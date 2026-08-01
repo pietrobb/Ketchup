@@ -1,0 +1,19 @@
+# Local Supervisor runtime
+.claude/
+skills/
+ClaudeSupervisor_*.exe
+models.yaml
+*.log
+
+# Rust and native builds
+/target/
+/build/
+cmake-build-*/
+
+# Local editor and OS files
+.vs/
+.idea/
+*.user
+*.suo
+Thumbs.db
+.DS_Store
