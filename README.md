@@ -1,5 +1,9 @@
 # Ketchup
 
+<p align="center">
+  <img src="pic/splash.png" alt="Ketchup — AI-native 2D/3D parametric modeler" width="100%">
+</p>
+
 Ketchup is an open-source, AI-native 2D/3D parametric modeler focused first on architecture, interiors, and furniture. The project targets fast direct interaction, exact geometry, deterministic canonical commands, and an optional AI assistant that cannot bypass validation or confirmation.
 
 ## Current phase
