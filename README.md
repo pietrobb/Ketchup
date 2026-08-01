@@ -25,6 +25,6 @@ Technical documentation, code, identifiers, schemas, tests, and commit messages 
 
 ## Execution
 
-The ordered autonomous work plan is recorded in the [R0-to-FLP mission manifest](docs/missions/ketchup-r0-to-flp_manifest.md). Current verified license and toolchain inputs are in the [R0 baseline](R0_LICENSE_AND_TOOLCHAIN_BASELINE.md).
+The ordered autonomous work plan is recorded in the [R0-to-FLP mission manifest](docs/missions/ketchup-r0-to-flp_manifest.md). Current verified license and toolchain inputs are in the [R0 baseline](R0_LICENSE_AND_TOOLCHAIN_BASELINE.md), with reproduction commands in the [Windows toolchain guide](docs/toolchain/WINDOWS.md).
 
 No stable public API or native file-format compatibility is promised at this stage.

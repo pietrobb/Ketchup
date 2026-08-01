@@ -1,0 +1,115 @@
+{
+  "schema_version": 1,
+  "freeze_id": "r0-v1",
+  "status": "frozen-before-a0",
+  "frozen_utc": "2026-08-01T13:05:07Z",
+  "measurement_state": "not_started",
+  "change_rule": "Any corpus, expected result, difficulty class, seed, or oracle change after an A0 observation fails r0-v1 and requires a new freeze_id.",
+  "canonical_tasks": {
+    "path": "corpora/canonical-tasks.yaml",
+    "count": 20,
+    "required_result": "All canonical and geometry invariants, not a plausible text response."
+  },
+  "fixed": [
+    {
+      "id": "FIX-EXTRUDE-001",
+      "difficulty": "baseline",
+      "spec": {"profile": "rectangle", "width_mm": 100, "depth_mm": 60, "extrude_mm": 20},
+      "expected": {"result": "valid_exact_solid", "solid_count": 1, "volume_mm3": 120000, "bbox_mm": [0, 0, 0, 100, 60, 20]}
+    },
+    {
+      "id": "FIX-EXTRUDE-002",
+      "difficulty": "baseline",
+      "spec": {"profile": "rectangle", "width_mm": 10, "depth_mm": 20, "extrude_mm": 30},
+      "expected": {"result": "valid_exact_solid", "solid_count": 1, "volume_mm3": 6000, "bbox_mm": [0, 0, 0, 10, 20, 30]}
+    },
+    {
+      "id": "FIX-CUT-001",
+      "difficulty": "baseline",
+      "spec": {"base_mm": [40, 30, 10], "cut_origin_mm": [10, 10, -5], "cut_size_mm": [20, 10, 20], "mode": "through_all"},
+      "expected": {"result": "valid_exact_solid", "solid_count": 1, "volume_mm3": 10000, "bbox_mm": [0, 0, 0, 40, 30, 10]}
+    },
+    {
+      "id": "FIX-CUT-002",
+      "difficulty": "baseline",
+      "spec": {"base_mm": [100, 60, 20], "cut_origin_mm": [30, 20, 10], "cut_size_mm": [40, 20, 15], "mode": "blind_planar"},
+      "expected": {"result": "valid_exact_solid", "solid_count": 1, "volume_mm3": 112000, "bbox_mm": [0, 0, 0, 100, 60, 20]}
+    }
+  ],
+  "generative": {
+    "id": "GEN-STRUCTURED-001",
+    "difficulty": "mixed-supported-envelope",
+    "generator": "SplitMix64 over integer micrometre parameters; no unconstrained byte fuzzing is counted as a valid-fixture corpus result.",
+    "seeds": [1, 7, 19, 31, 43, 61, 73, 101, 151, 211, 307, 401, 503, 601, 701, 809, 907, 1009, 1201, 1601],
+    "cases_per_seed": 50,
+    "case_count": 1000,
+    "distribution": {
+      "extrude_percent": 50,
+      "through_cut_percent": 30,
+      "blind_planar_cut_percent": 20,
+      "dimensions_um": {"minimum": 10000, "maximum": 100000000, "integer_only": true},
+      "cut_margin_um": {"minimum": 1000, "rule": "cut footprint remains inside its base unless the case is explicitly adversarial"}
+    },
+    "expected": "Every generated supported-envelope case returns a valid exact solid satisfying the common validity oracle."
+  },
+  "mutation": {
+    "id": "MUT-GUARANTEED-001",
+    "base_fixture": "FIX-EXTRUDE-001",
+    "references": ["extrusion.top", "extrusion.bottom", "extrusion.side(profile_edge=east)"],
+    "cases": [
+      {"id": "M01", "change": "extrude_mm:20->35", "expected_identity": {"top": "same_semantic_role", "bottom": "same_semantic_role", "east_side": "same_source_edge"}},
+      {"id": "M02", "change": "extrude_mm:20->5", "expected_identity": {"top": "same_semantic_role", "bottom": "same_semantic_role", "east_side": "same_source_edge"}},
+      {"id": "M03", "change": "width_mm:100->140", "expected_identity": {"top": "same_semantic_role", "bottom": "same_semantic_role", "east_side": "same_source_edge"}},
+      {"id": "M04", "change": "width_mm:100->40", "expected_identity": {"top": "same_semantic_role", "bottom": "same_semantic_role", "east_side": "same_source_edge"}},
+      {"id": "M05", "change": "depth_mm:60->90", "expected_identity": {"top": "same_semantic_role", "bottom": "same_semantic_role", "east_side": "same_source_edge"}},
+      {"id": "M06", "change": "depth_mm:60->25", "expected_identity": {"top": "same_semantic_role", "bottom": "same_semantic_role", "east_side": "same_source_edge"}},
+      {"id": "M07", "change": "width_mm:100->140;depth_mm:60->90;extrude_mm:20->35", "expected_identity": {"top": "same_semantic_role", "bottom": "same_semantic_role", "east_side": "same_source_edge"}},
+      {"id": "M08", "change": "width_mm:100->40;depth_mm:60->25;extrude_mm:20->5", "expected_identity": {"top": "same_semantic_role", "bottom": "same_semantic_role", "east_side": "same_source_edge"}}
+    ],
+    "expected": "All 24 reference outcomes resolve to the correct identity with documented history evidence; Ambiguous, Lost, or a similar but wrong face fails Guaranteed coverage."
+  },
+  "adversarial": {
+    "id": "ADV-EXACT-001",
+    "expected_valid": [
+      {"id": "AV01", "case": "extrude 0.01 x 0.01 x 0.01 mm"},
+      {"id": "AV02", "case": "extrude 100000 x 100000 x 0.01 mm"},
+      {"id": "AV03", "case": "extrude 0.01 x 100000 x 100 mm"},
+      {"id": "AV04", "case": "through cut with 0.001 mm supported minimum margin"},
+      {"id": "AV05", "case": "blind cut leaving a 0.001 mm supported minimum wall"},
+      {"id": "AV06", "case": "through cut exactly centered on both profile axes"},
+      {"id": "AV07", "case": "through cut with dimensions one third of integer-micrometre base dimensions"},
+      {"id": "AV08", "case": "eight sequential positive parameter mutations ending at original dimensions"},
+      {"id": "AV09", "case": "two non-overlapping through cuts in one solid"},
+      {"id": "AV10", "case": "cut tool extends 1000 mm beyond both sides of the base"}
+    ],
+    "expected_rejected": [
+      {"id": "AR01", "case": "zero profile width", "error_code": "invalid_parameter"},
+      {"id": "AR02", "case": "negative extrusion distance", "error_code": "invalid_parameter"},
+      {"id": "AR03", "case": "self-intersecting profile", "error_code": "invalid_profile"},
+      {"id": "AR04", "case": "non-finite parameter", "error_code": "non_finite_parameter"},
+      {"id": "AR05", "case": "cut with no intersection", "error_code": "no_geometric_change"},
+      {"id": "AR06", "case": "cut that only touches at an edge", "error_code": "degenerate_operation"}
+    ],
+    "expected": "At least 9 of 10 expected-valid cases pass; every non-pass and every expected rejection has typed structural diagnostics, and no invalid shape is accepted."
+  },
+  "external_step": {
+    "id": "STEP-SELF-AUTHORED-001",
+    "purpose": "Exercise the external STEP import boundary with auditable original files; this corpus does not claim independent-CAD-kernel diversity.",
+    "provenance": {
+      "author": "Ketchup project",
+      "copyright": "Ketchup contributors, 2026",
+      "license": "Apache-2.0",
+      "source_kind": "original programmatically authored fixtures",
+      "generator_source": "tests/native/r0-step-corpus.cpp",
+      "generator_script": "scripts/windows/generate-r0-step-corpus.ps1",
+      "generator_backend": "OCCT 8.0.1 b8f597c677811d1f9f4d8a97f5ae2825c0353a42",
+      "normalized_header_timestamp": "2026-08-01T00:00:00",
+      "excluded_sources": ["random internet CAD", "undocumented OCCT sample/test data", "files without an explicit redistribution grant"]
+    },
+    "fixtures": [
+      {"id": "STEP01", "path": "corpora/r0/step/self-authored-box.step", "sha256": "f925be79adc65eeaaa5234f4ae3f6400ceb93559cad86f67603c1d4d13883143", "expected": {"valid_solid_count": 1, "volume_mm3": 6000, "bbox_mm": [0, 0, 0, 10, 20, 30]}},
+      {"id": "STEP02", "path": "corpora/r0/step/self-authored-through-cut.step", "sha256": "05b9dcfcfed9f39b93a2bedef2b36bb77375a533deae39a073314017b3d72461", "expected": {"valid_solid_count": 1, "volume_mm3": 10000, "bbox_mm": [0, 0, 0, 40, 30, 10]}},
+      {"id": "STEP03", "path": "corpora/r0/step/self-authored-l-bracket.step", "sha256": "cf6f66efef2412956bd77131b93dacbdca5e9fd6390155457436c28693b7965b", "expected": {"valid_solid_count": 1, "volume_mm3": 6000, "bbox_mm": [0, 0, 0, 40, 30, 10]}}
+    ]
+  }
+}

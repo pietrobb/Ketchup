@@ -9,6 +9,9 @@ models.yaml
 /target/
 /build/
 cmake-build-*/
+/third_party/occt-src/
+/third_party/occt-build*/
+/third_party/occt-install*/
 
 # Local editor and OS files
 .vs/

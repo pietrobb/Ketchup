@@ -20,13 +20,13 @@
 | Component | R0 version/status | License | Decision |
 |---|---:|---|---|
 | Open CASCADE Technology | 8.0.1, tag `V8.0.1`, commit `b8f597c677811d1f9f4d8a97f5ae2825c0353a42` | LGPL-2.1 with Open CASCADE Exception 1.0; commercial alternative | Source build, shared libraries, no local OCCT modifications for A0 |
-| Rust toolchain | 1.97.0 stable | MIT or Apache-2.0, depending on component | Pin with `rust-toolchain.toml` when the workspace is initialized |
+| Rust toolchain | 1.97.0 stable | MIT or Apache-2.0, depending on component | Pinned by `rust-toolchain.toml`; installed and validated |
 | `cxx` bridge | Pin in the first `Cargo.lock` | MIT OR Apache-2.0 | Allowed; API remains inside Ketchup's facade |
 | `egui` | 0.35.0 | MIT OR Apache-2.0 | PoC candidate, not a long-term commitment |
 | `wgpu` | 29.0.4 with egui 0.35.0 | MIT OR Apache-2.0 | Pin 29.0.4; egui 0.35.0 declares `wgpu = "29.0"` |
 | Wasmtime | Deferred; release 47.0.3 verified at R0 | Apache-2.0 | Excluded from R0/A0; recheck before a plugin pilot |
-| CMake | Local 4.2.1 | BSD-3-Clause | Sufficient; freeze final fingerprint after clean configure |
-| MSVC Build Tools | Local VS 2022 17.5.33530.505 | Proprietary build tool | Not redistributed; update decision required before A0 |
+| CMake | Local 4.2.1, binary fingerprinted | BSD-3-Clause | Frozen for the R0 reference build |
+| MSVC Build Tools | Local VS 2022 17.5.33530.505, MSVC 19.35/14.35 | Proprietary build tool | Not redistributed; verified supported by OCCT, so no update is required for A0 |
 
 `wgpu` 30.0.0 may be newer as a standalone release, but it is not the correct pin for egui 0.35.0. The PoC uses one compatible render stack.
 
@@ -98,7 +98,7 @@ The owner accepts that third parties may distribute closed derivatives when they
 - RAM: 63.9 GB
 - GPU: AMD Radeon RX 6800 XT
 - Storage: Samsung SSD 990 PRO 2 TB and GIGABYTE GP-AG42TB 2 TB
-- Installed Rust/Cargo: 1.94.1
+- Project-pinned Rust/Cargo: 1.97.0
 - Installed CMake: 4.2.1
 - Installed Visual Studio Build Tools 2022: 17.5.33530.505
 
@@ -119,16 +119,15 @@ This machine is a high-performance B/C profile, not the only performance profile
 
 Localization details are binding in `docs/adr/0001-project-language-and-localization.md`.
 
-## 8. Open work before A0
+## 8. R0 preregistration inputs
 
-1. Pin or install Rust 1.97.0 for the project.
-2. Decide and perform any required update from local MSVC 17.5 to a supported VS 2022 branch before building OCCT.
-3. Produce a clean, reproducible OCCT build fingerprint.
-4. Add a provenance- and license-safe external STEP corpus. Random internet CAD files and undocumented OCCT test data are not acceptable.
-5. Freeze fixed, generative, mutation, and adversarial corpora plus the threshold file before observing A0 results.
-6. Define a second B/C reference profile using a mainstream integrated-GPU notebook.
+The reproducible Windows toolchain baseline is complete. Its commands and limitations are documented in `docs/toolchain/WINDOWS.md`; a normalized CMake configuration, the raw local cache hash, and 48 shared-library fingerprints are stored under `artifacts/r0/`.
 
-The connected public repository is `pietrobb/Ketchup`; local `main` tracks `origin/main`. This first project baseline commit does not itself complete R0.
+The pre-A0 corpus is frozen in `corpora/manifest.yaml`. It includes fixed, structure-aware generative, mutation, adversarial, and three self-authored provenance-safe STEP fixtures. Random internet CAD files and undocumented OCCT test data remain prohibited. `corpora/canonical-tasks.yaml` freezes all 20 FLP tasks, and `thresholds/r0.yaml` freezes the operation envelope, validity oracle, Guaranteed subset, hardware profiles, query classes, gate thresholds, owners, deadlines, and failure consequences.
+
+`HP-IGPU-01` is frozen as a hardware selection class. Its exact machine fingerprint must be recorded before the first Gate C observation; this does not block A0. `artifacts/r0/preregistration-lock.json` binds the preregistration and supporting evidence by SHA-256, and `docs/gates/R0_REPORT.md` records the R0 decision.
+
+The connected public repository is `pietrobb/Ketchup`; local `main` tracks `origin/main`. R0 completion does not itself authorize a commit, push, release, or public binary distribution.
 
 ## 9. Primary sources
 
@@ -152,4 +151,6 @@ The connected public repository is `pietrobb/Ketchup`; local `main` tracks `orig
 
 **License research pass:** conditionally successful; no known blocker.
 
-**A0 must not start yet:** the reproducible OCCT build fingerprint, frozen corpus, and frozen threshold file are still missing.
+**Toolchain gate:** complete. Rust 1.97.0 and the clean OCCT 8.0.1 shared-library build are pinned, fingerprinted, and validated.
+
+**R0 entry gate:** GO. The provenance-safe corpora, immutable threshold and consequence contract, canonical tasks, hardware/query profiles, Guaranteed subset, and SHA-256 lock were frozen before A0 measurement. A0 may start only against `r0-v1`; any post-observation change fails that run.

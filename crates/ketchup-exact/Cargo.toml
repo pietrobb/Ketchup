@@ -1,0 +1,17 @@
+[package]
+name = "ketchup-exact"
+description = "Exception-safe exact geometry facade and A0 structure-aware harness for Ketchup"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+cxx = "=1.0.198"
+
+[build-dependencies]
+cxx-build = "=1.0.198"
+
+[lints.clippy]
+all = "deny"

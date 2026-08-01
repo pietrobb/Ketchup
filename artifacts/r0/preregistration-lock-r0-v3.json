@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "freeze_id": "r0-v3",
+  "frozen_utc": "2026-08-01T16:30:22Z",
+  "measurement_state_at_freeze": "not_started",
+  "supersedes": {
+    "freeze_id": "r0-v2",
+    "lock_sha256": "72cd515b0ca87a7dd9a685fbcda1a8521b467ed56fc4a0b717e50bc305eb195e",
+    "reason": "The pre-commit index audit found that Git text normalization would alter two frozen CRLF toolchain manifests after checkout. The line-ending policy was corrected before publication, and A0 must be rerun under this replacement freeze. Historical r0-v2 evidence remains unchanged."
+  },
+  "inherited_contract": "All thresholds, corpora, expected outcomes, hardware profiles, oracles, consequences, dependencies, and toolchain evidence are inherited byte-for-byte from r0-v2. Only .gitattributes changes to preserve the already-frozen manifest bytes and force Cargo.lock to LF on every checkout.",
+  "immutability_rule": "Any listed byte change after an A0 observation fails the r0-v3 run. A replacement requires a new freeze_id and report; historical evidence remains unchanged.",
+  "files": [
+    {"path": ".gitattributes", "role": "checkout-stable line-ending and binary classification policy", "sha256": "61027be410ee223a1d44cf2baa010affee439512feb98a94f0725e6087fbc9d9"},
+    {"path": "thresholds/r0.yaml", "role": "inherited thresholds, envelopes, oracles, hardware, query classes, consequences", "sha256": "3a953aa2df56d859730fc7f3dd266801eb795252bd3f77fb995af84ca80de09c"},
+    {"path": "corpora/manifest.yaml", "role": "inherited fixed, generative, mutation, adversarial, and STEP corpus manifest", "sha256": "ceae3af9cd50c89298100993af7ef28e8d3433165ef882409cb506b79c7ae8ae"},
+    {"path": "corpora/canonical-tasks.yaml", "role": "inherited 20 canonical task contracts", "sha256": "e7388935910c154df007b81d4f1a7e6849e6afccbd838b804860470f228bc535"},
+    {"path": "corpora/r0/step/self-authored-box.step", "role": "inherited provenance-safe STEP fixture", "sha256": "f925be79adc65eeaaa5234f4ae3f6400ceb93559cad86f67603c1d4d13883143"},
+    {"path": "corpora/r0/step/self-authored-through-cut.step", "role": "inherited provenance-safe STEP fixture", "sha256": "05b9dcfcfed9f39b93a2bedef2b36bb77375a533deae39a073314017b3d72461"},
+    {"path": "corpora/r0/step/self-authored-l-bracket.step", "role": "inherited provenance-safe STEP fixture", "sha256": "cf6f66efef2412956bd77131b93dacbdca5e9fd6390155457436c28693b7965b"},
+    {"path": "docs/architecture/EXECUTION_CONTRACT.md", "role": "frozen English Architecture V3 execution contract", "sha256": "18ad1cbd1244145f009814b9985a44cda390f39be7359852639c6428aa2966eb"},
+    {"path": "R0_LICENSE_AND_TOOLCHAIN_BASELINE.md", "role": "license and toolchain baseline", "sha256": "d565e3c7a9f57338f4a533300ad2dc20e8a22150e7f33d689054db6a165160db"},
+    {"path": "rust-toolchain.toml", "role": "Rust pin", "sha256": "6ed0c02f396ed635caf66cce3272eb82b877df7259b736f6ca457e486c9c4158"},
+    {"path": "Cargo.lock", "role": "Rust dependency lock including the A0 cxx facade", "sha256": "a2f103264259b56e39e6b9a60243869f7ff4612faa311b2b7d28fb6a1cb66351"},
+    {"path": "deny.toml", "role": "dependency license and source policy", "sha256": "476e6c61e65cd2354bfd01db49c5eff57c25cea6a644cc47fa7628ccd94aa486"},
+    {"path": "artifacts/r0/occt-cmake-config.json", "role": "normalized OCCT build configuration", "sha256": "48227fd020d6a2356fee62cdeed7ff9315c6a255c8dff5a69bf87a32d8e2316e"},
+    {"path": "artifacts/r0/occt-build-manifest.json", "role": "OCCT source, toolchain, install-tree, and DLL evidence", "sha256": "1212a72954ed503a6b06618b2813b1d7c04f5b422329d2327594268e431ef48a"},
+    {"path": "tests/native/r0-step-corpus.cpp", "role": "original STEP fixture geometry generator", "sha256": "b7faed00a146f16f6f203a851c470179e2d0fd1c6f0e12b4b919414958fbfff3"},
+    {"path": "scripts/windows/generate-r0-step-corpus.ps1", "role": "pinned STEP generation and timestamp normalization procedure", "sha256": "325056f307a07b5a8afd03e0d4aa1620f55e261be28e7d4a65be88a72471466c"}
+  ]
+}

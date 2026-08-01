@@ -1,0 +1,215 @@
+{
+  "schema_version": 1,
+  "freeze_id": "r0-v1",
+  "status": "frozen-before-a0",
+  "frozen_utc": "2026-08-01T13:05:07Z",
+  "measurement_state": "not_started",
+  "authority": "docs/architecture/EXECUTION_CONTRACT.md",
+  "change_rule": "Changing a threshold, corpus, expected result, hardware selection rule, query class, oracle, or consequence after observing a gate result fails that r0-v1 gate run and requires a new freeze_id and report.",
+  "operation_envelope": {
+    "canonical_units": "millimetres",
+    "parameter_storage": "decimal source token plus canonical finite f64 millimetre value; authoritative parameters must round-trip without drift",
+    "local_coordinate_abs_max_mm": 1000000,
+    "positive_length_min_mm": 0.01,
+    "positive_length_max_mm": 100000,
+    "profile": {
+      "supported": ["one axis-aligned four-edge rectangle on the XY plane with stable directed edge IDs"],
+      "rejected": ["open wire", "self-intersection", "zero or negative dimension", "non-finite coordinate", "nested loops"]
+    },
+    "extrude": {
+      "supported": ["positive linear extrusion along +Z of the supported rectangle"],
+      "rejected": ["zero or negative distance", "non-linear sweep", "draft", "twist", "multi-region profile"]
+    },
+    "cut": {
+      "supported": ["one axis-aligned rectangular planar tool extruded along Z as through-all or blind cut against one exact extrusion solid"],
+      "rejected": ["non-intersecting tool", "touch-only or degenerate intersection", "multi-body result", "curved tool", "mesh operand"]
+    },
+    "mutation": "Positive dimension changes listed in corpora/manifest.yaml MUT-GUARANTEED-001.",
+    "explicitly_outside_a0": ["fillet", "chamfer", "shell", "loft", "revolve", "general boolean union", "curved profile", "mesh fallback", "final UI", "native persistence", "AI"]
+  },
+  "validity_oracle": {
+    "accepted_exact_result_requires_all": [
+      "No C++ exception crosses the facade or process boundary.",
+      "The facade returns a typed success with a non-null owned shape handle.",
+      "BRepCheck_Analyzer reports valid after the operation and after STEP round-trip where applicable.",
+      "Exactly one solid exists unless the fixture explicitly expects rejection.",
+      "The solid is closed, finite, and has strictly positive volume.",
+      "Volume and axis-aligned bounds match the fixture expectation within the declared tolerances.",
+      "Topology counts and history are captured as evidence; counts alone never prove identity.",
+      "Every requested SubshapeRef resolves to the expected identity, Ambiguous, or Lost; a wrong silent match is forbidden.",
+      "Diagnostics, backend fingerprint, tolerance profile, input digest, and result fingerprint are present."
+    ],
+    "rejected_result_requires_all": [
+      "A stable typed error code and structured diagnostic are returned.",
+      "No partial shape is committed or exposed as a successful exact result.",
+      "No document mutation or shared-cache poisoning occurs."
+    ],
+    "tolerances": {
+      "authoritative_parameter_change": 0,
+      "bbox_abs_mm": 0.000001,
+      "volume_abs_mm3": 0.000001,
+      "volume_relative": 0.0000000001,
+      "constraint_residual": 0.000000001
+    }
+  },
+  "guaranteed_subset": {
+    "id": "GUARANTEED-EXTRUDE-RECT-R0-V1",
+    "status": "closed-and-frozen-before-a0",
+    "producer": "one supported four-edge rectangular profile extruded linearly along +Z",
+    "preconditions": ["one profile", "one resulting solid", "no cut or downstream boolean", "positive dimensions inside the operation envelope"],
+    "references": [
+      {"id": "extrusion.top", "semantic_role": "terminal face in +Z", "expected_type": "planar_face", "cardinality": 1},
+      {"id": "extrusion.bottom", "semantic_role": "source face at minimum Z", "expected_type": "planar_face", "cardinality": 1},
+      {"id": "extrusion.side(profile_edge=east)", "semantic_role": "side face generated from the stable east profile edge", "expected_type": "planar_face", "cardinality": 1}
+    ],
+    "mutation_cases": ["M01", "M02", "M03", "M04", "M05", "M06", "M07", "M08"],
+    "required_evidence": ["producer feature and output role", "stable source profile edge where applicable", "document-scoped lineage", "documented backend Generated/Modified/Deleted evidence where emitted", "post-operation topology and adjacency evidence", "geometry fingerprint used only as corroboration, never sole identity"],
+    "pass_rule": "All 24 reference outcomes resolve to the correct identity and carry complete required evidence.",
+    "forbidden_expansion": "No cut face, boolean descendant, fillet, chamfer, or fingerprint-only match is Guaranteed in r0-v1."
+  },
+  "hardware_profiles": [
+    {
+      "id": "HP-DEV-01",
+      "role": "A0/A1 development and high-performance B/C comparison",
+      "selection": "exact-machine",
+      "os": "Windows 10 Pro 10.0.19045",
+      "cpu": "AMD Ryzen 9 5900X, 12 cores / 24 threads",
+      "ram_gib": 63.9,
+      "gpu": "AMD Radeon RX 6800 XT",
+      "storage": "Samsung SSD 990 PRO 2 TB or GIGABYTE GP-AG42TB 2 TB",
+      "power": "AC power; no artificial CPU or GPU overclock required"
+    },
+    {
+      "id": "HP-IGPU-01",
+      "role": "mandatory Gate C lower reference profile",
+      "selection": "frozen-class-before-machine-acquisition",
+      "requirements": [
+        "Retail x86-64 notebook released from 2023 through 2026.",
+        "Windows 11 23H2 or later, fully patched before the first run and then frozen for the gate run.",
+        "15 W to 30 W nominal mobile CPU class with at least 4 physical cores.",
+        "Integrated Direct3D 12 GPU; any discrete GPU is disabled for the gate run.",
+        "16 GiB system RAM with at most 4 GiB shared GPU budget.",
+        "1920x1080 display at 60 Hz, 100 percent scale, AC power, vendor balanced profile.",
+        "Production graphics driver version and complete machine fingerprint recorded before the first observation."
+      ],
+      "selection_rule": "The first available machine satisfying every requirement becomes the exact HP-IGPU-01 fingerprint. Substitution after any Gate C observation fails that run."
+    }
+  ],
+  "query_classes": [
+    {
+      "id": "QC-B-READER-01",
+      "gate": "B",
+      "scene": "10,000 occurrences of one exact rectangular-box definition in a 100x100 grid; one shared authoritative geometry; warm spatial index.",
+      "operation": "Concurrent camera navigation plus exact hover query while one 2-second killable geometry job runs.",
+      "samples": 1000,
+      "warmup_samples": 100,
+      "metrics": {"reader_block_ms_max": 100, "query_p95_ms_max": 16.7}
+    },
+    {
+      "id": "QC-B-TRANSPORT-01",
+      "gate": "B",
+      "scene": "One 100x60x20 mm rectangular extrusion with warm worker and caches.",
+      "operation": "Change extrusion height between 20 and 35 mm and return validity, bounds, volume, topology evidence, and result fingerprint.",
+      "samples": 1000,
+      "warmup_samples": 100,
+      "metrics": {"transport_p95_ms_max": 15, "transport_end_to_end_percent_max": 20}
+    },
+    {
+      "id": "QC-C-NAV-01",
+      "gate": "C",
+      "scene": "10,000 occurrences from QC-B-READER-01 with at most 500,000 visible tessellated triangles and warm GPU resources.",
+      "operation": "Orbit, pan, zoom, and ephemeral transform preview for 30 seconds per run.",
+      "samples": 30,
+      "warmup_seconds": 10,
+      "metrics": {"frame_p95_ms_max": 16.7, "frame_p99_ms_max": 33.3, "input_to_preview_p95_ms_max": 50}
+    },
+    {
+      "id": "QC-C-EDIT-01",
+      "gate": "C",
+      "scene": "One supported 100x60x20 mm rectangular extrusion with warm exact backend.",
+      "operation": "Baseline Smart Push/Pull changes the unambiguous source extrusion height from 20 to 35 mm.",
+      "samples": 1000,
+      "warmup_samples": 100,
+      "metrics": {"exact_result_p95_ms_max": 100, "action_digest_match_percent": 100}
+    },
+    {
+      "id": "QC-C-PICK-01",
+      "gate": "C",
+      "scene": "QC-C-NAV-01 with exact face, edge, endpoint, midpoint, and intersection candidates and a warm spatial index.",
+      "operation": "Pointer-to-exact-pick and snap resolution, including overlapping candidates.",
+      "samples": 2000,
+      "warmup_samples": 200,
+      "metrics": {"pick_snap_p95_ms_max": 50, "wrong_identity_count_max": 0}
+    },
+    {
+      "id": "QC-C-LONG-01",
+      "gate": "C",
+      "scene": "A deterministic exact job that runs for at least 2 seconds on HP-IGPU-01.",
+      "operation": "Navigate, query progress, and cancel while the job is active.",
+      "samples": 100,
+      "metrics": {"navigation_block_ms_max": 100, "cancel_p95_ms_max": 250, "committed_data_loss_count_max": 0}
+    }
+  ],
+  "measurement_rules": {
+    "clock": "Windows QueryPerformanceCounter through a monotonic Rust clock",
+    "build": "Release build with symbols allowed, debugger and profiler detached unless a diagnostic rerun is explicitly marked non-gating",
+    "background_state": "AC power, no pending OS update or active build, network-independent fixtures, warmup excluded",
+    "percentile": "nearest-rank percentile over recorded individual samples; do not average per-run percentiles",
+    "outliers": "No outlier removal in a gating run",
+    "raw_evidence": "Store every sample, environment fingerprint, revision, backend fingerprint, and summary under artifacts/<gate>/",
+    "repeat": "Correctness is evaluated over all fixtures. Performance thresholds must pass in three consecutive complete runs on every required profile."
+  },
+  "gates": {
+    "R0": {
+      "pass": ["Pinned OCCT source/build/toolchain evidence exists.", "Primary license sources and distribution checklist exist.", "Fixed, generative, mutation, adversarial, and provenance-safe STEP corpora are frozen.", "The 20 tasks, operation envelope, validity oracle, Guaranteed subset, hardware profiles, query classes, thresholds, owners, deadlines, and consequences are frozen.", "No A0 observation predates this freeze."],
+      "failure_consequence": "A0 must not start. Correct missing preregistration inputs and issue a new R0 report without fabricating or rewriting evidence."
+    },
+    "A0": {
+      "metrics": {
+        "cpp_exception_crosses_boundary_max": 0,
+        "ffi_fuzz_call_count_min": 10000,
+        "baseline_expected_valid_percent_min": 100,
+        "adversarial_expected_valid_percent_min": 90,
+        "adversarial_failure_structural_diagnosis_percent_min": 100,
+        "silent_invalid_shape_max": 0,
+        "guaranteed_identity_correct_percent_min": 100,
+        "silent_wrong_identity_all_classes_max": 0,
+        "guaranteed_history_evidence_percent_min": 100
+      },
+      "failure_consequences": [
+        "Any leaked C++ exception fails A0.",
+        "Any silent invalid shape or silent wrong identity fails A0 and blocks A1.",
+        "Failure of simple extrusion top, bottom, or specified-edge side identity blocks A1 and reopens the backend/reference model.",
+        "Sub-threshold adversarial expected-valid behavior narrows the supported operation envelope in a new preregistration and triggers a targeted exact-versus-mesh benchmark; it never converts a failed r0-v1 run into a pass."
+      ]
+    },
+    "A1": {
+      "metrics": {"canonical_changes_after_100_save_load_cycles_max": 0, "ui_rpc_digest_and_invariant_equivalence_percent_min": 100, "atomic_rollback_without_partial_mutation_percent_min": 100, "independent_node_recompute_count_max": 0, "precision_authoritative_without_drift_percent_min": 100, "old_schema_preserved_or_explicit_loss_percent_min": 100},
+      "failure_consequence": "Any save/load drift, partial rollback, or UI/protocol inequivalence blocks Gate B."
+    },
+    "B": {
+      "metrics": {"schedule_permutations_min": 10000, "stale_current_insert_max": 0, "crash_recovery_runs_min": 100, "committed_revision_damage_max": 0, "exception_crosses_contract_max": 0, "changed_read_digest_accepted_max": 0, "memory_cache_budget_mib_max": 512, "process_private_bytes_hp_igpu_mib_max": 2048, "post_warmup_growth_mib_per_100_edits_max": 1},
+      "query_classes": ["QC-B-READER-01", "QC-B-TRANSPORT-01", "QC-C-LONG-01"],
+      "failure_consequences": ["A stale insert, committed revision loss, or unbounded memory blocks Gate C.", "Worker-overhead failure permits one bounded transport optimization and one new run; continued failure requires an evidence-based isolation ADR without weakening the failed run."]
+    },
+    "C": {
+      "required_hardware": ["HP-DEV-01", "HP-IGPU-01"],
+      "query_classes": ["QC-C-NAV-01", "QC-C-EDIT-01", "QC-C-PICK-01", "QC-C-LONG-01"],
+      "metrics": {"shared_authoritative_geometry_for_10000_occurrences": 1, "preview_commit_action_digest_match_percent_min": 100},
+      "failure_consequences": ["A slow non-baseline exact operation leaves the interactive class and gets asynchronous progress.", "If QC-C-EDIT-01 misses its threshold, Gate C fails.", "Slow or incorrect picking must be fixed in spatial queries and cannot be hidden by renderer approximation.", "Gate C failure blocks AI tool-surface expansion."]
+    },
+    "FLP": {
+      "canonical_tasks_required": 20,
+      "canonical_tasks_pass_required": 20,
+      "additional_requirements": ["English fallback locale complete", "one second test locale", "privacy defaults verified", "exact and mesh exports distinct with loss report", "OCCT replaceability and packaging notices verified"],
+      "failure_consequence": "Do not label or package the revision as the First Lovable Product; publish an explicit NO-GO report with failed task IDs."
+    }
+  },
+  "owners_and_deadlines": [
+    {"decision": "A0 facade and corpus runner implementation", "owner": "project-owner assisted by AI agents", "deadline": "before the first A0 measurement", "blocking_gate": "A0"},
+    {"decision": "Exact HP-IGPU-01 machine fingerprint", "owner": "project-owner", "deadline": "before the first Gate C measurement", "blocking_gate": "C"},
+    {"decision": "Worker versus in-process exact-backend isolation", "owner": "project-owner assisted by AI agents", "deadline": "after Gate B comparison and before Gate B decision report", "blocking_gate": "B"},
+    {"decision": "egui suitability for the narrow shell", "owner": "project-owner assisted by AI agents", "deadline": "before Gate C implementation is frozen", "blocking_gate": "C"},
+    {"decision": "Public binary OCCT compliance packet", "owner": "project-owner", "deadline": "before any public binary distribution", "blocking_gate": "FLP packaging"}
+  ]
+}

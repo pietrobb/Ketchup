@@ -1,0 +1,192 @@
+{
+  "schema_version": 1,
+  "freeze_id": "r0-v1",
+  "status": "frozen-before-a0",
+  "frozen_utc": "2026-08-01T13:05:07Z",
+  "measurement_state": "not_started",
+  "command_schema": "ketchup.command.v1",
+  "intent_schema": "ketchup.intent.v1",
+  "tasks": [
+    {
+      "id": "T01",
+      "name": "Exact rectangular profile",
+      "fixture": "empty-mm-document",
+      "request": "Draw a rectangle 100 mm wide and 60 mm deep on the XY plane.",
+      "expected_intent": "CreateRectangularProfile",
+      "command_batch_shape": ["CreateSketch", "CreateRectangle", "SetDimension", "SetDimension"],
+      "invariants": ["unit=mm", "width=100", "depth=60", "closed_profile=true", "constraint_residual<=1e-9"]
+    },
+    {
+      "id": "T02",
+      "name": "Exact profile extrusion",
+      "fixture": "task-T01-result",
+      "request": "Extrude the rectangle upward by exactly 20 mm.",
+      "expected_intent": "ExtrudeProfile",
+      "command_batch_shape": ["CreateExtrusion"],
+      "invariants": ["distance=20", "direction=+Z", "valid_exact_solid=true", "volume_mm3=120000"]
+    },
+    {
+      "id": "T03",
+      "name": "Source extrusion height change",
+      "fixture": "task-T02-result",
+      "request": "Change the source extrusion height from 20 mm to 35 mm.",
+      "expected_intent": "SetFeatureParameter",
+      "command_batch_shape": ["SetParameter"],
+      "invariants": ["extrusion_distance=35", "profile_dimensions_unchanged=true", "volume_mm3=210000", "no_cumulative_drift=true"]
+    },
+    {
+      "id": "T04",
+      "name": "Rectangular opening cut",
+      "fixture": "task-T02-result",
+      "request": "Cut a centered 40 mm by 20 mm rectangular opening through the solid.",
+      "expected_intent": "CreateThroughCut",
+      "command_batch_shape": ["CreateSketch", "CreateRectangle", "SetDimension", "SetDimension", "CreateCut"],
+      "invariants": ["opening_width=40", "opening_depth=20", "through_all=true", "valid_exact_solid=true", "volume_mm3=104000"]
+    },
+    {
+      "id": "T05",
+      "name": "Unambiguous Smart Push Pull",
+      "fixture": "task-T02-result",
+      "request": "Push the top face upward by 10 mm and update the source extrusion.",
+      "expected_intent": "SmartPushPullSourceParameter",
+      "command_batch_shape": ["SetParameter"],
+      "invariants": ["source_extrusion_selected_unambiguously=true", "extrusion_distance=30", "action_digest_declares_parameter_change=true"]
+    },
+    {
+      "id": "T06",
+      "name": "Ambiguous Smart Push Pull",
+      "fixture": "ambiguous-stacked-extrusions",
+      "request": "Push this coincident face upward by 10 mm.",
+      "expected_intent": "SmartPushPullNeedsChoice",
+      "command_batch_shape": [],
+      "invariants": ["choice_required=true", "document_revision_unchanged=true", "no_silent_source_selection=true"]
+    },
+    {
+      "id": "T07",
+      "name": "Exact vector move",
+      "fixture": "single-box-occurrence",
+      "request": "Move the box by 25 mm in X, -10 mm in Y, and 5 mm in Z.",
+      "expected_intent": "MoveOccurrence",
+      "command_batch_shape": ["SetOccurrenceTransform"],
+      "invariants": ["translation_mm=[25,-10,5]", "definition_geometry_unchanged=true", "canonical_transform_exact=true"]
+    },
+    {
+      "id": "T08",
+      "name": "Snapped copy",
+      "fixture": "two-box-snap-scene",
+      "request": "Copy the selected box and snap its lower-front-left corner to the target endpoint.",
+      "expected_intent": "CopyOccurrenceWithSnap",
+      "command_batch_shape": ["CreateOccurrence", "SetOccurrenceTransform"],
+      "invariants": ["definition_is_shared=true", "snap_target_exact=true", "source_occurrence_unchanged=true"]
+    },
+    {
+      "id": "T09",
+      "name": "Shared definition occurrences",
+      "fixture": "empty-mm-document",
+      "request": "Create one chair definition and place three occurrences of it.",
+      "expected_intent": "CreateSharedOccurrences",
+      "command_batch_shape": ["CreateDefinition", "CreateOccurrence", "CreateOccurrence", "CreateOccurrence"],
+      "invariants": ["definition_count=1", "occurrence_count=3", "authoritative_geometry_instances=1"]
+    },
+    {
+      "id": "T10",
+      "name": "Definition edit propagation",
+      "fixture": "task-T09-result",
+      "request": "Change the shared chair definition width to 480 mm.",
+      "expected_intent": "EditDefinitionParameter",
+      "command_batch_shape": ["SetParameter"],
+      "invariants": ["definition_width=480", "all_occurrences_updated=true", "occurrence_transforms_unchanged=true"]
+    },
+    {
+      "id": "T11",
+      "name": "Make occurrence unique",
+      "fixture": "task-T09-result",
+      "request": "Make the second chair unique without changing the other chairs.",
+      "expected_intent": "MakeOccurrenceUnique",
+      "command_batch_shape": ["CloneDefinition", "RebindOccurrenceDefinition"],
+      "invariants": ["definition_count=2", "only_selected_occurrence_rebound=true", "geometry_initially_equivalent=true"]
+    },
+    {
+      "id": "T12",
+      "name": "Group and edit context",
+      "fixture": "three-independent-boxes",
+      "request": "Group the first two boxes and enter the group edit context.",
+      "expected_intent": "CreateGroupAndEnterContext",
+      "command_batch_shape": ["CreateGroup", "ReparentEntity", "ReparentEntity"],
+      "invariants": ["group_members=2", "third_box_parent_unchanged=true", "edit_context_is_ephemeral=true"]
+    },
+    {
+      "id": "T13",
+      "name": "Tag visibility ownership",
+      "fixture": "tagged-occurrences",
+      "request": "Hide the Furniture tag.",
+      "expected_intent": "SetTagVisibility",
+      "command_batch_shape": ["SetTagVisibility"],
+      "invariants": ["tag_visible=false", "geometry_ownership_unchanged=true", "entity_count_unchanged=true"]
+    },
+    {
+      "id": "T14",
+      "name": "Simple linear pattern",
+      "fixture": "single-box-occurrence",
+      "request": "Create five copies in a line at 200 mm spacing along X.",
+      "expected_intent": "CreateLinearPattern",
+      "command_batch_shape": ["CreateLinearPattern"],
+      "invariants": ["copy_count=5", "spacing_mm=200", "direction=+X", "definition_is_shared=true"]
+    },
+    {
+      "id": "T15",
+      "name": "Parameter expression",
+      "fixture": "parameterized-cabinet",
+      "request": "Set the shelf depth to width divided by two.",
+      "expected_intent": "SetParameterExpression",
+      "command_batch_shape": ["SetParameterExpression"],
+      "invariants": ["expression=width/2", "dependency_edge_present=true", "evaluated_value_exact=true"]
+    },
+    {
+      "id": "T16",
+      "name": "Dependent only recompute",
+      "fixture": "frozen-dag-R0-v1",
+      "request": "Change the cabinet width from 600 mm to 720 mm.",
+      "expected_intent": "SetFeatureParameter",
+      "command_batch_shape": ["SetParameter"],
+      "invariants": ["width=720", "only_transitive_dependents_recomputed=true", "independent_node_recompute_count=0"]
+    },
+    {
+      "id": "T17",
+      "name": "Save and reopen",
+      "fixture": "reference-rich-cabinet",
+      "request": "Save the model, close it, and reopen it.",
+      "expected_intent": "SaveAndReopenDocument",
+      "command_batch_shape": [],
+      "invariants": ["canonical_digest_unchanged=true", "dimensions_unchanged=true", "references_resolve_or_report_explicitly=true", "cache_not_required=true"]
+    },
+    {
+      "id": "T18",
+      "name": "Batch undo redo",
+      "fixture": "single-box-occurrence",
+      "request": "Move the box, tag it, and rename it as one action, then undo and redo that action.",
+      "expected_intent": "AtomicMultiCommandEdit",
+      "command_batch_shape": ["SetOccurrenceTransform", "AssignTag", "RenameEntity"],
+      "invariants": ["visible_undo_steps=1", "undo_restores_prior_digest=true", "redo_restores_committed_digest=true"]
+    },
+    {
+      "id": "T19",
+      "name": "Exact and mesh export",
+      "fixture": "task-T04-result",
+      "request": "Export this model as STEP and as STL, and show any loss of meaning.",
+      "expected_intent": "ExportArtifacts",
+      "command_batch_shape": [],
+      "post_commit_actions": ["ExportExactSTEP", "ExportMeshSTL"],
+      "invariants": ["source_revision_unchanged=true", "step_export_present=true", "stl_export_present=true", "mesh_loss_report_present=true", "exact_and_mesh_types_not_conflated=true"]
+    },
+    {
+      "id": "T20",
+      "name": "Risky AI proposal workflow",
+      "fixture": "reference-rich-cabinet",
+      "request": "Reduce the cabinet width by 20 percent and keep the opening centered.",
+      "expected_intent": "RiskyParameterizedEdit",
+      "command_batch_shape": ["SetParameter", "SetParameterExpression"],
+      "invariants": ["proposal_precedes_commit=true", "assumptions_visible=true", "diff_visible=true", "confirmation_required=true", "dependency_digest_revalidated=true", "post_commit_verification=true"]
+    }
+  ]
+}
