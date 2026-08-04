@@ -1,9 +1,12 @@
 #![forbid(unsafe_code)]
 
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, Stroke, Vec2};
+use ketchup_core::beam_m4ae::{
+    BeamChangeSummary, BeamSlice, BeamValidationVerdict, BeamWorkspace, GroovePosition, GroupedBom,
+};
 use ketchup_core::document::{
     CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentId, DocumentStore, FeatureId,
-    FeatureKind, GroupId, OccurrenceId, Snapshot, Transform,
+    FeatureKind, GroupId, InstancePath, OccurrenceId, Snapshot, Transform,
 };
 use ketchup_interaction::{
     Axis, ElementId, LocaleCatalog, Ray, SelectionId, Side, Vec3,
@@ -37,12 +40,12 @@ struct PushPullDrag {
     pixels_per_mm: f32,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct LastPushPull {
     selection: SelectionId,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct MoveDrag {
     source_document_id: DocumentId,
     source_revision: u64,
@@ -60,19 +63,19 @@ struct LastMove {
     applied_distance_mm: f64,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct BoxFace {
     element: ElementId,
     corners: [usize; 4],
     color: Color32,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 struct RenderBox {
     definition_id: DefinitionId,
     profile_feature_id: FeatureId,
     extrusion_feature_id: FeatureId,
-    occurrence_id: u64,
+    instance_path: InstancePath,
     origin_mm: Vec3,
     size_mm: Vec3,
 }
@@ -408,18 +411,18 @@ impl CommandRegistry {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 enum EditContext {
     Group(GroupId),
     Definition {
         definition_id: DefinitionId,
-        occurrence_id: OccurrenceId,
+        instance_path: InstancePath,
     },
 }
 
 #[derive(Default)]
 struct SelectionState {
-    occurrences: BTreeSet<OccurrenceId>,
+    occurrences: BTreeSet<InstancePath>,
     primary: Option<SelectionId>,
     selected_group: Option<GroupId>,
     edit_context: Vec<EditContext>,
@@ -432,17 +435,18 @@ impl SelectionState {
         self.selected_group = None;
     }
 
-    fn contains(&self, occurrence_id: u64) -> bool {
-        self.occurrences.contains(&OccurrenceId(occurrence_id))
+    fn contains(&self, instance_path: &InstancePath) -> bool {
+        self.occurrences.contains(instance_path)
     }
 
     fn select_exact(&mut self, selection: SelectionId, additive: bool) {
-        let occurrence_id = OccurrenceId(selection.occurrence_id);
-        if additive && self.occurrences.contains(&occurrence_id) {
-            self.occurrences.remove(&occurrence_id);
+        let instance_path = selection.instance_path.clone();
+        if additive && self.occurrences.contains(&instance_path) {
+            self.occurrences.remove(&instance_path);
             if self
                 .primary
-                .is_some_and(|primary| primary.occurrence_id == selection.occurrence_id)
+                .as_ref()
+                .is_some_and(|primary| primary.instance_path == selection.instance_path)
             {
                 self.primary = None;
             }
@@ -451,28 +455,32 @@ impl SelectionState {
         if !additive {
             self.occurrences.clear();
         }
-        self.occurrences.insert(occurrence_id);
+        self.occurrences.insert(instance_path);
         self.primary = Some(selection);
         self.selected_group = None;
     }
 
-    fn select_occurrence(&mut self, occurrence_id: OccurrenceId, additive: bool) {
-        if additive && self.occurrences.contains(&occurrence_id) {
-            self.occurrences.remove(&occurrence_id);
+    fn select_path(&mut self, instance_path: InstancePath, additive: bool) {
+        if additive && self.occurrences.contains(&instance_path) {
+            self.occurrences.remove(&instance_path);
         } else {
             if !additive {
                 self.occurrences.clear();
             }
-            self.occurrences.insert(occurrence_id);
+            self.occurrences.insert(instance_path);
         }
         self.primary = None;
         self.selected_group = None;
+    }
+
+    fn select_occurrence(&mut self, occurrence_id: OccurrenceId, additive: bool) {
+        self.select_path(InstancePath::root(occurrence_id), additive);
     }
 }
 
 #[derive(Clone)]
 struct OutlinerOccurrence {
-    id: OccurrenceId,
+    instance_path: InstancePath,
     name: String,
     position: String,
     visible: bool,
@@ -496,6 +504,7 @@ struct OutlinerDefinition {
 
 pub struct KetchupApp {
     document: DocumentStore,
+    review_candidate: Option<ketchup_core::persistence::LoadOutcome>,
     document_path: Option<PathBuf>,
     saved_digest: String,
     catalog: LocaleCatalog,
@@ -531,6 +540,8 @@ pub struct KetchupApp {
     shortcuts_open: bool,
     viewport_rect: Option<Rect>,
     dialogs: Box<dyn FileDialogs>,
+    beam_workspace: Option<BeamWorkspace>,
+    beam_zone1_gap_input: String,
 }
 
 impl Default for KetchupApp {
@@ -572,6 +583,7 @@ impl KetchupApp {
         let digest = catalog.text("status-ready");
         Self {
             document,
+            review_candidate: None,
             document_path: None,
             saved_digest,
             catalog,
@@ -607,6 +619,8 @@ impl KetchupApp {
             shortcuts_open: false,
             viewport_rect: None,
             dialogs: Box::new(NativeFileDialogs),
+            beam_workspace: None,
+            beam_zone1_gap_input: "415".to_owned(),
         }
     }
 
@@ -671,8 +685,26 @@ impl KetchupApp {
     fn open_document_from(&mut self, path: &Path) -> bool {
         match ketchup_core::persistence::load_file(path) {
             Ok(outcome) => {
-                self.document = outcome.document;
-                self.document.discard_history_before_current();
+                if !outcome.is_editable() {
+                    self.review_candidate = Some(outcome);
+                    self.digest = self.catalog.format(
+                        "error-open-document",
+                        &BTreeMap::from([
+                            ("path", path.display().to_string()),
+                            (
+                                "reason",
+                                "document requires read-only migration review".to_owned(),
+                            ),
+                        ]),
+                    );
+                    return false;
+                }
+                let Ok(mut document) = outcome.into_editable() else {
+                    unreachable!("editable load outcome must contain an editable document");
+                };
+                document.discard_history_before_current();
+                self.document = document;
+                self.review_candidate = None;
                 self.document_path = Some(path.to_owned());
                 self.saved_digest = self.document.current().canonical_digest();
                 self.reset_document_presentation();
@@ -830,6 +862,64 @@ impl KetchupApp {
         }
     }
 
+    pub fn load_beam_m4ae(&mut self) -> bool {
+        match BeamWorkspace::load() {
+            Ok(workspace) => {
+                self.beam_workspace = Some(workspace);
+                self.beam_zone1_gap_input = "415".to_owned();
+                true
+            }
+            Err(error) => {
+                self.digest = error.to_string();
+                false
+            }
+        }
+    }
+
+    pub fn set_beam_zone1_gap_mm(&mut self, value: f64) -> bool {
+        let Some(workspace) = self.beam_workspace.as_mut() else {
+            return false;
+        };
+        match workspace.set_zone1_gap_mm(value) {
+            Ok(_) => {
+                self.beam_zone1_gap_input = format_height(value);
+                true
+            }
+            Err(error) => {
+                self.digest = error.to_string();
+                false
+            }
+        }
+    }
+
+    #[must_use]
+    pub fn beam_slice(&self) -> Option<&BeamSlice> {
+        self.beam_workspace.as_ref().map(BeamWorkspace::slice)
+    }
+
+    #[must_use]
+    pub fn beam_groove_positions(&self) -> Option<&[GroovePosition]> {
+        self.beam_slice().map(|slice| slice.positions.as_slice())
+    }
+
+    #[must_use]
+    pub fn beam_bom(&self) -> Option<&GroupedBom> {
+        self.beam_slice().map(|slice| &slice.bom)
+    }
+
+    #[must_use]
+    pub fn beam_validation_is_green(&self) -> bool {
+        self.beam_slice()
+            .is_some_and(|slice| slice.validation == BeamValidationVerdict::Green)
+    }
+
+    #[must_use]
+    pub fn beam_last_change(&self) -> Option<&BeamChangeSummary> {
+        self.beam_workspace
+            .as_ref()
+            .and_then(BeamWorkspace::last_change)
+    }
+
     #[must_use]
     pub fn document_revision(&self) -> u64 {
         self.document.current().revision_id()
@@ -851,6 +941,10 @@ impl KetchupApp {
 
     /// Whether the active document carries unsaved changes.
     #[must_use]
+    pub fn has_review_candidate(&self) -> bool {
+        self.review_candidate.is_some()
+    }
+
     pub fn is_dirty(&self) -> bool {
         self.document.current().canonical_digest() != self.saved_digest
     }
@@ -906,7 +1000,7 @@ impl KetchupApp {
                     definition_id: occurrence.body.definition_id,
                     profile_feature_id: occurrence.body.profile_feature_id?,
                     extrusion_feature_id: occurrence.body.extrusion_feature_id?,
-                    occurrence_id: occurrence.occurrence_id.0,
+                    instance_path: occurrence.instance_path.clone(),
                     origin_mm: box_proxy.origin_mm,
                     size_mm: box_proxy.size_mm,
                 })
@@ -933,7 +1027,7 @@ impl KetchupApp {
     pub fn occurrence_box_geometry(&self, occurrence_id: u64) -> Option<(Vec3, Vec3)> {
         self.active_boxes()
             .into_iter()
-            .find(|item| item.occurrence_id == occurrence_id)
+            .find(|item| item.instance_path == InstancePath::root(OccurrenceId(occurrence_id)))
             .map(|item| (item.origin_mm, item.size_mm))
     }
 
@@ -961,30 +1055,50 @@ impl KetchupApp {
         self.selection.edit_context.len()
     }
 
-    fn selected_occurrence_ids(&self) -> BTreeSet<OccurrenceId> {
-        let mut ids = self.selection.occurrences.clone();
-        if let Some(primary) = self.selection.primary {
-            ids.insert(OccurrenceId(primary.occurrence_id));
+    fn selected_instance_paths(&self) -> BTreeSet<InstancePath> {
+        let mut paths = self.selection.occurrences.clone();
+        if let Some(primary) = &self.selection.primary {
+            paths.insert(primary.instance_path.clone());
         }
-        ids
+        paths
+    }
+
+    fn selected_occurrence_ids(&self) -> BTreeSet<OccurrenceId> {
+        let paths = self.selected_instance_paths();
+        if paths.iter().any(|path| !path.is_root()) {
+            return BTreeSet::new();
+        }
+        paths
+            .into_iter()
+            .map(|path| path.root_occurrence())
+            .collect()
     }
 
     fn selection_count(&self) -> usize {
-        self.selected_occurrence_ids().len()
+        self.selected_instance_paths().len()
     }
 
-    fn occurrence_in_active_context(&self, occurrence_id: OccurrenceId) -> bool {
+    fn occurrence_in_active_context(&self, instance_path: &InstancePath) -> bool {
         let snapshot = self.document.current();
-        let Some(occurrence) = snapshot.occurrence(occurrence_id) else {
+        let Some(occurrence) = snapshot.occurrence(instance_path.root_occurrence()) else {
             return false;
         };
-        match self.selection.edit_context.last().copied() {
+        if snapshot.resolve_instance_path(instance_path).is_err() {
+            return false;
+        }
+        match self.selection.edit_context.last() {
             None => true,
-            Some(EditContext::Group(group_id)) => occurrence.parent() == Some(group_id),
+            Some(EditContext::Group(group_id)) => occurrence.parent() == Some(*group_id),
             Some(EditContext::Definition {
                 definition_id,
-                occurrence_id: source_id,
-            }) => occurrence_id == source_id && occurrence.definition_id() == definition_id,
+                instance_path: context_path,
+            }) => {
+                snapshot
+                    .resolve_instance_path(context_path)
+                    .is_ok_and(|resolved| resolved.definition_id == *definition_id)
+                    && instance_path.root_occurrence() == context_path.root_occurrence()
+                    && instance_path.steps().starts_with(context_path.steps())
+            }
         }
     }
 
@@ -996,7 +1110,7 @@ impl KetchupApp {
         let ids = snapshot
             .occurrences()
             .filter(|occurrence| occurrence.parent() == Some(group_id))
-            .map(|occurrence| occurrence.id())
+            .map(|occurrence| InstancePath::root(occurrence.id()))
             .collect::<BTreeSet<_>>();
         if ids.is_empty() {
             return false;
@@ -1027,24 +1141,27 @@ impl KetchupApp {
         true
     }
 
-    fn enter_occurrence_context(&mut self, occurrence_id: OccurrenceId) -> bool {
+    fn enter_occurrence_context(&mut self, instance_path: InstancePath) -> bool {
         let snapshot = self.document.current();
-        let Some(occurrence) = snapshot.occurrence(occurrence_id) else {
+        let Ok(resolved) = snapshot.resolve_instance_path(&instance_path) else {
             return false;
         };
-        if !self.occurrence_in_active_context(occurrence_id) {
+        if !self.occurrence_in_active_context(&instance_path) {
             return false;
         }
-        let context = match self.selection.edit_context.last().copied() {
-            None if occurrence.parent().is_some() => {
+        let root = snapshot.occurrence(instance_path.root_occurrence());
+        let context = match (self.selection.edit_context.last(), root) {
+            (None, Some(occurrence))
+                if instance_path.is_root() && occurrence.parent().is_some() =>
+            {
                 EditContext::Group(occurrence.parent().unwrap())
             }
             _ => EditContext::Definition {
-                definition_id: occurrence.definition_id(),
-                occurrence_id,
+                definition_id: resolved.definition_id,
+                instance_path,
             },
         };
-        self.selection.edit_context.push(context);
+        self.selection.edit_context.push(context.clone());
         self.selection.clear();
         self.digest = self.catalog.text(match context {
             EditContext::Group(_) => "digest-entered-group-context",
@@ -1074,12 +1191,13 @@ impl KetchupApp {
             }
             return;
         };
-        let occurrence_id = OccurrenceId(target.occurrence_id);
-        if !self.occurrence_in_active_context(occurrence_id) {
+        let occurrence_id = target.instance_path.root_occurrence();
+        if !self.occurrence_in_active_context(&target.instance_path) {
             return;
         }
         let snapshot = self.document.current();
         if self.selection.edit_context.is_empty()
+            && target.instance_path.is_root()
             && let Some(group_id) = snapshot
                 .occurrence(occurrence_id)
                 .and_then(|occurrence| occurrence.parent())
@@ -1087,11 +1205,11 @@ impl KetchupApp {
             self.select_group(group_id);
             return;
         }
-        self.selection.select_exact(target, additive);
+        self.selection.select_exact(target.clone(), additive);
         if let Some(item) = snapshot
             .scene_query()
             .into_iter()
-            .find(|item| item.occurrence_id == occurrence_id)
+            .find(|item| item.instance_path == target.instance_path)
         {
             self.digest = self.catalog.format(
                 "digest-selected-viewport",
@@ -1103,24 +1221,26 @@ impl KetchupApp {
         }
     }
 
-    fn select_from_outliner(&mut self, occurrence_id: OccurrenceId, additive: bool) {
-        if !self.occurrence_in_active_context(occurrence_id) {
+    fn select_from_outliner(&mut self, instance_path: InstancePath, additive: bool) {
+        if !self.occurrence_in_active_context(&instance_path) {
             return;
         }
         let snapshot = self.document.current();
+        let root_id = instance_path.root_occurrence();
         if self.selection.edit_context.is_empty()
+            && instance_path.is_root()
             && let Some(group_id) = snapshot
-                .occurrence(occurrence_id)
+                .occurrence(root_id)
                 .and_then(|occurrence| occurrence.parent())
         {
             self.select_group(group_id);
             return;
         }
-        self.selection.select_occurrence(occurrence_id, additive);
+        self.selection.select_path(instance_path.clone(), additive);
         if let Some(item) = snapshot
             .scene_query()
             .into_iter()
-            .find(|item| item.occurrence_id == occurrence_id)
+            .find(|item| item.instance_path == instance_path)
         {
             self.digest = self.catalog.format(
                 "digest-selected-outliner",
@@ -1139,15 +1259,15 @@ impl KetchupApp {
             .into_iter()
             .filter(|item| {
                 item.definition_id == definition_id
-                    && self.occurrence_in_active_context(item.occurrence_id)
+                    && self.occurrence_in_active_context(&item.instance_path)
             })
-            .map(|item| item.occurrence_id)
+            .map(|item| item.instance_path)
             .collect::<Vec<_>>();
         let name = definition.name().to_owned();
         if !additive {
             self.selection.clear();
         }
-        self.selection.occurrences.extend(ids.iter().copied());
+        self.selection.occurrences.extend(ids.iter().cloned());
         self.digest = self.catalog.format(
             "digest-selected-definition",
             &BTreeMap::from([("name", name), ("count", ids.len().to_string())]),
@@ -1160,8 +1280,8 @@ impl KetchupApp {
             .current()
             .scene_query()
             .into_iter()
-            .filter(|item| item.visible && self.occurrence_in_active_context(item.occurrence_id))
-            .map(|item| item.occurrence_id)
+            .filter(|item| item.visible && self.occurrence_in_active_context(&item.instance_path))
+            .map(|item| item.instance_path)
             .collect::<Vec<_>>();
         self.selection.clear();
         self.selection.occurrences.extend(ids);
@@ -1190,7 +1310,7 @@ impl KetchupApp {
                     .map(|item| {
                         let matrix = item.transform.matrix();
                         OutlinerOccurrence {
-                            id: item.occurrence_id,
+                            instance_path: item.instance_path,
                             name: item.occurrence_name,
                             position: format!(
                                 "{},{}",
@@ -1274,7 +1394,7 @@ impl KetchupApp {
             .current()
             .scene_query()
             .into_iter()
-            .find(|item| item.occurrence_id == occurrence_id)
+            .find(|item| item.instance_path == InstancePath::root(occurrence_id))
             .map_or(0, |item| item.shared_occurrence_count)
     }
 
@@ -1294,7 +1414,7 @@ impl KetchupApp {
                         && self.selection_has_common_parent()
                 }
                 AppCommand::Ungroup => self.selected_group_id().is_some(),
-                AppCommand::MakeComponent => self.selection_count() == 1,
+                AppCommand::MakeComponent => self.selected_group_id().is_some(),
                 AppCommand::MakeUnique => self.selected_shared_occurrence_count() > 1,
                 AppCommand::Hide => self.selected_occurrences_with_visibility(true) > 0,
                 AppCommand::Unhide => self.selected_occurrences_with_visibility(false) > 0,
@@ -1510,10 +1630,10 @@ impl KetchupApp {
     }
 
     fn selected_box(&self) -> Option<RenderBox> {
-        let occurrence_id = self.selected_occurrence_ids().into_iter().next()?.0;
+        let instance_path = self.selected_instance_paths().into_iter().next()?;
         self.active_boxes()
             .into_iter()
-            .find(|item| item.occurrence_id == occurrence_id)
+            .find(|item| item.instance_path == instance_path)
     }
 
     pub fn group_selected(&mut self) -> bool {
@@ -1614,7 +1734,9 @@ impl KetchupApp {
             return false;
         }
         self.selection.clear();
-        self.selection.occurrences.extend(ids.iter().copied());
+        self.selection
+            .occurrences
+            .extend(ids.iter().copied().map(InstancePath::root));
         self.digest = self.catalog.format(
             "digest-ungrouped",
             &BTreeMap::from([("count", ids.len().to_string())]),
@@ -1623,41 +1745,25 @@ impl KetchupApp {
     }
 
     pub fn make_component(&mut self) -> bool {
-        if self.selection_count() != 1 {
-            return false;
-        }
-        let Some(occurrence_id) = self.selected_occurrence_ids().into_iter().next() else {
+        let Some(group_id) = self.selected_group_id() else {
             return false;
         };
-        let snapshot = self.document.current();
-        let Some(occurrence) = snapshot.occurrence(occurrence_id) else {
-            return false;
-        };
-        let definition_id = occurrence.definition_id();
-        let count = snapshot
-            .scene_query()
-            .into_iter()
-            .find(|item| item.occurrence_id == occurrence_id)
-            .map_or(1, |item| item.shared_occurrence_count);
         let name = self.catalog.format(
             "model-component-name",
-            &BTreeMap::from([("number", definition_id.0.to_string())]),
+            &BTreeMap::from([("number", group_id.0.to_string())]),
         );
-        if self
+        let Ok(result) = self
             .document
-            .apply_batch(&CommandBatch::new(vec![
-                CanonicalCommand::RenameDefinition {
-                    id: definition_id,
-                    name: name.clone(),
-                },
-            ]))
-            .is_err()
-        {
+            .convert_group_to_component(group_id, name.clone())
+        else {
             return false;
-        }
+        };
+        self.selection.clear();
+        self.selection
+            .select_occurrence(result.component_occurrence_id, false);
         self.digest = self.catalog.format(
             "digest-made-component",
-            &BTreeMap::from([("name", name), ("count", count.to_string())]),
+            &BTreeMap::from([("name", name), ("count", result.mappings.len().to_string())]),
         );
         true
     }
@@ -1670,77 +1776,20 @@ impl KetchupApp {
             return false;
         };
         let snapshot = self.document.current();
-        let Some(occurrence) = snapshot.occurrence(occurrence_id) else {
+        let Some(source) = snapshot
+            .occurrence(occurrence_id)
+            .and_then(|item| snapshot.definition(item.definition_id()))
+        else {
             return false;
         };
-        let source_definition_id = occurrence.definition_id();
-        let Some(source) = snapshot.definition(source_definition_id) else {
-            return false;
-        };
-        let new_definition_id = DefinitionId(
-            snapshot
-                .definitions()
-                .map(|definition| definition.id().0)
-                .max()
-                .unwrap_or(0)
-                + 1,
-        );
-        let first_feature_id = snapshot
-            .features()
-            .map(|feature| feature.id().0)
-            .max()
-            .unwrap_or(0)
-            + 1;
-        let feature_id_map = source
-            .feature_ids()
-            .iter()
-            .enumerate()
-            .map(|(index, id)| (*id, FeatureId(first_feature_id + index as u64)))
-            .collect::<Vec<_>>();
         let new_name = self.catalog.format(
             "model-unique-name",
             &BTreeMap::from([("name", source.name().to_owned())]),
         );
-        let element = self.selection.primary.map_or(
-            ElementId::Face {
-                axis: Axis::Z,
-                side: Side::Maximum,
-            },
-            |selection| selection.element,
-        );
-        if self
-            .document
-            .apply_batch(&CommandBatch::new(vec![
-                CanonicalCommand::CloneDefinitionAndRepoint {
-                    occurrence_id,
-                    source_definition_id,
-                    new_definition_id,
-                    new_definition_name: new_name,
-                    feature_id_map,
-                },
-            ]))
-            .is_err()
-        {
+        if self.document.make_unique(occurrence_id, new_name).is_err() {
             return false;
         }
-        for context in &mut self.selection.edit_context {
-            if let EditContext::Definition {
-                definition_id,
-                occurrence_id: context_occurrence_id,
-            } = context
-                && *context_occurrence_id == occurrence_id
-            {
-                *definition_id = new_definition_id;
-            }
-        }
-        self.selection.select_exact(
-            SelectionId {
-                definition_id: new_definition_id,
-                occurrence_id: occurrence_id.0,
-                element,
-            },
-            false,
-        );
+        self.selection.select_occurrence(occurrence_id, false);
         self.digest = self.catalog.text("digest-made-unique");
         true
     }
@@ -1814,7 +1863,7 @@ impl KetchupApp {
         self.selection.select_exact(
             SelectionId {
                 definition_id,
-                occurrence_id: occurrence_id.0,
+                instance_path: InstancePath::root(occurrence_id),
                 element: ElementId::Face {
                     axis: Axis::Z,
                     side: Side::Maximum,
@@ -1835,15 +1884,15 @@ impl KetchupApp {
     }
 
     fn selected_move_reference(&self) -> Option<SelectionId> {
-        if let Some(primary) = self.selection.primary {
-            return Some(primary);
+        if let Some(primary) = &self.selection.primary {
+            return Some(primary.clone());
         }
-        let occurrence_id = *self.selection.occurrences.iter().next()?;
+        let instance_path = self.selection.occurrences.iter().next()?.clone();
         let snapshot = self.document.current();
-        let occurrence = snapshot.occurrence(occurrence_id)?;
+        let occurrence = snapshot.occurrence(instance_path.root_occurrence())?;
         Some(SelectionId {
             definition_id: occurrence.definition_id(),
-            occurrence_id: occurrence_id.0,
+            instance_path,
             element: ElementId::Face {
                 axis: Axis::Z,
                 side: Side::Maximum,
@@ -1851,7 +1900,12 @@ impl KetchupApp {
         })
     }
 
-    fn translate_occurrence(&mut self, selection: SelectionId, delta_mm: Vec3, copy: bool) -> bool {
+    fn translate_occurrence(
+        &mut self,
+        selection: &SelectionId,
+        delta_mm: Vec3,
+        copy: bool,
+    ) -> bool {
         let distance_mm = vector_length(delta_mm);
         if !delta_mm.x.is_finite()
             || !delta_mm.y.is_finite()
@@ -1861,7 +1915,10 @@ impl KetchupApp {
             return false;
         }
         let snapshot = self.document.current();
-        let source_id = OccurrenceId(selection.occurrence_id);
+        if !selection.instance_path.is_root() {
+            return false;
+        }
+        let source_id = selection.instance_path.root_occurrence();
         let Some(source) = snapshot.occurrence(source_id) else {
             return false;
         };
@@ -1924,8 +1981,8 @@ impl KetchupApp {
         }
         let target = SelectionId {
             definition_id,
-            occurrence_id: target_id.0,
-            element: selection.element,
+            instance_path: InstancePath::root(target_id),
+            element: selection.element.clone(),
         };
         self.selection.select_exact(target, false);
         self.last_move = Some(LastMove {
@@ -1953,14 +2010,14 @@ impl KetchupApp {
         let Some(selection) = self.selected_move_reference() else {
             return false;
         };
-        self.translate_occurrence(selection, delta_mm, false)
+        self.translate_occurrence(&selection, delta_mm, false)
     }
 
     pub fn copy_selected(&mut self, delta_mm: Vec3) -> bool {
         let Some(selection) = self.selected_move_reference() else {
             return false;
         };
-        self.translate_occurrence(selection, delta_mm, true)
+        self.translate_occurrence(&selection, delta_mm, true)
     }
 
     fn copy_selection_to_clipboard(&mut self) -> bool {
@@ -2042,11 +2099,11 @@ impl KetchupApp {
         self.selection.clear();
         self.selection
             .occurrences
-            .extend(pasted.iter().map(|(id, _)| *id));
+            .extend(pasted.iter().map(|(id, _)| InstancePath::root(*id)));
         if let Some((occurrence_id, definition_id)) = pasted.first().copied() {
             self.selection.primary = Some(SelectionId {
                 definition_id,
-                occurrence_id: occurrence_id.0,
+                instance_path: InstancePath::root(occurrence_id),
                 element: ElementId::Face {
                     axis: Axis::Z,
                     side: Side::Maximum,
@@ -2062,11 +2119,14 @@ impl KetchupApp {
     }
 
     pub fn rotate_selected_90(&mut self) -> bool {
-        let Some(selection) = self.selection.primary else {
+        let Some(selection) = &self.selection.primary else {
             return false;
         };
         let snapshot = self.document.current();
-        let occurrence_id = OccurrenceId(selection.occurrence_id);
+        if !selection.instance_path.is_root() {
+            return false;
+        }
+        let occurrence_id = selection.instance_path.root_occurrence();
         let Some(occurrence) = snapshot.occurrence(occurrence_id) else {
             return false;
         };
@@ -2121,13 +2181,16 @@ impl KetchupApp {
     }
 
     #[must_use]
-    pub const fn selected_reference(&self) -> Option<SelectionId> {
-        self.selection.primary
+    pub fn selected_reference(&self) -> Option<SelectionId> {
+        self.selection.primary.clone()
     }
 
     fn push_pull_face_selected(&self) -> bool {
         matches!(
-            self.selection.primary.map(|selection| selection.element),
+            self.selection
+                .primary
+                .as_ref()
+                .map(|selection| selection.element.clone()),
             Some(ElementId::Face { .. })
         )
     }
@@ -2137,35 +2200,38 @@ impl KetchupApp {
     }
 
     pub fn start_preview(&mut self) -> bool {
-        let selection = self.selection.primary.unwrap_or(SelectionId {
+        let selection = self.selection.primary.clone().unwrap_or(SelectionId {
             definition_id: INITIAL_BOX_DEFINITION,
-            occurrence_id: 1,
+            instance_path: InstancePath::root(OccurrenceId(1)),
             element: ElementId::Face {
                 axis: Axis::Z,
                 side: Side::Maximum,
             },
         });
+        if !selection.instance_path.is_root() {
+            return false;
+        }
         let Some(distance_mm) = parse_distance_mm(&self.push_pull_distance_input) else {
             return false;
         };
         let Some(item) = self
             .active_boxes()
             .into_iter()
-            .find(|item| item.occurrence_id == selection.occurrence_id)
+            .find(|item| item.instance_path == selection.instance_path)
         else {
             return false;
         };
-        let Some(current_extent_mm) = face_extent(item, Some(selection.element)) else {
+        let Some(current_extent_mm) = face_extent(&item, Some(&selection.element)) else {
             return false;
         };
         let new_extent_mm = current_extent_mm + distance_mm;
-        let Some(after) = resize_box_from_face(item, selection.element, new_extent_mm) else {
+        let Some(after) = resize_box_from_face(&item, &selection.element, new_extent_mm) else {
             return false;
         };
         let Some(batch) = push_pull_batch(
             &self.document.current(),
-            selection,
-            item,
+            &selection,
+            &item,
             new_extent_mm,
             format_height(new_extent_mm),
         ) else {
@@ -2175,8 +2241,8 @@ impl KetchupApp {
         self.preview = Some(batch);
         self.preview_box = Some(EphemeralBoxPreview {
             source_revision: self.document.current().revision_id(),
-            selection_state: self.selection.primary,
-            target: selection,
+            selection_state: self.selection.primary.clone(),
+            target: selection.clone(),
             command_digest,
             box_data: after,
         });
@@ -2186,9 +2252,9 @@ impl KetchupApp {
         let shared_count = snapshot
             .scene_query()
             .into_iter()
-            .find(|candidate| candidate.occurrence_id == OccurrenceId(selection.occurrence_id))
+            .find(|candidate| candidate.instance_path == selection.instance_path)
             .map_or(1, |candidate| candidate.shared_occurrence_count);
-        self.digest = match selection.element {
+        self.digest = match &selection.element {
             ElementId::Face { axis: Axis::Z, .. } => self.catalog.format(
                 "digest-push-pull-live",
                 &BTreeMap::from([
@@ -2210,9 +2276,9 @@ impl KetchupApp {
     }
 
     fn has_preview(&self) -> bool {
-        let expected_target = self.selection.primary.unwrap_or(SelectionId {
+        let expected_target = self.selection.primary.clone().unwrap_or(SelectionId {
             definition_id: INITIAL_BOX_DEFINITION,
-            occurrence_id: 1,
+            instance_path: InstancePath::root(OccurrenceId(1)),
             element: ElementId::Face {
                 axis: Axis::Z,
                 side: Side::Maximum,
@@ -2248,11 +2314,11 @@ impl KetchupApp {
         let snapshot = self.document.current();
         self.selection
             .occurrences
-            .retain(|id| snapshot.occurrence(*id).is_some());
-        if self.selection.primary.is_some_and(|selection| {
+            .retain(|path| snapshot.resolve_instance_path(path).is_ok());
+        if self.selection.primary.as_ref().is_some_and(|selection| {
             snapshot
-                .occurrence(OccurrenceId(selection.occurrence_id))
-                .is_none()
+                .resolve_instance_path(&selection.instance_path)
+                .is_err()
         }) {
             self.selection.primary = None;
         }
@@ -2271,12 +2337,12 @@ impl KetchupApp {
                 EditContext::Group(group_id) => snapshot.group(*group_id).is_none(),
                 EditContext::Definition {
                     definition_id,
-                    occurrence_id,
+                    instance_path,
                 } => {
                     snapshot.definition(*definition_id).is_none()
-                        || snapshot
-                            .occurrence(*occurrence_id)
-                            .is_none_or(|occurrence| occurrence.definition_id() != *definition_id)
+                        || !snapshot
+                            .resolve_instance_path(instance_path)
+                            .is_ok_and(|resolved| resolved.definition_id == *definition_id)
                 }
             })
         {
@@ -2338,16 +2404,18 @@ impl KetchupApp {
             self.status_key = "error-preview-stale";
             return false;
         }
-        let committed_extent = self.selection.primary.and_then(|selection| {
+        let committed_extent = self.selection.primary.as_ref().and_then(|selection| {
             self.preview_box
                 .as_ref()
-                .and_then(|item| face_extent(item.box_data, Some(selection.element)))
+                .and_then(|item| face_extent(&item.box_data, Some(&selection.element)))
         });
         self.preview_box = None;
         self.preview_definition_id = None;
         self.status_key = "status-ready";
-        if let Some(selection) = self.selection.primary {
-            self.last_push_pull = Some(LastPushPull { selection });
+        if let Some(selection) = self.selection.primary.clone() {
+            self.last_push_pull = Some(LastPushPull {
+                selection: selection.clone(),
+            });
             self.digest = self.catalog.format(
                 match selection.element {
                     ElementId::Face { axis: Axis::Z, .. } => "digest-push-pull-committed-height",
@@ -2374,26 +2442,26 @@ impl KetchupApp {
         if !self.has_preview() {
             return None;
         }
-        let selection = self.selection.primary.unwrap_or(SelectionId {
+        let selection = self.selection.primary.clone().unwrap_or(SelectionId {
             definition_id: INITIAL_BOX_DEFINITION,
-            occurrence_id: 1,
+            instance_path: InstancePath::root(OccurrenceId(1)),
             element: ElementId::Face {
                 axis: Axis::Z,
                 side: Side::Maximum,
             },
         });
         let snapshot = self.document.current();
-        let occurrence = snapshot.occurrence(OccurrenceId(selection.occurrence_id))?;
+        let occurrence = snapshot.occurrence(selection.instance_path.root_occurrence())?;
         let definition = snapshot.definition(occurrence.definition_id())?;
         let from = self
             .active_boxes()
             .into_iter()
-            .find(|item| item.occurrence_id == selection.occurrence_id)
-            .and_then(|item| face_extent(item, Some(selection.element)))?;
+            .find(|item| item.instance_path == selection.instance_path)
+            .and_then(|item| face_extent(&item, Some(&selection.element)))?;
         let to = self
             .preview_box
             .as_ref()
-            .and_then(|item| face_extent(item.box_data, Some(selection.element)))?;
+            .and_then(|item| face_extent(&item.box_data, Some(&selection.element)))?;
         Some(self.catalog.format(
             "action-smart-push-pull-height",
             &BTreeMap::from([
@@ -2407,22 +2475,23 @@ impl KetchupApp {
     fn selected_face_extent_mm(&self) -> f64 {
         self.selection
             .primary
+            .as_ref()
             .and_then(|selection| {
                 self.selected_box()
-                    .and_then(|item| face_extent(item, Some(selection.element)))
+                    .and_then(|item| face_extent(&item, Some(&selection.element)))
             })
             .unwrap_or_else(|| self.document_height_mm())
     }
 
     fn push_pull_screen_projection(
         &self,
-        selection: SelectionId,
+        selection: &SelectionId,
         rect: Rect,
     ) -> Option<(Vec2, f32)> {
         let item = self
             .active_boxes()
             .into_iter()
-            .find(|item| item.occurrence_id == selection.occurrence_id)?;
+            .find(|item| item.instance_path == selection.instance_path)?;
         let ElementId::Face { axis, side } = selection.element else {
             return None;
         };
@@ -2471,32 +2540,32 @@ impl KetchupApp {
         let Some(ephemeral) = self.preview_box.as_ref() else {
             return item;
         };
-        let preview = ephemeral.box_data;
-        let selection = ephemeral.target;
+        let preview = &ephemeral.box_data;
+        let selection = &ephemeral.target;
         if preview.definition_id != item.definition_id {
             return item;
         }
-        let preview_element = match selection.element {
+        let preview_element = match &selection.element {
             ElementId::Face {
                 axis,
                 side: Side::Minimum,
-            } if item.occurrence_id != selection.occurrence_id => ElementId::Face {
-                axis,
+            } if item.instance_path != selection.instance_path => ElementId::Face {
+                axis: *axis,
                 side: Side::Maximum,
             },
-            element => element,
+            element => element.clone(),
         };
-        face_extent(preview, Some(selection.element))
-            .and_then(|extent| resize_box_from_face(item, preview_element, extent))
+        face_extent(preview, Some(&selection.element))
+            .and_then(|extent| resize_box_from_face(&item, &preview_element, extent))
             .unwrap_or(item)
     }
 
-    fn move_preview_is_current(&self, drag: MoveDrag) -> bool {
+    fn move_preview_is_current(&self, drag: &MoveDrag) -> bool {
         let snapshot = self.document.current();
         drag.source_document_id == snapshot.document_id()
             && drag.source_revision == snapshot.revision_id()
             && snapshot
-                .occurrence(OccurrenceId(drag.selection.occurrence_id))
+                .occurrence(drag.selection.instance_path.root_occurrence())
                 .is_some_and(|occurrence| {
                     occurrence.definition_id() == drag.selection.definition_id
                 })
@@ -2504,7 +2573,7 @@ impl KetchupApp {
 
     fn viewport_boxes(&self) -> Vec<RenderBox> {
         let mut boxes = self.active_boxes();
-        let Some(drag) = self.move_drag.or(self.move_anchor) else {
+        let Some(drag) = self.move_drag.as_ref().or(self.move_anchor.as_ref()) else {
             return boxes;
         };
         if !self.move_preview_is_current(drag) {
@@ -2512,11 +2581,11 @@ impl KetchupApp {
         }
         let Some(index) = boxes
             .iter()
-            .position(|item| item.occurrence_id == drag.selection.occurrence_id)
+            .position(|item| item.instance_path == drag.selection.instance_path)
         else {
             return boxes;
         };
-        let mut preview = boxes[index];
+        let mut preview = boxes[index].clone();
         preview.origin_mm = preview.origin_mm + drag.delta_mm;
         if drag.copy {
             boxes.push(preview);
@@ -2648,18 +2717,21 @@ impl KetchupApp {
             return self.complete_exact_rectangle();
         }
         if self.active_tool == ActiveTool::PushPull {
-            let selection = self
-                .selection
-                .primary
-                .or_else(|| self.last_push_pull.map(|operation| operation.selection));
+            let selection = self.selection.primary.clone().or_else(|| {
+                self.last_push_pull
+                    .as_ref()
+                    .map(|operation| operation.selection.clone())
+            });
             let Some(selection) = selection else {
                 self.digest = self.catalog.text("digest-nothing-to-apply");
                 return false;
             };
-            self.selection.select_exact(selection, false);
+            self.selection.select_exact(selection.clone(), false);
             self.push_pull_distance_input = self.value_input.clone();
             if self.start_preview() && self.confirm_preview() {
-                self.last_push_pull = Some(LastPushPull { selection });
+                self.last_push_pull = Some(LastPushPull {
+                    selection: selection.clone(),
+                });
                 self.digest = self.catalog.format(
                     "digest-exact-value-applied",
                     &BTreeMap::from([(
@@ -2697,14 +2769,14 @@ impl KetchupApp {
                     };
                     let selection = SelectionId {
                         definition_id: occurrence.definition_id(),
-                        occurrence_id: previous.occurrence_id.0,
+                        instance_path: InstancePath::root(previous.occurrence_id),
                         element: ElementId::Face {
                             axis: Axis::Z,
                             side: Side::Maximum,
                         },
                     };
                     if self.translate_occurrence(
-                        selection,
+                        &selection,
                         previous.direction * correction_mm,
                         false,
                     ) {
@@ -2778,16 +2850,16 @@ impl KetchupApp {
         }
         self.active_boxes()
             .into_iter()
-            .find(|item| item.occurrence_id == selection.occurrence_id)
+            .find(|item| item.instance_path == selection.instance_path)
             .map_or(0.0, |item| item.origin_mm.z + item.size_mm.z)
     }
 
     fn hover_readout(&self) -> String {
-        let Some(hovered) = self.hovered else {
+        let Some(hovered) = &self.hovered else {
             return self.catalog.text("hover-none");
         };
         let snapshot = self.document.current();
-        let Some(occurrence) = snapshot.occurrence(OccurrenceId(hovered.occurrence_id)) else {
+        let Some(occurrence) = snapshot.occurrence(hovered.instance_path.root_occurrence()) else {
             return self.catalog.text("hover-none");
         };
         let Some(definition) = snapshot.definition(occurrence.definition_id()) else {
@@ -2985,7 +3057,7 @@ impl KetchupApp {
                 let target = self.exact_pick_at_screen(pointer, response.rect);
                 self.select_from_viewport(target, false);
                 if self.push_pull_face_selected()
-                    && let Some(selection) = self.selection.primary
+                    && let Some(selection) = &self.selection.primary
                     && let Some((screen_normal, pixels_per_mm)) =
                         self.push_pull_screen_projection(selection, response.rect)
                 {
@@ -3000,7 +3072,7 @@ impl KetchupApp {
                 }
             } else if self.active_tool == ActiveTool::Move {
                 if let Some(mut anchor) = self.move_anchor.take() {
-                    if !self.move_preview_is_current(anchor) {
+                    if !self.move_preview_is_current(&anchor) {
                         self.digest = self.catalog.text("error-preview-stale");
                     } else {
                         if let Some(pointer_world) =
@@ -3014,7 +3086,7 @@ impl KetchupApp {
                         }
                         if vector_length(anchor.delta_mm) >= 0.01 {
                             self.translate_occurrence(
-                                anchor.selection,
+                                &anchor.selection,
                                 anchor.delta_mm,
                                 anchor.copy,
                             );
@@ -3026,12 +3098,10 @@ impl KetchupApp {
                     let target =
                         self.exact_pick_at_screen(pointer, response.rect)
                             .filter(|selection| {
-                                self.occurrence_in_active_context(OccurrenceId(
-                                    selection.occurrence_id,
-                                ))
+                                self.occurrence_in_active_context(&selection.instance_path)
                             });
                     if target.is_some() {
-                        self.select_from_viewport(target, false);
+                        self.select_from_viewport(target.clone(), false);
                     } else {
                         self.digest = self.catalog.text("digest-move-start-missed");
                     }
@@ -3039,7 +3109,7 @@ impl KetchupApp {
                         && let Some(item) = self
                             .active_boxes()
                             .into_iter()
-                            .find(|item| item.occurrence_id == selection.occurrence_id)
+                            .find(|item| item.instance_path == selection.instance_path)
                         && let Some(pointer_start_world) =
                             self.screen_to_plane(pointer, response.rect, item.origin_mm.z)
                     {
@@ -3072,7 +3142,7 @@ impl KetchupApp {
             && let Some(pointer) = response.interact_pointer_pos()
             && let Some(target) = self.exact_pick_at_screen(pointer, response.rect)
         {
-            self.enter_occurrence_context(OccurrenceId(target.occurrence_id));
+            self.enter_occurrence_context(target.instance_path);
         }
 
         self.hovered = response
@@ -3081,7 +3151,7 @@ impl KetchupApp {
 
         if self.active_tool == ActiveTool::Move
             && self.move_drag.is_none()
-            && let Some(mut anchor) = self.move_anchor
+            && let Some(mut anchor) = self.move_anchor.clone()
             && let Some(pointer) = response.hover_pos()
             && let Some(pointer_world) =
                 self.screen_to_plane(pointer, response.rect, anchor.plane_z)
@@ -3091,18 +3161,20 @@ impl KetchupApp {
                 pointer_world,
                 ui.input(|input| input.modifiers.shift),
             );
-            self.move_anchor = Some(anchor);
             let distance = vector_length(anchor.delta_mm);
+            let delta_mm = anchor.delta_mm;
+            let copy = anchor.copy;
+            self.move_anchor = Some(anchor);
             self.value_input = format_height(distance);
             self.digest = self.catalog.format(
-                if anchor.copy {
+                if copy {
                     "digest-copy-live"
                 } else {
                     "digest-move-live"
                 },
                 &BTreeMap::from([
                     ("distance", format_height(distance)),
-                    ("vector", format_vector_mm(anchor.delta_mm)),
+                    ("vector", format_vector_mm(delta_mm)),
                 ]),
             );
         }
@@ -3128,7 +3200,7 @@ impl KetchupApp {
                     self.sketch_cursor = self.screen_to_plane(pointer, response.rect, start.z);
                 }
             } else if let (Some(mut drag), Some(pointer)) =
-                (self.move_drag, response.interact_pointer_pos())
+                (self.move_drag.clone(), response.interact_pointer_pos())
             {
                 if let Some(pointer_world) =
                     self.screen_to_plane(pointer, response.rect, drag.plane_z)
@@ -3138,18 +3210,20 @@ impl KetchupApp {
                         pointer_world,
                         ui.input(|input| input.modifiers.shift),
                     );
-                    self.move_drag = Some(drag);
                     let distance = vector_length(drag.delta_mm);
+                    let delta_mm = drag.delta_mm;
+                    let copy = drag.copy;
+                    self.move_drag = Some(drag);
                     self.value_input = format_height(distance);
                     self.digest = self.catalog.format(
-                        if drag.copy {
+                        if copy {
                             "digest-copy-live"
                         } else {
                             "digest-move-live"
                         },
                         &BTreeMap::from([
                             ("distance", format_height(distance)),
-                            ("vector", format_vector_mm(drag.delta_mm)),
+                            ("vector", format_vector_mm(delta_mm)),
                         ]),
                     );
                 }
@@ -3172,10 +3246,10 @@ impl KetchupApp {
             || (response.hovered() && primary_release)
         {
             if let Some(drag) = self.move_drag.take() {
-                if !self.move_preview_is_current(drag) {
+                if !self.move_preview_is_current(&drag) {
                     self.digest = self.catalog.text("error-preview-stale");
                 } else if vector_length(drag.delta_mm) >= 0.01 {
-                    self.translate_occurrence(drag.selection, drag.delta_mm, drag.copy);
+                    self.translate_occurrence(&drag.selection, drag.delta_mm, drag.copy);
                 } else {
                     self.move_anchor = Some(drag);
                     self.digest = self.catalog.text("digest-move-anchor-set");
@@ -3239,13 +3313,13 @@ impl KetchupApp {
                 .map(|point| point + item.origin_mm);
             let projected = corners.map(|point| self.project(point, response.rect));
             for face in box_faces().into_iter().filter(|face| {
-                face_is_visible(face.element, forward)
+                face_is_visible(&face.element, forward)
                     && projected_face_has_area(face.corners, &projected)
             }) {
                 let selection = SelectionId {
                     definition_id: item.definition_id,
-                    occurrence_id: item.occurrence_id,
-                    element: face.element,
+                    instance_path: item.instance_path.clone(),
+                    element: face.element.clone(),
                 };
                 let points = face.corners.map(|index| projected[index]);
                 let depth = face
@@ -3271,8 +3345,7 @@ impl KetchupApp {
                                 side: Side::Maximum,
                             }
                         ),
-                    out_of_context: !self
-                        .occurrence_in_active_context(OccurrenceId(item.occurrence_id)),
+                    out_of_context: !self.occurrence_in_active_context(&item.instance_path),
                 });
             }
         }
@@ -3282,12 +3355,12 @@ impl KetchupApp {
             let color = if face.out_of_context {
                 Color32::from_rgb(43, 47, 54)
             } else if self.active_tool == ActiveTool::PushPull
-                && self.selection.primary == Some(face.selection)
+                && self.selection.primary.as_ref() == Some(&face.selection)
             {
                 Color32::from_rgb(194, 89, 48)
-            } else if self.selection.contains(face.selection.occurrence_id) {
+            } else if self.selection.contains(&face.selection.instance_path) {
                 Color32::from_rgb(154, 91, 67)
-            } else if self.hovered == Some(face.selection) {
+            } else if self.hovered.as_ref() == Some(&face.selection) {
                 Color32::from_rgb(76, 111, 158)
             } else if face.previewed {
                 Color32::from_rgb(58, 126, 174)
@@ -3317,9 +3390,9 @@ impl KetchupApp {
         let selection_stroke = Stroke::new(1.8_f32, Color32::from_rgb(240, 78, 35));
         for face in faces.iter().filter(|face| {
             if self.active_tool == ActiveTool::PushPull {
-                self.selection.primary == Some(face.selection)
+                self.selection.primary.as_ref() == Some(&face.selection)
             } else {
-                self.selection.contains(face.selection.occurrence_id)
+                self.selection.contains(&face.selection.instance_path)
             }
         }) {
             for edge in 0..face.points.len() {
@@ -3389,7 +3462,7 @@ impl KetchupApp {
     fn exact_pick_at_screen(&self, pointer: Pos2, rect: Rect) -> Option<SelectionId> {
         let projection = CanonicalInteractionProjection::from_snapshot(&self.document.current());
         let scene = projection
-            .scene_where(|occurrence| self.occurrence_in_active_context(occurrence.occurrence_id))
+            .scene_where(|occurrence| self.occurrence_in_active_context(&occurrence.instance_path))
             .ok()?;
 
         let ray = self.view_ray(pointer, rect)?;
@@ -3749,7 +3822,55 @@ impl KetchupApp {
         });
     }
 
+    fn show_beam_m4ae(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Beam A / M4a-E");
+        if ui.button("Load / reset Beam A").clicked() {
+            self.load_beam_m4ae();
+        }
+        if self.beam_workspace.is_some() {
+            ui.horizontal(|ui| {
+                ui.label("Zone 1 gap (mm)");
+                ui.text_edit_singleline(&mut self.beam_zone1_gap_input);
+                if ui.button("Apply Beam A change").clicked()
+                    && let Ok(value) = self.beam_zone1_gap_input.trim().parse::<f64>()
+                {
+                    self.set_beam_zone1_gap_mm(value);
+                }
+            });
+            if let Some(slice) = self.beam_slice() {
+                ui.label(match slice.validation {
+                    BeamValidationVerdict::Green => "Validation: green collision / joints OK",
+                    BeamValidationVerdict::Error => "Validation: collision / joint error",
+                });
+                egui::CollapsingHeader::new("12 groove positions")
+                    .default_open(true)
+                    .show(ui, |ui| {
+                        for item in &slice.positions {
+                            ui.label(format!(
+                                "G{:02}: {}/{}/{} mm",
+                                item.number,
+                                format_height(item.start_mm),
+                                format_height(item.end_mm),
+                                format_height(item.centre_mm)
+                            ));
+                        }
+                    });
+                ui.strong("Grouped BOM");
+                for row in &slice.bom.rows {
+                    ui.label(format!(
+                        "{}: {} x {} mm",
+                        row.stable_group_key,
+                        row.quantity,
+                        format_height(row.length_mm)
+                    ));
+                }
+            }
+        }
+        ui.separator();
+    }
+
     fn show_outliner(&mut self, ui: &mut egui::Ui) {
+        self.show_beam_m4ae(ui);
         let groups = self.outliner_groups();
         let entries = self.outliner_query();
         let occurrence_count = entries
@@ -3826,13 +3947,15 @@ impl KetchupApp {
                                 "outliner-occurrence"
                             };
                             let label = self.catalog.format(key, &arguments);
-                            let response = ui
-                                .selectable_label(self.selection.contains(occurrence.id.0), label);
+                            let response = ui.selectable_label(
+                                self.selection.contains(&occurrence.instance_path),
+                                label,
+                            );
                             if response.double_clicked() {
-                                self.enter_occurrence_context(occurrence.id);
+                                self.enter_occurrence_context(occurrence.instance_path.clone());
                             } else if response.clicked() {
                                 let additive = ui.input(|input| input.modifiers.shift);
-                                self.select_from_outliner(occurrence.id, additive);
+                                self.select_from_outliner(occurrence.instance_path, additive);
                             }
                         }
                     });
@@ -4074,16 +4197,19 @@ fn rotate_transform_90(transform: Transform, local_box: ProjectedBox) -> Result<
 
 fn push_pull_batch(
     snapshot: &Snapshot,
-    selection: SelectionId,
-    item: RenderBox,
+    selection: &SelectionId,
+    item: &RenderBox,
     new_extent_mm: f64,
     source_token: String,
 ) -> Option<CommandBatch> {
-    let occurrence_id = OccurrenceId(selection.occurrence_id);
+    if !selection.instance_path.is_root() {
+        return None;
+    }
+    let occurrence_id = selection.instance_path.root_occurrence();
     let occurrence = snapshot.occurrence(occurrence_id)?;
     if occurrence.definition_id() != selection.definition_id
         || item.definition_id != selection.definition_id
-        || item.occurrence_id != selection.occurrence_id
+        || item.instance_path != selection.instance_path
     {
         return None;
     }
@@ -4204,7 +4330,7 @@ fn box_faces() -> [BoxFace; 6] {
     ]
 }
 
-fn face_is_visible(element: ElementId, forward: Vec3) -> bool {
+fn face_is_visible(element: &ElementId, forward: Vec3) -> bool {
     let ElementId::Face { axis, side } = element else {
         return false;
     };
@@ -4345,7 +4471,7 @@ fn format_height(height: f64) -> String {
         .to_owned()
 }
 
-fn face_extent(item: RenderBox, element: Option<ElementId>) -> Option<f64> {
+fn face_extent(item: &RenderBox, element: Option<&ElementId>) -> Option<f64> {
     match element? {
         ElementId::Face { axis: Axis::X, .. } => Some(item.size_mm.x),
         ElementId::Face { axis: Axis::Y, .. } => Some(item.size_mm.y),
@@ -4355,10 +4481,11 @@ fn face_extent(item: RenderBox, element: Option<ElementId>) -> Option<f64> {
 }
 
 fn resize_box_from_face(
-    mut item: RenderBox,
-    element: ElementId,
+    item: &RenderBox,
+    element: &ElementId,
     new_extent_mm: f64,
 ) -> Option<RenderBox> {
+    let mut item = item.clone();
     if !new_extent_mm.is_finite() || new_extent_mm <= 0.01 {
         return None;
     }
@@ -4370,7 +4497,7 @@ fn resize_box_from_face(
         Axis::Y => (&mut item.origin_mm.y, &mut item.size_mm.y),
         Axis::Z => (&mut item.origin_mm.z, &mut item.size_mm.z),
     };
-    if side == Side::Minimum {
+    if *side == Side::Minimum {
         *origin += *extent - new_extent_mm;
     }
     *extent = new_extent_mm;
@@ -4394,6 +4521,19 @@ fn box_corners(width: f64, depth: f64, height: f64) -> [Vec3; 8] {
 mod tests {
     use super::*;
 
+    fn lossy_legacy_document() -> Vec<u8> {
+        let mut bytes = b"KETCHUPDOC".to_vec();
+        bytes.extend_from_slice(&0_u16.to_le_bytes());
+        bytes.extend_from_slice(&7_u64.to_le_bytes());
+        bytes.extend_from_slice(&1_u32.to_le_bytes());
+        bytes.extend_from_slice(&42_u64.to_le_bytes());
+        bytes.extend_from_slice(&1_u32.to_le_bytes());
+        bytes.push(b'x');
+        bytes.extend_from_slice(&3.5_f64.to_bits().to_le_bytes());
+        bytes.extend_from_slice(&0_u32.to_le_bytes());
+        bytes
+    }
+
     #[test]
     fn orbit_passes_both_poles_without_a_pitch_limit() {
         let mut app = KetchupApp::new();
@@ -4414,14 +4554,14 @@ mod tests {
         assert_eq!(app.active_box_count(), 2);
         let created = app.selected_reference().unwrap();
         assert_eq!(created.definition_id, DefinitionId(2));
-        assert_eq!(created.occurrence_id, 2);
+        assert_eq!(created.instance_path, InstancePath::root(OccurrenceId(2)));
         assert_eq!(app.box_height_mm(created.definition_id), Some(20.0));
 
         let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0));
         let second_top = app.project(Vec3::new(125.0, 85.0, 20.0), rect);
         let picked = app.exact_pick_at_screen(second_top, rect).unwrap();
         assert_eq!(picked.definition_id, DefinitionId(2));
-        assert_eq!(picked.occurrence_id, 2);
+        assert_eq!(picked.instance_path, InstancePath::root(OccurrenceId(2)));
 
         assert!(app.undo());
         assert_eq!(app.active_box_count(), 1);
@@ -4436,7 +4576,7 @@ mod tests {
         let mut app = KetchupApp::new();
         let selected = SelectionId {
             definition_id: INITIAL_BOX_DEFINITION,
-            occurrence_id: 1,
+            instance_path: InstancePath::root(OccurrenceId(1)),
             element: ElementId::Face {
                 axis: Axis::Z,
                 side: Side::Maximum,
@@ -4509,7 +4649,7 @@ mod tests {
         let mut app = KetchupApp::new();
         app.selection.primary = Some(SelectionId {
             definition_id: INITIAL_BOX_DEFINITION,
-            occurrence_id: 1,
+            instance_path: InstancePath::root(OccurrenceId(1)),
             element: ElementId::Face {
                 axis: Axis::X,
                 side: Side::Minimum,
@@ -4519,7 +4659,7 @@ mod tests {
 
         app.set_push_pull_distance_input("30");
         assert!(app.start_preview());
-        let preview = app.preview_box.as_ref().unwrap().box_data;
+        let preview = app.preview_box.as_ref().unwrap().box_data.clone();
         assert_eq!(preview.origin_mm.x, -30.0);
         assert_eq!(preview.size_mm.x, 130.0);
         assert_eq!(preview.origin_mm.x + preview.size_mm.x, old_maximum);
@@ -4557,25 +4697,25 @@ mod tests {
             .unwrap();
         let selection = SelectionId {
             definition_id: INITIAL_BOX_DEFINITION,
-            occurrence_id: 1,
+            instance_path: InstancePath::root(OccurrenceId(1)),
             element: ElementId::Face {
                 axis: Axis::X,
                 side: Side::Maximum,
             },
         };
-        app.selection.primary = Some(selection);
-        let item = app.active_boxes()[0];
+        app.selection.primary = Some(selection.clone());
+        let item = app.active_boxes()[0].clone();
         assert_eq!(item.profile_feature_id, FeatureId(1));
         assert_eq!(item.extrusion_feature_id, FeatureId(2));
         assert_eq!(item.origin_mm, Vec3::new(10.0, 20.0, 0.0));
         assert!(
             push_pull_batch(
                 &app.document.current(),
-                SelectionId {
+                &SelectionId {
                     definition_id: DefinitionId(999),
                     ..selection
                 },
-                item,
+                &item,
                 150.0,
                 "150".to_owned(),
             )
@@ -4614,9 +4754,9 @@ mod tests {
                 },
             ]))
             .unwrap();
-        let current = app.active_boxes()[0];
+        let current = app.active_boxes()[0].clone();
         assert!(!app.has_preview());
-        assert_eq!(app.render_box(current), current);
+        assert_eq!(app.render_box(current.clone()), current);
         assert!(!app.confirm_preview());
     }
 
@@ -4689,7 +4829,7 @@ mod tests {
             box_faces()
                 .into_iter()
                 .filter(|face| {
-                    face_is_visible(face.element, forward)
+                    face_is_visible(&face.element, forward)
                         && projected_face_has_area(face.corners, &projected)
                 })
                 .count(),
@@ -4709,7 +4849,7 @@ mod tests {
         assert_eq!(
             box_faces()
                 .into_iter()
-                .filter(|face| face_is_visible(face.element, forward))
+                .filter(|face| face_is_visible(&face.element, forward))
                 .count(),
             3
         );
@@ -4721,7 +4861,7 @@ mod tests {
         let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0));
         let selected = app.exact_pick_at_screen(rect.center(), rect).unwrap();
         assert_eq!(selected.definition_id, INITIAL_BOX_DEFINITION);
-        assert_eq!(selected.occurrence_id, 1);
+        assert_eq!(selected.instance_path, InstancePath::root(OccurrenceId(1)));
         assert_eq!(
             selected.element,
             ElementId::Face {
@@ -4759,22 +4899,25 @@ mod tests {
             .outliner_query()
             .into_iter()
             .flat_map(|definition| definition.occurrences)
-            .map(|occurrence| occurrence.id)
+            .map(|occurrence| occurrence.instance_path)
             .collect::<BTreeSet<_>>();
         assert_eq!(
             outliner_ids,
-            BTreeSet::from([OccurrenceId(1), OccurrenceId(2)])
+            BTreeSet::from([
+                InstancePath::root(OccurrenceId(1)),
+                InstancePath::root(OccurrenceId(2)),
+            ])
         );
 
         app.clear_selection();
-        app.select_from_outliner(OccurrenceId(1), false);
-        assert!(app.selection.contains(1));
+        app.select_from_outliner(InstancePath::root(OccurrenceId(1)), false);
+        assert!(app.selection.contains(&InstancePath::root(OccurrenceId(1))));
         assert_eq!(app.selection_count(), 1);
 
         app.select_from_viewport(
             Some(SelectionId {
                 definition_id: DefinitionId(2),
-                occurrence_id: 2,
+                instance_path: InstancePath::root(OccurrenceId(2)),
                 element: ElementId::Face {
                     axis: Axis::Z,
                     side: Side::Maximum,
@@ -4783,13 +4926,13 @@ mod tests {
             true,
         );
         assert_eq!(app.selection_count(), 2);
-        assert!(app.selection.contains(1));
-        assert!(app.selection.contains(2));
+        assert!(app.selection.contains(&InstancePath::root(OccurrenceId(1))));
+        assert!(app.selection.contains(&InstancePath::root(OccurrenceId(2))));
 
         app.select_from_viewport(
             Some(SelectionId {
                 definition_id: DefinitionId(2),
-                occurrence_id: 2,
+                instance_path: InstancePath::root(OccurrenceId(2)),
                 element: ElementId::Face {
                     axis: Axis::X,
                     side: Side::Maximum,
@@ -4824,7 +4967,7 @@ mod tests {
         app.selection.select_exact(
             SelectionId {
                 definition_id: INITIAL_BOX_DEFINITION,
-                occurrence_id: 1,
+                instance_path: InstancePath::root(OccurrenceId(1)),
                 element: ElementId::Face {
                     axis: Axis::Z,
                     side: Side::Maximum,
@@ -4850,7 +4993,7 @@ mod tests {
         app.selection.select_exact(
             SelectionId {
                 definition_id: INITIAL_BOX_DEFINITION,
-                occurrence_id: 1,
+                instance_path: InstancePath::root(OccurrenceId(1)),
                 element: ElementId::Face {
                     axis: Axis::X,
                     side: Side::Minimum,
@@ -4881,7 +5024,7 @@ mod tests {
 
         assert!(app.apply_value_input());
         assert_eq!(app.active_box_count(), 2);
-        let created = app.active_boxes()[1];
+        let created = app.active_boxes()[1].clone();
         assert_eq!(created.origin_mm, Vec3::new(-260.0, -170.0, 20.0));
         assert_eq!(created.size_mm, Vec3::new(300.0, 200.0, 20.0));
         assert_eq!(app.document.visible_undo_steps(), 1);
@@ -4907,7 +5050,7 @@ mod tests {
         app.selection.select_exact(
             SelectionId {
                 definition_id: INITIAL_BOX_DEFINITION,
-                occurrence_id: 1,
+                instance_path: InstancePath::root(OccurrenceId(1)),
                 element: ElementId::Face {
                     axis: Axis::Z,
                     side: Side::Maximum,
@@ -4940,7 +5083,10 @@ mod tests {
                 .definition_id()
         );
         assert_eq!(snapshot.scene_query()[0].shared_occurrence_count, 2);
-        assert_eq!(app.selected_move_reference().unwrap().occurrence_id, 2);
+        assert_eq!(
+            app.selected_move_reference().unwrap().instance_path,
+            InstancePath::root(OccurrenceId(2))
+        );
         assert_eq!(app.outliner_query()[0].occurrences[1].position, "80,20");
         assert_eq!(app.document.visible_undo_steps(), 2);
 
@@ -4957,7 +5103,7 @@ mod tests {
         app.selection.select_exact(
             SelectionId {
                 definition_id: INITIAL_BOX_DEFINITION,
-                occurrence_id: 1,
+                instance_path: InstancePath::root(OccurrenceId(1)),
                 element: ElementId::Face {
                     axis: Axis::Z,
                     side: Side::Maximum,
@@ -5009,8 +5155,8 @@ mod tests {
     fn group_and_ungroup_preserve_world_placement_as_atomic_batches() {
         let mut app = KetchupApp::new();
         assert!(app.create_box());
-        app.select_from_outliner(OccurrenceId(1), false);
-        app.select_from_outliner(OccurrenceId(2), true);
+        app.select_from_outliner(InstancePath::root(OccurrenceId(1)), false);
+        app.select_from_outliner(InstancePath::root(OccurrenceId(2)), true);
         let before = app
             .document
             .current()
@@ -5064,82 +5210,83 @@ mod tests {
     }
 
     #[test]
-    fn shared_component_edit_and_make_unique_have_expected_scope() {
+    fn component_copies_keep_distinct_nested_paths_and_composed_world_positions() {
         let mut app = KetchupApp::new();
-        app.selection.select_exact(
-            SelectionId {
-                definition_id: DefinitionId(1),
-                occurrence_id: 1,
-                element: ElementId::Face {
-                    axis: Axis::Z,
-                    side: Side::Maximum,
-                },
-            },
-            false,
-        );
-        assert!(app.copy_selected(Vec3::new(200.0, 0.0, 0.0)));
+        assert!(app.create_box());
+        let before = app
+            .active_boxes()
+            .into_iter()
+            .map(|item| item.origin_mm)
+            .collect::<Vec<_>>();
+        app.select_from_outliner(InstancePath::root(OccurrenceId(1)), false);
+        app.select_from_outliner(InstancePath::root(OccurrenceId(2)), true);
+        assert!(app.group_selected());
         assert!(app.make_component());
+
+        let converted = app.active_boxes();
         assert_eq!(
-            app.document
-                .current()
-                .definition(DefinitionId(1))
-                .unwrap()
-                .name(),
-            "Component 1"
-        );
-
-        app.selection.select_exact(
-            SelectionId {
-                definition_id: DefinitionId(1),
-                occurrence_id: 1,
-                element: ElementId::Face {
-                    axis: Axis::Z,
-                    side: Side::Maximum,
-                },
-            },
-            false,
-        );
-        app.set_push_pull_distance_input("10");
-        assert!(app.start_preview());
-        assert!(app.confirm_preview());
-        assert!(app.active_boxes().iter().all(|item| item.size_mm.z == 30.0));
-
-        app.selection.select_exact(
-            SelectionId {
-                definition_id: DefinitionId(1),
-                occurrence_id: 2,
-                element: ElementId::Face {
-                    axis: Axis::Z,
-                    side: Side::Maximum,
-                },
-            },
-            false,
-        );
-        assert!(app.make_unique());
-        let unique_definition = app
-            .document
-            .current()
-            .occurrence(OccurrenceId(2))
-            .unwrap()
-            .definition_id();
-        assert_ne!(unique_definition, DefinitionId(1));
-        assert!(
-            app.document
-                .current()
-                .scene_query()
+            converted
                 .iter()
-                .all(|item| item.shared_occurrence_count == 1)
+                .map(|item| item.origin_mm)
+                .collect::<Vec<_>>(),
+            before
         );
+        assert!(converted.iter().all(|item| !item.instance_path.is_root()));
+        let component_path = app.selected_move_reference().unwrap().instance_path;
+        assert!(component_path.is_root());
+        assert!(app.copy_selected(Vec3::new(200.0, 0.0, 0.0)));
 
-        app.set_push_pull_distance_input("15");
-        assert!(app.start_preview());
-        assert!(app.confirm_preview());
-        assert_eq!(app.active_boxes()[0].size_mm.z, 30.0);
-        assert_eq!(app.active_boxes()[1].size_mm.z, 45.0);
-        assert!(app.undo());
-        assert!(app.active_boxes().iter().all(|item| item.size_mm.z == 30.0));
-        assert!(app.redo());
-        assert_eq!(app.active_boxes()[1].size_mm.z, 45.0);
+        let boxes = app.active_boxes();
+        let paths = boxes
+            .iter()
+            .map(|item| item.instance_path.clone())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(paths.len(), 4);
+        assert_eq!(
+            paths
+                .iter()
+                .map(InstancePath::root_occurrence)
+                .collect::<BTreeSet<_>>()
+                .len(),
+            2
+        );
+        let mut expected = before.clone();
+        expected.extend(
+            before
+                .iter()
+                .map(|origin| *origin + Vec3::new(200.0, 0.0, 0.0)),
+        );
+        let actual = boxes.iter().map(|item| item.origin_mm).collect::<Vec<_>>();
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn nested_mutations_are_rejected_without_revision_or_digest_changes() {
+        let mut app = KetchupApp::new();
+        assert!(app.create_box());
+        app.select_from_outliner(InstancePath::root(OccurrenceId(1)), false);
+        app.select_from_outliner(InstancePath::root(OccurrenceId(2)), true);
+        assert!(app.group_selected());
+        assert!(app.make_component());
+        let nested = app.active_boxes()[0].clone();
+        app.selection.select_exact(
+            SelectionId {
+                definition_id: nested.definition_id,
+                instance_path: nested.instance_path,
+                element: ElementId::Face {
+                    axis: Axis::Z,
+                    side: Side::Maximum,
+                },
+            },
+            false,
+        );
+        let revision = app.document_revision();
+        let digest = app.document.current().canonical_digest();
+        app.set_push_pull_distance_input("5");
+        assert!(!app.start_preview());
+        assert!(!app.move_selected(Vec3::new(10.0, 0.0, 0.0)));
+        assert_eq!(app.document_revision(), revision);
+        assert_eq!(app.document.current().canonical_digest(), digest);
     }
 
     #[test]
@@ -5147,36 +5294,36 @@ mod tests {
         let mut app = KetchupApp::new();
         assert!(app.create_box());
         assert!(app.create_box());
-        app.select_from_outliner(OccurrenceId(1), false);
-        app.select_from_outliner(OccurrenceId(2), true);
+        app.select_from_outliner(InstancePath::root(OccurrenceId(1)), false);
+        app.select_from_outliner(InstancePath::root(OccurrenceId(2)), true);
         assert!(app.group_selected());
         let group_id = app.selection.selected_group.unwrap();
 
         app.clear_selection();
-        app.select_from_outliner(OccurrenceId(1), false);
+        app.select_from_outliner(InstancePath::root(OccurrenceId(1)), false);
         assert_eq!(app.selection.selected_group, Some(group_id));
-        assert!(app.enter_occurrence_context(OccurrenceId(1)));
+        assert!(app.enter_occurrence_context(InstancePath::root(OccurrenceId(1))));
         assert_eq!(
             app.selection.edit_context,
             vec![EditContext::Group(group_id)]
         );
 
-        app.select_from_outliner(OccurrenceId(3), false);
+        app.select_from_outliner(InstancePath::root(OccurrenceId(3)), false);
         assert_eq!(app.selection_count(), 0);
-        app.select_from_outliner(OccurrenceId(1), false);
+        app.select_from_outliner(InstancePath::root(OccurrenceId(1)), false);
         assert_eq!(app.selection_count(), 1);
-        assert!(app.enter_occurrence_context(OccurrenceId(1)));
+        assert!(app.enter_occurrence_context(InstancePath::root(OccurrenceId(1))));
         assert!(matches!(
             app.selection.edit_context.last(),
             Some(EditContext::Definition {
                 definition_id: DefinitionId(1),
-                occurrence_id: OccurrenceId(1)
-            })
+                instance_path,
+            }) if *instance_path == InstancePath::root(OccurrenceId(1))
         ));
 
-        app.select_from_outliner(OccurrenceId(2), false);
+        app.select_from_outliner(InstancePath::root(OccurrenceId(2)), false);
         assert_eq!(app.selection_count(), 0);
-        app.select_from_outliner(OccurrenceId(1), false);
+        app.select_from_outliner(InstancePath::root(OccurrenceId(1)), false);
         assert_eq!(app.selection_count(), 1);
         app.clear_selection();
         assert!(app.exit_edit_context());
@@ -5194,7 +5341,7 @@ mod tests {
         app.selection.select_exact(
             SelectionId {
                 definition_id: DefinitionId(1),
-                occurrence_id: 1,
+                instance_path: InstancePath::root(OccurrenceId(1)),
                 element: ElementId::Face {
                     axis: Axis::Z,
                     side: Side::Maximum,
@@ -5203,19 +5350,18 @@ mod tests {
             false,
         );
         assert!(app.copy_selected(Vec3::new(150.0, 0.0, 0.0)));
-        app.select_from_outliner(OccurrenceId(1), false);
-        app.select_from_outliner(OccurrenceId(2), true);
+        app.select_from_outliner(InstancePath::root(OccurrenceId(1)), false);
+        app.select_from_outliner(InstancePath::root(OccurrenceId(2)), true);
         assert!(app.group_selected());
         let group_id = app.selection.selected_group.unwrap();
         assert!(app.enter_group_context(group_id));
-        app.select_from_outliner(OccurrenceId(2), false);
+        app.select_from_outliner(InstancePath::root(OccurrenceId(2)), false);
         assert!(app.make_unique());
 
         let expected = app.document.current();
         let loaded = ketchup_core::persistence::load(&ketchup_core::persistence::save(&expected))
             .unwrap()
-            .document
-            .current();
+            .snapshot();
         assert_eq!(loaded.canonical_digest(), expected.canonical_digest());
         assert_eq!(
             loaded.occurrence(OccurrenceId(1)).unwrap().parent(),
@@ -5232,16 +5378,130 @@ mod tests {
     }
 
     #[test]
+    fn review_only_open_preserves_the_active_document_and_its_history() {
+        let directory = tempfile::tempdir().unwrap();
+        let active_path = directory.path().join("active.ketchup");
+        let review_path = directory.path().join("legacy.ketchup");
+        std::fs::write(&review_path, lossy_legacy_document()).unwrap();
+
+        let mut app = KetchupApp::new();
+        assert!(app.save_document_to(&active_path));
+        let node_id = ketchup_core::document::NodeId(900);
+        let active_revision = app
+            .document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::CreateEvaluatorNode {
+                    id: node_id,
+                    name: "active parameter".to_owned(),
+                    dimension: Dimension::new("2", 2.0).unwrap(),
+                    dependencies: vec![],
+                },
+            ]))
+            .unwrap();
+        app.document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::SetEvaluatorDimension {
+                    id: node_id,
+                    dimension: Dimension::new("3", 3.0).unwrap(),
+                },
+            ]))
+            .unwrap();
+        assert!(app.undo());
+        assert_eq!(app.document.visible_undo_steps(), 1);
+        assert_eq!(app.document.visible_redo_steps(), 1);
+
+        let before = app.document.current();
+        assert_eq!(
+            before.canonical_digest(),
+            active_revision.snapshot().canonical_digest()
+        );
+        let before_document_id = before.document_id();
+        let before_revision = before.revision_id();
+        let before_digest = before.canonical_digest();
+        let before_canonical_bytes = ketchup_core::persistence::save(&before);
+        let before_evaluation = before.evaluate(&Default::default()).unwrap();
+        let before_path = app.document_path.clone();
+        let before_dirty = app.is_dirty();
+        let before_undo_steps = app.document.visible_undo_steps();
+        let before_redo_steps = app.document.visible_redo_steps();
+        let before_revision_count = app.document.revision_count();
+        let before_evaluation_registry = app.document.evaluation_registry_len();
+
+        assert!(!app.open_document_from(&review_path));
+        assert!(app.has_review_candidate());
+        assert!(!app.review_candidate.as_ref().unwrap().is_editable());
+
+        let after = app.document.current();
+        assert_eq!(after.document_id(), before_document_id);
+        assert_eq!(after.revision_id(), before_revision);
+        assert_eq!(after.canonical_digest(), before_digest);
+        assert_eq!(
+            ketchup_core::persistence::save(&after),
+            before_canonical_bytes
+        );
+        assert_eq!(
+            after.evaluate(&Default::default()).unwrap(),
+            before_evaluation
+        );
+        assert_eq!(app.document_path, before_path);
+        assert_eq!(app.is_dirty(), before_dirty);
+        assert_eq!(app.document.visible_undo_steps(), before_undo_steps);
+        assert_eq!(app.document.visible_redo_steps(), before_redo_steps);
+        assert_eq!(app.document.revision_count(), before_revision_count);
+        assert_eq!(
+            app.document.evaluation_registry_len(),
+            before_evaluation_registry
+        );
+    }
+
+    #[test]
+    fn lossless_schema_three_open_replaces_the_document_and_clears_history_and_review() {
+        let directory = tempfile::tempdir().unwrap();
+        let review_path = directory.path().join("legacy.ketchup");
+        let lossless_path = directory.path().join("lossless.ketchup");
+        std::fs::write(&review_path, lossy_legacy_document()).unwrap();
+
+        let mut source = KetchupApp::new();
+        assert!(source.create_box());
+        assert!(source.create_box());
+        let expected = source.document.current();
+        let expected_bytes = ketchup_core::persistence::save(&expected);
+        assert!(source.save_document_to(&lossless_path));
+
+        let mut app = KetchupApp::new();
+        assert!(app.create_box());
+        let replaced_document_id = app.document.current().document_id();
+        assert!(app.document.visible_undo_steps() > 0);
+        assert!(!app.open_document_from(&review_path));
+        assert!(app.has_review_candidate());
+
+        assert!(app.open_document_from(&lossless_path));
+
+        let opened = app.document.current();
+        assert_ne!(opened.document_id(), replaced_document_id);
+        assert_eq!(opened.document_id(), expected.document_id());
+        assert_eq!(opened.revision_id(), expected.revision_id());
+        assert_eq!(opened.canonical_digest(), expected.canonical_digest());
+        assert_eq!(ketchup_core::persistence::save(&opened), expected_bytes);
+        assert_eq!(app.document_path.as_deref(), Some(lossless_path.as_path()));
+        assert!(!app.is_dirty());
+        assert_eq!(app.document.visible_undo_steps(), 0);
+        assert_eq!(app.document.visible_redo_steps(), 0);
+        assert_eq!(app.document.revision_count(), 1);
+        assert!(!app.has_review_candidate());
+    }
+
+    #[test]
     fn file_workflow_round_trips_composed_model_and_tracks_dirty_state() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("composed.ketchup");
         let mut app = KetchupApp::new();
         assert!(!app.is_dirty());
 
-        app.select_from_outliner(OccurrenceId(1), false);
+        app.select_from_outliner(InstancePath::root(OccurrenceId(1)), false);
         assert!(app.copy_selected(Vec3::new(150.0, 25.0, 0.0)));
-        app.select_from_outliner(OccurrenceId(1), false);
-        app.select_from_outliner(OccurrenceId(2), true);
+        app.select_from_outliner(InstancePath::root(OccurrenceId(1)), false);
+        app.select_from_outliner(InstancePath::root(OccurrenceId(2)), true);
         assert!(app.group_selected());
         let expected = app.document.current();
         assert!(app.is_dirty());
@@ -5275,7 +5535,7 @@ mod tests {
         assert!(!reopened.is_dirty());
         assert_eq!(reopened.document.visible_undo_steps(), 0);
 
-        reopened.select_from_outliner(OccurrenceId(1), false);
+        reopened.select_from_outliner(InstancePath::root(OccurrenceId(1)), false);
         assert!(reopened.move_selected(Vec3::new(10.0, 0.0, 0.0)));
         assert!(reopened.is_dirty());
         assert!(reopened.undo());
@@ -5285,8 +5545,7 @@ mod tests {
         assert!(reopened.save_document_to(&path));
         let saved_again = ketchup_core::persistence::load_file(&path)
             .unwrap()
-            .document
-            .current();
+            .snapshot();
         assert_eq!(
             saved_again.canonical_digest(),
             reopened.document.current().canonical_digest()

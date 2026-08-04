@@ -1,6 +1,6 @@
 use ketchup_core::document::{
     CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId, FeatureKind,
-    NodeId, OccurrenceId, Transform,
+    InstancePath, OccurrenceId, Transform,
 };
 use ketchup_interaction::projection::CanonicalInteractionProjection;
 use ketchup_interaction::{
@@ -73,12 +73,29 @@ fn projected_scene(
 fn source_document() -> DocumentStore {
     let mut store = DocumentStore::new();
     store
-        .apply_batch(&CommandBatch::new(vec![CanonicalCommand::CreateNode {
-            id: NodeId(1),
-            name: "Extrude-1".to_owned(),
-            dimension: Dimension::from_decimal("20").unwrap(),
-            dependencies: vec![],
-        }]))
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DefinitionId(1),
+                name: "Box".to_owned(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(1),
+                definition_id: DefinitionId(1),
+                name: "Profile-1".to_owned(),
+                kind: FeatureKind::Profile {
+                    points_mm: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(2),
+                definition_id: DefinitionId(1),
+                name: "Extrude-1".to_owned(),
+                kind: FeatureKind::Extrusion {
+                    profile: FeatureId(1),
+                    height: Dimension::from_decimal("20").unwrap(),
+                },
+            },
+        ]))
         .unwrap();
     store
 }
@@ -125,7 +142,10 @@ fn cpu_query_returns_exact_face_identity_and_endpoint_snap() {
     let result = scene.exact_pick(ray, 0.01).unwrap();
 
     assert_eq!(result.primary.reference.definition_id, DefinitionId(11));
-    assert_eq!(result.primary.reference.occurrence_id, 7);
+    assert_eq!(
+        result.primary.reference.instance_path,
+        InstancePath::root(OccurrenceId(7))
+    );
     assert_eq!(
         result.primary.reference.element,
         ElementId::Face {
@@ -182,9 +202,9 @@ fn crossing_exact_edges_produce_an_explicit_intersection_snap() {
     assert!(matches!(
         result.snap.reference.element,
         ElementId::Intersection {
-            other_occurrence_id: 2,
+            other_instance_path,
             ..
-        }
+        } if other_instance_path == InstancePath::root(OccurrenceId(2))
     ));
 }
 
@@ -212,21 +232,27 @@ fn overlapping_candidates_are_stable_and_nearest_first() {
     );
     let ray = Ray::new(Vec3::new(5.0, 5.0, 30.0), Vec3::new(0.0, 0.0, -1.0)).unwrap();
     let result = scene.exact_pick(ray, 0.1).unwrap();
-    assert_eq!(result.primary.reference.occurrence_id, 1);
+    assert_eq!(
+        result.primary.reference.instance_path,
+        InstancePath::root(OccurrenceId(1))
+    );
     assert_eq!(
         result
             .overlapping
             .iter()
-            .map(|hit| hit.reference.occurrence_id)
+            .map(|hit| hit.reference.instance_path.clone())
             .collect::<Vec<_>>(),
-        vec![1, 2]
+        vec![
+            InstancePath::root(OccurrenceId(1)),
+            InstancePath::root(OccurrenceId(2)),
+        ]
     );
 }
 
 #[test]
 fn smart_push_pull_preview_and_commit_share_one_canonical_digest() {
     let mut store = source_document();
-    let plan = match plan_smart_push_pull(&store, &[NodeId(1)], "35").unwrap() {
+    let plan = match plan_smart_push_pull(&store, &[FeatureId(2)], "35").unwrap() {
         SmartPushPullOutcome::Ready(plan) => plan,
         SmartPushPullOutcome::NeedsChoice { .. } => panic!("source should be unambiguous"),
     };
@@ -239,22 +265,17 @@ fn smart_push_pull_preview_and_commit_share_one_canonical_digest() {
     let committed = PreviewSession::new(1, plan).confirm(&mut store).unwrap();
     assert_eq!(committed.action_digest.command_digest, preview_digest);
     assert_eq!(committed.revision.batch_digest(), preview_digest);
-    assert_eq!(
-        store
-            .current()
-            .node(NodeId(1))
-            .unwrap()
-            .dimension()
-            .source_token(),
-        "35"
-    );
+    assert!(matches!(
+        store.current().feature(FeatureId(2)).unwrap().kind(),
+        FeatureKind::Extrusion { height, .. } if height.source_token() == "35"
+    ));
 }
 
 #[test]
 fn cancelled_and_stale_previews_never_mutate_the_document() {
     let mut store = source_document();
     let original = store.current().canonical_digest();
-    let plan = match plan_smart_push_pull(&store, &[NodeId(1)], "35").unwrap() {
+    let plan = match plan_smart_push_pull(&store, &[FeatureId(2)], "35").unwrap() {
         SmartPushPullOutcome::Ready(plan) => plan,
         SmartPushPullOutcome::NeedsChoice { .. } => unreachable!(),
     };
@@ -266,15 +287,17 @@ fn cancelled_and_stale_previews_never_mutate_the_document() {
     ));
     assert_eq!(store.current().canonical_digest(), original);
 
-    let stale_plan = match plan_smart_push_pull(&store, &[NodeId(1)], "35").unwrap() {
+    let stale_plan = match plan_smart_push_pull(&store, &[FeatureId(2)], "35").unwrap() {
         SmartPushPullOutcome::Ready(plan) => plan,
         SmartPushPullOutcome::NeedsChoice { .. } => unreachable!(),
     };
     store
-        .apply_batch(&CommandBatch::new(vec![CanonicalCommand::SetDimension {
-            id: NodeId(1),
-            dimension: Dimension::from_decimal("25").unwrap(),
-        }]))
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetFeatureDimension {
+                id: FeatureId(2),
+                dimension: Dimension::from_decimal("25").unwrap(),
+            },
+        ]))
         .unwrap();
     let after_external_edit = store.current().canonical_digest();
     assert!(matches!(
@@ -288,10 +311,10 @@ fn cancelled_and_stale_previews_never_mutate_the_document() {
 fn ambiguous_push_pull_requires_a_choice_and_creates_no_command() {
     let store = source_document();
     let revision = store.current().revision_id();
-    let outcome = plan_smart_push_pull(&store, &[NodeId(1), NodeId(2)], "35").unwrap();
+    let outcome = plan_smart_push_pull(&store, &[FeatureId(2), FeatureId(3)], "35").unwrap();
     match outcome {
         SmartPushPullOutcome::NeedsChoice { candidates } => {
-            assert_eq!(candidates, vec![NodeId(1), NodeId(2)]);
+            assert_eq!(candidates, vec![FeatureId(2), FeatureId(3)]);
         }
         SmartPushPullOutcome::Ready(_) => panic!("ambiguous sources must not be selected silently"),
     }

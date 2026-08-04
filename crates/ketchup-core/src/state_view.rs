@@ -1,458 +1,630 @@
 use crate::document::{
-    DefinitionId, DocumentId, FeatureId, FeatureKind, GroupId, NodeId, OccurrenceId, Snapshot,
-    TagId, Transform, UnitSystem,
+    EvaluationReport, EvaluationStatus, EvaluatorNodeKind, Snapshot, Transform, UnitSystem,
 };
+use crate::graph::{OverrideMergePolicy, RuleOutput, SlotSegment, ValueType};
 use std::fmt::Write;
 
 pub const COMPLETE_STATE_VIEW_V1: &str = "ketchup.state-view.complete.v1";
 pub const AGENT_STATE_VIEW_V1: &str = "ketchup.state-view.agent.v1";
 pub const SEMANTIC_ENCODER_V1: &str = "ketchup.semantic-state.v1";
 
-#[derive(Clone, Debug, PartialEq)]
-pub struct SemanticState {
-    document_id: DocumentId,
-    source_revision: u64,
-    canonical_digest: String,
-    units: UnitSystem,
-    nodes: Vec<SemanticNode>,
-    definitions: Vec<SemanticDefinition>,
-    features: Vec<SemanticFeature>,
-    occurrences: Vec<SemanticOccurrence>,
-    groups: Vec<SemanticGroup>,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-struct SemanticNode {
-    id: NodeId,
-    name: String,
-    source_token: String,
-    millimetres: f64,
-    dependencies: Vec<NodeId>,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct SemanticDefinition {
-    id: DefinitionId,
-    name: String,
-    feature_ids: Vec<FeatureId>,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-struct SemanticFeature {
-    id: FeatureId,
-    definition_id: DefinitionId,
-    name: String,
-    kind: SemanticFeatureKind,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-enum SemanticFeatureKind {
-    Profile {
-        points_mm: Vec<[f64; 2]>,
-    },
-    Extrusion {
-        profile: FeatureId,
-        source_token: String,
-        millimetres: f64,
-    },
-}
-
-#[derive(Clone, Debug, PartialEq)]
-struct SemanticOccurrence {
-    id: OccurrenceId,
-    definition_id: DefinitionId,
-    name: String,
-    transform: Transform,
-    parent: Option<GroupId>,
-    tag: Option<TagId>,
-    visible: bool,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-struct SemanticGroup {
-    id: GroupId,
-    name: String,
-    transform: Transform,
-    parent: Option<GroupId>,
+pub struct SemanticState {
+    complete: String,
+    agent: String,
 }
 
 #[must_use]
 pub fn encode_semantic_state(snapshot: &Snapshot) -> SemanticState {
-    let nodes = snapshot
-        .node_ids()
-        .map(|id| {
-            let node = snapshot.node(id).expect("node ID came from this snapshot");
-            SemanticNode {
-                id,
-                name: node.name().to_owned(),
-                source_token: node.dimension().source_token().to_owned(),
-                millimetres: node.dimension().millimetres(),
-                dependencies: node.dependencies().to_vec(),
-            }
-        })
-        .collect();
-    let definitions = snapshot
-        .definitions()
-        .map(|definition| SemanticDefinition {
-            id: definition.id(),
-            name: definition.name().to_owned(),
-            feature_ids: definition.feature_ids().to_vec(),
-        })
-        .collect();
-    let features = snapshot
-        .features()
-        .map(|feature| SemanticFeature {
-            id: feature.id(),
-            definition_id: feature.definition_id(),
-            name: feature.name().to_owned(),
-            kind: match feature.kind() {
-                FeatureKind::Profile { points_mm } => SemanticFeatureKind::Profile {
-                    points_mm: points_mm.clone(),
-                },
-                FeatureKind::Extrusion { profile, height } => SemanticFeatureKind::Extrusion {
-                    profile: *profile,
-                    source_token: height.source_token().to_owned(),
-                    millimetres: height.millimetres(),
-                },
-            },
-        })
-        .collect();
-    let occurrences = snapshot
-        .occurrences()
-        .map(|occurrence| SemanticOccurrence {
-            id: occurrence.id(),
-            definition_id: occurrence.definition_id(),
-            name: occurrence.name().to_owned(),
-            transform: occurrence.transform(),
-            parent: occurrence.parent(),
-            tag: occurrence.tag(),
-            visible: occurrence.visible(),
-        })
-        .collect();
-    let groups = snapshot
-        .groups()
-        .map(|group| SemanticGroup {
-            id: group.id(),
-            name: group.name().to_owned(),
-            transform: group.transform(),
-            parent: group.parent(),
-        })
-        .collect();
+    encode_semantic_state_with_evaluation(snapshot, None)
+}
 
-    SemanticState {
-        document_id: snapshot.document_id(),
-        source_revision: snapshot.revision_id(),
-        canonical_digest: snapshot.canonical_digest(),
-        units: snapshot.units(),
-        nodes,
-        definitions,
-        features,
-        occurrences,
-        groups,
+#[must_use]
+pub fn encode_semantic_state_with_evaluation(
+    snapshot: &Snapshot,
+    evaluation: Option<&EvaluationReport>,
+) -> SemanticState {
+    let mut complete = String::new();
+    let mut agent = String::new();
+    write_header(&mut complete, COMPLETE_STATE_VIEW_V1, snapshot);
+    write_header(&mut agent, AGENT_STATE_VIEW_V1, snapshot);
+    writeln!(
+        agent,
+        "summary.counts=evaluator_nodes:{},overrides:{},definitions:{},features:{},occurrences:{},groups:{},local_groups:{},local_occurrences:{}",
+        snapshot.evaluator_node_count(), snapshot.overrides().count(), snapshot.definitions().count(),
+        snapshot.features().count(), snapshot.occurrences().count(), snapshot.groups().count(),
+        snapshot.local_groups().count(), snapshot.local_occurrences().count()
+    ).unwrap();
+
+    let evaluation_is_current = evaluation.is_some_and(|report| {
+        report.document_id == Some(snapshot.document_id())
+            && report.revision_id == Some(snapshot.revision_id())
+            && report.canonical_digest.as_deref() == Some(snapshot.canonical_digest().as_str())
+    });
+    if let Some(report) = evaluation {
+        for output in [&mut complete, &mut agent] {
+            writeln!(
+                output,
+                "evaluation.evaluator={:?}",
+                report.identity.evaluator
+            )
+            .unwrap();
+            writeln!(output, "evaluation.schema={:?}", report.identity.schema).unwrap();
+            writeln!(
+                output,
+                "evaluation.tolerance={:?}",
+                report.identity.tolerance
+            )
+            .unwrap();
+            writeln!(output, "evaluation.backend={:?}", report.identity.backend).unwrap();
+            writeln!(
+                output,
+                "evaluation.document_id={}",
+                report
+                    .document_id
+                    .map_or_else(|| "none".to_owned(), |id| id.0.to_string())
+            )
+            .unwrap();
+            writeln!(
+                output,
+                "evaluation.revision={}",
+                report
+                    .revision_id
+                    .map_or_else(|| "none".to_owned(), |id| id.to_string())
+            )
+            .unwrap();
+            writeln!(
+                output,
+                "evaluation.canonical_digest={}",
+                report.canonical_digest.as_deref().unwrap_or("none")
+            )
+            .unwrap();
+            writeln!(output, "evaluation.current={evaluation_is_current}").unwrap();
+            writeln!(
+                output,
+                "evaluation.recomputed_nodes={}",
+                id_list(report.recomputed_nodes.iter().map(|id| id.0))
+            )
+            .unwrap();
+        }
+    } else {
+        writeln!(complete, "evaluation=not_supplied").unwrap();
+        writeln!(agent, "evaluation=not_supplied").unwrap();
     }
+
+    for node in snapshot.evaluator_nodes() {
+        let id = node.id().0;
+        writeln!(complete, "evaluator_node.{id}.name={:?}", node.name()).unwrap();
+        writeln!(complete, "evaluator_node.{id}.kind={}", node.kind().label()).unwrap();
+        writeln!(
+            complete,
+            "evaluator_node.{id}.source={:?}",
+            node.kind().source()
+        )
+        .unwrap();
+        writeln!(
+            complete,
+            "evaluator_node.{id}.dependencies={}",
+            id_list(node.dependencies().iter().map(|value| value.0))
+        )
+        .unwrap();
+        write_ports(&mut complete, id, "input", node.input_ports());
+        write_ports(&mut complete, id, "output", node.output_ports());
+        if let Some(dimension) = node.dimension() {
+            writeln!(
+                complete,
+                "evaluator_node.{id}.dimension.source={:?}",
+                dimension.source_token()
+            )
+            .unwrap();
+            writeln!(
+                complete,
+                "evaluator_node.{id}.dimension.f64_bits={:016x}",
+                dimension.millimetres().to_bits()
+            )
+            .unwrap();
+        }
+        for parameter in node.allowed_parameters() {
+            writeln!(
+                complete,
+                "evaluator_node.{id}.override_parameter.{:?}.merge_policy={}",
+                parameter.name(),
+                match parameter.merge_policy() {
+                    OverrideMergePolicy::Replace => "replace",
+                }
+            )
+            .unwrap();
+        }
+        if let EvaluatorNodeKind::Rule { outputs, .. } = node.kind() {
+            for (index, path) in output_paths(outputs).into_iter().enumerate() {
+                writeln!(
+                    complete,
+                    "evaluator_node.{id}.rule_output.{index}.slot_path={}",
+                    slot_path(&path)
+                )
+                .unwrap();
+            }
+        }
+        if evaluation_is_current {
+            if let Some(result) = evaluation.and_then(|report| report.node(node.id())) {
+                writeln!(
+                    complete,
+                    "evaluator_node.{id}.evaluation.input_digest={}",
+                    result.input_digest
+                )
+                .unwrap();
+                writeln!(
+                    complete,
+                    "evaluator_node.{id}.evaluation.result_digest={}",
+                    result.result_digest
+                )
+                .unwrap();
+                writeln!(
+                    complete,
+                    "evaluator_node.{id}.evaluation.status={}",
+                    status(result.status.clone())
+                )
+                .unwrap();
+            }
+        }
+        writeln!(
+            agent,
+            "evaluator_node.{id}=name:{:?},kind:{},source:{:?},depends_on:{}",
+            node.name(),
+            node.kind().label(),
+            node.kind().source(),
+            id_list(node.dependencies().iter().map(|value| value.0))
+        )
+        .unwrap();
+    }
+
+    if evaluation_is_current && let Some(report) = evaluation {
+        for (index, (identity, result)) in report.outputs.iter().enumerate() {
+            writeln!(
+                complete,
+                "derived_output.{index}.root={}",
+                identity.root_rule_node_id.0
+            )
+            .unwrap();
+            writeln!(
+                complete,
+                "derived_output.{index}.slot_path={}",
+                slot_path(identity.slot_path.segments())
+            )
+            .unwrap();
+            writeln!(
+                complete,
+                "derived_output.{index}.value.f64_bits={:016x}",
+                result.value.to_bits()
+            )
+            .unwrap();
+            writeln!(
+                complete,
+                "derived_output.{index}.input_digest={}",
+                result.input_digest
+            )
+            .unwrap();
+            writeln!(
+                complete,
+                "derived_output.{index}.result_digest={}",
+                result.result_digest
+            )
+            .unwrap();
+        }
+    }
+
+    for value in snapshot.overrides() {
+        let health = match value.health {
+            crate::graph::SlotResolution::Resolved => "resolved".to_owned(),
+            crate::graph::SlotResolution::Ambiguous { segment_index } => {
+                format!("ambiguous:{segment_index}")
+            }
+            crate::graph::SlotResolution::Lost { segment_index } => format!("lost:{segment_index}"),
+        };
+        for output in [&mut complete, &mut agent] {
+            writeln!(
+                output,
+                "override.{}.target.root={}",
+                value.id, value.target.root_rule_node_id.0
+            )
+            .unwrap();
+            writeln!(
+                output,
+                "override.{}.target.slot_path={}",
+                value.id,
+                slot_path(value.target.slot_path.segments())
+            )
+            .unwrap();
+            writeln!(
+                output,
+                "override.{}.parameter={:?}",
+                value.id, value.parameter
+            )
+            .unwrap();
+            writeln!(
+                output,
+                "override.{}.value.f64_bits={:016x}",
+                value.id, value.value_bits
+            )
+            .unwrap();
+            writeln!(output, "override.{}.health={health}", value.id).unwrap();
+        }
+    }
+
+    for joint in snapshot.joints() {
+        for output in [&mut complete, &mut agent] {
+            writeln!(
+                output,
+                "joint.{}.participant_a.root={}",
+                joint.id().0,
+                joint.participant_a().root_rule_node_id.0
+            )
+            .unwrap();
+            writeln!(
+                output,
+                "joint.{}.participant_a.slot_path={}",
+                joint.id().0,
+                slot_path(joint.participant_a().slot_path.segments())
+            )
+            .unwrap();
+            writeln!(
+                output,
+                "joint.{}.participant_b.root={}",
+                joint.id().0,
+                joint.participant_b().root_rule_node_id.0
+            )
+            .unwrap();
+            writeln!(
+                output,
+                "joint.{}.participant_b.slot_path={}",
+                joint.id().0,
+                slot_path(joint.participant_b().slot_path.segments())
+            )
+            .unwrap();
+            let min = joint.volume().min();
+            let max = joint.volume().max();
+            writeln!(
+                output,
+                "joint.{}.aabb.f64_bits={:016x},{:016x},{:016x}:{:016x},{:016x},{:016x}",
+                joint.id().0,
+                min[0].to_bits(),
+                min[1].to_bits(),
+                min[2].to_bits(),
+                max[0].to_bits(),
+                max[1].to_bits(),
+                max[2].to_bits()
+            )
+            .unwrap();
+        }
+    }
+
+    for definition in snapshot.definitions() {
+        writeln!(
+            complete,
+            "definition.{}.name={:?}",
+            definition.id().0,
+            definition.name()
+        )
+        .unwrap();
+        writeln!(
+            complete,
+            "definition.{}.features={}",
+            definition.id().0,
+            id_list(definition.feature_ids().iter().map(|id| id.0))
+        )
+        .unwrap();
+        writeln!(
+            agent,
+            "definition.{}=name:{:?},features:{}",
+            definition.id().0,
+            definition.name(),
+            id_list(definition.feature_ids().iter().map(|id| id.0))
+        )
+        .unwrap();
+    }
+    for feature in snapshot.features() {
+        writeln!(
+            complete,
+            "feature.{}.definition={}",
+            feature.id().0,
+            feature.definition_id().0
+        )
+        .unwrap();
+        writeln!(
+            complete,
+            "feature.{}.name={:?}",
+            feature.id().0,
+            feature.name()
+        )
+        .unwrap();
+        match feature.kind() {
+            crate::document::FeatureKind::Profile { points_mm } => {
+                writeln!(complete, "feature.{}.kind=profile", feature.id().0).unwrap();
+                for (index, point) in points_mm.iter().enumerate() {
+                    writeln!(
+                        complete,
+                        "feature.{}.point.{index}.f64_bits={:016x},{:016x}",
+                        feature.id().0,
+                        point[0].to_bits(),
+                        point[1].to_bits()
+                    )
+                    .unwrap();
+                }
+                writeln!(
+                    agent,
+                    "feature.{}=name:{:?},kind:profile,definition:{},points:{}",
+                    feature.id().0,
+                    feature.name(),
+                    feature.definition_id().0,
+                    points_mm.len()
+                )
+                .unwrap();
+            }
+            crate::document::FeatureKind::Extrusion { profile, height } => {
+                writeln!(complete, "feature.{}.kind=extrusion", feature.id().0).unwrap();
+                writeln!(complete, "feature.{}.profile={}", feature.id().0, profile.0).unwrap();
+                writeln!(
+                    complete,
+                    "feature.{}.height.source={:?}",
+                    feature.id().0,
+                    height.source_token()
+                )
+                .unwrap();
+                writeln!(
+                    complete,
+                    "feature.{}.height.f64_bits={:016x}",
+                    feature.id().0,
+                    height.millimetres().to_bits()
+                )
+                .unwrap();
+                writeln!(
+                    agent,
+                    "feature.{}=name:{:?},kind:extrusion,definition:{},profile:{},height_mm:{:?}",
+                    feature.id().0,
+                    feature.name(),
+                    feature.definition_id().0,
+                    profile.0,
+                    height.millimetres()
+                )
+                .unwrap();
+            }
+        }
+    }
+    for occurrence in snapshot.occurrences() {
+        writeln!(
+            complete,
+            "occurrence.{}.definition={}",
+            occurrence.id().0,
+            occurrence.definition_id().0
+        )
+        .unwrap();
+        writeln!(
+            complete,
+            "occurrence.{}.name={:?}",
+            occurrence.id().0,
+            occurrence.name()
+        )
+        .unwrap();
+        write_transform(
+            &mut complete,
+            "occurrence",
+            occurrence.id().0,
+            occurrence.transform(),
+        );
+        writeln!(
+            complete,
+            "occurrence.{}.parent={}",
+            occurrence.id().0,
+            optional_id(occurrence.parent().map(|id| id.0))
+        )
+        .unwrap();
+        writeln!(
+            complete,
+            "occurrence.{}.tag={}",
+            occurrence.id().0,
+            optional_id(occurrence.tag().map(|id| id.0))
+        )
+        .unwrap();
+        writeln!(
+            complete,
+            "occurrence.{}.visible={}",
+            occurrence.id().0,
+            occurrence.visible()
+        )
+        .unwrap();
+        writeln!(
+            agent,
+            "occurrence.{}=name:{:?},definition:{},parent:{},tag:{},visible:{}",
+            occurrence.id().0,
+            occurrence.name(),
+            occurrence.definition_id().0,
+            optional_id(occurrence.parent().map(|id| id.0)),
+            optional_id(occurrence.tag().map(|id| id.0)),
+            occurrence.visible()
+        )
+        .unwrap();
+    }
+    for group in snapshot.groups() {
+        writeln!(complete, "group.{}.name={:?}", group.id().0, group.name()).unwrap();
+        write_transform(&mut complete, "group", group.id().0, group.transform());
+        writeln!(
+            complete,
+            "group.{}.parent={}",
+            group.id().0,
+            optional_id(group.parent().map(|id| id.0))
+        )
+        .unwrap();
+        writeln!(
+            agent,
+            "group.{}=name:{:?},parent:{}",
+            group.id().0,
+            group.name(),
+            optional_id(group.parent().map(|id| id.0))
+        )
+        .unwrap();
+    }
+    for group in snapshot.local_groups() {
+        writeln!(
+            complete,
+            "local_group.{}:{}.name={:?}",
+            group.key().definition_id.0,
+            group.key().local_id.0,
+            group.name()
+        )
+        .unwrap();
+        writeln!(
+            complete,
+            "local_group.{}:{}.transform.f64_bits={}",
+            group.key().definition_id.0,
+            group.key().local_id.0,
+            transform_bits(group.transform())
+        )
+        .unwrap();
+    }
+    for occurrence in snapshot.local_occurrences() {
+        writeln!(
+            complete,
+            "local_occurrence.{}:{}.definition={}",
+            occurrence.key().definition_id.0,
+            occurrence.key().local_id.0,
+            occurrence.definition_id().0
+        )
+        .unwrap();
+        writeln!(
+            complete,
+            "local_occurrence.{}:{}.name={:?}",
+            occurrence.key().definition_id.0,
+            occurrence.key().local_id.0,
+            occurrence.name()
+        )
+        .unwrap();
+        writeln!(
+            complete,
+            "local_occurrence.{}:{}.transform.f64_bits={}",
+            occurrence.key().definition_id.0,
+            occurrence.key().local_id.0,
+            transform_bits(occurrence.transform())
+        )
+        .unwrap();
+    }
+    writeln!(agent, "intended_actions=canonical_command_batch_only").unwrap();
+    SemanticState { complete, agent }
 }
 
 impl SemanticState {
     #[must_use]
     pub fn complete_v1(&self) -> String {
-        let mut output = String::new();
-        writeln!(output, "schema={COMPLETE_STATE_VIEW_V1}").unwrap();
-        writeln!(output, "encoder={SEMANTIC_ENCODER_V1}").unwrap();
-        self.write_projection_header(&mut output);
-
-        for node in &self.nodes {
-            writeln!(output, "node.{}.name={:?}", node.id.0, node.name).unwrap();
-            writeln!(
-                output,
-                "node.{}.dimension.source={:?}",
-                node.id.0, node.source_token
-            )
-            .unwrap();
-            writeln!(
-                output,
-                "node.{}.dimension.f64_bits={:016x}",
-                node.id.0,
-                node.millimetres.to_bits()
-            )
-            .unwrap();
-            writeln!(
-                output,
-                "node.{}.dependencies={}",
-                node.id.0,
-                id_list(node.dependencies.iter().map(|id| id.0))
-            )
-            .unwrap();
-        }
-        for definition in &self.definitions {
-            writeln!(
-                output,
-                "definition.{}.name={:?}",
-                definition.id.0, definition.name
-            )
-            .unwrap();
-            writeln!(
-                output,
-                "definition.{}.features={}",
-                definition.id.0,
-                id_list(definition.feature_ids.iter().map(|id| id.0))
-            )
-            .unwrap();
-        }
-        for feature in &self.features {
-            writeln!(
-                output,
-                "feature.{}.definition={}",
-                feature.id.0, feature.definition_id.0
-            )
-            .unwrap();
-            writeln!(output, "feature.{}.name={:?}", feature.id.0, feature.name).unwrap();
-            match &feature.kind {
-                SemanticFeatureKind::Profile { points_mm } => {
-                    writeln!(output, "feature.{}.kind=profile", feature.id.0).unwrap();
-                    writeln!(
-                        output,
-                        "feature.{}.point_count={}",
-                        feature.id.0,
-                        points_mm.len()
-                    )
-                    .unwrap();
-                    for (index, point) in points_mm.iter().enumerate() {
-                        writeln!(
-                            output,
-                            "feature.{}.point.{index}.f64_bits={:016x},{:016x}",
-                            feature.id.0,
-                            point[0].to_bits(),
-                            point[1].to_bits()
-                        )
-                        .unwrap();
-                    }
-                }
-                SemanticFeatureKind::Extrusion {
-                    profile,
-                    source_token,
-                    millimetres,
-                } => {
-                    writeln!(output, "feature.{}.kind=extrusion", feature.id.0).unwrap();
-                    writeln!(output, "feature.{}.profile={}", feature.id.0, profile.0).unwrap();
-                    writeln!(
-                        output,
-                        "feature.{}.height.source={source_token:?}",
-                        feature.id.0
-                    )
-                    .unwrap();
-                    writeln!(
-                        output,
-                        "feature.{}.height.f64_bits={:016x}",
-                        feature.id.0,
-                        millimetres.to_bits()
-                    )
-                    .unwrap();
-                }
-            }
-        }
-        for occurrence in &self.occurrences {
-            writeln!(
-                output,
-                "occurrence.{}.definition={}",
-                occurrence.id.0, occurrence.definition_id.0
-            )
-            .unwrap();
-            writeln!(
-                output,
-                "occurrence.{}.name={:?}",
-                occurrence.id.0, occurrence.name
-            )
-            .unwrap();
-            write_transform(
-                &mut output,
-                "occurrence",
-                occurrence.id.0,
-                occurrence.transform,
-            );
-            writeln!(
-                output,
-                "occurrence.{}.parent={}",
-                occurrence.id.0,
-                optional_id(occurrence.parent.map(|id| id.0))
-            )
-            .unwrap();
-            writeln!(
-                output,
-                "occurrence.{}.tag={}",
-                occurrence.id.0,
-                optional_id(occurrence.tag.map(|id| id.0))
-            )
-            .unwrap();
-            writeln!(
-                output,
-                "occurrence.{}.visible={}",
-                occurrence.id.0, occurrence.visible
-            )
-            .unwrap();
-        }
-        for group in &self.groups {
-            writeln!(output, "group.{}.name={:?}", group.id.0, group.name).unwrap();
-            write_transform(&mut output, "group", group.id.0, group.transform);
-            writeln!(
-                output,
-                "group.{}.parent={}",
-                group.id.0,
-                optional_id(group.parent.map(|id| id.0))
-            )
-            .unwrap();
-        }
-        output
+        self.complete.clone()
     }
-
     #[must_use]
     pub fn agent_v1(&self) -> String {
-        let mut output = String::new();
-        writeln!(output, "schema={AGENT_STATE_VIEW_V1}").unwrap();
-        writeln!(output, "encoder={SEMANTIC_ENCODER_V1}").unwrap();
-        self.write_projection_header(&mut output);
-        writeln!(
-            output,
-            "summary.counts=nodes:{},definitions:{},features:{},occurrences:{},groups:{}",
-            self.nodes.len(),
-            self.definitions.len(),
-            self.features.len(),
-            self.occurrences.len(),
-            self.groups.len()
-        )
-        .unwrap();
-        for node in &self.nodes {
-            writeln!(
-                output,
-                "node.{}=name:{:?},dimension_mm:{:?},source_token:{:?},depends_on:{}",
-                node.id.0,
-                node.name,
-                node.millimetres,
-                node.source_token,
-                id_list(node.dependencies.iter().map(|id| id.0))
-            )
-            .unwrap();
-        }
-        for definition in &self.definitions {
-            let sharing = self
-                .occurrences
-                .iter()
-                .filter(|occurrence| occurrence.definition_id == definition.id)
-                .count();
-            writeln!(
-                output,
-                "definition.{}=name:{:?},features:{},instances:{sharing}",
-                definition.id.0,
-                definition.name,
-                id_list(definition.feature_ids.iter().map(|id| id.0))
-            )
-            .unwrap();
-        }
-        for feature in &self.features {
-            match &feature.kind {
-                SemanticFeatureKind::Profile { points_mm } => {
-                    let bounds = profile_bounds(points_mm);
-                    writeln!(
-                        output,
-                        "feature.{}=name:{:?},kind:profile,definition:{},points:{},bounds_mm:{}",
-                        feature.id.0,
-                        feature.name,
-                        feature.definition_id.0,
-                        points_mm.len(),
-                        bounds
-                    )
-                    .unwrap();
-                }
-                SemanticFeatureKind::Extrusion {
-                    profile,
-                    source_token,
-                    millimetres,
-                } => {
-                    writeln!(
-                        output,
-                        "feature.{}=name:{:?},kind:extrusion,definition:{},profile:{},height_mm:{millimetres:?},source_token:{source_token:?}",
-                        feature.id.0, feature.name, feature.definition_id.0, profile.0
-                    )
-                    .unwrap();
-                }
-            }
-        }
-        for occurrence in &self.occurrences {
-            writeln!(
-                output,
-                "occurrence.{}=name:{:?},definition:{},parent:{},tag:{},visible:{}",
-                occurrence.id.0,
-                occurrence.name,
-                occurrence.definition_id.0,
-                optional_id(occurrence.parent.map(|id| id.0)),
-                optional_id(occurrence.tag.map(|id| id.0)),
-                occurrence.visible
-            )
-            .unwrap();
-        }
-        for group in &self.groups {
-            writeln!(
-                output,
-                "group.{}=name:{:?},parent:{}",
-                group.id.0,
-                group.name,
-                optional_id(group.parent.map(|id| id.0))
-            )
-            .unwrap();
-        }
-        writeln!(output, "rules=unavailable_in_schema_2").unwrap();
-        writeln!(output, "references=tag_ids_only").unwrap();
-        writeln!(output, "validation_health=not_evaluated").unwrap();
-        writeln!(output, "intended_actions=canonical_command_batch_only").unwrap();
-        output
-    }
-
-    fn write_projection_header(&self, output: &mut String) {
-        writeln!(output, "source.document_id={}", self.document_id.0).unwrap();
-        writeln!(output, "source.revision={}", self.source_revision).unwrap();
-        writeln!(output, "source.canonical_digest={}", self.canonical_digest).unwrap();
-        writeln!(output, "source.units={}", unit_name(self.units)).unwrap();
-        writeln!(output, "projection.complete=true").unwrap();
-        writeln!(output, "projection.stale=false").unwrap();
+        self.agent.clone()
     }
 }
 
+fn write_header(output: &mut String, schema: &str, snapshot: &Snapshot) {
+    writeln!(output, "schema={schema}").unwrap();
+    writeln!(output, "encoder={SEMANTIC_ENCODER_V1}").unwrap();
+    writeln!(output, "source.document_id={}", snapshot.document_id().0).unwrap();
+    writeln!(output, "source.revision={}", snapshot.revision_id()).unwrap();
+    writeln!(
+        output,
+        "source.canonical_digest={}",
+        snapshot.canonical_digest()
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "source.units={}",
+        match snapshot.units() {
+            UnitSystem::Millimetres => "millimetres",
+        }
+    )
+    .unwrap();
+    writeln!(output, "source.canonical_schema=3").unwrap();
+    writeln!(output, "projection.complete=true").unwrap();
+    writeln!(output, "projection.stale=false").unwrap();
+}
+fn write_ports(output: &mut String, id: u64, direction: &str, ports: &[crate::graph::PortSpec]) {
+    for (index, port) in ports.iter().enumerate() {
+        writeln!(
+            output,
+            "evaluator_node.{id}.{direction}_port.{index}.name={:?}",
+            port.name()
+        )
+        .unwrap();
+        writeln!(
+            output,
+            "evaluator_node.{id}.{direction}_port.{index}.type={}",
+            match port.value_type() {
+                ValueType::Number => "number",
+            }
+        )
+        .unwrap();
+    }
+}
+fn output_paths(outputs: &[RuleOutput]) -> Vec<Vec<SlotSegment>> {
+    let mut paths = Vec::new();
+    let mut stack = outputs
+        .iter()
+        .rev()
+        .map(|output| (output, Vec::new()))
+        .collect::<Vec<_>>();
+    while let Some((output, mut path)) = stack.pop() {
+        path.push(output.segment().clone());
+        paths.push(path.clone());
+        for child in output.children().iter().rev() {
+            stack.push((child, path.clone()));
+        }
+    }
+    paths
+}
+fn slot_path(path: &[SlotSegment]) -> String {
+    path.iter()
+        .map(|segment| {
+            format!(
+                "{}:{:?}:{:?}",
+                segment.producer_rule_id.0, segment.output_port, segment.semantic_key
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("/")
+}
+fn status(value: EvaluationStatus) -> String {
+    match value {
+        EvaluationStatus::Evaluated(number) => format!("evaluated:{:016x}", number.to_bits()),
+        EvaluationStatus::Error(items) => format!(
+            "error:{}",
+            items
+                .iter()
+                .map(|item| format!("{}:{:?}", item.node_id.0, item.code))
+                .collect::<Vec<_>>()
+                .join(",")
+        ),
+    }
+}
 fn write_transform(output: &mut String, family: &str, id: u64, transform: Transform) {
-    let bits = transform
+    writeln!(
+        output,
+        "{family}.{id}.transform.f64_bits={}",
+        transform_bits(transform)
+    )
+    .unwrap();
+}
+fn transform_bits(transform: Transform) -> String {
+    transform
         .matrix()
         .iter()
         .map(|value| format!("{:016x}", value.to_bits()))
         .collect::<Vec<_>>()
-        .join(",");
-    writeln!(output, "{family}.{id}.transform.f64_bits={bits}").unwrap();
+        .join(",")
 }
-
-fn profile_bounds(points: &[[f64; 2]]) -> String {
-    let Some(first) = points.first() else {
-        return "empty".to_owned();
-    };
-    let (mut min_x, mut max_x, mut min_y, mut max_y) = (first[0], first[0], first[1], first[1]);
-    for point in &points[1..] {
-        min_x = min_x.min(point[0]);
-        max_x = max_x.max(point[0]);
-        min_y = min_y.min(point[1]);
-        max_y = max_y.max(point[1]);
-    }
-    format!("{:?}x{:?}", max_x - min_x, max_y - min_y)
-}
-
 fn id_list(ids: impl Iterator<Item = u64>) -> String {
     format!(
         "[{}]",
         ids.map(|id| id.to_string()).collect::<Vec<_>>().join(",")
     )
 }
-
 fn optional_id(id: Option<u64>) -> String {
     id.map_or_else(|| "none".to_owned(), |id| id.to_string())
-}
-
-const fn unit_name(units: UnitSystem) -> &'static str {
-    match units {
-        UnitSystem::Millimetres => "millimetres",
-    }
 }

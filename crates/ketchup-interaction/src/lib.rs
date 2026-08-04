@@ -4,7 +4,8 @@ pub mod projection;
 
 use ketchup_core::adapters::{AdapterError, UiAction, UiAdapter};
 use ketchup_core::document::{
-    DefinitionId, DocumentStore, NodeId, Proposal, ProposalCommitError, Revision, Snapshot,
+    DefinitionId, DocumentStore, FeatureId, FeatureKind, InstancePath, Proposal,
+    ProposalCommitError, Revision, Snapshot,
 };
 use std::collections::BTreeMap;
 use std::fmt;
@@ -132,7 +133,7 @@ pub enum Side {
     Maximum,
 }
 
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum ElementId {
     Face {
         axis: Axis,
@@ -143,7 +144,7 @@ pub enum ElementId {
     Endpoint(u8),
     Intersection {
         primary_edge: u8,
-        other_occurrence_id: u64,
+        other_instance_path: InstancePath,
         other_edge: u8,
     },
 }
@@ -156,10 +157,10 @@ pub enum SelectionFilter {
     Any,
 }
 
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct SelectionId {
     pub definition_id: DefinitionId,
-    pub occurrence_id: u64,
+    pub instance_path: InstancePath,
     pub element: ElementId,
 }
 
@@ -182,7 +183,7 @@ impl SnapKind {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct SnapResult {
     pub kind: SnapKind,
     pub reference: SelectionId,
@@ -190,7 +191,7 @@ pub struct SnapResult {
     pub distance_mm: f64,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ExactHit {
     pub reference: SelectionId,
     pub position_mm: Vec3,
@@ -252,7 +253,7 @@ impl SharedBoxGeometry {
 
 #[derive(Clone, Debug)]
 pub struct Occurrence {
-    pub id: u64,
+    pub instance_path: InstancePath,
     pub definition_id: DefinitionId,
     pub origin_mm: Vec3,
     geometry: Arc<SharedBoxGeometry>,
@@ -280,19 +281,24 @@ impl InteractionScene {
 
     pub(crate) fn add_occurrence(
         &mut self,
-        id: u64,
+        instance_path: InstancePath,
         definition_id: DefinitionId,
         origin_mm: Vec3,
         geometry: Arc<SharedBoxGeometry>,
     ) -> Result<(), InteractionError> {
-        if id == 0 || self.occurrences.iter().any(|item| item.id == id) {
+        if instance_path.root_occurrence().0 == 0
+            || self
+                .occurrences
+                .iter()
+                .any(|item| item.instance_path == instance_path)
+        {
             return Err(InteractionError::DuplicateOccurrence);
         }
         if !origin_mm.x.is_finite() || !origin_mm.y.is_finite() || !origin_mm.z.is_finite() {
             return Err(InteractionError::InvalidBox);
         }
         self.occurrences.push(Occurrence {
-            id,
+            instance_path,
             definition_id,
             origin_mm,
             geometry,
@@ -335,7 +341,7 @@ impl InteractionScene {
             .iter()
             .filter_map(|occurrence| {
                 let mut hit = hit_occurrence(ray, occurrence)?;
-                let face = hit.reference.element;
+                let face = hit.reference.element.clone();
                 hit.reference.element =
                     filtered_element(occurrence, hit.position_mm, snap_tolerance_mm, filter, face)?;
                 Some(hit)
@@ -346,13 +352,13 @@ impl InteractionScene {
                 .total_cmp(&right.ray_distance_mm)
                 .then_with(|| left.reference.cmp(&right.reference))
         });
-        let primary = *hits.first()?;
+        let primary = hits.first()?.clone();
         let occurrence = self
             .occurrences
             .iter()
-            .find(|item| item.id == primary.reference.occurrence_id)?;
-        let local_snap = resolve_snap(primary, occurrence, snap_tolerance_mm);
-        let snap = intersection_snap(primary, &self.occurrences, snap_tolerance_mm)
+            .find(|item| item.instance_path == primary.reference.instance_path)?;
+        let local_snap = resolve_snap(&primary, occurrence, snap_tolerance_mm);
+        let snap = intersection_snap(&primary, &self.occurrences, snap_tolerance_mm)
             .filter(|candidate| better_snap(candidate, &local_snap))
             .unwrap_or(local_snap);
         Some(PickResult {
@@ -465,7 +471,7 @@ fn hit_occurrence(ray: Ray, occurrence: &Occurrence) -> Option<ExactHit> {
     Some(ExactHit {
         reference: SelectionId {
             definition_id: occurrence.definition_id,
-            occurrence_id: occurrence.id,
+            instance_path: occurrence.instance_path.clone(),
             element: ElementId::Face {
                 axis: face.0,
                 side: face.1,
@@ -476,7 +482,7 @@ fn hit_occurrence(ray: Ray, occurrence: &Occurrence) -> Option<ExactHit> {
     })
 }
 
-fn resolve_snap(primary: ExactHit, occurrence: &Occurrence, tolerance: f64) -> SnapResult {
+fn resolve_snap(primary: &ExactHit, occurrence: &Occurrence, tolerance: f64) -> SnapResult {
     let endpoint = occurrence
         .geometry
         .endpoints
@@ -516,20 +522,20 @@ fn resolve_snap(primary: ExactHit, occurrence: &Occurrence, tolerance: f64) -> S
         })
         .unwrap_or(SnapResult {
             kind: SnapKind::Face,
-            reference: primary.reference,
+            reference: primary.reference.clone(),
             position_mm: primary.position_mm,
             distance_mm: 0.0,
         })
 }
 
 fn intersection_snap(
-    primary: ExactHit,
+    primary: &ExactHit,
     occurrences: &[Occurrence],
     tolerance: f64,
 ) -> Option<SnapResult> {
     let primary_occurrence = occurrences
         .iter()
-        .find(|occurrence| occurrence.id == primary.reference.occurrence_id)?;
+        .find(|occurrence| occurrence.instance_path == primary.reference.instance_path)?;
     for (primary_edge, (left, right)) in BOX_EDGE_ENDPOINTS.iter().enumerate() {
         let primary_start =
             primary_occurrence.origin_mm + primary_occurrence.geometry.endpoints[*left];
@@ -542,7 +548,7 @@ fn intersection_snap(
         }
         for other in occurrences
             .iter()
-            .filter(|occurrence| occurrence.id != primary_occurrence.id)
+            .filter(|occurrence| occurrence.instance_path != primary_occurrence.instance_path)
         {
             for (other_edge, (other_left, other_right)) in BOX_EDGE_ENDPOINTS.iter().enumerate() {
                 let other_start = other.origin_mm + other.geometry.endpoints[*other_left];
@@ -555,10 +561,10 @@ fn intersection_snap(
                         kind: SnapKind::Intersection,
                         reference: SelectionId {
                             definition_id: primary.reference.definition_id,
-                            occurrence_id: primary.reference.occurrence_id,
+                            instance_path: primary.reference.instance_path.clone(),
                             element: ElementId::Intersection {
                                 primary_edge: primary_edge as u8,
-                                other_occurrence_id: other.id,
+                                other_instance_path: other.instance_path.clone(),
                                 other_edge: other_edge as u8,
                             },
                         },
@@ -588,7 +594,7 @@ fn better_snap(candidate: &SnapResult, current: &SnapResult) -> bool {
 }
 
 fn snap_candidate(
-    primary: ExactHit,
+    primary: &ExactHit,
     occurrence: &Occurrence,
     local_position: Vec3,
     element: ElementId,
@@ -599,7 +605,7 @@ fn snap_candidate(
         kind,
         reference: SelectionId {
             definition_id: occurrence.definition_id,
-            occurrence_id: occurrence.id,
+            instance_path: occurrence.instance_path.clone(),
             element,
         },
         position_mm,
@@ -637,12 +643,12 @@ impl SmartPushPullPlan {
 #[derive(Clone, Debug)]
 pub enum SmartPushPullOutcome {
     Ready(SmartPushPullPlan),
-    NeedsChoice { candidates: Vec<NodeId> },
+    NeedsChoice { candidates: Vec<FeatureId> },
 }
 
 pub fn plan_smart_push_pull(
     store: &DocumentStore,
-    candidates: &[NodeId],
+    candidates: &[FeatureId],
     new_height_text: impl Into<String>,
 ) -> Result<SmartPushPullOutcome, InteractionError> {
     if candidates.len() != 1 {
@@ -652,17 +658,20 @@ pub fn plan_smart_push_pull(
     }
     let target = candidates[0];
     let snapshot = store.current();
-    let node = snapshot
-        .node(target)
-        .ok_or(InteractionError::NodeNotFound(target))?;
+    let feature = snapshot
+        .feature(target)
+        .ok_or(InteractionError::FeatureNotFound(target))?;
+    let FeatureKind::Extrusion { height, .. } = feature.kind() else {
+        return Err(InteractionError::FeatureNotFound(target));
+    };
     let new_height_text = new_height_text.into();
-    let batch = UiAdapter::canonicalize(UiAction::SetDimension {
+    let batch = UiAdapter::canonicalize(UiAction::SetFeatureDimension {
         target,
         value_text: new_height_text.clone(),
     })?;
     let mut arguments = BTreeMap::new();
-    arguments.insert("feature", node.name().to_owned());
-    arguments.insert("from", node.dimension().source_token().to_owned());
+    arguments.insert("feature", feature.name().to_owned());
+    arguments.insert("from", height.source_token().to_owned());
     arguments.insert("to", new_height_text);
     let action_digest = ActionDigest {
         localization_key: "action-smart-push-pull-height",
@@ -791,7 +800,7 @@ pub enum InteractionError {
     InvalidRay,
     InvalidBox,
     DuplicateOccurrence,
-    NodeNotFound(NodeId),
+    FeatureNotFound(FeatureId),
     InvalidLocaleResource,
     Adapter(AdapterError),
 }
@@ -802,9 +811,9 @@ impl fmt::Display for InteractionError {
             Self::InvalidRay => formatter.write_str("ray must have finite origin and direction"),
             Self::InvalidBox => formatter.write_str("box geometry must be finite and positive"),
             Self::DuplicateOccurrence => {
-                formatter.write_str("occurrence ID must be unique and nonzero")
+                formatter.write_str("instance path must be unique with a nonzero root")
             }
-            Self::NodeNotFound(id) => write!(formatter, "node {} does not exist", id.0),
+            Self::FeatureNotFound(id) => write!(formatter, "feature {} does not exist", id.0),
             Self::InvalidLocaleResource => formatter.write_str("locale resource is invalid"),
             Self::Adapter(error) => error.fmt(formatter),
         }

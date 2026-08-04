@@ -2,7 +2,7 @@
 
 use ketchup_core::document::{
     CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId, FeatureKind,
-    NodeId, OccurrenceId, Transform,
+    InstancePath, OccurrenceId, Transform,
 };
 use ketchup_interaction::projection::CanonicalInteractionProjection;
 use ketchup_interaction::{
@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-const NODE: NodeId = NodeId(1);
+const NODE: FeatureId = FeatureId(2);
 const EDIT_WARMUP: usize = 100;
 const EDIT_SAMPLES: usize = 1_000;
 const PICK_WARMUP: usize = 200;
@@ -170,9 +170,9 @@ fn execute_pick(scene: &InteractionScene, sample: usize) -> Option<bool> {
         return Some(matches!(
             result.snap.reference.element,
             ElementId::Intersection {
-                other_occurrence_id: 2,
+                ref other_instance_path,
                 ..
-            }
+            } if *other_instance_path == InstancePath::root(OccurrenceId(2))
         ));
     }
 
@@ -204,7 +204,10 @@ fn execute_pick(scene: &InteractionScene, sample: usize) -> Option<bool> {
         3 => result.snap.kind == SnapKind::Midpoint,
         _ => false,
     };
-    Some(result.primary.reference.occurrence_id == occurrence_id && class_correct)
+    Some(
+        result.primary.reference.instance_path == InstancePath::root(OccurrenceId(occurrence_id))
+            && class_correct,
+    )
 }
 
 fn measure_long(worker_path: &Path, scene: &InteractionScene) -> (Vec<f64>, Vec<f64>, usize) {
@@ -297,12 +300,29 @@ fn grid_origin(index: usize) -> Vec3 {
 fn seed_document() -> DocumentStore {
     let mut document = DocumentStore::new();
     document
-        .apply_batch(&CommandBatch::new(vec![CanonicalCommand::CreateNode {
-            id: NODE,
-            name: "Extrude-1".to_owned(),
-            dimension: Dimension::from_decimal("20").unwrap(),
-            dependencies: vec![],
-        }]))
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DefinitionId(1),
+                name: "Gate C".to_owned(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(1),
+                definition_id: DefinitionId(1),
+                name: "Profile".to_owned(),
+                kind: FeatureKind::Profile {
+                    points_mm: vec![[0.0, 0.0], [100.0, 0.0], [100.0, 60.0], [0.0, 60.0]],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: NODE,
+                definition_id: DefinitionId(1),
+                name: "Extrude-1".to_owned(),
+                kind: FeatureKind::Extrusion {
+                    profile: FeatureId(1),
+                    height: Dimension::from_decimal("20").unwrap(),
+                },
+            },
+        ]))
         .unwrap();
     document
 }

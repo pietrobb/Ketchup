@@ -105,8 +105,7 @@ fn save_writes_to_the_known_path_without_asking_again() {
     );
     let on_disk = ketchup_core::persistence::load_file(&path)
         .expect("the saved document reloads")
-        .document
-        .current()
+        .snapshot()
         .canonical_digest();
     assert_eq!(
         on_disk, edited_digest,

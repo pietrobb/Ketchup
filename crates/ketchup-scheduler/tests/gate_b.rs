@@ -129,16 +129,19 @@ fn result(token: JobToken, fingerprint: &str) -> DerivedResult {
 
 fn exercise_proposal_race() -> usize {
     let mut document = seed_document();
-    let proposal =
-        document.prepare_proposal(CommandBatch::new(vec![CanonicalCommand::SetDimension {
+    let proposal = document.prepare_proposal(CommandBatch::new(vec![
+        CanonicalCommand::SetEvaluatorDimension {
             id: NODE,
             dimension: dimension("35", 35.0),
-        }]));
+        },
+    ]));
     document
-        .apply_batch(&CommandBatch::new(vec![CanonicalCommand::SetDimension {
-            id: NODE,
-            dimension: dimension("30", 30.0),
-        }]))
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetEvaluatorDimension {
+                id: NODE,
+                dimension: dimension("30", 30.0),
+            },
+        ]))
         .unwrap();
     usize::from(!matches!(
         document.commit_proposal(&proposal),
@@ -310,12 +313,14 @@ fn exercise_cache_plateau() -> (usize, usize, u64) {
 fn seed_document() -> DocumentStore {
     let mut document = DocumentStore::new();
     document
-        .apply_batch(&CommandBatch::new(vec![CanonicalCommand::CreateNode {
-            id: NODE,
-            name: "extrusion_height".to_owned(),
-            dimension: dimension("20", 20.0),
-            dependencies: vec![],
-        }]))
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateEvaluatorNode {
+                id: NODE,
+                name: "extrusion_height".to_owned(),
+                dimension: dimension("20", 20.0),
+                dependencies: vec![],
+            },
+        ]))
         .unwrap();
     document
 }

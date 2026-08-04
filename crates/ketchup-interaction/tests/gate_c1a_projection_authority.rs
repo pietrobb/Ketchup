@@ -107,7 +107,7 @@ fn canonical_projection_carries_every_c1a_authority_field() {
         )));
     }
     assert!(complete.contains("definition.10.features=[9,11,12]"));
-    assert!(agent.contains("definition.10=name:\"Cabinet\",features:[9,11,12],instances:2"));
+    assert!(agent.contains("definition.10=name:\"Cabinet\",features:[9,11,12]"));
     for feature_id in [UNRELATED_PROFILE, PROFILE, EXTRUSION] {
         assert!(complete.contains(&format!("feature.{}.definition=10", feature_id.0)));
         assert!(agent.contains(&format!("feature.{}=", feature_id.0)));
@@ -116,9 +116,9 @@ fn canonical_projection_carries_every_c1a_authority_field() {
         assert!(complete.contains(&format!("occurrence.{}.definition=10", occurrence_id.0)));
         assert!(agent.contains(&format!("occurrence.{}=", occurrence_id.0)));
     }
-    assert!(
-        agent.contains("summary.counts=nodes:0,definitions:1,features:3,occurrences:2,groups:1")
-    );
+    assert!(agent.contains(
+        "summary.counts=evaluator_nodes:0,overrides:0,definitions:1,features:3,occurrences:2,groups:1,local_groups:0,local_occurrences:0"
+    ));
 
     assert_eq!(projection.schema(), INTERACTION_PROJECTION_V1);
     assert_eq!(projection.evaluator(), PROXY_EVALUATOR_V1);

@@ -1,8 +1,11 @@
 #![forbid(unsafe_code)]
 
 pub mod adapters;
+pub mod beam_m4ae;
 pub mod document;
+pub mod graph;
 pub mod persistence;
+pub mod prismatic;
 pub mod state_view;
 
 /// Returns the canonical application name for toolchain smoke tests.

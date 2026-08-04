@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 
-use ketchup_core::document::NodeId;
+use ketchup_core::document::{DerivedIdentity, NodeId, SlotPath, SlotSegment};
 use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
 use std::io::{BufRead, BufReader, Write};
@@ -8,12 +8,42 @@ use std::path::Path;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::time::{Duration, Instant};
 
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub struct AcceptanceIdentity {
+    pub document_scope: u64,
+    pub derived_identity: DerivedIdentity,
+    pub input_digest: String,
+    pub evaluator: String,
+    pub backend: Option<String>,
+    pub schema: String,
+    pub tolerance: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+struct ScheduledIdentity {
+    node_id: NodeId,
+    acceptance: AcceptanceIdentity,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ScheduledVersion {
+    revision_id: u64,
+    generation: u64,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct JobToken {
     pub node_id: NodeId,
     pub revision_id: u64,
     pub generation: u64,
-    pub input_digest: String,
+    pub acceptance: AcceptanceIdentity,
+}
+
+impl JobToken {
+    #[must_use]
+    pub fn input_digest(&self) -> &str {
+        &self.acceptance.input_digest
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -42,7 +72,7 @@ struct CacheKey {
     node_id: NodeId,
     revision_id: u64,
     generation: u64,
-    input_digest: String,
+    acceptance: AcceptanceIdentity,
 }
 
 #[derive(Clone, Debug)]
@@ -54,7 +84,7 @@ struct CacheEntry {
 pub struct EvaluationScheduler {
     current_revision: u64,
     generations: BTreeMap<NodeId, u64>,
-    scheduled_inputs: BTreeMap<NodeId, String>,
+    scheduled_inputs: BTreeMap<ScheduledIdentity, ScheduledVersion>,
     cache: BTreeMap<CacheKey, CacheEntry>,
     lru: VecDeque<CacheKey>,
     cache_budget_bytes: usize,
@@ -96,7 +126,8 @@ impl EvaluationScheduler {
         self.current_revision = revision_id;
         for node_id in dirty_nodes {
             *self.generations.entry(node_id).or_default() += 1;
-            self.scheduled_inputs.remove(&node_id);
+            self.scheduled_inputs
+                .retain(|identity, _| identity.node_id != node_id);
         }
         Ok(())
     }
@@ -110,12 +141,49 @@ impl EvaluationScheduler {
         if input_digest.is_empty() {
             return Err(SchedulerError::EmptyInputDigest);
         }
-        self.scheduled_inputs.insert(node_id, input_digest.clone());
+        let segment = SlotSegment::new(node_id, "value", "root")
+            .map_err(|_| SchedulerError::InvalidAcceptanceIdentity)?;
+        let identity = AcceptanceIdentity {
+            document_scope: 1,
+            derived_identity: DerivedIdentity::new(
+                node_id,
+                SlotPath::new(vec![segment])
+                    .map_err(|_| SchedulerError::InvalidAcceptanceIdentity)?,
+            )
+            .map_err(|_| SchedulerError::InvalidAcceptanceIdentity)?,
+            input_digest,
+            evaluator: ketchup_core::graph::EVALUATOR_ID_V1.to_owned(),
+            backend: Some(ketchup_core::graph::DEFAULT_BACKEND_ID.to_owned()),
+            schema: ketchup_core::graph::GRAPH_SCHEMA_ID_V1.to_owned(),
+            tolerance: ketchup_core::document::TOLERANCE_PROFILE_V1.to_owned(),
+        };
+        self.schedule_with_identity(node_id, identity)
+    }
+
+    pub fn schedule_with_identity(
+        &mut self,
+        node_id: NodeId,
+        acceptance: AcceptanceIdentity,
+    ) -> Result<JobToken, SchedulerError> {
+        if !is_valid_acceptance_identity(node_id, &acceptance) {
+            return Err(SchedulerError::InvalidAcceptanceIdentity);
+        }
+        let generation = *self.generations.entry(node_id).or_default();
+        self.scheduled_inputs.insert(
+            ScheduledIdentity {
+                node_id,
+                acceptance: acceptance.clone(),
+            },
+            ScheduledVersion {
+                revision_id: self.current_revision,
+                generation,
+            },
+        );
         Ok(JobToken {
             node_id,
             revision_id: self.current_revision,
-            generation: *self.generations.entry(node_id).or_default(),
-            input_digest,
+            generation,
+            acceptance,
         })
     }
 
@@ -125,10 +193,17 @@ impl EvaluationScheduler {
             .get(&result.token.node_id)
             .copied()
             .unwrap_or_default();
-        let expected_digest = self.scheduled_inputs.get(&result.token.node_id);
+        let scheduled_identity = ScheduledIdentity {
+            node_id: result.token.node_id,
+            acceptance: result.token.acceptance.clone(),
+        };
+        let current_version = ScheduledVersion {
+            revision_id: self.current_revision,
+            generation: expected_generation,
+        };
         if result.token.revision_id != self.current_revision
             || result.token.generation != expected_generation
-            || expected_digest != Some(&result.token.input_digest)
+            || self.scheduled_inputs.get(&scheduled_identity) != Some(&current_version)
         {
             return InsertOutcome::Stale;
         }
@@ -137,7 +212,7 @@ impl EvaluationScheduler {
             node_id: result.token.node_id,
             revision_id: result.token.revision_id,
             generation: result.token.generation,
-            input_digest: result.token.input_digest,
+            acceptance: result.token.acceptance,
         };
         self.insert_cache(
             key,
@@ -152,12 +227,47 @@ impl EvaluationScheduler {
     #[must_use]
     pub fn current_result_fingerprint(&self, node_id: NodeId) -> Option<&str> {
         let generation = self.generations.get(&node_id).copied().unwrap_or_default();
-        let input_digest = self.scheduled_inputs.get(&node_id)?;
+        let current_version = ScheduledVersion {
+            revision_id: self.current_revision,
+            generation,
+        };
+        let mut current_identities = self
+            .scheduled_inputs
+            .iter()
+            .filter(|(identity, version)| {
+                identity.node_id == node_id && **version == current_version
+            })
+            .map(|(identity, _)| &identity.acceptance);
+        let acceptance = current_identities.next()?;
+        if current_identities.next().is_some() {
+            return None;
+        }
+        self.current_result_fingerprint_for(node_id, acceptance)
+    }
+
+    #[must_use]
+    pub fn current_result_fingerprint_for(
+        &self,
+        node_id: NodeId,
+        acceptance: &AcceptanceIdentity,
+    ) -> Option<&str> {
+        let generation = self.generations.get(&node_id).copied().unwrap_or_default();
+        let scheduled_identity = ScheduledIdentity {
+            node_id,
+            acceptance: acceptance.clone(),
+        };
+        let current_version = ScheduledVersion {
+            revision_id: self.current_revision,
+            generation,
+        };
+        if self.scheduled_inputs.get(&scheduled_identity) != Some(&current_version) {
+            return None;
+        }
         let key = CacheKey {
             node_id,
             revision_id: self.current_revision,
             generation,
-            input_digest: input_digest.clone(),
+            acceptance: acceptance.clone(),
         };
         self.cache
             .get(&key)
@@ -198,10 +308,38 @@ impl EvaluationScheduler {
     }
 }
 
+fn is_valid_acceptance_identity(node_id: NodeId, acceptance: &AcceptanceIdentity) -> bool {
+    let root_rule_node_id = acceptance.derived_identity.root_rule_node_id;
+    let segments = acceptance.derived_identity.slot_path.segments();
+    acceptance.document_scope != 0
+        && root_rule_node_id == node_id
+        && DerivedIdentity::new(
+            root_rule_node_id,
+            acceptance.derived_identity.slot_path.clone(),
+        )
+        .is_ok()
+        && SlotPath::new(segments.to_vec()).is_ok()
+        && segments.iter().all(|segment| {
+            segment.producer_rule_id == root_rule_node_id
+                && SlotSegment::new(
+                    segment.producer_rule_id,
+                    &segment.output_port,
+                    &segment.semantic_key,
+                )
+                .is_ok()
+        })
+        && !acceptance.input_digest.is_empty()
+        && !acceptance.evaluator.is_empty()
+        && !acceptance.schema.is_empty()
+        && !acceptance.tolerance.is_empty()
+        && !acceptance.backend.as_ref().is_some_and(String::is_empty)
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SchedulerError {
     NonMonotonicRevision { current: u64, proposed: u64 },
     EmptyInputDigest,
+    InvalidAcceptanceIdentity,
 }
 
 impl fmt::Display for SchedulerError {
@@ -212,6 +350,9 @@ impl fmt::Display for SchedulerError {
                 "revision {proposed} does not advance current revision {current}"
             ),
             Self::EmptyInputDigest => formatter.write_str("scheduler input digest is empty"),
+            Self::InvalidAcceptanceIdentity => {
+                formatter.write_str("scheduler acceptance identity is incomplete")
+            }
         }
     }
 }

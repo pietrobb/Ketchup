@@ -8,6 +8,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+sha2 = "0.10.9"
 tempfile = "3.23.0"
 
 [lints]

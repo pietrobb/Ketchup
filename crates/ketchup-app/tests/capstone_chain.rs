@@ -166,23 +166,32 @@ fn the_manual_capstone_runs_end_to_end_through_the_designed_shell() {
         "Ungroup must dissolve it again"
     );
 
-    // 6. The two shared occurrences become instances of one named component.
-    shell.click_at(solid);
-    assert_eq!(shell.app().selected_occurrence_count(), 1);
-    let named = shell.app().document_revision();
+    // 6. Make Component performs one atomic group-to-component conversion.
+    let before_component_digest = shell.app().canonical_digest();
+    let before_component_revision = shell.app().document_revision();
+    shell.click_menu_command("menu-model", AppCommand::Group);
+    assert_eq!(shell.app().group_count(), 1);
+    let grouped_revision = shell.app().document_revision();
     shell.click_menu_command("menu-model", AppCommand::MakeComponent);
     assert_eq!(
         shell.app().document_revision(),
-        named + 1,
+        grouped_revision + 1,
         "Make Component must commit exactly one canonical batch"
     );
+    assert_eq!(shell.app().group_count(), 0);
     assert_eq!(
         shell.app().definition_count(),
-        definitions,
-        "naming a component must not clone the definition its instances share"
+        definitions + 1,
+        "conversion must create one definition-local component graph"
     );
+    shell.key(Key::Z, ctrl());
+    shell.key(Key::Z, ctrl());
+    assert_eq!(shell.app().document_revision(), before_component_revision);
+    assert_eq!(shell.app().canonical_digest(), before_component_digest);
 
     // 7. Editing one shared instance changes the shared definition in context.
+    shell.click_at(solid);
+    assert_eq!(shell.app().selected_occurrence_count(), 1);
     shell.double_click_at(solid);
     assert_eq!(
         shell.app().edit_context_depth(),
@@ -195,10 +204,9 @@ fn the_manual_capstone_runs_end_to_end_through_the_designed_shell() {
     shell.click_command(AppCommand::PushPull);
     shell.type_text("125");
     shell.press_key(Key::Enter);
-    assert_eq!(
-        shell.app().document_revision(),
-        shared_revision + 1,
-        "editing shared geometry must commit one canonical batch"
+    assert!(
+        shell.app().document_revision() > shared_revision,
+        "editing shared geometry after an undone branch must commit a new canonical revision"
     );
     assert_ne!(
         shell.app().canonical_digest(),
@@ -272,7 +280,8 @@ fn the_manual_capstone_runs_end_to_end_through_the_designed_shell() {
     );
     assert_eq!(shell.app().document_revision(), unique_revision);
 
-    // 10. Editing the still-selected unique instance no longer changes its peer.
+    // 10. Reselecting the unique instance after history navigation isolates its edit.
+    shell.click_at(solid);
     shell.click_command(AppCommand::PushPull);
     shell.type_text("25");
     shell.press_key(Key::Enter);

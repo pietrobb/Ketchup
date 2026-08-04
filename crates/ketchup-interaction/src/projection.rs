@@ -1,6 +1,7 @@
 use crate::{InteractionError, InteractionScene, SharedBoxGeometry, Vec3};
 use ketchup_core::document::{
-    DefinitionId, DocumentId, FeatureId, FeatureKind, GroupId, OccurrenceId, Snapshot, Transform,
+    DefinitionId, DocumentId, FeatureId, FeatureKind, GroupId, InstancePath, OccurrenceId,
+    Snapshot, Transform,
 };
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -30,6 +31,7 @@ pub struct ProjectedBox {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ProjectedOccurrence {
     pub occurrence_id: OccurrenceId,
+    pub instance_path: InstancePath,
     pub body: ProjectedBodyRef,
     pub occurrence_name: String,
     pub definition_name: String,
@@ -64,6 +66,7 @@ impl CanonicalInteractionProjection {
                     .and_then(|local_box| transformed_aabb(scene_occurrence.transform, local_box));
                 ProjectedOccurrence {
                     occurrence_id: scene_occurrence.occurrence_id,
+                    instance_path: scene_occurrence.instance_path,
                     body: ProjectedBodyRef {
                         definition_id: scene_occurrence.definition_id,
                         profile_feature_id,
@@ -151,7 +154,7 @@ impl InteractionProjection {
 
     pub fn scene_with_box_overrides_where(
         &self,
-        overrides: &BTreeMap<OccurrenceId, ProjectedBox>,
+        overrides: &BTreeMap<InstancePath, ProjectedBox>,
         include: impl Fn(&ProjectedOccurrence) -> bool,
     ) -> Result<InteractionScene, InteractionError> {
         let mut scene = InteractionScene::new();
@@ -163,7 +166,7 @@ impl InteractionProjection {
             .filter(|occurrence| occurrence.visible && include(occurrence))
         {
             let Some(box_proxy) = overrides
-                .get(&occurrence.occurrence_id)
+                .get(&occurrence.instance_path)
                 .copied()
                 .or(occurrence.box_proxy)
             else {
@@ -183,7 +186,7 @@ impl InteractionProjection {
                 geometry
             };
             scene.add_occurrence(
-                occurrence.occurrence_id.0,
+                occurrence.instance_path.clone(),
                 occurrence.body.definition_id,
                 box_proxy.origin_mm,
                 geometry,
