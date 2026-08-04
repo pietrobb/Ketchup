@@ -223,3 +223,5 @@ status-editing-component = editing component { $id }
 status-snap-on = snap on
 status-grid = grid { $step } mm
 status-refs-guaranteed = A0 refs: guaranteed
+status-exact-current = exact: { $bodies } current bodies / { $refs } stable refs
+status-exact-unavailable = exact: unavailable (proxy view)

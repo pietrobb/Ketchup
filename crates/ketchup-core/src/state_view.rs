@@ -145,27 +145,27 @@ pub fn encode_semantic_state_with_evaluation(
                 .unwrap();
             }
         }
-        if evaluation_is_current {
-            if let Some(result) = evaluation.and_then(|report| report.node(node.id())) {
-                writeln!(
-                    complete,
-                    "evaluator_node.{id}.evaluation.input_digest={}",
-                    result.input_digest
-                )
-                .unwrap();
-                writeln!(
-                    complete,
-                    "evaluator_node.{id}.evaluation.result_digest={}",
-                    result.result_digest
-                )
-                .unwrap();
-                writeln!(
-                    complete,
-                    "evaluator_node.{id}.evaluation.status={}",
-                    status(result.status.clone())
-                )
-                .unwrap();
-            }
+        if evaluation_is_current
+            && let Some(result) = evaluation.and_then(|report| report.node(node.id()))
+        {
+            writeln!(
+                complete,
+                "evaluator_node.{id}.evaluation.input_digest={}",
+                result.input_digest
+            )
+            .unwrap();
+            writeln!(
+                complete,
+                "evaluator_node.{id}.evaluation.result_digest={}",
+                result.result_digest
+            )
+            .unwrap();
+            writeln!(
+                complete,
+                "evaluator_node.{id}.evaluation.status={}",
+                status(result.status.clone())
+            )
+            .unwrap();
         }
         writeln!(
             agent,

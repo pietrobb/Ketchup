@@ -3,6 +3,7 @@
 pub mod adapters;
 pub mod beam_m4ae;
 pub mod document;
+pub mod exact_product;
 pub mod fabrication;
 pub mod graph;
 pub mod persistence;

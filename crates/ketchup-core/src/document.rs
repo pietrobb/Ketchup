@@ -1,3 +1,4 @@
+use crate::exact_product::{BodySubshapeRef, ExactRectangleRequest};
 pub use crate::graph::{
     CanonicalOverride, DerivedIdentity, DerivedOutput, EvaluationIdentity, EvaluationReport,
     EvaluationStatus, EvaluatorNode, EvaluatorNodeKind, GraphError, OverrideMergePolicy,
@@ -397,6 +398,7 @@ pub(crate) struct ProductModel {
     pub(crate) evaluator_nodes: BTreeMap<NodeId, Arc<EvaluatorNode>>,
     pub(crate) overrides: BTreeMap<u64, Arc<CanonicalOverride>>,
     pub(crate) joints: BTreeMap<JointId, Arc<CanonicalJoint>>,
+    pub(crate) exact_reference_evidence: BTreeMap<String, Arc<BodySubshapeRef>>,
     pub(crate) definitions: BTreeMap<DefinitionId, Arc<Definition>>,
     pub(crate) features: BTreeMap<FeatureId, Arc<Feature>>,
     pub(crate) occurrences: BTreeMap<OccurrenceId, Arc<Occurrence>>,
@@ -413,6 +415,7 @@ impl Default for ProductModel {
             evaluator_nodes: BTreeMap::new(),
             overrides: BTreeMap::new(),
             joints: BTreeMap::new(),
+            exact_reference_evidence: BTreeMap::new(),
             definitions: BTreeMap::new(),
             features: BTreeMap::new(),
             occurrences: BTreeMap::new(),
@@ -817,6 +820,21 @@ impl Snapshot {
         self.product.joints.get(&id).map(Arc::as_ref)
     }
 
+    pub fn exact_reference_evidence(&self) -> impl Iterator<Item = &BodySubshapeRef> {
+        self.product
+            .exact_reference_evidence
+            .values()
+            .map(Arc::as_ref)
+    }
+
+    #[must_use]
+    pub fn exact_reference_by_lineage(&self, lineage_digest: &str) -> Option<&BodySubshapeRef> {
+        self.product
+            .exact_reference_evidence
+            .get(lineage_digest)
+            .map(Arc::as_ref)
+    }
+
     #[must_use]
     pub fn resolve_slot(&self, identity: &DerivedIdentity) -> SlotResolution {
         resolve_derived_identity(&self.product.evaluator_nodes, identity)
@@ -1155,6 +1173,31 @@ pub struct DerivedResultEvent {
     pub classification: DerivedResultClassification,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ReferenceEvidenceError {
+    InvalidLineage,
+    WrongDocument,
+    ProducerNotFound,
+    ProducerDefinitionMismatch,
+}
+
+impl fmt::Display for ReferenceEvidenceError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidLineage => formatter.write_str("exact reference lineage is invalid"),
+            Self::WrongDocument => {
+                formatter.write_str("exact reference belongs to another document")
+            }
+            Self::ProducerNotFound => formatter.write_str("exact reference producer was not found"),
+            Self::ProducerDefinitionMismatch => {
+                formatter.write_str("exact reference producer belongs to another definition")
+            }
+        }
+    }
+}
+
+impl std::error::Error for ReferenceEvidenceError {}
+
 pub struct DocumentStore {
     revisions: Vec<Arc<Revision>>,
     cursor: usize,
@@ -1209,6 +1252,50 @@ impl DocumentStore {
         self.revisions[self.cursor].snapshot.clone()
     }
 
+    pub fn register_exact_reference_evidence(
+        &mut self,
+        reference: BodySubshapeRef,
+    ) -> Result<(), ReferenceEvidenceError> {
+        let current = &self.revisions[self.cursor];
+        if !reference.has_valid_lineage() {
+            return Err(ReferenceEvidenceError::InvalidLineage);
+        }
+        if reference.document_id != current.snapshot.document_id() {
+            return Err(ReferenceEvidenceError::WrongDocument);
+        }
+        let producer = current
+            .snapshot
+            .feature(reference.producer_feature_id)
+            .ok_or(ReferenceEvidenceError::ProducerNotFound)?;
+        if producer.definition_id() != reference.definition_id {
+            return Err(ReferenceEvidenceError::ProducerDefinitionMismatch);
+        }
+        let request =
+            ExactRectangleRequest::from_snapshot(&current.snapshot, reference.definition_id)
+                .map_err(|_| ReferenceEvidenceError::InvalidLineage)?;
+        if request.profile_feature_id != reference.profile_feature_id
+            || request.extrusion_feature_id != reference.producer_feature_id
+            || request.canonical_input_digest != reference.canonical_input_digest
+        {
+            return Err(ReferenceEvidenceError::InvalidLineage);
+        }
+        let mut product = current.snapshot.product.as_ref().clone();
+        product
+            .exact_reference_evidence
+            .insert(reference.lineage_digest.clone(), Arc::new(reference));
+        self.revisions[self.cursor] = Arc::new(Revision {
+            id: current.id,
+            snapshot: Snapshot {
+                revision_id: current.snapshot.revision_id,
+                product: Arc::new(product),
+            },
+            batch_digest: current.batch_digest.clone(),
+            recomputed_nodes: current.recomputed_nodes.clone(),
+            evaluation: current.evaluation.clone(),
+        });
+        Ok(())
+    }
+
     #[must_use]
     pub fn revision_count(&self) -> usize {
         self.revisions.len()
@@ -1241,6 +1328,7 @@ impl DocumentStore {
 
         let current = self.current();
         let mut product = current.product.as_ref().clone();
+        product.exact_reference_evidence.clear();
         let mut changed_evaluator_nodes = BTreeSet::new();
 
         for command in &batch.commands {
@@ -2650,14 +2738,13 @@ fn refresh_override_health(product: &mut ProductModel) {
 
 fn validate_overrides(product: &ProductModel) -> Result<(), CanonicalError> {
     for value in product.overrides.values() {
-        if let Some(root) = product.evaluator_nodes.get(&value.target.root_rule_node_id) {
-            if !root
+        if let Some(root) = product.evaluator_nodes.get(&value.target.root_rule_node_id)
+            && !root
                 .allowed_parameters()
                 .iter()
                 .any(|parameter| parameter.name() == value.parameter)
-            {
-                return Err(CanonicalError::UndeclaredOverrideParameter);
-            }
+        {
+            return Err(CanonicalError::UndeclaredOverrideParameter);
         }
     }
     Ok(())

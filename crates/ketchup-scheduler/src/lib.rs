@@ -1,11 +1,18 @@
 #![forbid(unsafe_code)]
 
 use ketchup_core::document::{DerivedIdentity, NodeId, SlotPath, SlotSegment};
+use ketchup_core::exact_product::{
+    ExactFaceRole, ExactProductError, ExactRectangleRequest, ExactRenderPackage,
+    build_box_render_package, canonical_reference_lineage_digest,
+};
+use ketchup_exact::GeometryErrorCode;
 use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
 use std::io::{BufRead, BufReader, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
@@ -359,6 +366,13 @@ impl fmt::Display for SchedulerError {
 
 impl std::error::Error for SchedulerError {}
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WorkerFaceEvidence {
+    pub ordinal: u32,
+    pub geometric_fingerprint: String,
+    pub lineage_digest: String,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct WorkerExactResult {
     pub backend_duration: Duration,
@@ -366,6 +380,13 @@ pub struct WorkerExactResult {
     pub volume_mm3: f64,
     pub bounds_mm: [f64; 6],
     pub topology_counts: [u32; 5],
+    pub request_digest: String,
+    pub exact_input_digest: String,
+    pub backend: String,
+    pub tolerance: String,
+    pub top: WorkerFaceEvidence,
+    pub bottom: WorkerFaceEvidence,
+    pub east: WorkerFaceEvidence,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -373,6 +394,11 @@ pub enum WorkerError {
     Spawn(String),
     Transport(String),
     WorkerExited,
+    Cancelled,
+    RequestTimedOut(Duration),
+    ResponseLineTooLarge { max_bytes: usize },
+    MalformedTransport(String),
+    MissingCapability(String),
     Protocol(String),
     Geometry(String),
 }
@@ -383,6 +409,25 @@ impl fmt::Display for WorkerError {
             Self::Spawn(message) => write!(formatter, "worker spawn failed: {message}"),
             Self::Transport(message) => write!(formatter, "worker transport failed: {message}"),
             Self::WorkerExited => formatter.write_str("worker exited before replying"),
+            Self::Cancelled => formatter.write_str("worker operation was cancelled"),
+            Self::RequestTimedOut(timeout) => write!(
+                formatter,
+                "worker request timed out after {} ms",
+                timeout.as_millis()
+            ),
+            Self::ResponseLineTooLarge { max_bytes } => write!(
+                formatter,
+                "worker response line exceeded the {max_bytes}-byte limit"
+            ),
+            Self::MalformedTransport(message) => {
+                write!(formatter, "worker transport was malformed: {message}")
+            }
+            Self::MissingCapability(capability) => {
+                write!(
+                    formatter,
+                    "worker does not support required capability {capability}"
+                )
+            }
             Self::Protocol(message) => write!(formatter, "worker protocol error: {message}"),
             Self::Geometry(code) => write!(formatter, "worker geometry error: {code}"),
         }
@@ -391,10 +436,43 @@ impl fmt::Display for WorkerError {
 
 impl std::error::Error for WorkerError {}
 
+impl WorkerError {
+    fn permits_restart(&self) -> bool {
+        matches!(
+            self,
+            Self::Transport(_)
+                | Self::WorkerExited
+                | Self::RequestTimedOut(_)
+                | Self::ResponseLineTooLarge { .. }
+                | Self::MalformedTransport(_)
+                | Self::Protocol(_)
+        )
+    }
+}
+
+const M3_CAPABILITY: &str = "M3_V1";
+const DEFAULT_WORKER_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+const CANCELLATION_POLL_INTERVAL: Duration = Duration::from_millis(10);
+const MAX_WORKER_RESPONSE_LINE_BYTES: usize = 64 * 1024;
+static NEVER_CANCELLED: AtomicBool = AtomicBool::new(false);
+
+struct WorkerWriteRequest {
+    line: String,
+    acknowledgment: Sender<Result<(), String>>,
+}
+
+enum WorkerResponse {
+    Line(String),
+    Exited,
+    TooLarge,
+    Malformed(String),
+    Transport(String),
+}
+
 pub struct ExactWorkerClient {
     child: Child,
-    stdin: ChildStdin,
-    stdout: BufReader<ChildStdout>,
+    write_sender: Sender<WorkerWriteRequest>,
+    response_receiver: Receiver<WorkerResponse>,
 }
 
 impl ExactWorkerClient {
@@ -413,52 +491,112 @@ impl ExactWorkerClient {
             .stdout
             .take()
             .ok_or_else(|| WorkerError::Spawn("worker stdout was not piped".to_owned()))?;
+        let (write_sender, write_receiver) = mpsc::channel();
+        let (response_sender, response_receiver) = mpsc::channel();
+        spawn_worker_writer(stdin, write_receiver);
+        spawn_worker_reader(stdout, response_sender);
         Ok(Self {
             child,
-            stdin,
-            stdout: BufReader::new(stdout),
+            write_sender,
+            response_receiver,
         })
     }
 
     pub fn ping(&mut self) -> Result<(), WorkerError> {
-        let response = self.request("PING")?;
+        self.ping_with_cancellation(&NEVER_CANCELLED)
+    }
+
+    fn ping_with_cancellation(&mut self, cancelled: &AtomicBool) -> Result<(), WorkerError> {
+        let response = self.request_with_cancellation("PING", cancelled)?;
         if response == "PONG" {
             Ok(())
         } else {
-            Err(WorkerError::Protocol(response))
+            self.fail_protocol(response)
+        }
+    }
+
+    fn verify_m3_capability(&mut self, cancelled: &AtomicBool) -> Result<(), WorkerError> {
+        let response = self.request_with_cancellation("CAPS M3_V1", cancelled)?;
+        if response == "CAPS M3_V1" {
+            Ok(())
+        } else if response.split_whitespace().next() == Some("ERR") {
+            let fields = response.split_whitespace().collect::<Vec<_>>();
+            self.fail(parse_error_response(&response, &fields))
+        } else {
+            self.terminate_worker();
+            Err(WorkerError::MissingCapability(M3_CAPABILITY.to_owned()))
         }
     }
 
     pub fn extrude_rectangle(&mut self, height_mm: f64) -> Result<WorkerExactResult, WorkerError> {
         let response = self.request(&format!("EXTRUDE {:016x}", height_mm.to_bits()))?;
-        parse_exact_result(&response)
+        match parse_legacy_exact_result(&response) {
+            Err(WorkerError::Protocol(response)) => self.fail_protocol(response),
+            result => result,
+        }
+    }
+
+    pub fn extrude_rectangle_request(
+        &mut self,
+        request: &ExactRectangleRequest,
+    ) -> Result<WorkerExactResult, WorkerError> {
+        self.extrude_rectangle_request_with_cancellation(request, &NEVER_CANCELLED)
+    }
+
+    fn extrude_rectangle_request_with_cancellation(
+        &mut self,
+        request: &ExactRectangleRequest,
+        cancelled: &AtomicBool,
+    ) -> Result<WorkerExactResult, WorkerError> {
+        let response = self.request_with_cancellation(
+            &format!(
+                "EXTRUDE_M3_V1 {:016x} {:016x} {:016x} {} {} {}",
+                request.width_bits,
+                request.depth_bits,
+                request.height_bits,
+                request.document_id.0,
+                request.extrusion_feature_id.0,
+                request.canonical_input_digest
+            ),
+            cancelled,
+        )?;
+        match parse_m3_exact_result(&response) {
+            Err(WorkerError::Protocol(response)) => self.fail_protocol(response),
+            result => result,
+        }
     }
 
     pub fn exception_probe(&mut self) -> Result<String, WorkerError> {
         let response = self.request("EXCEPTION")?;
-        let mut fields = response.split_whitespace();
-        match (fields.next(), fields.next(), fields.next()) {
-            (Some("ERR"), Some(code), None) => Ok(code.to_owned()),
-            _ => Err(WorkerError::Protocol(response)),
+        let fields = response.split_whitespace().collect::<Vec<_>>();
+        match fields.as_slice() {
+            ["ERR", code] if is_geometry_error_code(code) => Ok((*code).to_owned()),
+            _ => self.fail_protocol(response),
         }
     }
 
     pub fn begin_killable_job(&mut self, duration: Duration) -> Result<(), WorkerError> {
-        self.write_request(&format!("SLEEP {}", duration.as_millis()))
+        let deadline = Instant::now() + DEFAULT_WORKER_REQUEST_TIMEOUT;
+        self.write_request_until(&format!("SLEEP {}", duration.as_millis()), deadline)
     }
 
     pub fn crash(&mut self) -> Result<(), WorkerError> {
-        self.write_request("CRASH")?;
-        let mut response = String::new();
-        let bytes = self
-            .stdout
-            .read_line(&mut response)
-            .map_err(|error| WorkerError::Transport(error.to_string()))?;
-        if bytes == 0 {
-            let _ = self.child.wait();
-            Ok(())
-        } else {
-            Err(WorkerError::Protocol(response))
+        let deadline = Instant::now() + DEFAULT_WORKER_REQUEST_TIMEOUT;
+        self.write_request_until("CRASH", deadline)?;
+        match self.next_response_until(deadline)? {
+            WorkerResponse::Exited => self
+                .child
+                .wait()
+                .map(|_| ())
+                .map_err(|error| WorkerError::Transport(error.to_string())),
+            WorkerResponse::Line(response) => self.fail_protocol(response),
+            WorkerResponse::TooLarge => self.fail(WorkerError::ResponseLineTooLarge {
+                max_bytes: MAX_WORKER_RESPONSE_LINE_BYTES,
+            }),
+            WorkerResponse::Malformed(message) => {
+                self.fail(WorkerError::MalformedTransport(message))
+            }
+            WorkerResponse::Transport(message) => self.fail(WorkerError::Transport(message)),
         }
     }
 
@@ -474,22 +612,198 @@ impl ExactWorkerClient {
     }
 
     fn request(&mut self, request: &str) -> Result<String, WorkerError> {
-        self.write_request(request)?;
-        let mut response = String::new();
-        let bytes = self
-            .stdout
-            .read_line(&mut response)
-            .map_err(|error| WorkerError::Transport(error.to_string()))?;
-        if bytes == 0 {
-            return Err(WorkerError::WorkerExited);
-        }
-        Ok(response.trim_end().to_owned())
+        self.request_with_cancellation(request, &NEVER_CANCELLED)
     }
 
-    fn write_request(&mut self, request: &str) -> Result<(), WorkerError> {
-        writeln!(self.stdin, "{request}")
-            .and_then(|()| self.stdin.flush())
-            .map_err(|error| WorkerError::Transport(error.to_string()))
+    fn request_with_cancellation(
+        &mut self,
+        request: &str,
+        cancelled: &AtomicBool,
+    ) -> Result<String, WorkerError> {
+        let deadline = Instant::now() + DEFAULT_WORKER_REQUEST_TIMEOUT;
+        self.write_request_until_with_cancellation(request, deadline, cancelled)?;
+        match self.next_response_until_with_cancellation(deadline, cancelled)? {
+            WorkerResponse::Line(response) => Ok(response),
+            WorkerResponse::Exited => self.fail(WorkerError::WorkerExited),
+            WorkerResponse::TooLarge => self.fail(WorkerError::ResponseLineTooLarge {
+                max_bytes: MAX_WORKER_RESPONSE_LINE_BYTES,
+            }),
+            WorkerResponse::Malformed(message) => {
+                self.fail(WorkerError::MalformedTransport(message))
+            }
+            WorkerResponse::Transport(message) => self.fail(WorkerError::Transport(message)),
+        }
+    }
+
+    fn write_request_until(&mut self, request: &str, deadline: Instant) -> Result<(), WorkerError> {
+        self.write_request_until_with_cancellation(request, deadline, &NEVER_CANCELLED)
+    }
+
+    fn write_request_until_with_cancellation(
+        &mut self,
+        request: &str,
+        deadline: Instant,
+        cancelled: &AtomicBool,
+    ) -> Result<(), WorkerError> {
+        self.ensure_not_cancelled(cancelled)?;
+        let (acknowledgment, receiver) = mpsc::channel();
+        if self
+            .write_sender
+            .send(WorkerWriteRequest {
+                line: request.to_owned(),
+                acknowledgment,
+            })
+            .is_err()
+        {
+            self.ensure_not_cancelled(cancelled)?;
+            return self.fail(WorkerError::MalformedTransport(
+                "worker request writer disconnected".to_owned(),
+            ));
+        }
+        loop {
+            self.ensure_not_cancelled(cancelled)?;
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return self.fail(WorkerError::RequestTimedOut(DEFAULT_WORKER_REQUEST_TIMEOUT));
+            }
+            match receiver.recv_timeout(remaining.min(CANCELLATION_POLL_INTERVAL)) {
+                Ok(result) => {
+                    self.ensure_not_cancelled(cancelled)?;
+                    return match result {
+                        Ok(()) => Ok(()),
+                        Err(message) => self.fail(WorkerError::Transport(message)),
+                    };
+                }
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => {
+                    self.ensure_not_cancelled(cancelled)?;
+                    return self.fail(WorkerError::MalformedTransport(
+                        "worker request writer disconnected before acknowledging the write"
+                            .to_owned(),
+                    ));
+                }
+            }
+        }
+    }
+
+    fn next_response_until(&mut self, deadline: Instant) -> Result<WorkerResponse, WorkerError> {
+        self.next_response_until_with_cancellation(deadline, &NEVER_CANCELLED)
+    }
+
+    fn next_response_until_with_cancellation(
+        &mut self,
+        deadline: Instant,
+        cancelled: &AtomicBool,
+    ) -> Result<WorkerResponse, WorkerError> {
+        loop {
+            self.ensure_not_cancelled(cancelled)?;
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return self.fail(WorkerError::RequestTimedOut(DEFAULT_WORKER_REQUEST_TIMEOUT));
+            }
+            match self
+                .response_receiver
+                .recv_timeout(remaining.min(CANCELLATION_POLL_INTERVAL))
+            {
+                Ok(response) => {
+                    self.ensure_not_cancelled(cancelled)?;
+                    return Ok(response);
+                }
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => {
+                    self.ensure_not_cancelled(cancelled)?;
+                    return self.fail(WorkerError::MalformedTransport(
+                        "worker response reader disconnected without a terminal event".to_owned(),
+                    ));
+                }
+            }
+        }
+    }
+
+    fn ensure_not_cancelled(&mut self, cancelled: &AtomicBool) -> Result<(), WorkerError> {
+        if cancelled.load(Ordering::Acquire) {
+            self.fail(WorkerError::Cancelled)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn fail_protocol<T>(&mut self, response: String) -> Result<T, WorkerError> {
+        self.fail(WorkerError::Protocol(response))
+    }
+
+    fn fail<T>(&mut self, error: WorkerError) -> Result<T, WorkerError> {
+        self.terminate_worker();
+        Err(error)
+    }
+
+    fn terminate_worker(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+fn spawn_worker_writer(mut stdin: ChildStdin, receiver: Receiver<WorkerWriteRequest>) {
+    let _ = std::thread::spawn(move || {
+        while let Ok(request) = receiver.recv() {
+            let result = writeln!(stdin, "{}", request.line)
+                .and_then(|()| stdin.flush())
+                .map_err(|error| error.to_string());
+            let failed = result.is_err();
+            let _ = request.acknowledgment.send(result);
+            if failed {
+                break;
+            }
+        }
+    });
+}
+
+fn spawn_worker_reader(stdout: ChildStdout, sender: Sender<WorkerResponse>) {
+    let _ = std::thread::spawn(move || {
+        let mut reader = BufReader::new(stdout);
+        loop {
+            let response = read_worker_response(&mut reader);
+            let terminal = !matches!(response, WorkerResponse::Line(_));
+            if sender.send(response).is_err() || terminal {
+                break;
+            }
+        }
+    });
+}
+
+fn read_worker_response(reader: &mut impl BufRead) -> WorkerResponse {
+    let mut bytes = Vec::new();
+    loop {
+        let available = match reader.fill_buf() {
+            Ok(available) => available,
+            Err(error) => return WorkerResponse::Transport(error.to_string()),
+        };
+        if available.is_empty() {
+            return if bytes.is_empty() {
+                WorkerResponse::Exited
+            } else {
+                WorkerResponse::Malformed("worker response ended without a newline".to_owned())
+            };
+        }
+        let newline = available.iter().position(|byte| *byte == b'\n');
+        let consumed = newline.map_or(available.len(), |index| index + 1);
+        if bytes.len().saturating_add(consumed) > MAX_WORKER_RESPONSE_LINE_BYTES {
+            return WorkerResponse::TooLarge;
+        }
+        bytes.extend_from_slice(&available[..consumed]);
+        reader.consume(consumed);
+        if newline.is_some() {
+            bytes.pop();
+            if bytes.last() == Some(&b'\r') {
+                bytes.pop();
+            }
+            return match String::from_utf8(bytes) {
+                Ok(line) => WorkerResponse::Line(line),
+                Err(error) => WorkerResponse::Malformed(format!(
+                    "worker response was not valid UTF-8: {error}"
+                )),
+            };
+        }
     }
 }
 
@@ -500,12 +814,207 @@ impl Drop for ExactWorkerClient {
     }
 }
 
-fn parse_exact_result(response: &str) -> Result<WorkerExactResult, WorkerError> {
+pub struct ExactWorkerSupervisor {
+    executable: PathBuf,
+    client: ExactWorkerClient,
+}
+
+impl ExactWorkerSupervisor {
+    pub fn spawn(executable: impl AsRef<Path>) -> Result<Self, WorkerError> {
+        Self::spawn_with_cancellation(executable, &NEVER_CANCELLED)
+    }
+
+    pub fn spawn_with_cancellation(
+        executable: impl AsRef<Path>,
+        cancelled: &AtomicBool,
+    ) -> Result<Self, WorkerError> {
+        if cancelled.load(Ordering::Acquire) {
+            return Err(WorkerError::Cancelled);
+        }
+        let executable = executable.as_ref().to_owned();
+        let client = Self::spawn_verified_client(&executable, cancelled)?;
+        Ok(Self { executable, client })
+    }
+
+    fn spawn_verified_client(
+        executable: &Path,
+        cancelled: &AtomicBool,
+    ) -> Result<ExactWorkerClient, WorkerError> {
+        if cancelled.load(Ordering::Acquire) {
+            return Err(WorkerError::Cancelled);
+        }
+        let mut client = ExactWorkerClient::spawn(executable)?;
+        client.ensure_not_cancelled(cancelled)?;
+        client.ping_with_cancellation(cancelled)?;
+        client.verify_m3_capability(cancelled)?;
+        Ok(client)
+    }
+
+    pub fn evaluate_rectangle(
+        &mut self,
+        request: &ExactRectangleRequest,
+    ) -> Result<ExactRenderPackage, M3EvaluationError> {
+        self.evaluate_rectangle_with_cancellation(request, &NEVER_CANCELLED)
+    }
+
+    pub fn evaluate_rectangle_with_cancellation(
+        &mut self,
+        request: &ExactRectangleRequest,
+        cancelled: &AtomicBool,
+    ) -> Result<ExactRenderPackage, M3EvaluationError> {
+        self.client.ensure_not_cancelled(cancelled)?;
+        let result = match self
+            .client
+            .extrude_rectangle_request_with_cancellation(request, cancelled)
+        {
+            Ok(result) => result,
+            Err(error) if error.permits_restart() => {
+                self.client = Self::spawn_verified_client(&self.executable, cancelled)?;
+                self.client
+                    .extrude_rectangle_request_with_cancellation(request, cancelled)?
+            }
+            Err(error) => {
+                self.client.ensure_not_cancelled(cancelled)?;
+                return Err(error.into());
+            }
+        };
+        self.client.ensure_not_cancelled(cancelled)?;
+        let dimensions = request.dimensions_mm();
+        let expected_volume = dimensions.into_iter().product::<f64>();
+        let has_canonical_lineage = |role: ExactFaceRole, evidence: &WorkerFaceEvidence| {
+            !evidence.geometric_fingerprint.is_empty()
+                && evidence.lineage_digest
+                    == canonical_reference_lineage_digest(
+                        request.document_id,
+                        request.extrusion_feature_id,
+                        role.semantic_role(),
+                        role.source_element_id(),
+                        "planar_face",
+                    )
+        };
+        if result.request_digest != request.canonical_input_digest
+            || result.exact_input_digest.is_empty()
+            || result.result_fingerprint.is_empty()
+            || result.backend != ketchup_exact::backend_fingerprint()
+            || result.tolerance != ketchup_exact::tolerance_profile()
+            || !has_canonical_lineage(ExactFaceRole::Top, &result.top)
+            || !has_canonical_lineage(ExactFaceRole::Bottom, &result.bottom)
+            || !has_canonical_lineage(ExactFaceRole::East, &result.east)
+            || !result.volume_mm3.is_finite()
+            || result.volume_mm3 <= 0.0
+            || (result.volume_mm3 - expected_volume).abs()
+                > 1.0e-6_f64.max(expected_volume.abs() * 1.0e-10)
+            || result.topology_counts[2] != 6
+            || result.topology_counts[4] != 1
+            || [
+                result.top.ordinal,
+                result.bottom.ordinal,
+                result.east.ordinal,
+            ]
+            .into_iter()
+            .any(|ordinal| ordinal >= result.topology_counts[2])
+            || result.top.ordinal == result.bottom.ordinal
+            || result.top.ordinal == result.east.ordinal
+            || result.bottom.ordinal == result.east.ordinal
+        {
+            return Err(ExactProductError::InvalidWorkerEvidence.into());
+        }
+        let package = build_box_render_package(
+            request,
+            result.exact_input_digest,
+            result.result_fingerprint,
+            result.backend,
+            result.tolerance,
+            [
+                [
+                    result.bounds_mm[0],
+                    result.bounds_mm[1],
+                    result.bounds_mm[2],
+                ],
+                [
+                    result.bounds_mm[3],
+                    result.bounds_mm[4],
+                    result.bounds_mm[5],
+                ],
+            ],
+            [
+                (
+                    ExactFaceRole::Top,
+                    result.top.lineage_digest,
+                    result.top.geometric_fingerprint,
+                ),
+                (
+                    ExactFaceRole::Bottom,
+                    result.bottom.lineage_digest,
+                    result.bottom.geometric_fingerprint,
+                ),
+                (
+                    ExactFaceRole::East,
+                    result.east.lineage_digest,
+                    result.east.geometric_fingerprint,
+                ),
+            ],
+        );
+        self.client.ensure_not_cancelled(cancelled)?;
+        package.map_err(Into::into)
+    }
+}
+
+#[derive(Debug)]
+pub enum M3EvaluationError {
+    Worker(WorkerError),
+    Product(ExactProductError),
+}
+
+impl fmt::Display for M3EvaluationError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Worker(error) => error.fmt(formatter),
+            Self::Product(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for M3EvaluationError {}
+
+impl From<WorkerError> for M3EvaluationError {
+    fn from(error: WorkerError) -> Self {
+        Self::Worker(error)
+    }
+}
+
+impl From<ExactProductError> for M3EvaluationError {
+    fn from(error: ExactProductError) -> Self {
+        Self::Product(error)
+    }
+}
+
+fn is_geometry_error_code(code: &str) -> bool {
+    [
+        GeometryErrorCode::InvalidParameter,
+        GeometryErrorCode::InvalidProfile,
+        GeometryErrorCode::NonFiniteParameter,
+        GeometryErrorCode::NoGeometricChange,
+        GeometryErrorCode::DegenerateOperation,
+        GeometryErrorCode::InvalidShape,
+        GeometryErrorCode::BackendException,
+        GeometryErrorCode::NullResult,
+    ]
+    .into_iter()
+    .any(|candidate| candidate.as_str() == code)
+}
+
+fn parse_error_response(response: &str, fields: &[&str]) -> WorkerError {
+    match fields {
+        ["ERR", code] if is_geometry_error_code(code) => WorkerError::Geometry((*code).to_owned()),
+        _ => WorkerError::Protocol(response.to_owned()),
+    }
+}
+
+fn parse_legacy_exact_result(response: &str) -> Result<WorkerExactResult, WorkerError> {
     let fields: Vec<_> = response.split_whitespace().collect();
     if fields.first() == Some(&"ERR") {
-        return Err(WorkerError::Geometry(
-            fields.get(1).copied().unwrap_or("unknown").to_owned(),
-        ));
+        return Err(parse_error_response(response, &fields));
     }
     if fields.len() != 15 || fields[0] != "OK" {
         return Err(WorkerError::Protocol(response.to_owned()));
@@ -544,5 +1053,111 @@ fn parse_exact_result(response: &str) -> Result<WorkerExactResult, WorkerError> 
             parse_u32(13)?,
             parse_u32(14)?,
         ],
+        request_digest: String::new(),
+        exact_input_digest: String::new(),
+        backend: String::new(),
+        tolerance: String::new(),
+        top: WorkerFaceEvidence {
+            ordinal: 0,
+            geometric_fingerprint: String::new(),
+            lineage_digest: String::new(),
+        },
+        bottom: WorkerFaceEvidence {
+            ordinal: 0,
+            geometric_fingerprint: String::new(),
+            lineage_digest: String::new(),
+        },
+        east: WorkerFaceEvidence {
+            ordinal: 0,
+            geometric_fingerprint: String::new(),
+            lineage_digest: String::new(),
+        },
     })
+}
+
+fn parse_m3_exact_result(response: &str) -> Result<WorkerExactResult, WorkerError> {
+    let fields: Vec<_> = response.split_whitespace().collect();
+    if fields.first() == Some(&"ERR") {
+        return Err(parse_error_response(response, &fields));
+    }
+    if fields.len() != 28
+        || fields[0] != "OK_M3_V1"
+        || fields[17].is_empty()
+        || fields[18].is_empty()
+        || !is_sha256_digest(fields[15])
+        || [2, 16, 20, 21, 23, 24, 26, 27]
+            .into_iter()
+            .any(|index| !is_fnv1a64_digest(fields[index]))
+    {
+        return Err(WorkerError::Protocol(response.to_owned()));
+    }
+    let parse_u64 = |index: usize| {
+        fields[index]
+            .parse::<u64>()
+            .map_err(|_| WorkerError::Protocol(response.to_owned()))
+    };
+    let parse_f64 = |index: usize| {
+        u64::from_str_radix(fields[index], 16)
+            .map(f64::from_bits)
+            .map_err(|_| WorkerError::Protocol(response.to_owned()))
+    };
+    let parse_u32 = |index: usize| {
+        fields[index]
+            .parse::<u32>()
+            .map_err(|_| WorkerError::Protocol(response.to_owned()))
+    };
+    Ok(WorkerExactResult {
+        backend_duration: Duration::from_nanos(parse_u64(1)?),
+        result_fingerprint: fields[2].to_owned(),
+        volume_mm3: parse_f64(3)?,
+        bounds_mm: [
+            parse_f64(4)?,
+            parse_f64(5)?,
+            parse_f64(6)?,
+            parse_f64(7)?,
+            parse_f64(8)?,
+            parse_f64(9)?,
+        ],
+        topology_counts: [
+            parse_u32(10)?,
+            parse_u32(11)?,
+            parse_u32(12)?,
+            parse_u32(13)?,
+            parse_u32(14)?,
+        ],
+        request_digest: fields[15].to_owned(),
+        exact_input_digest: fields[16].to_owned(),
+        backend: fields[17].to_owned(),
+        tolerance: fields[18].to_owned(),
+        top: WorkerFaceEvidence {
+            ordinal: parse_u32(19)?,
+            geometric_fingerprint: fields[20].to_owned(),
+            lineage_digest: fields[21].to_owned(),
+        },
+        bottom: WorkerFaceEvidence {
+            ordinal: parse_u32(22)?,
+            geometric_fingerprint: fields[23].to_owned(),
+            lineage_digest: fields[24].to_owned(),
+        },
+        east: WorkerFaceEvidence {
+            ordinal: parse_u32(25)?,
+            geometric_fingerprint: fields[26].to_owned(),
+            lineage_digest: fields[27].to_owned(),
+        },
+    })
+}
+
+fn is_sha256_digest(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+}
+
+fn is_fnv1a64_digest(value: &str) -> bool {
+    value.len() == 24
+        && value.starts_with("fnv1a64:")
+        && value[8..]
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
 }

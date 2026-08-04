@@ -8,6 +8,16 @@ const MIN_LENGTH_MM: f64 = 0.01;
 const MAX_LENGTH_MM: f64 = 100_000.0;
 const MAX_COORDINATE_MM: f64 = 1_000_000.0;
 
+#[must_use]
+pub const fn backend_fingerprint() -> &'static str {
+    BACKEND_FINGERPRINT
+}
+
+#[must_use]
+pub const fn tolerance_profile() -> &'static str {
+    TOLERANCE_PROFILE
+}
+
 #[allow(dead_code, unsafe_code)]
 #[cxx::bridge(namespace = "ketchup::exact")]
 mod ffi {

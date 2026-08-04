@@ -11,6 +11,7 @@ use crate::document::{
     LocalOccurrence, LocalOccurrenceId, LocalOccurrenceKey, NodeId, Occurrence, OccurrenceId,
     ProductModel, Snapshot, TagId, Transform, UnitSystem,
 };
+use crate::exact_product::{BODY_SUBSHAPE_REF_SCHEMA_V1, BodySubshapeRef, ReferenceStability};
 use crate::graph::{
     CanonicalOverride, DerivedIdentity, EvaluatorNodeKind, OverrideMergePolicy,
     OverrideParameterSpec, PortSpec, RuleOutput, SlotPath, SlotResolution, SlotSegment,
@@ -18,7 +19,8 @@ use crate::graph::{
 use crate::prismatic::{Aabb, CanonicalJoint, JointId};
 
 const MAGIC: &[u8; 10] = b"KETCHUPDOC";
-const CURRENT_SCHEMA: u16 = 3;
+const CURRENT_SCHEMA: u16 = 4;
+const ENVELOPE_SCHEMA: u16 = 3;
 const PRODUCT_SCHEMA: u16 = 2;
 const RESEARCH_SCHEMA: u16 = 1;
 const LEGACY_SCHEMA: u16 = 0;
@@ -210,6 +212,10 @@ pub fn save(snapshot: &Snapshot) -> Vec<u8> {
     for joint in product.joints.values() {
         write_joint(&mut payload, joint);
     }
+    push_u32(&mut payload, product.exact_reference_evidence.len() as u32);
+    for reference in product.exact_reference_evidence.values() {
+        write_exact_reference(&mut payload, reference);
+    }
 
     let mut manifest = Vec::new();
     push_u64(&mut manifest, payload.len() as u64);
@@ -312,6 +318,32 @@ fn write_joint(bytes: &mut Vec<u8>, value: &CanonicalJoint) {
     for coordinate in value.volume().min().into_iter().chain(value.volume().max()) {
         push_u64(bytes, coordinate.to_bits());
     }
+}
+
+fn write_exact_reference(bytes: &mut Vec<u8>, value: &BodySubshapeRef) {
+    push_string(bytes, &value.schema);
+    push_u64(bytes, value.document_id.0);
+    push_u64(bytes, value.definition_id.0);
+    push_u64(bytes, value.profile_feature_id.0);
+    push_u64(bytes, value.producer_feature_id.0);
+    push_string(bytes, &value.semantic_role);
+    push_string(bytes, &value.source_element_id);
+    push_string(bytes, &value.expected_type);
+    push_u32(bytes, value.expected_cardinality);
+    push_u8(
+        bytes,
+        match value.stability {
+            ReferenceStability::Guaranteed => 1,
+        },
+    );
+    push_string(bytes, &value.canonical_input_digest);
+    push_string(bytes, &value.exact_input_digest);
+    push_string(bytes, &value.result_fingerprint);
+    push_string(bytes, &value.evaluator);
+    push_string(bytes, &value.backend);
+    push_string(bytes, &value.tolerance);
+    push_string(bytes, &value.lineage_digest);
+    push_string(bytes, &value.corroborating_geometry_fingerprint);
 }
 
 fn write_override(bytes: &mut Vec<u8>, value: &CanonicalOverride) {
@@ -422,12 +454,12 @@ pub fn load(bytes: &[u8]) -> Result<LoadOutcome, PersistenceError> {
     let schema = reader.u16()?;
     if !matches!(
         schema,
-        LEGACY_SCHEMA | RESEARCH_SCHEMA | PRODUCT_SCHEMA | CURRENT_SCHEMA
+        LEGACY_SCHEMA | RESEARCH_SCHEMA | PRODUCT_SCHEMA | ENVELOPE_SCHEMA | CURRENT_SCHEMA
     ) {
         return Err(PersistenceError::UnsupportedSchema(schema));
     }
     let mut migration_losses = Vec::new();
-    let (revision_id, product) = if schema == CURRENT_SCHEMA {
+    let (revision_id, product) = if matches!(schema, ENVELOPE_SCHEMA | CURRENT_SCHEMA) {
         let manifest_length = reader.count_with_limit(MAX_MANIFEST_BYTES as u32)? as usize;
         if manifest_length != MANIFEST_BYTES || bytes.len() < HEADER_BYTES + MANIFEST_BYTES {
             return Err(PersistenceError::InvalidEnvelopeLength);
@@ -465,7 +497,7 @@ pub fn load(bytes: &[u8]) -> Result<LoadOutcome, PersistenceError> {
         }
         let mut payload_reader = Reader::new(payload);
         let revision_id = payload_reader.u64()?;
-        let product = read_product(&mut payload_reader, true)?;
+        let product = read_product(&mut payload_reader, true, schema == CURRENT_SCHEMA)?;
         if !payload_reader.is_finished() {
             return Err(PersistenceError::TrailingBytes);
         }
@@ -474,7 +506,7 @@ pub fn load(bytes: &[u8]) -> Result<LoadOutcome, PersistenceError> {
         let revision_id = reader.u64()?;
         let nodes = read_nodes(&mut reader, schema == LEGACY_SCHEMA, &mut migration_losses)?;
         let mut product = if schema == PRODUCT_SCHEMA {
-            read_product(&mut reader, false)?
+            read_product(&mut reader, false, false)?
         } else {
             ProductModel::default()
         };
@@ -506,6 +538,20 @@ pub fn load(bytes: &[u8]) -> Result<LoadOutcome, PersistenceError> {
         override_health,
     };
     let document = DocumentStore::from_product(revision_id, product)?;
+    let loaded_snapshot = document.current();
+    for reference in loaded_snapshot.exact_reference_evidence() {
+        let request = crate::exact_product::ExactRectangleRequest::from_snapshot(
+            &loaded_snapshot,
+            reference.definition_id,
+        )
+        .map_err(|_| PersistenceError::InvalidExactReference)?;
+        if request.profile_feature_id != reference.profile_feature_id
+            || request.extrusion_feature_id != reference.producer_feature_id
+            || request.canonical_input_digest != reference.canonical_input_digest
+        {
+            return Err(PersistenceError::InvalidExactReference);
+        }
+    }
     if review_required {
         Ok(LoadOutcome::ReviewOnly(ReviewCandidate {
             snapshot: document.current(),
@@ -733,7 +779,41 @@ fn read_ids(reader: &mut Reader<'_>) -> Result<Vec<u64>, PersistenceError> {
     Ok(ids)
 }
 
-fn read_product(reader: &mut Reader<'_>, current: bool) -> Result<ProductModel, PersistenceError> {
+fn read_exact_reference(reader: &mut Reader<'_>) -> Result<BodySubshapeRef, PersistenceError> {
+    let reference = BodySubshapeRef {
+        schema: reader.string()?,
+        document_id: crate::document::DocumentId(reader.u64()?),
+        definition_id: DefinitionId(reader.u64()?),
+        profile_feature_id: FeatureId(reader.u64()?),
+        producer_feature_id: FeatureId(reader.u64()?),
+        semantic_role: reader.string()?,
+        source_element_id: reader.string()?,
+        expected_type: reader.string()?,
+        expected_cardinality: reader.count()?,
+        stability: match reader.u8()? {
+            1 => ReferenceStability::Guaranteed,
+            value => return Err(PersistenceError::InvalidReferenceStability(value)),
+        },
+        canonical_input_digest: reader.string()?,
+        exact_input_digest: reader.string()?,
+        result_fingerprint: reader.string()?,
+        evaluator: reader.string()?,
+        backend: reader.string()?,
+        tolerance: reader.string()?,
+        lineage_digest: reader.string()?,
+        corroborating_geometry_fingerprint: reader.string()?,
+    };
+    if reference.schema != BODY_SUBSHAPE_REF_SCHEMA_V1 || !reference.has_valid_lineage() {
+        return Err(PersistenceError::InvalidExactReference);
+    }
+    Ok(reference)
+}
+
+fn read_product(
+    reader: &mut Reader<'_>,
+    current: bool,
+    exact_evidence: bool,
+) -> Result<ProductModel, PersistenceError> {
     let mut product = ProductModel {
         document_id: crate::document::DocumentId(reader.u64()?),
         units: match reader.u8()? {
@@ -888,6 +968,27 @@ fn read_product(reader: &mut Reader<'_>, current: bool) -> Result<ProductModel, 
                 }
             }
         }
+        if exact_evidence {
+            for _ in 0..reader.count()? {
+                let reference = read_exact_reference(reader)?;
+                let producer = product
+                    .features
+                    .get(&reference.producer_feature_id)
+                    .ok_or(PersistenceError::InvalidExactReference)?;
+                if reference.document_id != product.document_id
+                    || producer.definition_id != reference.definition_id
+                {
+                    return Err(PersistenceError::InvalidExactReference);
+                }
+                if product
+                    .exact_reference_evidence
+                    .insert(reference.lineage_digest.clone(), Arc::new(reference))
+                    .is_some()
+                {
+                    return Err(PersistenceError::DuplicateExactReference);
+                }
+            }
+        }
     }
     Ok(product)
 }
@@ -930,11 +1031,14 @@ pub enum PersistenceError {
     InvalidPortType,
     InvalidOverrideMergePolicy,
     InvalidResolution(u8),
+    InvalidReferenceStability(u8),
+    InvalidExactReference,
     ChecksumMismatch,
     ResourceLimit,
     UnsupportedEnvelopeIdentity,
     DuplicateOverride,
     DuplicateJoint,
+    DuplicateExactReference,
     DuplicateNode(NodeId),
     DuplicateDefinition(DefinitionId),
     DuplicateFeature(FeatureId),
@@ -972,6 +1076,12 @@ impl fmt::Display for PersistenceError {
             Self::InvalidResolution(value) => {
                 write!(formatter, "slot resolution {value} is invalid")
             }
+            Self::InvalidReferenceStability(value) => {
+                write!(formatter, "exact reference stability {value} is invalid")
+            }
+            Self::InvalidExactReference => {
+                formatter.write_str("exact reference evidence is invalid")
+            }
             Self::ChecksumMismatch => formatter.write_str("document checksum does not match"),
             Self::ResourceLimit => formatter.write_str("document exceeds a resource limit"),
             Self::UnsupportedEnvelopeIdentity => {
@@ -979,6 +1089,9 @@ impl fmt::Display for PersistenceError {
             }
             Self::DuplicateOverride => formatter.write_str("document repeats an override"),
             Self::DuplicateJoint => formatter.write_str("document repeats a joint"),
+            Self::DuplicateExactReference => {
+                formatter.write_str("document repeats exact reference evidence")
+            }
             Self::DuplicateNode(id) => write!(formatter, "document repeats node {}", id.0),
             Self::DuplicateDefinition(id) => {
                 write!(formatter, "document repeats definition {}", id.0)

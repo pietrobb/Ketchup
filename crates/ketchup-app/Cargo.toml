@@ -11,6 +11,7 @@ repository.workspace = true
 eframe = { version = "0.32.3", default-features = false, features = ["accesskit", "default_fonts", "wgpu"] }
 ketchup-core = { path = "../ketchup-core" }
 ketchup-interaction = { path = "../ketchup-interaction" }
+ketchup-scheduler = { path = "../ketchup-scheduler" }
 rfd = "0.15.4"
 wgpu = { version = "25.0.2", default-features = false, features = ["dx12"] }
 

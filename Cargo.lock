@@ -1588,6 +1588,7 @@ dependencies = [
  "egui_kittest",
  "ketchup-core",
  "ketchup-interaction",
+ "ketchup-scheduler",
  "rfd",
  "tempfile",
  "wgpu",

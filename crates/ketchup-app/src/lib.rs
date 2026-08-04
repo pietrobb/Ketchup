@@ -8,19 +8,29 @@ use ketchup_core::document::{
     CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentId, DocumentStore, FeatureId,
     FeatureKind, GroupId, InstancePath, OccurrenceId, Snapshot, Transform,
 };
+use ketchup_core::exact_product::{
+    AssemblySelectionTarget, ExactFaceRole, ExactRectangleRequest, ExactRenderPackage,
+};
 use ketchup_core::fabrication::{FullBomProjection, PieceDimensionSheet};
 use ketchup_core::validation::ValidationReport;
 use ketchup_interaction::{
     Axis, ElementId, LocaleCatalog, Ray, SelectionId, Side, Vec3,
+    exact_projection::ExactInteractionProjection,
     projection::{CanonicalInteractionProjection, ProjectedBox},
 };
+use ketchup_scheduler::ExactWorkerSupervisor;
 pub mod dialogs;
 
 use dialogs::{DiscardRequest, FileDialogs, NativeFileDialogs, SaveRequest};
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
+    mpsc::{self, Receiver, TryRecvError},
+};
+use std::time::{Duration, Instant};
 
 const INITIAL_BOX_DEFINITION: DefinitionId = DefinitionId(1);
 const BOX_WIDTH_MM: f64 = 100.0;
@@ -504,6 +514,15 @@ struct OutlinerDefinition {
     occurrences: Vec<OutlinerOccurrence>,
 }
 
+type ExactSource = (DocumentId, u64, String);
+type ExactEvaluationResult = Result<BTreeMap<DefinitionId, Arc<ExactRenderPackage>>, String>;
+
+struct ExactEvaluationTask {
+    source: ExactSource,
+    cancelled: Arc<AtomicBool>,
+    receiver: Receiver<ExactEvaluationResult>,
+}
+
 pub struct KetchupApp {
     document: DocumentStore,
     review_candidate: Option<ketchup_core::persistence::LoadOutcome>,
@@ -542,6 +561,12 @@ pub struct KetchupApp {
     shortcuts_open: bool,
     viewport_rect: Option<Rect>,
     dialogs: Box<dyn FileDialogs>,
+    exact_worker_path: Option<PathBuf>,
+    exact_worker_attempted: bool,
+    exact_task: Option<ExactEvaluationTask>,
+    exact_packages: BTreeMap<DefinitionId, Arc<ExactRenderPackage>>,
+    exact_source: Option<ExactSource>,
+    exact_retry_at: Option<Instant>,
     beam_workspace: Option<BeamWorkspace>,
     beam_zone1_gap_input: String,
 }
@@ -621,6 +646,12 @@ impl KetchupApp {
             shortcuts_open: false,
             viewport_rect: None,
             dialogs: Box::new(NativeFileDialogs),
+            exact_worker_path: None,
+            exact_worker_attempted: false,
+            exact_task: None,
+            exact_packages: BTreeMap::new(),
+            exact_source: None,
+            exact_retry_at: None,
             beam_workspace: None,
             beam_zone1_gap_input: "415".to_owned(),
         }
@@ -675,6 +706,12 @@ impl KetchupApp {
         self.sketch_cursor = None;
         self.value_input.clear();
         self.focus_value_box = false;
+        if let Some(task) = self.exact_task.take() {
+            task.cancelled.store(true, Ordering::Release);
+        }
+        self.exact_packages.clear();
+        self.exact_source = None;
+        self.exact_retry_at = None;
         self.status_key = "status-ready";
     }
 
@@ -1006,20 +1043,222 @@ impl KetchupApp {
             .map(|item| item.size_mm.z)
     }
 
+    fn refresh_exact_products(&mut self, context: &egui::Context) {
+        let snapshot = self.document.current();
+        let source = (
+            snapshot.document_id(),
+            snapshot.revision_id(),
+            snapshot.canonical_digest(),
+        );
+        if self
+            .exact_source
+            .as_ref()
+            .is_some_and(|known| known != &source)
+        {
+            self.exact_packages.clear();
+            self.exact_source = None;
+        }
+        if self
+            .exact_task
+            .as_ref()
+            .is_some_and(|task| task.source != source)
+            && let Some(task) = self.exact_task.take()
+        {
+            task.cancelled.store(true, Ordering::Release);
+        }
+        if let Some(task) = self.exact_task.as_ref() {
+            match task.receiver.try_recv() {
+                Ok(result) => {
+                    let task = self.exact_task.take().expect("the completed task exists");
+                    if task.source == source && !task.cancelled.load(Ordering::Acquire) {
+                        match result {
+                            Ok(packages)
+                                if packages
+                                    .values()
+                                    .all(|package| package.is_current(&snapshot)) =>
+                            {
+                                let references = packages
+                                    .values()
+                                    .flat_map(|package| package.references.iter().cloned())
+                                    .collect::<Vec<_>>();
+                                if references.into_iter().all(|reference| {
+                                    self.document
+                                        .register_exact_reference_evidence(reference)
+                                        .is_ok()
+                                }) {
+                                    self.exact_packages = packages;
+                                    self.exact_source = Some(source.clone());
+                                    self.exact_retry_at = None;
+                                }
+                            }
+                            Ok(_) | Err(_) => {
+                                self.exact_retry_at = Some(Instant::now() + Duration::from_secs(1));
+                            }
+                        }
+                    }
+                }
+                Err(TryRecvError::Empty) => return,
+                Err(TryRecvError::Disconnected) => {
+                    self.exact_task = None;
+                    self.exact_retry_at = Some(Instant::now() + Duration::from_secs(1));
+                }
+            }
+        }
+        if self.exact_source.as_ref() == Some(&source)
+            || self
+                .exact_retry_at
+                .is_some_and(|retry_at| retry_at > Instant::now())
+        {
+            return;
+        }
+        if !self.exact_worker_attempted {
+            self.exact_worker_attempted = true;
+            self.exact_worker_path = exact_worker_candidates()
+                .into_iter()
+                .find(|path| path.is_file());
+        }
+        let Some(executable) = self.exact_worker_path.clone() else {
+            return;
+        };
+        let requests = snapshot
+            .scene_query()
+            .into_iter()
+            .map(|occurrence| occurrence.definition_id)
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .filter_map(|definition_id| {
+                ExactRectangleRequest::from_snapshot(&snapshot, definition_id)
+                    .ok()
+                    .map(|request| (definition_id, request))
+            })
+            .collect::<Vec<_>>();
+        if requests.is_empty() {
+            self.exact_packages.clear();
+            self.exact_source = Some(source);
+            return;
+        }
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let worker_cancelled = Arc::clone(&cancelled);
+        let repaint = context.clone();
+        let (sender, receiver) = mpsc::channel();
+        std::thread::spawn(move || {
+            let result = (|| {
+                let mut worker =
+                    ExactWorkerSupervisor::spawn_with_cancellation(executable, &worker_cancelled)
+                        .map_err(|error| error.to_string())?;
+                let mut packages = BTreeMap::new();
+                for (definition_id, request) in requests {
+                    if worker_cancelled.load(Ordering::Acquire) {
+                        return Err("exact evaluation cancelled".to_owned());
+                    }
+                    let package = worker
+                        .evaluate_rectangle_with_cancellation(&request, &worker_cancelled)
+                        .map_err(|error| error.to_string())?;
+                    packages.insert(definition_id, Arc::new(package));
+                }
+                Ok(packages)
+            })();
+            if !worker_cancelled.load(Ordering::Acquire) && sender.send(result).is_ok() {
+                repaint.request_repaint();
+            }
+        });
+        self.exact_task = Some(ExactEvaluationTask {
+            source,
+            cancelled,
+            receiver,
+        });
+    }
+
+    pub fn connect_exact_worker(&mut self, executable: impl AsRef<Path>) -> Result<(), String> {
+        let executable = executable.as_ref();
+        if !executable.is_file() {
+            return Err("exact worker executable was not found".to_owned());
+        }
+        if let Some(task) = self.exact_task.take() {
+            task.cancelled.store(true, Ordering::Release);
+        }
+        self.exact_worker_path = Some(executable.to_owned());
+        self.exact_worker_attempted = true;
+        self.exact_packages.clear();
+        self.exact_source = None;
+        self.exact_retry_at = None;
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn exact_render_body_count(&self) -> usize {
+        let snapshot = self.document.current();
+        self.exact_packages
+            .values()
+            .filter(|package| package.is_current(&snapshot))
+            .count()
+    }
+
+    #[must_use]
+    pub fn exact_stable_reference_count(&self) -> usize {
+        let snapshot = self.document.current();
+        self.exact_packages
+            .values()
+            .filter(|package| package.is_current(&snapshot))
+            .map(|package| package.references.len())
+            .sum()
+    }
+
+    #[must_use]
+    pub fn exact_pick_durable(&self, ray: Ray) -> Option<AssemblySelectionTarget> {
+        let snapshot = self.document.current();
+        let packages = self
+            .exact_packages
+            .iter()
+            .filter(|(_, package)| package.is_current(&snapshot))
+            .map(|(definition_id, package)| (*definition_id, Arc::clone(package)))
+            .collect();
+        let projection = ExactInteractionProjection::from_snapshot(&snapshot, &packages);
+        projection.exact_pick(ray).map(|hit| hit.target)
+    }
+
     fn active_boxes(&self) -> Vec<RenderBox> {
-        CanonicalInteractionProjection::from_snapshot(&self.document.current())
+        let snapshot = self.document.current();
+        CanonicalInteractionProjection::from_snapshot(&snapshot)
             .occurrences()
             .iter()
             .filter(|occurrence| occurrence.visible)
             .filter_map(|occurrence| {
                 let box_proxy = occurrence.box_proxy?;
+                let matrix = occurrence.canonical_world_transform.matrix();
+                let translation_only = matrix[0] == 1.0
+                    && matrix[1] == 0.0
+                    && matrix[2] == 0.0
+                    && matrix[4] == 0.0
+                    && matrix[5] == 1.0
+                    && matrix[6] == 0.0
+                    && matrix[8] == 0.0
+                    && matrix[9] == 0.0
+                    && matrix[10] == 1.0
+                    && matrix[12] == 0.0
+                    && matrix[13] == 0.0
+                    && matrix[14] == 0.0
+                    && matrix[15] == 1.0;
+                let exact_bounds = self
+                    .exact_packages
+                    .get(&occurrence.body.definition_id)
+                    .filter(|_| translation_only)
+                    .filter(|package| package.is_current(&snapshot))
+                    .map(|package| package.bounds_mm);
+                let (origin_mm, size_mm) =
+                    exact_bounds.map_or((box_proxy.origin_mm, box_proxy.size_mm), |[min, max]| {
+                        (
+                            box_proxy.origin_mm + Vec3::new(min[0], min[1], min[2]),
+                            Vec3::new(max[0] - min[0], max[1] - min[1], max[2] - min[2]),
+                        )
+                    });
                 Some(RenderBox {
                     definition_id: occurrence.body.definition_id,
                     profile_feature_id: occurrence.body.profile_feature_id?,
                     extrusion_feature_id: occurrence.body.extrusion_feature_id?,
                     instance_path: occurrence.instance_path.clone(),
-                    origin_mm: box_proxy.origin_mm,
-                    size_mm: box_proxy.size_mm,
+                    origin_mm,
+                    size_mm,
                 })
             })
             .collect()
@@ -3477,12 +3716,35 @@ impl KetchupApp {
     }
 
     fn exact_pick_at_screen(&self, pointer: Pos2, rect: Rect) -> Option<SelectionId> {
+        let ray = self.view_ray(pointer, rect)?;
+        if let Some(target) = self.exact_pick_durable(ray)
+            && self.occurrence_in_active_context(&target.instance_path)
+        {
+            let element = match target.body.role()? {
+                ExactFaceRole::Top => ElementId::Face {
+                    axis: Axis::Z,
+                    side: Side::Maximum,
+                },
+                ExactFaceRole::Bottom => ElementId::Face {
+                    axis: Axis::Z,
+                    side: Side::Minimum,
+                },
+                ExactFaceRole::East => ElementId::Face {
+                    axis: Axis::X,
+                    side: Side::Maximum,
+                },
+            };
+            return Some(SelectionId {
+                definition_id: target.body.definition_id,
+                instance_path: target.instance_path,
+                element,
+            });
+        }
+
         let projection = CanonicalInteractionProjection::from_snapshot(&self.document.current());
         let scene = projection
             .scene_where(|occurrence| self.occurrence_in_active_context(&occurrence.instance_path))
             .ok()?;
-
-        let ray = self.view_ray(pointer, rect)?;
         let scale = f64::from(self.zoom) * f64::from(rect.width().min(rect.height())) / 420.0;
         scene
             .exact_pick(ray, 8.0 / scale)
@@ -4088,8 +4350,38 @@ impl KetchupApp {
                     .format("status-grid", &BTreeMap::from([("step", "10".to_owned())])),
             );
             ui.label(self.catalog.text("status-refs-guaranteed"));
+            if self.exact_packages.is_empty() {
+                ui.label(self.catalog.text("status-exact-unavailable"));
+            } else {
+                ui.label(self.catalog.format(
+                    "status-exact-current",
+                    &BTreeMap::from([
+                        ("bodies", self.exact_render_body_count().to_string()),
+                        ("refs", self.exact_stable_reference_count().to_string()),
+                    ]),
+                ));
+            }
         });
     }
+}
+
+fn exact_worker_candidates() -> Vec<PathBuf> {
+    let executable_name = if cfg!(windows) {
+        "ketchup-exact-worker.exe"
+    } else {
+        "ketchup-exact-worker"
+    };
+    let Some(current) = std::env::current_exe().ok() else {
+        return Vec::new();
+    };
+    let Some(parent) = current.parent() else {
+        return Vec::new();
+    };
+    let mut candidates = vec![parent.join(executable_name)];
+    if let Some(grandparent) = parent.parent() {
+        candidates.push(grandparent.join(executable_name));
+    }
+    candidates
 }
 
 impl eframe::App for KetchupApp {
@@ -4104,6 +4396,7 @@ impl KetchupApp {
     /// This is the single entry point used both by the windowed `eframe`
     /// integration and by the offscreen [`crate::testing::HeadlessShell`].
     pub fn ui(&mut self, context: &egui::Context) {
+        self.refresh_exact_products(context);
         context.set_visuals(egui::Visuals::dark());
         self.handle_shortcuts(context);
 

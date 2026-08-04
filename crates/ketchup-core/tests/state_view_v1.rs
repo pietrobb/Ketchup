@@ -140,11 +140,10 @@ fn complete_and_agent_v1_match_independently_versioned_golden_fixtures() {
     assert_golden("complete-v1.txt", &complete);
     assert!(!complete.contains("<durable>"));
     assert!(
-        complete.contains(&format!(
+        !complete.contains(&format!(
             "source.document_id={}",
             fixture_document(false).current().document_id().0
-        )) == false
-            || complete.contains("source.document_id=")
+        )) || complete.contains("source.document_id=")
     );
     assert_golden("agent-v1.txt", &agent);
     assert!(complete.contains("height.f64_bits=4086800000000000"));

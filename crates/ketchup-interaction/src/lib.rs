@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+pub mod exact_projection;
 pub mod projection;
 
 use ketchup_core::adapters::{AdapterError, UiAction, UiAdapter};
