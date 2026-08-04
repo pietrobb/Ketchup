@@ -3789,13 +3789,20 @@ impl KetchupApp {
         let ray = self.view_ray(pointer, rect)?;
         let snapshot = self.document.current();
         let exact_projection = self.exact_projection(&snapshot);
-        if let Some(target) = exact_projection.exact_pick(ray).map(|hit| hit.target)
-            && self.occurrence_in_active_context(&target.instance_path)
-        {
+        if let Some(hit) = exact_projection.exact_surface_pick(ray) {
+            if !self.occurrence_in_active_context(&hit.instance_path) {
+                return None;
+            }
+            let element = hit
+                .durable_target
+                .as_ref()
+                .and_then(|target| target.body.role())
+                .map(exact_face_element)
+                .or_else(|| exact_surface_element(hit.outward_normal))?;
             return Some(SelectionId {
-                definition_id: target.body.definition_id,
-                instance_path: target.instance_path,
-                element: exact_face_element(target.body.role()?),
+                definition_id: hit.definition_id,
+                instance_path: hit.instance_path,
+                element,
             });
         }
 
@@ -4185,10 +4192,12 @@ impl KetchupApp {
                     }
                 });
                 ui.small(format!(
-                    "{} · input {} · diagnostics {}",
+                    "{} · input {} · diagnostics {} · Exact {} · Tolerant {}",
                     slice.validation_report.invocation.contract_id,
                     &slice.validation_report.invocation.input_digest[..12],
-                    slice.validation_report.diagnostics.len()
+                    slice.validation_report.diagnostics.len(),
+                    slice.validation_report.evidence_counts.exact,
+                    slice.validation_report.evidence_counts.tolerant
                 ));
                 egui::CollapsingHeader::new("12 groove positions")
                     .default_open(true)
@@ -4719,6 +4728,30 @@ fn box_faces() -> [BoxFace; 6] {
             color: Color32::from_rgb(88, 102, 119),
         },
     ]
+}
+
+fn exact_surface_element(normal: Vec3) -> Option<ElementId> {
+    let components = [normal.x.abs(), normal.y.abs(), normal.z.abs()];
+    let (axis_index, magnitude) = components
+        .into_iter()
+        .enumerate()
+        .max_by(|left, right| left.1.total_cmp(&right.1))?;
+    if magnitude <= 1.0e-9 {
+        return None;
+    }
+    let (axis, signed_component) = match axis_index {
+        0 => (Axis::X, normal.x),
+        1 => (Axis::Y, normal.y),
+        _ => (Axis::Z, normal.z),
+    };
+    Some(ElementId::Face {
+        axis,
+        side: if signed_component >= 0.0 {
+            Side::Maximum
+        } else {
+            Side::Minimum
+        },
+    })
 }
 
 fn exact_face_element(role: ExactFaceRole) -> ElementId {

@@ -159,6 +159,84 @@ pub enum DiagnosticSeverity {
     Error,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PermittedErrorDirection {
+    FalsePositiveOnly,
+    FalseNegativeOnly,
+    BidirectionalBounded,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TolerantEvidence {
+    applied_threshold_mm_bits: u64,
+    pub method_identity: String,
+    pub permitted_error_direction: PermittedErrorDirection,
+}
+
+impl TolerantEvidence {
+    pub fn new(
+        applied_threshold_mm: f64,
+        method_identity: impl Into<String>,
+        permitted_error_direction: PermittedErrorDirection,
+    ) -> Option<Self> {
+        let method_identity = method_identity.into();
+        if !applied_threshold_mm.is_finite()
+            || applied_threshold_mm < 0.0
+            || method_identity.trim().is_empty()
+        {
+            return None;
+        }
+        Some(Self {
+            applied_threshold_mm_bits: applied_threshold_mm.to_bits(),
+            method_identity,
+            permitted_error_direction,
+        })
+    }
+
+    #[must_use]
+    pub fn applied_threshold_mm(&self) -> f64 {
+        f64::from_bits(self.applied_threshold_mm_bits)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum EvidenceClass {
+    Exact,
+    Tolerant(TolerantEvidence),
+}
+
+impl EvidenceClass {
+    #[must_use]
+    pub fn weakest<'a>(
+        participants: impl IntoIterator<Item = &'a Self>,
+        tolerant_result: TolerantEvidence,
+    ) -> Self {
+        if participants
+            .into_iter()
+            .all(|participant| matches!(participant, Self::Exact))
+        {
+            Self::Exact
+        } else {
+            Self::Tolerant(tolerant_result)
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct EvidenceCounts {
+    pub exact: usize,
+    pub tolerant: usize,
+}
+
+impl EvidenceCounts {
+    pub fn record(&mut self, evidence_class: &EvidenceClass) {
+        match evidence_class {
+            EvidenceClass::Exact => self.exact += 1,
+            EvidenceClass::Tolerant(_) => self.tolerant += 1,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DiagnosticLocation {
     pub entity: Option<DerivedIdentity>,
@@ -170,6 +248,7 @@ pub struct ValidationDiagnostic {
     pub schema: &'static str,
     pub code: String,
     pub severity: DiagnosticSeverity,
+    pub evidence_class: EvidenceClass,
     pub location: DiagnosticLocation,
     pub policy_id: String,
     pub policy_version: u32,
@@ -180,6 +259,7 @@ pub struct ValidationDiagnostic {
 pub struct ValidationReport {
     pub invocation: ValidationInvocation,
     pub state: ValidationState,
+    pub evidence_counts: EvidenceCounts,
     pub diagnostics: Vec<ValidationDiagnostic>,
     pub assumptions: Vec<String>,
     pub unresolved_conditions: Vec<String>,
@@ -187,11 +267,18 @@ pub struct ValidationReport {
 
 impl ValidationReport {
     #[must_use]
-    pub fn unavailable(invocation: ValidationInvocation, evidence: impl Into<String>) -> Self {
+    pub fn unavailable(
+        invocation: ValidationInvocation,
+        evidence_class: EvidenceClass,
+        evidence: impl Into<String>,
+    ) -> Self {
+        let mut evidence_counts = EvidenceCounts::default();
+        evidence_counts.record(&evidence_class);
         let diagnostic = ValidationDiagnostic {
             schema: DIAGNOSTIC_SCHEMA_V1,
             code: "validator.unavailable".to_owned(),
             severity: DiagnosticSeverity::Error,
+            evidence_class,
             location: DiagnosticLocation {
                 entity: None,
                 joint: None,
@@ -203,6 +290,7 @@ impl ValidationReport {
         Self {
             invocation,
             state: ValidationState::Unavailable,
+            evidence_counts,
             diagnostics: vec![diagnostic],
             assumptions: vec![],
             unresolved_conditions: vec![],
@@ -210,17 +298,25 @@ impl ValidationReport {
     }
 
     #[must_use]
-    pub fn not_evaluated(invocation: ValidationInvocation, evidence: impl Into<String>) -> Self {
+    pub fn not_evaluated(
+        invocation: ValidationInvocation,
+        evidence_class: EvidenceClass,
+        evidence: impl Into<String>,
+    ) -> Self {
         let evidence = evidence.into();
         let policy_id = invocation.policy_id.clone();
         let policy_version = invocation.policy_version;
+        let mut evidence_counts = EvidenceCounts::default();
+        evidence_counts.record(&evidence_class);
         Self {
             invocation,
             state: ValidationState::NotEvaluated,
+            evidence_counts,
             diagnostics: vec![ValidationDiagnostic {
                 schema: DIAGNOSTIC_SCHEMA_V1,
                 code: "validator.not-evaluated".to_owned(),
                 severity: DiagnosticSeverity::Warning,
+                evidence_class,
                 location: DiagnosticLocation {
                     entity: None,
                     joint: None,
@@ -318,9 +414,40 @@ pub fn beam_validation_policy() -> ValidationPolicyRef {
 pub struct PrismaticJointCase {
     pub left_identity: DerivedIdentity,
     pub right_identity: DerivedIdentity,
+    pub left_evidence_class: EvidenceClass,
+    pub right_evidence_class: EvidenceClass,
     pub left_bounds: Aabb,
     pub right_bounds: Aabb,
     pub declared_joint: Option<CanonicalJoint>,
+}
+
+fn prismatic_case_evidence(case: &PrismaticJointCase, tolerance: TolerancePolicy) -> EvidenceClass {
+    EvidenceClass::weakest(
+        [&case.left_evidence_class, &case.right_evidence_class],
+        TolerantEvidence::new(
+            tolerance.epsilon_mm(),
+            PRISMATIC_VALIDATOR_IMPLEMENTATION_V1,
+            PermittedErrorDirection::FalsePositiveOnly,
+        )
+        .expect("the validated prismatic tolerance and method identity are valid"),
+    )
+}
+
+fn prismatic_input_evidence(
+    cases: &[PrismaticJointCase],
+    tolerance: TolerancePolicy,
+) -> EvidenceClass {
+    EvidenceClass::weakest(
+        cases
+            .iter()
+            .flat_map(|case| [&case.left_evidence_class, &case.right_evidence_class]),
+        TolerantEvidence::new(
+            tolerance.epsilon_mm(),
+            PRISMATIC_VALIDATOR_IMPLEMENTATION_V1,
+            PermittedErrorDirection::FalsePositiveOnly,
+        )
+        .expect("the validated prismatic tolerance and method identity are valid"),
+    )
 }
 
 #[must_use]
@@ -333,6 +460,8 @@ pub fn prismatic_input_bytes(cases: &[PrismaticJointCase], tolerance: ToleranceP
     for case in cases {
         push_identity(&mut input, &case.left_identity);
         push_identity(&mut input, &case.right_identity);
+        push_evidence_class(&mut input, &case.left_evidence_class);
+        push_evidence_class(&mut input, &case.right_evidence_class);
         push_aabb(&mut input, case.left_bounds);
         push_aabb(&mut input, case.right_bounds);
         if let Some(joint) = &case.declared_joint {
@@ -356,6 +485,8 @@ fn prismatic_input_len(cases: &[PrismaticJointCase], tolerance: TolerancePolicy)
     for case in cases {
         checked_add_identity(&mut length, &case.left_identity)?;
         checked_add_identity(&mut length, &case.right_identity)?;
+        checked_add_evidence_class(&mut length, &case.left_evidence_class)?;
+        checked_add_evidence_class(&mut length, &case.right_evidence_class)?;
         checked_add(&mut length, 97)?;
         if let Some(joint) = &case.declared_joint {
             checked_add(&mut length, 56)?;
@@ -386,6 +517,15 @@ fn checked_add_identity(length: &mut u64, identity: &DerivedIdentity) -> Option<
     Some(())
 }
 
+fn checked_add_evidence_class(length: &mut u64, evidence_class: &EvidenceClass) -> Option<()> {
+    checked_add(length, 1)?;
+    if let EvidenceClass::Tolerant(evidence) = evidence_class {
+        checked_add(length, 9)?;
+        checked_add_bytes(length, evidence.method_identity.as_bytes())?;
+    }
+    Some(())
+}
+
 fn push_bytes(output: &mut Vec<u8>, value: &[u8]) {
     output.extend_from_slice(&(value.len() as u64).to_le_bytes());
     output.extend_from_slice(value);
@@ -398,6 +538,22 @@ fn push_identity(output: &mut Vec<u8>, identity: &DerivedIdentity) {
         output.extend_from_slice(&segment.producer_rule_id.0.to_le_bytes());
         push_bytes(output, segment.output_port.as_bytes());
         push_bytes(output, segment.semantic_key.as_bytes());
+    }
+}
+
+fn push_evidence_class(output: &mut Vec<u8>, evidence_class: &EvidenceClass) {
+    match evidence_class {
+        EvidenceClass::Exact => output.push(0),
+        EvidenceClass::Tolerant(evidence) => {
+            output.push(1);
+            output.extend_from_slice(&evidence.applied_threshold_mm_bits.to_le_bytes());
+            push_bytes(output, evidence.method_identity.as_bytes());
+            output.push(match evidence.permitted_error_direction {
+                PermittedErrorDirection::FalsePositiveOnly => 0,
+                PermittedErrorDirection::FalseNegativeOnly => 1,
+                PermittedErrorDirection::BidirectionalBounded => 2,
+            });
+        }
     }
 }
 
@@ -444,22 +600,26 @@ impl HostNeutralValidator<[PrismaticJointCase]> for BuiltinPrismaticValidator {
     }
 
     fn invoke(&self, execution: ValidationExecution<'_, [PrismaticJointCase]>) -> ValidationReport {
+        let evidence_class = prismatic_input_evidence(execution.input, self.tolerance);
         let work_units = u64::try_from(execution.input.len()).unwrap_or(u64::MAX);
         if work_units > self.descriptor.limits.maximum_work_units {
             return ValidationReport::not_evaluated(
                 execution.invocation,
+                evidence_class.clone(),
                 "validator input exceeds its declared work envelope",
             );
         }
         let Some(input_len) = prismatic_input_len(execution.input, self.tolerance) else {
             return ValidationReport::not_evaluated(
                 execution.invocation,
+                evidence_class.clone(),
                 "validator input byte length overflows its declared envelope",
             );
         };
         if input_len > self.descriptor.limits.maximum_input_bytes {
             return ValidationReport::not_evaluated(
                 execution.invocation,
+                evidence_class.clone(),
                 "validator input exceeds its declared byte envelope",
             );
         }
@@ -505,7 +665,7 @@ impl HostNeutralValidator<[PrismaticJointCase]> for BuiltinPrismaticValidator {
             None
         };
         if let Some(reason) = reason {
-            return ValidationReport::not_evaluated(execution.invocation, reason);
+            return ValidationReport::not_evaluated(execution.invocation, evidence_class, reason);
         }
         evaluate_prismatic_joints(execution.invocation, execution.input, self.tolerance)
     }
@@ -517,7 +677,10 @@ fn evaluate_prismatic_joints(
     tolerance: TolerancePolicy,
 ) -> ValidationReport {
     let mut diagnostics = Vec::new();
+    let mut evidence_counts = EvidenceCounts::default();
     for case in cases {
+        let evidence_class = prismatic_case_evidence(case, tolerance);
+        evidence_counts.record(&evidence_class);
         if let Some(joint) = &case.declared_joint
             && !joint.connects(&case.left_identity, &case.right_identity)
         {
@@ -525,6 +688,7 @@ fn evaluate_prismatic_joints(
                 schema: DIAGNOSTIC_SCHEMA_V1,
                 code: "joint.participant-mismatch".to_owned(),
                 severity: DiagnosticSeverity::Error,
+                evidence_class,
                 location: DiagnosticLocation {
                     entity: Some(case.right_identity.clone()),
                     joint: Some(joint.id()),
@@ -546,6 +710,7 @@ fn evaluate_prismatic_joints(
             Err(error) => {
                 return ValidationReport::not_evaluated(
                     invocation,
+                    evidence_class,
                     format!("deterministic prismatic evaluation failed: {error}"),
                 );
             }
@@ -575,6 +740,7 @@ fn evaluate_prismatic_joints(
             schema: DIAGNOSTIC_SCHEMA_V1,
             code: code.to_owned(),
             severity,
+            evidence_class,
             location: DiagnosticLocation {
                 entity: Some(case.right_identity.clone()),
                 joint: case.declared_joint.as_ref().map(CanonicalJoint::id),
@@ -591,6 +757,7 @@ fn evaluate_prismatic_joints(
         } else {
             ValidationState::Failed
         },
+        evidence_counts,
         diagnostics,
         assumptions: vec![],
         unresolved_conditions: vec![],

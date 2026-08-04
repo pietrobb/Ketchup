@@ -1,6 +1,6 @@
 use crate::document::{DocumentId, Snapshot};
 use crate::graph::{DerivedIdentity, sha256_hex};
-use crate::validation::ValidationState;
+use crate::validation::{EvidenceCounts, ValidationState};
 
 pub const FABRICATION_PROJECTION_V1: &str = "ketchup.fabrication-projection.v1";
 pub const BEAM_FABRICATION_EVALUATOR_V1: &str = "ketchup.beam-fabrication-evaluator.v1";
@@ -71,6 +71,7 @@ pub struct FullBomRow {
 #[derive(Clone, Debug, PartialEq)]
 pub struct FullBomProjection {
     pub envelope: FabricationProjectionEnvelope,
+    pub evidence_counts: EvidenceCounts,
     pub rows: Vec<FullBomRow>,
 }
 

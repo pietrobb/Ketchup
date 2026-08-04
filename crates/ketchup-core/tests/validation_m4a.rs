@@ -33,7 +33,11 @@ fn host_neutral_contract_binds_inputs_and_required_failures_fail_closed() {
         [ReadScope::DerivedGeometry, ReadScope::DeclaredJoints]
     );
 
-    let unavailable = ValidationReport::unavailable(invocation.clone(), "implementation missing");
+    let unavailable = ValidationReport::unavailable(
+        invocation.clone(),
+        EvidenceClass::Exact,
+        "implementation missing",
+    );
     assert_eq!(
         decide(&policy, &unavailable).state,
         ValidationState::Unavailable
@@ -41,7 +45,8 @@ fn host_neutral_contract_binds_inputs_and_required_failures_fail_closed() {
     assert!(decide(&policy, &unavailable).blocks_release);
     assert_ne!(unavailable.state, ValidationState::Passed);
 
-    let not_evaluated = ValidationReport::not_evaluated(invocation, "trusted input absent");
+    let not_evaluated =
+        ValidationReport::not_evaluated(invocation, EvidenceClass::Exact, "trusted input absent");
     assert_eq!(
         decide(&policy, &not_evaluated).state,
         ValidationState::NotEvaluated
@@ -63,6 +68,8 @@ fn built_in_joint_validator_returns_stable_structured_diagnostics() {
     let cases = vec![PrismaticJointCase {
         left_identity: body.identity.clone(),
         right_identity: proxy.identity.clone(),
+        left_evidence_class: EvidenceClass::Exact,
+        right_evidence_class: EvidenceClass::Exact,
         left_bounds: body.bounds,
         right_bounds: proxy.bounds,
         declared_joint: None,
@@ -85,7 +92,15 @@ fn built_in_joint_validator_returns_stable_structured_diagnostics() {
         input: &cases,
     });
     assert_eq!(report.state, ValidationState::Failed);
+    assert_eq!(
+        report.evidence_counts,
+        EvidenceCounts {
+            exact: 1,
+            tolerant: 0
+        }
+    );
     assert_eq!(report.diagnostics.len(), 1);
+    assert_eq!(report.diagnostics[0].evidence_class, EvidenceClass::Exact);
     assert_eq!(
         report.diagnostics[0].code,
         "collision.undeclared-penetration"
@@ -99,6 +114,66 @@ fn built_in_joint_validator_returns_stable_structured_diagnostics() {
 }
 
 #[test]
+fn mixed_participants_take_the_weakest_evidence_class_with_required_metadata() {
+    let workspace = BeamWorkspace::load().unwrap();
+    let snapshot = workspace.snapshot();
+    let body = &workspace.slice().pieces[0];
+    let proxy = &workspace.slice().pieces[1];
+    let tolerance = TolerancePolicy::default();
+    let tolerant_participant = TolerantEvidence::new(
+        tolerance.epsilon_mm(),
+        "fixture.curved-envelope.v1",
+        PermittedErrorDirection::FalsePositiveOnly,
+    )
+    .unwrap();
+    let cases = vec![PrismaticJointCase {
+        left_identity: body.identity.clone(),
+        right_identity: proxy.identity.clone(),
+        left_evidence_class: EvidenceClass::Exact,
+        right_evidence_class: EvidenceClass::Tolerant(tolerant_participant),
+        left_bounds: body.bounds,
+        right_bounds: proxy.bounds,
+        declared_joint: None,
+    }];
+    let validator = BuiltinPrismaticValidator::new(tolerance);
+    let policy = beam_validation_policy();
+    let input = prismatic_input_bytes(&cases, tolerance);
+    let invocation = ValidationInvocation::bind(
+        &snapshot,
+        validator.descriptor(),
+        &policy,
+        vec![body.identity.clone(), proxy.identity.clone()],
+        &input,
+    );
+    let report = validator.invoke(ValidationExecution {
+        snapshot: &snapshot,
+        invocation,
+        policy: &policy,
+        input: &cases,
+    });
+
+    assert_eq!(
+        report.evidence_counts,
+        EvidenceCounts {
+            exact: 0,
+            tolerant: 1
+        }
+    );
+    let EvidenceClass::Tolerant(evidence) = &report.diagnostics[0].evidence_class else {
+        panic!("a mixed pair must not be promoted to Exact");
+    };
+    assert_eq!(evidence.applied_threshold_mm(), tolerance.epsilon_mm());
+    assert_eq!(
+        evidence.method_identity,
+        PRISMATIC_VALIDATOR_IMPLEMENTATION_V1
+    );
+    assert_eq!(
+        evidence.permitted_error_direction,
+        PermittedErrorDirection::FalsePositiveOnly
+    );
+}
+
+#[test]
 fn execution_rejects_tampering_stale_snapshots_limits_and_wrong_joint_participants() {
     let mut workspace = BeamWorkspace::load().unwrap();
     let old_snapshot = workspace.snapshot();
@@ -108,6 +183,8 @@ fn execution_rejects_tampering_stale_snapshots_limits_and_wrong_joint_participan
     let valid_cases = vec![PrismaticJointCase {
         left_identity: body.identity.clone(),
         right_identity: proxy.identity.clone(),
+        left_evidence_class: EvidenceClass::Exact,
+        right_evidence_class: EvidenceClass::Exact,
         left_bounds: body.bounds,
         right_bounds: proxy.bounds,
         declared_joint: Some(valid_joint.clone()),
@@ -217,6 +294,8 @@ fn execution_rejects_tampering_stale_snapshots_limits_and_wrong_joint_participan
     let wrong_cases = vec![PrismaticJointCase {
         left_identity: body.identity.clone(),
         right_identity: proxy.identity.clone(),
+        left_evidence_class: EvidenceClass::Exact,
+        right_evidence_class: EvidenceClass::Exact,
         left_bounds: body.bounds,
         right_bounds: proxy.bounds,
         declared_joint: Some(wrong_joint),

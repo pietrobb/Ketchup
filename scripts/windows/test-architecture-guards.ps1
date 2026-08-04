@@ -111,11 +111,11 @@ if (-not (Test-Path $d08Path -PathType Leaf)) {
     Fail-Guard "sole-mutation" "Missing D-08 lifecycle exception register."
 }
 $d08Hash = (Get-FileHash $d08Path -Algorithm SHA256).Hash.ToLowerInvariant()
-if ($d08Hash -ne "128d6c634b156d5cfd11891a7f3628e50a2f436efaab13d94ed281153ece7737") {
+if ($d08Hash -ne "32ff6e38ff8e89517eb184afb5f19807102bddd90a83a3a779177997ceaae77d") {
     Fail-Guard "sole-mutation" "D-08 lifecycle exception semantics changed without a reviewed register version."
 }
 $d08 = Get-Content $d08Path -Raw | ConvertFrom-Json
-if ($d08.schema_version -ne 1 -or $d08.decision -ne "D-08" -or
+if ($d08.schema_version -ne 2 -or $d08.decision -ne "D-08" -or
     $d08.invariant -ne "Only a validated canonical command batch mutates canonical model state.") {
     Fail-Guard "sole-mutation" "D-08 lifecycle exception contract is unsupported or weakened."
 }
@@ -146,12 +146,37 @@ foreach ($exception in $lifecycleExceptions) {
         }
     }
 }
+$expectedCanonicalDelegates = @(
+    "DocumentStore::commit_proposal",
+    "DocumentStore::convert_group_to_component",
+    "DocumentStore::make_unique"
+) | Sort-Object
+$actualCanonicalDelegates = @($d08.delegated_gateways | ForEach-Object {
+    if ($_.delegates_to -ne "DocumentStore::apply_batch") {
+        Fail-Guard "sole-mutation" "Canonical delegate does not target apply_batch: $($_.scope)"
+    }
+    [string]$_.scope
+}) | Sort-Object
+$expectedDerivedDelegates = @(
+    "DocumentStore::register_evaluation",
+    "DocumentStore::register_exact_reference_evidence"
+) | Sort-Object
+$actualDerivedDelegates = @($d08.derived_result_delegates | ForEach-Object {
+    if ($_.delegates_to -ne "DocumentStore::register_derived_result") {
+        Fail-Guard "sole-mutation" "Derived-result delegate does not target the P07 gateway: $($_.scope)"
+    }
+    [string]$_.scope
+}) | Sort-Object
 if ($d08.ordinary_gateway.scope -ne "DocumentStore::apply_batch" -or
-    @($d08.delegated_gateways).Count -ne 1 -or
-    $d08.delegated_gateways[0].scope -ne "DocumentStore::commit_proposal" -or
-    $d08.delegated_gateways[0].delegates_to -ne "DocumentStore::apply_batch" -or
+    (Compare-Object $expectedCanonicalDelegates $actualCanonicalDelegates) -or
+    $d08.derived_result_gateway.scope -ne "DocumentStore::register_derived_result" -or
+    $d08.derived_result_gateway.kind -ne "noncanonical_derived_result" -or
+    @($d08.derived_result_gateway.required_envelope).Count -ne 3 -or
+    @($d08.derived_result_gateway.allowed_payloads).Count -ne 2 -or
+    @($d08.derived_result_gateway.forbidden_effects).Count -ne 4 -or
+    (Compare-Object $expectedDerivedDelegates $actualDerivedDelegates) -or
     @($d08.dry_run_forbidden_effects).Count -ne 4) {
-    Fail-Guard "sole-mutation" "D-08 gateway or dry-run contract changed without review."
+    Fail-Guard "sole-mutation" "D-08 canonical or P07 gateway contract changed without review."
 }
 
 $documentPath = Join-Path $RepoRoot "crates\ketchup-core\src\document.rs"
@@ -166,7 +191,8 @@ if ($storeStruct -match '(?m)^\s*pub(?:\([^)]*\))?\s+[A-Za-z_][A-Za-z0-9_]*\s*:'
 foreach ($requiredField in @(
     'revisions:\s*Vec<Arc<Revision>>',
     'cursor:\s*usize',
-    'next_revision_id:\s*u64'
+    'next_revision_id:\s*u64',
+    'evaluation_registry:\s*BTreeMap<DerivedResultKey,\s*DerivedResultEvent>'
 )) {
     if ($storeStruct -notmatch $requiredField) {
         Fail-Guard "sole-mutation" "DocumentStore authority fields changed shape or gained interior mutability."
@@ -196,6 +222,7 @@ foreach ($signature in $publicMethodSignatures) {
 $allowedMutableMethods = @(
     ([string]$d08.ordinary_gateway.scope).Split("::")[-1]
     @($d08.delegated_gateways | ForEach-Object { ([string]$_.scope).Split("::")[-1] })
+    @($d08.derived_result_delegates | ForEach-Object { ([string]$_.scope).Split("::")[-1] })
     @($lifecycleExceptions | Where-Object { $_.scope -like "DocumentStore::*" } |
         ForEach-Object { ([string]$_.scope).Split("::")[-1] })
 ) | Sort-Object -Unique
@@ -213,11 +240,22 @@ foreach ($required in $allowedMutableMethods) {
         Fail-Guard "sole-mutation" "Required canonical gateway or lifecycle exception is missing: $required"
     }
 }
-$commitBlock = Get-BracedBlock $storeImpl "pub fn commit_proposal" "sole-mutation"
-if (-not $commitBlock.Contains(".apply_batch(")) {
-    Fail-Guard "sole-mutation" "Proposal commit no longer delegates to apply_batch."
+foreach ($delegate in $actualCanonicalDelegates) {
+    $method = ([string]$delegate).Split("::")[-1]
+    $delegateBlock = Get-BracedBlock $storeImpl "pub fn $method" "sole-mutation"
+    if (-not $delegateBlock.Contains(".apply_batch(")) {
+        Fail-Guard "sole-mutation" "Canonical delegate no longer calls apply_batch: $delegate"
+    }
+}
+foreach ($delegate in $actualDerivedDelegates) {
+    $method = ([string]$delegate).Split("::")[-1]
+    $delegateBlock = Get-BracedBlock $storeImpl "pub fn $method" "sole-mutation"
+    if (-not $delegateBlock.Contains(".register_derived_result(")) {
+        Fail-Guard "sole-mutation" "Derived-result delegate bypasses the P07 gateway: $delegate"
+    }
 }
 $applyBlock = Get-BracedBlock $storeImpl "pub fn apply_batch" "sole-mutation"
+$derivedResultBlock = Get-BracedBlock $storeImpl "fn register_derived_result" "sole-mutation"
 $graphValidation = $applyBlock.LastIndexOf("validate_graph(", [StringComparison]::Ordinal)
 $productValidation = $applyBlock.LastIndexOf("validate_product(", [StringComparison]::Ordinal)
 $revisionAppend = $applyBlock.IndexOf("self.revisions.push(", [StringComparison]::Ordinal)
@@ -230,14 +268,26 @@ $validatedTail = $applyBlock.Substring($validationBoundary, $revisionAppend - $v
 if ($validatedTail -match '(?m)(?:&mut\s+(?:nodes|product)\b|\b(?:nodes|product)\s*(?:=|\.\s*(?:clear|insert|remove|append|extend|retain|entry|get_mut)\b))') {
     Fail-Guard "sole-mutation" "apply_batch mutates candidate canonical state after validation and before revision append."
 }
-$fromPartsBlock = Get-BracedBlock $storeImpl "pub(crate) fn from_parts" "sole-mutation"
-if ($storeImpl -match '(?m)^\s*pub\s+fn\s+from_parts\b' -or
-    $fromPartsBlock.IndexOf("validate_graph(", [StringComparison]::Ordinal) -lt 0 -or
-    $fromPartsBlock.IndexOf("validate_product(", [StringComparison]::Ordinal) -lt 0 -or
-    $fromPartsBlock.IndexOf("Ok(Self", [StringComparison]::Ordinal) -lt 0 -or
-    $fromPartsBlock.IndexOf("validate_graph(", [StringComparison]::Ordinal) -gt $fromPartsBlock.IndexOf("Ok(Self", [StringComparison]::Ordinal) -or
-    $fromPartsBlock.IndexOf("validate_product(", [StringComparison]::Ordinal) -gt $fromPartsBlock.IndexOf("Ok(Self", [StringComparison]::Ordinal)) {
-    Fail-Guard "sole-mutation" "from_parts must remain crate-private and validate the complete candidate before construction."
+if (-not $derivedResultBlock.Contains("event.document_id != current.snapshot.document_id()") -or
+    -not $derivedResultBlock.Contains("event.revision_id != current.snapshot.revision_id()") -or
+    -not $derivedResultBlock.Contains("event.canonical_digest != current.snapshot.canonical_digest()") -or
+    -not $derivedResultBlock.Contains("key.document_id != event.document_id") -or
+    -not $derivedResultBlock.Contains("key.revision_id != event.revision_id") -or
+    -not $derivedResultBlock.Contains("reference.document_id != event.document_id") -or
+    -not $derivedResultBlock.Contains("return false;") -or
+    -not $derivedResultBlock.Contains("DerivedResultPayload::Evaluation") -or
+    -not $derivedResultBlock.Contains("DerivedResultPayload::ExactReference") -or
+    $derivedResultBlock -match 'next_revision_id|revisions\.push|self\.cursor\s*(?:=|\+=|-=)') {
+    Fail-Guard "sole-mutation" "P07 derived-result gateway must remain envelope-bound, non-revisioned, and non-Undoable."
+}
+$fromProductBlock = Get-BracedBlock $storeImpl "pub(crate) fn from_product" "sole-mutation"
+if ($storeImpl -match '(?m)^\s*pub\s+fn\s+from_product\b' -or
+    $fromProductBlock.IndexOf("validate_graph(", [StringComparison]::Ordinal) -lt 0 -or
+    $fromProductBlock.IndexOf("validate_product(", [StringComparison]::Ordinal) -lt 0 -or
+    $fromProductBlock.IndexOf("Ok(Self", [StringComparison]::Ordinal) -lt 0 -or
+    $fromProductBlock.IndexOf("validate_graph(", [StringComparison]::Ordinal) -gt $fromProductBlock.IndexOf("Ok(Self", [StringComparison]::Ordinal) -or
+    $fromProductBlock.IndexOf("validate_product(", [StringComparison]::Ordinal) -gt $fromProductBlock.IndexOf("Ok(Self", [StringComparison]::Ordinal)) {
+    Fail-Guard "sole-mutation" "from_product must remain crate-private and validate the complete candidate before construction."
 }
 $undoBlock = Get-BracedBlock $storeImpl "pub fn undo" "sole-mutation"
 $redoBlock = Get-BracedBlock $storeImpl "pub fn redo" "sole-mutation"
@@ -253,6 +303,21 @@ if (-not $retentionBlock.Contains("Arc::clone(&self.revisions[self.cursor])") -o
     -not $retentionBlock.Contains("self.cursor = 0") -or
     $retentionBlock -match 'next_revision_id|\bnodes\b|\bproduct\b|apply_batch') {
     Fail-Guard "sole-mutation" "History discard must remain retention-only and preserve current entity content."
+}
+$unguardedStoreImpl = $storeImpl
+foreach ($authorizedBlock in @(
+    $applyBlock,
+    $derivedResultBlock,
+    $fromProductBlock,
+    $undoBlock,
+    $redoBlock,
+    $retentionBlock
+)) {
+    $unguardedStoreImpl = $unguardedStoreImpl.Replace($authorizedBlock, "")
+}
+$authorityMutationPattern = '(?ms)(?:&mut\s+self\.(?:revisions|cursor|next_revision_id|evaluation_registry)\b|self\.(?:revisions|cursor|next_revision_id|evaluation_registry)(?:\s*\[[^\]]+\])?\s*(?:=|\+=|-=|\.\s*(?:clear|push|insert|remove|append|extend|retain|entry|get_mut)\s*\())'
+if ($unguardedStoreImpl -match $authorityMutationPattern) {
+    Fail-Guard "sole-mutation" "DocumentStore authority is mutated outside apply_batch, the P07 gateway, construction, or a reviewed lifecycle operation."
 }
 
 $sourceRoots = @(
@@ -275,11 +340,14 @@ $newDocumentBlock = Get-BracedBlock $appSource "fn new_document" "sole-mutation"
 $openDocumentBlock = Get-BracedBlock $appSource "fn open_document_from" "sole-mutation"
 $loadCandidate = $openDocumentBlock.IndexOf("ketchup_core::persistence::load_file(path)", [StringComparison]::Ordinal)
 $successBranch = $openDocumentBlock.IndexOf("Ok(outcome)", [StringComparison]::Ordinal)
-$storeSwap = $openDocumentBlock.IndexOf("self.document = outcome.document", [StringComparison]::Ordinal)
+$editableCandidate = $openDocumentBlock.IndexOf("outcome.into_editable()", [StringComparison]::Ordinal)
+$historyBaseline = $openDocumentBlock.IndexOf("document.discard_history_before_current()", [StringComparison]::Ordinal)
+$storeSwap = $openDocumentBlock.IndexOf("self.document = document", [StringComparison]::Ordinal)
 $failureBranch = $openDocumentBlock.IndexOf("Err(error)", [StringComparison]::Ordinal)
 if (-not $newDocumentBlock.Contains("*self = Self::new().with_dialogs(dialogs)") -or
-    $loadCandidate -lt 0 -or $successBranch -lt $loadCandidate -or $storeSwap -lt $successBranch -or
-    $failureBranch -lt $storeSwap -or
+    $loadCandidate -lt 0 -or $successBranch -lt $loadCandidate -or
+    $editableCandidate -lt $successBranch -or $historyBaseline -lt $editableCandidate -or
+    $storeSwap -lt $historyBaseline -or $failureBranch -lt $storeSwap -or
     ([regex]::Matches($openDocumentBlock, 'self\.document\s*=')).Count -ne 1) {
     Fail-Guard "sole-mutation" "New/Open must replace the active store only with a fresh or fully validated candidate; failed Open must not mutate it."
 }

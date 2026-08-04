@@ -26,9 +26,9 @@
     {
       "path": "governance/contract-changes.json",
       "direction": "tighten",
-      "old_freeze_id": "m0-pre-governance",
-      "new_freeze_id": "m0-ci-governance-v1",
-      "evidence": "KETCHUP_ARCHITECTURE_SPECIFICATION_V4.md"
+      "old_freeze_id": "m0-lifecycle-r0-envelope-v1",
+      "new_freeze_id": "m0-p07-authority-v1",
+      "evidence": "docs/adr/0006-canonical-and-derived-result-write-paths.md"
     },
     {
       "path": "scripts/windows/invoke-ci-governance.ps1",
@@ -41,18 +41,18 @@
     {
       "path": "scripts/windows/test-architecture-guards.ps1",
       "direction": "tighten",
-      "old_freeze_id": "m0-pre-governance",
-      "new_freeze_id": "m0-ci-governance-v1",
-      "evidence": "KETCHUP_ARCHITECTURE_SPECIFICATION_V4.md",
-      "new_sha256": "fb0768df3fad00538d1915c377b245140b8651628305c8b2d94a5a6dc952cc6a"
+      "old_freeze_id": "m0-lifecycle-r0-envelope-v1",
+      "new_freeze_id": "m0-p07-authority-v1",
+      "evidence": "docs/adr/0006-canonical-and-derived-result-write-paths.md",
+      "new_sha256": "06c44f0f8ca2886aed05ef95cddfedbdef4574994c079040d0863c7ed78b8ac6"
     },
     {
       "path": "scripts/windows/test-ci-guard-red-paths.ps1",
       "direction": "tighten",
-      "old_freeze_id": "m0-pre-governance",
-      "new_freeze_id": "m0-ci-governance-v1",
-      "evidence": "KETCHUP_ARCHITECTURE_SPECIFICATION_V4.md",
-      "new_sha256": "faa62a59d4dcd0996755ccca6560507942951205661d1ce1e8ce59f6f834942d"
+      "old_freeze_id": "m0-lifecycle-r0-envelope-v1",
+      "new_freeze_id": "m0-p07-authority-v1",
+      "evidence": "docs/adr/0006-canonical-and-derived-result-write-paths.md",
+      "new_sha256": "1f51a06dc42e76e6d3df1d12645d34d628cdefcdbd303a9aaec48234da668502"
     },
     {
       "path": "scripts/windows/validate-r0-v13-historical-evidence.ps1",
@@ -65,10 +65,10 @@
     {
       "path": "governance/d08-lifecycle-exceptions.json",
       "direction": "tighten",
-      "old_freeze_id": "m0-ci-governance-v1",
-      "new_freeze_id": "m0-lifecycle-r0-envelope-v1",
-      "evidence": "KETCHUP_ARCHITECTURE_SPECIFICATION_V4.md",
-      "new_sha256": "128d6c634b156d5cfd11891a7f3628e50a2f436efaab13d94ed281153ece7737"
+      "old_freeze_id": "m0-lifecycle-r0-envelope-v1",
+      "new_freeze_id": "m0-p07-authority-v1",
+      "evidence": "docs/adr/0006-canonical-and-derived-result-write-paths.md",
+      "new_sha256": "32ff6e38ff8e89517eb184afb5f19807102bddd90a83a3a779177997ceaae77d"
     },
     {
       "path": "governance/r0-transitions-v1-v13.json",

@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "decision": "D-08",
   "invariant": "Only a validated canonical command batch mutates canonical model state.",
   "ordinary_gateway": {
@@ -16,6 +16,48 @@
       "scope": "DocumentStore::commit_proposal",
       "source": "crates/ketchup-core/src/document.rs",
       "delegates_to": "DocumentStore::apply_batch"
+    },
+    {
+      "scope": "DocumentStore::make_unique",
+      "source": "crates/ketchup-core/src/document.rs",
+      "delegates_to": "DocumentStore::apply_batch"
+    },
+    {
+      "scope": "DocumentStore::convert_group_to_component",
+      "source": "crates/ketchup-core/src/document.rs",
+      "delegates_to": "DocumentStore::apply_batch"
+    }
+  ],
+  "derived_result_gateway": {
+    "scope": "DocumentStore::register_derived_result",
+    "source": "crates/ketchup-core/src/document.rs",
+    "kind": "noncanonical_derived_result",
+    "required_envelope": [
+      "document_id",
+      "revision_id",
+      "canonical_digest"
+    ],
+    "allowed_payloads": [
+      "evaluation_result",
+      "exact_reference_evidence"
+    ],
+    "forbidden_effects": [
+      "canonical_digest_change",
+      "revision_append",
+      "undo_step",
+      "canonical_meaning_change"
+    ]
+  },
+  "derived_result_delegates": [
+    {
+      "scope": "DocumentStore::register_evaluation",
+      "source": "crates/ketchup-core/src/document.rs",
+      "delegates_to": "DocumentStore::register_derived_result"
+    },
+    {
+      "scope": "DocumentStore::register_exact_reference_evidence",
+      "source": "crates/ketchup-core/src/document.rs",
+      "delegates_to": "DocumentStore::register_derived_result"
     }
   ],
   "construction_paths": [
@@ -26,7 +68,7 @@
       "contract": "construct a fresh validated empty store"
     },
     {
-      "scope": "DocumentStore::from_parts",
+      "scope": "DocumentStore::from_product",
       "source": "crates/ketchup-core/src/document.rs",
       "visibility": "crate",
       "contract": "validate the complete graph and product before constructing a separate one-revision candidate"

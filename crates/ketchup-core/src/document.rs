@@ -1172,9 +1172,18 @@ pub enum DerivedResultClassification {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DerivedResultPayload {
+    Evaluation(DerivedResultKey),
+    ExactReference(BodySubshapeRef),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DerivedResultEvent {
-    pub key: DerivedResultKey,
+    pub document_id: DocumentId,
+    pub revision_id: u64,
+    pub canonical_digest: String,
     pub classification: DerivedResultClassification,
+    pub payload: DerivedResultPayload,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1280,21 +1289,63 @@ impl DocumentStore {
         if !reference.matches_request(&request) {
             return Err(ReferenceEvidenceError::InvalidLineage);
         }
-        let mut product = current.snapshot.product.as_ref().clone();
-        product
-            .exact_reference_evidence
-            .insert(reference.lineage_digest.clone(), Arc::new(reference));
-        self.revisions[self.cursor] = Arc::new(Revision {
-            id: current.id,
-            snapshot: Snapshot {
-                revision_id: current.snapshot.revision_id,
-                product: Arc::new(product),
-            },
-            batch_digest: current.batch_digest.clone(),
-            recomputed_nodes: current.recomputed_nodes.clone(),
-            evaluation: current.evaluation.clone(),
-        });
+        let event = DerivedResultEvent {
+            document_id: current.snapshot.document_id(),
+            revision_id: current.snapshot.revision_id(),
+            canonical_digest: current.snapshot.canonical_digest(),
+            classification: DerivedResultClassification::Current,
+            payload: DerivedResultPayload::ExactReference(reference),
+        };
+        if !self.register_derived_result(event) {
+            return Err(ReferenceEvidenceError::WrongDocument);
+        }
         Ok(())
+    }
+
+    fn register_derived_result(&mut self, event: DerivedResultEvent) -> bool {
+        let current = &self.revisions[self.cursor];
+        if event.document_id != current.snapshot.document_id()
+            || event.revision_id != current.snapshot.revision_id()
+            || event.canonical_digest != current.snapshot.canonical_digest()
+        {
+            return false;
+        }
+        match &event.payload {
+            DerivedResultPayload::Evaluation(key)
+                if key.document_id != event.document_id || key.revision_id != event.revision_id =>
+            {
+                return false;
+            }
+            DerivedResultPayload::ExactReference(reference)
+                if reference.document_id != event.document_id =>
+            {
+                return false;
+            }
+            _ => {}
+        }
+        match &event.payload {
+            DerivedResultPayload::Evaluation(key) => {
+                self.evaluation_registry.insert(key.clone(), event);
+            }
+            DerivedResultPayload::ExactReference(reference) => {
+                let mut product = current.snapshot.product.as_ref().clone();
+                product.exact_reference_evidence.insert(
+                    reference.lineage_digest.clone(),
+                    Arc::new(reference.clone()),
+                );
+                self.revisions[self.cursor] = Arc::new(Revision {
+                    id: current.id,
+                    snapshot: Snapshot {
+                        revision_id: current.snapshot.revision_id,
+                        product: Arc::new(product),
+                    },
+                    batch_digest: current.batch_digest.clone(),
+                    recomputed_nodes: current.recomputed_nodes.clone(),
+                    evaluation: current.evaluation.clone(),
+                });
+            }
+        }
+        true
     }
 
     #[must_use]
@@ -1991,10 +2042,15 @@ impl DocumentStore {
             tolerance: report.identity.tolerance.clone(),
         };
         let event = DerivedResultEvent {
-            key: key.clone(),
+            document_id: snapshot.document_id(),
+            revision_id: snapshot.revision_id(),
+            canonical_digest: snapshot.canonical_digest(),
             classification: DerivedResultClassification::Current,
+            payload: DerivedResultPayload::Evaluation(key),
         };
-        self.evaluation_registry.insert(key, event.clone());
+        if !self.register_derived_result(event.clone()) {
+            return Err(CanonicalError::EvaluationEnvelopeMismatch);
+        }
         Ok(event)
     }
 

@@ -15,6 +15,16 @@ pub struct DurableExactHit {
     pub ray_distance_mm: f64,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExactSurfaceHit {
+    pub definition_id: DefinitionId,
+    pub instance_path: InstancePath,
+    pub durable_target: Option<AssemblySelectionTarget>,
+    pub position_mm: Vec3,
+    pub outward_normal: Vec3,
+    pub ray_distance_mm: f64,
+}
+
 #[derive(Clone, Debug)]
 struct ExactOccurrence {
     instance_path: InstancePath,
@@ -91,7 +101,7 @@ impl ExactInteractionProjection {
     }
 
     #[must_use]
-    pub fn exact_pick(&self, ray: Ray) -> Option<DurableExactHit> {
+    pub fn exact_surface_pick(&self, ray: Ray) -> Option<ExactSurfaceHit> {
         let hit = self
             .occurrences
             .iter()
@@ -106,14 +116,46 @@ impl ExactInteractionProjection {
                     })
                     .then_with(|| left.triangle_index.cmp(&right.triangle_index))
             })?;
-        let role = hit.occurrence.package.triangles[hit.triangle_index].face_role?;
-        let reference = hit.occurrence.package.reference(role)?.clone();
-        Some(DurableExactHit {
-            target: AssemblySelectionTarget {
-                instance_path: hit.occurrence.instance_path.clone(),
-                body: reference,
-            },
+        let triangle = &hit.occurrence.package.triangles[hit.triangle_index];
+        let [first, second, third] = triangle.vertex_indices.map(|index| {
+            let position = hit.occurrence.package.vertices[index as usize].position_mm;
+            Vec3::new(position[0], position[1], position[2])
+        });
+        let normal = cross(second - first, third - first);
+        let normal_length = normal.length();
+        if normal_length <= RAY_EPSILON {
+            return None;
+        }
+        let outward_normal = Vec3::new(
+            normal.x / normal_length,
+            normal.y / normal_length,
+            normal.z / normal_length,
+        );
+        let durable_target =
+            triangle.face_role.and_then(|role| {
+                hit.occurrence.package.reference(role).cloned().map(|body| {
+                    AssemblySelectionTarget {
+                        instance_path: hit.occurrence.instance_path.clone(),
+                        body,
+                    }
+                })
+            });
+        Some(ExactSurfaceHit {
+            definition_id: hit.occurrence.package.identity.definition_id,
+            instance_path: hit.occurrence.instance_path.clone(),
+            durable_target,
             position_mm: ray.at(hit.ray_distance_mm),
+            outward_normal,
+            ray_distance_mm: hit.ray_distance_mm,
+        })
+    }
+
+    #[must_use]
+    pub fn exact_pick(&self, ray: Ray) -> Option<DurableExactHit> {
+        let hit = self.exact_surface_pick(ray)?;
+        Some(DurableExactHit {
+            target: hit.durable_target?,
+            position_mm: hit.position_mm,
             ray_distance_mm: hit.ray_distance_mm,
         })
     }
@@ -337,6 +379,7 @@ mod tests {
         let ray = Ray::new(Vec3::new(5.0, 5.0, 20.0), Vec3::new(0.0, 0.0, -1.0)).unwrap();
 
         assert_eq!(projection.occurrence_count(), 1);
+        assert!(projection.exact_surface_pick(ray).is_none());
         assert!(projection.exact_pick(ray).is_none());
     }
 
@@ -391,6 +434,12 @@ mod tests {
                             .is_some_and(|distance| distance > physical_hit.ray_distance_mm)
                 })
         );
+        let surface_hit = projection
+            .exact_surface_pick(ray)
+            .expect("the unreferenced front triangle is still a physical surface");
+        assert!(surface_hit.durable_target.is_none());
+        assert_eq!(surface_hit.instance_path, InstancePath::root(OCCURRENCE));
+        assert!(surface_hit.outward_normal.x < -0.999);
         assert!(projection.exact_pick(ray).is_none());
     }
 

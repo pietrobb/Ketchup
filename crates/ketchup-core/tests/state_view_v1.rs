@@ -1,3 +1,4 @@
+use ketchup_core::beam_m4ae::BeamWorkspace;
 use ketchup_core::document::{
     CanonicalCommand, CanonicalOverride, CommandBatch, DefinitionId, DerivedIdentity, Dimension,
     DocumentStore, EvaluationIdentity, FeatureId, FeatureKind, GroupId, NodeId, OccurrenceId,
@@ -6,7 +7,7 @@ use ketchup_core::document::{
 };
 use ketchup_core::state_view::{
     AGENT_STATE_VIEW_V1, COMPLETE_STATE_VIEW_V1, encode_semantic_state,
-    encode_semantic_state_with_evaluation,
+    encode_semantic_state_with_evaluation, encode_semantic_state_with_results,
 };
 use std::path::PathBuf;
 
@@ -327,4 +328,17 @@ fn final_m2_state_view_covers_graph_overrides_and_supplied_evaluation_without_mu
     assert_eq!(snapshot.revision_id(), revision);
     assert_eq!(store.current().canonical_digest(), canonical_digest);
     assert_eq!(store.current().revision_id(), revision);
+}
+
+#[test]
+fn complete_and_agent_views_report_exact_and_tolerant_validation_counts_separately() {
+    let workspace = BeamWorkspace::load().unwrap();
+    let snapshot = workspace.snapshot();
+    let report = &workspace.slice().validation_report;
+    let state = encode_semantic_state_with_results(&snapshot, None, Some(report));
+
+    for projection in [state.complete_v1(), state.agent_v1()] {
+        assert!(projection.contains("validation.evidence.exact_count=12"));
+        assert!(projection.contains("validation.evidence.tolerant_count=0"));
+    }
 }

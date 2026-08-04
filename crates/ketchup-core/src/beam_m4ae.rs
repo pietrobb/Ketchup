@@ -13,9 +13,9 @@ use crate::prismatic::{
     validate_joint_overlap,
 };
 use crate::validation::{
-    BuiltinPrismaticValidator, HostNeutralValidator, PrismaticJointCase, ValidationExecution,
-    ValidationInvocation, ValidationReport, ValidationState, beam_validation_policy,
-    prismatic_input_bytes,
+    BuiltinPrismaticValidator, EvidenceCounts, HostNeutralValidator, PrismaticJointCase,
+    ValidationExecution, ValidationInvocation, ValidationReport, ValidationState,
+    beam_validation_policy, prismatic_input_bytes,
 };
 use std::collections::BTreeSet;
 use std::fmt;
@@ -287,6 +287,8 @@ fn derive_slice(document: &DocumentStore) -> Result<BeamSlice, BeamError> {
         .map(|proxy| PrismaticJointCase {
             left_identity: body_id.clone(),
             right_identity: proxy.identity.clone(),
+            left_evidence_class: crate::validation::EvidenceClass::Exact,
+            right_evidence_class: crate::validation::EvidenceClass::Exact,
             left_bounds: body_bounds,
             right_bounds: proxy.bounds,
             declared_joint: snapshot
@@ -355,7 +357,7 @@ fn derive_slice(document: &DocumentStore) -> Result<BeamSlice, BeamError> {
             },
         ],
     };
-    let full_bom = full_bom_projection(&snapshot, &pieces, validation_report.state);
+    let full_bom = full_bom_projection(&snapshot, &pieces, &validation_report);
     let dimension_sheet = dimension_sheet_projection(&snapshot, &body_id, &positions)?;
     Ok(BeamSlice {
         revision_id: snapshot.revision_id(),
@@ -373,8 +375,9 @@ fn derive_slice(document: &DocumentStore) -> Result<BeamSlice, BeamError> {
 fn full_bom_projection(
     snapshot: &crate::document::Snapshot,
     pieces: &[DerivedProxyPiece],
-    validation_state: ValidationState,
+    validation_report: &ValidationReport,
 ) -> FullBomProjection {
+    let validation_state = validation_report.state;
     let body_identities = pieces
         .iter()
         .filter(|piece| piece.kind == PieceKind::BeamBody)
@@ -415,7 +418,7 @@ fn full_bom_projection(
             validation_state,
         },
     ];
-    let result_bytes = full_bom_bytes(&rows);
+    let result_bytes = full_bom_bytes(&rows, validation_report.evidence_counts);
     FullBomProjection {
         envelope: FabricationProjectionEnvelope::new(
             snapshot,
@@ -426,6 +429,7 @@ fn full_bom_projection(
                 ProjectionStatus::Incomplete
             },
         ),
+        evidence_counts: validation_report.evidence_counts,
         rows,
     }
 }
@@ -535,8 +539,10 @@ fn dimension_sheet_projection(
     })
 }
 
-fn full_bom_bytes(rows: &[FullBomRow]) -> Vec<u8> {
+fn full_bom_bytes(rows: &[FullBomRow], evidence_counts: EvidenceCounts) -> Vec<u8> {
     let mut output = b"ketchup.full-bom.v1".to_vec();
+    output.extend_from_slice(&(evidence_counts.exact as u64).to_le_bytes());
+    output.extend_from_slice(&(evidence_counts.tolerant as u64).to_le_bytes());
     output.extend_from_slice(&(rows.len() as u64).to_le_bytes());
     for row in rows {
         push_text(&mut output, &row.stable_row_id);

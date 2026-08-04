@@ -92,10 +92,19 @@ try {
     }
     Write-Utf8NoBom (Join-Path $tempRoot "crates\ketchup-core\src\document.rs") $documentSource
 
+    Invoke-ExpectedRed "private in-core revision write bypass" "sole-mutation" {
+        $mutated = $documentSource.Replace(
+            "impl DocumentStore {",
+            "impl DocumentStore {`n    fn bypass_inside_core(&mut self) { self.revisions[self.cursor] = self.revisions[self.cursor].clone(); }"
+        )
+        Write-Utf8NoBom (Join-Path $tempRoot "crates\ketchup-core\src\document.rs") $mutated
+    }
+    Write-Utf8NoBom (Join-Path $tempRoot "crates\ketchup-core\src\document.rs") $documentSource
+
     Invoke-ExpectedRed "candidate mutation after validation" "sole-mutation" {
         $mutated = $documentSource.Replace(
-            "let recomputed_nodes = dependent_closure(&nodes, &changed);",
-            "mutate_candidate(&mut nodes, &mut product);`n        let recomputed_nodes = dependent_closure(&nodes, &changed);"
+            "let recomputed_nodes =",
+            "product = product.clone();`n        let recomputed_nodes ="
         )
         Write-Utf8NoBom (Join-Path $tempRoot "crates\ketchup-core\src\document.rs") $mutated
     }
@@ -108,7 +117,7 @@ try {
     Write-Utf8NoBom (Join-Path $tempRoot "crates\ketchup-core\src\document.rs") $documentSource
 
     Invoke-ExpectedRed "public persistence constructor" "sole-mutation" {
-        $mutated = $documentSource.Replace("pub(crate) fn from_parts", "pub fn from_parts")
+        $mutated = $documentSource.Replace("pub(crate) fn from_product", "pub fn from_product")
         Write-Utf8NoBom (Join-Path $tempRoot "crates\ketchup-core\src\document.rs") $mutated
     }
     Write-Utf8NoBom (Join-Path $tempRoot "crates\ketchup-core\src\document.rs") $documentSource

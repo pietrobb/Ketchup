@@ -138,6 +138,12 @@ fn exact_fixture_change_bom_containment_and_slot_health() {
     );
     assert_eq!(w.slice().validation, BeamValidationVerdict::Green);
     assert_eq!(w.slice().validation_report.state, ValidationState::Passed);
+    assert_eq!(w.slice().validation_report.evidence_counts.exact, 12);
+    assert_eq!(w.slice().validation_report.evidence_counts.tolerant, 0);
+    assert_eq!(
+        w.slice().full_bom.evidence_counts,
+        w.slice().validation_report.evidence_counts
+    );
     assert!(w.slice().full_bom.envelope.is_current(&w.snapshot()));
     assert_eq!(w.slice().full_bom.rows.len(), 2);
     assert_eq!(

@@ -2,6 +2,7 @@ use crate::document::{
     EvaluationReport, EvaluationStatus, EvaluatorNodeKind, Snapshot, Transform, UnitSystem,
 };
 use crate::graph::{OverrideMergePolicy, RuleOutput, SlotSegment, ValueType};
+use crate::validation::ValidationReport;
 use std::fmt::Write;
 
 pub const COMPLETE_STATE_VIEW_V1: &str = "ketchup.state-view.complete.v1";
@@ -16,13 +17,22 @@ pub struct SemanticState {
 
 #[must_use]
 pub fn encode_semantic_state(snapshot: &Snapshot) -> SemanticState {
-    encode_semantic_state_with_evaluation(snapshot, None)
+    encode_semantic_state_with_results(snapshot, None, None)
 }
 
 #[must_use]
 pub fn encode_semantic_state_with_evaluation(
     snapshot: &Snapshot,
     evaluation: Option<&EvaluationReport>,
+) -> SemanticState {
+    encode_semantic_state_with_results(snapshot, evaluation, None)
+}
+
+#[must_use]
+pub fn encode_semantic_state_with_results(
+    snapshot: &Snapshot,
+    evaluation: Option<&EvaluationReport>,
+    validation: Option<&ValidationReport>,
 ) -> SemanticState {
     let mut complete = String::new();
     let mut agent = String::new();
@@ -90,6 +100,23 @@ pub fn encode_semantic_state_with_evaluation(
     } else {
         writeln!(complete, "evaluation=not_supplied").unwrap();
         writeln!(agent, "evaluation=not_supplied").unwrap();
+    }
+
+    if let Some(report) = validation {
+        for output in [&mut complete, &mut agent] {
+            writeln!(
+                output,
+                "validation.evidence.exact_count={}",
+                report.evidence_counts.exact
+            )
+            .unwrap();
+            writeln!(
+                output,
+                "validation.evidence.tolerant_count={}",
+                report.evidence_counts.tolerant
+            )
+            .unwrap();
+        }
     }
 
     for node in snapshot.evaluator_nodes() {
