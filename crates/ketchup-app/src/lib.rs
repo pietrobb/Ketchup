@@ -101,9 +101,23 @@ struct EphemeralBoxPreview {
     box_data: RenderBox,
 }
 
+enum ProjectedPolygon {
+    Triangle([Pos2; 3]),
+    Quad([Pos2; 4]),
+}
+
+impl ProjectedPolygon {
+    fn points(&self) -> &[Pos2] {
+        match self {
+            Self::Triangle(points) => points,
+            Self::Quad(points) => points,
+        }
+    }
+}
+
 struct ProjectedFace {
     selection: SelectionId,
-    points: [Pos2; 4],
+    polygon: ProjectedPolygon,
     color: Color32,
     depth: f64,
     previewed: bool,
@@ -1204,17 +1218,16 @@ impl KetchupApp {
             .sum()
     }
 
+    fn exact_projection(&self, snapshot: &Snapshot) -> ExactInteractionProjection {
+        ExactInteractionProjection::from_snapshot(snapshot, &self.exact_packages)
+    }
+
     #[must_use]
     pub fn exact_pick_durable(&self, ray: Ray) -> Option<AssemblySelectionTarget> {
         let snapshot = self.document.current();
-        let packages = self
-            .exact_packages
-            .iter()
-            .filter(|(_, package)| package.is_current(&snapshot))
-            .map(|(definition_id, package)| (*definition_id, Arc::clone(package)))
-            .collect();
-        let projection = ExactInteractionProjection::from_snapshot(&snapshot, &packages);
-        projection.exact_pick(ray).map(|hit| hit.target)
+        self.exact_projection(&snapshot)
+            .exact_pick(ray)
+            .map(|hit| hit.target)
     }
 
     fn active_boxes(&self) -> Vec<RenderBox> {
@@ -2827,27 +2840,40 @@ impl KetchupApp {
                 })
     }
 
-    fn viewport_boxes(&self) -> Vec<RenderBox> {
+    fn proxy_preview_is_active(&self, item: &RenderBox) -> bool {
+        let push_pull_preview =
+            self.has_preview() && self.preview_definition_id == Some(item.definition_id);
+        let move_preview = self
+            .move_drag
+            .as_ref()
+            .or(self.move_anchor.as_ref())
+            .is_some_and(|drag| {
+                self.move_preview_is_current(drag)
+                    && drag.selection.instance_path == item.instance_path
+            });
+        push_pull_preview || move_preview
+    }
+
+    fn viewport_boxes(&self, exact_projection: &ExactInteractionProjection) -> Vec<RenderBox> {
         let mut boxes = self.active_boxes();
-        let Some(drag) = self.move_drag.as_ref().or(self.move_anchor.as_ref()) else {
-            return boxes;
-        };
-        if !self.move_preview_is_current(drag) {
-            return boxes;
+        if let Some(drag) = self.move_drag.as_ref().or(self.move_anchor.as_ref())
+            && self.move_preview_is_current(drag)
+            && let Some(index) = boxes
+                .iter()
+                .position(|item| item.instance_path == drag.selection.instance_path)
+        {
+            let mut preview = boxes[index].clone();
+            preview.origin_mm = preview.origin_mm + drag.delta_mm;
+            if drag.copy {
+                boxes.push(preview);
+            } else {
+                boxes[index] = preview;
+            }
         }
-        let Some(index) = boxes
-            .iter()
-            .position(|item| item.instance_path == drag.selection.instance_path)
-        else {
-            return boxes;
-        };
-        let mut preview = boxes[index].clone();
-        preview.origin_mm = preview.origin_mm + drag.delta_mm;
-        if drag.copy {
-            boxes.push(preview);
-        } else {
-            boxes[index] = preview;
-        }
+        boxes.retain(|item| {
+            !exact_projection.contains_occurrence(&item.instance_path)
+                || self.proxy_preview_is_active(item)
+        });
         boxes
     }
 
@@ -3562,8 +3588,10 @@ impl KetchupApp {
             -f64::from(self.yaw.cos() * self.pitch.sin()),
             -f64::from(self.pitch.cos()),
         );
+        let snapshot = self.document.current();
+        let exact_projection = self.exact_projection(&snapshot);
         let mut faces = Vec::new();
-        for item in self.viewport_boxes() {
+        for item in self.viewport_boxes(&exact_projection) {
             let item = self.render_box(item);
             let corners = box_corners(item.size_mm.x, item.size_mm.y, item.size_mm.z)
                 .map(|point| point + item.origin_mm);
@@ -3581,15 +3609,12 @@ impl KetchupApp {
                 let depth = face
                     .corners
                     .iter()
-                    .map(|index| {
-                        let point = corners[*index];
-                        point.x * forward.x + point.y * forward.y + point.z * forward.z
-                    })
+                    .map(|index| point_depth(corners[*index], forward))
                     .sum::<f64>()
                     / 4.0;
                 faces.push(ProjectedFace {
                     selection,
-                    points,
+                    polygon: ProjectedPolygon::Quad(points),
                     color: face.color,
                     depth,
                     previewed: self.has_preview()
@@ -3602,6 +3627,55 @@ impl KetchupApp {
                             }
                         ),
                     out_of_context: !self.occurrence_in_active_context(&item.instance_path),
+                });
+            }
+        }
+        let canonical_projection = CanonicalInteractionProjection::from_snapshot(&snapshot);
+        for occurrence in canonical_projection
+            .occurrences()
+            .iter()
+            .filter(|occurrence| {
+                occurrence.visible
+                    && exact_projection.contains_occurrence(&occurrence.instance_path)
+            })
+        {
+            let Some(package) = self.exact_packages.get(&occurrence.body.definition_id) else {
+                continue;
+            };
+            let matrix = occurrence.canonical_world_transform.matrix();
+            let origin = Vec3::new(matrix[3], matrix[7], matrix[11]);
+            for triangle in &package.triangles {
+                let points_mm = triangle.vertex_indices.map(|index| {
+                    let position = package.vertices[index as usize].position_mm;
+                    origin + Vec3::new(position[0], position[1], position[2])
+                });
+                let normal = triangle_normal(points_mm);
+                if point_depth(normal, forward) >= -1.0e-9 {
+                    continue;
+                }
+                let projected = points_mm.map(|point| self.project(point, response.rect));
+                if !projected_polygon_has_area(&projected) {
+                    continue;
+                }
+                let element = triangle
+                    .face_role
+                    .map(exact_face_element)
+                    .unwrap_or_else(|| face_element_from_normal(normal));
+                faces.push(ProjectedFace {
+                    selection: SelectionId {
+                        definition_id: occurrence.body.definition_id,
+                        instance_path: occurrence.instance_path.clone(),
+                        element,
+                    },
+                    polygon: ProjectedPolygon::Triangle(projected),
+                    color: face_color_from_normal(normal),
+                    depth: points_mm
+                        .into_iter()
+                        .map(|point| point_depth(point, forward))
+                        .sum::<f64>()
+                        / 3.0,
+                    previewed: false,
+                    out_of_context: !self.occurrence_in_active_context(&occurrence.instance_path),
                 });
             }
         }
@@ -3624,7 +3698,7 @@ impl KetchupApp {
                 face.color
             };
             painter.add(egui::Shape::convex_polygon(
-                face.points.to_vec(),
+                face.polygon.points().to_vec(),
                 color,
                 Stroke::NONE,
             ));
@@ -3632,12 +3706,10 @@ impl KetchupApp {
 
         let edge_stroke = Stroke::new(1.25_f32, Color32::from_rgb(182, 192, 207));
         for face in &faces {
-            for edge in 0..face.points.len() {
+            let points = face.polygon.points();
+            for edge in 0..points.len() {
                 painter.line_segment(
-                    [
-                        face.points[edge],
-                        face.points[(edge + 1) % face.points.len()],
-                    ],
+                    [points[edge], points[(edge + 1) % points.len()]],
                     edge_stroke,
                 );
             }
@@ -3651,12 +3723,10 @@ impl KetchupApp {
                 self.selection.contains(&face.selection.instance_path)
             }
         }) {
-            for edge in 0..face.points.len() {
+            let points = face.polygon.points();
+            for edge in 0..points.len() {
                 painter.line_segment(
-                    [
-                        face.points[edge],
-                        face.points[(edge + 1) % face.points.len()],
-                    ],
+                    [points[edge], points[(edge + 1) % points.len()]],
                     selection_stroke,
                 );
             }
@@ -3717,33 +3787,24 @@ impl KetchupApp {
 
     fn exact_pick_at_screen(&self, pointer: Pos2, rect: Rect) -> Option<SelectionId> {
         let ray = self.view_ray(pointer, rect)?;
-        if let Some(target) = self.exact_pick_durable(ray)
+        let snapshot = self.document.current();
+        let exact_projection = self.exact_projection(&snapshot);
+        if let Some(target) = exact_projection.exact_pick(ray).map(|hit| hit.target)
             && self.occurrence_in_active_context(&target.instance_path)
         {
-            let element = match target.body.role()? {
-                ExactFaceRole::Top => ElementId::Face {
-                    axis: Axis::Z,
-                    side: Side::Maximum,
-                },
-                ExactFaceRole::Bottom => ElementId::Face {
-                    axis: Axis::Z,
-                    side: Side::Minimum,
-                },
-                ExactFaceRole::East => ElementId::Face {
-                    axis: Axis::X,
-                    side: Side::Maximum,
-                },
-            };
             return Some(SelectionId {
                 definition_id: target.body.definition_id,
                 instance_path: target.instance_path,
-                element,
+                element: exact_face_element(target.body.role()?),
             });
         }
 
-        let projection = CanonicalInteractionProjection::from_snapshot(&self.document.current());
+        let projection = CanonicalInteractionProjection::from_snapshot(&snapshot);
         let scene = projection
-            .scene_where(|occurrence| self.occurrence_in_active_context(&occurrence.instance_path))
+            .scene_where(|occurrence| {
+                self.occurrence_in_active_context(&occurrence.instance_path)
+                    && !exact_projection.contains_occurrence(&occurrence.instance_path)
+            })
             .ok()?;
         let scale = f64::from(self.zoom) * f64::from(rect.width().min(rect.height())) / 420.0;
         scene
@@ -4660,6 +4721,76 @@ fn box_faces() -> [BoxFace; 6] {
     ]
 }
 
+fn exact_face_element(role: ExactFaceRole) -> ElementId {
+    match role {
+        ExactFaceRole::Top => ElementId::Face {
+            axis: Axis::Z,
+            side: Side::Maximum,
+        },
+        ExactFaceRole::Bottom => ElementId::Face {
+            axis: Axis::Z,
+            side: Side::Minimum,
+        },
+        ExactFaceRole::East | ExactFaceRole::CutEast => ElementId::Face {
+            axis: Axis::X,
+            side: Side::Maximum,
+        },
+        ExactFaceRole::CutWest => ElementId::Face {
+            axis: Axis::X,
+            side: Side::Minimum,
+        },
+        ExactFaceRole::CutSouth => ElementId::Face {
+            axis: Axis::Y,
+            side: Side::Minimum,
+        },
+        ExactFaceRole::CutNorth => ElementId::Face {
+            axis: Axis::Y,
+            side: Side::Maximum,
+        },
+    }
+}
+
+fn point_depth(point: Vec3, forward: Vec3) -> f64 {
+    point.x * forward.x + point.y * forward.y + point.z * forward.z
+}
+
+fn triangle_normal([first, second, third]: [Vec3; 3]) -> Vec3 {
+    let first_edge = second - first;
+    let second_edge = third - first;
+    Vec3::new(
+        first_edge.y * second_edge.z - first_edge.z * second_edge.y,
+        first_edge.z * second_edge.x - first_edge.x * second_edge.z,
+        first_edge.x * second_edge.y - first_edge.y * second_edge.x,
+    )
+}
+
+fn face_element_from_normal(normal: Vec3) -> ElementId {
+    let (axis, direction) = if normal.x.abs() >= normal.y.abs() && normal.x.abs() >= normal.z.abs()
+    {
+        (Axis::X, normal.x)
+    } else if normal.y.abs() >= normal.z.abs() {
+        (Axis::Y, normal.y)
+    } else {
+        (Axis::Z, normal.z)
+    };
+    ElementId::Face {
+        axis,
+        side: if direction < 0.0 {
+            Side::Minimum
+        } else {
+            Side::Maximum
+        },
+    }
+}
+
+fn face_color_from_normal(normal: Vec3) -> Color32 {
+    let element = face_element_from_normal(normal);
+    box_faces()
+        .into_iter()
+        .find(|face| face.element == element)
+        .map_or(Color32::from_rgb(94, 108, 126), |face| face.color)
+}
+
 fn face_is_visible(element: &ElementId, forward: Vec3) -> bool {
     let ElementId::Face { axis, side } = element else {
         return false;
@@ -4677,10 +4808,15 @@ fn face_is_visible(element: &ElementId, forward: Vec3) -> bool {
 }
 
 fn projected_face_has_area(corners: [usize; 4], projected: &[Pos2; 8]) -> bool {
-    let twice_area = (0..corners.len())
+    let points = corners.map(|index| projected[index]);
+    projected_polygon_has_area(&points)
+}
+
+fn projected_polygon_has_area(points: &[Pos2]) -> bool {
+    let twice_area = (0..points.len())
         .map(|index| {
-            let current = projected[corners[index]];
-            let next = projected[corners[(index + 1) % corners.len()]];
+            let current = points[index];
+            let next = points[(index + 1) % points.len()];
             current.x * next.y - next.x * current.y
         })
         .sum::<f32>();
@@ -4862,6 +4998,70 @@ mod tests {
         bytes.extend_from_slice(&3.5_f64.to_bits().to_le_bytes());
         bytes.extend_from_slice(&0_u32.to_le_bytes());
         bytes
+    }
+
+    fn current_box_package(app: &KetchupApp) -> Arc<ExactRenderPackage> {
+        use ketchup_core::exact_product::{
+            build_box_render_package, canonical_reference_lineage_digest,
+        };
+
+        let snapshot = app.document.current();
+        let request = ExactRectangleRequest::from_snapshot(&snapshot, INITIAL_BOX_DEFINITION)
+            .expect("the default box has an exact request");
+        let evidence = [
+            ExactFaceRole::Top,
+            ExactFaceRole::Bottom,
+            ExactFaceRole::East,
+        ]
+        .map(|role| {
+            (
+                role,
+                canonical_reference_lineage_digest(
+                    request.document_id,
+                    request.producer_feature_id(),
+                    role.semantic_role(),
+                    role.source_element_id(),
+                    "planar_face",
+                ),
+                format!("geometry-{role:?}"),
+            )
+        });
+        Arc::new(
+            build_box_render_package(
+                &request,
+                "exact-input".to_owned(),
+                "result".to_owned(),
+                "backend".to_owned(),
+                "tolerance".to_owned(),
+                [[0.0; 3], request.dimensions_mm()],
+                evidence,
+            )
+            .expect("the exact package matches the default box"),
+        )
+    }
+
+    #[test]
+    fn current_exact_occurrence_suppresses_only_the_non_preview_proxy() {
+        let mut app = KetchupApp::new();
+        let package = current_box_package(&app);
+        app.exact_packages.insert(INITIAL_BOX_DEFINITION, package);
+        let snapshot = app.document.current();
+        let exact_projection = app.exact_projection(&snapshot);
+
+        assert!(exact_projection.contains_occurrence(&InstancePath::root(OccurrenceId(1))));
+        assert!(app.viewport_boxes(&exact_projection).is_empty());
+
+        app.selection.primary = Some(SelectionId {
+            definition_id: INITIAL_BOX_DEFINITION,
+            instance_path: InstancePath::root(OccurrenceId(1)),
+            element: ElementId::Face {
+                axis: Axis::Z,
+                side: Side::Maximum,
+            },
+        });
+        app.set_push_pull_distance_input("5");
+        assert!(app.start_preview());
+        assert_eq!(app.viewport_boxes(&exact_projection).len(), 1);
     }
 
     #[test]

@@ -388,6 +388,21 @@ pub fn encode_semantic_state_with_evaluation(
                 )
                 .unwrap();
             }
+            crate::document::FeatureKind::ThroughCut { target, profile } => {
+                writeln!(complete, "feature.{}.kind=through_cut", feature.id().0).unwrap();
+                writeln!(complete, "feature.{}.target={}", feature.id().0, target.0).unwrap();
+                writeln!(complete, "feature.{}.profile={}", feature.id().0, profile.0).unwrap();
+                writeln!(
+                    agent,
+                    "feature.{}=name:{:?},kind:through_cut,definition:{},target:{},profile:{}",
+                    feature.id().0,
+                    feature.name(),
+                    feature.definition_id().0,
+                    target.0,
+                    profile.0
+                )
+                .unwrap();
+            }
         }
     }
     for occurrence in snapshot.occurrences() {

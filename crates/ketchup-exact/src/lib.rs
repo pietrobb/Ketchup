@@ -724,6 +724,162 @@ pub fn capture_guaranteed_references(
     Ok(references)
 }
 
+pub fn capture_bounded_through_cut_references(
+    output: &mut ExactOpOutput,
+    document_id: &str,
+    producer_feature_id: &str,
+    base: RectangleExtrudeSpec,
+    cut: BoxSpec,
+) -> Result<Vec<SubshapeRef>, GeometryError> {
+    if !has_complete_manifold_adjacency(&output.body.topology) {
+        return Err(parameter_error(
+            GeometryErrorCode::InvalidShape,
+            "capture_bounded_through_cut_references",
+            &output.input_digest,
+            "Through-cut output lacks complete reciprocal face/edge adjacency".to_owned(),
+        ));
+    }
+    let cut_max_x = cut.origin_mm.x + cut.size_mm.x;
+    let cut_max_y = cut.origin_mm.y + cut.size_mm.y;
+    let roles = [
+        ("extrusion.top", "profile.face", 2_usize, base.height_mm),
+        ("extrusion.bottom", "profile.face", 2_usize, 0.0),
+        (
+            "extrusion.side(profile_edge=east)",
+            "profile.edge.east",
+            0_usize,
+            base.width_mm,
+        ),
+        (
+            "through_cut.wall.west",
+            "cut_profile.edge.west",
+            0_usize,
+            cut.origin_mm.x,
+        ),
+        (
+            "through_cut.wall.east",
+            "cut_profile.edge.east",
+            0_usize,
+            cut_max_x,
+        ),
+        (
+            "through_cut.wall.south",
+            "cut_profile.edge.south",
+            1_usize,
+            cut.origin_mm.y,
+        ),
+        (
+            "through_cut.wall.north",
+            "cut_profile.edge.north",
+            1_usize,
+            cut_max_y,
+        ),
+    ];
+    let mut references = Vec::with_capacity(roles.len());
+    for (semantic_role, source_element_id, axis, coordinate) in roles {
+        let candidates = output
+            .body
+            .topology
+            .faces
+            .iter()
+            .filter(|face| face.surface_kind == "plane")
+            .filter(|face| face_matches_cut_role(face, semantic_role, axis, coordinate, base, cut))
+            .collect::<Vec<_>>();
+        let [face] = candidates.as_slice() else {
+            return Err(parameter_error(
+                GeometryErrorCode::InvalidShape,
+                "capture_bounded_through_cut_references",
+                &output.input_digest,
+                format!(
+                    "Through-cut role {semantic_role} has {} candidates",
+                    candidates.len()
+                ),
+            ));
+        };
+        let face_ordinal = face.ordinal;
+        let corroborating_geometry_fingerprint = face.geometric_fingerprint.clone();
+        if !output.topology_history.iter().any(|entry| {
+            entry.semantic_role.as_deref() == Some(semantic_role)
+                && entry.source_element_id == source_element_id
+                && entry.output_face_ordinal == Some(face_ordinal)
+        }) {
+            output.topology_history.push(HistoryEvidence {
+                semantic_role: Some(semantic_role.to_owned()),
+                relation: "bounded_cut_classification".to_owned(),
+                source_element_id: source_element_id.to_owned(),
+                output_face_ordinal: Some(face_ordinal),
+            });
+        }
+        let lineage = format!(
+            "{document_id}:{producer_feature_id}:{semantic_role}:{source_element_id}:planar_face"
+        );
+        references.push(SubshapeRef {
+            document_id: document_id.to_owned(),
+            producer_feature_id: producer_feature_id.to_owned(),
+            semantic_role: semantic_role.to_owned(),
+            source_element_id: source_element_id.to_owned(),
+            expected_type: "planar_face".to_owned(),
+            stability_class: StabilityClass::Guaranteed,
+            backend_fingerprint: output.backend_fingerprint.to_owned(),
+            lineage_digest: stable_digest(&lineage),
+            corroborating_geometry_fingerprint,
+        });
+    }
+    Ok(references)
+}
+
+fn face_matches_cut_role(
+    face: &FaceEvidence,
+    semantic_role: &str,
+    axis: usize,
+    coordinate: f64,
+    base: RectangleExtrudeSpec,
+    cut: BoxSpec,
+) -> bool {
+    let mins = [
+        face.bounds_mm.min.x,
+        face.bounds_mm.min.y,
+        face.bounds_mm.min.z,
+    ];
+    let maxs = [
+        face.bounds_mm.max.x,
+        face.bounds_mm.max.y,
+        face.bounds_mm.max.z,
+    ];
+    if (mins[axis] - coordinate).abs() > 1.0e-6 || (maxs[axis] - coordinate).abs() > 1.0e-6 {
+        return false;
+    }
+    let cut_max_x = cut.origin_mm.x + cut.size_mm.x;
+    let cut_max_y = cut.origin_mm.y + cut.size_mm.y;
+    match semantic_role {
+        "extrusion.top" | "extrusion.bottom" => {
+            (mins[0]).abs() <= 1.0e-6
+                && (mins[1]).abs() <= 1.0e-6
+                && (maxs[0] - base.width_mm).abs() <= 1.0e-6
+                && (maxs[1] - base.depth_mm).abs() <= 1.0e-6
+        }
+        "extrusion.side(profile_edge=east)" => {
+            mins[1].abs() <= 1.0e-6
+                && mins[2].abs() <= 1.0e-6
+                && (maxs[1] - base.depth_mm).abs() <= 1.0e-6
+                && (maxs[2] - base.height_mm).abs() <= 1.0e-6
+        }
+        "through_cut.wall.west" | "through_cut.wall.east" => {
+            (mins[1] - cut.origin_mm.y).abs() <= 1.0e-6
+                && mins[2].abs() <= 1.0e-6
+                && (maxs[1] - cut_max_y).abs() <= 1.0e-6
+                && (maxs[2] - base.height_mm).abs() <= 1.0e-6
+        }
+        "through_cut.wall.south" | "through_cut.wall.north" => {
+            (mins[0] - cut.origin_mm.x).abs() <= 1.0e-6
+                && mins[2].abs() <= 1.0e-6
+                && (maxs[0] - cut_max_x).abs() <= 1.0e-6
+                && (maxs[2] - base.height_mm).abs() <= 1.0e-6
+        }
+        _ => false,
+    }
+}
+
 #[must_use]
 pub fn resolve_subshape_reference(
     reference: &SubshapeRef,

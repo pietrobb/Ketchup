@@ -167,6 +167,10 @@ pub enum FeatureKind {
         profile: FeatureId,
         height: Dimension,
     },
+    ThroughCut {
+        target: FeatureId,
+        profile: FeatureId,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1273,10 +1277,7 @@ impl DocumentStore {
         let request =
             ExactRectangleRequest::from_snapshot(&current.snapshot, reference.definition_id)
                 .map_err(|_| ReferenceEvidenceError::InvalidLineage)?;
-        if request.profile_feature_id != reference.profile_feature_id
-            || request.extrusion_feature_id != reference.producer_feature_id
-            || request.canonical_input_digest != reference.canonical_input_digest
-        {
+        if !reference.matches_request(&request) {
             return Err(ReferenceEvidenceError::InvalidLineage);
         }
         let mut product = current.snapshot.product.as_ref().clone();
@@ -2306,6 +2307,7 @@ fn validate_feature_kind(kind: &FeatureKind) -> Result<(), CanonicalError> {
         FeatureKind::Extrusion { height, .. } => {
             Dimension::new(height.source_token.clone(), height.millimetres).map(|_| ())
         }
+        FeatureKind::ThroughCut { .. } => Ok(()),
     }
 }
 
@@ -2371,6 +2373,14 @@ fn clone_definition_and_repoint(
                     .get(profile)
                     .ok_or(CanonicalError::InvalidFeatureMap)?,
                 height: height.clone(),
+            },
+            FeatureKind::ThroughCut { target, profile } => FeatureKind::ThroughCut {
+                target: *mapping
+                    .get(target)
+                    .ok_or(CanonicalError::InvalidFeatureMap)?,
+                profile: *mapping
+                    .get(profile)
+                    .ok_or(CanonicalError::InvalidFeatureMap)?,
             },
         };
         cloned_features.push(Arc::new(Feature {
@@ -2806,16 +2816,36 @@ fn validate_product(product: &ProductModel) -> Result<(), CanonicalError> {
         if !definition.feature_ids.contains(&feature.id) {
             return Err(CanonicalError::InvalidFeatureOwnership(feature.id));
         }
-        if let FeatureKind::Extrusion { profile, .. } = feature.kind {
-            let profile = product
-                .features
-                .get(&profile)
-                .ok_or(CanonicalError::FeatureNotFound(profile))?;
-            if profile.definition_id != feature.definition_id
-                || !matches!(profile.kind, FeatureKind::Profile { .. })
-            {
-                return Err(CanonicalError::InvalidFeatureOwnership(feature.id));
+        match feature.kind {
+            FeatureKind::Extrusion { profile, .. } => {
+                let profile = product
+                    .features
+                    .get(&profile)
+                    .ok_or(CanonicalError::FeatureNotFound(profile))?;
+                if profile.definition_id != feature.definition_id
+                    || !matches!(profile.kind, FeatureKind::Profile { .. })
+                {
+                    return Err(CanonicalError::InvalidFeatureOwnership(feature.id));
+                }
             }
+            FeatureKind::ThroughCut { target, profile } => {
+                let target = product
+                    .features
+                    .get(&target)
+                    .ok_or(CanonicalError::FeatureNotFound(target))?;
+                let profile = product
+                    .features
+                    .get(&profile)
+                    .ok_or(CanonicalError::FeatureNotFound(profile))?;
+                if target.definition_id != feature.definition_id
+                    || profile.definition_id != feature.definition_id
+                    || !matches!(target.kind, FeatureKind::Extrusion { .. })
+                    || !matches!(profile.kind, FeatureKind::Profile { .. })
+                {
+                    return Err(CanonicalError::InvalidFeatureOwnership(feature.id));
+                }
+            }
+            FeatureKind::Profile { .. } => {}
         }
     }
     for occurrence in product.occurrences.values() {
@@ -2976,8 +3006,15 @@ fn authoritative_dependencies(
             } => {
                 dependencies.insert(AuthoritativeDependency::Feature(*id));
                 dependencies.insert(AuthoritativeDependency::Definition(*definition_id));
-                if let FeatureKind::Extrusion { profile, .. } = kind {
-                    add_feature_dependency_closure(snapshot, *profile, &mut dependencies);
+                match kind {
+                    FeatureKind::Extrusion { profile, .. } => {
+                        add_feature_dependency_closure(snapshot, *profile, &mut dependencies);
+                    }
+                    FeatureKind::ThroughCut { target, profile } => {
+                        add_feature_dependency_closure(snapshot, *target, &mut dependencies);
+                        add_feature_dependency_closure(snapshot, *profile, &mut dependencies);
+                    }
+                    FeatureKind::Profile { .. } => {}
                 }
             }
             CanonicalCommand::DeleteFeature { id } => {
@@ -3115,8 +3152,15 @@ fn add_feature_dependency_closure(
     }
     if let Some(feature) = snapshot.feature(id) {
         dependencies.insert(AuthoritativeDependency::Definition(feature.definition_id()));
-        if let FeatureKind::Extrusion { profile, .. } = feature.kind() {
-            add_feature_dependency_closure(snapshot, *profile, dependencies);
+        match feature.kind() {
+            FeatureKind::Extrusion { profile, .. } => {
+                add_feature_dependency_closure(snapshot, *profile, dependencies);
+            }
+            FeatureKind::ThroughCut { target, profile } => {
+                add_feature_dependency_closure(snapshot, *target, dependencies);
+                add_feature_dependency_closure(snapshot, *profile, dependencies);
+            }
+            FeatureKind::Profile { .. } => {}
         }
     }
 }
@@ -3353,6 +3397,11 @@ impl StableDigest {
                 self.bytes(height.source_token.as_bytes());
                 self.u64(height.millimetres.to_bits());
             }
+            FeatureKind::ThroughCut { target, profile } => {
+                self.byte(3);
+                self.u64(target.0);
+                self.u64(profile.0);
+            }
         }
     }
 
@@ -3530,6 +3579,11 @@ impl StableDigest {
                     .values()
                     .filter_map(|feature| match feature.kind {
                         FeatureKind::Extrusion { profile, .. } if profile == id => Some(feature.id),
+                        FeatureKind::ThroughCut { target, profile }
+                            if target == id || profile == id =>
+                        {
+                            Some(feature.id)
+                        }
                         _ => None,
                     })
                     .collect::<Vec<_>>();

@@ -387,6 +387,10 @@ pub struct WorkerExactResult {
     pub top: WorkerFaceEvidence,
     pub bottom: WorkerFaceEvidence,
     pub east: WorkerFaceEvidence,
+    pub cut_west: Option<WorkerFaceEvidence>,
+    pub cut_east: Option<WorkerFaceEvidence>,
+    pub cut_south: Option<WorkerFaceEvidence>,
+    pub cut_north: Option<WorkerFaceEvidence>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -451,6 +455,7 @@ impl WorkerError {
 }
 
 const M3_CAPABILITY: &str = "M3_V1";
+const M3_CUT_CAPABILITY: &str = "M3_CUT_V1";
 const DEFAULT_WORKER_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 const CANCELLATION_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const MAX_WORKER_RESPONSE_LINE_BYTES: usize = 64 * 1024;
@@ -528,6 +533,16 @@ impl ExactWorkerClient {
         }
     }
 
+    fn verify_m3_cut_capability(&mut self, cancelled: &AtomicBool) -> Result<(), WorkerError> {
+        let response = self.request_with_cancellation("CAPS M3_CUT_V1", cancelled)?;
+        if response == "CAPS M3_CUT_V1" {
+            Ok(())
+        } else {
+            self.terminate_worker();
+            Err(WorkerError::MissingCapability(M3_CUT_CAPABILITY.to_owned()))
+        }
+    }
+
     pub fn extrude_rectangle(&mut self, height_mm: f64) -> Result<WorkerExactResult, WorkerError> {
         let response = self.request(&format!("EXTRUDE {:016x}", height_mm.to_bits()))?;
         match parse_legacy_exact_result(&response) {
@@ -548,19 +563,50 @@ impl ExactWorkerClient {
         request: &ExactRectangleRequest,
         cancelled: &AtomicBool,
     ) -> Result<WorkerExactResult, WorkerError> {
-        let response = self.request_with_cancellation(
-            &format!(
-                "EXTRUDE_M3_V1 {:016x} {:016x} {:016x} {} {} {}",
-                request.width_bits,
-                request.depth_bits,
-                request.height_bits,
-                request.document_id.0,
-                request.extrusion_feature_id.0,
-                request.canonical_input_digest
-            ),
-            cancelled,
-        )?;
-        match parse_m3_exact_result(&response) {
+        let (response, is_through_cut) = if let Some(cut) = &request.through_cut {
+            self.verify_m3_cut_capability(cancelled)?;
+            (
+                self.request_with_cancellation(
+                    &format!(
+                        "EXTRUDE_CUT_M3_V1 {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {} {} {}",
+                        request.width_bits,
+                        request.depth_bits,
+                        request.height_bits,
+                        cut.min_x_bits,
+                        cut.min_y_bits,
+                        cut.width_bits,
+                        cut.depth_bits,
+                        request.document_id.0,
+                        request.producer_feature_id().0,
+                        request.canonical_input_digest
+                    ),
+                    cancelled,
+                )?,
+                true,
+            )
+        } else {
+            (
+                self.request_with_cancellation(
+                    &format!(
+                        "EXTRUDE_M3_V1 {:016x} {:016x} {:016x} {} {} {}",
+                        request.width_bits,
+                        request.depth_bits,
+                        request.height_bits,
+                        request.document_id.0,
+                        request.extrusion_feature_id.0,
+                        request.canonical_input_digest
+                    ),
+                    cancelled,
+                )?,
+                false,
+            )
+        };
+        let parsed = if is_through_cut {
+            parse_m3_cut_exact_result(&response)
+        } else {
+            parse_m3_exact_result(&response)
+        };
+        match parsed {
             Err(WorkerError::Protocol(response)) => self.fail_protocol(response),
             result => result,
         }
@@ -879,84 +925,166 @@ impl ExactWorkerSupervisor {
             }
         };
         self.client.ensure_not_cancelled(cancelled)?;
-        let dimensions = request.dimensions_mm();
-        let expected_volume = dimensions.into_iter().product::<f64>();
-        let has_canonical_lineage = |role: ExactFaceRole, evidence: &WorkerFaceEvidence| {
-            !evidence.geometric_fingerprint.is_empty()
-                && evidence.lineage_digest
-                    == canonical_reference_lineage_digest(
-                        request.document_id,
-                        request.extrusion_feature_id,
-                        role.semantic_role(),
-                        role.source_element_id(),
-                        "planar_face",
-                    )
-        };
-        if result.request_digest != request.canonical_input_digest
-            || result.exact_input_digest.is_empty()
-            || result.result_fingerprint.is_empty()
-            || result.backend != ketchup_exact::backend_fingerprint()
-            || result.tolerance != ketchup_exact::tolerance_profile()
-            || !has_canonical_lineage(ExactFaceRole::Top, &result.top)
-            || !has_canonical_lineage(ExactFaceRole::Bottom, &result.bottom)
-            || !has_canonical_lineage(ExactFaceRole::East, &result.east)
-            || !result.volume_mm3.is_finite()
-            || result.volume_mm3 <= 0.0
-            || (result.volume_mm3 - expected_volume).abs()
-                > 1.0e-6_f64.max(expected_volume.abs() * 1.0e-10)
-            || result.topology_counts[2] != 6
-            || result.topology_counts[4] != 1
-            || [
-                result.top.ordinal,
-                result.bottom.ordinal,
-                result.east.ordinal,
-            ]
-            .into_iter()
-            .any(|ordinal| ordinal >= result.topology_counts[2])
-            || result.top.ordinal == result.bottom.ordinal
-            || result.top.ordinal == result.east.ordinal
-            || result.bottom.ordinal == result.east.ordinal
-        {
-            return Err(ExactProductError::InvalidWorkerEvidence.into());
-        }
-        let package = build_box_render_package(
-            request,
-            result.exact_input_digest,
-            result.result_fingerprint,
-            result.backend,
-            result.tolerance,
-            [
-                [
-                    result.bounds_mm[0],
-                    result.bounds_mm[1],
-                    result.bounds_mm[2],
-                ],
-                [
-                    result.bounds_mm[3],
-                    result.bounds_mm[4],
-                    result.bounds_mm[5],
-                ],
-            ],
-            [
-                (
-                    ExactFaceRole::Top,
-                    result.top.lineage_digest,
-                    result.top.geometric_fingerprint,
-                ),
-                (
-                    ExactFaceRole::Bottom,
-                    result.bottom.lineage_digest,
-                    result.bottom.geometric_fingerprint,
-                ),
-                (
-                    ExactFaceRole::East,
-                    result.east.lineage_digest,
-                    result.east.geometric_fingerprint,
-                ),
-            ],
-        );
+        validate_m3_worker_result(request, &result)?;
+        let package = build_m3_render_package(request, &result)?;
         self.client.ensure_not_cancelled(cancelled)?;
-        package.map_err(Into::into)
+        Ok(package)
+    }
+}
+
+fn validate_m3_worker_result(
+    request: &ExactRectangleRequest,
+    result: &WorkerExactResult,
+) -> Result<(), ExactProductError> {
+    let mut role_evidence = vec![
+        (ExactFaceRole::Top, &result.top),
+        (ExactFaceRole::Bottom, &result.bottom),
+        (ExactFaceRole::East, &result.east),
+    ];
+    match (
+        &request.through_cut,
+        &result.cut_west,
+        &result.cut_east,
+        &result.cut_south,
+        &result.cut_north,
+    ) {
+        (Some(_), Some(west), Some(east), Some(south), Some(north)) => {
+            role_evidence.extend([
+                (ExactFaceRole::CutWest, west),
+                (ExactFaceRole::CutEast, east),
+                (ExactFaceRole::CutSouth, south),
+                (ExactFaceRole::CutNorth, north),
+            ]);
+        }
+        (None, None, None, None, None) => {}
+        _ => return Err(ExactProductError::InvalidWorkerEvidence),
+    }
+
+    let dimensions = request.dimensions_mm();
+    let expected_bounds = [0.0, 0.0, 0.0, dimensions[0], dimensions[1], dimensions[2]];
+    let (expected_volume, expected_topology) = request.through_cut.as_ref().map_or_else(
+        || (dimensions.into_iter().product::<f64>(), [8, 12, 6, 1, 1]),
+        |cut| {
+            let cut_volume =
+                f64::from_bits(cut.width_bits) * f64::from_bits(cut.depth_bits) * dimensions[2];
+            (
+                dimensions.into_iter().product::<f64>() - cut_volume,
+                [16, 24, 10, 1, 1],
+            )
+        },
+    );
+    let volume_tolerance = 1.0e-6_f64.max(expected_volume.abs() * 1.0e-10);
+    let producer_feature_id = request.producer_feature_id();
+    let has_canonical_lineage = |role: ExactFaceRole, evidence: &WorkerFaceEvidence| {
+        !evidence.geometric_fingerprint.is_empty()
+            && evidence.lineage_digest
+                == canonical_reference_lineage_digest(
+                    request.document_id,
+                    producer_feature_id,
+                    role.semantic_role(),
+                    role.source_element_id(),
+                    "planar_face",
+                )
+    };
+    let ordinals_are_distinct_and_in_range =
+        role_evidence
+            .iter()
+            .enumerate()
+            .all(|(index, (_, evidence))| {
+                evidence.ordinal < result.topology_counts[2]
+                    && role_evidence[..index]
+                        .iter()
+                        .all(|(_, prior)| prior.ordinal != evidence.ordinal)
+            });
+
+    if result.request_digest != request.canonical_input_digest
+        || !is_sha256_digest(&result.request_digest)
+        || !is_fnv1a64_digest(&result.exact_input_digest)
+        || !is_fnv1a64_digest(&result.result_fingerprint)
+        || result.backend != ketchup_exact::backend_fingerprint()
+        || result.tolerance != ketchup_exact::tolerance_profile()
+        || !role_evidence
+            .iter()
+            .all(|(role, evidence)| has_canonical_lineage(*role, evidence))
+        || !ordinals_are_distinct_and_in_range
+        || !result.volume_mm3.is_finite()
+        || result.volume_mm3 <= 0.0
+        || (result.volume_mm3 - expected_volume).abs() > volume_tolerance
+        || result
+            .bounds_mm
+            .into_iter()
+            .zip(expected_bounds)
+            .any(|(actual, expected)| !actual.is_finite() || (actual - expected).abs() > 1.0e-6)
+        || result.topology_counts != expected_topology
+    {
+        return Err(ExactProductError::InvalidWorkerEvidence);
+    }
+    Ok(())
+}
+
+fn build_m3_render_package(
+    request: &ExactRectangleRequest,
+    result: &WorkerExactResult,
+) -> Result<ExactRenderPackage, ExactProductError> {
+    let bounds = [
+        [
+            result.bounds_mm[0],
+            result.bounds_mm[1],
+            result.bounds_mm[2],
+        ],
+        [
+            result.bounds_mm[3],
+            result.bounds_mm[4],
+            result.bounds_mm[5],
+        ],
+    ];
+    let evidence = |role: ExactFaceRole, value: &WorkerFaceEvidence| {
+        (
+            role,
+            value.lineage_digest.clone(),
+            value.geometric_fingerprint.clone(),
+        )
+    };
+    if request.through_cut.is_some() {
+        let (Some(cut_west), Some(cut_east), Some(cut_south), Some(cut_north)) = (
+            &result.cut_west,
+            &result.cut_east,
+            &result.cut_south,
+            &result.cut_north,
+        ) else {
+            return Err(ExactProductError::InvalidWorkerEvidence);
+        };
+        build_box_render_package(
+            request,
+            result.exact_input_digest.clone(),
+            result.result_fingerprint.clone(),
+            result.backend.clone(),
+            result.tolerance.clone(),
+            bounds,
+            [
+                evidence(ExactFaceRole::Top, &result.top),
+                evidence(ExactFaceRole::Bottom, &result.bottom),
+                evidence(ExactFaceRole::East, &result.east),
+                evidence(ExactFaceRole::CutWest, cut_west),
+                evidence(ExactFaceRole::CutEast, cut_east),
+                evidence(ExactFaceRole::CutSouth, cut_south),
+                evidence(ExactFaceRole::CutNorth, cut_north),
+            ],
+        )
+    } else {
+        build_box_render_package(
+            request,
+            result.exact_input_digest.clone(),
+            result.result_fingerprint.clone(),
+            result.backend.clone(),
+            result.tolerance.clone(),
+            bounds,
+            [
+                evidence(ExactFaceRole::Top, &result.top),
+                evidence(ExactFaceRole::Bottom, &result.bottom),
+                evidence(ExactFaceRole::East, &result.east),
+            ],
+        )
     }
 }
 
@@ -1072,6 +1200,10 @@ fn parse_legacy_exact_result(response: &str) -> Result<WorkerExactResult, Worker
             geometric_fingerprint: String::new(),
             lineage_digest: String::new(),
         },
+        cut_west: None,
+        cut_east: None,
+        cut_south: None,
+        cut_north: None,
     })
 }
 
@@ -1144,6 +1276,83 @@ fn parse_m3_exact_result(response: &str) -> Result<WorkerExactResult, WorkerErro
             geometric_fingerprint: fields[26].to_owned(),
             lineage_digest: fields[27].to_owned(),
         },
+        cut_west: None,
+        cut_east: None,
+        cut_south: None,
+        cut_north: None,
+    })
+}
+
+fn parse_m3_cut_exact_result(response: &str) -> Result<WorkerExactResult, WorkerError> {
+    let fields: Vec<_> = response.split_whitespace().collect();
+    if fields.first() == Some(&"ERR") {
+        return Err(parse_error_response(response, &fields));
+    }
+    if fields.len() != 40
+        || fields[0] != "OK_M3_CUT_V1"
+        || fields[17].is_empty()
+        || fields[18].is_empty()
+        || !is_sha256_digest(fields[15])
+        || [
+            2, 16, 20, 21, 23, 24, 26, 27, 29, 30, 32, 33, 35, 36, 38, 39,
+        ]
+        .into_iter()
+        .any(|index| !is_fnv1a64_digest(fields[index]))
+    {
+        return Err(WorkerError::Protocol(response.to_owned()));
+    }
+    let parse_u64 = |index: usize| {
+        fields[index]
+            .parse::<u64>()
+            .map_err(|_| WorkerError::Protocol(response.to_owned()))
+    };
+    let parse_f64 = |index: usize| {
+        u64::from_str_radix(fields[index], 16)
+            .map(f64::from_bits)
+            .map_err(|_| WorkerError::Protocol(response.to_owned()))
+    };
+    let parse_u32 = |index: usize| {
+        fields[index]
+            .parse::<u32>()
+            .map_err(|_| WorkerError::Protocol(response.to_owned()))
+    };
+    let parse_evidence = |ordinal_index: usize| {
+        Ok(WorkerFaceEvidence {
+            ordinal: parse_u32(ordinal_index)?,
+            geometric_fingerprint: fields[ordinal_index + 1].to_owned(),
+            lineage_digest: fields[ordinal_index + 2].to_owned(),
+        })
+    };
+    Ok(WorkerExactResult {
+        backend_duration: Duration::from_nanos(parse_u64(1)?),
+        result_fingerprint: fields[2].to_owned(),
+        volume_mm3: parse_f64(3)?,
+        bounds_mm: [
+            parse_f64(4)?,
+            parse_f64(5)?,
+            parse_f64(6)?,
+            parse_f64(7)?,
+            parse_f64(8)?,
+            parse_f64(9)?,
+        ],
+        topology_counts: [
+            parse_u32(10)?,
+            parse_u32(11)?,
+            parse_u32(12)?,
+            parse_u32(13)?,
+            parse_u32(14)?,
+        ],
+        request_digest: fields[15].to_owned(),
+        exact_input_digest: fields[16].to_owned(),
+        backend: fields[17].to_owned(),
+        tolerance: fields[18].to_owned(),
+        top: parse_evidence(19)?,
+        bottom: parse_evidence(22)?,
+        east: parse_evidence(25)?,
+        cut_west: Some(parse_evidence(28)?),
+        cut_east: Some(parse_evidence(31)?),
+        cut_south: Some(parse_evidence(34)?),
+        cut_north: Some(parse_evidence(37)?),
     })
 }
 

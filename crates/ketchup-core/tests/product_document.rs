@@ -134,7 +134,7 @@ fn product_schema_round_trip_preserves_identity_hierarchy_values_and_digest() {
     let expected = document.current();
     let loaded = persistence::load(&persistence::save(&expected)).unwrap();
 
-    assert_eq!(loaded.source_schema(), 4);
+    assert_eq!(loaded.source_schema(), 5);
     assert!(loaded.migration_losses().is_empty());
     let actual = loaded.snapshot();
     assert_eq!(actual.document_id(), expected.document_id());
@@ -345,7 +345,7 @@ fn nested_conversion_mapping_sharing_unique_history_and_schema_three_round_trip(
     assert_eq!(document.redo().unwrap().canonical_digest(), unique_digest);
 
     let reopened = persistence::load(&persistence::save(&document.current())).unwrap();
-    assert_eq!(reopened.source_schema(), 4);
+    assert_eq!(reopened.source_schema(), 5);
     let snapshot = reopened.snapshot();
     assert_eq!(snapshot.canonical_digest(), unique_digest);
     assert_eq!(snapshot.evaluator_node_count(), 1);

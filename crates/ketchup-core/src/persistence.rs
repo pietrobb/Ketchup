@@ -19,7 +19,8 @@ use crate::graph::{
 use crate::prismatic::{Aabb, CanonicalJoint, JointId};
 
 const MAGIC: &[u8; 10] = b"KETCHUPDOC";
-const CURRENT_SCHEMA: u16 = 4;
+const CURRENT_SCHEMA: u16 = 5;
+const EXACT_EVIDENCE_SCHEMA: u16 = 4;
 const ENVELOPE_SCHEMA: u16 = 3;
 const PRODUCT_SCHEMA: u16 = 2;
 const RESEARCH_SCHEMA: u16 = 1;
@@ -394,6 +395,11 @@ fn write_features(bytes: &mut Vec<u8>, product: &ProductModel) {
                 push_string(bytes, height.source_token());
                 push_u64(bytes, height.millimetres().to_bits());
             }
+            FeatureKind::ThroughCut { target, profile } => {
+                push_u8(bytes, 3);
+                push_u64(bytes, target.0);
+                push_u64(bytes, profile.0);
+            }
         }
     }
 }
@@ -454,12 +460,20 @@ pub fn load(bytes: &[u8]) -> Result<LoadOutcome, PersistenceError> {
     let schema = reader.u16()?;
     if !matches!(
         schema,
-        LEGACY_SCHEMA | RESEARCH_SCHEMA | PRODUCT_SCHEMA | ENVELOPE_SCHEMA | CURRENT_SCHEMA
+        LEGACY_SCHEMA
+            | RESEARCH_SCHEMA
+            | PRODUCT_SCHEMA
+            | ENVELOPE_SCHEMA
+            | EXACT_EVIDENCE_SCHEMA
+            | CURRENT_SCHEMA
     ) {
         return Err(PersistenceError::UnsupportedSchema(schema));
     }
     let mut migration_losses = Vec::new();
-    let (revision_id, product) = if matches!(schema, ENVELOPE_SCHEMA | CURRENT_SCHEMA) {
+    let (revision_id, product) = if matches!(
+        schema,
+        ENVELOPE_SCHEMA | EXACT_EVIDENCE_SCHEMA | CURRENT_SCHEMA
+    ) {
         let manifest_length = reader.count_with_limit(MAX_MANIFEST_BYTES as u32)? as usize;
         if manifest_length != MANIFEST_BYTES || bytes.len() < HEADER_BYTES + MANIFEST_BYTES {
             return Err(PersistenceError::InvalidEnvelopeLength);
@@ -497,7 +511,12 @@ pub fn load(bytes: &[u8]) -> Result<LoadOutcome, PersistenceError> {
         }
         let mut payload_reader = Reader::new(payload);
         let revision_id = payload_reader.u64()?;
-        let product = read_product(&mut payload_reader, true, schema == CURRENT_SCHEMA)?;
+        let product = read_product(
+            &mut payload_reader,
+            true,
+            schema >= EXACT_EVIDENCE_SCHEMA,
+            schema == CURRENT_SCHEMA,
+        )?;
         if !payload_reader.is_finished() {
             return Err(PersistenceError::TrailingBytes);
         }
@@ -506,7 +525,7 @@ pub fn load(bytes: &[u8]) -> Result<LoadOutcome, PersistenceError> {
         let revision_id = reader.u64()?;
         let nodes = read_nodes(&mut reader, schema == LEGACY_SCHEMA, &mut migration_losses)?;
         let mut product = if schema == PRODUCT_SCHEMA {
-            read_product(&mut reader, false, false)?
+            read_product(&mut reader, false, false, false)?
         } else {
             ProductModel::default()
         };
@@ -545,10 +564,7 @@ pub fn load(bytes: &[u8]) -> Result<LoadOutcome, PersistenceError> {
             reference.definition_id,
         )
         .map_err(|_| PersistenceError::InvalidExactReference)?;
-        if request.profile_feature_id != reference.profile_feature_id
-            || request.extrusion_feature_id != reference.producer_feature_id
-            || request.canonical_input_digest != reference.canonical_input_digest
-        {
+        if !reference.matches_request(&request) {
             return Err(PersistenceError::InvalidExactReference);
         }
     }
@@ -813,6 +829,7 @@ fn read_product(
     reader: &mut Reader<'_>,
     current: bool,
     exact_evidence: bool,
+    through_cut: bool,
 ) -> Result<ProductModel, PersistenceError> {
     let mut product = ProductModel {
         document_id: crate::document::DocumentId(reader.u64()?),
@@ -878,6 +895,10 @@ fn read_product(
             2 => FeatureKind::Extrusion {
                 profile: FeatureId(reader.u64()?),
                 height: Dimension::new(reader.string()?, f64::from_bits(reader.u64()?))?,
+            },
+            3 if through_cut => FeatureKind::ThroughCut {
+                target: FeatureId(reader.u64()?),
+                profile: FeatureId(reader.u64()?),
             },
             kind => return Err(PersistenceError::InvalidFeatureKind(kind)),
         };

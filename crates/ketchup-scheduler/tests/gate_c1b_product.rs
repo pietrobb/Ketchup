@@ -2,7 +2,9 @@ use ketchup_core::document::{
     CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId, FeatureKind,
     OccurrenceId, Transform,
 };
-use ketchup_core::exact_product::{ExactFaceRole, ExactRectangleRequest};
+use ketchup_core::exact_product::{
+    EXACT_THROUGH_CUT_EVALUATOR_V1, ExactFaceRole, ExactRectangleRequest,
+};
 use ketchup_exact::{
     ExactBackend, RectangleExtrudeSpec, ReferenceResolution, StabilityClass,
     capture_guaranteed_references, resolve_subshape_reference,
@@ -16,6 +18,8 @@ use std::sync::Arc;
 const PROFILE: FeatureId = FeatureId(11);
 const EXTRUSION: FeatureId = FeatureId(12);
 const DEFINITION: DefinitionId = DefinitionId(10);
+const CUT_PROFILE: FeatureId = FeatureId(14);
+const THROUGH_CUT: FeatureId = FeatureId(15);
 
 #[test]
 fn preregistered_c1b_product_corpus_has_zero_wrong_identities_and_survives_save_open() {
@@ -161,6 +165,120 @@ fn preregistered_c1b_product_corpus_has_zero_wrong_identities_and_survives_save_
     assert_eq!(observed_roles, 27);
 }
 
+#[test]
+fn scheduler_evaluates_bounded_through_cut_with_seven_role_evidences() {
+    let mut supervisor = ExactWorkerSupervisor::spawn(worker_path()).unwrap();
+    let mut document = through_cut_document(100.0, 60.0, 18.0, [30.0, 20.0, 20.0, 15.0]);
+    let snapshot = document.current();
+    let request = ExactRectangleRequest::from_snapshot(&snapshot, DEFINITION).unwrap();
+    let cut = request.through_cut.as_ref().unwrap();
+    assert_eq!(cut.feature_id, THROUGH_CUT);
+    assert_eq!(cut.profile_feature_id, CUT_PROFILE);
+    assert_eq!(request.producer_feature_id(), THROUGH_CUT);
+    assert_eq!(request.evaluator(), EXACT_THROUGH_CUT_EVALUATOR_V1);
+
+    let package = supervisor.evaluate_rectangle(&request).unwrap();
+    assert!(package.is_current(&snapshot));
+    assert_eq!(package.identity.producer_feature_id, THROUGH_CUT);
+    assert_eq!(package.identity.evaluator, EXACT_THROUGH_CUT_EVALUATOR_V1);
+    assert_eq!(package.bounds_mm, [[0.0, 0.0, 0.0], [100.0, 60.0, 18.0]]);
+    assert_eq!(package.vertices.len(), 16);
+    assert_eq!(package.triangles.len(), 32);
+    let mut edge_use = BTreeMap::<(u32, u32), usize>::new();
+    let mut signed_volume_mm3 = 0.0;
+    for triangle in &package.triangles {
+        let [a, b, c] = triangle
+            .vertex_indices
+            .map(|index| package.vertices[index as usize].position_mm);
+        let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+        let ac = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+        let cross = [
+            ab[1] * ac[2] - ab[2] * ac[1],
+            ab[2] * ac[0] - ab[0] * ac[2],
+            ab[0] * ac[1] - ab[1] * ac[0],
+        ];
+        assert!(cross.into_iter().map(|value| value * value).sum::<f64>() > 1.0e-12);
+        signed_volume_mm3 += (a[0] * (b[1] * c[2] - b[2] * c[1])
+            + a[1] * (b[2] * c[0] - b[0] * c[2])
+            + a[2] * (b[0] * c[1] - b[1] * c[0]))
+            / 6.0;
+        for [first, second] in [
+            [triangle.vertex_indices[0], triangle.vertex_indices[1]],
+            [triangle.vertex_indices[1], triangle.vertex_indices[2]],
+            [triangle.vertex_indices[2], triangle.vertex_indices[0]],
+        ] {
+            *edge_use
+                .entry((first.min(second), first.max(second)))
+                .or_default() += 1;
+        }
+    }
+    assert!(edge_use.values().all(|count| *count == 2));
+    assert!((signed_volume_mm3 - 102_600.0).abs() < 1.0e-6);
+    assert_eq!(package.references.len(), 7);
+
+    let packages = BTreeMap::from([(DEFINITION, Arc::new(package.clone()))]);
+    let projection = ExactInteractionProjection::from_snapshot(&snapshot, &packages);
+    let hole_ray = Ray::new(Vec3::new(40.0, 27.5, 30.0), Vec3::new(0.0, 0.0, -1.0)).unwrap();
+    assert!(projection.exact_pick(hole_ray).is_none());
+    let cut_wall_ray = Ray::new(Vec3::new(40.0, 27.5, 9.0), Vec3::new(-1.0, 0.0, 0.0)).unwrap();
+    assert_eq!(
+        projection
+            .exact_pick(cut_wall_ray)
+            .and_then(|hit| hit.target.body.role()),
+        Some(ExactFaceRole::CutWest)
+    );
+
+    for role in [
+        ExactFaceRole::Top,
+        ExactFaceRole::Bottom,
+        ExactFaceRole::East,
+        ExactFaceRole::CutWest,
+        ExactFaceRole::CutEast,
+        ExactFaceRole::CutSouth,
+        ExactFaceRole::CutNorth,
+    ] {
+        let matching = package
+            .references
+            .iter()
+            .filter(|reference| reference.role() == Some(role))
+            .collect::<Vec<_>>();
+        assert_eq!(matching.len(), 1, "expected one durable {role:?} evidence");
+        assert_eq!(matching[0].producer_feature_id, THROUGH_CUT);
+        assert_eq!(
+            matching[0].profile_feature_id,
+            match role {
+                ExactFaceRole::Top | ExactFaceRole::Bottom | ExactFaceRole::East => PROFILE,
+                ExactFaceRole::CutWest
+                | ExactFaceRole::CutEast
+                | ExactFaceRole::CutSouth
+                | ExactFaceRole::CutNorth => CUT_PROFILE,
+            }
+        );
+        assert!(matching[0].has_valid_lineage());
+    }
+
+    for reference in package.references.clone() {
+        document
+            .register_exact_reference_evidence(reference)
+            .unwrap();
+    }
+    let loaded =
+        ketchup_core::persistence::load(&ketchup_core::persistence::save(&document.current()))
+            .unwrap();
+    assert_eq!(loaded.source_schema(), 5);
+    let reopened = match loaded {
+        ketchup_core::persistence::LoadOutcome::Editable { document, .. } => document,
+        ketchup_core::persistence::LoadOutcome::ReviewOnly(_) => {
+            panic!("schema-5 through-cut evidence must reopen editable")
+        }
+    };
+    assert_eq!(
+        reopened.current().canonical_digest(),
+        snapshot.canonical_digest()
+    );
+    assert_eq!(reopened.current().exact_reference_evidence().count(), 7);
+}
+
 fn rectangle_document(width: f64, depth: f64, height: f64) -> DocumentStore {
     let mut document = DocumentStore::new();
     document
@@ -201,6 +319,39 @@ fn rectangle_document(width: f64, depth: f64, height: f64) -> DocumentStore {
     document
 }
 
+fn through_cut_document(width: f64, depth: f64, height: f64, cut: [f64; 4]) -> DocumentStore {
+    let mut document = rectangle_document(width, depth, height);
+    let [x, y, cut_width, cut_depth] = cut;
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateFeature {
+                id: CUT_PROFILE,
+                definition_id: DEFINITION,
+                name: "Through-cut profile".to_owned(),
+                kind: FeatureKind::Profile {
+                    points_mm: vec![
+                        [x, y],
+                        [x + cut_width, y],
+                        [x + cut_width, y + cut_depth],
+                        [x, y + cut_depth],
+                    ],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: THROUGH_CUT,
+                definition_id: DEFINITION,
+                name: "Bounded through-cut".to_owned(),
+                kind: FeatureKind::ThroughCut {
+                    target: EXTRUSION,
+                    profile: CUT_PROFILE,
+                },
+            },
+        ]))
+        .unwrap();
+    document.discard_history_before_current();
+    document
+}
+
 fn ray_for(role: ExactFaceRole, width: f64, depth: f64, height: f64) -> Ray {
     let (origin, direction) = match role {
         ExactFaceRole::Top => (
@@ -215,6 +366,10 @@ fn ray_for(role: ExactFaceRole, width: f64, depth: f64, height: f64) -> Ray {
             Vec3::new(width + 10.0, depth / 2.0, height / 2.0),
             Vec3::new(-1.0, 0.0, 0.0),
         ),
+        ExactFaceRole::CutWest
+        | ExactFaceRole::CutEast
+        | ExactFaceRole::CutSouth
+        | ExactFaceRole::CutNorth => panic!("cut roles are outside the extrusion-only C1b corpus"),
     };
     Ray::new(origin, direction).unwrap()
 }

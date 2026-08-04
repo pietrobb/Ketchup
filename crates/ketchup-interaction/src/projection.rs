@@ -212,7 +212,7 @@ fn canonical_box(
                 FeatureKind::Extrusion { profile, height } => {
                     Some((*feature_id, *profile, height.millimetres()))
                 }
-                FeatureKind::Profile { .. } => None,
+                FeatureKind::Profile { .. } | FeatureKind::ThroughCut { .. } => None,
             }
         })
         .collect::<Vec<_>>();
