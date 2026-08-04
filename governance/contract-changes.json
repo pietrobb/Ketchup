@@ -1,0 +1,418 @@
+{
+  "schema_version": 1,
+  "bootstrap_base_commit": "f0a0cf3afa9df45682fe8723dacc99cb8e153058",
+  "directions": [
+    "tighten",
+    "loosen",
+    "neutral"
+  ],
+  "changes": [
+    {
+      "path": ".github/CODEOWNERS",
+      "direction": "tighten",
+      "old_freeze_id": "m0-pre-governance",
+      "new_freeze_id": "m0-ci-governance-v1",
+      "evidence": "KETCHUP_ARCHITECTURE_SPECIFICATION_V4.md",
+      "new_sha256": "295fa487b512b7570dad52cf7ea016f987a0d80257e091c43339c206c286f3d0"
+    },
+    {
+      "path": ".github/workflows/ci.yml",
+      "direction": "tighten",
+      "old_freeze_id": "m0-pre-governance",
+      "new_freeze_id": "m0-ci-governance-v1",
+      "evidence": "KETCHUP_ARCHITECTURE_SPECIFICATION_V4.md",
+      "new_sha256": "5d13178b2f8ed3b5adcbd13d341ba7933d1a8bfb0580f9e6568e9d374bb66843"
+    },
+    {
+      "path": "governance/contract-changes.json",
+      "direction": "tighten",
+      "old_freeze_id": "m0-pre-governance",
+      "new_freeze_id": "m0-ci-governance-v1",
+      "evidence": "KETCHUP_ARCHITECTURE_SPECIFICATION_V4.md"
+    },
+    {
+      "path": "scripts/windows/invoke-ci-governance.ps1",
+      "direction": "tighten",
+      "old_freeze_id": "m0-pre-governance",
+      "new_freeze_id": "m0-ci-governance-v1",
+      "evidence": "KETCHUP_ARCHITECTURE_SPECIFICATION_V4.md",
+      "new_sha256": "ebffa3cc0388f55ede575e283e2eaf13288cd3ffcd0572c643aac3938da4b5fc"
+    },
+    {
+      "path": "scripts/windows/test-architecture-guards.ps1",
+      "direction": "tighten",
+      "old_freeze_id": "m0-pre-governance",
+      "new_freeze_id": "m0-ci-governance-v1",
+      "evidence": "KETCHUP_ARCHITECTURE_SPECIFICATION_V4.md",
+      "new_sha256": "fb0768df3fad00538d1915c377b245140b8651628305c8b2d94a5a6dc952cc6a"
+    },
+    {
+      "path": "scripts/windows/test-ci-guard-red-paths.ps1",
+      "direction": "tighten",
+      "old_freeze_id": "m0-pre-governance",
+      "new_freeze_id": "m0-ci-governance-v1",
+      "evidence": "KETCHUP_ARCHITECTURE_SPECIFICATION_V4.md",
+      "new_sha256": "faa62a59d4dcd0996755ccca6560507942951205661d1ce1e8ce59f6f834942d"
+    },
+    {
+      "path": "scripts/windows/validate-r0-v13-historical-evidence.ps1",
+      "direction": "tighten",
+      "old_freeze_id": "m0-pre-governance",
+      "new_freeze_id": "m0-ci-governance-v1",
+      "evidence": "docs/gates/R0_V13_REPORT.md",
+      "new_sha256": "ed625b4cae1165979e7dd84fab41f7a5b596ad91eed752ae0056c31fdb9067fd"
+    },
+    {
+      "path": "governance/d08-lifecycle-exceptions.json",
+      "direction": "tighten",
+      "old_freeze_id": "m0-ci-governance-v1",
+      "new_freeze_id": "m0-lifecycle-r0-envelope-v1",
+      "evidence": "KETCHUP_ARCHITECTURE_SPECIFICATION_V4.md",
+      "new_sha256": "128d6c634b156d5cfd11891a7f3628e50a2f436efaab13d94ed281153ece7737"
+    },
+    {
+      "path": "governance/r0-transitions-v1-v13.json",
+      "direction": "tighten",
+      "old_freeze_id": "r0-v13",
+      "new_freeze_id": "m0-lifecycle-r0-envelope-v1",
+      "evidence": "scripts/windows/validate-r0-transition-classifications.ps1",
+      "new_sha256": "01599a4166a059eb528e3c52a7c5b8550a28fce044d3eca341310b92af2c6a3b"
+    },
+    {
+      "path": "scripts/windows/validate-r0-transition-classifications.ps1",
+      "direction": "tighten",
+      "old_freeze_id": "r0-v13",
+      "new_freeze_id": "m0-lifecycle-r0-envelope-v1",
+      "evidence": "governance/r0-transitions-v1-v13.json",
+      "new_sha256": "bdda434369dbc18e81023e01b7737794a442f7c46bf7f28281965f20e78b6aa9"
+    },
+    {
+      "path": "crates/ketchup-exact/tests/upper_envelope.rs",
+      "direction": "tighten",
+      "old_freeze_id": "r0-v13",
+      "new_freeze_id": "m0-upper-envelope-v1",
+      "evidence": "governance/r0-transitions-v1-v13.json",
+      "new_sha256": "d588e016901257f36cbdc04670937c7b94dcea54b44ba169d4f0f53743007e9e"
+    },
+    {
+      "path": "governance/deny-ci.toml",
+      "direction": "neutral",
+      "old_freeze_id": "m0-pre-governance",
+      "new_freeze_id": "m0-ci-governance-v1",
+      "evidence": "KETCHUP_ARCHITECTURE_SPECIFICATION_V4.md",
+      "new_sha256": "0e2973212555e072cb53ddeaeac914a1082ab4f69b2a36d9675ad201316bd72f"
+    },
+    {
+      "path": "artifacts/gate-a0/runs/run-006/metrics.json",
+      "direction": "neutral",
+      "old_freeze_id": "m0-pre-governance",
+      "new_freeze_id": "m0-governed-baseline-v1",
+      "evidence": "artifacts/gate-a0/runs/run-006/metrics.json",
+      "new_sha256": "20d42e4708397ac279e57ef1862803f0f0b66b93813b33b69a890d10b52f3d56"
+    },
+    {
+      "path": "artifacts/gate-a0/runs/run-006/report.md",
+      "direction": "neutral",
+      "old_freeze_id": "m0-pre-governance",
+      "new_freeze_id": "m0-governed-baseline-v1",
+      "evidence": "artifacts/gate-a0/runs/run-006/report.md",
+      "new_sha256": "ef7904496dc8ff4fe1d9fc934e71c61fbf9705c1fa143504803d6ac04ddd92d3"
+    },
+    {
+      "path": "artifacts/gate-a0/runs/run-007/metrics.json",
+      "direction": "neutral",
+      "old_freeze_id": "m0-pre-governance",
+      "new_freeze_id": "m0-governed-baseline-v1",
+      "evidence": "artifacts/gate-a0/runs/run-007/metrics.json",
+      "new_sha256": "f586cb979288cd1dac832fbb2329326713333b69704afdb6afabccd1d9c399d6"
+    },
+    {
+      "path": "artifacts/gate-a0/runs/run-007/report.md",
+      "direction": "neutral",
+      "old_freeze_id": "m0-pre-governance",
+      "new_freeze_id": "m0-governed-baseline-v1",
+      "evidence": "artifacts/gate-a0/runs/run-007/report.md",
+      "new_sha256": "56dafb20e4fab13b9f22eaf19ae9d8213f311f13c14da014620aaec81d4aca3c"
+    },
+    {
+      "path": "artifacts/gate-a0/runs/run-008/metrics.json",
+      "direction": "neutral",
+      "old_freeze_id": "m0-pre-governance",
+      "new_freeze_id": "m0-governed-baseline-v1",
+      "evidence": "artifacts/gate-a0/runs/run-008/metrics.json",
+      "new_sha256": "b67dfa0a8a4b25db899b45cc06206c1f20439e65a84487c7872ee99734c3b892"
+    },
+    {
+      "path": "artifacts/gate-a0/runs/run-008/report.md",
+      "direction": "neutral",
+      "old_freeze_id": "m0-pre-governance",
+      "new_freeze_id": "m0-governed-baseline-v1",
+      "evidence": "artifacts/gate-a0/runs/run-008/report.md",
+      "new_sha256": "a95a09c4fa841cad7305f7f1335ff274cd02e2fa8da907b0ac4ab3c3d9f35d46"
+    },
+    {
+      "path": "artifacts/gate-a0/runs/run-009/metrics.json",
+      "direction": "neutral",
+      "old_freeze_id": "m0-pre-governance",
+      "new_freeze_id": "m0-governed-baseline-v1",
+      "evidence": "artifacts/gate-a0/runs/run-009/metrics.json",
+      "new_sha256": "b6ce3f0ff891642c5c26a22ad9aaa8d8bd9e818ece43b7c6c2c4ca08a4c8d629"
+    },
+    {
+      "path": "artifacts/gate-a0/runs/run-009/report.md",
+      "direction": "neutral",
+      "old_freeze_id": "m0-pre-governance",
+      "new_freeze_id": "m0-governed-baseline-v1",
+      "evidence": "artifacts/gate-a0/runs/run-009/report.md",
+      "new_sha256": "b70f64df1bdf4c416b4a8d192978855d16c9a6f6fb8e17d61e5ad6dc7ce02c10"
+    },
+    {
+      "path": "artifacts/gate-a0/runs/run-010/metrics.json",
+      "direction": "neutral",
+      "old_freeze_id": "m0-pre-governance",
+      "new_freeze_id": "m0-governed-baseline-v1",
+      "evidence": "artifacts/gate-a0/runs/run-010/metrics.json",
+      "new_sha256": "600c3d2284e0caa5071da156af59678c7c50709b99dc13a3736f6010dd808d3c"
+    },
+    {
+      "path": "artifacts/gate-a0/runs/run-010/report.md",
+      "direction": "neutral",
+      "old_freeze_id": "m0-pre-governance",
+      "new_freeze_id": "m0-governed-baseline-v1",
+      "evidence": "artifacts/gate-a0/runs/run-010/report.md",
+      "new_sha256": "33e5339fedcef2bca1408dfa88ce8104bb7b455834c26e5fbb58c9354299ec20"
+    },
+    {
+      "path": "artifacts/gate-a0/runs/run-011/metrics.json",
+      "direction": "neutral",
+      "old_freeze_id": "m0-pre-governance",
+      "new_freeze_id": "m0-governed-baseline-v1",
+      "evidence": "artifacts/gate-a0/runs/run-011/metrics.json",
+      "new_sha256": "3c4b8de07601270126682d14d1d36c0ddf1077c3e28ae0a76859b176c7a5b7e1"
+    },
+    {
+      "path": "artifacts/gate-a0/runs/run-011/report.md",
+      "direction": "neutral",
+      "old_freeze_id": "m0-pre-governance",
+      "new_freeze_id": "m0-governed-baseline-v1",
+      "evidence": "artifacts/gate-a0/runs/run-011/report.md",
+      "new_sha256": "71ad4b488fbbc8394760cec49e9f60b8c066adfa108c9419fd89b00eda3dfc6e"
+    },
+    {
+      "path": "artifacts/gate-a0/runs/strengthened-run-001/metrics.json",
+      "direction": "neutral",
+      "old_freeze_id": "m0-pre-governance",
+      "new_freeze_id": "m0-governed-baseline-v1",
+      "evidence": "artifacts/gate-a0/runs/strengthened-run-001/metrics.json",
+      "new_sha256": "6a3c6e150ca328510bac5468c0e036461cf30ddf73111d0c673869245ab67fae"
+    },
+    {
+      "path": "artifacts/gate-a0/runs/strengthened-run-001/report.md",
+      "direction": "neutral",
+      "old_freeze_id": "m0-pre-governance",
+      "new_freeze_id": "m0-governed-baseline-v1",
+      "evidence": "artifacts/gate-a0/runs/strengthened-run-001/report.md",
+      "new_sha256": "14142c7aca58e324d6c697695e9491429fd02a2b9aa9418f535fa1bba49f9c48"
+    },
+    {
+      "path": "artifacts/gate-a0/strengthened-a0-v1-lock.json",
+      "direction": "neutral",
+      "old_freeze_id": "m0-pre-governance",
+      "new_freeze_id": "m0-governed-baseline-v1",
+      "evidence": "artifacts/gate-a0/strengthened-a0-v1-lock.json",
+      "new_sha256": "5ae34bdd0eb7cad4719c11154e57e5ec8d955d51313e7ffb14ff5f96809a7ff0"
+    },
+    {
+      "path": "artifacts/gate-a0/strengthened-a0-v1-preregistration.json",
+      "direction": "neutral",
+      "old_freeze_id": "m0-pre-governance",
+      "new_freeze_id": "m0-governed-baseline-v1",
+      "evidence": "artifacts/gate-a0/strengthened-a0-v1-preregistration.json",
+      "new_sha256": "4359b007264f6ee7b1719c8be121fdddebdb1324bec970b7388a3b2ada1099be"
+    },
+    {
+      "path": "artifacts/r0/preregistration-lock-r0-v10.json",
+      "direction": "neutral",
+      "old_freeze_id": "m0-pre-governance",
+      "new_freeze_id": "m0-governed-baseline-v1",
+      "evidence": "artifacts/r0/preregistration-lock-r0-v10.json",
+      "new_sha256": "ad3113150d52805efb2659c2e4a4b51dc9e8c695207beef52309e437e2509e99"
+    },
+    {
+      "path": "artifacts/r0/preregistration-lock-r0-v11.json",
+      "direction": "neutral",
+      "old_freeze_id": "m0-pre-governance",
+      "new_freeze_id": "m0-governed-baseline-v1",
+      "evidence": "artifacts/r0/preregistration-lock-r0-v11.json",
+      "new_sha256": "d6c9edacd884a1b24a8fc6d42a14ad4bc25c248883faf7ba5c0d846977ae8de7"
+    },
+    {
+      "path": "artifacts/r0/preregistration-lock-r0-v12.json",
+      "direction": "neutral",
+      "old_freeze_id": "m0-pre-governance",
+      "new_freeze_id": "m0-governed-baseline-v1",
+      "evidence": "artifacts/r0/preregistration-lock-r0-v12.json",
+      "new_sha256": "01ee1e30d4a9026f674ee3ee9fa1dde965294b97b691b7870fab49c782b96176"
+    },
+    {
+      "path": "artifacts/r0/preregistration-lock-r0-v13.json",
+      "direction": "neutral",
+      "old_freeze_id": "m0-pre-governance",
+      "new_freeze_id": "m0-governed-baseline-v1",
+      "evidence": "artifacts/r0/preregistration-lock-r0-v13.json",
+      "new_sha256": "b1cf0c769cb46d0c678c1bc579e241356cc85663582a0df72093e2e54086cb01"
+    },
+    {
+      "path": "artifacts/r0/preregistration-lock-r0-v6.json",
+      "direction": "neutral",
+      "old_freeze_id": "m0-pre-governance",
+      "new_freeze_id": "m0-governed-baseline-v1",
+      "evidence": "artifacts/r0/preregistration-lock-r0-v6.json",
+      "new_sha256": "4a07111ad9cadb40d9c57f2a8c827b317e2edbe34243143f54cee133c2c74256"
+    },
+    {
+      "path": "artifacts/r0/preregistration-lock-r0-v7.json",
+      "direction": "neutral",
+      "old_freeze_id": "m0-pre-governance",
+      "new_freeze_id": "m0-governed-baseline-v1",
+      "evidence": "artifacts/r0/preregistration-lock-r0-v7.json",
+      "new_sha256": "50db67abb3696890006d714394897942c6367991fdfb91b0ae175abff7b361a4"
+    },
+    {
+      "path": "artifacts/r0/preregistration-lock-r0-v8.json",
+      "direction": "neutral",
+      "old_freeze_id": "m0-pre-governance",
+      "new_freeze_id": "m0-governed-baseline-v1",
+      "evidence": "artifacts/r0/preregistration-lock-r0-v8.json",
+      "new_sha256": "ad2f6ff3c89043d1491b02de1e0af390a3211ae4844cb37f32bacb3956b7c456"
+    },
+    {
+      "path": "artifacts/r0/preregistration-lock-r0-v9.json",
+      "direction": "neutral",
+      "old_freeze_id": "m0-pre-governance",
+      "new_freeze_id": "m0-governed-baseline-v1",
+      "evidence": "artifacts/r0/preregistration-lock-r0-v9.json",
+      "new_sha256": "da0dbcd3b3daf845a83f6a708a528c7cdcbf8e0155d1d93bfbb9637c539a7b25"
+    },
+    {
+      "path": "docs/design/EXECUTION_CONTRACT.md",
+      "direction": "tighten",
+      "old_freeze_id": "m0-pre-governance",
+      "new_freeze_id": "m0-ci-governance-v1",
+      "evidence": "KETCHUP_ARCHITECTURE_SPECIFICATION_V4.md",
+      "new_sha256": "18ad1cbd1244145f009814b9985a44cda390f39be7359852639c6428aa2966eb"
+    },
+    {
+      "path": "scripts/windows/run-gate-c-hp-dev-01-r0-v13.ps1",
+      "direction": "tighten",
+      "old_freeze_id": "m0-pre-governance",
+      "new_freeze_id": "m0-ci-governance-v1",
+      "evidence": "KETCHUP_ARCHITECTURE_SPECIFICATION_V4.md",
+      "new_sha256": "588a6a8be01446a11ede1a06a28c08987ccd06fa7da14ec2d3b842173b9ab38c"
+    },
+    {
+      "path": "scripts/windows/run-gate-c-hp-igpu-01.ps1",
+      "direction": "tighten",
+      "old_freeze_id": "m0-pre-governance",
+      "new_freeze_id": "m0-ci-governance-v1",
+      "evidence": "KETCHUP_ARCHITECTURE_SPECIFICATION_V4.md",
+      "new_sha256": "8bade6a87253ebdac41f4cf9f92acc11a84ddec7e907cce9e2ad16af7cdcf564"
+    },
+    {
+      "path": "scripts/windows/run-strengthened-a0-v1.ps1",
+      "direction": "tighten",
+      "old_freeze_id": "m0-pre-governance",
+      "new_freeze_id": "m0-ci-governance-v1",
+      "evidence": "KETCHUP_ARCHITECTURE_SPECIFICATION_V4.md",
+      "new_sha256": "a5276979e8703eba08b9f645ce5260e65f04376a67dee350aa09c197a25124f9"
+    },
+    {
+      "path": "scripts/windows/validate-r0-v10-preregistration.ps1",
+      "direction": "tighten",
+      "old_freeze_id": "m0-pre-governance",
+      "new_freeze_id": "m0-ci-governance-v1",
+      "evidence": "KETCHUP_ARCHITECTURE_SPECIFICATION_V4.md",
+      "new_sha256": "cbdba247d22d5349d2ae9d646b8cbf9eb2647ba9a420e3bba24b344f7f4e3831"
+    },
+    {
+      "path": "scripts/windows/validate-r0-v11-preregistration.ps1",
+      "direction": "tighten",
+      "old_freeze_id": "m0-pre-governance",
+      "new_freeze_id": "m0-ci-governance-v1",
+      "evidence": "KETCHUP_ARCHITECTURE_SPECIFICATION_V4.md",
+      "new_sha256": "949355ecdc9ebc2622082388225a68c7dc48661d48cc07a1d6186b5fc5140452"
+    },
+    {
+      "path": "scripts/windows/validate-r0-v12-preregistration.ps1",
+      "direction": "tighten",
+      "old_freeze_id": "m0-pre-governance",
+      "new_freeze_id": "m0-ci-governance-v1",
+      "evidence": "KETCHUP_ARCHITECTURE_SPECIFICATION_V4.md",
+      "new_sha256": "2efd7ab90ff199c2cd9669fbb603af6ba1db58b1ef264e4d126baed5564c0c56"
+    },
+    {
+      "path": "scripts/windows/validate-r0-v13-preregistration.ps1",
+      "direction": "tighten",
+      "old_freeze_id": "m0-pre-governance",
+      "new_freeze_id": "m0-ci-governance-v1",
+      "evidence": "KETCHUP_ARCHITECTURE_SPECIFICATION_V4.md",
+      "new_sha256": "0aafe1544295f69b312370294025eb9423b0464e2a4423f8cdf6f31e90e204ec"
+    },
+    {
+      "path": "scripts/windows/validate-r0-v6-preregistration.ps1",
+      "direction": "tighten",
+      "old_freeze_id": "m0-pre-governance",
+      "new_freeze_id": "m0-ci-governance-v1",
+      "evidence": "KETCHUP_ARCHITECTURE_SPECIFICATION_V4.md",
+      "new_sha256": "aa61976ef5ba197f506dbb1c63ef97ce22df2b13af107acc046c3e8322e1383d"
+    },
+    {
+      "path": "scripts/windows/validate-r0-v7-preregistration.ps1",
+      "direction": "tighten",
+      "old_freeze_id": "m0-pre-governance",
+      "new_freeze_id": "m0-ci-governance-v1",
+      "evidence": "KETCHUP_ARCHITECTURE_SPECIFICATION_V4.md",
+      "new_sha256": "bb8214fb201d747cb9d1158014a2b88bee57c47c197a4ded0e38313a27da6f92"
+    },
+    {
+      "path": "scripts/windows/validate-r0-v8-preregistration.ps1",
+      "direction": "tighten",
+      "old_freeze_id": "m0-pre-governance",
+      "new_freeze_id": "m0-ci-governance-v1",
+      "evidence": "KETCHUP_ARCHITECTURE_SPECIFICATION_V4.md",
+      "new_sha256": "8ca01886de3043c596b5e753e748aa0b2deb0280fb4e34dbba8d36172ab9b92f"
+    },
+    {
+      "path": "scripts/windows/validate-r0-v9-preregistration.ps1",
+      "direction": "tighten",
+      "old_freeze_id": "m0-pre-governance",
+      "new_freeze_id": "m0-ci-governance-v1",
+      "evidence": "KETCHUP_ARCHITECTURE_SPECIFICATION_V4.md",
+      "new_sha256": "857bcb4c0081a6433edd24b224997ebe82aa7e6194f8dad769c09104230e1d87"
+    },
+    {
+      "path": "scripts/windows/validate-strengthened-a0-v1.ps1",
+      "direction": "tighten",
+      "old_freeze_id": "m0-pre-governance",
+      "new_freeze_id": "m0-ci-governance-v1",
+      "evidence": "KETCHUP_ARCHITECTURE_SPECIFICATION_V4.md",
+      "new_sha256": "ebbbe0b37b45184656fe1a53f1019074084982a3aba31f90acf64c453039b2aa"
+    },
+    {
+      "path": "scripts/windows/verify-gate-c-transfer.ps1",
+      "direction": "tighten",
+      "old_freeze_id": "m0-pre-governance",
+      "new_freeze_id": "m0-ci-governance-v1",
+      "evidence": "KETCHUP_ARCHITECTURE_SPECIFICATION_V4.md",
+      "new_sha256": "b1dd096d480bfd8f4af66ac3593c4618bb90192ba4185592497cd98be8642c54"
+    },
+    {
+      "path": "scripts/windows/write-gate-c-report.ps1",
+      "direction": "tighten",
+      "old_freeze_id": "m0-pre-governance",
+      "new_freeze_id": "m0-ci-governance-v1",
+      "evidence": "KETCHUP_ARCHITECTURE_SPECIFICATION_V4.md",
+      "new_sha256": "21d8c7e3dd820925ff7f0d264e511890c5fb31f2317aeb88b5b8a914f034a4b3"
+    }
+  ]
+}

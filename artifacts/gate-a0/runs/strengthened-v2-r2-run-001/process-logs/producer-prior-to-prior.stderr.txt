@@ -1,0 +1,9 @@
+
+thread 'main' (13832) panicked at crates\ketchup-exact\src\bin\ketchup-a0-diagnostic-probe.rs:115:10:
+diagnostic producer must contain the north face
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+thread 'main' (13832) panicked at crates\ketchup-exact\src\bin\ketchup-a0-diagnostic-probe.rs:115:10:
+diagnostic producer must contain the north face
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace

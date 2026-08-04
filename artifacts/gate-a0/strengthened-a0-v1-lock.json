@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "freeze_id": "strengthened-a0-v1",
+  "frozen_utc": "2026-08-03T21:17:28.221667Z",
+  "measurement_state_at_freeze": "not_started",
+  "tree_hash_algorithm": "SHA-256 over UTF-8 lines relative/path|size|file_sha256\\n, paths sorted case-insensitively; frozen Python executable SHA-256 5f7b89a612c9b8af1d6456cdfcd1dbe5ca630849e79aebced9bee9a6694952ec",
+  "files": [
+    {"path":"artifacts/gate-a0/HISTORICAL_AUDIT_ADDENDUM.md","sha256":"f5395dadd392296583fe6d3e192478d723b479965edde218fb53a157d0d6aef4"},
+    {"path":"artifacts/gate-a0/strengthened-a0-v1-preregistration.json","sha256":"4359b007264f6ee7b1719c8be121fdddebdb1324bec970b7388a3b2ada1099be"},
+    {"path":"thresholds/r0.yaml","sha256":"3a953aa2df56d859730fc7f3dd266801eb795252bd3f77fb995af84ca80de09c"},
+    {"path":"corpora/manifest.yaml","sha256":"ceae3af9cd50c89298100993af7ef28e8d3433165ef882409cb506b79c7ae8ae"},
+    {"path":"corpora/r0/step/self-authored-box.step","sha256":"f925be79adc65eeaaa5234f4ae3f6400ceb93559cad86f67603c1d4d13883143"},
+    {"path":"corpora/r0/step/self-authored-through-cut.step","sha256":"05b9dcfcfed9f39b93a2bedef2b36bb77375a533deae39a073314017b3d72461"},
+    {"path":"corpora/r0/step/self-authored-l-bracket.step","sha256":"cf6f66efef2412956bd77131b93dacbdca5e9fd6390155457436c28693b7965b"},
+    {"path":"Cargo.toml","sha256":"f030c12a55147f250ee71fee4864865fa19b3104f12f786d16b8feed8b186158"},
+    {"path":"Cargo.lock","sha256":"eceb482fd1aa9e9f6bcdc644431e03d1e516f2efa787355de7f0767744ffe852"},
+    {"path":"rust-toolchain.toml","sha256":"6ed0c02f396ed635caf66cce3272eb82b877df7259b736f6ca457e486c9c4158"},
+    {"path":"crates/ketchup-exact/Cargo.toml","sha256":"1a85af282f919a25dcf109abf49a2433cd7ecb8e34c9ca134cae1c7f47237a0b"},
+    {"path":"crates/ketchup-exact/build.rs","sha256":"879b4295db28c772a17dccf0c5f41740a2f7618d91e1c8ede2b21d7dc15972e6"},
+    {"path":"crates/ketchup-exact/include/ketchup_exact.hxx","sha256":"ad3b8305e1550d8183c2d193d3d2f0c9f988bd7f9743b0dbafe74eb0d24bdb4c"},
+    {"path":"crates/ketchup-exact/src/lib.rs","sha256":"99468b337361fd358ffe0c1da98bfec1254bcff460d0593ec3275d60b95c09a6"},
+    {"path":"crates/ketchup-exact/src/native.cc","sha256":"df3d11561cd2108a6bb22536e52de5cba675eeb20145ff6a4c2f74db4aff7aba"},
+    {"path":"crates/ketchup-exact/src/bin/ketchup-a0-reference-producer.rs","sha256":"d70940ab915695a5f9450e8aacc23b8c5c6864548561487855e3dc8bd1034481"},
+    {"path":"crates/ketchup-exact/tests/gate_a0.rs","sha256":"8393da7af2d4184abc80321bf0dccd0e60d7fae6704809f7cbbffc1a641ed68d"},
+    {"path":"scripts/windows/validate-strengthened-a0-v1.ps1","sha256":"ebbbe0b37b45184656fe1a53f1019074084982a3aba31f90acf64c453039b2aa"},
+    {"path":"scripts/windows/run-strengthened-a0-v1.ps1","sha256":"a5276979e8703eba08b9f645ce5260e65f04376a67dee350aa09c197a25124f9"},
+    {"path":"artifacts/r0/occt-build-manifest.json","sha256":"1212a72954ed503a6b06618b2813b1d7c04f5b422329d2327594268e431ef48a"}
+  ],
+  "backends": [
+    {
+      "id":"prior-real-build","install_path":"third_party/occt-install","release":"8.0.1","file_count":7400,"tree_sha256":"bc55a1294872a05e01c69a8011f17a3171f3edd704e4d1f621c2827ffd28ab9d","fingerprint":"occt-8.0.1:tree:bc55a1294872a05e01c69a8011f17a3171f3edd704e4d1f621c2827ffd28ab9d:tkernel:5d48e135036b6b58331250b7432b9dd3ae21a31ca9348d3110d8762b15c2173a:prior-real-build",
+      "representative_libraries":[
+        {"path":"win64/vc14/bin/TKernel.dll","sha256":"5d48e135036b6b58331250b7432b9dd3ae21a31ca9348d3110d8762b15c2173a"},
+        {"path":"win64/vc14/bin/TKBRep.dll","sha256":"85faa230f668d6f047a3eadb97fcf6efad8c8ad24775e6c0543d46a493d4afb6"},
+        {"path":"win64/vc14/bin/TKPrim.dll","sha256":"42ba0d12e9bd8e9d288c0cecf549789226a78159bee03026c0c1d5a96c2f9304"}
+      ]
+    },
+    {
+      "id":"current-r0-v1-build","install_path":"third_party/occt-install-r0-v1","release":"8.0.1","file_count":7400,"tree_sha256":"c51103534429a99414c22c88c7964cd2d55dd53baf3a0fc7dc8314481aa25a76","fingerprint":"occt-8.0.1:tree:c51103534429a99414c22c88c7964cd2d55dd53baf3a0fc7dc8314481aa25a76:tkernel:ec7d6c0d93ccf1624d7e76fe275d38ce5a807a74da824a25b1c93ef484d18df5:current-r0-v1-build",
+      "representative_libraries":[
+        {"path":"win64/vc14/bin/TKernel.dll","sha256":"ec7d6c0d93ccf1624d7e76fe275d38ce5a807a74da824a25b1c93ef484d18df5"},
+        {"path":"win64/vc14/bin/TKBRep.dll","sha256":"ed9c9beefb62ab27919ab55f842c45a4676302a273141c46694e2a8e34e3b8a3"},
+        {"path":"win64/vc14/bin/TKPrim.dll","sha256":"e295f3f6fe36967da3d5478988c49b71ab0e1ab6fa576de39397c95ed506a53c"}
+      ]
+    }
+  ]
+}

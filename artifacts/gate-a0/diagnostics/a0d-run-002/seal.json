@@ -1,0 +1,144 @@
+{
+    "schema_version":  1,
+    "run_id":  "a0d-run-002",
+    "sealed_utc":  "2026-08-04T05:57:59.0472747Z",
+    "hash_algorithm":  "SHA-256",
+    "file_count":  27,
+    "files":  [
+                  {
+                      "path":  "inputs/ketchup-a0-diagnostic-probe.rs",
+                      "size":  12012,
+                      "sha256":  "dcbe8bf2b72f4ad8f6a4e4f40cd3f2039f403e898345eec813eaf80f69becc3e"
+                  },
+                  {
+                      "path":  "inputs/run-a0-diagnostic-matrix-v1.ps1",
+                      "size":  14734,
+                      "sha256":  "30915397050ac8bbb19e85a223a080544bfa6a6e751cc1f50c8fc4c7d4b2c135"
+                  },
+                  {
+                      "path":  "matrix.json",
+                      "size":  11437,
+                      "sha256":  "8775088c98f7d07ade13a99bd180229b76bf440058a2ad69f5fa677d93208d46"
+                  },
+                  {
+                      "path":  "processes.json",
+                      "size":  19960,
+                      "sha256":  "b3e8ef7d9961baab98d6a164f7dbc0eeb700b0ead188056f007f55666292ec68"
+                  },
+                  {
+                      "path":  "process-logs/build-current.stderr.txt",
+                      "size":  876,
+                      "sha256":  "c49cb941cdadd1d12b01d39c80ae730fcdf084fc35388a858a3c3347ee367dd4"
+                  },
+                  {
+                      "path":  "process-logs/build-current.stdout.txt",
+                      "size":  0,
+                      "sha256":  "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+                  },
+                  {
+                      "path":  "process-logs/build-prior.stderr.txt",
+                      "size":  876,
+                      "sha256":  "2a7229eb05fc4d6561d0a6c424506d1b32faabd4b02d049640d90ab06b3b3378"
+                  },
+                  {
+                      "path":  "process-logs/build-prior.stdout.txt",
+                      "size":  0,
+                      "sha256":  "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+                  },
+                  {
+                      "path":  "process-logs/consumer-current-to-current.stderr.txt",
+                      "size":  0,
+                      "sha256":  "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+                  },
+                  {
+                      "path":  "process-logs/consumer-current-to-current.stdout.txt",
+                      "size":  0,
+                      "sha256":  "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+                  },
+                  {
+                      "path":  "process-logs/consumer-current-to-prior.stderr.txt",
+                      "size":  0,
+                      "sha256":  "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+                  },
+                  {
+                      "path":  "process-logs/consumer-current-to-prior.stdout.txt",
+                      "size":  0,
+                      "sha256":  "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+                  },
+                  {
+                      "path":  "process-logs/consumer-prior-to-current.stderr.txt",
+                      "size":  0,
+                      "sha256":  "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+                  },
+                  {
+                      "path":  "process-logs/consumer-prior-to-current.stdout.txt",
+                      "size":  0,
+                      "sha256":  "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+                  },
+                  {
+                      "path":  "process-logs/consumer-prior-to-prior.stderr.txt",
+                      "size":  0,
+                      "sha256":  "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+                  },
+                  {
+                      "path":  "process-logs/consumer-prior-to-prior.stdout.txt",
+                      "size":  0,
+                      "sha256":  "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+                  },
+                  {
+                      "path":  "process-logs/preflight-validator.stderr.txt",
+                      "size":  0,
+                      "sha256":  "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+                  },
+                  {
+                      "path":  "process-logs/preflight-validator.stdout.txt",
+                      "size":  1777,
+                      "sha256":  "7a3994f8cc124b9ff8129d4985b65a8b4e7d56f66fc06f839c9bdc8a37891d51"
+                  },
+                  {
+                      "path":  "process-logs/producer-current-to-current.stderr.txt",
+                      "size":  645,
+                      "sha256":  "cfef9fb869e035559584cddcc76981e85e219a08e5edb6381df899ce0f3e8cec"
+                  },
+                  {
+                      "path":  "process-logs/producer-current-to-current.stdout.txt",
+                      "size":  221,
+                      "sha256":  "88152184bea1de05713a8411b7c45a1ca5d590c1bf245c836f3edcc5b85e1066"
+                  },
+                  {
+                      "path":  "process-logs/producer-current-to-prior.stderr.txt",
+                      "size":  645,
+                      "sha256":  "094f6738e2bf9e6d273dd96003aa0ea50d920a9b73a59b6ecc0ae268ec1a6e2c"
+                  },
+                  {
+                      "path":  "process-logs/producer-current-to-prior.stdout.txt",
+                      "size":  221,
+                      "sha256":  "88152184bea1de05713a8411b7c45a1ca5d590c1bf245c836f3edcc5b85e1066"
+                  },
+                  {
+                      "path":  "process-logs/producer-prior-to-current.stderr.txt",
+                      "size":  642,
+                      "sha256":  "ab2da05c1ece58a37dabee217e2d56224ea8ab2439234f7538c7fbd210b2ff51"
+                  },
+                  {
+                      "path":  "process-logs/producer-prior-to-current.stdout.txt",
+                      "size":  218,
+                      "sha256":  "e19f353d59a41140f0d81c3616fbc823457fdf23f19c3aad0b0ca0729e346f4e"
+                  },
+                  {
+                      "path":  "process-logs/producer-prior-to-prior.stderr.txt",
+                      "size":  642,
+                      "sha256":  "e0e51b445b6440710380d59a57b70d9274feed3f058ae1646cd6846129e5a51b"
+                  },
+                  {
+                      "path":  "process-logs/producer-prior-to-prior.stdout.txt",
+                      "size":  218,
+                      "sha256":  "e19f353d59a41140f0d81c3616fbc823457fdf23f19c3aad0b0ca0729e346f4e"
+                  },
+                  {
+                      "path":  "report.md",
+                      "size":  1030,
+                      "sha256":  "668f6110993d62fbf2dac7ca9e0e2560ab7f87187a587de5f8ba522be8d90283"
+                  }
+              ]
+}

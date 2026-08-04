@@ -1,0 +1,18 @@
+{
+    "schema_version":  1,
+    "freeze_id":  "strengthened-a0-v2-r3",
+    "run_id":  "strengthened-v2-r3-run-001",
+    "lock_sha256":  "8dfc733a6607d9e47b707de85e9f2be50e74a5b2df728cf8f42c709189ebcd79",
+    "native_observation_reached":  true,
+    "provenance_failure":  false,
+    "cleanup_barrier_passed":  true,
+    "substantive_failure_observed":  false,
+    "inherited_suites_passed":  2,
+    "inherited_suites_required":  2,
+    "matrix_combinations_passed":  4,
+    "matrix_combinations_required":  4,
+    "decision":  "FULL_GO",
+    "failure_class":  "none",
+    "fatal_detail":  null,
+    "applied_disposition":  "A0 v2 passes both frozen backends and all four same/cross-build directions. Release M3, withdraw L-01/L-02 from ADR 0004, leave L-03/L-04 unadopted, and keep PF0 inactive."
+}

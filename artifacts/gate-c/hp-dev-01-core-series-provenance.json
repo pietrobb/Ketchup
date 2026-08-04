@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "profile_id": "HP-DEV-01",
+  "series": [1, 2, 3],
+  "r0_lock_sha256": "da0dbcd3b3daf845a83f6a708a528c7cdcbf8e0155d1d93bfbb9637c539a7b25",
+  "git_head": "f0a0cf3afa9df45682fe8723dacc99cb8e153058",
+  "working_tree_dirty": true,
+  "note": "The Git HEAD, dirty state, source hashes, executable hashes, and immutable result hashes identify the exact uncommitted measurement revision without rewriting any raw series file.",
+  "files": [
+    {"path": "target/release/ketchup-gate-c-core.exe", "sha256": "cfea07b32dec2ee395bb26aa5a7c3dce7d8411190361d821696063a049f680c5"},
+    {"path": "target/release/ketchup-exact-worker.exe", "sha256": "54cf12f88fd2fdb1d69de23cccc36c80a6111507c4e75217f5f4dd1def6ae708"},
+    {"path": "crates/ketchup-scheduler/src/bin/ketchup-gate-c-core.rs", "sha256": "1dd8d666d456f8c421b498628bf9f9e9a2d48bf02eabac817300aa8c15bb4b84"},
+    {"path": "crates/ketchup-scheduler/src/bin/ketchup-exact-worker.rs", "sha256": "d7091e406934b992e3910e9937781030f3d05853677ed66885dc53babf4fcddc"},
+    {"path": "artifacts/gate-c/hp-dev-01-core-series-1.json", "sha256": "a7cc437658dc0513e6fba3dd89a1ef5a05574c4394e5177bef79826ac819bf82"},
+    {"path": "artifacts/gate-c/hp-dev-01-core-series-2.json", "sha256": "684032d7ebb484721b6de20a6e9e33b23e11a6181c480742ea69fd58925699ec"},
+    {"path": "artifacts/gate-c/hp-dev-01-core-series-3.json", "sha256": "fa41bd881245827b9865e171e3cebfd64364d6733a7b7fb02890067455bfcf7e"}
+  ]
+}

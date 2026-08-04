@@ -2,7 +2,7 @@
 
 use std::fmt;
 
-const BACKEND_FINGERPRINT: &str = "occt-8.0.1:b8f597c677811d1f9f4d8a97f5ae2825c0353a42:r0-v1";
+const BACKEND_FINGERPRINT: &str = env!("KETCHUP_OCCT_BUILD_FINGERPRINT");
 const TOLERANCE_PROFILE: &str = "r0-v1:bbox=1e-6mm:volume_abs=1e-6mm3:volume_rel=1e-10";
 const MIN_LENGTH_MM: f64 = 0.01;
 const MAX_LENGTH_MM: f64 = 100_000.0;
@@ -43,6 +43,16 @@ mod ffi {
         max_y: f64,
         max_z: f64,
         edge_count: u32,
+    }
+
+    struct NativeFaceEdgeEvidence {
+        face_ordinal: u32,
+        edge_ordinal: u32,
+    }
+
+    struct NativeEdgeFaceEvidence {
+        edge_ordinal: u32,
+        face_ordinal: u32,
     }
 
     struct NativeHistoryEvidence {
@@ -88,6 +98,8 @@ mod ffi {
         fn valid(self: &NativeOperationResult) -> bool;
         fn topology_summary(self: &NativeOperationResult) -> NativeTopologySummary;
         fn face_evidence(self: &NativeOperationResult) -> Vec<NativeFaceEvidence>;
+        fn face_edge_evidence(self: &NativeOperationResult) -> Vec<NativeFaceEdgeEvidence>;
+        fn edge_face_evidence(self: &NativeOperationResult) -> Vec<NativeEdgeFaceEvidence>;
         fn history_evidence(self: &NativeOperationResult) -> Vec<NativeHistoryEvidence>;
     }
 }
@@ -193,7 +205,14 @@ pub struct FaceEvidence {
     pub normal: Point3,
     pub bounds_mm: Bounds3,
     pub edge_count: u32,
+    pub edge_ordinals: Vec<u32>,
     pub geometric_fingerprint: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EdgeEvidence {
+    pub ordinal: u32,
+    pub adjacent_face_ordinals: Vec<u32>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -206,6 +225,7 @@ pub struct TopologyEvidence {
     pub volume_mm3: f64,
     pub bounds_mm: Bounds3,
     pub faces: Vec<FaceEvidence>,
+    pub edges: Vec<EdgeEvidence>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -357,6 +377,15 @@ impl ExactBackend {
         )
     }
 
+    pub fn exception_probe(&self) -> Result<ExactOpOutput, GeometryError> {
+        collect_output(
+            ffi::exception_probe_native(),
+            "exception_probe",
+            "intentional",
+            HistoryConfidence::None,
+        )
+    }
+
     pub fn import_step(&self, path: &str) -> Result<ExactOpOutput, GeometryError> {
         let input = format!("import_step:{path}");
         if path.trim().is_empty() {
@@ -436,6 +465,8 @@ fn collect_output(
     }
 
     let summary = native_ref.topology_summary();
+    let face_edges = native_ref.face_edge_evidence();
+    let edge_faces = native_ref.edge_face_evidence();
     let faces = native_ref
         .face_evidence()
         .into_iter()
@@ -479,6 +510,15 @@ fn collect_output(
                     },
                 },
                 edge_count: face.edge_count,
+                edge_ordinals: {
+                    let mut ordinals = face_edges
+                        .iter()
+                        .filter(|entry| entry.face_ordinal == face.ordinal)
+                        .map(|entry| entry.edge_ordinal)
+                        .collect::<Vec<_>>();
+                    ordinals.sort_unstable();
+                    ordinals
+                },
                 geometric_fingerprint: stable_digest(&signature),
             }
         })
@@ -503,6 +543,20 @@ fn collect_output(
             },
         },
         faces,
+        edges: (0..summary.edge_count)
+            .map(|ordinal| {
+                let mut adjacent_face_ordinals = edge_faces
+                    .iter()
+                    .filter(|entry| entry.edge_ordinal == ordinal)
+                    .map(|entry| entry.face_ordinal)
+                    .collect::<Vec<_>>();
+                adjacent_face_ordinals.sort_unstable();
+                EdgeEvidence {
+                    ordinal,
+                    adjacent_face_ordinals,
+                }
+            })
+            .collect(),
     };
     let result_signature = format!(
         "{}:{}:{}:{}:{}:{:016x}:{:?}",
@@ -548,11 +602,58 @@ fn collect_output(
     })
 }
 
+#[must_use]
+pub fn has_complete_manifold_adjacency(topology: &TopologyEvidence) -> bool {
+    if topology.faces.len() != topology.face_count as usize
+        || topology.edges.len() != topology.edge_count as usize
+        || topology
+            .faces
+            .iter()
+            .enumerate()
+            .any(|(ordinal, face)| face.ordinal != ordinal as u32)
+        || topology
+            .edges
+            .iter()
+            .enumerate()
+            .any(|(ordinal, edge)| edge.ordinal != ordinal as u32)
+    {
+        return false;
+    }
+
+    topology.faces.iter().all(|face| {
+        face.edge_count as usize == face.edge_ordinals.len()
+            && !face.edge_ordinals.is_empty()
+            && face.edge_ordinals.windows(2).all(|pair| pair[0] < pair[1])
+            && face.edge_ordinals.iter().all(|edge_ordinal| {
+                topology.edges.iter().any(|edge| {
+                    edge.ordinal == *edge_ordinal
+                        && edge.adjacent_face_ordinals.contains(&face.ordinal)
+                })
+            })
+    }) && topology.edges.iter().all(|edge| {
+        edge.adjacent_face_ordinals.len() == 2
+            && edge.adjacent_face_ordinals[0] < edge.adjacent_face_ordinals[1]
+            && edge.adjacent_face_ordinals.iter().all(|face_ordinal| {
+                topology.faces.iter().any(|face| {
+                    face.ordinal == *face_ordinal && face.edge_ordinals.contains(&edge.ordinal)
+                })
+            })
+    })
+}
+
 pub fn capture_guaranteed_references(
     output: &ExactOpOutput,
     document_id: &str,
     producer_feature_id: &str,
 ) -> Result<Vec<SubshapeRef>, GeometryError> {
+    if !has_complete_manifold_adjacency(&output.body.topology) {
+        return Err(parameter_error(
+            GeometryErrorCode::InvalidShape,
+            "capture_guaranteed_references",
+            &output.input_digest,
+            "Guaranteed output lacks complete reciprocal face/edge adjacency".to_owned(),
+        ));
+    }
     let required = [
         ("extrusion.top", "profile.face"),
         ("extrusion.bottom", "profile.face"),
@@ -619,6 +720,26 @@ pub fn resolve_subshape_reference(
     output: &ExactOpOutput,
 ) -> ReferenceResolution {
     let migrated_backend = reference.backend_fingerprint != output.backend_fingerprint;
+    let expected_lineage = stable_digest(&format!(
+        "{}:{}:{}:{}:{}",
+        reference.document_id,
+        reference.producer_feature_id,
+        reference.semantic_role,
+        reference.source_element_id,
+        reference.expected_type
+    ));
+    if reference.document_id.is_empty()
+        || reference.producer_feature_id.is_empty()
+        || reference.lineage_digest != expected_lineage
+    {
+        return if migrated_backend {
+            ReferenceResolution::QuarantinedMigration {
+                reason: "Reference provenance or lineage digest is invalid".to_owned(),
+            }
+        } else {
+            ReferenceResolution::Lost
+        };
+    }
     let mut candidates = output
         .topology_history
         .iter()

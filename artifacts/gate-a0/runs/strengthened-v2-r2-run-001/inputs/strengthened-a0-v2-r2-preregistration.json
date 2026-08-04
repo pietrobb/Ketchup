@@ -1,0 +1,113 @@
+{
+  "schema_version": 1,
+  "gate_id": "strengthened-a0-v2-r2",
+  "status": "preregistered_before_observation",
+  "preregistered_utc": "2026-08-04T07:44:40.024219Z",
+  "measurement_state_at_preregistration": "not_started",
+  "first_observation_definition": "The first launch of an inherited-suite or reference-probe executable that can invoke native geometry. Source inspection, preregistration, hashing, validation, and compilation are not observations.",
+  "authority": "thresholds/r0.yaml A0, docs/architecture/EXECUTION_CONTRACT.md, ADR 0004, and ADR 0005",
+  "purpose": "Re-observe the unchanged A0 v2 contract after the sealed first attempt ended before native observation on a PowerShell collection-shape harness defect; preserve the same geometry, matrix, negative control, thresholds, and owner-fixed outcome dispositions.",
+  "immutability_rule": "This r2 revision changes only pre-observation harness mechanics identified by strengthened-v2-run-001: scalar-safe executable counting and native-only Job Object emptiness enforcement. After the first r2 observation, any change requires another preregistration version. Historical A0 v1, A0-D, and v2 run-001 evidence remains immutable.",
+  "historical_anchors": {
+    "strengthened_a0_v1_lock": {"path": "artifacts/gate-a0/strengthened-a0-v1-lock.json", "sha256": "5ae34bdd0eb7cad4719c11154e57e5ec8d955d51313e7ffb14ff5f96809a7ff0"},
+    "strengthened_a0_v1_metrics": {"path": "artifacts/gate-a0/runs/strengthened-run-001/metrics.json", "sha256": "6a3c6e150ca328510bac5468c0e036461cf30ddf73111d0c673869245ab67fae"},
+    "strengthened_a0_v1_report": {"path": "artifacts/gate-a0/runs/strengthened-run-001/report.md", "sha256": "14142c7aca58e324d6c697695e9491429fd02a2b9aa9418f535fa1bba49f9c48"},
+    "a0d_run_002_seal": {"path": "artifacts/gate-a0/diagnostics/a0d-run-002/seal.json", "sha256": "1f360c23eabd28cf56db62d25ba0179eb47bbf672297c8d59fb04fbae92252af"},
+    "adr_0004": {"path": "docs/adr/0004-v4-p15-sequence-and-a0-disposition.md", "sha256": "16a7f9410a797352bd7b65a4d4e56f441bedcf533c237a6555dca80a45d7ff39"},
+    "adr_0005": {"path": "docs/adr/0005-no-go-diagnostic-hold.md", "sha256": "806ef9c391ec9347e02b8d64f35ded82b630c5d1e4d7dc66f4a6fee66df44392"},
+    "execution_contract": {"path": "docs/architecture/EXECUTION_CONTRACT.md", "sha256": "a8c80003ddfc620c6e4fdc27449cd10642df425187c84ce7664a643b2280a66b"},
+    "a0_v2_lock": {"path": "artifacts/gate-a0/strengthened-a0-v2-lock.json", "sha256": "8c12965aa5d77e5bf7f4fcd55e575ab506a70a99ffaedd1a6a07441bd9178ce0"},
+    "a0_v2_run_001_seal": {"path": "artifacts/gate-a0/runs/strengthened-v2-run-001/seal.json", "sha256": "c77689e74e208524566c136b2ae385029abe8ac6e2f75f8e481c7f96df698127"}
+  },
+  "inherited_contract": {
+    "thresholds_path": "thresholds/r0.yaml",
+    "thresholds_sha256": "3a953aa2df56d859730fc7f3dd266801eb795252bd3f77fb995af84ca80de09c",
+    "corpus": "corpora/manifest.yaml fixed, generative, mutation, adversarial, rejection, and three STEP fixtures are inherited byte-for-byte",
+    "operation_envelope_change": "none",
+    "threshold_change": "none",
+    "consequence_change": "none",
+    "required_counts_per_backend": {
+      "fixed_expected_valid": 4,
+      "ffi_fuzz_calls_min": 10000,
+      "adversarial_expected_valid": 10,
+      "typed_rejections": 6,
+      "guaranteed_mutation_outcomes": 24,
+      "step_fixtures": 3
+    },
+    "required_backend_suite_passes": 2,
+    "measurement_build": "Release; debugger and profiler detached"
+  },
+  "guaranteed_oracle": {
+    "active_references": [
+      "extrusion.top",
+      "extrusion.bottom",
+      "extrusion.side(profile_edge=east)"
+    ],
+    "requirements": [
+      "All 24 mutation outcomes per backend resolve to the correct semantic face.",
+      "Every resolved face has four unique boundary edges and complete reciprocal manifold adjacency.",
+      "Every Guaranteed result has explicit role, source-element, lineage, and non-empty backend-history evidence.",
+      "Geometry fingerprints are corroborative and never the identity oracle.",
+      "Silent wrong identity count is zero."
+    ]
+  },
+  "backend_matrix": {
+    "backends": [
+      {"alias": "prior", "lock_backend_id": "prior-real-build", "install_path": "third_party/occt-install", "release": "8.0.1"},
+      {"alias": "current", "lock_backend_id": "current-r0-v1-build", "install_path": "third_party/occt-install-r0-v1", "release": "8.0.1"}
+    ],
+    "required_combinations": [
+      "prior-to-prior",
+      "current-to-current",
+      "prior-to-current",
+      "current-to-prior"
+    ],
+    "full_go_required_pass_count": 4,
+    "same_build_go_required_combinations": ["prior-to-prior", "current-to-current"],
+    "producer_fixture": {"width_mm": 100, "depth_mm": 60, "height_mm": 20},
+    "consumer_fixture": {"width_mm": 100, "depth_mm": 60, "height_mm": 20},
+    "active_reference_expectation_per_consumer": {"resolved_correctly": 3, "ambiguous": 0, "lost": 0, "silent_wrong_identity": 0},
+    "intentional_invalid_reference_negative_control": {
+      "semantic_role": "legacy.extrusion.side(profile_edge=north)",
+      "source_element_id": "profile.edge.north",
+      "construction": "Capture a real north face, boundary, lineage, and geometric fingerprint under a semantic role absent from consumer history. The consumer uses identical geometry, so the north face has the same geometric fingerprint while the semantic lineage remains invalid; fingerprint-only fallback is therefore detectable.",
+      "same_build_expected": "Lost",
+      "cross_build_expected": "QuarantinedMigration",
+      "forbidden": ["Resolved", "Ambiguous"]
+    },
+    "combination_pass_rule": "Producer succeeds; consumer runs; all three active references resolve to their correct semantic faces with complete adjacency; the intentional invalid reference returns exactly Lost for same identity or QuarantinedMigration for changed identity; stdout/stderr/panic/exit/executable and backend identity are sealed.",
+    "anti_simulation_rule": "Both executables are compiled from the locked repaired evaluator source against each validated backend. Executable SHA-256 and the complete staged OCCT DLL set are recorded and rechecked against the frozen backend immediately before launch. Editing only a fingerprint string is not evidence."
+  },
+  "process_evidence": {
+    "required_per_stage": [
+      "state",
+      "exact argument vector",
+      "build identity",
+      "evaluator/source identity",
+      "executable SHA-256",
+      "stdout and stderr paths plus SHA-256",
+      "panic detection",
+      "exit code",
+      "consumer_not_run and reason when applicable"
+    ],
+    "seal": "Every run, including preflight/build/start/panic failure, ends with matrix.json, processes.json, report.md, SHA-256 file manifest seal.json, and seal.sha256."
+  },
+  "decision_rule": {
+    "FULL_GO": "Both inherited backend suites pass, all four matrix combinations pass, and every negative control is rejected exactly as preregistered. Release the M3 halt and withdraw L-01/L-02 from ADR 0004 because their evidentiary basis was the defective A0 observation.",
+    "SAME_BUILD_GO": "Both inherited backend suites and both same-build combinations pass with their negative controls, while at least one cross-build active-reference transfer fails without silent wrong identity. Keep L-01/L-02, do not change the version, quarantine changed identities, and release the M3 halt on the unchanged passing identity.",
+    "NO_GO": "Any inherited metric failure, same-build producer/consumer failure, same-build active-reference wrong/ambiguous/lost result, adjacency gap, negative-control mismatch, leaked exception, silent invalid shape, or silent wrong identity. Cross-build active-reference failure alone selects SAME_BUILD_GO only when both same-build paths and every negative control pass.",
+    "hash_or_provenance_only": "No geometry conclusion when validation, locked input, build identity, runtime staging, or exclusive evidence path fails before native observation.",
+    "diagnostic_hold": "A substantive NO-GO applies the safe halt but authorizes no redesign, fallback, guarantee narrowing, or loosen until a minimal reproducer localizes the cause to a concrete source path or named external boundary.",
+    "operator_disposition": "Before observation, the project owner fixed both admissible success consequences: FULL_GO withdraws L-01/L-02; SAME_BUILD_GO retains L-01/L-02 without a version change. Both release the M3 halt. PF0 remains inactive.",
+    "full_go_effect": "Withdraw L-01/L-02 from ADR 0004, leave L-03/L-04 unadopted, and release M3.",
+    "same_build_go_effect": "Retain L-01/L-02 and the current version, keep failed changed identities quarantined, leave L-03/L-04 unadopted, and release M3 on the unchanged passing identity."
+  },
+  "evidence_scope": "The narrow rectangular extrusion Guaranteed subset, inherited A0 operation envelope and corpus, complete manifold adjacency, two frozen OCCT 8.0.1 build identities, all four same/cross directions, and one intentional invalid-reference control. It is not general topological naming or product certification.",
+  "historical_failed_attempt": {
+    "run_id": "strengthened-v2-run-001",
+    "classification": "hash_or_provenance_only",
+    "native_observation_reached": false,
+    "geometry_conclusion": "none",
+    "sealed_run_path": "artifacts/gate-a0/runs/strengthened-v2-run-001"
+  }
+}

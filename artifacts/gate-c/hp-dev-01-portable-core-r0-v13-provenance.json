@@ -1,0 +1,91 @@
+{
+    "schema_version":  1,
+    "profile_id":  "HP-DEV-01",
+    "freeze_id":  "r0-v13",
+    "attempt":  3,
+    "contract":  "portable-build-provenance-v1",
+    "r0_lock_sha256":  "b1cf0c769cb46d0c678c1bc579e241356cc85663582a0df72093e2e54086cb01",
+    "build_input_tree_sha256":  "de8592b10b5ed88d2ae7cf8394c127d3d7ca1ea8b22830911cc28a8fbdca84bb",
+    "controller_script_sha256":  "588a6a8be01446a11ede1a06a28c08987ccd06fa7da14ec2d3b842173b9ab38c",
+    "runner_script_sha256":  "8bade6a87253ebdac41f4cf9f92acc11a84ddec7e907cce9e2ad16af7cdcf564",
+    "validator_script_sha256":  "0aafe1544295f69b312370294025eb9423b0464e2a4423f8cdf6f31e90e204ec",
+    "clean_build":  true,
+    "decision":  "PASS",
+    "started_utc":  "2026-08-02T07:08:57.6997519Z",
+    "completed_utc":  "2026-08-02T07:10:09.7033683Z",
+    "executable_sha256":  {
+                              "ketchup-gate-c-core.exe":  "8febf81571ace7127c31e8e4f0ac6cabcc04438d24772a37f9d2339f72752e77",
+                              "ketchup-exact-worker.exe":  "7efc64d70522098b6c4c407ee42b2de5ac8617708f28e0c8e3a8860e9e53f8fe",
+                              "ketchup-gate-c-nav.exe":  "44c0866581de56e779afed75ee71656bfa5accdfa00ee1e969b13ef715a0ebd8"
+                          },
+    "metrics":  [
+                    {
+                        "series":  1,
+                        "edit_p95_ms":  2.5764,
+                        "pick_snap_p95_ms":  2.4647,
+                        "navigation_block_max_ms":  3.4303,
+                        "cancel_p95_ms":  1.2644,
+                        "action_digest_match_percent":  100,
+                        "wrong_identity_count":  0,
+                        "committed_data_loss_count":  0
+                    },
+                    {
+                        "series":  2,
+                        "edit_p95_ms":  3.0476,
+                        "pick_snap_p95_ms":  2.4764,
+                        "navigation_block_max_ms":  2.7046,
+                        "cancel_p95_ms":  1.2021,
+                        "action_digest_match_percent":  100,
+                        "wrong_identity_count":  0,
+                        "committed_data_loss_count":  0
+                    },
+                    {
+                        "series":  3,
+                        "edit_p95_ms":  2.4934,
+                        "pick_snap_p95_ms":  2.4773,
+                        "navigation_block_max_ms":  3.0742,
+                        "cancel_p95_ms":  1.3148,
+                        "action_digest_match_percent":  100,
+                        "wrong_identity_count":  0,
+                        "committed_data_loss_count":  0
+                    }
+                ],
+    "files":  [
+                  {
+                      "path":  "artifacts/gate-c/hp-dev-01-core-r0-v13-attempt-3-series-1.json",
+                      "sha256":  "8dcc1a8e860c264a1a44e03e6bcf42d8597ae79c4777d98430a7e685e33e8cdb"
+                  },
+                  {
+                      "path":  "artifacts/gate-c/hp-dev-01-core-r0-v13-attempt-3-series-2.json",
+                      "sha256":  "a4a05d866bc56ad4d22eb3738bcab0e87af331ac5f6e3110682e4c3673605ba1"
+                  },
+                  {
+                      "path":  "artifacts/gate-c/hp-dev-01-core-r0-v13-attempt-3-series-3.json",
+                      "sha256":  "13f9d6c97d66a30c23ea841373dae6731b87581ae3ee9c20aad85c196cc80231"
+                  },
+                  {
+                      "path":  "artifacts/gate-c/hp-dev-01-core-r0-v13-attempt-3-series-1.stdout.log",
+                      "sha256":  "173d9c5fde353f3186f80f200d9d5168fd5007dddc5af9c4a7ed6ddfb0b5f89a"
+                  },
+                  {
+                      "path":  "artifacts/gate-c/hp-dev-01-core-r0-v13-attempt-3-series-2.stdout.log",
+                      "sha256":  "5e3a09f446cee6529cb94bc4bc63cc709bfa118fd0d268141a819d7f4d5be34e"
+                  },
+                  {
+                      "path":  "artifacts/gate-c/hp-dev-01-core-r0-v13-attempt-3-series-3.stdout.log",
+                      "sha256":  "955b5e092cf5f05ac9a9edea91bc2b520d5f1157df07350e9cda526c19643a46"
+                  },
+                  {
+                      "path":  "artifacts/gate-c/hp-dev-01-core-r0-v13-attempt-3-series-1.stderr.log",
+                      "sha256":  "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+                  },
+                  {
+                      "path":  "artifacts/gate-c/hp-dev-01-core-r0-v13-attempt-3-series-2.stderr.log",
+                      "sha256":  "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+                  },
+                  {
+                      "path":  "artifacts/gate-c/hp-dev-01-core-r0-v13-attempt-3-series-3.stderr.log",
+                      "sha256":  "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+                  }
+              ]
+}

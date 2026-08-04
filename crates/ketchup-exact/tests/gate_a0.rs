@@ -1,14 +1,14 @@
 use ketchup_exact::{
     BoxSpec, CutMode, ExactBackend, ExactOpOutput, FaceEvidence, GeneratedOperation, GeometryError,
     GeometryErrorCode, Point3, RectangleExtrudeSpec, ReferenceResolution, Size3,
-    StructuredGenerator, SubshapeRef, capture_guaranteed_references, resolve_subshape_reference,
-    validate_closed_planar_profile,
+    StructuredGenerator, SubshapeRef, capture_guaranteed_references,
+    has_complete_manifold_adjacency, resolve_subshape_reference, validate_closed_planar_profile,
 };
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const ACTIVE_LOCK_SHA256: &str = "0a47c3d0b6d6a24201f64d221b8850892926f7786a3c23ba117c13df881c3d58";
+const STRENGTHENED_FREEZE_ID: &str = "strengthened-a0-v1";
 const SEEDS: [u64; 20] = [
     1, 7, 19, 31, 43, 61, 73, 101, 151, 211, 307, 401, 503, 601, 701, 809, 907, 1009, 1201, 1601,
 ];
@@ -29,11 +29,15 @@ struct Metrics {
     guaranteed_correct: usize,
     guaranteed_total: usize,
     guaranteed_history_complete: usize,
+    guaranteed_adjacency_complete: usize,
     silent_wrong_identities: usize,
     step_passes: usize,
     step_total: usize,
     migration_resolved: usize,
     migration_quarantined: usize,
+    migration_backends_distinct: bool,
+    migration_producer_backend: Option<String>,
+    migration_consumer_backend: Option<String>,
 }
 
 #[test]
@@ -53,7 +57,7 @@ fn gate_a0() {
     write_evidence(&repository, &metrics, &failures);
     assert!(
         failures.is_empty(),
-        "A0 NO-GO under r0-v5: {}",
+        "Strengthened A0 v1 NO-GO: {}",
         failures.join("; ")
     );
 }
@@ -67,17 +71,43 @@ fn repository_root() -> PathBuf {
 }
 
 fn validate_active_freeze(repository: &Path) {
-    let script = repository.join("scripts/windows/validate-r0-v5-preregistration.ps1");
+    let script = repository.join("scripts/windows/validate-strengthened-a0-v1.ps1");
     let output = Command::new("powershell.exe")
         .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
         .arg(script)
+        .arg("-EmitJson")
         .output()
-        .expect("R0 v2 validator must run before A0 observations");
+        .expect("strengthened A0 validator must run before observations");
     assert!(
         output.status.success(),
-        "R0 v2 integrity failed before A0: {}",
+        "strengthened A0 integrity failed before geometry observation: {}",
         String::from_utf8_lossy(&output.stderr)
     );
+    let run_id = std::env::var("KETCHUP_A0_RUN_ID")
+        .expect("formal strengthened A0 requires a sealed run ID");
+    let run_suffix = run_id
+        .strip_prefix("strengthened-run-")
+        .expect("run ID must use the strengthened-run-NNN namespace");
+    assert!(
+        run_suffix.len() == 3 && run_suffix.bytes().all(|byte| byte.is_ascii_digit()),
+        "run ID must end in exactly three digits"
+    );
+    let lock_sha256 = std::env::var("KETCHUP_A0_LOCK_SHA256")
+        .expect("runner must provide the validated lock hash");
+    let producer_fingerprint = std::env::var("KETCHUP_A0_PRODUCER_FINGERPRINT")
+        .expect("runner must provide the validated producer fingerprint");
+    let consumer_fingerprint = env!("KETCHUP_OCCT_BUILD_FINGERPRINT");
+    let validation = String::from_utf8(output.stdout).expect("validator output must be UTF-8");
+    for required in [
+        format!("\"lock_sha256\":\"{lock_sha256}\""),
+        format!("\"fingerprint\":\"{producer_fingerprint}\""),
+        format!("\"fingerprint\":\"{consumer_fingerprint}\""),
+    ] {
+        assert!(
+            validation.contains(&required),
+            "execution environment does not match the validated freeze: {required}"
+        );
+    }
 }
 
 fn run_fixed_corpus(backend: &ExactBackend, metrics: &mut Metrics) {
@@ -206,6 +236,11 @@ fn run_guaranteed_mutations_and_migration(backend: &ExactBackend, metrics: &mut 
                     } else {
                         metrics.silent_wrong_identities += 1;
                     }
+                    if has_complete_manifold_adjacency(&output.body.topology)
+                        && face.edge_ordinals.len() == 4
+                    {
+                        metrics.guaranteed_adjacency_complete += 1;
+                    }
                     if output.topology_history.iter().any(|entry| {
                         entry.semantic_role.as_deref() == Some(reference.semantic_role.as_str())
                             && entry.source_element_id == reference.source_element_id
@@ -229,29 +264,139 @@ fn run_guaranteed_mutations_and_migration(backend: &ExactBackend, metrics: &mut 
             height_mm: 25.0,
         })
         .expect("migration target must succeed");
-    for reference in &references {
-        let mut prior_backend_reference = reference.clone();
-        prior_backend_reference.backend_fingerprint = "occt-prior-build:test-fixture".to_owned();
-        if matches!(
-            resolve_subshape_reference(&prior_backend_reference, &current),
-            ReferenceResolution::Resolved {
-                migrated_backend: true,
-                ..
+    assert!(
+        has_complete_manifold_adjacency(&current.body.topology),
+        "migration target lacks complete reciprocal adjacency"
+    );
+    let (prior_references, retired_reference) = load_prior_backend_references();
+    metrics.migration_producer_backend = Some(prior_references[0].backend_fingerprint.clone());
+    metrics.migration_consumer_backend = Some(current.backend_fingerprint.to_owned());
+    metrics.migration_backends_distinct = prior_references
+        .iter()
+        .chain(std::iter::once(&retired_reference))
+        .all(|reference| reference.backend_fingerprint != current.backend_fingerprint);
+    for reference in &prior_references {
+        if let ReferenceResolution::Resolved {
+            face_ordinal,
+            migrated_backend: true,
+        } = resolve_subshape_reference(reference, &current)
+        {
+            let face = current
+                .body
+                .topology
+                .faces
+                .iter()
+                .find(|face| face.ordinal == face_ordinal)
+                .expect("migrated face ordinal must exist");
+            if expected_semantic_face(reference, face, 120.0, 25.0) && face.edge_ordinals.len() == 4
+            {
+                metrics.migration_resolved += 1;
+            } else {
+                metrics.silent_wrong_identities += 1;
             }
-        ) {
-            metrics.migration_resolved += 1;
         }
     }
-    let mut unresolved = references[0].clone();
-    unresolved.backend_fingerprint = "occt-prior-build:test-fixture".to_owned();
-    unresolved.semantic_role = "extrusion.removed-role".to_owned();
-    unresolved.source_element_id = "profile.removed-element".to_owned();
     if matches!(
-        resolve_subshape_reference(&unresolved, &current),
+        resolve_subshape_reference(&retired_reference, &current),
         ReferenceResolution::QuarantinedMigration { .. }
     ) {
         metrics.migration_quarantined += 1;
     }
+}
+
+fn load_prior_backend_references() -> (Vec<SubshapeRef>, SubshapeRef) {
+    let path = std::env::var("KETCHUP_A0_PRIOR_REFERENCE_FIXTURE")
+        .expect("strengthened A0 requires a real prior-build reference fixture");
+    let raw = fs::read_to_string(path).expect("prior-build reference fixture must be readable");
+    let mut lines = raw.lines();
+    assert_eq!(
+        lines.next(),
+        Some("strengthened-a0-reference-fixture-v1"),
+        "unexpected migration fixture schema"
+    );
+    let backend = lines
+        .next()
+        .and_then(|line| line.strip_prefix("backend\t"))
+        .expect("migration fixture must record its producer backend");
+    assert!(!backend.is_empty(), "producer backend must not be empty");
+    assert_eq!(
+        lines.next(),
+        Some("topology\t6\t12"),
+        "producer fixture must be the preregistered closed cuboid"
+    );
+
+    let mut references = Vec::new();
+    let mut retired_reference = None;
+    for line in lines {
+        let fields = line.split('\t').collect::<Vec<_>>();
+        assert_eq!(fields.len(), 11, "malformed producer reference row");
+        assert!(
+            matches!(fields[0], "reference" | "retired_reference"),
+            "unexpected producer row kind"
+        );
+        assert_eq!(fields[1], "a0-document");
+        assert_eq!(fields[2], "extrusion-001");
+        assert_eq!(fields[5], "planar_face");
+        assert_eq!(fields[6], backend, "reference/backend provenance mismatch");
+        assert!(fields[7].starts_with("fnv1a64:"));
+        assert!(fields[8].starts_with("fnv1a64:"));
+        let face_ordinal = fields[9]
+            .parse::<u32>()
+            .expect("producer face ordinal must be numeric");
+        assert!(face_ordinal < 6, "producer face ordinal outside fixture");
+        let mut boundary = fields[10]
+            .split(',')
+            .map(|value| value.parse::<u32>().expect("edge ordinal must be numeric"))
+            .collect::<Vec<_>>();
+        boundary.sort_unstable();
+        assert_eq!(boundary.len(), 4, "producer face boundary must be complete");
+        assert!(boundary.windows(2).all(|pair| pair[0] < pair[1]));
+        assert!(boundary.iter().all(|ordinal| *ordinal < 12));
+        let reference = SubshapeRef {
+            document_id: fields[1].to_owned(),
+            producer_feature_id: fields[2].to_owned(),
+            semantic_role: fields[3].to_owned(),
+            source_element_id: fields[4].to_owned(),
+            expected_type: fields[5].to_owned(),
+            stability_class: ketchup_exact::StabilityClass::Guaranteed,
+            backend_fingerprint: fields[6].to_owned(),
+            lineage_digest: fields[7].to_owned(),
+            corroborating_geometry_fingerprint: fields[8].to_owned(),
+        };
+        if fields[0] == "reference" {
+            references.push(reference);
+        } else {
+            assert!(
+                retired_reference.replace(reference).is_none(),
+                "producer emitted more than one retired reference"
+            );
+        }
+    }
+    let mut active_keys = references
+        .iter()
+        .map(|reference| {
+            (
+                reference.semantic_role.as_str(),
+                reference.source_element_id.as_str(),
+            )
+        })
+        .collect::<Vec<_>>();
+    active_keys.sort_unstable();
+    assert_eq!(
+        active_keys,
+        vec![
+            ("extrusion.bottom", "profile.face"),
+            ("extrusion.side(profile_edge=east)", "profile.edge.east"),
+            ("extrusion.top", "profile.face"),
+        ]
+    );
+    let retired_reference = retired_reference.expect("producer must emit one retired reference");
+    assert_eq!(
+        retired_reference.semantic_role,
+        "legacy.extrusion.side(profile_edge=north)"
+    );
+    assert_eq!(retired_reference.source_element_id, "profile.edge.north");
+    (references, retired_reference)
 }
 
 fn expected_semantic_face(
@@ -703,6 +848,12 @@ fn gate_failures(metrics: &Metrics) -> Vec<String> {
             metrics.guaranteed_correct, metrics.guaranteed_total
         ));
     }
+    if metrics.guaranteed_adjacency_complete != metrics.guaranteed_total {
+        failures.push(format!(
+            "Guaranteed complete adjacency {}/{}",
+            metrics.guaranteed_adjacency_complete, metrics.guaranteed_total
+        ));
+    }
     if metrics.silent_wrong_identities != 0 {
         failures.push(format!(
             "{} silent wrong identities",
@@ -721,6 +872,9 @@ fn gate_failures(metrics: &Metrics) -> Vec<String> {
             metrics.step_passes, metrics.step_total
         ));
     }
+    if !metrics.migration_backends_distinct {
+        failures.push("producer and consumer backend builds are not distinct".to_owned());
+    }
     if metrics.migration_resolved != 3 || metrics.migration_quarantined != 1 {
         failures.push(format!(
             "migration resolved={}, quarantined={}",
@@ -735,6 +889,8 @@ fn write_evidence(repository: &Path, metrics: &Metrics, failures: &[String]) {
     let Ok(run_id) = std::env::var("KETCHUP_A0_RUN_ID") else {
         return;
     };
+    let lock_sha256 = std::env::var("KETCHUP_A0_LOCK_SHA256")
+        .expect("runner must provide the validated strengthened A0 lock hash");
     let run_dir = artifact_dir.join("runs").join(&run_id);
     assert!(
         !run_dir.exists(),
@@ -742,27 +898,44 @@ fn write_evidence(repository: &Path, metrics: &Metrics, failures: &[String]) {
     );
     fs::create_dir_all(&run_dir).expect("A0 run artifact directory must be writable");
     let decision = if failures.is_empty() { "GO" } else { "NO-GO" };
+    let failure_class = if failures.is_empty() {
+        "none"
+    } else {
+        "substantive_topology_or_reference"
+    };
+    let producer_backend = metrics
+        .migration_producer_backend
+        .as_deref()
+        .expect("migration producer provenance must be recorded");
+    let consumer_backend = metrics
+        .migration_consumer_backend
+        .as_deref()
+        .expect("migration consumer provenance must be recorded");
     let raw = format!(
         concat!(
             "{{\n",
-            "  \"schema_version\": 1,\n",
-            "  \"freeze_id\": \"r0-v5\",\n",
+            "  \"schema_version\": 2,\n",
+            "  \"freeze_id\": \"{}\",\n",
             "  \"lock_sha256\": \"{}\",\n",
             "  \"decision\": \"{}\",\n",
+            "  \"failure_class\": \"{}\",\n",
+            "  \"evidence_scope\": \"narrow rectangular Guaranteed subset, inherited A0 corpus, complete Guaranteed adjacency, and one preregistered two-build OCCT 8.0.1 transfer\",\n",
             "  \"fixed\": {{\"passed\": {}, \"total\": {}}},\n",
             "  \"ffi_fuzz\": {{\"passed\": {}, \"calls\": {}}},\n",
             "  \"adversarial_expected_valid\": {{\"passed\": {}, \"total\": {}}},\n",
             "  \"adversarial_structural_diagnoses\": {{\"diagnosed\": {}, \"non_passes\": {}}},\n",
             "  \"expected_rejections\": {{\"passed\": {}, \"total\": {}}},\n",
             "  \"silent_invalid_shapes\": {},\n",
-            "  \"guaranteed_identity\": {{\"correct\": {}, \"total\": {}, \"history_complete\": {}}},\n",
+            "  \"guaranteed_identity\": {{\"correct\": {}, \"total\": {}, \"history_complete\": {}, \"complete_adjacency\": {}}},\n",
             "  \"silent_wrong_identities\": {},\n",
             "  \"external_step\": {{\"passed\": {}, \"total\": {}}},\n",
-            "  \"migration\": {{\"resolved\": {}, \"quarantined_unresolved\": {}}}\n",
+            "  \"migration\": {{\"producer_backend\": \"{}\", \"consumer_backend\": \"{}\", \"builds_distinct\": {}, \"resolved\": {}, \"quarantined_unresolved\": {}}}\n",
             "}}\n"
         ),
-        ACTIVE_LOCK_SHA256,
+        STRENGTHENED_FREEZE_ID,
+        lock_sha256,
         decision,
+        failure_class,
         metrics.fixed_passes,
         metrics.fixed_total,
         metrics.ffi_fuzz_passes,
@@ -777,16 +950,20 @@ fn write_evidence(repository: &Path, metrics: &Metrics, failures: &[String]) {
         metrics.guaranteed_correct,
         metrics.guaranteed_total,
         metrics.guaranteed_history_complete,
+        metrics.guaranteed_adjacency_complete,
         metrics.silent_wrong_identities,
         metrics.step_passes,
         metrics.step_total,
+        producer_backend,
+        consumer_backend,
+        metrics.migration_backends_distinct,
         metrics.migration_resolved,
         metrics.migration_quarantined,
     );
     fs::write(run_dir.join("metrics.json"), &raw)
-        .expect("immutable A0 raw evidence must be written");
-    fs::write(artifact_dir.join("metrics.json"), raw)
-        .expect("current A0 raw evidence must be written");
+        .expect("immutable strengthened A0 raw evidence must be written");
+    fs::write(artifact_dir.join("strengthened-metrics.json"), raw)
+        .expect("current strengthened A0 raw evidence must be written");
 
     let failure_text = if failures.is_empty() {
         "None.".to_owned()
@@ -797,8 +974,13 @@ fn write_evidence(repository: &Path, metrics: &Metrics, failures: &[String]) {
             .collect::<Vec<_>>()
             .join("\n")
     };
+    let consequence = if failures.is_empty() {
+        "Continue M0 governance work within the recorded evidence scope."
+    } else {
+        "Halt M1/M2/M3 until an explicit planar fallback or backend/reference redesign disposition is approved."
+    };
     let report = format!(
-        "# Gate A0 Report\n\n- Run: `{run_id}`\n- Freeze: `r0-v5`\n- Lock SHA-256: `{ACTIVE_LOCK_SHA256}`\n- **Decision: {decision}**\n\n## Results\n\n| Contract | Result |\n|---|---:|\n| Fixed baseline valid | {}/{} |\n| Structure-aware FFI fuzz | {}/{} |\n| Adversarial expected-valid | {}/{} |\n| Adversarial non-pass structural diagnosis | {}/{} |\n| Expected typed rejections | {}/{} |\n| Silent invalid shapes | {} |\n| Guaranteed correct identity | {}/{} |\n| Guaranteed history evidence | {}/{} |\n| Silent wrong identity | {} |\n| External STEP fixtures | {}/{} |\n| Prior-backend references migrated | {} |\n| Unresolved migration references quarantined | {} |\n\n## Failure consequences\n\n{failure_text}\n\nThe report was produced by `cargo test -p ketchup-exact --test gate_a0` against the active immutable lock. Geometry fingerprints were used only as corroborating evidence; Guaranteed identity was resolved from producer role, source element lineage, and backend history.\n",
+        "# Strengthened Gate A0 v1 Report\n\n- Run: `{run_id}`\n- Freeze: `{STRENGTHENED_FREEZE_ID}`\n- Lock SHA-256: `{lock_sha256}`\n- Failure class: `{failure_class}`\n- **Decision: {decision}**\n\n## Evidence scope\n\nNarrow rectangular Guaranteed subset, inherited A0 corpus, complete reciprocal adjacency for all Guaranteed outcomes, and the preregistered transfer between two real OCCT 8.0.1 builds. This is not general topological-naming or product certification.\n\n## Results\n\n| Contract | Result |\n|---|---:|\n| Fixed baseline valid | {}/{} |\n| Structure-aware FFI fuzz | {}/{} |\n| Adversarial expected-valid | {}/{} |\n| Adversarial non-pass structural diagnosis | {}/{} |\n| Expected typed rejections | {}/{} |\n| Silent invalid shapes | {} |\n| Guaranteed correct identity | {}/{} |\n| Guaranteed history evidence | {}/{} |\n| Guaranteed complete adjacency | {}/{} |\n| Silent wrong identity | {} |\n| External STEP fixtures | {}/{} |\n| Distinct real backend builds | {} |\n| Prior-build references migrated | {} |\n| Removed migration reference quarantined | {} |\n\nProducer: `{producer_backend}`  \nConsumer: `{consumer_backend}`\n\n## Failures\n\n{failure_text}\n\n## Applied consequence\n\n{consequence}\n\nGeometry fingerprints were corroborative only. Guaranteed identity used producer role, source lineage, backend history, and complete reciprocal adjacency.\n",
         metrics.fixed_passes,
         metrics.fixed_total,
         metrics.ffi_fuzz_passes,
@@ -814,12 +996,17 @@ fn write_evidence(repository: &Path, metrics: &Metrics, failures: &[String]) {
         metrics.guaranteed_total,
         metrics.guaranteed_history_complete,
         metrics.guaranteed_total,
+        metrics.guaranteed_adjacency_complete,
+        metrics.guaranteed_total,
         metrics.silent_wrong_identities,
         metrics.step_passes,
         metrics.step_total,
+        metrics.migration_backends_distinct,
         metrics.migration_resolved,
         metrics.migration_quarantined,
     );
-    fs::write(run_dir.join("report.md"), &report).expect("immutable A0 report must be written");
-    fs::write(artifact_dir.join("report.md"), report).expect("current A0 report must be written");
+    fs::write(run_dir.join("report.md"), &report)
+        .expect("immutable strengthened A0 report must be written");
+    fs::write(artifact_dir.join("strengthened-report.md"), report)
+        .expect("current strengthened A0 report must be written");
 }

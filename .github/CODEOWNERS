@@ -1,0 +1,12 @@
+/.github/workflows/ @pietrobb
+/governance/ @pietrobb
+/scripts/windows/invoke-ci-governance.ps1 @pietrobb
+/scripts/windows/test-architecture-guards.ps1 @pietrobb
+/scripts/windows/test-ci-guard-red-paths.ps1 @pietrobb
+/scripts/windows/validate-*.ps1 @pietrobb
+/thresholds/ @pietrobb
+/corpora/ @pietrobb
+/artifacts/**/runs/ @pietrobb
+/artifacts/**/*lock*.json @pietrobb
+/artifacts/**/*preregistration*.json @pietrobb
+/docs/design/EXECUTION_CONTRACT.md @pietrobb

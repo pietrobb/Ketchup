@@ -1,0 +1,7 @@
+a0-diagnostic-reference-fixture-v1
+backend	occt-8.0.1:tree:bc55a1294872a05e01c69a8011f17a3171f3edd704e4d1f621c2827ffd28ab9d:tkernel:5d48e135036b6b58331250b7432b9dd3ae21a31ca9348d3110d8762b15c2173a:prior-real-build
+topology	6	12
+reference	a0-document	extrusion-001	extrusion.top	profile.face	planar_face	occt-8.0.1:tree:bc55a1294872a05e01c69a8011f17a3171f3edd704e4d1f621c2827ffd28ab9d:tkernel:5d48e135036b6b58331250b7432b9dd3ae21a31ca9348d3110d8762b15c2173a:prior-real-build	fnv1a64:f2bcd146a0449317	fnv1a64:d14105e35829b9ea	5	3,6,9,11
+reference	a0-document	extrusion-001	extrusion.bottom	profile.face	planar_face	occt-8.0.1:tree:bc55a1294872a05e01c69a8011f17a3171f3edd704e4d1f621c2827ffd28ab9d:tkernel:5d48e135036b6b58331250b7432b9dd3ae21a31ca9348d3110d8762b15c2173a:prior-real-build	fnv1a64:65bf311ac6213a0b	fnv1a64:b3fd09d43da0a05e	4	2,5,8,10
+reference	a0-document	extrusion-001	extrusion.side(profile_edge=east)	profile.edge.east	planar_face	occt-8.0.1:tree:bc55a1294872a05e01c69a8011f17a3171f3edd704e4d1f621c2827ffd28ab9d:tkernel:5d48e135036b6b58331250b7432b9dd3ae21a31ca9348d3110d8762b15c2173a:prior-real-build	fnv1a64:90920a66dc28b6f2	fnv1a64:381e97c2acafeebd	1	1,4,5,6
+retired_reference	a0-document	extrusion-001	legacy.extrusion.side(profile_edge=north)	profile.edge.north	planar_face	occt-8.0.1:tree:bc55a1294872a05e01c69a8011f17a3171f3edd704e4d1f621c2827ffd28ab9d:tkernel:5d48e135036b6b58331250b7432b9dd3ae21a31ca9348d3110d8762b15c2173a:prior-real-build	fnv1a64:d232028440f09481	fnv1a64:3a020e61db625d88	2	4,7,8,9

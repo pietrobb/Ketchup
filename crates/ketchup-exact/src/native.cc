@@ -20,12 +20,16 @@
 #include <IFSelect_ReturnStatus.hxx>
 #include <TopAbs_Orientation.hxx>
 #include <TopAbs_ShapeEnum.hxx>
+#include <TopExp.hxx>
 #include <TopExp_Explorer.hxx>
 #include <NCollection_List.hxx>
+#include <TopTools_IndexedDataMapOfShapeListOfShape.hxx>
+#include <TopTools_IndexedMapOfShape.hxx>
 #include <TopoDS.hxx>
 #include <TopoDS_Edge.hxx>
 #include <TopoDS_Face.hxx>
 #include <TopoDS_Shape.hxx>
+#include <TopoDS_Vertex.hxx>
 #include <gp_Dir.hxx>
 #include <gp_Pln.hxx>
 #include <gp_Pnt.hxx>
@@ -92,39 +96,6 @@ HistoryRecord history_record(
       std::move(role), std::move(relation), std::move(source), ordinal, present};
 }
 
-HistoryRecord semantic_face_record(
-    std::string role,
-    std::string relation,
-    std::string source,
-    const TopoDS_Shape& result,
-    char axis,
-    bool positive) {
-  std::uint32_t ordinal = 0;
-  std::uint32_t selected_ordinal = 0;
-  double selected_coordinate = positive
-      ? -std::numeric_limits<double>::infinity()
-      : std::numeric_limits<double>::infinity();
-  bool found = false;
-  for (TopExp_Explorer explorer(result, TopAbs_FACE); explorer.More(); explorer.Next(), ++ordinal) {
-    const TopoDS_Face face = TopoDS::Face(explorer.Current());
-    BRepBuilderAPI_FindPlane plane_finder(face);
-    if (!plane_finder.Found()) {
-      continue;
-    }
-    GProp_GProps properties;
-    BRepGProp::SurfaceProperties(face, properties);
-    const gp_Pnt centre = properties.CentreOfMass();
-    const double coordinate = axis == 'x' ? centre.X() : centre.Z();
-    if (!found || (positive ? coordinate > selected_coordinate : coordinate < selected_coordinate)) {
-      selected_coordinate = coordinate;
-      selected_ordinal = ordinal;
-      found = true;
-    }
-  }
-  return HistoryRecord{
-      std::move(role), std::move(relation), std::move(source), selected_ordinal, found};
-}
-
 std::string standard_failure_message(const Standard_Failure& failure) {
   const char* message = failure.what();
   return message == nullptr ? "OCCT Standard_Failure without a message" : message;
@@ -138,6 +109,8 @@ struct NativeOperationResult::Impl {
   TopoDS_Shape shape;
   NativeTopologySummary summary{};
   std::vector<NativeFaceEvidence> faces;
+  std::vector<NativeFaceEdgeEvidence> face_edges;
+  std::vector<NativeEdgeFaceEvidence> edge_faces;
   std::vector<HistoryRecord> history;
 };
 
@@ -202,7 +175,11 @@ NativeFaceEvidence inspect_face(const TopoDS_Face& face, std::uint32_t ordinal) 
       max_x,
       max_y,
       max_z,
-      count_subshapes(face, TopAbs_EDGE)};
+      [&face] {
+        TopTools_IndexedMapOfShape edges;
+        TopExp::MapShapes(face, TopAbs_EDGE, edges);
+        return static_cast<std::uint32_t>(edges.Extent());
+      }()};
 }
 
 std::unique_ptr<NativeOperationResult> success_result(
@@ -224,6 +201,13 @@ std::unique_ptr<NativeOperationResult> success_result(
   BRepGProp::VolumeProperties(impl->shape, properties);
   const double volume = properties.Mass();
 
+  TopTools_IndexedMapOfShape vertices;
+  TopTools_IndexedMapOfShape edges;
+  TopTools_IndexedMapOfShape faces;
+  TopExp::MapShapes(impl->shape, TopAbs_VERTEX, vertices);
+  TopExp::MapShapes(impl->shape, TopAbs_EDGE, edges);
+  TopExp::MapShapes(impl->shape, TopAbs_FACE, faces);
+
   Bnd_Box bounds;
   BRepBndLib::Add(impl->shape, bounds);
   double min_x = 0.0;
@@ -235,9 +219,9 @@ std::unique_ptr<NativeOperationResult> success_result(
   bounds.Get(min_x, min_y, min_z, max_x, max_y, max_z);
 
   impl->summary = NativeTopologySummary{
-      count_subshapes(impl->shape, TopAbs_VERTEX),
-      count_subshapes(impl->shape, TopAbs_EDGE),
-      count_subshapes(impl->shape, TopAbs_FACE),
+      static_cast<std::uint32_t>(vertices.Extent()),
+      static_cast<std::uint32_t>(edges.Extent()),
+      static_cast<std::uint32_t>(faces.Extent()),
       count_subshapes(impl->shape, TopAbs_SHELL),
       solids,
       volume,
@@ -248,10 +232,38 @@ std::unique_ptr<NativeOperationResult> success_result(
       max_y,
       max_z};
 
-  std::uint32_t ordinal = 0;
-  for (TopExp_Explorer explorer(impl->shape, TopAbs_FACE); explorer.More(); explorer.Next()) {
-    impl->faces.push_back(inspect_face(TopoDS::Face(explorer.Current()), ordinal));
-    ++ordinal;
+  for (Standard_Integer face_index = 1; face_index <= faces.Extent(); ++face_index) {
+    const auto face_ordinal = static_cast<std::uint32_t>(face_index - 1);
+    const TopoDS_Face face = TopoDS::Face(faces(face_index));
+    impl->faces.push_back(inspect_face(face, face_ordinal));
+
+    TopTools_IndexedMapOfShape boundary_edges;
+    TopExp::MapShapes(face, TopAbs_EDGE, boundary_edges);
+    for (Standard_Integer boundary_index = 1; boundary_index <= boundary_edges.Extent(); ++boundary_index) {
+      const Standard_Integer edge_index = edges.FindIndex(boundary_edges(boundary_index));
+      if (edge_index > 0) {
+        impl->face_edges.push_back(NativeFaceEdgeEvidence{
+            face_ordinal, static_cast<std::uint32_t>(edge_index - 1)});
+      }
+    }
+  }
+
+  TopTools_IndexedDataMapOfShapeListOfShape edge_ancestors;
+  TopExp::MapShapesAndAncestors(impl->shape, TopAbs_EDGE, TopAbs_FACE, edge_ancestors);
+  for (Standard_Integer edge_index = 1; edge_index <= edges.Extent(); ++edge_index) {
+    const TopoDS_Shape& edge = edges(edge_index);
+    if (!edge_ancestors.Contains(edge)) {
+      continue;
+    }
+    const TopTools_ListOfShape& adjacent_faces = edge_ancestors.FindFromKey(edge);
+    for (NCollection_List<TopoDS_Shape>::Iterator iterator(adjacent_faces); iterator.More(); iterator.Next()) {
+      const Standard_Integer face_index = faces.FindIndex(iterator.Value());
+      if (face_index > 0) {
+        impl->edge_faces.push_back(NativeEdgeFaceEvidence{
+            static_cast<std::uint32_t>(edge_index - 1),
+            static_cast<std::uint32_t>(face_index - 1)});
+      }
+    }
   }
 
   if (!analyzer.IsValid() || solids != 1 || !std::isfinite(volume) || volume <= 0.0) {
@@ -336,6 +348,28 @@ rust::Vec<NativeFaceEvidence> NativeOperationResult::face_evidence() const {
   return output;
 }
 
+rust::Vec<NativeFaceEdgeEvidence> NativeOperationResult::face_edge_evidence() const {
+  rust::Vec<NativeFaceEdgeEvidence> output;
+  if (impl_ != nullptr) {
+    output.reserve(impl_->face_edges.size());
+    for (const NativeFaceEdgeEvidence& entry : impl_->face_edges) {
+      output.push_back(entry);
+    }
+  }
+  return output;
+}
+
+rust::Vec<NativeEdgeFaceEvidence> NativeOperationResult::edge_face_evidence() const {
+  rust::Vec<NativeEdgeFaceEvidence> output;
+  if (impl_ != nullptr) {
+    output.reserve(impl_->edge_faces.size());
+    for (const NativeEdgeFaceEvidence& entry : impl_->edge_faces) {
+      output.push_back(entry);
+    }
+  }
+  return output;
+}
+
 rust::Vec<NativeHistoryEvidence> NativeOperationResult::history_evidence() const {
   rust::Vec<NativeHistoryEvidence> output;
   if (impl_ != nullptr) {
@@ -395,6 +429,25 @@ std::unique_ptr<NativeOperationResult> extrude_rectangle_native(
       return error_result(STATUS_INVALID_SHAPE, "OCCT profile face builder did not complete");
     }
     const TopoDS_Face profile = face_builder.Face();
+    TopoDS_Edge profile_east;
+    for (TopExp_Explorer explorer(profile, TopAbs_EDGE); explorer.More(); explorer.Next()) {
+      const TopoDS_Edge candidate = TopoDS::Edge(explorer.Current());
+      TopoDS_Vertex first;
+      TopoDS_Vertex last;
+      TopExp::Vertices(candidate, first, last);
+      if (!first.IsNull()
+          && !last.IsNull()
+          && std::abs(BRep_Tool::Pnt(first).X() - width) <= 1.0e-9
+          && std::abs(BRep_Tool::Pnt(last).X() - width) <= 1.0e-9) {
+        if (!profile_east.IsNull()) {
+          return error_result(STATUS_INVALID_SHAPE, "OCCT profile has ambiguous east edge identity");
+        }
+        profile_east = candidate;
+      }
+    }
+    if (profile_east.IsNull()) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT profile lacks east edge identity");
+    }
     BRepPrimAPI_MakePrism operation(profile, gp_Vec(0.0, 0.0, height), true, false);
     const TopoDS_Shape result = operation.Shape();
     if (!operation.IsDone()) {
@@ -402,28 +455,25 @@ std::unique_ptr<NativeOperationResult> extrude_rectangle_native(
     }
 
     std::vector<HistoryRecord> history;
-    history.push_back(semantic_face_record(
+    history.push_back(history_record(
         "extrusion.bottom",
-        "source+post_operation_walk",
+        "first_shape",
         "profile.face",
         result,
-        'z',
-        false));
-    history.push_back(semantic_face_record(
+        operation.FirstShape()));
+    history.push_back(history_record(
         "extrusion.top",
-        "generated+post_operation_walk",
+        "last_shape",
         "profile.face",
         result,
-        'z',
-        true));
-    HistoryRecord east_history = semantic_face_record(
+        operation.LastShape()));
+    HistoryRecord east_history{
         "extrusion.side(profile_edge=east)",
-        "generated+post_operation_walk",
+        "generated",
         "profile.edge.east",
-        result,
-        'x',
-        true);
-    const NCollection_List<TopoDS_Shape>& east_generated = operation.Generated(east);
+        0,
+        false};
+    const NCollection_List<TopoDS_Shape>& east_generated = operation.Generated(profile_east);
     for (NCollection_List<TopoDS_Shape>::Iterator iterator(east_generated); iterator.More(); iterator.Next()) {
       const HistoryRecord backend_history = history_record(
           "extrusion.side(profile_edge=east)",
@@ -435,7 +485,6 @@ std::unique_ptr<NativeOperationResult> extrude_rectangle_native(
         east_history = backend_history;
         break;
       }
-      east_history.relation = "backend_generated+post_operation_walk";
     }
     history.push_back(std::move(east_history));
     return success_result(result, std::move(history));

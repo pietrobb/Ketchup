@@ -1,0 +1,10 @@
+{
+    "schema_version":  2,
+    "freeze_id":  "strengthened-a0-v1",
+    "lock_sha256":  "5ae34bdd0eb7cad4719c11154e57e5ec8d955d51313e7ffb14ff5f96809a7ff0",
+    "decision":  "NO-GO",
+    "failure_class":  "substantive_topology_or_reference",
+    "evidence_scope":  "strengthened A0 execution reached native geometry",
+    "detail":  "The validated prior-build producer reached native geometry but failed to emit complete Guaranteed references.",
+    "applied_consequence":  "Halt M1/M2/M3 until an explicit planar fallback or backend/reference redesign disposition is approved."
+}

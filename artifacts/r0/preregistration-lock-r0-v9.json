@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "freeze_id": "r0-v9",
+  "frozen_utc": "2026-08-01T18:35:16Z",
+  "measurement_state_at_freeze": "not_started",
+  "supersedes": {
+    "freeze_id": "r0-v8",
+    "lock_sha256": "ad2f6ff3c89043d1491b02de1e0af390a3211ae4844cb37f32bacb3956b7c456",
+    "reason": "The first non-gating Gate C core diagnostic required the existing ketchup-interaction package from the ketchup-scheduler measurement binary. Cargo.lock changes only to record that local package edge; deny.toml and every threshold, corpus, expected outcome, hardware profile, oracle, and consequence remain unchanged. A0 is rerun before any formal Gate C measurement."
+  },
+  "inherited_contract": "All thresholds, corpora, expected outcomes, hardware profiles, oracles, consequences, license policy, toolchain evidence, and OCCT inputs are inherited byte-for-byte from r0-v8. Only Cargo.lock changes for the local ketchup-scheduler to ketchup-interaction measurement dependency.",
+  "immutability_rule": "Any listed byte change after an A0 or Gate C observation fails the r0-v9 run. A replacement requires a new freeze_id and report; historical evidence remains unchanged.",
+  "files": [
+    {"path": ".gitattributes", "role": "checkout-stable line-ending and binary classification policy", "sha256": "fd18fd3c583d7c48c260660e985f5998b6db7eac60abafd364fcd043cc6b56e5"},
+    {"path": "thresholds/r0.yaml", "role": "inherited thresholds, envelopes, oracles, hardware, query classes, consequences", "sha256": "3a953aa2df56d859730fc7f3dd266801eb795252bd3f77fb995af84ca80de09c"},
+    {"path": "corpora/manifest.yaml", "role": "inherited fixed, generative, mutation, adversarial, and STEP corpus manifest", "sha256": "ceae3af9cd50c89298100993af7ef28e8d3433165ef882409cb506b79c7ae8ae"},
+    {"path": "corpora/canonical-tasks.yaml", "role": "inherited 20 canonical task contracts", "sha256": "e7388935910c154df007b81d4f1a7e6849e6afccbd838b804860470f228bc535"},
+    {"path": "corpora/r0/step/self-authored-box.step", "role": "inherited provenance-safe STEP fixture", "sha256": "f925be79adc65eeaaa5234f4ae3f6400ceb93559cad86f67603c1d4d13883143"},
+    {"path": "corpora/r0/step/self-authored-through-cut.step", "role": "inherited provenance-safe STEP fixture", "sha256": "05b9dcfcfed9f39b93a2bedef2b36bb77375a533deae39a073314017b3d72461"},
+    {"path": "corpora/r0/step/self-authored-l-bracket.step", "role": "inherited provenance-safe STEP fixture", "sha256": "cf6f66efef2412956bd77131b93dacbdca5e9fd6390155457436c28693b7965b"},
+    {"path": "docs/architecture/EXECUTION_CONTRACT.md", "role": "frozen English Architecture V3 execution contract", "sha256": "18ad1cbd1244145f009814b9985a44cda390f39be7359852639c6428aa2966eb"},
+    {"path": "R0_LICENSE_AND_TOOLCHAIN_BASELINE.md", "role": "license and toolchain baseline", "sha256": "d565e3c7a9f57338f4a533300ad2dc20e8a22150e7f33d689054db6a165160db"},
+    {"path": "rust-toolchain.toml", "role": "Rust pin", "sha256": "6ed0c02f396ed635caf66cce3272eb82b877df7259b736f6ca457e486c9c4158"},
+    {"path": "Cargo.lock", "role": "Rust dependency lock including the Gate C core runner local interaction edge", "sha256": "7da2587afc53c6d12b88b0226111ab6b34891df8093529be350e413a94e020a8"},
+    {"path": "deny.toml", "role": "dependency license and source policy including audited Gate C transitive licenses", "sha256": "77c78034b807cd298bcb237a4cb5f5334053305ed965ba7cd5d8279c7135cc11"},
+    {"path": "artifacts/r0/occt-cmake-config.json", "role": "normalized OCCT build configuration", "sha256": "48227fd020d6a2356fee62cdeed7ff9315c6a255c8dff5a69bf87a32d8e2316e"},
+    {"path": "artifacts/r0/occt-build-manifest.json", "role": "OCCT source, toolchain, install-tree, and DLL evidence", "sha256": "1212a72954ed503a6b06618b2813b1d7c04f5b422329d2327594268e431ef48a"},
+    {"path": "tests/native/r0-step-corpus.cpp", "role": "original STEP fixture geometry generator", "sha256": "b7faed00a146f16f6f203a851c470179e2d0fd1c6f0e12b4b919414958fbfff3"},
+    {"path": "scripts/windows/generate-r0-step-corpus.ps1", "role": "pinned STEP generation and timestamp normalization procedure", "sha256": "325056f307a07b5a8afd03e0d4aa1620f55e261be28e7d4a65be88a72471466c"}
+  ]
+}

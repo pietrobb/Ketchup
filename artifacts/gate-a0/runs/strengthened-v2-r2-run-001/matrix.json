@@ -1,0 +1,12 @@
+{
+    "schema_version":  1,
+    "freeze_id":  "strengthened-a0-v2-r2",
+    "run_id":  "strengthened-v2-r2-run-001",
+    "required_combinations":  4,
+    "observed_combinations":  0,
+    "passed_combinations":  0,
+    "negative_control":  "intentional retired north reference: Lost for same identity, QuarantinedMigration for changed identity",
+    "combinations":  [
+
+                     ]
+}

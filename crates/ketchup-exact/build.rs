@@ -24,10 +24,18 @@ fn main() {
         .parent()
         .and_then(Path::parent)
         .expect("exact crate must remain below crates/");
-    let occt_root = repository_root.join("third_party/occt-install-r0-v1");
+    let occt_root = env::var_os("KETCHUP_OCCT_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| repository_root.join("third_party/occt-install-r0-v1"));
+    let backend_fingerprint = env::var("KETCHUP_OCCT_BUILD_FINGERPRINT")
+        .unwrap_or_else(|_| "occt-8.0.1:b8f597c677811d1f9f4d8a97f5ae2825c0353a42:r0-v1".to_owned());
     let include_dir = occt_root.join("inc");
     let library_dir = occt_root.join("win64/vc14/lib");
     let runtime_dir = occt_root.join("win64/vc14/bin");
+
+    println!("cargo:rustc-env=KETCHUP_OCCT_BUILD_FINGERPRINT={backend_fingerprint}");
+    println!("cargo:rerun-if-env-changed=KETCHUP_OCCT_ROOT");
+    println!("cargo:rerun-if-env-changed=KETCHUP_OCCT_BUILD_FINGERPRINT");
 
     for required in [&include_dir, &library_dir, &runtime_dir] {
         assert!(

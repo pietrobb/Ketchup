@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "freeze_id": "strengthened-a0-v2",
+  "frozen_utc": "2026-08-04T07:40:07.341994Z",
+  "measurement_state_at_freeze": "not_started",
+  "tree_hash_algorithm": "SHA-256 over UTF-8 lines relative/path|size|file_sha256\\n, paths sorted case-insensitively; frozen Python executable SHA-256 5f7b89a612c9b8af1d6456cdfcd1dbe5ca630849e79aebced9bee9a6694952ec",
+  "evaluator_source_sha256": "7c4c72b3cd7da181fef079f5e77df11d62d600fee996652768f99bf01f7d1025",
+  "tolerance_profile_sha256": "3a953aa2df56d859730fc7f3dd266801eb795252bd3f77fb995af84ca80de09c",
+  "files": [
+    {"path": "artifacts/gate-a0/strengthened-a0-v2-preregistration.json", "sha256": "3895103f471241552b131564b7f0e979c129fad768e08189c47e77959ec68c21"},
+    {"path": "artifacts/gate-a0/strengthened-a0-v1-lock.json", "sha256": "5ae34bdd0eb7cad4719c11154e57e5ec8d955d51313e7ffb14ff5f96809a7ff0"},
+    {"path": "artifacts/gate-a0/runs/strengthened-run-001/metrics.json", "sha256": "6a3c6e150ca328510bac5468c0e036461cf30ddf73111d0c673869245ab67fae"},
+    {"path": "artifacts/gate-a0/runs/strengthened-run-001/report.md", "sha256": "14142c7aca58e324d6c697695e9491429fd02a2b9aa9418f535fa1bba49f9c48"},
+    {"path": "artifacts/gate-a0/diagnostics/a0d-run-002/seal.json", "sha256": "1f360c23eabd28cf56db62d25ba0179eb47bbf672297c8d59fb04fbae92252af"},
+    {"path": "docs/adr/0004-v4-p15-sequence-and-a0-disposition.md", "sha256": "16a7f9410a797352bd7b65a4d4e56f441bedcf533c237a6555dca80a45d7ff39"},
+    {"path": "docs/adr/0005-no-go-diagnostic-hold.md", "sha256": "806ef9c391ec9347e02b8d64f35ded82b630c5d1e4d7dc66f4a6fee66df44392"},
+    {"path": "docs/architecture/EXECUTION_CONTRACT.md", "sha256": "a8c80003ddfc620c6e4fdc27449cd10642df425187c84ce7664a643b2280a66b"},
+    {"path": "thresholds/r0.yaml", "sha256": "3a953aa2df56d859730fc7f3dd266801eb795252bd3f77fb995af84ca80de09c"},
+    {"path": "corpora/manifest.yaml", "sha256": "ceae3af9cd50c89298100993af7ef28e8d3433165ef882409cb506b79c7ae8ae"},
+    {"path": "corpora/r0/step/self-authored-box.step", "sha256": "f925be79adc65eeaaa5234f4ae3f6400ceb93559cad86f67603c1d4d13883143"},
+    {"path": "corpora/r0/step/self-authored-through-cut.step", "sha256": "05b9dcfcfed9f39b93a2bedef2b36bb77375a533deae39a073314017b3d72461"},
+    {"path": "corpora/r0/step/self-authored-l-bracket.step", "sha256": "cf6f66efef2412956bd77131b93dacbdca5e9fd6390155457436c28693b7965b"},
+    {"path": "Cargo.toml", "sha256": "f030c12a55147f250ee71fee4864865fa19b3104f12f786d16b8feed8b186158"},
+    {"path": "Cargo.lock", "sha256": "eceb482fd1aa9e9f6bcdc644431e03d1e516f2efa787355de7f0767744ffe852"},
+    {"path": "rust-toolchain.toml", "sha256": "6ed0c02f396ed635caf66cce3272eb82b877df7259b736f6ca457e486c9c4158"},
+    {"path": "crates/ketchup-exact/Cargo.toml", "sha256": "1a85af282f919a25dcf109abf49a2433cd7ecb8e34c9ca134cae1c7f47237a0b"},
+    {"path": "crates/ketchup-exact/build.rs", "sha256": "879b4295db28c772a17dccf0c5f41740a2f7618d91e1c8ede2b21d7dc15972e6"},
+    {"path": "crates/ketchup-exact/include/ketchup_exact.hxx", "sha256": "ad3b8305e1550d8183c2d193d3d2f0c9f988bd7f9743b0dbafe74eb0d24bdb4c"},
+    {"path": "crates/ketchup-exact/src/lib.rs", "sha256": "99468b337361fd358ffe0c1da98bfec1254bcff460d0593ec3275d60b95c09a6"},
+    {"path": "crates/ketchup-exact/src/native.cc", "sha256": "7c4c72b3cd7da181fef079f5e77df11d62d600fee996652768f99bf01f7d1025"},
+    {"path": "crates/ketchup-exact/src/bin/ketchup-a0-diagnostic-probe.rs", "sha256": "ce6c428bd557386cfb7d73b9ec3cbfa7918b6172979ce121dd48bbd4d9defa42"},
+    {"path": "crates/ketchup-exact/tests/gate_a0_v2.rs", "sha256": "4d9a8ee18130ae1542d64e98c175d649b142b1beb6bb0af401e03e0a2e6a2ada"},
+    {"path": "scripts/windows/validate-strengthened-a0-v2.ps1", "sha256": "c82446e13e1960f324c62ea00f78f67d26f5138f61fe586345a26d1f67623b9c"},
+    {"path": "scripts/windows/run-strengthened-a0-v2.ps1", "sha256": "dfd866f0866a3355ce00e91009135ce99e42c27e691c870a270d3f427b497be9"},
+    {"path": "artifacts/r0/occt-build-manifest.json", "sha256": "1212a72954ed503a6b06618b2813b1d7c04f5b422329d2327594268e431ef48a"}
+  ],
+  "backends": [
+    {
+      "alias": "prior",
+      "id": "prior-real-build",
+      "install_path": "third_party/occt-install",
+      "release": "8.0.1",
+      "file_count": 7400,
+      "tree_sha256": "bc55a1294872a05e01c69a8011f17a3171f3edd704e4d1f621c2827ffd28ab9d",
+      "fingerprint": "occt-8.0.1:tree:bc55a1294872a05e01c69a8011f17a3171f3edd704e4d1f621c2827ffd28ab9d:tkernel:5d48e135036b6b58331250b7432b9dd3ae21a31ca9348d3110d8762b15c2173a:prior-real-build",
+      "representative_libraries": [
+        {"path": "win64/vc14/bin/TKernel.dll", "sha256": "5d48e135036b6b58331250b7432b9dd3ae21a31ca9348d3110d8762b15c2173a"},
+        {"path": "win64/vc14/bin/TKBRep.dll", "sha256": "85faa230f668d6f047a3eadb97fcf6efad8c8ad24775e6c0543d46a493d4afb6"},
+        {"path": "win64/vc14/bin/TKPrim.dll", "sha256": "42ba0d12e9bd8e9d288c0cecf549789226a78159bee03026c0c1d5a96c2f9304"}
+      ]
+    },
+    {
+      "alias": "current",
+      "id": "current-r0-v1-build",
+      "install_path": "third_party/occt-install-r0-v1",
+      "release": "8.0.1",
+      "file_count": 7400,
+      "tree_sha256": "c51103534429a99414c22c88c7964cd2d55dd53baf3a0fc7dc8314481aa25a76",
+      "fingerprint": "occt-8.0.1:tree:c51103534429a99414c22c88c7964cd2d55dd53baf3a0fc7dc8314481aa25a76:tkernel:ec7d6c0d93ccf1624d7e76fe275d38ce5a807a74da824a25b1c93ef484d18df5:current-r0-v1-build",
+      "representative_libraries": [
+        {"path": "win64/vc14/bin/TKernel.dll", "sha256": "ec7d6c0d93ccf1624d7e76fe275d38ce5a807a74da824a25b1c93ef484d18df5"},
+        {"path": "win64/vc14/bin/TKBRep.dll", "sha256": "ed9c9beefb62ab27919ab55f842c45a4676302a273141c46694e2a8e34e3b8a3"},
+        {"path": "win64/vc14/bin/TKPrim.dll", "sha256": "e295f3f6fe36967da3d5478988c49b71ab0e1ab6fa576de39397c95ed506a53c"}
+      ]
+    }
+  ]
+}

@@ -1,0 +1,44 @@
+{
+    "schema_version":  1,
+    "profile_id":  "HP-DEV-01",
+    "freeze_id":  "r0-v12",
+    "contract":  "portable-build-provenance-v1",
+    "controller_pid":  28820,
+    "started_utc":  "2026-08-02T03:04:32.3222489Z",
+    "updated_utc":  "2026-08-02T04:04:40.4058617Z",
+    "status":  "PASS",
+    "active_series":  null,
+    "failure":  null,
+    "r0_lock_sha256":  "01ee1e30d4a9026f674ee3ee9fa1dde965294b97b691b7870fab49c782b96176",
+    "executable_sha256":  "b1495fd0442330279e2813a841e63c1c50bfe41d7e1e921cc0cbb3cd2d269a49",
+    "expected_adapter_name":  "AMD Radeon RX 6800 XT",
+    "completed_series":  [
+                             {
+                                 "series":  1,
+                                 "completed_utc":  "2026-08-02T03:24:33.3500172Z",
+                                 "exit_code":  0,
+                                 "metric_path":  "artifacts/gate-c/hp-dev-01-nav-r0-v12-portable-replacement-series-1.json",
+                                 "metric_sha256":  "29905288c23a4486190594c259e048fd4a9f4a7657e21d0ed742ee4bec3c4cc3",
+                                 "stdout_sha256":  "aecc13e9d1ed565db068c4184d33fd2d81389b2a528f4c1914d6c75328664141",
+                                 "stderr_sha256":  "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+                             },
+                             {
+                                 "series":  2,
+                                 "completed_utc":  "2026-08-02T03:44:34.4138952Z",
+                                 "exit_code":  0,
+                                 "metric_path":  "artifacts/gate-c/hp-dev-01-nav-r0-v12-portable-replacement-series-2.json",
+                                 "metric_sha256":  "d9f08c7fdc4aeae500bf4c503f32cca5ef14f5b49200613d498f5afdfc894b22",
+                                 "stdout_sha256":  "5ac172656c37a450644c4de05dcbfce2b45b41b727b8cfacc9cfe4447fc4ceba",
+                                 "stderr_sha256":  "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+                             },
+                             {
+                                 "series":  3,
+                                 "completed_utc":  "2026-08-02T04:04:40.3978616Z",
+                                 "exit_code":  0,
+                                 "metric_path":  "artifacts/gate-c/hp-dev-01-nav-r0-v12-portable-replacement-series-3.json",
+                                 "metric_sha256":  "b42c8d79f6c86d293c058293d4836edd430840c44f196df40d6058b7cf125395",
+                                 "stdout_sha256":  "03cd5946bf5f122836f0ec8865e1b5c371ac0da7377c1e6886a9b672c4724994",
+                                 "stderr_sha256":  "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+                             }
+                         ]
+}

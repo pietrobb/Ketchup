@@ -1,0 +1,20 @@
+[
+    {
+        "alias":  "prior",
+        "process_id":  "suite-prior",
+        "state":  "ran",
+        "exit_code":  0,
+        "metrics_path":  "inherited-suites/prior.json",
+        "metrics_decision":  "GO",
+        "pass":  true
+    },
+    {
+        "alias":  "current",
+        "process_id":  "suite-current",
+        "state":  "ran",
+        "exit_code":  0,
+        "metrics_path":  "inherited-suites/current.json",
+        "metrics_decision":  "GO",
+        "pass":  true
+    }
+]

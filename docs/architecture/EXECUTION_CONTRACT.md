@@ -213,6 +213,8 @@ Before each gate, version and freeze:
 
 Changing any of these after observing results fails the original gate run and creates a new test version.
 
+A NO-GO immediately applies its preregistered safe halt, but it does not by itself authorize an architectural redesign, fallback activation, supported-envelope narrowing, or threshold/consequence loosen. Before any such disposition, diagnostics must reduce the cause to a minimal reproducer and either a concrete source line/path or a named external boundary with reproducible boundary evidence. Until then the gate remains in `diagnostic_hold`: preserve the halt and complete process evidence, draw no broader architecture inference, and run the smallest discriminating diagnostic matrix. Any later loosen requires a separately accepted disposition and a new preregistration; it never rewrites the failed historical run.
+
 ## 13. R0 entry gate
 
 Before A0, R0 must contain:

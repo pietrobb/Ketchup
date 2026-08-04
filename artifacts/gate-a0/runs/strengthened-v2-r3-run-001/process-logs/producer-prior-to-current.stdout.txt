@@ -1,0 +1,8 @@
+native_observation=entered
+mode=produce
+backend=occt-8.0.1:tree:bc55a1294872a05e01c69a8011f17a3171f3edd704e4d1f621c2827ffd28ab9d:tkernel:5d48e135036b6b58331250b7432b9dd3ae21a31ca9348d3110d8762b15c2173a:prior-real-build
+topology=faces:6,edges:12
+captured=extrusion.top
+captured=extrusion.bottom
+captured=extrusion.side(profile_edge=east)
+diagnostic_result=PASS

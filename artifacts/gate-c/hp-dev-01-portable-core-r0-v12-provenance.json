@@ -1,0 +1,64 @@
+{
+  "schema_version": 1,
+  "profile_id": "HP-DEV-01",
+  "freeze_id": "r0-v12",
+  "contract": "portable-build-provenance-v1",
+  "r0_lock_sha256": "01ee1e30d4a9026f674ee3ee9fa1dde965294b97b691b7870fab49c782b96176",
+  "build_input_tree_sha256": "6dc2be8e1cfe992247d2946853c77977915ba249930437b6797f0b053d65b3b6",
+  "runner_script_sha256": "cf8bb2ef587e0925ecfafa05908179b30fae53a4e738a87af6162c1f8536d164",
+  "validator_script_sha256": "2efd7ab90ff199c2cd9669fbb603af6ba1db58b1ef264e4d126baed5564c0c56",
+  "clean_build": true,
+  "decision": "PASS",
+  "result_fingerprint": "fnv1a64:fef50903b056d7c8",
+  "executable_sha256": {
+    "ketchup-gate-c-core.exe": "6b145b60d08ac2e644142d5e3ae0d86f1217b778088362927f4ddb51ae7430e0",
+    "ketchup-exact-worker.exe": "f77c0d626c00cb66fbc22e20b80cd5368007c349399f3dca6e7c1a20fa8c6a3d",
+    "ketchup-gate-c-nav.exe": "b1495fd0442330279e2813a841e63c1c50bfe41d7e1e921cc0cbb3cd2d269a49"
+  },
+  "metrics": [
+    {
+      "series": 1,
+      "edit_p95_ms": 2.4312,
+      "pick_snap_p95_ms": 2.4307,
+      "navigation_block_max_ms": 2.8044,
+      "cancel_p95_ms": 1.0795,
+      "action_digest_match_percent": 100.0,
+      "wrong_identity_count": 0,
+      "committed_data_loss_count": 0
+    },
+    {
+      "series": 2,
+      "edit_p95_ms": 2.4407,
+      "pick_snap_p95_ms": 2.4377,
+      "navigation_block_max_ms": 2.8452,
+      "cancel_p95_ms": 0.9561,
+      "action_digest_match_percent": 100.0,
+      "wrong_identity_count": 0,
+      "committed_data_loss_count": 0
+    },
+    {
+      "series": 3,
+      "edit_p95_ms": 2.279,
+      "pick_snap_p95_ms": 2.4734,
+      "navigation_block_max_ms": 3.2787,
+      "cancel_p95_ms": 1.1023,
+      "action_digest_match_percent": 100.0,
+      "wrong_identity_count": 0,
+      "committed_data_loss_count": 0
+    }
+  ],
+  "files": [
+    {
+      "path": "artifacts/gate-c/hp-dev-01-core-r0-v12-portable-series-1.json",
+      "sha256": "707785815944c88b308817905063e7e9a735b91765f525de0510daa985c79aba"
+    },
+    {
+      "path": "artifacts/gate-c/hp-dev-01-core-r0-v12-portable-series-2.json",
+      "sha256": "c6e98ceb8aeb443d836bcc4c86e2d2636a8670c583372220b59e40a001aaa725"
+    },
+    {
+      "path": "artifacts/gate-c/hp-dev-01-core-r0-v12-portable-series-3.json",
+      "sha256": "3c6718bd90daf3893cbe163b719602e71333dfd16f26b777b7a549c9d5535c75"
+    }
+  ]
+}

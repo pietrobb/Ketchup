@@ -1,0 +1,153 @@
+{
+  "schema_version": 1,
+  "ledger_id": "r0-v1-v13-transition-classification-v1",
+  "classification_rule": {
+    "directions": [
+      "tighten",
+      "loosen",
+      "neutral",
+      "unknown"
+    ],
+    "unknown_is_fail_closed": true,
+    "post_failure_envelope_narrowing_is": "loosen"
+  },
+  "common_threshold_sha256": "3a953aa2df56d859730fc7f3dd266801eb795252bd3f77fb995af84ca80de09c",
+  "transitions": [
+    {
+      "from": "r0-v1",
+      "to": "r0-v2",
+      "direction": "neutral",
+      "observation_timing": "before_affected_observation",
+      "changed_inputs": ["Cargo.lock"],
+      "reason": "Pinned the cxx dependency without changing thresholds, operation envelopes, corpora, or consequences.",
+      "lock": "artifacts/r0/preregistration-lock-r0-v2.json",
+      "report": "docs/gates/R0_V2_REPORT.md"
+    },
+    {
+      "from": "r0-v2",
+      "to": "r0-v3",
+      "direction": "neutral",
+      "observation_timing": "after_affected_observation",
+      "changed_inputs": [".gitattributes"],
+      "reason": "Bound reproducible line-ending bytes after v2 evidence without changing thresholds or the operation envelope.",
+      "lock": "artifacts/r0/preregistration-lock-r0-v3.json",
+      "report": "docs/gates/R0_V3_REPORT.md"
+    },
+    {
+      "from": "r0-v3",
+      "to": "r0-v4",
+      "direction": "neutral",
+      "observation_timing": "after_affected_observation",
+      "changed_inputs": [".gitattributes"],
+      "reason": "Changed attribute ordering after historical run-004 without changing threshold or envelope semantics.",
+      "lock": "artifacts/r0/preregistration-lock-r0-v4.json",
+      "report": "docs/gates/R0_V4_REPORT.md"
+    },
+    {
+      "from": "r0-v4",
+      "to": "r0-v5",
+      "direction": "neutral",
+      "observation_timing": "before_affected_observation",
+      "changed_inputs": [".gitattributes"],
+      "reason": "Changed checkout byte treatment before any v4 A0 observation; thresholds and operation envelopes stayed byte-identical.",
+      "lock": "artifacts/r0/preregistration-lock-r0-v5.json",
+      "report": "docs/gates/R0_V5_REPORT.md"
+    },
+    {
+      "from": "r0-v5",
+      "to": "r0-v6",
+      "direction": "neutral",
+      "observation_timing": "after_affected_observation",
+      "changed_inputs": ["Cargo.lock"],
+      "reason": "Added the local scheduler package after run-005 without changing thresholds or operation envelopes.",
+      "lock": "artifacts/r0/preregistration-lock-r0-v6.json",
+      "report": "docs/gates/R0_V6_REPORT.md"
+    },
+    {
+      "from": "r0-v6",
+      "to": "r0-v7",
+      "direction": "neutral",
+      "observation_timing": "after_affected_observation",
+      "changed_inputs": ["Cargo.lock", "deny.toml"],
+      "reason": "Added the GUI dependency stack and audited licenses after v6 A0/Gate B evidence; numerical and operation envelopes were unchanged.",
+      "lock": "artifacts/r0/preregistration-lock-r0-v7.json",
+      "report": "docs/gates/R0_V7_REPORT.md"
+    },
+    {
+      "from": "r0-v7",
+      "to": "r0-v8",
+      "direction": "neutral",
+      "observation_timing": "after_previous_before_affected_observation",
+      "changed_inputs": ["Cargo.lock"],
+      "reason": "Enabled the Direct3D-12-only wgpu path after startup smoke and before formal Gate C without changing thresholds or envelopes.",
+      "lock": "artifacts/r0/preregistration-lock-r0-v8.json",
+      "report": "docs/gates/R0_V8_REPORT.md"
+    },
+    {
+      "from": "r0-v8",
+      "to": "r0-v9",
+      "direction": "neutral",
+      "observation_timing": "after_affected_observation",
+      "changed_inputs": ["Cargo.lock"],
+      "reason": "Added the scheduler-to-interaction local edge after run-008 and a non-gating diagnostic; thresholds and envelopes were unchanged.",
+      "lock": "artifacts/r0/preregistration-lock-r0-v9.json",
+      "report": "docs/gates/R0_V9_REPORT.md"
+    },
+    {
+      "from": "r0-v9",
+      "to": "r0-v10",
+      "direction": "neutral",
+      "observation_timing": "after_affected_failure",
+      "changed_inputs": ["crates/ketchup-app/src/bin/ketchup-gate-c-nav.rs", "crates/ketchup-app/src/lib.rs"],
+      "reason": "After the v9 NAV p95 failure, froze the existing product vsync configuration and source hashes; no threshold or operation-envelope narrowing occurred.",
+      "post_failure_envelope_narrowing": false,
+      "lock": "artifacts/r0/preregistration-lock-r0-v10.json",
+      "report": "docs/gates/R0_V10_REPORT.md"
+    },
+    {
+      "from": "r0-v10",
+      "to": "r0-v11",
+      "direction": "neutral",
+      "observation_timing": "after_affected_failure",
+      "changed_inputs": ["crates/ketchup-app/src/lib.rs"],
+      "reason": "After the v10 NAV p95 failure, froze the actual AutoNoVsync configuration; no threshold or operation-envelope narrowing occurred.",
+      "post_failure_envelope_narrowing": false,
+      "lock": "artifacts/r0/preregistration-lock-r0-v11.json",
+      "report": "docs/gates/R0_V11_REPORT.md"
+    },
+    {
+      "from": "r0-v11",
+      "to": "r0-v12",
+      "direction": "neutral",
+      "observation_timing": "before_affected_observation",
+      "changed_inputs": ["crates/ketchup-app/src/bin/ketchup-gate-c-nav.rs", "crates/ketchup-app/src/lib.rs"],
+      "reason": "Bound adapter selection and adapter identity before HP-IGPU observation; thresholds and non-NAV sources stayed unchanged.",
+      "lock": "artifacts/r0/preregistration-lock-r0-v12.json",
+      "report": "docs/gates/R0_V12_REPORT.md"
+    },
+    {
+      "from": "r0-v12",
+      "to": "r0-v13",
+      "direction": "neutral",
+      "observation_timing": "after_previous_before_affected_observation",
+      "changed_inputs": ["crates/ketchup-app/src/lib.rs"],
+      "reason": "Froze viewport, camera, usability, and provenance repairs before any affected HP-IGPU observation; historical observations cannot certify the repaired executable.",
+      "lock": "artifacts/r0/preregistration-lock-r0-v13.json",
+      "report": "docs/gates/R0_V13_REPORT.md"
+    }
+  ],
+  "upper_envelope_coverage": {
+    "freeze_id": "m0-upper-envelope-v1",
+    "policy_change": "none",
+    "direction": "tighten",
+    "test_path": "crates/ketchup-exact/tests/upper_envelope.rs",
+    "test_sha256": "d588e016901257f36cbdc04670937c7b94dcea54b44ba169d4f0f53743007e9e",
+    "cases": [
+      "boxes_may_touch_positive_and_negative_coordinate_limits",
+      "maximum_length_may_end_exactly_at_positive_coordinate_limit",
+      "coordinates_just_outside_the_envelope_are_invalid_parameters",
+      "non_finite_coordinate_is_rejected",
+      "translated_high_coordinate_cut_succeeds_without_backend_exception"
+    ]
+  }
+}

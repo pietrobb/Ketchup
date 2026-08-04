@@ -1,0 +1,13 @@
+{
+    "schema_version":  1,
+    "profile_id":  "HP-DEV-01",
+    "freeze_id":  "r0-v13",
+    "r0_lock_sha256":  "b1cf0c769cb46d0c678c1bc579e241356cc85663582a0df72093e2e54086cb01",
+    "attempt":  2,
+    "status":  "FAILED",
+    "stage":  "terminal",
+    "completed_core_series":  0,
+    "completed_nav_series":  0,
+    "message":  "The clean R0 v13 reference build failed with exit code 101.",
+    "updated_utc":  "2026-08-02T07:06:34.4818058Z"
+}

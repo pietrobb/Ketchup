@@ -1,0 +1,134 @@
+{
+    "schema_version":  1,
+    "diagnostic_id":  "a0-diagnostic-matrix-v1",
+    "run_id":  "a0d-run-001",
+    "observed_utc":  "2026-08-04T05:53:39.7608489Z",
+    "purpose":  "Disambiguate harness, same-build capture/adjacency, and cross-build transfer without changing A0 thresholds or consequences.",
+    "gate_effect":  "diagnostic_only",
+    "threshold_or_consequence_change":  "none; no loosen and no tightening",
+    "strengthened_a0_v1_lock_sha256":  "5ae34bdd0eb7cad4719c11154e57e5ec8d955d51313e7ffb14ff5f96809a7ff0",
+    "runner_source_sha256":  "c071aa255ae70b54172db6d9abce8ef2dd8c4e4b199c27338964febdd154da05",
+    "probe_source_sha256":  "2bf44659946f642f3647c2325a95f23781a639400ec9af11aab97468f5db94d4",
+    "expected_combinations":  4,
+    "observed_combinations":  4,
+    "passed_combinations":  0,
+    "diagnosis":  "At least one same-build path failed. The evidence localizes the problem before cross-build transfer (build-specific construction, adjacency, capture, or consumer behavior); inspect the sealed process stderr.",
+    "combinations":  [
+                         {
+                             "id":  "prior-to-prior",
+                             "producer_build":  {
+                                                    "alias":  "prior",
+                                                    "id":  "prior-real-build",
+                                                    "install_path":  "C:\\Sources8\\Ketchup\\third_party\\occt-install",
+                                                    "tree_sha256":  "bc55a1294872a05e01c69a8011f17a3171f3edd704e4d1f621c2827ffd28ab9d",
+                                                    "fingerprint":  "occt-8.0.1:tree:bc55a1294872a05e01c69a8011f17a3171f3edd704e4d1f621c2827ffd28ab9d:tkernel:5d48e135036b6b58331250b7432b9dd3ae21a31ca9348d3110d8762b15c2173a:prior-real-build",
+                                                    "tkernel_sha256":  "5d48e135036b6b58331250b7432b9dd3ae21a31ca9348d3110d8762b15c2173a"
+                                                },
+                             "consumer_build":  {
+                                                    "alias":  "prior",
+                                                    "id":  "prior-real-build",
+                                                    "install_path":  "C:\\Sources8\\Ketchup\\third_party\\occt-install",
+                                                    "tree_sha256":  "bc55a1294872a05e01c69a8011f17a3171f3edd704e4d1f621c2827ffd28ab9d",
+                                                    "fingerprint":  "occt-8.0.1:tree:bc55a1294872a05e01c69a8011f17a3171f3edd704e4d1f621c2827ffd28ab9d:tkernel:5d48e135036b6b58331250b7432b9dd3ae21a31ca9348d3110d8762b15c2173a:prior-real-build",
+                                                    "tkernel_sha256":  "5d48e135036b6b58331250b7432b9dd3ae21a31ca9348d3110d8762b15c2173a"
+                                                },
+                             "same_build_identity":  true,
+                             "producer_process_id":  "producer-prior-to-prior",
+                             "producer_state":  "ran",
+                             "producer_exit_code":  101,
+                             "consumer_process_id":  "consumer-prior-to-prior",
+                             "consumer_state":  "not_run",
+                             "consumer_not_run":  true,
+                             "consumer_not_run_reason":  "producer did not complete successfully",
+                             "consumer_exit_code":  null,
+                             "pass":  false
+                         },
+                         {
+                             "id":  "current-to-current",
+                             "producer_build":  {
+                                                    "alias":  "current",
+                                                    "id":  "current-r0-v1-build",
+                                                    "install_path":  "C:\\Sources8\\Ketchup\\third_party\\occt-install-r0-v1",
+                                                    "tree_sha256":  "c51103534429a99414c22c88c7964cd2d55dd53baf3a0fc7dc8314481aa25a76",
+                                                    "fingerprint":  "occt-8.0.1:tree:c51103534429a99414c22c88c7964cd2d55dd53baf3a0fc7dc8314481aa25a76:tkernel:ec7d6c0d93ccf1624d7e76fe275d38ce5a807a74da824a25b1c93ef484d18df5:current-r0-v1-build",
+                                                    "tkernel_sha256":  "ec7d6c0d93ccf1624d7e76fe275d38ce5a807a74da824a25b1c93ef484d18df5"
+                                                },
+                             "consumer_build":  {
+                                                    "alias":  "current",
+                                                    "id":  "current-r0-v1-build",
+                                                    "install_path":  "C:\\Sources8\\Ketchup\\third_party\\occt-install-r0-v1",
+                                                    "tree_sha256":  "c51103534429a99414c22c88c7964cd2d55dd53baf3a0fc7dc8314481aa25a76",
+                                                    "fingerprint":  "occt-8.0.1:tree:c51103534429a99414c22c88c7964cd2d55dd53baf3a0fc7dc8314481aa25a76:tkernel:ec7d6c0d93ccf1624d7e76fe275d38ce5a807a74da824a25b1c93ef484d18df5:current-r0-v1-build",
+                                                    "tkernel_sha256":  "ec7d6c0d93ccf1624d7e76fe275d38ce5a807a74da824a25b1c93ef484d18df5"
+                                                },
+                             "same_build_identity":  true,
+                             "producer_process_id":  "producer-current-to-current",
+                             "producer_state":  "ran",
+                             "producer_exit_code":  101,
+                             "consumer_process_id":  "consumer-current-to-current",
+                             "consumer_state":  "not_run",
+                             "consumer_not_run":  true,
+                             "consumer_not_run_reason":  "producer did not complete successfully",
+                             "consumer_exit_code":  null,
+                             "pass":  false
+                         },
+                         {
+                             "id":  "prior-to-current",
+                             "producer_build":  {
+                                                    "alias":  "prior",
+                                                    "id":  "prior-real-build",
+                                                    "install_path":  "C:\\Sources8\\Ketchup\\third_party\\occt-install",
+                                                    "tree_sha256":  "bc55a1294872a05e01c69a8011f17a3171f3edd704e4d1f621c2827ffd28ab9d",
+                                                    "fingerprint":  "occt-8.0.1:tree:bc55a1294872a05e01c69a8011f17a3171f3edd704e4d1f621c2827ffd28ab9d:tkernel:5d48e135036b6b58331250b7432b9dd3ae21a31ca9348d3110d8762b15c2173a:prior-real-build",
+                                                    "tkernel_sha256":  "5d48e135036b6b58331250b7432b9dd3ae21a31ca9348d3110d8762b15c2173a"
+                                                },
+                             "consumer_build":  {
+                                                    "alias":  "current",
+                                                    "id":  "current-r0-v1-build",
+                                                    "install_path":  "C:\\Sources8\\Ketchup\\third_party\\occt-install-r0-v1",
+                                                    "tree_sha256":  "c51103534429a99414c22c88c7964cd2d55dd53baf3a0fc7dc8314481aa25a76",
+                                                    "fingerprint":  "occt-8.0.1:tree:c51103534429a99414c22c88c7964cd2d55dd53baf3a0fc7dc8314481aa25a76:tkernel:ec7d6c0d93ccf1624d7e76fe275d38ce5a807a74da824a25b1c93ef484d18df5:current-r0-v1-build",
+                                                    "tkernel_sha256":  "ec7d6c0d93ccf1624d7e76fe275d38ce5a807a74da824a25b1c93ef484d18df5"
+                                                },
+                             "same_build_identity":  false,
+                             "producer_process_id":  "producer-prior-to-current",
+                             "producer_state":  "ran",
+                             "producer_exit_code":  101,
+                             "consumer_process_id":  "consumer-prior-to-current",
+                             "consumer_state":  "not_run",
+                             "consumer_not_run":  true,
+                             "consumer_not_run_reason":  "producer did not complete successfully",
+                             "consumer_exit_code":  null,
+                             "pass":  false
+                         },
+                         {
+                             "id":  "current-to-prior",
+                             "producer_build":  {
+                                                    "alias":  "current",
+                                                    "id":  "current-r0-v1-build",
+                                                    "install_path":  "C:\\Sources8\\Ketchup\\third_party\\occt-install-r0-v1",
+                                                    "tree_sha256":  "c51103534429a99414c22c88c7964cd2d55dd53baf3a0fc7dc8314481aa25a76",
+                                                    "fingerprint":  "occt-8.0.1:tree:c51103534429a99414c22c88c7964cd2d55dd53baf3a0fc7dc8314481aa25a76:tkernel:ec7d6c0d93ccf1624d7e76fe275d38ce5a807a74da824a25b1c93ef484d18df5:current-r0-v1-build",
+                                                    "tkernel_sha256":  "ec7d6c0d93ccf1624d7e76fe275d38ce5a807a74da824a25b1c93ef484d18df5"
+                                                },
+                             "consumer_build":  {
+                                                    "alias":  "prior",
+                                                    "id":  "prior-real-build",
+                                                    "install_path":  "C:\\Sources8\\Ketchup\\third_party\\occt-install",
+                                                    "tree_sha256":  "bc55a1294872a05e01c69a8011f17a3171f3edd704e4d1f621c2827ffd28ab9d",
+                                                    "fingerprint":  "occt-8.0.1:tree:bc55a1294872a05e01c69a8011f17a3171f3edd704e4d1f621c2827ffd28ab9d:tkernel:5d48e135036b6b58331250b7432b9dd3ae21a31ca9348d3110d8762b15c2173a:prior-real-build",
+                                                    "tkernel_sha256":  "5d48e135036b6b58331250b7432b9dd3ae21a31ca9348d3110d8762b15c2173a"
+                                                },
+                             "same_build_identity":  false,
+                             "producer_process_id":  "producer-current-to-prior",
+                             "producer_state":  "ran",
+                             "producer_exit_code":  101,
+                             "consumer_process_id":  "consumer-current-to-prior",
+                             "consumer_state":  "not_run",
+                             "consumer_not_run":  true,
+                             "consumer_not_run_reason":  "producer did not complete successfully",
+                             "consumer_exit_code":  null,
+                             "pass":  false
+                         }
+                     ]
+}

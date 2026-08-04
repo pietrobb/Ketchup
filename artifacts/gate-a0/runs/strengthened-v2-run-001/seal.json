@@ -1,0 +1,95 @@
+{
+    "schema_version":  1,
+    "freeze_id":  "strengthened-a0-v2",
+    "run_id":  "strengthened-v2-run-001",
+    "sealed_utc":  "2026-08-04T07:41:49.7097594Z",
+    "hash_algorithm":  "SHA-256",
+    "file_count":  17,
+    "files":  [
+                  {
+                      "path":  "inherited-suites.json",
+                      "size":  2,
+                      "sha256":  "7eb70257593da06f682a3ddda54a9d260d4fc514f645237f5ca74b08f8da61a6"
+                  },
+                  {
+                      "path":  "inputs/gate_a0_v2.rs",
+                      "size":  26155,
+                      "sha256":  "4d9a8ee18130ae1542d64e98c175d649b142b1beb6bb0af401e03e0a2e6a2ada"
+                  },
+                  {
+                      "path":  "inputs/ketchup-a0-diagnostic-probe.rs",
+                      "size":  12473,
+                      "sha256":  "ce6c428bd557386cfb7d73b9ec3cbfa7918b6172979ce121dd48bbd4d9defa42"
+                  },
+                  {
+                      "path":  "inputs/run-strengthened-a0-v2.ps1",
+                      "size":  34849,
+                      "sha256":  "dfd866f0866a3355ce00e91009135ce99e42c27e691c870a270d3f427b497be9"
+                  },
+                  {
+                      "path":  "inputs/strengthened-a0-v2-lock.json",
+                      "size":  5860,
+                      "sha256":  "8c12965aa5d77e5bf7f4fcd55e575ab506a70a99ffaedd1a6a07441bd9178ce0"
+                  },
+                  {
+                      "path":  "inputs/strengthened-a0-v2-preregistration.json",
+                      "size":  8665,
+                      "sha256":  "3895103f471241552b131564b7f0e979c129fad768e08189c47e77959ec68c21"
+                  },
+                  {
+                      "path":  "inputs/validate-strengthened-a0-v2.ps1",
+                      "size":  12488,
+                      "sha256":  "c82446e13e1960f324c62ea00f78f67d26f5138f61fe586345a26d1f67623b9c"
+                  },
+                  {
+                      "path":  "matrix.json",
+                      "size":  399,
+                      "sha256":  "5a5e556dd2fd0654627fd5b678d29dc70d8c6d21712d21c77cf5bf0035a84da3"
+                  },
+                  {
+                      "path":  "processes.json",
+                      "size":  9132,
+                      "sha256":  "baf551ca9f1197ad32221d13e135ef81e37da2f191070d01047aeb0d0045354d"
+                  },
+                  {
+                      "path":  "process-logs/build-probe-prior.stderr.txt",
+                      "size":  126,
+                      "sha256":  "01dbdf5d7b9d23222f20b41a696dc8b28f6c03dc2d30f2f949506b0252a75d1c"
+                  },
+                  {
+                      "path":  "process-logs/build-probe-prior.stdout.txt",
+                      "size":  0,
+                      "sha256":  "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+                  },
+                  {
+                      "path":  "process-logs/build-suite-prior.stderr.txt",
+                      "size":  2064,
+                      "sha256":  "a3f4001010fa1da2866c71bef84df6d4617bf950e425dcb7514ee3605f0c5555"
+                  },
+                  {
+                      "path":  "process-logs/build-suite-prior.stdout.txt",
+                      "size":  0,
+                      "sha256":  "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+                  },
+                  {
+                      "path":  "process-logs/preflight-validator.stderr.txt",
+                      "size":  0,
+                      "sha256":  "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+                  },
+                  {
+                      "path":  "process-logs/preflight-validator.stdout.txt",
+                      "size":  1989,
+                      "sha256":  "263d2e24c1ae873e8003f79477dc1636b1d71ff26ef193d186e5d8623071929e"
+                  },
+                  {
+                      "path":  "report.md",
+                      "size":  731,
+                      "sha256":  "2a15fa154b5488d4abb8d6770aab561e9787f24a6b200ad37b7ab0197d2c7b9d"
+                  },
+                  {
+                      "path":  "summary.json",
+                      "size":  1414,
+                      "sha256":  "4b0c71471b4f704c65caab8b25c928f2106e6496540b4c58883b620c648179a4"
+                  }
+              ]
+}

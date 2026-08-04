@@ -1,0 +1,13 @@
+{
+    "schema_version":  1,
+    "profile_id":  "HP-DEV-01",
+    "freeze_id":  "r0-v13",
+    "r0_lock_sha256":  "b1cf0c769cb46d0c678c1bc579e241356cc85663582a0df72093e2e54086cb01",
+    "attempt":  3,
+    "status":  "RUNNING",
+    "stage":  "navigation-series-3",
+    "completed_core_series":  3,
+    "completed_nav_series":  2,
+    "message":  "Running the immutable 1,200-second navigation reference series 3.",
+    "updated_utc":  "2026-08-02T07:50:14.3207199Z"
+}

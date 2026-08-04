@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "freeze_id": "strengthened-a0-v2-r3",
+  "lock_sha256": "8dfc733a6607d9e47b707de85e9f2be50e74a5b2df728cf8f42c709189ebcd79",
+  "backend_fingerprint": "occt-8.0.1:tree:c51103534429a99414c22c88c7964cd2d55dd53baf3a0fc7dc8314481aa25a76:tkernel:ec7d6c0d93ccf1624d7e76fe275d38ce5a807a74da824a25b1c93ef484d18df5:current-r0-v1-build",
+  "decision": "GO",
+  "fixed": {"passed": 4, "total": 4},
+  "ffi_fuzz": {"passed": 10000, "calls": 10000},
+  "adversarial_expected_valid": {"passed": 10, "total": 10},
+  "adversarial_structural_diagnoses": {"diagnosed": 0, "non_passes": 0},
+  "expected_rejections": {"passed": 6, "total": 6},
+  "silent_invalid_shapes": 0,
+  "guaranteed_identity": {"correct": 24, "total": 24, "history_complete": 24, "complete_adjacency": 24},
+  "silent_wrong_identities": 0,
+  "external_step": {"passed": 3, "total": 3},
+  "failures": []
+}

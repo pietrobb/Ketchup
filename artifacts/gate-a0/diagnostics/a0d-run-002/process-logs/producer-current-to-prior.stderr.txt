@@ -1,0 +1,4 @@
+
+thread 'main' (33100) panicked at crates\ketchup-exact\src\bin\ketchup-a0-diagnostic-probe.rs:51:10:
+diagnostic producer Guaranteed references must be capturable: GeometryError { code: InvalidShape, diagnostic: "Guaranteed role extrusion.side(profile_edge=east) has 0 candidates", operation: "capture_guaranteed_references", input_digest: "fnv1a64:d199714b87bb7347", backend_fingerprint: "occt-8.0.1:tree:c51103534429a99414c22c88c7964cd2d55dd53baf3a0fc7dc8314481aa25a76:tkernel:ec7d6c0d93ccf1624d7e76fe275d38ce5a807a74da824a25b1c93ef484d18df5:current-r0-v1-build" }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace

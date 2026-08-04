@@ -1,0 +1,94 @@
+{
+  "schema_version": 1,
+  "profile_id": "HP-DEV-01",
+  "freeze_id": "r0-v12",
+  "contract": "portable-build-provenance-v1",
+  "r0_lock_sha256": "01ee1e30d4a9026f674ee3ee9fa1dde965294b97b691b7870fab49c782b96176",
+  "build_input_tree_sha256": "6dc2be8e1cfe992247d2946853c77977915ba249930437b6797f0b053d65b3b6",
+  "runner_script_sha256": "cf8bb2ef587e0925ecfafa05908179b30fae53a4e738a87af6162c1f8536d164",
+  "validator_script_sha256": "2efd7ab90ff199c2cd9669fbb603af6ba1db58b1ef264e4d126baed5564c0c56",
+  "clean_build": true,
+  "decision": "PASS",
+  "executable_sha256": "b1495fd0442330279e2813a841e63c1c50bfe41d7e1e921cc0cbb3cd2d269a49",
+  "expected_adapter_name": "AMD Radeon RX 6800 XT",
+  "backend": "dx12",
+  "thresholds": {
+    "frame_p95_ms_max": 16.7,
+    "frame_p99_ms_max": 33.3,
+    "input_to_preview_p95_ms_max": 50.0
+  },
+  "controller_state": {
+    "path": "artifacts/gate-c/hp-dev-01-nav-r0-v12-portable-replacement-state.json",
+    "sha256": "d36998a5787f1c9900fb67548faa364a674bada8e40354e65112e1ca190c1547",
+    "status": "PASS",
+    "started_utc": "2026-08-02T03:04:32.3222489Z",
+    "completed_utc": "2026-08-02T04:04:40.4058617Z"
+  },
+  "metrics": [
+    {
+      "series": 1,
+      "frame_p95_ms": 5.0341,
+      "frame_p99_ms": 6.2485,
+      "input_to_preview_p95_ms": 0.4119,
+      "frame_sample_count": 227678,
+      "input_to_preview_sample_count": 227678,
+      "decision": "PASS"
+    },
+    {
+      "series": 2,
+      "frame_p95_ms": 4.8206,
+      "frame_p99_ms": 6.0411,
+      "input_to_preview_p95_ms": 0.4121,
+      "frame_sample_count": 241588,
+      "input_to_preview_sample_count": 241588,
+      "decision": "PASS"
+    },
+    {
+      "series": 3,
+      "frame_p95_ms": 4.9443,
+      "frame_p99_ms": 5.9220,
+      "input_to_preview_p95_ms": 0.3999,
+      "frame_sample_count": 227985,
+      "input_to_preview_sample_count": 227985,
+      "decision": "PASS"
+    }
+  ],
+  "files": [
+    {
+      "path": "artifacts/gate-c/hp-dev-01-nav-r0-v12-portable-replacement-series-1.json",
+      "sha256": "29905288c23a4486190594c259e048fd4a9f4a7657e21d0ed742ee4bec3c4cc3"
+    },
+    {
+      "path": "artifacts/gate-c/hp-dev-01-nav-r0-v12-portable-replacement-series-1.stdout.log",
+      "sha256": "aecc13e9d1ed565db068c4184d33fd2d81389b2a528f4c1914d6c75328664141"
+    },
+    {
+      "path": "artifacts/gate-c/hp-dev-01-nav-r0-v12-portable-replacement-series-1.stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "artifacts/gate-c/hp-dev-01-nav-r0-v12-portable-replacement-series-2.json",
+      "sha256": "d9f08c7fdc4aeae500bf4c503f32cca5ef14f5b49200613d498f5afdfc894b22"
+    },
+    {
+      "path": "artifacts/gate-c/hp-dev-01-nav-r0-v12-portable-replacement-series-2.stdout.log",
+      "sha256": "5ac172656c37a450644c4de05dcbfce2b45b41b727b8cfacc9cfe4447fc4ceba"
+    },
+    {
+      "path": "artifacts/gate-c/hp-dev-01-nav-r0-v12-portable-replacement-series-2.stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "artifacts/gate-c/hp-dev-01-nav-r0-v12-portable-replacement-series-3.json",
+      "sha256": "b42c8d79f6c86d293c058293d4836edd430840c44f196df40d6058b7cf125395"
+    },
+    {
+      "path": "artifacts/gate-c/hp-dev-01-nav-r0-v12-portable-replacement-series-3.stdout.log",
+      "sha256": "03cd5946bf5f122836f0ec8865e1b5c371ac0da7377c1e6886a9b672c4724994"
+    },
+    {
+      "path": "artifacts/gate-c/hp-dev-01-nav-r0-v12-portable-replacement-series-3.stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ]
+}

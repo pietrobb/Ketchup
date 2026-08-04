@@ -1,0 +1,151 @@
+[
+    {
+        "id":  "preflight-validator",
+        "stage":  "preflight",
+        "state":  "ran",
+        "started_utc":  "2026-08-04T07:41:26.7673313Z",
+        "ended_utc":  "2026-08-04T07:41:31.2843278Z",
+        "command":  "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+        "arguments":  [
+                          "-NoProfile",
+                          "-ExecutionPolicy",
+                          "Bypass",
+                          "-File",
+                          "C:\\Sources8\\Ketchup\\scripts\\windows\\validate-strengthened-a0-v2.ps1",
+                          "-EmitJson"
+                      ],
+        "build_identity":  {
+                               "freeze_id":  "strengthened-a0-v2"
+                           },
+        "executable_sha256":  "9785001b0dcf755eddb8af294a373c0b87b2498660f724e76c4d53f9c217c7a3",
+        "runtime_root":  "",
+        "runtime_libraries":  [
+
+                              ],
+        "native_observation":  false,
+        "exit_code":  0,
+        "success":  true,
+        "panic_detected":  false,
+        "stdout_path":  "process-logs/preflight-validator.stdout.txt",
+        "stderr_path":  "process-logs/preflight-validator.stderr.txt",
+        "stdout_sha256":  "263d2e24c1ae873e8003f79477dc1636b1d71ff26ef193d186e5d8623071929e",
+        "stderr_sha256":  "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+        "id":  "build-suite-prior",
+        "stage":  "build",
+        "state":  "ran",
+        "started_utc":  "2026-08-04T07:41:31.3353283Z",
+        "ended_utc":  "2026-08-04T07:41:49.3375505Z",
+        "command":  "C:\\Users\\peter\\.cargo\\bin\\cargo.exe",
+        "arguments":  [
+                          "test",
+                          "--locked",
+                          "--release",
+                          "--manifest-path",
+                          "C:\\Sources8\\Ketchup\\Cargo.toml",
+                          "-p",
+                          "ketchup-exact",
+                          "--test",
+                          "gate_a0_v2",
+                          "--no-run",
+                          "--target-dir",
+                          "C:\\Users\\peter\\AppData\\Local\\Temp\\ketchup-a0-v2-strengthened-v2-run-001\\target-prior"
+                      ],
+        "build_identity":  {
+                               "alias":  "prior",
+                               "id":  "prior-real-build",
+                               "install_path":  "C:\\Sources8\\Ketchup\\third_party\\occt-install",
+                               "tree_sha256":  "bc55a1294872a05e01c69a8011f17a3171f3edd704e4d1f621c2827ffd28ab9d",
+                               "fingerprint":  "occt-8.0.1:tree:bc55a1294872a05e01c69a8011f17a3171f3edd704e4d1f621c2827ffd28ab9d:tkernel:5d48e135036b6b58331250b7432b9dd3ae21a31ca9348d3110d8762b15c2173a:prior-real-build",
+                               "tkernel_sha256":  "5d48e135036b6b58331250b7432b9dd3ae21a31ca9348d3110d8762b15c2173a",
+                               "evaluator_source_sha256":  "7c4c72b3cd7da181fef079f5e77df11d62d600fee996652768f99bf01f7d1025",
+                               "tolerance_profile_sha256":  "3a953aa2df56d859730fc7f3dd266801eb795252bd3f77fb995af84ca80de09c",
+                               "representative_libraries":  [
+                                                                {
+                                                                    "path":  "win64/vc14/bin/TKernel.dll",
+                                                                    "sha256":  "5d48e135036b6b58331250b7432b9dd3ae21a31ca9348d3110d8762b15c2173a"
+                                                                },
+                                                                {
+                                                                    "path":  "win64/vc14/bin/TKBRep.dll",
+                                                                    "sha256":  "85faa230f668d6f047a3eadb97fcf6efad8c8ad24775e6c0543d46a493d4afb6"
+                                                                },
+                                                                {
+                                                                    "path":  "win64/vc14/bin/TKPrim.dll",
+                                                                    "sha256":  "42ba0d12e9bd8e9d288c0cecf549789226a78159bee03026c0c1d5a96c2f9304"
+                                                                }
+                                                            ]
+                           },
+        "executable_sha256":  "86478e53f769379d7f0ebfa7c9aa97cb76ca92233f79aa2cc0dbee2efaac73c7",
+        "runtime_root":  "",
+        "runtime_libraries":  [
+
+                              ],
+        "native_observation":  false,
+        "exit_code":  0,
+        "success":  true,
+        "panic_detected":  false,
+        "stdout_path":  "process-logs/build-suite-prior.stdout.txt",
+        "stderr_path":  "process-logs/build-suite-prior.stderr.txt",
+        "stdout_sha256":  "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stderr_sha256":  "a3f4001010fa1da2866c71bef84df6d4617bf950e425dcb7514ee3605f0c5555"
+    },
+    {
+        "id":  "build-probe-prior",
+        "stage":  "build",
+        "state":  "ran",
+        "started_utc":  "2026-08-04T07:41:49.3455494Z",
+        "ended_utc":  "2026-08-04T07:41:49.5865530Z",
+        "command":  "C:\\Users\\peter\\.cargo\\bin\\cargo.exe",
+        "arguments":  [
+                          "build",
+                          "--locked",
+                          "--release",
+                          "--manifest-path",
+                          "C:\\Sources8\\Ketchup\\Cargo.toml",
+                          "-p",
+                          "ketchup-exact",
+                          "--bin",
+                          "ketchup-a0-diagnostic-probe",
+                          "--target-dir",
+                          "C:\\Users\\peter\\AppData\\Local\\Temp\\ketchup-a0-v2-strengthened-v2-run-001\\target-prior"
+                      ],
+        "build_identity":  {
+                               "alias":  "prior",
+                               "id":  "prior-real-build",
+                               "install_path":  "C:\\Sources8\\Ketchup\\third_party\\occt-install",
+                               "tree_sha256":  "bc55a1294872a05e01c69a8011f17a3171f3edd704e4d1f621c2827ffd28ab9d",
+                               "fingerprint":  "occt-8.0.1:tree:bc55a1294872a05e01c69a8011f17a3171f3edd704e4d1f621c2827ffd28ab9d:tkernel:5d48e135036b6b58331250b7432b9dd3ae21a31ca9348d3110d8762b15c2173a:prior-real-build",
+                               "tkernel_sha256":  "5d48e135036b6b58331250b7432b9dd3ae21a31ca9348d3110d8762b15c2173a",
+                               "evaluator_source_sha256":  "7c4c72b3cd7da181fef079f5e77df11d62d600fee996652768f99bf01f7d1025",
+                               "tolerance_profile_sha256":  "3a953aa2df56d859730fc7f3dd266801eb795252bd3f77fb995af84ca80de09c",
+                               "representative_libraries":  [
+                                                                {
+                                                                    "path":  "win64/vc14/bin/TKernel.dll",
+                                                                    "sha256":  "5d48e135036b6b58331250b7432b9dd3ae21a31ca9348d3110d8762b15c2173a"
+                                                                },
+                                                                {
+                                                                    "path":  "win64/vc14/bin/TKBRep.dll",
+                                                                    "sha256":  "85faa230f668d6f047a3eadb97fcf6efad8c8ad24775e6c0543d46a493d4afb6"
+                                                                },
+                                                                {
+                                                                    "path":  "win64/vc14/bin/TKPrim.dll",
+                                                                    "sha256":  "42ba0d12e9bd8e9d288c0cecf549789226a78159bee03026c0c1d5a96c2f9304"
+                                                                }
+                                                            ]
+                           },
+        "executable_sha256":  "86478e53f769379d7f0ebfa7c9aa97cb76ca92233f79aa2cc0dbee2efaac73c7",
+        "runtime_root":  "",
+        "runtime_libraries":  [
+
+                              ],
+        "native_observation":  false,
+        "exit_code":  0,
+        "success":  true,
+        "panic_detected":  false,
+        "stdout_path":  "process-logs/build-probe-prior.stdout.txt",
+        "stderr_path":  "process-logs/build-probe-prior.stderr.txt",
+        "stdout_sha256":  "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stderr_sha256":  "01dbdf5d7b9d23222f20b41a696dc8b28f6c03dc2d30f2f949506b0252a75d1c"
+    }
+]

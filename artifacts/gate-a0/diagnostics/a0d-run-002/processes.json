@@ -1,0 +1,323 @@
+[
+    {
+        "id":  "preflight-validator",
+        "stage":  "preflight",
+        "state":  "ran",
+        "started_utc":  "2026-08-04T05:57:38.3599762Z",
+        "ended_utc":  "2026-08-04T05:57:42.8670913Z",
+        "command":  "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+        "arguments":  [
+                          "-NoProfile",
+                          "-ExecutionPolicy",
+                          "Bypass",
+                          "-File",
+                          "C:\\Sources8\\Ketchup\\scripts\\windows\\validate-strengthened-a0-v1.ps1",
+                          "-EmitJson"
+                      ],
+        "command_display":  "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\\Sources8\\Ketchup\\scripts\\windows\\validate-strengthened-a0-v1.ps1 -EmitJson",
+        "build_identity":  {
+                               "freeze_id":  "strengthened-a0-v1"
+                           },
+        "exit_code":  0,
+        "success":  true,
+        "panic_detected":  false,
+        "stdout_path":  "process-logs/preflight-validator.stdout.txt",
+        "stderr_path":  "process-logs/preflight-validator.stderr.txt",
+        "stdout_sha256":  "7a3994f8cc124b9ff8129d4985b65a8b4e7d56f66fc06f839c9bdc8a37891d51",
+        "stderr_sha256":  "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+        "id":  "build-prior",
+        "stage":  "build",
+        "state":  "ran",
+        "started_utc":  "2026-08-04T05:57:42.9680914Z",
+        "ended_utc":  "2026-08-04T05:57:50.5821061Z",
+        "command":  "C:\\Users\\peter\\.cargo\\bin\\cargo.exe",
+        "arguments":  [
+                          "build",
+                          "--manifest-path",
+                          "C:\\Sources8\\Ketchup\\Cargo.toml",
+                          "-p",
+                          "ketchup-exact",
+                          "--bin",
+                          "ketchup-a0-diagnostic-probe",
+                          "--target-dir",
+                          "C:\\Users\\peter\\AppData\\Local\\Temp\\ketchup-a0d-a0d-run-002-prior"
+                      ],
+        "command_display":  "C:\\Users\\peter\\.cargo\\bin\\cargo.exe build --manifest-path C:\\Sources8\\Ketchup\\Cargo.toml -p ketchup-exact --bin ketchup-a0-diagnostic-probe --target-dir C:\\Users\\peter\\AppData\\Local\\Temp\\ketchup-a0d-a0d-run-002-prior",
+        "build_identity":  {
+                               "alias":  "prior",
+                               "id":  "prior-real-build",
+                               "install_path":  "C:\\Sources8\\Ketchup\\third_party\\occt-install",
+                               "tree_sha256":  "bc55a1294872a05e01c69a8011f17a3171f3edd704e4d1f621c2827ffd28ab9d",
+                               "fingerprint":  "occt-8.0.1:tree:bc55a1294872a05e01c69a8011f17a3171f3edd704e4d1f621c2827ffd28ab9d:tkernel:5d48e135036b6b58331250b7432b9dd3ae21a31ca9348d3110d8762b15c2173a:prior-real-build",
+                               "tkernel_sha256":  "5d48e135036b6b58331250b7432b9dd3ae21a31ca9348d3110d8762b15c2173a"
+                           },
+        "exit_code":  0,
+        "success":  true,
+        "panic_detected":  false,
+        "stdout_path":  "process-logs/build-prior.stdout.txt",
+        "stderr_path":  "process-logs/build-prior.stderr.txt",
+        "stdout_sha256":  "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stderr_sha256":  "2a7229eb05fc4d6561d0a6c424506d1b32faabd4b02d049640d90ab06b3b3378"
+    },
+    {
+        "id":  "build-current",
+        "stage":  "build",
+        "state":  "ran",
+        "started_utc":  "2026-08-04T05:57:50.6741049Z",
+        "ended_utc":  "2026-08-04T05:57:58.2072761Z",
+        "command":  "C:\\Users\\peter\\.cargo\\bin\\cargo.exe",
+        "arguments":  [
+                          "build",
+                          "--manifest-path",
+                          "C:\\Sources8\\Ketchup\\Cargo.toml",
+                          "-p",
+                          "ketchup-exact",
+                          "--bin",
+                          "ketchup-a0-diagnostic-probe",
+                          "--target-dir",
+                          "C:\\Users\\peter\\AppData\\Local\\Temp\\ketchup-a0d-a0d-run-002-current"
+                      ],
+        "command_display":  "C:\\Users\\peter\\.cargo\\bin\\cargo.exe build --manifest-path C:\\Sources8\\Ketchup\\Cargo.toml -p ketchup-exact --bin ketchup-a0-diagnostic-probe --target-dir C:\\Users\\peter\\AppData\\Local\\Temp\\ketchup-a0d-a0d-run-002-current",
+        "build_identity":  {
+                               "alias":  "current",
+                               "id":  "current-r0-v1-build",
+                               "install_path":  "C:\\Sources8\\Ketchup\\third_party\\occt-install-r0-v1",
+                               "tree_sha256":  "c51103534429a99414c22c88c7964cd2d55dd53baf3a0fc7dc8314481aa25a76",
+                               "fingerprint":  "occt-8.0.1:tree:c51103534429a99414c22c88c7964cd2d55dd53baf3a0fc7dc8314481aa25a76:tkernel:ec7d6c0d93ccf1624d7e76fe275d38ce5a807a74da824a25b1c93ef484d18df5:current-r0-v1-build",
+                               "tkernel_sha256":  "ec7d6c0d93ccf1624d7e76fe275d38ce5a807a74da824a25b1c93ef484d18df5"
+                           },
+        "exit_code":  0,
+        "success":  true,
+        "panic_detected":  false,
+        "stdout_path":  "process-logs/build-current.stdout.txt",
+        "stderr_path":  "process-logs/build-current.stderr.txt",
+        "stdout_sha256":  "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stderr_sha256":  "c49cb941cdadd1d12b01d39c80ae730fcdf084fc35388a858a3c3347ee367dd4"
+    },
+    {
+        "id":  "producer-prior-to-prior",
+        "stage":  "producer",
+        "state":  "ran",
+        "started_utc":  "2026-08-04T05:57:58.3062744Z",
+        "ended_utc":  "2026-08-04T05:57:58.5782761Z",
+        "command":  "C:\\Users\\peter\\AppData\\Local\\Temp\\ketchup-a0d-a0d-run-002-prior\\debug\\ketchup-a0-diagnostic-probe.exe",
+        "arguments":  [
+                          "produce",
+                          "C:\\Sources8\\Ketchup\\artifacts\\gate-a0\\diagnostics\\a0d-run-002\\fixtures\\prior-to-prior.tsv"
+                      ],
+        "command_display":  "C:\\Users\\peter\\AppData\\Local\\Temp\\ketchup-a0d-a0d-run-002-prior\\debug\\ketchup-a0-diagnostic-probe.exe produce C:\\Sources8\\Ketchup\\artifacts\\gate-a0\\diagnostics\\a0d-run-002\\fixtures\\prior-to-prior.tsv",
+        "build_identity":  {
+                               "alias":  "prior",
+                               "id":  "prior-real-build",
+                               "install_path":  "C:\\Sources8\\Ketchup\\third_party\\occt-install",
+                               "tree_sha256":  "bc55a1294872a05e01c69a8011f17a3171f3edd704e4d1f621c2827ffd28ab9d",
+                               "fingerprint":  "occt-8.0.1:tree:bc55a1294872a05e01c69a8011f17a3171f3edd704e4d1f621c2827ffd28ab9d:tkernel:5d48e135036b6b58331250b7432b9dd3ae21a31ca9348d3110d8762b15c2173a:prior-real-build",
+                               "tkernel_sha256":  "5d48e135036b6b58331250b7432b9dd3ae21a31ca9348d3110d8762b15c2173a"
+                           },
+        "exit_code":  101,
+        "success":  false,
+        "panic_detected":  true,
+        "stdout_path":  "process-logs/producer-prior-to-prior.stdout.txt",
+        "stderr_path":  "process-logs/producer-prior-to-prior.stderr.txt",
+        "stdout_sha256":  "e19f353d59a41140f0d81c3616fbc823457fdf23f19c3aad0b0ca0729e346f4e",
+        "stderr_sha256":  "e0e51b445b6440710380d59a57b70d9274feed3f058ae1646cd6846129e5a51b"
+    },
+    {
+        "id":  "consumer-prior-to-prior",
+        "stage":  "consumer",
+        "state":  "not_run",
+        "reason":  "producer did not complete successfully",
+        "started_utc":  null,
+        "ended_utc":  null,
+        "command":  null,
+        "arguments":  [
+
+                      ],
+        "command_display":  null,
+        "build_identity":  {
+                               "alias":  "prior",
+                               "id":  "prior-real-build",
+                               "install_path":  "C:\\Sources8\\Ketchup\\third_party\\occt-install",
+                               "tree_sha256":  "bc55a1294872a05e01c69a8011f17a3171f3edd704e4d1f621c2827ffd28ab9d",
+                               "fingerprint":  "occt-8.0.1:tree:bc55a1294872a05e01c69a8011f17a3171f3edd704e4d1f621c2827ffd28ab9d:tkernel:5d48e135036b6b58331250b7432b9dd3ae21a31ca9348d3110d8762b15c2173a:prior-real-build",
+                               "tkernel_sha256":  "5d48e135036b6b58331250b7432b9dd3ae21a31ca9348d3110d8762b15c2173a"
+                           },
+        "exit_code":  null,
+        "success":  false,
+        "panic_detected":  false,
+        "stdout_path":  "process-logs/consumer-prior-to-prior.stdout.txt",
+        "stderr_path":  "process-logs/consumer-prior-to-prior.stderr.txt",
+        "stdout_sha256":  "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stderr_sha256":  "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+        "id":  "producer-current-to-current",
+        "stage":  "producer",
+        "state":  "ran",
+        "started_utc":  "2026-08-04T05:57:58.5962747Z",
+        "ended_utc":  "2026-08-04T05:57:58.8732778Z",
+        "command":  "C:\\Users\\peter\\AppData\\Local\\Temp\\ketchup-a0d-a0d-run-002-current\\debug\\ketchup-a0-diagnostic-probe.exe",
+        "arguments":  [
+                          "produce",
+                          "C:\\Sources8\\Ketchup\\artifacts\\gate-a0\\diagnostics\\a0d-run-002\\fixtures\\current-to-current.tsv"
+                      ],
+        "command_display":  "C:\\Users\\peter\\AppData\\Local\\Temp\\ketchup-a0d-a0d-run-002-current\\debug\\ketchup-a0-diagnostic-probe.exe produce C:\\Sources8\\Ketchup\\artifacts\\gate-a0\\diagnostics\\a0d-run-002\\fixtures\\current-to-current.tsv",
+        "build_identity":  {
+                               "alias":  "current",
+                               "id":  "current-r0-v1-build",
+                               "install_path":  "C:\\Sources8\\Ketchup\\third_party\\occt-install-r0-v1",
+                               "tree_sha256":  "c51103534429a99414c22c88c7964cd2d55dd53baf3a0fc7dc8314481aa25a76",
+                               "fingerprint":  "occt-8.0.1:tree:c51103534429a99414c22c88c7964cd2d55dd53baf3a0fc7dc8314481aa25a76:tkernel:ec7d6c0d93ccf1624d7e76fe275d38ce5a807a74da824a25b1c93ef484d18df5:current-r0-v1-build",
+                               "tkernel_sha256":  "ec7d6c0d93ccf1624d7e76fe275d38ce5a807a74da824a25b1c93ef484d18df5"
+                           },
+        "exit_code":  101,
+        "success":  false,
+        "panic_detected":  true,
+        "stdout_path":  "process-logs/producer-current-to-current.stdout.txt",
+        "stderr_path":  "process-logs/producer-current-to-current.stderr.txt",
+        "stdout_sha256":  "88152184bea1de05713a8411b7c45a1ca5d590c1bf245c836f3edcc5b85e1066",
+        "stderr_sha256":  "cfef9fb869e035559584cddcc76981e85e219a08e5edb6381df899ce0f3e8cec"
+    },
+    {
+        "id":  "consumer-current-to-current",
+        "stage":  "consumer",
+        "state":  "not_run",
+        "reason":  "producer did not complete successfully",
+        "started_utc":  null,
+        "ended_utc":  null,
+        "command":  null,
+        "arguments":  [
+
+                      ],
+        "command_display":  null,
+        "build_identity":  {
+                               "alias":  "current",
+                               "id":  "current-r0-v1-build",
+                               "install_path":  "C:\\Sources8\\Ketchup\\third_party\\occt-install-r0-v1",
+                               "tree_sha256":  "c51103534429a99414c22c88c7964cd2d55dd53baf3a0fc7dc8314481aa25a76",
+                               "fingerprint":  "occt-8.0.1:tree:c51103534429a99414c22c88c7964cd2d55dd53baf3a0fc7dc8314481aa25a76:tkernel:ec7d6c0d93ccf1624d7e76fe275d38ce5a807a74da824a25b1c93ef484d18df5:current-r0-v1-build",
+                               "tkernel_sha256":  "ec7d6c0d93ccf1624d7e76fe275d38ce5a807a74da824a25b1c93ef484d18df5"
+                           },
+        "exit_code":  null,
+        "success":  false,
+        "panic_detected":  false,
+        "stdout_path":  "process-logs/consumer-current-to-current.stdout.txt",
+        "stderr_path":  "process-logs/consumer-current-to-current.stderr.txt",
+        "stdout_sha256":  "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stderr_sha256":  "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+        "id":  "producer-prior-to-current",
+        "stage":  "producer",
+        "state":  "ran",
+        "started_utc":  "2026-08-04T05:57:58.8832757Z",
+        "ended_utc":  "2026-08-04T05:57:58.9112789Z",
+        "command":  "C:\\Users\\peter\\AppData\\Local\\Temp\\ketchup-a0d-a0d-run-002-prior\\debug\\ketchup-a0-diagnostic-probe.exe",
+        "arguments":  [
+                          "produce",
+                          "C:\\Sources8\\Ketchup\\artifacts\\gate-a0\\diagnostics\\a0d-run-002\\fixtures\\prior-to-current.tsv"
+                      ],
+        "command_display":  "C:\\Users\\peter\\AppData\\Local\\Temp\\ketchup-a0d-a0d-run-002-prior\\debug\\ketchup-a0-diagnostic-probe.exe produce C:\\Sources8\\Ketchup\\artifacts\\gate-a0\\diagnostics\\a0d-run-002\\fixtures\\prior-to-current.tsv",
+        "build_identity":  {
+                               "alias":  "prior",
+                               "id":  "prior-real-build",
+                               "install_path":  "C:\\Sources8\\Ketchup\\third_party\\occt-install",
+                               "tree_sha256":  "bc55a1294872a05e01c69a8011f17a3171f3edd704e4d1f621c2827ffd28ab9d",
+                               "fingerprint":  "occt-8.0.1:tree:bc55a1294872a05e01c69a8011f17a3171f3edd704e4d1f621c2827ffd28ab9d:tkernel:5d48e135036b6b58331250b7432b9dd3ae21a31ca9348d3110d8762b15c2173a:prior-real-build",
+                               "tkernel_sha256":  "5d48e135036b6b58331250b7432b9dd3ae21a31ca9348d3110d8762b15c2173a"
+                           },
+        "exit_code":  101,
+        "success":  false,
+        "panic_detected":  true,
+        "stdout_path":  "process-logs/producer-prior-to-current.stdout.txt",
+        "stderr_path":  "process-logs/producer-prior-to-current.stderr.txt",
+        "stdout_sha256":  "e19f353d59a41140f0d81c3616fbc823457fdf23f19c3aad0b0ca0729e346f4e",
+        "stderr_sha256":  "ab2da05c1ece58a37dabee217e2d56224ea8ab2439234f7538c7fbd210b2ff51"
+    },
+    {
+        "id":  "consumer-prior-to-current",
+        "stage":  "consumer",
+        "state":  "not_run",
+        "reason":  "producer did not complete successfully",
+        "started_utc":  null,
+        "ended_utc":  null,
+        "command":  null,
+        "arguments":  [
+
+                      ],
+        "command_display":  null,
+        "build_identity":  {
+                               "alias":  "current",
+                               "id":  "current-r0-v1-build",
+                               "install_path":  "C:\\Sources8\\Ketchup\\third_party\\occt-install-r0-v1",
+                               "tree_sha256":  "c51103534429a99414c22c88c7964cd2d55dd53baf3a0fc7dc8314481aa25a76",
+                               "fingerprint":  "occt-8.0.1:tree:c51103534429a99414c22c88c7964cd2d55dd53baf3a0fc7dc8314481aa25a76:tkernel:ec7d6c0d93ccf1624d7e76fe275d38ce5a807a74da824a25b1c93ef484d18df5:current-r0-v1-build",
+                               "tkernel_sha256":  "ec7d6c0d93ccf1624d7e76fe275d38ce5a807a74da824a25b1c93ef484d18df5"
+                           },
+        "exit_code":  null,
+        "success":  false,
+        "panic_detected":  false,
+        "stdout_path":  "process-logs/consumer-prior-to-current.stdout.txt",
+        "stderr_path":  "process-logs/consumer-prior-to-current.stderr.txt",
+        "stdout_sha256":  "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stderr_sha256":  "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+        "id":  "producer-current-to-prior",
+        "stage":  "producer",
+        "state":  "ran",
+        "started_utc":  "2026-08-04T05:57:58.9202740Z",
+        "ended_utc":  "2026-08-04T05:57:58.9472772Z",
+        "command":  "C:\\Users\\peter\\AppData\\Local\\Temp\\ketchup-a0d-a0d-run-002-current\\debug\\ketchup-a0-diagnostic-probe.exe",
+        "arguments":  [
+                          "produce",
+                          "C:\\Sources8\\Ketchup\\artifacts\\gate-a0\\diagnostics\\a0d-run-002\\fixtures\\current-to-prior.tsv"
+                      ],
+        "command_display":  "C:\\Users\\peter\\AppData\\Local\\Temp\\ketchup-a0d-a0d-run-002-current\\debug\\ketchup-a0-diagnostic-probe.exe produce C:\\Sources8\\Ketchup\\artifacts\\gate-a0\\diagnostics\\a0d-run-002\\fixtures\\current-to-prior.tsv",
+        "build_identity":  {
+                               "alias":  "current",
+                               "id":  "current-r0-v1-build",
+                               "install_path":  "C:\\Sources8\\Ketchup\\third_party\\occt-install-r0-v1",
+                               "tree_sha256":  "c51103534429a99414c22c88c7964cd2d55dd53baf3a0fc7dc8314481aa25a76",
+                               "fingerprint":  "occt-8.0.1:tree:c51103534429a99414c22c88c7964cd2d55dd53baf3a0fc7dc8314481aa25a76:tkernel:ec7d6c0d93ccf1624d7e76fe275d38ce5a807a74da824a25b1c93ef484d18df5:current-r0-v1-build",
+                               "tkernel_sha256":  "ec7d6c0d93ccf1624d7e76fe275d38ce5a807a74da824a25b1c93ef484d18df5"
+                           },
+        "exit_code":  101,
+        "success":  false,
+        "panic_detected":  true,
+        "stdout_path":  "process-logs/producer-current-to-prior.stdout.txt",
+        "stderr_path":  "process-logs/producer-current-to-prior.stderr.txt",
+        "stdout_sha256":  "88152184bea1de05713a8411b7c45a1ca5d590c1bf245c836f3edcc5b85e1066",
+        "stderr_sha256":  "094f6738e2bf9e6d273dd96003aa0ea50d920a9b73a59b6ecc0ae268ec1a6e2c"
+    },
+    {
+        "id":  "consumer-current-to-prior",
+        "stage":  "consumer",
+        "state":  "not_run",
+        "reason":  "producer did not complete successfully",
+        "started_utc":  null,
+        "ended_utc":  null,
+        "command":  null,
+        "arguments":  [
+
+                      ],
+        "command_display":  null,
+        "build_identity":  {
+                               "alias":  "prior",
+                               "id":  "prior-real-build",
+                               "install_path":  "C:\\Sources8\\Ketchup\\third_party\\occt-install",
+                               "tree_sha256":  "bc55a1294872a05e01c69a8011f17a3171f3edd704e4d1f621c2827ffd28ab9d",
+                               "fingerprint":  "occt-8.0.1:tree:bc55a1294872a05e01c69a8011f17a3171f3edd704e4d1f621c2827ffd28ab9d:tkernel:5d48e135036b6b58331250b7432b9dd3ae21a31ca9348d3110d8762b15c2173a:prior-real-build",
+                               "tkernel_sha256":  "5d48e135036b6b58331250b7432b9dd3ae21a31ca9348d3110d8762b15c2173a"
+                           },
+        "exit_code":  null,
+        "success":  false,
+        "panic_detected":  false,
+        "stdout_path":  "process-logs/consumer-current-to-prior.stdout.txt",
+        "stderr_path":  "process-logs/consumer-current-to-prior.stderr.txt",
+        "stdout_sha256":  "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stderr_sha256":  "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+]

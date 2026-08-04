@@ -1,0 +1,18 @@
+{
+    "schema_version":  1,
+    "freeze_id":  "strengthened-a0-v2-r2",
+    "run_id":  "strengthened-v2-r2-run-001",
+    "lock_sha256":  "b4a6212f70b822b33bed37d83df822b39e01a7890efb163d479cec8c71215b2d",
+    "native_observation_reached":  true,
+    "provenance_failure":  true,
+    "cleanup_barrier_passed":  true,
+    "substantive_failure_observed":  true,
+    "inherited_suites_passed":  0,
+    "inherited_suites_required":  2,
+    "matrix_combinations_passed":  0,
+    "matrix_combinations_required":  4,
+    "decision":  "NO-GO",
+    "failure_class":  "substantive_topology_or_reference",
+    "fatal_detail":  "System.Management.Automation.MethodInvocationException: Exception calling \"Matches\" with \"2\" argument(s): \"Value cannot be null.\r\nParameter name: input\" ---\u003e System.ArgumentNullException: Value cannot be null.\r\nParameter name: input\r\n   at System.Text.RegularExpressions.Regex.Matches(String input)\r\n   at System.Text.RegularExpressions.Regex.Matches(String input, String pattern)\r\n   at CallSite.Target(Closure , CallSite , Type , Object , String )\r\n   --- End of inner exception stack trace ---\r\n   at System.Management.Automation.ExceptionHandlingOps.CheckActionPreference(FunctionContext funcContext, Exception exception)\r\n   at System.Management.Automation.Interpreter.ActionCallInstruction`2.Run(InterpretedFrame frame)\r\n   at System.Management.Automation.Interpreter.EnterTryCatchFinallyInstruction.Run(InterpretedFrame frame)\r\n   at System.Management.Automation.Interpreter.EnterTryCatchFinallyInstruction.Run(InterpretedFrame frame)",
+    "applied_disposition":  "Apply the safe halt and diagnostic_hold. The run reached native observation but did not complete; preserve this evidence and localize the cause before any architectural disposition."
+}

@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "profile_id": "HP-DEV-01",
+  "series": [1, 2, 3],
+  "r0_lock_sha256": "01ee1e30d4a9026f674ee3ee9fa1dde965294b97b691b7870fab49c782b96176",
+  "git_head": "f0a0cf3afa9df45682fe8723dacc99cb8e153058",
+  "working_tree_dirty": true,
+  "decision": "PASS",
+  "metrics": [
+    {"series": 1, "edit_p95_ms": 2.3064, "pick_snap_p95_ms": 2.4291, "navigation_block_max_ms": 3.3691, "cancel_p95_ms": 1.0791, "action_digest_match_percent": 100.0, "wrong_identity_count": 0, "committed_data_loss_count": 0},
+    {"series": 2, "edit_p95_ms": 2.1940, "pick_snap_p95_ms": 2.4382, "navigation_block_max_ms": 3.0375, "cancel_p95_ms": 1.0974, "action_digest_match_percent": 100.0, "wrong_identity_count": 0, "committed_data_loss_count": 0},
+    {"series": 3, "edit_p95_ms": 2.3470, "pick_snap_p95_ms": 2.4379, "navigation_block_max_ms": 3.3618, "cancel_p95_ms": 1.0542, "action_digest_match_percent": 100.0, "wrong_identity_count": 0, "committed_data_loss_count": 0}
+  ],
+  "files": [
+    {"path": "target/release/ketchup-gate-c-core.exe", "sha256": "cfea07b32dec2ee395bb26aa5a7c3dce7d8411190361d821696063a049f680c5"},
+    {"path": "target/release/ketchup-exact-worker.exe", "sha256": "54cf12f88fd2fdb1d69de23cccc36c80a6111507c4e75217f5f4dd1def6ae708"},
+    {"path": "crates/ketchup-scheduler/src/bin/ketchup-gate-c-core.rs", "sha256": "1dd8d666d456f8c421b498628bf9f9e9a2d48bf02eabac817300aa8c15bb4b84"},
+    {"path": "crates/ketchup-scheduler/src/bin/ketchup-exact-worker.rs", "sha256": "d7091e406934b992e3910e9937781030f3d05853677ed66885dc53babf4fcddc"},
+    {"path": "artifacts/r0/preregistration-lock-r0-v12.json", "sha256": "01ee1e30d4a9026f674ee3ee9fa1dde965294b97b691b7870fab49c782b96176"},
+    {"path": "artifacts/gate-c/hp-dev-01-core-r0-v12-series-1.json", "sha256": "d858eeb73769ef7a883ecd3191dcfcfa7b322b3b4d0dd198c1c4925baf996ba8"},
+    {"path": "artifacts/gate-c/hp-dev-01-core-r0-v12-series-2.json", "sha256": "f3f966b5bf162b64dacb1f97e03ab1161f3ef59cbd6013b5de5e9bd6b44d959e"},
+    {"path": "artifacts/gate-c/hp-dev-01-core-r0-v12-series-3.json", "sha256": "b57d44fd51a8093371670a5efd3e64140f960ecc727d92e568faf9f66dcc5a4c"}
+  ]
+}

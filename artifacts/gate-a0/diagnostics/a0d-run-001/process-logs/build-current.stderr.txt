@@ -1,0 +1,25 @@
+   Compiling find-msvc-tools v0.1.9
+   Compiling shlex v2.0.1
+   Compiling proc-macro2 v1.0.107
+   Compiling quote v1.0.47
+   Compiling unicode-ident v1.0.24
+   Compiling windows-link v0.2.1
+   Compiling hashbrown v0.17.1
+   Compiling equivalent v1.0.2
+   Compiling scratch v1.0.9
+   Compiling cxxbridge-flags v1.0.198
+   Compiling unicode-width v0.2.2
+   Compiling foldhash v0.2.0
+   Compiling windows-sys v0.61.2
+   Compiling cc v1.4.0
+   Compiling indexmap v2.14.0
+   Compiling winapi-util v0.1.11
+   Compiling syn v3.0.3
+   Compiling termcolor v1.4.1
+   Compiling codespan-reporting v0.13.1
+   Compiling link-cplusplus v1.0.12
+   Compiling cxx v1.0.198
+   Compiling cxx-build v1.0.198
+   Compiling cxxbridge-macro v1.0.198
+   Compiling ketchup-exact v0.1.0 (C:\Sources8\Ketchup\crates\ketchup-exact)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 7.48s

@@ -1,0 +1,132 @@
+{
+  "schema_version": 1,
+  "decision": "D-08",
+  "invariant": "Only a validated canonical command batch mutates canonical model state.",
+  "ordinary_gateway": {
+    "scope": "DocumentStore::apply_batch",
+    "source": "crates/ketchup-core/src/document.rs",
+    "required_validation": [
+      "validate_graph",
+      "validate_product"
+    ],
+    "revision_append_after_validation": true
+  },
+  "delegated_gateways": [
+    {
+      "scope": "DocumentStore::commit_proposal",
+      "source": "crates/ketchup-core/src/document.rs",
+      "delegates_to": "DocumentStore::apply_batch"
+    }
+  ],
+  "construction_paths": [
+    {
+      "scope": "DocumentStore::new",
+      "source": "crates/ketchup-core/src/document.rs",
+      "visibility": "public",
+      "contract": "construct a fresh validated empty store"
+    },
+    {
+      "scope": "DocumentStore::from_parts",
+      "source": "crates/ketchup-core/src/document.rs",
+      "visibility": "crate",
+      "contract": "validate the complete graph and product before constructing a separate one-revision candidate"
+    }
+  ],
+  "lifecycle_exceptions": [
+    {
+      "id": "undo",
+      "scope": "DocumentStore::undo",
+      "source": "crates/ketchup-core/src/document.rs",
+      "kind": "cursor_only",
+      "allowed_state_changes": [
+        "cursor"
+      ],
+      "forbidden_effects": [
+        "entity_content_mutation",
+        "revision_append",
+        "id_consumption"
+      ],
+      "evidence": [
+        "crates/ketchup-core/tests/product_document.rs"
+      ]
+    },
+    {
+      "id": "redo",
+      "scope": "DocumentStore::redo",
+      "source": "crates/ketchup-core/src/document.rs",
+      "kind": "cursor_only",
+      "allowed_state_changes": [
+        "cursor"
+      ],
+      "forbidden_effects": [
+        "entity_content_mutation",
+        "revision_append",
+        "id_consumption"
+      ],
+      "evidence": [
+        "crates/ketchup-core/tests/product_document.rs"
+      ]
+    },
+    {
+      "id": "discard-history-before-current",
+      "scope": "DocumentStore::discard_history_before_current",
+      "source": "crates/ketchup-core/src/document.rs",
+      "kind": "retention_only",
+      "allowed_state_changes": [
+        "revisions_retention",
+        "cursor"
+      ],
+      "forbidden_effects": [
+        "entity_content_mutation",
+        "revision_append",
+        "id_consumption"
+      ],
+      "evidence": [
+        "crates/ketchup-core/tests/product_document.rs"
+      ]
+    },
+    {
+      "id": "new-document",
+      "scope": "KetchupApp::new_document",
+      "source": "crates/ketchup-app/src/lib.rs",
+      "kind": "validated_fresh_store_swap",
+      "allowed_state_changes": [
+        "active_store_replacement",
+        "ephemeral_ui_reset"
+      ],
+      "forbidden_effects": [
+        "in_place_entity_content_mutation",
+        "partial_replacement"
+      ],
+      "evidence": [
+        "crates/ketchup-app/tests/file_workflow.rs"
+      ]
+    },
+    {
+      "id": "open-document",
+      "scope": "KetchupApp::open_document_from",
+      "source": "crates/ketchup-app/src/lib.rs",
+      "kind": "validated_candidate_swap",
+      "allowed_state_changes": [
+        "active_store_replacement_after_success",
+        "document_path",
+        "ephemeral_ui_reset"
+      ],
+      "forbidden_effects": [
+        "active_store_change_on_load_failure",
+        "in_place_entity_content_mutation",
+        "partial_replacement"
+      ],
+      "evidence": [
+        "crates/ketchup-core/tests/product_document.rs",
+        "crates/ketchup-app/tests/file_workflow.rs"
+      ]
+    }
+  ],
+  "dry_run_forbidden_effects": [
+    "canonical_state_mutation",
+    "irreversible_id_consumption",
+    "shared_cache_publication",
+    "worker_global_state_change"
+  ]
+}

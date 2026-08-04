@@ -1,0 +1,22 @@
+[package]
+name = "ketchup-app"
+description = "Narrow localization-ready wgpu desktop shell for Ketchup"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+eframe = { version = "0.32.3", default-features = false, features = ["accesskit", "default_fonts", "wgpu"] }
+ketchup-core = { path = "../ketchup-core" }
+ketchup-interaction = { path = "../ketchup-interaction" }
+rfd = "0.15.4"
+wgpu = { version = "25.0.2", default-features = false, features = ["dx12"] }
+
+[dev-dependencies]
+egui_kittest = "0.32.0"
+tempfile = "3.23.0"
+
+[lints]
+workspace = true

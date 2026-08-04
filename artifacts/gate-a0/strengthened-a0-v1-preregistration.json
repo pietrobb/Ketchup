@@ -1,0 +1,86 @@
+{
+  "schema_version": 1,
+  "gate_id": "strengthened-a0-v1",
+  "status": "preregistered_before_observation",
+  "preregistered_utc": "2026-08-03T20:49:32Z",
+  "authority": "KETCHUP_ARCHITECTURE_SPECIFICATION_V4.md M0 and thresholds/r0.yaml A0",
+  "measurement_state_at_preregistration": "not_started",
+  "purpose": "Replace any current-tree A0 claim with complete adjacency evidence and migration between two real OCCT backend builds.",
+  "immutability_rule": "After the first observation, any change to this contract, the strengthened lock, a locked source/build input, corpus, oracle, threshold, sample count, backend install tree, classification rule, or consequence invalidates the run and requires a new preregistration version. Historical A0 evidence remains immutable.",
+  "inherited_contract": {
+    "thresholds": "thresholds/r0.yaml A0 is inherited byte-for-byte",
+    "corpus": "corpora/manifest.yaml fixed, generative, mutation, adversarial, rejection, and STEP fixtures are inherited byte-for-byte",
+    "required_counts": {
+      "fixed_expected_valid": 4,
+      "ffi_fuzz_calls_min": 10000,
+      "adversarial_expected_valid": 10,
+      "typed_rejections": 6,
+      "guaranteed_mutation_outcomes": 24,
+      "step_fixtures": 3
+    }
+  },
+  "complete_adjacency_oracle": {
+    "scope": "Every successful exact output records a unique edge table and every face records its complete unique boundary edge ordinals. Strengthened gating applies the closed-manifold checks to all 24 Guaranteed mutation outcomes.",
+    "requirements": [
+      "Every face boundary edge ordinal exists in the output edge table and appears exactly once on that face.",
+      "Every edge adjacent-face ordinal exists in the output face table and appears exactly once for that edge.",
+      "Face-to-edge and edge-to-face membership is reciprocal.",
+      "Every edge in a closed one-solid Guaranteed extrusion has exactly two adjacent faces.",
+      "The union of face boundary edges equals the complete output edge table; no edge is omitted or invented.",
+      "The resolved Guaranteed face has four boundary edges and complete reciprocal adjacency evidence.",
+      "Geometry fingerprints remain corroborative and are never the identity oracle."
+    ],
+    "pass_count": 24,
+    "required_pass_count": 24
+  },
+  "real_build_migration_oracle": {
+    "producer_backend": {
+      "install_path": "third_party/occt-install",
+      "release": "8.0.1",
+      "kind": "independently materialized Release shared-library build",
+      "required_file_count": 7400
+    },
+    "consumer_backend": {
+      "install_path": "third_party/occt-install-r0-v1",
+      "release": "8.0.1",
+      "kind": "frozen r0-v1 Release shared-library build",
+      "required_file_count": 7400
+    },
+    "distinctness_rule": "The two validated install-tree SHA-256 values and their TKernel.dll SHA-256 values must differ before either producer or consumer runs.",
+    "producer_fixture": {"width_mm": 100, "depth_mm": 60, "height_mm": 20},
+    "consumer_fixture": {"width_mm": 120, "depth_mm": 70, "height_mm": 25},
+    "serialized_references": [
+      "extrusion.top",
+      "extrusion.bottom",
+      "extrusion.side(profile_edge=east)"
+    ],
+    "serialized_retired_reference": "legacy.extrusion.side(profile_edge=north), captured from the real prior-build north face with its ordinal, four boundary edges, geometry fingerprint, and lineage digest; absent from current semantic history and therefore required to quarantine",
+    "expected": {
+      "resolved_on_consumer_build": 3,
+      "quarantined_removed_reference": 1,
+      "silent_wrong_identity": 0,
+      "producer_and_consumer_backend_fingerprints_distinct": true
+    },
+    "anti_simulation_rule": "The producer reference fixture must be emitted by an executable compiled against the validated producer install, with TKernel/TKBRep/TKPrim hashes rechecked beside the executable before launch. The consumer must be compiled against the validated consumer install, with the same DLL hashes rechecked beside the test executable. Gate environment values must match fresh validator output. Editing only a fingerprint string is not migration evidence."
+  },
+  "evidence_scope": "The narrow rectangular extrusion Guaranteed subset, inherited A0 exact-operation envelope, inherited corpus, complete manifold adjacency for Guaranteed outcomes, and the specified prior/current OCCT 8.0.1 build transfer only. It is not a claim of general topological naming, arbitrary CAD-kernel migration, or broader product certification.",
+  "failure_classification": {
+    "hash_or_provenance_only": "Preflight failure before native geometry observation: stale/missing lock input, backend tree mismatch, non-distinct builds, wrong executable linkage, missing tool, or evidence-path collision.",
+    "substantive_topology_or_reference": "After successful preflight, any inherited A0 metric failure, incomplete/non-reciprocal adjacency, wrong/ambiguous/lost Guaranteed identity, failed real-build transfer, failed removed-reference quarantine, leaked native exception, silent invalid shape, or silent wrong identity."
+  },
+  "consequences": {
+    "GO": "Record an evidence-scoped strengthened A0 disposition and continue M0 governance work.",
+    "hash_or_provenance_only": "Record a non-geometry disposition, repair provenance, issue a new preregistration version before another observation, and draw no geometry conclusion.",
+    "substantive_topology_or_reference": "Record NO-GO and halt M1/M2/M3 investment until an explicit planar-fallback or backend/reference redesign disposition is approved."
+  },
+  "required_locked_inputs": [
+    "this preregistration",
+    "historical audit addendum",
+    "thresholds/r0.yaml",
+    "corpora/manifest.yaml and the three STEP fixtures",
+    "Cargo.toml, Cargo.lock, rust-toolchain.toml",
+    "crates/ketchup-exact/Cargo.toml, build.rs, include/ketchup_exact.hxx, src/lib.rs, src/native.cc, strengthened A0 producer and gate sources",
+    "strengthened A0 validator and runner",
+    "producer and consumer OCCT install-tree fingerprints plus representative shared-library hashes"
+  ]
+}

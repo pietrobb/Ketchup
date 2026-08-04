@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "profile_id": "HP-DEV-01",
+  "series": [1, 2, 3],
+  "r0_lock_sha256": "d6c9edacd884a1b24a8fc6d42a14ad4bc25c248883faf7ba5c0d846977ae8de7",
+  "git_head": "f0a0cf3afa9df45682fe8723dacc99cb8e153058",
+  "working_tree_dirty": true,
+  "decision": "PASS",
+  "metrics": [
+    {"series": 1, "edit_p95_ms": 2.2523, "pick_snap_p95_ms": 2.4464, "navigation_block_max_ms": 2.9298, "cancel_p95_ms": 1.1074, "action_digest_match_percent": 100.0, "wrong_identity_count": 0, "committed_data_loss_count": 0},
+    {"series": 2, "edit_p95_ms": 2.3727, "pick_snap_p95_ms": 2.4526, "navigation_block_max_ms": 2.8840, "cancel_p95_ms": 1.1428, "action_digest_match_percent": 100.0, "wrong_identity_count": 0, "committed_data_loss_count": 0},
+    {"series": 3, "edit_p95_ms": 2.3888, "pick_snap_p95_ms": 2.4470, "navigation_block_max_ms": 2.8555, "cancel_p95_ms": 1.1319, "action_digest_match_percent": 100.0, "wrong_identity_count": 0, "committed_data_loss_count": 0}
+  ],
+  "files": [
+    {"path": "target/release/ketchup-gate-c-core.exe", "sha256": "cfea07b32dec2ee395bb26aa5a7c3dce7d8411190361d821696063a049f680c5"},
+    {"path": "target/release/ketchup-exact-worker.exe", "sha256": "54cf12f88fd2fdb1d69de23cccc36c80a6111507c4e75217f5f4dd1def6ae708"},
+    {"path": "crates/ketchup-scheduler/src/bin/ketchup-gate-c-core.rs", "sha256": "1dd8d666d456f8c421b498628bf9f9e9a2d48bf02eabac817300aa8c15bb4b84"},
+    {"path": "crates/ketchup-scheduler/src/bin/ketchup-exact-worker.rs", "sha256": "d7091e406934b992e3910e9937781030f3d05853677ed66885dc53babf4fcddc"},
+    {"path": "artifacts/gate-c/hp-dev-01-core-r0-v11-series-1.json", "sha256": "5f08b8d5fbd680eaac2c150e525e55835498e4d1464906ba858f2c0149df4d09"},
+    {"path": "artifacts/gate-c/hp-dev-01-core-r0-v11-series-2.json", "sha256": "965fdc52b3a3d4f5d35b060945397779401d5359178d8f2b7fed09cc6d36ae35"},
+    {"path": "artifacts/gate-c/hp-dev-01-core-r0-v11-series-3.json", "sha256": "afaf2edc083aa90d6caf71a60d88e67a46cb8454a61e4940bcc77801a5f861e6"}
+  ]
+}

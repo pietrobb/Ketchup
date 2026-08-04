@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "freeze_id": "r0-v6",
+  "lock_sha256": "4a07111ad9cadb40d9c57f2a8c827b317e2edbe34243143f54cee133c2c74256",
+  "decision": "GO",
+  "fixed": {"passed": 4, "total": 4},
+  "ffi_fuzz": {"passed": 10000, "calls": 10000},
+  "adversarial_expected_valid": {"passed": 10, "total": 10},
+  "adversarial_structural_diagnoses": {"diagnosed": 0, "non_passes": 0},
+  "expected_rejections": {"passed": 6, "total": 6},
+  "silent_invalid_shapes": 0,
+  "guaranteed_identity": {"correct": 24, "total": 24, "history_complete": 24},
+  "silent_wrong_identities": 0,
+  "external_step": {"passed": 3, "total": 3},
+  "migration": {"resolved": 3, "quarantined_unresolved": 1}
+}

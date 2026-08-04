@@ -1,0 +1,160 @@
+{
+    "schema_version":  1,
+    "freeze_id":  "strengthened-a0-v2-r2",
+    "run_id":  "strengthened-v2-r2-run-001",
+    "sealed_utc":  "2026-08-04T07:53:54.0856661Z",
+    "hash_algorithm":  "SHA-256",
+    "file_count":  30,
+    "files":  [
+                  {
+                      "path":  "fixtures/prior-to-prior.tsv",
+                      "size":  1176,
+                      "sha256":  "4b8b1482d6b92e42a60c97bf338b52d315940d417945a8ae1c15e85e6dd28714"
+                  },
+                  {
+                      "path":  "inherited-suites.json",
+                      "size":  491,
+                      "sha256":  "c1e6e0db656e199177c8b0e97e462cd89878eb641de149c3403cf111c2847f0d"
+                  },
+                  {
+                      "path":  "inputs/gate_a0_v2.rs",
+                      "size":  26164,
+                      "sha256":  "2cec580b99927f7fd054a07e423d1f85648332b78588d2d87b70fdefea59b8af"
+                  },
+                  {
+                      "path":  "inputs/ketchup-a0-diagnostic-probe.rs",
+                      "size":  12473,
+                      "sha256":  "ce6c428bd557386cfb7d73b9ec3cbfa7918b6172979ce121dd48bbd4d9defa42"
+                  },
+                  {
+                      "path":  "inputs/run-strengthened-a0-v2.ps1",
+                      "size":  34906,
+                      "sha256":  "d8b2f7bcb4057214f3a963006390d83e2a372b69bff344a2d8419315f5943d75"
+                  },
+                  {
+                      "path":  "inputs/strengthened-a0-v2-r2-lock.json",
+                      "size":  5852,
+                      "sha256":  "b4a6212f70b822b33bed37d83df822b39e01a7890efb163d479cec8c71215b2d"
+                  },
+                  {
+                      "path":  "inputs/strengthened-a0-v2-r2-preregistration.json",
+                      "size":  9400,
+                      "sha256":  "d5f8427d79518fd3bfcd3c6c93252b131b7a26b955858842cd207874f4abfeab"
+                  },
+                  {
+                      "path":  "inputs/validate-strengthened-a0-v2.ps1",
+                      "size":  13371,
+                      "sha256":  "5646d317cb8449fc5df8eaf3d6184d2c4a545ea7a6a37e0f623379542ffdba8a"
+                  },
+                  {
+                      "path":  "matrix.json",
+                      "size":  405,
+                      "sha256":  "43d70d7dd903180e2c8c0d608453e1c291118d94164d152352a2f2a8d43a1745"
+                  },
+                  {
+                      "path":  "processes.json",
+                      "size":  64224,
+                      "sha256":  "a86545018e0bc8ac16a4982d3ad206453b156d3948304be013c40886377eaaa8"
+                  },
+                  {
+                      "path":  "process-logs/build-probe-current.stderr.txt",
+                      "size":  126,
+                      "sha256":  "500d22d0108afe31b017f6b7b2f17623ea090d977e17f14e185daff0e4a4e829"
+                  },
+                  {
+                      "path":  "process-logs/build-probe-current.stdout.txt",
+                      "size":  0,
+                      "sha256":  "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+                  },
+                  {
+                      "path":  "process-logs/build-probe-prior.stderr.txt",
+                      "size":  126,
+                      "sha256":  "500d22d0108afe31b017f6b7b2f17623ea090d977e17f14e185daff0e4a4e829"
+                  },
+                  {
+                      "path":  "process-logs/build-probe-prior.stdout.txt",
+                      "size":  0,
+                      "sha256":  "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+                  },
+                  {
+                      "path":  "process-logs/build-suite-current.stderr.txt",
+                      "size":  2074,
+                      "sha256":  "e46732bec55ca729e599d78f5b3f518540028bb414990d3c344cb90e71bd456e"
+                  },
+                  {
+                      "path":  "process-logs/build-suite-current.stdout.txt",
+                      "size":  0,
+                      "sha256":  "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+                  },
+                  {
+                      "path":  "process-logs/build-suite-prior.stderr.txt",
+                      "size":  2070,
+                      "sha256":  "9fc4a5c3e6d1741a9cc525dabb89b02bb90ce16d775368e1b930dcb1cd66a175"
+                  },
+                  {
+                      "path":  "process-logs/build-suite-prior.stdout.txt",
+                      "size":  0,
+                      "sha256":  "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+                  },
+                  {
+                      "path":  "process-logs/consumer-prior-to-prior.stderr.txt",
+                      "size":  0,
+                      "sha256":  "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+                  },
+                  {
+                      "path":  "process-logs/consumer-prior-to-prior.stdout.txt",
+                      "size":  0,
+                      "sha256":  "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+                  },
+                  {
+                      "path":  "process-logs/preflight-validator.stderr.txt",
+                      "size":  0,
+                      "sha256":  "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+                  },
+                  {
+                      "path":  "process-logs/preflight-validator.stdout.txt",
+                      "size":  1992,
+                      "sha256":  "48bcda4dd81393a6677b05ccc9e53fb1e50b8ecdfaf6b24a85f65d3cddb98169"
+                  },
+                  {
+                      "path":  "process-logs/producer-prior-to-prior.stderr.txt",
+                      "size":  460,
+                      "sha256":  "3f76510de3643420b69d90e2e83546266a9e587ed495509162a1a271050a6a6f"
+                  },
+                  {
+                      "path":  "process-logs/producer-prior-to-prior.stdout.txt",
+                      "size":  337,
+                      "sha256":  "5b843c59c040d2b888c15e0f8659bb3c482b9b20021f459479260e005f8820e3"
+                  },
+                  {
+                      "path":  "process-logs/suite-current.stderr.txt",
+                      "size":  112,
+                      "sha256":  "0ad7967b01590e9f89140bbc043966d2c266e31b991a392e45745db9756eab78"
+                  },
+                  {
+                      "path":  "process-logs/suite-current.stdout.txt",
+                      "size":  0,
+                      "sha256":  "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+                  },
+                  {
+                      "path":  "process-logs/suite-prior.stderr.txt",
+                      "size":  112,
+                      "sha256":  "0ad7967b01590e9f89140bbc043966d2c266e31b991a392e45745db9756eab78"
+                  },
+                  {
+                      "path":  "process-logs/suite-prior.stdout.txt",
+                      "size":  0,
+                      "sha256":  "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+                  },
+                  {
+                      "path":  "report.md",
+                      "size":  771,
+                      "sha256":  "c6347a16f70ab6681a3af13f2b6fad0b107ba1533aefbf8a656e535ca470130b"
+                  },
+                  {
+                      "path":  "summary.json",
+                      "size":  1822,
+                      "sha256":  "47bc33d2d81d73b3c278a834e19a8e6e55ff0c09354f011ab1c73683dfed9d21"
+                  }
+              ]
+}

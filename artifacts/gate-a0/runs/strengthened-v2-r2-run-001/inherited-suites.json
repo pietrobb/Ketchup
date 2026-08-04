@@ -1,0 +1,20 @@
+[
+    {
+        "alias":  "prior",
+        "process_id":  "suite-prior",
+        "state":  "failed_to_start",
+        "exit_code":  null,
+        "metrics_path":  null,
+        "metrics_decision":  null,
+        "pass":  false
+    },
+    {
+        "alias":  "current",
+        "process_id":  "suite-current",
+        "state":  "failed_to_start",
+        "exit_code":  null,
+        "metrics_path":  null,
+        "metrics_decision":  null,
+        "pass":  false
+    }
+]

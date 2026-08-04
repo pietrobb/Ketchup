@@ -1,0 +1,18 @@
+{
+    "schema_version":  1,
+    "freeze_id":  "strengthened-a0-v2",
+    "run_id":  "strengthened-v2-run-001",
+    "lock_sha256":  "8c12965aa5d77e5bf7f4fcd55e575ab506a70a99ffaedd1a6a07441bd9178ce0",
+    "native_observation_reached":  false,
+    "provenance_failure":  false,
+    "cleanup_barrier_passed":  false,
+    "substantive_failure_observed":  false,
+    "inherited_suites_passed":  0,
+    "inherited_suites_required":  2,
+    "matrix_combinations_passed":  0,
+    "matrix_combinations_required":  4,
+    "decision":  "NO-GO",
+    "failure_class":  "hash_or_provenance_only",
+    "fatal_detail":  "System.Management.Automation.PropertyNotFoundException: The property \u0027Count\u0027 cannot be found on this object. Verify that the property exists.\r\n   at System.Management.Automation.ExceptionHandlingOps.CheckActionPreference(FunctionContext funcContext, Exception exception)\r\n   at System.Management.Automation.Interpreter.ActionCallInstruction`2.Run(InterpretedFrame frame)\r\n   at System.Management.Automation.Interpreter.EnterTryCatchFinallyInstruction.Run(InterpretedFrame frame)\r\n   at System.Management.Automation.Interpreter.EnterTryCatchFinallyInstruction.Run(InterpretedFrame frame)",
+    "applied_disposition":  "No complete geometry conclusion. Repair the failed setup/build/runtime provenance path and issue a new preregistration before another formal observation."
+}

@@ -1,0 +1,40 @@
+{
+  "schema_version": 2,
+  "profile_id": "HP-DEV-01",
+  "query_class": "QC-C-NAV-01",
+  "series": [1, 2, 3],
+  "r0_lock_sha256": "01ee1e30d4a9026f674ee3ee9fa1dde965294b97b691b7870fab49c782b96176",
+  "git_head": "f0a0cf3afa9df45682fe8723dacc99cb8e153058",
+  "working_tree_dirty": true,
+  "decision": "PASS",
+  "selected_adapter": {
+    "name": "AMD Radeon RX 6800 XT",
+    "vendor_id": 4098,
+    "device_id": 29631,
+    "device_type": "discrete-gpu",
+    "driver": "32.0.21045.1000",
+    "driver_info": "",
+    "backend": "dx12"
+  },
+  "environment": {
+    "cpu": "AMD Ryzen 9 5900X, 12 cores / 24 logical processors",
+    "gpu": "AMD Radeon RX 6800 XT",
+    "gpu_driver": "32.0.21045.1000",
+    "os": "Microsoft Windows 10 Pro 10.0.19045 build 19045",
+    "visible_memory_kib": 67011352
+  },
+  "metrics": [
+    {"series": 1, "frame_p95_ms": 4.8705, "frame_p99_ms": 6.0704, "input_to_preview_p95_ms": 0.4065, "frame_samples": 240429},
+    {"series": 2, "frame_p95_ms": 4.8272, "frame_p99_ms": 6.1676, "input_to_preview_p95_ms": 0.4131, "frame_samples": 238489},
+    {"series": 3, "frame_p95_ms": 5.2305, "frame_p99_ms": 6.7570, "input_to_preview_p95_ms": 0.4403, "frame_samples": 224696}
+  ],
+  "files": [
+    {"path": "target/release/ketchup-gate-c-nav.exe", "sha256": "3bf31886d57a089ed9653ad9689f2bcb5f9e507e4513a2f79a99f71cd21cffb2"},
+    {"path": "crates/ketchup-app/src/lib.rs", "sha256": "86bddca8af98d2bab045877a8a75a3c89a381905a13e67ac86e25009a1d497c1"},
+    {"path": "crates/ketchup-app/src/bin/ketchup-gate-c-nav.rs", "sha256": "2dfe7857159e9cfca1b5fd5f98cb4bded3649fe96d4524947b96223548efab92"},
+    {"path": "artifacts/r0/preregistration-lock-r0-v12.json", "sha256": "01ee1e30d4a9026f674ee3ee9fa1dde965294b97b691b7870fab49c782b96176"},
+    {"path": "artifacts/gate-c/hp-dev-01-nav-r0-v12-series-1.json", "sha256": "192897a9a2ae95667f4399f975c52e402d64a8494da9f77e14af5974bdd092c5"},
+    {"path": "artifacts/gate-c/hp-dev-01-nav-r0-v12-series-2.json", "sha256": "7078dab86b275beee42fe89c10560095a9f31bbefd5d4951ffe6baf577ed1338"},
+    {"path": "artifacts/gate-c/hp-dev-01-nav-r0-v12-series-3.json", "sha256": "2867941246792680e43f2feb5406e5d8cf41bca7c3c8d4743ceab84c77e04bc7"}
+  ]
+}

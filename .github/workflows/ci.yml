@@ -1,0 +1,51 @@
+name: CI governance
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-governance-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pull-request-guards:
+    name: architecture guards
+    if: github.event_name == 'pull_request'
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out exact revision
+        uses: actions/checkout@11bd71901bbe5b163ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Run disposable pull-request guards
+        shell: powershell
+        env:
+          KETCHUP_CI_BASE_REF: ${{ github.event.pull_request.base.sha }}
+        run: .\scripts\windows\invoke-ci-governance.ps1 -ArchitectureOnly -BaseRef $env:KETCHUP_CI_BASE_REF
+
+  governance:
+    name: governed Windows build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, Windows, X64, ketchup-occt-r0-v1]
+    timeout-minutes: 90
+    steps:
+      - name: Check out exact revision
+        uses: actions/checkout@11bd71901bbe5b163ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Run coherent governance block
+        shell: powershell
+        env:
+          KETCHUP_CI_BASE_REF: ${{ github.event.before }}
+        run: .\scripts\windows\invoke-ci-governance.ps1 -BaseRef $env:KETCHUP_CI_BASE_REF

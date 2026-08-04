@@ -1,0 +1,16 @@
+[package]
+name = "ketchup-scheduler"
+description = "Revision-safe evaluation scheduling and exact-worker isolation for Ketchup"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+ketchup-core = { path = "../ketchup-core" }
+ketchup-exact = { path = "../ketchup-exact" }
+ketchup-interaction = { path = "../ketchup-interaction" }
+
+[lints]
+workspace = true

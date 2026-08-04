@@ -1,0 +1,10 @@
+native_observation=entered
+mode=consume
+producer_backend=occt-8.0.1:tree:c51103534429a99414c22c88c7964cd2d55dd53baf3a0fc7dc8314481aa25a76:tkernel:ec7d6c0d93ccf1624d7e76fe275d38ce5a807a74da824a25b1c93ef484d18df5:current-r0-v1-build
+consumer_backend=occt-8.0.1:tree:c51103534429a99414c22c88c7964cd2d55dd53baf3a0fc7dc8314481aa25a76:tkernel:ec7d6c0d93ccf1624d7e76fe275d38ce5a807a74da824a25b1c93ef484d18df5:current-r0-v1-build
+migrated_backend=false
+resolved=extrusion.top@5
+resolved=extrusion.bottom@4
+resolved=extrusion.side(profile_edge=east)@1
+retired_reference=lost
+diagnostic_result=PASS

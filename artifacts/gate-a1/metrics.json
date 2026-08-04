@@ -1,0 +1,18 @@
+{
+  "gate": "A1",
+  "decision": "GO",
+  "threshold_source": "thresholds/r0.yaml#gate_thresholds.A1",
+  "source_revision": "f0a0cf3afa9df45682fe8723dacc99cb8e153058",
+  "test_command": "cargo test -p ketchup-core --test gate_a1",
+  "tests_passed": 7,
+  "tests_failed": 0,
+  "metrics": {
+    "canonical_changes_after_100_save_load_cycles": 0,
+    "ui_rpc_digest_and_invariant_equivalence_percent": 100,
+    "atomic_rollback_without_partial_mutation_percent": 100,
+    "independent_node_recompute_count": 0,
+    "precision_authoritative_without_drift_percent": 100,
+    "old_schema_preserved_or_explicit_loss_percent": 100,
+    "changed_relevant_proposal_accepted_count": 0
+  }
+}

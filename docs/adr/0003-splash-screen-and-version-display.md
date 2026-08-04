@@ -1,4 +1,4 @@
-# ADR 0002: Splash Screen and Version Display
+# ADR 0003: Splash Screen and Version Display
 
 - Status: Accepted
 - Date: 2026-08-01

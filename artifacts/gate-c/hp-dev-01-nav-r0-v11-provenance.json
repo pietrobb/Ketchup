@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "profile_id": "HP-DEV-01",
+  "query_class": "QC-C-NAV-01",
+  "series": [1, 2, 3],
+  "r0_lock_sha256": "d6c9edacd884a1b24a8fc6d42a14ad4bc25c248883faf7ba5c0d846977ae8de7",
+  "git_head": "f0a0cf3afa9df45682fe8723dacc99cb8e153058",
+  "working_tree_dirty": true,
+  "decision": "PASS",
+  "environment": {
+    "cpu": "AMD Ryzen 9 5900X, 12 cores / 24 logical processors",
+    "gpu": "AMD Radeon RX 6800 XT",
+    "gpu_driver": "32.0.21045.1000",
+    "os": "Microsoft Windows 10 Pro 10.0.19045 build 19045",
+    "visible_memory_kib": 67011352
+  },
+  "metrics": [
+    {"series": 1, "frame_p95_ms": 5.2199, "frame_p99_ms": 6.4700, "input_to_preview_p95_ms": 0.4408, "frame_samples": 224755},
+    {"series": 2, "frame_p95_ms": 5.3903, "frame_p99_ms": 7.2572, "input_to_preview_p95_ms": 0.4053, "frame_samples": 216154},
+    {"series": 3, "frame_p95_ms": 5.6148, "frame_p99_ms": 6.4348, "input_to_preview_p95_ms": 0.4254, "frame_samples": 216540}
+  ],
+  "files": [
+    {"path": "target/release/ketchup-gate-c-nav.exe", "sha256": "977141119f1c249e7e88fd90f5c59485cbf3d17f9a5bc50a3cd3e80f4d47e8f9"},
+    {"path": "crates/ketchup-app/src/lib.rs", "sha256": "babe9b0c6de1e8664f3b527b90558cf0ecb1be4dd09b39fa48df43adfd4edf92"},
+    {"path": "crates/ketchup-app/src/bin/ketchup-gate-c-nav.rs", "sha256": "1cb320582add123b648775a8877201d465006a4595e1a2e032f41c4a22290cd1"},
+    {"path": "artifacts/r0/preregistration-lock-r0-v11.json", "sha256": "d6c9edacd884a1b24a8fc6d42a14ad4bc25c248883faf7ba5c0d846977ae8de7"},
+    {"path": "artifacts/gate-c/hp-dev-01-nav-r0-v11-series-1.json", "sha256": "674bfb7e4878c95d0e0e3b675f231cbb9d6db8d39c8eb01d1ed08cf4182c6d40"},
+    {"path": "artifacts/gate-c/hp-dev-01-nav-r0-v11-series-2.json", "sha256": "c5130c4e35828439583e96e4a13e8836f93eba58ba3bdf491412ed012fc7513c"},
+    {"path": "artifacts/gate-c/hp-dev-01-nav-r0-v11-series-3.json", "sha256": "76bb75e195c5a96c60ea0ad5a467a9f6595f9f45efc887aba7b32773cd31171a"}
+  ]
+}
