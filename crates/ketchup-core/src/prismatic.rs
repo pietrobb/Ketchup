@@ -138,6 +138,39 @@ impl Aabb {
             self.min[axis] >= expanded.min[axis] && self.max[axis] <= expanded.max[axis]
         }))
     }
+
+    #[must_use]
+    pub fn vertices(&self) -> [[f64; 3]; 8] {
+        std::array::from_fn(|index| {
+            std::array::from_fn(|axis| {
+                if index & (1 << axis) == 0 {
+                    self.min[axis]
+                } else {
+                    self.max[axis]
+                }
+            })
+        })
+    }
+
+    pub fn distance_to_point(&self, point: [f64; 3]) -> Result<f64, PrismaticError> {
+        ensure_finite(point)?;
+        let squared = (0..3)
+            .map(|axis| {
+                if point[axis] < self.min[axis] {
+                    self.min[axis] - point[axis]
+                } else if point[axis] > self.max[axis] {
+                    point[axis] - self.max[axis]
+                } else {
+                    0.0
+                }
+            })
+            .map(|distance| distance * distance)
+            .sum::<f64>();
+        if !squared.is_finite() {
+            return Err(PrismaticError::NumericalFailure);
+        }
+        Ok(squared.sqrt())
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -413,8 +446,14 @@ pub fn validate_joint_overlap(
         .filter(Aabb::has_positive_volume);
     match (physical, declared_joint) {
         (Some(intersection), Some(joint)) => {
-            let conservative_intersection = intersection.inflate(tolerance.epsilon_mm)?;
-            if conservative_intersection.subset_of_expanded(&joint.volume, tolerance)? {
+            let inside = intersection
+                .vertices()
+                .into_iter()
+                .map(|vertex| joint.volume.distance_to_point(vertex))
+                .collect::<Result<Vec<_>, _>>()?
+                .into_iter()
+                .all(|distance| distance <= tolerance.epsilon_mm);
+            if inside {
                 Ok(Some(JointValidationOutcome::OverlapInsideDeclaredJointOk))
             } else {
                 Ok(Some(

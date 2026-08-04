@@ -1,0 +1,14 @@
+# schema=ketchup.furnigen-prismatic-corpus.v1
+# source_repository=https://github.com/pietrobb/FurniGen.git
+# source_commit=45dca2fbee382e5fa40cecd176d2361e6c53fa7f
+# provenance=independently encoded factual inputs and expected classifications from the named source tests; no implementation text copied
+# adaptation=FurniGen strict AABB collision cases run with Ketchup prismatic tolerance v1; envelope compares complete extents; structural cases remain NotEvaluated
+id	kind	left_min_xyz	left_max_xyz	right_min_xyz	right_max_xyz	tolerance_mm	expected	source	context
+no-overlap	collision	0,0,0	10,10,10	20,0,0	30,10,10	0.0000001	passed	tests/test_validation.py::TestCollision::test_no_overlap	strict-aabb
+face-touching	collision	0,0,0	10,10,10	10,0,0	20,10,10	0.0000001	passed	tests/test_validation.py::TestCollision::test_touching_not_overlapping	strict-aabb
+hard-overlap	collision	0,0,0	10,10,10	5,5,5	15,15,15	0.0000001	failed	tests/test_validation.py::TestCollision::test_overlap	strict-aabb
+pair-enumeration-overlap	collision	0,0,0	100,100,100	50,50,50	150,150,150	0.0000001	failed	tests/test_validation.py::TestCollision::test_find_collisions	A-B-only; C=200,200,200..300,300,300
+carcass-overlay-571-in-550	envelope	0,-18,0	600,553,2000	0,0,0	600,550,2000	1	failed	tests/test_envelope.py::test_overflow_depth_is_flagged	550-body plus -18 door and +3 back; y-span=571; overflow=21
+carcass-overlay-exact-fit	envelope	0,-18,0	600,532,2000	0,0,0	600,550,2000	1	passed	tests/test_envelope.py::test_within_envelope_passes	529-body plus overlays; y-span=550
+tolerance-absorbed-overflow	envelope	0,0,0	100,550.5,100	0,0,0	100,550,100	2	passed	tests/test_envelope.py::test_tolerance_absorbs_tiny_overflow	0.5-mm overflow within 2-mm tolerance
+racking-class-d	advisory	0,0,0	600,2700,510	0,0,0	0,0,0	0.0000001	not-evaluated	tests/test_racking.py::TestRackingClass::test_slender_open_face_is_class_d	rear_kind=rails; expected FurniGen class D; Ketchup structural validator absent

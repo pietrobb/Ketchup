@@ -3,10 +3,19 @@ use crate::document::{
     EvaluatorNodeKind, NodeId, OverrideParameterSpec, PortSpec, RuleOutput, SlotPath,
     SlotResolution, SlotSegment,
 };
+use crate::fabrication::{
+    DimensionChain, DimensionDatumRef, DimensionSegment, FabricationProjectionEnvelope,
+    FullBomProjection, FullBomRow, PieceDimensionSheet, PieceDimensions, ProjectionStatus,
+};
 use crate::graph::DerivedIdentity;
 use crate::prismatic::{
     Aabb, CanonicalJoint, JointId, JointValidationOutcome, PrismaticError, TolerancePolicy,
     validate_joint_overlap,
+};
+use crate::validation::{
+    BuiltinPrismaticValidator, HostNeutralValidator, PrismaticJointCase, ValidationExecution,
+    ValidationInvocation, ValidationReport, ValidationState, beam_validation_policy,
+    prismatic_input_bytes,
 };
 use std::collections::BTreeSet;
 use std::fmt;
@@ -77,7 +86,10 @@ pub struct BeamSlice {
     pub positions: Vec<GroovePosition>,
     pub pieces: Vec<DerivedProxyPiece>,
     pub bom: GroupedBom,
+    pub full_bom: FullBomProjection,
+    pub dimension_sheet: PieceDimensionSheet,
     pub joint_outcomes: Vec<JointValidationOutcome>,
+    pub validation_report: ValidationReport,
     pub validation: BeamValidationVerdict,
 }
 
@@ -87,6 +99,8 @@ pub struct BeamChangeSummary {
     pub recomputed_nodes: BTreeSet<NodeId>,
     pub recomputed_piece_identities: BTreeSet<DerivedIdentity>,
     pub bom_regenerated: bool,
+    pub dimensions_regenerated: bool,
+    pub validator_ran: bool,
 }
 
 pub struct BeamWorkspace {
@@ -217,7 +231,11 @@ impl BeamWorkspace {
             revision_id: revision.id(),
             recomputed_nodes: revision.recomputed_nodes().clone(),
             recomputed_piece_identities: changed,
-            bom_regenerated: before.bom.generated_for_revision != after.bom.generated_for_revision,
+            bom_regenerated: before.full_bom.envelope.source_revision
+                != after.full_bom.envelope.source_revision,
+            dimensions_regenerated: before.dimension_sheet.envelope.source_revision
+                != after.dimension_sheet.envelope.source_revision,
+            validator_ran: true,
         });
         self.slice = after;
         Ok(self
@@ -262,24 +280,57 @@ fn derive_slice(document: &DocumentStore) -> Result<BeamSlice, BeamError> {
             length_mm: GROOVE_WIDTH_MM,
         });
     }
-    let mut outcomes = Vec::new();
     let tolerance = TolerancePolicy::default();
-    for proxy in pieces.iter().skip(1) {
-        let joint = snapshot
-            .joints()
-            .find(|joint| joint.connects(&body_id, &proxy.identity));
-        if let Some(outcome) = validate_joint_overlap(body_bounds, proxy.bounds, joint, tolerance)?
-        {
-            outcomes.push(outcome);
-        }
-    }
-    let validation =
-        if outcomes.len() == positions.len() && outcomes.iter().all(|outcome| outcome.is_ok()) {
-            BeamValidationVerdict::Green
-        } else {
-            BeamValidationVerdict::Error
-        };
-    let body_identities = vec![body_id];
+    let cases = pieces
+        .iter()
+        .skip(1)
+        .map(|proxy| PrismaticJointCase {
+            left_identity: body_id.clone(),
+            right_identity: proxy.identity.clone(),
+            left_bounds: body_bounds,
+            right_bounds: proxy.bounds,
+            declared_joint: snapshot
+                .joints()
+                .find(|joint| joint.connects(&body_id, &proxy.identity))
+                .cloned(),
+        })
+        .collect::<Vec<_>>();
+    let outcomes = cases
+        .iter()
+        .map(|case| {
+            validate_joint_overlap(
+                case.left_bounds,
+                case.right_bounds,
+                case.declared_joint.as_ref(),
+                tolerance,
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+    let validator = BuiltinPrismaticValidator::new(tolerance);
+    let policy = beam_validation_policy();
+    let input = prismatic_input_bytes(&cases, tolerance);
+    let invocation = ValidationInvocation::bind(
+        &snapshot,
+        validator.descriptor(),
+        &policy,
+        pieces.iter().map(|piece| piece.identity.clone()).collect(),
+        &input,
+    );
+    let validation_report = validator.invoke(ValidationExecution {
+        snapshot: &snapshot,
+        invocation,
+        policy: &policy,
+        input: &cases,
+    });
+    let validation = if validation_report.state == ValidationState::Passed {
+        BeamValidationVerdict::Green
+    } else {
+        BeamValidationVerdict::Error
+    };
+    let body_identities = vec![body_id.clone()];
     let crossing_identities = pieces
         .iter()
         .skip(1)
@@ -304,14 +355,281 @@ fn derive_slice(document: &DocumentStore) -> Result<BeamSlice, BeamError> {
             },
         ],
     };
+    let full_bom = full_bom_projection(&snapshot, &pieces, validation_report.state);
+    let dimension_sheet = dimension_sheet_projection(&snapshot, &body_id, &positions)?;
     Ok(BeamSlice {
         revision_id: snapshot.revision_id(),
         positions,
         pieces,
         bom,
+        full_bom,
+        dimension_sheet,
         joint_outcomes: outcomes,
+        validation_report,
         validation,
     })
+}
+
+fn full_bom_projection(
+    snapshot: &crate::document::Snapshot,
+    pieces: &[DerivedProxyPiece],
+    validation_state: ValidationState,
+) -> FullBomProjection {
+    let body_identities = pieces
+        .iter()
+        .filter(|piece| piece.kind == PieceKind::BeamBody)
+        .map(|piece| piece.identity.clone())
+        .collect::<Vec<_>>();
+    let crossing_identities = pieces
+        .iter()
+        .filter(|piece| piece.kind == PieceKind::CrossingJointProxy)
+        .map(|piece| piece.identity.clone())
+        .collect::<Vec<_>>();
+    let rows = vec![
+        FullBomRow {
+            stable_row_id: "beam-a/body".to_owned(),
+            definition_key: "beam-a/member-definition".to_owned(),
+            piece_kind: "timber-beam-body".to_owned(),
+            material_key: "ketchup.material.timber.unspecified.v1".to_owned(),
+            quantity: body_identities.len(),
+            dimensions: PieceDimensions {
+                length_mm: BEAM_TOTAL_MM,
+                width_mm: BEAM_WIDTH_MM,
+                height_mm: BEAM_HEIGHT_MM,
+            },
+            piece_identities: body_identities,
+            validation_state,
+        },
+        FullBomRow {
+            stable_row_id: "beam-a/crossing-members".to_owned(),
+            definition_key: "beam-a/crossing-member-proxy-definition".to_owned(),
+            piece_kind: "crossing-member-proxy".to_owned(),
+            material_key: "ketchup.material.fixture-proxy.v1".to_owned(),
+            quantity: crossing_identities.len(),
+            dimensions: PieceDimensions {
+                length_mm: GROOVE_WIDTH_MM,
+                width_mm: BEAM_WIDTH_MM,
+                height_mm: GROOVE_DEPTH_MM * 2.0,
+            },
+            piece_identities: crossing_identities,
+            validation_state,
+        },
+    ];
+    let result_bytes = full_bom_bytes(&rows);
+    FullBomProjection {
+        envelope: FabricationProjectionEnvelope::new(
+            snapshot,
+            &result_bytes,
+            if validation_state == ValidationState::Passed {
+                ProjectionStatus::Complete
+            } else {
+                ProjectionStatus::Incomplete
+            },
+        ),
+        rows,
+    }
+}
+
+fn dimension_sheet_projection(
+    snapshot: &crate::document::Snapshot,
+    body: &DerivedIdentity,
+    positions: &[GroovePosition],
+) -> Result<PieceDimensionSheet, BeamError> {
+    let mut spacing_segments = Vec::new();
+    for pair in positions.windows(2) {
+        let left = &pair[0];
+        let right = &pair[1];
+        let left_zone = if left.number <= 7 { "zone1" } else { "zone2" };
+        let right_zone = if right.number <= 7 { "zone1" } else { "zone2" };
+        spacing_segments.push(DimensionSegment {
+            stable_segment_id: format!("beam-a/gap/g{:02}-g{:02}", left.number, right.number),
+            from: DimensionDatumRef {
+                piece: groove_identity(left_zone, left.number)?,
+                datum: "end".to_owned(),
+            },
+            to: DimensionDatumRef {
+                piece: groove_identity(right_zone, right.number)?,
+                datum: "start".to_owned(),
+            },
+            value_mm: right.start_mm - left.end_mm,
+        });
+    }
+    if let Some(last) = positions.last() {
+        let zone = if last.number <= 7 { "zone1" } else { "zone2" };
+        spacing_segments.push(DimensionSegment {
+            stable_segment_id: "beam-a/gap/g12-terminal".to_owned(),
+            from: DimensionDatumRef {
+                piece: groove_identity(zone, last.number)?,
+                datum: "end".to_owned(),
+            },
+            to: DimensionDatumRef {
+                piece: body.clone(),
+                datum: "terminal-residual-start".to_owned(),
+            },
+            value_mm: TERMINAL_GAP_MM,
+        });
+    }
+    let grouped_labels = grouped_dimension_labels(&spacing_segments);
+    let body_datum = |datum: &str| DimensionDatumRef {
+        piece: body.clone(),
+        datum: datum.to_owned(),
+    };
+    let chains = vec![
+        DimensionChain {
+            stable_chain_id: "beam-a/remainder-distribution".to_owned(),
+            axis: "x".to_owned(),
+            segments: spacing_segments,
+            grouped_labels,
+        },
+        DimensionChain {
+            stable_chain_id: "beam-a/overall-length".to_owned(),
+            axis: "x".to_owned(),
+            segments: vec![DimensionSegment {
+                stable_segment_id: "beam-a/overall-length/value".to_owned(),
+                from: body_datum("origin"),
+                to: body_datum("end"),
+                value_mm: BEAM_TOTAL_MM,
+            }],
+            grouped_labels: vec![format_number(BEAM_TOTAL_MM)],
+        },
+        DimensionChain {
+            stable_chain_id: "beam-a/cross-section-width".to_owned(),
+            axis: "y".to_owned(),
+            segments: vec![DimensionSegment {
+                stable_segment_id: "beam-a/cross-section-width/value".to_owned(),
+                from: body_datum("side-west"),
+                to: body_datum("side-east"),
+                value_mm: BEAM_WIDTH_MM,
+            }],
+            grouped_labels: vec![format_number(BEAM_WIDTH_MM)],
+        },
+        DimensionChain {
+            stable_chain_id: "beam-a/cross-section-height".to_owned(),
+            axis: "z".to_owned(),
+            segments: vec![DimensionSegment {
+                stable_segment_id: "beam-a/cross-section-height/value".to_owned(),
+                from: body_datum("bottom"),
+                to: body_datum("top"),
+                value_mm: BEAM_HEIGHT_MM,
+            }],
+            grouped_labels: vec![format_number(BEAM_HEIGHT_MM)],
+        },
+    ];
+    let stable_sheet_id = "beam-a/fabrication-sheet";
+    let named_view = "beam-a-longitudinal-and-cross-section";
+    let result_bytes = dimension_sheet_bytes(stable_sheet_id, body, named_view, &chains);
+    let status = if snapshot
+        .overrides()
+        .all(|override_value| override_value.health == SlotResolution::Resolved)
+    {
+        ProjectionStatus::Complete
+    } else {
+        ProjectionStatus::Incomplete
+    };
+    Ok(PieceDimensionSheet {
+        envelope: FabricationProjectionEnvelope::new(snapshot, &result_bytes, status),
+        stable_sheet_id: stable_sheet_id.to_owned(),
+        piece: body.clone(),
+        named_view: named_view.to_owned(),
+        chains,
+    })
+}
+
+fn full_bom_bytes(rows: &[FullBomRow]) -> Vec<u8> {
+    let mut output = b"ketchup.full-bom.v1".to_vec();
+    output.extend_from_slice(&(rows.len() as u64).to_le_bytes());
+    for row in rows {
+        push_text(&mut output, &row.stable_row_id);
+        push_text(&mut output, &row.definition_key);
+        push_text(&mut output, &row.piece_kind);
+        push_text(&mut output, &row.material_key);
+        output.extend_from_slice(&(row.quantity as u64).to_le_bytes());
+        push_number(&mut output, row.dimensions.length_mm);
+        push_number(&mut output, row.dimensions.width_mm);
+        push_number(&mut output, row.dimensions.height_mm);
+        output.extend_from_slice(&(row.piece_identities.len() as u64).to_le_bytes());
+        for identity in &row.piece_identities {
+            push_identity(&mut output, identity);
+        }
+        output.push(match row.validation_state {
+            ValidationState::Passed => 0,
+            ValidationState::Failed => 1,
+            ValidationState::NotEvaluated => 2,
+            ValidationState::Unavailable => 3,
+        });
+    }
+    output
+}
+
+fn dimension_sheet_bytes(
+    stable_sheet_id: &str,
+    piece: &DerivedIdentity,
+    named_view: &str,
+    chains: &[DimensionChain],
+) -> Vec<u8> {
+    let mut output = b"ketchup.dimension-sheet.v1".to_vec();
+    push_text(&mut output, stable_sheet_id);
+    push_identity(&mut output, piece);
+    push_text(&mut output, named_view);
+    output.extend_from_slice(&(chains.len() as u64).to_le_bytes());
+    for chain in chains {
+        push_text(&mut output, &chain.stable_chain_id);
+        push_text(&mut output, &chain.axis);
+        output.extend_from_slice(&(chain.segments.len() as u64).to_le_bytes());
+        for segment in &chain.segments {
+            push_text(&mut output, &segment.stable_segment_id);
+            push_identity(&mut output, &segment.from.piece);
+            push_text(&mut output, &segment.from.datum);
+            push_identity(&mut output, &segment.to.piece);
+            push_text(&mut output, &segment.to.datum);
+            push_number(&mut output, segment.value_mm);
+        }
+        output.extend_from_slice(&(chain.grouped_labels.len() as u64).to_le_bytes());
+        for label in &chain.grouped_labels {
+            push_text(&mut output, label);
+        }
+    }
+    output
+}
+
+fn push_identity(output: &mut Vec<u8>, identity: &DerivedIdentity) {
+    output.extend_from_slice(&identity.root_rule_node_id.0.to_le_bytes());
+    output.extend_from_slice(&(identity.slot_path.segments().len() as u64).to_le_bytes());
+    for segment in identity.slot_path.segments() {
+        output.extend_from_slice(&segment.producer_rule_id.0.to_le_bytes());
+        push_text(output, &segment.output_port);
+        push_text(output, &segment.semantic_key);
+    }
+}
+
+fn push_text(output: &mut Vec<u8>, value: &str) {
+    output.extend_from_slice(&(value.len() as u64).to_le_bytes());
+    output.extend_from_slice(value.as_bytes());
+}
+
+fn push_number(output: &mut Vec<u8>, value: f64) {
+    output.extend_from_slice(&value.to_bits().to_le_bytes());
+}
+
+fn grouped_dimension_labels(segments: &[DimensionSegment]) -> Vec<String> {
+    let mut labels = Vec::new();
+    let mut index = 0;
+    while index < segments.len() {
+        let value = segments[index].value_mm;
+        let mut count = 1;
+        while index + count < segments.len()
+            && segments[index + count].value_mm.to_bits() == value.to_bits()
+        {
+            count += 1;
+        }
+        if count == 1 {
+            labels.push(format_number(value));
+        } else {
+            labels.push(format!("{} × {count}", format_number(value)));
+        }
+        index += count;
+    }
+    labels
 }
 
 fn zone1_gap(document: &DocumentStore) -> Result<f64, BeamError> {

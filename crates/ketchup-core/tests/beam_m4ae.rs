@@ -1,5 +1,7 @@
 use ketchup_core::beam_m4ae::*;
+use ketchup_core::fabrication::PieceDimensions;
 use ketchup_core::prismatic::*;
+use ketchup_core::validation::ValidationState;
 
 #[test]
 fn tolerance_aabb_obb_sat_and_touching_are_conservative() {
@@ -75,6 +77,28 @@ fn validator_emits_all_four_joint_outcomes() {
         validate_joint_overlap(body.bounds, far, Some(joint), t).unwrap(),
         Some(JointValidationOutcome::DeclaredJointWithEmptyIntersectionError)
     );
+
+    let euclidean = TolerancePolicy::new(1.0).unwrap();
+    let participant_a = joint.participant_a().clone();
+    let participant_b = joint.participant_b().clone();
+    let bounded = CanonicalJoint::new(
+        JointId(100),
+        participant_a,
+        participant_b,
+        Aabb::bounded_volume([0.0, 0.0, 0.0], [1.0, 1.0, 1.0]).unwrap(),
+    )
+    .unwrap();
+    let solid = Aabb::bounded_volume([0.0, 0.0, 0.0], [2.0, 2.0, 1.0]).unwrap();
+    let one_axis = Aabb::bounded_volume([0.0, 0.0, 0.0], [1.9, 1.0, 1.0]).unwrap();
+    assert_eq!(
+        validate_joint_overlap(solid, one_axis, Some(&bounded), euclidean).unwrap(),
+        Some(JointValidationOutcome::OverlapInsideDeclaredJointOk)
+    );
+    let corner = Aabb::bounded_volume([0.0, 0.0, 0.0], [1.8, 1.8, 1.0]).unwrap();
+    assert_eq!(
+        validate_joint_overlap(solid, corner, Some(&bounded), euclidean).unwrap(),
+        Some(JointValidationOutcome::OverlapOutsideDeclaredJointError)
+    );
 }
 
 #[test]
@@ -113,6 +137,61 @@ fn exact_fixture_change_bom_containment_and_slot_health() {
         vec![(1, 7260.0), (12, 160.0)]
     );
     assert_eq!(w.slice().validation, BeamValidationVerdict::Green);
+    assert_eq!(w.slice().validation_report.state, ValidationState::Passed);
+    assert!(w.slice().full_bom.envelope.is_current(&w.snapshot()));
+    assert_eq!(w.slice().full_bom.rows.len(), 2);
+    assert_eq!(
+        w.slice()
+            .full_bom
+            .rows
+            .iter()
+            .map(|row| (
+                row.stable_row_id.as_str(),
+                row.material_key.as_str(),
+                row.quantity,
+                row.dimensions,
+                row.validation_state,
+            ))
+            .collect::<Vec<_>>(),
+        vec![
+            (
+                "beam-a/body",
+                "ketchup.material.timber.unspecified.v1",
+                1,
+                PieceDimensions {
+                    length_mm: 7260.0,
+                    width_mm: 200.0,
+                    height_mm: 420.0,
+                },
+                ValidationState::Passed,
+            ),
+            (
+                "beam-a/crossing-members",
+                "ketchup.material.fixture-proxy.v1",
+                12,
+                PieceDimensions {
+                    length_mm: 160.0,
+                    width_mm: 200.0,
+                    height_mm: 40.0,
+                },
+                ValidationState::Passed,
+            ),
+        ]
+    );
+    assert!(w.slice().dimension_sheet.envelope.is_current(&w.snapshot()));
+    assert_eq!(
+        w.slice().dimension_sheet.chains[0].grouped_labels,
+        ["415 × 6", "408 × 5", "400"]
+    );
+    assert!(
+        w.slice().dimension_sheet.chains[0]
+            .segments
+            .iter()
+            .all(
+                |segment| !segment.from.piece.slot_path.segments().is_empty()
+                    && !segment.to.piece.slot_path.segments().is_empty()
+            )
+    );
     for (piece, outcome) in w
         .slice()
         .pieces
@@ -130,6 +209,20 @@ fn exact_fixture_change_bom_containment_and_slot_health() {
         .map(|p| p.identity.clone())
         .collect::<Vec<_>>();
     let bom_rev = w.slice().bom.generated_for_revision;
+    let full_bom_digest = w.slice().full_bom.envelope.result_digest.clone();
+    let dimension_digest = w.slice().dimension_sheet.envelope.result_digest.clone();
+    let bom_row_ids = w
+        .slice()
+        .full_bom
+        .rows
+        .iter()
+        .map(|row| row.stable_row_id.clone())
+        .collect::<Vec<_>>();
+    let dimension_segment_ids = w.slice().dimension_sheet.chains[0]
+        .segments
+        .iter()
+        .map(|segment| segment.stable_segment_id.clone())
+        .collect::<Vec<_>>();
     w.set_zone1_gap_mm(420.0).unwrap();
     let change = w.last_change().unwrap();
     assert_eq!(
@@ -138,7 +231,35 @@ fn exact_fixture_change_bom_containment_and_slot_health() {
     );
     assert!(!change.recomputed_nodes.contains(&UNRELATED_NODE));
     assert!(change.bom_regenerated);
+    assert!(change.dimensions_regenerated);
+    assert!(change.validator_ran);
     assert_ne!(w.slice().bom.generated_for_revision, bom_rev);
+    assert_eq!(w.slice().full_bom.envelope.result_digest, full_bom_digest);
+    assert_ne!(
+        w.slice().dimension_sheet.envelope.result_digest,
+        dimension_digest
+    );
+    assert_eq!(
+        w.slice()
+            .full_bom
+            .rows
+            .iter()
+            .map(|row| row.stable_row_id.clone())
+            .collect::<Vec<_>>(),
+        bom_row_ids
+    );
+    assert_eq!(
+        w.slice().dimension_sheet.chains[0]
+            .segments
+            .iter()
+            .map(|segment| segment.stable_segment_id.clone())
+            .collect::<Vec<_>>(),
+        dimension_segment_ids
+    );
+    assert_eq!(
+        w.slice().dimension_sheet.chains[0].grouped_labels,
+        ["420 × 6", "408 × 5", "400"]
+    );
     assert_eq!(
         w.slice()
             .pieces
@@ -155,6 +276,10 @@ fn exact_fixture_change_bom_containment_and_slot_health() {
             .unwrap()
             .health,
         ketchup_core::graph::SlotResolution::Lost { segment_index: 1 }
+    );
+    assert_eq!(
+        w.slice().dimension_sheet.envelope.status,
+        ketchup_core::fabrication::ProjectionStatus::Incomplete
     );
     let mut w = BeamWorkspace::load().unwrap();
     w.duplicate_override_key().unwrap();

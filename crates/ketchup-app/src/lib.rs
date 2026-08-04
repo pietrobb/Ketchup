@@ -8,6 +8,8 @@ use ketchup_core::document::{
     CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentId, DocumentStore, FeatureId,
     FeatureKind, GroupId, InstancePath, OccurrenceId, Snapshot, Transform,
 };
+use ketchup_core::fabrication::{FullBomProjection, PieceDimensionSheet};
+use ketchup_core::validation::ValidationReport;
 use ketchup_interaction::{
     Axis, ElementId, LocaleCatalog, Ray, SelectionId, Side, Vec3,
     projection::{CanonicalInteractionProjection, ProjectedBox},
@@ -905,6 +907,21 @@ impl KetchupApp {
     #[must_use]
     pub fn beam_bom(&self) -> Option<&GroupedBom> {
         self.beam_slice().map(|slice| &slice.bom)
+    }
+
+    #[must_use]
+    pub fn beam_full_bom(&self) -> Option<&FullBomProjection> {
+        self.beam_slice().map(|slice| &slice.full_bom)
+    }
+
+    #[must_use]
+    pub fn beam_dimension_sheet(&self) -> Option<&PieceDimensionSheet> {
+        self.beam_slice().map(|slice| &slice.dimension_sheet)
+    }
+
+    #[must_use]
+    pub fn beam_validation_report(&self) -> Option<&ValidationReport> {
+        self.beam_slice().map(|slice| &slice.validation_report)
     }
 
     #[must_use]
@@ -3823,7 +3840,7 @@ impl KetchupApp {
     }
 
     fn show_beam_m4ae(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Beam A / M4a-E");
+        ui.heading("Beam A / M4a completion");
         if ui.button("Load / reset Beam A").clicked() {
             self.load_beam_m4ae();
         }
@@ -3839,9 +3856,17 @@ impl KetchupApp {
             });
             if let Some(slice) = self.beam_slice() {
                 ui.label(match slice.validation {
-                    BeamValidationVerdict::Green => "Validation: green collision / joints OK",
-                    BeamValidationVerdict::Error => "Validation: collision / joint error",
+                    BeamValidationVerdict::Green => "Validation: Passed (collision / joints)",
+                    BeamValidationVerdict::Error => {
+                        "Validation: Failed / NotEvaluated / Unavailable"
+                    }
                 });
+                ui.small(format!(
+                    "{} · input {} · diagnostics {}",
+                    slice.validation_report.invocation.contract_id,
+                    &slice.validation_report.invocation.input_digest[..12],
+                    slice.validation_report.diagnostics.len()
+                ));
                 egui::CollapsingHeader::new("12 groove positions")
                     .default_open(true)
                     .show(ui, |ui| {
@@ -3855,13 +3880,25 @@ impl KetchupApp {
                             ));
                         }
                     });
-                ui.strong("Grouped BOM");
-                for row in &slice.bom.rows {
+                ui.strong("Full BOM");
+                for row in &slice.full_bom.rows {
                     ui.label(format!(
-                        "{}: {} x {} mm",
-                        row.stable_group_key,
+                        "{} · {} · {} × {} × {} mm · qty {} · {:?}",
+                        row.stable_row_id,
+                        row.material_key,
+                        format_height(row.dimensions.length_mm),
+                        format_height(row.dimensions.width_mm),
+                        format_height(row.dimensions.height_mm),
                         row.quantity,
-                        format_height(row.length_mm)
+                        row.validation_state
+                    ));
+                }
+                ui.strong("Dimension projections");
+                for chain in &slice.dimension_sheet.chains {
+                    ui.label(format!(
+                        "{}: {}",
+                        chain.stable_chain_id,
+                        chain.grouped_labels.join(", ")
                     ));
                 }
             }
