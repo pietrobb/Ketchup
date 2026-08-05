@@ -1,8 +1,13 @@
 use ketchup_core::beam_m4ae::BeamWorkspace;
 use ketchup_core::prismatic::{
-    Aabb, CanonicalJoint, JointId, JointValidationOutcome, TolerancePolicy, validate_joint_overlap,
+    Aabb, CanonicalJoint, ExactPrismaticBody, JointId, JointValidationOutcome, TolerancePolicy,
+    validate_joint_overlap,
 };
 use ketchup_core::validation::*;
+
+fn solid(bounds: Aabb) -> ExactPrismaticBody {
+    ExactPrismaticBody::solid(bounds).unwrap()
+}
 
 #[test]
 fn host_neutral_contract_binds_inputs_and_required_failures_fail_closed() {
@@ -70,8 +75,8 @@ fn built_in_joint_validator_returns_stable_structured_diagnostics() {
         right_identity: proxy.identity.clone(),
         left_evidence_class: EvidenceClass::Exact,
         right_evidence_class: EvidenceClass::Exact,
-        left_bounds: body.bounds,
-        right_bounds: proxy.bounds,
+        left_body: solid(body.bounds),
+        right_body: solid(proxy.bounds),
         declared_joint: None,
     }];
     let validator = BuiltinPrismaticValidator::default();
@@ -131,8 +136,8 @@ fn mixed_participants_take_the_weakest_evidence_class_with_required_metadata() {
         right_identity: proxy.identity.clone(),
         left_evidence_class: EvidenceClass::Exact,
         right_evidence_class: EvidenceClass::Tolerant(tolerant_participant),
-        left_bounds: body.bounds,
-        right_bounds: proxy.bounds,
+        left_body: solid(body.bounds),
+        right_body: solid(proxy.bounds),
         declared_joint: None,
     }];
     let validator = BuiltinPrismaticValidator::new(tolerance);
@@ -185,8 +190,8 @@ fn execution_rejects_tampering_stale_snapshots_limits_and_wrong_joint_participan
         right_identity: proxy.identity.clone(),
         left_evidence_class: EvidenceClass::Exact,
         right_evidence_class: EvidenceClass::Exact,
-        left_bounds: body.bounds,
-        right_bounds: proxy.bounds,
+        left_body: solid(body.bounds),
+        right_body: solid(proxy.bounds),
         declared_joint: Some(valid_joint.clone()),
     }];
     let policy = beam_validation_policy();
@@ -296,8 +301,8 @@ fn execution_rejects_tampering_stale_snapshots_limits_and_wrong_joint_participan
         right_identity: proxy.identity.clone(),
         left_evidence_class: EvidenceClass::Exact,
         right_evidence_class: EvidenceClass::Exact,
-        left_bounds: body.bounds,
-        right_bounds: proxy.bounds,
+        left_body: solid(body.bounds),
+        right_body: solid(proxy.bounds),
         declared_joint: Some(wrong_joint),
     }];
     let wrong_input = prismatic_input_bytes(&wrong_cases, TolerancePolicy::default());

@@ -9,8 +9,8 @@ use crate::fabrication::{
 };
 use crate::graph::DerivedIdentity;
 use crate::prismatic::{
-    Aabb, CanonicalJoint, JointId, JointValidationOutcome, PrismaticError, TolerancePolicy,
-    validate_joint_overlap,
+    Aabb, CanonicalJoint, ExactPrismaticBody, JointId, JointValidationOutcome, PrismaticComponent,
+    PrismaticComponentKey, PrismaticError, TolerancePolicy, validate_joint_geometry,
 };
 use crate::validation::{
     BuiltinPrismaticValidator, EvidenceCounts, HostNeutralValidator, PrismaticJointCase,
@@ -60,6 +60,24 @@ pub struct DerivedProxyPiece {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub struct JointDrivenHalfLap {
+    pub joint_id: JointId,
+    pub feature_ordinal: u32,
+    pub participant_a: DerivedIdentity,
+    pub participant_b: DerivedIdentity,
+    pub participant_a_notch: Aabb,
+    pub participant_b_notch: Aabb,
+    pub contact: Aabb,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExactNotchedPiece {
+    pub identity: DerivedIdentity,
+    pub geometry: ExactPrismaticBody,
+    pub source_joints: Vec<JointId>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct BomRow {
     pub stable_group_key: &'static str,
     pub kind: PieceKind,
@@ -85,6 +103,8 @@ pub struct BeamSlice {
     pub revision_id: u64,
     pub positions: Vec<GroovePosition>,
     pub pieces: Vec<DerivedProxyPiece>,
+    pub half_laps: Vec<JointDrivenHalfLap>,
+    pub exact_pieces: Vec<ExactNotchedPiece>,
     pub bom: GroupedBom,
     pub full_bom: FullBomProjection,
     pub dimension_sheet: PieceDimensionSheet,
@@ -270,39 +290,51 @@ fn derive_slice(document: &DocumentStore) -> Result<BeamSlice, BeamError> {
             identity: groove_identity(zone, position.number)?,
             kind: PieceKind::CrossingJointProxy,
             bounds: Aabb::bounded_volume(
-                [position.start_mm, 0.0, BEAM_HEIGHT_MM - GROOVE_DEPTH_MM],
                 [
-                    position.end_mm,
-                    BEAM_WIDTH_MM,
-                    BEAM_HEIGHT_MM + GROOVE_DEPTH_MM,
+                    position.start_mm,
+                    0.0,
+                    BEAM_HEIGHT_MM - GROOVE_DEPTH_MM * 2.0,
                 ],
+                [position.end_mm, BEAM_WIDTH_MM, BEAM_HEIGHT_MM],
             )?,
             length_mm: GROOVE_WIDTH_MM,
         });
     }
+    let half_laps = derive_half_laps(&snapshot, &body_id, body_bounds, &pieces)?;
+    let beam_geometry = exact_notched_beam(body_bounds, &half_laps)?;
+    let mut exact_pieces = vec![ExactNotchedPiece {
+        identity: body_id.clone(),
+        geometry: beam_geometry.clone(),
+        source_joints: half_laps.iter().map(|half_lap| half_lap.joint_id).collect(),
+    }];
+    for (proxy, half_lap) in pieces.iter().skip(1).zip(&half_laps) {
+        exact_pieces.push(ExactNotchedPiece {
+            identity: proxy.identity.clone(),
+            geometry: exact_notched_crossing(proxy.bounds, half_lap)?,
+            source_joints: vec![half_lap.joint_id],
+        });
+    }
     let tolerance = TolerancePolicy::default();
-    let cases = pieces
+    let cases = exact_pieces
         .iter()
         .skip(1)
-        .map(|proxy| PrismaticJointCase {
+        .zip(&half_laps)
+        .map(|(crossing, half_lap)| PrismaticJointCase {
             left_identity: body_id.clone(),
-            right_identity: proxy.identity.clone(),
+            right_identity: crossing.identity.clone(),
             left_evidence_class: crate::validation::EvidenceClass::Exact,
             right_evidence_class: crate::validation::EvidenceClass::Exact,
-            left_bounds: body_bounds,
-            right_bounds: proxy.bounds,
-            declared_joint: snapshot
-                .joints()
-                .find(|joint| joint.connects(&body_id, &proxy.identity))
-                .cloned(),
+            left_body: beam_geometry.clone(),
+            right_body: crossing.geometry.clone(),
+            declared_joint: snapshot.joint(half_lap.joint_id).cloned(),
         })
         .collect::<Vec<_>>();
     let outcomes = cases
         .iter()
         .map(|case| {
-            validate_joint_overlap(
-                case.left_bounds,
-                case.right_bounds,
+            validate_joint_geometry(
+                &case.left_body,
+                &case.right_body,
                 case.declared_joint.as_ref(),
                 tolerance,
             )
@@ -363,6 +395,8 @@ fn derive_slice(document: &DocumentStore) -> Result<BeamSlice, BeamError> {
         revision_id: snapshot.revision_id(),
         positions,
         pieces,
+        half_laps,
+        exact_pieces,
         bom,
         full_bom,
         dimension_sheet,
@@ -370,6 +404,153 @@ fn derive_slice(document: &DocumentStore) -> Result<BeamSlice, BeamError> {
         validation_report,
         validation,
     })
+}
+
+fn derive_half_laps(
+    snapshot: &crate::document::Snapshot,
+    beam_identity: &DerivedIdentity,
+    beam_stock: Aabb,
+    pieces: &[DerivedProxyPiece],
+) -> Result<Vec<JointDrivenHalfLap>, BeamError> {
+    pieces
+        .iter()
+        .skip(1)
+        .enumerate()
+        .map(|(index, crossing)| {
+            let feature_ordinal =
+                u32::try_from(index + 1).map_err(|_| BeamError::InvalidFixture)?;
+            let mut matching_joints = snapshot
+                .joints()
+                .filter(|joint| joint.connects(beam_identity, &crossing.identity));
+            let joint = matching_joints.next().ok_or(BeamError::InvalidFixture)?;
+            if matching_joints.next().is_some()
+                || joint.participant_a() != beam_identity
+                || joint.participant_b() != &crossing.identity
+            {
+                return Err(BeamError::InvalidFixture);
+            }
+            let joint_id = joint.id();
+            let intersection = beam_stock
+                .convex_intersection(&crossing.bounds)?
+                .filter(Aabb::has_positive_volume)
+                .ok_or(BeamError::InvalidFixture)?;
+            if intersection != joint.volume() {
+                return Err(BeamError::InvalidFixture);
+            }
+            let min = joint.volume().min();
+            let max = joint.volume().max();
+            let split_z = (min[2] + max[2]) * 0.5;
+            if !split_z.is_finite() || split_z <= min[2] || split_z >= max[2] {
+                return Err(BeamError::InvalidFixture);
+            }
+            Ok(JointDrivenHalfLap {
+                joint_id,
+                feature_ordinal,
+                participant_a: beam_identity.clone(),
+                participant_b: crossing.identity.clone(),
+                participant_a_notch: Aabb::bounded_volume([min[0], min[1], split_z], max)?,
+                participant_b_notch: Aabb::bounded_volume(min, [max[0], max[1], split_z])?,
+                contact: Aabb::new([min[0], min[1], split_z], [max[0], max[1], split_z])?,
+            })
+        })
+        .collect()
+}
+
+fn exact_notched_beam(
+    stock: Aabb,
+    half_laps: &[JointDrivenHalfLap],
+) -> Result<ExactPrismaticBody, BeamError> {
+    let Some(first) = half_laps.first() else {
+        return Ok(ExactPrismaticBody::solid(stock)?);
+    };
+    let stock_min = stock.min();
+    let stock_max = stock.max();
+    let notch_floor = first.participant_a_notch.min()[2];
+    let mut components = vec![PrismaticComponent {
+        key: PrismaticComponentKey {
+            feature_ordinal: 0,
+            fragment_ordinal: 0,
+        },
+        bounds: Aabb::bounded_volume(stock_min, [stock_max[0], stock_max[1], notch_floor])?,
+    }];
+    let mut previous_x = stock_min[0];
+    for (index, half_lap) in half_laps.iter().enumerate() {
+        let notch = half_lap.participant_a_notch;
+        if half_lap.feature_ordinal != u32::try_from(index + 1).unwrap_or(u32::MAX)
+            || notch.min()[0] < previous_x
+            || notch.min()[1] != stock_min[1]
+            || notch.max()[1] != stock_max[1]
+            || notch.min()[2] != notch_floor
+            || notch.max()[2] != stock_max[2]
+        {
+            return Err(BeamError::InvalidFixture);
+        }
+        if previous_x < notch.min()[0] {
+            components.push(PrismaticComponent {
+                key: PrismaticComponentKey {
+                    feature_ordinal: half_lap.feature_ordinal,
+                    fragment_ordinal: 0,
+                },
+                bounds: Aabb::bounded_volume(
+                    [previous_x, stock_min[1], notch_floor],
+                    [notch.min()[0], stock_max[1], stock_max[2]],
+                )?,
+            });
+        }
+        previous_x = notch.max()[0];
+    }
+    if previous_x < stock_max[0] {
+        components.push(PrismaticComponent {
+            key: PrismaticComponentKey {
+                feature_ordinal: u32::try_from(half_laps.len() + 1)
+                    .map_err(|_| BeamError::InvalidFixture)?,
+                fragment_ordinal: 0,
+            },
+            bounds: Aabb::bounded_volume([previous_x, stock_min[1], notch_floor], stock_max)?,
+        });
+    }
+    let occupied_volume = components
+        .iter()
+        .map(|component| component.bounds.volume())
+        .sum::<f64>();
+    let removed_volume = half_laps
+        .iter()
+        .map(|half_lap| half_lap.participant_a_notch.volume())
+        .sum::<f64>();
+    if occupied_volume + removed_volume != stock.volume() {
+        return Err(BeamError::InvalidFixture);
+    }
+    Ok(ExactPrismaticBody::from_components(stock, components)?)
+}
+
+fn exact_notched_crossing(
+    stock: Aabb,
+    half_lap: &JointDrivenHalfLap,
+) -> Result<ExactPrismaticBody, BeamError> {
+    let notch = half_lap.participant_b_notch;
+    let stock_min = stock.min();
+    let stock_max = stock.max();
+    if notch.min() != stock_min
+        || notch.max()[0] != stock_max[0]
+        || notch.max()[1] != stock_max[1]
+        || notch.max()[2] >= stock_max[2]
+    {
+        return Err(BeamError::InvalidFixture);
+    }
+    let remaining = Aabb::bounded_volume([stock_min[0], stock_min[1], notch.max()[2]], stock_max)?;
+    if remaining.volume() + notch.volume() != stock.volume() {
+        return Err(BeamError::InvalidFixture);
+    }
+    Ok(ExactPrismaticBody::from_components(
+        stock,
+        vec![PrismaticComponent {
+            key: PrismaticComponentKey {
+                feature_ordinal: half_lap.feature_ordinal,
+                fragment_ordinal: 0,
+            },
+            bounds: remaining,
+        }],
+    )?)
 }
 
 fn full_bom_projection(
@@ -659,7 +840,14 @@ fn zone_counts(document: &DocumentStore) -> Result<(usize, usize), BeamError> {
         outputs
             .iter()
             .find(|output| output.segment().semantic_key == key)
-            .map(|output| output.children().len())
+            .map(|output| {
+                output
+                    .children()
+                    .iter()
+                    .map(|child| child.segment().semantic_key.as_str())
+                    .collect::<BTreeSet<_>>()
+                    .len()
+            })
             .unwrap_or(0)
     };
     Ok((zone("zone1"), zone("zone2")))
@@ -751,7 +939,11 @@ fn joint_commands(
                 "zone2"
             };
             let volume = Aabb::bounded_volume(
-                [position.start_mm, 0.0, BEAM_HEIGHT_MM - GROOVE_DEPTH_MM],
+                [
+                    position.start_mm,
+                    0.0,
+                    BEAM_HEIGHT_MM - GROOVE_DEPTH_MM * 2.0,
+                ],
                 [position.end_mm, BEAM_WIDTH_MM, BEAM_HEIGHT_MM],
             )?;
             Ok(CanonicalCommand::UpsertJoint(CanonicalJoint::new(

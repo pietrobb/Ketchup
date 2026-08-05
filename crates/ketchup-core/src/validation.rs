@@ -2,7 +2,8 @@ use crate::document::{DocumentId, Snapshot};
 use crate::exact_product::BodyResultIdentity;
 use crate::graph::{DerivedIdentity, sha256_hex};
 use crate::prismatic::{
-    Aabb, CanonicalJoint, JointId, JointValidationOutcome, TolerancePolicy, validate_joint_overlap,
+    Aabb, CanonicalJoint, ExactPrismaticBody, JointId, JointValidationOutcome, TolerancePolicy,
+    validate_joint_geometry,
 };
 
 pub const VALIDATOR_PROTOCOL_V1: &str = "ketchup.validator-protocol.v1";
@@ -443,8 +444,8 @@ pub struct PrismaticJointCase {
     pub right_identity: DerivedIdentity,
     pub left_evidence_class: EvidenceClass,
     pub right_evidence_class: EvidenceClass,
-    pub left_bounds: Aabb,
-    pub right_bounds: Aabb,
+    pub left_body: ExactPrismaticBody,
+    pub right_body: ExactPrismaticBody,
     pub declared_joint: Option<CanonicalJoint>,
 }
 
@@ -489,8 +490,8 @@ pub fn prismatic_input_bytes(cases: &[PrismaticJointCase], tolerance: ToleranceP
         push_identity(&mut input, &case.right_identity);
         push_evidence_class(&mut input, &case.left_evidence_class);
         push_evidence_class(&mut input, &case.right_evidence_class);
-        push_aabb(&mut input, case.left_bounds);
-        push_aabb(&mut input, case.right_bounds);
+        push_prismatic_body(&mut input, &case.left_body);
+        push_prismatic_body(&mut input, &case.right_body);
         if let Some(joint) = &case.declared_joint {
             input.push(1);
             input.extend_from_slice(&joint.id().0.to_le_bytes());
@@ -514,7 +515,9 @@ fn prismatic_input_len(cases: &[PrismaticJointCase], tolerance: TolerancePolicy)
         checked_add_identity(&mut length, &case.right_identity)?;
         checked_add_evidence_class(&mut length, &case.left_evidence_class)?;
         checked_add_evidence_class(&mut length, &case.right_evidence_class)?;
-        checked_add(&mut length, 97)?;
+        checked_add_prismatic_body(&mut length, &case.left_body)?;
+        checked_add_prismatic_body(&mut length, &case.right_body)?;
+        checked_add(&mut length, 1)?;
         if let Some(joint) = &case.declared_joint {
             checked_add(&mut length, 56)?;
             checked_add_identity(&mut length, joint.participant_a())?;
@@ -553,6 +556,16 @@ fn checked_add_evidence_class(length: &mut u64, evidence_class: &EvidenceClass) 
     Some(())
 }
 
+fn checked_add_prismatic_body(length: &mut u64, body: &ExactPrismaticBody) -> Option<()> {
+    checked_add(length, 56)?;
+    checked_add(
+        length,
+        u64::try_from(body.components().len())
+            .ok()?
+            .checked_mul(56)?,
+    )
+}
+
 fn push_bytes(output: &mut Vec<u8>, value: &[u8]) {
     output.extend_from_slice(&(value.len() as u64).to_le_bytes());
     output.extend_from_slice(value);
@@ -581,6 +594,16 @@ fn push_evidence_class(output: &mut Vec<u8>, evidence_class: &EvidenceClass) {
                 PermittedErrorDirection::BidirectionalBounded => 2,
             });
         }
+    }
+}
+
+fn push_prismatic_body(output: &mut Vec<u8>, body: &ExactPrismaticBody) {
+    push_aabb(output, body.stock());
+    output.extend_from_slice(&(body.components().len() as u64).to_le_bytes());
+    for component in body.components() {
+        output.extend_from_slice(&component.key.feature_ordinal.to_le_bytes());
+        output.extend_from_slice(&component.key.fragment_ordinal.to_le_bytes());
+        push_aabb(output, component.bounds);
     }
 }
 
@@ -728,9 +751,9 @@ fn evaluate_prismatic_joints(
             });
             continue;
         }
-        let outcome = match validate_joint_overlap(
-            case.left_bounds,
-            case.right_bounds,
+        let outcome = match validate_joint_geometry(
+            &case.left_body,
+            &case.right_body,
             case.declared_joint.as_ref(),
             tolerance,
         ) {

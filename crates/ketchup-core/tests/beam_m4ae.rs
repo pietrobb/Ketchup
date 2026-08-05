@@ -102,6 +102,80 @@ fn validator_emits_all_four_joint_outcomes() {
 }
 
 #[test]
+fn joint_driven_half_lap_keeps_one_authority_and_all_four_geometry_verdicts() {
+    let workspace = BeamWorkspace::load().unwrap();
+    let snapshot = workspace.snapshot();
+    let beam = &workspace.slice().exact_pieces[0];
+    let crossing = &workspace.slice().exact_pieces[1];
+    let half_lap = &workspace.slice().half_laps[0];
+    let joint = snapshot.joint(half_lap.joint_id).unwrap();
+    let tolerance = TolerancePolicy::default();
+
+    assert_eq!(half_lap.participant_a, beam.identity);
+    assert_eq!(half_lap.participant_b, crossing.identity);
+    assert_eq!(beam.source_joints[0], half_lap.joint_id);
+    assert_eq!(crossing.source_joints, [half_lap.joint_id]);
+    assert_eq!(
+        half_lap.participant_a_notch.volume() + half_lap.participant_b_notch.volume(),
+        joint.volume().volume()
+    );
+    assert_eq!(
+        half_lap.contact.extents(),
+        [GROOVE_WIDTH_MM, BEAM_WIDTH_MM, 0.0]
+    );
+    assert_eq!(beam.geometry.components().len(), 14);
+    assert_eq!(crossing.geometry.components().len(), 1);
+    assert_eq!(
+        validate_joint_geometry(&beam.geometry, &crossing.geometry, Some(joint), tolerance)
+            .unwrap(),
+        Some(JointValidationOutcome::OverlapInsideDeclaredJointOk)
+    );
+
+    let tiny = CanonicalJoint::new(
+        JointId(99),
+        beam.identity.clone(),
+        crossing.identity.clone(),
+        Aabb::bounded_volume(
+            half_lap.contact.min(),
+            [
+                half_lap.contact.min()[0] + 10.0,
+                half_lap.contact.max()[1],
+                half_lap.contact.max()[2] + 1.0,
+            ],
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        validate_joint_geometry(&beam.geometry, &crossing.geometry, Some(&tiny), tolerance)
+            .unwrap(),
+        Some(JointValidationOutcome::OverlapOutsideDeclaredJointError)
+    );
+
+    let penetrating_crossing =
+        ExactPrismaticBody::solid(workspace.slice().pieces[1].bounds).unwrap();
+    assert_eq!(
+        validate_joint_geometry(&beam.geometry, &penetrating_crossing, None, tolerance).unwrap(),
+        Some(JointValidationOutcome::OverlapWithoutJointError)
+    );
+    let far = ExactPrismaticBody::solid(
+        Aabb::bounded_volume([9000.0, 0.0, 380.0], [9160.0, 200.0, 420.0]).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        validate_joint_geometry(&beam.geometry, &far, Some(joint), tolerance).unwrap(),
+        Some(JointValidationOutcome::DeclaredJointWithEmptyIntersectionError)
+    );
+
+    let mut reversed_components = beam.geometry.components().to_vec();
+    reversed_components.reverse();
+    assert_eq!(
+        ExactPrismaticBody::from_components(beam.geometry.stock(), reversed_components).unwrap(),
+        beam.geometry
+    );
+}
+
+#[test]
 fn exact_fixture_change_bom_containment_and_slot_health() {
     let mut w = BeamWorkspace::load().unwrap();
     let expected = [
@@ -140,6 +214,16 @@ fn exact_fixture_change_bom_containment_and_slot_health() {
     assert_eq!(w.slice().validation_report.state, ValidationState::Passed);
     assert_eq!(w.slice().validation_report.evidence_counts.exact, 12);
     assert_eq!(w.slice().validation_report.evidence_counts.tolerant, 0);
+    assert_eq!(w.slice().half_laps.len(), 12);
+    assert_eq!(w.slice().exact_pieces.len(), 13);
+    assert_eq!(w.slice().exact_pieces[0].geometry.components().len(), 14);
+    assert!(
+        w.slice()
+            .exact_pieces
+            .iter()
+            .skip(1)
+            .all(|piece| piece.geometry.components().len() == 1)
+    );
     assert_eq!(
         w.slice().full_bom.evidence_counts,
         w.slice().validation_report.evidence_counts
@@ -275,6 +359,9 @@ fn exact_fixture_change_bom_containment_and_slot_health() {
         ids
     );
     assert_eq!(w.slice().validation, BeamValidationVerdict::Green);
+    assert_eq!(w.slice().validation_report.evidence_counts.exact, 12);
+    assert_eq!(w.slice().validation_report.evidence_counts.tolerant, 0);
+    assert_eq!(w.slice().exact_pieces[0].geometry.components().len(), 14);
     w.set_zone1_count(3).unwrap();
     assert_eq!(
         w.snapshot()

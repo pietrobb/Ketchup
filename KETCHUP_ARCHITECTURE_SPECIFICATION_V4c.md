@@ -115,7 +115,7 @@ The highest-risk remaining gaps are:
 4. schema 5 provides checksums, limits, identity envelopes, graph/override/joint/reference round-trip, and review-only Open, but not the complete long-term container/blob/unknown-extension/migration contract;
 5. persistent canonical tags, collections, general dimensions, patterning, union/export, Assistant, and plugin surfaces remain incomplete or absent;
 6. M4a is a strong bounded prismatic/beam slice and M4b adds bounded accepted-exact-body clearance, exact-face dimensions, and exact-joint validation; neither is yet general validation, BOM, drawing, or manufacturing infrastructure over arbitrary documents;
-7. ThroughCut is a real exact opening, but joint-driven half-laps, exact notched-beam validation, piece drawings, manufacturing operation projection, and the rest of M5 remain open;
+7. ThroughCut is a real exact opening and the bounded beam slice now derives complementary half-lap notches and exact prismatic collision components from one canonical joint; worker-evaluated notch B-Reps, durable notch references, piece drawings, manufacturing operation projection, and the rest of M5 remain open;
 8. historical A0 v2 `FULL_GO` and other frozen evidence do not certify the current-evidence commit named in Appendix G; Gate C still lacks terminal integrated-GPU evidence;
 9. architecture guards now enforce D-08/P07 write authority inside `ketchup-core`, but full release governance still depends on CI execution and current hashes/records;
 10. V4 remains unratified under §14.3: ADR 0004 covers P15 and ADR 0006 records the immediate P07 implementation consequence, but the adoption ADR and broader dedicated P07/P08 ratification record remain outstanding.
@@ -329,9 +329,9 @@ Named people and calendar dates remain unavailable. That is itself an unresolved
 | Interaction scene | **PARTIAL—PRODUCT PATH** | Canonical cuboid projection coexists with revision-bound exact triangle projection; exact picking returns durable assembly targets. | General exact/mesh query service with broader topology and acceleration. |
 | Renderer | **PARTIAL—PRODUCT PATH** | wgpu-backed app paints cuboid fallback and exact triangle packages, including a hole-safe ThroughCut mesh. | General derived mesh cache, instancing/BVH, richer highlights, curved exact/mesh bodies. |
 | Manual shell | **PARTIAL—PRODUCT PATH** | Major shell, Outliner, exact numeric tools, file workflows, Push/Pull, hierarchy/component actions, and Undo/Redo exist. | Correct profile-only Rectangle semantics, tags, persistent dimensions, remaining shortcuts/menu and physical-window evidence. |
-| Collision validation | **PARTIAL—PRODUCT PATH** | The bounded prismatic path has AABB/OBB/SAT, convex intersection, certified joint containment, and FurniGen evidence; bounded M4b accepts current exact-result identities and validates conservative body clearance plus canonical joints with durable exact contacts. | Curved-body narrow phases, broader document/domain coverage, and general standards/manufacturability validators. |
+| Collision validation | **PARTIAL—PRODUCT PATH** | The bounded prismatic path has AABB/OBB/SAT, convex intersection, certified joint containment, and FurniGen evidence; bounded M4b accepts current exact-result identities and validates conservative body clearance plus canonical joints with durable exact contacts; the beam path additionally validates a feature-ordered exact cuboid decomposition of the notched body. | Curved-body narrow phases, broader document/domain coverage, and general standards/manufacturability validators. |
 | Validator protocol and hosting | **PARTIAL—PRODUCT PATH** | Host-neutral read-only built-in contract, descriptor/invocation/policy, limits, structured diagnostics, four result states, W4A evidence classes, and fail-closed decision exist. | M7 third-party package provenance, trust, licensing, isolation, egress, and revocation. |
-| Rules and manufacturing projections | **PARTIAL—PRODUCT PATH** | Beam rules derive stable pieces/joints, grouped list, full BOM, and `SlotPath` dimension sheets. | General document-wide fabrication, exact notches, piece drawings, operations, export, and later BTLx. |
+| Rules and manufacturing projections | **PARTIAL—PRODUCT PATH** | Beam rules derive stable pieces/joints, grouped list, full BOM, and `SlotPath` dimension sheets; one ordered joint now derives both complementary half-lap notch geometries without storing two cut authorities. | Worker-backed exact notch packages and references, piece drawings, manufacturing operations, general document-wide fabrication/export, and later BTLx. |
 | Proposal safety | **PARTIAL—PROOF ONLY** | Narrow proposal/digest primitive delegates accepted canonical changes to `apply_batch`; no product Assistant flow. | Authoritative typed read/write sets, assumptions, risks, budgets, diff, verification, and intended product client. |
 | AI assistant | **PLANNED** | No product Assistant surface. | Optional local-first intent/proposal UI after manual modeler and validators. |
 | Plugin system | **PLANNED** | No third-party host/capability sandbox. | Capability- and budget-limited host after core protocol stabilizes. |
@@ -490,6 +490,8 @@ The host-neutral built-in validator contract has versioned descriptors, invocati
 
 The bounded M4b path accepts only resolved, current exact packages at supported occurrence transforms, binds both derived and exact-result identities into the invocation, and fails closed on stale snapshots or mismatched inputs. It classifies exact-body minimum gaps, touching, and intersection through conservative AABB envelopes; validates canonical joint volume plus durable opposing exact-face participants; and projects exact parallel-face dimensions with revision-bound body/reference identities. Rectangle boxes use `Exact` evidence; the real ThroughCut package exercises `Tolerant` propagation with an explicit threshold, method identity, and false-positive-only envelope. This does not introduce target-state `ClearanceVolume`, establish curved-body narrow phases, general document-wide BOM/drawings, structural certification, third-party validator hosting, or arbitrary manufacturing export.
 
+The bounded M5 beam step keeps each crossing as one canonical joint. Its ordered rule feature derives an upper beam notch, a complementary lower crossing-piece notch, and their common contact plane. The non-convex beam is represented by one lower rail plus thirteen upper fragments; component keys are sorted by explicit feature/fragment ordinal, checked for unique disjoint containment, and included in the validator input digest. Validation checks every non-empty component-pair intersection or declared contact against the joint volume, retains all four joint verdicts including declared-without-contact failure, and remains `12 Exact / 0 Tolerant` before and after the controlled spacing change. This is exact plane-cut prismatic geometry in the core validation path, not yet an OCCT worker notch package, persisted durable notch reference, piece drawing, or manufacturing-operation export.
+
 ## 5.8 Tests and evidence — CURRENT SNAPSHOT
 
 Current runs against the baseline and working-tree scope recorded once in Appendix G reported:
@@ -498,8 +500,9 @@ Current runs against the baseline and working-tree scope recorded once in Append
 - `cargo test -p ketchup-app --test capstone_chain -- --nocapture` passed 2/2 with the exact worker present;
 - focused P07/W4A core suites passed 16/16, the exact physical/durable interaction suite passed 4/4, and the M4b suite passed its accepted-body clearance, exact-face dimension, canonical-joint, stale-binding, and real ThroughCut `Tolerant` propagation assertions;
 - the exact clearance unit proof classifies separated diagonal gap, touching, and positive-volume intersection distinctly;
+- the M5 beam proof derives both complementary notches from each canonical joint, validates a 14-component exact notched beam, preserves all four joint verdicts, canonicalizes reversed component input, and remains `12 Exact / 0 Tolerant` after the controlled spacing change;
 - the deliberate-red architecture self-test observed all 16 intended rejection paths exactly once, including A0 rediscovery and a private in-core revision write;
-- strict workspace Clippy passed after the final M4b enum-layout correction;
+- strict workspace Clippy passed over the current working-tree scope;
 - the explicit `cargo test --locked -p ketchup-exact --features a0-certification --test gate_a0_v2 -- --exact gate_a0_v2 --nocapture` target failed closed before geometry on stale sealed inputs;
 - the default architecture guard passed without consulting a historical A0 lock, while its explicit `-FrozenLockPath` mode and deliberate-red fixture still reject changed locked inputs.
 
@@ -1707,7 +1710,9 @@ M4a MUST NOT depend on integrated OCCT results, durable `SubshapeRef`, C1b, or a
 5. piece-drawing/manufacturing operation projection;
 6. beam workflow 6.3b.
 
-**Exit:** semantic half-lap joint produces consistent geometry and dimensions on both pieces, survives controlled parameter changes, and exports no invalid/quarantined result.
+**Exit:** semantic half-lap joint produces consistent geometry and dimensions on both pieces, survives controlled parameter changes, and exports no invalid/quarantined result. The fully prismatic beam acceptance case MUST remain `12 Exact / 0 Tolerant`; any `Tolerant` result is a finding that blocks M5 exit.
+
+**Current bounded implementation:** one canonical joint derives complementary plane-cut notches on both beam participants and a common contact plane. The exact-prismatic validator consumes a deterministic feature/fragment-ordered cuboid decomposition of the resulting non-convex beam, retains the four declared-joint verdicts, and passes the `12 Exact / 0 Tolerant` controlled-change proof. Worker-backed notch B-Reps/references and the drawing/manufacturing/export remainder still block full M5 exit.
 
 ## M6 — Broaden geometry deliberately
 
@@ -2003,8 +2008,8 @@ This appendix is the single authority for the current-evidence commit. Other sec
 | Field | Value |
 |---|---|
 | As-built update date | 2026-08-05 |
-| Current-evidence commit | `8e95c8d15918a8dddeb71697568b63918aed1458` (`Harden exact interaction and validation invariants`) |
-| Working-tree scope | `dirty=true`; post-baseline work contains sealed-A0 target separation, governance evidence updates, this V4C consistency pass, and subsequent M4b work until the next approved commit |
+| Current-evidence commit | `d2e06393550e016f17513fa9837fc8e44282dfc2` (`Separate sealed certification and add exact validation`) |
+| Working-tree scope | `dirty=true`; post-baseline work contains the bounded M5 joint-driven half-lap and exact-prismatic notched-beam validation step plus this as-built update |
 | OS | Windows 10 10.0.19045 x64 |
 | Rust | `rustc 1.97.0 (2d8144b78 2026-07-07)` |
 | Cargo | `cargo 1.97.0 (c980f4866 2026-06-30)` |
@@ -2017,14 +2022,14 @@ Current validation observations used by this update:
 | Command | Outcome |
 |---|---|
 | `cargo fmt --all` / final `cargo fmt --all --check` | PASS after implementation; final check recorded before closure |
-| `cargo clippy --workspace --all-targets -- -D warnings` | PASS before final exact-pick correction; final rerun recorded before closure |
-| governed portable workspace command from `invoke-ci-governance.ps1` | PASS, including app/core/exact/interaction/scheduler, Gate B, C1a, narrow C1b, ThroughCut, capstone, P07, and W4A |
+| `cargo clippy --locked --workspace --all-targets -- -D warnings` | PASS over the current M5 working-tree scope |
+| `cargo test --locked --workspace --all-targets` | PASS, including app/core/exact/interaction/scheduler, Gate B, C1a, narrow C1b, ThroughCut, capstone, P07, W4A, and the bounded M5 beam proof |
 | `cargo test -p ketchup-app --test capstone_chain -- --nocapture` | PASS; 2/2 with `ketchup-exact-worker` present |
 | focused P07/W4A suites | PASS; 16/16 |
 | exact physical/durable interaction unit suite | PASS; 4/4, including hole miss and unreferenced physical-face occlusion |
 | deliberate-red architecture/R0 self-test | PASS; all 16 expected red paths observed exactly once, including sealed-A0 rediscovery |
 | default architecture guard | PASS without consulting sealed A0 freshness; supplied `-FrozenLockPath` remains fail-closed |
-| literal `cargo test --locked --workspace --all-targets` | PASS; product signal is independent of sealed A0 age |
+| `cargo test --locked -p ketchup-core --test beam_m4ae --test validation_m4a --test state_view_v1` | PASS; joint-derived notches, four geometry verdicts, canonical decomposition, controlled recompute, and `12 Exact / 0 Tolerant` |
 | explicit `gate_a0_v2` target with `a0-certification` | Expected FAIL CLOSED before geometry on stale sealed inputs |
 
 Cargo excludes sealed A0 tests from daily discovery unless `a0-certification` is explicitly enabled. The dedicated A0 runner is the only conforming certification invocation because it supplies a sealed run ID, lock hash, backend identity matrix, runtime libraries, and unique evidence paths. Skipping that preflight inside the formal test or silently accepting an ephemeral lock would weaken governance and is prohibited. Test counts and durations are observations, not permanent requirements; claim boundaries remain those in §5.9, §12.2, and Appendix A.
@@ -2033,6 +2038,6 @@ Cargo excludes sealed A0 tests from daily discovery unless `a0-certification` is
 
 # Final statement
 
-Ketchup has crossed from disconnected experiments into a narrow coherent product substrate with a manual modeler, evaluator/persistence path, prismatic fabrication/validation path, integrated exact extrusion/ThroughCut path, and bounded exact-dependent validation. It has not crossed into a general exact, rule-driven 2D/3D product: the current slices remain bounded, broader feature/result unification and M5–M7 are incomplete, and current-tree gate certification is absent.
+Ketchup has crossed from disconnected experiments into a narrow coherent product substrate with a manual modeler, evaluator/persistence path, prismatic fabrication/validation path, integrated exact extrusion/ThroughCut path, bounded exact-dependent validation, and a bounded joint-driven exact-prismatic half-lap beam step. It has not crossed into a general exact, rule-driven 2D/3D product: the current slices remain bounded, worker-backed notch/reference/drawing/manufacturing completion and M6–M7 remain open, and current-tree gate certification is absent.
 
 The next architectural success is not another broad feature demo. It is extending the same canonical rule/feature authority across exact evaluation, interaction, persistence, validation, and fabrication without widening the current two write paths, creating a second authority, or silently changing meaning during Open, recompute, or AI automation.

@@ -88,6 +88,15 @@ impl Aabb {
     }
 
     #[must_use]
+    pub fn has_positive_area(&self) -> bool {
+        self.extents()
+            .into_iter()
+            .filter(|extent| *extent > 0.0)
+            .count()
+            >= 2
+    }
+
+    #[must_use]
     pub fn volume(&self) -> f64 {
         let extent = self.extents();
         extent[0] * extent[1] * extent[2]
@@ -125,6 +134,13 @@ impl Aabb {
         } else {
             Self::new(min, max).map(Some)
         }
+    }
+
+    #[must_use]
+    pub fn subset_of(&self, container: &Self) -> bool {
+        (0..3).all(|axis| {
+            self.min[axis] >= container.min[axis] && self.max[axis] <= container.max[axis]
+        })
     }
 
     pub fn subset_of_expanded(
@@ -170,6 +186,77 @@ impl Aabb {
             return Err(PrismaticError::NumericalFailure);
         }
         Ok(squared.sqrt())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, PartialOrd, Ord)]
+pub struct PrismaticComponentKey {
+    pub feature_ordinal: u32,
+    pub fragment_ordinal: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PrismaticComponent {
+    pub key: PrismaticComponentKey,
+    pub bounds: Aabb,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExactPrismaticBody {
+    stock: Aabb,
+    components: Vec<PrismaticComponent>,
+}
+
+impl ExactPrismaticBody {
+    pub fn solid(stock: Aabb) -> Result<Self, PrismaticError> {
+        Self::from_components(
+            stock,
+            vec![PrismaticComponent {
+                key: PrismaticComponentKey {
+                    feature_ordinal: 0,
+                    fragment_ordinal: 0,
+                },
+                bounds: stock,
+            }],
+        )
+    }
+
+    pub fn from_components(
+        stock: Aabb,
+        mut components: Vec<PrismaticComponent>,
+    ) -> Result<Self, PrismaticError> {
+        if components.is_empty() {
+            return Err(PrismaticError::InvalidDecomposition);
+        }
+        components.sort_by_key(|component| component.key);
+        for (index, component) in components.iter().enumerate() {
+            if !component.bounds.has_positive_volume()
+                || !component.bounds.subset_of(&stock)
+                || index > 0 && components[index - 1].key == component.key
+            {
+                return Err(PrismaticError::InvalidDecomposition);
+            }
+            for other in &components[..index] {
+                if component
+                    .bounds
+                    .convex_intersection(&other.bounds)?
+                    .is_some_and(|intersection| intersection.has_positive_volume())
+                {
+                    return Err(PrismaticError::InvalidDecomposition);
+                }
+            }
+        }
+        Ok(Self { stock, components })
+    }
+
+    #[must_use]
+    pub const fn stock(&self) -> Aabb {
+        self.stock
+    }
+
+    #[must_use]
+    pub fn components(&self) -> &[PrismaticComponent] {
+        &self.components
     }
 }
 
@@ -434,6 +521,55 @@ impl JointValidationOutcome {
     }
 }
 
+pub fn validate_joint_geometry(
+    left: &ExactPrismaticBody,
+    right: &ExactPrismaticBody,
+    declared_joint: Option<&CanonicalJoint>,
+    tolerance: TolerancePolicy,
+) -> Result<Option<JointValidationOutcome>, PrismaticError> {
+    validate_policy(tolerance)?;
+    let mut has_penetration = false;
+    let mut has_declared_contact = false;
+    let mut outside_declared_volume = false;
+    for left_component in left.components() {
+        for right_component in right.components() {
+            let Some(intersection) = left_component
+                .bounds
+                .convex_intersection(&right_component.bounds)?
+            else {
+                continue;
+            };
+            let is_penetration = intersection.has_positive_volume();
+            let is_contact = intersection.has_positive_area();
+            has_penetration |= is_penetration;
+            if declared_joint.is_some() && is_contact {
+                has_declared_contact = true;
+            }
+            if (is_penetration || declared_joint.is_some() && is_contact)
+                && let Some(joint) = declared_joint
+            {
+                for vertex in intersection.vertices() {
+                    outside_declared_volume |=
+                        joint.volume.distance_to_point(vertex)? > tolerance.epsilon_mm;
+                }
+            }
+        }
+    }
+    match declared_joint {
+        Some(_) if outside_declared_volume => Ok(Some(
+            JointValidationOutcome::OverlapOutsideDeclaredJointError,
+        )),
+        Some(_) if has_penetration || has_declared_contact => {
+            Ok(Some(JointValidationOutcome::OverlapInsideDeclaredJointOk))
+        }
+        Some(_) => Ok(Some(
+            JointValidationOutcome::DeclaredJointWithEmptyIntersectionError,
+        )),
+        None if has_penetration => Ok(Some(JointValidationOutcome::OverlapWithoutJointError)),
+        None => Ok(None),
+    }
+}
+
 pub fn validate_joint_overlap(
     left: Aabb,
     right: Aabb,
@@ -509,6 +645,7 @@ pub enum PrismaticError {
     InvalidAabb,
     InvalidObb,
     EmptyVolume,
+    InvalidDecomposition,
     ReservedJointId,
     DuplicateJointParticipant,
     NumericalFailure,
@@ -521,6 +658,9 @@ impl fmt::Display for PrismaticError {
             Self::InvalidAabb => "axis-aligned bounds are invalid or outside the bounded envelope",
             Self::InvalidObb => "oriented bounds are invalid or not orthonormal",
             Self::EmptyVolume => "joint bounds must have finite positive volume",
+            Self::InvalidDecomposition => {
+                "exact prismatic components must be uniquely keyed, disjoint, and inside stock"
+            }
             Self::ReservedJointId => "joint id zero is reserved",
             Self::DuplicateJointParticipant => "a joint must connect two distinct participants",
             Self::NumericalFailure => "prismatic collision arithmetic was numerically uncertain",
