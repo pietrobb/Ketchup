@@ -94,7 +94,7 @@ $env:KETCHUP_A0_PRIOR_REFERENCE_FIXTURE = $fixturePath
 $env:KETCHUP_A0_PRODUCER_FINGERPRINT = [string]$preflight.producer.fingerprint
 $env:KETCHUP_A0_RUN_ID = $RunId
 $env:KETCHUP_A0_LOCK_SHA256 = $lockSha256
-& cargo test --manifest-path (Join-Path $repoRoot "Cargo.toml") -p ketchup-exact --test gate_a0 --no-run --target-dir $consumerTarget
+& cargo test --manifest-path (Join-Path $repoRoot "Cargo.toml") -p ketchup-exact --features a0-certification --test gate_a0 --no-run --target-dir $consumerTarget
 if ($LASTEXITCODE -ne 0) {
     Write-FailedDisposition "hash_or_provenance_only" "The current-build consumer did not compile; no consumer geometry was observed." $lockSha256
     throw "Current-build consumer compilation failed."
@@ -105,7 +105,7 @@ try {
     Write-FailedDisposition "hash_or_provenance_only" $_.Exception.Message $lockSha256
     throw
 }
-& cargo test --manifest-path (Join-Path $repoRoot "Cargo.toml") -p ketchup-exact --test gate_a0 --target-dir $consumerTarget
+& cargo test --manifest-path (Join-Path $repoRoot "Cargo.toml") -p ketchup-exact --features a0-certification --test gate_a0 --target-dir $consumerTarget
 if ($LASTEXITCODE -ne 0) {
     if (-not (Test-Path $runDir)) {
         Write-FailedDisposition "substantive_topology_or_reference" "The current-build gate reached native geometry but terminated before writing its detailed metrics." $lockSha256

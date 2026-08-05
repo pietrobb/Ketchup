@@ -63,6 +63,10 @@ try {
     $d08Source = Get-Content (Join-Path $repoRoot "governance\d08-lifecycle-exceptions.json") -Raw
     $transitionSource = Get-Content (Join-Path $repoRoot "governance\r0-transitions-v1-v13.json") -Raw
     $appSource = Get-Content (Join-Path $repoRoot "crates\ketchup-app\src\lib.rs") -Raw
+    $exactManifestSource = Get-Content (Join-Path $repoRoot "crates\ketchup-exact\Cargo.toml") -Raw
+    $ciGovernanceSource = Get-Content (Join-Path $repoRoot "scripts\windows\invoke-ci-governance.ps1") -Raw
+    $a0V1RunnerSource = Get-Content (Join-Path $repoRoot "scripts\windows\run-strengthened-a0-v1.ps1") -Raw
+    $a0V2RunnerSource = Get-Content (Join-Path $repoRoot "scripts\windows\run-strengthened-a0-v2.ps1") -Raw
     $stateViewSource = "pub const COMPLETE_STATE_VIEW_V1: &str = `"complete`";`npub const AGENT_STATE_VIEW_V1: &str = `"agent`";`nfn encode_semantic_state() {}`n"
     Write-Utf8NoBom (Join-Path $tempRoot "crates\ketchup-core\src\document.rs") $documentSource
     Write-Utf8NoBom (Join-Path $tempRoot "crates\ketchup-core\src\state_view.rs") $stateViewSource
@@ -71,6 +75,10 @@ try {
     Write-Utf8NoBom (Join-Path $tempRoot "crates\ketchup-core\tests\fixtures\state-view\complete-v1.txt") "complete`n"
     Write-Utf8NoBom (Join-Path $tempRoot "crates\ketchup-core\tests\fixtures\state-view\agent-v1.txt") "agent`n"
     Write-Utf8NoBom (Join-Path $tempRoot "crates\ketchup-app\src\lib.rs") $appSource
+    Write-Utf8NoBom (Join-Path $tempRoot "crates\ketchup-exact\Cargo.toml") $exactManifestSource
+    Write-Utf8NoBom (Join-Path $tempRoot "scripts\windows\invoke-ci-governance.ps1") $ciGovernanceSource
+    Write-Utf8NoBom (Join-Path $tempRoot "scripts\windows\run-strengthened-a0-v1.ps1") $a0V1RunnerSource
+    Write-Utf8NoBom (Join-Path $tempRoot "scripts\windows\run-strengthened-a0-v2.ps1") $a0V2RunnerSource
     Write-Utf8NoBom (Join-Path $tempRoot "governance\d08-lifecycle-exceptions.json") $d08Source
     Write-Utf8NoBom (Join-Path $tempRoot "governance\contract-changes.json") "{`n  `"schema_version`": 1,`n  `"changes`": []`n}`n"
     Write-Utf8NoBom (Join-Path $tempRoot "governance\frozen.txt") "frozen`n"
@@ -82,6 +90,12 @@ try {
         -ChangeManifestPath (Join-Path $tempRoot "governance\contract-changes.json") `
         -FrozenLockPath (Join-Path $tempRoot "governance\frozen-inputs.json") 2>&1)
     if ($LASTEXITCODE -ne 0) { throw "Self-test fixture baseline is invalid: $($baselineOutput -join ' ')" }
+
+    Invoke-ExpectedRed "sealed A0 target returned to daily test discovery" "a0-separation" {
+        $mutated = $exactManifestSource.Replace('required-features = ["a0-certification"]', 'required-features = []')
+        Write-Utf8NoBom (Join-Path $tempRoot "crates\ketchup-exact\Cargo.toml") $mutated
+    }
+    Write-Utf8NoBom (Join-Path $tempRoot "crates\ketchup-exact\Cargo.toml") $exactManifestSource
 
     Invoke-ExpectedRed "public associated mutator" "sole-mutation" {
         $mutated = $documentSource.Replace(

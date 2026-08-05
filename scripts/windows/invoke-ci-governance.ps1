@@ -39,21 +39,18 @@ try {
 
     Invoke-NativeStep "rustfmt" { & cargo fmt --all --check }
     Invoke-NativeStep "clippy" { & cargo clippy --locked --workspace --all-targets -- -D warnings }
-    Invoke-NativeStep "portable workspace tests with sealed A0 NO-GO assertions excluded" {
-        & cargo test --locked --workspace --all-targets -- --skip gate_a0 --skip fixed_extrusion_is_valid_and_carries_guaranteed_history
+    Invoke-NativeStep "workspace product tests" {
+        & cargo test --locked --workspace --all-targets
     }
     Invoke-NativeStep "product build" { & cargo build --locked -p ketchup-app --bin ketchup-app }
     Invoke-NativeStep "dependency advisories, licenses, and sources" {
         & cargo deny --config (Join-Path $repoRoot "governance\deny-ci.toml") check advisories licenses sources
     }
 
-    Write-Output "==> strengthened A0 frozen-input and backend validation"
-    & (Join-Path $PSScriptRoot "validate-strengthened-a0-v1.ps1")
-
     Write-Output "==> historical R0 v13/Gate C evidence validation"
     & (Join-Path $PSScriptRoot "validate-r0-v13-historical-evidence.ps1")
 
-    Write-Output "CI governance block passed: quality, workspace tests, product build, architecture guards, frozen gate inputs, and dependency policy are green."
+    Write-Output "CI governance block passed: quality, workspace product tests, product build, architecture guards, historical evidence, and dependency policy are green."
 } finally {
     Pop-Location
 }

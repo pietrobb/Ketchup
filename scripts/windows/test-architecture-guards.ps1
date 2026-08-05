@@ -18,11 +18,6 @@ if ([string]::IsNullOrWhiteSpace($RepoRoot)) {
 if ([string]::IsNullOrWhiteSpace($ChangeManifestPath)) {
     $ChangeManifestPath = Join-Path $RepoRoot "governance\contract-changes.json"
 }
-$usingDefaultFrozenLock = [string]::IsNullOrWhiteSpace($FrozenLockPath)
-if ($usingDefaultFrozenLock) {
-    $FrozenLockPath = Join-Path $RepoRoot "artifacts\gate-a0\strengthened-a0-v1-lock.json"
-}
-
 function Fail-Guard([string]$Id, [string]$Message) {
     throw "[guard:$Id] $Message"
 }
@@ -372,49 +367,62 @@ if ($stateViewSource -notmatch 'COMPLETE_STATE_VIEW_V1' -or
     Fail-Guard "state-view" "Complete and agent StateView v1 must share one encoder and retain non-empty separate golden fixtures."
 }
 
-if (-not (Test-Path $FrozenLockPath -PathType Leaf)) {
-    Fail-Guard "frozen-input" "Missing frozen-input lock: $FrozenLockPath"
+$exactManifestSource = Get-Content (Join-Path $RepoRoot "crates\ketchup-exact\Cargo.toml") -Raw
+foreach ($target in @("gate_a0", "gate_a0_v2")) {
+    $targetPattern = "(?ms)\[\[test\]\]\s*name\s*=\s*`"$target`"\s*required-features\s*=\s*\[`"a0-certification`"\]"
+    if ($exactManifestSource -notmatch $targetPattern) {
+        Fail-Guard "a0-separation" "Sealed target $target must require the explicit a0-certification feature."
+    }
 }
-$frozenLockHash = (Get-FileHash $FrozenLockPath -Algorithm SHA256).Hash.ToLowerInvariant()
-$frozenLock = Get-Content $FrozenLockPath -Raw | ConvertFrom-Json
-if (-not ($frozenLock.PSObject.Properties.Name -contains "files") -or @($frozenLock.files).Count -eq 0) {
-    Fail-Guard "frozen-input" "Frozen-input lock has no files."
+$ciGovernanceSource = Get-Content (Join-Path $RepoRoot "scripts\windows\invoke-ci-governance.ps1") -Raw
+if ($ciGovernanceSource -notmatch 'cargo test --locked --workspace --all-targets' -or
+    $ciGovernanceSource -match '(?m)--skip\s+gate_a0|validate-strengthened-a0-v[12]\.ps1') {
+    Fail-Guard "a0-separation" "Daily governance must run the unfiltered product workspace and must not invoke sealed A0 validation."
 }
-if ($usingDefaultFrozenLock -and (
-    $frozenLockHash -ne "5ae34bdd0eb7cad4719c11154e57e5ec8d955d51313e7ffb14ff5f96809a7ff0" -or
-    [string]$frozenLock.freeze_id -ne "strengthened-a0-v1" -or
-    @($frozenLock.files).Count -ne 20
-)) {
-    Fail-Guard "frozen-input" "The strengthened A0 lock identity, digest, or exact input count changed."
+foreach ($runner in @("run-strengthened-a0-v1.ps1", "run-strengthened-a0-v2.ps1")) {
+    $runnerSource = Get-Content (Join-Path $RepoRoot "scripts\windows\$runner") -Raw
+    if ($runnerSource -notmatch '(?:--features\s+a0-certification|"--features",\s*"a0-certification")') {
+        Fail-Guard "a0-separation" "Explicit sealed runner $runner must enable a0-certification."
+    }
 }
+
 $repoPrefix = $RepoRoot.TrimEnd("\") + "\"
-foreach ($entry in @($frozenLock.files)) {
-    $relative = Normalize-Path ([string]$entry.path)
-    $fullPath = [IO.Path]::GetFullPath((Join-Path $RepoRoot $relative))
-    if (-not $fullPath.StartsWith($repoPrefix, [StringComparison]::OrdinalIgnoreCase)) {
-        Fail-Guard "frozen-input" "Locked path escapes the repository: $relative"
+if (-not [string]::IsNullOrWhiteSpace($FrozenLockPath)) {
+    if (-not (Test-Path $FrozenLockPath -PathType Leaf)) {
+        Fail-Guard "frozen-input" "Missing frozen-input lock: $FrozenLockPath"
     }
-    if (-not (Test-Path $fullPath -PathType Leaf)) {
-        Fail-Guard "frozen-input" "Locked input is missing: $relative"
+    $frozenLock = Get-Content $FrozenLockPath -Raw | ConvertFrom-Json
+    if (-not ($frozenLock.PSObject.Properties.Name -contains "files") -or @($frozenLock.files).Count -eq 0) {
+        Fail-Guard "frozen-input" "Frozen-input lock has no files."
     }
-    $item = Get-Item $fullPath -Force
-    if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) {
-        Fail-Guard "frozen-input" "Locked path traverses a reparse point: $relative"
-    }
-    $cursorPath = Split-Path $fullPath -Parent
-    while (-not [string]::IsNullOrWhiteSpace($cursorPath) -and
-        $cursorPath.StartsWith($RepoRoot, [StringComparison]::OrdinalIgnoreCase)) {
-        $cursor = Get-Item $cursorPath -Force
-        if ($cursor.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+    foreach ($entry in @($frozenLock.files)) {
+        $relative = Normalize-Path ([string]$entry.path)
+        $fullPath = [IO.Path]::GetFullPath((Join-Path $RepoRoot $relative))
+        if (-not $fullPath.StartsWith($repoPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+            Fail-Guard "frozen-input" "Locked path escapes the repository: $relative"
+        }
+        if (-not (Test-Path $fullPath -PathType Leaf)) {
+            Fail-Guard "frozen-input" "Locked input is missing: $relative"
+        }
+        $item = Get-Item $fullPath -Force
+        if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) {
             Fail-Guard "frozen-input" "Locked path traverses a reparse point: $relative"
         }
-        $parentPath = Split-Path $cursorPath -Parent
-        if ($parentPath -eq $cursorPath) { break }
-        $cursorPath = $parentPath
-    }
-    $actualHash = (Get-FileHash $fullPath -Algorithm SHA256).Hash.ToLowerInvariant()
-    if ($actualHash -ne ([string]$entry.sha256).ToLowerInvariant()) {
-        Fail-Guard "frozen-input" "Locked input changed: $relative"
+        $cursorPath = Split-Path $fullPath -Parent
+        while (-not [string]::IsNullOrWhiteSpace($cursorPath) -and
+            $cursorPath.StartsWith($RepoRoot, [StringComparison]::OrdinalIgnoreCase)) {
+            $cursor = Get-Item $cursorPath -Force
+            if ($cursor.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+                Fail-Guard "frozen-input" "Locked path traverses a reparse point: $relative"
+            }
+            $parentPath = Split-Path $cursorPath -Parent
+            if ($parentPath -eq $cursorPath) { break }
+            $cursorPath = $parentPath
+        }
+        $actualHash = (Get-FileHash $fullPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($actualHash -ne ([string]$entry.sha256).ToLowerInvariant()) {
+            Fail-Guard "frozen-input" "Locked input changed: $relative"
+        }
     }
 }
 
@@ -558,4 +566,4 @@ foreach ($path in $protectedChangedPaths) {
     }
 }
 
-Write-Output "Architecture guards passed: sole mutation, legacy absence, projection authority, StateView fixtures, frozen inputs, and anti-loosening governance."
+Write-Output "Architecture guards passed: sole mutation, legacy absence, projection authority, StateView fixtures, sealed A0 separation, optional frozen inputs, and anti-loosening governance."

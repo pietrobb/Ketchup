@@ -1,4 +1,5 @@
 use crate::document::{DocumentId, Snapshot};
+use crate::exact_product::BodyResultIdentity;
 use crate::graph::{DerivedIdentity, sha256_hex};
 use crate::prismatic::{
     Aabb, CanonicalJoint, JointId, JointValidationOutcome, TolerancePolicy, validate_joint_overlap,
@@ -83,6 +84,7 @@ pub struct ValidationInvocation {
     pub revision_id: u64,
     pub canonical_digest: String,
     pub accepted_derived_results: Vec<DerivedIdentity>,
+    pub accepted_exact_results: Vec<BodyResultIdentity>,
     pub contract_id: String,
     pub contract_version: u32,
     pub implementation_id: String,
@@ -106,17 +108,39 @@ impl ValidationInvocation {
         snapshot: &Snapshot,
         descriptor: &ValidatorDescriptor,
         policy: &ValidationPolicyRef,
+        accepted_derived_results: Vec<DerivedIdentity>,
+        input: &[u8],
+    ) -> Self {
+        Self::bind_with_exact_results(
+            snapshot,
+            descriptor,
+            policy,
+            accepted_derived_results,
+            vec![],
+            input,
+        )
+    }
+
+    #[must_use]
+    pub fn bind_with_exact_results(
+        snapshot: &Snapshot,
+        descriptor: &ValidatorDescriptor,
+        policy: &ValidationPolicyRef,
         mut accepted_derived_results: Vec<DerivedIdentity>,
+        mut accepted_exact_results: Vec<BodyResultIdentity>,
         input: &[u8],
     ) -> Self {
         accepted_derived_results.sort();
         accepted_derived_results.dedup();
+        accepted_exact_results.sort();
+        accepted_exact_results.dedup();
         Self {
             protocol: VALIDATOR_PROTOCOL_V1,
             document_id: snapshot.document_id(),
             revision_id: snapshot.revision_id(),
             canonical_digest: snapshot.canonical_digest(),
             accepted_derived_results,
+            accepted_exact_results,
             contract_id: descriptor.contract_id.clone(),
             contract_version: descriptor.contract_version,
             implementation_id: descriptor.implementation_id.clone(),
@@ -240,6 +264,7 @@ impl EvidenceCounts {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DiagnosticLocation {
     pub entity: Option<DerivedIdentity>,
+    pub exact_body: Option<BodyResultIdentity>,
     pub joint: Option<JointId>,
 }
 
@@ -281,6 +306,7 @@ impl ValidationReport {
             evidence_class,
             location: DiagnosticLocation {
                 entity: None,
+                exact_body: None,
                 joint: None,
             },
             policy_id: invocation.policy_id.clone(),
@@ -319,6 +345,7 @@ impl ValidationReport {
                 evidence_class,
                 location: DiagnosticLocation {
                     entity: None,
+                    exact_body: None,
                     joint: None,
                 },
                 policy_id,
@@ -691,6 +718,7 @@ fn evaluate_prismatic_joints(
                 evidence_class,
                 location: DiagnosticLocation {
                     entity: Some(case.right_identity.clone()),
+                    exact_body: None,
                     joint: Some(joint.id()),
                 },
                 policy_id: invocation.policy_id.clone(),
@@ -743,6 +771,7 @@ fn evaluate_prismatic_joints(
             evidence_class,
             location: DiagnosticLocation {
                 entity: Some(case.right_identity.clone()),
+                exact_body: None,
                 joint: case.declared_joint.as_ref().map(CanonicalJoint::id),
             },
             policy_id: invocation.policy_id.clone(),

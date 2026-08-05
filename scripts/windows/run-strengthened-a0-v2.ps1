@@ -479,7 +479,7 @@ try {
             ("build-suite-" + $alias) `
             "build" `
             $cargo `
-            @("test", "--locked", "--release", "--manifest-path", (Join-Path $repoRoot "Cargo.toml"), "-p", "ketchup-exact", "--test", "gate_a0_v2", "--no-run", "--target-dir", $targetDir) `
+            @("test", "--locked", "--release", "--manifest-path", (Join-Path $repoRoot "Cargo.toml"), "-p", "ketchup-exact", "--features", "a0-certification", "--test", "gate_a0_v2", "--no-run", "--target-dir", $targetDir) `
             $environment `
             $identity `
             $false `

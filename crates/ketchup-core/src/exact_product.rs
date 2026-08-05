@@ -137,7 +137,7 @@ impl BodySubshapeRef {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct BodyResultIdentity {
     pub schema: String,
     pub document_id: DocumentId,
