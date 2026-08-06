@@ -1712,7 +1712,7 @@ M4a MUST NOT depend on integrated OCCT results, durable `SubshapeRef`, C1b, or a
 
 **Exit:** semantic half-lap joint produces consistent geometry and dimensions on both pieces, survives controlled parameter changes, and exports no invalid/quarantined result. The fully prismatic beam acceptance case MUST remain `12 Exact / 0 Tolerant`; any `Tolerant` result is a finding that blocks M5 exit.
 
-**Current bounded implementation:** one canonical joint derives complementary plane-cut notches on both beam participants and a common contact plane. The exact-prismatic validator consumes a deterministic feature/fragment-ordered cuboid decomposition of the resulting non-convex beam, retains the four declared-joint verdicts, and passes the `12 Exact / 0 Tolerant` controlled-change proof. Worker-backed notch B-Reps/references and the drawing/manufacturing/export remainder still block full M5 exit.
+**Current implementation:** one canonical joint derives complementary plane-cut notches on both beam participants and a common contact plane. The exact-prismatic validator consumes a deterministic feature/fragment-ordered cuboid decomposition of the resulting non-convex beam, retains the four declared-joint verdicts, and passes the `12 Exact / 0 Tolerant` controlled-change proof. The supervised worker evaluates all thirteen pieces as OCCT B-Reps; the running application accepts only current revision/digest-bound results, preserves 48 semantic contact/wall references across the controlled spacing change, and emits a dimensioned SVG piece drawing plus a deterministic 24-operation manufacturing export. Stale results and invalid or quarantined lineage fail closed, so the full M5 exit is satisfied for beam workflow 6.3b; general document-wide drawings and fabrication export remain later scope.
 
 ## M6 — Broaden geometry deliberately
 
@@ -2007,9 +2007,9 @@ This appendix is the single authority for the current-evidence commit. Other sec
 
 | Field | Value |
 |---|---|
-| As-built update date | 2026-08-05 |
-| Current-evidence commit | `d2e06393550e016f17513fa9837fc8e44282dfc2` (`Separate sealed certification and add exact validation`) |
-| Working-tree scope | `dirty=true`; post-baseline work contains the bounded M5 joint-driven half-lap and exact-prismatic notched-beam validation step plus this as-built update |
+| As-built update date | 2026-08-06 |
+| Current-evidence commit | `749d17f4676b23035cc8e9c543ceae1c3c89e006` (`Complete the M5 half-lap product path`) |
+| Working-tree scope | `dirty=true`; post-baseline work is limited to this evidence-manifest and M5 exit-status correction |
 | OS | Windows 10 10.0.19045 x64 |
 | Rust | `rustc 1.97.0 (2d8144b78 2026-07-07)` |
 | Cargo | `cargo 1.97.0 (c980f4866 2026-06-30)` |
@@ -2022,8 +2022,8 @@ Current validation observations used by this update:
 | Command | Outcome |
 |---|---|
 | `cargo fmt --all` / final `cargo fmt --all --check` | PASS after implementation; final check recorded before closure |
-| `cargo clippy --locked --workspace --all-targets -- -D warnings` | PASS over the current M5 working-tree scope |
-| `cargo test --locked --workspace --all-targets` | PASS, including app/core/exact/interaction/scheduler, Gate B, C1a, narrow C1b, ThroughCut, capstone, P07, W4A, and the bounded M5 beam proof |
+| `cargo clippy --locked --workspace --all-targets -- -D warnings` | PASS over commit `749d17f` plus this documentation-only correction |
+| `cargo test --locked --workspace --all-targets` | PASS, including app/core/exact/interaction/scheduler, Gate B, C1a, narrow C1b, ThroughCut, capstone, P07, W4A, and the full M5 worker/app/export proof |
 | `cargo test -p ketchup-app --test capstone_chain -- --nocapture` | PASS; 2/2 with `ketchup-exact-worker` present |
 | focused P07/W4A suites | PASS; 16/16 |
 | exact physical/durable interaction unit suite | PASS; 4/4, including hole miss and unreferenced physical-face occlusion |
