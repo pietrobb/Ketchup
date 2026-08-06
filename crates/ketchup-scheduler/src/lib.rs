@@ -1,10 +1,15 @@
 #![forbid(unsafe_code)]
 
+use ketchup_core::beam_m5::{
+    BeamExactPiecePackage, BeamExactPieceRequest, BeamM5Error, BeamNotchFaceRole,
+    BeamWorkerFaceEvidence, BeamWorkerResult, HalfLapParticipant, build_piece_package,
+};
 use ketchup_core::document::{DerivedIdentity, NodeId, SlotPath, SlotSegment};
 use ketchup_core::exact_product::{
     ExactFaceRole, ExactProductError, ExactRectangleRequest, ExactRenderPackage,
     build_box_render_package, canonical_reference_lineage_digest,
 };
+use ketchup_core::prismatic::{Aabb, JointId};
 use ketchup_exact::GeometryErrorCode;
 use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
@@ -456,6 +461,7 @@ impl WorkerError {
 
 const M3_CAPABILITY: &str = "M3_V1";
 const M3_CUT_CAPABILITY: &str = "M3_CUT_V1";
+const M5_NOTCH_CAPABILITY: &str = "M5_NOTCH_V1";
 const DEFAULT_WORKER_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 const CANCELLATION_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const MAX_WORKER_RESPONSE_LINE_BYTES: usize = 64 * 1024;
@@ -543,6 +549,18 @@ impl ExactWorkerClient {
         }
     }
 
+    fn verify_m5_notch_capability(&mut self, cancelled: &AtomicBool) -> Result<(), WorkerError> {
+        let response = self.request_with_cancellation("CAPS M5_NOTCH_V1", cancelled)?;
+        if response == "CAPS M5_NOTCH_V1" {
+            Ok(())
+        } else {
+            self.terminate_worker();
+            Err(WorkerError::MissingCapability(
+                M5_NOTCH_CAPABILITY.to_owned(),
+            ))
+        }
+    }
+
     pub fn extrude_rectangle(&mut self, height_mm: f64) -> Result<WorkerExactResult, WorkerError> {
         let response = self.request(&format!("EXTRUDE {:016x}", height_mm.to_bits()))?;
         match parse_legacy_exact_result(&response) {
@@ -607,6 +625,35 @@ impl ExactWorkerClient {
             parse_m3_exact_result(&response)
         };
         match parsed {
+            Err(WorkerError::Protocol(response)) => self.fail_protocol(response),
+            result => result,
+        }
+    }
+
+    fn evaluate_beam_piece_request_with_cancellation(
+        &mut self,
+        request: &BeamExactPieceRequest,
+        cancelled: &AtomicBool,
+    ) -> Result<BeamWorkerResult, WorkerError> {
+        self.verify_m5_notch_capability(cancelled)?;
+        let stock = request.stock;
+        let mut line = format!(
+            "EVAL_NOTCHED_M5_V1 {} {} {}",
+            request.document_id.0, request.piece_key, request.canonical_input_digest
+        );
+        push_aabb_request(&mut line, stock);
+        line.push_str(&format!(" {}", request.notches.len()));
+        for notch in &request.notches {
+            line.push_str(&format!(
+                " {} {} {}",
+                notch.joint_id.0,
+                notch.participant.token(),
+                notch.feature_ordinal
+            ));
+            push_aabb_request(&mut line, notch.removed);
+        }
+        let response = self.request_with_cancellation(&line, cancelled)?;
+        match parse_m5_exact_result(&response) {
             Err(WorkerError::Protocol(response)) => self.fail_protocol(response),
             result => result,
         }
@@ -930,6 +977,42 @@ impl ExactWorkerSupervisor {
         self.client.ensure_not_cancelled(cancelled)?;
         Ok(package)
     }
+
+    pub fn evaluate_beam_piece(
+        &mut self,
+        request: &BeamExactPieceRequest,
+    ) -> Result<BeamExactPiecePackage, M5EvaluationError> {
+        self.evaluate_beam_piece_with_cancellation(request, &NEVER_CANCELLED)
+    }
+
+    pub fn evaluate_beam_piece_with_cancellation(
+        &mut self,
+        request: &BeamExactPieceRequest,
+        cancelled: &AtomicBool,
+    ) -> Result<BeamExactPiecePackage, M5EvaluationError> {
+        if !is_sha256_digest(&request.piece_key)
+            || !is_sha256_digest(&request.canonical_input_digest)
+        {
+            return Err(BeamM5Error::InvalidWorkerEvidence.into());
+        }
+        self.client.ensure_not_cancelled(cancelled)?;
+        let result = match self
+            .client
+            .evaluate_beam_piece_request_with_cancellation(request, cancelled)
+        {
+            Ok(result) => result,
+            Err(error) if error.permits_restart() => {
+                self.client = Self::spawn_verified_client(&self.executable, cancelled)?;
+                self.client
+                    .evaluate_beam_piece_request_with_cancellation(request, cancelled)?
+            }
+            Err(error) => return Err(error.into()),
+        };
+        self.client.ensure_not_cancelled(cancelled)?;
+        let package = build_piece_package(request, result)?;
+        self.client.ensure_not_cancelled(cancelled)?;
+        Ok(package)
+    }
 }
 
 fn validate_m3_worker_result(
@@ -1089,6 +1172,35 @@ fn build_m3_render_package(
 }
 
 #[derive(Debug)]
+pub enum M5EvaluationError {
+    Worker(WorkerError),
+    Product(BeamM5Error),
+}
+
+impl fmt::Display for M5EvaluationError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Worker(error) => error.fmt(formatter),
+            Self::Product(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for M5EvaluationError {}
+
+impl From<WorkerError> for M5EvaluationError {
+    fn from(error: WorkerError) -> Self {
+        Self::Worker(error)
+    }
+}
+
+impl From<BeamM5Error> for M5EvaluationError {
+    fn from(error: BeamM5Error) -> Self {
+        Self::Product(error)
+    }
+}
+
+#[derive(Debug)]
 pub enum M3EvaluationError {
     Worker(WorkerError),
     Product(ExactProductError),
@@ -1130,6 +1242,92 @@ fn is_geometry_error_code(code: &str) -> bool {
     ]
     .into_iter()
     .any(|candidate| candidate.as_str() == code)
+}
+
+fn push_aabb_request(line: &mut String, bounds: Aabb) {
+    for value in bounds.min().into_iter().chain(bounds.max()) {
+        line.push_str(&format!(" {:016x}", value.to_bits()));
+    }
+}
+
+fn parse_m5_exact_result(response: &str) -> Result<BeamWorkerResult, WorkerError> {
+    let fields = response.split_whitespace().collect::<Vec<_>>();
+    if fields.first() == Some(&"ERR") {
+        return Err(parse_error_response(response, &fields));
+    }
+    if fields.len() < 19 || fields[0] != "OK_M5_V1" {
+        return Err(WorkerError::Protocol(response.to_owned()));
+    }
+    let parse_u64 = |index: usize| {
+        fields[index]
+            .parse::<u64>()
+            .map_err(|_| WorkerError::Protocol(response.to_owned()))
+    };
+    let parse_u32 = |index: usize| {
+        fields[index]
+            .parse::<u32>()
+            .map_err(|_| WorkerError::Protocol(response.to_owned()))
+    };
+    let parse_f64 = |index: usize| {
+        u64::from_str_radix(fields[index], 16)
+            .map(f64::from_bits)
+            .map_err(|_| WorkerError::Protocol(response.to_owned()))
+    };
+    let reference_count = fields[18]
+        .parse::<usize>()
+        .map_err(|_| WorkerError::Protocol(response.to_owned()))?;
+    let expected_len = reference_count
+        .checked_mul(6)
+        .and_then(|count| count.checked_add(19))
+        .ok_or_else(|| WorkerError::Protocol(response.to_owned()))?;
+    if fields.len() != expected_len {
+        return Err(WorkerError::Protocol(response.to_owned()));
+    }
+    let bounds_mm = Aabb::bounded_volume(
+        [parse_f64(3)?, parse_f64(4)?, parse_f64(5)?],
+        [parse_f64(6)?, parse_f64(7)?, parse_f64(8)?],
+    )
+    .map_err(|_| WorkerError::Protocol(response.to_owned()))?;
+    let mut face_evidence = Vec::with_capacity(reference_count);
+    for index in 0..reference_count {
+        let offset = 19 + index * 6;
+        let participant = match fields[offset + 1] {
+            "a" => HalfLapParticipant::A,
+            "b" => HalfLapParticipant::B,
+            _ => return Err(WorkerError::Protocol(response.to_owned())),
+        };
+        let role = match fields[offset + 2] {
+            "contact" => BeamNotchFaceRole::Contact,
+            "wall.west" => BeamNotchFaceRole::WestWall,
+            "wall.east" => BeamNotchFaceRole::EastWall,
+            _ => return Err(WorkerError::Protocol(response.to_owned())),
+        };
+        face_evidence.push(BeamWorkerFaceEvidence {
+            joint_id: JointId(parse_u64(offset)?),
+            participant,
+            role,
+            face_ordinal: parse_u32(offset + 3)?,
+            geometric_fingerprint: fields[offset + 4].to_owned(),
+            lineage_digest: fields[offset + 5].to_owned(),
+        });
+    }
+    Ok(BeamWorkerResult {
+        result_fingerprint: fields[1].to_owned(),
+        volume_mm3: parse_f64(2)?,
+        bounds_mm,
+        topology_counts: [
+            parse_u32(9)?,
+            parse_u32(10)?,
+            parse_u32(11)?,
+            parse_u32(12)?,
+            parse_u32(13)?,
+        ],
+        request_digest: fields[14].to_owned(),
+        exact_input_digest: fields[15].to_owned(),
+        backend: fields[16].to_owned(),
+        tolerance: fields[17].to_owned(),
+        face_evidence,
+    })
 }
 
 fn parse_error_response(response: &str, fields: &[&str]) -> WorkerError {

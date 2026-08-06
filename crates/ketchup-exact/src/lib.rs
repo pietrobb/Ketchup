@@ -247,6 +247,57 @@ pub struct HistoryEvidence {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HalfLapParticipant {
+    A,
+    B,
+}
+
+impl HalfLapParticipant {
+    #[must_use]
+    pub const fn token(self) -> &'static str {
+        match self {
+            Self::A => "a",
+            Self::B => "b",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HalfLapFaceRole {
+    Contact,
+    WestWall,
+    EastWall,
+}
+
+impl HalfLapFaceRole {
+    #[must_use]
+    pub const fn token(self) -> &'static str {
+        match self {
+            Self::Contact => "contact",
+            Self::WestWall => "wall.west",
+            Self::EastWall => "wall.east",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HalfLapNotchSpec {
+    pub joint_id: u64,
+    pub participant: HalfLapParticipant,
+    pub removed: BoxSpec,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HalfLapFaceEvidence {
+    pub joint_id: u64,
+    pub participant: HalfLapParticipant,
+    pub role: HalfLapFaceRole,
+    pub face_ordinal: u32,
+    pub lineage_digest: String,
+    pub geometric_fingerprint: String,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum HistoryConfidence {
     Complete,
     Partial,
@@ -826,6 +877,168 @@ pub fn capture_bounded_through_cut_references(
         });
     }
     Ok(references)
+}
+
+pub fn capture_half_lap_notch_references(
+    output: &ExactOpOutput,
+    document_id: u64,
+    piece_key: &str,
+    notches: &[HalfLapNotchSpec],
+) -> Result<Vec<HalfLapFaceEvidence>, GeometryError> {
+    if piece_key.is_empty()
+        || notches.is_empty()
+        || !has_complete_manifold_adjacency(&output.body.topology)
+    {
+        return Err(parameter_error(
+            GeometryErrorCode::InvalidShape,
+            "capture_half_lap_notch_references",
+            &output.input_digest,
+            "Half-lap output lacks identity, notch inputs, or reciprocal manifold adjacency"
+                .to_owned(),
+        ));
+    }
+    let mut references = Vec::new();
+    for notch in notches {
+        let roles = if notch.participant == HalfLapParticipant::A {
+            vec![
+                (HalfLapFaceRole::Contact, 2_usize, notch.removed.origin_mm.z),
+                (
+                    HalfLapFaceRole::WestWall,
+                    0_usize,
+                    notch.removed.origin_mm.x,
+                ),
+                (
+                    HalfLapFaceRole::EastWall,
+                    0_usize,
+                    notch.removed.origin_mm.x + notch.removed.size_mm.x,
+                ),
+            ]
+        } else {
+            vec![(
+                HalfLapFaceRole::Contact,
+                2_usize,
+                notch.removed.origin_mm.z + notch.removed.size_mm.z,
+            )]
+        };
+        for (role, axis, coordinate) in roles {
+            let candidates = output
+                .body
+                .topology
+                .faces
+                .iter()
+                .filter(|face| face.surface_kind == "plane")
+                .filter(|face| half_lap_face_matches(face, *notch, role, axis, coordinate))
+                .collect::<Vec<_>>();
+            let [face] = candidates.as_slice() else {
+                return Err(parameter_error(
+                    GeometryErrorCode::InvalidShape,
+                    "capture_half_lap_notch_references",
+                    &output.input_digest,
+                    format!(
+                        "Half-lap joint {} participant {} role {} has {} candidates",
+                        notch.joint_id,
+                        notch.participant.token(),
+                        role.token(),
+                        candidates.len()
+                    ),
+                ));
+            };
+            references.push(HalfLapFaceEvidence {
+                joint_id: notch.joint_id,
+                participant: notch.participant,
+                role,
+                face_ordinal: face.ordinal,
+                lineage_digest: half_lap_lineage_digest(
+                    document_id,
+                    piece_key,
+                    notch.joint_id,
+                    notch.participant,
+                    role,
+                ),
+                geometric_fingerprint: face.geometric_fingerprint.clone(),
+            });
+        }
+    }
+    references.sort_by_key(|reference| {
+        (
+            reference.joint_id,
+            reference.participant.token(),
+            reference.role.token(),
+        )
+    });
+    if references.windows(2).any(|pair| {
+        pair[0].joint_id == pair[1].joint_id
+            && pair[0].participant == pair[1].participant
+            && pair[0].role == pair[1].role
+    }) {
+        return Err(parameter_error(
+            GeometryErrorCode::InvalidShape,
+            "capture_half_lap_notch_references",
+            &output.input_digest,
+            "Half-lap reference roles are not unique".to_owned(),
+        ));
+    }
+    Ok(references)
+}
+
+fn half_lap_face_matches(
+    face: &FaceEvidence,
+    notch: HalfLapNotchSpec,
+    role: HalfLapFaceRole,
+    axis: usize,
+    coordinate: f64,
+) -> bool {
+    let min = [
+        face.bounds_mm.min.x,
+        face.bounds_mm.min.y,
+        face.bounds_mm.min.z,
+    ];
+    let max = [
+        face.bounds_mm.max.x,
+        face.bounds_mm.max.y,
+        face.bounds_mm.max.z,
+    ];
+    if (min[axis] - coordinate).abs() > 1.0e-6 || (max[axis] - coordinate).abs() > 1.0e-6 {
+        return false;
+    }
+    let removed_min = [
+        notch.removed.origin_mm.x,
+        notch.removed.origin_mm.y,
+        notch.removed.origin_mm.z,
+    ];
+    let removed_max = [
+        notch.removed.origin_mm.x + notch.removed.size_mm.x,
+        notch.removed.origin_mm.y + notch.removed.size_mm.y,
+        notch.removed.origin_mm.z + notch.removed.size_mm.z,
+    ];
+    match role {
+        HalfLapFaceRole::Contact => {
+            (min[0] - removed_min[0]).abs() <= 1.0e-6
+                && (max[0] - removed_max[0]).abs() <= 1.0e-6
+                && (min[1] - removed_min[1]).abs() <= 1.0e-6
+                && (max[1] - removed_max[1]).abs() <= 1.0e-6
+        }
+        HalfLapFaceRole::WestWall | HalfLapFaceRole::EastWall => {
+            (min[1] - removed_min[1]).abs() <= 1.0e-6
+                && (max[1] - removed_max[1]).abs() <= 1.0e-6
+                && (min[2] - removed_min[2]).abs() <= 1.0e-6
+                && (max[2] - removed_max[2]).abs() <= 1.0e-6
+        }
+    }
+}
+
+fn half_lap_lineage_digest(
+    document_id: u64,
+    piece_key: &str,
+    joint_id: u64,
+    participant: HalfLapParticipant,
+    role: HalfLapFaceRole,
+) -> String {
+    stable_digest(&format!(
+        "{document_id}:{piece_key}:{joint_id}:{}:{}:planar_face",
+        participant.token(),
+        role.token()
+    ))
 }
 
 fn face_matches_cut_role(

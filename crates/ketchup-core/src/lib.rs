@@ -2,6 +2,7 @@
 
 pub mod adapters;
 pub mod beam_m4ae;
+pub mod beam_m5;
 pub mod document;
 pub mod exact_product;
 pub mod exact_validation;

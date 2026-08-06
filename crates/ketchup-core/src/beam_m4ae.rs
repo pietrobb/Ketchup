@@ -190,6 +190,19 @@ impl BeamWorkspace {
         self.last_change.as_ref()
     }
 
+    pub fn m5_requests(
+        &self,
+    ) -> Result<Vec<crate::beam_m5::BeamExactPieceRequest>, crate::beam_m5::BeamM5Error> {
+        crate::beam_m5::requests_for_slice(&self.document.current(), &self.slice)
+    }
+
+    pub fn accept_m5_packages(
+        &self,
+        packages: Vec<crate::beam_m5::BeamExactPiecePackage>,
+    ) -> Result<crate::beam_m5::BeamM5Products, crate::beam_m5::BeamM5Error> {
+        crate::beam_m5::accept_products(&self.document.current(), &self.slice, packages)
+    }
+
     pub fn set_zone1_gap_mm(&mut self, gap_mm: f64) -> Result<&BeamChangeSummary, BeamError> {
         if !gap_mm.is_finite() || gap_mm <= 0.0 {
             return Err(BeamError::InvalidFixture);

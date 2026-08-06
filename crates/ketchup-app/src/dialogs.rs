@@ -17,6 +17,12 @@ pub struct SaveRequest<'a> {
     pub suggested_name: &'a str,
 }
 
+pub struct ExportRequest<'a> {
+    pub filter_label: &'a str,
+    pub extension: &'a str,
+    pub suggested_name: &'a str,
+}
+
 /// The localized text of the unsaved-changes confirmation.
 pub struct DiscardRequest<'a> {
     /// Dialog title.
@@ -32,6 +38,8 @@ pub trait FileDialogs {
 
     /// Ask where to write the document. `None` cancels the command.
     fn pick_save_path(&mut self, request: SaveRequest<'_>) -> Option<PathBuf>;
+
+    fn pick_export_path(&mut self, request: ExportRequest<'_>) -> Option<PathBuf>;
 
     /// Ask whether unsaved changes in the active document may be discarded.
     fn confirm_discard(&mut self, request: DiscardRequest<'_>) -> bool;
@@ -55,6 +63,18 @@ impl FileDialogs for NativeFileDialogs {
             .save_file()?;
         if path.extension().is_none() {
             Some(path.with_extension("ketchup"))
+        } else {
+            Some(path)
+        }
+    }
+
+    fn pick_export_path(&mut self, request: ExportRequest<'_>) -> Option<PathBuf> {
+        let path = rfd::FileDialog::new()
+            .add_filter(request.filter_label, &[request.extension])
+            .set_file_name(request.suggested_name)
+            .save_file()?;
+        if path.extension().is_none() {
+            Some(path.with_extension(request.extension))
         } else {
             Some(path)
         }
@@ -145,6 +165,14 @@ impl FileDialogs for ScriptedFileDialogs {
     }
 
     fn pick_save_path(&mut self, request: SaveRequest<'_>) -> Option<PathBuf> {
+        let mut state = self.state();
+        state
+            .suggested_names
+            .push(request.suggested_name.to_owned());
+        state.save_paths.pop_front().flatten()
+    }
+
+    fn pick_export_path(&mut self, request: ExportRequest<'_>) -> Option<PathBuf> {
         let mut state = self.state();
         state
             .suggested_names

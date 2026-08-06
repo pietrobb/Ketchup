@@ -1,9 +1,10 @@
 #![forbid(unsafe_code)]
 
 use ketchup_exact::{
-    BoxSpec, CutMode, ExactBackend, Point3, RectangleExtrudeSpec, ReferenceResolution, Size3,
-    StabilityClass, capture_bounded_through_cut_references, capture_guaranteed_references,
-    resolve_subshape_reference,
+    BoxSpec, CutMode, ExactBackend, HalfLapFaceRole, HalfLapNotchSpec, HalfLapParticipant, Point3,
+    RectangleExtrudeSpec, ReferenceResolution, Size3, StabilityClass,
+    capture_bounded_through_cut_references, capture_guaranteed_references,
+    capture_half_lap_notch_references, resolve_subshape_reference,
 };
 use std::io::{self, BufRead, Write};
 use std::time::{Duration, Instant};
@@ -33,6 +34,16 @@ fn handle_request(backend: &ExactBackend, request: &str) -> Option<String> {
         (Some("PING"), None, None) => Some("PONG".to_owned()),
         (Some("CAPS"), Some("M3_V1"), None) => Some("CAPS M3_V1".to_owned()),
         (Some("CAPS"), Some("M3_CUT_V1"), None) => Some("CAPS M3_CUT_V1".to_owned()),
+        (Some("CAPS"), Some("M5_NOTCH_V1"), None) => Some("CAPS M5_NOTCH_V1".to_owned()),
+        (Some("EVAL_NOTCHED_M5_V1"), Some(document_id), Some(piece_key)) => {
+            let remaining = fields.collect::<Vec<_>>();
+            Some(m5_notched_response(
+                backend,
+                document_id,
+                piece_key,
+                &remaining,
+            ))
+        }
         (Some("EXTRUDE"), Some(height_bits), None) => {
             let Ok(height_bits) = u64::from_str_radix(height_bits, 16) else {
                 return Some("ERR invalid_parameter".to_owned());
@@ -409,6 +420,158 @@ fn m3_through_cut_response(
         }
         Err(error) => format!("ERR {}", error.code.as_str()),
     }
+}
+
+fn m5_notched_response(
+    backend: &ExactBackend,
+    document_id: &str,
+    piece_key: &str,
+    fields: &[&str],
+) -> String {
+    if fields.len() < 8
+        || document_id.parse::<u64>().is_err()
+        || !is_canonical_digest(piece_key)
+        || !is_canonical_digest(fields[0])
+    {
+        return "ERR invalid_request".to_owned();
+    }
+    let Ok(document_id) = document_id.parse::<u64>() else {
+        return "ERR invalid_request".to_owned();
+    };
+    let request_digest = fields[0];
+    let parse_number = |value: &str| {
+        u64::from_str_radix(value, 16)
+            .map(f64::from_bits)
+            .map_err(|_| ())
+    };
+    let parse_bounds = |values: &[&str]| -> Result<BoxSpec, ()> {
+        let [min_x, min_y, min_z, max_x, max_y, max_z] = values else {
+            return Err(());
+        };
+        let min = [
+            parse_number(min_x)?,
+            parse_number(min_y)?,
+            parse_number(min_z)?,
+        ];
+        let max = [
+            parse_number(max_x)?,
+            parse_number(max_y)?,
+            parse_number(max_z)?,
+        ];
+        Ok(BoxSpec {
+            origin_mm: Point3 {
+                x: min[0],
+                y: min[1],
+                z: min[2],
+            },
+            size_mm: Size3 {
+                x: max[0] - min[0],
+                y: max[1] - min[1],
+                z: max[2] - min[2],
+            },
+        })
+    };
+    let Ok(stock) = parse_bounds(&fields[1..7]) else {
+        return "ERR invalid_parameter".to_owned();
+    };
+    let Ok(notch_count) = fields[7].parse::<usize>() else {
+        return "ERR invalid_request".to_owned();
+    };
+    let Some(expected_len) = notch_count
+        .checked_mul(9)
+        .and_then(|count| count.checked_add(8))
+    else {
+        return "ERR invalid_request".to_owned();
+    };
+    if notch_count == 0 || fields.len() != expected_len {
+        return "ERR invalid_request".to_owned();
+    }
+    let mut notches = Vec::with_capacity(notch_count);
+    let mut previous_feature_ordinal = 0_u32;
+    for index in 0..notch_count {
+        let offset = 8 + index * 9;
+        let Ok(joint_id) = fields[offset].parse::<u64>() else {
+            return "ERR invalid_request".to_owned();
+        };
+        let participant = match fields[offset + 1] {
+            "a" => HalfLapParticipant::A,
+            "b" => HalfLapParticipant::B,
+            _ => return "ERR invalid_request".to_owned(),
+        };
+        let Ok(feature_ordinal) = fields[offset + 2].parse::<u32>() else {
+            return "ERR invalid_request".to_owned();
+        };
+        if feature_ordinal <= previous_feature_ordinal
+            || notches
+                .iter()
+                .any(|notch: &HalfLapNotchSpec| notch.joint_id == joint_id)
+        {
+            return "ERR invalid_request".to_owned();
+        }
+        previous_feature_ordinal = feature_ordinal;
+        let Ok(removed) = parse_bounds(&fields[(offset + 3)..(offset + 9)]) else {
+            return "ERR invalid_parameter".to_owned();
+        };
+        notches.push(HalfLapNotchSpec {
+            joint_id,
+            participant,
+            removed,
+        });
+    }
+    let mut output = match backend.make_box(stock) {
+        Ok(output) => output,
+        Err(error) => return format!("ERR {}", error.code.as_str()),
+    };
+    for notch in &notches {
+        output = match backend.cut_box(&output.body, notch.removed, CutMode::BlindPlanar) {
+            Ok(output) => output,
+            Err(error) => return format!("ERR {}", error.code.as_str()),
+        };
+    }
+    let references =
+        match capture_half_lap_notch_references(&output, document_id, piece_key, &notches) {
+            Ok(references) => references,
+            Err(error) => return format!("ERR {}", error.code.as_str()),
+        };
+    let topology = &output.body.topology;
+    let mut response = format!(
+        "OK_M5_V1 {} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {} {} {} {} {} {} {} {} {} {}",
+        output.body.result_fingerprint,
+        topology.volume_mm3.to_bits(),
+        topology.bounds_mm.min.x.to_bits(),
+        topology.bounds_mm.min.y.to_bits(),
+        topology.bounds_mm.min.z.to_bits(),
+        topology.bounds_mm.max.x.to_bits(),
+        topology.bounds_mm.max.y.to_bits(),
+        topology.bounds_mm.max.z.to_bits(),
+        topology.vertex_count,
+        topology.edge_count,
+        topology.face_count,
+        topology.shell_count,
+        topology.solid_count,
+        request_digest,
+        output.input_digest,
+        output.backend_fingerprint,
+        output.tolerance_report.profile,
+        references.len()
+    );
+    for reference in references {
+        let role = match reference.role {
+            HalfLapFaceRole::Contact => "contact",
+            HalfLapFaceRole::WestWall => "wall.west",
+            HalfLapFaceRole::EastWall => "wall.east",
+        };
+        response.push_str(&format!(
+            " {} {} {} {} {} {}",
+            reference.joint_id,
+            reference.participant.token(),
+            role,
+            reference.face_ordinal,
+            reference.geometric_fingerprint,
+            reference.lineage_digest
+        ));
+    }
+    response
 }
 
 fn is_canonical_digest(value: &str) -> bool {

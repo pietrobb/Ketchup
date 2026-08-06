@@ -4,6 +4,7 @@ use eframe::egui::{self, Color32, Pos2, Rect, Sense, Stroke, Vec2};
 use ketchup_core::beam_m4ae::{
     BeamChangeSummary, BeamSlice, BeamValidationVerdict, BeamWorkspace, GroovePosition, GroupedBom,
 };
+use ketchup_core::beam_m5::{BeamExactPiecePackage, BeamM5Products};
 use ketchup_core::document::{
     CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentId, DocumentStore, FeatureId,
     FeatureKind, GroupId, InstancePath, OccurrenceId, Snapshot, Transform,
@@ -21,7 +22,7 @@ use ketchup_interaction::{
 use ketchup_scheduler::ExactWorkerSupervisor;
 pub mod dialogs;
 
-use dialogs::{DiscardRequest, FileDialogs, NativeFileDialogs, SaveRequest};
+use dialogs::{DiscardRequest, ExportRequest, FileDialogs, NativeFileDialogs, SaveRequest};
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -537,6 +538,14 @@ struct ExactEvaluationTask {
     receiver: Receiver<ExactEvaluationResult>,
 }
 
+type BeamM5EvaluationResult = Result<Vec<BeamExactPiecePackage>, String>;
+
+struct BeamM5EvaluationTask {
+    source: ExactSource,
+    cancelled: Arc<AtomicBool>,
+    receiver: Receiver<BeamM5EvaluationResult>,
+}
+
 pub struct KetchupApp {
     document: DocumentStore,
     review_candidate: Option<ketchup_core::persistence::LoadOutcome>,
@@ -583,6 +592,10 @@ pub struct KetchupApp {
     exact_retry_at: Option<Instant>,
     beam_workspace: Option<BeamWorkspace>,
     beam_zone1_gap_input: String,
+    beam_m5_task: Option<BeamM5EvaluationTask>,
+    beam_m5_products: Option<Arc<BeamM5Products>>,
+    beam_m5_source: Option<ExactSource>,
+    beam_m5_retry_at: Option<Instant>,
 }
 
 impl Default for KetchupApp {
@@ -668,6 +681,10 @@ impl KetchupApp {
             exact_retry_at: None,
             beam_workspace: None,
             beam_zone1_gap_input: "415".to_owned(),
+            beam_m5_task: None,
+            beam_m5_products: None,
+            beam_m5_source: None,
+            beam_m5_retry_at: None,
         }
     }
 
@@ -918,8 +935,14 @@ impl KetchupApp {
     pub fn load_beam_m4ae(&mut self) -> bool {
         match BeamWorkspace::load() {
             Ok(workspace) => {
+                if let Some(task) = self.beam_m5_task.take() {
+                    task.cancelled.store(true, Ordering::Release);
+                }
                 self.beam_workspace = Some(workspace);
                 self.beam_zone1_gap_input = "415".to_owned();
+                self.beam_m5_products = None;
+                self.beam_m5_source = None;
+                self.beam_m5_retry_at = None;
                 true
             }
             Err(error) => {
@@ -935,7 +958,13 @@ impl KetchupApp {
         };
         match workspace.set_zone1_gap_mm(value) {
             Ok(_) => {
+                if let Some(task) = self.beam_m5_task.take() {
+                    task.cancelled.store(true, Ordering::Release);
+                }
                 self.beam_zone1_gap_input = format_height(value);
+                self.beam_m5_products = None;
+                self.beam_m5_source = None;
+                self.beam_m5_retry_at = None;
                 true
             }
             Err(error) => {
@@ -986,6 +1015,177 @@ impl KetchupApp {
         self.beam_workspace
             .as_ref()
             .and_then(BeamWorkspace::last_change)
+    }
+
+    #[must_use]
+    pub fn beam_m5_products(&self) -> Option<&BeamM5Products> {
+        self.beam_m5_products.as_deref()
+    }
+
+    #[must_use]
+    pub fn beam_m5_stable_reference_count(&self) -> usize {
+        self.beam_m5_products()
+            .map_or(0, BeamM5Products::stable_reference_count)
+    }
+
+    pub fn export_beam_drawing_to(&mut self, path: &Path) -> bool {
+        let result = self
+            .beam_m5_products()
+            .ok_or_else(|| "M5 exact products are not current".to_owned())
+            .and_then(|products| products.drawing_svg().map_err(|error| error.to_string()))
+            .and_then(|bytes| std::fs::write(path, bytes).map_err(|error| error.to_string()));
+        match result {
+            Ok(()) => {
+                self.digest = format!("Exported Beam A piece drawing to {}", path.display());
+                true
+            }
+            Err(error) => {
+                self.digest = format!("Beam A drawing export blocked: {error}");
+                false
+            }
+        }
+    }
+
+    pub fn export_beam_manufacturing_to(&mut self, path: &Path) -> bool {
+        let result = self
+            .beam_m5_products()
+            .ok_or_else(|| "M5 exact products are not current".to_owned())
+            .and_then(|products| {
+                products
+                    .manufacturing_export()
+                    .map_err(|error| error.to_string())
+            })
+            .and_then(|bytes| std::fs::write(path, bytes).map_err(|error| error.to_string()));
+        match result {
+            Ok(()) => {
+                self.digest = format!(
+                    "Exported Beam A manufacturing operations to {}",
+                    path.display()
+                );
+                true
+            }
+            Err(error) => {
+                self.digest = format!("Beam A manufacturing export blocked: {error}");
+                false
+            }
+        }
+    }
+
+    fn refresh_beam_m5_products(&mut self, context: &egui::Context) {
+        let Some(workspace) = self.beam_workspace.as_ref() else {
+            return;
+        };
+        let snapshot = workspace.snapshot();
+        let source = (
+            snapshot.document_id(),
+            snapshot.revision_id(),
+            snapshot.canonical_digest(),
+        );
+        if self
+            .beam_m5_source
+            .as_ref()
+            .is_some_and(|known| known != &source)
+        {
+            self.beam_m5_products = None;
+            self.beam_m5_source = None;
+        }
+        if self
+            .beam_m5_task
+            .as_ref()
+            .is_some_and(|task| task.source != source)
+            && let Some(task) = self.beam_m5_task.take()
+        {
+            task.cancelled.store(true, Ordering::Release);
+        }
+        if let Some(task) = self.beam_m5_task.as_ref() {
+            match task.receiver.try_recv() {
+                Ok(result) => {
+                    let task = self
+                        .beam_m5_task
+                        .take()
+                        .expect("the completed M5 task exists");
+                    if task.source == source && !task.cancelled.load(Ordering::Acquire) {
+                        match result.and_then(|packages| {
+                            self.beam_workspace
+                                .as_ref()
+                                .expect("the source beam workspace exists")
+                                .accept_m5_packages(packages)
+                                .map_err(|error| error.to_string())
+                        }) {
+                            Ok(products) => {
+                                self.beam_m5_products = Some(Arc::new(products));
+                                self.beam_m5_source = Some(source.clone());
+                                self.beam_m5_retry_at = None;
+                            }
+                            Err(error) => {
+                                self.digest = format!("M5 exact evaluation failed: {error}");
+                                self.beam_m5_retry_at =
+                                    Some(Instant::now() + Duration::from_secs(1));
+                                context.request_repaint_after(Duration::from_secs(1));
+                            }
+                        }
+                    }
+                }
+                Err(TryRecvError::Empty) => return,
+                Err(TryRecvError::Disconnected) => {
+                    self.beam_m5_task = None;
+                    self.digest = "M5 exact evaluation worker disconnected".to_owned();
+                    self.beam_m5_retry_at = Some(Instant::now() + Duration::from_secs(1));
+                    context.request_repaint_after(Duration::from_secs(1));
+                }
+            }
+        }
+        if self.beam_m5_source.as_ref() == Some(&source)
+            || self
+                .beam_m5_retry_at
+                .is_some_and(|retry_at| retry_at > Instant::now())
+        {
+            return;
+        }
+        if !self.exact_worker_attempted {
+            self.exact_worker_attempted = true;
+            self.exact_worker_path = exact_worker_candidates()
+                .into_iter()
+                .find(|path| path.is_file());
+        }
+        let Some(executable) = self.exact_worker_path.clone() else {
+            return;
+        };
+        let Ok(requests) = self
+            .beam_workspace
+            .as_ref()
+            .expect("the source beam workspace exists")
+            .m5_requests()
+        else {
+            return;
+        };
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let worker_cancelled = Arc::clone(&cancelled);
+        let repaint = context.clone();
+        let (sender, receiver) = mpsc::channel();
+        std::thread::spawn(move || {
+            let result = (|| {
+                let mut worker =
+                    ExactWorkerSupervisor::spawn_with_cancellation(executable, &worker_cancelled)
+                        .map_err(|error| error.to_string())?;
+                requests
+                    .iter()
+                    .map(|request| {
+                        worker
+                            .evaluate_beam_piece_with_cancellation(request, &worker_cancelled)
+                            .map_err(|error| error.to_string())
+                    })
+                    .collect::<Result<Vec<_>, _>>()
+            })();
+            if !worker_cancelled.load(Ordering::Acquire) && sender.send(result).is_ok() {
+                repaint.request_repaint();
+            }
+        });
+        self.beam_m5_task = Some(BeamM5EvaluationTask {
+            source,
+            cancelled,
+            receiver,
+        });
     }
 
     #[must_use]
@@ -1191,11 +1391,17 @@ impl KetchupApp {
         if let Some(task) = self.exact_task.take() {
             task.cancelled.store(true, Ordering::Release);
         }
+        if let Some(task) = self.beam_m5_task.take() {
+            task.cancelled.store(true, Ordering::Release);
+        }
         self.exact_worker_path = Some(executable.to_owned());
         self.exact_worker_attempted = true;
         self.exact_packages.clear();
         self.exact_source = None;
         self.exact_retry_at = None;
+        self.beam_m5_products = None;
+        self.beam_m5_source = None;
+        self.beam_m5_retry_at = None;
         Ok(())
     }
 
@@ -4170,7 +4376,7 @@ impl KetchupApp {
     }
 
     fn show_beam_m4ae(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Beam A / M4a completion");
+        ui.heading("Beam A / M5 exact fabrication");
         if ui.button("Load / reset Beam A").clicked() {
             self.load_beam_m4ae();
         }
@@ -4234,6 +4440,91 @@ impl KetchupApp {
                     ));
                 }
             }
+            let m5_ready = self.beam_m5_products.is_some();
+            if let Some(products) = self.beam_m5_products.as_deref() {
+                ui.strong("Worker-backed exact piece drawing");
+                ui.small(format!(
+                    "{} B-Rep pieces · {} durable notch-face references · {} manufacturing operations",
+                    products.packages.len(),
+                    products.stable_reference_count(),
+                    products.manufacturing.operations.len()
+                ));
+                if let Some(outline) = products.drawing.outlines.first() {
+                    let desired = Vec2::new(ui.available_width().max(120.0), 96.0);
+                    let (rect, _) = ui.allocate_exact_size(desired, Sense::hover());
+                    let min_x = outline
+                        .points_mm
+                        .iter()
+                        .map(|point| point[0])
+                        .reduce(f64::min)
+                        .unwrap_or(0.0);
+                    let max_x = outline
+                        .points_mm
+                        .iter()
+                        .map(|point| point[0])
+                        .reduce(f64::max)
+                        .unwrap_or(1.0);
+                    let min_y = outline
+                        .points_mm
+                        .iter()
+                        .map(|point| point[1])
+                        .reduce(f64::min)
+                        .unwrap_or(0.0);
+                    let max_y = outline
+                        .points_mm
+                        .iter()
+                        .map(|point| point[1])
+                        .reduce(f64::max)
+                        .unwrap_or(1.0);
+                    let scale_x = f64::from(rect.width()) / (max_x - min_x).max(1.0);
+                    let scale_y = f64::from(rect.height()) / (max_y - min_y).max(1.0);
+                    let points = outline
+                        .points_mm
+                        .iter()
+                        .map(|point| {
+                            Pos2::new(
+                                rect.left() + ((point[0] - min_x) * scale_x) as f32,
+                                rect.bottom() - ((point[1] - min_y) * scale_y) as f32,
+                            )
+                        })
+                        .collect::<Vec<_>>();
+                    ui.painter().add(egui::Shape::closed_line(
+                        points,
+                        Stroke::new(1.5_f32, Color32::from_rgb(240, 190, 92)),
+                    ));
+                }
+            } else {
+                ui.label("Exact notch worker: evaluating / unavailable");
+            }
+            ui.horizontal(|ui| {
+                let drawing = ui
+                    .add_enabled(m5_ready, egui::Button::new("Export piece drawing (SVG)"))
+                    .clicked();
+                let manufacturing = ui
+                    .add_enabled(
+                        m5_ready,
+                        egui::Button::new("Export manufacturing operations"),
+                    )
+                    .clicked();
+                if drawing
+                    && let Some(path) = self.dialogs.pick_export_path(ExportRequest {
+                        filter_label: "SVG piece drawing",
+                        extension: "svg",
+                        suggested_name: "beam-a-piece-drawing.svg",
+                    })
+                {
+                    self.export_beam_drawing_to(&path);
+                }
+                if manufacturing
+                    && let Some(path) = self.dialogs.pick_export_path(ExportRequest {
+                        filter_label: "Ketchup manufacturing operations",
+                        extension: "kfm",
+                        suggested_name: "beam-a-manufacturing.kfm",
+                    })
+                {
+                    self.export_beam_manufacturing_to(&path);
+                }
+            });
         }
         ui.separator();
     }
@@ -4467,6 +4758,7 @@ impl KetchupApp {
     /// integration and by the offscreen [`crate::testing::HeadlessShell`].
     pub fn ui(&mut self, context: &egui::Context) {
         self.refresh_exact_products(context);
+        self.refresh_beam_m5_products(context);
         context.set_visuals(egui::Visuals::dark());
         self.handle_shortcuts(context);
 
