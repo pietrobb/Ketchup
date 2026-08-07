@@ -3,7 +3,7 @@ use ketchup_core::document::{
     InstancePath, NodeId, OccurrenceId, Transform,
 };
 use ketchup_core::exact_product::{
-    ExactFaceRole, ExactRectangleRequest, build_box_render_package,
+    ExactFaceRole, ExactFeatureChainRequest, build_box_render_package,
     canonical_reference_lineage_digest,
 };
 use ketchup_core::exact_validation::*;
@@ -335,8 +335,8 @@ fn package(
     snapshot: &ketchup_core::document::Snapshot,
     definition_id: DefinitionId,
 ) -> ketchup_core::exact_product::ExactRenderPackage {
-    let request = ExactRectangleRequest::from_snapshot(snapshot, definition_id).unwrap();
-    let roles = if request.through_cut.is_some() {
+    let request = ExactFeatureChainRequest::from_snapshot(snapshot, definition_id).unwrap();
+    let roles = if request.boolean.is_some() {
         vec![
             ExactFaceRole::Top,
             ExactFaceRole::Bottom,
@@ -366,7 +366,7 @@ fn package(
             format!("geometry:{role:?}"),
         )
     });
-    if request.through_cut.is_some() {
+    if request.boolean.is_some() {
         build_box_render_package::<7>(
             &request,
             "exact-input-cut".to_owned(),

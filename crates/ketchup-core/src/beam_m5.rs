@@ -6,6 +6,7 @@ use crate::prismatic::{Aabb, JointId};
 use crate::validation::ValidationState;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use std::sync::Arc;
 
 pub const BEAM_EXACT_PRODUCT_V1: &str = "ketchup.beam-exact-product.v1";
 pub const BEAM_NOTCH_EVALUATOR_V1: &str = "ketchup.beam-notch-evaluator.v1";
@@ -150,6 +151,22 @@ pub struct BeamBodyResultIdentity {
     pub tolerance: String,
 }
 
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct BeamExactResultKey {
+    pub document_id: DocumentId,
+    pub source_revision: u64,
+    pub source_digest: String,
+    pub piece: DerivedIdentity,
+    pub piece_key: String,
+    pub canonical_input_digest: String,
+    pub exact_input_digest: String,
+    pub result_fingerprint: String,
+    pub evaluator: String,
+    pub backend: String,
+    pub tolerance: String,
+    pub schema: String,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BeamNotchFaceRef {
     pub schema: &'static str,
@@ -209,6 +226,79 @@ pub struct BeamExactPiecePackage {
 }
 
 impl BeamExactPiecePackage {
+    #[must_use]
+    pub fn result_key(&self) -> BeamExactResultKey {
+        BeamExactResultKey {
+            document_id: self.identity.document_id,
+            source_revision: self.identity.source_revision,
+            source_digest: self.identity.source_digest.clone(),
+            piece: self.identity.piece.clone(),
+            piece_key: self.identity.piece_key.clone(),
+            canonical_input_digest: self.identity.canonical_input_digest.clone(),
+            exact_input_digest: self.identity.exact_input_digest.clone(),
+            result_fingerprint: self.identity.result_fingerprint.clone(),
+            evaluator: self.identity.evaluator.to_owned(),
+            backend: self.identity.backend.clone(),
+            tolerance: self.identity.tolerance.clone(),
+            schema: self.identity.schema.to_owned(),
+        }
+    }
+
+    #[must_use]
+    pub fn has_valid_registry_evidence(&self) -> bool {
+        let roles = self
+            .references
+            .iter()
+            .map(|reference| (reference.joint_id, reference.participant, reference.role))
+            .collect::<BTreeSet<_>>();
+        let min = self.bounds_mm.min();
+        let max = self.bounds_mm.max();
+        self.identity.schema == BEAM_EXACT_PRODUCT_V1
+            && self.identity.evaluator == BEAM_NOTCH_EVALUATOR_V1
+            && self.identity.piece_key == piece_key(&self.identity.piece)
+            && !self.identity.canonical_input_digest.is_empty()
+            && !self.identity.exact_input_digest.is_empty()
+            && !self.identity.result_fingerprint.is_empty()
+            && !self.identity.backend.is_empty()
+            && !self.identity.tolerance.is_empty()
+            && !self.references.is_empty()
+            && roles.len() == self.references.len()
+            && self.references.iter().all(|reference| {
+                reference.has_valid_lineage()
+                    && reference.document_id == self.identity.document_id
+                    && reference.piece == self.identity.piece
+                    && reference.piece_key == self.identity.piece_key
+                    && reference.canonical_input_digest == self.identity.canonical_input_digest
+                    && reference.exact_input_digest == self.identity.exact_input_digest
+                    && reference.result_fingerprint == self.identity.result_fingerprint
+                    && reference.evaluator == self.identity.evaluator
+                    && reference.backend == self.identity.backend
+                    && reference.tolerance == self.identity.tolerance
+                    && !reference.corroborating_geometry_fingerprint.is_empty()
+            })
+            && !self.vertices.is_empty()
+            && self.vertices.iter().all(|vertex| {
+                vertex.position_mm.iter().enumerate().all(|(axis, value)| {
+                    value.is_finite() && *value >= min[axis] && *value <= max[axis]
+                })
+            })
+            && !self.triangles.is_empty()
+            && self.triangles.iter().all(|triangle| {
+                triangle
+                    .vertex_indices
+                    .iter()
+                    .all(|index| (*index as usize) < self.vertices.len())
+            })
+    }
+
+    #[must_use]
+    pub fn is_current(&self, snapshot: &Snapshot) -> bool {
+        self.identity.document_id == snapshot.document_id()
+            && self.identity.source_revision == snapshot.revision_id()
+            && self.identity.source_digest == snapshot.canonical_digest()
+            && self.has_valid_registry_evidence()
+    }
+
     pub fn validate_for_request(&self, request: &BeamExactPieceRequest) -> Result<(), BeamM5Error> {
         let expected_roles = request
             .expected_face_roles()
@@ -300,7 +390,7 @@ pub struct ManufacturingOperationProjection {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct BeamM5Products {
-    pub packages: BTreeMap<DerivedIdentity, BeamExactPiecePackage>,
+    pub packages: BTreeMap<DerivedIdentity, Arc<BeamExactPiecePackage>>,
     pub drawing: PieceDrawingProjection,
     pub manufacturing: ManufacturingOperationProjection,
 }
@@ -618,7 +708,7 @@ pub fn accept_products(
     let requests = requests_for_slice(snapshot, slice)?;
     let packages = packages
         .into_iter()
-        .map(|package| (package.identity.piece.clone(), package))
+        .map(|package| (package.identity.piece.clone(), Arc::new(package)))
         .collect::<BTreeMap<_, _>>();
     if packages.len() != requests.len() {
         return Err(BeamM5Error::InvalidWorkerEvidence);

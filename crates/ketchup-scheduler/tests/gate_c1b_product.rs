@@ -1,10 +1,11 @@
 use ketchup_core::bottle_m6::ExactRevolveRequest;
 use ketchup_core::document::{
-    BottleControlDimension, BottleEdgeFinishKind, CanonicalCommand, CommandBatch, DefinitionId,
-    Dimension, DocumentStore, FeatureId, FeatureKind, OccurrenceId, Transform,
+    BooleanOperation, BottleControlDimension, BottleEdgeFinishKind, CanonicalCommand, CommandBatch,
+    DefinitionId, Dimension, DocumentStore, FeatureId, FeatureKind, OccurrenceId, Transform,
 };
 use ketchup_core::exact_product::{
-    EXACT_THROUGH_CUT_EVALUATOR_V1, ExactFaceRole, ExactRectangleRequest,
+    EXACT_BOOLEAN_UNION_EVALUATOR_V1, EXACT_THROUGH_CUT_EVALUATOR_V1, ExactBodyPackage,
+    ExactFaceRole, ExactFeatureChainRequest, ExactResultRegistry,
 };
 use ketchup_exact::{
     ExactBackend, RectangleExtrudeSpec, ReferenceResolution, StabilityClass,
@@ -20,7 +21,8 @@ const PROFILE: FeatureId = FeatureId(11);
 const EXTRUSION: FeatureId = FeatureId(12);
 const DEFINITION: DefinitionId = DefinitionId(10);
 const CUT_PROFILE: FeatureId = FeatureId(14);
-const THROUGH_CUT: FeatureId = FeatureId(15);
+const TOOL_EXTRUSION: FeatureId = FeatureId(15);
+const THROUGH_CUT: FeatureId = FeatureId(16);
 const BOTTLE_DEFINITION: DefinitionId = DefinitionId(30);
 const BOTTLE_PROFILE: FeatureId = FeatureId(31);
 const BOTTLE_REVOLVE: FeatureId = FeatureId(32);
@@ -49,7 +51,7 @@ fn preregistered_c1b_product_corpus_has_zero_wrong_identities_and_survives_save_
         let height = fields[3].parse::<f64>().unwrap();
         let mut document = rectangle_document(width, depth, height);
         let snapshot = document.current();
-        let request = ExactRectangleRequest::from_snapshot(&snapshot, DEFINITION).unwrap();
+        let request = ExactFeatureChainRequest::from_snapshot(&snapshot, DEFINITION).unwrap();
         let package = supervisor.evaluate_rectangle(&request).unwrap();
         assert!(package.is_current(&snapshot));
         assert_eq!(package.vertices.len(), 8);
@@ -68,8 +70,9 @@ fn preregistered_c1b_product_corpus_has_zero_wrong_identities_and_survives_save_
             &EXTRUSION.0.to_string(),
         )
         .unwrap();
-        let packages = BTreeMap::from([(DEFINITION, Arc::new(package.clone().into()))]);
-        let projection = ExactInteractionProjection::from_snapshot(&snapshot, &packages);
+        let results =
+            ExactResultRegistry::accept(&snapshot, [Arc::new(package.clone().into())]).unwrap();
+        let projection = ExactInteractionProjection::from_snapshot(&snapshot, &results);
         assert_eq!(projection.occurrence_count(), 1);
 
         for role in [
@@ -174,13 +177,22 @@ fn preregistered_c1b_product_corpus_has_zero_wrong_identities_and_survives_save_
 }
 
 #[test]
-fn scheduler_evaluates_bounded_through_cut_with_seven_role_evidences() {
+fn scheduler_evaluates_canonical_boolean_cut_with_seven_role_evidences() {
     let mut supervisor = ExactWorkerSupervisor::spawn(worker_path()).unwrap();
-    let mut document = through_cut_document(100.0, 60.0, 18.0, [30.0, 20.0, 20.0, 15.0]);
+    let mut document = boolean_document(
+        100.0,
+        60.0,
+        18.0,
+        [30.0, 20.0, 20.0, 15.0],
+        BooleanOperation::Cut,
+    );
     let snapshot = document.current();
-    let request = ExactRectangleRequest::from_snapshot(&snapshot, DEFINITION).unwrap();
-    let cut = request.through_cut.as_ref().unwrap();
+    let request = ExactFeatureChainRequest::from_snapshot(&snapshot, DEFINITION).unwrap();
+    let cut = request.boolean.as_ref().unwrap();
     assert_eq!(cut.feature_id, THROUGH_CUT);
+    assert_eq!(cut.operation, BooleanOperation::Cut);
+    assert_eq!(cut.target_feature_id, EXTRUSION);
+    assert_eq!(cut.tool_feature_id, TOOL_EXTRUSION);
     assert_eq!(cut.profile_feature_id, CUT_PROFILE);
     assert_eq!(request.producer_feature_id(), THROUGH_CUT);
     assert_eq!(request.evaluator(), EXACT_THROUGH_CUT_EVALUATOR_V1);
@@ -223,9 +235,23 @@ fn scheduler_evaluates_bounded_through_cut_with_seven_role_evidences() {
     assert!(edge_use.values().all(|count| *count == 2));
     assert!((signed_volume_mm3 - 102_600.0).abs() < 1.0e-6);
     assert_eq!(package.references.len(), 7);
+    let export = ExactBodyPackage::from(package.clone()).mesh_export(
+        Transform::from_matrix([
+            0.0, -1.0, 0.0, 10.0, 1.0, 0.0, 0.0, 20.0, 0.0, 0.0, 1.0, 30.0, 0.0, 0.0, 0.0, 1.0,
+        ])
+        .unwrap(),
+    );
+    assert!(
+        export
+            .mesh_obj
+            .contains("v 10.00000000000000000 20.00000000000000000 30.00000000000000000")
+    );
+    assert!(export.mesh_obj.contains("g through_cut.wall.west"));
+    assert!(export.loss_report.contains("producer_feature_id=16"));
 
-    let packages = BTreeMap::from([(DEFINITION, Arc::new(package.clone().into()))]);
-    let projection = ExactInteractionProjection::from_snapshot(&snapshot, &packages);
+    let results =
+        ExactResultRegistry::accept(&snapshot, [Arc::new(package.clone().into())]).unwrap();
+    let projection = ExactInteractionProjection::from_snapshot(&snapshot, &results);
     let hole_ray = Ray::new(Vec3::new(40.0, 27.5, 30.0), Vec3::new(0.0, 0.0, -1.0)).unwrap();
     assert!(projection.exact_pick(hole_ray).is_none());
     let cut_wall_ray = Ray::new(Vec3::new(40.0, 27.5, 9.0), Vec3::new(-1.0, 0.0, 0.0)).unwrap();
@@ -287,11 +313,11 @@ fn scheduler_evaluates_bounded_through_cut_with_seven_role_evidences() {
     let loaded =
         ketchup_core::persistence::load(&ketchup_core::persistence::save(&document.current()))
             .unwrap();
-    assert_eq!(loaded.source_schema(), 8);
+    assert_eq!(loaded.source_schema(), 9);
     let reopened = match loaded {
         ketchup_core::persistence::LoadOutcome::Editable { document, .. } => document,
         ketchup_core::persistence::LoadOutcome::ReviewOnly(_) => {
-            panic!("schema-5 through-cut evidence must reopen editable")
+            panic!("schema-9 Boolean evidence must reopen editable")
         }
     };
     assert_eq!(
@@ -299,6 +325,42 @@ fn scheduler_evaluates_bounded_through_cut_with_seven_role_evidences() {
         snapshot.canonical_digest()
     );
     assert_eq!(reopened.current().exact_reference_evidence().count(), 7);
+}
+
+#[test]
+fn scheduler_evaluates_contained_boolean_union_as_the_target_body() {
+    let mut supervisor = ExactWorkerSupervisor::spawn(worker_path()).unwrap();
+    let document = boolean_document(
+        100.0,
+        60.0,
+        18.0,
+        [30.0, 20.0, 20.0, 15.0],
+        BooleanOperation::Union,
+    );
+    let snapshot = document.current();
+    let request = ExactFeatureChainRequest::from_snapshot(&snapshot, DEFINITION).unwrap();
+    let boolean = request.boolean.as_ref().unwrap();
+    assert_eq!(boolean.operation, BooleanOperation::Union);
+    assert_eq!(request.producer_feature_id(), THROUGH_CUT);
+    assert_eq!(request.evaluator(), EXACT_BOOLEAN_UNION_EVALUATOR_V1);
+
+    let package = supervisor.evaluate_rectangle(&request).unwrap();
+    assert!(package.is_current(&snapshot));
+    assert_eq!(package.identity.producer_feature_id, THROUGH_CUT);
+    assert_eq!(package.identity.evaluator, EXACT_BOOLEAN_UNION_EVALUATOR_V1);
+    assert_eq!(package.vertices.len(), 8);
+    assert_eq!(package.triangles.len(), 12);
+    assert_eq!(package.references.len(), 3);
+
+    let results = ExactResultRegistry::accept(&snapshot, [Arc::new(package.into())]).unwrap();
+    let projection = ExactInteractionProjection::from_snapshot(&snapshot, &results);
+    let tool_region_ray = Ray::new(Vec3::new(40.0, 27.5, 30.0), Vec3::new(0.0, 0.0, -1.0)).unwrap();
+    assert_eq!(
+        projection
+            .exact_pick(tool_region_ray)
+            .and_then(|hit| hit.target.body.role()),
+        Some(ExactFaceRole::Top)
+    );
 }
 
 #[test]
@@ -326,8 +388,8 @@ fn scheduler_evaluates_bottle_revolve_with_deterministic_mesh_and_five_durable_r
     assert_eq!(first.vertices.len(), 130);
     assert_eq!(first.triangles.len(), 256);
 
-    let packages = BTreeMap::from([(BOTTLE_DEFINITION, Arc::new(first.clone().into()))]);
-    let projection = ExactInteractionProjection::from_snapshot(&snapshot, &packages);
+    let results = ExactResultRegistry::accept(&snapshot, [Arc::new(first.clone().into())]).unwrap();
+    let projection = ExactInteractionProjection::from_snapshot(&snapshot, &results);
     assert_eq!(projection.occurrence_count(), 1);
     for (role, origin, direction) in [
         (
@@ -466,7 +528,7 @@ fn scheduler_evaluates_editable_bottle_shell_with_open_mouth_and_current_referen
     let reopened =
         ketchup_core::persistence::load(&ketchup_core::persistence::save(&document.current()))
             .unwrap();
-    assert_eq!(reopened.source_schema(), 8);
+    assert_eq!(reopened.source_schema(), 9);
     assert_eq!(reopened.snapshot().exact_reference_evidence().count(), 9);
 }
 
@@ -567,7 +629,7 @@ fn scheduler_evaluates_controlled_bottle_fillet_and_chamfer_with_current_roles()
     let reopened =
         ketchup_core::persistence::load(&ketchup_core::persistence::save(&document.current()))
             .unwrap();
-    assert_eq!(reopened.source_schema(), 8);
+    assert_eq!(reopened.source_schema(), 9);
     assert_eq!(reopened.snapshot().exact_reference_evidence().count(), 9);
 }
 
@@ -750,7 +812,13 @@ fn rectangle_document(width: f64, depth: f64, height: f64) -> DocumentStore {
     document
 }
 
-fn through_cut_document(width: f64, depth: f64, height: f64, cut: [f64; 4]) -> DocumentStore {
+fn boolean_document(
+    width: f64,
+    depth: f64,
+    height: f64,
+    cut: [f64; 4],
+    operation: BooleanOperation,
+) -> DocumentStore {
     let mut document = rectangle_document(width, depth, height);
     let [x, y, cut_width, cut_depth] = cut;
     document
@@ -769,12 +837,22 @@ fn through_cut_document(width: f64, depth: f64, height: f64, cut: [f64; 4]) -> D
                 },
             },
             CanonicalCommand::CreateFeature {
+                id: TOOL_EXTRUSION,
+                definition_id: DEFINITION,
+                name: "Boolean tool extrusion".to_owned(),
+                kind: FeatureKind::Extrusion {
+                    profile: CUT_PROFILE,
+                    height: Dimension::new(height.to_string(), height).unwrap(),
+                },
+            },
+            CanonicalCommand::CreateFeature {
                 id: THROUGH_CUT,
                 definition_id: DEFINITION,
-                name: "Bounded through-cut".to_owned(),
-                kind: FeatureKind::ThroughCut {
+                name: "Bounded Boolean cut".to_owned(),
+                kind: FeatureKind::Boolean {
+                    operation,
                     target: EXTRUSION,
-                    profile: CUT_PROFILE,
+                    tool: TOOL_EXTRUSION,
                 },
             },
         ]))

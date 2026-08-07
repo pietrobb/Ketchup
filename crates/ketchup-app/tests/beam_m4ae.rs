@@ -128,8 +128,10 @@ fn running_app_accepts_worker_notches_and_exports_current_piece_outputs() {
         .beam_m5_products()
         .expect("the running app must accept current M5 worker products");
     assert_eq!(products.packages.len(), 13);
+    assert_eq!(shell.app().beam_exact_body_count(), 13);
     assert_eq!(products.stable_reference_count(), 48);
     assert_eq!(products.manufacturing.operations.len(), 24);
+    let first_piece = products.packages.keys().next().unwrap().clone();
     let lineages = products
         .packages
         .values()
@@ -140,11 +142,17 @@ fn running_app_accepts_worker_notches_and_exports_current_piece_outputs() {
     let directory = tempfile::tempdir().unwrap();
     let drawing_path = directory.path().join("beam-a.svg");
     let manufacturing_path = directory.path().join("beam-a.kfm");
+    let mesh_path = directory.path().join("beam-piece.obj");
     assert!(shell.app_mut().export_beam_drawing_to(&drawing_path));
     assert!(
         shell
             .app_mut()
             .export_beam_manufacturing_to(&manufacturing_path)
+    );
+    assert!(
+        shell
+            .app_mut()
+            .export_beam_piece_mesh_to(&first_piece, &mesh_path)
     );
     let drawing = std::fs::read_to_string(drawing_path).unwrap();
     let manufacturing = std::fs::read_to_string(&manufacturing_path).unwrap();
@@ -152,13 +160,23 @@ fn running_app_accepts_worker_notches_and_exports_current_piece_outputs() {
     assert!(drawing.contains("beam-a/longitudinal-outline"));
     assert!(manufacturing.starts_with("ketchup.beam-manufacturing-export.v1\n"));
     assert_eq!(manufacturing.matches("operation=").count(), 24);
+    let mesh = std::fs::read_to_string(&mesh_path).unwrap();
+    let loss = std::fs::read_to_string(mesh_path.with_extension("obj.loss.txt")).unwrap();
+    assert!(mesh.starts_with("# Ketchup exact body OBJ\n"));
+    assert!(loss.contains("producer_piece_key="));
 
     assert!(shell.app_mut().set_beam_zone1_gap_mm(420.0));
     assert!(shell.app().beam_m5_products().is_none());
+    assert_eq!(shell.app().beam_exact_body_count(), 0);
     assert!(
         !shell
             .app_mut()
             .export_beam_manufacturing_to(&manufacturing_path)
+    );
+    assert!(
+        !shell
+            .app_mut()
+            .export_beam_piece_mesh_to(&first_piece, &mesh_path)
     );
     for _ in 0..100 {
         shell.settle();
@@ -171,6 +189,7 @@ fn running_app_accepts_worker_notches_and_exports_current_piece_outputs() {
         .app()
         .beam_m5_products()
         .expect("the app must accept recomputed M5 products");
+    assert_eq!(shell.app().beam_exact_body_count(), 13);
     assert_eq!(changed.stable_reference_count(), 48);
     assert_eq!(
         changed

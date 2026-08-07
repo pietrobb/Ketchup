@@ -6,10 +6,10 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crate::document::{
-    BottleEdgeFinishKind, CanonicalError, Definition, DefinitionId, Dimension, DocumentStore,
-    EvaluatorNode, Feature, FeatureId, FeatureKind, Group, GroupId, LocalGroup, LocalGroupId,
-    LocalGroupKey, LocalOccurrence, LocalOccurrenceId, LocalOccurrenceKey, NodeId, Occurrence,
-    OccurrenceId, ProductModel, Snapshot, TagId, Transform, UnitSystem,
+    BooleanOperation, BottleEdgeFinishKind, CanonicalError, Definition, DefinitionId, Dimension,
+    DocumentStore, EvaluatorNode, Feature, FeatureId, FeatureKind, Group, GroupId, LocalGroup,
+    LocalGroupId, LocalGroupKey, LocalOccurrence, LocalOccurrenceId, LocalOccurrenceKey, NodeId,
+    Occurrence, OccurrenceId, ProductModel, Snapshot, TagId, Transform, UnitSystem,
 };
 use crate::exact_product::{BODY_SUBSHAPE_REF_SCHEMA_V1, BodySubshapeRef, ReferenceStability};
 use crate::graph::{
@@ -19,7 +19,9 @@ use crate::graph::{
 use crate::prismatic::{Aabb, CanonicalJoint, JointId};
 
 const MAGIC: &[u8; 10] = b"KETCHUPDOC";
-const CURRENT_SCHEMA: u16 = 8;
+const CURRENT_SCHEMA: u16 = 9;
+const BOOLEAN_SCHEMA: u16 = 9;
+const BOTTLE_FINISH_SCHEMA: u16 = 8;
 const SHELL_SCHEMA: u16 = 7;
 const REVOLVE_SCHEMA: u16 = 6;
 const THROUGH_CUT_SCHEMA: u16 = 5;
@@ -28,6 +30,41 @@ const ENVELOPE_SCHEMA: u16 = 3;
 const PRODUCT_SCHEMA: u16 = 2;
 const RESEARCH_SCHEMA: u16 = 1;
 const LEGACY_SCHEMA: u16 = 0;
+
+#[derive(Clone, Copy)]
+struct ProductSchemaCapabilities {
+    current: bool,
+    exact_evidence: bool,
+    through_cut: bool,
+    revolve: bool,
+    shell: bool,
+    bottle_finish: bool,
+    boolean: bool,
+}
+
+impl ProductSchemaCapabilities {
+    const PRODUCT_V2: Self = Self {
+        current: false,
+        exact_evidence: false,
+        through_cut: false,
+        revolve: false,
+        shell: false,
+        bottle_finish: false,
+        boolean: false,
+    };
+
+    const fn current(schema: u16) -> Self {
+        Self {
+            current: schema >= THROUGH_CUT_SCHEMA,
+            exact_evidence: schema >= EXACT_EVIDENCE_SCHEMA,
+            through_cut: schema >= THROUGH_CUT_SCHEMA,
+            revolve: schema >= REVOLVE_SCHEMA,
+            shell: schema >= SHELL_SCHEMA,
+            bottle_finish: schema >= BOTTLE_FINISH_SCHEMA,
+            boolean: schema >= BOOLEAN_SCHEMA,
+        }
+    }
+}
 const MAX_FILE_BYTES: usize = 32 * 1024 * 1024;
 const HEADER_BYTES: usize = 16;
 const MANIFEST_BYTES: usize = 8
@@ -403,6 +440,22 @@ fn write_features(bytes: &mut Vec<u8>, product: &ProductModel) {
                 push_u64(bytes, target.0);
                 push_u64(bytes, profile.0);
             }
+            FeatureKind::Boolean {
+                operation,
+                target,
+                tool,
+            } => {
+                push_u8(bytes, 8);
+                push_u8(
+                    bytes,
+                    match operation {
+                        BooleanOperation::Cut => 1,
+                        BooleanOperation::Union => 2,
+                    },
+                );
+                push_u64(bytes, target.0);
+                push_u64(bytes, tool.0);
+            }
             FeatureKind::Revolve { profile } => {
                 push_u8(bytes, 4);
                 push_u64(bytes, profile.0);
@@ -511,6 +564,7 @@ pub fn load(bytes: &[u8]) -> Result<LoadOutcome, PersistenceError> {
             | THROUGH_CUT_SCHEMA
             | REVOLVE_SCHEMA
             | SHELL_SCHEMA
+            | BOTTLE_FINISH_SCHEMA
             | CURRENT_SCHEMA
     ) {
         return Err(PersistenceError::UnsupportedSchema(schema));
@@ -556,12 +610,7 @@ pub fn load(bytes: &[u8]) -> Result<LoadOutcome, PersistenceError> {
         let revision_id = payload_reader.u64()?;
         let product = read_product(
             &mut payload_reader,
-            schema >= THROUGH_CUT_SCHEMA,
-            schema >= EXACT_EVIDENCE_SCHEMA,
-            schema >= THROUGH_CUT_SCHEMA,
-            schema >= REVOLVE_SCHEMA,
-            schema >= SHELL_SCHEMA,
-            schema >= CURRENT_SCHEMA,
+            ProductSchemaCapabilities::current(schema),
         )?;
         if !payload_reader.is_finished() {
             return Err(PersistenceError::TrailingBytes);
@@ -571,7 +620,7 @@ pub fn load(bytes: &[u8]) -> Result<LoadOutcome, PersistenceError> {
         let revision_id = reader.u64()?;
         let nodes = read_nodes(&mut reader, schema == LEGACY_SCHEMA, &mut migration_losses)?;
         let mut product = if schema == PRODUCT_SCHEMA {
-            read_product(&mut reader, false, false, false, false, false, false)?
+            read_product(&mut reader, ProductSchemaCapabilities::PRODUCT_V2)?
         } else {
             ProductModel::default()
         };
@@ -605,7 +654,7 @@ pub fn load(bytes: &[u8]) -> Result<LoadOutcome, PersistenceError> {
     let document = DocumentStore::from_product(revision_id, product)?;
     let loaded_snapshot = document.current();
     for reference in loaded_snapshot.exact_reference_evidence() {
-        let matches_request = crate::exact_product::ExactRectangleRequest::from_snapshot(
+        let matches_request = crate::exact_product::ExactFeatureChainRequest::from_snapshot(
             &loaded_snapshot,
             reference.definition_id,
         )
@@ -880,12 +929,7 @@ fn read_exact_reference(reader: &mut Reader<'_>) -> Result<BodySubshapeRef, Pers
 
 fn read_product(
     reader: &mut Reader<'_>,
-    current: bool,
-    exact_evidence: bool,
-    through_cut: bool,
-    revolve: bool,
-    shell: bool,
-    bottle_finish: bool,
+    capabilities: ProductSchemaCapabilities,
 ) -> Result<ProductModel, PersistenceError> {
     let mut product = ProductModel {
         document_id: crate::document::DocumentId(reader.u64()?),
@@ -895,7 +939,7 @@ fn read_product(
         },
         ..ProductModel::default()
     };
-    if current {
+    if capabilities.current {
         product.evaluator_nodes = read_current_nodes(reader)?;
         for _ in 0..reader.count()? {
             let value = read_override(reader)?;
@@ -914,12 +958,12 @@ fn read_product(
             id,
             name: reader.string()?,
             feature_ids: read_ids(reader)?.into_iter().map(FeatureId).collect(),
-            local_group_ids: if current {
+            local_group_ids: if capabilities.current {
                 read_ids(reader)?.into_iter().map(LocalGroupId).collect()
             } else {
                 Vec::new()
             },
-            local_occurrence_ids: if current {
+            local_occurrence_ids: if capabilities.current {
                 read_ids(reader)?
                     .into_iter()
                     .map(LocalOccurrenceId)
@@ -952,24 +996,24 @@ fn read_product(
                 profile: FeatureId(reader.u64()?),
                 height: Dimension::new(reader.string()?, f64::from_bits(reader.u64()?))?,
             },
-            3 if through_cut => FeatureKind::ThroughCut {
+            3 if capabilities.through_cut => FeatureKind::ThroughCut {
                 target: FeatureId(reader.u64()?),
                 profile: FeatureId(reader.u64()?),
             },
-            4 if revolve => FeatureKind::Revolve {
+            4 if capabilities.revolve => FeatureKind::Revolve {
                 profile: FeatureId(reader.u64()?),
             },
-            5 if shell => FeatureKind::Shell {
+            5 if capabilities.shell => FeatureKind::Shell {
                 target: FeatureId(reader.u64()?),
                 thickness: Dimension::new(reader.string()?, f64::from_bits(reader.u64()?))?,
             },
-            6 if bottle_finish => FeatureKind::BottleProfileControl {
+            6 if capabilities.bottle_finish => FeatureKind::BottleProfileControl {
                 profile: FeatureId(reader.u64()?),
                 body_radius: Dimension::new(reader.string()?, f64::from_bits(reader.u64()?))?,
                 body_height: Dimension::new(reader.string()?, f64::from_bits(reader.u64()?))?,
                 shoulder_rise: Dimension::new(reader.string()?, f64::from_bits(reader.u64()?))?,
             },
-            7 if bottle_finish => FeatureKind::BottleEdgeFinish {
+            7 if capabilities.bottle_finish => FeatureKind::BottleEdgeFinish {
                 target: FeatureId(reader.u64()?),
                 kind: match reader.u8()? {
                     1 => BottleEdgeFinishKind::Fillet,
@@ -977,6 +1021,15 @@ fn read_product(
                     value => return Err(PersistenceError::InvalidFeatureKind(value)),
                 },
                 amount: Dimension::new(reader.string()?, f64::from_bits(reader.u64()?))?,
+            },
+            8 if capabilities.boolean => FeatureKind::Boolean {
+                operation: match reader.u8()? {
+                    1 => BooleanOperation::Cut,
+                    2 => BooleanOperation::Union,
+                    value => return Err(PersistenceError::InvalidFeatureKind(value)),
+                },
+                target: FeatureId(reader.u64()?),
+                tool: FeatureId(reader.u64()?),
             },
             kind => return Err(PersistenceError::InvalidFeatureKind(kind)),
         };
@@ -1021,7 +1074,7 @@ fn read_product(
             return Err(PersistenceError::DuplicateGroup(id));
         }
     }
-    if current {
+    if capabilities.current {
         for _ in 0..reader.count()? {
             let key = LocalGroupKey {
                 definition_id: DefinitionId(reader.u64()?),
@@ -1067,7 +1120,7 @@ fn read_product(
                 }
             }
         }
-        if exact_evidence {
+        if capabilities.exact_evidence {
             for _ in 0..reader.count()? {
                 let reference = read_exact_reference(reader)?;
                 let producer = product

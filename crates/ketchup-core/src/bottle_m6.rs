@@ -122,7 +122,9 @@ impl ExactRevolveRequest {
                         return Err(ExactProductError::UnsupportedDefinition);
                     }
                 }
-                FeatureKind::Extrusion { .. } | FeatureKind::ThroughCut { .. } => {
+                FeatureKind::Extrusion { .. }
+                | FeatureKind::ThroughCut { .. }
+                | FeatureKind::Boolean { .. } => {
                     return Err(ExactProductError::UnsupportedDefinition);
                 }
             }

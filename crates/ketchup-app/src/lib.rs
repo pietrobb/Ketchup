@@ -12,9 +12,11 @@ use ketchup_core::document::{
     OccurrenceId, Proposal, ProposalGoal, ProposalValue, Snapshot, Transform,
 };
 use ketchup_core::exact_product::{
-    AssemblySelectionTarget, ExactBodyPackage, ExactFaceRole, ExactRectangleRequest,
+    AssemblySelectionTarget, ExactBodyPackage, ExactBodyView, ExactFaceRole,
+    ExactFeatureChainRequest, ExactMeshExport, ExactResultRegistry,
 };
 use ketchup_core::fabrication::{FullBomProjection, PieceDimensionSheet};
+use ketchup_core::graph::DerivedIdentity;
 use ketchup_core::intent::{IntentRequest, WorkflowIntent, propose_intent};
 use ketchup_core::validation::ValidationReport;
 use ketchup_interaction::{
@@ -562,10 +564,10 @@ struct OutlinerDefinition {
 }
 
 type ExactSource = (DocumentId, u64, String);
-type ExactEvaluationResult = Result<BTreeMap<DefinitionId, Arc<ExactBodyPackage>>, String>;
+type ExactEvaluationResult = Result<Vec<Arc<ExactBodyPackage>>, String>;
 
 enum ExactEvaluationRequest {
-    Rectangle(ExactRectangleRequest),
+    Rectangle(ExactFeatureChainRequest),
     Revolve(ExactRevolveRequest),
 }
 
@@ -645,13 +647,14 @@ pub struct KetchupApp {
     exact_worker_path: Option<PathBuf>,
     exact_worker_attempted: bool,
     exact_task: Option<ExactEvaluationTask>,
-    exact_packages: BTreeMap<DefinitionId, Arc<ExactBodyPackage>>,
+    exact_results: ExactResultRegistry,
     exact_source: Option<ExactSource>,
     exact_retry_at: Option<Instant>,
     beam_workspace: Option<BeamWorkspace>,
     beam_zone1_gap_input: String,
     beam_m5_task: Option<BeamM5EvaluationTask>,
     beam_m5_products: Option<Arc<BeamM5Products>>,
+    beam_exact_results: ExactResultRegistry,
     beam_m5_source: Option<ExactSource>,
     beam_m5_retry_at: Option<Instant>,
 }
@@ -741,13 +744,14 @@ impl KetchupApp {
             exact_worker_path: None,
             exact_worker_attempted: false,
             exact_task: None,
-            exact_packages: BTreeMap::new(),
+            exact_results: ExactResultRegistry::default(),
             exact_source: None,
             exact_retry_at: None,
             beam_workspace: None,
             beam_zone1_gap_input: "415".to_owned(),
             beam_m5_task: None,
             beam_m5_products: None,
+            beam_exact_results: ExactResultRegistry::default(),
             beam_m5_source: None,
             beam_m5_retry_at: None,
         }
@@ -809,7 +813,7 @@ impl KetchupApp {
         if let Some(task) = self.exact_task.take() {
             task.cancelled.store(true, Ordering::Release);
         }
-        self.exact_packages.clear();
+        self.exact_results.clear();
         self.exact_source = None;
         self.exact_retry_at = None;
         self.status_key = "status-ready";
@@ -1010,6 +1014,7 @@ impl KetchupApp {
                 self.beam_workspace = Some(workspace);
                 self.beam_zone1_gap_input = "415".to_owned();
                 self.beam_m5_products = None;
+                self.beam_exact_results.clear();
                 self.beam_m5_source = None;
                 self.beam_m5_retry_at = None;
                 true
@@ -1032,6 +1037,7 @@ impl KetchupApp {
                 }
                 self.beam_zone1_gap_input = format_height(value);
                 self.beam_m5_products = None;
+                self.beam_exact_results.clear();
                 self.beam_m5_source = None;
                 self.beam_m5_retry_at = None;
                 true
@@ -1097,6 +1103,46 @@ impl KetchupApp {
             .map_or(0, BeamM5Products::stable_reference_count)
     }
 
+    #[must_use]
+    pub fn beam_exact_body_count(&self) -> usize {
+        let Some(snapshot) = self.beam_workspace.as_ref().map(BeamWorkspace::snapshot) else {
+            return 0;
+        };
+        self.beam_exact_results
+            .beam_values()
+            .filter(|package| package.is_current(&snapshot))
+            .count()
+    }
+
+    pub fn export_beam_piece_mesh_to(&mut self, piece: &DerivedIdentity, path: &Path) -> bool {
+        let result = self
+            .beam_workspace
+            .as_ref()
+            .map(BeamWorkspace::snapshot)
+            .ok_or_else(|| "Beam workspace is unavailable".to_owned())
+            .and_then(|snapshot| {
+                self.beam_exact_results
+                    .get_beam(piece)
+                    .filter(|package| package.is_current(&snapshot))
+                    .ok_or_else(|| "current accepted Beam exact body is unavailable".to_owned())
+                    .map(|package| package.mesh_export(Transform::identity()))
+            })
+            .and_then(|bundle| write_exact_mesh_export(path, bundle));
+        match result {
+            Ok(()) => {
+                self.digest = format!(
+                    "Exported Beam exact body OBJ with explicit loss report to {}",
+                    path.display()
+                );
+                true
+            }
+            Err(error) => {
+                self.digest = format!("Beam exact body export blocked: {error}");
+                false
+            }
+        }
+    }
+
     pub fn export_beam_drawing_to(&mut self, path: &Path) -> bool {
         let result = self
             .beam_m5_products()
@@ -1156,6 +1202,7 @@ impl KetchupApp {
             .is_some_and(|known| known != &source)
         {
             self.beam_m5_products = None;
+            self.beam_exact_results.clear();
             self.beam_m5_source = None;
         }
         if self
@@ -1174,15 +1221,25 @@ impl KetchupApp {
                         .take()
                         .expect("the completed M5 task exists");
                     if task.source == source && !task.cancelled.load(Ordering::Acquire) {
-                        match result.and_then(|packages| {
-                            self.beam_workspace
-                                .as_ref()
-                                .expect("the source beam workspace exists")
-                                .accept_m5_packages(packages)
+                        match result
+                            .and_then(|packages| {
+                                self.beam_workspace
+                                    .as_ref()
+                                    .expect("the source beam workspace exists")
+                                    .accept_m5_packages(packages)
+                                    .map_err(|error| error.to_string())
+                            })
+                            .and_then(|products| {
+                                ExactResultRegistry::accept_beam(
+                                    &snapshot,
+                                    products.packages.values().cloned(),
+                                )
+                                .map(|results| (products, results))
                                 .map_err(|error| error.to_string())
-                        }) {
-                            Ok(products) => {
+                            }) {
+                            Ok((products, results)) => {
                                 self.beam_m5_products = Some(Arc::new(products));
+                                self.beam_exact_results = results;
                                 self.beam_m5_source = Some(source.clone());
                                 self.beam_m5_retry_at = None;
                             }
@@ -1419,7 +1476,7 @@ impl KetchupApp {
             .as_ref()
             .is_some_and(|known| known != &source)
         {
-            self.exact_packages.clear();
+            self.exact_results.clear();
             self.exact_source = None;
         }
         if self
@@ -1435,13 +1492,12 @@ impl KetchupApp {
                 Ok(result) => {
                     let task = self.exact_task.take().expect("the completed task exists");
                     if task.source == source && !task.cancelled.load(Ordering::Acquire) {
-                        match result {
-                            Ok(packages)
-                                if packages
-                                    .values()
-                                    .all(|package| package.is_current(&snapshot)) =>
-                            {
-                                let references = packages
+                        match result.and_then(|packages| {
+                            ExactResultRegistry::accept(&snapshot, packages)
+                                .map_err(|error| error.to_string())
+                        }) {
+                            Ok(results) => {
+                                let references = results
                                     .values()
                                     .flat_map(|package| package.references().iter().cloned())
                                     .collect::<Vec<_>>();
@@ -1450,12 +1506,12 @@ impl KetchupApp {
                                         .register_exact_reference_evidence(reference)
                                         .is_ok()
                                 }) {
-                                    self.exact_packages = packages;
+                                    self.exact_results = results;
                                     self.exact_source = Some(source.clone());
                                     self.exact_retry_at = None;
                                 }
                             }
-                            Ok(_) | Err(_) => {
+                            Err(_) => {
                                 self.exact_retry_at = Some(Instant::now() + Duration::from_secs(1));
                             }
                         }
@@ -1491,7 +1547,7 @@ impl KetchupApp {
             .collect::<BTreeSet<_>>()
             .into_iter()
             .filter_map(|definition_id| {
-                ExactRectangleRequest::from_snapshot(&snapshot, definition_id)
+                ExactFeatureChainRequest::from_snapshot(&snapshot, definition_id)
                     .map(ExactEvaluationRequest::Rectangle)
                     .or_else(|_| {
                         ExactRevolveRequest::from_snapshot(&snapshot, definition_id)
@@ -1502,7 +1558,7 @@ impl KetchupApp {
             })
             .collect::<Vec<_>>();
         if requests.is_empty() {
-            self.exact_packages.clear();
+            self.exact_results.clear();
             self.exact_source = Some(source);
             return;
         }
@@ -1515,8 +1571,8 @@ impl KetchupApp {
                 let mut worker =
                     ExactWorkerSupervisor::spawn_with_cancellation(executable, &worker_cancelled)
                         .map_err(|error| error.to_string())?;
-                let mut packages = BTreeMap::new();
-                for (definition_id, request) in requests {
+                let mut packages = Vec::new();
+                for (_definition_id, request) in requests {
                     if worker_cancelled.load(Ordering::Acquire) {
                         return Err("exact evaluation cancelled".to_owned());
                     }
@@ -1530,7 +1586,7 @@ impl KetchupApp {
                             .map(ExactBodyPackage::from)
                             .map_err(|error| error.to_string())?,
                     };
-                    packages.insert(definition_id, Arc::new(package));
+                    packages.push(Arc::new(package));
                 }
                 Ok(packages)
             })();
@@ -1558,10 +1614,11 @@ impl KetchupApp {
         }
         self.exact_worker_path = Some(executable.to_owned());
         self.exact_worker_attempted = true;
-        self.exact_packages.clear();
+        self.exact_results.clear();
         self.exact_source = None;
         self.exact_retry_at = None;
         self.beam_m5_products = None;
+        self.beam_exact_results.clear();
         self.beam_m5_source = None;
         self.beam_m5_retry_at = None;
         Ok(())
@@ -1570,7 +1627,7 @@ impl KetchupApp {
     #[must_use]
     pub fn exact_render_body_count(&self) -> usize {
         let snapshot = self.document.current();
-        self.exact_packages
+        self.exact_results
             .values()
             .filter(|package| package.is_current(&snapshot))
             .count()
@@ -1579,7 +1636,7 @@ impl KetchupApp {
     #[must_use]
     pub fn exact_stable_reference_count(&self) -> usize {
         let snapshot = self.document.current();
-        self.exact_packages
+        self.exact_results
             .values()
             .filter(|package| package.is_current(&snapshot))
             .map(|package| package.references().len())
@@ -1587,7 +1644,7 @@ impl KetchupApp {
     }
 
     fn exact_projection(&self, snapshot: &Snapshot) -> ExactInteractionProjection {
-        ExactInteractionProjection::from_snapshot(snapshot, &self.exact_packages)
+        ExactInteractionProjection::from_snapshot(snapshot, &self.exact_results)
     }
 
     #[must_use]
@@ -1621,7 +1678,7 @@ impl KetchupApp {
                     && matrix[14] == 0.0
                     && matrix[15] == 1.0;
                 let exact_bounds = self
-                    .exact_packages
+                    .exact_results
                     .get(&occurrence.body.definition_id)
                     .filter(|_| translation_only)
                     .filter(|package| package.is_current(&snapshot))
@@ -2675,10 +2732,7 @@ impl KetchupApp {
         definition_id: DefinitionId,
     ) -> Option<BottleAuthorityReport> {
         let snapshot = self.document.current();
-        let ExactBodyPackage::Revolve(package) = self.exact_packages.get(&definition_id)?.as_ref()
-        else {
-            return None;
-        };
+        let package = self.exact_results.get(&definition_id)?.revolve()?;
         Some(package.authority_report(&snapshot))
     }
 
@@ -2689,12 +2743,9 @@ impl KetchupApp {
     ) -> bool {
         let snapshot = self.document.current();
         let result = self
-            .exact_packages
+            .exact_results
             .get(&definition_id)
-            .and_then(|package| match package.as_ref() {
-                ExactBodyPackage::Revolve(package) => Some(package),
-                ExactBodyPackage::Rectangle(_) => None,
-            })
+            .and_then(|package| package.revolve())
             .ok_or_else(|| "current accepted bottle result is unavailable".to_owned())
             .and_then(|package| {
                 package
@@ -2716,26 +2767,35 @@ impl KetchupApp {
         }
     }
 
+    pub fn exact_reference_for_occurrence(
+        &self,
+        instance_path: &InstancePath,
+        role: ExactFaceRole,
+    ) -> Option<AssemblySelectionTarget> {
+        let snapshot = self.document.current();
+        let occurrence = snapshot
+            .scene_query()
+            .into_iter()
+            .find(|occurrence| &occurrence.instance_path == instance_path)?;
+        let package = self
+            .exact_results
+            .get(&occurrence.definition_id)
+            .filter(|package| package.is_current(&snapshot))?;
+        Some(AssemblySelectionTarget {
+            instance_path: instance_path.clone(),
+            body: package.reference(role)?.clone(),
+        })
+    }
+
     pub fn export_bottle_mesh_to(&mut self, definition_id: DefinitionId, path: &Path) -> bool {
         let snapshot = self.document.current();
         let result = self
-            .exact_packages
+            .exact_results
             .get(&definition_id)
-            .and_then(|package| match package.as_ref() {
-                ExactBodyPackage::Revolve(package) => Some(package),
-                ExactBodyPackage::Rectangle(_) => None,
-            })
-            .ok_or_else(|| "current accepted bottle result is unavailable".to_owned())
-            .and_then(|package| {
-                package
-                    .export_bundle(&snapshot)
-                    .map_err(|error| error.to_string())
-            })
-            .and_then(|bundle| {
-                std::fs::write(path, bundle.mesh_obj).map_err(|error| error.to_string())?;
-                std::fs::write(path.with_extension("obj.loss.txt"), bundle.mesh_loss_report)
-                    .map_err(|error| error.to_string())
-            });
+            .filter(|package| package.is_current(&snapshot))
+            .ok_or_else(|| "current accepted exact body result is unavailable".to_owned())
+            .map(|package| package.mesh_export(Transform::identity()))
+            .and_then(|bundle| write_exact_mesh_export(path, bundle));
         match result {
             Ok(()) => {
                 self.digest = format!(
@@ -2746,6 +2806,40 @@ impl KetchupApp {
             }
             Err(error) => {
                 self.digest = format!("Bottle mesh export blocked: {error}");
+                false
+            }
+        }
+    }
+
+    pub fn export_exact_occurrence_mesh_to(
+        &mut self,
+        instance_path: &InstancePath,
+        path: &Path,
+    ) -> bool {
+        let snapshot = self.document.current();
+        let result = snapshot
+            .scene_query()
+            .into_iter()
+            .find(|occurrence| &occurrence.instance_path == instance_path)
+            .ok_or_else(|| "canonical occurrence is unavailable".to_owned())
+            .and_then(|occurrence| {
+                self.exact_results
+                    .get(&occurrence.definition_id)
+                    .filter(|package| package.is_current(&snapshot))
+                    .ok_or_else(|| "current accepted exact body result is unavailable".to_owned())
+                    .map(|package| package.mesh_export(occurrence.transform))
+            })
+            .and_then(|bundle| write_exact_mesh_export(path, bundle));
+        match result {
+            Ok(()) => {
+                self.digest = format!(
+                    "Exported transformed exact occurrence OBJ with explicit loss report to {}",
+                    path.display()
+                );
+                true
+            }
+            Err(error) => {
+                self.digest = format!("Exact occurrence mesh export blocked: {error}");
                 false
             }
         }
@@ -4472,15 +4566,17 @@ impl KetchupApp {
                     && exact_projection.contains_occurrence(&occurrence.instance_path)
             })
         {
-            let Some(package) = self.exact_packages.get(&occurrence.body.definition_id) else {
+            let Some(package) = self.exact_results.get(&occurrence.body.definition_id) else {
                 continue;
             };
-            let matrix = occurrence.canonical_world_transform.matrix();
-            let origin = Vec3::new(matrix[3], matrix[7], matrix[11]);
+            let transform = occurrence.canonical_world_transform;
             for triangle in package.triangles() {
                 let points_mm = triangle.vertex_indices.map(|index| {
                     let position = package.vertices()[index as usize].position_mm;
-                    origin + Vec3::new(position[0], position[1], position[2])
+                    transform_model_point(
+                        transform,
+                        Vec3::new(position[0], position[1], position[2]),
+                    )
                 });
                 let normal = triangle_normal(points_mm);
                 if point_depth(normal, forward) >= -1.0e-9 {
@@ -5575,7 +5671,7 @@ impl KetchupApp {
                     .format("status-grid", &BTreeMap::from([("step", "10".to_owned())])),
             );
             ui.label(self.catalog.text("status-refs-guaranteed"));
-            if self.exact_packages.is_empty() {
+            if self.exact_results.is_empty() {
                 ui.label(self.catalog.text("status-exact-unavailable"));
             } else {
                 ui.label(self.catalog.format(
@@ -5953,6 +6049,21 @@ fn exact_surface_element(normal: Vec3) -> Option<ElementId> {
     })
 }
 
+fn write_exact_mesh_export(path: &Path, bundle: ExactMeshExport) -> Result<(), String> {
+    std::fs::write(path, bundle.mesh_obj).map_err(|error| error.to_string())?;
+    std::fs::write(path.with_extension("obj.loss.txt"), bundle.loss_report)
+        .map_err(|error| error.to_string())
+}
+
+fn transform_model_point(transform: Transform, point: Vec3) -> Vec3 {
+    let matrix = transform.matrix();
+    Vec3::new(
+        matrix[0] * point.x + matrix[1] * point.y + matrix[2] * point.z + matrix[3],
+        matrix[4] * point.x + matrix[5] * point.y + matrix[6] * point.z + matrix[7],
+        matrix[8] * point.x + matrix[9] * point.y + matrix[10] * point.z + matrix[11],
+    )
+}
+
 fn point_depth(point: Vec3, forward: Vec3) -> f64 {
     point.x * forward.x + point.y * forward.y + point.z * forward.z
 }
@@ -6260,7 +6371,7 @@ mod tests {
         };
 
         let snapshot = app.document.current();
-        let request = ExactRectangleRequest::from_snapshot(&snapshot, INITIAL_BOX_DEFINITION)
+        let request = ExactFeatureChainRequest::from_snapshot(&snapshot, INITIAL_BOX_DEFINITION)
             .expect("the default box has an exact request");
         let evidence = [
             ExactFaceRole::Top,
@@ -6382,7 +6493,10 @@ mod tests {
         assert!(app.create_bottle());
         let definition_id = app.selected_bottle_definition().unwrap();
         let package = current_bottle_package(&app, definition_id);
-        app.exact_packages.insert(definition_id, package);
+        let snapshot = app.document.current();
+        app.exact_results
+            .insert_current(&snapshot, package)
+            .unwrap();
 
         let report = app.bottle_authority_report(definition_id).unwrap();
         assert!(report.current);
@@ -6433,9 +6547,10 @@ mod tests {
     fn current_exact_occurrence_suppresses_only_the_non_preview_proxy() {
         let mut app = KetchupApp::new();
         let package = current_box_package(&app);
-        app.exact_packages
-            .insert(INITIAL_BOX_DEFINITION, Arc::new((*package).clone().into()));
         let snapshot = app.document.current();
+        app.exact_results
+            .insert_current(&snapshot, Arc::new((*package).clone().into()))
+            .unwrap();
         let exact_projection = app.exact_projection(&snapshot);
 
         assert!(exact_projection.contains_occurrence(&InstancePath::root(OccurrenceId(1))));
@@ -6452,6 +6567,52 @@ mod tests {
         app.set_push_pull_distance_input("5");
         assert!(app.start_preview());
         assert_eq!(app.viewport_boxes(&exact_projection).len(), 1);
+    }
+
+    #[test]
+    fn exact_occurrence_reference_and_mesh_export_use_the_canonical_world_transform() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("transformed.obj");
+        let mut app = KetchupApp::new();
+        let transform = Transform::from_matrix([
+            0.0, -1.0, 0.0, 10.0, 1.0, 0.0, 0.0, 20.0, 0.0, 0.0, 1.0, 30.0, 0.0, 0.0, 0.0, 1.0,
+        ])
+        .unwrap();
+        app.document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::SetOccurrenceTransform {
+                    id: OccurrenceId(1),
+                    transform,
+                },
+            ]))
+            .unwrap();
+        let package = current_box_package(&app);
+        let snapshot = app.document.current();
+        app.exact_results
+            .insert_current(&snapshot, Arc::new((*package).clone().into()))
+            .unwrap();
+        let instance_path = InstancePath::root(OccurrenceId(1));
+
+        let reference = app
+            .exact_reference_for_occurrence(&instance_path, ExactFaceRole::Top)
+            .unwrap();
+        assert_eq!(reference.instance_path, instance_path);
+        assert_eq!(reference.body.role(), Some(ExactFaceRole::Top));
+        assert!(app.export_exact_occurrence_mesh_to(&instance_path, &path));
+
+        let mesh = std::fs::read_to_string(&path).unwrap();
+        let first_vertex = mesh
+            .lines()
+            .find_map(|line| line.strip_prefix("v "))
+            .unwrap()
+            .split_whitespace()
+            .map(|value| value.parse::<f64>().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(first_vertex, vec![10.0, 20.0, 30.0]);
+        assert!(mesh.contains("g extrusion.top"));
+        let loss = std::fs::read_to_string(path.with_extension("obj.loss.txt")).unwrap();
+        assert!(loss.contains("exact-body-to-world-space-mesh"));
+        assert!(loss.contains("producer_feature_id=2"));
     }
 
     #[test]

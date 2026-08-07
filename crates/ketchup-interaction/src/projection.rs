@@ -224,7 +224,8 @@ fn canonical_box(
                 | FeatureKind::Revolve { .. }
                 | FeatureKind::Shell { .. }
                 | FeatureKind::BottleEdgeFinish { .. }
-                | FeatureKind::ThroughCut { .. } => None,
+                | FeatureKind::ThroughCut { .. }
+                | FeatureKind::Boolean { .. } => None,
             }
         })
         .collect::<Vec<_>>();

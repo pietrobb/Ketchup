@@ -10,9 +10,9 @@ use ketchup_core::beam_m5::{
 use ketchup_core::bottle_m6::{
     ExactRevolvePackage, ExactRevolveRequest, build_revolve_package, expected_volume_mm3,
 };
-use ketchup_core::document::{DerivedIdentity, NodeId, SlotPath, SlotSegment};
+use ketchup_core::document::{BooleanOperation, DerivedIdentity, NodeId, SlotPath, SlotSegment};
 use ketchup_core::exact_product::{
-    ExactFaceRole, ExactProductError, ExactRectangleRequest, ExactRenderPackage,
+    ExactFaceRole, ExactFeatureChainRequest, ExactProductError, ExactRenderPackage,
     build_box_render_package, canonical_reference_lineage_digest,
 };
 use ketchup_core::prismatic::{Aabb, JointId};
@@ -616,17 +616,21 @@ impl ExactWorkerClient {
 
     pub fn extrude_rectangle_request(
         &mut self,
-        request: &ExactRectangleRequest,
+        request: &ExactFeatureChainRequest,
     ) -> Result<WorkerExactResult, WorkerError> {
         self.extrude_rectangle_request_with_cancellation(request, &NEVER_CANCELLED)
     }
 
     fn extrude_rectangle_request_with_cancellation(
         &mut self,
-        request: &ExactRectangleRequest,
+        request: &ExactFeatureChainRequest,
         cancelled: &AtomicBool,
     ) -> Result<WorkerExactResult, WorkerError> {
-        let (response, is_through_cut) = if let Some(cut) = &request.through_cut {
+        let (response, is_through_cut) = if let Some(cut) = request
+            .boolean
+            .as_ref()
+            .filter(|boolean| boolean.operation == BooleanOperation::Cut)
+        {
             self.verify_m3_cut_capability(cancelled)?;
             (
                 self.request_with_cancellation(
@@ -656,7 +660,7 @@ impl ExactWorkerClient {
                         request.depth_bits,
                         request.height_bits,
                         request.document_id.0,
-                        request.extrusion_feature_id.0,
+                        request.producer_feature_id().0,
                         request.canonical_input_digest
                     ),
                     cancelled,
@@ -1051,14 +1055,14 @@ impl ExactWorkerSupervisor {
 
     pub fn evaluate_rectangle(
         &mut self,
-        request: &ExactRectangleRequest,
+        request: &ExactFeatureChainRequest,
     ) -> Result<ExactRenderPackage, M3EvaluationError> {
         self.evaluate_rectangle_with_cancellation(request, &NEVER_CANCELLED)
     }
 
     pub fn evaluate_rectangle_with_cancellation(
         &mut self,
-        request: &ExactRectangleRequest,
+        request: &ExactFeatureChainRequest,
         cancelled: &AtomicBool,
     ) -> Result<ExactRenderPackage, M3EvaluationError> {
         self.client.ensure_not_cancelled(cancelled)?;
@@ -1263,7 +1267,7 @@ fn build_m6_revolve_package(
 }
 
 fn validate_m3_worker_result(
-    request: &ExactRectangleRequest,
+    request: &ExactFeatureChainRequest,
     result: &WorkerExactResult,
 ) -> Result<(), ExactProductError> {
     let mut role_evidence = vec![
@@ -1272,13 +1276,16 @@ fn validate_m3_worker_result(
         (ExactFaceRole::East, &result.east),
     ];
     match (
-        &request.through_cut,
+        request
+            .boolean
+            .as_ref()
+            .is_some_and(|boolean| boolean.operation == BooleanOperation::Cut),
         &result.cut_west,
         &result.cut_east,
         &result.cut_south,
         &result.cut_north,
     ) {
-        (Some(_), Some(west), Some(east), Some(south), Some(north)) => {
+        (true, Some(west), Some(east), Some(south), Some(north)) => {
             role_evidence.extend([
                 (ExactFaceRole::CutWest, west),
                 (ExactFaceRole::CutEast, east),
@@ -1286,23 +1293,27 @@ fn validate_m3_worker_result(
                 (ExactFaceRole::CutNorth, north),
             ]);
         }
-        (None, None, None, None, None) => {}
+        (false, None, None, None, None) => {}
         _ => return Err(ExactProductError::InvalidWorkerEvidence),
     }
 
     let dimensions = request.dimensions_mm();
     let expected_bounds = [0.0, 0.0, 0.0, dimensions[0], dimensions[1], dimensions[2]];
-    let (expected_volume, expected_topology) = request.through_cut.as_ref().map_or_else(
-        || (dimensions.into_iter().product::<f64>(), [8, 12, 6, 1, 1]),
-        |cut| {
-            let cut_volume =
-                f64::from_bits(cut.width_bits) * f64::from_bits(cut.depth_bits) * dimensions[2];
-            (
-                dimensions.into_iter().product::<f64>() - cut_volume,
-                [16, 24, 10, 1, 1],
-            )
-        },
-    );
+    let (expected_volume, expected_topology) =
+        match request.boolean.as_ref().map(|boolean| boolean.operation) {
+            Some(BooleanOperation::Cut) => {
+                let cut = request.boolean.as_ref().expect("matched Boolean cut");
+                let cut_volume =
+                    f64::from_bits(cut.width_bits) * f64::from_bits(cut.depth_bits) * dimensions[2];
+                (
+                    dimensions.into_iter().product::<f64>() - cut_volume,
+                    [16, 24, 10, 1, 1],
+                )
+            }
+            None | Some(BooleanOperation::Union) => {
+                (dimensions.into_iter().product::<f64>(), [8, 12, 6, 1, 1])
+            }
+        };
     let volume_tolerance = 1.0e-6_f64.max(expected_volume.abs() * 1.0e-10);
     let producer_feature_id = request.producer_feature_id();
     let has_canonical_lineage = |role: ExactFaceRole, evidence: &WorkerFaceEvidence| {
@@ -1353,7 +1364,7 @@ fn validate_m3_worker_result(
 }
 
 fn build_m3_render_package(
-    request: &ExactRectangleRequest,
+    request: &ExactFeatureChainRequest,
     result: &WorkerExactResult,
 ) -> Result<ExactRenderPackage, ExactProductError> {
     let bounds = [
@@ -1375,7 +1386,11 @@ fn build_m3_render_package(
             value.geometric_fingerprint.clone(),
         )
     };
-    if request.through_cut.is_some() {
+    if request
+        .boolean
+        .as_ref()
+        .is_some_and(|boolean| boolean.operation == BooleanOperation::Cut)
+    {
         let (Some(cut_west), Some(cut_east), Some(cut_south), Some(cut_north)) = (
             &result.cut_west,
             &result.cut_east,

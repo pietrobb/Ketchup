@@ -1,9 +1,8 @@
 #![forbid(unsafe_code)]
 
 use crate::{Ray, Vec3};
-use ketchup_core::document::{DefinitionId, InstancePath, Snapshot};
-use ketchup_core::exact_product::{AssemblySelectionTarget, ExactBodyPackage};
-use std::collections::BTreeMap;
+use ketchup_core::document::{DefinitionId, InstancePath, Snapshot, Transform};
+use ketchup_core::exact_product::{AssemblySelectionTarget, ExactBodyPackage, ExactResultRegistry};
 use std::sync::Arc;
 
 const RAY_EPSILON: f64 = 1.0e-12;
@@ -28,7 +27,7 @@ pub struct ExactSurfaceHit {
 #[derive(Clone, Debug)]
 struct ExactOccurrence {
     instance_path: InstancePath,
-    origin_mm: Vec3,
+    transform: Transform,
     package: Arc<ExactBodyPackage>,
 }
 
@@ -46,41 +45,21 @@ pub struct ExactInteractionProjection {
 
 impl ExactInteractionProjection {
     #[must_use]
-    pub fn from_snapshot(
-        snapshot: &Snapshot,
-        packages: &BTreeMap<DefinitionId, Arc<ExactBodyPackage>>,
-    ) -> Self {
+    pub fn from_snapshot(snapshot: &Snapshot, results: &ExactResultRegistry) -> Self {
         let occurrences = snapshot
             .scene_query()
             .into_iter()
             .filter(|occurrence| occurrence.visible)
             .filter_map(|occurrence| {
-                let package = Arc::clone(packages.get(&occurrence.definition_id)?);
+                let package = Arc::clone(results.get(&occurrence.definition_id)?);
                 if !package.is_current(snapshot)
                     || package.definition_id() != occurrence.definition_id
                 {
                     return None;
                 }
-                let matrix = occurrence.transform.matrix();
-                if matrix[0] != 1.0
-                    || matrix[1] != 0.0
-                    || matrix[2] != 0.0
-                    || matrix[4] != 0.0
-                    || matrix[5] != 1.0
-                    || matrix[6] != 0.0
-                    || matrix[8] != 0.0
-                    || matrix[9] != 0.0
-                    || matrix[10] != 1.0
-                    || matrix[12] != 0.0
-                    || matrix[13] != 0.0
-                    || matrix[14] != 0.0
-                    || matrix[15] != 1.0
-                {
-                    return None;
-                }
                 Some(ExactOccurrence {
                     instance_path: occurrence.instance_path,
-                    origin_mm: Vec3::new(matrix[3], matrix[7], matrix[11]),
+                    transform: occurrence.transform,
                     package,
                 })
             })
@@ -119,7 +98,10 @@ impl ExactInteractionProjection {
         let triangle = &hit.occurrence.package.triangles()[hit.triangle_index];
         let [first, second, third] = triangle.vertex_indices.map(|index| {
             let position = hit.occurrence.package.vertices()[index as usize].position_mm;
-            Vec3::new(position[0], position[1], position[2])
+            transform_point(
+                hit.occurrence.transform,
+                Vec3::new(position[0], position[1], position[2]),
+            )
         });
         let normal = cross(second - first, third - first);
         let normal_length = normal.length();
@@ -165,11 +147,10 @@ fn hit_occurrence<'a>(
     ray: Ray,
     occurrence: &'a ExactOccurrence,
 ) -> Option<PhysicalTriangleHit<'a>> {
-    let local_ray = Ray {
-        origin: ray.origin - occurrence.origin_mm,
-        direction: ray.direction,
-    };
-    if !ray_intersects_bounds(local_ray, occurrence.package.bounds_mm()) {
+    if !ray_intersects_bounds(
+        ray,
+        transformed_bounds(occurrence.transform, occurrence.package.bounds_mm()),
+    ) {
         return None;
     }
     occurrence
@@ -180,9 +161,12 @@ fn hit_occurrence<'a>(
         .filter_map(|(triangle_index, triangle)| {
             let [first, second, third] = triangle.vertex_indices.map(|index| {
                 let position = occurrence.package.vertices()[index as usize].position_mm;
-                Vec3::new(position[0], position[1], position[2])
+                transform_point(
+                    occurrence.transform,
+                    Vec3::new(position[0], position[1], position[2]),
+                )
             });
-            let ray_distance_mm = ray_triangle_distance(local_ray, first, second, third)?;
+            let ray_distance_mm = ray_triangle_distance(ray, first, second, third)?;
             Some(PhysicalTriangleHit {
                 occurrence,
                 triangle_index,
@@ -194,6 +178,38 @@ fn hit_occurrence<'a>(
                 .total_cmp(&right.ray_distance_mm)
                 .then_with(|| left.triangle_index.cmp(&right.triangle_index))
         })
+}
+
+fn transformed_bounds(transform: Transform, bounds: [[f64; 3]; 2]) -> [[f64; 3]; 2] {
+    let corners = [
+        [bounds[0][0], bounds[0][1], bounds[0][2]],
+        [bounds[1][0], bounds[0][1], bounds[0][2]],
+        [bounds[0][0], bounds[1][1], bounds[0][2]],
+        [bounds[1][0], bounds[1][1], bounds[0][2]],
+        [bounds[0][0], bounds[0][1], bounds[1][2]],
+        [bounds[1][0], bounds[0][1], bounds[1][2]],
+        [bounds[0][0], bounds[1][1], bounds[1][2]],
+        [bounds[1][0], bounds[1][1], bounds[1][2]],
+    ]
+    .map(|point| transform_point(transform, Vec3::new(point[0], point[1], point[2])));
+    let mut min = [f64::INFINITY; 3];
+    let mut max = [f64::NEG_INFINITY; 3];
+    for point in corners {
+        for (axis, value) in [point.x, point.y, point.z].into_iter().enumerate() {
+            min[axis] = min[axis].min(value);
+            max[axis] = max[axis].max(value);
+        }
+    }
+    [min, max]
+}
+
+fn transform_point(transform: Transform, point: Vec3) -> Vec3 {
+    let matrix = transform.matrix();
+    Vec3::new(
+        matrix[0] * point.x + matrix[1] * point.y + matrix[2] * point.z + matrix[3],
+        matrix[4] * point.x + matrix[5] * point.y + matrix[6] * point.z + matrix[7],
+        matrix[8] * point.x + matrix[9] * point.y + matrix[10] * point.z + matrix[11],
+    )
 }
 
 fn ray_intersects_bounds(ray: Ray, bounds: [[f64; 3]; 2]) -> bool {
@@ -263,8 +279,8 @@ mod tests {
         OccurrenceId, Transform,
     };
     use ketchup_core::exact_product::{
-        ExactFaceRole, ExactRectangleRequest, ExactRenderPackage, build_box_render_package,
-        canonical_reference_lineage_digest,
+        ExactFaceRole, ExactFeatureChainRequest, ExactProductError, ExactRenderPackage,
+        build_box_render_package, canonical_reference_lineage_digest,
     };
 
     const DEFINITION: DefinitionId = DefinitionId(1);
@@ -329,7 +345,7 @@ mod tests {
     }
 
     fn render_package(snapshot: &Snapshot) -> ExactRenderPackage {
-        let request = ExactRectangleRequest::from_snapshot(snapshot, DEFINITION).unwrap();
+        let request = ExactFeatureChainRequest::from_snapshot(snapshot, DEFINITION).unwrap();
         let evidence = [
             ExactFaceRole::Top,
             ExactFaceRole::Bottom,
@@ -365,10 +381,29 @@ mod tests {
     }
 
     fn projection(snapshot: &Snapshot, package: ExactRenderPackage) -> ExactInteractionProjection {
-        ExactInteractionProjection::from_snapshot(
-            snapshot,
-            &BTreeMap::from([(DEFINITION, Arc::new(package.into()))]),
-        )
+        let results = ExactResultRegistry::accept(snapshot, [Arc::new(package.into())]).unwrap();
+        ExactInteractionProjection::from_snapshot(snapshot, &results)
+    }
+
+    #[test]
+    fn registry_indexes_current_results_by_complete_derived_identity() {
+        let store = through_cut_document();
+        let snapshot = store.current();
+        let package: Arc<ExactBodyPackage> = Arc::new(render_package(&snapshot).into());
+        let key = package.result_key();
+        let mut results = ExactResultRegistry::accept(&snapshot, [Arc::clone(&package)]).unwrap();
+
+        assert_eq!(key.definition_id, DEFINITION);
+        assert_eq!(key.producer_feature_id, CUT);
+        assert!(Arc::ptr_eq(results.get_result(&key).unwrap(), &package));
+        assert!(Arc::ptr_eq(results.get(&DEFINITION).unwrap(), &package));
+        assert_eq!(
+            results.insert_current(&snapshot, package),
+            Err(ExactProductError::DuplicateResult {
+                definition_id: DEFINITION,
+                producer_feature_id: CUT,
+            })
+        );
     }
 
     #[test]
@@ -444,7 +479,7 @@ mod tests {
     }
 
     #[test]
-    fn stale_packages_and_unsupported_transforms_are_excluded() {
+    fn stale_packages_are_rejected_and_affine_transforms_remain_pickable() {
         let mut store = through_cut_document();
         let initial_snapshot = store.current();
         let initial_package = render_package(&initial_snapshot);
@@ -461,9 +496,10 @@ mod tests {
             ]))
             .unwrap();
         let changed_snapshot = store.current();
-        let stale = projection(&changed_snapshot, initial_package);
-        assert_eq!(stale.occurrence_count(), 0);
-        assert!(!stale.contains_occurrence(&instance_path));
+        assert!(matches!(
+            ExactResultRegistry::accept(&changed_snapshot, [Arc::new(initial_package.into())]),
+            Err(ExactProductError::StaleResult)
+        ));
 
         let rotation = Transform::from_matrix([
             0.0, -1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
@@ -478,8 +514,15 @@ mod tests {
             ]))
             .unwrap();
         let rotated_snapshot = store.current();
-        let unsupported = projection(&rotated_snapshot, render_package(&rotated_snapshot));
-        assert_eq!(unsupported.occurrence_count(), 0);
-        assert!(!unsupported.contains_occurrence(&instance_path));
+        let rotated = projection(&rotated_snapshot, render_package(&rotated_snapshot));
+        assert_eq!(rotated.occurrence_count(), 1);
+        assert!(rotated.contains_occurrence(&instance_path));
+        let hole_ray = Ray::new(Vec3::new(-5.0, 5.0, 20.0), Vec3::new(0.0, 0.0, -1.0)).unwrap();
+        assert!(rotated.exact_surface_pick(hole_ray).is_none());
+        let wall_ray = Ray::new(Vec3::new(-5.0, 5.0, 5.0), Vec3::new(0.0, -1.0, 0.0)).unwrap();
+        let wall = rotated.exact_pick(wall_ray).unwrap();
+        assert_eq!(wall.target.body.role(), Some(ExactFaceRole::CutWest));
+        assert!((wall.position_mm.y - 4.0).abs() <= 1.0e-9);
+        assert!(wall.position_mm.x.abs() > 4.999 && wall.position_mm.x.abs() < 5.001);
     }
 }

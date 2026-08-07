@@ -1,12 +1,21 @@
 #![forbid(unsafe_code)]
 
-use crate::document::{DefinitionId, DocumentId, FeatureId, FeatureKind, InstancePath, Snapshot};
+use crate::beam_m5::{BeamExactPiecePackage, BeamExactResultKey};
+use crate::document::{
+    BooleanOperation, DefinitionId, DocumentId, FeatureId, FeatureKind, InstancePath, Snapshot,
+    Transform,
+};
+use crate::graph::DerivedIdentity;
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use std::fmt;
+use std::fmt::Write as _;
+use std::sync::Arc;
 
 pub const EXACT_PRODUCT_SCHEMA_V1: &str = "ketchup.exact-product.v1";
 pub const EXACT_RECTANGLE_EVALUATOR_V1: &str = "ketchup.exact-rectangle-evaluator.v1";
 pub const EXACT_THROUGH_CUT_EVALUATOR_V1: &str = "ketchup.exact-through-cut-evaluator.v1";
+pub const EXACT_BOOLEAN_UNION_EVALUATOR_V1: &str = "ketchup.exact-boolean-union-evaluator.v1";
 pub const BODY_SUBSHAPE_REF_SCHEMA_V1: &str = "ketchup.body-subshape-ref.v1";
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -202,7 +211,7 @@ impl BodySubshapeRef {
     }
 
     #[must_use]
-    pub fn matches_request(&self, request: &ExactRectangleRequest) -> bool {
+    pub fn matches_request(&self, request: &ExactFeatureChainRequest) -> bool {
         let Some(role) = self.role() else {
             return false;
         };
@@ -265,12 +274,78 @@ pub enum ExactBodyPackage {
     Revolve(crate::bottle_m6::ExactRevolvePackage),
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExactMeshExport {
+    pub mesh_obj: String,
+    pub loss_report: String,
+}
+
+pub trait ExactBodyView {
+    fn bounds_mm(&self) -> [[f64; 3]; 2];
+    fn vertex_count(&self) -> usize;
+    fn vertex_position_mm(&self, index: usize) -> [f64; 3];
+    fn triangle_count(&self) -> usize;
+    fn triangle_indices(&self, index: usize) -> [u32; 3];
+    fn triangle_group(&self, index: usize) -> &'static str;
+    fn tolerance(&self) -> &str;
+    fn source_digest(&self) -> &str;
+    fn producer_identity(&self) -> String;
+    fn result_fingerprint(&self) -> &str;
+
+    #[must_use]
+    fn mesh_export(&self, transform: Transform) -> ExactMeshExport {
+        mesh_export_from_view(self, transform)
+    }
+}
+
 impl ExactBodyPackage {
     #[must_use]
     pub fn definition_id(&self) -> DefinitionId {
         match self {
             Self::Rectangle(package) => package.identity.definition_id,
             Self::Revolve(package) => package.identity.definition_id,
+        }
+    }
+
+    #[must_use]
+    pub fn producer_feature_id(&self) -> FeatureId {
+        match self {
+            Self::Rectangle(package) => package.identity.producer_feature_id,
+            Self::Revolve(package) => package.identity.producer_feature_id,
+        }
+    }
+
+    #[must_use]
+    pub fn result_key(&self) -> ExactResultKey {
+        match self {
+            Self::Rectangle(package) => ExactResultKey {
+                document_id: package.identity.document_id,
+                source_revision: package.identity.source_revision,
+                source_digest: package.identity.source_digest.clone(),
+                definition_id: package.identity.definition_id,
+                producer_feature_id: package.identity.producer_feature_id,
+                canonical_input_digest: package.identity.canonical_input_digest.clone(),
+                exact_input_digest: package.identity.exact_input_digest.clone(),
+                evaluator: package.identity.evaluator.clone(),
+                backend: package.identity.backend.clone(),
+                tolerance: package.identity.tolerance.clone(),
+                schema: package.identity.schema.clone(),
+                result_fingerprint: package.identity.result_fingerprint.clone(),
+            },
+            Self::Revolve(package) => ExactResultKey {
+                document_id: package.identity.document_id,
+                source_revision: package.identity.source_revision,
+                source_digest: package.identity.source_digest.clone(),
+                definition_id: package.identity.definition_id,
+                producer_feature_id: package.identity.producer_feature_id,
+                canonical_input_digest: package.identity.canonical_input_digest.clone(),
+                exact_input_digest: package.identity.exact_input_digest.clone(),
+                evaluator: package.identity.evaluator.clone(),
+                backend: package.identity.backend.clone(),
+                tolerance: package.identity.tolerance.clone(),
+                schema: package.identity.schema.clone(),
+                result_fingerprint: package.identity.result_fingerprint.clone(),
+            },
         }
     }
 
@@ -320,6 +395,171 @@ impl ExactBodyPackage {
             .iter()
             .find(|reference| reference.role() == Some(role))
     }
+
+    #[must_use]
+    pub fn mesh_export(&self, transform: Transform) -> ExactMeshExport {
+        mesh_export_from_view(self, transform)
+    }
+
+    #[must_use]
+    pub fn revolve(&self) -> Option<&crate::bottle_m6::ExactRevolvePackage> {
+        match self {
+            Self::Revolve(package) => Some(package),
+            Self::Rectangle(_) => None,
+        }
+    }
+}
+
+impl ExactBodyView for ExactBodyPackage {
+    fn bounds_mm(&self) -> [[f64; 3]; 2] {
+        self.bounds_mm()
+    }
+
+    fn vertex_count(&self) -> usize {
+        self.vertices().len()
+    }
+
+    fn vertex_position_mm(&self, index: usize) -> [f64; 3] {
+        self.vertices()[index].position_mm
+    }
+
+    fn triangle_count(&self) -> usize {
+        self.triangles().len()
+    }
+
+    fn triangle_indices(&self, index: usize) -> [u32; 3] {
+        self.triangles()[index].vertex_indices
+    }
+
+    fn triangle_group(&self, index: usize) -> &'static str {
+        self.triangles()[index]
+            .face_role
+            .map_or("unreferenced", ExactFaceRole::semantic_role)
+    }
+
+    fn tolerance(&self) -> &str {
+        match self {
+            Self::Rectangle(package) => &package.identity.tolerance,
+            Self::Revolve(package) => &package.identity.tolerance,
+        }
+    }
+
+    fn source_digest(&self) -> &str {
+        match self {
+            Self::Rectangle(package) => &package.identity.source_digest,
+            Self::Revolve(package) => &package.identity.source_digest,
+        }
+    }
+
+    fn producer_identity(&self) -> String {
+        format!("producer_feature_id={}", self.producer_feature_id().0)
+    }
+
+    fn result_fingerprint(&self) -> &str {
+        match self {
+            Self::Rectangle(package) => &package.identity.result_fingerprint,
+            Self::Revolve(package) => &package.identity.result_fingerprint,
+        }
+    }
+}
+
+impl ExactBodyView for BeamExactPiecePackage {
+    fn bounds_mm(&self) -> [[f64; 3]; 2] {
+        [self.bounds_mm.min(), self.bounds_mm.max()]
+    }
+
+    fn vertex_count(&self) -> usize {
+        self.vertices.len()
+    }
+
+    fn vertex_position_mm(&self, index: usize) -> [f64; 3] {
+        self.vertices[index].position_mm
+    }
+
+    fn triangle_count(&self) -> usize {
+        self.triangles.len()
+    }
+
+    fn triangle_indices(&self, index: usize) -> [u32; 3] {
+        self.triangles[index].vertex_indices
+    }
+
+    fn triangle_group(&self, _index: usize) -> &'static str {
+        "unreferenced"
+    }
+
+    fn tolerance(&self) -> &str {
+        &self.identity.tolerance
+    }
+
+    fn source_digest(&self) -> &str {
+        &self.identity.source_digest
+    }
+
+    fn producer_identity(&self) -> String {
+        format!("producer_piece_key={}", self.identity.piece_key)
+    }
+
+    fn result_fingerprint(&self) -> &str {
+        &self.identity.result_fingerprint
+    }
+}
+
+fn mesh_export_from_view(
+    view: &(impl ExactBodyView + ?Sized),
+    transform: Transform,
+) -> ExactMeshExport {
+    let matrix = transform.matrix();
+    let determinant = matrix[0] * (matrix[5] * matrix[10] - matrix[6] * matrix[9])
+        - matrix[1] * (matrix[4] * matrix[10] - matrix[6] * matrix[8])
+        + matrix[2] * (matrix[4] * matrix[9] - matrix[5] * matrix[8]);
+    let loss_report = format!(
+        "authority=accepted exact OCCT B-Rep\nconversion=exact-body-to-world-space-mesh\nloss=exact topology, analytic surfaces, feature editability, and durable face identity are not preserved by OBJ\ntolerance={}\nsource_digest={}\n{}\nresult_fingerprint={}\n",
+        view.tolerance(),
+        view.source_digest(),
+        view.producer_identity(),
+        view.result_fingerprint()
+    );
+    let mut mesh_obj = format!(
+        "# Ketchup exact body OBJ\n# {}# canonical_authority=canonical source identity and transform\n",
+        loss_report.replace('\n', "\n# ")
+    );
+    for index in 0..view.vertex_count() {
+        let [x, y, z] = transform_exact_point(matrix, view.vertex_position_mm(index));
+        writeln!(mesh_obj, "v {x:.17} {y:.17} {z:.17}").expect("writing to a String cannot fail");
+    }
+    let mut current_group = None;
+    for triangle_index in 0..view.triangle_count() {
+        let group = view.triangle_group(triangle_index);
+        if current_group != Some(group) {
+            writeln!(mesh_obj, "g {group}").expect("writing to a String cannot fail");
+            current_group = Some(group);
+        }
+        let mut indices = view.triangle_indices(triangle_index);
+        if determinant < 0.0 {
+            indices.swap(1, 2);
+        }
+        writeln!(
+            mesh_obj,
+            "f {} {} {}",
+            indices[0] + 1,
+            indices[1] + 1,
+            indices[2] + 1
+        )
+        .expect("writing to a String cannot fail");
+    }
+    ExactMeshExport {
+        mesh_obj,
+        loss_report,
+    }
+}
+
+fn transform_exact_point(matrix: &[f64; 16], point: [f64; 3]) -> [f64; 3] {
+    [
+        matrix[0] * point[0] + matrix[1] * point[1] + matrix[2] * point[2] + matrix[3],
+        matrix[4] * point[0] + matrix[5] * point[1] + matrix[6] * point[2] + matrix[7],
+        matrix[8] * point[0] + matrix[9] * point[1] + matrix[10] * point[2] + matrix[11],
+    ]
 }
 
 impl From<ExactRenderPackage> for ExactBodyPackage {
@@ -331,6 +571,159 @@ impl From<ExactRenderPackage> for ExactBodyPackage {
 impl From<crate::bottle_m6::ExactRevolvePackage> for ExactBodyPackage {
     fn from(package: crate::bottle_m6::ExactRevolvePackage) -> Self {
         Self::Revolve(package)
+    }
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct ExactResultKey {
+    pub document_id: DocumentId,
+    pub source_revision: u64,
+    pub source_digest: String,
+    pub definition_id: DefinitionId,
+    pub producer_feature_id: FeatureId,
+    pub canonical_input_digest: String,
+    pub exact_input_digest: String,
+    pub evaluator: String,
+    pub backend: String,
+    pub tolerance: String,
+    pub schema: String,
+    pub result_fingerprint: String,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct ExactResultRegistry {
+    packages: BTreeMap<ExactResultKey, Arc<ExactBodyPackage>>,
+    beam_packages: BTreeMap<BeamExactResultKey, Arc<BeamExactPiecePackage>>,
+}
+
+impl ExactResultRegistry {
+    pub fn accept(
+        snapshot: &Snapshot,
+        packages: impl IntoIterator<Item = Arc<ExactBodyPackage>>,
+    ) -> Result<Self, ExactProductError> {
+        let mut registry = Self::default();
+        for package in packages {
+            registry.insert_current(snapshot, package)?;
+        }
+        Ok(registry)
+    }
+
+    pub fn accept_beam(
+        snapshot: &Snapshot,
+        packages: impl IntoIterator<Item = Arc<BeamExactPiecePackage>>,
+    ) -> Result<Self, ExactProductError> {
+        let mut registry = Self::default();
+        for package in packages {
+            registry.insert_current_beam(snapshot, package)?;
+        }
+        Ok(registry)
+    }
+
+    pub fn insert_current(
+        &mut self,
+        snapshot: &Snapshot,
+        package: Arc<ExactBodyPackage>,
+    ) -> Result<(), ExactProductError> {
+        if !package.is_current(snapshot) {
+            return Err(ExactProductError::StaleResult);
+        }
+        let key = package.result_key();
+        if self.packages.contains_key(&key) {
+            return Err(ExactProductError::DuplicateResult {
+                definition_id: key.definition_id,
+                producer_feature_id: key.producer_feature_id,
+            });
+        }
+        self.packages.insert(key, package);
+        Ok(())
+    }
+
+    pub fn insert_current_beam(
+        &mut self,
+        snapshot: &Snapshot,
+        package: Arc<BeamExactPiecePackage>,
+    ) -> Result<(), ExactProductError> {
+        if package.identity.document_id != snapshot.document_id()
+            || package.identity.source_revision != snapshot.revision_id()
+            || package.identity.source_digest != snapshot.canonical_digest()
+        {
+            return Err(ExactProductError::StaleResult);
+        }
+        if !package.has_valid_registry_evidence() {
+            return Err(ExactProductError::InvalidWorkerEvidence);
+        }
+        let key = package.result_key();
+        if self
+            .beam_packages
+            .keys()
+            .any(|existing| existing.piece == key.piece)
+        {
+            return Err(ExactProductError::DuplicateDerivedResult {
+                piece: key.piece.clone(),
+            });
+        }
+        self.beam_packages.insert(key, package);
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn get_result(&self, key: &ExactResultKey) -> Option<&Arc<ExactBodyPackage>> {
+        self.packages.get(key)
+    }
+
+    #[must_use]
+    pub fn get_beam_result(&self, key: &BeamExactResultKey) -> Option<&Arc<BeamExactPiecePackage>> {
+        self.beam_packages.get(key)
+    }
+
+    #[must_use]
+    pub fn get_beam(&self, piece: &DerivedIdentity) -> Option<&Arc<BeamExactPiecePackage>> {
+        let mut matches = self
+            .beam_packages
+            .iter()
+            .filter(|(key, _)| key.piece == *piece)
+            .map(|(_, package)| package);
+        let package = matches.next()?;
+        matches.next().is_none().then_some(package)
+    }
+
+    #[must_use]
+    pub fn get(&self, definition_id: &DefinitionId) -> Option<&Arc<ExactBodyPackage>> {
+        let mut matches = self
+            .packages
+            .iter()
+            .filter(|(key, _)| key.definition_id == *definition_id)
+            .map(|(_, package)| package);
+        let package = matches.next()?;
+        matches.next().is_none().then_some(package)
+    }
+
+    pub fn values(&self) -> impl Iterator<Item = &Arc<ExactBodyPackage>> {
+        self.packages.values()
+    }
+
+    pub fn beam_values(&self) -> impl Iterator<Item = &Arc<BeamExactPiecePackage>> {
+        self.beam_packages.values()
+    }
+
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.packages.len()
+    }
+
+    #[must_use]
+    pub fn beam_len(&self) -> usize {
+        self.beam_packages.len()
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.packages.is_empty()
+    }
+
+    pub fn clear(&mut self) {
+        self.packages.clear();
+        self.beam_packages.clear();
     }
 }
 
@@ -347,13 +740,13 @@ impl ExactRenderPackage {
         self.identity.document_id == snapshot.document_id()
             && self.identity.source_revision == snapshot.revision_id()
             && self.identity.source_digest == snapshot.canonical_digest()
-            && ExactRectangleRequest::from_snapshot(snapshot, self.identity.definition_id)
+            && ExactFeatureChainRequest::from_snapshot(snapshot, self.identity.definition_id)
                 .is_ok_and(|request| self.validate_for_request(&request).is_ok())
     }
 
     pub fn validate_for_request(
         &self,
-        request: &ExactRectangleRequest,
+        request: &ExactFeatureChainRequest,
     ) -> Result<(), ExactProductError> {
         let expected_roles = request.expected_face_roles();
         let mut actual_roles = self
@@ -365,14 +758,14 @@ impl ExactRenderPackage {
         actual_roles.sort_unstable();
         let mut sorted_expected = expected_roles.to_vec();
         sorted_expected.sort_unstable();
-        let expected_counts = if request.through_cut.is_some() {
-            (16, 32)
-        } else {
-            (8, 12)
-        };
+        let is_cut = request
+            .boolean
+            .as_ref()
+            .is_some_and(|boolean| boolean.operation == BooleanOperation::Cut);
+        let expected_counts = if is_cut { (16, 32) } else { (8, 12) };
         let expected_triangle_roles = expected_roles.iter().all(|role| {
             let expected = match role {
-                ExactFaceRole::Top | ExactFaceRole::Bottom if request.through_cut.is_some() => 8,
+                ExactFaceRole::Top | ExactFaceRole::Bottom if is_cut => 8,
                 _ => 2,
             };
             self.triangles
@@ -427,8 +820,11 @@ pub struct AssemblySelectionTarget {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ExactThroughCutRequest {
+pub struct ExactBooleanRequest {
     pub feature_id: FeatureId,
+    pub operation: BooleanOperation,
+    pub target_feature_id: FeatureId,
+    pub tool_feature_id: FeatureId,
     pub profile_feature_id: FeatureId,
     pub min_x_bits: u64,
     pub min_y_bits: u64,
@@ -437,7 +833,7 @@ pub struct ExactThroughCutRequest {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ExactRectangleRequest {
+pub struct ExactFeatureChainRequest {
     pub document_id: DocumentId,
     pub source_revision: u64,
     pub source_digest: String,
@@ -447,11 +843,11 @@ pub struct ExactRectangleRequest {
     pub width_bits: u64,
     pub depth_bits: u64,
     pub height_bits: u64,
-    pub through_cut: Option<ExactThroughCutRequest>,
+    pub boolean: Option<ExactBooleanRequest>,
     pub canonical_input_digest: String,
 }
 
-impl ExactRectangleRequest {
+impl ExactFeatureChainRequest {
     pub fn from_snapshot(
         snapshot: &Snapshot,
         definition_id: DefinitionId,
@@ -460,9 +856,15 @@ impl ExactRectangleRequest {
             .definition(definition_id)
             .ok_or(ExactProductError::DefinitionNotFound(definition_id))?;
         if definition.feature_ids().iter().any(|feature_id| {
-            snapshot
-                .feature(*feature_id)
-                .is_some_and(|feature| matches!(feature.kind(), FeatureKind::Revolve { .. }))
+            snapshot.feature(*feature_id).is_some_and(|feature| {
+                matches!(
+                    feature.kind(),
+                    FeatureKind::BottleProfileControl { .. }
+                        | FeatureKind::Revolve { .. }
+                        | FeatureKind::Shell { .. }
+                        | FeatureKind::BottleEdgeFinish { .. }
+                )
+            })
         }) {
             return Err(ExactProductError::UnsupportedDefinition);
         }
@@ -471,80 +873,149 @@ impl ExactRectangleRequest {
             .iter()
             .filter_map(|id| {
                 let feature = snapshot.feature(*id)?;
-                match feature.kind() {
-                    FeatureKind::Extrusion { profile, height } => {
-                        Some((*id, *profile, height.millimetres()))
-                    }
-                    FeatureKind::Profile { .. }
-                    | FeatureKind::BottleProfileControl { .. }
-                    | FeatureKind::Revolve { .. }
-                    | FeatureKind::Shell { .. }
-                    | FeatureKind::BottleEdgeFinish { .. }
-                    | FeatureKind::ThroughCut { .. } => None,
-                }
+                let FeatureKind::Extrusion { profile, height } = feature.kind() else {
+                    return None;
+                };
+                Some((*id, *profile, height.millimetres()))
             })
             .collect::<Vec<_>>();
-        let [(extrusion_feature_id, profile_feature_id, height_mm)] = extrusions.as_slice() else {
-            return Err(ExactProductError::UnsupportedDefinition);
-        };
+        let legacy_cuts = definition
+            .feature_ids()
+            .iter()
+            .filter_map(|id| {
+                let feature = snapshot.feature(*id)?;
+                let FeatureKind::ThroughCut { target, profile } = feature.kind() else {
+                    return None;
+                };
+                Some((*id, *target, *profile))
+            })
+            .collect::<Vec<_>>();
+        let legacy_through_cut = !legacy_cuts.is_empty();
+        let booleans = definition
+            .feature_ids()
+            .iter()
+            .filter_map(|id| {
+                let feature = snapshot.feature(*id)?;
+                let FeatureKind::Boolean {
+                    operation,
+                    target,
+                    tool,
+                } = feature.kind()
+                else {
+                    return None;
+                };
+                Some((*id, *operation, *target, *tool))
+            })
+            .collect::<Vec<_>>();
+        let (extrusion_feature_id, profile_feature_id, height_mm, boolean_source) =
+            match (legacy_cuts.as_slice(), booleans.as_slice()) {
+                ([], []) => {
+                    let [(extrusion, profile, height)] = extrusions.as_slice() else {
+                        return Err(ExactProductError::UnsupportedDefinition);
+                    };
+                    (*extrusion, *profile, *height, None)
+                }
+                ([(feature_id, target, profile)], []) => {
+                    let [(extrusion, base_profile, height)] = extrusions.as_slice() else {
+                        return Err(ExactProductError::UnsupportedDefinition);
+                    };
+                    if target != extrusion {
+                        return Err(ExactProductError::UnsupportedDefinition);
+                    }
+                    (
+                        *extrusion,
+                        *base_profile,
+                        *height,
+                        Some((
+                            *feature_id,
+                            BooleanOperation::Cut,
+                            *target,
+                            *profile,
+                            *profile,
+                            *height,
+                        )),
+                    )
+                }
+                ([], [(feature_id, operation, target, tool)]) => {
+                    if extrusions.len() != 2 {
+                        return Err(ExactProductError::UnsupportedBoolean(*operation));
+                    }
+                    let (target_id, target_profile, target_height) = extrusions
+                        .iter()
+                        .find(|(id, _, _)| id == target)
+                        .copied()
+                        .ok_or(ExactProductError::UnsupportedDefinition)?;
+                    let (tool_id, tool_profile, tool_height) = extrusions
+                        .iter()
+                        .find(|(id, _, _)| id == tool)
+                        .copied()
+                        .ok_or(ExactProductError::UnsupportedDefinition)?;
+                    if target_height.to_bits() != tool_height.to_bits() {
+                        return Err(ExactProductError::UnsupportedBoolean(*operation));
+                    }
+                    (
+                        target_id,
+                        target_profile,
+                        target_height,
+                        Some((
+                            *feature_id,
+                            *operation,
+                            target_id,
+                            tool_id,
+                            tool_profile,
+                            tool_height,
+                        )),
+                    )
+                }
+                _ => return Err(ExactProductError::UnsupportedDefinition),
+            };
         let profile = snapshot
-            .feature(*profile_feature_id)
-            .ok_or(ExactProductError::ProfileNotFound(*profile_feature_id))?;
-        if profile.definition_id() != definition_id {
-            return Err(ExactProductError::UnsupportedDefinition);
-        }
+            .feature(profile_feature_id)
+            .ok_or(ExactProductError::ProfileNotFound(profile_feature_id))?;
         let FeatureKind::Profile { points_mm } = profile.kind() else {
             return Err(ExactProductError::UnsupportedProfile);
         };
         let (width_mm, depth_mm) =
             origin_rectangle_size(points_mm).ok_or(ExactProductError::UnsupportedProfile)?;
-        if !height_mm.is_finite() || *height_mm <= 0.0 {
+        if !height_mm.is_finite() || height_mm <= 0.0 {
             return Err(ExactProductError::UnsupportedExtrusion);
         }
-        let cuts = definition
-            .feature_ids()
-            .iter()
-            .filter_map(|id| {
-                let feature = snapshot.feature(*id)?;
-                match feature.kind() {
-                    FeatureKind::ThroughCut { target, profile } => Some((*id, *target, *profile)),
-                    FeatureKind::Profile { .. }
-                    | FeatureKind::Extrusion { .. }
-                    | FeatureKind::BottleProfileControl { .. }
-                    | FeatureKind::Revolve { .. }
-                    | FeatureKind::Shell { .. }
-                    | FeatureKind::BottleEdgeFinish { .. } => None,
-                }
-            })
-            .collect::<Vec<_>>();
-        let through_cut = match cuts.as_slice() {
-            [] => None,
-            [(feature_id, target, cut_profile_id)] if target == extrusion_feature_id => {
-                let cut_profile = snapshot
-                    .feature(*cut_profile_id)
-                    .ok_or(ExactProductError::ProfileNotFound(*cut_profile_id))?;
-                let FeatureKind::Profile {
-                    points_mm: cut_points,
-                } = cut_profile.kind()
-                else {
-                    return Err(ExactProductError::UnsupportedProfile);
-                };
-                let [min_x, min_y, max_x, max_y] =
-                    rectangle_bounds(cut_points).ok_or(ExactProductError::UnsupportedThroughCut)?;
-                if min_x <= 0.0 || min_y <= 0.0 || max_x >= width_mm || max_y >= depth_mm {
-                    return Err(ExactProductError::UnsupportedThroughCut);
-                }
-                Some(ExactThroughCutRequest {
-                    feature_id: *feature_id,
-                    profile_feature_id: *cut_profile_id,
-                    min_x_bits: min_x.to_bits(),
-                    min_y_bits: min_y.to_bits(),
-                    width_bits: (max_x - min_x).to_bits(),
-                    depth_bits: (max_y - min_y).to_bits(),
-                })
-            }
-            _ => return Err(ExactProductError::UnsupportedDefinition),
-        };
+        let boolean = boolean_source
+            .map(
+                |(feature_id, operation, target, tool, tool_profile_id, tool_height)| {
+                    let tool_profile = snapshot
+                        .feature(tool_profile_id)
+                        .ok_or(ExactProductError::ProfileNotFound(tool_profile_id))?;
+                    let FeatureKind::Profile {
+                        points_mm: tool_points,
+                    } = tool_profile.kind()
+                    else {
+                        return Err(ExactProductError::UnsupportedProfile);
+                    };
+                    let [min_x, min_y, max_x, max_y] = rectangle_bounds(tool_points)
+                        .ok_or(ExactProductError::UnsupportedBoolean(operation))?;
+                    if tool_height.to_bits() != height_mm.to_bits()
+                        || min_x <= 0.0
+                        || min_y <= 0.0
+                        || max_x >= width_mm
+                        || max_y >= depth_mm
+                    {
+                        return Err(ExactProductError::UnsupportedBoolean(operation));
+                    }
+                    Ok(ExactBooleanRequest {
+                        feature_id,
+                        operation,
+                        target_feature_id: target,
+                        tool_feature_id: tool,
+                        profile_feature_id: tool_profile_id,
+                        min_x_bits: min_x.to_bits(),
+                        min_y_bits: min_y.to_bits(),
+                        width_bits: (max_x - min_x).to_bits(),
+                        depth_bits: (max_y - min_y).to_bits(),
+                    })
+                },
+            )
+            .transpose()?;
         let source_digest = snapshot.canonical_digest();
         let canonical_input = format!(
             "{}:{}:{}:{}:{}:{:016x}:{:016x}:{:016x}:{}",
@@ -558,18 +1029,36 @@ impl ExactRectangleRequest {
             height_mm.to_bits(),
             source_digest
         );
-        let canonical_input_digest = through_cut.as_ref().map_or_else(
+        let canonical_input_digest = boolean.as_ref().map_or_else(
             || digest(&canonical_input),
             |cut| {
-                digest(&format!(
-                    "{canonical_input}:{}:{}:{:016x}:{:016x}:{:016x}:{:016x}",
-                    cut.feature_id.0,
-                    cut.profile_feature_id.0,
-                    cut.min_x_bits,
-                    cut.min_y_bits,
-                    cut.width_bits,
-                    cut.depth_bits
-                ))
+                if legacy_through_cut {
+                    digest(&format!(
+                        "{canonical_input}:{}:{}:{:016x}:{:016x}:{:016x}:{:016x}",
+                        cut.feature_id.0,
+                        cut.profile_feature_id.0,
+                        cut.min_x_bits,
+                        cut.min_y_bits,
+                        cut.width_bits,
+                        cut.depth_bits
+                    ))
+                } else {
+                    digest(&format!(
+                        "{canonical_input}:{}:{}:{}:{}:{}:{:016x}:{:016x}:{:016x}:{:016x}",
+                        cut.feature_id.0,
+                        match cut.operation {
+                            BooleanOperation::Cut => "cut",
+                            BooleanOperation::Union => "union",
+                        },
+                        cut.target_feature_id.0,
+                        cut.tool_feature_id.0,
+                        cut.profile_feature_id.0,
+                        cut.min_x_bits,
+                        cut.min_y_bits,
+                        cut.width_bits,
+                        cut.depth_bits
+                    ))
+                }
             },
         );
         Ok(Self {
@@ -577,12 +1066,12 @@ impl ExactRectangleRequest {
             source_revision: snapshot.revision_id(),
             source_digest,
             definition_id,
-            profile_feature_id: *profile_feature_id,
-            extrusion_feature_id: *extrusion_feature_id,
+            profile_feature_id,
+            extrusion_feature_id,
             width_bits: width_mm.to_bits(),
             depth_bits: depth_mm.to_bits(),
             height_bits: height_mm.to_bits(),
-            through_cut,
+            boolean,
             canonical_input_digest,
         })
     }
@@ -598,17 +1087,17 @@ impl ExactRectangleRequest {
 
     #[must_use]
     pub fn producer_feature_id(&self) -> FeatureId {
-        self.through_cut
+        self.boolean
             .as_ref()
             .map_or(self.extrusion_feature_id, |cut| cut.feature_id)
     }
 
     #[must_use]
     pub fn evaluator(&self) -> &'static str {
-        if self.through_cut.is_some() {
-            EXACT_THROUGH_CUT_EVALUATOR_V1
-        } else {
-            EXACT_RECTANGLE_EVALUATOR_V1
+        match self.boolean.as_ref().map(|boolean| boolean.operation) {
+            Some(BooleanOperation::Cut) => EXACT_THROUGH_CUT_EVALUATOR_V1,
+            Some(BooleanOperation::Union) => EXACT_BOOLEAN_UNION_EVALUATOR_V1,
+            None => EXACT_RECTANGLE_EVALUATOR_V1,
         }
     }
 
@@ -621,9 +1110,7 @@ impl ExactRectangleRequest {
             ExactFaceRole::CutWest
             | ExactFaceRole::CutEast
             | ExactFaceRole::CutSouth
-            | ExactFaceRole::CutNorth => {
-                self.through_cut.as_ref().map(|cut| cut.profile_feature_id)
-            }
+            | ExactFaceRole::CutNorth => self.boolean.as_ref().map(|cut| cut.profile_feature_id),
             ExactFaceRole::RevolveBottom
             | ExactFaceRole::RevolveBody
             | ExactFaceRole::RevolveShoulder
@@ -642,7 +1129,11 @@ impl ExactRectangleRequest {
     }
 
     fn expected_face_roles(&self) -> &'static [ExactFaceRole] {
-        if self.through_cut.is_some() {
+        if self
+            .boolean
+            .as_ref()
+            .is_some_and(|boolean| boolean.operation == BooleanOperation::Cut)
+        {
             &THROUGH_CUT_FACE_ROLES
         } else {
             &EXTRUSION_FACE_ROLES
@@ -658,8 +1149,17 @@ pub enum ExactProductError {
     UnsupportedProfile,
     UnsupportedExtrusion,
     UnsupportedThroughCut,
+    UnsupportedBoolean(BooleanOperation),
     UnsupportedShell,
     InvalidWorkerEvidence,
+    StaleResult,
+    DuplicateResult {
+        definition_id: DefinitionId,
+        producer_feature_id: FeatureId,
+    },
+    DuplicateDerivedResult {
+        piece: DerivedIdentity,
+    },
 }
 
 impl fmt::Display for ExactProductError {
@@ -679,11 +1179,29 @@ impl fmt::Display for ExactProductError {
             Self::UnsupportedThroughCut => formatter.write_str(
                 "exact M3 supports one strictly bounded axis-aligned rectangle through-cut",
             ),
+            Self::UnsupportedBoolean(operation) => write!(
+                formatter,
+                "exact feature-chain evaluator does not support {operation:?} in this envelope"
+            ),
             Self::UnsupportedShell => formatter
                 .write_str("exact M6 shell thickness is outside the conservative bottle envelope"),
             Self::InvalidWorkerEvidence => {
                 formatter.write_str("exact worker evidence does not match the canonical request")
             }
+            Self::StaleResult => formatter.write_str("exact result is stale for the snapshot"),
+            Self::DuplicateResult {
+                definition_id,
+                producer_feature_id,
+            } => write!(
+                formatter,
+                "duplicate exact result for definition {} producer {}",
+                definition_id.0, producer_feature_id.0
+            ),
+            Self::DuplicateDerivedResult { piece } => write!(
+                formatter,
+                "duplicate exact result for derived rule {} slot path",
+                piece.root_rule_node_id.0
+            ),
         }
     }
 }
@@ -691,7 +1209,7 @@ impl fmt::Display for ExactProductError {
 impl std::error::Error for ExactProductError {}
 
 pub fn build_box_render_package<const N: usize>(
-    request: &ExactRectangleRequest,
+    request: &ExactFeatureChainRequest,
     exact_input_digest: String,
     result_fingerprint: String,
     backend: String,
@@ -784,7 +1302,7 @@ pub fn build_box_render_package<const N: usize>(
 }
 
 fn valid_evidence_roles<const N: usize>(
-    request: &ExactRectangleRequest,
+    request: &ExactFeatureChainRequest,
     evidence: &[(ExactFaceRole, String, String); N],
 ) -> bool {
     let mut roles = evidence
@@ -814,7 +1332,7 @@ fn valid_evidence_roles<const N: usize>(
 }
 
 fn render_mesh(
-    request: &ExactRectangleRequest,
+    request: &ExactFeatureChainRequest,
 ) -> Result<(Vec<ExactVertex>, Vec<ExactTriangle>), ExactProductError> {
     let [width, depth, height] = request.dimensions_mm();
     if [width, depth, height]
@@ -833,7 +1351,11 @@ fn render_mesh(
         [width, depth, height],
         [0.0, depth, height],
     ];
-    let Some(cut) = &request.through_cut else {
+    let Some(cut) = request
+        .boolean
+        .as_ref()
+        .filter(|boolean| boolean.operation == BooleanOperation::Cut)
+    else {
         let vertices = outer
             .map(|position_mm| ExactVertex { position_mm })
             .to_vec();

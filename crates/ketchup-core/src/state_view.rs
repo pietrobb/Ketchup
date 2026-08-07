@@ -545,6 +545,30 @@ pub fn encode_semantic_state_with_results(
                 )
                 .unwrap();
             }
+            crate::document::FeatureKind::Boolean {
+                operation,
+                target,
+                tool,
+            } => {
+                let operation = match operation {
+                    crate::document::BooleanOperation::Cut => "cut",
+                    crate::document::BooleanOperation::Union => "union",
+                };
+                writeln!(complete, "feature.{}.kind=boolean", feature.id().0).unwrap();
+                writeln!(complete, "feature.{}.operation={operation}", feature.id().0).unwrap();
+                writeln!(complete, "feature.{}.target={}", feature.id().0, target.0).unwrap();
+                writeln!(complete, "feature.{}.tool={}", feature.id().0, tool.0).unwrap();
+                writeln!(
+                    agent,
+                    "feature.{}=name:{:?},kind:boolean,operation:{operation},definition:{},target:{},tool:{}",
+                    feature.id().0,
+                    feature.name(),
+                    feature.definition_id().0,
+                    target.0,
+                    tool.0
+                )
+                .unwrap();
+            }
         }
     }
     for occurrence in snapshot.occurrences() {

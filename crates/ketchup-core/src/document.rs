@@ -1,5 +1,5 @@
 use crate::bottle_m6::{ExactRevolveRequest, reference_matches_revolve_request};
-use crate::exact_product::{BodySubshapeRef, ExactRectangleRequest};
+use crate::exact_product::{BodySubshapeRef, ExactFeatureChainRequest};
 pub use crate::graph::{
     CanonicalOverride, DerivedIdentity, DerivedOutput, EvaluationIdentity, EvaluationReport,
     EvaluationStatus, EvaluatorNode, EvaluatorNodeKind, GraphError, OverrideMergePolicy,
@@ -172,6 +172,12 @@ pub enum BottleEdgeFinishKind {
     Chamfer,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BooleanOperation {
+    Cut,
+    Union,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum FeatureKind {
     Profile {
@@ -202,6 +208,11 @@ pub enum FeatureKind {
     ThroughCut {
         target: FeatureId,
         profile: FeatureId,
+    },
+    Boolean {
+        operation: BooleanOperation,
+        target: FeatureId,
+        tool: FeatureId,
     },
 }
 
@@ -1421,7 +1432,7 @@ impl DocumentStore {
             return Err(ReferenceEvidenceError::ProducerDefinitionMismatch);
         }
         let matches_request =
-            ExactRectangleRequest::from_snapshot(&current.snapshot, reference.definition_id)
+            ExactFeatureChainRequest::from_snapshot(&current.snapshot, reference.definition_id)
                 .is_ok_and(|request| reference.matches_request(&request))
                 || ExactRevolveRequest::from_snapshot(&current.snapshot, reference.definition_id)
                     .is_ok_and(|request| reference_matches_revolve_request(&reference, &request));
@@ -2802,7 +2813,9 @@ fn validate_feature_kind(kind: &FeatureKind) -> Result<(), CanonicalError> {
             }
             Ok(())
         }
-        FeatureKind::Revolve { .. } | FeatureKind::ThroughCut { .. } => Ok(()),
+        FeatureKind::Revolve { .. }
+        | FeatureKind::ThroughCut { .. }
+        | FeatureKind::Boolean { .. } => Ok(()),
     }
 }
 
@@ -3084,6 +3097,17 @@ fn clone_definition_and_repoint(
                 profile: *mapping
                     .get(profile)
                     .ok_or(CanonicalError::InvalidFeatureMap)?,
+            },
+            FeatureKind::Boolean {
+                operation,
+                target,
+                tool,
+            } => FeatureKind::Boolean {
+                operation: *operation,
+                target: *mapping
+                    .get(target)
+                    .ok_or(CanonicalError::InvalidFeatureMap)?,
+                tool: *mapping.get(tool).ok_or(CanonicalError::InvalidFeatureMap)?,
             },
         };
         cloned_features.push(Arc::new(Feature {
@@ -3640,6 +3664,48 @@ fn validate_product(product: &ProductModel) -> Result<(), CanonicalError> {
                     return Err(CanonicalError::InvalidFeatureOwnership(feature.id));
                 }
             }
+            FeatureKind::Boolean { target, tool, .. } => {
+                let target_feature = product
+                    .features
+                    .get(&target)
+                    .ok_or(CanonicalError::FeatureNotFound(target))?;
+                let tool_feature = product
+                    .features
+                    .get(&tool)
+                    .ok_or(CanonicalError::FeatureNotFound(tool))?;
+                let produces_body = |kind: &FeatureKind| {
+                    matches!(
+                        kind,
+                        FeatureKind::Extrusion { .. }
+                            | FeatureKind::Revolve { .. }
+                            | FeatureKind::Shell { .. }
+                            | FeatureKind::BottleEdgeFinish { .. }
+                            | FeatureKind::ThroughCut { .. }
+                            | FeatureKind::Boolean { .. }
+                    )
+                };
+                let feature_position = definition
+                    .feature_ids
+                    .iter()
+                    .position(|candidate| *candidate == feature.id)
+                    .expect("validated definition contains feature");
+                let inputs_precede_boolean = [target, tool].into_iter().all(|input| {
+                    definition
+                        .feature_ids
+                        .iter()
+                        .position(|candidate| *candidate == input)
+                        .is_some_and(|position| position < feature_position)
+                });
+                if target == tool
+                    || target_feature.definition_id != feature.definition_id
+                    || tool_feature.definition_id != feature.definition_id
+                    || !produces_body(&target_feature.kind)
+                    || !produces_body(&tool_feature.kind)
+                    || !inputs_precede_boolean
+                {
+                    return Err(CanonicalError::InvalidFeatureOwnership(feature.id));
+                }
+            }
             FeatureKind::Profile { .. } => {}
         }
     }
@@ -3963,6 +4029,10 @@ fn authoritative_dependencies(
                         add_feature_dependency_closure(snapshot, *target, &mut dependencies);
                         add_feature_dependency_closure(snapshot, *profile, &mut dependencies);
                     }
+                    FeatureKind::Boolean { target, tool, .. } => {
+                        add_feature_dependency_closure(snapshot, *target, &mut dependencies);
+                        add_feature_dependency_closure(snapshot, *tool, &mut dependencies);
+                    }
                     FeatureKind::Shell { target, .. }
                     | FeatureKind::BottleEdgeFinish { target, .. } => {
                         add_feature_dependency_closure(snapshot, *target, &mut dependencies);
@@ -4116,6 +4186,10 @@ fn add_feature_dependency_closure(
             FeatureKind::ThroughCut { target, profile } => {
                 add_feature_dependency_closure(snapshot, *target, dependencies);
                 add_feature_dependency_closure(snapshot, *profile, dependencies);
+            }
+            FeatureKind::Boolean { target, tool, .. } => {
+                add_feature_dependency_closure(snapshot, *target, dependencies);
+                add_feature_dependency_closure(snapshot, *tool, dependencies);
             }
             FeatureKind::Shell { target, .. } | FeatureKind::BottleEdgeFinish { target, .. } => {
                 add_feature_dependency_closure(snapshot, *target, dependencies);
@@ -4362,6 +4436,19 @@ impl StableDigest {
                 self.u64(target.0);
                 self.u64(profile.0);
             }
+            FeatureKind::Boolean {
+                operation,
+                target,
+                tool,
+            } => {
+                self.byte(8);
+                self.byte(match operation {
+                    BooleanOperation::Cut => 1,
+                    BooleanOperation::Union => 2,
+                });
+                self.u64(target.0);
+                self.u64(tool.0);
+            }
             FeatureKind::Revolve { profile } => {
                 self.byte(4);
                 self.u64(profile.0);
@@ -4579,6 +4666,9 @@ impl StableDigest {
                         FeatureKind::ThroughCut { target, profile }
                             if target == id || profile == id =>
                         {
+                            Some(feature.id)
+                        }
+                        FeatureKind::Boolean { target, tool, .. } if target == id || tool == id => {
                             Some(feature.id)
                         }
                         _ => None,
