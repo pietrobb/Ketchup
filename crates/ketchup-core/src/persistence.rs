@@ -7,7 +7,8 @@ use std::sync::Arc;
 
 use crate::document::{
     BooleanOperation, BottleEdgeFinishKind, CanonicalError, Definition, DefinitionId, Dimension,
-    DocumentStore, EvaluatorNode, Feature, FeatureId, FeatureKind, FeatureParameterBinding,
+    DocumentStore, EvaluationIdentity, EvaluatorNode, Feature, FeatureId, FeatureKind,
+    FeatureParameterBinding, FeatureParameterFreshnessAudit, FeatureParameterProvenance,
     FeatureParameterSlot, FeatureParameterTarget, Group, GroupId, LocalGroup, LocalGroupId,
     LocalGroupKey, LocalOccurrence, LocalOccurrenceId, LocalOccurrenceKey, NodeId, Occurrence,
     OccurrenceId, ProductModel, Snapshot, TagId, Transform, UnitSystem,
@@ -20,7 +21,8 @@ use crate::graph::{
 use crate::prismatic::{Aabb, CanonicalJoint, JointId};
 
 const MAGIC: &[u8; 10] = b"KETCHUPDOC";
-const CURRENT_SCHEMA: u16 = 10;
+const CURRENT_SCHEMA: u16 = 11;
+const PARAMETRIC_PROVENANCE_SCHEMA: u16 = 11;
 const PARAMETRIC_BINDING_SCHEMA: u16 = 10;
 const BOOLEAN_SCHEMA: u16 = 9;
 const BOTTLE_FINISH_SCHEMA: u16 = 8;
@@ -43,6 +45,7 @@ struct ProductSchemaCapabilities {
     bottle_finish: bool,
     boolean: bool,
     parametric_bindings: bool,
+    parametric_provenance: bool,
 }
 
 impl ProductSchemaCapabilities {
@@ -55,6 +58,7 @@ impl ProductSchemaCapabilities {
         bottle_finish: false,
         boolean: false,
         parametric_bindings: false,
+        parametric_provenance: false,
     };
 
     const fn current(schema: u16) -> Self {
@@ -67,6 +71,7 @@ impl ProductSchemaCapabilities {
             bottle_finish: schema >= BOTTLE_FINISH_SCHEMA,
             boolean: schema >= BOOLEAN_SCHEMA,
             parametric_bindings: schema >= PARAMETRIC_BINDING_SCHEMA,
+            parametric_provenance: schema >= PARAMETRIC_PROVENANCE_SCHEMA,
         }
     }
 }
@@ -110,6 +115,7 @@ pub struct LoadAudit {
     pub source_schema: u16,
     pub migration_losses: Vec<MigrationLoss>,
     pub override_health: Vec<OverrideHealthAudit>,
+    pub feature_parameter_freshness: Vec<FeatureParameterFreshnessAudit>,
 }
 
 pub struct ReviewCandidate {
@@ -222,6 +228,12 @@ pub fn save(snapshot: &Snapshot) -> Vec<u8> {
     );
     for binding in product.feature_parameter_bindings.values() {
         write_feature_parameter_binding(&mut payload, binding);
+        if let Some(provenance) = product.feature_parameter_provenance.get(&binding.target) {
+            push_u8(&mut payload, 1);
+            write_feature_parameter_provenance(&mut payload, provenance);
+        } else {
+            push_u8(&mut payload, 0);
+        }
     }
 
     push_u32(&mut payload, product.definitions.len() as u32);
@@ -415,6 +427,24 @@ fn write_feature_parameter_binding(bytes: &mut Vec<u8>, binding: &FeatureParamet
     write_identity(bytes, &binding.derived_from);
 }
 
+fn write_feature_parameter_provenance(
+    bytes: &mut Vec<u8>,
+    provenance: &FeatureParameterProvenance,
+) {
+    push_string(bytes, &provenance.identity.evaluator);
+    push_string(bytes, &provenance.identity.schema);
+    push_string(bytes, &provenance.identity.tolerance);
+    if let Some(backend) = &provenance.identity.backend {
+        push_u8(bytes, 1);
+        push_string(bytes, backend);
+    } else {
+        push_u8(bytes, 0);
+    }
+    push_string(bytes, &provenance.input_digest);
+    push_string(bytes, &provenance.result_digest);
+    push_u64(bytes, provenance.applied_value_bits);
+}
+
 fn write_override(bytes: &mut Vec<u8>, value: &CanonicalOverride) {
     push_u64(bytes, value.id);
     push_u64(bytes, value.target.root_rule_node_id.0);
@@ -594,6 +624,7 @@ pub fn load(bytes: &[u8]) -> Result<LoadOutcome, PersistenceError> {
             | SHELL_SCHEMA
             | BOTTLE_FINISH_SCHEMA
             | BOOLEAN_SCHEMA
+            | PARAMETRIC_BINDING_SCHEMA
             | CURRENT_SCHEMA
     ) {
         return Err(PersistenceError::UnsupportedSchema(schema));
@@ -675,12 +706,16 @@ pub fn load(bytes: &[u8]) -> Result<LoadOutcome, PersistenceError> {
         || override_health.iter().any(|entry| {
             entry.audited != SlotResolution::Resolved || entry.audited != entry.stored
         });
+    let document = DocumentStore::from_product(revision_id, product)?;
+    let feature_parameter_freshness = document
+        .current()
+        .audit_feature_parameter_freshness(&EvaluationIdentity::default())?;
     let audit = LoadAudit {
         source_schema: schema,
         migration_losses,
         override_health,
+        feature_parameter_freshness,
     };
-    let document = DocumentStore::from_product(revision_id, product)?;
     let loaded_snapshot = document.current();
     for reference in loaded_snapshot.exact_reference_evidence() {
         let matches_request = crate::exact_product::ExactFeatureChainRequest::from_snapshot(
@@ -897,6 +932,30 @@ fn read_feature_parameter_binding(
     })
 }
 
+fn read_feature_parameter_provenance(
+    reader: &mut Reader<'_>,
+) -> Result<Option<FeatureParameterProvenance>, PersistenceError> {
+    match reader.u8()? {
+        0 => Ok(None),
+        1 => Ok(Some(FeatureParameterProvenance {
+            identity: EvaluationIdentity {
+                evaluator: reader.string()?,
+                schema: reader.string()?,
+                tolerance: reader.string()?,
+                backend: match reader.u8()? {
+                    0 => None,
+                    1 => Some(reader.string()?),
+                    value => return Err(PersistenceError::InvalidOptionalMarker(value)),
+                },
+            },
+            input_digest: reader.string()?,
+            result_digest: reader.string()?,
+            applied_value_bits: reader.u64()?,
+        })),
+        value => Err(PersistenceError::InvalidOptionalMarker(value)),
+    }
+}
+
 fn read_joint(reader: &mut Reader<'_>) -> Result<CanonicalJoint, PersistenceError> {
     let id = JointId(reader.u64()?);
     let participant_a = read_identity(reader)?;
@@ -1002,12 +1061,20 @@ fn read_product(
         if capabilities.parametric_bindings {
             for _ in 0..reader.count()? {
                 let binding = read_feature_parameter_binding(reader)?;
+                let target = binding.target;
                 if product
                     .feature_parameter_bindings
-                    .insert(binding.target, Arc::new(binding))
+                    .insert(target, Arc::new(binding))
                     .is_some()
                 {
                     return Err(PersistenceError::DuplicateFeatureParameterBinding);
+                }
+                if capabilities.parametric_provenance
+                    && let Some(provenance) = read_feature_parameter_provenance(reader)?
+                {
+                    product
+                        .feature_parameter_provenance
+                        .insert(target, Arc::new(provenance));
                 }
             }
         }
@@ -1244,6 +1311,7 @@ pub enum PersistenceError {
     InvalidOverrideMergePolicy,
     InvalidResolution(u8),
     InvalidReferenceStability(u8),
+    InvalidOptionalMarker(u8),
     InvalidParameterSlot(u8),
     InvalidExactReference,
     ChecksumMismatch,
@@ -1292,6 +1360,9 @@ impl fmt::Display for PersistenceError {
             }
             Self::InvalidReferenceStability(value) => {
                 write!(formatter, "exact reference stability {value} is invalid")
+            }
+            Self::InvalidOptionalMarker(value) => {
+                write!(formatter, "optional value marker {value} is invalid")
             }
             Self::InvalidParameterSlot(value) => {
                 write!(formatter, "feature parameter slot {value} is invalid")

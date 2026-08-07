@@ -14,6 +14,8 @@ const UNRELATED_PROFILE: FeatureId = FeatureId(9);
 const PROFILE: FeatureId = FeatureId(11);
 const EXTRUSION: FeatureId = FeatureId(12);
 const SECOND_EXTRUSION: FeatureId = FeatureId(13);
+const CUT_PROFILE: FeatureId = FeatureId(14);
+const CUT: FeatureId = FeatureId(15);
 const GROUP: GroupId = GroupId(20);
 const FIRST: OccurrenceId = OccurrenceId(30);
 const SECOND: OccurrenceId = OccurrenceId(31);
@@ -181,6 +183,48 @@ fn old_projection_becomes_stale_and_edits_appear_only_after_successful_batch() {
     let current_scene = current_projection.scene().unwrap();
     assert_eq!(current_scene.occurrence_count(), 2);
     assert_eq!(current_scene.authoritative_geometry_count(), 1);
+}
+
+#[test]
+fn exact_only_cut_definition_never_falls_back_to_a_filled_box_proxy() {
+    let mut store = source_document();
+    store
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateFeature {
+                id: CUT_PROFILE,
+                definition_id: DEFINITION,
+                name: "Cut profile".to_owned(),
+                kind: FeatureKind::Profile {
+                    points_mm: vec![
+                        [100.0, 100.0],
+                        [200.0, 100.0],
+                        [200.0, 200.0],
+                        [100.0, 200.0],
+                    ],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: CUT,
+                definition_id: DEFINITION,
+                name: "Through cut".to_owned(),
+                kind: FeatureKind::ThroughCut {
+                    target: EXTRUSION,
+                    profile: CUT_PROFILE,
+                },
+            },
+        ]))
+        .unwrap();
+
+    let projection = CanonicalInteractionProjection::from_snapshot(&store.current());
+    assert_eq!(projection.occurrences().len(), 2);
+    for occurrence in projection.occurrences() {
+        assert_eq!(occurrence.body.definition_id, DEFINITION);
+        assert_eq!(occurrence.body.profile_feature_id, None);
+        assert_eq!(occurrence.body.extrusion_feature_id, None);
+        assert_eq!(occurrence.local_box, None);
+        assert_eq!(occurrence.box_proxy, None);
+    }
+    assert_eq!(projection.scene().unwrap().occurrence_count(), 0);
 }
 
 #[test]

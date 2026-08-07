@@ -221,7 +221,7 @@ fn canonical_ids_and_parameters_survive_one_hundred_save_load_cycles() {
 
     for _ in 0..100 {
         let loaded = persistence::load(&bytes).expect("current schema loads");
-        assert_eq!(loaded.source_schema(), 10);
+        assert_eq!(loaded.source_schema(), 11);
         assert!(loaded.migration_losses().is_empty());
         let snapshot = loaded.snapshot();
         assert_eq!(snapshot.canonical_digest(), expected_digest);
@@ -461,9 +461,9 @@ fn schema_zero_and_one_are_one_way_imports_into_schema_three_authority() {
             ]))
             .expect("the imported ProductModel is the writable authority");
         let saved = persistence::save(&document.current());
-        assert_eq!(u16::from_le_bytes([saved[10], saved[11]]), 10);
+        assert_eq!(u16::from_le_bytes([saved[10], saved[11]]), 11);
         let reopened = persistence::load(&saved).expect("current schema reopens");
-        assert_eq!(reopened.source_schema(), 10);
+        assert_eq!(reopened.source_schema(), 11);
         assert_eq!(
             reopened
                 .snapshot()

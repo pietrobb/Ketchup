@@ -6363,6 +6363,77 @@ mod tests {
         )
     }
 
+    fn through_cut_document() -> DocumentStore {
+        let mut document = DocumentStore::new();
+        document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::CreateDefinition {
+                    id: DefinitionId(10),
+                    name: "Exact cut body".to_owned(),
+                },
+                CanonicalCommand::CreateFeature {
+                    id: FeatureId(11),
+                    definition_id: DefinitionId(10),
+                    name: "Outer profile".to_owned(),
+                    kind: FeatureKind::Profile {
+                        points_mm: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]],
+                    },
+                },
+                CanonicalCommand::CreateFeature {
+                    id: FeatureId(12),
+                    definition_id: DefinitionId(10),
+                    name: "Base extrusion".to_owned(),
+                    kind: FeatureKind::Extrusion {
+                        profile: FeatureId(11),
+                        height: Dimension::from_decimal("10").unwrap(),
+                    },
+                },
+                CanonicalCommand::CreateFeature {
+                    id: FeatureId(13),
+                    definition_id: DefinitionId(10),
+                    name: "Cut profile".to_owned(),
+                    kind: FeatureKind::Profile {
+                        points_mm: vec![[4.0, 4.0], [6.0, 4.0], [6.0, 6.0], [4.0, 6.0]],
+                    },
+                },
+                CanonicalCommand::CreateFeature {
+                    id: FeatureId(14),
+                    definition_id: DefinitionId(10),
+                    name: "Through cut".to_owned(),
+                    kind: FeatureKind::ThroughCut {
+                        target: FeatureId(12),
+                        profile: FeatureId(13),
+                    },
+                },
+                CanonicalCommand::CreateOccurrence {
+                    id: OccurrenceId(10),
+                    definition_id: DefinitionId(10),
+                    name: "Cut body occurrence".to_owned(),
+                    transform: Transform::identity(),
+                    parent: None,
+                    tag: None,
+                    visible: true,
+                },
+            ]))
+            .unwrap();
+        document.discard_history_before_current();
+        document
+    }
+
+    fn exact_worker_executable() -> PathBuf {
+        let executable_name = if cfg!(windows) {
+            "ketchup-exact-worker.exe"
+        } else {
+            "ketchup-exact-worker"
+        };
+        std::env::current_exe()
+            .unwrap()
+            .parent()
+            .and_then(Path::parent)
+            .unwrap()
+            .join(executable_name)
+    }
+
     fn current_box_package(
         app: &KetchupApp,
     ) -> Arc<ketchup_core::exact_product::ExactRenderPackage> {
@@ -6613,6 +6684,85 @@ mod tests {
         let loss = std::fs::read_to_string(path.with_extension("obj.loss.txt")).unwrap();
         assert!(loss.contains("exact-body-to-world-space-mesh"));
         assert!(loss.contains("producer_feature_id=2"));
+    }
+
+    #[test]
+    fn running_app_uses_one_exact_cut_body_for_render_pick_and_export() {
+        let executable = exact_worker_executable();
+        assert!(
+            executable.is_file(),
+            "build workspace all-targets so the exact worker exists at {}",
+            executable.display()
+        );
+        let mut app = KetchupApp::new();
+        app.document = through_cut_document();
+        app.reset_document_presentation();
+        app.connect_exact_worker(&executable).unwrap();
+        let before = app.document.current();
+        let context = egui::Context::default();
+
+        for _ in 0..200 {
+            app.refresh_exact_products(&context);
+            if app.exact_render_body_count() == 1 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        assert_eq!(app.exact_render_body_count(), 1);
+        assert_eq!(app.document.current().revision_id(), before.revision_id());
+        assert_eq!(
+            app.document.current().canonical_digest(),
+            before.canonical_digest()
+        );
+        let projection = app.exact_projection(&app.document.current());
+        assert!(
+            projection
+                .exact_surface_pick(
+                    Ray::new(Vec3::new(5.0, 5.0, 20.0), Vec3::new(0.0, 0.0, -1.0)).unwrap()
+                )
+                .is_none(),
+            "the exact through-hole must not be filled by an axis-aligned proxy"
+        );
+        let wall = app
+            .exact_pick_durable(
+                Ray::new(Vec3::new(5.0, 5.0, 5.0), Vec3::new(1.0, 0.0, 0.0)).unwrap(),
+            )
+            .expect("the cut wall must remain durably pickable");
+        assert_eq!(wall.body.role(), Some(ExactFaceRole::CutEast));
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("through-cut.obj");
+        assert!(app.export_exact_occurrence_mesh_to(&InstancePath::root(OccurrenceId(10)), &path));
+        let mesh = std::fs::read_to_string(&path).unwrap();
+        assert!(mesh.contains("g through_cut.wall.east"));
+        assert_eq!(
+            mesh.lines().filter(|line| line.starts_with("f ")).count(),
+            32
+        );
+        let loss = std::fs::read_to_string(path.with_extension("obj.loss.txt")).unwrap();
+        assert!(loss.contains("authority=accepted exact OCCT B-Rep"));
+
+        app.document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::SetFeatureDimension {
+                    id: FeatureId(12),
+                    dimension: Dimension::from_decimal("11").unwrap(),
+                },
+            ]))
+            .unwrap();
+        assert_eq!(app.exact_render_body_count(), 0);
+        let stale_projection = app.exact_projection(&app.document.current());
+        assert!(!stale_projection.contains_occurrence(&InstancePath::root(OccurrenceId(10))));
+        assert!(app.viewport_boxes(&stale_projection).is_empty());
+        let stale_path = directory.path().join("stale-through-cut.obj");
+        assert!(
+            !app.export_exact_occurrence_mesh_to(
+                &InstancePath::root(OccurrenceId(10)),
+                &stale_path
+            )
+        );
+        assert!(!stale_path.exists());
     }
 
     #[test]

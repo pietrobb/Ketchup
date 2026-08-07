@@ -208,6 +208,39 @@ pub struct FeatureParameterBinding {
     pub derived_from: DerivedIdentity,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FeatureParameterProvenance {
+    pub identity: EvaluationIdentity,
+    pub input_digest: String,
+    pub result_digest: String,
+    pub applied_value_bits: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FeatureParameterStaleReason {
+    NeverComputed,
+    EvaluatorChanged,
+    SchemaChanged,
+    ToleranceChanged,
+    BackendChanged,
+    InputChanged,
+    ResultChanged,
+    AppliedValueChanged,
+    EvaluationFailed,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FeatureParameterFreshness {
+    Current,
+    Stale(FeatureParameterStaleReason),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FeatureParameterFreshnessAudit {
+    pub target: FeatureParameterTarget,
+    pub freshness: FeatureParameterFreshness,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BooleanOperation {
     Cut,
@@ -482,6 +515,8 @@ pub(crate) struct ProductModel {
     pub(crate) overrides: BTreeMap<u64, Arc<CanonicalOverride>>,
     pub(crate) feature_parameter_bindings:
         BTreeMap<FeatureParameterTarget, Arc<FeatureParameterBinding>>,
+    pub(crate) feature_parameter_provenance:
+        BTreeMap<FeatureParameterTarget, Arc<FeatureParameterProvenance>>,
     pub(crate) joints: BTreeMap<JointId, Arc<CanonicalJoint>>,
     pub(crate) exact_reference_evidence: BTreeMap<String, Arc<BodySubshapeRef>>,
     pub(crate) definitions: BTreeMap<DefinitionId, Arc<Definition>>,
@@ -500,6 +535,7 @@ impl Default for ProductModel {
             evaluator_nodes: BTreeMap::new(),
             overrides: BTreeMap::new(),
             feature_parameter_bindings: BTreeMap::new(),
+            feature_parameter_provenance: BTreeMap::new(),
             joints: BTreeMap::new(),
             exact_reference_evidence: BTreeMap::new(),
             definitions: BTreeMap::new(),
@@ -1021,6 +1057,37 @@ impl Snapshot {
             .feature_parameter_bindings
             .get(&target)
             .map(Arc::as_ref)
+    }
+
+    #[must_use]
+    pub fn feature_parameter_provenance(
+        &self,
+        target: FeatureParameterTarget,
+    ) -> Option<&FeatureParameterProvenance> {
+        self.product
+            .feature_parameter_provenance
+            .get(&target)
+            .map(Arc::as_ref)
+    }
+
+    pub fn audit_feature_parameter_freshness(
+        &self,
+        identity: &EvaluationIdentity,
+    ) -> Result<Vec<FeatureParameterFreshnessAudit>, CanonicalError> {
+        let report = evaluate_graph(&self.product.evaluator_nodes, identity)
+            .map_err(CanonicalError::Graph)?;
+        self.product
+            .feature_parameter_bindings
+            .values()
+            .map(|binding| {
+                let freshness =
+                    audit_feature_parameter_binding(&self.product, binding, identity, &report);
+                Ok(FeatureParameterFreshnessAudit {
+                    target: binding.target,
+                    freshness,
+                })
+            })
+            .collect()
     }
 
     #[must_use]
@@ -1770,6 +1837,7 @@ impl DocumentStore {
                     }
                 }
                 CanonicalCommand::UpsertFeatureParameterBinding(binding) => {
+                    product.feature_parameter_provenance.remove(&binding.target);
                     product
                         .feature_parameter_bindings
                         .insert(binding.target, Arc::new(binding.clone()));
@@ -1778,6 +1846,7 @@ impl DocumentStore {
                     if product.feature_parameter_bindings.remove(target).is_none() {
                         return Err(CanonicalError::FeatureParameterBindingNotFound(*target));
                     }
+                    product.feature_parameter_provenance.remove(target);
                 }
                 CanonicalCommand::RecomputeFeatureParameters { identity } => {
                     let report = recompute_feature_parameters(&mut product, identity)?;
@@ -1830,6 +1899,9 @@ impl DocumentStore {
                         product.features.remove(feature_id);
                         product
                             .feature_parameter_bindings
+                            .retain(|target, _| target.feature_id != *feature_id);
+                        product
+                            .feature_parameter_provenance
                             .retain(|target, _| target.feature_id != *feature_id);
                     }
                 }
@@ -1902,6 +1974,9 @@ impl DocumentStore {
                         .collect();
                     product
                         .feature_parameter_bindings
+                        .retain(|target, _| target.feature_id != *id);
+                    product
+                        .feature_parameter_provenance
                         .retain(|target, _| target.feature_id != *id);
                     product.definitions.insert(
                         feature.definition_id,
@@ -2908,6 +2983,71 @@ fn feature_supports_parameter_slot(kind: &FeatureKind, slot: FeatureParameterSlo
     )
 }
 
+fn audit_feature_parameter_binding(
+    product: &ProductModel,
+    binding: &FeatureParameterBinding,
+    identity: &EvaluationIdentity,
+    report: &EvaluationReport,
+) -> FeatureParameterFreshness {
+    let Some(provenance) = product.feature_parameter_provenance.get(&binding.target) else {
+        return FeatureParameterFreshness::Stale(FeatureParameterStaleReason::NeverComputed);
+    };
+    let reason = if provenance.identity.evaluator != identity.evaluator {
+        Some(FeatureParameterStaleReason::EvaluatorChanged)
+    } else if provenance.identity.schema != identity.schema {
+        Some(FeatureParameterStaleReason::SchemaChanged)
+    } else if provenance.identity.tolerance != identity.tolerance {
+        Some(FeatureParameterStaleReason::ToleranceChanged)
+    } else if provenance.identity.backend != identity.backend {
+        Some(FeatureParameterStaleReason::BackendChanged)
+    } else if let Some(output) = report.outputs.get(&binding.derived_from) {
+        if provenance.input_digest != output.input_digest {
+            Some(FeatureParameterStaleReason::InputChanged)
+        } else if provenance.result_digest != output.result_digest {
+            Some(FeatureParameterStaleReason::ResultChanged)
+        } else if feature_parameter_dimension(product, binding.target).is_none_or(|dimension| {
+            dimension.millimetres().to_bits() != provenance.applied_value_bits
+        }) {
+            Some(FeatureParameterStaleReason::AppliedValueChanged)
+        } else {
+            None
+        }
+    } else {
+        Some(FeatureParameterStaleReason::EvaluationFailed)
+    };
+    reason.map_or(
+        FeatureParameterFreshness::Current,
+        FeatureParameterFreshness::Stale,
+    )
+}
+
+fn feature_parameter_dimension(
+    product: &ProductModel,
+    target: FeatureParameterTarget,
+) -> Option<&Dimension> {
+    let feature = product.features.get(&target.feature_id)?;
+    match (&feature.kind, target.slot) {
+        (FeatureKind::Extrusion { height, .. }, FeatureParameterSlot::Height) => Some(height),
+        (
+            FeatureKind::BottleProfileControl { body_radius, .. },
+            FeatureParameterSlot::BodyRadius,
+        ) => Some(body_radius),
+        (
+            FeatureKind::BottleProfileControl { body_height, .. },
+            FeatureParameterSlot::BodyHeight,
+        ) => Some(body_height),
+        (
+            FeatureKind::BottleProfileControl { shoulder_rise, .. },
+            FeatureParameterSlot::ShoulderRise,
+        ) => Some(shoulder_rise),
+        (FeatureKind::Shell { thickness, .. }, FeatureParameterSlot::Thickness) => Some(thickness),
+        (FeatureKind::BottleEdgeFinish { amount, .. }, FeatureParameterSlot::Amount) => {
+            Some(amount)
+        }
+        _ => None,
+    }
+}
+
 fn recompute_feature_parameters(
     product: &mut ProductModel,
     identity: &EvaluationIdentity,
@@ -2929,6 +3069,15 @@ fn recompute_feature_parameters(
                 ))?;
         let dimension = Dimension::new(output.value.to_string(), output.value)?;
         set_feature_parameter(product, binding.target, dimension)?;
+        product.feature_parameter_provenance.insert(
+            binding.target,
+            Arc::new(FeatureParameterProvenance {
+                identity: identity.clone(),
+                input_digest: output.input_digest.clone(),
+                result_digest: output.result_digest.clone(),
+                applied_value_bits: output.value.to_bits(),
+            }),
+        );
     }
     Ok(report)
 }
@@ -3969,6 +4118,15 @@ fn validate_product(product: &ProductModel) -> Result<(), CanonicalError> {
             || !feature_supports_parameter_slot(&feature.kind, target.slot)
             || resolve_derived_identity(&product.evaluator_nodes, &binding.derived_from)
                 != SlotResolution::Resolved
+        {
+            return Err(CanonicalError::InvalidFeatureParameterBinding(*target));
+        }
+    }
+    for (target, provenance) in &product.feature_parameter_provenance {
+        if !product.feature_parameter_bindings.contains_key(target)
+            || provenance.input_digest.is_empty()
+            || provenance.result_digest.is_empty()
+            || provenance.identity.validate().is_err()
         {
             return Err(CanonicalError::InvalidFeatureParameterBinding(*target));
         }

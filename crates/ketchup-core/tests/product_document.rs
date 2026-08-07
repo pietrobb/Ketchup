@@ -1,8 +1,9 @@
 use ketchup_core::document::{
     BottleControlDimension, BottleEdgeFinishKind, CanonicalCommand, CanonicalError, CommandBatch,
     ConvertedEntityId, DefinitionId, DerivedIdentity, Dimension, DocumentStore, EvaluationIdentity,
-    FeatureId, FeatureKind, FeatureParameterBinding, FeatureParameterSlot, FeatureParameterTarget,
-    GroupId, InstancePathStep, LocalGroupId, LocalGroupKey, LocalOccurrenceId, LocalOccurrenceKey,
+    FeatureId, FeatureKind, FeatureParameterBinding, FeatureParameterFreshness,
+    FeatureParameterSlot, FeatureParameterStaleReason, FeatureParameterTarget, GroupId,
+    InstancePathStep, LocalGroupId, LocalGroupKey, LocalOccurrenceId, LocalOccurrenceKey,
     MappingResolution, NodeId, OccurrenceId, PortSpec, RuleOutput, SlotPath, SlotSegment, TagId,
     Transform, UnresolvedMappingReason, WorldEntityPath,
 };
@@ -136,7 +137,7 @@ fn product_schema_round_trip_preserves_identity_hierarchy_values_and_digest() {
     let expected = document.current();
     let loaded = persistence::load(&persistence::save(&expected)).unwrap();
 
-    assert_eq!(loaded.source_schema(), 10);
+    assert_eq!(loaded.source_schema(), 11);
     assert!(loaded.migration_losses().is_empty());
     let actual = loaded.snapshot();
     assert_eq!(actual.document_id(), expected.document_id());
@@ -321,7 +322,7 @@ fn m6_bottle_profile_and_revolve_are_canonical_persisted_and_undoable() {
     assert_eq!(document.redo().unwrap().canonical_digest(), changed_digest);
 
     let loaded = persistence::load(&persistence::save(&document.current())).unwrap();
-    assert_eq!(loaded.source_schema(), 10);
+    assert_eq!(loaded.source_schema(), 11);
     assert!(loaded.migration_losses().is_empty());
     assert_eq!(loaded.snapshot().canonical_digest(), changed_digest);
     assert!(matches!(
@@ -397,7 +398,7 @@ fn m6_shell_thickness_is_canonical_undoable_persisted_and_fail_closed() {
     assert_eq!(document.redo().unwrap().canonical_digest(), changed_digest);
 
     let reopened = persistence::load(&persistence::save(&document.current())).unwrap();
-    assert_eq!(reopened.source_schema(), 10);
+    assert_eq!(reopened.source_schema(), 11);
     assert!(reopened.migration_losses().is_empty());
     assert_eq!(reopened.snapshot().canonical_digest(), changed_digest);
 
@@ -540,7 +541,7 @@ fn m6_controlled_profile_and_edge_finish_are_atomic_persisted_and_fail_closed() 
     assert_eq!(document.redo().unwrap().canonical_digest(), changed_digest);
 
     let reopened = persistence::load(&persistence::save(&document.current())).unwrap();
-    assert_eq!(reopened.source_schema(), 10);
+    assert_eq!(reopened.source_schema(), 11);
     assert!(reopened.migration_losses().is_empty());
     assert_eq!(reopened.snapshot().canonical_digest(), changed_digest);
     assert!(matches!(
@@ -776,7 +777,7 @@ fn nested_conversion_mapping_sharing_unique_history_and_schema_three_round_trip(
     assert_eq!(document.redo().unwrap().canonical_digest(), unique_digest);
 
     let reopened = persistence::load(&persistence::save(&document.current())).unwrap();
-    assert_eq!(reopened.source_schema(), 10);
+    assert_eq!(reopened.source_schema(), 11);
     let snapshot = reopened.snapshot();
     assert_eq!(snapshot.canonical_digest(), unique_digest);
     assert_eq!(snapshot.evaluator_node_count(), 1);
@@ -948,7 +949,7 @@ fn feature_parameter_bindings_are_canonical_persisted_and_never_recompute_on_ope
     let saved_revision = document.current().revision_id();
     let saved_undo = document.visible_undo_steps();
     let loaded = persistence::load(&persistence::save(&document.current())).unwrap();
-    assert_eq!(loaded.source_schema(), 10);
+    assert_eq!(loaded.source_schema(), 11);
     assert_eq!(loaded.snapshot().revision_id(), saved_revision);
     assert_eq!(loaded.snapshot().canonical_digest(), bound_digest);
     assert_eq!(
@@ -1044,6 +1045,88 @@ fn explicit_feature_parameter_recompute_is_deterministic_undoable_and_identity_b
             if height.source_token() == "720" && height.millimetres() == 720.0
     ));
     assert_eq!(document.redo().unwrap().canonical_digest(), recomputed);
+    let provenance = document
+        .current()
+        .feature_parameter_provenance(target)
+        .unwrap()
+        .clone();
+    assert_eq!(provenance.identity, identity);
+    assert_eq!(provenance.applied_value_bits, 42.0_f64.to_bits());
+    assert_eq!(
+        document
+            .current()
+            .audit_feature_parameter_freshness(&identity)
+            .unwrap()[0]
+            .freshness,
+        FeatureParameterFreshness::Current
+    );
+
+    let saved_digest = document.current().canonical_digest();
+    let reopened = persistence::load(&persistence::save(&document.current())).unwrap();
+    assert_eq!(reopened.snapshot().canonical_digest(), saved_digest);
+    assert_eq!(
+        reopened.audit().feature_parameter_freshness[0].freshness,
+        FeatureParameterFreshness::Current
+    );
+    assert_eq!(
+        reopened.snapshot().feature_parameter_provenance(target),
+        Some(&provenance)
+    );
+
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetEvaluatorDimension {
+                id: SOURCE,
+                dimension: height("22"),
+            },
+        ]))
+        .unwrap();
+    assert!(matches!(
+        document.current().feature(EXTRUSION).unwrap().kind(),
+        FeatureKind::Extrusion { height, .. }
+            if height.source_token() == "42" && height.millimetres() == 42.0
+    ));
+    assert_eq!(
+        document
+            .current()
+            .audit_feature_parameter_freshness(&identity)
+            .unwrap()[0]
+            .freshness,
+        FeatureParameterFreshness::Stale(FeatureParameterStaleReason::InputChanged)
+    );
+    let stale_digest = document.current().canonical_digest();
+    let reopened_stale = persistence::load(&persistence::save(&document.current())).unwrap();
+    assert_eq!(reopened_stale.snapshot().canonical_digest(), stale_digest);
+    assert_eq!(
+        reopened_stale.audit().feature_parameter_freshness[0].freshness,
+        FeatureParameterFreshness::Stale(FeatureParameterStaleReason::InputChanged)
+    );
+
+    document.apply_batch(&recompute).unwrap();
+    assert!(matches!(
+        document.current().feature(EXTRUSION).unwrap().kind(),
+        FeatureKind::Extrusion { height, .. }
+            if height.source_token() == "44" && height.millimetres() == 44.0
+    ));
+    assert_eq!(
+        document
+            .current()
+            .audit_feature_parameter_freshness(&identity)
+            .unwrap()[0]
+            .freshness,
+        FeatureParameterFreshness::Current
+    );
+    assert_eq!(
+        document
+            .current()
+            .audit_feature_parameter_freshness(&EvaluationIdentity {
+                backend: Some("alternate-backend".to_owned()),
+                ..identity
+            })
+            .unwrap()[0]
+            .freshness,
+        FeatureParameterFreshness::Stale(FeatureParameterStaleReason::BackendChanged)
+    );
 }
 
 #[test]

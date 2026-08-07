@@ -204,9 +204,17 @@ fn canonical_box(
         return (None, None, None);
     };
     if definition.feature_ids().iter().any(|feature_id| {
-        snapshot
-            .feature(*feature_id)
-            .is_some_and(|feature| matches!(feature.kind(), FeatureKind::Revolve { .. }))
+        snapshot.feature(*feature_id).is_some_and(|feature| {
+            matches!(
+                feature.kind(),
+                FeatureKind::BottleProfileControl { .. }
+                    | FeatureKind::Revolve { .. }
+                    | FeatureKind::Shell { .. }
+                    | FeatureKind::BottleEdgeFinish { .. }
+                    | FeatureKind::ThroughCut { .. }
+                    | FeatureKind::Boolean { .. }
+            )
+        })
     }) {
         return (None, None, None);
     }

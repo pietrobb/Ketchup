@@ -375,6 +375,24 @@ if ($appSource -match 'InteractionScene::new|\.add_occurrence\s*\(' -or
     $appSource -notmatch 'CanonicalInteractionProjection::from_snapshot') {
     Fail-Guard "projection-authority" "Production app scene construction must use the canonical interaction projection service exclusively."
 }
+$exactProjectionPath = Join-Path $RepoRoot "crates\ketchup-interaction\src\exact_projection.rs"
+$exactProjectionSource = if (Test-Path $exactProjectionPath -PathType Leaf) {
+    Get-Content $exactProjectionPath -Raw
+} else {
+    ""
+}
+$viewportBlock = Get-BracedBlock $appSource "fn viewport(" "exact-body-authority"
+$viewportBoxesBlock = Get-BracedBlock $appSource "fn viewport_boxes" "exact-body-authority"
+$exactExportBlock = Get-BracedBlock $appSource "pub fn export_exact_occurrence_mesh_to" "exact-body-authority"
+if ($exactProjectionSource -notmatch 'package\.is_current\(snapshot\)' -or
+    $exactProjectionSource -notmatch 'ray_triangle_distance' -or
+    -not $viewportBoxesBlock.Contains('!exact_projection.contains_occurrence(&item.instance_path)') -or
+    -not $viewportBlock.Contains('exact_projection.contains_occurrence(&occurrence.instance_path)') -or
+    -not $viewportBlock.Contains('for triangle in package.triangles()') -or
+    -not $exactExportBlock.Contains('.filter(|package| package.is_current(&snapshot))') -or
+    -not $exactExportBlock.Contains('package.mesh_export(occurrence.transform)')) {
+    Fail-Guard "exact-body-authority" "Current exact bodies must suppress box proxies and share triangle render, pick, and transformed export authority."
+}
 $stateViewPath = Join-Path $RepoRoot "crates\ketchup-core\src\state_view.rs"
 $completeFixture = Join-Path $RepoRoot "crates\ketchup-core\tests\fixtures\state-view\complete-v1.txt"
 $agentFixture = Join-Path $RepoRoot "crates\ketchup-core\tests\fixtures\state-view\agent-v1.txt"

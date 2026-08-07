@@ -1,11 +1,14 @@
 use ketchup_core::bottle_m6::ExactRevolveRequest;
 use ketchup_core::document::{
     BooleanOperation, BottleControlDimension, BottleEdgeFinishKind, CanonicalCommand, CommandBatch,
-    DefinitionId, Dimension, DocumentStore, FeatureId, FeatureKind, OccurrenceId, Transform,
+    DefinitionId, DerivedIdentity, Dimension, DocumentStore, EvaluationIdentity, FeatureId,
+    FeatureKind, FeatureParameterBinding, FeatureParameterFreshness, FeatureParameterSlot,
+    FeatureParameterStaleReason, FeatureParameterTarget, NodeId, OccurrenceId, PortSpec,
+    RuleOutput, SlotPath, SlotSegment, Transform,
 };
 use ketchup_core::exact_product::{
     EXACT_BOOLEAN_UNION_EVALUATOR_V1, EXACT_THROUGH_CUT_EVALUATOR_V1, ExactBodyPackage,
-    ExactFaceRole, ExactFeatureChainRequest, ExactResultRegistry,
+    ExactFaceRole, ExactFeatureChainRequest, ExactProductError, ExactResultRegistry,
 };
 use ketchup_exact::{
     ExactBackend, RectangleExtrudeSpec, ReferenceResolution, StabilityClass,
@@ -177,6 +180,114 @@ fn preregistered_c1b_product_corpus_has_zero_wrong_identities_and_survives_save_
 }
 
 #[test]
+fn explicit_parameter_recompute_restores_exact_registry_render_pick_and_export() {
+    const SOURCE: NodeId = NodeId(201);
+    const RULE: NodeId = NodeId(202);
+    let identity = EvaluationIdentity::default();
+    let segment = SlotSegment::new(RULE, "dimensions", "extrusion_height").unwrap();
+    let target = FeatureParameterTarget {
+        feature_id: EXTRUSION,
+        slot: FeatureParameterSlot::Height,
+    };
+    let mut document = rectangle_document(100.0, 60.0, 18.0);
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateEvaluatorNode {
+                id: SOURCE,
+                name: "Height source".to_owned(),
+                dimension: Dimension::new("21", 21.0).unwrap(),
+                dependencies: vec![],
+            },
+            CanonicalCommand::CreateRuleNode {
+                id: RULE,
+                name: "Extrusion height rule".to_owned(),
+                expression: "$201 * 2".to_owned(),
+                input_ports: vec![PortSpec::number("source").unwrap()],
+                output_ports: vec![PortSpec::number("dimensions").unwrap()],
+                outputs: vec![RuleOutput::new(segment.clone(), vec![]).unwrap()],
+                override_parameters: vec![],
+            },
+            CanonicalCommand::UpsertFeatureParameterBinding(FeatureParameterBinding {
+                target,
+                derived_from: DerivedIdentity::new(RULE, SlotPath::new(vec![segment]).unwrap())
+                    .unwrap(),
+            }),
+            CanonicalCommand::RecomputeFeatureParameters {
+                identity: identity.clone(),
+            },
+        ]))
+        .unwrap();
+    let initial = document.current();
+    assert_eq!(
+        initial
+            .audit_feature_parameter_freshness(&identity)
+            .unwrap()[0]
+            .freshness,
+        FeatureParameterFreshness::Current
+    );
+
+    let mut supervisor = ExactWorkerSupervisor::spawn(worker_path()).unwrap();
+    let initial_request = ExactFeatureChainRequest::from_snapshot(&initial, DEFINITION).unwrap();
+    let initial_package = supervisor.evaluate_rectangle(&initial_request).unwrap();
+    assert_eq!(initial_package.bounds_mm[1][2], 42.0);
+
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetEvaluatorDimension {
+                id: SOURCE,
+                dimension: Dimension::new("22", 22.0).unwrap(),
+            },
+        ]))
+        .unwrap();
+    let stale = document.current();
+    assert_eq!(
+        stale.audit_feature_parameter_freshness(&identity).unwrap()[0].freshness,
+        FeatureParameterFreshness::Stale(FeatureParameterStaleReason::InputChanged)
+    );
+    assert!(matches!(
+        ExactResultRegistry::accept(&stale, [Arc::new(initial_package.into())]),
+        Err(ExactProductError::StaleResult)
+    ));
+
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::RecomputeFeatureParameters {
+                identity: identity.clone(),
+            },
+        ]))
+        .unwrap();
+    let recomputed = document.current();
+    assert_eq!(
+        recomputed
+            .audit_feature_parameter_freshness(&identity)
+            .unwrap()[0]
+            .freshness,
+        FeatureParameterFreshness::Current
+    );
+    let request = ExactFeatureChainRequest::from_snapshot(&recomputed, DEFINITION).unwrap();
+    let package = supervisor.evaluate_rectangle(&request).unwrap();
+    assert_eq!(package.bounds_mm, [[0.0, 0.0, 0.0], [100.0, 60.0, 44.0]]);
+
+    let registry =
+        ExactResultRegistry::accept(&recomputed, [Arc::new(package.clone().into())]).unwrap();
+    let projection = ExactInteractionProjection::from_snapshot(&recomputed, &registry);
+    assert_eq!(projection.occurrence_count(), 1);
+    assert_eq!(
+        projection
+            .exact_pick(ray_for(ExactFaceRole::Top, 100.0, 60.0, 44.0))
+            .and_then(|hit| hit.target.body.role()),
+        Some(ExactFaceRole::Top)
+    );
+    let export = ExactBodyPackage::from(package).mesh_export(Transform::identity());
+    assert!(
+        export
+            .mesh_obj
+            .contains("v 0.00000000000000000 0.00000000000000000 44.00000000000000000")
+    );
+    assert!(export.loss_report.contains("producer_feature_id=12"));
+}
+
+#[test]
 fn scheduler_evaluates_canonical_boolean_cut_with_seven_role_evidences() {
     let mut supervisor = ExactWorkerSupervisor::spawn(worker_path()).unwrap();
     let mut document = boolean_document(
@@ -313,7 +424,7 @@ fn scheduler_evaluates_canonical_boolean_cut_with_seven_role_evidences() {
     let loaded =
         ketchup_core::persistence::load(&ketchup_core::persistence::save(&document.current()))
             .unwrap();
-    assert_eq!(loaded.source_schema(), 10);
+    assert_eq!(loaded.source_schema(), 11);
     let reopened = match loaded {
         ketchup_core::persistence::LoadOutcome::Editable { document, .. } => document,
         ketchup_core::persistence::LoadOutcome::ReviewOnly(_) => {
@@ -528,7 +639,7 @@ fn scheduler_evaluates_editable_bottle_shell_with_open_mouth_and_current_referen
     let reopened =
         ketchup_core::persistence::load(&ketchup_core::persistence::save(&document.current()))
             .unwrap();
-    assert_eq!(reopened.source_schema(), 10);
+    assert_eq!(reopened.source_schema(), 11);
     assert_eq!(reopened.snapshot().exact_reference_evidence().count(), 9);
 }
 
@@ -629,7 +740,7 @@ fn scheduler_evaluates_controlled_bottle_fillet_and_chamfer_with_current_roles()
     let reopened =
         ketchup_core::persistence::load(&ketchup_core::persistence::save(&document.current()))
             .unwrap();
-    assert_eq!(reopened.source_schema(), 10);
+    assert_eq!(reopened.source_schema(), 11);
     assert_eq!(reopened.snapshot().exact_reference_evidence().count(), 9);
 }
 
