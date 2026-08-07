@@ -3,7 +3,7 @@
 ## Current system, target architecture, and migration contract
 
 - **Status:** Proposed for external architecture review
-- **Snapshot date:** 2026-08-05 (as-built scope is the current-evidence commit named once in Appendix G)
+- **Snapshot date:** 2026-08-07 (as-built scope is the current-evidence commit plus the explicitly bounded working-tree observations named once in Appendix G)
 - **Language:** English, per ADR 0001
 - **Supersedes for current architectural review:** `KETCHUP_ARCHITECTURE_PROPOSAL_V3.md`
 - **Does not erase:** V3, frozen gate evidence, accepted ADRs, or historical reports
@@ -82,11 +82,11 @@ AI is not the product’s source of truth and is never required for ordinary mod
 
 As of the 2026-08-04 as-built update, Ketchup is **not yet one integrated general CAD system**, but the earlier three-island description is obsolete. Three narrow product paths are now connected through the canonical document:
 
-1. **Canonical manual modeler and evaluator substrate — PARTIAL—PRODUCT PATH.** Immutable revisions, atomic command batches, definitions, occurrences, definition-local hierarchy, groups/components, Move/Copy, Group/Ungroup, Make Unique, edit context, Push/Pull, Undo/Redo, and atomic Save/Open are joined by a typed evaluator graph, bounded expressions, affected-only recomputation, hierarchical `SlotPath` identity, overrides, StateView projections, and schema-5 persistence.
+1. **Canonical manual modeler and evaluator substrate — PARTIAL—PRODUCT PATH.** Immutable revisions, atomic command batches, definitions, occurrences, definition-local hierarchy, groups/components, Move/Copy, Group/Ungroup, Make Unique, edit context, Push/Pull, Undo/Redo, and atomic Save/Open are joined by a typed evaluator graph, bounded expressions, affected-only recomputation, hierarchical `SlotPath` identity, overrides, StateView projections, and schema-8 persistence.
 2. **Prismatic fabrication and validation — PARTIAL—PRODUCT PATH.** The beam workflow owns deterministic collision/containment, declared joints, the frozen `415 × 6`, `408 × 5`, `400` placement fixture, grouped pieces, full BOM, stable dimension sheets, a host-neutral built-in validator contract, resource limits, FurniGen regression evidence, and W4A `Exact`/`Tolerant` reporting. This is a bounded prismatic/beam slice, not a general fabrication service.
-3. **Integrated exact product geometry — PARTIAL—PRODUCT PATH.** The desktop application schedules rectangle extrusion and bounded ThroughCut through the supervised isolated OCCT worker, receives exact triangle/reference packages, renders and picks them, registers durable exact-reference evidence through P07, and round-trips that evidence through schema 5. The sealed C1b corpus is narrow: rectangles and named semantic roles, plus a focused ThroughCut hole-safe picking test.
+3. **Integrated exact product geometry — PARTIAL—PRODUCT PATH.** The desktop application schedules rectangle extrusion, bounded ThroughCut, and the bounded rotational-bottle chain through the supervised isolated OCCT worker; receives exact triangle/reference packages; renders and picks them; registers durable exact-reference evidence through P07; and round-trips that evidence through schema 8. C1b evidence remains bounded to rectangles, named ThroughCut roles, and five/nine semantic bottle roles.
 
-Cuboid projection remains as a derived fallback for entities without a current exact package. Exact packages are likewise derived and revision/digest-bound; neither representation is canonical authority. The implementation does not yet provide general curved-body modeling, a universal feature/result registry, or full exact Gate C hardware certification.
+Cuboid projection remains as a derived fallback for entities without a current exact package. Exact packages are likewise derived and revision/digest-bound; neither representation is canonical authority. The implementation does not provide general curved-body modeling beyond the frozen rotational bottle, a universal feature/result registry, or full exact Gate C hardware certification.
 
 ## 1.3 Current strengths
 
@@ -110,9 +110,9 @@ The following foundations are real and should be retained:
 The highest-risk remaining gaps are:
 
 1. the evaluator graph is real, but geometric product features are not yet a general evaluator output vocabulary; legacy/product migration is therefore incomplete at the universal feature-result boundary;
-2. exact rectangle extrusion and ThroughCut are integrated, but broad exact operations, curved bodies, mesh-authoritative bodies, and a general feature/result registry remain absent;
-3. C1b covers a narrow rectangle corpus and focused ThroughCut roles; transforms, broader mutations, and complete `Ambiguous`/`Lost` behavior remain future work;
-4. schema 5 provides checksums, limits, identity envelopes, graph/override/joint/reference round-trip, and review-only Open, but not the complete long-term container/blob/unknown-extension/migration contract;
+2. exact rectangle extrusion, ThroughCut, and one rotational Revolve/Shell/Fillet-Chamfer bottle chain are integrated, but broad exact operations, arbitrary curved bodies, mesh-authoritative bodies, and a general feature/result registry remain absent;
+3. C1b covers a narrow rectangle corpus, focused ThroughCut roles, and the bounded bottle's five/nine roles; transforms, broader mutations, arbitrary edge selection, and complete `Ambiguous`/`Lost` behavior remain future work;
+4. schema 8 provides checksums, limits, identity envelopes, graph/override/joint/reference round-trip, and review-only Open, but not the complete long-term container/blob/unknown-extension/migration contract;
 5. persistent canonical tags, collections, general dimensions, patterning, union/export, Assistant, and plugin surfaces remain incomplete or absent;
 6. M4a is a strong bounded prismatic/beam slice and M4b adds bounded accepted-exact-body clearance, exact-face dimensions, and exact-joint validation; neither is yet general validation, BOM, drawing, or manufacturing infrastructure over arbitrary documents;
 7. ThroughCut is a real exact opening and the beam workflow now carries each canonical half-lap through worker-evaluated OCCT notch B-Reps, durable semantic notch-face references, exact prismatic collision components, a piece drawing, manufacturing-operation projection, and fail-closed export; broader arbitrary drawing/export infrastructure remains open;
@@ -128,9 +128,9 @@ A user gesture or accepted AI Proposal commits exactly one validated `CanonicalC
 
 ## 1.6 Can Ketchup model a ketchup bottle?
 
-**Today: no, not faithfully.** The desktop path can create and manipulate exact rectangular extrusions and bounded rectangular ThroughCuts, with exact triangle rendering/picking and cuboid fallback. It lacks the curved/profile operations, shelling, edge finishing, and editable workflow required for a bottle.
+**Today: yes, for one bounded rotational workflow.** The desktop path creates a validated six-point half-profile, applies controlled body-radius scaling, body-height stretching, and shoulder flattening, then evaluates Revolve → Shell/thickness → Fillet or Chamfer through the supervised OCCT worker. Numeric edits and durable-role viewport drags commit one validated batch, remain Undoable, round-trip losslessly through schema 8, render and pick only a current accepted exact result, and expose explicit exact/mesh authority and OBJ tessellation loss. Stale or invalid results fail closed before export.
 
-**Target: yes, through a workflow-proven editable modeling slice.** The acceptance case is not merely that a backend can construct a bottle. A user must be able to start from a primitive or profile, stretch or scale selected regions, flatten them, apply bevel/fillet and shell/thickness, and keep every step editable, Undoable, persistable, and explicit about exact/mesh authority and reference loss. A rotational bottle may use **Revolve**, **Shell**, and **Fillet/Chamfer**; a squeezed asymmetric bottle may require controlled spline, **Loft**, or **Sweep** operations. These are candidate means selected by the workflow, not a mandatory quest to complete every CAD feature family.
+**Boundary:** this is not a general bottle or freeform CAD claim. The implemented case is rotational and intentionally does not require spline, Loft, or Sweep; asymmetric squeezed bottles and broader profile/edge-selection semantics remain planned. The acceptance principle remains workflow-led: candidate operation families are selected only when a frozen case requires them, not to complete a generic checklist.
 
 A second bounded organic reference workflow is one editable living tree: trunk and branch structure has semantic paths and variable-radius sweep/loft or explicitly mesh-authoritative procedural geometry. This is a non-blocking research/acceptance slice after the fabrication path, not a release gate or prerequisite for the bottle, beam, exact integration, or FLP. Ketchup’s target is not “every mathematically imaginable shape,” unrestricted sculpting, animation, or production-scale vegetation generation. It is selected exact and mesh workflows that make furniture, buildings, bottles, trees, and similarly understandable shapes quick to create and revise, with honest fallback and loss reporting.
 
@@ -173,14 +173,14 @@ Therefore validators, stable derivation identity, dimensions, BOMs, and bounded 
 | Rectangle profile | **PARTIAL—PRODUCT PATH** | Core stores an ordered finite point loop and checks only point count/nonzero signed area; simple-polygon, closure, duplicate, self-intersection, hole, winding, tolerance, and coordinate-envelope rules are not complete. UI creates rectangles; target adds validated closed polylines and constraints. |
 | Linear extrusion | **PARTIAL—PRODUCT PATH** | Rectangle/profile extrusion is evaluated as exact B-Rep through the supervised product worker, rendered/picked, and bound to durable reference evidence; broader profiles, directions, transforms, and result vocabulary remain incomplete. |
 | Cut/union/opening | **PARTIAL—PRODUCT PATH** | Canonical bounded rectangular ThroughCut drives exact geometry, hole-safe render/pick, durable roles, and Save/Open; union, arbitrary openings, joint-driven paired cuts, and broader boolean contracts remain planned. |
-| Revolve | **PLANNED** | Rotational objects such as bottles, legs, knobs, and turned profiles. |
+| Revolve | **IMPLEMENTED narrow bottle product path** | A validated six-point radial half-profile produces a deterministic exact rotational body through the supervised worker; arbitrary axes, general profiles, and other turned products remain outside the envelope. |
 | Sweep | **PLANNED** | Profiles along paths, trims, pipes, rails, and selected fabrication operations. |
 | Loft | **PLANNED** | Transitions and asymmetric products, including non-rotational bottle bodies. |
-| Shell/thickness | **PLANNED** | Hollow containers and wall-like bodies with explicit failure diagnostics. |
-| Fillet/chamfer | **PLANNED** | Edge finishing with stable-reference limits stated per feature contract. |
+| Shell/thickness | **IMPLEMENTED narrow bottle product path** | A bounded positive thickness creates one valid open-mouth bottle solid, preserves nine semantic outer/rim/inner roles, and fails closed outside the declared radius envelope. |
+| Fillet/chamfer | **IMPLEMENTED narrow bottle product path** | Fillet or chamfer finishes the bounded shell shoulder under an amount envelope while preserving the nine shell-role lineages; arbitrary edge selection remains planned. |
 | Spline/NURBS sketch and surface inputs | **PLANNED** | Required for controlled freeform exact geometry; not an organic sculpting system. |
 | Mesh-authoritative bodies | **PLANNED** | Imports and procedural polygonal workflows where mesh is explicitly authoritative. |
-| Exact-to-mesh / mesh-to-exact conversion | **PLANNED** | Named operations with provenance and loss reports; never an invisible fallback. |
+| Exact-to-mesh / mesh-to-exact conversion | **PARTIAL—PRODUCT PATH** | The current accepted bottle B-Rep exports deterministic OBJ with an explicit tessellation loss report; general conversion operations and mesh-to-exact remain planned. |
 | 2D associative drawings | **PARTIAL—PRODUCT PATH** | Stable entity/`SlotPath` dimension sheets exist for the bounded beam workflow, and revision-bound exact parallel-face dimension projections carry durable body/face identities; persistent exact dimensions, general views, annotations, layouts, and professional drawing production remain later. |
 | BIM semantics and IFC | **PLANNED after FLP** | Domain packages over the same core, not a parallel document architecture. |
 
@@ -321,20 +321,20 @@ Named people and calendar dates remain unavailable. That is itself an unresolved
 | Parametric DAG | **PARTIAL—PRODUCT PATH** | Typed parameter/expression/rule nodes, ports, bounded parser, actual evaluation, affected-only recomputation, per-node digests, outputs, `SlotPath`, and override health exist; geometric feature outputs are not universal DAG values. | One complete typed feature/rule DAG for all product geometry and domains. |
 | Definitions/components/Make Unique | **IMPLEMENTED narrow** | Sharing, clone/repoint, definition-local hierarchy, Group→Component, and Make Unique work for the current feature vocabulary. | Complete nested conversion and future-feature remapping. |
 | Edit context | **PARTIAL—PRODUCT PATH** | Ephemeral app context stack and filtering work, but core query semantics for every nested exact sub-element remain incomplete. | Snapshot-bound context-safe query and command scope. |
-| Persistence | **PARTIAL—PRODUCT PATH** | Atomic schema 5 has a manifest envelope, checksum, 32 MiB/file and collection/string limits, graph/override/joint/reference round-trip, compatibility audit, `ReviewOnly`, and observational Open; schemas 0–4 remain readable. | Long-term container/blob/unknown-extension policy and explicit confirmed semantic migration. |
-| Exact geometry | **PARTIAL—PRODUCT PATH** | Rectangle extrusion and bounded ThroughCut run from the app through the supervised OCCT worker into exact render/reference packages. | Broad exact operation vocabulary, curved-body workflows, and a general result registry. |
-| Mesh geometry | **PLANNED** | Exact tessellation is derived render data; no canonical product `MeshBody`. | Explicit mesh-authoritative specs, validation, rendering, and conversion/loss contract. |
-| Stable subshape references | **PARTIAL—PRODUCT PATH** | `BodySubshapeRef` and `AssemblySelectionTarget` are produced, picked, registered through P07, persisted in schema 5, and covered by a narrow C1b corpus. | Broader transforms/mutations, complete ambiguity/loss/audit/quarantine, and all supported feature families. |
+| Persistence | **PARTIAL—PRODUCT PATH** | Atomic schema 8 has a manifest envelope, checksum, 32 MiB/file and collection/string limits, graph/override/joint/reference/bottle round-trip, compatibility audit, `ReviewOnly`, and observational Open; schemas 0–7 remain readable. | Long-term container/blob/unknown-extension policy and explicit confirmed semantic migration. |
+| Exact geometry | **PARTIAL—PRODUCT PATH** | Rectangle extrusion, bounded ThroughCut, and the frozen rotational Revolve/Shell/Fillet-Chamfer bottle run from the app through the supervised OCCT worker into exact render/reference packages. | Broad exact operation vocabulary, arbitrary curved-body workflows, and a general result registry. |
+| Mesh geometry | **PLANNED canonical authority / PARTIAL—PRODUCT PATH derived export** | Exact tessellation remains derived render data and the bottle can export OBJ with explicit loss; no canonical product `MeshBody` exists. | Explicit mesh-authoritative specs, validation, rendering, and general conversion/loss contract. |
+| Stable subshape references | **PARTIAL—PRODUCT PATH** | `BodySubshapeRef` and `AssemblySelectionTarget` are produced, picked, registered through P07, persisted in schema 8, and covered by bounded rectangle, ThroughCut, and five/nine-role bottle evidence. | Broader transforms/mutations, complete ambiguity/loss/audit/quarantine, and all supported feature families. |
 | Scheduler/worker | **PARTIAL—PRODUCT PATH** | App integration, capability handshake, deadlines, cancellation, stale rejection, restart, and one retry exist for the narrow exact path. | General job vocabulary, richer status/progress, policy, and production telemetry. |
 | Interaction scene | **PARTIAL—PRODUCT PATH** | Canonical cuboid projection coexists with revision-bound exact triangle projection; exact picking returns durable assembly targets. | General exact/mesh query service with broader topology and acceleration. |
 | Renderer | **PARTIAL—PRODUCT PATH** | wgpu-backed app paints cuboid fallback and exact triangle packages, including a hole-safe ThroughCut mesh. | General derived mesh cache, instancing/BVH, richer highlights, curved exact/mesh bodies. |
 | Manual shell | **PARTIAL—PRODUCT PATH** | Major shell, Outliner, exact numeric tools, file workflows, Push/Pull, hierarchy/component actions, and Undo/Redo exist. | Correct profile-only Rectangle semantics, tags, persistent dimensions, remaining shortcuts/menu and physical-window evidence. |
 | Collision validation | **PARTIAL—PRODUCT PATH** | The bounded prismatic path has AABB/OBB/SAT, convex intersection, certified joint containment, and FurniGen evidence; bounded M4b accepts current exact-result identities and validates conservative body clearance plus canonical joints with durable exact contacts; the beam path additionally validates a feature-ordered exact cuboid decomposition of the notched body. | Curved-body narrow phases, broader document/domain coverage, and general standards/manufacturability validators. |
-| Validator protocol and hosting | **PARTIAL—PRODUCT PATH** | Host-neutral read-only built-in contract, descriptor/invocation/policy, limits, structured diagnostics, four result states, W4A evidence classes, and fail-closed decision exist. | M7 third-party package provenance, trust, licensing, isolation, egress, and revocation. |
+| Validator protocol and hosting | **PARTIAL—PRODUCT PATH** | Host-neutral read-only contract plus a bounded M7C host now verify Ed25519 publisher signatures, signed descriptor/artifact identities, monotonic updates, trust/revocation and external paid-license availability. Exact descriptor/current-invocation binding fails closed to `Unavailable`; signed no-import WASM executes under strict parser, fuel and memory/table/instance limits, while host-mediated TCP egress requires both the signed publisher declaration and a separate host grant for the exact endpoint, is byte/timeout bounded, and is receipted. | Persistent production catalog, native OS sandbox launcher, public HTTPS/TLS egress deployment, credential brokerage, and broader validator result decoding remain later scope. |
 | Rules and manufacturing projections | **PARTIAL—PRODUCT PATH** | Beam rules derive stable pieces/joints, grouped list, full BOM, and `SlotPath` dimensions; one ordered joint derives both complementary half-lap notch geometries, worker-backed OCCT packages, durable contact/wall references, a dimensioned piece SVG, and deterministic manufacturing operations/export with stale or quarantined evidence blocked. | General document-wide fabrication/drawings/export and later BTLx. |
-| Proposal safety | **PARTIAL—PROOF ONLY** | Narrow proposal/digest primitive delegates accepted canonical changes to `apply_batch`; no product Assistant flow. | Authoritative typed read/write sets, assumptions, risks, budgets, diff, verification, and intended product client. |
-| AI assistant | **PLANNED** | No product Assistant surface. | Optional local-first intent/proposal UI after manual modeler and validators. |
-| Plugin system | **PLANNED** | No third-party host/capability sandbox. | Capability- and budget-limited host after core protocol stabilizes. |
+| Proposal safety | **PARTIAL—PRODUCT PATH** | M7A exposes two workflow-derived dimension intents through a principal/capability grant and a revision/digest-bound Proposal with authoritative typed read/write sets, assumptions, before/after diff, Standard risk, ReviewRequired confirmation, bounded budget, stale/replay rejection, and transactional postcondition verification; accepted changes still delegate exactly once to `apply_batch`. | High-risk human-only confirmation tokens, broader proven intent vocabulary, provider/egress policy, and later M7 extension clients. |
+| AI assistant | **PARTIAL—PRODUCT PATH** | The local M7A Assistant panel prepares an ephemeral typed Proposal, displays provenance/read-write/diff/risk/budget evidence, and offers explicit Confirm/Cancel; Confirm creates one verified canonical Undo step and Cancel creates none. | Natural-language/model-provider integration, high-risk actions, broader verification criteria, and full Gate D corpus remain beyond the bounded M7A slice. |
+| Plugin system | **PARTIAL—PRODUCT PATH** | M7B provides a versioned bounded process protocol, host-issued principal/capability grant, cumulative query/request and Proposal budgets, Agent StateView-only reads, typed-Intent-only writes, timeout/cancellation/kill behavior, and an external Python SDK pilot; the plugin receives no document, OCCT, renderer, or commit handle. | OS-level filesystem/network sandboxing, package discovery/distribution, authenticated provenance/signatures, trust/revocation/licensing, persisted namespaces, remote egress, and production hosting remain M7C. |
 | CI governance | **PARTIAL—PRODUCT PATH** | Daily CI runs the unfiltered product workspace while sealed A0 v1/v2 require an explicit certification feature and runner; guards enforce that separation plus D-08/P07, legacy absence, StateView, optional supplied frozen inputs, and anti-loosening invariants. | Keep reviewed governance hashes current and complete required gate/hardware execution without merging historical certification freshness into the daily product signal. |
 | Gate certification of current tree | **PARTIAL—PROOF ONLY** | Historical strengthened A0 v2 `FULL_GO`, Gate B, C1a, and narrow C1b evidence exist; the current-evidence baseline in Appendix G is not a new freeze and Gate C hardware evidence remains incomplete. | New freeze over stable current inputs and honest reruns on required hardware. |
 
@@ -414,13 +414,13 @@ The app’s “Make Component” currently renames an already reusable definitio
 
 ## 5.3 Persistence — PARTIAL—PRODUCT PATH
 
-The native format remains a custom binary stream, now at schema 5 while retaining readers for schemas 0–4. Schema 5 adds a manifest envelope and SHA-256 payload checksum; explicit graph/evaluator/tolerance identities; bounded file, payload, string, and collection sizes; typed evaluator nodes and ports; overrides and health audit; declared joints; definition-local hierarchy; ThroughCut features; and exact-reference evidence.
+The native format remains a custom binary stream, now at schema 8 while retaining readers for schemas 0–7. Earlier schema evolution added the manifest envelope and SHA-256 payload checksum; explicit graph/evaluator/tolerance identities; bounded file, payload, string, and collection sizes; typed evaluator nodes and ports; overrides and health audit; declared joints; definition-local hierarchy; ThroughCut features; and exact-reference evidence. Schemas 6–8 add the bounded bottle profile/control, Revolve, Shell, and Fillet/Chamfer feature vocabulary without changing observational Open semantics.
 
 `save_atomic` writes and synchronizes a sibling temporary file before replacement. Load checks size before allocation, validates the envelope/checksum and bounded collections while decoding, constructs a separate complete candidate through crate-private `from_product`, and audits compatibility and override resolution. A lossless current candidate is editable; a lossy or incompatible candidate is `ReviewOnly` and cannot replace the active editable document. Failed Open likewise leaves the active document unchanged. Open performs no hidden evaluation or canonical migration.
 
 Canonical state uses deterministic ordered traversal and exact numeric bits. Canonical batch and result identity now use SHA-256 where the corresponding graph/evaluation contracts require it; the document's user-facing canonical digest remains an equality/dirty-state authority rather than a substitute for the file checksum. P07 exact-reference evidence round-trips but is excluded from canonical digest authority.
 
-Current gaps are the long-term native container/blob strategy, unknown-extension preservation, complete backend migration/quarantine policy, explicit confirmed semantic-migration transaction and backup UI, canonical mesh-body storage, and persisted history. The implemented schema-5 envelope is a bounded product path, not the full compatibility promise.
+Current gaps are the long-term native container/blob strategy, unknown-extension preservation, complete backend migration/quarantine policy, explicit confirmed semantic-migration transaction and backup UI, canonical mesh-body storage, and persisted history. The implemented schema-8 envelope is a bounded product path, not the full compatibility promise.
 
 ## 5.4 Application and interaction — PARTIAL—PRODUCT PATH
 
@@ -472,9 +472,9 @@ Selection and the edit-context stack are ephemeral app state (`lib.rs:383-443`).
 
 `ketchup-exact` links the pinned OCCT build through CXX behind the process-isolated scheduler boundary. The native façade catches exceptions and validates successful shapes using B-Rep validity, solid count, finite bounds, positive volume, and deterministic result evidence.
 
-The product path currently supports rectangular extrusion and bounded rectangular ThroughCut. The worker returns exact topology evidence, semantic face roles, tessellated triangles, bounds/fingerprint, and durable body/subshape references. Core owns `BodySubshapeRef` and `AssemblySelectionTarget`; accepted evidence is registered through P07, queried by the app, persisted by schema 5, and exercised by a narrow C1b corpus. ThroughCut evidence covers outer roles plus four cut-wall roles and hole-safe interaction.
+The product path currently supports rectangular extrusion, bounded rectangular ThroughCut, and the frozen rotational-bottle chain: validated profile/control, Revolve, open-mouth Shell, and shoulder Fillet/Chamfer. The worker returns exact topology evidence, semantic face roles, tessellated triangles, bounds/fingerprint, and durable body/subshape references. Core owns `BodySubshapeRef` and `AssemblySelectionTarget`; accepted evidence is registered through P07, queried by the app, persisted by schema 8, and exercised by bounded C1b evidence. ThroughCut covers outer roles plus four cut-wall roles and hole-safe interaction; the bottle covers five Revolve roles or nine Shell/finished-shell roles with currentness and lineage checks.
 
-The façade also retains isolated box/STEP/probe operations that are not all product capabilities. Reference capture/resolution and backend identity remain narrower than the complete target: broad transformations, feature mutations, curved topology, all ambiguity/loss paths, and general exact operation families are not yet proven.
+The façade also retains isolated box/STEP/probe operations that are not all product capabilities. Reference capture/resolution and backend identity remain narrower than the complete target: broad transformations, arbitrary feature mutations and curved topology, general edge selection, all ambiguity/loss paths, and general exact operation families are not yet proven.
 
 ## 5.6 Scheduler and worker — PARTIAL—PRODUCT PATH
 
@@ -501,6 +501,7 @@ Current runs against the baseline and working-tree scope recorded once in Append
 - focused P07/W4A core suites passed 16/16, the exact physical/durable interaction suite passed 4/4, and the M4b suite passed its accepted-body clearance, exact-face dimension, canonical-joint, stale-binding, and real ThroughCut `Tolerant` propagation assertions;
 - the exact clearance unit proof classifies separated diagonal gap, touching, and positive-volume intersection distinctly;
 - the M5 beam proof derives both complementary notches from each canonical joint, validates a 14-component exact notched beam, preserves all four joint verdicts, and remains `12 Exact / 0 Tolerant`; physical worker/app acceptance additionally evaluates 13 OCCT B-Reps, accepts 48 durable notch-face references, emits a dimensioned SVG plus 24 manufacturing operations, rejects stale/quarantined export, and preserves reference lineage after the controlled spacing change;
+- the M6A bottle proof passed 4 canonical/rollback/persistence tests, 3 native OCCT Revolve/Shell/Fillet-Chamfer tests, 3 worker/current-reference tests, and 2 app numeric/direct-edit/render/pick/export tests; its controlled batch changes radius `30 → 32`, height `110 → 120`, shoulder rise `20 → 16`, finish `Fillet 2 → Chamfer 1.5`, invalidates the old exact package, produces bounds `[-32,-32,0]..[32,32,161]`, and preserves nine current durable roles after lossless schema-8 Save/Open;
 - the deliberate-red architecture self-test observed all 16 intended rejection paths exactly once, including A0 rediscovery and a private in-core revision write;
 - strict workspace Clippy passed over the current working-tree scope;
 - the explicit `cargo test --locked -p ketchup-exact --features a0-certification --test gate_a0_v2 -- --exact gate_a0_v2 --nocapture` target failed closed before geometry on stale sealed inputs;
@@ -511,9 +512,9 @@ Formal A0 tests remain runner-only: Cargo requires the explicit `a0-certificatio
 ## 5.9 Evidence caveats
 
 - Historical strengthened A0 v2 `FULL_GO` proves its frozen operation/reference subset and identities; it does not certify the current-evidence baseline in Appendix G, later working-tree changes, curved topology, or broad exact operations.
-- The former A1 research graph has become product/core evaluator and schema-5 infrastructure, but the evidence still does not prove a universal geometry-feature DAG.
+- The former A1 research graph has become product/core evaluator and schema-8 infrastructure, but the evidence still does not prove a universal geometry-feature DAG.
 - Gate B primitives and the integrated supervisor support the narrow product worker path; they are not a sealed certification of every future job, restart, memory, or progress policy.
-- C1a and a narrow C1b rectangle corpus exist, with focused ThroughCut reference/picking evidence. They do not cover all transforms, mutations, feature families, or `Ambiguous`/`Lost` paths.
+- C1a and bounded C1b product evidence exist for rectangles, ThroughCut, and the rotational bottle's five Revolve or nine Shell/finished-shell roles. They do not cover all transforms, mutations, feature families, arbitrary edge selection, or `Ambiguous`/`Lost` paths.
 - The required terminal integrated-GPU Gate C evidence is incomplete.
 - This as-built update is bound to the single current-evidence commit and working-tree scope in Appendix G. It is not a new current freeze; evidence and line references must be read with that scope.
 
@@ -1726,6 +1727,10 @@ Workflow slices, not a universal feature checklist, determine priority:
 
 Every slice repeats the canonical-command-evaluator-reference-interaction-persistence-validation chain and proves direct manipulation, meaningful numeric control, Undo/Redo, Save/Open, and authority/loss reporting. M6 does not promise complete CAD, unrestricted sculpting, animation, or production-scale vegetation generation.
 
+**Current M6A implementation:** the bounded rotational bottle slice is complete on the working-tree scope in Appendix G. One canonical chain owns a validated six-point half-profile, controlled radius/height/shoulder dimensions, Revolve, open-mouth Shell thickness, and Fillet/Chamfer finish. The supervised worker returns a deterministic OCCT B-Rep, tessellation, and five or nine durable semantic face roles; the app accepts only a revision/digest-bound current package for rendering, picking, exact-recipe export, and OBJ export with explicit topology/editability loss. Numeric panel edits and body/shoulder/neck role drags each commit one atomic batch; Undo/Redo and schema-8 observational Save/Open preserve canonical identity. The controlled-change fixture records `30→32 mm` body radius, `110→120 mm` body height, `20→16 mm` shoulder rise, and `Fillet 2→Chamfer 1.5 mm`; it changes canonical/result identities, rejects the stale package, produces `[-32,-32,0]..[32,32,161]` bounds, and retains nine current durable roles after reopen. Invalid profiles, thicknesses, finish amounts, and combined edits roll back without a revision or Undo step.
+
+**M6 status:** M6 closed on the blocking M6A bottle exit for this rotational envelope. The explicitly non-blocking M6B living-tree research slice and unapproved M6C additions were deferred without implementation claims; asymmetric spline/Loft/Sweep bottles remain planned.
+
 ## M7 — AI and extension surface
 
 **Goal:** expose automation only after deterministic semantics exist.
@@ -1737,6 +1742,14 @@ Every slice repeats the canonical-command-evaluator-reference-interaction-persis
 5. Python SDK and constrained plugin pilot;
 6. third-party validator hosting: discovery/install/update, authenticated publisher/signature provenance, trust and revocation, paid-license state, native/WASM process isolation, and confirmed remote egress;
 7. later domain semantic packages, BIM primitives, and broader drawing/manufacturing integrations; the host-neutral validator protocol already exists from M4a.
+
+**Current M7A implementation:** a bounded local Assistant accepts only `SetRuleDimension` and `SetFeatureDimension` typed intents under an explicit `LocalAssistant` capability grant. Core derives the command batch, provenance, dependency-scoped read set, typed write set, before/after dimension diff, intended write-result digest, Standard risk, ReviewRequired confirmation, and a host-bounded `1 command / 64 reads / 1 write` budget. Preparation dry-runs the same `apply_batch` path against an isolated snapshot; relevant changes, replay, cross-document use, invalid values/targets, missing capability, and budget violations fail closed. Unrelated changes may be revalidated. Confirm preflights again, applies exactly one canonical batch, verifies the write-result digest, and transactionally restores history and the derived-result registry on any mismatch; Cancel never mutates. The product panel displays this evidence and a verified receipt. Focused Gate D covers both rule and model tasks plus these adversarial boundaries, and the full locked workspace passes on the Appendix G working-tree scope.
+
+**Current M7B implementation:** the constrained extension pilot runs an external Python SDK client behind `ketchup.plugin.v1`. An untrusted process declares a package/version, stable numeric principal, capabilities, and limits; the host separately grants a subset and enforces bounded request lines before full allocation, cumulative request/query bytes, the existing Proposal command/read/write budget, one review-only Proposal, timeout, cancellation, and process termination. The only read is Agent StateView v1 and the only writes are the two proven typed Intents from M7A; the process receives neither `DocumentStore` nor raw OCCT/renderer/commit access, and a trusted caller still performs the same stale-checked verified Proposal commit. Focused acceptance executes the Python process and covers denied capabilities, exhausted request/query budgets, direct-mutation vocabulary, oversized input, timeout/cancellation, stale commit, and one canonical Undo step. This pilot is process separation and protocol least privilege, not an OS filesystem/network sandbox or a production package host.
+
+**Current M7C implementation:** the bounded third-party validator host discovers, installs, and monotonically updates packages whose complete descriptor digest, artifact digest, runtime, egress declaration, and license product identity are covered by an Ed25519 publisher signature. Host-owned trust, publisher/release revocation, and external `Missing`/`Active`/`Expired` paid-license state are rechecked on every resolution; no license secret enters the package or document. Resolution binds the authenticated descriptor to a current document invocation and returns structured `Unavailable` on stale, mismatched, revoked, untrusted, tampered, or unlicensed input without mutation. The executable product path is signed no-import WASM under strict parser, fuel, memory, table, and instance limits; modules receive no filesystem, process, or network imports. Declared egress is performed only by a host TCP broker when the signed publisher declaration intersects a separate host-owned grant for the exact host/port, with timeout, request/response byte limits, and digest-only receipts; focused acceptance confirms the transport against a loopback remote-endpoint fixture. Native packages without a configured OS sandbox remain unavailable, and the loopback proof does not claim a production public-network/TLS deployment.
+
+**M7 status:** the bounded M7A Assistant, M7B constrained Python pilot, and M7C signed no-import WASM validator path satisfy the narrow M7 product exit without creating a second document or commit authority. Natural-language/model-provider integration, high-risk human confirmation tokens, broader canonical task coverage, persistent public package catalog/namespaces, native OS sandboxing, production HTTPS/TLS egress and credential brokerage remain later scope.
 
 **Exit:** AI can change rules and models only through the same safe, observable, undoable path as manual actions.
 
@@ -1827,15 +1840,16 @@ Line numbers are a snapshot aid for the 2026-08-03 working tree and may move. Te
 | Undo/Redo | `document.rs::undo/redo` | core and app/capstone suites | **IMPLEMENTED canonical** |
 | Definitions, local hierarchy, Group→Component, Make Unique | `document.rs` | product/hierarchy/component and headless-shell suites | **IMPLEMENTED current features** |
 | Canonical/evaluation digests | `document.rs`; `graph.rs` | graph and persistence suites | **IMPLEMENTED for current contracts** |
-| Schema-5 persistence and observational Open | `crates/ketchup-core/src/persistence.rs`; app Open path | persistence/schema-limit/file-workflow suites | **PARTIAL—PRODUCT PATH** |
+| Schema-8 persistence and observational Open | `crates/ketchup-core/src/persistence.rs`; app Open path | persistence/schema-limit/file-workflow suites plus M6 bottle round-trip | **PARTIAL—PRODUCT PATH; schemas 0–7 remain readable under bounded compatibility rules** |
 | Complete and agent StateView | `crates/ketchup-core/src/state_view.rs` | `tests/state_view_v1.rs` plus independent golden fixtures | **IMPLEMENTED current schema** |
 | Designed shell and command registry | `crates/ketchup-app/src/lib.rs` | headless shell, registry, shortcut, and workflow suites | **PARTIAL—PRODUCT PATH** |
 | Headless real-widget harness | `ketchup-app/tests/harness/mod.rs` | `capstone_chain.rs` and app integration tests | **IMPLEMENTED** |
 | Selection/edit context | `ketchup-app/src/lib.rs` | capstone and focused context tests | **PARTIAL—PRODUCT PATH** |
 | Canonical cuboid projection / C1a | `ketchup-interaction` projection; app consumption | C1a and Gate C interaction suites | **IMPLEMENTED narrow box path** |
 | Exact triangle interaction/picking | `ketchup-interaction/src/exact_projection.rs`; app exact projection | `gate_c1b_product.rs`, ThroughCut product tests | **PARTIAL—PRODUCT PATH** |
-| Exact façade and ThroughCut | `ketchup-exact`; worker binary | exact unit tests, A0 v2 evidence, exact product/ThroughCut suites | **PARTIAL—PRODUCT PATH; narrow operations** |
-| Durable exact references / C1b | `ketchup-core/src/exact_product.rs`; scheduler exact packages; schema 5 | narrow 27-comparison rectangle corpus plus ThroughCut roles/Save-Open | **PARTIAL—PRODUCT PATH** |
+| Exact façade, ThroughCut, and bounded bottle operations | `ketchup-exact`; worker binary | exact unit tests, A0 v2 evidence, exact product/ThroughCut suites, fixed M6 bottle OCCT suite | **PARTIAL—PRODUCT PATH; Extrude, ThroughCut, rotational Revolve, Shell, and shoulder Fillet/Chamfer only** |
+| Durable exact references / C1b | `ketchup-core/src/exact_product.rs`; `bottle_m6.rs`; scheduler exact packages; schema 8 | rectangle corpus, ThroughCut roles/Save-Open, and five/nine-role bottle worker tests | **PARTIAL—PRODUCT PATH** |
+| Editable rotational bottle workflow / M6A | `bottle_m6.rs`; `document.rs`; `ketchup-exact`; scheduler worker; app bottle panel/drag/export path | `product_document.rs` M6 tests, fixed native bottle tests, `gate_c1b_product.rs` bottle tests, app bottle tests | **IMPLEMENTED narrow product path; arbitrary profiles/axes/edges and asymmetric spline/Loft/Sweep remain planned** |
 | Scheduler and exact-worker supervision | `ketchup-scheduler`; app integration | Gate B, supervisor, exact product, and capstone suites | **PARTIAL—PRODUCT PATH** |
 | Prismatic collision and bounded joints | `ketchup-core/src/prismatic.rs` | `beam_m4ae.rs`, `validation_m4a.rs` | **IMPLEMENTED bounded slice** |
 | Host-neutral validator and W4A | `ketchup-core/src/validation.rs` | `validation_m4a.rs`, StateView/BOM/app projections | **IMPLEMENTED bounded built-in slice** |
@@ -1865,9 +1879,9 @@ Line numbers are a snapshot aid for the 2026-08-03 working tree and may move. Te
 | 14 | Linear pattern | **PLANNED.** |
 | 15 | Parameter expression | **IMPLEMENTED narrow:** bounded typed expression nodes evaluate deterministically. |
 | 16 | Dependent-only recompute | **IMPLEMENTED narrow:** affected-only evaluator recomputation and stable unrelated result identity are tested. |
-| 17 | Save/Open dimensions/references | **PARTIAL—PRODUCT PATH:** schema 5 round-trips current identities, graph, overrides, joints, exact references, and beam dimension provenance; general persistent dimensions remain incomplete. |
+| 17 | Save/Open dimensions/references | **PARTIAL—PRODUCT PATH:** schema 8 round-trips current identities, graph, overrides, joints, exact references, beam dimension provenance, and the bottle recipe without semantic loss; general persistent dimensions remain incomplete. |
 | 18 | Batch Undo/Redo one step | **IMPLEMENTED canonical state; P07 results add no Undo step.** |
-| 19 | Exact or mesh export with loss report | **PLANNED product path.** |
+| 19 | Exact or mesh export with loss report | **PARTIAL—PRODUCT PATH:** the current accepted bottle package exports a deterministic exact recipe and OBJ plus explicit tessellation/topology/editability loss; general exact formats, arbitrary bodies, and mesh-to-exact remain planned. |
 | 20 | Risky AI Proposal workflow | **PLANNED:** narrow proposal primitive only, no Assistant/product pipeline. |
 
 # Appendix C — Change log from V3
@@ -1893,7 +1907,7 @@ Line numbers are a snapshot aid for the 2026-08-03 working tree and may move. Te
 - the exact worker is connected to the product application through scheduler supervision for the bounded M3 slice;
 - `apply_batch` is the canonical semantic path and P07 `register_derived_result` is the only non-canonical result path; construction/lifecycle operations are explicitly classified and guarded;
 - evaluator nodes perform bounded typed expression/rule evaluation and affected-only recomputation, but universal geometric feature-result unification remains incomplete;
-- schema 5 stores evaluator identity, graph/override/joint state, limits/checksum, and exact-reference evidence with observational Open;
+- schema 8 stores evaluator identity, graph/override/joint state, limits/checksum, and exact-reference evidence with observational Open;
 - M4a implements a bounded prismatic beam/validator/BOM/dimension slice with W4A evidence classes;
 - historical gate evidence remains scoped to frozen source/harness and is not automatic current certification;
 - C1b is real but narrow, and terminal integrated-GPU Gate C evidence remains incomplete.
@@ -1994,7 +2008,7 @@ Before sending this draft for review, include:
 - current crate dependency graph;
 - complete and agent StateView v1 golden examples;
 - current test/gate disposition with exact build fingerprint;
-- one current `.ketchup` schema-5 fixture and decoded semantic inventory;
+- one current `.ketchup` schema-8 fixture and decoded semantic inventory;
 - one narrow manual capstone trace;
 - one A0 reference fixture and one Gate B worker trace;
 - explicit questions from section 14.2.
@@ -2007,9 +2021,9 @@ This appendix is the single authority for the current-evidence commit. Other sec
 
 | Field | Value |
 |---|---|
-| As-built update date | 2026-08-06 |
-| Current-evidence commit | `749d17f4676b23035cc8e9c543ceae1c3c89e006` (`Complete the M5 half-lap product path`) |
-| Working-tree scope | `dirty=true`; post-baseline work is limited to this evidence-manifest and M5 exit-status correction |
+| As-built update date | 2026-08-07 |
+| Current-evidence commit | `d8fab4f4a587caddebc133cbe86d785e16def7c9` (`Record full M5 exit evidence`) |
+| Working-tree scope | `dirty=true`; post-baseline scope is the bounded M6A rotational-bottle implementation and this truthful V4C status/evidence update across the files reported by `git status`; it is not an immutable current-evidence commit or new gate freeze |
 | OS | Windows 10 10.0.19045 x64 |
 | Rust | `rustc 1.97.0 (2d8144b78 2026-07-07)` |
 | Cargo | `cargo 1.97.0 (c980f4866 2026-06-30)` |
@@ -2021,10 +2035,10 @@ Current validation observations used by this update:
 
 | Command | Outcome |
 |---|---|
-| `cargo fmt --all` / final `cargo fmt --all --check` | PASS after implementation; final check recorded before closure |
-| `cargo clippy --locked --workspace --all-targets -- -D warnings` | PASS over commit `749d17f` plus this documentation-only correction |
-| `cargo test --locked --workspace --all-targets` | PASS, including app/core/exact/interaction/scheduler, Gate B, C1a, narrow C1b, ThroughCut, capstone, P07, W4A, and the full M5 worker/app/export proof |
-| `cargo test -p ketchup-app --test capstone_chain -- --nocapture` | PASS; 2/2 with `ketchup-exact-worker` present |
+| `cargo fmt --all` / final `cargo fmt --all --check` | PASS after M6A implementation; final check recorded before M6A closure |
+| `cargo clippy --locked --workspace --all-targets -- -D warnings` | PASS over the bounded dirty M6A working-tree scope |
+| `cargo test --locked --workspace --all-targets` | PASS, including app/core/exact/interaction/scheduler, formal Gate B, C1a, bounded C1b, ThroughCut, capstone, P07, W4A, M5, and M6A bottle proofs; formal Gate B completed in 158.88 s |
+| focused M6A commands: core `product_document m6_`, exact `fixed_bottle`, scheduler `gate_c1b_product bottle`, app-lib `bottle_` | PASS; respectively 4/4, 3/3, 3/3, and 2/2 |
 | focused P07/W4A suites | PASS; 16/16 |
 | exact physical/durable interaction unit suite | PASS; 4/4, including hole miss and unreferenced physical-face occlusion |
 | deliberate-red architecture/R0 self-test | PASS; all 16 expected red paths observed exactly once, including sealed-A0 rediscovery |
@@ -2038,6 +2052,6 @@ Cargo excludes sealed A0 tests from daily discovery unless `a0-certification` is
 
 # Final statement
 
-Ketchup has crossed from disconnected experiments into a narrow coherent product substrate with a manual modeler, evaluator/persistence path, prismatic fabrication/validation path, integrated exact extrusion/ThroughCut path, bounded exact-dependent validation, and a bounded joint-driven exact-prismatic half-lap beam step. It has not crossed into a general exact, rule-driven 2D/3D product: the current slices remain bounded, worker-backed notch/reference/drawing/manufacturing completion and M6–M7 remain open, and current-tree gate certification is absent.
+Ketchup has crossed from disconnected experiments into a narrow coherent product substrate with a manual modeler, evaluator/persistence path, prismatic fabrication/validation path, integrated exact extrusion/ThroughCut path, bounded exact-dependent validation, a joint-driven exact-prismatic half-lap beam step, and one complete bounded rotational-bottle vertical slice. It has not crossed into a general exact, rule-driven 2D/3D product: the current slices remain bounded, arbitrary profiles/axes/edge selection, asymmetric spline/Loft/Sweep bottles, the non-blocking living-tree research slice, later M6 domain additions, M7, and current-tree gate certification remain open.
 
-The next architectural success is not another broad feature demo. It is extending the same canonical rule/feature authority across exact evaluation, interaction, persistence, validation, and fabrication without widening the current two write paths, creating a second authority, or silently changing meaning during Open, recompute, or AI automation.
+The next architectural success is not another broad feature demo. It is preserving the same canonical rule/feature authority while choosing the next workflow-derived slice, without widening the current two write paths, creating a second authority, or silently changing meaning during Open, recompute, or AI automation.

@@ -9,8 +9,11 @@
 #include <BRepBuilderAPI_MakeWire.hxx>
 #include <BRepCheck_Analyzer.hxx>
 #include <BRepGProp.hxx>
+#include <BRepFilletAPI_MakeChamfer.hxx>
+#include <BRepFilletAPI_MakeFillet.hxx>
 #include <BRepPrimAPI_MakeBox.hxx>
 #include <BRepPrimAPI_MakePrism.hxx>
+#include <BRepPrimAPI_MakeRevol.hxx>
 #include <BRep_Tool.hxx>
 #include <Bnd_Box.hxx>
 #include <GProp_GProps.hxx>
@@ -30,6 +33,7 @@
 #include <TopoDS_Face.hxx>
 #include <TopoDS_Shape.hxx>
 #include <TopoDS_Vertex.hxx>
+#include <gp_Ax1.hxx>
 #include <gp_Dir.hxx>
 #include <gp_Pln.hxx>
 #include <gp_Pnt.hxx>
@@ -72,6 +76,16 @@ std::uint32_t count_subshapes(const TopoDS_Shape& shape, TopAbs_ShapeEnum kind) 
     ++count;
   }
   return count;
+}
+
+TopoDS_Face face_at_ordinal(const TopoDS_Shape& shape, std::uint32_t target) {
+  std::uint32_t ordinal = 0;
+  for (TopExp_Explorer explorer(shape, TopAbs_FACE); explorer.More(); explorer.Next(), ++ordinal) {
+    if (ordinal == target) {
+      return TopoDS::Face(explorer.Current());
+    }
+  }
+  return TopoDS_Face();
 }
 
 std::pair<std::uint32_t, bool> face_ordinal(
@@ -209,7 +223,7 @@ std::unique_ptr<NativeOperationResult> success_result(
   TopExp::MapShapes(impl->shape, TopAbs_FACE, faces);
 
   Bnd_Box bounds;
-  BRepBndLib::Add(impl->shape, bounds);
+  BRepBndLib::AddOptimal(impl->shape, bounds, false, false);
   double min_x = 0.0;
   double min_y = 0.0;
   double min_z = 0.0;
@@ -488,6 +502,345 @@ std::unique_ptr<NativeOperationResult> extrude_rectangle_native(
     }
     history.push_back(std::move(east_history));
     return success_result(result, std::move(history));
+  });
+}
+
+std::unique_ptr<NativeOperationResult> revolve_profile_native(
+    rust::Slice<const double> points) noexcept {
+  return guarded([&] {
+    if (points.size() != 12) {
+      return error_result(STATUS_INVALID_PARAMETER, "Bottle revolve requires six profile points");
+    }
+    std::vector<gp_Pnt> profile_points;
+    profile_points.reserve(6);
+    for (std::size_t index = 0; index < points.size(); index += 2) {
+      const double radius = points[index];
+      const double z = points[index + 1];
+      if (!std::isfinite(radius) || !std::isfinite(z)) {
+        return error_result(STATUS_NON_FINITE_PARAMETER, "Bottle revolve profile is non-finite");
+      }
+      profile_points.emplace_back(radius, 0.0, z);
+    }
+
+    std::vector<TopoDS_Edge> profile_edges;
+    profile_edges.reserve(profile_points.size());
+    BRepBuilderAPI_MakeWire wire_builder;
+    for (std::size_t index = 0; index < profile_points.size(); ++index) {
+      const std::size_t next = (index + 1) % profile_points.size();
+      const TopoDS_Edge edge =
+          BRepBuilderAPI_MakeEdge(profile_points[index], profile_points[next]).Edge();
+      profile_edges.push_back(edge);
+      wire_builder.Add(edge);
+    }
+    if (!wire_builder.IsDone()) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT revolve wire builder did not complete");
+    }
+    BRepBuilderAPI_MakeFace face_builder(wire_builder.Wire(), true);
+    if (!face_builder.IsDone()) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT revolve profile face builder did not complete");
+    }
+    const TopoDS_Face profile = face_builder.Face();
+    std::vector<TopoDS_Edge> operation_edges;
+    operation_edges.reserve(5);
+    for (std::size_t source_index = 0; source_index < 5; ++source_index) {
+      TopoDS_Edge matched;
+      const gp_Pnt expected_first = profile_points[source_index];
+      const gp_Pnt expected_last = profile_points[source_index + 1];
+      for (TopExp_Explorer explorer(profile, TopAbs_EDGE); explorer.More(); explorer.Next()) {
+        const TopoDS_Edge candidate = TopoDS::Edge(explorer.Current());
+        TopoDS_Vertex first;
+        TopoDS_Vertex last;
+        TopExp::Vertices(candidate, first, last);
+        if (first.IsNull() || last.IsNull()) {
+          continue;
+        }
+        const gp_Pnt first_point = BRep_Tool::Pnt(first);
+        const gp_Pnt last_point = BRep_Tool::Pnt(last);
+        const bool forward = first_point.Distance(expected_first) <= 1.0e-9
+            && last_point.Distance(expected_last) <= 1.0e-9;
+        const bool reverse = first_point.Distance(expected_last) <= 1.0e-9
+            && last_point.Distance(expected_first) <= 1.0e-9;
+        if (forward || reverse) {
+          matched = candidate;
+          break;
+        }
+      }
+      if (matched.IsNull()) {
+        return error_result(STATUS_INVALID_SHAPE, "OCCT revolve profile edge identity was lost");
+      }
+      operation_edges.push_back(matched);
+    }
+    BRepPrimAPI_MakeRevol operation(
+        profile,
+        gp_Ax1(gp_Pnt(0.0, 0.0, 0.0), gp_Dir(0.0, 0.0, 1.0)),
+        2.0 * std::acos(-1.0),
+        true);
+    if (!operation.IsDone()) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT revolve builder did not complete");
+    }
+    const TopoDS_Shape result = operation.Shape();
+    const char* roles[] = {
+        "revolve.bottom", "revolve.body", "revolve.shoulder", "revolve.neck", "revolve.mouth"};
+    std::vector<HistoryRecord> history;
+    history.reserve(5);
+    for (std::size_t index = 0; index < 5; ++index) {
+      const std::string source = std::string("profile.edge.") + std::to_string(index);
+      HistoryRecord record{roles[index], "generated", source, 0, false};
+      const NCollection_List<TopoDS_Shape>& generated = operation.Generated(operation_edges[index]);
+      for (NCollection_List<TopoDS_Shape>::Iterator iterator(generated); iterator.More(); iterator.Next()) {
+        const HistoryRecord candidate = history_record(
+            roles[index], "generated", source, result, iterator.Value());
+        if (candidate.output_present) {
+          record = candidate;
+          break;
+        }
+      }
+      history.push_back(std::move(record));
+    }
+    return success_result(result, std::move(history));
+  });
+}
+
+std::unique_ptr<NativeOperationResult> shell_revolve_profile_native(
+    rust::Slice<const double> points, double thickness) noexcept {
+  return guarded([&] {
+    if (points.size() != 12 || !std::isfinite(thickness) || thickness <= 0.0) {
+      return error_result(STATUS_INVALID_PARAMETER, "Bottle shell requires six points and positive finite thickness");
+    }
+    std::vector<gp_Pnt> outer_points;
+    outer_points.reserve(6);
+    for (std::size_t index = 0; index < points.size(); index += 2) {
+      if (!std::isfinite(points[index]) || !std::isfinite(points[index + 1])) {
+        return error_result(STATUS_NON_FINITE_PARAMETER, "Bottle shell profile is non-finite");
+      }
+      outer_points.emplace_back(points[index], 0.0, points[index + 1]);
+    }
+    const double body_radius = points[2];
+    const double body_top_z = points[5];
+    const double neck_radius = points[8];
+    const double top_z = points[9];
+    const double dr = points[6] - points[4];
+    const double dz = points[7] - points[5];
+    const double shoulder_length = std::hypot(dr, dz);
+    if (body_radius != points[4]
+        || neck_radius != points[6]
+        || dr >= -1.0e-9
+        || dz <= 1.0e-9
+        || thickness >= body_radius * 0.5
+        || thickness >= neck_radius * 0.5
+        || thickness >= shoulder_length * 0.5) {
+      return error_result(STATUS_INVALID_PARAMETER, "Bottle shell thickness is outside the conservative offset envelope");
+    }
+    const double shifted_radius = points[4] - dz / shoulder_length * thickness;
+    const double shifted_z = body_top_z + dr / shoulder_length * thickness;
+    const double inner_body_radius = body_radius - thickness;
+    const double inner_neck_radius = neck_radius - thickness;
+    const auto intersect_z = [&](double radius) {
+      return shifted_z + (radius - shifted_radius) / dr * dz;
+    };
+    const double inner_body_top_z = intersect_z(inner_body_radius);
+    const double inner_neck_bottom_z = intersect_z(inner_neck_radius);
+    const double inner_bottom_z = points[1] + thickness;
+    if (!(inner_bottom_z < inner_body_top_z
+          && inner_body_top_z < inner_neck_bottom_z
+          && inner_neck_bottom_z < top_z)) {
+      return error_result(STATUS_DEGENERATE_OPERATION, "Bottle shell offset profile is degenerate");
+    }
+    const double cavity_extension = std::max(1.0, thickness);
+    const std::vector<gp_Pnt> inner_points = {
+        gp_Pnt(0.0, 0.0, inner_bottom_z),
+        gp_Pnt(inner_body_radius, 0.0, inner_bottom_z),
+        gp_Pnt(inner_body_radius, 0.0, inner_body_top_z),
+        gp_Pnt(inner_neck_radius, 0.0, inner_neck_bottom_z),
+        gp_Pnt(inner_neck_radius, 0.0, top_z + cavity_extension),
+        gp_Pnt(0.0, 0.0, top_z + cavity_extension)};
+
+    const auto revolve = [](const std::vector<gp_Pnt>& profile_points) -> TopoDS_Shape {
+      BRepBuilderAPI_MakeWire wire_builder;
+      for (std::size_t index = 0; index < profile_points.size(); ++index) {
+        const std::size_t next = (index + 1) % profile_points.size();
+        wire_builder.Add(BRepBuilderAPI_MakeEdge(profile_points[index], profile_points[next]).Edge());
+      }
+      if (!wire_builder.IsDone()) {
+        throw Standard_Failure("OCCT shell profile wire builder did not complete");
+      }
+      BRepBuilderAPI_MakeFace face_builder(wire_builder.Wire(), true);
+      if (!face_builder.IsDone()) {
+        throw Standard_Failure("OCCT shell profile face builder did not complete");
+      }
+      BRepPrimAPI_MakeRevol operation(
+          face_builder.Face(),
+          gp_Ax1(gp_Pnt(0.0, 0.0, 0.0), gp_Dir(0.0, 0.0, 1.0)),
+          2.0 * std::acos(-1.0),
+          true);
+      if (!operation.IsDone()) {
+        throw Standard_Failure("OCCT shell revolve builder did not complete");
+      }
+      return operation.Shape();
+    };
+
+    const TopoDS_Shape outer = revolve(outer_points);
+    const TopoDS_Shape cavity = revolve(inner_points);
+    BRepAlgoAPI_Cut operation(outer, cavity);
+    operation.Build();
+    if (!operation.IsDone() || operation.HasErrors()) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT bottle shell cut did not complete");
+    }
+    const TopoDS_Shape result = operation.Shape();
+    if (result.IsNull()) {
+      return error_result(STATUS_NULL_RESULT, "OCCT bottle shell returned a null shape");
+    }
+
+    constexpr double tolerance = 1.0e-5;
+    const auto close = [tolerance](double left, double right) {
+      return std::abs(left - right) <= tolerance;
+    };
+    std::vector<HistoryRecord> history;
+    for (TopExp_Explorer explorer(result, TopAbs_FACE); explorer.More(); explorer.Next()) {
+      const TopoDS_Face face = TopoDS::Face(explorer.Current());
+      Bnd_Box bounds;
+      BRepBndLib::Add(face, bounds);
+      double min_x = 0.0;
+      double min_y = 0.0;
+      double min_z = 0.0;
+      double max_x = 0.0;
+      double max_y = 0.0;
+      double max_z = 0.0;
+      bounds.Get(min_x, min_y, min_z, max_x, max_y, max_z);
+      const double radius = std::max({std::abs(min_x), std::abs(min_y), std::abs(max_x), std::abs(max_y)});
+      const bool planar_z = close(min_z, max_z);
+      const char* role = nullptr;
+      const char* source = nullptr;
+      if (planar_z && close(min_z, points[1]) && close(radius, body_radius)) {
+        role = "shell.outer.bottom";
+        source = "revolve.face.bottom";
+      } else if (planar_z && close(min_z, top_z) && close(radius, neck_radius)) {
+        role = "shell.rim";
+        source = "revolve.face.mouth";
+      } else if (planar_z && close(min_z, inner_bottom_z) && close(radius, inner_body_radius)) {
+        role = "shell.inner.bottom";
+        source = "shell.offset.bottom";
+      } else if (!planar_z && close(radius, body_radius) && close(min_z, points[1]) && close(max_z, body_top_z)) {
+        role = "shell.outer.body";
+        source = "revolve.face.body";
+      } else if (!planar_z && close(radius, body_radius) && close(min_z, body_top_z) && close(max_z, points[7])) {
+        role = "shell.outer.shoulder";
+        source = "revolve.face.shoulder";
+      } else if (!planar_z && close(radius, neck_radius) && close(min_z, points[7]) && close(max_z, top_z)) {
+        role = "shell.outer.neck";
+        source = "revolve.face.neck";
+      } else if (!planar_z && close(radius, inner_body_radius) && close(min_z, inner_bottom_z) && close(max_z, inner_body_top_z)) {
+        role = "shell.inner.body";
+        source = "shell.offset.body";
+      } else if (!planar_z && close(radius, inner_body_radius) && close(min_z, inner_body_top_z) && close(max_z, inner_neck_bottom_z)) {
+        role = "shell.inner.shoulder";
+        source = "shell.offset.shoulder";
+      } else if (!planar_z && close(radius, inner_neck_radius) && close(min_z, inner_neck_bottom_z) && close(max_z, top_z)) {
+        role = "shell.inner.neck";
+        source = "shell.offset.neck";
+      }
+      if (role != nullptr) {
+        history.push_back(history_record(role, "bounded_shell_classification", source, result, face));
+      }
+    }
+    if (history.size() != 9) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT bottle shell did not produce nine unambiguous semantic faces");
+    }
+    return success_result(result, std::move(history));
+  });
+}
+
+std::unique_ptr<NativeOperationResult> finish_shell_revolve_profile_native(
+    rust::Slice<const double> points, double thickness, double amount,
+    bool fillet) noexcept {
+  return guarded([&] {
+    if (points.size() != 12 || !std::isfinite(amount) || amount <= 0.0) {
+      return error_result(STATUS_INVALID_PARAMETER, "Bottle edge finish requires six points and positive finite amount");
+    }
+    auto base = shell_revolve_profile_native(points, thickness);
+    if (!base || !base->valid()) {
+      return error_result(STATUS_INVALID_SHAPE, "Bottle edge finish could not construct its shell input");
+    }
+    const TopoDS_Shape base_shape = base->impl().shape;
+    constexpr double tolerance = 1.0e-5;
+    std::vector<TopoDS_Edge> selected_edges;
+    TopTools_IndexedMapOfShape unique_edges;
+    TopExp::MapShapes(base_shape, TopAbs_EDGE, unique_edges);
+    for (Standard_Integer edge_index = 1; edge_index <= unique_edges.Extent(); ++edge_index) {
+      const TopoDS_Edge edge = TopoDS::Edge(unique_edges(edge_index));
+      Bnd_Box bounds;
+      BRepBndLib::Add(edge, bounds);
+      double min_x = 0.0;
+      double min_y = 0.0;
+      double min_z = 0.0;
+      double max_x = 0.0;
+      double max_y = 0.0;
+      double max_z = 0.0;
+      bounds.Get(min_x, min_y, min_z, max_x, max_y, max_z);
+      const double radius = std::max({std::abs(min_x), std::abs(min_y), std::abs(max_x), std::abs(max_y)});
+      const bool lower = std::abs(min_z - points[5]) <= tolerance
+          && std::abs(max_z - points[5]) <= tolerance
+          && std::abs(radius - points[4]) <= tolerance;
+      const bool upper = std::abs(min_z - points[7]) <= tolerance
+          && std::abs(max_z - points[7]) <= tolerance
+          && std::abs(radius - points[6]) <= tolerance;
+      if (lower || upper) {
+        selected_edges.push_back(edge);
+      }
+    }
+    if (selected_edges.size() != 2) {
+      return error_result(
+          STATUS_INVALID_SHAPE,
+          "Bottle edge finish resolved " + std::to_string(selected_edges.size()) + " shoulder edges instead of two");
+    }
+
+    const auto collect_finished = [&](auto& operation) -> std::unique_ptr<NativeOperationResult> {
+      operation.Build();
+      if (!operation.IsDone()) {
+        return error_result(STATUS_INVALID_SHAPE, "OCCT bottle edge finish did not complete");
+      }
+      const TopoDS_Shape result = operation.Shape();
+      if (result.IsNull()) {
+        return error_result(STATUS_NULL_RESULT, "OCCT bottle edge finish returned a null shape");
+      }
+      std::vector<HistoryRecord> history;
+      history.reserve(base->impl().history.size());
+      for (const HistoryRecord& source_history : base->impl().history) {
+        const TopoDS_Face source_face = face_at_ordinal(base_shape, source_history.output_ordinal);
+        if (source_face.IsNull()) {
+          return error_result(STATUS_INVALID_SHAPE, "Bottle edge finish lost a shell source face");
+        }
+        const TopTools_ListOfShape& modified = operation.Modified(source_face);
+        if (modified.Extent() > 1) {
+          return error_result(STATUS_INVALID_SHAPE, "Bottle edge finish produced ambiguous shell face history");
+        }
+        const TopoDS_Shape mapped_face = modified.IsEmpty() ? source_face : modified.First();
+        HistoryRecord mapped = history_record(
+            source_history.semantic_role,
+            fillet ? "bounded_fillet_modified" : "bounded_chamfer_modified",
+            source_history.source_element_id,
+            result,
+            mapped_face);
+        if (!mapped.output_present) {
+          return error_result(STATUS_INVALID_SHAPE, "Bottle edge finish history output is absent");
+        }
+        history.push_back(std::move(mapped));
+      }
+      return success_result(result, std::move(history));
+    };
+
+    if (fillet) {
+      BRepFilletAPI_MakeFillet operation(base_shape);
+      for (const TopoDS_Edge& edge : selected_edges) {
+        operation.Add(amount, edge);
+      }
+      return collect_finished(operation);
+    }
+    BRepFilletAPI_MakeChamfer operation(base_shape);
+    for (const TopoDS_Edge& edge : selected_edges) {
+      operation.Add(amount, edge);
+    }
+    return collect_finished(operation);
   });
 }
 

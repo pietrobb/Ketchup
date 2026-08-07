@@ -11,6 +11,10 @@ repository.workspace = true
 ketchup-core = { path = "../ketchup-core" }
 ketchup-exact = { path = "../ketchup-exact" }
 ketchup-interaction = { path = "../ketchup-interaction" }
+wasmi = "1.1.0"
+
+[dev-dependencies]
+ed25519-dalek = "2.2.0"
 
 [lints]
 workspace = true

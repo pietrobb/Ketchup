@@ -66,6 +66,7 @@ fn main() {
         "TKPrim",
         "TKBool",
         "TKBO",
+        "TKFillet",
         "TKXSBase",
         "TKDESTEP",
     ] {

@@ -91,6 +91,17 @@ mod ffi {
             depth: f64,
             height: f64,
         ) -> UniquePtr<NativeOperationResult>;
+        fn revolve_profile_native(points: &[f64]) -> UniquePtr<NativeOperationResult>;
+        fn shell_revolve_profile_native(
+            points: &[f64],
+            thickness: f64,
+        ) -> UniquePtr<NativeOperationResult>;
+        fn finish_shell_revolve_profile_native(
+            points: &[f64],
+            thickness: f64,
+            amount: f64,
+            fillet: bool,
+        ) -> UniquePtr<NativeOperationResult>;
         fn cut_box_native(
             base: &NativeOperationResult,
             origin_x: f64,
@@ -147,6 +158,12 @@ pub struct RectangleExtrudeSpec {
     pub width_mm: f64,
     pub depth_mm: f64,
     pub height_mm: f64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BottleEdgeFinish {
+    Fillet,
+    Chamfer,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -433,6 +450,83 @@ impl ExactBackend {
         collect_output(
             native,
             "extrude_rectangle",
+            &input,
+            HistoryConfidence::Complete,
+        )
+    }
+
+    pub fn revolve_profile(&self, points_mm: &[[f64; 2]]) -> Result<ExactOpOutput, GeometryError> {
+        let input = format!("revolve_profile:{points_mm:?}");
+        validate_bottle_revolve_profile(points_mm, &input)?;
+        let flattened = points_mm
+            .iter()
+            .flat_map(|point| point.iter().copied())
+            .collect::<Vec<_>>();
+        let native = ffi::revolve_profile_native(&flattened);
+        collect_output(
+            native,
+            "revolve_profile",
+            &input,
+            HistoryConfidence::Complete,
+        )
+    }
+
+    pub fn shell_revolve_profile(
+        &self,
+        points_mm: &[[f64; 2]],
+        thickness_mm: f64,
+    ) -> Result<ExactOpOutput, GeometryError> {
+        let input = format!(
+            "shell_revolve_profile:{points_mm:?}:{:016x}",
+            thickness_mm.to_bits()
+        );
+        validate_bottle_revolve_profile(points_mm, &input)?;
+        validate_bottle_shell_thickness(points_mm, thickness_mm, &input)?;
+        let flattened = points_mm
+            .iter()
+            .flat_map(|point| point.iter().copied())
+            .collect::<Vec<_>>();
+        let native = ffi::shell_revolve_profile_native(&flattened, thickness_mm);
+        collect_output(
+            native,
+            "shell_revolve_profile",
+            &input,
+            HistoryConfidence::Complete,
+        )
+    }
+
+    pub fn finish_shell_revolve_profile(
+        &self,
+        points_mm: &[[f64; 2]],
+        thickness_mm: f64,
+        finish: BottleEdgeFinish,
+        amount_mm: f64,
+    ) -> Result<ExactOpOutput, GeometryError> {
+        let input = format!(
+            "finish_shell_revolve_profile:{points_mm:?}:{:016x}:{}:{:016x}",
+            thickness_mm.to_bits(),
+            match finish {
+                BottleEdgeFinish::Fillet => "fillet",
+                BottleEdgeFinish::Chamfer => "chamfer",
+            },
+            amount_mm.to_bits()
+        );
+        validate_bottle_revolve_profile(points_mm, &input)?;
+        validate_bottle_shell_thickness(points_mm, thickness_mm, &input)?;
+        validate_bottle_finish_amount(points_mm, amount_mm, &input)?;
+        let flattened = points_mm
+            .iter()
+            .flat_map(|point| point.iter().copied())
+            .collect::<Vec<_>>();
+        let native = ffi::finish_shell_revolve_profile_native(
+            &flattened,
+            thickness_mm,
+            amount_mm,
+            finish == BottleEdgeFinish::Fillet,
+        );
+        collect_output(
+            native,
+            "finish_shell_revolve_profile",
             &input,
             HistoryConfidence::Complete,
         )
@@ -766,6 +860,185 @@ pub fn capture_guaranteed_references(
             semantic_role: semantic_role.to_owned(),
             source_element_id: source_element_id.to_owned(),
             expected_type: "planar_face".to_owned(),
+            stability_class: StabilityClass::Guaranteed,
+            backend_fingerprint: output.backend_fingerprint.to_owned(),
+            lineage_digest: stable_digest(&lineage),
+            corroborating_geometry_fingerprint: face.geometric_fingerprint.clone(),
+        });
+    }
+    Ok(references)
+}
+
+fn has_closed_revolve_adjacency(topology: &TopologyEvidence) -> bool {
+    topology.solid_count == 1
+        && topology.shell_count == 1
+        && topology.faces.len() == topology.face_count as usize
+        && topology.edges.len() == topology.edge_count as usize
+        && topology.faces.iter().all(|face| {
+            face.edge_count as usize == face.edge_ordinals.len()
+                && !face.edge_ordinals.is_empty()
+                && face.edge_ordinals.iter().all(|edge_ordinal| {
+                    topology.edges.iter().any(|edge| {
+                        edge.ordinal == *edge_ordinal
+                            && edge.adjacent_face_ordinals.contains(&face.ordinal)
+                    })
+                })
+        })
+        && topology.edges.iter().all(|edge| {
+            (1..=2).contains(&edge.adjacent_face_ordinals.len())
+                && edge.adjacent_face_ordinals.iter().all(|face_ordinal| {
+                    topology.faces.iter().any(|face| {
+                        face.ordinal == *face_ordinal && face.edge_ordinals.contains(&edge.ordinal)
+                    })
+                })
+        })
+}
+
+pub fn capture_revolve_references(
+    output: &ExactOpOutput,
+    document_id: &str,
+    producer_feature_id: &str,
+) -> Result<Vec<SubshapeRef>, GeometryError> {
+    if !has_closed_revolve_adjacency(&output.body.topology) {
+        return Err(parameter_error(
+            GeometryErrorCode::InvalidShape,
+            "capture_revolve_references",
+            &output.input_digest,
+            "Revolve output lacks complete reciprocal face/edge adjacency".to_owned(),
+        ));
+    }
+    let required = [
+        ("revolve.bottom", "profile.edge.0"),
+        ("revolve.body", "profile.edge.1"),
+        ("revolve.shoulder", "profile.edge.2"),
+        ("revolve.neck", "profile.edge.3"),
+        ("revolve.mouth", "profile.edge.4"),
+    ];
+    let mut references = Vec::with_capacity(required.len());
+    for (semantic_role, source_element_id) in required {
+        let candidates = output
+            .topology_history
+            .iter()
+            .filter(|entry| {
+                entry.semantic_role.as_deref() == Some(semantic_role)
+                    && entry.source_element_id == source_element_id
+            })
+            .filter_map(|entry| entry.output_face_ordinal)
+            .collect::<Vec<_>>();
+        let [ordinal] = candidates.as_slice() else {
+            return Err(parameter_error(
+                GeometryErrorCode::InvalidShape,
+                "capture_revolve_references",
+                &output.input_digest,
+                format!(
+                    "Revolve role {semantic_role} has {} candidates",
+                    candidates.len()
+                ),
+            ));
+        };
+        let face = output
+            .body
+            .topology
+            .faces
+            .iter()
+            .find(|face| face.ordinal == *ordinal)
+            .ok_or_else(|| {
+                parameter_error(
+                    GeometryErrorCode::InvalidShape,
+                    "capture_revolve_references",
+                    &output.input_digest,
+                    format!("Revolve role {semantic_role} has no output face"),
+                )
+            })?;
+        let expected_type = "face";
+        let lineage = format!(
+            "{document_id}:{producer_feature_id}:{semantic_role}:{source_element_id}:{expected_type}"
+        );
+        references.push(SubshapeRef {
+            document_id: document_id.to_owned(),
+            producer_feature_id: producer_feature_id.to_owned(),
+            semantic_role: semantic_role.to_owned(),
+            source_element_id: source_element_id.to_owned(),
+            expected_type: expected_type.to_owned(),
+            stability_class: StabilityClass::Guaranteed,
+            backend_fingerprint: output.backend_fingerprint.to_owned(),
+            lineage_digest: stable_digest(&lineage),
+            corroborating_geometry_fingerprint: face.geometric_fingerprint.clone(),
+        });
+    }
+    Ok(references)
+}
+
+pub fn capture_shell_references(
+    output: &ExactOpOutput,
+    document_id: &str,
+    producer_feature_id: &str,
+) -> Result<Vec<SubshapeRef>, GeometryError> {
+    if !has_closed_revolve_adjacency(&output.body.topology) {
+        return Err(parameter_error(
+            GeometryErrorCode::InvalidShape,
+            "capture_shell_references",
+            &output.input_digest,
+            "Shell output lacks complete reciprocal face/edge adjacency".to_owned(),
+        ));
+    }
+    let required = [
+        ("shell.outer.bottom", "revolve.face.bottom"),
+        ("shell.outer.body", "revolve.face.body"),
+        ("shell.outer.shoulder", "revolve.face.shoulder"),
+        ("shell.outer.neck", "revolve.face.neck"),
+        ("shell.rim", "revolve.face.mouth"),
+        ("shell.inner.bottom", "shell.offset.bottom"),
+        ("shell.inner.body", "shell.offset.body"),
+        ("shell.inner.shoulder", "shell.offset.shoulder"),
+        ("shell.inner.neck", "shell.offset.neck"),
+    ];
+    let mut references = Vec::with_capacity(required.len());
+    for (semantic_role, source_element_id) in required {
+        let candidates = output
+            .topology_history
+            .iter()
+            .filter(|entry| {
+                entry.semantic_role.as_deref() == Some(semantic_role)
+                    && entry.source_element_id == source_element_id
+            })
+            .filter_map(|entry| entry.output_face_ordinal)
+            .collect::<Vec<_>>();
+        let [ordinal] = candidates.as_slice() else {
+            return Err(parameter_error(
+                GeometryErrorCode::InvalidShape,
+                "capture_shell_references",
+                &output.input_digest,
+                format!(
+                    "Shell role {semantic_role} has {} candidates",
+                    candidates.len()
+                ),
+            ));
+        };
+        let face = output
+            .body
+            .topology
+            .faces
+            .iter()
+            .find(|face| face.ordinal == *ordinal)
+            .ok_or_else(|| {
+                parameter_error(
+                    GeometryErrorCode::InvalidShape,
+                    "capture_shell_references",
+                    &output.input_digest,
+                    format!("Shell role {semantic_role} has no output face"),
+                )
+            })?;
+        let expected_type = "face";
+        let lineage = format!(
+            "{document_id}:{producer_feature_id}:{semantic_role}:{source_element_id}:{expected_type}"
+        );
+        references.push(SubshapeRef {
+            document_id: document_id.to_owned(),
+            producer_feature_id: producer_feature_id.to_owned(),
+            semantic_role: semantic_role.to_owned(),
+            source_element_id: source_element_id.to_owned(),
+            expected_type: expected_type.to_owned(),
             stability_class: StabilityClass::Guaranteed,
             backend_fingerprint: output.backend_fingerprint.to_owned(),
             lineage_digest: stable_digest(&lineage),
@@ -1152,6 +1425,101 @@ pub fn resolve_subshape_reference(
             candidate_ordinals: candidates,
         },
     }
+}
+
+fn validate_bottle_shell_thickness(
+    points_mm: &[[f64; 2]],
+    thickness_mm: f64,
+    input: &str,
+) -> Result<(), GeometryError> {
+    let shoulder = [
+        points_mm[3][0] - points_mm[2][0],
+        points_mm[3][1] - points_mm[2][1],
+    ];
+    let shoulder_length = shoulder[0].hypot(shoulder[1]);
+    let minimum_radius = points_mm[1..5]
+        .iter()
+        .map(|point| point[0])
+        .fold(f64::INFINITY, f64::min);
+    if !thickness_mm.is_finite() {
+        return Err(parameter_error(
+            GeometryErrorCode::NonFiniteParameter,
+            "shell_revolve_profile",
+            input,
+            "Shell thickness must be finite".to_owned(),
+        ));
+    }
+    if thickness_mm < MIN_LENGTH_MM
+        || thickness_mm >= minimum_radius * 0.5
+        || thickness_mm >= shoulder_length * 0.5
+    {
+        return Err(parameter_error(
+            GeometryErrorCode::InvalidParameter,
+            "shell_revolve_profile",
+            input,
+            "Shell thickness is outside the conservative bottle offset envelope".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_bottle_finish_amount(
+    points_mm: &[[f64; 2]],
+    amount_mm: f64,
+    input: &str,
+) -> Result<(), GeometryError> {
+    let shoulder_length =
+        (points_mm[3][0] - points_mm[2][0]).hypot(points_mm[3][1] - points_mm[2][1]);
+    if !amount_mm.is_finite() {
+        return Err(parameter_error(
+            GeometryErrorCode::NonFiniteParameter,
+            "finish_shell_revolve_profile",
+            input,
+            "Bottle edge finish amount must be finite".to_owned(),
+        ));
+    }
+    if amount_mm < MIN_LENGTH_MM
+        || amount_mm >= shoulder_length * 0.25
+        || amount_mm >= points_mm[3][0] * 0.25
+    {
+        return Err(parameter_error(
+            GeometryErrorCode::InvalidParameter,
+            "finish_shell_revolve_profile",
+            input,
+            "Bottle edge finish amount is outside the conservative shoulder envelope".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_bottle_revolve_profile(
+    points_mm: &[[f64; 2]],
+    input: &str,
+) -> Result<(), GeometryError> {
+    let valid_coordinates = points_mm
+        .iter()
+        .flatten()
+        .all(|coordinate| coordinate.is_finite() && coordinate.abs() <= MAX_COORDINATE_MM);
+    let valid_axis = points_mm.len() == 6
+        && points_mm.first().is_some_and(|point| point[0] == 0.0)
+        && points_mm.last().is_some_and(|point| point[0] == 0.0)
+        && points_mm[1..points_mm.len() - 1]
+            .iter()
+            .all(|point| point[0] >= MIN_LENGTH_MM);
+    let distinct = points_mm.iter().enumerate().all(|(index, point)| {
+        points_mm[index + 1..]
+            .iter()
+            .all(|candidate| point != candidate)
+    });
+    if !valid_coordinates || !valid_axis || !distinct {
+        return Err(parameter_error(
+            GeometryErrorCode::InvalidProfile,
+            "revolve_profile",
+            input,
+            "Bottle revolve requires six finite distinct [radius, z] points with only its endpoints on the Z axis".to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 pub fn validate_closed_planar_profile(points: &[Point3]) -> Result<(), GeometryError> {
@@ -1647,6 +2015,136 @@ mod tests {
         }
         assert!(output.input_digest.starts_with("fnv1a64:"));
         assert!(output.body.result_fingerprint.starts_with("fnv1a64:"));
+    }
+
+    #[test]
+    fn fixed_bottle_revolve_is_valid_and_carries_five_durable_faces() {
+        let profile = [
+            [0.0, 0.0],
+            [30.0, 0.0],
+            [30.0, 110.0],
+            [12.0, 130.0],
+            [12.0, 155.0],
+            [0.0, 155.0],
+        ];
+        let output = ExactBackend::new()
+            .revolve_profile(&profile)
+            .expect("fixed bottle revolve must succeed");
+        assert_eq!(output.body.topology.solid_count, 1);
+        assert_eq!(output.body.topology.shell_count, 1);
+        assert_close(output.body.topology.bounds_mm.min.x, -30.0);
+        assert_close(output.body.topology.bounds_mm.min.y, -30.0);
+        assert_close(output.body.topology.bounds_mm.min.z, 0.0);
+        assert_close(output.body.topology.bounds_mm.max.x, 30.0);
+        assert_close(output.body.topology.bounds_mm.max.y, 30.0);
+        assert_close(output.body.topology.bounds_mm.max.z, 155.0);
+        assert_close(
+            output.body.topology.volume_mm3,
+            111_960.0 * std::f64::consts::PI,
+        );
+        assert_eq!(output.history_confidence, HistoryConfidence::Complete);
+
+        let references = capture_revolve_references(&output, "unit-document", "revolve-001")
+            .expect("revolve references must come from OCCT history");
+        assert_eq!(references.len(), 5);
+        for role in [
+            "revolve.bottom",
+            "revolve.body",
+            "revolve.shoulder",
+            "revolve.neck",
+            "revolve.mouth",
+        ] {
+            let reference = references
+                .iter()
+                .find(|reference| reference.semantic_role == role)
+                .expect("every bounded revolve role must exist");
+            assert!(matches!(
+                resolve_subshape_reference(reference, &output),
+                ReferenceResolution::Resolved {
+                    migrated_backend: false,
+                    ..
+                }
+            ));
+        }
+    }
+
+    #[test]
+    fn fixed_bottle_shell_is_valid_open_and_carries_nine_durable_faces() {
+        let profile = [
+            [0.0, 0.0],
+            [30.0, 0.0],
+            [30.0, 110.0],
+            [12.0, 130.0],
+            [12.0, 155.0],
+            [0.0, 155.0],
+        ];
+        let backend = ExactBackend::new();
+        let output = backend
+            .shell_revolve_profile(&profile, 2.0)
+            .expect("bounded bottle shell must succeed");
+        assert_eq!(output.body.topology.solid_count, 1);
+        assert_eq!(output.body.topology.shell_count, 1);
+        assert_eq!(output.body.topology.face_count, 9);
+        assert!(output.body.topology.volume_mm3 > 0.0);
+        assert!(output.body.topology.volume_mm3 < 111_960.0 * std::f64::consts::PI);
+        let references = capture_shell_references(&output, "unit-document", "shell-001")
+            .expect("shell roles must resolve uniquely");
+        assert_eq!(references.len(), 9);
+        assert!(references.iter().all(|reference| matches!(
+            resolve_subshape_reference(reference, &output),
+            ReferenceResolution::Resolved {
+                migrated_backend: false,
+                ..
+            }
+        )));
+
+        let error = backend
+            .shell_revolve_profile(&profile, 6.0)
+            .expect_err("half-neck-radius thickness must fail conservatively");
+        assert_eq!(error.code, GeometryErrorCode::InvalidParameter);
+    }
+
+    #[test]
+    fn fixed_bottle_fillet_and_chamfer_are_exact_and_preserve_shell_roles() {
+        let profile = [
+            [0.0, 0.0],
+            [30.0, 0.0],
+            [30.0, 110.0],
+            [12.0, 130.0],
+            [12.0, 155.0],
+            [0.0, 155.0],
+        ];
+        let backend = ExactBackend::new();
+        let shell = backend.shell_revolve_profile(&profile, 2.0).unwrap();
+        for finish in [BottleEdgeFinish::Fillet, BottleEdgeFinish::Chamfer] {
+            let output = backend
+                .finish_shell_revolve_profile(&profile, 2.0, finish, 2.0)
+                .expect("bounded shoulder finish must succeed");
+            assert_eq!(output.body.topology.solid_count, 1);
+            assert_eq!(output.body.topology.shell_count, 1);
+            assert!(output.body.topology.face_count > shell.body.topology.face_count);
+            assert_ne!(
+                output.body.result_fingerprint,
+                shell.body.result_fingerprint
+            );
+            let references = capture_shell_references(&output, "unit-document", "finish-001")
+                .expect("all nine shell roles must survive the finish");
+            assert_eq!(references.len(), 9);
+            assert!(references.iter().all(|reference| matches!(
+                resolve_subshape_reference(reference, &output),
+                ReferenceResolution::Resolved {
+                    migrated_backend: false,
+                    ..
+                }
+            )));
+        }
+        assert_eq!(
+            backend
+                .finish_shell_revolve_profile(&profile, 2.0, BottleEdgeFinish::Fillet, 8.0)
+                .unwrap_err()
+                .code,
+            GeometryErrorCode::InvalidParameter
+        );
     }
 
     #[test]

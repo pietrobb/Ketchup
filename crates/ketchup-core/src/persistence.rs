@@ -6,10 +6,10 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crate::document::{
-    CanonicalError, Definition, DefinitionId, Dimension, DocumentStore, EvaluatorNode, Feature,
-    FeatureId, FeatureKind, Group, GroupId, LocalGroup, LocalGroupId, LocalGroupKey,
-    LocalOccurrence, LocalOccurrenceId, LocalOccurrenceKey, NodeId, Occurrence, OccurrenceId,
-    ProductModel, Snapshot, TagId, Transform, UnitSystem,
+    BottleEdgeFinishKind, CanonicalError, Definition, DefinitionId, Dimension, DocumentStore,
+    EvaluatorNode, Feature, FeatureId, FeatureKind, Group, GroupId, LocalGroup, LocalGroupId,
+    LocalGroupKey, LocalOccurrence, LocalOccurrenceId, LocalOccurrenceKey, NodeId, Occurrence,
+    OccurrenceId, ProductModel, Snapshot, TagId, Transform, UnitSystem,
 };
 use crate::exact_product::{BODY_SUBSHAPE_REF_SCHEMA_V1, BodySubshapeRef, ReferenceStability};
 use crate::graph::{
@@ -19,7 +19,10 @@ use crate::graph::{
 use crate::prismatic::{Aabb, CanonicalJoint, JointId};
 
 const MAGIC: &[u8; 10] = b"KETCHUPDOC";
-const CURRENT_SCHEMA: u16 = 5;
+const CURRENT_SCHEMA: u16 = 8;
+const SHELL_SCHEMA: u16 = 7;
+const REVOLVE_SCHEMA: u16 = 6;
+const THROUGH_CUT_SCHEMA: u16 = 5;
 const EXACT_EVIDENCE_SCHEMA: u16 = 4;
 const ENVELOPE_SCHEMA: u16 = 3;
 const PRODUCT_SCHEMA: u16 = 2;
@@ -400,6 +403,46 @@ fn write_features(bytes: &mut Vec<u8>, product: &ProductModel) {
                 push_u64(bytes, target.0);
                 push_u64(bytes, profile.0);
             }
+            FeatureKind::Revolve { profile } => {
+                push_u8(bytes, 4);
+                push_u64(bytes, profile.0);
+            }
+            FeatureKind::BottleProfileControl {
+                profile,
+                body_radius,
+                body_height,
+                shoulder_rise,
+            } => {
+                push_u8(bytes, 6);
+                push_u64(bytes, profile.0);
+                for dimension in [body_radius, body_height, shoulder_rise] {
+                    push_string(bytes, dimension.source_token());
+                    push_u64(bytes, dimension.millimetres().to_bits());
+                }
+            }
+            FeatureKind::Shell { target, thickness } => {
+                push_u8(bytes, 5);
+                push_u64(bytes, target.0);
+                push_string(bytes, thickness.source_token());
+                push_u64(bytes, thickness.millimetres().to_bits());
+            }
+            FeatureKind::BottleEdgeFinish {
+                target,
+                kind,
+                amount,
+            } => {
+                push_u8(bytes, 7);
+                push_u64(bytes, target.0);
+                push_u8(
+                    bytes,
+                    match kind {
+                        BottleEdgeFinishKind::Fillet => 1,
+                        BottleEdgeFinishKind::Chamfer => 2,
+                    },
+                );
+                push_string(bytes, amount.source_token());
+                push_u64(bytes, amount.millimetres().to_bits());
+            }
         }
     }
 }
@@ -465,15 +508,15 @@ pub fn load(bytes: &[u8]) -> Result<LoadOutcome, PersistenceError> {
             | PRODUCT_SCHEMA
             | ENVELOPE_SCHEMA
             | EXACT_EVIDENCE_SCHEMA
+            | THROUGH_CUT_SCHEMA
+            | REVOLVE_SCHEMA
+            | SHELL_SCHEMA
             | CURRENT_SCHEMA
     ) {
         return Err(PersistenceError::UnsupportedSchema(schema));
     }
     let mut migration_losses = Vec::new();
-    let (revision_id, product) = if matches!(
-        schema,
-        ENVELOPE_SCHEMA | EXACT_EVIDENCE_SCHEMA | CURRENT_SCHEMA
-    ) {
+    let (revision_id, product) = if schema >= ENVELOPE_SCHEMA {
         let manifest_length = reader.count_with_limit(MAX_MANIFEST_BYTES as u32)? as usize;
         if manifest_length != MANIFEST_BYTES || bytes.len() < HEADER_BYTES + MANIFEST_BYTES {
             return Err(PersistenceError::InvalidEnvelopeLength);
@@ -513,9 +556,12 @@ pub fn load(bytes: &[u8]) -> Result<LoadOutcome, PersistenceError> {
         let revision_id = payload_reader.u64()?;
         let product = read_product(
             &mut payload_reader,
-            true,
+            schema >= THROUGH_CUT_SCHEMA,
             schema >= EXACT_EVIDENCE_SCHEMA,
-            schema == CURRENT_SCHEMA,
+            schema >= THROUGH_CUT_SCHEMA,
+            schema >= REVOLVE_SCHEMA,
+            schema >= SHELL_SCHEMA,
+            schema >= CURRENT_SCHEMA,
         )?;
         if !payload_reader.is_finished() {
             return Err(PersistenceError::TrailingBytes);
@@ -525,7 +571,7 @@ pub fn load(bytes: &[u8]) -> Result<LoadOutcome, PersistenceError> {
         let revision_id = reader.u64()?;
         let nodes = read_nodes(&mut reader, schema == LEGACY_SCHEMA, &mut migration_losses)?;
         let mut product = if schema == PRODUCT_SCHEMA {
-            read_product(&mut reader, false, false, false)?
+            read_product(&mut reader, false, false, false, false, false, false)?
         } else {
             ProductModel::default()
         };
@@ -559,12 +605,19 @@ pub fn load(bytes: &[u8]) -> Result<LoadOutcome, PersistenceError> {
     let document = DocumentStore::from_product(revision_id, product)?;
     let loaded_snapshot = document.current();
     for reference in loaded_snapshot.exact_reference_evidence() {
-        let request = crate::exact_product::ExactRectangleRequest::from_snapshot(
+        let matches_request = crate::exact_product::ExactRectangleRequest::from_snapshot(
             &loaded_snapshot,
             reference.definition_id,
         )
-        .map_err(|_| PersistenceError::InvalidExactReference)?;
-        if !reference.matches_request(&request) {
+        .is_ok_and(|request| reference.matches_request(&request))
+            || crate::bottle_m6::ExactRevolveRequest::from_snapshot(
+                &loaded_snapshot,
+                reference.definition_id,
+            )
+            .is_ok_and(|request| {
+                crate::bottle_m6::reference_matches_revolve_request(reference, &request)
+            });
+        if !matches_request {
             return Err(PersistenceError::InvalidExactReference);
         }
     }
@@ -830,6 +883,9 @@ fn read_product(
     current: bool,
     exact_evidence: bool,
     through_cut: bool,
+    revolve: bool,
+    shell: bool,
+    bottle_finish: bool,
 ) -> Result<ProductModel, PersistenceError> {
     let mut product = ProductModel {
         document_id: crate::document::DocumentId(reader.u64()?),
@@ -899,6 +955,28 @@ fn read_product(
             3 if through_cut => FeatureKind::ThroughCut {
                 target: FeatureId(reader.u64()?),
                 profile: FeatureId(reader.u64()?),
+            },
+            4 if revolve => FeatureKind::Revolve {
+                profile: FeatureId(reader.u64()?),
+            },
+            5 if shell => FeatureKind::Shell {
+                target: FeatureId(reader.u64()?),
+                thickness: Dimension::new(reader.string()?, f64::from_bits(reader.u64()?))?,
+            },
+            6 if bottle_finish => FeatureKind::BottleProfileControl {
+                profile: FeatureId(reader.u64()?),
+                body_radius: Dimension::new(reader.string()?, f64::from_bits(reader.u64()?))?,
+                body_height: Dimension::new(reader.string()?, f64::from_bits(reader.u64()?))?,
+                shoulder_rise: Dimension::new(reader.string()?, f64::from_bits(reader.u64()?))?,
+            },
+            7 if bottle_finish => FeatureKind::BottleEdgeFinish {
+                target: FeatureId(reader.u64()?),
+                kind: match reader.u8()? {
+                    1 => BottleEdgeFinishKind::Fillet,
+                    2 => BottleEdgeFinishKind::Chamfer,
+                    value => return Err(PersistenceError::InvalidFeatureKind(value)),
+                },
+                amount: Dimension::new(reader.string()?, f64::from_bits(reader.u64()?))?,
             },
             kind => return Err(PersistenceError::InvalidFeatureKind(kind)),
         };

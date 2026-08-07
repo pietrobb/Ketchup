@@ -5,14 +5,17 @@ use ketchup_core::beam_m4ae::{
     BeamChangeSummary, BeamSlice, BeamValidationVerdict, BeamWorkspace, GroovePosition, GroupedBom,
 };
 use ketchup_core::beam_m5::{BeamExactPiecePackage, BeamM5Products};
+use ketchup_core::bottle_m6::{BottleAuthorityReport, ExactRevolveRequest};
 use ketchup_core::document::{
-    CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentId, DocumentStore, FeatureId,
-    FeatureKind, GroupId, InstancePath, OccurrenceId, Snapshot, Transform,
+    BottleControlDimension, BottleEdgeFinishKind, CanonicalCommand, CommandBatch, DefinitionId,
+    Dimension, DocumentId, DocumentStore, FeatureId, FeatureKind, GroupId, InstancePath, NodeId,
+    OccurrenceId, Proposal, ProposalGoal, ProposalValue, Snapshot, Transform,
 };
 use ketchup_core::exact_product::{
-    AssemblySelectionTarget, ExactFaceRole, ExactRectangleRequest, ExactRenderPackage,
+    AssemblySelectionTarget, ExactBodyPackage, ExactFaceRole, ExactRectangleRequest,
 };
 use ketchup_core::fabrication::{FullBomProjection, PieceDimensionSheet};
+use ketchup_core::intent::{IntentRequest, WorkflowIntent, propose_intent};
 use ketchup_core::validation::ValidationReport;
 use ketchup_interaction::{
     Axis, ElementId, LocaleCatalog, Ray, SelectionId, Side, Vec3,
@@ -56,6 +59,35 @@ struct PushPullDrag {
 #[derive(Clone)]
 struct LastPushPull {
     selection: SelectionId,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct BottleFeatureIds {
+    control: FeatureId,
+    shell: FeatureId,
+    finish: FeatureId,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct BottleEditorInputs {
+    definition_id: DefinitionId,
+    body_radius: String,
+    body_height: String,
+    shoulder_rise: String,
+    thickness: String,
+    finish_amount: String,
+    finish_kind: BottleEdgeFinishKind,
+}
+
+#[derive(Clone, Copy)]
+struct BottleDirectDrag {
+    definition_id: DefinitionId,
+    feature_id: FeatureId,
+    control: BottleControlDimension,
+    pointer_start: Pos2,
+    value_start_mm: f64,
+    screen_direction: Vec2,
+    pixels_per_mm: f32,
 }
 
 #[derive(Clone)]
@@ -530,7 +562,12 @@ struct OutlinerDefinition {
 }
 
 type ExactSource = (DocumentId, u64, String);
-type ExactEvaluationResult = Result<BTreeMap<DefinitionId, Arc<ExactRenderPackage>>, String>;
+type ExactEvaluationResult = Result<BTreeMap<DefinitionId, Arc<ExactBodyPackage>>, String>;
+
+enum ExactEvaluationRequest {
+    Rectangle(ExactRectangleRequest),
+    Revolve(ExactRevolveRequest),
+}
 
 struct ExactEvaluationTask {
     source: ExactSource,
@@ -544,6 +581,20 @@ struct BeamM5EvaluationTask {
     source: ExactSource,
     cancelled: Arc<AtomicBool>,
     receiver: Receiver<BeamM5EvaluationResult>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AssistantIntentKind {
+    RuleDimension,
+    FeatureDimension,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AssistantVerification {
+    pub revision_id: u64,
+    pub command_digest: String,
+    pub result_digest: String,
+    pub verified_write_count: usize,
 }
 
 pub struct KetchupApp {
@@ -566,8 +617,15 @@ pub struct KetchupApp {
     hovered: Option<SelectionId>,
     active_tool: ActiveTool,
     digest: String,
+    assistant_intent_kind: AssistantIntentKind,
+    assistant_target_input: String,
+    assistant_value_input: String,
+    assistant_proposal: Option<Proposal>,
+    assistant_verification: Option<AssistantVerification>,
     push_pull_drag: Option<PushPullDrag>,
     last_push_pull: Option<LastPushPull>,
+    bottle_direct_drag: Option<BottleDirectDrag>,
+    bottle_editor: Option<BottleEditorInputs>,
     move_drag: Option<MoveDrag>,
     move_anchor: Option<MoveDrag>,
     last_move: Option<LastMove>,
@@ -587,7 +645,7 @@ pub struct KetchupApp {
     exact_worker_path: Option<PathBuf>,
     exact_worker_attempted: bool,
     exact_task: Option<ExactEvaluationTask>,
-    exact_packages: BTreeMap<DefinitionId, Arc<ExactRenderPackage>>,
+    exact_packages: BTreeMap<DefinitionId, Arc<ExactBodyPackage>>,
     exact_source: Option<ExactSource>,
     exact_retry_at: Option<Instant>,
     beam_workspace: Option<BeamWorkspace>,
@@ -655,8 +713,15 @@ impl KetchupApp {
             hovered: None,
             active_tool: ActiveTool::Select,
             digest,
+            assistant_intent_kind: AssistantIntentKind::FeatureDimension,
+            assistant_target_input: "2".to_owned(),
+            assistant_value_input: "35".to_owned(),
+            assistant_proposal: None,
+            assistant_verification: None,
             push_pull_drag: None,
             last_push_pull: None,
+            bottle_direct_drag: None,
+            bottle_editor: None,
             move_drag: None,
             move_anchor: None,
             last_move: None,
@@ -726,8 +791,12 @@ impl KetchupApp {
         self.selection = SelectionState::default();
         self.hovered = None;
         self.active_tool = ActiveTool::Select;
+        self.assistant_proposal = None;
+        self.assistant_verification = None;
         self.push_pull_drag = None;
         self.last_push_pull = None;
+        self.bottle_direct_drag = None;
+        self.bottle_editor = None;
         self.move_drag = None;
         self.move_anchor = None;
         self.last_move = None;
@@ -1229,6 +1298,87 @@ impl KetchupApp {
         &self.digest
     }
 
+    pub fn prepare_assistant_intent(&mut self, intent: WorkflowIntent) -> bool {
+        match propose_intent(&self.document, IntentRequest::m7a(intent)) {
+            Ok(proposal) => {
+                self.digest = self.catalog.format(
+                    "assistant-digest-preview",
+                    &BTreeMap::from([
+                        (
+                            "reads",
+                            proposal.authoritative_dependencies().len().to_string(),
+                        ),
+                        ("writes", proposal.authoritative_writes().len().to_string()),
+                    ]),
+                );
+                self.status_key = "status-preview";
+                self.assistant_verification = None;
+                self.assistant_proposal = Some(proposal);
+                true
+            }
+            Err(error) => {
+                self.assistant_proposal = None;
+                self.digest = self.catalog.format(
+                    "assistant-digest-rejected",
+                    &BTreeMap::from([("reason", error.to_string())]),
+                );
+                false
+            }
+        }
+    }
+
+    pub fn confirm_assistant_proposal(&mut self) -> bool {
+        let Some(proposal) = self.assistant_proposal.take() else {
+            return false;
+        };
+        match self.document.commit_verified_proposal(&proposal) {
+            Ok(committed) => {
+                let verification = AssistantVerification {
+                    revision_id: committed.revision().id(),
+                    command_digest: committed.command_digest().to_owned(),
+                    result_digest: committed.result_digest().to_owned(),
+                    verified_write_count: committed.verified_writes().len(),
+                };
+                self.digest = self.catalog.format(
+                    "assistant-digest-committed",
+                    &BTreeMap::from([
+                        ("revision", verification.revision_id.to_string()),
+                        ("writes", verification.verified_write_count.to_string()),
+                    ]),
+                );
+                self.status_key = "status-ready";
+                self.assistant_verification = Some(verification);
+                true
+            }
+            Err(error) => {
+                self.digest = self.catalog.format(
+                    "assistant-digest-rejected",
+                    &BTreeMap::from([("reason", error.to_string())]),
+                );
+                false
+            }
+        }
+    }
+
+    pub fn cancel_assistant_proposal(&mut self) -> bool {
+        if self.assistant_proposal.take().is_none() {
+            return false;
+        }
+        self.status_key = "status-ready";
+        self.digest = self.catalog.text("assistant-digest-cancelled");
+        true
+    }
+
+    #[must_use]
+    pub const fn assistant_proposal(&self) -> Option<&Proposal> {
+        self.assistant_proposal.as_ref()
+    }
+
+    #[must_use]
+    pub const fn assistant_verification(&self) -> Option<&AssistantVerification> {
+        self.assistant_verification.as_ref()
+    }
+
     /// The localization catalog the shell paints with.
     ///
     /// Acceptance tests resolve expected labels through this catalog instead of
@@ -1293,7 +1443,7 @@ impl KetchupApp {
                             {
                                 let references = packages
                                     .values()
-                                    .flat_map(|package| package.references.iter().cloned())
+                                    .flat_map(|package| package.references().iter().cloned())
                                     .collect::<Vec<_>>();
                                 if references.into_iter().all(|reference| {
                                     self.document
@@ -1342,6 +1492,11 @@ impl KetchupApp {
             .into_iter()
             .filter_map(|definition_id| {
                 ExactRectangleRequest::from_snapshot(&snapshot, definition_id)
+                    .map(ExactEvaluationRequest::Rectangle)
+                    .or_else(|_| {
+                        ExactRevolveRequest::from_snapshot(&snapshot, definition_id)
+                            .map(ExactEvaluationRequest::Revolve)
+                    })
                     .ok()
                     .map(|request| (definition_id, request))
             })
@@ -1365,9 +1520,16 @@ impl KetchupApp {
                     if worker_cancelled.load(Ordering::Acquire) {
                         return Err("exact evaluation cancelled".to_owned());
                     }
-                    let package = worker
-                        .evaluate_rectangle_with_cancellation(&request, &worker_cancelled)
-                        .map_err(|error| error.to_string())?;
+                    let package = match request {
+                        ExactEvaluationRequest::Rectangle(request) => worker
+                            .evaluate_rectangle_with_cancellation(&request, &worker_cancelled)
+                            .map(ExactBodyPackage::from)
+                            .map_err(|error| error.to_string())?,
+                        ExactEvaluationRequest::Revolve(request) => worker
+                            .evaluate_revolve_with_cancellation(&request, &worker_cancelled)
+                            .map(ExactBodyPackage::from)
+                            .map_err(|error| error.to_string())?,
+                    };
                     packages.insert(definition_id, Arc::new(package));
                 }
                 Ok(packages)
@@ -1420,7 +1582,7 @@ impl KetchupApp {
         self.exact_packages
             .values()
             .filter(|package| package.is_current(&snapshot))
-            .map(|package| package.references.len())
+            .map(|package| package.references().len())
             .sum()
     }
 
@@ -1463,7 +1625,7 @@ impl KetchupApp {
                     .get(&occurrence.body.definition_id)
                     .filter(|_| translation_only)
                     .filter(|package| package.is_current(&snapshot))
-                    .map(|package| package.bounds_mm);
+                    .map(|package| package.bounds_mm());
                 let (origin_mm, size_mm) =
                     exact_bounds.map_or((box_proxy.origin_mm, box_proxy.size_mm), |[min, max]| {
                         (
@@ -2269,6 +2431,326 @@ impl KetchupApp {
         true
     }
 
+    fn bottle_feature_ids(
+        snapshot: &Snapshot,
+        definition_id: DefinitionId,
+    ) -> Option<BottleFeatureIds> {
+        let definition = snapshot.definition(definition_id)?;
+        let mut control = None;
+        let mut shell = None;
+        let mut finish = None;
+        for feature_id in definition.feature_ids() {
+            match snapshot.feature(*feature_id)?.kind() {
+                FeatureKind::BottleProfileControl { .. } => control = Some(*feature_id),
+                FeatureKind::Shell { .. } => shell = Some(*feature_id),
+                FeatureKind::BottleEdgeFinish { .. } => finish = Some(*feature_id),
+                _ => {}
+            }
+        }
+        Some(BottleFeatureIds {
+            control: control?,
+            shell: shell?,
+            finish: finish?,
+        })
+    }
+
+    fn bottle_editor_inputs(
+        snapshot: &Snapshot,
+        definition_id: DefinitionId,
+    ) -> Option<BottleEditorInputs> {
+        let ids = Self::bottle_feature_ids(snapshot, definition_id)?;
+        let FeatureKind::BottleProfileControl {
+            body_radius,
+            body_height,
+            shoulder_rise,
+            ..
+        } = snapshot.feature(ids.control)?.kind()
+        else {
+            return None;
+        };
+        let FeatureKind::Shell { thickness, .. } = snapshot.feature(ids.shell)?.kind() else {
+            return None;
+        };
+        let FeatureKind::BottleEdgeFinish { kind, amount, .. } =
+            snapshot.feature(ids.finish)?.kind()
+        else {
+            return None;
+        };
+        Some(BottleEditorInputs {
+            definition_id,
+            body_radius: body_radius.source_token().to_owned(),
+            body_height: body_height.source_token().to_owned(),
+            shoulder_rise: shoulder_rise.source_token().to_owned(),
+            thickness: thickness.source_token().to_owned(),
+            finish_amount: amount.source_token().to_owned(),
+            finish_kind: *kind,
+        })
+    }
+
+    fn selected_bottle_definition(&self) -> Option<DefinitionId> {
+        let snapshot = self.document.current();
+        let definition_id = self
+            .selection
+            .primary
+            .as_ref()
+            .map(|selection| selection.definition_id)
+            .or_else(|| {
+                let path = self.selection.occurrences.iter().next()?;
+                snapshot
+                    .occurrence(path.root_occurrence())
+                    .map(|occurrence| occurrence.definition_id())
+            })?;
+        Self::bottle_feature_ids(&snapshot, definition_id).map(|_| definition_id)
+    }
+
+    pub fn create_bottle(&mut self) -> bool {
+        let snapshot = self.document.current();
+        let definition_id = DefinitionId(
+            snapshot
+                .definitions()
+                .map(|definition| definition.id().0)
+                .max()
+                .unwrap_or(0)
+                + 1,
+        );
+        let first_feature_id = snapshot
+            .features()
+            .map(|feature| feature.id().0)
+            .max()
+            .unwrap_or(0)
+            + 1;
+        let profile = FeatureId(first_feature_id);
+        let control = FeatureId(first_feature_id + 1);
+        let revolve = FeatureId(first_feature_id + 2);
+        let shell = FeatureId(first_feature_id + 3);
+        let finish = FeatureId(first_feature_id + 4);
+        let occurrence_id = OccurrenceId(
+            snapshot
+                .occurrences()
+                .map(|occurrence| occurrence.id().0)
+                .max()
+                .unwrap_or(0)
+                + 1,
+        );
+        let offset = snapshot.occurrences().count() as f64 * 90.0;
+        let batch = CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: definition_id,
+                name: "Editable bottle".to_owned(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: profile,
+                definition_id,
+                name: "Validated bottle profile".to_owned(),
+                kind: FeatureKind::Profile {
+                    points_mm: vec![
+                        [0.0, 0.0],
+                        [30.0, 0.0],
+                        [30.0, 110.0],
+                        [12.0, 130.0],
+                        [12.0, 155.0],
+                        [0.0, 155.0],
+                    ],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: control,
+                definition_id,
+                name: "Scale stretch flatten controls".to_owned(),
+                kind: FeatureKind::BottleProfileControl {
+                    profile,
+                    body_radius: Dimension::new("30", 30.0).expect("built-in radius is valid"),
+                    body_height: Dimension::new("110", 110.0).expect("built-in height is valid"),
+                    shoulder_rise: Dimension::new("20", 20.0).expect("built-in shoulder is valid"),
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: revolve,
+                definition_id,
+                name: "Bottle revolve".to_owned(),
+                kind: FeatureKind::Revolve { profile: control },
+            },
+            CanonicalCommand::CreateFeature {
+                id: shell,
+                definition_id,
+                name: "Bottle shell".to_owned(),
+                kind: FeatureKind::Shell {
+                    target: revolve,
+                    thickness: Dimension::new("2", 2.0).expect("built-in thickness is valid"),
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: finish,
+                definition_id,
+                name: "Bottle shoulder finish".to_owned(),
+                kind: FeatureKind::BottleEdgeFinish {
+                    target: shell,
+                    kind: BottleEdgeFinishKind::Fillet,
+                    amount: Dimension::new("2", 2.0).expect("built-in finish is valid"),
+                },
+            },
+            CanonicalCommand::CreateOccurrence {
+                id: occurrence_id,
+                definition_id,
+                name: "Editable bottle occurrence".to_owned(),
+                transform: Transform::from_translation(offset, 0.0, 0.0)
+                    .expect("built-in bottle placement is valid"),
+                parent: None,
+                tag: None,
+                visible: true,
+            },
+        ]);
+        if self.document.apply_batch(&batch).is_err() {
+            return false;
+        }
+        self.selection
+            .select_path(InstancePath::root(occurrence_id), false);
+        self.bottle_editor = Self::bottle_editor_inputs(&self.document.current(), definition_id);
+        self.digest = "Created editable exact bottle; worker evaluation pending".to_owned();
+        true
+    }
+
+    fn set_bottle_parameters(&mut self, editor: &BottleEditorInputs) -> bool {
+        let snapshot = self.document.current();
+        let Some(ids) = Self::bottle_feature_ids(&snapshot, editor.definition_id) else {
+            return false;
+        };
+        let Some(body_radius) = parse_dimension(&editor.body_radius) else {
+            return false;
+        };
+        let Some(body_height) = parse_dimension(&editor.body_height) else {
+            return false;
+        };
+        let Some(shoulder_rise) = parse_dimension(&editor.shoulder_rise) else {
+            return false;
+        };
+        let Some(thickness) = parse_dimension(&editor.thickness) else {
+            return false;
+        };
+        let Some(finish_amount) = parse_dimension(&editor.finish_amount) else {
+            return false;
+        };
+        let batch = CommandBatch::new(vec![
+            CanonicalCommand::SetBottleControlDimension {
+                id: ids.control,
+                control: BottleControlDimension::BodyRadius,
+                dimension: body_radius,
+            },
+            CanonicalCommand::SetBottleControlDimension {
+                id: ids.control,
+                control: BottleControlDimension::BodyHeight,
+                dimension: body_height,
+            },
+            CanonicalCommand::SetBottleControlDimension {
+                id: ids.control,
+                control: BottleControlDimension::ShoulderRise,
+                dimension: shoulder_rise,
+            },
+            CanonicalCommand::SetFeatureDimension {
+                id: ids.shell,
+                dimension: thickness,
+            },
+            CanonicalCommand::SetFeatureDimension {
+                id: ids.finish,
+                dimension: finish_amount,
+            },
+            CanonicalCommand::SetBottleEdgeFinishKind {
+                id: ids.finish,
+                kind: editor.finish_kind,
+            },
+        ]);
+        if self.document.apply_batch(&batch).is_err() {
+            self.digest = "Bottle edit rejected; canonical document unchanged".to_owned();
+            return false;
+        }
+        self.bottle_editor =
+            Self::bottle_editor_inputs(&self.document.current(), editor.definition_id);
+        self.digest =
+            "Bottle parameters committed atomically; exact re-evaluation pending".to_owned();
+        true
+    }
+
+    pub fn bottle_authority_report(
+        &self,
+        definition_id: DefinitionId,
+    ) -> Option<BottleAuthorityReport> {
+        let snapshot = self.document.current();
+        let ExactBodyPackage::Revolve(package) = self.exact_packages.get(&definition_id)?.as_ref()
+        else {
+            return None;
+        };
+        Some(package.authority_report(&snapshot))
+    }
+
+    pub fn export_bottle_exact_recipe_to(
+        &mut self,
+        definition_id: DefinitionId,
+        path: &Path,
+    ) -> bool {
+        let snapshot = self.document.current();
+        let result = self
+            .exact_packages
+            .get(&definition_id)
+            .and_then(|package| match package.as_ref() {
+                ExactBodyPackage::Revolve(package) => Some(package),
+                ExactBodyPackage::Rectangle(_) => None,
+            })
+            .ok_or_else(|| "current accepted bottle result is unavailable".to_owned())
+            .and_then(|package| {
+                package
+                    .export_bundle(&snapshot)
+                    .map_err(|error| error.to_string())
+            })
+            .and_then(|bundle| {
+                std::fs::write(path, bundle.exact_recipe).map_err(|error| error.to_string())
+            });
+        match result {
+            Ok(()) => {
+                self.digest = format!("Exported current exact bottle recipe to {}", path.display());
+                true
+            }
+            Err(error) => {
+                self.digest = format!("Exact bottle export blocked: {error}");
+                false
+            }
+        }
+    }
+
+    pub fn export_bottle_mesh_to(&mut self, definition_id: DefinitionId, path: &Path) -> bool {
+        let snapshot = self.document.current();
+        let result = self
+            .exact_packages
+            .get(&definition_id)
+            .and_then(|package| match package.as_ref() {
+                ExactBodyPackage::Revolve(package) => Some(package),
+                ExactBodyPackage::Rectangle(_) => None,
+            })
+            .ok_or_else(|| "current accepted bottle result is unavailable".to_owned())
+            .and_then(|package| {
+                package
+                    .export_bundle(&snapshot)
+                    .map_err(|error| error.to_string())
+            })
+            .and_then(|bundle| {
+                std::fs::write(path, bundle.mesh_obj).map_err(|error| error.to_string())?;
+                std::fs::write(path.with_extension("obj.loss.txt"), bundle.mesh_loss_report)
+                    .map_err(|error| error.to_string())
+            });
+        match result {
+            Ok(()) => {
+                self.digest = format!(
+                    "Exported derived bottle OBJ with explicit loss report to {}",
+                    path.display()
+                );
+                true
+            }
+            Err(error) => {
+                self.digest = format!("Bottle mesh export blocked: {error}");
+                false
+            }
+        }
+    }
+
     fn create_box_at(&mut self, origin_mm: Vec3, size_mm: Vec3) -> bool {
         if !size_mm.x.is_finite()
             || !size_mm.y.is_finite()
@@ -2780,6 +3262,7 @@ impl KetchupApp {
         self.preview_box = None;
         self.preview_definition_id = None;
         self.push_pull_drag = None;
+        self.bottle_direct_drag = None;
         self.move_drag = None;
         self.move_anchor = None;
         self.clear_measurement();
@@ -2956,6 +3439,135 @@ impl KetchupApp {
                     .and_then(|item| face_extent(&item, Some(&selection.element)))
             })
             .unwrap_or_else(|| self.document_height_mm())
+    }
+
+    fn bottle_direct_target(
+        &self,
+        definition_id: DefinitionId,
+        role: ExactFaceRole,
+    ) -> Option<(FeatureId, BottleControlDimension, f64)> {
+        let snapshot = self.document.current();
+        let ids = Self::bottle_feature_ids(&snapshot, definition_id)?;
+        let control = match role {
+            ExactFaceRole::RevolveBody | ExactFaceRole::ShellOuterBody => {
+                BottleControlDimension::BodyRadius
+            }
+            ExactFaceRole::RevolveShoulder
+            | ExactFaceRole::ShellOuterShoulder
+            | ExactFaceRole::ShellInnerShoulder => BottleControlDimension::ShoulderRise,
+            ExactFaceRole::RevolveNeck
+            | ExactFaceRole::RevolveMouth
+            | ExactFaceRole::ShellOuterNeck
+            | ExactFaceRole::ShellInnerNeck
+            | ExactFaceRole::ShellRim => BottleControlDimension::BodyHeight,
+            _ => return None,
+        };
+        let FeatureKind::BottleProfileControl {
+            body_radius,
+            body_height,
+            shoulder_rise,
+            ..
+        } = snapshot.feature(ids.control)?.kind()
+        else {
+            return None;
+        };
+        let value = match control {
+            BottleControlDimension::BodyRadius => body_radius.millimetres(),
+            BottleControlDimension::BodyHeight => body_height.millimetres(),
+            BottleControlDimension::ShoulderRise => shoulder_rise.millimetres(),
+        };
+        Some((ids.control, control, value))
+    }
+
+    fn begin_bottle_direct_drag(&mut self, pointer: Pos2, rect: Rect) -> bool {
+        let ray = match self.view_ray(pointer, rect) {
+            Some(ray) => ray,
+            None => return false,
+        };
+        let snapshot = self.document.current();
+        let hit = match self.exact_projection(&snapshot).exact_surface_pick(ray) {
+            Some(hit) => hit,
+            None => return false,
+        };
+        let role = match hit
+            .durable_target
+            .as_ref()
+            .and_then(|target| target.body.role())
+        {
+            Some(role) => role,
+            None => return false,
+        };
+        let Some((feature_id, control, value_start_mm)) =
+            self.bottle_direct_target(hit.definition_id, role)
+        else {
+            return false;
+        };
+        let direction_world = if control == BottleControlDimension::BodyRadius {
+            hit.outward_normal
+        } else {
+            Vec3::new(0.0, 0.0, 1.0)
+        };
+        let projected = self.project(hit.position_mm + direction_world, rect)
+            - self.project(hit.position_mm, rect);
+        let pixels_per_mm = projected.length();
+        if pixels_per_mm <= 1.0e-4 {
+            return false;
+        }
+        let element = exact_face_element(role)
+            .or_else(|| exact_surface_element(hit.outward_normal))
+            .unwrap_or(ElementId::Face {
+                axis: Axis::Z,
+                side: Side::Maximum,
+            });
+        self.select_from_viewport(
+            Some(SelectionId {
+                definition_id: hit.definition_id,
+                instance_path: hit.instance_path,
+                element,
+            }),
+            false,
+        );
+        self.bottle_direct_drag = Some(BottleDirectDrag {
+            definition_id: hit.definition_id,
+            feature_id,
+            control,
+            pointer_start: pointer,
+            value_start_mm,
+            screen_direction: projected / pixels_per_mm,
+            pixels_per_mm,
+        });
+        self.value_input = format_height(value_start_mm);
+        true
+    }
+
+    fn bottle_direct_value(drag: BottleDirectDrag, pointer: Pos2) -> f64 {
+        let delta = f64::from((pointer - drag.pointer_start).dot(drag.screen_direction))
+            / f64::from(drag.pixels_per_mm);
+        ((drag.value_start_mm + delta) * 2.0).round() / 2.0
+    }
+
+    fn commit_bottle_direct_drag(&mut self, drag: BottleDirectDrag, value_mm: f64) -> bool {
+        let source = format_height(value_mm);
+        let Ok(dimension) = Dimension::new(source, value_mm) else {
+            return false;
+        };
+        let batch = CommandBatch::new(vec![CanonicalCommand::SetBottleControlDimension {
+            id: drag.feature_id,
+            control: drag.control,
+            dimension,
+        }]);
+        if self.document.apply_batch(&batch).is_err() {
+            self.digest = "Bottle direct edit rejected; canonical document unchanged".to_owned();
+            return false;
+        }
+        self.bottle_editor =
+            Self::bottle_editor_inputs(&self.document.current(), drag.definition_id);
+        self.digest = format!(
+            "Bottle {:?} direct edit committed at {} mm; exact re-evaluation pending",
+            drag.control,
+            format_height(value_mm)
+        );
+        true
     }
 
     fn push_pull_screen_projection(
@@ -3542,21 +4154,23 @@ impl KetchupApp {
                 let target = self.exact_pick_at_screen(pointer, response.rect);
                 self.select_from_viewport(target, additive);
             } else if self.active_tool == ActiveTool::PushPull {
-                let target = self.exact_pick_at_screen(pointer, response.rect);
-                self.select_from_viewport(target, false);
-                if self.push_pull_face_selected()
-                    && let Some(selection) = &self.selection.primary
-                    && let Some((screen_normal, pixels_per_mm)) =
-                        self.push_pull_screen_projection(selection, response.rect)
-                {
-                    self.push_pull_distance_input = "0".to_owned();
-                    self.value_input = "0".to_owned();
-                    self.push_pull_drag = Some(PushPullDrag {
-                        pointer_start: pointer,
-                        extent_start_mm: self.selected_face_extent_mm(),
-                        screen_normal,
-                        pixels_per_mm,
-                    });
+                if !self.begin_bottle_direct_drag(pointer, response.rect) {
+                    let target = self.exact_pick_at_screen(pointer, response.rect);
+                    self.select_from_viewport(target, false);
+                    if self.push_pull_face_selected()
+                        && let Some(selection) = &self.selection.primary
+                        && let Some((screen_normal, pixels_per_mm)) =
+                            self.push_pull_screen_projection(selection, response.rect)
+                    {
+                        self.push_pull_distance_input = "0".to_owned();
+                        self.value_input = "0".to_owned();
+                        self.push_pull_drag = Some(PushPullDrag {
+                            pointer_start: pointer,
+                            extent_start_mm: self.selected_face_extent_mm(),
+                            screen_normal,
+                            pixels_per_mm,
+                        });
+                    }
                 }
             } else if self.active_tool == ActiveTool::Move {
                 if let Some(mut anchor) = self.move_anchor.take() {
@@ -3716,6 +4330,16 @@ impl KetchupApp {
                     );
                 }
             } else if let (Some(drag), Some(pointer)) =
+                (self.bottle_direct_drag, response.interact_pointer_pos())
+            {
+                let value = Self::bottle_direct_value(drag, pointer);
+                self.value_input = format_height(value);
+                self.digest = format!(
+                    "Bottle {:?} direct preview: {} mm (release to commit once)",
+                    drag.control,
+                    format_height(value)
+                );
+            } else if let (Some(drag), Some(pointer)) =
                 (self.push_pull_drag, response.interact_pointer_pos())
             {
                 let distance = push_pull_distance_from_pointer(drag, pointer);
@@ -3742,6 +4366,9 @@ impl KetchupApp {
                     self.move_anchor = Some(drag);
                     self.digest = self.catalog.text("digest-move-anchor-set");
                 }
+            } else if let Some(drag) = self.bottle_direct_drag.take() {
+                let value = parse_distance_mm(&self.value_input).unwrap_or(drag.value_start_mm);
+                self.commit_bottle_direct_drag(drag, value);
             } else if self.push_pull_drag.take().is_some() && self.has_preview() {
                 self.confirm_preview();
             }
@@ -3850,9 +4477,9 @@ impl KetchupApp {
             };
             let matrix = occurrence.canonical_world_transform.matrix();
             let origin = Vec3::new(matrix[3], matrix[7], matrix[11]);
-            for triangle in &package.triangles {
+            for triangle in package.triangles() {
                 let points_mm = triangle.vertex_indices.map(|index| {
-                    let position = package.vertices[index as usize].position_mm;
+                    let position = package.vertices()[index as usize].position_mm;
                     origin + Vec3::new(position[0], position[1], position[2])
                 });
                 let normal = triangle_normal(points_mm);
@@ -3865,7 +4492,7 @@ impl KetchupApp {
                 }
                 let element = triangle
                     .face_role
-                    .map(exact_face_element)
+                    .and_then(exact_face_element)
                     .unwrap_or_else(|| face_element_from_normal(normal));
                 faces.push(ProjectedFace {
                     selection: SelectionId {
@@ -4003,7 +4630,7 @@ impl KetchupApp {
                 .durable_target
                 .as_ref()
                 .and_then(|target| target.body.role())
-                .map(exact_face_element)
+                .and_then(exact_face_element)
                 .or_else(|| exact_surface_element(hit.outward_normal))?;
             return Some(SelectionId {
                 definition_id: hit.definition_id,
@@ -4375,6 +5002,241 @@ impl KetchupApp {
         });
     }
 
+    fn prepare_assistant_from_inputs(&mut self) -> bool {
+        let Ok(target) = self.assistant_target_input.trim().parse::<u64>() else {
+            self.digest = self.catalog.text("assistant-error-target");
+            return false;
+        };
+        let value_text = self.assistant_value_input.clone();
+        let intent = match self.assistant_intent_kind {
+            AssistantIntentKind::RuleDimension => WorkflowIntent::SetRuleDimension {
+                target: NodeId(target),
+                value_text,
+            },
+            AssistantIntentKind::FeatureDimension => WorkflowIntent::SetFeatureDimension {
+                target: FeatureId(target),
+                value_text,
+            },
+        };
+        self.prepare_assistant_intent(intent)
+    }
+
+    fn assistant_value_text(&self, value: &ProposalValue) -> String {
+        match value {
+            ProposalValue::Missing => self.catalog.text("assistant-value-missing"),
+            ProposalValue::Dimension(value) => self.catalog.format(
+                "assistant-value-dimension",
+                &BTreeMap::from([("value", value.source_token().to_owned())]),
+            ),
+            ProposalValue::Digest(digest) => self.catalog.format(
+                "assistant-value-digest",
+                &BTreeMap::from([("digest", digest.chars().take(12).collect())]),
+            ),
+        }
+    }
+
+    fn show_assistant(&mut self, ui: &mut egui::Ui) {
+        ui.heading(self.catalog.text("assistant-title"));
+        ui.small(self.catalog.text("assistant-boundary"));
+        egui::ComboBox::from_label(self.catalog.text("assistant-intent"))
+            .selected_text(self.catalog.text(match self.assistant_intent_kind {
+                AssistantIntentKind::RuleDimension => "assistant-intent-rule",
+                AssistantIntentKind::FeatureDimension => "assistant-intent-feature",
+            }))
+            .show_ui(ui, |ui| {
+                ui.selectable_value(
+                    &mut self.assistant_intent_kind,
+                    AssistantIntentKind::RuleDimension,
+                    self.catalog.text("assistant-intent-rule"),
+                );
+                ui.selectable_value(
+                    &mut self.assistant_intent_kind,
+                    AssistantIntentKind::FeatureDimension,
+                    self.catalog.text("assistant-intent-feature"),
+                );
+            });
+        egui::Grid::new("assistant-intent-inputs").show(ui, |ui| {
+            ui.label(self.catalog.text("assistant-target"));
+            ui.text_edit_singleline(&mut self.assistant_target_input);
+            ui.end_row();
+            ui.label(self.catalog.text("assistant-value"));
+            ui.text_edit_singleline(&mut self.assistant_value_input);
+            ui.end_row();
+        });
+        if ui.button(self.catalog.text("assistant-preview")).clicked() {
+            self.prepare_assistant_from_inputs();
+        }
+
+        let mut confirm = false;
+        let mut cancel = false;
+        if let Some(proposal) = self.assistant_proposal.as_ref() {
+            ui.separator();
+            ui.strong(self.catalog.text("assistant-review-title"));
+            let goal = self.catalog.text(match proposal.goal() {
+                ProposalGoal::SetRuleDimension(_) => "assistant-goal-rule",
+                ProposalGoal::SetFeatureDimension(_) => "assistant-goal-feature",
+                ProposalGoal::CanonicalPreview => "assistant-goal-canonical",
+            });
+            ui.label(goal);
+            ui.small(self.catalog.format(
+                "assistant-review-meta",
+                &BTreeMap::from([
+                    ("revision", proposal.provenance_revision().to_string()),
+                    (
+                        "reads",
+                        proposal.authoritative_dependencies().len().to_string(),
+                    ),
+                    ("writes", proposal.authoritative_writes().len().to_string()),
+                    ("commands", proposal.cost().commands.to_string()),
+                    ("assumptions", proposal.assumptions().len().to_string()),
+                ]),
+            ));
+            ui.small(self.catalog.text("assistant-risk-standard"));
+            ui.small(self.catalog.text("assistant-confirmation-review"));
+            for entry in proposal.authoritative_diff() {
+                ui.monospace(self.catalog.format(
+                    "assistant-diff-row",
+                    &BTreeMap::from([
+                        ("before", self.assistant_value_text(&entry.before)),
+                        ("after", self.assistant_value_text(&entry.after)),
+                    ]),
+                ));
+            }
+            ui.horizontal(|ui| {
+                confirm = ui.button(self.catalog.text("assistant-confirm")).clicked();
+                cancel = ui.button(self.catalog.text("assistant-cancel")).clicked();
+            });
+        }
+        if confirm {
+            self.confirm_assistant_proposal();
+        } else if cancel {
+            self.cancel_assistant_proposal();
+        }
+
+        if let Some(verification) = self.assistant_verification.as_ref() {
+            ui.small(self.catalog.format(
+                "assistant-verification",
+                &BTreeMap::from([
+                    ("revision", verification.revision_id.to_string()),
+                    ("writes", verification.verified_write_count.to_string()),
+                ]),
+            ));
+        }
+        ui.separator();
+    }
+
+    fn show_bottle_workflow(&mut self, ui: &mut egui::Ui) {
+        ui.heading("M6 editable bottle");
+        if ui.button("Create editable bottle").clicked() {
+            self.create_bottle();
+        }
+        let Some(definition_id) = self.selected_bottle_definition() else {
+            ui.small("Select an editable bottle to inspect exact authority or edit parameters.");
+            ui.separator();
+            return;
+        };
+        if self
+            .bottle_editor
+            .as_ref()
+            .is_none_or(|editor| editor.definition_id != definition_id)
+        {
+            self.bottle_editor =
+                Self::bottle_editor_inputs(&self.document.current(), definition_id);
+        }
+
+        ui.small("Push/Pull drag: body=scale, shoulder=flatten, neck/rim=stretch");
+        let mut apply = false;
+        if let Some(editor) = self.bottle_editor.as_mut() {
+            egui::Grid::new("bottle-parameters").show(ui, |ui| {
+                ui.label("Body radius / scale (mm)");
+                ui.text_edit_singleline(&mut editor.body_radius);
+                ui.end_row();
+                ui.label("Body height / stretch (mm)");
+                ui.text_edit_singleline(&mut editor.body_height);
+                ui.end_row();
+                ui.label("Shoulder rise / flatten (mm)");
+                ui.text_edit_singleline(&mut editor.shoulder_rise);
+                ui.end_row();
+                ui.label("Shell thickness (mm)");
+                ui.text_edit_singleline(&mut editor.thickness);
+                ui.end_row();
+                ui.label("Finish amount (mm)");
+                ui.text_edit_singleline(&mut editor.finish_amount);
+                ui.end_row();
+            });
+            egui::ComboBox::from_label("Shoulder finish")
+                .selected_text(match editor.finish_kind {
+                    BottleEdgeFinishKind::Fillet => "Fillet",
+                    BottleEdgeFinishKind::Chamfer => "Chamfer",
+                })
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(
+                        &mut editor.finish_kind,
+                        BottleEdgeFinishKind::Fillet,
+                        "Fillet",
+                    );
+                    ui.selectable_value(
+                        &mut editor.finish_kind,
+                        BottleEdgeFinishKind::Chamfer,
+                        "Chamfer",
+                    );
+                });
+            apply = ui.button("Apply bottle parameters atomically").clicked();
+        }
+        if apply && let Some(editor) = self.bottle_editor.clone() {
+            self.set_bottle_parameters(&editor);
+        }
+
+        let report = self.bottle_authority_report(definition_id);
+        if let Some(report) = &report {
+            ui.strong(if report.current && report.validation_passed {
+                "Validation: accepted current exact result"
+            } else {
+                "Validation: stale or rejected — exports blocked"
+            });
+            ui.small(format!(
+                "Canonical authority: {}\nEvaluated authority: {}\nViewport: {}\nLoss: {}\nDurable references: {}",
+                report.canonical_authority,
+                report.evaluated_authority,
+                report.render_representation,
+                report.conversion_loss,
+                report.durable_reference_count
+            ));
+        } else {
+            ui.label(
+                "Exact authority: evaluating / unavailable; proxy fallback is not authoritative",
+            );
+        }
+        let export_ready = report.is_some_and(|report| report.current && report.validation_passed);
+        ui.horizontal(|ui| {
+            let exact = ui
+                .add_enabled(export_ready, egui::Button::new("Export exact recipe"))
+                .clicked();
+            let mesh = ui
+                .add_enabled(export_ready, egui::Button::new("Export mesh + loss report"))
+                .clicked();
+            if exact
+                && let Some(path) = self.dialogs.pick_export_path(ExportRequest {
+                    filter_label: "Ketchup exact bottle recipe",
+                    extension: "kbex",
+                    suggested_name: "editable-bottle.kbex",
+                })
+            {
+                self.export_bottle_exact_recipe_to(definition_id, &path);
+            }
+            if mesh
+                && let Some(path) = self.dialogs.pick_export_path(ExportRequest {
+                    filter_label: "Wavefront OBJ mesh",
+                    extension: "obj",
+                    suggested_name: "editable-bottle.obj",
+                })
+            {
+                self.export_bottle_mesh_to(definition_id, &path);
+            }
+        });
+        ui.separator();
+    }
+
     fn show_beam_m4ae(&mut self, ui: &mut egui::Ui) {
         ui.heading("Beam A / M5 exact fabrication");
         if ui.button("Load / reset Beam A").clicked() {
@@ -4530,6 +5392,8 @@ impl KetchupApp {
     }
 
     fn show_outliner(&mut self, ui: &mut egui::Ui) {
+        self.show_assistant(ui);
+        self.show_bottle_workflow(ui);
         self.show_beam_m4ae(ui);
         let groups = self.outliner_groups();
         let entries = self.outliner_query();
@@ -5022,6 +5886,49 @@ fn box_faces() -> [BoxFace; 6] {
     ]
 }
 
+fn exact_face_element(role: ExactFaceRole) -> Option<ElementId> {
+    match role {
+        ExactFaceRole::Top => Some(ElementId::Face {
+            axis: Axis::Z,
+            side: Side::Maximum,
+        }),
+        ExactFaceRole::Bottom => Some(ElementId::Face {
+            axis: Axis::Z,
+            side: Side::Minimum,
+        }),
+        ExactFaceRole::East | ExactFaceRole::CutEast => Some(ElementId::Face {
+            axis: Axis::X,
+            side: Side::Maximum,
+        }),
+        ExactFaceRole::CutWest => Some(ElementId::Face {
+            axis: Axis::X,
+            side: Side::Minimum,
+        }),
+        ExactFaceRole::CutSouth => Some(ElementId::Face {
+            axis: Axis::Y,
+            side: Side::Minimum,
+        }),
+        ExactFaceRole::CutNorth => Some(ElementId::Face {
+            axis: Axis::Y,
+            side: Side::Maximum,
+        }),
+        ExactFaceRole::RevolveBottom
+        | ExactFaceRole::RevolveBody
+        | ExactFaceRole::RevolveShoulder
+        | ExactFaceRole::RevolveNeck
+        | ExactFaceRole::RevolveMouth
+        | ExactFaceRole::ShellOuterBottom
+        | ExactFaceRole::ShellOuterBody
+        | ExactFaceRole::ShellOuterShoulder
+        | ExactFaceRole::ShellOuterNeck
+        | ExactFaceRole::ShellRim
+        | ExactFaceRole::ShellInnerBottom
+        | ExactFaceRole::ShellInnerBody
+        | ExactFaceRole::ShellInnerShoulder
+        | ExactFaceRole::ShellInnerNeck => None,
+    }
+}
+
 fn exact_surface_element(normal: Vec3) -> Option<ElementId> {
     let components = [normal.x.abs(), normal.y.abs(), normal.z.abs()];
     let (axis_index, magnitude) = components
@@ -5044,35 +5951,6 @@ fn exact_surface_element(normal: Vec3) -> Option<ElementId> {
             Side::Minimum
         },
     })
-}
-
-fn exact_face_element(role: ExactFaceRole) -> ElementId {
-    match role {
-        ExactFaceRole::Top => ElementId::Face {
-            axis: Axis::Z,
-            side: Side::Maximum,
-        },
-        ExactFaceRole::Bottom => ElementId::Face {
-            axis: Axis::Z,
-            side: Side::Minimum,
-        },
-        ExactFaceRole::East | ExactFaceRole::CutEast => ElementId::Face {
-            axis: Axis::X,
-            side: Side::Maximum,
-        },
-        ExactFaceRole::CutWest => ElementId::Face {
-            axis: Axis::X,
-            side: Side::Minimum,
-        },
-        ExactFaceRole::CutSouth => ElementId::Face {
-            axis: Axis::Y,
-            side: Side::Minimum,
-        },
-        ExactFaceRole::CutNorth => ElementId::Face {
-            axis: Axis::Y,
-            side: Side::Maximum,
-        },
-    }
 }
 
 fn point_depth(point: Vec3, forward: Vec3) -> f64 {
@@ -5246,6 +6124,11 @@ fn parse_distance_mm(input: &str) -> Option<f64> {
     distance.is_finite().then_some(distance)
 }
 
+fn parse_dimension(input: &str) -> Option<Dimension> {
+    let millimetres = parse_distance_mm(input)?;
+    Dimension::new(input.trim().to_owned(), millimetres).ok()
+}
+
 fn format_signed_mm(distance: f64) -> String {
     if distance > 0.0 {
         format!("+{} mm", format_height(distance))
@@ -5325,7 +6208,53 @@ mod tests {
         bytes
     }
 
-    fn current_box_package(app: &KetchupApp) -> Arc<ExactRenderPackage> {
+    fn current_bottle_package(
+        app: &KetchupApp,
+        definition_id: DefinitionId,
+    ) -> Arc<ExactBodyPackage> {
+        use ketchup_core::bottle_m6::{SHELL_FACE_ROLES, build_revolve_package};
+        use ketchup_core::exact_product::canonical_reference_lineage_digest;
+
+        let snapshot = app.document.current();
+        let request = ExactRevolveRequest::from_snapshot(&snapshot, definition_id).unwrap();
+        let points = request.points_mm();
+        let max_radius = points.iter().map(|point| point[0]).fold(0.0_f64, f64::max);
+        let evidence = SHELL_FACE_ROLES
+            .map(|role| {
+                (
+                    role,
+                    canonical_reference_lineage_digest(
+                        request.document_id,
+                        request.producer_feature_id(),
+                        role.semantic_role(),
+                        role.source_element_id(),
+                        role.expected_type(),
+                    ),
+                    format!("geometry-{role:?}"),
+                )
+            })
+            .to_vec();
+        Arc::new(
+            build_revolve_package(
+                &request,
+                "exact-input".to_owned(),
+                "result".to_owned(),
+                "OCCT-test".to_owned(),
+                "linear=1e-7mm".to_owned(),
+                [
+                    [-max_radius, -max_radius, points[0][1]],
+                    [max_radius, max_radius, points[5][1]],
+                ],
+                evidence,
+            )
+            .unwrap()
+            .into(),
+        )
+    }
+
+    fn current_box_package(
+        app: &KetchupApp,
+    ) -> Arc<ketchup_core::exact_product::ExactRenderPackage> {
         use ketchup_core::exact_product::{
             build_box_render_package, canonical_reference_lineage_digest,
         };
@@ -5366,10 +6295,146 @@ mod tests {
     }
 
     #[test]
+    fn bottle_numeric_workflow_is_atomic_and_round_trips_losslessly() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("editable-bottle.ketchup");
+        let mut app = KetchupApp::new();
+        let undo_before_create = app.document.visible_undo_steps();
+
+        assert!(app.create_bottle());
+        assert_eq!(app.document.visible_undo_steps(), undo_before_create + 1);
+        let definition_id = app.selected_bottle_definition().unwrap();
+        let revision_before_edit = app.document.current().revision_id();
+        let undo_before_edit = app.document.visible_undo_steps();
+
+        assert!(app.set_bottle_parameters(&BottleEditorInputs {
+            definition_id,
+            body_radius: "34 mm".to_owned(),
+            body_height: "125".to_owned(),
+            shoulder_rise: "16.5".to_owned(),
+            thickness: "2.5".to_owned(),
+            finish_amount: "1.5".to_owned(),
+            finish_kind: BottleEdgeFinishKind::Chamfer,
+        }));
+        assert_ne!(app.document.current().revision_id(), revision_before_edit);
+        assert_eq!(app.document.visible_undo_steps(), undo_before_edit + 1);
+        let edited = app.document.current();
+        let ids = KetchupApp::bottle_feature_ids(&edited, definition_id).unwrap();
+        let FeatureKind::BottleProfileControl {
+            body_radius,
+            body_height,
+            shoulder_rise,
+            ..
+        } = edited.feature(ids.control).unwrap().kind()
+        else {
+            panic!("bottle control feature missing");
+        };
+        assert_eq!(body_radius.source_token(), "34 mm");
+        assert_eq!(body_height.millimetres(), 125.0);
+        assert_eq!(shoulder_rise.millimetres(), 16.5);
+        assert!(matches!(
+            edited.feature(ids.finish).unwrap().kind(),
+            FeatureKind::BottleEdgeFinish {
+                kind: BottleEdgeFinishKind::Chamfer,
+                ..
+            }
+        ));
+
+        let digest_before_rejection = edited.canonical_digest();
+        let revision_before_rejection = edited.revision_id();
+        let undo_before_rejection = app.document.visible_undo_steps();
+        assert!(!app.set_bottle_parameters(&BottleEditorInputs {
+            definition_id,
+            body_radius: "34".to_owned(),
+            body_height: "125".to_owned(),
+            shoulder_rise: "16.5".to_owned(),
+            thickness: "7".to_owned(),
+            finish_amount: "1.5".to_owned(),
+            finish_kind: BottleEdgeFinishKind::Fillet,
+        }));
+        assert_eq!(
+            app.document.current().canonical_digest(),
+            digest_before_rejection
+        );
+        assert_eq!(
+            app.document.current().revision_id(),
+            revision_before_rejection
+        );
+        assert_eq!(app.document.visible_undo_steps(), undo_before_rejection);
+
+        assert!(app.save_document_to(&path));
+        let expected = app.document.current();
+        let mut reopened = KetchupApp::new();
+        assert!(reopened.open_document_from(&path));
+        let actual = reopened.document.current();
+        assert_eq!(actual.canonical_digest(), expected.canonical_digest());
+        assert!(ExactRevolveRequest::from_snapshot(&actual, definition_id).is_ok());
+        assert!(KetchupApp::bottle_editor_inputs(&actual, definition_id).is_some());
+    }
+
+    #[test]
+    fn accepted_bottle_result_drives_render_pick_authority_and_fail_closed_exports() {
+        let directory = tempfile::tempdir().unwrap();
+        let exact_path = directory.path().join("bottle.kbex");
+        let mesh_path = directory.path().join("bottle.obj");
+        let stale_path = directory.path().join("stale.kbex");
+        let mut app = KetchupApp::new();
+        assert!(app.create_bottle());
+        let definition_id = app.selected_bottle_definition().unwrap();
+        let package = current_bottle_package(&app, definition_id);
+        app.exact_packages.insert(definition_id, package);
+
+        let report = app.bottle_authority_report(definition_id).unwrap();
+        assert!(report.current);
+        assert!(report.validation_passed);
+        assert_eq!(report.durable_reference_count, 9);
+        assert_eq!(app.exact_render_body_count(), 1);
+        assert_eq!(app.exact_stable_reference_count(), 9);
+        let picked = app
+            .exact_pick_durable(
+                Ray::new(Vec3::new(130.0, 0.0, 50.0), Vec3::new(-1.0, 0.0, 0.0)).unwrap(),
+            )
+            .expect("accepted bottle mesh must remain exactly pickable");
+        assert_eq!(picked.body.role(), Some(ExactFaceRole::ShellOuterBody));
+
+        assert!(app.export_bottle_exact_recipe_to(definition_id, &exact_path));
+        assert!(app.export_bottle_mesh_to(definition_id, &mesh_path));
+        let exact = std::fs::read_to_string(&exact_path).unwrap();
+        let mesh = std::fs::read_to_string(&mesh_path).unwrap();
+        let loss = std::fs::read_to_string(mesh_path.with_extension("obj.loss.txt")).unwrap();
+        assert!(exact.starts_with("KETCHUP_EXACT_BOTTLE_RECIPE_V1\n"));
+        assert!(exact.contains("result_fingerprint=result"));
+        assert!(mesh.contains("# authority=accepted exact OCCT B-Rep"));
+        assert!(mesh.contains("g shell.outer.body"));
+        assert!(loss.contains("feature editability"));
+
+        let ids = KetchupApp::bottle_feature_ids(&app.document.current(), definition_id).unwrap();
+        let undo_before_drag = app.document.visible_undo_steps();
+        assert!(app.commit_bottle_direct_drag(
+            BottleDirectDrag {
+                definition_id,
+                feature_id: ids.control,
+                control: BottleControlDimension::BodyRadius,
+                pointer_start: Pos2::ZERO,
+                value_start_mm: 30.0,
+                screen_direction: Vec2::X,
+                pixels_per_mm: 1.0,
+            },
+            33.0,
+        ));
+        assert_eq!(app.document.visible_undo_steps(), undo_before_drag + 1);
+        assert_eq!(app.exact_render_body_count(), 0);
+        assert!(!app.bottle_authority_report(definition_id).unwrap().current);
+        assert!(!app.export_bottle_exact_recipe_to(definition_id, &stale_path));
+        assert!(!stale_path.exists());
+    }
+
+    #[test]
     fn current_exact_occurrence_suppresses_only_the_non_preview_proxy() {
         let mut app = KetchupApp::new();
         let package = current_box_package(&app);
-        app.exact_packages.insert(INITIAL_BOX_DEFINITION, package);
+        app.exact_packages
+            .insert(INITIAL_BOX_DEFINITION, Arc::new((*package).clone().into()));
         let snapshot = app.document.current();
         let exact_projection = app.exact_projection(&snapshot);
 

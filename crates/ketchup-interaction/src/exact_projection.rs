@@ -2,7 +2,7 @@
 
 use crate::{Ray, Vec3};
 use ketchup_core::document::{DefinitionId, InstancePath, Snapshot};
-use ketchup_core::exact_product::{AssemblySelectionTarget, ExactRenderPackage};
+use ketchup_core::exact_product::{AssemblySelectionTarget, ExactBodyPackage};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -29,7 +29,7 @@ pub struct ExactSurfaceHit {
 struct ExactOccurrence {
     instance_path: InstancePath,
     origin_mm: Vec3,
-    package: Arc<ExactRenderPackage>,
+    package: Arc<ExactBodyPackage>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -48,7 +48,7 @@ impl ExactInteractionProjection {
     #[must_use]
     pub fn from_snapshot(
         snapshot: &Snapshot,
-        packages: &BTreeMap<DefinitionId, Arc<ExactRenderPackage>>,
+        packages: &BTreeMap<DefinitionId, Arc<ExactBodyPackage>>,
     ) -> Self {
         let occurrences = snapshot
             .scene_query()
@@ -57,7 +57,7 @@ impl ExactInteractionProjection {
             .filter_map(|occurrence| {
                 let package = Arc::clone(packages.get(&occurrence.definition_id)?);
                 if !package.is_current(snapshot)
-                    || package.identity.definition_id != occurrence.definition_id
+                    || package.definition_id() != occurrence.definition_id
                 {
                     return None;
                 }
@@ -116,9 +116,9 @@ impl ExactInteractionProjection {
                     })
                     .then_with(|| left.triangle_index.cmp(&right.triangle_index))
             })?;
-        let triangle = &hit.occurrence.package.triangles[hit.triangle_index];
+        let triangle = &hit.occurrence.package.triangles()[hit.triangle_index];
         let [first, second, third] = triangle.vertex_indices.map(|index| {
-            let position = hit.occurrence.package.vertices[index as usize].position_mm;
+            let position = hit.occurrence.package.vertices()[index as usize].position_mm;
             Vec3::new(position[0], position[1], position[2])
         });
         let normal = cross(second - first, third - first);
@@ -141,7 +141,7 @@ impl ExactInteractionProjection {
                 })
             });
         Some(ExactSurfaceHit {
-            definition_id: hit.occurrence.package.identity.definition_id,
+            definition_id: hit.occurrence.package.definition_id(),
             instance_path: hit.occurrence.instance_path.clone(),
             durable_target,
             position_mm: ray.at(hit.ray_distance_mm),
@@ -169,17 +169,17 @@ fn hit_occurrence<'a>(
         origin: ray.origin - occurrence.origin_mm,
         direction: ray.direction,
     };
-    if !ray_intersects_bounds(local_ray, occurrence.package.bounds_mm) {
+    if !ray_intersects_bounds(local_ray, occurrence.package.bounds_mm()) {
         return None;
     }
     occurrence
         .package
-        .triangles
+        .triangles()
         .iter()
         .enumerate()
         .filter_map(|(triangle_index, triangle)| {
             let [first, second, third] = triangle.vertex_indices.map(|index| {
-                let position = occurrence.package.vertices[index as usize].position_mm;
+                let position = occurrence.package.vertices()[index as usize].position_mm;
                 Vec3::new(position[0], position[1], position[2])
             });
             let ray_distance_mm = ray_triangle_distance(local_ray, first, second, third)?;
@@ -263,7 +263,7 @@ mod tests {
         OccurrenceId, Transform,
     };
     use ketchup_core::exact_product::{
-        ExactFaceRole, ExactRectangleRequest, build_box_render_package,
+        ExactFaceRole, ExactRectangleRequest, ExactRenderPackage, build_box_render_package,
         canonical_reference_lineage_digest,
     };
 
@@ -367,7 +367,7 @@ mod tests {
     fn projection(snapshot: &Snapshot, package: ExactRenderPackage) -> ExactInteractionProjection {
         ExactInteractionProjection::from_snapshot(
             snapshot,
-            &BTreeMap::from([(DEFINITION, Arc::new(package))]),
+            &BTreeMap::from([(DEFINITION, Arc::new(package.into()))]),
         )
     }
 
@@ -414,19 +414,19 @@ mod tests {
         let physical_hit = hit_occurrence(ray, &projection.occurrences[0]).unwrap();
 
         assert_eq!(
-            physical_hit.occurrence.package.triangles[physical_hit.triangle_index].face_role,
+            physical_hit.occurrence.package.triangles()[physical_hit.triangle_index].face_role,
             None
         );
         assert!(
             physical_hit
                 .occurrence
                 .package
-                .triangles
+                .triangles()
                 .iter()
                 .any(|triangle| {
                     let [first, second, third] = triangle.vertex_indices.map(|index| {
                         let position =
-                            physical_hit.occurrence.package.vertices[index as usize].position_mm;
+                            physical_hit.occurrence.package.vertices()[index as usize].position_mm;
                         Vec3::new(position[0], position[1], position[2])
                     });
                     triangle.face_role.is_some()

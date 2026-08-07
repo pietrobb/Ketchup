@@ -1,6 +1,7 @@
+use ketchup_core::bottle_m6::ExactRevolveRequest;
 use ketchup_core::document::{
-    CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId, FeatureKind,
-    OccurrenceId, Transform,
+    BottleControlDimension, BottleEdgeFinishKind, CanonicalCommand, CommandBatch, DefinitionId,
+    Dimension, DocumentStore, FeatureId, FeatureKind, OccurrenceId, Transform,
 };
 use ketchup_core::exact_product::{
     EXACT_THROUGH_CUT_EVALUATOR_V1, ExactFaceRole, ExactRectangleRequest,
@@ -20,6 +21,13 @@ const EXTRUSION: FeatureId = FeatureId(12);
 const DEFINITION: DefinitionId = DefinitionId(10);
 const CUT_PROFILE: FeatureId = FeatureId(14);
 const THROUGH_CUT: FeatureId = FeatureId(15);
+const BOTTLE_DEFINITION: DefinitionId = DefinitionId(30);
+const BOTTLE_PROFILE: FeatureId = FeatureId(31);
+const BOTTLE_REVOLVE: FeatureId = FeatureId(32);
+const BOTTLE_OCCURRENCE: OccurrenceId = OccurrenceId(33);
+const BOTTLE_SHELL: FeatureId = FeatureId(34);
+const BOTTLE_CONTROL: FeatureId = FeatureId(35);
+const BOTTLE_FINISH: FeatureId = FeatureId(36);
 
 #[test]
 fn preregistered_c1b_product_corpus_has_zero_wrong_identities_and_survives_save_open() {
@@ -60,7 +68,7 @@ fn preregistered_c1b_product_corpus_has_zero_wrong_identities_and_survives_save_
             &EXTRUSION.0.to_string(),
         )
         .unwrap();
-        let packages = BTreeMap::from([(DEFINITION, Arc::new(package.clone()))]);
+        let packages = BTreeMap::from([(DEFINITION, Arc::new(package.clone().into()))]);
         let projection = ExactInteractionProjection::from_snapshot(&snapshot, &packages);
         assert_eq!(projection.occurrence_count(), 1);
 
@@ -216,7 +224,7 @@ fn scheduler_evaluates_bounded_through_cut_with_seven_role_evidences() {
     assert!((signed_volume_mm3 - 102_600.0).abs() < 1.0e-6);
     assert_eq!(package.references.len(), 7);
 
-    let packages = BTreeMap::from([(DEFINITION, Arc::new(package.clone()))]);
+    let packages = BTreeMap::from([(DEFINITION, Arc::new(package.clone().into()))]);
     let projection = ExactInteractionProjection::from_snapshot(&snapshot, &packages);
     let hole_ray = Ray::new(Vec3::new(40.0, 27.5, 30.0), Vec3::new(0.0, 0.0, -1.0)).unwrap();
     assert!(projection.exact_pick(hole_ray).is_none());
@@ -252,6 +260,20 @@ fn scheduler_evaluates_bounded_through_cut_with_seven_role_evidences() {
                 | ExactFaceRole::CutEast
                 | ExactFaceRole::CutSouth
                 | ExactFaceRole::CutNorth => CUT_PROFILE,
+                ExactFaceRole::RevolveBottom
+                | ExactFaceRole::RevolveBody
+                | ExactFaceRole::RevolveShoulder
+                | ExactFaceRole::RevolveNeck
+                | ExactFaceRole::RevolveMouth
+                | ExactFaceRole::ShellOuterBottom
+                | ExactFaceRole::ShellOuterBody
+                | ExactFaceRole::ShellOuterShoulder
+                | ExactFaceRole::ShellOuterNeck
+                | ExactFaceRole::ShellRim
+                | ExactFaceRole::ShellInnerBottom
+                | ExactFaceRole::ShellInnerBody
+                | ExactFaceRole::ShellInnerShoulder
+                | ExactFaceRole::ShellInnerNeck => unreachable!(),
             }
         );
         assert!(matching[0].has_valid_lineage());
@@ -265,7 +287,7 @@ fn scheduler_evaluates_bounded_through_cut_with_seven_role_evidences() {
     let loaded =
         ketchup_core::persistence::load(&ketchup_core::persistence::save(&document.current()))
             .unwrap();
-    assert_eq!(loaded.source_schema(), 5);
+    assert_eq!(loaded.source_schema(), 8);
     let reopened = match loaded {
         ketchup_core::persistence::LoadOutcome::Editable { document, .. } => document,
         ketchup_core::persistence::LoadOutcome::ReviewOnly(_) => {
@@ -277,6 +299,415 @@ fn scheduler_evaluates_bounded_through_cut_with_seven_role_evidences() {
         snapshot.canonical_digest()
     );
     assert_eq!(reopened.current().exact_reference_evidence().count(), 7);
+}
+
+#[test]
+fn scheduler_evaluates_bottle_revolve_with_deterministic_mesh_and_five_durable_roles() {
+    let mut supervisor = ExactWorkerSupervisor::spawn(worker_path()).unwrap();
+    let mut document = bottle_document();
+    let snapshot = document.current();
+    let request = ExactRevolveRequest::from_snapshot(&snapshot, BOTTLE_DEFINITION).unwrap();
+
+    let first = supervisor.evaluate_revolve(&request).unwrap();
+    let second = supervisor.evaluate_revolve(&request).unwrap();
+    assert!(first.is_current(&snapshot));
+    assert_eq!(first.identity, second.identity);
+    assert_eq!(first.vertices, second.vertices);
+    assert_eq!(first.triangles, second.triangles);
+    for (actual, expected) in first
+        .bounds_mm
+        .into_iter()
+        .flatten()
+        .zip([-30.0, -30.0, 0.0, 30.0, 30.0, 155.0])
+    {
+        assert!((actual - expected).abs() <= 1.0e-6);
+    }
+    assert_eq!(first.references.len(), 5);
+    assert_eq!(first.vertices.len(), 130);
+    assert_eq!(first.triangles.len(), 256);
+
+    let packages = BTreeMap::from([(BOTTLE_DEFINITION, Arc::new(first.clone().into()))]);
+    let projection = ExactInteractionProjection::from_snapshot(&snapshot, &packages);
+    assert_eq!(projection.occurrence_count(), 1);
+    for (role, origin, direction) in [
+        (
+            ExactFaceRole::RevolveBottom,
+            Vec3::new(20.0, 0.0, -10.0),
+            Vec3::new(0.0, 0.0, 1.0),
+        ),
+        (
+            ExactFaceRole::RevolveBody,
+            Vec3::new(40.0, 0.0, 50.0),
+            Vec3::new(-1.0, 0.0, 0.0),
+        ),
+        (
+            ExactFaceRole::RevolveShoulder,
+            Vec3::new(40.0, 0.0, 120.0),
+            Vec3::new(-1.0, 0.0, 0.0),
+        ),
+        (
+            ExactFaceRole::RevolveNeck,
+            Vec3::new(20.0, 0.0, 140.0),
+            Vec3::new(-1.0, 0.0, 0.0),
+        ),
+        (
+            ExactFaceRole::RevolveMouth,
+            Vec3::new(6.0, 0.0, 165.0),
+            Vec3::new(0.0, 0.0, -1.0),
+        ),
+    ] {
+        let hit = projection
+            .exact_pick(Ray::new(origin, direction).unwrap())
+            .unwrap_or_else(|| panic!("revolve pick missed {role:?}"));
+        assert_eq!(hit.target.body.role(), Some(role));
+        assert!(hit.target.body.has_valid_lineage());
+        assert_eq!(hit.target.body.producer_feature_id, BOTTLE_REVOLVE);
+    }
+
+    for reference in first.references.clone() {
+        document
+            .register_exact_reference_evidence(reference)
+            .unwrap();
+    }
+    assert_eq!(document.current().exact_reference_evidence().count(), 5);
+    let reopened =
+        ketchup_core::persistence::load(&ketchup_core::persistence::save(&document.current()))
+            .unwrap();
+    let reopened = match reopened {
+        ketchup_core::persistence::LoadOutcome::Editable { document, .. } => document,
+        ketchup_core::persistence::LoadOutcome::ReviewOnly(_) => {
+            panic!("current M6 bottle must reopen editable")
+        }
+    };
+    assert_eq!(reopened.current().exact_reference_evidence().count(), 5);
+}
+
+#[test]
+fn scheduler_evaluates_editable_bottle_shell_with_open_mouth_and_current_references() {
+    let mut supervisor = ExactWorkerSupervisor::spawn(worker_path()).unwrap();
+    let mut document = bottle_shell_document();
+    let snapshot = document.current();
+    let request = ExactRevolveRequest::from_snapshot(&snapshot, BOTTLE_DEFINITION).unwrap();
+    assert_eq!(request.shell_feature_id, Some(BOTTLE_SHELL));
+    assert_eq!(request.producer_feature_id(), BOTTLE_SHELL);
+    assert_eq!(request.thickness_mm(), Some(2.0));
+
+    let first = supervisor.evaluate_revolve(&request).unwrap();
+    let repeated = supervisor.evaluate_revolve(&request).unwrap();
+    assert!(first.is_current(&snapshot));
+    assert_eq!(first.identity, repeated.identity);
+    assert_eq!(first.vertices, repeated.vertices);
+    assert_eq!(first.triangles, repeated.triangles);
+    assert_eq!(first.references.len(), 9);
+    assert_eq!(first.vertices.len(), 258);
+    assert_eq!(first.triangles.len(), 512);
+    assert_eq!(first.identity.producer_feature_id, BOTTLE_SHELL);
+    assert_eq!(first.identity.shell_feature_id, Some(BOTTLE_SHELL));
+    assert!(first.references.iter().all(|reference| {
+        reference.producer_feature_id == BOTTLE_SHELL && reference.has_valid_lineage()
+    }));
+
+    let top_triangles = first
+        .triangles
+        .iter()
+        .filter(|triangle| triangle.face_role == Some(ExactFaceRole::ShellRim))
+        .collect::<Vec<_>>();
+    assert_eq!(top_triangles.len(), 64);
+    assert!(top_triangles.iter().all(|triangle| {
+        triangle.vertex_indices.iter().all(|index| {
+            let [x, y, z] = first.vertices[*index as usize].position_mm;
+            (z - 155.0).abs() <= 1.0e-9 && x.hypot(y) >= 10.0 - 1.0e-9
+        })
+    }));
+    assert!(first.triangles.iter().all(|triangle| {
+        if triangle.face_role == Some(ExactFaceRole::ShellRim) {
+            true
+        } else {
+            triangle.vertex_indices.iter().all(|index| {
+                let [x, y, z] = first.vertices[*index as usize].position_mm;
+                z != 155.0 || x.hypot(y) != 0.0
+            })
+        }
+    }));
+
+    for reference in first.references.clone() {
+        document
+            .register_exact_reference_evidence(reference)
+            .unwrap();
+    }
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetFeatureDimension {
+                id: BOTTLE_SHELL,
+                dimension: Dimension::new("3", 3.0).unwrap(),
+            },
+        ]))
+        .unwrap();
+    assert!(!first.is_current(&document.current()));
+    assert!(
+        document
+            .register_exact_reference_evidence(first.references[0].clone())
+            .is_err()
+    );
+
+    let changed_request =
+        ExactRevolveRequest::from_snapshot(&document.current(), BOTTLE_DEFINITION).unwrap();
+    let changed = supervisor.evaluate_revolve(&changed_request).unwrap();
+    assert!(changed.is_current(&document.current()));
+    assert_ne!(
+        changed.identity.canonical_input_digest,
+        first.identity.canonical_input_digest
+    );
+    for reference in changed.references.clone() {
+        document
+            .register_exact_reference_evidence(reference)
+            .unwrap();
+    }
+    let reopened =
+        ketchup_core::persistence::load(&ketchup_core::persistence::save(&document.current()))
+            .unwrap();
+    assert_eq!(reopened.source_schema(), 8);
+    assert_eq!(reopened.snapshot().exact_reference_evidence().count(), 9);
+}
+
+#[test]
+fn scheduler_evaluates_controlled_bottle_fillet_and_chamfer_with_current_roles() {
+    let mut supervisor = ExactWorkerSupervisor::spawn(worker_path()).unwrap();
+    let mut document = controlled_finished_bottle_document();
+    let snapshot = document.current();
+    let request = ExactRevolveRequest::from_snapshot(&snapshot, BOTTLE_DEFINITION).unwrap();
+    assert_eq!(request.control_feature_id, Some(BOTTLE_CONTROL));
+    assert_eq!(request.shell_feature_id, Some(BOTTLE_SHELL));
+    assert_eq!(request.edge_finish_feature_id, Some(BOTTLE_FINISH));
+    assert_eq!(request.edge_finish_kind, Some(BottleEdgeFinishKind::Fillet));
+    assert_eq!(request.producer_feature_id(), BOTTLE_FINISH);
+
+    let fillet = supervisor.evaluate_revolve(&request).unwrap();
+    let repeated = supervisor.evaluate_revolve(&request).unwrap();
+    assert!(fillet.is_current(&snapshot));
+    assert_eq!(fillet.identity, repeated.identity);
+    assert_eq!(fillet.vertices, repeated.vertices);
+    assert_eq!(fillet.triangles, repeated.triangles);
+    assert_eq!(fillet.references.len(), 9);
+    assert_eq!(fillet.identity.control_feature_id, Some(BOTTLE_CONTROL));
+    assert_eq!(fillet.identity.edge_finish_feature_id, Some(BOTTLE_FINISH));
+    assert!(fillet.references.iter().all(|reference| {
+        reference.producer_feature_id == BOTTLE_FINISH && reference.has_valid_lineage()
+    }));
+
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetBottleControlDimension {
+                id: BOTTLE_CONTROL,
+                control: BottleControlDimension::BodyRadius,
+                dimension: Dimension::new("32", 32.0).unwrap(),
+            },
+            CanonicalCommand::SetBottleControlDimension {
+                id: BOTTLE_CONTROL,
+                control: BottleControlDimension::BodyHeight,
+                dimension: Dimension::new("120", 120.0).unwrap(),
+            },
+            CanonicalCommand::SetBottleControlDimension {
+                id: BOTTLE_CONTROL,
+                control: BottleControlDimension::ShoulderRise,
+                dimension: Dimension::new("16", 16.0).unwrap(),
+            },
+            CanonicalCommand::SetFeatureDimension {
+                id: BOTTLE_FINISH,
+                dimension: Dimension::new("1.5", 1.5).unwrap(),
+            },
+            CanonicalCommand::SetBottleEdgeFinishKind {
+                id: BOTTLE_FINISH,
+                kind: BottleEdgeFinishKind::Chamfer,
+            },
+        ]))
+        .unwrap();
+    assert!(!fillet.is_current(&document.current()));
+
+    let changed_request =
+        ExactRevolveRequest::from_snapshot(&document.current(), BOTTLE_DEFINITION).unwrap();
+    assert_eq!(
+        changed_request.edge_finish_kind,
+        Some(BottleEdgeFinishKind::Chamfer)
+    );
+    assert_eq!(
+        changed_request.points_mm(),
+        vec![
+            [0.0, 0.0],
+            [32.0, 0.0],
+            [32.0, 120.0],
+            [12.0, 136.0],
+            [12.0, 161.0],
+            [0.0, 161.0],
+        ]
+    );
+    let chamfer = supervisor.evaluate_revolve(&changed_request).unwrap();
+    assert!(chamfer.is_current(&document.current()));
+    assert_ne!(
+        chamfer.identity.canonical_input_digest,
+        fillet.identity.canonical_input_digest
+    );
+    assert_ne!(
+        chamfer.identity.result_fingerprint,
+        fillet.identity.result_fingerprint
+    );
+    for (actual, expected) in chamfer
+        .bounds_mm
+        .into_iter()
+        .flatten()
+        .zip([-32.0, -32.0, 0.0, 32.0, 32.0, 161.0])
+    {
+        assert!((actual - expected).abs() <= 1.0e-6);
+    }
+    for reference in chamfer.references.clone() {
+        document
+            .register_exact_reference_evidence(reference)
+            .unwrap();
+    }
+    let reopened =
+        ketchup_core::persistence::load(&ketchup_core::persistence::save(&document.current()))
+            .unwrap();
+    assert_eq!(reopened.source_schema(), 8);
+    assert_eq!(reopened.snapshot().exact_reference_evidence().count(), 9);
+}
+
+fn controlled_finished_bottle_document() -> DocumentStore {
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: BOTTLE_DEFINITION,
+                name: "Controlled M6 bottle".to_owned(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: BOTTLE_PROFILE,
+                definition_id: BOTTLE_DEFINITION,
+                name: "Bottle profile".to_owned(),
+                kind: FeatureKind::Profile {
+                    points_mm: vec![
+                        [0.0, 0.0],
+                        [30.0, 0.0],
+                        [30.0, 110.0],
+                        [12.0, 130.0],
+                        [12.0, 155.0],
+                        [0.0, 155.0],
+                    ],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: BOTTLE_CONTROL,
+                definition_id: BOTTLE_DEFINITION,
+                name: "Bottle controls".to_owned(),
+                kind: FeatureKind::BottleProfileControl {
+                    profile: BOTTLE_PROFILE,
+                    body_radius: Dimension::new("30", 30.0).unwrap(),
+                    body_height: Dimension::new("110", 110.0).unwrap(),
+                    shoulder_rise: Dimension::new("20", 20.0).unwrap(),
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: BOTTLE_REVOLVE,
+                definition_id: BOTTLE_DEFINITION,
+                name: "Bottle revolve".to_owned(),
+                kind: FeatureKind::Revolve {
+                    profile: BOTTLE_CONTROL,
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: BOTTLE_SHELL,
+                definition_id: BOTTLE_DEFINITION,
+                name: "Bottle shell".to_owned(),
+                kind: FeatureKind::Shell {
+                    target: BOTTLE_REVOLVE,
+                    thickness: Dimension::new("2", 2.0).unwrap(),
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: BOTTLE_FINISH,
+                definition_id: BOTTLE_DEFINITION,
+                name: "Shoulder finish".to_owned(),
+                kind: FeatureKind::BottleEdgeFinish {
+                    target: BOTTLE_SHELL,
+                    kind: BottleEdgeFinishKind::Fillet,
+                    amount: Dimension::new("2", 2.0).unwrap(),
+                },
+            },
+            CanonicalCommand::CreateOccurrence {
+                id: BOTTLE_OCCURRENCE,
+                definition_id: BOTTLE_DEFINITION,
+                name: "Bottle occurrence".to_owned(),
+                transform: Transform::identity(),
+                parent: None,
+                tag: None,
+                visible: true,
+            },
+        ]))
+        .unwrap();
+    document.discard_history_before_current();
+    document
+}
+
+fn bottle_shell_document() -> DocumentStore {
+    let mut document = bottle_document();
+    document
+        .apply_batch(&CommandBatch::new(vec![CanonicalCommand::CreateFeature {
+            id: BOTTLE_SHELL,
+            definition_id: BOTTLE_DEFINITION,
+            name: "Bottle shell".to_owned(),
+            kind: FeatureKind::Shell {
+                target: BOTTLE_REVOLVE,
+                thickness: Dimension::new("2", 2.0).unwrap(),
+            },
+        }]))
+        .unwrap();
+    document.discard_history_before_current();
+    document
+}
+
+fn bottle_document() -> DocumentStore {
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: BOTTLE_DEFINITION,
+                name: "M6 bottle".to_owned(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: BOTTLE_PROFILE,
+                definition_id: BOTTLE_DEFINITION,
+                name: "Bottle profile".to_owned(),
+                kind: FeatureKind::Profile {
+                    points_mm: vec![
+                        [0.0, 0.0],
+                        [30.0, 0.0],
+                        [30.0, 110.0],
+                        [12.0, 130.0],
+                        [12.0, 155.0],
+                        [0.0, 155.0],
+                    ],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: BOTTLE_REVOLVE,
+                definition_id: BOTTLE_DEFINITION,
+                name: "Bottle revolve".to_owned(),
+                kind: FeatureKind::Revolve {
+                    profile: BOTTLE_PROFILE,
+                },
+            },
+            CanonicalCommand::CreateOccurrence {
+                id: BOTTLE_OCCURRENCE,
+                definition_id: BOTTLE_DEFINITION,
+                name: "Bottle occurrence".to_owned(),
+                transform: Transform::identity(),
+                parent: None,
+                tag: None,
+                visible: true,
+            },
+        ]))
+        .unwrap();
+    document.discard_history_before_current();
+    document
 }
 
 fn rectangle_document(width: f64, depth: f64, height: f64) -> DocumentStore {
@@ -369,7 +800,23 @@ fn ray_for(role: ExactFaceRole, width: f64, depth: f64, height: f64) -> Ray {
         ExactFaceRole::CutWest
         | ExactFaceRole::CutEast
         | ExactFaceRole::CutSouth
-        | ExactFaceRole::CutNorth => panic!("cut roles are outside the extrusion-only C1b corpus"),
+        | ExactFaceRole::CutNorth
+        | ExactFaceRole::RevolveBottom
+        | ExactFaceRole::RevolveBody
+        | ExactFaceRole::RevolveShoulder
+        | ExactFaceRole::RevolveNeck
+        | ExactFaceRole::RevolveMouth
+        | ExactFaceRole::ShellOuterBottom
+        | ExactFaceRole::ShellOuterBody
+        | ExactFaceRole::ShellOuterShoulder
+        | ExactFaceRole::ShellOuterNeck
+        | ExactFaceRole::ShellRim
+        | ExactFaceRole::ShellInnerBottom
+        | ExactFaceRole::ShellInnerBody
+        | ExactFaceRole::ShellInnerShoulder
+        | ExactFaceRole::ShellInnerNeck => {
+            panic!("non-extrusion roles are outside the extrusion-only C1b corpus")
+        }
     };
     Ray::new(origin, direction).unwrap()
 }

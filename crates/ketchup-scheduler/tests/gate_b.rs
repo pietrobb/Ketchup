@@ -129,12 +129,14 @@ fn result(token: JobToken, fingerprint: &str) -> DerivedResult {
 
 fn exercise_proposal_race() -> usize {
     let mut document = seed_document();
-    let proposal = document.prepare_proposal(CommandBatch::new(vec![
-        CanonicalCommand::SetEvaluatorDimension {
-            id: NODE,
-            dimension: dimension("35", 35.0),
-        },
-    ]));
+    let proposal = document
+        .prepare_proposal(CommandBatch::new(vec![
+            CanonicalCommand::SetEvaluatorDimension {
+                id: NODE,
+                dimension: dimension("35", 35.0),
+            },
+        ]))
+        .unwrap();
     document
         .apply_batch(&CommandBatch::new(vec![
             CanonicalCommand::SetEvaluatorDimension {

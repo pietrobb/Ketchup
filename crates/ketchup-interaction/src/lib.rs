@@ -6,7 +6,7 @@ pub mod projection;
 use ketchup_core::adapters::{AdapterError, UiAction, UiAdapter};
 use ketchup_core::document::{
     DefinitionId, DocumentStore, FeatureId, FeatureKind, InstancePath, Proposal,
-    ProposalCommitError, Revision, Snapshot,
+    ProposalCommitError, ProposalPrepareError, Revision, Snapshot,
 };
 use std::collections::BTreeMap;
 use std::fmt;
@@ -643,7 +643,7 @@ impl SmartPushPullPlan {
 
 #[derive(Clone, Debug)]
 pub enum SmartPushPullOutcome {
-    Ready(SmartPushPullPlan),
+    Ready(Box<SmartPushPullPlan>),
     NeedsChoice { candidates: Vec<FeatureId> },
 }
 
@@ -679,21 +679,21 @@ pub fn plan_smart_push_pull(
         command_digest: batch.digest(),
         arguments,
     };
-    Ok(SmartPushPullOutcome::Ready(SmartPushPullPlan {
-        proposal: store.prepare_proposal(batch),
+    Ok(SmartPushPullOutcome::Ready(Box::new(SmartPushPullPlan {
+        proposal: store.prepare_proposal(batch)?,
         action_digest,
-    }))
+    })))
 }
 
 pub struct PreviewSession {
     generation: u64,
-    plan: SmartPushPullPlan,
+    plan: Box<SmartPushPullPlan>,
     cancelled: bool,
 }
 
 impl PreviewSession {
     #[must_use]
-    pub const fn new(generation: u64, plan: SmartPushPullPlan) -> Self {
+    pub const fn new(generation: u64, plan: Box<SmartPushPullPlan>) -> Self {
         Self {
             generation,
             plan,
@@ -804,6 +804,7 @@ pub enum InteractionError {
     FeatureNotFound(FeatureId),
     InvalidLocaleResource,
     Adapter(AdapterError),
+    Proposal(ProposalPrepareError),
 }
 
 impl fmt::Display for InteractionError {
@@ -817,6 +818,7 @@ impl fmt::Display for InteractionError {
             Self::FeatureNotFound(id) => write!(formatter, "feature {} does not exist", id.0),
             Self::InvalidLocaleResource => formatter.write_str("locale resource is invalid"),
             Self::Adapter(error) => error.fmt(formatter),
+            Self::Proposal(error) => error.fmt(formatter),
         }
     }
 }
@@ -826,6 +828,12 @@ impl std::error::Error for InteractionError {}
 impl From<AdapterError> for InteractionError {
     fn from(error: AdapterError) -> Self {
         Self::Adapter(error)
+    }
+}
+
+impl From<ProposalPrepareError> for InteractionError {
+    fn from(error: ProposalPrepareError) -> Self {
+        Self::Proposal(error)
     }
 }
 

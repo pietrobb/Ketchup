@@ -142,12 +142,14 @@ fn command_batch_is_atomic_and_is_one_undo_redo_step() {
 #[test]
 fn proposal_revalidation_accepts_unrelated_edits_and_rejects_changed_dependencies() {
     let mut document = seed_document();
-    let proposal = document.prepare_proposal(CommandBatch::new(vec![
-        CanonicalCommand::SetEvaluatorDimension {
-            id: WIDTH,
-            dimension: dimension("720", 720.0),
-        },
-    ]));
+    let proposal = document
+        .prepare_proposal(CommandBatch::new(vec![
+            CanonicalCommand::SetEvaluatorDimension {
+                id: WIDTH,
+                dimension: dimension("720", 720.0),
+            },
+        ]))
+        .unwrap();
 
     document
         .apply_batch(&CommandBatch::new(vec![
@@ -165,12 +167,14 @@ fn proposal_revalidation_accepts_unrelated_edits_and_rejects_changed_dependencie
         .commit_proposal(&proposal)
         .expect("unchanged dependency digest permits the exact proposed batch");
 
-    let stale = document.prepare_proposal(CommandBatch::new(vec![
-        CanonicalCommand::SetEvaluatorDimension {
-            id: WIDTH,
-            dimension: dimension("840", 840.0),
-        },
-    ]));
+    let stale = document
+        .prepare_proposal(CommandBatch::new(vec![
+            CanonicalCommand::SetEvaluatorDimension {
+                id: WIDTH,
+                dimension: dimension("840", 840.0),
+            },
+        ]))
+        .unwrap();
     document
         .apply_batch(&CommandBatch::new(vec![
             CanonicalCommand::SetEvaluatorDimension {
@@ -217,7 +221,7 @@ fn canonical_ids_and_parameters_survive_one_hundred_save_load_cycles() {
 
     for _ in 0..100 {
         let loaded = persistence::load(&bytes).expect("current schema loads");
-        assert_eq!(loaded.source_schema(), 5);
+        assert_eq!(loaded.source_schema(), 8);
         assert!(loaded.migration_losses().is_empty());
         let snapshot = loaded.snapshot();
         assert_eq!(snapshot.canonical_digest(), expected_digest);
@@ -371,12 +375,14 @@ fn legacy_schema_preserves_binary_meaning_and_reports_unrecoverable_source_token
 #[test]
 fn product_proposals_use_typed_dependencies_without_snapshot_fallback() {
     let mut document = seed_product_document();
-    let proposal = document.prepare_proposal(CommandBatch::new(vec![
-        CanonicalCommand::SetFeatureDimension {
-            id: PRODUCT_EXTRUSION,
-            dimension: dimension("720", 720.0),
-        },
-    ]));
+    let proposal = document
+        .prepare_proposal(CommandBatch::new(vec![
+            CanonicalCommand::SetFeatureDimension {
+                id: PRODUCT_EXTRUSION,
+                dimension: dimension("720", 720.0),
+            },
+        ]))
+        .unwrap();
     document
         .apply_batch(&CommandBatch::new(vec![
             CanonicalCommand::CreateDefinition {
@@ -391,12 +397,14 @@ fn product_proposals_use_typed_dependencies_without_snapshot_fallback() {
     ));
     document.commit_proposal(&proposal).unwrap();
 
-    let stale = document.prepare_proposal(CommandBatch::new(vec![
-        CanonicalCommand::SetFeatureDimension {
-            id: PRODUCT_EXTRUSION,
-            dimension: dimension("840", 840.0),
-        },
-    ]));
+    let stale = document
+        .prepare_proposal(CommandBatch::new(vec![
+            CanonicalCommand::SetFeatureDimension {
+                id: PRODUCT_EXTRUSION,
+                dimension: dimension("840", 840.0),
+            },
+        ]))
+        .unwrap();
     document
         .apply_batch(&CommandBatch::new(vec![
             CanonicalCommand::SetProfilePoints {
@@ -453,9 +461,9 @@ fn schema_zero_and_one_are_one_way_imports_into_schema_three_authority() {
             ]))
             .expect("the imported ProductModel is the writable authority");
         let saved = persistence::save(&document.current());
-        assert_eq!(u16::from_le_bytes([saved[10], saved[11]]), 5);
+        assert_eq!(u16::from_le_bytes([saved[10], saved[11]]), 8);
         let reopened = persistence::load(&saved).expect("current schema reopens");
-        assert_eq!(reopened.source_schema(), 5);
+        assert_eq!(reopened.source_schema(), 8);
         assert_eq!(
             reopened
                 .snapshot()

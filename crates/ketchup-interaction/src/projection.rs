@@ -203,6 +203,13 @@ fn canonical_box(
     let Some(definition) = snapshot.definition(definition_id) else {
         return (None, None, None);
     };
+    if definition.feature_ids().iter().any(|feature_id| {
+        snapshot
+            .feature(*feature_id)
+            .is_some_and(|feature| matches!(feature.kind(), FeatureKind::Revolve { .. }))
+    }) {
+        return (None, None, None);
+    }
     let extrusions = definition
         .feature_ids()
         .iter()
@@ -212,7 +219,12 @@ fn canonical_box(
                 FeatureKind::Extrusion { profile, height } => {
                     Some((*feature_id, *profile, height.millimetres()))
                 }
-                FeatureKind::Profile { .. } | FeatureKind::ThroughCut { .. } => None,
+                FeatureKind::Profile { .. }
+                | FeatureKind::BottleProfileControl { .. }
+                | FeatureKind::Revolve { .. }
+                | FeatureKind::Shell { .. }
+                | FeatureKind::BottleEdgeFinish { .. }
+                | FeatureKind::ThroughCut { .. } => None,
             }
         })
         .collect::<Vec<_>>();

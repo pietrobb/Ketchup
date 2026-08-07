@@ -111,6 +111,22 @@ impl ExactBodyParticipant {
                 ExactFaceRole::CutEast => (0, 1),
                 ExactFaceRole::CutSouth => (1, -1),
                 ExactFaceRole::CutNorth => (1, 1),
+                ExactFaceRole::RevolveBottom
+                | ExactFaceRole::RevolveBody
+                | ExactFaceRole::RevolveShoulder
+                | ExactFaceRole::RevolveNeck
+                | ExactFaceRole::RevolveMouth
+                | ExactFaceRole::ShellOuterBottom
+                | ExactFaceRole::ShellOuterBody
+                | ExactFaceRole::ShellOuterShoulder
+                | ExactFaceRole::ShellOuterNeck
+                | ExactFaceRole::ShellRim
+                | ExactFaceRole::ShellInnerBottom
+                | ExactFaceRole::ShellInnerBody
+                | ExactFaceRole::ShellInnerShoulder
+                | ExactFaceRole::ShellInnerNeck => {
+                    return Err(ExactValidationError::InvalidFaceReference);
+                }
             };
             let mut coordinates = package
                 .triangles

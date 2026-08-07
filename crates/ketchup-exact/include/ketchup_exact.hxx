@@ -44,6 +44,13 @@ std::unique_ptr<NativeOperationResult> make_box_native(
     double size_x, double size_y, double size_z) noexcept;
 std::unique_ptr<NativeOperationResult> extrude_rectangle_native(
     double width, double depth, double height) noexcept;
+std::unique_ptr<NativeOperationResult> revolve_profile_native(
+    rust::Slice<const double> points) noexcept;
+std::unique_ptr<NativeOperationResult> shell_revolve_profile_native(
+    rust::Slice<const double> points, double thickness) noexcept;
+std::unique_ptr<NativeOperationResult> finish_shell_revolve_profile_native(
+    rust::Slice<const double> points, double thickness, double amount,
+    bool fillet) noexcept;
 std::unique_ptr<NativeOperationResult> cut_box_native(
     const NativeOperationResult& base,
     double origin_x, double origin_y, double origin_z,

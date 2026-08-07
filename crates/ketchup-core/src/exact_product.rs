@@ -18,6 +18,20 @@ pub enum ExactFaceRole {
     CutEast,
     CutSouth,
     CutNorth,
+    RevolveBottom,
+    RevolveBody,
+    RevolveShoulder,
+    RevolveNeck,
+    RevolveMouth,
+    ShellOuterBottom,
+    ShellOuterBody,
+    ShellOuterShoulder,
+    ShellOuterNeck,
+    ShellRim,
+    ShellInnerBottom,
+    ShellInnerBody,
+    ShellInnerShoulder,
+    ShellInnerNeck,
 }
 
 const EXTRUSION_FACE_ROLES: [ExactFaceRole; 3] = [
@@ -46,6 +60,20 @@ impl ExactFaceRole {
             Self::CutEast => "through_cut.wall.east",
             Self::CutSouth => "through_cut.wall.south",
             Self::CutNorth => "through_cut.wall.north",
+            Self::RevolveBottom => "revolve.bottom",
+            Self::RevolveBody => "revolve.body",
+            Self::RevolveShoulder => "revolve.shoulder",
+            Self::RevolveNeck => "revolve.neck",
+            Self::RevolveMouth => "revolve.mouth",
+            Self::ShellOuterBottom => "shell.outer.bottom",
+            Self::ShellOuterBody => "shell.outer.body",
+            Self::ShellOuterShoulder => "shell.outer.shoulder",
+            Self::ShellOuterNeck => "shell.outer.neck",
+            Self::ShellRim => "shell.rim",
+            Self::ShellInnerBottom => "shell.inner.bottom",
+            Self::ShellInnerBody => "shell.inner.body",
+            Self::ShellInnerShoulder => "shell.inner.shoulder",
+            Self::ShellInnerNeck => "shell.inner.neck",
         }
     }
 
@@ -58,6 +86,47 @@ impl ExactFaceRole {
             Self::CutEast => "cut_profile.edge.east",
             Self::CutSouth => "cut_profile.edge.south",
             Self::CutNorth => "cut_profile.edge.north",
+            Self::RevolveBottom => "profile.edge.0",
+            Self::RevolveBody => "profile.edge.1",
+            Self::RevolveShoulder => "profile.edge.2",
+            Self::RevolveNeck => "profile.edge.3",
+            Self::RevolveMouth => "profile.edge.4",
+            Self::ShellOuterBottom => "revolve.face.bottom",
+            Self::ShellOuterBody => "revolve.face.body",
+            Self::ShellOuterShoulder => "revolve.face.shoulder",
+            Self::ShellOuterNeck => "revolve.face.neck",
+            Self::ShellRim => "revolve.face.mouth",
+            Self::ShellInnerBottom => "shell.offset.bottom",
+            Self::ShellInnerBody => "shell.offset.body",
+            Self::ShellInnerShoulder => "shell.offset.shoulder",
+            Self::ShellInnerNeck => "shell.offset.neck",
+        }
+    }
+
+    #[must_use]
+    pub const fn expected_type(self) -> &'static str {
+        match self {
+            Self::Top
+            | Self::Bottom
+            | Self::East
+            | Self::CutWest
+            | Self::CutEast
+            | Self::CutSouth
+            | Self::CutNorth => "planar_face",
+            Self::RevolveBottom
+            | Self::RevolveBody
+            | Self::RevolveShoulder
+            | Self::RevolveNeck
+            | Self::RevolveMouth
+            | Self::ShellOuterBottom
+            | Self::ShellOuterBody
+            | Self::ShellOuterShoulder
+            | Self::ShellOuterNeck
+            | Self::ShellRim
+            | Self::ShellInnerBottom
+            | Self::ShellInnerBody
+            | Self::ShellInnerShoulder
+            | Self::ShellInnerNeck => "face",
         }
     }
 }
@@ -100,6 +169,20 @@ impl BodySubshapeRef {
             ExactFaceRole::CutEast,
             ExactFaceRole::CutSouth,
             ExactFaceRole::CutNorth,
+            ExactFaceRole::RevolveBottom,
+            ExactFaceRole::RevolveBody,
+            ExactFaceRole::RevolveShoulder,
+            ExactFaceRole::RevolveNeck,
+            ExactFaceRole::RevolveMouth,
+            ExactFaceRole::ShellOuterBottom,
+            ExactFaceRole::ShellOuterBody,
+            ExactFaceRole::ShellOuterShoulder,
+            ExactFaceRole::ShellOuterNeck,
+            ExactFaceRole::ShellRim,
+            ExactFaceRole::ShellInnerBottom,
+            ExactFaceRole::ShellInnerBody,
+            ExactFaceRole::ShellInnerShoulder,
+            ExactFaceRole::ShellInnerNeck,
         ]
         .into_iter()
         .find(|role| {
@@ -111,9 +194,10 @@ impl BodySubshapeRef {
     #[must_use]
     pub fn has_valid_lineage(&self) -> bool {
         self.schema == BODY_SUBSHAPE_REF_SCHEMA_V1
-            && self.expected_type == "planar_face"
             && self.expected_cardinality == 1
-            && self.role().is_some()
+            && self
+                .role()
+                .is_some_and(|role| self.expected_type == role.expected_type())
             && self.lineage_digest == reference_lineage_digest(self)
     }
 
@@ -173,6 +257,81 @@ pub struct ExactRenderPackage {
     pub vertices: Vec<ExactVertex>,
     pub triangles: Vec<ExactTriangle>,
     pub references: Vec<BodySubshapeRef>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum ExactBodyPackage {
+    Rectangle(ExactRenderPackage),
+    Revolve(crate::bottle_m6::ExactRevolvePackage),
+}
+
+impl ExactBodyPackage {
+    #[must_use]
+    pub fn definition_id(&self) -> DefinitionId {
+        match self {
+            Self::Rectangle(package) => package.identity.definition_id,
+            Self::Revolve(package) => package.identity.definition_id,
+        }
+    }
+
+    #[must_use]
+    pub fn is_current(&self, snapshot: &Snapshot) -> bool {
+        match self {
+            Self::Rectangle(package) => package.is_current(snapshot),
+            Self::Revolve(package) => package.is_current(snapshot),
+        }
+    }
+
+    #[must_use]
+    pub fn bounds_mm(&self) -> [[f64; 3]; 2] {
+        match self {
+            Self::Rectangle(package) => package.bounds_mm,
+            Self::Revolve(package) => package.bounds_mm,
+        }
+    }
+
+    #[must_use]
+    pub fn vertices(&self) -> &[ExactVertex] {
+        match self {
+            Self::Rectangle(package) => &package.vertices,
+            Self::Revolve(package) => &package.vertices,
+        }
+    }
+
+    #[must_use]
+    pub fn triangles(&self) -> &[ExactTriangle] {
+        match self {
+            Self::Rectangle(package) => &package.triangles,
+            Self::Revolve(package) => &package.triangles,
+        }
+    }
+
+    #[must_use]
+    pub fn references(&self) -> &[BodySubshapeRef] {
+        match self {
+            Self::Rectangle(package) => &package.references,
+            Self::Revolve(package) => &package.references,
+        }
+    }
+
+    #[must_use]
+    pub fn reference(&self, role: ExactFaceRole) -> Option<&BodySubshapeRef> {
+        self.references()
+            .iter()
+            .find(|reference| reference.role() == Some(role))
+    }
+}
+
+impl From<ExactRenderPackage> for ExactBodyPackage {
+    fn from(package: ExactRenderPackage) -> Self {
+        Self::Rectangle(package)
+    }
+}
+
+impl From<crate::bottle_m6::ExactRevolvePackage> for ExactBodyPackage {
+    fn from(package: crate::bottle_m6::ExactRevolvePackage) -> Self {
+        Self::Revolve(package)
+    }
 }
 
 impl ExactRenderPackage {
@@ -300,6 +459,13 @@ impl ExactRectangleRequest {
         let definition = snapshot
             .definition(definition_id)
             .ok_or(ExactProductError::DefinitionNotFound(definition_id))?;
+        if definition.feature_ids().iter().any(|feature_id| {
+            snapshot
+                .feature(*feature_id)
+                .is_some_and(|feature| matches!(feature.kind(), FeatureKind::Revolve { .. }))
+        }) {
+            return Err(ExactProductError::UnsupportedDefinition);
+        }
         let extrusions = definition
             .feature_ids()
             .iter()
@@ -309,7 +475,12 @@ impl ExactRectangleRequest {
                     FeatureKind::Extrusion { profile, height } => {
                         Some((*id, *profile, height.millimetres()))
                     }
-                    FeatureKind::Profile { .. } | FeatureKind::ThroughCut { .. } => None,
+                    FeatureKind::Profile { .. }
+                    | FeatureKind::BottleProfileControl { .. }
+                    | FeatureKind::Revolve { .. }
+                    | FeatureKind::Shell { .. }
+                    | FeatureKind::BottleEdgeFinish { .. }
+                    | FeatureKind::ThroughCut { .. } => None,
                 }
             })
             .collect::<Vec<_>>();
@@ -337,7 +508,12 @@ impl ExactRectangleRequest {
                 let feature = snapshot.feature(*id)?;
                 match feature.kind() {
                     FeatureKind::ThroughCut { target, profile } => Some((*id, *target, *profile)),
-                    FeatureKind::Profile { .. } | FeatureKind::Extrusion { .. } => None,
+                    FeatureKind::Profile { .. }
+                    | FeatureKind::Extrusion { .. }
+                    | FeatureKind::BottleProfileControl { .. }
+                    | FeatureKind::Revolve { .. }
+                    | FeatureKind::Shell { .. }
+                    | FeatureKind::BottleEdgeFinish { .. } => None,
                 }
             })
             .collect::<Vec<_>>();
@@ -448,6 +624,20 @@ impl ExactRectangleRequest {
             | ExactFaceRole::CutNorth => {
                 self.through_cut.as_ref().map(|cut| cut.profile_feature_id)
             }
+            ExactFaceRole::RevolveBottom
+            | ExactFaceRole::RevolveBody
+            | ExactFaceRole::RevolveShoulder
+            | ExactFaceRole::RevolveNeck
+            | ExactFaceRole::RevolveMouth
+            | ExactFaceRole::ShellOuterBottom
+            | ExactFaceRole::ShellOuterBody
+            | ExactFaceRole::ShellOuterShoulder
+            | ExactFaceRole::ShellOuterNeck
+            | ExactFaceRole::ShellRim
+            | ExactFaceRole::ShellInnerBottom
+            | ExactFaceRole::ShellInnerBody
+            | ExactFaceRole::ShellInnerShoulder
+            | ExactFaceRole::ShellInnerNeck => None,
         }
     }
 
@@ -468,6 +658,7 @@ pub enum ExactProductError {
     UnsupportedProfile,
     UnsupportedExtrusion,
     UnsupportedThroughCut,
+    UnsupportedShell,
     InvalidWorkerEvidence,
 }
 
@@ -488,6 +679,8 @@ impl fmt::Display for ExactProductError {
             Self::UnsupportedThroughCut => formatter.write_str(
                 "exact M3 supports one strictly bounded axis-aligned rectangle through-cut",
             ),
+            Self::UnsupportedShell => formatter
+                .write_str("exact M6 shell thickness is outside the conservative bottle envelope"),
             Self::InvalidWorkerEvidence => {
                 formatter.write_str("exact worker evidence does not match the canonical request")
             }

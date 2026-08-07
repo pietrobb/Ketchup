@@ -415,6 +415,121 @@ pub fn encode_semantic_state_with_results(
                 )
                 .unwrap();
             }
+            crate::document::FeatureKind::BottleProfileControl {
+                profile,
+                body_radius,
+                body_height,
+                shoulder_rise,
+            } => {
+                writeln!(
+                    complete,
+                    "feature.{}.kind=bottle_profile_control",
+                    feature.id().0
+                )
+                .unwrap();
+                writeln!(complete, "feature.{}.profile={}", feature.id().0, profile.0).unwrap();
+                for (name, dimension) in [
+                    ("body_radius", body_radius),
+                    ("body_height", body_height),
+                    ("shoulder_rise", shoulder_rise),
+                ] {
+                    writeln!(
+                        complete,
+                        "feature.{}.{name}.f64_bits={:016x}",
+                        feature.id().0,
+                        dimension.millimetres().to_bits()
+                    )
+                    .unwrap();
+                }
+                writeln!(
+                    agent,
+                    "feature.{}=name:{:?},kind:bottle_profile_control,definition:{},profile:{},body_radius_mm:{:?},body_height_mm:{:?},shoulder_rise_mm:{:?}",
+                    feature.id().0,
+                    feature.name(),
+                    feature.definition_id().0,
+                    profile.0,
+                    body_radius.millimetres(),
+                    body_height.millimetres(),
+                    shoulder_rise.millimetres()
+                )
+                .unwrap();
+            }
+            crate::document::FeatureKind::Revolve { profile } => {
+                writeln!(complete, "feature.{}.kind=revolve", feature.id().0).unwrap();
+                writeln!(complete, "feature.{}.profile={}", feature.id().0, profile.0).unwrap();
+                writeln!(
+                    agent,
+                    "feature.{}=name:{:?},kind:revolve,definition:{},profile:{}",
+                    feature.id().0,
+                    feature.name(),
+                    feature.definition_id().0,
+                    profile.0
+                )
+                .unwrap();
+            }
+            crate::document::FeatureKind::Shell { target, thickness } => {
+                writeln!(complete, "feature.{}.kind=shell", feature.id().0).unwrap();
+                writeln!(complete, "feature.{}.target={}", feature.id().0, target.0).unwrap();
+                writeln!(
+                    complete,
+                    "feature.{}.thickness.source={:?}",
+                    feature.id().0,
+                    thickness.source_token()
+                )
+                .unwrap();
+                writeln!(
+                    complete,
+                    "feature.{}.thickness.f64_bits={:016x}",
+                    feature.id().0,
+                    thickness.millimetres().to_bits()
+                )
+                .unwrap();
+                writeln!(
+                    agent,
+                    "feature.{}=name:{:?},kind:shell,definition:{},target:{},thickness_mm:{:?}",
+                    feature.id().0,
+                    feature.name(),
+                    feature.definition_id().0,
+                    target.0,
+                    thickness.millimetres()
+                )
+                .unwrap();
+            }
+            crate::document::FeatureKind::BottleEdgeFinish {
+                target,
+                kind,
+                amount,
+            } => {
+                let kind = match kind {
+                    crate::document::BottleEdgeFinishKind::Fillet => "fillet",
+                    crate::document::BottleEdgeFinishKind::Chamfer => "chamfer",
+                };
+                writeln!(
+                    complete,
+                    "feature.{}.kind=bottle_edge_finish",
+                    feature.id().0
+                )
+                .unwrap();
+                writeln!(complete, "feature.{}.target={}", feature.id().0, target.0).unwrap();
+                writeln!(complete, "feature.{}.finish_kind={kind}", feature.id().0).unwrap();
+                writeln!(
+                    complete,
+                    "feature.{}.amount.f64_bits={:016x}",
+                    feature.id().0,
+                    amount.millimetres().to_bits()
+                )
+                .unwrap();
+                writeln!(
+                    agent,
+                    "feature.{}=name:{:?},kind:bottle_edge_finish,definition:{},target:{},finish_kind:{kind},amount_mm:{:?}",
+                    feature.id().0,
+                    feature.name(),
+                    feature.definition_id().0,
+                    target.0,
+                    amount.millimetres()
+                )
+                .unwrap();
+            }
             crate::document::FeatureKind::ThroughCut { target, profile } => {
                 writeln!(complete, "feature.{}.kind=through_cut", feature.id().0).unwrap();
                 writeln!(complete, "feature.{}.target={}", feature.id().0, target.0).unwrap();

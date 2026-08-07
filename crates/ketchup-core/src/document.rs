@@ -1,3 +1,4 @@
+use crate::bottle_m6::{ExactRevolveRequest, reference_matches_revolve_request};
 use crate::exact_product::{BodySubshapeRef, ExactRectangleRequest};
 pub use crate::graph::{
     CanonicalOverride, DerivedIdentity, DerivedOutput, EvaluationIdentity, EvaluationReport,
@@ -158,6 +159,19 @@ impl Default for Transform {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BottleControlDimension {
+    BodyRadius,
+    BodyHeight,
+    ShoulderRise,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BottleEdgeFinishKind {
+    Fillet,
+    Chamfer,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum FeatureKind {
     Profile {
@@ -166,6 +180,24 @@ pub enum FeatureKind {
     Extrusion {
         profile: FeatureId,
         height: Dimension,
+    },
+    BottleProfileControl {
+        profile: FeatureId,
+        body_radius: Dimension,
+        body_height: Dimension,
+        shoulder_rise: Dimension,
+    },
+    Revolve {
+        profile: FeatureId,
+    },
+    Shell {
+        target: FeatureId,
+        thickness: Dimension,
+    },
+    BottleEdgeFinish {
+        target: FeatureId,
+        kind: BottleEdgeFinishKind,
+        amount: Dimension,
     },
     ThroughCut {
         target: FeatureId,
@@ -565,6 +597,15 @@ pub enum CanonicalCommand {
         id: FeatureId,
         dimension: Dimension,
     },
+    SetBottleControlDimension {
+        id: FeatureId,
+        control: BottleControlDimension,
+        dimension: Dimension,
+    },
+    SetBottleEdgeFinishKind {
+        id: FeatureId,
+        kind: BottleEdgeFinishKind,
+    },
     SetProfilePoints {
         id: FeatureId,
         points_mm: Vec<[f64; 2]>,
@@ -650,6 +691,102 @@ pub enum AuthoritativeDependency {
     FeatureUsers(FeatureId),
     GroupChildren(GroupId),
     GroupSubtree(GroupId),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ProposalBudget {
+    pub max_commands: usize,
+    pub max_read_dependencies: usize,
+    pub max_write_targets: usize,
+}
+
+impl ProposalBudget {
+    pub const HOST_MAX: Self = Self {
+        max_commands: 4,
+        max_read_dependencies: 128,
+        max_write_targets: 32,
+    };
+
+    pub const M7A_SINGLE_CHANGE: Self = Self {
+        max_commands: 1,
+        max_read_dependencies: 64,
+        max_write_targets: 1,
+    };
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ProposalCost {
+    pub commands: usize,
+    pub read_dependencies: usize,
+    pub write_targets: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProposalPrincipal {
+    ManualClient,
+    LocalAssistant,
+    Plugin(u64),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProposalRisk {
+    Standard,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProposalConfirmation {
+    ReviewRequired,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProposalGoal {
+    CanonicalPreview,
+    SetRuleDimension(NodeId),
+    SetFeatureDimension(FeatureId),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProposalAssumption {
+    TargetExists(AuthoritativeDependency),
+    TargetHasDimension(AuthoritativeDependency),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum ProposalValue {
+    Missing,
+    Dimension(Dimension),
+    Digest(String),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ProposalDiffEntry {
+    pub target: AuthoritativeDependency,
+    pub before: ProposalValue,
+    pub after: ProposalValue,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProposalContext {
+    pub principal: ProposalPrincipal,
+    pub goal: ProposalGoal,
+    pub assumptions: Vec<ProposalAssumption>,
+    pub risk: ProposalRisk,
+    pub confirmation: ProposalConfirmation,
+    pub requested_budget: ProposalBudget,
+}
+
+impl ProposalContext {
+    #[must_use]
+    pub fn canonical_preview() -> Self {
+        Self {
+            principal: ProposalPrincipal::ManualClient,
+            goal: ProposalGoal::CanonicalPreview,
+            assumptions: Vec::new(),
+            risk: ProposalRisk::Standard,
+            confirmation: ProposalConfirmation::ReviewRequired,
+            requested_budget: ProposalBudget::HOST_MAX,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -1283,10 +1420,12 @@ impl DocumentStore {
         if producer.definition_id() != reference.definition_id {
             return Err(ReferenceEvidenceError::ProducerDefinitionMismatch);
         }
-        let request =
+        let matches_request =
             ExactRectangleRequest::from_snapshot(&current.snapshot, reference.definition_id)
-                .map_err(|_| ReferenceEvidenceError::InvalidLineage)?;
-        if !reference.matches_request(&request) {
+                .is_ok_and(|request| reference.matches_request(&request))
+                || ExactRevolveRequest::from_snapshot(&current.snapshot, reference.definition_id)
+                    .is_ok_and(|request| reference_matches_revolve_request(&reference, &request));
+        if !matches_request {
             return Err(ReferenceEvidenceError::InvalidLineage);
         }
         let event = DerivedResultEvent {
@@ -1677,7 +1816,86 @@ impl DocumentStore {
                         .features
                         .get(id)
                         .ok_or(CanonicalError::FeatureNotFound(*id))?;
-                    let FeatureKind::Extrusion { profile, .. } = feature.kind else {
+                    let kind = match feature.kind {
+                        FeatureKind::Extrusion { profile, .. } => FeatureKind::Extrusion {
+                            profile,
+                            height: dimension.clone(),
+                        },
+                        FeatureKind::Shell { target, .. } => FeatureKind::Shell {
+                            target,
+                            thickness: dimension.clone(),
+                        },
+                        FeatureKind::BottleEdgeFinish { target, kind, .. } => {
+                            FeatureKind::BottleEdgeFinish {
+                                target,
+                                kind,
+                                amount: dimension.clone(),
+                            }
+                        }
+                        _ => return Err(CanonicalError::FeatureHasNoDimension(*id)),
+                    };
+                    product.features.insert(
+                        *id,
+                        Arc::new(Feature {
+                            id: *id,
+                            definition_id: feature.definition_id,
+                            name: feature.name.clone(),
+                            kind,
+                        }),
+                    );
+                }
+                CanonicalCommand::SetBottleControlDimension {
+                    id,
+                    control,
+                    dimension,
+                } => {
+                    let feature = product
+                        .features
+                        .get(id)
+                        .ok_or(CanonicalError::FeatureNotFound(*id))?;
+                    let FeatureKind::BottleProfileControl {
+                        profile,
+                        body_radius,
+                        body_height,
+                        shoulder_rise,
+                    } = &feature.kind
+                    else {
+                        return Err(CanonicalError::FeatureHasNoDimension(*id));
+                    };
+                    let kind = FeatureKind::BottleProfileControl {
+                        profile: *profile,
+                        body_radius: if *control == BottleControlDimension::BodyRadius {
+                            dimension.clone()
+                        } else {
+                            body_radius.clone()
+                        },
+                        body_height: if *control == BottleControlDimension::BodyHeight {
+                            dimension.clone()
+                        } else {
+                            body_height.clone()
+                        },
+                        shoulder_rise: if *control == BottleControlDimension::ShoulderRise {
+                            dimension.clone()
+                        } else {
+                            shoulder_rise.clone()
+                        },
+                    };
+                    product.features.insert(
+                        *id,
+                        Arc::new(Feature {
+                            id: *id,
+                            definition_id: feature.definition_id,
+                            name: feature.name.clone(),
+                            kind,
+                        }),
+                    );
+                }
+                CanonicalCommand::SetBottleEdgeFinishKind { id, kind } => {
+                    let feature = product
+                        .features
+                        .get(id)
+                        .ok_or(CanonicalError::FeatureNotFound(*id))?;
+                    let FeatureKind::BottleEdgeFinish { target, amount, .. } = &feature.kind else {
                         return Err(CanonicalError::FeatureHasNoDimension(*id));
                     };
                     product.features.insert(
@@ -1686,9 +1904,10 @@ impl DocumentStore {
                             id: *id,
                             definition_id: feature.definition_id,
                             name: feature.name.clone(),
-                            kind: FeatureKind::Extrusion {
-                                profile,
-                                height: dimension.clone(),
+                            kind: FeatureKind::BottleEdgeFinish {
+                                target: *target,
+                                kind: *kind,
+                                amount: amount.clone(),
                             },
                         }),
                     );
@@ -2075,26 +2294,55 @@ impl DocumentStore {
         Some(self.current())
     }
 
-    #[must_use]
-    pub fn prepare_proposal(&self, batch: CommandBatch) -> Proposal {
+    pub fn prepare_proposal(&self, batch: CommandBatch) -> Result<Proposal, ProposalPrepareError> {
+        self.prepare_proposal_with_context(batch, ProposalContext::canonical_preview())
+    }
+
+    pub fn prepare_proposal_with_context(
+        &self,
+        batch: CommandBatch,
+        context: ProposalContext,
+    ) -> Result<Proposal, ProposalPrepareError> {
         let snapshot = self.current();
         let authoritative_dependencies = authoritative_dependencies(&snapshot, &batch);
-        Proposal {
+        let authoritative_writes = authoritative_writes(&snapshot, &batch);
+        let cost = ProposalCost {
+            commands: batch.commands.len(),
+            read_dependencies: authoritative_dependencies.len(),
+            write_targets: authoritative_writes.len(),
+        };
+        validate_proposal_budget(context.requested_budget, cost)?;
+        let (authoritative_diff, intended_result_digest) =
+            proposal_candidate(&snapshot, &batch, &authoritative_writes)?;
+        Ok(Proposal {
+            document_id: snapshot.document_id(),
             provenance_revision: snapshot.revision_id,
+            provenance_digest: snapshot.canonical_digest(),
             command_digest: batch.digest(),
             dependency_digest: dependency_digest(&snapshot, &authoritative_dependencies),
             authoritative_dependencies,
+            authoritative_writes,
+            authoritative_diff,
+            intended_result_digest,
+            principal: context.principal,
+            goal: context.goal,
+            assumptions: context.assumptions,
+            risk: context.risk,
+            confirmation: context.confirmation,
+            requested_budget: context.requested_budget,
+            cost,
             batch,
-        }
+        })
     }
 
     #[must_use]
     pub fn validate_proposal(&self, proposal: &Proposal) -> ProposalValidity {
         let snapshot = self.current();
+        let envelope_matches = proposal.document_id == snapshot.document_id();
         let command_matches = proposal.command_digest == proposal.batch.digest();
         let dependencies_match = proposal.dependency_digest
             == dependency_digest(&snapshot, &proposal.authoritative_dependencies);
-        if command_matches && dependencies_match {
+        if envelope_matches && command_matches && dependencies_match {
             ProposalValidity::Valid {
                 evaluated_revision: snapshot.revision_id,
             }
@@ -2110,28 +2358,88 @@ impl DocumentStore {
         &mut self,
         proposal: &Proposal,
     ) -> Result<Arc<Revision>, ProposalCommitError> {
-        match self.validate_proposal(proposal) {
-            ProposalValidity::Valid { .. } => self
-                .apply_batch(&proposal.batch)
-                .map_err(ProposalCommitError::Canonical),
-            stale @ ProposalValidity::Stale { .. } => Err(ProposalCommitError::Stale(stale)),
+        self.commit_verified_proposal(proposal)
+            .map(|committed| committed.revision)
+    }
+
+    pub fn commit_verified_proposal(
+        &mut self,
+        proposal: &Proposal,
+    ) -> Result<VerifiedProposalCommit, ProposalCommitError> {
+        if let stale @ ProposalValidity::Stale { .. } = self.validate_proposal(proposal) {
+            return Err(ProposalCommitError::Stale(stale));
         }
+        let current = self.current();
+        let (diff, intended_result_digest) =
+            proposal_candidate(&current, &proposal.batch, &proposal.authoritative_writes)
+                .map_err(ProposalCommitError::Preparation)?;
+        if diff != proposal.authoritative_diff
+            || intended_result_digest != proposal.intended_result_digest
+        {
+            return Err(ProposalCommitError::VerificationMismatch);
+        }
+        let previous_revisions = self.revisions.clone();
+        let previous_cursor = self.cursor;
+        let previous_next_revision_id = self.next_revision_id;
+        let previous_registry = self.evaluation_registry.clone();
+        let revision = self
+            .apply_batch(&proposal.batch)
+            .map_err(ProposalCommitError::Canonical)?;
+        let actual_result_digest =
+            dependency_digest(revision.snapshot(), &proposal.authoritative_writes);
+        if revision.batch_digest() != proposal.command_digest
+            || actual_result_digest != proposal.intended_result_digest
+        {
+            self.revisions = previous_revisions;
+            self.cursor = previous_cursor;
+            self.next_revision_id = previous_next_revision_id;
+            self.evaluation_registry = previous_registry;
+            return Err(ProposalCommitError::VerificationMismatch);
+        }
+        Ok(VerifiedProposalCommit {
+            revision,
+            command_digest: proposal.command_digest.clone(),
+            result_digest: actual_result_digest,
+            verified_writes: proposal.authoritative_writes.clone(),
+        })
     }
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Proposal {
+    document_id: DocumentId,
     provenance_revision: u64,
+    provenance_digest: String,
     batch: CommandBatch,
     command_digest: String,
     authoritative_dependencies: BTreeSet<AuthoritativeDependency>,
+    authoritative_writes: BTreeSet<AuthoritativeDependency>,
     dependency_digest: String,
+    authoritative_diff: Vec<ProposalDiffEntry>,
+    intended_result_digest: String,
+    principal: ProposalPrincipal,
+    goal: ProposalGoal,
+    assumptions: Vec<ProposalAssumption>,
+    risk: ProposalRisk,
+    confirmation: ProposalConfirmation,
+    requested_budget: ProposalBudget,
+    cost: ProposalCost,
 }
 
 impl Proposal {
     #[must_use]
+    pub const fn document_id(&self) -> DocumentId {
+        self.document_id
+    }
+
+    #[must_use]
     pub const fn provenance_revision(&self) -> u64 {
         self.provenance_revision
+    }
+
+    #[must_use]
+    pub fn provenance_digest(&self) -> &str {
+        &self.provenance_digest
     }
 
     #[must_use]
@@ -2140,8 +2448,93 @@ impl Proposal {
     }
 
     #[must_use]
+    pub fn command_digest(&self) -> &str {
+        &self.command_digest
+    }
+
+    #[must_use]
     pub const fn authoritative_dependencies(&self) -> &BTreeSet<AuthoritativeDependency> {
         &self.authoritative_dependencies
+    }
+
+    #[must_use]
+    pub const fn authoritative_writes(&self) -> &BTreeSet<AuthoritativeDependency> {
+        &self.authoritative_writes
+    }
+
+    #[must_use]
+    pub fn authoritative_diff(&self) -> &[ProposalDiffEntry] {
+        &self.authoritative_diff
+    }
+
+    #[must_use]
+    pub fn intended_result_digest(&self) -> &str {
+        &self.intended_result_digest
+    }
+
+    #[must_use]
+    pub const fn principal(&self) -> ProposalPrincipal {
+        self.principal
+    }
+
+    #[must_use]
+    pub const fn goal(&self) -> ProposalGoal {
+        self.goal
+    }
+
+    #[must_use]
+    pub fn assumptions(&self) -> &[ProposalAssumption] {
+        &self.assumptions
+    }
+
+    #[must_use]
+    pub const fn risk(&self) -> ProposalRisk {
+        self.risk
+    }
+
+    #[must_use]
+    pub const fn confirmation(&self) -> ProposalConfirmation {
+        self.confirmation
+    }
+
+    #[must_use]
+    pub const fn requested_budget(&self) -> ProposalBudget {
+        self.requested_budget
+    }
+
+    #[must_use]
+    pub const fn cost(&self) -> ProposalCost {
+        self.cost
+    }
+}
+
+#[derive(Clone)]
+pub struct VerifiedProposalCommit {
+    revision: Arc<Revision>,
+    command_digest: String,
+    result_digest: String,
+    verified_writes: BTreeSet<AuthoritativeDependency>,
+}
+
+impl VerifiedProposalCommit {
+    #[must_use]
+    pub const fn revision(&self) -> &Arc<Revision> {
+        &self.revision
+    }
+
+    #[must_use]
+    pub fn command_digest(&self) -> &str {
+        &self.command_digest
+    }
+
+    #[must_use]
+    pub fn result_digest(&self) -> &str {
+        &self.result_digest
+    }
+
+    #[must_use]
+    pub const fn verified_writes(&self) -> &BTreeSet<AuthoritativeDependency> {
+        &self.verified_writes
     }
 }
 
@@ -2157,16 +2550,47 @@ pub enum ProposalValidity {
 }
 
 #[derive(Debug, PartialEq)]
+pub enum ProposalPrepareError {
+    HostBudgetExceeded,
+    RequestedBudgetExceeded,
+    Canonical(CanonicalError),
+}
+
+impl fmt::Display for ProposalPrepareError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::HostBudgetExceeded => formatter.write_str("proposal budget exceeds host policy"),
+            Self::RequestedBudgetExceeded => {
+                formatter.write_str("proposal work exceeds its requested budget")
+            }
+            Self::Canonical(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for ProposalPrepareError {}
+
+impl From<CanonicalError> for ProposalPrepareError {
+    fn from(error: CanonicalError) -> Self {
+        Self::Canonical(error)
+    }
+}
+
+#[derive(Debug, PartialEq)]
 pub enum ProposalCommitError {
     Stale(ProposalValidity),
+    Preparation(ProposalPrepareError),
     Canonical(CanonicalError),
+    VerificationMismatch,
 }
 
 impl fmt::Display for ProposalCommitError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Stale(_) => formatter.write_str("proposal dependencies changed"),
+            Self::Preparation(error) => error.fmt(formatter),
             Self::Canonical(error) => error.fmt(formatter),
+            Self::VerificationMismatch => formatter.write_str("proposal verification failed"),
         }
     }
 }
@@ -2341,21 +2765,7 @@ fn validate_transform(transform: Transform) -> Result<(), CanonicalError> {
 fn validate_feature_kind(kind: &FeatureKind) -> Result<(), CanonicalError> {
     match kind {
         FeatureKind::Profile { points_mm } => {
-            if points_mm.len() < 3
-                || points_mm
-                    .iter()
-                    .flatten()
-                    .any(|coordinate| !coordinate.is_finite())
-            {
-                return Err(CanonicalError::InvalidProfile);
-            }
-            let twice_area: f64 = points_mm
-                .iter()
-                .zip(points_mm.iter().cycle().skip(1))
-                .take(points_mm.len())
-                .map(|(left, right)| left[0] * right[1] - right[0] * left[1])
-                .sum();
-            if twice_area.abs() <= f64::EPSILON {
+            if !is_valid_profile(points_mm) {
                 return Err(CanonicalError::InvalidProfile);
             }
             Ok(())
@@ -2363,7 +2773,209 @@ fn validate_feature_kind(kind: &FeatureKind) -> Result<(), CanonicalError> {
         FeatureKind::Extrusion { height, .. } => {
             Dimension::new(height.source_token.clone(), height.millimetres).map(|_| ())
         }
-        FeatureKind::ThroughCut { .. } => Ok(()),
+        FeatureKind::BottleProfileControl {
+            body_radius,
+            body_height,
+            shoulder_rise,
+            ..
+        } => {
+            for dimension in [body_radius, body_height, shoulder_rise] {
+                Dimension::new(dimension.source_token.clone(), dimension.millimetres)
+                    .map(|_| ())?;
+                if dimension.millimetres <= 0.0 {
+                    return Err(CanonicalError::DimensionOutsideEnvelope);
+                }
+            }
+            Ok(())
+        }
+        FeatureKind::Shell { thickness, .. } => {
+            Dimension::new(thickness.source_token.clone(), thickness.millimetres).map(|_| ())?;
+            if thickness.millimetres <= 0.0 {
+                return Err(CanonicalError::DimensionOutsideEnvelope);
+            }
+            Ok(())
+        }
+        FeatureKind::BottleEdgeFinish { amount, .. } => {
+            Dimension::new(amount.source_token.clone(), amount.millimetres).map(|_| ())?;
+            if amount.millimetres <= 0.0 {
+                return Err(CanonicalError::DimensionOutsideEnvelope);
+            }
+            Ok(())
+        }
+        FeatureKind::Revolve { .. } | FeatureKind::ThroughCut { .. } => Ok(()),
+    }
+}
+
+const MAX_PROFILE_POINTS: usize = 1_024;
+const PROFILE_EPSILON_MM: f64 = 1.0e-9;
+
+fn is_valid_profile(points_mm: &[[f64; 2]]) -> bool {
+    if !(3..=MAX_PROFILE_POINTS).contains(&points_mm.len())
+        || points_mm
+            .iter()
+            .flatten()
+            .any(|coordinate| !coordinate.is_finite() || coordinate.abs() > MAX_CANONICAL_ABS_MM)
+    {
+        return false;
+    }
+    for (index, point) in points_mm.iter().enumerate() {
+        if points_mm[index + 1..].iter().any(|candidate| {
+            (point[0] - candidate[0]).abs() <= PROFILE_EPSILON_MM
+                && (point[1] - candidate[1]).abs() <= PROFILE_EPSILON_MM
+        }) {
+            return false;
+        }
+    }
+    let twice_area: f64 = points_mm
+        .iter()
+        .zip(points_mm.iter().cycle().skip(1))
+        .take(points_mm.len())
+        .map(|(left, right)| left[0] * right[1] - right[0] * left[1])
+        .sum();
+    if twice_area.abs() <= PROFILE_EPSILON_MM {
+        return false;
+    }
+    for left_index in 0..points_mm.len() {
+        let left_next = (left_index + 1) % points_mm.len();
+        for right_index in (left_index + 1)..points_mm.len() {
+            let right_next = (right_index + 1) % points_mm.len();
+            if left_index == right_next || left_next == right_index {
+                continue;
+            }
+            if segments_intersect(
+                points_mm[left_index],
+                points_mm[left_next],
+                points_mm[right_index],
+                points_mm[right_next],
+            ) {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+fn segments_intersect(a: [f64; 2], b: [f64; 2], c: [f64; 2], d: [f64; 2]) -> bool {
+    fn cross(a: [f64; 2], b: [f64; 2], c: [f64; 2]) -> f64 {
+        (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+    }
+    fn on_segment(a: [f64; 2], b: [f64; 2], point: [f64; 2]) -> bool {
+        point[0] >= a[0].min(b[0]) - PROFILE_EPSILON_MM
+            && point[0] <= a[0].max(b[0]) + PROFILE_EPSILON_MM
+            && point[1] >= a[1].min(b[1]) - PROFILE_EPSILON_MM
+            && point[1] <= a[1].max(b[1]) + PROFILE_EPSILON_MM
+    }
+    let ab_c = cross(a, b, c);
+    let ab_d = cross(a, b, d);
+    let cd_a = cross(c, d, a);
+    let cd_b = cross(c, d, b);
+    if ((ab_c > PROFILE_EPSILON_MM && ab_d < -PROFILE_EPSILON_MM)
+        || (ab_c < -PROFILE_EPSILON_MM && ab_d > PROFILE_EPSILON_MM))
+        && ((cd_a > PROFILE_EPSILON_MM && cd_b < -PROFILE_EPSILON_MM)
+            || (cd_a < -PROFILE_EPSILON_MM && cd_b > PROFILE_EPSILON_MM))
+    {
+        return true;
+    }
+    (ab_c.abs() <= PROFILE_EPSILON_MM && on_segment(a, b, c))
+        || (ab_d.abs() <= PROFILE_EPSILON_MM && on_segment(a, b, d))
+        || (cd_a.abs() <= PROFILE_EPSILON_MM && on_segment(c, d, a))
+        || (cd_b.abs() <= PROFILE_EPSILON_MM && on_segment(c, d, b))
+}
+
+fn is_valid_revolve_profile(points_mm: &[[f64; 2]]) -> bool {
+    is_valid_profile(points_mm)
+        && points_mm.len() >= 4
+        && points_mm
+            .first()
+            .is_some_and(|point| point[0].abs() <= PROFILE_EPSILON_MM)
+        && points_mm
+            .last()
+            .is_some_and(|point| point[0].abs() <= PROFILE_EPSILON_MM)
+        && points_mm[1..points_mm.len() - 1]
+            .iter()
+            .all(|point| point[0] > PROFILE_EPSILON_MM)
+}
+
+fn shell_thickness_is_conservative(points_mm: &[[f64; 2]], thickness_mm: f64) -> bool {
+    is_valid_revolve_profile(points_mm)
+        && thickness_mm.is_finite()
+        && thickness_mm > 0.0
+        && points_mm[1..points_mm.len() - 1]
+            .iter()
+            .map(|point| point[0])
+            .reduce(f64::min)
+            .is_some_and(|minimum_radius| thickness_mm < minimum_radius * 0.5)
+        && points_mm
+            .windows(2)
+            .map(|edge| {
+                let radius = edge[1][0] - edge[0][0];
+                let height = edge[1][1] - edge[0][1];
+                radius.hypot(height)
+            })
+            .filter(|length| *length > PROFILE_EPSILON_MM)
+            .reduce(f64::min)
+            .is_some_and(|minimum_edge| thickness_mm < minimum_edge * 0.5)
+}
+
+fn controlled_bottle_profile(
+    points_mm: &[[f64; 2]],
+    body_radius_mm: f64,
+    body_height_mm: f64,
+    shoulder_rise_mm: f64,
+) -> Option<Vec<[f64; 2]>> {
+    if points_mm.len() != 6
+        || !is_valid_revolve_profile(points_mm)
+        || !body_radius_mm.is_finite()
+        || !body_height_mm.is_finite()
+        || !shoulder_rise_mm.is_finite()
+        || body_radius_mm <= points_mm[3][0]
+        || body_height_mm <= 0.0
+        || shoulder_rise_mm <= 0.0
+    {
+        return None;
+    }
+    let base_z = points_mm[0][1];
+    let neck_height = points_mm[4][1] - points_mm[3][1];
+    if neck_height <= 0.0 {
+        return None;
+    }
+    let body_top_z = base_z + body_height_mm;
+    let shoulder_top_z = body_top_z + shoulder_rise_mm;
+    let top_z = shoulder_top_z + neck_height;
+    let controlled = vec![
+        [0.0, base_z],
+        [body_radius_mm, base_z],
+        [body_radius_mm, body_top_z],
+        [points_mm[3][0], shoulder_top_z],
+        [points_mm[4][0], top_z],
+        [0.0, top_z],
+    ];
+    is_valid_revolve_profile(&controlled).then_some(controlled)
+}
+
+fn resolved_bottle_profile(product: &ProductModel, id: FeatureId) -> Option<Vec<[f64; 2]>> {
+    let feature = product.features.get(&id)?;
+    match &feature.kind {
+        FeatureKind::Profile { points_mm } if is_valid_revolve_profile(points_mm) => {
+            Some(points_mm.clone())
+        }
+        FeatureKind::BottleProfileControl {
+            profile,
+            body_radius,
+            body_height,
+            shoulder_rise,
+        } => {
+            let FeatureKind::Profile { points_mm } = &product.features.get(profile)?.kind else {
+                return None;
+            };
+            controlled_bottle_profile(
+                points_mm,
+                body_radius.millimetres(),
+                body_height.millimetres(),
+                shoulder_rise.millimetres(),
+            )
+        }
+        _ => None,
     }
 }
 
@@ -2429,6 +3041,41 @@ fn clone_definition_and_repoint(
                     .get(profile)
                     .ok_or(CanonicalError::InvalidFeatureMap)?,
                 height: height.clone(),
+            },
+            FeatureKind::BottleProfileControl {
+                profile,
+                body_radius,
+                body_height,
+                shoulder_rise,
+            } => FeatureKind::BottleProfileControl {
+                profile: *mapping
+                    .get(profile)
+                    .ok_or(CanonicalError::InvalidFeatureMap)?,
+                body_radius: body_radius.clone(),
+                body_height: body_height.clone(),
+                shoulder_rise: shoulder_rise.clone(),
+            },
+            FeatureKind::Revolve { profile } => FeatureKind::Revolve {
+                profile: *mapping
+                    .get(profile)
+                    .ok_or(CanonicalError::InvalidFeatureMap)?,
+            },
+            FeatureKind::Shell { target, thickness } => FeatureKind::Shell {
+                target: *mapping
+                    .get(target)
+                    .ok_or(CanonicalError::InvalidFeatureMap)?,
+                thickness: thickness.clone(),
+            },
+            FeatureKind::BottleEdgeFinish {
+                target,
+                kind,
+                amount,
+            } => FeatureKind::BottleEdgeFinish {
+                target: *mapping
+                    .get(target)
+                    .ok_or(CanonicalError::InvalidFeatureMap)?,
+                kind: *kind,
+                amount: amount.clone(),
             },
             FeatureKind::ThroughCut { target, profile } => FeatureKind::ThroughCut {
                 target: *mapping
@@ -2872,7 +3519,7 @@ fn validate_product(product: &ProductModel) -> Result<(), CanonicalError> {
         if !definition.feature_ids.contains(&feature.id) {
             return Err(CanonicalError::InvalidFeatureOwnership(feature.id));
         }
-        match feature.kind {
+        match feature.kind.clone() {
             FeatureKind::Extrusion { profile, .. } => {
                 let profile = product
                     .features
@@ -2880,6 +3527,98 @@ fn validate_product(product: &ProductModel) -> Result<(), CanonicalError> {
                     .ok_or(CanonicalError::FeatureNotFound(profile))?;
                 if profile.definition_id != feature.definition_id
                     || !matches!(profile.kind, FeatureKind::Profile { .. })
+                {
+                    return Err(CanonicalError::InvalidFeatureOwnership(feature.id));
+                }
+            }
+            FeatureKind::BottleProfileControl {
+                profile,
+                body_radius,
+                body_height,
+                shoulder_rise,
+            } => {
+                let source = product
+                    .features
+                    .get(&profile)
+                    .ok_or(CanonicalError::FeatureNotFound(profile))?;
+                if source.definition_id != feature.definition_id
+                    || !matches!(source.kind, FeatureKind::Profile { .. })
+                    || controlled_bottle_profile(
+                        match &source.kind {
+                            FeatureKind::Profile { points_mm } => points_mm,
+                            _ => unreachable!(),
+                        },
+                        body_radius.millimetres(),
+                        body_height.millimetres(),
+                        shoulder_rise.millimetres(),
+                    )
+                    .is_none()
+                {
+                    return Err(CanonicalError::InvalidFeatureOwnership(feature.id));
+                }
+            }
+            FeatureKind::Revolve { profile } => {
+                let profile_feature = product
+                    .features
+                    .get(&profile)
+                    .ok_or(CanonicalError::FeatureNotFound(profile))?;
+                if profile_feature.definition_id != feature.definition_id
+                    || resolved_bottle_profile(product, profile).is_none()
+                {
+                    return Err(CanonicalError::InvalidFeatureOwnership(feature.id));
+                }
+            }
+            FeatureKind::Shell { target, thickness } => {
+                let target = product
+                    .features
+                    .get(&target)
+                    .ok_or(CanonicalError::FeatureNotFound(target))?;
+                let FeatureKind::Revolve { profile } = target.kind else {
+                    return Err(CanonicalError::InvalidFeatureOwnership(feature.id));
+                };
+                let profile = product
+                    .features
+                    .get(&profile)
+                    .ok_or(CanonicalError::FeatureNotFound(profile))?;
+                let valid_thickness =
+                    resolved_bottle_profile(product, profile.id).is_some_and(|points_mm| {
+                        shell_thickness_is_conservative(&points_mm, thickness.millimetres())
+                    });
+                if target.definition_id != feature.definition_id
+                    || profile.definition_id != feature.definition_id
+                    || !valid_thickness
+                {
+                    return Err(CanonicalError::InvalidFeatureOwnership(feature.id));
+                }
+            }
+            FeatureKind::BottleEdgeFinish { target, amount, .. } => {
+                let target_feature = product
+                    .features
+                    .get(&target)
+                    .ok_or(CanonicalError::FeatureNotFound(target))?;
+                let FeatureKind::Shell {
+                    target: revolve_id, ..
+                } = target_feature.kind
+                else {
+                    return Err(CanonicalError::InvalidFeatureOwnership(feature.id));
+                };
+                let revolve = product
+                    .features
+                    .get(&revolve_id)
+                    .ok_or(CanonicalError::FeatureNotFound(revolve_id))?;
+                let FeatureKind::Revolve { profile } = revolve.kind else {
+                    return Err(CanonicalError::InvalidFeatureOwnership(feature.id));
+                };
+                let valid_amount =
+                    resolved_bottle_profile(product, profile).is_some_and(|points| {
+                        let shoulder_length =
+                            (points[3][0] - points[2][0]).hypot(points[3][1] - points[2][1]);
+                        amount.millimetres() < shoulder_length * 0.25
+                            && amount.millimetres() < points[3][0] * 0.25
+                    });
+                if target_feature.definition_id != feature.definition_id
+                    || revolve.definition_id != feature.definition_id
+                    || !valid_amount
                 {
                     return Err(CanonicalError::InvalidFeatureOwnership(feature.id));
                 }
@@ -3023,6 +3762,158 @@ fn validate_definition_ownership_graph(product: &ProductModel) -> Result<(), Can
     Ok(())
 }
 
+fn validate_proposal_budget(
+    requested: ProposalBudget,
+    cost: ProposalCost,
+) -> Result<(), ProposalPrepareError> {
+    if requested.max_commands > ProposalBudget::HOST_MAX.max_commands
+        || requested.max_read_dependencies > ProposalBudget::HOST_MAX.max_read_dependencies
+        || requested.max_write_targets > ProposalBudget::HOST_MAX.max_write_targets
+    {
+        return Err(ProposalPrepareError::HostBudgetExceeded);
+    }
+    if cost.commands > requested.max_commands
+        || cost.read_dependencies > requested.max_read_dependencies
+        || cost.write_targets > requested.max_write_targets
+    {
+        return Err(ProposalPrepareError::RequestedBudgetExceeded);
+    }
+    Ok(())
+}
+
+fn proposal_candidate(
+    snapshot: &Snapshot,
+    batch: &CommandBatch,
+    writes: &BTreeSet<AuthoritativeDependency>,
+) -> Result<(Vec<ProposalDiffEntry>, String), ProposalPrepareError> {
+    let mut candidate =
+        DocumentStore::from_product(snapshot.revision_id, snapshot.product.as_ref().clone())?;
+    let revision = candidate.apply_batch(batch)?;
+    let after = revision.snapshot();
+    let diff = writes
+        .iter()
+        .copied()
+        .map(|target| ProposalDiffEntry {
+            target,
+            before: proposal_value(snapshot, target),
+            after: proposal_value(after, target),
+        })
+        .collect();
+    Ok((diff, dependency_digest(after, writes)))
+}
+
+fn proposal_value(snapshot: &Snapshot, target: AuthoritativeDependency) -> ProposalValue {
+    match target {
+        AuthoritativeDependency::EvaluatorNode(id) => snapshot
+            .evaluator_node(id)
+            .and_then(EvaluatorNode::dimension)
+            .cloned()
+            .map_or(ProposalValue::Missing, ProposalValue::Dimension),
+        AuthoritativeDependency::Feature(id) => {
+            snapshot
+                .feature(id)
+                .map_or(ProposalValue::Missing, |feature| match feature.kind() {
+                    FeatureKind::Extrusion { height, .. } => {
+                        ProposalValue::Dimension(height.clone())
+                    }
+                    FeatureKind::Shell { thickness, .. } => {
+                        ProposalValue::Dimension(thickness.clone())
+                    }
+                    FeatureKind::BottleEdgeFinish { amount, .. } => {
+                        ProposalValue::Dimension(amount.clone())
+                    }
+                    _ => ProposalValue::Digest(dependency_digest(
+                        snapshot,
+                        &BTreeSet::from([target]),
+                    )),
+                })
+        }
+        _ => ProposalValue::Digest(dependency_digest(snapshot, &BTreeSet::from([target]))),
+    }
+}
+
+fn authoritative_writes(
+    snapshot: &Snapshot,
+    batch: &CommandBatch,
+) -> BTreeSet<AuthoritativeDependency> {
+    let mut writes = BTreeSet::new();
+    for command in &batch.commands {
+        match command {
+            CanonicalCommand::CreateEvaluatorNode { id, .. }
+            | CanonicalCommand::SetEvaluatorDimension { id, .. }
+            | CanonicalCommand::RenameEvaluatorNode { id, .. }
+            | CanonicalCommand::CreateExpressionNode { id, .. }
+            | CanonicalCommand::CreateRuleNode { id, .. }
+            | CanonicalCommand::SetNodeExpression { id, .. }
+            | CanonicalCommand::SetRuleOutputs { id, .. } => {
+                writes.insert(AuthoritativeDependency::EvaluatorNode(*id));
+            }
+            CanonicalCommand::UpsertOverride(value) => {
+                writes.insert(AuthoritativeDependency::Override(value.id));
+            }
+            CanonicalCommand::DeleteOverride { id } => {
+                writes.insert(AuthoritativeDependency::Override(*id));
+            }
+            CanonicalCommand::UpsertJoint(joint) => {
+                writes.insert(AuthoritativeDependency::Joint(joint.id()));
+            }
+            CanonicalCommand::DeleteJoint { id } => {
+                writes.insert(AuthoritativeDependency::Joint(*id));
+            }
+            CanonicalCommand::CreateDefinition { id, .. }
+            | CanonicalCommand::DeleteDefinition { id }
+            | CanonicalCommand::RenameDefinition { id, .. } => {
+                writes.insert(AuthoritativeDependency::Definition(*id));
+            }
+            CanonicalCommand::CreateFeature {
+                id, definition_id, ..
+            } => {
+                writes.insert(AuthoritativeDependency::Feature(*id));
+                writes.insert(AuthoritativeDependency::Definition(*definition_id));
+            }
+            CanonicalCommand::DeleteFeature { id } => {
+                writes.insert(AuthoritativeDependency::Feature(*id));
+                if let Some(feature) = snapshot.feature(*id) {
+                    writes.insert(AuthoritativeDependency::Definition(feature.definition_id()));
+                }
+            }
+            CanonicalCommand::SetFeatureDimension { id, .. }
+            | CanonicalCommand::SetBottleControlDimension { id, .. }
+            | CanonicalCommand::SetBottleEdgeFinishKind { id, .. }
+            | CanonicalCommand::SetProfilePoints { id, .. } => {
+                writes.insert(AuthoritativeDependency::Feature(*id));
+            }
+            CanonicalCommand::CreateOccurrence { id, .. }
+            | CanonicalCommand::DeleteOccurrence { id }
+            | CanonicalCommand::SetOccurrenceTransform { id, .. }
+            | CanonicalCommand::SetOccurrenceVisibility { id, .. }
+            | CanonicalCommand::RepointOccurrence { id, .. }
+            | CanonicalCommand::SetOccurrenceParent { id, .. } => {
+                writes.insert(AuthoritativeDependency::Occurrence(*id));
+            }
+            CanonicalCommand::CreateGroup { id, .. }
+            | CanonicalCommand::DeleteGroup { id }
+            | CanonicalCommand::SetGroupTransform { id, .. }
+            | CanonicalCommand::SetGroupParent { id, .. } => {
+                writes.insert(AuthoritativeDependency::Group(*id));
+            }
+            CanonicalCommand::CloneDefinitionAndRepoint(plan) => {
+                writes.insert(AuthoritativeDependency::Occurrence(plan.occurrence_id));
+                writes.insert(AuthoritativeDependency::Definition(plan.new_definition_id));
+                for (_, new_id) in &plan.feature_id_map {
+                    writes.insert(AuthoritativeDependency::Feature(*new_id));
+                }
+            }
+            CanonicalCommand::ConvertGroupToComponent(plan) => {
+                writes.insert(AuthoritativeDependency::GroupSubtree(plan.group_id));
+                writes.insert(AuthoritativeDependency::Definition(plan.new_definition_id));
+                writes.insert(AuthoritativeDependency::Occurrence(plan.new_occurrence_id));
+            }
+        }
+    }
+    writes
+}
+
 fn authoritative_dependencies(
     snapshot: &Snapshot,
     batch: &CommandBatch,
@@ -3063,12 +3954,18 @@ fn authoritative_dependencies(
                 dependencies.insert(AuthoritativeDependency::Feature(*id));
                 dependencies.insert(AuthoritativeDependency::Definition(*definition_id));
                 match kind {
-                    FeatureKind::Extrusion { profile, .. } => {
+                    FeatureKind::Extrusion { profile, .. }
+                    | FeatureKind::BottleProfileControl { profile, .. }
+                    | FeatureKind::Revolve { profile } => {
                         add_feature_dependency_closure(snapshot, *profile, &mut dependencies);
                     }
                     FeatureKind::ThroughCut { target, profile } => {
                         add_feature_dependency_closure(snapshot, *target, &mut dependencies);
                         add_feature_dependency_closure(snapshot, *profile, &mut dependencies);
+                    }
+                    FeatureKind::Shell { target, .. }
+                    | FeatureKind::BottleEdgeFinish { target, .. } => {
+                        add_feature_dependency_closure(snapshot, *target, &mut dependencies);
                     }
                     FeatureKind::Profile { .. } => {}
                 }
@@ -3078,6 +3975,8 @@ fn authoritative_dependencies(
                 dependencies.insert(AuthoritativeDependency::FeatureUsers(*id));
             }
             CanonicalCommand::SetFeatureDimension { id, .. }
+            | CanonicalCommand::SetBottleControlDimension { id, .. }
+            | CanonicalCommand::SetBottleEdgeFinishKind { id, .. }
             | CanonicalCommand::SetProfilePoints { id, .. } => {
                 add_feature_dependency_closure(snapshot, *id, &mut dependencies);
             }
@@ -3209,12 +4108,17 @@ fn add_feature_dependency_closure(
     if let Some(feature) = snapshot.feature(id) {
         dependencies.insert(AuthoritativeDependency::Definition(feature.definition_id()));
         match feature.kind() {
-            FeatureKind::Extrusion { profile, .. } => {
+            FeatureKind::Extrusion { profile, .. }
+            | FeatureKind::BottleProfileControl { profile, .. }
+            | FeatureKind::Revolve { profile } => {
                 add_feature_dependency_closure(snapshot, *profile, dependencies);
             }
             FeatureKind::ThroughCut { target, profile } => {
                 add_feature_dependency_closure(snapshot, *target, dependencies);
                 add_feature_dependency_closure(snapshot, *profile, dependencies);
+            }
+            FeatureKind::Shell { target, .. } | FeatureKind::BottleEdgeFinish { target, .. } => {
+                add_feature_dependency_closure(snapshot, *target, dependencies);
             }
             FeatureKind::Profile { .. } => {}
         }
@@ -3457,6 +4361,43 @@ impl StableDigest {
                 self.byte(3);
                 self.u64(target.0);
                 self.u64(profile.0);
+            }
+            FeatureKind::Revolve { profile } => {
+                self.byte(4);
+                self.u64(profile.0);
+            }
+            FeatureKind::BottleProfileControl {
+                profile,
+                body_radius,
+                body_height,
+                shoulder_rise,
+            } => {
+                self.byte(6);
+                self.u64(profile.0);
+                for dimension in [body_radius, body_height, shoulder_rise] {
+                    self.bytes(dimension.source_token.as_bytes());
+                    self.u64(dimension.millimetres.to_bits());
+                }
+            }
+            FeatureKind::Shell { target, thickness } => {
+                self.byte(5);
+                self.u64(target.0);
+                self.bytes(thickness.source_token.as_bytes());
+                self.u64(thickness.millimetres.to_bits());
+            }
+            FeatureKind::BottleEdgeFinish {
+                target,
+                kind,
+                amount,
+            } => {
+                self.byte(7);
+                self.u64(target.0);
+                self.byte(match kind {
+                    BottleEdgeFinishKind::Fillet => 1,
+                    BottleEdgeFinishKind::Chamfer => 2,
+                });
+                self.bytes(amount.source_token.as_bytes());
+                self.u64(amount.millimetres.to_bits());
             }
         }
     }
@@ -3776,6 +4717,29 @@ impl StableDigest {
                 self.u64(id.0);
                 self.bytes(dimension.source_token.as_bytes());
                 self.u64(dimension.millimetres.to_bits());
+            }
+            CanonicalCommand::SetBottleControlDimension {
+                id,
+                control,
+                dimension,
+            } => {
+                self.byte(31);
+                self.u64(id.0);
+                self.byte(match control {
+                    BottleControlDimension::BodyRadius => 1,
+                    BottleControlDimension::BodyHeight => 2,
+                    BottleControlDimension::ShoulderRise => 3,
+                });
+                self.bytes(dimension.source_token.as_bytes());
+                self.u64(dimension.millimetres.to_bits());
+            }
+            CanonicalCommand::SetBottleEdgeFinishKind { id, kind } => {
+                self.byte(32);
+                self.u64(id.0);
+                self.byte(match kind {
+                    BottleEdgeFinishKind::Fillet => 1,
+                    BottleEdgeFinishKind::Chamfer => 2,
+                });
             }
             CanonicalCommand::SetProfilePoints { id, points_mm } => {
                 self.byte(27);

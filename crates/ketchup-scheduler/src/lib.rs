@@ -1,8 +1,14 @@
 #![forbid(unsafe_code)]
 
+pub mod plugin;
+pub mod validator_runtime;
+
 use ketchup_core::beam_m5::{
     BeamExactPiecePackage, BeamExactPieceRequest, BeamM5Error, BeamNotchFaceRole,
     BeamWorkerFaceEvidence, BeamWorkerResult, HalfLapParticipant, build_piece_package,
+};
+use ketchup_core::bottle_m6::{
+    ExactRevolvePackage, ExactRevolveRequest, build_revolve_package, expected_volume_mm3,
 };
 use ketchup_core::document::{DerivedIdentity, NodeId, SlotPath, SlotSegment};
 use ketchup_core::exact_product::{
@@ -398,6 +404,19 @@ pub struct WorkerExactResult {
     pub cut_north: Option<WorkerFaceEvidence>,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct WorkerRevolveResult {
+    pub result_fingerprint: String,
+    pub volume_mm3: f64,
+    pub bounds_mm: [f64; 6],
+    pub topology_counts: [u32; 5],
+    pub request_digest: String,
+    pub exact_input_digest: String,
+    pub backend: String,
+    pub tolerance: String,
+    pub faces: Vec<WorkerFaceEvidence>,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum WorkerError {
     Spawn(String),
@@ -462,6 +481,8 @@ impl WorkerError {
 const M3_CAPABILITY: &str = "M3_V1";
 const M3_CUT_CAPABILITY: &str = "M3_CUT_V1";
 const M5_NOTCH_CAPABILITY: &str = "M5_NOTCH_V1";
+const M6_REVOLVE_CAPABILITY: &str = "M6_REVOLVE_V1";
+const M6_SHELL_CAPABILITY: &str = "M6_SHELL_V1";
 const DEFAULT_WORKER_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 const CANCELLATION_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const MAX_WORKER_RESPONSE_LINE_BYTES: usize = 64 * 1024;
@@ -561,6 +582,30 @@ impl ExactWorkerClient {
         }
     }
 
+    fn verify_m6_revolve_capability(&mut self, cancelled: &AtomicBool) -> Result<(), WorkerError> {
+        let response = self.request_with_cancellation("CAPS M6_REVOLVE_V1", cancelled)?;
+        if response == "CAPS M6_REVOLVE_V1" {
+            Ok(())
+        } else {
+            self.terminate_worker();
+            Err(WorkerError::MissingCapability(
+                M6_REVOLVE_CAPABILITY.to_owned(),
+            ))
+        }
+    }
+
+    fn verify_m6_shell_capability(&mut self, cancelled: &AtomicBool) -> Result<(), WorkerError> {
+        let response = self.request_with_cancellation("CAPS M6_SHELL_V1", cancelled)?;
+        if response == "CAPS M6_SHELL_V1" {
+            Ok(())
+        } else {
+            self.terminate_worker();
+            Err(WorkerError::MissingCapability(
+                M6_SHELL_CAPABILITY.to_owned(),
+            ))
+        }
+    }
+
     pub fn extrude_rectangle(&mut self, height_mm: f64) -> Result<WorkerExactResult, WorkerError> {
         let response = self.request(&format!("EXTRUDE {:016x}", height_mm.to_bits()))?;
         match parse_legacy_exact_result(&response) {
@@ -625,6 +670,67 @@ impl ExactWorkerClient {
             parse_m3_exact_result(&response)
         };
         match parsed {
+            Err(WorkerError::Protocol(response)) => self.fail_protocol(response),
+            result => result,
+        }
+    }
+
+    fn evaluate_revolve_request_with_cancellation(
+        &mut self,
+        request: &ExactRevolveRequest,
+        cancelled: &AtomicBool,
+    ) -> Result<WorkerRevolveResult, WorkerError> {
+        let mut line = if let (
+            Some(finish_feature_id),
+            Some(finish_kind),
+            Some(amount_bits),
+            Some(thickness_bits),
+        ) = (
+            request.edge_finish_feature_id,
+            request.edge_finish_kind,
+            request.edge_finish_amount_bits,
+            request.thickness_bits,
+        ) {
+            let response = self.request_with_cancellation("CAPS M6_FINISH_V1", cancelled)?;
+            if response != "CAPS M6_FINISH_V1" {
+                self.terminate_worker();
+                return Err(WorkerError::MissingCapability("M6_FINISH_V1".to_owned()));
+            }
+            format!(
+                "FINISH_M6_V1 {} {} {} {:016x} {} {:016x}",
+                request.document_id.0,
+                finish_feature_id.0,
+                request.canonical_input_digest,
+                thickness_bits,
+                match finish_kind {
+                    ketchup_core::document::BottleEdgeFinishKind::Fillet => "fillet",
+                    ketchup_core::document::BottleEdgeFinishKind::Chamfer => "chamfer",
+                },
+                amount_bits,
+            )
+        } else if let (Some(shell_feature_id), Some(thickness_bits)) =
+            (request.shell_feature_id, request.thickness_bits)
+        {
+            self.verify_m6_shell_capability(cancelled)?;
+            format!(
+                "SHELL_M6_V1 {} {} {} {:016x}",
+                request.document_id.0,
+                shell_feature_id.0,
+                request.canonical_input_digest,
+                thickness_bits,
+            )
+        } else {
+            self.verify_m6_revolve_capability(cancelled)?;
+            format!(
+                "REVOLVE_M6_V1 {} {} {}",
+                request.document_id.0, request.revolve_feature_id.0, request.canonical_input_digest,
+            )
+        };
+        for point in &request.points_bits {
+            line.push_str(&format!(" {:016x} {:016x}", point[0], point[1]));
+        }
+        let response = self.request_with_cancellation(&line, cancelled)?;
+        match parse_m6_revolve_result(&response) {
             Err(WorkerError::Protocol(response)) => self.fail_protocol(response),
             result => result,
         }
@@ -978,6 +1084,38 @@ impl ExactWorkerSupervisor {
         Ok(package)
     }
 
+    pub fn evaluate_revolve(
+        &mut self,
+        request: &ExactRevolveRequest,
+    ) -> Result<ExactRevolvePackage, M6EvaluationError> {
+        self.evaluate_revolve_with_cancellation(request, &NEVER_CANCELLED)
+    }
+
+    pub fn evaluate_revolve_with_cancellation(
+        &mut self,
+        request: &ExactRevolveRequest,
+        cancelled: &AtomicBool,
+    ) -> Result<ExactRevolvePackage, M6EvaluationError> {
+        self.client.ensure_not_cancelled(cancelled)?;
+        let result = match self
+            .client
+            .evaluate_revolve_request_with_cancellation(request, cancelled)
+        {
+            Ok(result) => result,
+            Err(error) if error.permits_restart() => {
+                self.client = Self::spawn_verified_client(&self.executable, cancelled)?;
+                self.client
+                    .evaluate_revolve_request_with_cancellation(request, cancelled)?
+            }
+            Err(error) => return Err(error.into()),
+        };
+        self.client.ensure_not_cancelled(cancelled)?;
+        validate_m6_worker_result(request, &result)?;
+        let package = build_m6_revolve_package(request, &result)?;
+        self.client.ensure_not_cancelled(cancelled)?;
+        Ok(package)
+    }
+
     pub fn evaluate_beam_piece(
         &mut self,
         request: &BeamExactPieceRequest,
@@ -1013,6 +1151,115 @@ impl ExactWorkerSupervisor {
         self.client.ensure_not_cancelled(cancelled)?;
         Ok(package)
     }
+}
+
+fn validate_m6_worker_result(
+    request: &ExactRevolveRequest,
+    result: &WorkerRevolveResult,
+) -> Result<(), ExactProductError> {
+    let points = request.points_mm();
+    let max_radius = points.iter().map(|point| point[0]).fold(0.0_f64, f64::max);
+    let expected_bounds = [
+        -max_radius,
+        -max_radius,
+        points[0][1],
+        max_radius,
+        max_radius,
+        points[5][1],
+    ];
+    let expected_volume = expected_volume_mm3(request);
+    let expected_roles = request.face_roles();
+    let volume_valid = expected_volume.is_some_and(|expected| {
+        let tolerance = 1.0e-6_f64.max(expected.abs() * 1.0e-10);
+        (result.volume_mm3 - expected).abs() <= tolerance
+    }) || request.edge_finish_feature_id.is_some()
+        && result.volume_mm3.is_finite()
+        && result.volume_mm3 > 0.0;
+    let topology_face_count_valid = if request.edge_finish_feature_id.is_some() {
+        result.topology_counts[2] >= expected_roles.len() as u32
+    } else {
+        result.topology_counts[2] == expected_roles.len() as u32
+    };
+    let evidence_valid = result.faces.len() == expected_roles.len()
+        && result
+            .faces
+            .iter()
+            .zip(expected_roles.iter().copied())
+            .enumerate()
+            .all(|(index, (evidence, role))| {
+                evidence.ordinal < result.topology_counts[2]
+                    && result.faces[..index]
+                        .iter()
+                        .all(|prior| prior.ordinal != evidence.ordinal)
+                    && !evidence.geometric_fingerprint.is_empty()
+                    && evidence.lineage_digest
+                        == canonical_reference_lineage_digest(
+                            request.document_id,
+                            request.producer_feature_id(),
+                            role.semantic_role(),
+                            role.source_element_id(),
+                            role.expected_type(),
+                        )
+            });
+    if result.request_digest != request.canonical_input_digest
+        || !is_sha256_digest(&result.request_digest)
+        || !is_fnv1a64_digest(&result.exact_input_digest)
+        || !is_fnv1a64_digest(&result.result_fingerprint)
+        || result.backend != ketchup_exact::backend_fingerprint()
+        || result.tolerance != ketchup_exact::tolerance_profile()
+        || !evidence_valid
+        || !volume_valid
+        || result
+            .bounds_mm
+            .into_iter()
+            .zip(expected_bounds)
+            .any(|(actual, expected)| !actual.is_finite() || (actual - expected).abs() > 1.0e-6)
+        || !topology_face_count_valid
+        || result.topology_counts[3] != 1
+        || result.topology_counts[4] != 1
+    {
+        return Err(ExactProductError::InvalidWorkerEvidence);
+    }
+    Ok(())
+}
+
+fn build_m6_revolve_package(
+    request: &ExactRevolveRequest,
+    result: &WorkerRevolveResult,
+) -> Result<ExactRevolvePackage, ExactProductError> {
+    let face_evidence = request
+        .face_roles()
+        .iter()
+        .copied()
+        .zip(&result.faces)
+        .map(|(role, evidence)| {
+            (
+                role,
+                evidence.lineage_digest.clone(),
+                evidence.geometric_fingerprint.clone(),
+            )
+        })
+        .collect();
+    build_revolve_package(
+        request,
+        result.exact_input_digest.clone(),
+        result.result_fingerprint.clone(),
+        result.backend.clone(),
+        result.tolerance.clone(),
+        [
+            [
+                result.bounds_mm[0],
+                result.bounds_mm[1],
+                result.bounds_mm[2],
+            ],
+            [
+                result.bounds_mm[3],
+                result.bounds_mm[4],
+                result.bounds_mm[5],
+            ],
+        ],
+        face_evidence,
+    )
 }
 
 fn validate_m3_worker_result(
@@ -1172,6 +1419,35 @@ fn build_m3_render_package(
 }
 
 #[derive(Debug)]
+pub enum M6EvaluationError {
+    Worker(WorkerError),
+    Product(ExactProductError),
+}
+
+impl fmt::Display for M6EvaluationError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Worker(error) => error.fmt(formatter),
+            Self::Product(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for M6EvaluationError {}
+
+impl From<WorkerError> for M6EvaluationError {
+    fn from(error: WorkerError) -> Self {
+        Self::Worker(error)
+    }
+}
+
+impl From<ExactProductError> for M6EvaluationError {
+    fn from(error: ExactProductError) -> Self {
+        Self::Product(error)
+    }
+}
+
+#[derive(Debug)]
 pub enum M5EvaluationError {
     Worker(WorkerError),
     Product(BeamM5Error),
@@ -1248,6 +1524,76 @@ fn push_aabb_request(line: &mut String, bounds: Aabb) {
     for value in bounds.min().into_iter().chain(bounds.max()) {
         line.push_str(&format!(" {:016x}", value.to_bits()));
     }
+}
+
+fn parse_m6_revolve_result(response: &str) -> Result<WorkerRevolveResult, WorkerError> {
+    let fields = response.split_whitespace().collect::<Vec<_>>();
+    if fields.first() == Some(&"ERR") {
+        return Err(parse_error_response(response, &fields));
+    }
+    let face_count = match fields.first().copied() {
+        Some("OK_M6_REVOLVE_V1") => 5,
+        Some("OK_M6_SHELL_V1") | Some("OK_M6_FINISH_V1") => 9,
+        _ => return Err(WorkerError::Protocol(response.to_owned())),
+    };
+    let expected_len = 19 + face_count * 3;
+    if fields.len() != expected_len
+        || fields[1].parse::<u128>().is_err()
+        || !is_fnv1a64_digest(fields[2])
+        || !is_sha256_digest(fields[15])
+        || !is_fnv1a64_digest(fields[16])
+        || fields[17].is_empty()
+        || fields[18].is_empty()
+        || (0..face_count).any(|index| {
+            let offset = 19 + index * 3;
+            !is_fnv1a64_digest(fields[offset + 1]) || !is_fnv1a64_digest(fields[offset + 2])
+        })
+    {
+        return Err(WorkerError::Protocol(response.to_owned()));
+    }
+    let parse_f64 = |index: usize| {
+        u64::from_str_radix(fields[index], 16)
+            .map(f64::from_bits)
+            .map_err(|_| WorkerError::Protocol(response.to_owned()))
+    };
+    let parse_u32 = |index: usize| {
+        fields[index]
+            .parse::<u32>()
+            .map_err(|_| WorkerError::Protocol(response.to_owned()))
+    };
+    let mut faces = Vec::with_capacity(face_count);
+    for index in 0..face_count {
+        let offset = 19 + index * 3;
+        faces.push(WorkerFaceEvidence {
+            ordinal: parse_u32(offset)?,
+            geometric_fingerprint: fields[offset + 1].to_owned(),
+            lineage_digest: fields[offset + 2].to_owned(),
+        });
+    }
+    Ok(WorkerRevolveResult {
+        result_fingerprint: fields[2].to_owned(),
+        volume_mm3: parse_f64(3)?,
+        bounds_mm: [
+            parse_f64(4)?,
+            parse_f64(5)?,
+            parse_f64(6)?,
+            parse_f64(7)?,
+            parse_f64(8)?,
+            parse_f64(9)?,
+        ],
+        topology_counts: [
+            parse_u32(10)?,
+            parse_u32(11)?,
+            parse_u32(12)?,
+            parse_u32(13)?,
+            parse_u32(14)?,
+        ],
+        request_digest: fields[15].to_owned(),
+        exact_input_digest: fields[16].to_owned(),
+        backend: fields[17].to_owned(),
+        tolerance: fields[18].to_owned(),
+        faces,
+    })
 }
 
 fn parse_m5_exact_result(response: &str) -> Result<BeamWorkerResult, WorkerError> {

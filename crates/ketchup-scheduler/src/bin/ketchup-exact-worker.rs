@@ -1,10 +1,11 @@
 #![forbid(unsafe_code)]
 
 use ketchup_exact::{
-    BoxSpec, CutMode, ExactBackend, HalfLapFaceRole, HalfLapNotchSpec, HalfLapParticipant, Point3,
-    RectangleExtrudeSpec, ReferenceResolution, Size3, StabilityClass,
+    BottleEdgeFinish, BoxSpec, CutMode, ExactBackend, HalfLapFaceRole, HalfLapNotchSpec,
+    HalfLapParticipant, Point3, RectangleExtrudeSpec, ReferenceResolution, Size3, StabilityClass,
     capture_bounded_through_cut_references, capture_guaranteed_references,
-    capture_half_lap_notch_references, resolve_subshape_reference,
+    capture_half_lap_notch_references, capture_revolve_references, capture_shell_references,
+    resolve_subshape_reference,
 };
 use std::io::{self, BufRead, Write};
 use std::time::{Duration, Instant};
@@ -35,6 +36,9 @@ fn handle_request(backend: &ExactBackend, request: &str) -> Option<String> {
         (Some("CAPS"), Some("M3_V1"), None) => Some("CAPS M3_V1".to_owned()),
         (Some("CAPS"), Some("M3_CUT_V1"), None) => Some("CAPS M3_CUT_V1".to_owned()),
         (Some("CAPS"), Some("M5_NOTCH_V1"), None) => Some("CAPS M5_NOTCH_V1".to_owned()),
+        (Some("CAPS"), Some("M6_REVOLVE_V1"), None) => Some("CAPS M6_REVOLVE_V1".to_owned()),
+        (Some("CAPS"), Some("M6_SHELL_V1"), None) => Some("CAPS M6_SHELL_V1".to_owned()),
+        (Some("CAPS"), Some("M6_FINISH_V1"), None) => Some("CAPS M6_FINISH_V1".to_owned()),
         (Some("EVAL_NOTCHED_M5_V1"), Some(document_id), Some(piece_key)) => {
             let remaining = fields.collect::<Vec<_>>();
             Some(m5_notched_response(
@@ -42,6 +46,37 @@ fn handle_request(backend: &ExactBackend, request: &str) -> Option<String> {
                 document_id,
                 piece_key,
                 &remaining,
+            ))
+        }
+        (Some("REVOLVE_M6_V1"), Some(document_id), Some(producer_feature_id)) => {
+            let remaining = fields.collect::<Vec<_>>();
+            Some(m6_revolve_response(
+                backend,
+                document_id,
+                producer_feature_id,
+                &remaining,
+                None,
+            ))
+        }
+        (Some("SHELL_M6_V1"), Some(document_id), Some(producer_feature_id)) => {
+            let remaining = fields.collect::<Vec<_>>();
+            Some(m6_revolve_response(
+                backend,
+                document_id,
+                producer_feature_id,
+                &remaining,
+                Some("shell"),
+            ))
+        }
+        (Some("FINISH_M6_V1"), Some(document_id), Some(producer_feature_id)) => {
+            let remaining = fields.collect::<Vec<_>>();
+            let finish = remaining.get(2).copied();
+            Some(m6_revolve_response(
+                backend,
+                document_id,
+                producer_feature_id,
+                &remaining,
+                finish,
             ))
         }
         (Some("EXTRUDE"), Some(height_bits), None) => {
@@ -420,6 +455,170 @@ fn m3_through_cut_response(
         }
         Err(error) => format!("ERR {}", error.code.as_str()),
     }
+}
+
+fn m6_revolve_response(
+    backend: &ExactBackend,
+    document_id: &str,
+    producer_feature_id: &str,
+    fields: &[&str],
+    operation: Option<&str>,
+) -> String {
+    let finish = match operation {
+        Some("fillet") => Some(BottleEdgeFinish::Fillet),
+        Some("chamfer") => Some(BottleEdgeFinish::Chamfer),
+        _ => None,
+    };
+    let shell = operation.is_some();
+    let expected_fields = if finish.is_some() {
+        16
+    } else if shell {
+        14
+    } else {
+        13
+    };
+    if document_id.parse::<u64>().is_err()
+        || producer_feature_id.parse::<u64>().is_err()
+        || fields.len() != expected_fields
+        || !is_canonical_digest(fields[0])
+    {
+        return "ERR invalid_request".to_owned();
+    }
+    let parse_bits = |value: &str| u64::from_str_radix(value, 16).map(f64::from_bits);
+    let thickness_mm = shell
+        .then(|| parse_bits(fields[1]))
+        .transpose()
+        .ok()
+        .flatten();
+    let amount_mm = finish
+        .map(|_| parse_bits(fields[3]))
+        .transpose()
+        .ok()
+        .flatten();
+    if shell && thickness_mm.is_none() || finish.is_some() && amount_mm.is_none() {
+        return "ERR invalid_parameter".to_owned();
+    }
+    let point_offset = if finish.is_some() {
+        4
+    } else if shell {
+        2
+    } else {
+        1
+    };
+    let mut points = Vec::with_capacity(6);
+    for pair in fields[point_offset..].chunks_exact(2) {
+        let (Ok(radius), Ok(z)) = (parse_bits(pair[0]), parse_bits(pair[1])) else {
+            return "ERR invalid_parameter".to_owned();
+        };
+        points.push([radius, z]);
+    }
+    let output = match (thickness_mm, finish, amount_mm) {
+        (Some(thickness), Some(finish), Some(amount)) => {
+            backend.finish_shell_revolve_profile(&points, thickness, finish, amount)
+        }
+        (Some(thickness), None, None) => backend.shell_revolve_profile(&points, thickness),
+        (None, None, None) => backend.revolve_profile(&points),
+        _ => return "ERR invalid_request".to_owned(),
+    };
+    let output = match output {
+        Ok(output) => output,
+        Err(error) => return format!("ERR {}", error.code.as_str()),
+    };
+    let references = if shell {
+        capture_shell_references(&output, document_id, producer_feature_id)
+    } else {
+        capture_revolve_references(&output, document_id, producer_feature_id)
+    };
+    let references = match references {
+        Ok(references) => references,
+        Err(error) => return format!("ERR {}", error.code.as_str()),
+    };
+    let roles = if shell {
+        vec![
+            ("shell.outer.bottom", "revolve.face.bottom"),
+            ("shell.outer.body", "revolve.face.body"),
+            ("shell.outer.shoulder", "revolve.face.shoulder"),
+            ("shell.outer.neck", "revolve.face.neck"),
+            ("shell.rim", "revolve.face.mouth"),
+            ("shell.inner.bottom", "shell.offset.bottom"),
+            ("shell.inner.body", "shell.offset.body"),
+            ("shell.inner.shoulder", "shell.offset.shoulder"),
+            ("shell.inner.neck", "shell.offset.neck"),
+        ]
+    } else {
+        vec![
+            ("revolve.bottom", "profile.edge.0"),
+            ("revolve.body", "profile.edge.1"),
+            ("revolve.shoulder", "profile.edge.2"),
+            ("revolve.neck", "profile.edge.3"),
+            ("revolve.mouth", "profile.edge.4"),
+        ]
+    };
+    let mut evidence = Vec::with_capacity(roles.len());
+    for (role, source) in roles {
+        let matching = references
+            .iter()
+            .filter(|reference| {
+                reference.semantic_role == role && reference.source_element_id == source
+            })
+            .collect::<Vec<_>>();
+        let [reference] = matching.as_slice() else {
+            return "ERR incomplete_history".to_owned();
+        };
+        if reference.document_id != document_id
+            || reference.producer_feature_id != producer_feature_id
+            || reference.expected_type != "face"
+            || reference.stability_class != StabilityClass::Guaranteed
+            || reference.backend_fingerprint != output.backend_fingerprint
+            || reference.lineage_digest.is_empty()
+            || reference.corroborating_geometry_fingerprint.is_empty()
+        {
+            return "ERR incomplete_history".to_owned();
+        }
+        let ReferenceResolution::Resolved {
+            face_ordinal,
+            migrated_backend: false,
+        } = resolve_subshape_reference(reference, &output)
+        else {
+            return "ERR incomplete_history".to_owned();
+        };
+        evidence.push((face_ordinal, *reference));
+    }
+    let topology = &output.body.topology;
+    let response_kind = if finish.is_some() {
+        "OK_M6_FINISH_V1"
+    } else if shell {
+        "OK_M6_SHELL_V1"
+    } else {
+        "OK_M6_REVOLVE_V1"
+    };
+    let mut response = format!(
+        "{response_kind} 0 {} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {} {} {} {} {} {} {} {} {}",
+        output.body.result_fingerprint,
+        topology.volume_mm3.to_bits(),
+        topology.bounds_mm.min.x.to_bits(),
+        topology.bounds_mm.min.y.to_bits(),
+        topology.bounds_mm.min.z.to_bits(),
+        topology.bounds_mm.max.x.to_bits(),
+        topology.bounds_mm.max.y.to_bits(),
+        topology.bounds_mm.max.z.to_bits(),
+        topology.vertex_count,
+        topology.edge_count,
+        topology.face_count,
+        topology.shell_count,
+        topology.solid_count,
+        fields[0],
+        output.input_digest,
+        output.backend_fingerprint,
+        output.tolerance_report.profile,
+    );
+    for (ordinal, reference) in evidence {
+        response.push_str(&format!(
+            " {ordinal} {} {}",
+            reference.corroborating_geometry_fingerprint, reference.lineage_digest,
+        ));
+    }
+    response
 }
 
 fn m5_notched_response(
