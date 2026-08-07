@@ -172,6 +172,42 @@ pub enum BottleEdgeFinishKind {
     Chamfer,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, PartialOrd, Ord)]
+pub enum FeatureParameterSlot {
+    Height,
+    BodyRadius,
+    BodyHeight,
+    ShoulderRise,
+    Thickness,
+    Amount,
+}
+
+impl FeatureParameterSlot {
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Height => "height",
+            Self::BodyRadius => "body_radius",
+            Self::BodyHeight => "body_height",
+            Self::ShoulderRise => "shoulder_rise",
+            Self::Thickness => "thickness",
+            Self::Amount => "amount",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, PartialOrd, Ord)]
+pub struct FeatureParameterTarget {
+    pub feature_id: FeatureId,
+    pub slot: FeatureParameterSlot,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FeatureParameterBinding {
+    pub target: FeatureParameterTarget,
+    pub derived_from: DerivedIdentity,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BooleanOperation {
     Cut,
@@ -444,6 +480,8 @@ pub(crate) struct ProductModel {
     pub(crate) units: UnitSystem,
     pub(crate) evaluator_nodes: BTreeMap<NodeId, Arc<EvaluatorNode>>,
     pub(crate) overrides: BTreeMap<u64, Arc<CanonicalOverride>>,
+    pub(crate) feature_parameter_bindings:
+        BTreeMap<FeatureParameterTarget, Arc<FeatureParameterBinding>>,
     pub(crate) joints: BTreeMap<JointId, Arc<CanonicalJoint>>,
     pub(crate) exact_reference_evidence: BTreeMap<String, Arc<BodySubshapeRef>>,
     pub(crate) definitions: BTreeMap<DefinitionId, Arc<Definition>>,
@@ -461,6 +499,7 @@ impl Default for ProductModel {
             units: UnitSystem::Millimetres,
             evaluator_nodes: BTreeMap::new(),
             overrides: BTreeMap::new(),
+            feature_parameter_bindings: BTreeMap::new(),
             joints: BTreeMap::new(),
             exact_reference_evidence: BTreeMap::new(),
             definitions: BTreeMap::new(),
@@ -580,6 +619,13 @@ pub enum CanonicalCommand {
     DeleteOverride {
         id: u64,
     },
+    UpsertFeatureParameterBinding(FeatureParameterBinding),
+    DeleteFeatureParameterBinding {
+        target: FeatureParameterTarget,
+    },
+    RecomputeFeatureParameters {
+        identity: EvaluationIdentity,
+    },
     UpsertJoint(CanonicalJoint),
     DeleteJoint {
         id: JointId,
@@ -691,6 +737,7 @@ pub struct ConvertGroupPlan {
 pub enum AuthoritativeDependency {
     EvaluatorNode(NodeId),
     Override(u64),
+    FeatureParameterBinding(FeatureParameterTarget),
     Joint(JointId),
     Definition(DefinitionId),
     Feature(FeatureId),
@@ -956,6 +1003,24 @@ impl Snapshot {
 
     pub fn overrides(&self) -> impl Iterator<Item = &CanonicalOverride> {
         self.product.overrides.values().map(Arc::as_ref)
+    }
+
+    pub fn feature_parameter_bindings(&self) -> impl Iterator<Item = &FeatureParameterBinding> {
+        self.product
+            .feature_parameter_bindings
+            .values()
+            .map(Arc::as_ref)
+    }
+
+    #[must_use]
+    pub fn feature_parameter_binding(
+        &self,
+        target: FeatureParameterTarget,
+    ) -> Option<&FeatureParameterBinding> {
+        self.product
+            .feature_parameter_bindings
+            .get(&target)
+            .map(Arc::as_ref)
     }
 
     #[must_use]
@@ -1532,6 +1597,7 @@ impl DocumentStore {
         let mut product = current.product.as_ref().clone();
         product.exact_reference_evidence.clear();
         let mut changed_evaluator_nodes = BTreeSet::new();
+        let mut evaluation_identity = EvaluationIdentity::default();
 
         for command in &batch.commands {
             match command {
@@ -1703,6 +1769,26 @@ impl DocumentStore {
                         return Err(CanonicalError::OverrideNotFound(*id));
                     }
                 }
+                CanonicalCommand::UpsertFeatureParameterBinding(binding) => {
+                    product
+                        .feature_parameter_bindings
+                        .insert(binding.target, Arc::new(binding.clone()));
+                }
+                CanonicalCommand::DeleteFeatureParameterBinding { target } => {
+                    if product.feature_parameter_bindings.remove(target).is_none() {
+                        return Err(CanonicalError::FeatureParameterBindingNotFound(*target));
+                    }
+                }
+                CanonicalCommand::RecomputeFeatureParameters { identity } => {
+                    let report = recompute_feature_parameters(&mut product, identity)?;
+                    changed_evaluator_nodes.extend(
+                        product
+                            .feature_parameter_bindings
+                            .values()
+                            .map(|binding| binding.derived_from.root_rule_node_id),
+                    );
+                    evaluation_identity = report.identity;
+                }
                 CanonicalCommand::UpsertJoint(joint) => {
                     product.joints.insert(joint.id(), Arc::new(joint.clone()));
                 }
@@ -1742,6 +1828,9 @@ impl DocumentStore {
                         .ok_or(CanonicalError::DefinitionNotFound(*id))?;
                     for feature_id in &definition.feature_ids {
                         product.features.remove(feature_id);
+                        product
+                            .feature_parameter_bindings
+                            .retain(|target, _| target.feature_id != *feature_id);
                     }
                 }
                 CanonicalCommand::RenameDefinition { id, name } => {
@@ -1811,6 +1900,9 @@ impl DocumentStore {
                         .copied()
                         .filter(|candidate| candidate != id)
                         .collect();
+                    product
+                        .feature_parameter_bindings
+                        .retain(|target, _| target.feature_id != *id);
                     product.definitions.insert(
                         feature.definition_id,
                         Arc::new(Definition {
@@ -2120,7 +2212,7 @@ impl DocumentStore {
             dependent_closure(&product.evaluator_nodes, &changed_evaluator_nodes);
         let evaluation = evaluate_affected(
             &product.evaluator_nodes,
-            &EvaluationIdentity::default(),
+            &evaluation_identity,
             self.revisions[self.cursor].evaluation.as_ref(),
             &recomputed_nodes,
         )
@@ -2633,6 +2725,8 @@ pub enum CanonicalError {
     FeatureNotFound(FeatureId),
     FeatureHasNoDimension(FeatureId),
     FeatureIsNotProfile(FeatureId),
+    InvalidFeatureParameterBinding(FeatureParameterTarget),
+    FeatureParameterBindingNotFound(FeatureParameterTarget),
     OccurrenceAlreadyExists(OccurrenceId),
     OccurrenceNotFound(OccurrenceId),
     GroupAlreadyExists(GroupId),
@@ -2700,6 +2794,18 @@ impl fmt::Display for CanonicalError {
             Self::FeatureIsNotProfile(id) => {
                 write!(formatter, "feature {} is not a profile", id.0)
             }
+            Self::InvalidFeatureParameterBinding(target) => write!(
+                formatter,
+                "feature {} parameter {} has an invalid derived binding",
+                target.feature_id.0,
+                target.slot.label()
+            ),
+            Self::FeatureParameterBindingNotFound(target) => write!(
+                formatter,
+                "feature {} parameter {} has no derived binding",
+                target.feature_id.0,
+                target.slot.label()
+            ),
             Self::OccurrenceAlreadyExists(id) => {
                 write!(formatter, "occurrence {} already exists", id.0)
             }
@@ -2771,6 +2877,129 @@ fn ensure_name(name: &str) -> Result<(), CanonicalError> {
 
 fn validate_transform(transform: Transform) -> Result<(), CanonicalError> {
     Transform::from_matrix(transform.matrix).map(|_| ())
+}
+
+const fn feature_parameter_slot_tag(slot: FeatureParameterSlot) -> u8 {
+    match slot {
+        FeatureParameterSlot::Height => 1,
+        FeatureParameterSlot::BodyRadius => 2,
+        FeatureParameterSlot::BodyHeight => 3,
+        FeatureParameterSlot::ShoulderRise => 4,
+        FeatureParameterSlot::Thickness => 5,
+        FeatureParameterSlot::Amount => 6,
+    }
+}
+
+fn feature_supports_parameter_slot(kind: &FeatureKind, slot: FeatureParameterSlot) -> bool {
+    matches!(
+        (kind, slot),
+        (FeatureKind::Extrusion { .. }, FeatureParameterSlot::Height)
+            | (
+                FeatureKind::BottleProfileControl { .. },
+                FeatureParameterSlot::BodyRadius
+                    | FeatureParameterSlot::BodyHeight
+                    | FeatureParameterSlot::ShoulderRise
+            )
+            | (FeatureKind::Shell { .. }, FeatureParameterSlot::Thickness)
+            | (
+                FeatureKind::BottleEdgeFinish { .. },
+                FeatureParameterSlot::Amount
+            )
+    )
+}
+
+fn recompute_feature_parameters(
+    product: &mut ProductModel,
+    identity: &EvaluationIdentity,
+) -> Result<EvaluationReport, CanonicalError> {
+    let report =
+        evaluate_graph(&product.evaluator_nodes, identity).map_err(CanonicalError::Graph)?;
+    let bindings = product
+        .feature_parameter_bindings
+        .values()
+        .map(|binding| binding.as_ref().clone())
+        .collect::<Vec<_>>();
+    for binding in bindings {
+        let output =
+            report
+                .outputs
+                .get(&binding.derived_from)
+                .ok_or(CanonicalError::FailedEvaluation(
+                    binding.derived_from.root_rule_node_id,
+                ))?;
+        let dimension = Dimension::new(output.value.to_string(), output.value)?;
+        set_feature_parameter(product, binding.target, dimension)?;
+    }
+    Ok(report)
+}
+
+fn set_feature_parameter(
+    product: &mut ProductModel,
+    target: FeatureParameterTarget,
+    dimension: Dimension,
+) -> Result<(), CanonicalError> {
+    let feature = product
+        .features
+        .get(&target.feature_id)
+        .ok_or(CanonicalError::FeatureNotFound(target.feature_id))?;
+    let kind = match (&feature.kind, target.slot) {
+        (FeatureKind::Extrusion { profile, .. }, FeatureParameterSlot::Height) => {
+            FeatureKind::Extrusion {
+                profile: *profile,
+                height: dimension,
+            }
+        }
+        (
+            FeatureKind::BottleProfileControl {
+                profile,
+                body_radius,
+                body_height,
+                shoulder_rise,
+            },
+            slot,
+        ) => FeatureKind::BottleProfileControl {
+            profile: *profile,
+            body_radius: if slot == FeatureParameterSlot::BodyRadius {
+                dimension.clone()
+            } else {
+                body_radius.clone()
+            },
+            body_height: if slot == FeatureParameterSlot::BodyHeight {
+                dimension.clone()
+            } else {
+                body_height.clone()
+            },
+            shoulder_rise: if slot == FeatureParameterSlot::ShoulderRise {
+                dimension
+            } else {
+                shoulder_rise.clone()
+            },
+        },
+        (FeatureKind::Shell { target, .. }, FeatureParameterSlot::Thickness) => {
+            FeatureKind::Shell {
+                target: *target,
+                thickness: dimension,
+            }
+        }
+        (FeatureKind::BottleEdgeFinish { target, kind, .. }, FeatureParameterSlot::Amount) => {
+            FeatureKind::BottleEdgeFinish {
+                target: *target,
+                kind: *kind,
+                amount: dimension,
+            }
+        }
+        _ => return Err(CanonicalError::InvalidFeatureParameterBinding(target)),
+    };
+    product.features.insert(
+        target.feature_id,
+        Arc::new(Feature {
+            id: feature.id,
+            definition_id: feature.definition_id,
+            name: feature.name.clone(),
+            kind,
+        }),
+    );
+    Ok(())
 }
 
 fn validate_feature_kind(kind: &FeatureKind) -> Result<(), CanonicalError> {
@@ -3174,6 +3403,28 @@ fn clone_definition_and_repoint(
     for feature in cloned_features {
         product.features.insert(feature.id, feature);
     }
+    let cloned_bindings = product
+        .feature_parameter_bindings
+        .values()
+        .filter_map(|binding| {
+            mapping
+                .get(&binding.target.feature_id)
+                .map(|new_feature_id| {
+                    let target = FeatureParameterTarget {
+                        feature_id: *new_feature_id,
+                        slot: binding.target.slot,
+                    };
+                    (
+                        target,
+                        Arc::new(FeatureParameterBinding {
+                            target,
+                            derived_from: binding.derived_from.clone(),
+                        }),
+                    )
+                })
+        })
+        .collect::<Vec<_>>();
+    product.feature_parameter_bindings.extend(cloned_bindings);
     product.occurrences.insert(
         occurrence_id,
         Arc::new(Occurrence {
@@ -3709,6 +3960,19 @@ fn validate_product(product: &ProductModel) -> Result<(), CanonicalError> {
             FeatureKind::Profile { .. } => {}
         }
     }
+    for (target, binding) in &product.feature_parameter_bindings {
+        let feature = product
+            .features
+            .get(&target.feature_id)
+            .ok_or(CanonicalError::FeatureNotFound(target.feature_id))?;
+        if binding.target != *target
+            || !feature_supports_parameter_slot(&feature.kind, target.slot)
+            || resolve_derived_identity(&product.evaluator_nodes, &binding.derived_from)
+                != SlotResolution::Resolved
+        {
+            return Err(CanonicalError::InvalidFeatureParameterBinding(*target));
+        }
+    }
     for occurrence in product.occurrences.values() {
         ensure_product_id(occurrence.id.0)?;
         ensure_name(&occurrence.name)?;
@@ -3919,6 +4183,21 @@ fn authoritative_writes(
             }
             CanonicalCommand::DeleteOverride { id } => {
                 writes.insert(AuthoritativeDependency::Override(*id));
+            }
+            CanonicalCommand::UpsertFeatureParameterBinding(binding) => {
+                writes.insert(AuthoritativeDependency::FeatureParameterBinding(
+                    binding.target,
+                ));
+            }
+            CanonicalCommand::DeleteFeatureParameterBinding { target } => {
+                writes.insert(AuthoritativeDependency::FeatureParameterBinding(*target));
+            }
+            CanonicalCommand::RecomputeFeatureParameters { .. } => {
+                writes.extend(
+                    snapshot
+                        .feature_parameter_bindings()
+                        .map(|binding| AuthoritativeDependency::Feature(binding.target.feature_id)),
+                );
             }
             CanonicalCommand::UpsertJoint(joint) => {
                 writes.insert(AuthoritativeDependency::Joint(joint.id()));
@@ -4141,6 +4420,41 @@ fn authoritative_dependencies(
             CanonicalCommand::DeleteOverride { id } => {
                 dependencies.insert(AuthoritativeDependency::Override(*id));
             }
+            CanonicalCommand::UpsertFeatureParameterBinding(binding) => {
+                dependencies.insert(AuthoritativeDependency::FeatureParameterBinding(
+                    binding.target,
+                ));
+                add_feature_dependency_closure(
+                    snapshot,
+                    binding.target.feature_id,
+                    &mut dependencies,
+                );
+                add_evaluator_dependency_closure(
+                    snapshot,
+                    binding.derived_from.root_rule_node_id,
+                    &mut dependencies,
+                );
+            }
+            CanonicalCommand::DeleteFeatureParameterBinding { target } => {
+                dependencies.insert(AuthoritativeDependency::FeatureParameterBinding(*target));
+            }
+            CanonicalCommand::RecomputeFeatureParameters { .. } => {
+                for binding in snapshot.feature_parameter_bindings() {
+                    dependencies.insert(AuthoritativeDependency::FeatureParameterBinding(
+                        binding.target,
+                    ));
+                    add_feature_dependency_closure(
+                        snapshot,
+                        binding.target.feature_id,
+                        &mut dependencies,
+                    );
+                    add_evaluator_dependency_closure(
+                        snapshot,
+                        binding.derived_from.root_rule_node_id,
+                        &mut dependencies,
+                    );
+                }
+            }
             CanonicalCommand::UpsertJoint(joint) => {
                 dependencies.insert(AuthoritativeDependency::Joint(joint.id()));
             }
@@ -4268,6 +4582,10 @@ fn digest_snapshot(snapshot: &Snapshot) -> String {
     for value in snapshot.product.overrides.values() {
         digest.canonical_override(value);
     }
+    digest.u64(snapshot.product.feature_parameter_bindings.len() as u64);
+    for binding in snapshot.product.feature_parameter_bindings.values() {
+        digest.feature_parameter_binding(binding);
+    }
     digest.u64(snapshot.product.joints.len() as u64);
     for joint in snapshot.product.joints.values() {
         digest.joint(joint);
@@ -4379,6 +4697,13 @@ impl StableDigest {
                 self.u64(segment_index as u64);
             }
         }
+    }
+
+    fn feature_parameter_binding(&mut self, binding: &FeatureParameterBinding) {
+        self.u64(binding.target.feature_id.0);
+        self.byte(feature_parameter_slot_tag(binding.target.slot));
+        self.u64(binding.derived_from.root_rule_node_id.0);
+        self.slot_path(&binding.derived_from.slot_path);
     }
 
     fn joint(&mut self, joint: &CanonicalJoint) {
@@ -4554,6 +4879,17 @@ impl StableDigest {
                 if let Some(value) = product.overrides.get(&id) {
                     self.byte(1);
                     self.canonical_override(value);
+                } else {
+                    self.byte(0);
+                }
+            }
+            AuthoritativeDependency::FeatureParameterBinding(target) => {
+                self.byte(14);
+                self.u64(target.feature_id.0);
+                self.byte(feature_parameter_slot_tag(target.slot));
+                if let Some(binding) = product.feature_parameter_bindings.get(&target) {
+                    self.byte(1);
+                    self.feature_parameter_binding(binding);
                 } else {
                     self.byte(0);
                 }
@@ -4978,6 +5314,28 @@ impl StableDigest {
             CanonicalCommand::DeleteOverride { id } => {
                 self.byte(9);
                 self.u64(*id);
+            }
+            CanonicalCommand::UpsertFeatureParameterBinding(binding) => {
+                self.byte(33);
+                self.feature_parameter_binding(binding);
+            }
+            CanonicalCommand::DeleteFeatureParameterBinding { target } => {
+                self.byte(34);
+                self.u64(target.feature_id.0);
+                self.byte(feature_parameter_slot_tag(target.slot));
+            }
+            CanonicalCommand::RecomputeFeatureParameters { identity } => {
+                self.byte(35);
+                self.bytes(identity.evaluator.as_bytes());
+                self.bytes(identity.schema.as_bytes());
+                self.bytes(identity.tolerance.as_bytes());
+                match &identity.backend {
+                    Some(backend) => {
+                        self.byte(1);
+                        self.bytes(backend.as_bytes());
+                    }
+                    None => self.byte(0),
+                }
             }
             CanonicalCommand::UpsertJoint(joint) => {
                 self.byte(29);

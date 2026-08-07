@@ -1,9 +1,10 @@
 use ketchup_core::document::{
     BottleControlDimension, BottleEdgeFinishKind, CanonicalCommand, CanonicalError, CommandBatch,
-    ConvertedEntityId, DefinitionId, Dimension, DocumentStore, FeatureId, FeatureKind, GroupId,
-    InstancePathStep, LocalGroupId, LocalGroupKey, LocalOccurrenceId, LocalOccurrenceKey,
-    MappingResolution, NodeId, OccurrenceId, TagId, Transform, UnresolvedMappingReason,
-    WorldEntityPath,
+    ConvertedEntityId, DefinitionId, DerivedIdentity, Dimension, DocumentStore, EvaluationIdentity,
+    FeatureId, FeatureKind, FeatureParameterBinding, FeatureParameterSlot, FeatureParameterTarget,
+    GroupId, InstancePathStep, LocalGroupId, LocalGroupKey, LocalOccurrenceId, LocalOccurrenceKey,
+    MappingResolution, NodeId, OccurrenceId, PortSpec, RuleOutput, SlotPath, SlotSegment, TagId,
+    Transform, UnresolvedMappingReason, WorldEntityPath,
 };
 use ketchup_core::persistence;
 
@@ -135,7 +136,7 @@ fn product_schema_round_trip_preserves_identity_hierarchy_values_and_digest() {
     let expected = document.current();
     let loaded = persistence::load(&persistence::save(&expected)).unwrap();
 
-    assert_eq!(loaded.source_schema(), 9);
+    assert_eq!(loaded.source_schema(), 10);
     assert!(loaded.migration_losses().is_empty());
     let actual = loaded.snapshot();
     assert_eq!(actual.document_id(), expected.document_id());
@@ -152,10 +153,17 @@ fn product_schema_round_trip_preserves_identity_hierarchy_values_and_digest() {
         expected.feature(EXTRUSION).unwrap().kind()
     );
 
-    let mut schema_five = persistence::save(&expected);
-    schema_five[10..12].copy_from_slice(&5_u16.to_le_bytes());
-    let legacy_current = persistence::load(&schema_five).unwrap();
-    assert_eq!(legacy_current.source_schema(), 5);
+    let mut schema_nine = persistence::save(&expected);
+    let manifest_length = u32::from_le_bytes(schema_nine[12..16].try_into().unwrap()) as usize;
+    let payload_offset = 16 + manifest_length;
+    schema_nine.drain(payload_offset + 25..payload_offset + 29);
+    schema_nine[10..12].copy_from_slice(&9_u16.to_le_bytes());
+    let payload_length = (schema_nine.len() - payload_offset) as u64;
+    schema_nine[16..24].copy_from_slice(&payload_length.to_le_bytes());
+    let checksum = ketchup_core::graph::sha256_bytes(&schema_nine[payload_offset..]);
+    schema_nine[24..56].copy_from_slice(&checksum);
+    let legacy_current = persistence::load(&schema_nine).unwrap();
+    assert_eq!(legacy_current.source_schema(), 9);
     assert_eq!(
         legacy_current.snapshot().canonical_digest(),
         expected.canonical_digest()
@@ -313,7 +321,7 @@ fn m6_bottle_profile_and_revolve_are_canonical_persisted_and_undoable() {
     assert_eq!(document.redo().unwrap().canonical_digest(), changed_digest);
 
     let loaded = persistence::load(&persistence::save(&document.current())).unwrap();
-    assert_eq!(loaded.source_schema(), 9);
+    assert_eq!(loaded.source_schema(), 10);
     assert!(loaded.migration_losses().is_empty());
     assert_eq!(loaded.snapshot().canonical_digest(), changed_digest);
     assert!(matches!(
@@ -389,7 +397,7 @@ fn m6_shell_thickness_is_canonical_undoable_persisted_and_fail_closed() {
     assert_eq!(document.redo().unwrap().canonical_digest(), changed_digest);
 
     let reopened = persistence::load(&persistence::save(&document.current())).unwrap();
-    assert_eq!(reopened.source_schema(), 9);
+    assert_eq!(reopened.source_schema(), 10);
     assert!(reopened.migration_losses().is_empty());
     assert_eq!(reopened.snapshot().canonical_digest(), changed_digest);
 
@@ -532,7 +540,7 @@ fn m6_controlled_profile_and_edge_finish_are_atomic_persisted_and_fail_closed() 
     assert_eq!(document.redo().unwrap().canonical_digest(), changed_digest);
 
     let reopened = persistence::load(&persistence::save(&document.current())).unwrap();
-    assert_eq!(reopened.source_schema(), 9);
+    assert_eq!(reopened.source_schema(), 10);
     assert!(reopened.migration_losses().is_empty());
     assert_eq!(reopened.snapshot().canonical_digest(), changed_digest);
     assert!(matches!(
@@ -768,7 +776,7 @@ fn nested_conversion_mapping_sharing_unique_history_and_schema_three_round_trip(
     assert_eq!(document.redo().unwrap().canonical_digest(), unique_digest);
 
     let reopened = persistence::load(&persistence::save(&document.current())).unwrap();
-    assert_eq!(reopened.source_schema(), 9);
+    assert_eq!(reopened.source_schema(), 10);
     let snapshot = reopened.snapshot();
     assert_eq!(snapshot.canonical_digest(), unique_digest);
     assert_eq!(snapshot.evaluator_node_count(), 1);
@@ -836,5 +844,308 @@ fn conversion_collision_and_local_ownership_cycle_fail_atomically() {
         Err(persistence::PersistenceError::InvalidCanonicalData(
             CanonicalError::InvalidLocalGraph
         ))
+    ));
+}
+
+#[test]
+fn feature_parameter_bindings_are_canonical_persisted_and_never_recompute_on_open() {
+    const SOURCE: NodeId = NodeId(201);
+    const RULE: NodeId = NodeId(202);
+    let segment = SlotSegment::new(RULE, "dimensions", "extrusion_height").unwrap();
+    let derived_from =
+        DerivedIdentity::new(RULE, SlotPath::new(vec![segment.clone()]).unwrap()).unwrap();
+    let target = FeatureParameterTarget {
+        feature_id: EXTRUSION,
+        slot: FeatureParameterSlot::Height,
+    };
+    let binding = FeatureParameterBinding {
+        target,
+        derived_from: derived_from.clone(),
+    };
+    let mut document = seed_product_document();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateEvaluatorNode {
+                id: SOURCE,
+                name: "Rule source".to_owned(),
+                dimension: height("21"),
+                dependencies: vec![],
+            },
+            CanonicalCommand::CreateRuleNode {
+                id: RULE,
+                name: "Extrusion height rule".to_owned(),
+                expression: "$201 * 2".to_owned(),
+                input_ports: vec![PortSpec::number("source").unwrap()],
+                output_ports: vec![PortSpec::number("dimensions").unwrap()],
+                outputs: vec![RuleOutput::new(segment, vec![]).unwrap()],
+                override_parameters: vec![],
+            },
+            CanonicalCommand::UpsertFeatureParameterBinding(binding.clone()),
+        ]))
+        .unwrap();
+
+    let bound = document.current();
+    let bound_digest = bound.canonical_digest();
+    assert_eq!(bound.feature_parameter_binding(target), Some(&binding));
+    assert_eq!(bound.feature_parameter_bindings().count(), 1);
+    let state = ketchup_core::state_view::encode_semantic_state(&bound);
+    for view in [state.complete_v1(), state.agent_v1()] {
+        assert!(view.contains("parameter_binding.11.height.derived_from.root=202"));
+        assert!(view.contains(
+            "parameter_binding.11.height.derived_from.slot_path=202:\"dimensions\":\"extrusion_height\""
+        ));
+    }
+    assert!(matches!(
+        bound.feature(EXTRUSION).unwrap().kind(),
+        FeatureKind::Extrusion { height, .. }
+            if height.source_token() == "720" && height.millimetres() == 720.0
+    ));
+
+    let invalid_target = FeatureParameterTarget {
+        feature_id: EXTRUSION,
+        slot: FeatureParameterSlot::Thickness,
+    };
+    let undo_before_invalid = document.visible_undo_steps();
+    let invalid_slot_error = match document.apply_batch(&CommandBatch::new(vec![
+        CanonicalCommand::UpsertFeatureParameterBinding(FeatureParameterBinding {
+            target: invalid_target,
+            derived_from: derived_from.clone(),
+        }),
+    ])) {
+        Ok(_) => panic!("invalid feature parameter slot accepted"),
+        Err(error) => error,
+    };
+    assert_eq!(
+        invalid_slot_error,
+        CanonicalError::InvalidFeatureParameterBinding(invalid_target)
+    );
+    assert_eq!(document.current().canonical_digest(), bound_digest);
+    assert_eq!(document.visible_undo_steps(), undo_before_invalid);
+
+    let unresolved = DerivedIdentity::new(
+        RULE,
+        SlotPath::new(vec![
+            SlotSegment::new(RULE, "dimensions", "missing").unwrap(),
+        ])
+        .unwrap(),
+    )
+    .unwrap();
+    let unresolved_error = match document.apply_batch(&CommandBatch::new(vec![
+        CanonicalCommand::UpsertFeatureParameterBinding(FeatureParameterBinding {
+            target,
+            derived_from: unresolved,
+        }),
+    ])) {
+        Ok(_) => panic!("unresolved feature parameter binding accepted"),
+        Err(error) => error,
+    };
+    assert_eq!(
+        unresolved_error,
+        CanonicalError::InvalidFeatureParameterBinding(target)
+    );
+    assert_eq!(document.current().canonical_digest(), bound_digest);
+
+    let saved_revision = document.current().revision_id();
+    let saved_undo = document.visible_undo_steps();
+    let loaded = persistence::load(&persistence::save(&document.current())).unwrap();
+    assert_eq!(loaded.source_schema(), 10);
+    assert_eq!(loaded.snapshot().revision_id(), saved_revision);
+    assert_eq!(loaded.snapshot().canonical_digest(), bound_digest);
+    assert_eq!(
+        loaded.snapshot().feature_parameter_binding(target),
+        Some(&binding)
+    );
+    assert!(matches!(
+        loaded.snapshot().feature(EXTRUSION).unwrap().kind(),
+        FeatureKind::Extrusion { height, .. }
+            if height.source_token() == "720" && height.millimetres() == 720.0
+    ));
+    assert_eq!(document.visible_undo_steps(), saved_undo);
+
+    document.undo().unwrap();
+    assert!(
+        document
+            .current()
+            .feature_parameter_binding(target)
+            .is_none()
+    );
+    document.redo().unwrap();
+    assert_eq!(
+        document.current().feature_parameter_binding(target),
+        Some(&binding)
+    );
+}
+
+#[test]
+fn explicit_feature_parameter_recompute_is_deterministic_undoable_and_identity_bound() {
+    const SOURCE: NodeId = NodeId(201);
+    const RULE: NodeId = NodeId(202);
+    let segment = SlotSegment::new(RULE, "dimensions", "extrusion_height").unwrap();
+    let target = FeatureParameterTarget {
+        feature_id: EXTRUSION,
+        slot: FeatureParameterSlot::Height,
+    };
+    let mut document = seed_product_document();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateEvaluatorNode {
+                id: SOURCE,
+                name: "Rule source".to_owned(),
+                dimension: height("21"),
+                dependencies: vec![],
+            },
+            CanonicalCommand::CreateRuleNode {
+                id: RULE,
+                name: "Extrusion height rule".to_owned(),
+                expression: "$201 * 2".to_owned(),
+                input_ports: vec![PortSpec::number("source").unwrap()],
+                output_ports: vec![PortSpec::number("dimensions").unwrap()],
+                outputs: vec![RuleOutput::new(segment.clone(), vec![]).unwrap()],
+                override_parameters: vec![],
+            },
+            CanonicalCommand::UpsertFeatureParameterBinding(FeatureParameterBinding {
+                target,
+                derived_from: DerivedIdentity::new(RULE, SlotPath::new(vec![segment]).unwrap())
+                    .unwrap(),
+            }),
+        ]))
+        .unwrap();
+
+    let identity = EvaluationIdentity::default();
+    let recompute = CommandBatch::new(vec![CanonicalCommand::RecomputeFeatureParameters {
+        identity: identity.clone(),
+    }]);
+    let alternate = CommandBatch::new(vec![CanonicalCommand::RecomputeFeatureParameters {
+        identity: EvaluationIdentity {
+            backend: Some("alternate-backend".to_owned()),
+            ..identity.clone()
+        },
+    }]);
+    assert_ne!(recompute.digest(), alternate.digest());
+
+    let before = document.current().canonical_digest();
+    let undo_before = document.visible_undo_steps();
+    let revision = document.apply_batch(&recompute).unwrap();
+    let recomputed = revision.snapshot().canonical_digest();
+    assert_ne!(recomputed, before);
+    assert_eq!(document.visible_undo_steps(), undo_before + 1);
+    assert!(revision.recomputed_nodes().contains(&RULE));
+    assert_eq!(revision.evaluation().unwrap().identity, identity);
+    assert!(matches!(
+        revision.snapshot().feature(EXTRUSION).unwrap().kind(),
+        FeatureKind::Extrusion { height, .. }
+            if height.source_token() == "42" && height.millimetres() == 42.0
+    ));
+
+    assert_eq!(document.undo().unwrap().canonical_digest(), before);
+    assert!(matches!(
+        document.current().feature(EXTRUSION).unwrap().kind(),
+        FeatureKind::Extrusion { height, .. }
+            if height.source_token() == "720" && height.millimetres() == 720.0
+    ));
+    assert_eq!(document.redo().unwrap().canonical_digest(), recomputed);
+}
+
+#[test]
+fn feature_parameter_recompute_rolls_back_every_target_when_one_value_is_invalid() {
+    const SECOND_EXTRUSION: FeatureId = FeatureId(12);
+    const GOOD_SOURCE: NodeId = NodeId(201);
+    const GOOD_RULE: NodeId = NodeId(202);
+    const INVALID_SOURCE: NodeId = NodeId(203);
+    const INVALID_RULE: NodeId = NodeId(204);
+    let good_segment = SlotSegment::new(GOOD_RULE, "dimensions", "height").unwrap();
+    let invalid_segment = SlotSegment::new(INVALID_RULE, "dimensions", "thickness").unwrap();
+    let mut document = seed_product_document();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateFeature {
+                id: SECOND_EXTRUSION,
+                definition_id: CABINET,
+                name: "Second extrusion".to_owned(),
+                kind: FeatureKind::Extrusion {
+                    profile: PROFILE,
+                    height: height("3"),
+                },
+            },
+            CanonicalCommand::CreateEvaluatorNode {
+                id: GOOD_SOURCE,
+                name: "Good source".to_owned(),
+                dimension: height("21"),
+                dependencies: vec![],
+            },
+            CanonicalCommand::CreateRuleNode {
+                id: GOOD_RULE,
+                name: "Good rule".to_owned(),
+                expression: "$201 * 2".to_owned(),
+                input_ports: vec![PortSpec::number("source").unwrap()],
+                output_ports: vec![PortSpec::number("dimensions").unwrap()],
+                outputs: vec![RuleOutput::new(good_segment.clone(), vec![]).unwrap()],
+                override_parameters: vec![],
+            },
+            CanonicalCommand::CreateEvaluatorNode {
+                id: INVALID_SOURCE,
+                name: "Invalid source".to_owned(),
+                dimension: height("2"),
+                dependencies: vec![],
+            },
+            CanonicalCommand::CreateRuleNode {
+                id: INVALID_RULE,
+                name: "Invalid rule".to_owned(),
+                expression: "$203 * 1000000".to_owned(),
+                input_ports: vec![PortSpec::number("source").unwrap()],
+                output_ports: vec![PortSpec::number("dimensions").unwrap()],
+                outputs: vec![RuleOutput::new(invalid_segment.clone(), vec![]).unwrap()],
+                override_parameters: vec![],
+            },
+            CanonicalCommand::UpsertFeatureParameterBinding(FeatureParameterBinding {
+                target: FeatureParameterTarget {
+                    feature_id: EXTRUSION,
+                    slot: FeatureParameterSlot::Height,
+                },
+                derived_from: DerivedIdentity::new(
+                    GOOD_RULE,
+                    SlotPath::new(vec![good_segment]).unwrap(),
+                )
+                .unwrap(),
+            }),
+            CanonicalCommand::UpsertFeatureParameterBinding(FeatureParameterBinding {
+                target: FeatureParameterTarget {
+                    feature_id: SECOND_EXTRUSION,
+                    slot: FeatureParameterSlot::Height,
+                },
+                derived_from: DerivedIdentity::new(
+                    INVALID_RULE,
+                    SlotPath::new(vec![invalid_segment]).unwrap(),
+                )
+                .unwrap(),
+            }),
+        ]))
+        .unwrap();
+
+    let before = document.current().canonical_digest();
+    let undo_before = document.visible_undo_steps();
+    assert!(matches!(
+        document.apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::RecomputeFeatureParameters {
+                identity: EvaluationIdentity::default(),
+            },
+        ])),
+        Err(CanonicalError::DimensionOutsideEnvelope)
+    ));
+    assert_eq!(document.current().canonical_digest(), before);
+    assert_eq!(document.visible_undo_steps(), undo_before);
+    assert!(matches!(
+        document.current().feature(EXTRUSION).unwrap().kind(),
+        FeatureKind::Extrusion { height, .. }
+            if height.source_token() == "720" && height.millimetres() == 720.0
+    ));
+    assert!(matches!(
+        document
+            .current()
+            .feature(SECOND_EXTRUSION)
+            .unwrap()
+            .kind(),
+        FeatureKind::Extrusion { height, .. }
+            if height.source_token() == "3" && height.millimetres() == 3.0
     ));
 }

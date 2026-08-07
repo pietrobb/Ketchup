@@ -319,7 +319,7 @@ fn final_m2_state_view_covers_graph_overrides_and_supplied_evaluation_without_mu
     }
 
     assert!(agent.contains(
-        "summary.counts=evaluator_nodes:3,overrides:1,definitions:0,features:0,occurrences:0,groups:0,local_groups:0,local_occurrences:0"
+        "summary.counts=evaluator_nodes:3,overrides:1,parameter_bindings:0,definitions:0,features:0,occurrences:0,groups:0,local_groups:0,local_occurrences:0"
     ));
     assert!(agent.contains("evaluation.current=true"));
     assert!(!agent.contains("evaluation=not_supplied"));

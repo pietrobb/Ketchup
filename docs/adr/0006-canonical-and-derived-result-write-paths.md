@@ -17,7 +17,7 @@ V4-P07 distinguishes a semantic canonical change from registration of a semantic
 
 There are exactly two semantic write paths into an active document:
 
-1. **Canonical path — `DocumentStore::apply_batch`.** Any change to canonical meaning is a validated `CommandBatch`, appends exactly one revision, and creates exactly one visible Undo step. Existing canonical delegates are `commit_proposal`, `make_unique`, and `convert_group_to_component`; each must call `apply_batch`.
+1. **Canonical path — `DocumentStore::apply_batch`.** Any change to canonical meaning is a validated `CommandBatch`, appends exactly one revision, and creates exactly one visible Undo step. Existing canonical delegates are `commit_verified_proposal`, `make_unique`, and `convert_group_to_component`; each must call `apply_batch`. The compatibility wrapper `commit_proposal` must delegate only to `commit_verified_proposal`.
 2. **Non-canonical P07 path — `DocumentStore::register_derived_result`.** A semantics-preserving result must carry the current `document_id`, `revision_id`, and canonical digest. The gateway checks this envelope at runtime and fails closed on mismatch. It may update only derived-result storage, must not advance or append a revision, must not create an Undo step, and must not change the canonical digest.
 
 The currently admitted P07 payloads are:

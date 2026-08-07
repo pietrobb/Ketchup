@@ -7,9 +7,10 @@ use std::sync::Arc;
 
 use crate::document::{
     BooleanOperation, BottleEdgeFinishKind, CanonicalError, Definition, DefinitionId, Dimension,
-    DocumentStore, EvaluatorNode, Feature, FeatureId, FeatureKind, Group, GroupId, LocalGroup,
-    LocalGroupId, LocalGroupKey, LocalOccurrence, LocalOccurrenceId, LocalOccurrenceKey, NodeId,
-    Occurrence, OccurrenceId, ProductModel, Snapshot, TagId, Transform, UnitSystem,
+    DocumentStore, EvaluatorNode, Feature, FeatureId, FeatureKind, FeatureParameterBinding,
+    FeatureParameterSlot, FeatureParameterTarget, Group, GroupId, LocalGroup, LocalGroupId,
+    LocalGroupKey, LocalOccurrence, LocalOccurrenceId, LocalOccurrenceKey, NodeId, Occurrence,
+    OccurrenceId, ProductModel, Snapshot, TagId, Transform, UnitSystem,
 };
 use crate::exact_product::{BODY_SUBSHAPE_REF_SCHEMA_V1, BodySubshapeRef, ReferenceStability};
 use crate::graph::{
@@ -19,7 +20,8 @@ use crate::graph::{
 use crate::prismatic::{Aabb, CanonicalJoint, JointId};
 
 const MAGIC: &[u8; 10] = b"KETCHUPDOC";
-const CURRENT_SCHEMA: u16 = 9;
+const CURRENT_SCHEMA: u16 = 10;
+const PARAMETRIC_BINDING_SCHEMA: u16 = 10;
 const BOOLEAN_SCHEMA: u16 = 9;
 const BOTTLE_FINISH_SCHEMA: u16 = 8;
 const SHELL_SCHEMA: u16 = 7;
@@ -40,6 +42,7 @@ struct ProductSchemaCapabilities {
     shell: bool,
     bottle_finish: bool,
     boolean: bool,
+    parametric_bindings: bool,
 }
 
 impl ProductSchemaCapabilities {
@@ -51,6 +54,7 @@ impl ProductSchemaCapabilities {
         shell: false,
         bottle_finish: false,
         boolean: false,
+        parametric_bindings: false,
     };
 
     const fn current(schema: u16) -> Self {
@@ -62,6 +66,7 @@ impl ProductSchemaCapabilities {
             shell: schema >= SHELL_SCHEMA,
             bottle_finish: schema >= BOTTLE_FINISH_SCHEMA,
             boolean: schema >= BOOLEAN_SCHEMA,
+            parametric_bindings: schema >= PARAMETRIC_BINDING_SCHEMA,
         }
     }
 }
@@ -210,6 +215,13 @@ pub fn save(snapshot: &Snapshot) -> Vec<u8> {
     push_u32(&mut payload, product.overrides.len() as u32);
     for value in product.overrides.values() {
         write_override(&mut payload, value);
+    }
+    push_u32(
+        &mut payload,
+        product.feature_parameter_bindings.len() as u32,
+    );
+    for binding in product.feature_parameter_bindings.values() {
+        write_feature_parameter_binding(&mut payload, binding);
     }
 
     push_u32(&mut payload, product.definitions.len() as u32);
@@ -385,6 +397,22 @@ fn write_exact_reference(bytes: &mut Vec<u8>, value: &BodySubshapeRef) {
     push_string(bytes, &value.tolerance);
     push_string(bytes, &value.lineage_digest);
     push_string(bytes, &value.corroborating_geometry_fingerprint);
+}
+
+fn write_feature_parameter_binding(bytes: &mut Vec<u8>, binding: &FeatureParameterBinding) {
+    push_u64(bytes, binding.target.feature_id.0);
+    push_u8(
+        bytes,
+        match binding.target.slot {
+            FeatureParameterSlot::Height => 1,
+            FeatureParameterSlot::BodyRadius => 2,
+            FeatureParameterSlot::BodyHeight => 3,
+            FeatureParameterSlot::ShoulderRise => 4,
+            FeatureParameterSlot::Thickness => 5,
+            FeatureParameterSlot::Amount => 6,
+        },
+    );
+    write_identity(bytes, &binding.derived_from);
 }
 
 fn write_override(bytes: &mut Vec<u8>, value: &CanonicalOverride) {
@@ -565,6 +593,7 @@ pub fn load(bytes: &[u8]) -> Result<LoadOutcome, PersistenceError> {
             | REVOLVE_SCHEMA
             | SHELL_SCHEMA
             | BOTTLE_FINISH_SCHEMA
+            | BOOLEAN_SCHEMA
             | CURRENT_SCHEMA
     ) {
         return Err(PersistenceError::UnsupportedSchema(schema));
@@ -849,6 +878,25 @@ fn read_identity(reader: &mut Reader<'_>) -> Result<DerivedIdentity, Persistence
         .map_err(PersistenceError::from)
 }
 
+fn read_feature_parameter_binding(
+    reader: &mut Reader<'_>,
+) -> Result<FeatureParameterBinding, PersistenceError> {
+    let feature_id = FeatureId(reader.u64()?);
+    let slot = match reader.u8()? {
+        1 => FeatureParameterSlot::Height,
+        2 => FeatureParameterSlot::BodyRadius,
+        3 => FeatureParameterSlot::BodyHeight,
+        4 => FeatureParameterSlot::ShoulderRise,
+        5 => FeatureParameterSlot::Thickness,
+        6 => FeatureParameterSlot::Amount,
+        value => return Err(PersistenceError::InvalidParameterSlot(value)),
+    };
+    Ok(FeatureParameterBinding {
+        target: FeatureParameterTarget { feature_id, slot },
+        derived_from: read_identity(reader)?,
+    })
+}
+
 fn read_joint(reader: &mut Reader<'_>) -> Result<CanonicalJoint, PersistenceError> {
     let id = JointId(reader.u64()?);
     let participant_a = read_identity(reader)?;
@@ -949,6 +997,18 @@ fn read_product(
                 .is_some()
             {
                 return Err(PersistenceError::DuplicateOverride);
+            }
+        }
+        if capabilities.parametric_bindings {
+            for _ in 0..reader.count()? {
+                let binding = read_feature_parameter_binding(reader)?;
+                if product
+                    .feature_parameter_bindings
+                    .insert(binding.target, Arc::new(binding))
+                    .is_some()
+                {
+                    return Err(PersistenceError::DuplicateFeatureParameterBinding);
+                }
             }
         }
     }
@@ -1184,11 +1244,13 @@ pub enum PersistenceError {
     InvalidOverrideMergePolicy,
     InvalidResolution(u8),
     InvalidReferenceStability(u8),
+    InvalidParameterSlot(u8),
     InvalidExactReference,
     ChecksumMismatch,
     ResourceLimit,
     UnsupportedEnvelopeIdentity,
     DuplicateOverride,
+    DuplicateFeatureParameterBinding,
     DuplicateJoint,
     DuplicateExactReference,
     DuplicateNode(NodeId),
@@ -1231,6 +1293,9 @@ impl fmt::Display for PersistenceError {
             Self::InvalidReferenceStability(value) => {
                 write!(formatter, "exact reference stability {value} is invalid")
             }
+            Self::InvalidParameterSlot(value) => {
+                write!(formatter, "feature parameter slot {value} is invalid")
+            }
             Self::InvalidExactReference => {
                 formatter.write_str("exact reference evidence is invalid")
             }
@@ -1240,6 +1305,9 @@ impl fmt::Display for PersistenceError {
                 formatter.write_str("document envelope identity is unsupported")
             }
             Self::DuplicateOverride => formatter.write_str("document repeats an override"),
+            Self::DuplicateFeatureParameterBinding => {
+                formatter.write_str("document repeats a feature parameter binding")
+            }
             Self::DuplicateJoint => formatter.write_str("document repeats a joint"),
             Self::DuplicateExactReference => {
                 formatter.write_str("document repeats exact reference evidence")

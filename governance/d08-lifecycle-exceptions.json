@@ -15,6 +15,11 @@
     {
       "scope": "DocumentStore::commit_proposal",
       "source": "crates/ketchup-core/src/document.rs",
+      "delegates_to": "DocumentStore::commit_verified_proposal"
+    },
+    {
+      "scope": "DocumentStore::commit_verified_proposal",
+      "source": "crates/ketchup-core/src/document.rs",
       "delegates_to": "DocumentStore::apply_batch"
     },
     {

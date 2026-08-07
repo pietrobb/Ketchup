@@ -40,8 +40,9 @@ pub fn encode_semantic_state_with_results(
     write_header(&mut agent, AGENT_STATE_VIEW_V1, snapshot);
     writeln!(
         agent,
-        "summary.counts=evaluator_nodes:{},overrides:{},definitions:{},features:{},occurrences:{},groups:{},local_groups:{},local_occurrences:{}",
-        snapshot.evaluator_node_count(), snapshot.overrides().count(), snapshot.definitions().count(),
+        "summary.counts=evaluator_nodes:{},overrides:{},parameter_bindings:{},definitions:{},features:{},occurrences:{},groups:{},local_groups:{},local_occurrences:{}",
+        snapshot.evaluator_node_count(), snapshot.overrides().count(),
+        snapshot.feature_parameter_bindings().count(), snapshot.definitions().count(),
         snapshot.features().count(), snapshot.occurrences().count(), snapshot.groups().count(),
         snapshot.local_groups().count(), snapshot.local_occurrences().count()
     ).unwrap();
@@ -275,6 +276,27 @@ pub fn encode_semantic_state_with_results(
             )
             .unwrap();
             writeln!(output, "override.{}.health={health}", value.id).unwrap();
+        }
+    }
+
+    for binding in snapshot.feature_parameter_bindings() {
+        for output in [&mut complete, &mut agent] {
+            writeln!(
+                output,
+                "parameter_binding.{}.{}.derived_from.root={}",
+                binding.target.feature_id.0,
+                binding.target.slot.label(),
+                binding.derived_from.root_rule_node_id.0
+            )
+            .unwrap();
+            writeln!(
+                output,
+                "parameter_binding.{}.{}.derived_from.slot_path={}",
+                binding.target.feature_id.0,
+                binding.target.slot.label(),
+                slot_path(binding.derived_from.slot_path.segments())
+            )
+            .unwrap();
         }
     }
 

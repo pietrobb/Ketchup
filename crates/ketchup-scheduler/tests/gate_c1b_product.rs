@@ -313,7 +313,7 @@ fn scheduler_evaluates_canonical_boolean_cut_with_seven_role_evidences() {
     let loaded =
         ketchup_core::persistence::load(&ketchup_core::persistence::save(&document.current()))
             .unwrap();
-    assert_eq!(loaded.source_schema(), 9);
+    assert_eq!(loaded.source_schema(), 10);
     let reopened = match loaded {
         ketchup_core::persistence::LoadOutcome::Editable { document, .. } => document,
         ketchup_core::persistence::LoadOutcome::ReviewOnly(_) => {
@@ -528,7 +528,7 @@ fn scheduler_evaluates_editable_bottle_shell_with_open_mouth_and_current_referen
     let reopened =
         ketchup_core::persistence::load(&ketchup_core::persistence::save(&document.current()))
             .unwrap();
-    assert_eq!(reopened.source_schema(), 9);
+    assert_eq!(reopened.source_schema(), 10);
     assert_eq!(reopened.snapshot().exact_reference_evidence().count(), 9);
 }
 
@@ -629,7 +629,7 @@ fn scheduler_evaluates_controlled_bottle_fillet_and_chamfer_with_current_roles()
     let reopened =
         ketchup_core::persistence::load(&ketchup_core::persistence::save(&document.current()))
             .unwrap();
-    assert_eq!(reopened.source_schema(), 9);
+    assert_eq!(reopened.source_schema(), 10);
     assert_eq!(reopened.snapshot().exact_reference_evidence().count(), 9);
 }
 

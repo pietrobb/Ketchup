@@ -106,7 +106,7 @@ if (-not (Test-Path $d08Path -PathType Leaf)) {
     Fail-Guard "sole-mutation" "Missing D-08 lifecycle exception register."
 }
 $d08Hash = (Get-FileHash $d08Path -Algorithm SHA256).Hash.ToLowerInvariant()
-if ($d08Hash -ne "32ff6e38ff8e89517eb184afb5f19807102bddd90a83a3a779177997ceaae77d") {
+if ($d08Hash -ne "a845a5bfc99fce5cd7ebd5850b90cf8dd9316cb2b9f25e2b496a38732b0b9f7c") {
     Fail-Guard "sole-mutation" "D-08 lifecycle exception semantics changed without a reviewed register version."
 }
 $d08 = Get-Content $d08Path -Raw | ConvertFrom-Json
@@ -143,12 +143,18 @@ foreach ($exception in $lifecycleExceptions) {
 }
 $expectedCanonicalDelegates = @(
     "DocumentStore::commit_proposal",
+    "DocumentStore::commit_verified_proposal",
     "DocumentStore::convert_group_to_component",
     "DocumentStore::make_unique"
 ) | Sort-Object
 $actualCanonicalDelegates = @($d08.delegated_gateways | ForEach-Object {
-    if ($_.delegates_to -ne "DocumentStore::apply_batch") {
-        Fail-Guard "sole-mutation" "Canonical delegate does not target apply_batch: $($_.scope)"
+    $expectedTarget = if ($_.scope -eq "DocumentStore::commit_proposal") {
+        "DocumentStore::commit_verified_proposal"
+    } else {
+        "DocumentStore::apply_batch"
+    }
+    if ($_.delegates_to -ne $expectedTarget) {
+        Fail-Guard "sole-mutation" "Canonical delegate has an unexpected target: $($_.scope)"
     }
     [string]$_.scope
 }) | Sort-Object
@@ -237,9 +243,11 @@ foreach ($required in $allowedMutableMethods) {
 }
 foreach ($delegate in $actualCanonicalDelegates) {
     $method = ([string]$delegate).Split("::")[-1]
+    $declaration = @($d08.delegated_gateways | Where-Object { $_.scope -eq $delegate })[0]
+    $targetMethod = ([string]$declaration.delegates_to).Split("::")[-1]
     $delegateBlock = Get-BracedBlock $storeImpl "pub fn $method" "sole-mutation"
-    if (-not $delegateBlock.Contains(".apply_batch(")) {
-        Fail-Guard "sole-mutation" "Canonical delegate no longer calls apply_batch: $delegate"
+    if (-not $delegateBlock.Contains(".$targetMethod(")) {
+        Fail-Guard "sole-mutation" "Canonical delegate no longer calls its reviewed target: $delegate"
     }
 }
 foreach ($delegate in $actualDerivedDelegates) {
@@ -250,6 +258,7 @@ foreach ($delegate in $actualDerivedDelegates) {
     }
 }
 $applyBlock = Get-BracedBlock $storeImpl "pub fn apply_batch" "sole-mutation"
+$verifiedProposalBlock = Get-BracedBlock $storeImpl "pub fn commit_verified_proposal" "sole-mutation"
 $derivedResultBlock = Get-BracedBlock $storeImpl "fn register_derived_result" "sole-mutation"
 $graphValidation = $applyBlock.LastIndexOf("validate_graph(", [StringComparison]::Ordinal)
 $productValidation = $applyBlock.LastIndexOf("validate_product(", [StringComparison]::Ordinal)
@@ -262,6 +271,21 @@ $validationBoundary = [Math]::Max($graphValidation, $productValidation)
 $validatedTail = $applyBlock.Substring($validationBoundary, $revisionAppend - $validationBoundary)
 if ($validatedTail -match '(?m)(?:&mut\s+(?:nodes|product)\b|\b(?:nodes|product)\s*(?:=|\.\s*(?:clear|insert|remove|append|extend|retain|entry|get_mut)\b))') {
     Fail-Guard "sole-mutation" "apply_batch mutates candidate canonical state after validation and before revision append."
+}
+foreach ($requiredRollbackLine in @(
+    "let previous_revisions = self.revisions.clone()",
+    "let previous_cursor = self.cursor",
+    "let previous_next_revision_id = self.next_revision_id",
+    "let previous_registry = self.evaluation_registry.clone()",
+    ".apply_batch(&proposal.batch)",
+    "self.revisions = previous_revisions",
+    "self.cursor = previous_cursor",
+    "self.next_revision_id = previous_next_revision_id",
+    "self.evaluation_registry = previous_registry"
+)) {
+    if (-not $verifiedProposalBlock.Contains($requiredRollbackLine)) {
+        Fail-Guard "sole-mutation" "Verified Proposal rollback no longer restores the complete pre-commit authority."
+    }
 }
 if (-not $derivedResultBlock.Contains("event.document_id != current.snapshot.document_id()") -or
     -not $derivedResultBlock.Contains("event.revision_id != current.snapshot.revision_id()") -or
@@ -302,6 +326,7 @@ if (-not $retentionBlock.Contains("Arc::clone(&self.revisions[self.cursor])") -o
 $unguardedStoreImpl = $storeImpl
 foreach ($authorizedBlock in @(
     $applyBlock,
+    $verifiedProposalBlock,
     $derivedResultBlock,
     $fromProductBlock,
     $undoBlock,

@@ -117,7 +117,7 @@ fn canonical_projection_carries_every_c1a_authority_field() {
         assert!(agent.contains(&format!("occurrence.{}=", occurrence_id.0)));
     }
     assert!(agent.contains(
-        "summary.counts=evaluator_nodes:0,overrides:0,definitions:1,features:3,occurrences:2,groups:1,local_groups:0,local_occurrences:0"
+        "summary.counts=evaluator_nodes:0,overrides:0,parameter_bindings:0,definitions:1,features:3,occurrences:2,groups:1,local_groups:0,local_occurrences:0"
     ));
 
     assert_eq!(projection.schema(), INTERACTION_PROJECTION_V1);
