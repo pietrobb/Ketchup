@@ -112,7 +112,11 @@ fn hiding_and_unhiding_the_selection_is_one_undo_step_each() {
 fn zoom_fit_frames_the_whole_model_without_changing_it() {
     let mut shell = Shell::new();
     shell.click_at(shell.viewport_rect().center());
-    assert!(shell.app_mut().copy_selected(Vec3::new(2400.0, 0.0, 0.0)));
+    assert!(
+        shell
+            .app_mut()
+            .copy_selected(Vec3::new(100_000.0, 0.0, 0.0))
+    );
     shell.settle();
 
     let zoom_before = shell.app().camera_zoom();
@@ -125,12 +129,46 @@ fn zoom_fit_frames_the_whole_model_without_changing_it() {
         "framing a model wider than the viewport must zoom out, was {zoom_before} and stayed {}",
         shell.app().camera_zoom()
     );
+    for occurrence_id in [1, 2] {
+        let (origin, size) = shell
+            .app()
+            .occurrence_box_geometry(occurrence_id)
+            .expect("the framed occurrence must exist");
+        let centre = Vec3::new(
+            origin.x + size.x * 0.5,
+            origin.y + size.y * 0.5,
+            origin.z + size.z * 0.5,
+        );
+        let screen = shell.app().project_to_screen(centre, shell.viewport_rect());
+        assert!(
+            shell.viewport_rect().contains(screen),
+            "Zoom Fit must keep occurrence {occurrence_id} visible, projected to {screen:?}"
+        );
+    }
     assert_eq!(
         shell.app().document_revision(),
         revision,
         "the camera is not part of the document"
     );
     assert_eq!(shell.app().canonical_digest(), digest);
+}
+
+#[test]
+fn wheel_zoom_can_pull_back_far_beyond_the_old_small_model_limit() {
+    let mut shell = Shell::new();
+    let viewport_centre = shell.viewport_rect().center();
+
+    for _ in 0..30 {
+        shell.scroll_at(viewport_centre, -120.0);
+    }
+
+    assert!(
+        shell.app().camera_zoom() < 0.1,
+        "wheel zoom must not stop at the former 0.8 limit, got {}",
+        shell.app().camera_zoom()
+    );
+    assert!(shell.app().camera_zoom().is_finite());
+    assert!(shell.app().camera_zoom() > 0.0);
 }
 
 #[test]

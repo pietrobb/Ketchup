@@ -265,6 +265,16 @@ impl Shell {
         self.event(egui::Event::PointerMoved(position));
     }
 
+    /// Scroll the wheel over `position` by a point delta.
+    pub fn scroll_at(&mut self, position: Pos2, delta_y: f32) {
+        self.move_pointer(position);
+        self.event(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: Vec2::new(0.0, delta_y),
+            modifiers: Modifiers::NONE,
+        });
+    }
+
     /// Press, release, and settle a primary click at `position`.
     ///
     /// Used for the viewport, which is a painted surface rather than a widget

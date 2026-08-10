@@ -87,6 +87,10 @@ const TOOL_RAIL_WIDTH: f32 = 54.0;
 const PERSPECTIVE_NEAR_MM: f64 = 1.0;
 /// How far outside the model's bounding sphere a converging eye must sit.
 const CAMERA_CLEARANCE: f64 = 2.5;
+/// Smallest useful magnification. This still frames scenes hundreds of kilometres wide.
+const MIN_CAMERA_ZOOM: f32 = 1.0e-6;
+/// Largest useful magnification before floating-point picking becomes unstable.
+const MAX_CAMERA_ZOOM: f32 = 8.0;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NativeDocumentInspection {
@@ -2947,7 +2951,7 @@ impl KetchupApp {
         let flat = projected_bounds(&corners, |point| self.project(point, rect));
         let fit =
             (rect.width() / flat.width().max(1.0)).min(rect.height() / flat.height().max(1.0));
-        self.zoom = (fit * 0.82).clamp(0.8, 8.0);
+        self.zoom = (fit * 0.82).clamp(MIN_CAMERA_ZOOM, MAX_CAMERA_ZOOM);
         let scaled = projected_bounds(&corners, |point| self.project(point, rect));
         self.pan = rect.center() - scaled.center();
         self.digest = self.catalog.format(
@@ -5202,7 +5206,7 @@ impl KetchupApp {
                 let scale = self.view_scale(rect);
                 let view_plane_point =
                     target + right * (horizontal / scale) + up * (vertical / scale);
-                Ray::new(view_plane_point - forward * 10_000.0, forward).ok()
+                Ray::new(view_plane_point - forward * self.camera_distance(), forward).ok()
             }
             ProjectionMode::Perspective => {
                 let focal = self.camera_focal(rect);
@@ -5781,7 +5785,8 @@ impl KetchupApp {
         }
         if response.hovered() {
             let scroll = ui.input(|input| input.raw_scroll_delta.y);
-            self.zoom = (self.zoom * (1.0 + scroll * 0.001)).clamp(0.8, 8.0);
+            self.zoom =
+                (self.zoom * (scroll * 0.001).exp()).clamp(MIN_CAMERA_ZOOM, MAX_CAMERA_ZOOM);
         }
         let forward = Vec3::new(
             -f64::from(self.yaw.sin() * self.pitch.sin()),
@@ -6925,21 +6930,27 @@ impl KetchupApp {
         });
     }
 
-    /// Paint the construction grid and the three world axes on Z = 0.
+    /// Paint an adaptive construction grid and the three world axes on Z = 0.
     ///
-    /// Every fourth line is a major one, which is what makes a large model
-    /// readable at a glance: the minor lines give the 10 mm rhythm and the
-    /// major ones give the 40 mm one. Lines are clipped to the viewport, so a
-    /// steep camera cannot smear them across the panels.
+    /// The painted patch follows the visible part of the ground plane. Its
+    /// spacing advances through metric 1/2/5 steps so lines stay legible while
+    /// the camera moves between millimetre details and kilometre-scale scenes.
     fn paint_ground_plane(&self, painter: &egui::Painter, rect: Rect) {
-        const EXTENT: usize = 14;
         let palette = self.palette();
-        let step = GRID_STEP_MM * 4.0;
-        #[expect(
-            clippy::cast_precision_loss,
-            reason = "EXTENT is 14, far inside f64's exact integer range"
-        )]
-        let reach = step * EXTENT as f64;
+        let scale = self.view_scale(rect).max(1.0e-12);
+        let step = adaptive_grid_step(scale);
+        let centre = self
+            .screen_to_plane(rect.center(), rect, 0.0)
+            .unwrap_or_else(|| self.camera_target());
+        let half_reach = f64::from(rect.width().max(rect.height())) / scale * 1.25;
+        let x_start = ((centre.x - half_reach) / step).floor() as i64;
+        let x_end = ((centre.x + half_reach) / step).ceil() as i64;
+        let y_start = ((centre.y - half_reach) / step).floor() as i64;
+        let y_end = ((centre.y + half_reach) / step).ceil() as i64;
+        let x_min = x_start as f64 * step;
+        let x_max = x_end as f64 * step;
+        let y_min = y_start as f64 * step;
+        let y_max = y_end as f64 * step;
         let painter = painter.with_clip_rect(rect);
         let segment = |from: Vec3, to: Vec3, major: bool| {
             let stroke = Stroke::new(
@@ -6952,40 +6963,46 @@ impl KetchupApp {
             );
             painter.line_segment([self.project(from, rect), self.project(to, rect)], stroke);
         };
-        for index in -(EXTENT as isize)..=(EXTENT as isize) {
-            #[expect(
-                clippy::cast_precision_loss,
-                reason = "the index spans -14..=14, far inside f64's exact integer range"
-            )]
-            let offset = index as f64 * step;
-            if index == 0 {
-                continue;
+        for index in x_start..=x_end {
+            if index != 0 {
+                segment(
+                    Vec3::new(index as f64 * step, y_min, 0.0),
+                    Vec3::new(index as f64 * step, y_max, 0.0),
+                    index % 5 == 0,
+                );
             }
-            let major = index % 4 == 0;
-            segment(
-                Vec3::new(offset, -reach, 0.0),
-                Vec3::new(offset, reach, 0.0),
-                major,
-            );
-            segment(
-                Vec3::new(-reach, offset, 0.0),
-                Vec3::new(reach, offset, 0.0),
-                major,
-            );
+        }
+        for index in y_start..=y_end {
+            if index != 0 {
+                segment(
+                    Vec3::new(x_min, index as f64 * step, 0.0),
+                    Vec3::new(x_max, index as f64 * step, 0.0),
+                    index % 5 == 0,
+                );
+            }
         }
         // The axes are the one place the viewport does not use the palette: red,
         // green and blue for X, Y and Z is a convention the user already knows
         // from every other modeller, and it must not shift with the theme.
-        for (direction, color) in [
-            (Vec3::new(1.0, 0.0, 0.0), Color32::from_rgb(224, 86, 63)),
-            (Vec3::new(0.0, 1.0, 0.0), Color32::from_rgb(93, 187, 99)),
-            (Vec3::new(0.0, 0.0, 1.0), Color32::from_rgb(78, 134, 199)),
+        for (from, to, color) in [
+            (
+                Vec3::new(x_min, 0.0, 0.0),
+                Vec3::new(x_max, 0.0, 0.0),
+                Color32::from_rgb(224, 86, 63),
+            ),
+            (
+                Vec3::new(0.0, y_min, 0.0),
+                Vec3::new(0.0, y_max, 0.0),
+                Color32::from_rgb(93, 187, 99),
+            ),
+            (
+                Vec3::new(0.0, 0.0, -half_reach),
+                Vec3::new(0.0, 0.0, half_reach),
+                Color32::from_rgb(78, 134, 199),
+            ),
         ] {
             painter.line_segment(
-                [
-                    self.project(direction * -reach, rect),
-                    self.project(direction * reach, rect),
-                ],
+                [self.project(from, rect), self.project(to, rect)],
                 Stroke::new(1.6_f32, color),
             );
         }
@@ -9928,6 +9945,23 @@ fn projected_polygon_has_area(points: &[Pos2]) -> bool {
         })
         .sum::<f32>();
     twice_area.abs() >= 1.0
+}
+
+fn adaptive_grid_step(pixels_per_mm: f64) -> f64 {
+    const TARGET_SPACING_PX: f64 = 32.0;
+    let desired = (TARGET_SPACING_PX / pixels_per_mm.max(1.0e-12)).max(GRID_STEP_MM);
+    let magnitude = 10.0_f64.powf(desired.log10().floor());
+    let normalized = desired / magnitude;
+    let factor = if normalized <= 1.0 {
+        1.0
+    } else if normalized <= 2.0 {
+        2.0
+    } else if normalized <= 5.0 {
+        5.0
+    } else {
+        10.0
+    };
+    factor * magnitude
 }
 
 fn projected_bounds(points: &[Vec3], project: impl Fn(Vec3) -> Pos2) -> Rect {
@@ -13985,6 +14019,24 @@ mod tests {
     }
 
     #[test]
+    fn parallel_view_picks_a_hundred_metre_body_after_zoom_fit() {
+        let mut app = KetchupApp::new();
+        let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(1600.0, 900.0));
+        app.viewport_rect = Some(rect);
+        assert!(app.create_box_at(Vec3::new(0.0, 200.0, 0.0), Vec3::new(100_000.0, 60.0, 20.0),));
+        app.zoom_fit();
+        app.refresh_camera_distance();
+        let visible_top = app.project(Vec3::new(75_000.0, 230.0, 20.0), rect);
+
+        let selected = app
+            .exact_pick_at_screen(visible_top, rect)
+            .expect("a visible point on a 100 m body must remain pickable");
+
+        assert_eq!(selected.definition_id, DefinitionId(2));
+        assert_eq!(selected.instance_path, InstancePath::root(OccurrenceId(2)));
+    }
+
+    #[test]
     fn viewport_picks_the_geometry_currently_shown_in_preview() {
         let mut app = KetchupApp::new();
         let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0));
@@ -14249,6 +14301,18 @@ mod tests {
         assert_eq!(transform.matrix()[3], 70.0);
         assert_eq!(transform.matrix()[7], 60.0);
         assert_eq!(transform.matrix()[11], 5.0);
+    }
+
+    #[test]
+    fn adaptive_grid_keeps_metric_lines_readable_across_camera_scales() {
+        assert_eq!(adaptive_grid_step(8.0), 10.0);
+        assert_eq!(adaptive_grid_step(0.01), 5_000.0);
+        assert_eq!(adaptive_grid_step(0.000_01), 5_000_000.0);
+        for scale in [8.0, 1.0, 0.01, 0.000_01] {
+            let screen_spacing = adaptive_grid_step(scale) * scale;
+            assert!(screen_spacing >= 32.0);
+            assert!(screen_spacing <= 80.0);
+        }
     }
 
     #[test]
