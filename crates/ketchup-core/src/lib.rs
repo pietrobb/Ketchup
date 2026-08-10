@@ -13,6 +13,7 @@ pub mod graph;
 pub mod intent;
 pub mod persistence;
 pub mod prismatic;
+pub mod space;
 pub mod state_view;
 pub mod validation;
 pub mod validator_hosting;

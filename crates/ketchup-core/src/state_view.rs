@@ -1,7 +1,9 @@
 use crate::document::{
-    EvaluationReport, EvaluationStatus, EvaluatorNodeKind, Snapshot, Transform, UnitSystem,
+    EvaluationReport, EvaluationStatus, EvaluatorNodeKind, InstancePathStep, Snapshot, Transform,
+    UnitSystem,
 };
-use crate::graph::{OverrideMergePolicy, RuleOutput, SlotSegment, ValueType};
+use crate::graph::{OverrideMergePolicy, RuleOutput, SlotResolution, SlotSegment, ValueType};
+use crate::space::{ClearanceOwner, ClearanceSeverity};
 use crate::validation::ValidationReport;
 use std::fmt::Write;
 
@@ -40,10 +42,10 @@ pub fn encode_semantic_state_with_results(
     write_header(&mut agent, AGENT_STATE_VIEW_V1, snapshot);
     writeln!(
         agent,
-        "summary.counts=evaluator_nodes:{},overrides:{},parameter_bindings:{},definitions:{},features:{},occurrences:{},groups:{},local_groups:{},local_occurrences:{}",
+        "summary.counts=evaluator_nodes:{},overrides:{},parameter_bindings:{},spaces:{},clearance_volumes:{},persistent_dimensions:{},tags:{},collections:{},definitions:{},features:{},occurrences:{},groups:{},local_groups:{},local_occurrences:{}",
         snapshot.evaluator_node_count(), snapshot.overrides().count(),
-        snapshot.feature_parameter_bindings().count(), snapshot.definitions().count(),
-        snapshot.features().count(), snapshot.occurrences().count(), snapshot.groups().count(),
+        snapshot.feature_parameter_bindings().count(), snapshot.spaces().count(), snapshot.clearance_volumes().count(), snapshot.persistent_dimensions().count(), snapshot.tags().count(), snapshot.collections().count(),
+        snapshot.definitions().count(), snapshot.features().count(), snapshot.occurrences().count(), snapshot.groups().count(),
         snapshot.local_groups().count(), snapshot.local_occurrences().count()
     ).unwrap();
 
@@ -300,6 +302,91 @@ pub fn encode_semantic_state_with_results(
         }
     }
 
+    for dimension in snapshot.persistent_dimensions() {
+        let target = match &dimension.target {
+            crate::document::PersistentDimensionTarget::FeatureParameter(target) => {
+                format!("feature:{}:{}", target.feature_id.0, target.slot.label())
+            }
+            crate::document::PersistentDimensionTarget::DerivedOutput(target) => format!(
+                "slot:{}:{}",
+                target.root_rule_node_id.0,
+                slot_path(target.slot_path.segments())
+            ),
+            crate::document::PersistentDimensionTarget::ExactFeatureParameter {
+                definition_id,
+                producer_feature_id,
+                semantic_role,
+                source_element_id,
+                slot,
+            } => format!(
+                "exact:{}:{}:{semantic_role:?}:{source_element_id:?}:{}",
+                definition_id.0,
+                producer_feature_id.0,
+                slot.label()
+            ),
+        };
+        let projection = snapshot
+            .project_persistent_dimension(dimension.id)
+            .expect("canonical persistent dimension projects");
+        let health = match projection.health {
+            crate::document::DimensionReferenceHealth::Resolved => "resolved".to_owned(),
+            crate::document::DimensionReferenceHealth::Ambiguous { segment_index } => {
+                format!("ambiguous:{segment_index}")
+            }
+            crate::document::DimensionReferenceHealth::Lost => "lost".to_owned(),
+        };
+        for output in [&mut complete, &mut agent] {
+            writeln!(
+                output,
+                "persistent_dimension.{}.name={:?}",
+                dimension.id.0, dimension.name
+            )
+            .unwrap();
+            writeln!(
+                output,
+                "persistent_dimension.{}.target={target}",
+                dimension.id.0
+            )
+            .unwrap();
+            writeln!(
+                output,
+                "persistent_dimension.{}.unit={}",
+                dimension.id.0,
+                dimension.presentation.unit.label()
+            )
+            .unwrap();
+            writeln!(
+                output,
+                "persistent_dimension.{}.decimal_places={}",
+                dimension.id.0, dimension.presentation.decimal_places
+            )
+            .unwrap();
+            writeln!(
+                output,
+                "persistent_dimension.{}.health={health}",
+                dimension.id.0
+            )
+            .unwrap();
+            writeln!(
+                output,
+                "persistent_dimension.{}.millimetres.f64_bits={}",
+                dimension.id.0,
+                projection.millimetres.map_or_else(
+                    || "unresolved".to_owned(),
+                    |value| format!("{:016x}", value.to_bits())
+                )
+            )
+            .unwrap();
+            writeln!(
+                output,
+                "persistent_dimension.{}.display={:?}",
+                dimension.id.0,
+                projection.display_text.as_deref().unwrap_or("unresolved")
+            )
+            .unwrap();
+        }
+    }
+
     for joint in snapshot.joints() {
         for output in [&mut complete, &mut agent] {
             writeln!(
@@ -345,6 +432,162 @@ pub fn encode_semantic_state_with_results(
             )
             .unwrap();
         }
+    }
+
+    for space in snapshot.spaces() {
+        let adjacent = id_list(space.adjacent_to().iter().map(|id| id.0));
+        let accessible = id_list(space.accessible_to().iter().map(|id| id.0));
+        let min = space.volume().min();
+        let max = space.volume().max();
+        for output in [&mut complete, &mut agent] {
+            writeln!(
+                output,
+                "space.{}.purpose={:?}",
+                space.id().0,
+                space.purpose()
+            )
+            .unwrap();
+            writeln!(output, "space.{}.adjacent_to={adjacent}", space.id().0).unwrap();
+            writeln!(output, "space.{}.accessible_to={accessible}", space.id().0).unwrap();
+            writeln!(
+                output,
+                "space.{}.aabb.f64_bits={:016x},{:016x},{:016x}:{:016x},{:016x},{:016x}",
+                space.id().0,
+                min[0].to_bits(),
+                min[1].to_bits(),
+                min[2].to_bits(),
+                max[0].to_bits(),
+                max[1].to_bits(),
+                max[2].to_bits()
+            )
+            .unwrap();
+        }
+    }
+
+    for clearance in snapshot.clearance_volumes() {
+        let owner = match clearance.owner() {
+            ClearanceOwner::Occurrence(path) => {
+                let mut label = format!("occurrence:{}", path.root_occurrence().0);
+                for step in path.steps() {
+                    match step {
+                        InstancePathStep::Group(id) => write!(label, "/group:{}", id.0).unwrap(),
+                        InstancePathStep::Occurrence(id) => {
+                            write!(label, "/occurrence:{}", id.0).unwrap();
+                        }
+                    }
+                }
+                label
+            }
+            ClearanceOwner::Space(id) => format!("space:{}", id.0),
+        };
+        let health = match clearance.derived_from() {
+            None => "manual".to_owned(),
+            Some(identity) => match snapshot.resolve_slot(identity) {
+                SlotResolution::Resolved => "resolved".to_owned(),
+                SlotResolution::Ambiguous { segment_index } => {
+                    format!("ambiguous:{segment_index}")
+                }
+                SlotResolution::Lost { segment_index } => format!("lost:{segment_index}"),
+            },
+        };
+        let min = clearance.volume().min();
+        let max = clearance.volume().max();
+        for output in [&mut complete, &mut agent] {
+            writeln!(
+                output,
+                "clearance_volume.{}.owner={owner}",
+                clearance.id().0
+            )
+            .unwrap();
+            writeln!(
+                output,
+                "clearance_volume.{}.reason={:?}",
+                clearance.id().0,
+                clearance.reason()
+            )
+            .unwrap();
+            writeln!(
+                output,
+                "clearance_volume.{}.severity={}",
+                clearance.id().0,
+                match clearance.severity() {
+                    ClearanceSeverity::Advisory => "advisory",
+                    ClearanceSeverity::Required => "required",
+                }
+            )
+            .unwrap();
+            writeln!(
+                output,
+                "clearance_volume.{}.slot_health={health}",
+                clearance.id().0
+            )
+            .unwrap();
+            writeln!(
+                output,
+                "clearance_volume.{}.aabb.f64_bits={:016x},{:016x},{:016x}:{:016x},{:016x},{:016x}",
+                clearance.id().0,
+                min[0].to_bits(),
+                min[1].to_bits(),
+                min[2].to_bits(),
+                max[0].to_bits(),
+                max[1].to_bits(),
+                max[2].to_bits()
+            )
+            .unwrap();
+        }
+    }
+
+    for tag in snapshot.tags() {
+        writeln!(complete, "tag.{}.name={:?}", tag.id().0, tag.name()).unwrap();
+        writeln!(complete, "tag.{}.visible={}", tag.id().0, tag.visible()).unwrap();
+        writeln!(
+            complete,
+            "tag.{}.occurrences={}",
+            tag.id().0,
+            id_list(
+                snapshot
+                    .occurrences_with_tag(tag.id())
+                    .map(|occurrence| occurrence.id().0)
+            )
+        )
+        .unwrap();
+        writeln!(
+            agent,
+            "tag.{}=name:{:?},visible:{},occurrences:{}",
+            tag.id().0,
+            tag.name(),
+            tag.visible(),
+            id_list(
+                snapshot
+                    .occurrences_with_tag(tag.id())
+                    .map(|occurrence| occurrence.id().0)
+            )
+        )
+        .unwrap();
+    }
+
+    for collection in snapshot.collections() {
+        let occurrence_ids = id_list(collection.occurrence_ids().map(|id| id.0));
+        writeln!(
+            complete,
+            "collection.{}.name={:?}",
+            collection.id().0,
+            collection.name()
+        )
+        .unwrap();
+        writeln!(
+            complete,
+            "collection.{}.occurrences={occurrence_ids}",
+            collection.id().0
+        )
+        .unwrap();
+        writeln!(
+            agent,
+            "collection.{}=name:{:?},occurrences:{occurrence_ids}",
+            collection.id().0,
+            collection.name()
+        )
+        .unwrap();
     }
 
     for definition in snapshot.definitions() {
@@ -588,6 +831,169 @@ pub fn encode_semantic_state_with_results(
                     feature.definition_id().0,
                     target.0,
                     tool.0
+                )
+                .unwrap();
+            }
+            crate::document::FeatureKind::MeshBody(spec) => {
+                writeln!(complete, "feature.{}.kind=mesh_body", feature.id().0).unwrap();
+                writeln!(
+                    complete,
+                    "feature.{}.mesh.schema={:?}",
+                    feature.id().0,
+                    spec.schema
+                )
+                .unwrap();
+                for (index, vertex) in spec.vertices_mm.iter().enumerate() {
+                    writeln!(
+                        complete,
+                        "feature.{}.mesh.vertex.{index}.f64_bits={:016x},{:016x},{:016x}",
+                        feature.id().0,
+                        vertex[0].to_bits(),
+                        vertex[1].to_bits(),
+                        vertex[2].to_bits()
+                    )
+                    .unwrap();
+                }
+                for (index, triangle) in spec.triangles.iter().enumerate() {
+                    writeln!(
+                        complete,
+                        "feature.{}.mesh.triangle.{index}={},{},{}",
+                        feature.id().0,
+                        triangle[0],
+                        triangle[1],
+                        triangle[2]
+                    )
+                    .unwrap();
+                }
+                match &spec.authority {
+                    crate::document::MeshAuthority::Authored { provenance } => {
+                        writeln!(
+                            complete,
+                            "feature.{}.mesh.authority=authored:{provenance:?}",
+                            feature.id().0
+                        )
+                        .unwrap();
+                    }
+                    crate::document::MeshAuthority::ExactConversion(conversion) => {
+                        writeln!(
+                            complete,
+                            "feature.{}.mesh.authority=exact_conversion",
+                            feature.id().0
+                        )
+                        .unwrap();
+                        writeln!(
+                            complete,
+                            "feature.{}.mesh.source_document={}",
+                            feature.id().0,
+                            conversion.source_document_id.0
+                        )
+                        .unwrap();
+                        writeln!(
+                            complete,
+                            "feature.{}.mesh.source_revision={}",
+                            feature.id().0,
+                            conversion.source_revision
+                        )
+                        .unwrap();
+                        writeln!(
+                            complete,
+                            "feature.{}.mesh.source_digest={:?}",
+                            feature.id().0,
+                            conversion.source_digest
+                        )
+                        .unwrap();
+                        writeln!(
+                            complete,
+                            "feature.{}.mesh.source_definition={}",
+                            feature.id().0,
+                            conversion.source_definition_id.0
+                        )
+                        .unwrap();
+                        writeln!(
+                            complete,
+                            "feature.{}.mesh.source_feature={}",
+                            feature.id().0,
+                            conversion.source_feature_id.0
+                        )
+                        .unwrap();
+                        writeln!(
+                            complete,
+                            "feature.{}.mesh.source_result_fingerprint={:?}",
+                            feature.id().0,
+                            conversion.source_result_fingerprint
+                        )
+                        .unwrap();
+                        writeln!(
+                            complete,
+                            "feature.{}.mesh.source_evaluator={:?}",
+                            feature.id().0,
+                            conversion.source_evaluator
+                        )
+                        .unwrap();
+                        writeln!(
+                            complete,
+                            "feature.{}.mesh.source_backend={:?}",
+                            feature.id().0,
+                            conversion.source_backend
+                        )
+                        .unwrap();
+                        writeln!(
+                            complete,
+                            "feature.{}.mesh.source_tolerance={:?}",
+                            feature.id().0,
+                            conversion.source_tolerance
+                        )
+                        .unwrap();
+                        writeln!(
+                            complete,
+                            "feature.{}.mesh.tessellation_tolerance={:?}",
+                            feature.id().0,
+                            conversion.tessellation_tolerance
+                        )
+                        .unwrap();
+                        writeln!(
+                            complete,
+                            "feature.{}.mesh.destination_definition={}",
+                            feature.id().0,
+                            conversion.destination_definition_id.0
+                        )
+                        .unwrap();
+                        writeln!(
+                            complete,
+                            "feature.{}.mesh.destination_feature={}",
+                            feature.id().0,
+                            conversion.destination_feature_id.0
+                        )
+                        .unwrap();
+                        writeln!(
+                            complete,
+                            "feature.{}.mesh.exact_reference_consequence=lost",
+                            feature.id().0
+                        )
+                        .unwrap();
+                        for (index, semantic) in conversion.unsupported_semantics.iter().enumerate()
+                        {
+                            writeln!(
+                                complete,
+                                "feature.{}.mesh.unsupported.{index}={semantic:?}",
+                                feature.id().0
+                            )
+                            .unwrap();
+                        }
+                    }
+                }
+                writeln!(
+                    agent,
+                    "feature.{}=name:{:?},kind:mesh_body,definition:{},vertices:{},triangles:{},authority:{}",
+                    feature.id().0,
+                    feature.name(),
+                    feature.definition_id().0,
+                    spec.vertices_mm.len(),
+                    spec.triangles.len(),
+                    match &spec.authority {
+                        crate::document::MeshAuthority::Authored { .. } => "authored",
+                        crate::document::MeshAuthority::ExactConversion(_) => "exact_conversion",
+                    }
                 )
                 .unwrap();
             }

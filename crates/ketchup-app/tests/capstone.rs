@@ -147,7 +147,12 @@ fn an_exact_rectangle_becomes_a_solid_through_exact_push_pull() {
     assert_eq!(
         shell.app().active_box_count(),
         2,
-        "an exact rectangle must produce a second solid"
+        "an exact rectangle must produce a second profile occurrence"
+    );
+    assert_eq!(
+        shell.app().occurrence_box_geometry(2).unwrap().1.z,
+        0.0,
+        "Rectangle must remain profile-only until Push/Pull"
     );
     assert_eq!(
         shell.app().document_revision(),

@@ -2,8 +2,9 @@
 
 use crate::beam_m5::{BeamExactPiecePackage, BeamExactResultKey};
 use crate::document::{
-    BooleanOperation, DefinitionId, DocumentId, FeatureId, FeatureKind, InstancePath, Snapshot,
-    Transform,
+    BooleanOperation, CanonicalCommand, CommandBatch, DefinitionId, DocumentId,
+    ExactReferenceConversionConsequence, ExactToMeshConversion, FeatureId, FeatureKind,
+    InstancePath, MESH_BODY_SCHEMA_V1, MeshAuthority, MeshBodySpec, Snapshot, Transform,
 };
 use crate::graph::DerivedIdentity;
 use sha2::{Digest, Sha256};
@@ -230,6 +231,27 @@ impl BodySubshapeRef {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExactReferenceQuarantineReason {
+    InvalidLineage,
+    WrongDocument,
+    IncompatibleEvaluationEnvelope,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ExactReferenceResolution {
+    Resolved {
+        reference: Box<BodySubshapeRef>,
+    },
+    Ambiguous {
+        candidate_count: usize,
+    },
+    Lost,
+    Quarantined {
+        reason: ExactReferenceQuarantineReason,
+    },
+}
+
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct BodyResultIdentity {
     pub schema: String,
@@ -408,6 +430,66 @@ impl ExactBodyPackage {
             Self::Rectangle(_) => None,
         }
     }
+
+    pub fn detached_mesh_conversion_batch(
+        &self,
+        snapshot: &Snapshot,
+        destination_definition_id: DefinitionId,
+        destination_definition_name: impl Into<String>,
+        destination_feature_id: FeatureId,
+        destination_feature_name: impl Into<String>,
+    ) -> Result<CommandBatch, ExactProductError> {
+        if !self.is_current(snapshot) {
+            return Err(ExactProductError::StaleResult);
+        }
+        let key = self.result_key();
+        let spec = MeshBodySpec {
+            schema: MESH_BODY_SCHEMA_V1.to_owned(),
+            vertices_mm: self
+                .vertices()
+                .iter()
+                .map(|vertex| vertex.position_mm)
+                .collect(),
+            triangles: self
+                .triangles()
+                .iter()
+                .map(|triangle| triangle.vertex_indices)
+                .collect(),
+            authority: MeshAuthority::ExactConversion(ExactToMeshConversion {
+                source_document_id: key.document_id,
+                source_revision: key.source_revision,
+                source_digest: key.source_digest,
+                source_definition_id: key.definition_id,
+                source_feature_id: key.producer_feature_id,
+                source_result_fingerprint: key.result_fingerprint,
+                source_evaluator: key.evaluator,
+                source_backend: key.backend,
+                source_tolerance: key.tolerance.clone(),
+                tessellation_tolerance: key.tolerance,
+                destination_definition_id,
+                destination_feature_id,
+                unsupported_semantics: vec![
+                    "analytic_surfaces".to_owned(),
+                    "canonical_exact_features_rules_dimensions".to_owned(),
+                    "durable_exact_subshape_references".to_owned(),
+                    "exact_topology".to_owned(),
+                ],
+                exact_reference_consequence: ExactReferenceConversionConsequence::Lost,
+            }),
+        };
+        Ok(CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: destination_definition_id,
+                name: destination_definition_name.into(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: destination_feature_id,
+                definition_id: destination_definition_id,
+                name: destination_feature_name.into(),
+                kind: FeatureKind::MeshBody(spec),
+            },
+        ]))
+    }
 }
 
 impl ExactBodyView for ExactBodyPackage {
@@ -514,7 +596,7 @@ fn mesh_export_from_view(
         - matrix[1] * (matrix[4] * matrix[10] - matrix[6] * matrix[8])
         + matrix[2] * (matrix[4] * matrix[9] - matrix[5] * matrix[8]);
     let loss_report = format!(
-        "authority=accepted exact OCCT B-Rep\nconversion=exact-body-to-world-space-mesh\nloss=exact topology, analytic surfaces, feature editability, and durable face identity are not preserved by OBJ\ntolerance={}\nsource_digest={}\n{}\nresult_fingerprint={}\n",
+        "authority=accepted exact OCCT B-Rep\nformat=Wavefront OBJ\nconversion=exact-body-to-world-space-mesh\neditability_loss=canonical features, rules, and dimensions are not preserved\ntopology_loss=exact topology, analytic surfaces, and durable face identity are not preserved\ntolerance_loss=geometry is approximated by the accepted tessellation under the source tolerance profile\nsource_tolerance={}\nsource_digest={}\n{}\nresult_fingerprint={}\n",
         view.tolerance(),
         view.source_digest(),
         view.producer_identity(),
@@ -696,6 +778,74 @@ impl ExactResultRegistry {
             .map(|(_, package)| package);
         let package = matches.next()?;
         matches.next().is_none().then_some(package)
+    }
+
+    #[must_use]
+    pub fn resolve_reference(
+        &self,
+        snapshot: &Snapshot,
+        reference: &BodySubshapeRef,
+    ) -> ExactReferenceResolution {
+        if !reference.has_valid_lineage() {
+            return ExactReferenceResolution::Quarantined {
+                reason: ExactReferenceQuarantineReason::InvalidLineage,
+            };
+        }
+        if reference.document_id != snapshot.document_id() {
+            return ExactReferenceResolution::Quarantined {
+                reason: ExactReferenceQuarantineReason::WrongDocument,
+            };
+        }
+        if snapshot
+            .feature(reference.producer_feature_id)
+            .is_none_or(|producer| producer.definition_id() != reference.definition_id)
+        {
+            return ExactReferenceResolution::Lost;
+        }
+
+        let candidates = self
+            .packages
+            .values()
+            .filter(|package| package.is_current(snapshot))
+            .flat_map(|package| package.references())
+            .filter(|candidate| {
+                candidate.has_valid_lineage()
+                    && candidate.document_id == reference.document_id
+                    && candidate.definition_id == reference.definition_id
+                    && candidate.profile_feature_id == reference.profile_feature_id
+                    && candidate.producer_feature_id == reference.producer_feature_id
+                    && candidate.semantic_role == reference.semantic_role
+                    && candidate.source_element_id == reference.source_element_id
+                    && candidate.expected_type == reference.expected_type
+                    && candidate.expected_cardinality == reference.expected_cardinality
+                    && candidate.stability == reference.stability
+            })
+            .collect::<Vec<_>>();
+        let [candidate] = candidates.as_slice() else {
+            return if candidates.is_empty() {
+                ExactReferenceResolution::Lost
+            } else {
+                ExactReferenceResolution::Ambiguous {
+                    candidate_count: candidates.len(),
+                }
+            };
+        };
+        if candidate.lineage_digest != reference.lineage_digest {
+            return ExactReferenceResolution::Quarantined {
+                reason: ExactReferenceQuarantineReason::InvalidLineage,
+            };
+        }
+        if candidate.evaluator != reference.evaluator
+            || candidate.backend != reference.backend
+            || candidate.tolerance != reference.tolerance
+        {
+            return ExactReferenceResolution::Quarantined {
+                reason: ExactReferenceQuarantineReason::IncompatibleEvaluationEnvelope,
+            };
+        }
+        ExactReferenceResolution::Resolved {
+            reference: Box::new((*candidate).clone()),
+        }
     }
 
     pub fn values(&self) -> impl Iterator<Item = &Arc<ExactBodyPackage>> {

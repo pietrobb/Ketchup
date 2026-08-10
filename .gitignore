@@ -12,6 +12,8 @@ cmake-build-*/
 /third_party/occt-src/
 /third_party/occt-build*/
 /third_party/occt-install*/
+/artifacts/
+__pycache__/
 
 # Local editor and OS files
 .vs/

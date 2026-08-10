@@ -1,9 +1,11 @@
 #![forbid(unsafe_code)]
 
-use crate::document::{InstancePath, InstancePathStep, Snapshot};
+use crate::document::{
+    DefinitionId, FeatureId, FeatureKind, InstancePath, InstancePathStep, Snapshot, Transform,
+};
 use crate::exact_product::{
-    BodyResultIdentity, BodySubshapeRef, EXACT_RECTANGLE_EVALUATOR_V1, ExactFaceRole,
-    ExactRenderPackage,
+    BodyResultIdentity, BodySubshapeRef, EXACT_RECTANGLE_EVALUATOR_V1, ExactBodyPackage,
+    ExactFaceRole, ExactRenderPackage, ExactResultKey, ExactResultRegistry,
 };
 use crate::graph::{DerivedIdentity, SlotResolution, sha256_hex};
 use crate::prismatic::{
@@ -24,6 +26,13 @@ pub const EXACT_VALIDATOR_INPUT_V1: &str = "ketchup.exact-body-validation-input.
 pub const EXACT_VALIDATION_POLICY_V1: &str = "ketchup.policy.exact-body-validation.v1";
 pub const EXACT_AABB_ENVELOPE_METHOD_V1: &str =
     "ketchup.method.exact-body-aabb-envelope.cpu-f64.v1";
+pub const GENERAL_BODY_VALIDATOR_CONTRACT_V1: &str = "ketchup.validator.general-bodies.v1";
+pub const GENERAL_BODY_VALIDATOR_IMPLEMENTATION_V1: &str =
+    "ketchup.builtin.general-bodies.aabb-cpu-f64.v1";
+pub const GENERAL_BODY_VALIDATOR_INPUT_V1: &str = "ketchup.general-body-validation-input.v1";
+pub const GENERAL_BODY_VALIDATION_POLICY_V1: &str = "ketchup.policy.general-body-validation.v1";
+pub const GENERAL_BODY_AABB_METHOD_V1: &str =
+    "ketchup.method.general-body-aabb-envelope.cpu-f64.v1";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ExactValidationError {
@@ -740,6 +749,495 @@ fn clearance(left: Aabb, right: Aabb) -> (ExactClearanceRelation, f64) {
     } else {
         (ExactClearanceRelation::Touching, 0.0)
     }
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum GeneralBodySource {
+    Exact(ExactResultKey),
+    CanonicalMesh {
+        definition_id: DefinitionId,
+        feature_id: FeatureId,
+        geometry_digest: String,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct GeneralBodyParticipant {
+    instance_path: InstancePath,
+    source: GeneralBodySource,
+    bounds: Aabb,
+    evidence_class: EvidenceClass,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GeneralBodyValidationError {
+    InvalidOrHiddenInstance,
+    UnavailableOrAmbiguousGeometry,
+    StaleExactResult,
+    InvalidGeometry,
+    InvalidClearance,
+}
+
+impl GeneralBodyParticipant {
+    pub fn accept(
+        snapshot: &Snapshot,
+        registry: &ExactResultRegistry,
+        instance_path: InstancePath,
+        tolerance: TolerancePolicy,
+    ) -> Result<Self, GeneralBodyValidationError> {
+        let occurrence = snapshot
+            .scene_query()
+            .into_iter()
+            .find(|occurrence| occurrence.instance_path == instance_path && occurrence.visible)
+            .ok_or(GeneralBodyValidationError::InvalidOrHiddenInstance)?;
+        let transform = occurrence.transform;
+        let (source, vertices, exact_box) =
+            if let Some(package) = registry.get(&occurrence.definition_id) {
+                if !package.is_current(snapshot) {
+                    return Err(GeneralBodyValidationError::StaleExactResult);
+                }
+                let exact_box = matches!(
+                    package.as_ref(),
+                    ExactBodyPackage::Rectangle(render)
+                        if render.identity.evaluator == EXACT_RECTANGLE_EVALUATOR_V1
+                            && render.vertices.len() == 8
+                            && render.triangles.len() == 12
+                            && is_translation_only(transform)
+                );
+                (
+                    GeneralBodySource::Exact(package.result_key()),
+                    package
+                        .vertices()
+                        .iter()
+                        .map(|vertex| vertex.position_mm)
+                        .collect::<Vec<_>>(),
+                    exact_box,
+                )
+            } else {
+                let definition = snapshot
+                    .definition(occurrence.definition_id)
+                    .ok_or(GeneralBodyValidationError::UnavailableOrAmbiguousGeometry)?;
+                let [feature_id] = definition.feature_ids() else {
+                    return Err(GeneralBodyValidationError::UnavailableOrAmbiguousGeometry);
+                };
+                let FeatureKind::MeshBody(spec) = snapshot
+                    .feature(*feature_id)
+                    .ok_or(GeneralBodyValidationError::UnavailableOrAmbiguousGeometry)?
+                    .kind()
+                else {
+                    return Err(GeneralBodyValidationError::UnavailableOrAmbiguousGeometry);
+                };
+                (
+                    GeneralBodySource::CanonicalMesh {
+                        definition_id: occurrence.definition_id,
+                        feature_id: *feature_id,
+                        geometry_digest: mesh_geometry_digest(spec),
+                    },
+                    spec.vertices_mm.clone(),
+                    false,
+                )
+            };
+        let bounds = transformed_body_bounds(transform, &vertices)?;
+        let evidence_class = if exact_box {
+            EvidenceClass::Exact
+        } else {
+            EvidenceClass::Tolerant(general_tolerant_evidence(tolerance))
+        };
+        Ok(Self {
+            instance_path,
+            source,
+            bounds,
+            evidence_class,
+        })
+    }
+
+    #[must_use]
+    pub fn instance_path(&self) -> &InstancePath {
+        &self.instance_path
+    }
+
+    #[must_use]
+    pub fn source(&self) -> &GeneralBodySource {
+        &self.source
+    }
+
+    #[must_use]
+    pub const fn bounds(&self) -> Aabb {
+        self.bounds
+    }
+
+    #[must_use]
+    pub const fn evidence_class(&self) -> &EvidenceClass {
+        &self.evidence_class
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct GeneralClearanceCase {
+    pub left: GeneralBodyParticipant,
+    pub right: GeneralBodyParticipant,
+    required_minimum_mm_bits: u64,
+}
+
+impl GeneralClearanceCase {
+    pub fn new(
+        left: GeneralBodyParticipant,
+        right: GeneralBodyParticipant,
+        required_minimum_mm: f64,
+    ) -> Result<Self, GeneralBodyValidationError> {
+        if !required_minimum_mm.is_finite() || required_minimum_mm < 0.0 {
+            return Err(GeneralBodyValidationError::InvalidClearance);
+        }
+        Ok(Self {
+            left,
+            right,
+            required_minimum_mm_bits: required_minimum_mm.to_bits(),
+        })
+    }
+
+    #[must_use]
+    pub fn required_minimum_mm(&self) -> f64 {
+        f64::from_bits(self.required_minimum_mm_bits)
+    }
+}
+
+#[must_use]
+pub fn general_body_validator_descriptor() -> ValidatorDescriptor {
+    ValidatorDescriptor {
+        contract_id: GENERAL_BODY_VALIDATOR_CONTRACT_V1.to_owned(),
+        contract_version: 1,
+        implementation_id: GENERAL_BODY_VALIDATOR_IMPLEMENTATION_V1.to_owned(),
+        implementation_version: "1.0.0".to_owned(),
+        input_schema: GENERAL_BODY_VALIDATOR_INPUT_V1.to_owned(),
+        validation_class: ValidationClass::Collision,
+        read_scopes: vec![ReadScope::CanonicalGraph, ReadScope::DerivedGeometry],
+        deterministic: true,
+        limits: ResourceLimits {
+            maximum_input_bytes: 16 * 1024 * 1024,
+            maximum_work_units: 1_000_000,
+        },
+    }
+}
+
+#[must_use]
+pub fn general_body_validation_policy() -> ValidationPolicyRef {
+    ValidationPolicyRef {
+        policy_id: GENERAL_BODY_VALIDATION_POLICY_V1.to_owned(),
+        policy_version: 1,
+        contract_id: GENERAL_BODY_VALIDATOR_CONTRACT_V1.to_owned(),
+        contract_version: 1,
+        requirement: PolicyRequirement::Required,
+        severity: PolicySeverity::Error,
+        blocks_release: true,
+        governing_standard: None,
+    }
+}
+
+pub struct BuiltinGeneralBodyValidator {
+    descriptor: ValidatorDescriptor,
+    tolerance: TolerancePolicy,
+}
+
+impl BuiltinGeneralBodyValidator {
+    #[must_use]
+    pub fn new(tolerance: TolerancePolicy) -> Self {
+        Self {
+            descriptor: general_body_validator_descriptor(),
+            tolerance,
+        }
+    }
+}
+
+impl Default for BuiltinGeneralBodyValidator {
+    fn default() -> Self {
+        Self::new(TolerancePolicy::default())
+    }
+}
+
+impl HostNeutralValidator<[GeneralClearanceCase]> for BuiltinGeneralBodyValidator {
+    fn descriptor(&self) -> &ValidatorDescriptor {
+        &self.descriptor
+    }
+
+    fn invoke(
+        &self,
+        execution: ValidationExecution<'_, [GeneralClearanceCase]>,
+    ) -> ValidationReport {
+        let evidence_class = general_input_evidence(execution.input, self.tolerance);
+        let work_units = u64::try_from(execution.input.len()).unwrap_or(u64::MAX);
+        if work_units > self.descriptor.limits.maximum_work_units {
+            return ValidationReport::not_evaluated(
+                execution.invocation,
+                evidence_class,
+                "validator input exceeds its declared work envelope",
+            );
+        }
+        let input_bytes = general_body_input_bytes(execution.input);
+        if u64::try_from(input_bytes.len()).unwrap_or(u64::MAX)
+            > self.descriptor.limits.maximum_input_bytes
+        {
+            return ValidationReport::not_evaluated(
+                execution.invocation,
+                evidence_class,
+                "validator input exceeds its declared byte envelope",
+            );
+        }
+        let descriptor_matches = execution.invocation.protocol
+            == crate::validation::VALIDATOR_PROTOCOL_V1
+            && execution.invocation.contract_id == self.descriptor.contract_id
+            && execution.invocation.contract_version == self.descriptor.contract_version
+            && execution.invocation.implementation_id == self.descriptor.implementation_id
+            && execution.invocation.implementation_version
+                == self.descriptor.implementation_version
+            && execution.invocation.input_schema == self.descriptor.input_schema
+            && execution.invocation.validation_class == self.descriptor.validation_class
+            && execution.invocation.read_scopes == self.descriptor.read_scopes
+            && execution.invocation.deterministic == self.descriptor.deterministic
+            && execution.invocation.resource_limits == self.descriptor.limits
+            && execution.invocation.diagnostic_schema == DIAGNOSTIC_SCHEMA_V1;
+        let policy_matches = execution.invocation.policy_id == execution.policy.policy_id
+            && execution.invocation.policy_version == execution.policy.policy_version
+            && execution.invocation.policy_severity == execution.policy.severity
+            && execution.invocation.governing_standard == execution.policy.governing_standard
+            && execution.invocation.contract_id == execution.policy.contract_id
+            && execution.invocation.contract_version == execution.policy.contract_version;
+        let reason = if !execution.invocation.is_current(execution.snapshot) {
+            Some("snapshot binding is stale or mismatched")
+        } else if !descriptor_matches {
+            Some("validator descriptor envelope is incompatible")
+        } else if !policy_matches {
+            Some("validation policy envelope is incompatible")
+        } else if !execution.invocation.accepted_derived_results.is_empty()
+            || !execution.invocation.accepted_exact_results.is_empty()
+        {
+            Some("legacy narrow result identities are incompatible with general registry-key input")
+        } else if execution.invocation.input_digest != sha256_hex(&input_bytes) {
+            Some("validator input digest does not match the supplied input")
+        } else {
+            None
+        };
+        if let Some(reason) = reason {
+            return ValidationReport::not_evaluated(execution.invocation, evidence_class, reason);
+        }
+        evaluate_general_clearance(execution.invocation, execution.input, self.tolerance)
+    }
+}
+
+#[must_use]
+pub fn general_body_input_bytes(cases: &[GeneralClearanceCase]) -> Vec<u8> {
+    let mut output = Vec::new();
+    push_bytes(&mut output, GENERAL_BODY_VALIDATOR_INPUT_V1.as_bytes());
+    output.extend_from_slice(&(cases.len() as u64).to_le_bytes());
+    for case in cases {
+        push_general_participant(&mut output, &case.left);
+        push_general_participant(&mut output, &case.right);
+        output.extend_from_slice(&case.required_minimum_mm_bits.to_le_bytes());
+    }
+    output
+}
+
+fn evaluate_general_clearance(
+    invocation: ValidationInvocation,
+    cases: &[GeneralClearanceCase],
+    tolerance: TolerancePolicy,
+) -> ValidationReport {
+    let mut diagnostics = Vec::new();
+    let mut evidence_counts = EvidenceCounts::default();
+    let mut failed = false;
+    for case in cases {
+        let evidence_class = general_case_evidence(case, tolerance);
+        evidence_counts.record(&evidence_class);
+        let (relation, gap_mm) = clearance(case.left.bounds, case.right.bounds);
+        let passes =
+            relation == ExactClearanceRelation::Separated && gap_mm >= case.required_minimum_mm();
+        failed |= !passes;
+        let collision_only = case.required_minimum_mm() == 0.0;
+        diagnostics.push(ValidationDiagnostic {
+            schema: DIAGNOSTIC_SCHEMA_V1,
+            code: match (collision_only, passes) {
+                (true, true) => "collision.none",
+                (true, false) => "collision.detected",
+                (false, true) => "clearance.minimum-satisfied",
+                (false, false) => "clearance.minimum-not-met",
+            }
+            .to_owned(),
+            severity: if passes {
+                DiagnosticSeverity::Information
+            } else {
+                DiagnosticSeverity::Error
+            },
+            evidence_class,
+            location: DiagnosticLocation {
+                entity: None,
+                exact_body: None,
+                joint: None,
+            },
+            policy_id: invocation.policy_id.clone(),
+            policy_version: invocation.policy_version,
+            evidence: format!(
+                "left={}; right={}; relation={relation:?}; minimum_gap_mm={gap_mm:.9}; required_mm={:.9}",
+                instance_path_label(&case.left.instance_path),
+                instance_path_label(&case.right.instance_path),
+                case.required_minimum_mm()
+            ),
+        });
+    }
+    ValidationReport {
+        invocation,
+        state: if failed {
+            ValidationState::Failed
+        } else {
+            ValidationState::Passed
+        },
+        evidence_counts,
+        diagnostics,
+        assumptions: vec![],
+        unresolved_conditions: vec![],
+    }
+}
+
+fn general_input_evidence(
+    cases: &[GeneralClearanceCase],
+    tolerance: TolerancePolicy,
+) -> EvidenceClass {
+    EvidenceClass::weakest(
+        cases
+            .iter()
+            .flat_map(|case| [&case.left.evidence_class, &case.right.evidence_class]),
+        general_tolerant_evidence(tolerance),
+    )
+}
+
+fn general_case_evidence(case: &GeneralClearanceCase, tolerance: TolerancePolicy) -> EvidenceClass {
+    EvidenceClass::weakest(
+        [&case.left.evidence_class, &case.right.evidence_class],
+        general_tolerant_evidence(tolerance),
+    )
+}
+
+fn general_tolerant_evidence(tolerance: TolerancePolicy) -> TolerantEvidence {
+    TolerantEvidence::new(
+        tolerance.epsilon_mm(),
+        GENERAL_BODY_AABB_METHOD_V1,
+        PermittedErrorDirection::FalsePositiveOnly,
+    )
+    .expect("the general-body tolerance and method identity are valid")
+}
+
+fn transformed_body_bounds(
+    transform: Transform,
+    vertices: &[[f64; 3]],
+) -> Result<Aabb, GeneralBodyValidationError> {
+    let first = vertices
+        .first()
+        .copied()
+        .ok_or(GeneralBodyValidationError::InvalidGeometry)?;
+    let mut minimum = transform_body_point(transform, first);
+    let mut maximum = minimum;
+    for vertex in &vertices[1..] {
+        let point = transform_body_point(transform, *vertex);
+        for axis in 0..3 {
+            minimum[axis] = minimum[axis].min(point[axis]);
+            maximum[axis] = maximum[axis].max(point[axis]);
+        }
+    }
+    Aabb::bounded_volume(minimum, maximum).map_err(|_| GeneralBodyValidationError::InvalidGeometry)
+}
+
+fn transform_body_point(transform: Transform, point: [f64; 3]) -> [f64; 3] {
+    let matrix = transform.matrix();
+    [
+        matrix[0] * point[0] + matrix[1] * point[1] + matrix[2] * point[2] + matrix[3],
+        matrix[4] * point[0] + matrix[5] * point[1] + matrix[6] * point[2] + matrix[7],
+        matrix[8] * point[0] + matrix[9] * point[1] + matrix[10] * point[2] + matrix[11],
+    ]
+}
+
+fn is_translation_only(transform: Transform) -> bool {
+    let matrix = transform.matrix();
+    matrix[0] == 1.0
+        && matrix[5] == 1.0
+        && matrix[10] == 1.0
+        && matrix[15] == 1.0
+        && [1, 2, 4, 6, 8, 9, 12, 13, 14]
+            .into_iter()
+            .all(|index| matrix[index] == 0.0)
+}
+
+fn mesh_geometry_digest(spec: &crate::document::MeshBodySpec) -> String {
+    let mut bytes = Vec::new();
+    push_bytes(&mut bytes, spec.schema.as_bytes());
+    bytes.extend_from_slice(&(spec.vertices_mm.len() as u64).to_le_bytes());
+    bytes.extend_from_slice(&(spec.triangles.len() as u64).to_le_bytes());
+    for vertex in &spec.vertices_mm {
+        for coordinate in vertex {
+            bytes.extend_from_slice(&coordinate.to_bits().to_le_bytes());
+        }
+    }
+    for triangle in &spec.triangles {
+        for index in triangle {
+            bytes.extend_from_slice(&index.to_le_bytes());
+        }
+    }
+    sha256_hex(&bytes)
+}
+
+fn push_general_participant(output: &mut Vec<u8>, participant: &GeneralBodyParticipant) {
+    push_instance_path(output, &participant.instance_path);
+    match &participant.source {
+        GeneralBodySource::Exact(key) => {
+            output.push(0);
+            output.extend_from_slice(&key.document_id.0.to_le_bytes());
+            output.extend_from_slice(&key.source_revision.to_le_bytes());
+            push_bytes(output, key.source_digest.as_bytes());
+            output.extend_from_slice(&key.definition_id.0.to_le_bytes());
+            output.extend_from_slice(&key.producer_feature_id.0.to_le_bytes());
+            push_bytes(output, key.canonical_input_digest.as_bytes());
+            push_bytes(output, key.exact_input_digest.as_bytes());
+            push_bytes(output, key.evaluator.as_bytes());
+            push_bytes(output, key.backend.as_bytes());
+            push_bytes(output, key.tolerance.as_bytes());
+            push_bytes(output, key.schema.as_bytes());
+            push_bytes(output, key.result_fingerprint.as_bytes());
+        }
+        GeneralBodySource::CanonicalMesh {
+            definition_id,
+            feature_id,
+            geometry_digest,
+        } => {
+            output.push(1);
+            output.extend_from_slice(&definition_id.0.to_le_bytes());
+            output.extend_from_slice(&feature_id.0.to_le_bytes());
+            push_bytes(output, geometry_digest.as_bytes());
+        }
+    }
+    push_aabb(output, participant.bounds);
+    match &participant.evidence_class {
+        EvidenceClass::Exact => output.push(0),
+        EvidenceClass::Tolerant(evidence) => {
+            output.push(1);
+            output.extend_from_slice(&evidence.applied_threshold_mm().to_bits().to_le_bytes());
+            push_bytes(output, evidence.method_identity.as_bytes());
+            output.push(match evidence.permitted_error_direction {
+                PermittedErrorDirection::FalsePositiveOnly => 0,
+                PermittedErrorDirection::FalseNegativeOnly => 1,
+                PermittedErrorDirection::BidirectionalBounded => 2,
+            });
+        }
+    }
+}
+
+fn instance_path_label(path: &InstancePath) -> String {
+    let mut label = format!("occurrence:{}", path.root_occurrence().0);
+    for step in path.steps() {
+        match step {
+            InstancePathStep::Group(id) => label.push_str(&format!("/group:{}", id.0)),
+            InstancePathStep::Occurrence(id) => {
+                label.push_str(&format!("/occurrence:{}", id.0));
+            }
+        }
+    }
+    label
 }
 
 #[cfg(test)]

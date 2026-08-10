@@ -4,8 +4,8 @@ use ketchup_core::document::{
 };
 use ketchup_interaction::projection::CanonicalInteractionProjection;
 use ketchup_interaction::{
-    ElementId, InteractionScene, LocaleCatalog, PreviewError, PreviewSession, Ray, Side,
-    SmartPushPullOutcome, SnapKind, Vec3, plan_smart_push_pull,
+    ElementId, InteractionError, InteractionScene, LocaleCatalog, PreviewError, PreviewSession,
+    Ray, Side, SmartPushPullOutcome, SnapKind, SnapPolicy, SnapTracker, Vec3, plan_smart_push_pull,
 };
 
 #[derive(Clone, Copy)]
@@ -247,6 +247,66 @@ fn overlapping_candidates_are_stable_and_nearest_first() {
             InstancePath::root(OccurrenceId(2)),
         ]
     );
+    assert_eq!(
+        result.overlap_choice(3).unwrap().reference.instance_path,
+        InstancePath::root(OccurrenceId(2)),
+        "overlap choice must cycle deterministically"
+    );
+}
+
+#[test]
+fn snap_scoring_and_hysteresis_are_deterministic() {
+    let scene = projected_scene(
+        &[BoxDefinition {
+            id: DefinitionId(1),
+            profile_id: FeatureId(1),
+            extrusion_id: FeatureId(2),
+            size_mm: Vec3::new(10.0, 10.0, 10.0),
+        }],
+        &[(OccurrenceId(1), DefinitionId(1), Vec3::ZERO)],
+    );
+    let pick = |x| {
+        scene
+            .exact_pick(
+                Ray::new(Vec3::new(x, 0.0, 30.0), Vec3::new(0.0, 0.0, -1.0)).unwrap(),
+                2.0,
+            )
+            .unwrap()
+    };
+    let policy = SnapPolicy::new(1.0, 2.0).unwrap();
+    let mut tracker = SnapTracker::default();
+
+    let acquired = pick(0.5);
+    assert_eq!(acquired.snap.kind, SnapKind::Endpoint);
+    assert_eq!(acquired.snap.score().kind_rank, 0);
+    assert_eq!(
+        tracker.update(Some(&acquired), policy).unwrap().kind,
+        SnapKind::Endpoint
+    );
+
+    let retained = pick(1.5);
+    assert_eq!(retained.snap.kind, SnapKind::Endpoint);
+    assert_eq!(retained.snap.reference, acquired.snap.reference);
+    assert_eq!(
+        tracker.update(Some(&retained), policy).unwrap().position_mm,
+        acquired.snap.position_mm,
+        "release tolerance must retain the original stable snap"
+    );
+
+    let released = pick(2.5);
+    assert_eq!(
+        tracker.update(Some(&released), policy).unwrap().kind,
+        SnapKind::Face
+    );
+    tracker.update(None, policy);
+    assert!(tracker.locked().is_none());
+}
+
+#[test]
+fn invalid_snap_hysteresis_policy_fails_closed() {
+    assert!(SnapPolicy::new(f64::NAN, 2.0).is_none());
+    assert!(SnapPolicy::new(2.0, 1.0).is_none());
+    assert!(SnapPolicy::new(-1.0, 2.0).is_none());
 }
 
 #[test]
@@ -319,6 +379,58 @@ fn ambiguous_push_pull_requires_a_choice_and_creates_no_command() {
         SmartPushPullOutcome::Ready(_) => panic!("ambiguous sources must not be selected silently"),
     }
     assert_eq!(store.current().revision_id(), revision);
+}
+
+#[test]
+fn real_and_pseudo_locales_match_the_complete_english_key_set() {
+    let english = LocaleCatalog::english();
+    let slovak = LocaleCatalog::slovak();
+    let pseudo = LocaleCatalog::pseudo();
+
+    assert!(
+        english.key_count() > 400,
+        "the complete shell resource must be covered"
+    );
+    assert_eq!(slovak.validate_complete_against(&english), Ok(()));
+    assert_eq!(pseudo.validate_complete_against(&english), Ok(()));
+    assert_eq!(slovak.key_count(), english.key_count());
+    assert_eq!(pseudo.key_count(), english.key_count());
+    assert_eq!(slovak.text("menu-file"), "Súbor");
+    assert_ne!(slovak.text("menu-file"), english.text("menu-file"));
+}
+
+#[test]
+fn locale_completeness_rejects_missing_and_extra_keys() {
+    let reference = LocaleCatalog::parse("app-title = Ketchup\nmenu-file = File").unwrap();
+    let missing = LocaleCatalog::parse("app-title = Kečup").unwrap();
+    let extra =
+        LocaleCatalog::parse("app-title = Kečup\nmenu-file = Súbor\nmenu-unexpected = Neočakávané")
+            .unwrap();
+
+    assert_eq!(
+        missing.validate_complete_against(&reference),
+        Err(InteractionError::InvalidLocaleResource)
+    );
+    assert_eq!(
+        extra.validate_complete_against(&reference),
+        Err(InteractionError::InvalidLocaleResource)
+    );
+}
+
+#[test]
+fn pseudo_locale_expands_visible_text_without_rewriting_arguments() {
+    let pseudo = LocaleCatalog::pseudo();
+    let rendered = pseudo.format(
+        "scene-box-count",
+        &std::collections::BTreeMap::from([("count", "7".to_owned())]),
+    );
+
+    assert!(rendered.starts_with("[!! "));
+    assert!(rendered.ends_with(" !!]"));
+    assert!(rendered.len() > "Boxes: 7".len() * 2);
+    assert!(rendered.contains('7'));
+    assert!(!rendered.contains("{ $count }"));
+    assert_eq!(pseudo.text("shortcut-none"), "[!!  !!]");
 }
 
 #[test]

@@ -11,6 +11,7 @@ repository.workspace = true
 ketchup-core = { path = "../ketchup-core" }
 ketchup-exact = { path = "../ketchup-exact" }
 ketchup-interaction = { path = "../ketchup-interaction" }
+tempfile = "3.23.0"
 wasmi = "1.1.0"
 
 [dev-dependencies]

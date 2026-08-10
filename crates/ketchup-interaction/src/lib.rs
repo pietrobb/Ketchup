@@ -1,8 +1,14 @@
 #![forbid(unsafe_code)]
 
 pub mod exact_projection;
+pub mod mesh_projection;
 pub mod projection;
+pub mod spatial;
 
+use crate::spatial::{
+    SPATIAL_INDEX_V1, SnapshotBinding, SpatialBounds, SpatialIndex, SpatialQueryError,
+    SpatialQueryStats,
+};
 use ketchup_core::adapters::{AdapterError, UiAction, UiAdapter};
 use ketchup_core::document::{
     DefinitionId, DocumentStore, FeatureId, FeatureKind, InstancePath, Proposal,
@@ -184,12 +190,28 @@ impl SnapKind {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SnapScore {
+    pub distance_mm: f64,
+    pub kind_rank: u8,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct SnapResult {
     pub kind: SnapKind,
     pub reference: SelectionId,
     pub position_mm: Vec3,
     pub distance_mm: f64,
+}
+
+impl SnapResult {
+    #[must_use]
+    pub fn score(&self) -> SnapScore {
+        SnapScore {
+            distance_mm: self.distance_mm,
+            kind_rank: self.kind.rank(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -206,6 +228,75 @@ pub struct PickResult {
     pub snap: SnapResult,
 }
 
+impl PickResult {
+    #[must_use]
+    pub fn overlap_choice(&self, index: usize) -> Option<&ExactHit> {
+        (!self.overlapping.is_empty()).then(|| &self.overlapping[index % self.overlapping.len()])
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SnapPolicy {
+    acquire_tolerance_mm: f64,
+    release_tolerance_mm: f64,
+}
+
+impl SnapPolicy {
+    #[must_use]
+    pub fn new(acquire_tolerance_mm: f64, release_tolerance_mm: f64) -> Option<Self> {
+        (acquire_tolerance_mm.is_finite()
+            && release_tolerance_mm.is_finite()
+            && acquire_tolerance_mm >= 0.0
+            && release_tolerance_mm >= acquire_tolerance_mm)
+            .then_some(Self {
+                acquire_tolerance_mm,
+                release_tolerance_mm,
+            })
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SnapTracker {
+    locked: Option<SnapResult>,
+}
+
+impl SnapTracker {
+    #[must_use]
+    pub fn locked(&self) -> Option<&SnapResult> {
+        self.locked.as_ref()
+    }
+
+    pub fn clear(&mut self) {
+        self.locked = None;
+    }
+
+    pub fn update(&mut self, pick: Option<&PickResult>, policy: SnapPolicy) -> Option<&SnapResult> {
+        let Some(pick) = pick else {
+            self.clear();
+            return None;
+        };
+        if self.locked.as_ref().is_some_and(|locked| {
+            pick.overlapping
+                .iter()
+                .any(|hit| hit.reference.instance_path == locked.reference.instance_path)
+                && pick.primary.position_mm.distance(locked.position_mm)
+                    <= policy.release_tolerance_mm + SNAP_EPSILON
+        }) {
+            return self.locked.as_ref();
+        }
+        self.locked = Some(
+            if pick.snap.kind == SnapKind::Face
+                || pick.snap.distance_mm <= policy.acquire_tolerance_mm + SNAP_EPSILON
+            {
+                pick.snap.clone()
+            } else {
+                face_snap(&pick.primary)
+            },
+        );
+        self.locked.as_ref()
+    }
+}
+
 #[derive(Debug, PartialEq)]
 pub struct SharedBoxGeometry {
     size_mm: Vec3,
@@ -220,7 +311,7 @@ impl SharedBoxGeometry {
             || !size_mm.z.is_finite()
             || size_mm.x <= 0.0
             || size_mm.y <= 0.0
-            || size_mm.z <= 0.0
+            || size_mm.z < 0.0
         {
             return Err(InteractionError::InvalidBox);
         }
@@ -267,16 +358,21 @@ impl Occurrence {
     }
 }
 
-#[derive(Default)]
 pub struct InteractionScene {
+    binding: SnapshotBinding,
     occurrences: Vec<Occurrence>,
+    occurrence_indices: BTreeMap<InstancePath, usize>,
+    spatial_index: SpatialIndex,
 }
 
 impl InteractionScene {
     #[must_use]
-    pub(crate) const fn new() -> Self {
+    pub(crate) fn new(binding: SnapshotBinding) -> Self {
         Self {
+            binding,
             occurrences: Vec::new(),
+            occurrence_indices: BTreeMap::new(),
+            spatial_index: SpatialIndex::default(),
         }
     }
 
@@ -288,16 +384,15 @@ impl InteractionScene {
         geometry: Arc<SharedBoxGeometry>,
     ) -> Result<(), InteractionError> {
         if instance_path.root_occurrence().0 == 0
-            || self
-                .occurrences
-                .iter()
-                .any(|item| item.instance_path == instance_path)
+            || self.occurrence_indices.contains_key(&instance_path)
         {
             return Err(InteractionError::DuplicateOccurrence);
         }
         if !origin_mm.x.is_finite() || !origin_mm.y.is_finite() || !origin_mm.z.is_finite() {
             return Err(InteractionError::InvalidBox);
         }
+        let index = self.occurrences.len();
+        self.occurrence_indices.insert(instance_path.clone(), index);
         self.occurrences.push(Occurrence {
             instance_path,
             definition_id,
@@ -305,6 +400,30 @@ impl InteractionScene {
             geometry,
         });
         Ok(())
+    }
+
+    pub(crate) fn rebuild_spatial_index(&mut self) {
+        self.spatial_index = SpatialIndex::build(self.occurrences.iter().enumerate().map(
+            |(index, occurrence)| {
+                (
+                    index,
+                    SpatialBounds::from_origin_size(
+                        occurrence.origin_mm,
+                        occurrence.geometry.size_mm,
+                    ),
+                )
+            },
+        ));
+    }
+
+    #[must_use]
+    pub const fn spatial_index_schema(&self) -> &'static str {
+        SPATIAL_INDEX_V1
+    }
+
+    #[must_use]
+    pub fn is_current(&self, snapshot: &Snapshot) -> bool {
+        self.binding.is_current(snapshot)
     }
 
     #[must_use]
@@ -325,7 +444,27 @@ impl InteractionScene {
     }
 
     pub fn exact_pick(&self, ray: Ray, snap_tolerance_mm: f64) -> Option<PickResult> {
-        self.exact_pick_filtered(ray, snap_tolerance_mm, SelectionFilter::Face)
+        self.exact_pick_with_stats(ray, snap_tolerance_mm).0
+    }
+
+    pub fn exact_pick_with_stats(
+        &self,
+        ray: Ray,
+        snap_tolerance_mm: f64,
+    ) -> (Option<PickResult>, SpatialQueryStats) {
+        self.exact_pick_filtered_with_stats(ray, snap_tolerance_mm, SelectionFilter::Face)
+    }
+
+    pub fn exact_pick_current(
+        &self,
+        snapshot: &Snapshot,
+        ray: Ray,
+        snap_tolerance_mm: f64,
+    ) -> Result<Option<PickResult>, SpatialQueryError> {
+        if !self.is_current(snapshot) {
+            return Err(SpatialQueryError::StaleProjection);
+        }
+        Ok(self.exact_pick(ray, snap_tolerance_mm))
     }
 
     pub fn exact_pick_filtered(
@@ -334,13 +473,24 @@ impl InteractionScene {
         snap_tolerance_mm: f64,
         filter: SelectionFilter,
     ) -> Option<PickResult> {
+        self.exact_pick_filtered_with_stats(ray, snap_tolerance_mm, filter)
+            .0
+    }
+
+    pub fn exact_pick_filtered_with_stats(
+        &self,
+        ray: Ray,
+        snap_tolerance_mm: f64,
+        filter: SelectionFilter,
+    ) -> (Option<PickResult>, SpatialQueryStats) {
+        let (candidate_indices, stats) = self.spatial_index.query_ray(ray);
         if !snap_tolerance_mm.is_finite() || snap_tolerance_mm < 0.0 {
-            return None;
+            return (None, stats);
         }
-        let mut hits = self
-            .occurrences
-            .iter()
-            .filter_map(|occurrence| {
+        let mut hits = candidate_indices
+            .into_iter()
+            .filter_map(|index| {
+                let occurrence = &self.occurrences[index];
                 let mut hit = hit_occurrence(ray, occurrence)?;
                 let face = hit.reference.element.clone();
                 hit.reference.element =
@@ -353,20 +503,33 @@ impl InteractionScene {
                 .total_cmp(&right.ray_distance_mm)
                 .then_with(|| left.reference.cmp(&right.reference))
         });
-        let primary = hits.first()?.clone();
-        let occurrence = self
-            .occurrences
-            .iter()
-            .find(|item| item.instance_path == primary.reference.instance_path)?;
+        let Some(primary) = hits.first().cloned() else {
+            return (None, stats);
+        };
+        let Some(occurrence_index) = self
+            .occurrence_indices
+            .get(&primary.reference.instance_path)
+            .copied()
+        else {
+            return (None, stats);
+        };
+        let occurrence = &self.occurrences[occurrence_index];
         let local_snap = resolve_snap(&primary, occurrence, snap_tolerance_mm);
-        let snap = intersection_snap(&primary, &self.occurrences, snap_tolerance_mm)
+        let nearby = self.spatial_index.query_bounds(SpatialBounds::around(
+            primary.position_mm,
+            snap_tolerance_mm + SNAP_EPSILON,
+        ));
+        let snap = intersection_snap(&primary, &self.occurrences, &nearby, snap_tolerance_mm)
             .filter(|candidate| better_snap(candidate, &local_snap))
             .unwrap_or(local_snap);
-        Some(PickResult {
-            primary,
-            overlapping: hits,
-            snap,
-        })
+        (
+            Some(PickResult {
+                primary,
+                overlapping: hits,
+                snap,
+            }),
+            stats,
+        )
     }
 }
 
@@ -515,23 +678,31 @@ fn resolve_snap(primary: &ExactHit, occurrence: &Occurrence, tolerance: f64) -> 
     endpoint
         .chain(midpoint)
         .filter(|candidate| candidate.distance_mm <= tolerance + SNAP_EPSILON)
-        .min_by(|left, right| {
-            left.distance_mm
-                .total_cmp(&right.distance_mm)
-                .then_with(|| left.kind.rank().cmp(&right.kind.rank()))
-                .then_with(|| left.reference.cmp(&right.reference))
-        })
-        .unwrap_or(SnapResult {
-            kind: SnapKind::Face,
-            reference: primary.reference.clone(),
-            position_mm: primary.position_mm,
-            distance_mm: 0.0,
-        })
+        .min_by(compare_snap)
+        .unwrap_or_else(|| face_snap(primary))
+}
+
+fn face_snap(primary: &ExactHit) -> SnapResult {
+    SnapResult {
+        kind: SnapKind::Face,
+        reference: primary.reference.clone(),
+        position_mm: primary.position_mm,
+        distance_mm: 0.0,
+    }
+}
+
+fn compare_snap(left: &SnapResult, right: &SnapResult) -> std::cmp::Ordering {
+    left.score()
+        .distance_mm
+        .total_cmp(&right.score().distance_mm)
+        .then_with(|| left.score().kind_rank.cmp(&right.score().kind_rank))
+        .then_with(|| left.reference.cmp(&right.reference))
 }
 
 fn intersection_snap(
     primary: &ExactHit,
     occurrences: &[Occurrence],
+    candidate_indices: &[usize],
     tolerance: f64,
 ) -> Option<SnapResult> {
     let primary_occurrence = occurrences
@@ -547,8 +718,9 @@ fn intersection_snap(
         {
             continue;
         }
-        for other in occurrences
+        for other in candidate_indices
             .iter()
+            .map(|index| &occurrences[*index])
             .filter(|occurrence| occurrence.instance_path != primary_occurrence.instance_path)
         {
             for (other_edge, (other_left, other_right)) in BOX_EDGE_ENDPOINTS.iter().enumerate() {
@@ -589,9 +761,7 @@ fn segments_parallel(left: Vec3, right: Vec3) -> bool {
 }
 
 fn better_snap(candidate: &SnapResult, current: &SnapResult) -> bool {
-    candidate.distance_mm < current.distance_mm - SNAP_EPSILON
-        || ((candidate.distance_mm - current.distance_mm).abs() <= SNAP_EPSILON
-            && candidate.kind.rank() < current.kind.rank())
+    compare_snap(candidate, current).is_lt()
 }
 
 fn snap_candidate(
@@ -770,6 +940,37 @@ impl LocaleCatalog {
     }
 
     #[must_use]
+    pub fn slovak() -> Self {
+        let catalog = Self::parse(include_str!("../../../locales/sk-SK.ftl"))
+            .expect("the embedded Slovak locale must be valid");
+        catalog
+            .validate_complete_against(&Self::english())
+            .expect("the embedded Slovak locale must match the complete English key set");
+        catalog
+    }
+
+    #[must_use]
+    pub fn pseudo() -> Self {
+        let messages = Self::english()
+            .messages
+            .into_iter()
+            .map(|(key, value)| (key, pseudo_localize(&value)))
+            .collect();
+        Self { messages }
+    }
+
+    pub fn validate_complete_against(&self, reference: &Self) -> Result<(), InteractionError> {
+        (self.messages.keys().eq(reference.messages.keys()))
+            .then_some(())
+            .ok_or(InteractionError::InvalidLocaleResource)
+    }
+
+    #[must_use]
+    pub fn key_count(&self) -> usize {
+        self.messages.len()
+    }
+
+    #[must_use]
     pub fn text(&self, key: &str) -> String {
         self.messages
             .get(key)
@@ -794,6 +995,38 @@ impl LocaleCatalog {
         }
         value
     }
+}
+
+fn pseudo_localize(value: &str) -> String {
+    let mut result = String::with_capacity(value.len() + 8);
+    result.push_str("[!! ");
+    let mut placeholder_depth = 0_u8;
+    for character in value.chars() {
+        match character {
+            '{' => {
+                placeholder_depth = placeholder_depth.saturating_add(1);
+                result.push(character);
+            }
+            '}' => {
+                placeholder_depth = placeholder_depth.saturating_sub(1);
+                result.push(character);
+            }
+            _ if placeholder_depth > 0 => result.push(character),
+            'a' => result.push_str("áá"),
+            'A' => result.push_str("ÁÁ"),
+            'e' => result.push_str("ëë"),
+            'E' => result.push_str("ËË"),
+            'i' => result.push_str("ïï"),
+            'I' => result.push_str("ÏÏ"),
+            'o' => result.push_str("öö"),
+            'O' => result.push_str("ÖÖ"),
+            'u' => result.push_str("üü"),
+            'U' => result.push_str("ÜÜ"),
+            _ => result.push(character),
+        }
+    }
+    result.push_str(" !!]");
+    result
 }
 
 #[derive(Debug, PartialEq)]

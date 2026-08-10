@@ -6,10 +6,16 @@ pub use crate::graph::{
     OverrideParameterSpec, PortSpec, RuleOutput, SlotPath, SlotResolution, SlotSegment, ValueType,
 };
 use crate::graph::{
-    evaluate_affected, evaluate_graph, resolve_derived_identity,
+    ExpressionAst, evaluate_affected, evaluate_graph, resolve_derived_identity,
     validate_graph as validate_typed_graph,
 };
 use crate::prismatic::{CanonicalJoint, JointId, PrismaticError};
+use crate::space::{
+    CanonicalClearanceVolume, CanonicalSpace, ClearanceCoordinateFrame, ClearanceOwner,
+    ClearanceSeverity, ClearanceVolumeId, SpaceError, SpaceId,
+};
+use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use sha2::{Digest as _, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -33,6 +39,7 @@ typed_id!(OccurrenceId);
 typed_id!(GroupId);
 typed_id!(FeatureId);
 typed_id!(TagId);
+typed_id!(CollectionId);
 typed_id!(NodeId);
 typed_id!(LocalOccurrenceId);
 typed_id!(LocalGroupId);
@@ -180,6 +187,8 @@ pub enum FeatureParameterSlot {
     ShoulderRise,
     Thickness,
     Amount,
+    ProfileWidth,
+    ProfileHeight,
 }
 
 impl FeatureParameterSlot {
@@ -192,6 +201,8 @@ impl FeatureParameterSlot {
             Self::ShoulderRise => "shoulder_rise",
             Self::Thickness => "thickness",
             Self::Amount => "amount",
+            Self::ProfileWidth => "profile_width",
+            Self::ProfileHeight => "profile_height",
         }
     }
 }
@@ -247,6 +258,70 @@ pub enum BooleanOperation {
     Union,
 }
 
+pub const MESH_BODY_SCHEMA_V1: &str = "ketchup.mesh-body.v1";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExactReferenceConversionConsequence {
+    Lost,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExactToMeshConversion {
+    pub source_document_id: DocumentId,
+    pub source_revision: u64,
+    pub source_digest: String,
+    pub source_definition_id: DefinitionId,
+    pub source_feature_id: FeatureId,
+    pub source_result_fingerprint: String,
+    pub source_evaluator: String,
+    pub source_backend: String,
+    pub source_tolerance: String,
+    pub tessellation_tolerance: String,
+    pub destination_definition_id: DefinitionId,
+    pub destination_feature_id: FeatureId,
+    pub unsupported_semantics: Vec<String>,
+    pub exact_reference_consequence: ExactReferenceConversionConsequence,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum MeshAuthority {
+    Authored { provenance: String },
+    ExactConversion(ExactToMeshConversion),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct MeshBodySpec {
+    pub schema: String,
+    pub vertices_mm: Vec<[f64; 3]>,
+    pub triangles: Vec<[u32; 3]>,
+    pub authority: MeshAuthority,
+}
+
+impl MeshBodySpec {
+    #[must_use]
+    pub fn exact_conversion_loss_report(&self) -> Option<String> {
+        let MeshAuthority::ExactConversion(conversion) = &self.authority else {
+            return None;
+        };
+        Some(format!(
+            "authority=canonical mesh body\nconversion=exact-to-mesh\nsource_document_id={}\nsource_revision={}\nsource_digest={}\nsource_definition_id={}\nsource_feature_id={}\nsource_result_fingerprint={}\nsource_evaluator={}\nsource_backend={}\nsource_tolerance={}\ntessellation_tolerance={}\ndestination_definition_id={}\ndestination_feature_id={}\neditability_loss=canonical exact features, rules, and dimensions are not preserved\ntopology_loss=exact topology and analytic surfaces are not preserved\ntolerance_loss=geometry is approximated by the accepted tessellation\nexact_reference_consequence=Lost\nunsupported_semantics={}\n",
+            conversion.source_document_id.0,
+            conversion.source_revision,
+            conversion.source_digest,
+            conversion.source_definition_id.0,
+            conversion.source_feature_id.0,
+            conversion.source_result_fingerprint,
+            conversion.source_evaluator,
+            conversion.source_backend,
+            conversion.source_tolerance,
+            conversion.tessellation_tolerance,
+            conversion.destination_definition_id.0,
+            conversion.destination_feature_id.0,
+            conversion.unsupported_semantics.join(",")
+        ))
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum FeatureKind {
     Profile {
@@ -283,6 +358,7 @@ pub enum FeatureKind {
         target: FeatureId,
         tool: FeatureId,
     },
+    MeshBody(MeshBodySpec),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -348,6 +424,53 @@ impl Definition {
     #[must_use]
     pub fn local_group_ids(&self) -> &[LocalGroupId] {
         &self.local_group_ids
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Tag {
+    pub(crate) id: TagId,
+    pub(crate) name: String,
+    pub(crate) visible: bool,
+}
+
+impl Tag {
+    #[must_use]
+    pub const fn id(&self) -> TagId {
+        self.id
+    }
+
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    #[must_use]
+    pub const fn visible(&self) -> bool {
+        self.visible
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Collection {
+    pub(crate) id: CollectionId,
+    pub(crate) name: String,
+    pub(crate) occurrence_ids: BTreeSet<OccurrenceId>,
+}
+
+impl Collection {
+    #[must_use]
+    pub const fn id(&self) -> CollectionId {
+        self.id
+    }
+
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn occurrence_ids(&self) -> impl Iterator<Item = OccurrenceId> + '_ {
+        self.occurrence_ids.iter().copied()
     }
 }
 
@@ -518,7 +641,12 @@ pub(crate) struct ProductModel {
     pub(crate) feature_parameter_provenance:
         BTreeMap<FeatureParameterTarget, Arc<FeatureParameterProvenance>>,
     pub(crate) joints: BTreeMap<JointId, Arc<CanonicalJoint>>,
+    pub(crate) spaces: BTreeMap<SpaceId, Arc<CanonicalSpace>>,
+    pub(crate) clearance_volumes: BTreeMap<ClearanceVolumeId, Arc<CanonicalClearanceVolume>>,
     pub(crate) exact_reference_evidence: BTreeMap<String, Arc<BodySubshapeRef>>,
+    pub(crate) persistent_dimensions: BTreeMap<PersistentDimensionId, Arc<PersistentDimension>>,
+    pub(crate) tags: BTreeMap<TagId, Arc<Tag>>,
+    pub(crate) collections: BTreeMap<CollectionId, Arc<Collection>>,
     pub(crate) definitions: BTreeMap<DefinitionId, Arc<Definition>>,
     pub(crate) features: BTreeMap<FeatureId, Arc<Feature>>,
     pub(crate) occurrences: BTreeMap<OccurrenceId, Arc<Occurrence>>,
@@ -537,7 +665,12 @@ impl Default for ProductModel {
             feature_parameter_bindings: BTreeMap::new(),
             feature_parameter_provenance: BTreeMap::new(),
             joints: BTreeMap::new(),
+            spaces: BTreeMap::new(),
+            clearance_volumes: BTreeMap::new(),
             exact_reference_evidence: BTreeMap::new(),
+            persistent_dimensions: BTreeMap::new(),
+            tags: BTreeMap::new(),
+            collections: BTreeMap::new(),
             definitions: BTreeMap::new(),
             features: BTreeMap::new(),
             occurrences: BTreeMap::new(),
@@ -558,6 +691,62 @@ fn allocate_document_id() -> DocumentId {
         .fetch_add(1, Ordering::Relaxed);
     DocumentId(value.max(1))
 }
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SceneQueryContext {
+    Group(GroupId),
+    Definition {
+        definition_id: DefinitionId,
+        instance_path: InstancePath,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BoundSceneQuery {
+    document_id: DocumentId,
+    source_revision: u64,
+    source_digest: String,
+    context: SceneQueryContext,
+}
+
+impl BoundSceneQuery {
+    #[must_use]
+    pub const fn document_id(&self) -> DocumentId {
+        self.document_id
+    }
+
+    #[must_use]
+    pub const fn source_revision(&self) -> u64 {
+        self.source_revision
+    }
+
+    #[must_use]
+    pub fn source_digest(&self) -> &str {
+        &self.source_digest
+    }
+
+    #[must_use]
+    pub const fn context(&self) -> &SceneQueryContext {
+        &self.context
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SceneQueryError {
+    InvalidContext,
+    SnapshotMismatch,
+}
+
+impl fmt::Display for SceneQueryError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::InvalidContext => "scene query context is invalid or hidden",
+            Self::SnapshotMismatch => "scene query is bound to a different snapshot",
+        })
+    }
+}
+
+impl std::error::Error for SceneQueryError {}
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct SceneOccurrence {
@@ -613,6 +802,125 @@ impl Dimension {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct PersistentDimensionId(pub u64);
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PersistentDimensionTarget {
+    FeatureParameter(FeatureParameterTarget),
+    DerivedOutput(DerivedIdentity),
+    ExactFeatureParameter {
+        definition_id: DefinitionId,
+        producer_feature_id: FeatureId,
+        semantic_role: String,
+        source_element_id: String,
+        slot: FeatureParameterSlot,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DimensionDisplayUnit {
+    Millimetres,
+    Centimetres,
+    Inches,
+}
+
+impl DimensionDisplayUnit {
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Millimetres => "mm",
+            Self::Centimetres => "cm",
+            Self::Inches => "in",
+        }
+    }
+
+    #[must_use]
+    pub fn from_millimetres(self, millimetres: f64) -> f64 {
+        match self {
+            Self::Millimetres => millimetres,
+            Self::Centimetres => millimetres / 10.0,
+            Self::Inches => millimetres / 25.4,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DimensionPresentation {
+    pub unit: DimensionDisplayUnit,
+    pub decimal_places: u8,
+}
+
+impl DimensionPresentation {
+    pub fn new(unit: DimensionDisplayUnit, decimal_places: u8) -> Result<Self, CanonicalError> {
+        if decimal_places > 9 {
+            return Err(CanonicalError::InvalidDimensionPresentation);
+        }
+        Ok(Self {
+            unit,
+            decimal_places,
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PersistentDimension {
+    pub id: PersistentDimensionId,
+    pub name: String,
+    pub target: PersistentDimensionTarget,
+    pub presentation: DimensionPresentation,
+}
+
+impl PersistentDimension {
+    pub fn new(
+        id: PersistentDimensionId,
+        name: impl Into<String>,
+        target: PersistentDimensionTarget,
+        presentation: DimensionPresentation,
+    ) -> Result<Self, CanonicalError> {
+        ensure_product_id(id.0)?;
+        let name = name.into();
+        ensure_name(&name)?;
+        if matches!(
+            &target,
+            PersistentDimensionTarget::ExactFeatureParameter {
+                definition_id,
+                producer_feature_id,
+                semantic_role,
+                source_element_id,
+                ..
+            } if definition_id.0 == 0
+                || producer_feature_id.0 == 0
+                || semantic_role.is_empty()
+                || source_element_id.is_empty()
+        ) {
+            return Err(CanonicalError::InvalidPersistentDimensionTarget);
+        }
+        Ok(Self {
+            id,
+            name,
+            target,
+            presentation,
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DimensionReferenceHealth {
+    Resolved,
+    Ambiguous { segment_index: usize },
+    Lost,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct PersistentDimensionProjection {
+    pub id: PersistentDimensionId,
+    pub health: DimensionReferenceHealth,
+    pub millimetres: Option<f64>,
+    pub display_value: Option<f64>,
+    pub display_text: Option<String>,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum CanonicalCommand {
     CreateEvaluatorNode {
@@ -665,6 +973,41 @@ pub enum CanonicalCommand {
     UpsertJoint(CanonicalJoint),
     DeleteJoint {
         id: JointId,
+    },
+    UpsertSpace(CanonicalSpace),
+    DeleteSpace {
+        id: SpaceId,
+    },
+    UpsertClearanceVolume(CanonicalClearanceVolume),
+    DeleteClearanceVolume {
+        id: ClearanceVolumeId,
+    },
+    UpsertPersistentDimension(PersistentDimension),
+    DeletePersistentDimension {
+        id: PersistentDimensionId,
+    },
+    CreateTag {
+        id: TagId,
+        name: String,
+        visible: bool,
+    },
+    DeleteTag {
+        id: TagId,
+    },
+    SetTagVisibility {
+        id: TagId,
+        visible: bool,
+    },
+    CreateCollection {
+        id: CollectionId,
+        name: String,
+    },
+    DeleteCollection {
+        id: CollectionId,
+    },
+    SetCollectionOccurrences {
+        id: CollectionId,
+        occurrence_ids: Vec<OccurrenceId>,
     },
     CreateDefinition {
         id: DefinitionId,
@@ -723,6 +1066,10 @@ pub enum CanonicalCommand {
         id: OccurrenceId,
         visible: bool,
     },
+    SetOccurrenceTag {
+        id: OccurrenceId,
+        tag: Option<TagId>,
+    },
     RepointOccurrence {
         id: OccurrenceId,
         definition_id: DefinitionId,
@@ -761,6 +1108,24 @@ pub struct CloneDefinitionPlan {
     feature_id_map: Vec<(FeatureId, FeatureId)>,
 }
 
+impl CloneDefinitionPlan {
+    pub(crate) fn new(
+        occurrence_id: OccurrenceId,
+        source_definition_id: DefinitionId,
+        new_definition_id: DefinitionId,
+        new_definition_name: String,
+        feature_id_map: Vec<(FeatureId, FeatureId)>,
+    ) -> Self {
+        Self {
+            occurrence_id,
+            source_definition_id,
+            new_definition_id,
+            new_definition_name,
+            feature_id_map,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct ConvertGroupPlan {
     group_id: GroupId,
@@ -769,12 +1134,33 @@ pub struct ConvertGroupPlan {
     component_name: String,
 }
 
+impl ConvertGroupPlan {
+    pub(crate) fn new(
+        group_id: GroupId,
+        new_definition_id: DefinitionId,
+        new_occurrence_id: OccurrenceId,
+        component_name: String,
+    ) -> Self {
+        Self {
+            group_id,
+            new_definition_id,
+            new_occurrence_id,
+            component_name,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum AuthoritativeDependency {
     EvaluatorNode(NodeId),
     Override(u64),
     FeatureParameterBinding(FeatureParameterTarget),
     Joint(JointId),
+    Space(SpaceId),
+    ClearanceVolume(ClearanceVolumeId),
+    PersistentDimension(PersistentDimensionId),
+    Tag(TagId),
+    Collection(CollectionId),
     Definition(DefinitionId),
     Feature(FeatureId),
     Occurrence(OccurrenceId),
@@ -783,8 +1169,10 @@ pub enum AuthoritativeDependency {
     LocalOccurrence(LocalOccurrenceKey),
     DefinitionUsers(DefinitionId),
     FeatureUsers(FeatureId),
+    FeatureParameterBindings(FeatureId),
     GroupChildren(GroupId),
     GroupSubtree(GroupId),
+    OccurrenceCollections(OccurrenceId),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -806,6 +1194,18 @@ impl ProposalBudget {
         max_read_dependencies: 64,
         max_write_targets: 1,
     };
+
+    pub const M18C_CREATE_FEATURE: Self = Self {
+        max_commands: 1,
+        max_read_dependencies: 64,
+        max_write_targets: 2,
+    };
+
+    pub const M18C_CLONE_PROFILE_DEFINITION: Self = Self {
+        max_commands: 1,
+        max_read_dependencies: 64,
+        max_write_targets: 3,
+    };
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -818,37 +1218,263 @@ pub struct ProposalCost {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProposalPrincipal {
     ManualClient,
+    Human(u64),
     LocalAssistant,
     Plugin(u64),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ProposalRisk {
-    Standard,
+pub enum HighRiskClass {
+    DestructiveBulkChange,
+    Overwrite,
+    LossyConversion,
+    ExternalDisclosure,
+    ReleaseManufacturingExportWithWarnings,
+    CapabilityExpansion,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProposalRisk {
+    Standard,
+    High(HighRiskClass),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HighRiskScope {
+    class: HighRiskClass,
+    destination: Option<String>,
+    provider: Option<String>,
+    path: Option<String>,
+}
+
+impl HighRiskScope {
+    pub fn new(
+        class: HighRiskClass,
+        destination: Option<String>,
+        provider: Option<String>,
+        path: Option<String>,
+    ) -> Result<Self, HumanConfirmationError> {
+        for value in [destination.as_deref(), provider.as_deref(), path.as_deref()]
+            .into_iter()
+            .flatten()
+        {
+            if value.is_empty() || value.len() > 1024 || value.chars().any(char::is_control) {
+                return Err(HumanConfirmationError::InvalidScope);
+            }
+        }
+        if matches!(class, HighRiskClass::ExternalDisclosure)
+            && (destination.is_none() || provider.is_none())
+        {
+            return Err(HumanConfirmationError::InvalidScope);
+        }
+        if matches!(
+            class,
+            HighRiskClass::Overwrite
+                | HighRiskClass::LossyConversion
+                | HighRiskClass::ReleaseManufacturingExportWithWarnings
+        ) && path.is_none()
+        {
+            return Err(HumanConfirmationError::InvalidScope);
+        }
+        Ok(Self {
+            class,
+            destination,
+            provider,
+            path,
+        })
+    }
+
+    #[must_use]
+    pub const fn class(&self) -> HighRiskClass {
+        self.class
+    }
+
+    #[must_use]
+    pub fn destination(&self) -> Option<&str> {
+        self.destination.as_deref()
+    }
+
+    #[must_use]
+    pub fn provider(&self) -> Option<&str> {
+        self.provider.as_deref()
+    }
+
+    #[must_use]
+    pub fn path(&self) -> Option<&str> {
+        self.path.as_deref()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProposalConfirmation {
     ReviewRequired,
+    HumanOnly(HighRiskScope),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProposalGoal {
     CanonicalPreview,
+    CreateEvaluatorInput(NodeId),
+    CreateEvaluatorExpression(NodeId),
+    CreateEvaluatorRule(NodeId),
+    CreateRuleOverride(u64),
+    DeleteRuleOverride(u64),
+    CreateFeatureParameterBinding(FeatureParameterTarget),
+    DeleteFeatureParameterBinding(FeatureParameterTarget),
+    CreatePersistentDimension(PersistentDimensionId),
+    CreateSpace(SpaceId),
+    CreateClearanceVolume(ClearanceVolumeId),
+    CreateJoint(JointId),
+    RecomputeFeatureParameter(FeatureParameterTarget),
+    DeleteJoint(JointId),
+    DeleteSpace(SpaceId),
+    DeleteClearanceVolume(ClearanceVolumeId),
+    DeletePersistentDimension(PersistentDimensionId),
     SetRuleDimension(NodeId),
+    RenameEvaluatorNode(NodeId),
+    SetEvaluatorExpression(NodeId),
+    SetRuleOutputs(NodeId),
     SetFeatureDimension(FeatureId),
+    SetBottleControlDimension(FeatureId, BottleControlDimension),
+    SetBottleEdgeFinishKind(FeatureId),
+    SetProfilePoints(FeatureId),
+    RenameDefinition(DefinitionId),
+    SetOccurrenceVisibility(OccurrenceId),
+    SetOccurrenceTranslation(OccurrenceId),
+    SetOccurrenceTag(OccurrenceId),
+    SetTagVisibility(TagId),
+    RepointOccurrence(OccurrenceId),
+    SetOccurrenceParent(OccurrenceId),
+    SetGroupTranslation(GroupId),
+    SetGroupParent(GroupId),
+    SetCollectionOccurrences(CollectionId),
+    CreateTag(TagId),
+    DeleteTag(TagId),
+    CreateCollection(CollectionId),
+    DeleteCollection(CollectionId),
+    DeleteGroup(GroupId),
+    DeleteOccurrence(OccurrenceId),
+    CreateDefinition(DefinitionId),
+    DeleteDefinition(DefinitionId),
+    CreateProfileFeature(FeatureId),
+    DeleteProfileFeature(FeatureId),
+    CreateGroup(GroupId),
+    CreateOccurrence(OccurrenceId),
+    CloneProfileDefinitionAndRepoint(OccurrenceId),
+    ConvertEmptyGroupToComponent(GroupId),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProposalAssumption {
     TargetExists(AuthoritativeDependency),
+    TargetMissing(AuthoritativeDependency),
     TargetHasDimension(AuthoritativeDependency),
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum ProposalValue {
     Missing,
+    EvaluatorInputState {
+        name: String,
+        dimension: Dimension,
+        dependencies: Vec<NodeId>,
+    },
+    EvaluatorExpressionState {
+        name: String,
+        expression: String,
+        dependencies: Vec<NodeId>,
+    },
+    EvaluatorRuleState {
+        name: String,
+        expression: String,
+        dependencies: Vec<NodeId>,
+        input_ports: Vec<PortSpec>,
+        output_ports: Vec<PortSpec>,
+        outputs: Vec<RuleOutput>,
+        override_parameters: Vec<OverrideParameterSpec>,
+    },
+    RuleOverrideState {
+        target: DerivedIdentity,
+        parameter: String,
+        value: f64,
+        health: SlotResolution,
+    },
+    FeatureParameterBindingState {
+        target: FeatureParameterTarget,
+        derived_from: DerivedIdentity,
+    },
+    JointState {
+        participant_a: DerivedIdentity,
+        participant_b: DerivedIdentity,
+        volume_min: [f64; 3],
+        volume_max: [f64; 3],
+    },
+    SpaceState {
+        purpose: String,
+        volume_min: [f64; 3],
+        volume_max: [f64; 3],
+        adjacent_to: Vec<SpaceId>,
+        accessible_to: Vec<SpaceId>,
+    },
+    ClearanceVolumeState {
+        owner: ClearanceOwner,
+        reason: String,
+        volume_min: [f64; 3],
+        volume_max: [f64; 3],
+        coordinate_frame: ClearanceCoordinateFrame,
+        tolerance_mm: f64,
+        severity: ClearanceSeverity,
+        derived_from: Option<DerivedIdentity>,
+    },
+    PersistentDimensionState {
+        name: String,
+        target: PersistentDimensionTarget,
+        presentation: DimensionPresentation,
+    },
+    Boolean(bool),
     Dimension(Dimension),
+    BottleEdgeFinishKind(BottleEdgeFinishKind),
+    RuleOutputs(Vec<RuleOutput>),
+    ProfilePoints(Vec<[f64; 2]>),
+    Transform(Transform),
+    Tag(Option<TagId>),
+    TagState {
+        name: String,
+        visible: bool,
+    },
+    CollectionState {
+        name: String,
+        occurrence_ids: Vec<OccurrenceId>,
+    },
+    Definition(DefinitionId),
+    DefinitionState {
+        name: String,
+        feature_ids: Vec<FeatureId>,
+        local_occurrence_ids: Vec<LocalOccurrenceId>,
+        local_group_ids: Vec<LocalGroupId>,
+    },
+    DefinitionFeatures(Vec<FeatureId>),
+    ProfileFeatureState {
+        definition: DefinitionId,
+        name: String,
+        points_mm: Vec<[f64; 2]>,
+    },
+    Group(Option<GroupId>),
+    GroupState {
+        name: String,
+        transform: Transform,
+        parent: Option<GroupId>,
+    },
+    OccurrenceState {
+        definition: DefinitionId,
+        name: String,
+        transform: Transform,
+        parent: Option<GroupId>,
+        tag: Option<TagId>,
+        visible: bool,
+    },
+    Occurrences(Vec<OccurrenceId>),
+    Text(String),
     Digest(String),
 }
 
@@ -1060,6 +1686,11 @@ impl Snapshot {
     }
 
     #[must_use]
+    pub fn has_feature_parameter(&self, target: FeatureParameterTarget) -> bool {
+        feature_parameter_dimension(&self.product, target).is_some()
+    }
+
+    #[must_use]
     pub fn feature_parameter_provenance(
         &self,
         target: FeatureParameterTarget,
@@ -1104,6 +1735,24 @@ impl Snapshot {
         self.product.joints.get(&id).map(Arc::as_ref)
     }
 
+    pub fn spaces(&self) -> impl Iterator<Item = &CanonicalSpace> {
+        self.product.spaces.values().map(Arc::as_ref)
+    }
+
+    #[must_use]
+    pub fn space(&self, id: SpaceId) -> Option<&CanonicalSpace> {
+        self.product.spaces.get(&id).map(Arc::as_ref)
+    }
+
+    pub fn clearance_volumes(&self) -> impl Iterator<Item = &CanonicalClearanceVolume> {
+        self.product.clearance_volumes.values().map(Arc::as_ref)
+    }
+
+    #[must_use]
+    pub fn clearance_volume(&self, id: ClearanceVolumeId) -> Option<&CanonicalClearanceVolume> {
+        self.product.clearance_volumes.get(&id).map(Arc::as_ref)
+    }
+
     pub fn exact_reference_evidence(&self) -> impl Iterator<Item = &BodySubshapeRef> {
         self.product
             .exact_reference_evidence
@@ -1117,6 +1766,40 @@ impl Snapshot {
             .exact_reference_evidence
             .get(lineage_digest)
             .map(Arc::as_ref)
+    }
+
+    pub fn persistent_dimensions(&self) -> impl Iterator<Item = &PersistentDimension> {
+        self.product.persistent_dimensions.values().map(Arc::as_ref)
+    }
+
+    #[must_use]
+    pub fn persistent_dimension(&self, id: PersistentDimensionId) -> Option<&PersistentDimension> {
+        self.product.persistent_dimensions.get(&id).map(Arc::as_ref)
+    }
+
+    #[must_use]
+    pub fn project_persistent_dimension(
+        &self,
+        id: PersistentDimensionId,
+    ) -> Option<PersistentDimensionProjection> {
+        let dimension = self.persistent_dimension(id)?;
+        let (health, millimetres) = resolve_persistent_dimension(self.product(), dimension);
+        let display_value =
+            millimetres.map(|value| dimension.presentation.unit.from_millimetres(value));
+        let display_text = display_value.map(|value| {
+            format!(
+                "{value:.precision$} {}",
+                dimension.presentation.unit.label(),
+                precision = usize::from(dimension.presentation.decimal_places)
+            )
+        });
+        Some(PersistentDimensionProjection {
+            id,
+            health,
+            millimetres,
+            display_value,
+            display_text,
+        })
     }
 
     #[must_use]
@@ -1149,6 +1832,54 @@ impl Snapshot {
     #[must_use]
     pub fn units(&self) -> UnitSystem {
         self.product.units
+    }
+
+    #[must_use]
+    pub fn tag(&self, id: TagId) -> Option<&Tag> {
+        self.product.tags.get(&id).map(Arc::as_ref)
+    }
+
+    pub fn tags(&self) -> impl Iterator<Item = &Tag> {
+        self.product.tags.values().map(Arc::as_ref)
+    }
+
+    pub fn occurrences_with_tag(&self, id: TagId) -> impl Iterator<Item = &Occurrence> {
+        self.product
+            .occurrences
+            .values()
+            .filter(move |occurrence| occurrence.tag == Some(id))
+            .map(Arc::as_ref)
+    }
+
+    #[must_use]
+    pub fn collection(&self, id: CollectionId) -> Option<&Collection> {
+        self.product.collections.get(&id).map(Arc::as_ref)
+    }
+
+    pub fn collections(&self) -> impl Iterator<Item = &Collection> {
+        self.product.collections.values().map(Arc::as_ref)
+    }
+
+    pub fn occurrences_in_collection(&self, id: CollectionId) -> impl Iterator<Item = &Occurrence> {
+        self.product
+            .collections
+            .get(&id)
+            .into_iter()
+            .flat_map(|collection| collection.occurrence_ids.iter())
+            .filter_map(|occurrence_id| self.product.occurrences.get(occurrence_id))
+            .map(Arc::as_ref)
+    }
+
+    #[must_use]
+    pub fn occurrence_effectively_visible(&self, id: OccurrenceId) -> Option<bool> {
+        let occurrence = self.occurrence(id)?;
+        Some(
+            occurrence.visible
+                && occurrence
+                    .tag
+                    .and_then(|tag_id| self.tag(tag_id))
+                    .is_none_or(Tag::visible),
+        )
     }
 
     #[must_use]
@@ -1214,6 +1945,9 @@ impl Snapshot {
             let world_transform = self
                 .world_transform_for_occurrence(occurrence.id)
                 .expect("validated occurrence hierarchy has a world transform");
+            let visible = self
+                .occurrence_effectively_visible(occurrence.id)
+                .expect("validated occurrence is queryable");
             occurrences.push(SceneOccurrence {
                 occurrence_id: occurrence.id,
                 instance_path: instance_path.clone(),
@@ -1223,7 +1957,7 @@ impl Snapshot {
                 transform: world_transform,
                 parent: occurrence.parent,
                 local_parent: None,
-                visible: occurrence.visible,
+                visible,
                 shared_occurrence_count: 0,
             });
             project_local_occurrences(
@@ -1232,7 +1966,7 @@ impl Snapshot {
                 definition.id,
                 &instance_path,
                 world_transform,
-                occurrence.visible,
+                visible,
                 &mut occurrences,
             );
         }
@@ -1245,6 +1979,84 @@ impl Snapshot {
             occurrence.shared_occurrence_count = sharing[&occurrence.definition_id];
         }
         occurrences
+    }
+
+    pub fn bind_scene_query(
+        &self,
+        context: SceneQueryContext,
+    ) -> Result<BoundSceneQuery, SceneQueryError> {
+        let context_is_valid = match &context {
+            SceneQueryContext::Group(group_id) => self.group(*group_id).is_some(),
+            SceneQueryContext::Definition {
+                definition_id,
+                instance_path,
+            } => {
+                self.resolve_instance_path(instance_path)
+                    .is_ok_and(|resolved| resolved.definition_id == *definition_id)
+                    && self.scene_query().into_iter().any(|occurrence| {
+                        occurrence.instance_path == *instance_path && occurrence.visible
+                    })
+            }
+        };
+        if !context_is_valid {
+            return Err(SceneQueryError::InvalidContext);
+        }
+        Ok(BoundSceneQuery {
+            document_id: self.document_id(),
+            source_revision: self.revision_id(),
+            source_digest: self.canonical_digest(),
+            context,
+        })
+    }
+
+    pub fn scene_query_in(
+        &self,
+        query: &BoundSceneQuery,
+    ) -> Result<Vec<SceneOccurrence>, SceneQueryError> {
+        if query.document_id != self.document_id()
+            || query.source_revision != self.revision_id()
+            || query.source_digest != self.canonical_digest()
+        {
+            return Err(SceneQueryError::SnapshotMismatch);
+        }
+        let mut occurrences = self.scene_query();
+        occurrences.retain(|occurrence| {
+            occurrence.visible
+                && match &query.context {
+                    SceneQueryContext::Group(group_id) => {
+                        occurrence.instance_path.is_root()
+                            && self
+                                .occurrence(occurrence.instance_path.root_occurrence())
+                                .is_some_and(|root| root.parent() == Some(*group_id))
+                    }
+                    SceneQueryContext::Definition {
+                        definition_id,
+                        instance_path,
+                    } => {
+                        self.resolve_instance_path(instance_path)
+                            .is_ok_and(|resolved| resolved.definition_id == *definition_id)
+                            && occurrence.instance_path.root_occurrence()
+                                == instance_path.root_occurrence()
+                            && occurrence
+                                .instance_path
+                                .steps()
+                                .starts_with(instance_path.steps())
+                            && occurrence.instance_path.steps()[instance_path.steps().len()..]
+                                .iter()
+                                .filter(|step| matches!(step, InstancePathStep::Occurrence(_)))
+                                .count()
+                                <= 1
+                    }
+                }
+        });
+        let mut sharing = BTreeMap::<DefinitionId, usize>::new();
+        for occurrence in &occurrences {
+            *sharing.entry(occurrence.definition_id).or_default() += 1;
+        }
+        for occurrence in &mut occurrences {
+            occurrence.shared_occurrence_count = sharing[&occurrence.definition_id];
+        }
+        Ok(occurrences)
     }
 
     pub fn resolve_instance_path(
@@ -1371,7 +2183,11 @@ fn project_local_occurrences(
         path = path.with_step(InstancePathStep::Occurrence(*local_id));
         world_transform = world_transform.compose(local.transform);
         let target_definition = &product.definitions[&local.definition_id];
-        let visible = owner_visible && local.visible;
+        let tag_visible = local
+            .tag
+            .and_then(|tag_id| product.tags.get(&tag_id))
+            .is_none_or(|tag| tag.visible);
+        let visible = owner_visible && local.visible && tag_visible;
         output.push(SceneOccurrence {
             occurrence_id: root_occurrence_id,
             instance_path: path.clone(),
@@ -1491,11 +2307,18 @@ impl fmt::Display for ReferenceEvidenceError {
 
 impl std::error::Error for ReferenceEvidenceError {}
 
+struct HumanConfirmationPolicy {
+    verifying_key: VerifyingKey,
+    epoch: u64,
+    consumed_signatures: BTreeSet<[u8; 64]>,
+}
+
 pub struct DocumentStore {
     revisions: Vec<Arc<Revision>>,
     cursor: usize,
     next_revision_id: u64,
     evaluation_registry: BTreeMap<DerivedResultKey, DerivedResultEvent>,
+    human_confirmation_policy: Option<Box<HumanConfirmationPolicy>>,
 }
 
 impl Default for DocumentStore {
@@ -1509,6 +2332,29 @@ impl DocumentStore {
     pub fn new() -> Self {
         Self::from_product(0, ProductModel::default())
             .expect("an empty canonical document is valid")
+    }
+
+    pub fn configure_human_confirmation_policy(
+        &mut self,
+        verifying_key: [u8; 32],
+        epoch: u64,
+    ) -> Result<(), HumanConfirmationError> {
+        if epoch == 0
+            || self
+                .human_confirmation_policy
+                .as_ref()
+                .is_some_and(|current| epoch <= current.epoch)
+        {
+            return Err(HumanConfirmationError::PolicyEpochInvalid);
+        }
+        let verifying_key = VerifyingKey::from_bytes(&verifying_key)
+            .map_err(|_| HumanConfirmationError::InvalidVerifyingKey)?;
+        self.human_confirmation_policy = Some(Box::new(HumanConfirmationPolicy {
+            verifying_key,
+            epoch,
+            consumed_signatures: BTreeSet::new(),
+        }));
+        Ok(())
     }
 
     pub(crate) fn from_product(
@@ -1537,6 +2383,7 @@ impl DocumentStore {
             cursor: 0,
             next_revision_id,
             evaluation_registry: BTreeMap::new(),
+            human_confirmation_policy: None,
         })
     }
 
@@ -1849,13 +2696,24 @@ impl DocumentStore {
                     product.feature_parameter_provenance.remove(target);
                 }
                 CanonicalCommand::RecomputeFeatureParameters { identity } => {
-                    let report = recompute_feature_parameters(&mut product, identity)?;
-                    changed_evaluator_nodes.extend(
-                        product
-                            .feature_parameter_bindings
-                            .values()
-                            .map(|binding| binding.derived_from.root_rule_node_id),
-                    );
+                    let affected = if changed_evaluator_nodes.is_empty() {
+                        None
+                    } else {
+                        Some(dependent_closure(
+                            &product.evaluator_nodes,
+                            &changed_evaluator_nodes,
+                        ))
+                    };
+                    let report =
+                        recompute_feature_parameters(&mut product, identity, affected.as_ref())?;
+                    if affected.is_none() {
+                        changed_evaluator_nodes.extend(
+                            product
+                                .feature_parameter_bindings
+                                .values()
+                                .map(|binding| binding.derived_from.root_rule_node_id),
+                        );
+                    }
                     evaluation_identity = report.identity;
                 }
                 CanonicalCommand::UpsertJoint(joint) => {
@@ -1865,6 +2723,129 @@ impl DocumentStore {
                     if product.joints.remove(id).is_none() {
                         return Err(CanonicalError::JointNotFound(*id));
                     }
+                }
+                CanonicalCommand::UpsertSpace(space) => {
+                    product.spaces.insert(space.id(), Arc::new(space.clone()));
+                }
+                CanonicalCommand::DeleteSpace { id } => {
+                    if product.spaces.remove(id).is_none() {
+                        return Err(CanonicalError::SpaceNotFound(*id));
+                    }
+                }
+                CanonicalCommand::UpsertClearanceVolume(clearance) => {
+                    if clearance.derived_from().is_some_and(|identity| {
+                        resolve_derived_identity(&product.evaluator_nodes, identity)
+                            != SlotResolution::Resolved
+                    }) {
+                        return Err(CanonicalError::UnresolvedDerivedOutput);
+                    }
+                    product
+                        .clearance_volumes
+                        .insert(clearance.id(), Arc::new(clearance.clone()));
+                }
+                CanonicalCommand::DeleteClearanceVolume { id } => {
+                    if product.clearance_volumes.remove(id).is_none() {
+                        return Err(CanonicalError::ClearanceVolumeNotFound(*id));
+                    }
+                }
+                CanonicalCommand::UpsertPersistentDimension(dimension) => {
+                    validate_persistent_dimension(dimension)?;
+                    product
+                        .persistent_dimensions
+                        .insert(dimension.id, Arc::new(dimension.clone()));
+                }
+                CanonicalCommand::DeletePersistentDimension { id } => {
+                    if product.persistent_dimensions.remove(id).is_none() {
+                        return Err(CanonicalError::PersistentDimensionNotFound(*id));
+                    }
+                }
+                CanonicalCommand::CreateTag { id, name, visible } => {
+                    ensure_product_id(id.0)?;
+                    ensure_name(name)?;
+                    if product.tags.contains_key(id) {
+                        return Err(CanonicalError::TagAlreadyExists(*id));
+                    }
+                    product.tags.insert(
+                        *id,
+                        Arc::new(Tag {
+                            id: *id,
+                            name: name.clone(),
+                            visible: *visible,
+                        }),
+                    );
+                }
+                CanonicalCommand::DeleteTag { id } => {
+                    if product
+                        .occurrences
+                        .values()
+                        .any(|occurrence| occurrence.tag == Some(*id))
+                        || product
+                            .local_occurrences
+                            .values()
+                            .any(|occurrence| occurrence.tag == Some(*id))
+                    {
+                        return Err(CanonicalError::TagInUse(*id));
+                    }
+                    product
+                        .tags
+                        .remove(id)
+                        .ok_or(CanonicalError::TagNotFound(*id))?;
+                }
+                CanonicalCommand::SetTagVisibility { id, visible } => {
+                    let existing = product
+                        .tags
+                        .get(id)
+                        .ok_or(CanonicalError::TagNotFound(*id))?;
+                    product.tags.insert(
+                        *id,
+                        Arc::new(Tag {
+                            visible: *visible,
+                            ..existing.as_ref().clone()
+                        }),
+                    );
+                }
+                CanonicalCommand::CreateCollection { id, name } => {
+                    ensure_product_id(id.0)?;
+                    ensure_name(name)?;
+                    if product.collections.contains_key(id) {
+                        return Err(CanonicalError::CollectionAlreadyExists(*id));
+                    }
+                    product.collections.insert(
+                        *id,
+                        Arc::new(Collection {
+                            id: *id,
+                            name: name.clone(),
+                            occurrence_ids: BTreeSet::new(),
+                        }),
+                    );
+                }
+                CanonicalCommand::DeleteCollection { id } => {
+                    product
+                        .collections
+                        .remove(id)
+                        .ok_or(CanonicalError::CollectionNotFound(*id))?;
+                }
+                CanonicalCommand::SetCollectionOccurrences { id, occurrence_ids } => {
+                    let existing = product
+                        .collections
+                        .get(id)
+                        .ok_or(CanonicalError::CollectionNotFound(*id))?;
+                    if occurrence_ids.windows(2).any(|pair| pair[0] >= pair[1]) {
+                        return Err(CanonicalError::CollectionMembershipNotCanonical(*id));
+                    }
+                    let canonical = occurrence_ids.iter().copied().collect::<BTreeSet<_>>();
+                    for occurrence_id in &canonical {
+                        if !product.occurrences.contains_key(occurrence_id) {
+                            return Err(CanonicalError::OccurrenceNotFound(*occurrence_id));
+                        }
+                    }
+                    product.collections.insert(
+                        *id,
+                        Arc::new(Collection {
+                            occurrence_ids: canonical,
+                            ..existing.as_ref().clone()
+                        }),
+                    );
                 }
                 CanonicalCommand::CreateDefinition { id, name } => {
                     ensure_product_id(id.0)?;
@@ -2128,6 +3109,11 @@ impl DocumentStore {
                     if product.occurrences.contains_key(id) {
                         return Err(CanonicalError::OccurrenceAlreadyExists(*id));
                     }
+                    if let Some(tag_id) = tag
+                        && !product.tags.contains_key(tag_id)
+                    {
+                        return Err(CanonicalError::TagNotFound(*tag_id));
+                    }
                     product.occurrences.insert(
                         *id,
                         Arc::new(Occurrence {
@@ -2142,6 +3128,13 @@ impl DocumentStore {
                     );
                 }
                 CanonicalCommand::DeleteOccurrence { id } => {
+                    if product
+                        .collections
+                        .values()
+                        .any(|collection| collection.occurrence_ids.contains(id))
+                    {
+                        return Err(CanonicalError::OccurrenceInCollection(*id));
+                    }
                     product
                         .occurrences
                         .remove(id)
@@ -2170,6 +3163,24 @@ impl DocumentStore {
                         *id,
                         Arc::new(Occurrence {
                             visible: *visible,
+                            ..existing.as_ref().clone()
+                        }),
+                    );
+                }
+                CanonicalCommand::SetOccurrenceTag { id, tag } => {
+                    if let Some(tag_id) = tag
+                        && !product.tags.contains_key(tag_id)
+                    {
+                        return Err(CanonicalError::TagNotFound(*tag_id));
+                    }
+                    let existing = product
+                        .occurrences
+                        .get(id)
+                        .ok_or(CanonicalError::OccurrenceNotFound(*id))?;
+                    product.occurrences.insert(
+                        *id,
+                        Arc::new(Occurrence {
+                            tag: *tag,
                             ..existing.as_ref().clone()
                         }),
                     );
@@ -2481,6 +3492,7 @@ impl DocumentStore {
         batch: CommandBatch,
         context: ProposalContext,
     ) -> Result<Proposal, ProposalPrepareError> {
+        validate_confirmation_requirement(&context)?;
         let snapshot = self.current();
         let authoritative_dependencies = authoritative_dependencies(&snapshot, &batch);
         let authoritative_writes = authoritative_writes(&snapshot, &batch);
@@ -2491,7 +3503,7 @@ impl DocumentStore {
         };
         validate_proposal_budget(context.requested_budget, cost)?;
         let (authoritative_diff, intended_result_digest) =
-            proposal_candidate(&snapshot, &batch, &authoritative_writes)?;
+            proposal_candidate(&snapshot, &batch, &authoritative_writes, context.goal)?;
         Ok(Proposal {
             document_id: snapshot.document_id(),
             provenance_revision: snapshot.revision_id,
@@ -2510,6 +3522,45 @@ impl DocumentStore {
             requested_budget: context.requested_budget,
             cost,
             batch,
+        })
+    }
+
+    pub fn prepare_high_risk_side_effect(
+        &self,
+        operation: &str,
+        principal: ProposalPrincipal,
+        scope: HighRiskScope,
+        payload: &[u8],
+    ) -> Result<SideEffectProposal, HumanConfirmationError> {
+        if operation.is_empty()
+            || operation.len() > 128
+            || operation.chars().any(char::is_control)
+            || payload.is_empty()
+        {
+            return Err(HumanConfirmationError::InvalidSideEffectEvidence);
+        }
+        validate_high_risk_requester(principal)?;
+        let snapshot = self.current();
+        let payload_digest = format!("{:x}", Sha256::digest(payload));
+        let mut evidence = Vec::new();
+        push_confirmation_field(&mut evidence, b"ketchup.side-effect-proposal.v1");
+        push_confirmation_field(&mut evidence, operation.as_bytes());
+        push_confirmation_u64(&mut evidence, snapshot.document_id().0);
+        push_confirmation_u64(&mut evidence, snapshot.revision_id);
+        push_confirmation_field(&mut evidence, snapshot.canonical_digest().as_bytes());
+        push_confirmation_principal(&mut evidence, principal);
+        push_confirmation_scope(&mut evidence, &scope);
+        push_confirmation_field(&mut evidence, payload_digest.as_bytes());
+        let operation_digest = format!("{:x}", Sha256::digest(&evidence));
+        Ok(SideEffectProposal {
+            document_id: snapshot.document_id(),
+            provenance_revision: snapshot.revision_id,
+            provenance_digest: snapshot.canonical_digest(),
+            operation: operation.to_owned(),
+            operation_digest,
+            payload_digest,
+            principal,
+            scope,
         })
     }
 
@@ -2544,13 +3595,144 @@ impl DocumentStore {
         &mut self,
         proposal: &Proposal,
     ) -> Result<VerifiedProposalCommit, ProposalCommitError> {
+        if matches!(proposal.risk, ProposalRisk::High(_)) {
+            return Err(ProposalCommitError::HumanApprovalRequired);
+        }
+        self.commit_verified_proposal_inner(proposal)
+    }
+
+    pub fn commit_high_risk_proposal(
+        &mut self,
+        proposal: &Proposal,
+        approval: &HumanApprovalToken,
+        now_ms: u64,
+    ) -> Result<VerifiedProposalCommit, ProposalCommitError> {
+        let ProposalRisk::High(risk_class) = proposal.risk else {
+            return Err(ProposalCommitError::HumanApprovalUnexpected);
+        };
+        let ProposalConfirmation::HumanOnly(scope) = &proposal.confirmation else {
+            return Err(ProposalCommitError::HumanApprovalInvalid);
+        };
+        let signature = approval.signature;
+        {
+            let policy = self
+                .human_confirmation_policy
+                .as_ref()
+                .ok_or(ProposalCommitError::HumanApprovalPolicyUnavailable)?;
+            if policy.epoch != approval.policy_epoch {
+                return Err(ProposalCommitError::HumanApprovalPolicyStale);
+            }
+            if policy.consumed_signatures.contains(&signature) {
+                return Err(ProposalCommitError::HumanApprovalReplayed);
+            }
+            if approval.approving_human == 0
+                || approval.requester != proposal.principal
+                || approval.document_id != proposal.document_id
+                || approval.revision_id != proposal.provenance_revision
+                || approval.provenance_digest != proposal.provenance_digest
+                || approval.dependency_digest != proposal.dependency_digest
+                || approval.command_digest != proposal.command_digest
+                || approval.result_digest != proposal.intended_result_digest
+                || approval.scope != *scope
+                || approval.scope.class != risk_class
+                || now_ms < approval.issued_at_ms
+                || now_ms > approval.expires_at_ms
+            {
+                return Err(ProposalCommitError::HumanApprovalInvalid);
+            }
+            policy
+                .verifying_key
+                .verify(
+                    &approval.signing_payload(),
+                    &Signature::from_bytes(&approval.signature),
+                )
+                .map_err(|_| ProposalCommitError::HumanApprovalInvalid)?;
+        }
+        let committed = self.commit_verified_proposal_inner(proposal)?;
+        self.human_confirmation_policy
+            .as_mut()
+            .expect("confirmation policy was verified before commit")
+            .consumed_signatures
+            .insert(signature);
+        Ok(committed)
+    }
+
+    pub fn authorize_high_risk_side_effect(
+        &mut self,
+        proposal: &SideEffectProposal,
+        approval: &SideEffectApprovalToken,
+        now_ms: u64,
+    ) -> Result<SideEffectAuthorizationReceipt, SideEffectAuthorizationError> {
+        let signature = approval.signature;
+        let snapshot = self.current();
+        {
+            let policy = self
+                .human_confirmation_policy
+                .as_ref()
+                .ok_or(SideEffectAuthorizationError::PolicyUnavailable)?;
+            if policy.epoch != approval.policy_epoch {
+                return Err(SideEffectAuthorizationError::PolicyStale);
+            }
+            if policy.consumed_signatures.contains(&signature) {
+                return Err(SideEffectAuthorizationError::Replayed);
+            }
+            if approval.approving_human == 0
+                || approval.requester != proposal.principal
+                || approval.document_id != proposal.document_id
+                || approval.revision_id != proposal.provenance_revision
+                || approval.provenance_digest != proposal.provenance_digest
+                || approval.operation_digest != proposal.operation_digest
+                || approval.payload_digest != proposal.payload_digest
+                || approval.scope != proposal.scope
+                || snapshot.document_id() != proposal.document_id
+                || snapshot.revision_id != proposal.provenance_revision
+                || snapshot.canonical_digest() != proposal.provenance_digest
+                || now_ms < approval.issued_at_ms
+                || now_ms > approval.expires_at_ms
+            {
+                return Err(SideEffectAuthorizationError::Invalid);
+            }
+            policy
+                .verifying_key
+                .verify(
+                    &approval.signing_payload(),
+                    &Signature::from_bytes(&approval.signature),
+                )
+                .map_err(|_| SideEffectAuthorizationError::Invalid)?;
+        }
+        self.human_confirmation_policy
+            .as_mut()
+            .expect("side-effect policy was verified before authorization")
+            .consumed_signatures
+            .insert(signature);
+        Ok(SideEffectAuthorizationReceipt {
+            approving_human: approval.approving_human,
+            document_id: proposal.document_id,
+            revision_id: proposal.provenance_revision,
+            operation: proposal.operation.clone(),
+            operation_digest: proposal.operation_digest.clone(),
+            payload_digest: proposal.payload_digest.clone(),
+            scope: proposal.scope.clone(),
+            policy_epoch: approval.policy_epoch,
+            authorized_at_ms: now_ms,
+        })
+    }
+
+    fn commit_verified_proposal_inner(
+        &mut self,
+        proposal: &Proposal,
+    ) -> Result<VerifiedProposalCommit, ProposalCommitError> {
         if let stale @ ProposalValidity::Stale { .. } = self.validate_proposal(proposal) {
             return Err(ProposalCommitError::Stale(stale));
         }
         let current = self.current();
-        let (diff, intended_result_digest) =
-            proposal_candidate(&current, &proposal.batch, &proposal.authoritative_writes)
-                .map_err(ProposalCommitError::Preparation)?;
+        let (diff, intended_result_digest) = proposal_candidate(
+            &current,
+            &proposal.batch,
+            &proposal.authoritative_writes,
+            proposal.goal,
+        )
+        .map_err(ProposalCommitError::Preparation)?;
         if diff != proposal.authoritative_diff
             || intended_result_digest != proposal.intended_result_digest
         {
@@ -2671,8 +3853,8 @@ impl Proposal {
     }
 
     #[must_use]
-    pub const fn confirmation(&self) -> ProposalConfirmation {
-        self.confirmation
+    pub const fn confirmation(&self) -> &ProposalConfirmation {
+        &self.confirmation
     }
 
     #[must_use]
@@ -2683,6 +3865,319 @@ impl Proposal {
     #[must_use]
     pub const fn cost(&self) -> ProposalCost {
         self.cost
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SideEffectProposal {
+    document_id: DocumentId,
+    provenance_revision: u64,
+    provenance_digest: String,
+    operation: String,
+    operation_digest: String,
+    payload_digest: String,
+    principal: ProposalPrincipal,
+    scope: HighRiskScope,
+}
+
+impl SideEffectProposal {
+    #[must_use]
+    pub const fn document_id(&self) -> DocumentId {
+        self.document_id
+    }
+
+    #[must_use]
+    pub const fn provenance_revision(&self) -> u64 {
+        self.provenance_revision
+    }
+
+    #[must_use]
+    pub fn provenance_digest(&self) -> &str {
+        &self.provenance_digest
+    }
+
+    #[must_use]
+    pub fn operation(&self) -> &str {
+        &self.operation
+    }
+
+    #[must_use]
+    pub fn operation_digest(&self) -> &str {
+        &self.operation_digest
+    }
+
+    #[must_use]
+    pub fn payload_digest(&self) -> &str {
+        &self.payload_digest
+    }
+
+    #[must_use]
+    pub const fn principal(&self) -> ProposalPrincipal {
+        self.principal
+    }
+
+    #[must_use]
+    pub const fn scope(&self) -> &HighRiskScope {
+        &self.scope
+    }
+}
+
+pub const MAX_HUMAN_CONFIRMATION_LIFETIME_MS: u64 = 5 * 60 * 1000;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AuthenticatedApprover {
+    Human(u64),
+    Machine(ProposalPrincipal),
+}
+
+pub struct TrustedConfirmationSurface {
+    signing_key: SigningKey,
+    policy_epoch: u64,
+}
+
+impl TrustedConfirmationSurface {
+    pub fn new(signing_key: [u8; 32], policy_epoch: u64) -> Result<Self, HumanConfirmationError> {
+        if policy_epoch == 0 {
+            return Err(HumanConfirmationError::PolicyEpochInvalid);
+        }
+        Ok(Self {
+            signing_key: SigningKey::from_bytes(&signing_key),
+            policy_epoch,
+        })
+    }
+
+    #[must_use]
+    pub fn verifying_key(&self) -> [u8; 32] {
+        self.signing_key.verifying_key().to_bytes()
+    }
+
+    pub fn issue(
+        &self,
+        proposal: &Proposal,
+        approver: AuthenticatedApprover,
+        issued_at_ms: u64,
+        expires_at_ms: u64,
+    ) -> Result<HumanApprovalToken, HumanConfirmationError> {
+        let approving_human = match approver {
+            AuthenticatedApprover::Human(id) if id != 0 => id,
+            AuthenticatedApprover::Human(_) => {
+                return Err(HumanConfirmationError::InvalidHumanPrincipal);
+            }
+            AuthenticatedApprover::Machine(_) => {
+                return Err(HumanConfirmationError::MachineCannotApprove);
+            }
+        };
+        if proposal.principal == ProposalPrincipal::Human(approving_human) {
+            return Err(HumanConfirmationError::RequesterCannotApprove);
+        }
+        let ProposalRisk::High(risk_class) = proposal.risk else {
+            return Err(HumanConfirmationError::NotHighRisk);
+        };
+        let ProposalConfirmation::HumanOnly(scope) = &proposal.confirmation else {
+            return Err(HumanConfirmationError::ConfirmationRequirementMismatch);
+        };
+        if scope.class != risk_class {
+            return Err(HumanConfirmationError::ConfirmationRequirementMismatch);
+        }
+        if expires_at_ms <= issued_at_ms
+            || expires_at_ms - issued_at_ms > MAX_HUMAN_CONFIRMATION_LIFETIME_MS
+        {
+            return Err(HumanConfirmationError::InvalidLifetime);
+        }
+        let mut token = HumanApprovalToken {
+            requester: proposal.principal,
+            approving_human,
+            document_id: proposal.document_id,
+            revision_id: proposal.provenance_revision,
+            provenance_digest: proposal.provenance_digest.clone(),
+            dependency_digest: proposal.dependency_digest.clone(),
+            command_digest: proposal.command_digest.clone(),
+            result_digest: proposal.intended_result_digest.clone(),
+            scope: scope.clone(),
+            policy_epoch: self.policy_epoch,
+            issued_at_ms,
+            expires_at_ms,
+            signature: [0; 64],
+        };
+        token.signature = self.signing_key.sign(&token.signing_payload()).to_bytes();
+        Ok(token)
+    }
+
+    pub fn issue_side_effect(
+        &self,
+        proposal: &SideEffectProposal,
+        approver: AuthenticatedApprover,
+        issued_at_ms: u64,
+        expires_at_ms: u64,
+    ) -> Result<SideEffectApprovalToken, HumanConfirmationError> {
+        let approving_human = authenticated_human(approver)?;
+        if proposal.principal == ProposalPrincipal::Human(approving_human) {
+            return Err(HumanConfirmationError::RequesterCannotApprove);
+        }
+        validate_confirmation_lifetime(issued_at_ms, expires_at_ms)?;
+        let mut token = SideEffectApprovalToken {
+            requester: proposal.principal,
+            approving_human,
+            document_id: proposal.document_id,
+            revision_id: proposal.provenance_revision,
+            provenance_digest: proposal.provenance_digest.clone(),
+            operation_digest: proposal.operation_digest.clone(),
+            payload_digest: proposal.payload_digest.clone(),
+            scope: proposal.scope.clone(),
+            policy_epoch: self.policy_epoch,
+            issued_at_ms,
+            expires_at_ms,
+            signature: [0; 64],
+        };
+        token.signature = self.signing_key.sign(&token.signing_payload()).to_bytes();
+        Ok(token)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HumanApprovalToken {
+    requester: ProposalPrincipal,
+    approving_human: u64,
+    document_id: DocumentId,
+    revision_id: u64,
+    provenance_digest: String,
+    dependency_digest: String,
+    command_digest: String,
+    result_digest: String,
+    scope: HighRiskScope,
+    policy_epoch: u64,
+    issued_at_ms: u64,
+    expires_at_ms: u64,
+    signature: [u8; 64],
+}
+
+impl HumanApprovalToken {
+    #[must_use]
+    pub const fn approving_human(&self) -> u64 {
+        self.approving_human
+    }
+
+    #[must_use]
+    pub const fn policy_epoch(&self) -> u64 {
+        self.policy_epoch
+    }
+
+    #[must_use]
+    pub const fn expires_at_ms(&self) -> u64 {
+        self.expires_at_ms
+    }
+
+    fn signing_payload(&self) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        push_confirmation_field(&mut bytes, b"ketchup.human-confirmation.v1");
+        push_confirmation_principal(&mut bytes, self.requester);
+        push_confirmation_u64(&mut bytes, self.approving_human);
+        push_confirmation_u64(&mut bytes, self.document_id.0);
+        push_confirmation_u64(&mut bytes, self.revision_id);
+        push_confirmation_field(&mut bytes, self.provenance_digest.as_bytes());
+        push_confirmation_field(&mut bytes, self.dependency_digest.as_bytes());
+        push_confirmation_field(&mut bytes, self.command_digest.as_bytes());
+        push_confirmation_field(&mut bytes, self.result_digest.as_bytes());
+        push_confirmation_scope(&mut bytes, &self.scope);
+        push_confirmation_u64(&mut bytes, self.policy_epoch);
+        push_confirmation_u64(&mut bytes, self.issued_at_ms);
+        push_confirmation_u64(&mut bytes, self.expires_at_ms);
+        bytes
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SideEffectApprovalToken {
+    requester: ProposalPrincipal,
+    approving_human: u64,
+    document_id: DocumentId,
+    revision_id: u64,
+    provenance_digest: String,
+    operation_digest: String,
+    payload_digest: String,
+    scope: HighRiskScope,
+    policy_epoch: u64,
+    issued_at_ms: u64,
+    expires_at_ms: u64,
+    signature: [u8; 64],
+}
+
+impl SideEffectApprovalToken {
+    fn signing_payload(&self) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        push_confirmation_field(&mut bytes, b"ketchup.side-effect-confirmation.v1");
+        push_confirmation_principal(&mut bytes, self.requester);
+        push_confirmation_u64(&mut bytes, self.approving_human);
+        push_confirmation_u64(&mut bytes, self.document_id.0);
+        push_confirmation_u64(&mut bytes, self.revision_id);
+        push_confirmation_field(&mut bytes, self.provenance_digest.as_bytes());
+        push_confirmation_field(&mut bytes, self.operation_digest.as_bytes());
+        push_confirmation_field(&mut bytes, self.payload_digest.as_bytes());
+        push_confirmation_scope(&mut bytes, &self.scope);
+        push_confirmation_u64(&mut bytes, self.policy_epoch);
+        push_confirmation_u64(&mut bytes, self.issued_at_ms);
+        push_confirmation_u64(&mut bytes, self.expires_at_ms);
+        bytes
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct SideEffectAuthorizationReceipt {
+    approving_human: u64,
+    document_id: DocumentId,
+    revision_id: u64,
+    operation: String,
+    operation_digest: String,
+    payload_digest: String,
+    scope: HighRiskScope,
+    policy_epoch: u64,
+    authorized_at_ms: u64,
+}
+
+impl SideEffectAuthorizationReceipt {
+    #[must_use]
+    pub const fn approving_human(&self) -> u64 {
+        self.approving_human
+    }
+
+    #[must_use]
+    pub const fn document_id(&self) -> DocumentId {
+        self.document_id
+    }
+
+    #[must_use]
+    pub const fn revision_id(&self) -> u64 {
+        self.revision_id
+    }
+
+    #[must_use]
+    pub fn operation(&self) -> &str {
+        &self.operation
+    }
+
+    #[must_use]
+    pub fn operation_digest(&self) -> &str {
+        &self.operation_digest
+    }
+
+    #[must_use]
+    pub fn payload_digest(&self) -> &str {
+        &self.payload_digest
+    }
+
+    #[must_use]
+    pub const fn scope(&self) -> &HighRiskScope {
+        &self.scope
+    }
+
+    #[must_use]
+    pub const fn policy_epoch(&self) -> u64 {
+        self.policy_epoch
+    }
+
+    #[must_use]
+    pub const fn authorized_at_ms(&self) -> u64 {
+        self.authorized_at_ms
     }
 }
 
@@ -2727,10 +4222,65 @@ pub enum ProposalValidity {
     },
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HumanConfirmationError {
+    InvalidScope,
+    PolicyEpochInvalid,
+    InvalidVerifyingKey,
+    InvalidHumanPrincipal,
+    UnidentifiedRequester,
+    MachineCannotApprove,
+    RequesterCannotApprove,
+    NotHighRisk,
+    ConfirmationRequirementMismatch,
+    InvalidLifetime,
+    InvalidSideEffectEvidence,
+}
+
+impl fmt::Display for HumanConfirmationError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidScope => formatter.write_str("high-risk confirmation scope is invalid"),
+            Self::PolicyEpochInvalid => {
+                formatter.write_str("human-confirmation policy epoch must advance from non-zero")
+            }
+            Self::InvalidVerifyingKey => {
+                formatter.write_str("human-confirmation verifying key is invalid")
+            }
+            Self::InvalidHumanPrincipal => {
+                formatter.write_str("approving human principal must be authenticated and non-zero")
+            }
+            Self::UnidentifiedRequester => formatter.write_str(
+                "high-risk proposal requires an explicitly identified requesting principal",
+            ),
+            Self::MachineCannotApprove => {
+                formatter.write_str("machine principals cannot approve human-only operations")
+            }
+            Self::RequesterCannotApprove => {
+                formatter.write_str("requesting human cannot satisfy distinct-human approval")
+            }
+            Self::NotHighRisk => {
+                formatter.write_str("human-only approval applies only to high-risk proposals")
+            }
+            Self::ConfirmationRequirementMismatch => {
+                formatter.write_str("proposal risk and confirmation requirement do not match")
+            }
+            Self::InvalidLifetime => formatter
+                .write_str("human confirmation lifetime must be positive and at most five minutes"),
+            Self::InvalidSideEffectEvidence => formatter.write_str(
+                "side-effect operation and payload evidence must be non-empty and bounded",
+            ),
+        }
+    }
+}
+
+impl std::error::Error for HumanConfirmationError {}
+
 #[derive(Debug, PartialEq)]
 pub enum ProposalPrepareError {
     HostBudgetExceeded,
     RequestedBudgetExceeded,
+    Confirmation(HumanConfirmationError),
     Canonical(CanonicalError),
 }
 
@@ -2741,6 +4291,7 @@ impl fmt::Display for ProposalPrepareError {
             Self::RequestedBudgetExceeded => {
                 formatter.write_str("proposal work exceeds its requested budget")
             }
+            Self::Confirmation(error) => error.fmt(formatter),
             Self::Canonical(error) => error.fmt(formatter),
         }
     }
@@ -2760,6 +4311,12 @@ pub enum ProposalCommitError {
     Preparation(ProposalPrepareError),
     Canonical(CanonicalError),
     VerificationMismatch,
+    HumanApprovalRequired,
+    HumanApprovalUnexpected,
+    HumanApprovalPolicyUnavailable,
+    HumanApprovalPolicyStale,
+    HumanApprovalInvalid,
+    HumanApprovalReplayed,
 }
 
 impl fmt::Display for ProposalCommitError {
@@ -2769,11 +4326,53 @@ impl fmt::Display for ProposalCommitError {
             Self::Preparation(error) => error.fmt(formatter),
             Self::Canonical(error) => error.fmt(formatter),
             Self::VerificationMismatch => formatter.write_str("proposal verification failed"),
+            Self::HumanApprovalRequired => {
+                formatter.write_str("high-risk proposal requires authenticated human approval")
+            }
+            Self::HumanApprovalUnexpected => {
+                formatter.write_str("human-only approval was supplied for a standard proposal")
+            }
+            Self::HumanApprovalPolicyUnavailable => {
+                formatter.write_str("trusted human-confirmation policy is unavailable")
+            }
+            Self::HumanApprovalPolicyStale => {
+                formatter.write_str("human-confirmation policy epoch is stale")
+            }
+            Self::HumanApprovalInvalid => {
+                formatter.write_str("human confirmation is invalid, expired, or mismatched")
+            }
+            Self::HumanApprovalReplayed => {
+                formatter.write_str("human confirmation was already consumed")
+            }
         }
     }
 }
 
 impl std::error::Error for ProposalCommitError {}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SideEffectAuthorizationError {
+    PolicyUnavailable,
+    PolicyStale,
+    Invalid,
+    Replayed,
+}
+
+impl fmt::Display for SideEffectAuthorizationError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::PolicyUnavailable => {
+                formatter.write_str("trusted side-effect confirmation policy is unavailable")
+            }
+            Self::PolicyStale => formatter.write_str("side-effect confirmation policy is stale"),
+            Self::Invalid => formatter
+                .write_str("side-effect confirmation is invalid, expired, stale, or mismatched"),
+            Self::Replayed => formatter.write_str("side-effect confirmation was already consumed"),
+        }
+    }
+}
+
+impl std::error::Error for SideEffectAuthorizationError {}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CanonicalError {
@@ -2793,9 +4392,11 @@ pub enum CanonicalError {
     EmptyProductName,
     InvalidTransform,
     InvalidProfile,
+    InvalidMeshBody,
     DefinitionAlreadyExists(DefinitionId),
     DefinitionNotFound(DefinitionId),
     DefinitionInUse(DefinitionId),
+    DefinitionNotEmpty(DefinitionId),
     FeatureAlreadyExists(FeatureId),
     FeatureNotFound(FeatureId),
     FeatureHasNoDimension(FeatureId),
@@ -2815,8 +4416,25 @@ pub enum CanonicalError {
     InvalidInstancePath,
     IdExhausted,
     WrongNodeKind(NodeId),
+    OverrideAlreadyExists(u64),
     OverrideNotFound(u64),
+    JointAlreadyExists(JointId),
     JointNotFound(JointId),
+    SpaceAlreadyExists(SpaceId),
+    SpaceNotFound(SpaceId),
+    ClearanceVolumeAlreadyExists(ClearanceVolumeId),
+    ClearanceVolumeNotFound(ClearanceVolumeId),
+    PersistentDimensionNotFound(PersistentDimensionId),
+    PersistentDimensionAlreadyExists(PersistentDimensionId),
+    TagAlreadyExists(TagId),
+    TagNotFound(TagId),
+    TagInUse(TagId),
+    CollectionAlreadyExists(CollectionId),
+    CollectionNotFound(CollectionId),
+    CollectionMembershipNotCanonical(CollectionId),
+    OccurrenceInCollection(OccurrenceId),
+    InvalidPersistentDimensionTarget,
+    InvalidDimensionPresentation,
     UndeclaredOverrideParameter,
     UnresolvedDerivedOutput,
     EvaluationEnvelopeMismatch,
@@ -2825,6 +4443,7 @@ pub enum CanonicalError {
     RevisionExhausted,
     Graph(GraphError),
     Prismatic(PrismaticError),
+    Space(SpaceError),
 }
 
 impl fmt::Display for CanonicalError {
@@ -2856,11 +4475,15 @@ impl fmt::Display for CanonicalError {
             Self::InvalidProfile => {
                 formatter.write_str("profile must contain finite non-degenerate points")
             }
+            Self::InvalidMeshBody => formatter.write_str(
+                "mesh body must be finite, closed, consistently oriented, non-degenerate, and carry valid authority provenance",
+            ),
             Self::DefinitionAlreadyExists(id) => {
                 write!(formatter, "definition {} already exists", id.0)
             }
             Self::DefinitionNotFound(id) => write!(formatter, "definition {} does not exist", id.0),
             Self::DefinitionInUse(id) => write!(formatter, "definition {} is still used", id.0),
+            Self::DefinitionNotEmpty(id) => write!(formatter, "definition {} is not empty", id.0),
             Self::FeatureAlreadyExists(id) => write!(formatter, "feature {} already exists", id.0),
             Self::FeatureNotFound(id) => write!(formatter, "feature {} does not exist", id.0),
             Self::FeatureHasNoDimension(id) => {
@@ -2904,8 +4527,47 @@ impl fmt::Display for CanonicalError {
             Self::InvalidInstancePath => formatter.write_str("instance path is unresolved"),
             Self::IdExhausted => formatter.write_str("canonical ID space is exhausted"),
             Self::WrongNodeKind(id) => write!(formatter, "node {} has the wrong kind", id.0),
+            Self::OverrideAlreadyExists(id) => write!(formatter, "override {id} already exists"),
             Self::OverrideNotFound(id) => write!(formatter, "override {id} does not exist"),
+            Self::JointAlreadyExists(id) => write!(formatter, "joint {} already exists", id.0),
             Self::JointNotFound(id) => write!(formatter, "joint {} does not exist", id.0),
+            Self::SpaceAlreadyExists(id) => write!(formatter, "space {} already exists", id.0),
+            Self::SpaceNotFound(id) => write!(formatter, "space {} does not exist", id.0),
+            Self::ClearanceVolumeAlreadyExists(id) => {
+                write!(formatter, "clearance volume {} already exists", id.0)
+            }
+            Self::ClearanceVolumeNotFound(id) => {
+                write!(formatter, "clearance volume {} does not exist", id.0)
+            }
+            Self::PersistentDimensionNotFound(id) => {
+                write!(formatter, "persistent dimension {} does not exist", id.0)
+            }
+            Self::PersistentDimensionAlreadyExists(id) => {
+                write!(formatter, "persistent dimension {} already exists", id.0)
+            }
+            Self::TagAlreadyExists(id) => write!(formatter, "tag {} already exists", id.0),
+            Self::TagNotFound(id) => write!(formatter, "tag {} does not exist", id.0),
+            Self::TagInUse(id) => write!(formatter, "tag {} is still assigned", id.0),
+            Self::CollectionAlreadyExists(id) => {
+                write!(formatter, "collection {} already exists", id.0)
+            }
+            Self::CollectionNotFound(id) => {
+                write!(formatter, "collection {} does not exist", id.0)
+            }
+            Self::CollectionMembershipNotCanonical(id) => write!(
+                formatter,
+                "collection {} membership must be unique and strictly sorted",
+                id.0
+            ),
+            Self::OccurrenceInCollection(id) => {
+                write!(formatter, "occurrence {} is still in a collection", id.0)
+            }
+            Self::InvalidPersistentDimensionTarget => {
+                formatter.write_str("persistent dimension target is invalid")
+            }
+            Self::InvalidDimensionPresentation => {
+                formatter.write_str("persistent dimension presentation is invalid")
+            }
             Self::UndeclaredOverrideParameter => {
                 formatter.write_str("override parameter is not declared by the root rule")
             }
@@ -2922,6 +4584,7 @@ impl fmt::Display for CanonicalError {
             Self::RevisionExhausted => formatter.write_str("revision ID space is exhausted"),
             Self::Graph(error) => error.fmt(formatter),
             Self::Prismatic(error) => error.fmt(formatter),
+            Self::Space(error) => error.fmt(formatter),
         }
     }
 }
@@ -2931,6 +4594,12 @@ impl std::error::Error for CanonicalError {}
 impl From<PrismaticError> for CanonicalError {
     fn from(error: PrismaticError) -> Self {
         Self::Prismatic(error)
+    }
+}
+
+impl From<SpaceError> for CanonicalError {
+    fn from(error: SpaceError) -> Self {
+        Self::Space(error)
     }
 }
 
@@ -2954,6 +4623,110 @@ fn validate_transform(transform: Transform) -> Result<(), CanonicalError> {
     Transform::from_matrix(transform.matrix).map(|_| ())
 }
 
+fn validate_persistent_dimension(dimension: &PersistentDimension) -> Result<(), CanonicalError> {
+    ensure_product_id(dimension.id.0)?;
+    ensure_name(&dimension.name)?;
+    DimensionPresentation::new(
+        dimension.presentation.unit,
+        dimension.presentation.decimal_places,
+    )?;
+    if matches!(
+        &dimension.target,
+        PersistentDimensionTarget::ExactFeatureParameter {
+            definition_id,
+            producer_feature_id,
+            semantic_role,
+            source_element_id,
+            ..
+        } if definition_id.0 == 0
+            || producer_feature_id.0 == 0
+            || semantic_role.is_empty()
+            || source_element_id.is_empty()
+    ) {
+        return Err(CanonicalError::InvalidPersistentDimensionTarget);
+    }
+    Ok(())
+}
+
+fn resolve_persistent_dimension(
+    product: &ProductModel,
+    dimension: &PersistentDimension,
+) -> (DimensionReferenceHealth, Option<f64>) {
+    match &dimension.target {
+        PersistentDimensionTarget::FeatureParameter(target) => {
+            let value = feature_parameter_value_bits(product, *target).map(f64::from_bits);
+            if value.is_some() {
+                (DimensionReferenceHealth::Resolved, value)
+            } else {
+                (DimensionReferenceHealth::Lost, None)
+            }
+        }
+        PersistentDimensionTarget::DerivedOutput(target) => {
+            match resolve_derived_identity(&product.evaluator_nodes, target) {
+                SlotResolution::Resolved => {
+                    let value =
+                        evaluate_graph(&product.evaluator_nodes, &EvaluationIdentity::default())
+                            .ok()
+                            .and_then(|report| {
+                                report.outputs.get(target).map(|output| output.value)
+                            });
+                    if value.is_some() {
+                        (DimensionReferenceHealth::Resolved, value)
+                    } else {
+                        (DimensionReferenceHealth::Lost, None)
+                    }
+                }
+                SlotResolution::Ambiguous { segment_index } => {
+                    (DimensionReferenceHealth::Ambiguous { segment_index }, None)
+                }
+                SlotResolution::Lost { .. } => (DimensionReferenceHealth::Lost, None),
+            }
+        }
+        PersistentDimensionTarget::ExactFeatureParameter {
+            definition_id,
+            producer_feature_id,
+            semantic_role,
+            source_element_id,
+            slot,
+        } => {
+            let candidates = product
+                .exact_reference_evidence
+                .values()
+                .filter(|reference| {
+                    reference.document_id == product.document_id
+                        && reference.definition_id == *definition_id
+                        && reference.producer_feature_id == *producer_feature_id
+                        && reference.semantic_role == *semantic_role
+                        && reference.source_element_id == *source_element_id
+                        && reference.has_valid_lineage()
+                })
+                .count();
+            match candidates {
+                0 => (DimensionReferenceHealth::Lost, None),
+                1 => {
+                    let value = feature_parameter_value_bits(
+                        product,
+                        FeatureParameterTarget {
+                            feature_id: *producer_feature_id,
+                            slot: *slot,
+                        },
+                    )
+                    .map(f64::from_bits);
+                    if value.is_some() {
+                        (DimensionReferenceHealth::Resolved, value)
+                    } else {
+                        (DimensionReferenceHealth::Lost, None)
+                    }
+                }
+                _ => (
+                    DimensionReferenceHealth::Ambiguous { segment_index: 0 },
+                    None,
+                ),
+            }
+        }
+    }
+}
+
 const fn feature_parameter_slot_tag(slot: FeatureParameterSlot) -> u8 {
     match slot {
         FeatureParameterSlot::Height => 1,
@@ -2962,25 +4735,28 @@ const fn feature_parameter_slot_tag(slot: FeatureParameterSlot) -> u8 {
         FeatureParameterSlot::ShoulderRise => 4,
         FeatureParameterSlot::Thickness => 5,
         FeatureParameterSlot::Amount => 6,
+        FeatureParameterSlot::ProfileWidth => 7,
+        FeatureParameterSlot::ProfileHeight => 8,
     }
 }
 
 fn feature_supports_parameter_slot(kind: &FeatureKind, slot: FeatureParameterSlot) -> bool {
-    matches!(
-        (kind, slot),
+    match (kind, slot) {
         (FeatureKind::Extrusion { .. }, FeatureParameterSlot::Height)
-            | (
-                FeatureKind::BottleProfileControl { .. },
-                FeatureParameterSlot::BodyRadius
-                    | FeatureParameterSlot::BodyHeight
-                    | FeatureParameterSlot::ShoulderRise
-            )
-            | (FeatureKind::Shell { .. }, FeatureParameterSlot::Thickness)
-            | (
-                FeatureKind::BottleEdgeFinish { .. },
-                FeatureParameterSlot::Amount
-            )
-    )
+        | (
+            FeatureKind::BottleProfileControl { .. },
+            FeatureParameterSlot::BodyRadius
+            | FeatureParameterSlot::BodyHeight
+            | FeatureParameterSlot::ShoulderRise,
+        )
+        | (FeatureKind::Shell { .. }, FeatureParameterSlot::Thickness)
+        | (FeatureKind::BottleEdgeFinish { .. }, FeatureParameterSlot::Amount) => true,
+        (
+            FeatureKind::Profile { points_mm },
+            FeatureParameterSlot::ProfileWidth | FeatureParameterSlot::ProfileHeight,
+        ) => is_axis_aligned_rectangle(points_mm),
+        _ => false,
+    }
 }
 
 fn audit_feature_parameter_binding(
@@ -3005,9 +4781,9 @@ fn audit_feature_parameter_binding(
             Some(FeatureParameterStaleReason::InputChanged)
         } else if provenance.result_digest != output.result_digest {
             Some(FeatureParameterStaleReason::ResultChanged)
-        } else if feature_parameter_dimension(product, binding.target).is_none_or(|dimension| {
-            dimension.millimetres().to_bits() != provenance.applied_value_bits
-        }) {
+        } else if feature_parameter_value_bits(product, binding.target)
+            .is_none_or(|value_bits| value_bits != provenance.applied_value_bits)
+        {
             Some(FeatureParameterStaleReason::AppliedValueChanged)
         } else {
             None
@@ -3024,33 +4800,92 @@ fn audit_feature_parameter_binding(
 fn feature_parameter_dimension(
     product: &ProductModel,
     target: FeatureParameterTarget,
-) -> Option<&Dimension> {
+) -> Option<Dimension> {
     let feature = product.features.get(&target.feature_id)?;
     match (&feature.kind, target.slot) {
-        (FeatureKind::Extrusion { height, .. }, FeatureParameterSlot::Height) => Some(height),
+        (FeatureKind::Extrusion { height, .. }, FeatureParameterSlot::Height) => {
+            Some(height.clone())
+        }
         (
             FeatureKind::BottleProfileControl { body_radius, .. },
             FeatureParameterSlot::BodyRadius,
-        ) => Some(body_radius),
+        ) => Some(body_radius.clone()),
         (
             FeatureKind::BottleProfileControl { body_height, .. },
             FeatureParameterSlot::BodyHeight,
-        ) => Some(body_height),
+        ) => Some(body_height.clone()),
         (
             FeatureKind::BottleProfileControl { shoulder_rise, .. },
             FeatureParameterSlot::ShoulderRise,
-        ) => Some(shoulder_rise),
-        (FeatureKind::Shell { thickness, .. }, FeatureParameterSlot::Thickness) => Some(thickness),
+        ) => Some(shoulder_rise.clone()),
+        (FeatureKind::Shell { thickness, .. }, FeatureParameterSlot::Thickness) => {
+            Some(thickness.clone())
+        }
         (FeatureKind::BottleEdgeFinish { amount, .. }, FeatureParameterSlot::Amount) => {
-            Some(amount)
+            Some(amount.clone())
+        }
+        (FeatureKind::Profile { points_mm }, FeatureParameterSlot::ProfileWidth)
+            if is_axis_aligned_rectangle(points_mm) =>
+        {
+            let value = points_mm[1][0] - points_mm[0][0];
+            Dimension::new(value.to_string(), value).ok()
+        }
+        (FeatureKind::Profile { points_mm }, FeatureParameterSlot::ProfileHeight)
+            if is_axis_aligned_rectangle(points_mm) =>
+        {
+            let value = points_mm[3][1] - points_mm[0][1];
+            Dimension::new(value.to_string(), value).ok()
         }
         _ => None,
     }
 }
 
+fn feature_parameter_value_bits(
+    product: &ProductModel,
+    target: FeatureParameterTarget,
+) -> Option<u64> {
+    let feature = product.features.get(&target.feature_id)?;
+    let value = match (&feature.kind, target.slot) {
+        (FeatureKind::Extrusion { height, .. }, FeatureParameterSlot::Height) => {
+            height.millimetres()
+        }
+        (
+            FeatureKind::BottleProfileControl { body_radius, .. },
+            FeatureParameterSlot::BodyRadius,
+        ) => body_radius.millimetres(),
+        (
+            FeatureKind::BottleProfileControl { body_height, .. },
+            FeatureParameterSlot::BodyHeight,
+        ) => body_height.millimetres(),
+        (
+            FeatureKind::BottleProfileControl { shoulder_rise, .. },
+            FeatureParameterSlot::ShoulderRise,
+        ) => shoulder_rise.millimetres(),
+        (FeatureKind::Shell { thickness, .. }, FeatureParameterSlot::Thickness) => {
+            thickness.millimetres()
+        }
+        (FeatureKind::BottleEdgeFinish { amount, .. }, FeatureParameterSlot::Amount) => {
+            amount.millimetres()
+        }
+        (FeatureKind::Profile { points_mm }, FeatureParameterSlot::ProfileWidth)
+            if is_axis_aligned_rectangle(points_mm) =>
+        {
+            points_mm[1][0] - points_mm[0][0]
+        }
+        (FeatureKind::Profile { points_mm }, FeatureParameterSlot::ProfileHeight)
+            if is_axis_aligned_rectangle(points_mm) =>
+        {
+            points_mm[3][1] - points_mm[0][1]
+        }
+        _ => return None,
+    };
+    Some(value.to_bits())
+}
+
 fn recompute_feature_parameters(
     product: &mut ProductModel,
     identity: &EvaluationIdentity,
+    affected_nodes: Option<&BTreeSet<NodeId>>,
 ) -> Result<EvaluationReport, CanonicalError> {
     let report =
         evaluate_graph(&product.evaluator_nodes, identity).map_err(CanonicalError::Graph)?;
@@ -3060,6 +4895,11 @@ fn recompute_feature_parameters(
         .map(|binding| binding.as_ref().clone())
         .collect::<Vec<_>>();
     for binding in bindings {
+        if affected_nodes
+            .is_some_and(|affected| !affected.contains(&binding.derived_from.root_rule_node_id))
+        {
+            continue;
+        }
         let output =
             report
                 .outputs
@@ -3098,6 +4938,12 @@ fn set_feature_parameter(
                 height: dimension,
             }
         }
+        (
+            FeatureKind::Profile { points_mm },
+            FeatureParameterSlot::ProfileWidth | FeatureParameterSlot::ProfileHeight,
+        ) => FeatureKind::Profile {
+            points_mm: resize_axis_aligned_rectangle(points_mm, target, dimension.millimetres())?,
+        },
         (
             FeatureKind::BottleProfileControl {
                 profile,
@@ -3191,14 +5037,161 @@ fn validate_feature_kind(kind: &FeatureKind) -> Result<(), CanonicalError> {
             }
             Ok(())
         }
+        FeatureKind::MeshBody(spec) => validate_mesh_body(spec),
         FeatureKind::Revolve { .. }
         | FeatureKind::ThroughCut { .. }
         | FeatureKind::Boolean { .. } => Ok(()),
     }
 }
 
+const MAX_MESH_VERTICES: usize = 100_000;
+const MAX_MESH_TRIANGLES: usize = 200_000;
+const MESH_AREA_EPSILON: f64 = 1.0e-18;
+const MESH_VOLUME_EPSILON: f64 = 1.0e-12;
+
+fn validate_mesh_body(spec: &MeshBodySpec) -> Result<(), CanonicalError> {
+    if spec.schema != MESH_BODY_SCHEMA_V1
+        || !(4..=MAX_MESH_VERTICES).contains(&spec.vertices_mm.len())
+        || !(4..=MAX_MESH_TRIANGLES).contains(&spec.triangles.len())
+        || spec
+            .vertices_mm
+            .iter()
+            .flatten()
+            .any(|coordinate| !coordinate.is_finite() || coordinate.abs() > MAX_CANONICAL_ABS_MM)
+    {
+        return Err(CanonicalError::InvalidMeshBody);
+    }
+    match &spec.authority {
+        MeshAuthority::Authored { provenance } if provenance.is_empty() => {
+            return Err(CanonicalError::InvalidMeshBody);
+        }
+        MeshAuthority::ExactConversion(conversion)
+            if conversion.source_document_id.0 == 0
+                || conversion.source_revision == 0
+                || conversion.source_digest.is_empty()
+                || conversion.source_definition_id.0 == 0
+                || conversion.source_feature_id.0 == 0
+                || conversion.source_result_fingerprint.is_empty()
+                || conversion.source_evaluator.is_empty()
+                || conversion.source_backend.is_empty()
+                || conversion.source_tolerance.is_empty()
+                || conversion.tessellation_tolerance.is_empty()
+                || conversion.destination_definition_id.0 == 0
+                || conversion.destination_feature_id.0 == 0
+                || conversion.unsupported_semantics.is_empty()
+                || !conversion
+                    .unsupported_semantics
+                    .windows(2)
+                    .all(|pair| pair[0] < pair[1]) =>
+        {
+            return Err(CanonicalError::InvalidMeshBody);
+        }
+        _ => {}
+    }
+
+    let mut edges = BTreeMap::<(u32, u32), (u32, i32)>::new();
+    let mut seen_triangles = BTreeSet::new();
+    let mut signed_volume_times_six = 0.0;
+    for indices in &spec.triangles {
+        let [a, b, c] = *indices;
+        if a == b
+            || b == c
+            || a == c
+            || [a, b, c]
+                .into_iter()
+                .any(|index| index as usize >= spec.vertices_mm.len())
+        {
+            return Err(CanonicalError::InvalidMeshBody);
+        }
+        let mut canonical = [a, b, c];
+        canonical.sort_unstable();
+        if !seen_triangles.insert(canonical) {
+            return Err(CanonicalError::InvalidMeshBody);
+        }
+        let first = spec.vertices_mm[a as usize];
+        let second = spec.vertices_mm[b as usize];
+        let third = spec.vertices_mm[c as usize];
+        let first_edge = [
+            second[0] - first[0],
+            second[1] - first[1],
+            second[2] - first[2],
+        ];
+        let second_edge = [
+            third[0] - first[0],
+            third[1] - first[1],
+            third[2] - first[2],
+        ];
+        let cross = [
+            first_edge[1] * second_edge[2] - first_edge[2] * second_edge[1],
+            first_edge[2] * second_edge[0] - first_edge[0] * second_edge[2],
+            first_edge[0] * second_edge[1] - first_edge[1] * second_edge[0],
+        ];
+        if cross.into_iter().map(|value| value * value).sum::<f64>() <= MESH_AREA_EPSILON {
+            return Err(CanonicalError::InvalidMeshBody);
+        }
+        signed_volume_times_six += first[0] * (second[1] * third[2] - second[2] * third[1])
+            + first[1] * (second[2] * third[0] - second[0] * third[2])
+            + first[2] * (second[0] * third[1] - second[1] * third[0]);
+        for (from, to) in [(a, b), (b, c), (c, a)] {
+            let key = (from.min(to), from.max(to));
+            let entry = edges.entry(key).or_default();
+            entry.0 += 1;
+            entry.1 += if from < to { 1 } else { -1 };
+        }
+    }
+    if edges
+        .values()
+        .any(|(uses, orientation)| *uses != 2 || *orientation != 0)
+        || signed_volume_times_six <= MESH_VOLUME_EPSILON
+    {
+        return Err(CanonicalError::InvalidMeshBody);
+    }
+    Ok(())
+}
+
 const MAX_PROFILE_POINTS: usize = 1_024;
 const PROFILE_EPSILON_MM: f64 = 1.0e-9;
+
+fn is_axis_aligned_rectangle(points_mm: &[[f64; 2]]) -> bool {
+    points_mm.len() == 4
+        && points_mm[0][1] == points_mm[1][1]
+        && points_mm[1][0] == points_mm[2][0]
+        && points_mm[2][1] == points_mm[3][1]
+        && points_mm[3][0] == points_mm[0][0]
+        && points_mm[1][0] > points_mm[0][0]
+        && points_mm[3][1] > points_mm[0][1]
+}
+
+fn resize_axis_aligned_rectangle(
+    points_mm: &[[f64; 2]],
+    target: FeatureParameterTarget,
+    value_mm: f64,
+) -> Result<Vec<[f64; 2]>, CanonicalError> {
+    if !is_axis_aligned_rectangle(points_mm) {
+        return Err(CanonicalError::InvalidFeatureParameterBinding(target));
+    }
+    if value_mm <= PROFILE_EPSILON_MM {
+        return Err(CanonicalError::DimensionOutsideEnvelope);
+    }
+    let mut resized = points_mm.to_vec();
+    match target.slot {
+        FeatureParameterSlot::ProfileWidth => {
+            let right = points_mm[0][0] + value_mm;
+            resized[1][0] = right;
+            resized[2][0] = right;
+        }
+        FeatureParameterSlot::ProfileHeight => {
+            let top = points_mm[0][1] + value_mm;
+            resized[2][1] = top;
+            resized[3][1] = top;
+        }
+        _ => return Err(CanonicalError::InvalidFeatureParameterBinding(target)),
+    }
+    validate_feature_kind(&FeatureKind::Profile {
+        points_mm: resized.clone(),
+    })?;
+    Ok(resized)
+}
 
 fn is_valid_profile(points_mm: &[[f64; 2]]) -> bool {
     if !(3..=MAX_PROFILE_POINTS).contains(&points_mm.len())
@@ -3223,7 +5216,7 @@ fn is_valid_profile(points_mm: &[[f64; 2]]) -> bool {
         .take(points_mm.len())
         .map(|(left, right)| left[0] * right[1] - right[0] * left[1])
         .sum();
-    if twice_area.abs() <= PROFILE_EPSILON_MM {
+    if twice_area <= PROFILE_EPSILON_MM {
         return false;
     }
     for left_index in 0..points_mm.len() {
@@ -3487,6 +5480,14 @@ fn clone_definition_and_repoint(
                     .ok_or(CanonicalError::InvalidFeatureMap)?,
                 tool: *mapping.get(tool).ok_or(CanonicalError::InvalidFeatureMap)?,
             },
+            FeatureKind::MeshBody(spec) => {
+                let mut spec = spec.clone();
+                if let MeshAuthority::ExactConversion(conversion) = &mut spec.authority {
+                    conversion.destination_definition_id = new_definition_id;
+                    conversion.destination_feature_id = *new_id;
+                }
+                FeatureKind::MeshBody(spec)
+            }
         };
         cloned_features.push(Arc::new(Feature {
             id: *new_id,
@@ -3894,6 +5895,67 @@ fn validate_product(product: &ProductModel) -> Result<(), CanonicalError> {
             return Err(CanonicalError::Prismatic(PrismaticError::EmptyVolume));
         }
     }
+    for (id, space) in &product.spaces {
+        if *id != space.id() || !space.volume().has_positive_volume() {
+            return Err(CanonicalError::Space(SpaceError::InvalidVolume));
+        }
+        for adjacent_id in space.adjacent_to() {
+            let adjacent = product
+                .spaces
+                .get(adjacent_id)
+                .ok_or(CanonicalError::Space(SpaceError::MissingSpace))?;
+            if !adjacent.adjacent_to().contains(id) {
+                return Err(CanonicalError::Space(SpaceError::AsymmetricAdjacency));
+            }
+        }
+        if space
+            .accessible_to()
+            .iter()
+            .any(|target| !product.spaces.contains_key(target))
+        {
+            return Err(CanonicalError::Space(SpaceError::MissingSpace));
+        }
+    }
+    let validation_snapshot = Snapshot {
+        revision_id: 0,
+        product: Arc::new(product.clone()),
+    };
+    for (id, clearance) in &product.clearance_volumes {
+        if *id != clearance.id() || !clearance.volume().has_positive_volume() {
+            return Err(CanonicalError::Space(SpaceError::InvalidVolume));
+        }
+        let owner_is_valid = match clearance.owner() {
+            ClearanceOwner::Occurrence(path) => {
+                validation_snapshot.resolve_instance_path(path).is_ok()
+            }
+            ClearanceOwner::Space(space_id) => product.spaces.contains_key(space_id),
+        };
+        if !owner_is_valid {
+            return Err(CanonicalError::Space(SpaceError::InvalidOwner));
+        }
+    }
+    for (id, dimension) in &product.persistent_dimensions {
+        if *id != dimension.id {
+            return Err(CanonicalError::InvalidPersistentDimensionTarget);
+        }
+        validate_persistent_dimension(dimension)?;
+    }
+    for tag in product.tags.values() {
+        ensure_product_id(tag.id.0)?;
+        ensure_name(&tag.name)?;
+    }
+    for (id, collection) in &product.collections {
+        if *id != collection.id {
+            return Err(CanonicalError::CollectionNotFound(*id));
+        }
+        ensure_product_id(collection.id.0)?;
+        ensure_name(&collection.name)?;
+        for occurrence_id in &collection.occurrence_ids {
+            if !product.occurrences.contains_key(occurrence_id) {
+                return Err(CanonicalError::OccurrenceNotFound(*occurrence_id));
+            }
+        }
+    }
     for definition in product.definitions.values() {
         ensure_product_id(definition.id.0)?;
         ensure_name(&definition.name)?;
@@ -4106,6 +6168,18 @@ fn validate_product(product: &ProductModel) -> Result<(), CanonicalError> {
                     return Err(CanonicalError::InvalidFeatureOwnership(feature.id));
                 }
             }
+            FeatureKind::MeshBody(spec) => {
+                if definition.feature_ids.as_slice() != [feature.id]
+                    || matches!(
+                        &spec.authority,
+                        MeshAuthority::ExactConversion(conversion)
+                            if conversion.destination_definition_id != feature.definition_id
+                                || conversion.destination_feature_id != feature.id
+                    )
+                {
+                    return Err(CanonicalError::InvalidFeatureOwnership(feature.id));
+                }
+            }
             FeatureKind::Profile { .. } => {}
         }
     }
@@ -4142,6 +6216,11 @@ fn validate_product(product: &ProductModel) -> Result<(), CanonicalError> {
             && !product.groups.contains_key(&parent)
         {
             return Err(CanonicalError::GroupNotFound(parent));
+        }
+        if let Some(tag) = occurrence.tag
+            && !product.tags.contains_key(&tag)
+        {
+            return Err(CanonicalError::TagNotFound(tag));
         }
     }
     for group in product.groups.values() {
@@ -4212,6 +6291,11 @@ fn validate_product(product: &ProductModel) -> Result<(), CanonicalError> {
                 return Err(CanonicalError::InvalidLocalGraph);
             }
         }
+        if let Some(tag) = occurrence.tag
+            && !product.tags.contains_key(&tag)
+        {
+            return Err(CanonicalError::TagNotFound(tag));
+        }
     }
     validate_definition_ownership_graph(product)
 }
@@ -4250,6 +6334,116 @@ fn validate_definition_ownership_graph(product: &ProductModel) -> Result<(), Can
     Ok(())
 }
 
+fn validate_high_risk_requester(
+    principal: ProposalPrincipal,
+) -> Result<(), HumanConfirmationError> {
+    if matches!(
+        principal,
+        ProposalPrincipal::ManualClient
+            | ProposalPrincipal::Human(0)
+            | ProposalPrincipal::Plugin(0)
+    ) {
+        return Err(HumanConfirmationError::UnidentifiedRequester);
+    }
+    Ok(())
+}
+
+fn authenticated_human(approver: AuthenticatedApprover) -> Result<u64, HumanConfirmationError> {
+    match approver {
+        AuthenticatedApprover::Human(id) if id != 0 => Ok(id),
+        AuthenticatedApprover::Human(_) => Err(HumanConfirmationError::InvalidHumanPrincipal),
+        AuthenticatedApprover::Machine(_) => Err(HumanConfirmationError::MachineCannotApprove),
+    }
+}
+
+fn validate_confirmation_lifetime(
+    issued_at_ms: u64,
+    expires_at_ms: u64,
+) -> Result<(), HumanConfirmationError> {
+    if expires_at_ms <= issued_at_ms
+        || expires_at_ms - issued_at_ms > MAX_HUMAN_CONFIRMATION_LIFETIME_MS
+    {
+        return Err(HumanConfirmationError::InvalidLifetime);
+    }
+    Ok(())
+}
+
+fn validate_confirmation_requirement(
+    context: &ProposalContext,
+) -> Result<(), ProposalPrepareError> {
+    if matches!(context.risk, ProposalRisk::High(_))
+        && matches!(
+            context.principal,
+            ProposalPrincipal::ManualClient
+                | ProposalPrincipal::Human(0)
+                | ProposalPrincipal::Plugin(0)
+        )
+    {
+        return Err(ProposalPrepareError::Confirmation(
+            HumanConfirmationError::UnidentifiedRequester,
+        ));
+    }
+    match (context.risk, &context.confirmation) {
+        (ProposalRisk::Standard, ProposalConfirmation::ReviewRequired) => Ok(()),
+        (ProposalRisk::High(class), ProposalConfirmation::HumanOnly(scope))
+            if class == scope.class =>
+        {
+            Ok(())
+        }
+        _ => Err(ProposalPrepareError::Confirmation(
+            HumanConfirmationError::ConfirmationRequirementMismatch,
+        )),
+    }
+}
+
+fn push_confirmation_u64(bytes: &mut Vec<u8>, value: u64) {
+    bytes.extend_from_slice(&value.to_be_bytes());
+}
+
+fn push_confirmation_field(bytes: &mut Vec<u8>, value: &[u8]) {
+    push_confirmation_u64(bytes, u64::try_from(value.len()).unwrap_or(u64::MAX));
+    bytes.extend_from_slice(value);
+}
+
+fn push_confirmation_optional_field(bytes: &mut Vec<u8>, value: Option<&str>) {
+    match value {
+        Some(value) => {
+            bytes.push(1);
+            push_confirmation_field(bytes, value.as_bytes());
+        }
+        None => bytes.push(0),
+    }
+}
+
+fn push_confirmation_principal(bytes: &mut Vec<u8>, principal: ProposalPrincipal) {
+    match principal {
+        ProposalPrincipal::ManualClient => bytes.push(0),
+        ProposalPrincipal::Human(id) => {
+            bytes.push(1);
+            push_confirmation_u64(bytes, id);
+        }
+        ProposalPrincipal::LocalAssistant => bytes.push(2),
+        ProposalPrincipal::Plugin(id) => {
+            bytes.push(3);
+            push_confirmation_u64(bytes, id);
+        }
+    }
+}
+
+fn push_confirmation_scope(bytes: &mut Vec<u8>, scope: &HighRiskScope) {
+    bytes.push(match scope.class {
+        HighRiskClass::DestructiveBulkChange => 0,
+        HighRiskClass::Overwrite => 1,
+        HighRiskClass::LossyConversion => 2,
+        HighRiskClass::ExternalDisclosure => 3,
+        HighRiskClass::ReleaseManufacturingExportWithWarnings => 4,
+        HighRiskClass::CapabilityExpansion => 5,
+    });
+    push_confirmation_optional_field(bytes, scope.destination());
+    push_confirmation_optional_field(bytes, scope.provider());
+    push_confirmation_optional_field(bytes, scope.path());
+}
+
 fn validate_proposal_budget(
     requested: ProposalBudget,
     cost: ProposalCost,
@@ -4273,6 +6467,7 @@ fn proposal_candidate(
     snapshot: &Snapshot,
     batch: &CommandBatch,
     writes: &BTreeSet<AuthoritativeDependency>,
+    goal: ProposalGoal,
 ) -> Result<(Vec<ProposalDiffEntry>, String), ProposalPrepareError> {
     let mut candidate =
         DocumentStore::from_product(snapshot.revision_id, snapshot.product.as_ref().clone())?;
@@ -4283,37 +6478,390 @@ fn proposal_candidate(
         .copied()
         .map(|target| ProposalDiffEntry {
             target,
-            before: proposal_value(snapshot, target),
-            after: proposal_value(after, target),
+            before: proposal_value(snapshot, target, goal),
+            after: proposal_value(after, target, goal),
         })
         .collect();
     Ok((diff, dependency_digest(after, writes)))
 }
 
-fn proposal_value(snapshot: &Snapshot, target: AuthoritativeDependency) -> ProposalValue {
+fn proposal_value(
+    snapshot: &Snapshot,
+    target: AuthoritativeDependency,
+    goal: ProposalGoal,
+) -> ProposalValue {
     match target {
-        AuthoritativeDependency::EvaluatorNode(id) => snapshot
-            .evaluator_node(id)
-            .and_then(EvaluatorNode::dimension)
-            .cloned()
-            .map_or(ProposalValue::Missing, ProposalValue::Dimension),
+        AuthoritativeDependency::EvaluatorNode(id) => {
+            snapshot
+                .evaluator_node(id)
+                .map_or(ProposalValue::Missing, |node| {
+                    if matches!(goal, ProposalGoal::CreateEvaluatorInput(_)) {
+                        node.dimension()
+                            .map_or(ProposalValue::Missing, |dimension| {
+                                ProposalValue::EvaluatorInputState {
+                                    name: node.name().to_owned(),
+                                    dimension: dimension.clone(),
+                                    dependencies: node.dependencies().to_vec(),
+                                }
+                            })
+                    } else if matches!(goal, ProposalGoal::CreateEvaluatorExpression(_)) {
+                        ProposalValue::EvaluatorExpressionState {
+                            name: node.name().to_owned(),
+                            expression: node.kind().source().to_owned(),
+                            dependencies: node.dependencies().to_vec(),
+                        }
+                    } else if matches!(goal, ProposalGoal::CreateEvaluatorRule(_)) {
+                        match node.kind() {
+                            EvaluatorNodeKind::Rule {
+                                outputs,
+                                allowed_parameters,
+                                ..
+                            } => ProposalValue::EvaluatorRuleState {
+                                name: node.name().to_owned(),
+                                expression: node.kind().source().to_owned(),
+                                dependencies: node.dependencies().to_vec(),
+                                input_ports: node.input_ports().to_vec(),
+                                output_ports: node.output_ports().to_vec(),
+                                outputs: outputs.clone(),
+                                override_parameters: allowed_parameters.clone(),
+                            },
+                            _ => ProposalValue::Missing,
+                        }
+                    } else if matches!(goal, ProposalGoal::RenameEvaluatorNode(_)) {
+                        ProposalValue::Text(node.name().to_owned())
+                    } else if matches!(goal, ProposalGoal::SetEvaluatorExpression(_)) {
+                        ProposalValue::Text(node.kind().source().to_owned())
+                    } else if matches!(goal, ProposalGoal::SetRuleOutputs(_)) {
+                        match node.kind() {
+                            EvaluatorNodeKind::Rule { outputs, .. } => {
+                                ProposalValue::RuleOutputs(outputs.clone())
+                            }
+                            _ => ProposalValue::Missing,
+                        }
+                    } else {
+                        node.dimension()
+                            .cloned()
+                            .map_or(ProposalValue::Missing, ProposalValue::Dimension)
+                    }
+                })
+        }
+        AuthoritativeDependency::Override(id)
+            if matches!(
+                goal,
+                ProposalGoal::CreateRuleOverride(_) | ProposalGoal::DeleteRuleOverride(_)
+            ) =>
+        {
+            snapshot
+                .override_by_id(id)
+                .map_or(ProposalValue::Missing, |value| {
+                    ProposalValue::RuleOverrideState {
+                        target: value.target.clone(),
+                        parameter: value.parameter.clone(),
+                        value: value.value(),
+                        health: value.health.clone(),
+                    }
+                })
+        }
+        AuthoritativeDependency::FeatureParameterBinding(target)
+            if matches!(
+                goal,
+                ProposalGoal::CreateFeatureParameterBinding(_)
+                    | ProposalGoal::DeleteFeatureParameterBinding(_)
+            ) =>
+        {
+            snapshot
+                .feature_parameter_binding(target)
+                .map_or(ProposalValue::Missing, |binding| {
+                    ProposalValue::FeatureParameterBindingState {
+                        target: binding.target,
+                        derived_from: binding.derived_from.clone(),
+                    }
+                })
+        }
+        AuthoritativeDependency::Joint(id)
+            if matches!(
+                goal,
+                ProposalGoal::CreateJoint(_) | ProposalGoal::DeleteJoint(_)
+            ) =>
+        {
+            snapshot
+                .joint(id)
+                .map_or(ProposalValue::Missing, |joint| ProposalValue::JointState {
+                    participant_a: joint.participant_a().clone(),
+                    participant_b: joint.participant_b().clone(),
+                    volume_min: joint.volume().min(),
+                    volume_max: joint.volume().max(),
+                })
+        }
+        AuthoritativeDependency::Space(id)
+            if matches!(
+                goal,
+                ProposalGoal::CreateSpace(_) | ProposalGoal::DeleteSpace(_)
+            ) =>
+        {
+            snapshot
+                .space(id)
+                .map_or(ProposalValue::Missing, |space| ProposalValue::SpaceState {
+                    purpose: space.purpose().to_owned(),
+                    volume_min: space.volume().min(),
+                    volume_max: space.volume().max(),
+                    adjacent_to: space.adjacent_to().to_vec(),
+                    accessible_to: space.accessible_to().to_vec(),
+                })
+        }
+        AuthoritativeDependency::ClearanceVolume(id)
+            if matches!(
+                goal,
+                ProposalGoal::CreateClearanceVolume(_) | ProposalGoal::DeleteClearanceVolume(_)
+            ) =>
+        {
+            snapshot
+                .clearance_volume(id)
+                .map_or(ProposalValue::Missing, |clearance| {
+                    ProposalValue::ClearanceVolumeState {
+                        owner: clearance.owner().clone(),
+                        reason: clearance.reason().to_owned(),
+                        volume_min: clearance.volume().min(),
+                        volume_max: clearance.volume().max(),
+                        coordinate_frame: clearance.coordinate_frame(),
+                        tolerance_mm: clearance.tolerance().epsilon_mm(),
+                        severity: clearance.severity(),
+                        derived_from: clearance.derived_from().cloned(),
+                    }
+                })
+        }
+        AuthoritativeDependency::PersistentDimension(id)
+            if matches!(
+                goal,
+                ProposalGoal::CreatePersistentDimension(_)
+                    | ProposalGoal::DeletePersistentDimension(_)
+            ) =>
+        {
+            snapshot
+                .persistent_dimension(id)
+                .map_or(ProposalValue::Missing, |dimension| {
+                    ProposalValue::PersistentDimensionState {
+                        name: dimension.name.clone(),
+                        target: dimension.target.clone(),
+                        presentation: dimension.presentation,
+                    }
+                })
+        }
         AuthoritativeDependency::Feature(id) => {
             snapshot
                 .feature(id)
-                .map_or(ProposalValue::Missing, |feature| match feature.kind() {
-                    FeatureKind::Extrusion { height, .. } => {
-                        ProposalValue::Dimension(height.clone())
+                .map_or(ProposalValue::Missing, |feature| {
+                    if let ProposalGoal::RecomputeFeatureParameter(parameter) = goal
+                        && parameter.feature_id == id
+                    {
+                        return feature_parameter_dimension(&snapshot.product, parameter)
+                            .map_or(ProposalValue::Missing, ProposalValue::Dimension);
                     }
-                    FeatureKind::Shell { thickness, .. } => {
-                        ProposalValue::Dimension(thickness.clone())
+                    match feature.kind() {
+                        FeatureKind::BottleProfileControl {
+                            body_radius,
+                            body_height,
+                            shoulder_rise,
+                            ..
+                        } => match goal {
+                            ProposalGoal::SetBottleControlDimension(
+                                _,
+                                BottleControlDimension::BodyRadius,
+                            ) => ProposalValue::Dimension(body_radius.clone()),
+                            ProposalGoal::SetBottleControlDimension(
+                                _,
+                                BottleControlDimension::BodyHeight,
+                            ) => ProposalValue::Dimension(body_height.clone()),
+                            ProposalGoal::SetBottleControlDimension(
+                                _,
+                                BottleControlDimension::ShoulderRise,
+                            ) => ProposalValue::Dimension(shoulder_rise.clone()),
+                            _ => ProposalValue::Digest(dependency_digest(
+                                snapshot,
+                                &BTreeSet::from([target]),
+                            )),
+                        },
+                        FeatureKind::BottleEdgeFinish { kind, .. }
+                            if matches!(goal, ProposalGoal::SetBottleEdgeFinishKind(_)) =>
+                        {
+                            ProposalValue::BottleEdgeFinishKind(*kind)
+                        }
+                        FeatureKind::Profile { points_mm }
+                            if matches!(goal, ProposalGoal::SetProfilePoints(_)) =>
+                        {
+                            ProposalValue::ProfilePoints(points_mm.clone())
+                        }
+                        FeatureKind::Profile { points_mm }
+                            if matches!(
+                                goal,
+                                ProposalGoal::CreateProfileFeature(_)
+                                    | ProposalGoal::DeleteProfileFeature(_)
+                                    | ProposalGoal::CloneProfileDefinitionAndRepoint(_)
+                            ) =>
+                        {
+                            ProposalValue::ProfileFeatureState {
+                                definition: feature.definition_id(),
+                                name: feature.name().to_owned(),
+                                points_mm: points_mm.clone(),
+                            }
+                        }
+                        FeatureKind::Extrusion { height, .. } => {
+                            ProposalValue::Dimension(height.clone())
+                        }
+                        FeatureKind::Shell { thickness, .. } => {
+                            ProposalValue::Dimension(thickness.clone())
+                        }
+                        FeatureKind::BottleEdgeFinish { amount, .. } => {
+                            ProposalValue::Dimension(amount.clone())
+                        }
+                        _ => ProposalValue::Digest(dependency_digest(
+                            snapshot,
+                            &BTreeSet::from([target]),
+                        )),
                     }
-                    FeatureKind::BottleEdgeFinish { amount, .. } => {
-                        ProposalValue::Dimension(amount.clone())
+                })
+        }
+        AuthoritativeDependency::Tag(id) => {
+            snapshot
+                .tag(id)
+                .map_or(ProposalValue::Missing, |tag| match goal {
+                    ProposalGoal::SetTagVisibility(_) => ProposalValue::Boolean(tag.visible()),
+                    ProposalGoal::CreateTag(_) | ProposalGoal::DeleteTag(_) => {
+                        ProposalValue::TagState {
+                            name: tag.name().to_owned(),
+                            visible: tag.visible(),
+                        }
                     }
                     _ => ProposalValue::Digest(dependency_digest(
                         snapshot,
                         &BTreeSet::from([target]),
                     )),
+                })
+        }
+        AuthoritativeDependency::Collection(id)
+            if matches!(
+                goal,
+                ProposalGoal::SetCollectionOccurrences(_)
+                    | ProposalGoal::CreateCollection(_)
+                    | ProposalGoal::DeleteCollection(_)
+            ) =>
+        {
+            snapshot
+                .collection(id)
+                .map_or(ProposalValue::Missing, |collection| match goal {
+                    ProposalGoal::CreateCollection(_) => {
+                        ProposalValue::Text(collection.name().to_owned())
+                    }
+                    ProposalGoal::SetCollectionOccurrences(_) => {
+                        ProposalValue::Occurrences(collection.occurrence_ids().collect())
+                    }
+                    ProposalGoal::DeleteCollection(_) => ProposalValue::CollectionState {
+                        name: collection.name().to_owned(),
+                        occurrence_ids: collection.occurrence_ids().collect(),
+                    },
+                    _ => unreachable!(),
+                })
+        }
+        AuthoritativeDependency::Definition(id) => {
+            snapshot
+                .definition(id)
+                .map_or(ProposalValue::Missing, |definition| {
+                    if matches!(
+                        goal,
+                        ProposalGoal::RenameDefinition(_) | ProposalGoal::CreateDefinition(_)
+                    ) {
+                        ProposalValue::Text(definition.name().to_owned())
+                    } else if matches!(
+                        goal,
+                        ProposalGoal::DeleteDefinition(_)
+                            | ProposalGoal::CloneProfileDefinitionAndRepoint(_)
+                            | ProposalGoal::ConvertEmptyGroupToComponent(_)
+                    ) {
+                        ProposalValue::DefinitionState {
+                            name: definition.name().to_owned(),
+                            feature_ids: definition.feature_ids().to_vec(),
+                            local_occurrence_ids: definition.local_occurrence_ids().to_vec(),
+                            local_group_ids: definition.local_group_ids().to_vec(),
+                        }
+                    } else if matches!(
+                        goal,
+                        ProposalGoal::CreateProfileFeature(_)
+                            | ProposalGoal::DeleteProfileFeature(_)
+                    ) {
+                        ProposalValue::DefinitionFeatures(definition.feature_ids().to_vec())
+                    } else {
+                        ProposalValue::Digest(dependency_digest(
+                            snapshot,
+                            &BTreeSet::from([target]),
+                        ))
+                    }
+                })
+        }
+        AuthoritativeDependency::Occurrence(id) => {
+            snapshot
+                .occurrence(id)
+                .map_or(ProposalValue::Missing, |occurrence| match goal {
+                    ProposalGoal::SetOccurrenceTranslation(_) => {
+                        ProposalValue::Transform(occurrence.transform())
+                    }
+                    ProposalGoal::SetOccurrenceTag(_) => ProposalValue::Tag(occurrence.tag()),
+                    ProposalGoal::RepointOccurrence(_) => {
+                        ProposalValue::Definition(occurrence.definition_id())
+                    }
+                    ProposalGoal::SetOccurrenceParent(_) => {
+                        ProposalValue::Group(occurrence.parent())
+                    }
+                    ProposalGoal::CreateOccurrence(_)
+                    | ProposalGoal::DeleteOccurrence(_)
+                    | ProposalGoal::CloneProfileDefinitionAndRepoint(_)
+                    | ProposalGoal::ConvertEmptyGroupToComponent(_) => {
+                        ProposalValue::OccurrenceState {
+                            definition: occurrence.definition_id(),
+                            name: occurrence.name().to_owned(),
+                            transform: occurrence.transform(),
+                            parent: occurrence.parent(),
+                            tag: occurrence.tag(),
+                            visible: occurrence.visible(),
+                        }
+                    }
+                    _ => ProposalValue::Boolean(occurrence.visible()),
+                })
+        }
+        AuthoritativeDependency::GroupSubtree(id)
+            if matches!(goal, ProposalGoal::ConvertEmptyGroupToComponent(_)) =>
+        {
+            snapshot
+                .group(id)
+                .map_or(ProposalValue::Missing, |group| ProposalValue::GroupState {
+                    name: group.name().to_owned(),
+                    transform: group.transform(),
+                    parent: group.parent(),
+                })
+        }
+        AuthoritativeDependency::Group(id)
+            if matches!(
+                goal,
+                ProposalGoal::SetGroupTranslation(_)
+                    | ProposalGoal::SetGroupParent(_)
+                    | ProposalGoal::CreateGroup(_)
+                    | ProposalGoal::DeleteGroup(_)
+            ) =>
+        {
+            snapshot
+                .group(id)
+                .map_or(ProposalValue::Missing, |group| match goal {
+                    ProposalGoal::SetGroupTranslation(_) => {
+                        ProposalValue::Transform(group.transform())
+                    }
+                    ProposalGoal::SetGroupParent(_) => ProposalValue::Group(group.parent()),
+                    ProposalGoal::CreateGroup(_) | ProposalGoal::DeleteGroup(_) => {
+                        ProposalValue::GroupState {
+                            name: group.name().to_owned(),
+                            transform: group.transform(),
+                            parent: group.parent(),
+                        }
+                    }
+                    _ => unreachable!(),
                 })
         }
         _ => ProposalValue::Digest(dependency_digest(snapshot, &BTreeSet::from([target]))),
@@ -4363,6 +6911,34 @@ fn authoritative_writes(
             CanonicalCommand::DeleteJoint { id } => {
                 writes.insert(AuthoritativeDependency::Joint(*id));
             }
+            CanonicalCommand::UpsertSpace(space) => {
+                writes.insert(AuthoritativeDependency::Space(space.id()));
+            }
+            CanonicalCommand::DeleteSpace { id } => {
+                writes.insert(AuthoritativeDependency::Space(*id));
+            }
+            CanonicalCommand::UpsertClearanceVolume(clearance) => {
+                writes.insert(AuthoritativeDependency::ClearanceVolume(clearance.id()));
+            }
+            CanonicalCommand::DeleteClearanceVolume { id } => {
+                writes.insert(AuthoritativeDependency::ClearanceVolume(*id));
+            }
+            CanonicalCommand::UpsertPersistentDimension(dimension) => {
+                writes.insert(AuthoritativeDependency::PersistentDimension(dimension.id));
+            }
+            CanonicalCommand::DeletePersistentDimension { id } => {
+                writes.insert(AuthoritativeDependency::PersistentDimension(*id));
+            }
+            CanonicalCommand::CreateTag { id, .. }
+            | CanonicalCommand::DeleteTag { id }
+            | CanonicalCommand::SetTagVisibility { id, .. } => {
+                writes.insert(AuthoritativeDependency::Tag(*id));
+            }
+            CanonicalCommand::CreateCollection { id, .. }
+            | CanonicalCommand::DeleteCollection { id }
+            | CanonicalCommand::SetCollectionOccurrences { id, .. } => {
+                writes.insert(AuthoritativeDependency::Collection(*id));
+            }
             CanonicalCommand::CreateDefinition { id, .. }
             | CanonicalCommand::DeleteDefinition { id }
             | CanonicalCommand::RenameDefinition { id, .. } => {
@@ -4390,6 +6966,7 @@ fn authoritative_writes(
             | CanonicalCommand::DeleteOccurrence { id }
             | CanonicalCommand::SetOccurrenceTransform { id, .. }
             | CanonicalCommand::SetOccurrenceVisibility { id, .. }
+            | CanonicalCommand::SetOccurrenceTag { id, .. }
             | CanonicalCommand::RepointOccurrence { id, .. }
             | CanonicalCommand::SetOccurrenceParent { id, .. } => {
                 writes.insert(AuthoritativeDependency::Occurrence(*id));
@@ -4474,7 +7051,7 @@ fn authoritative_dependencies(
                     | FeatureKind::BottleEdgeFinish { target, .. } => {
                         add_feature_dependency_closure(snapshot, *target, &mut dependencies);
                     }
-                    FeatureKind::Profile { .. } => {}
+                    FeatureKind::Profile { .. } | FeatureKind::MeshBody(_) => {}
                 }
             }
             CanonicalCommand::DeleteFeature { id } => {
@@ -4491,16 +7068,29 @@ fn authoritative_dependencies(
                 id,
                 definition_id,
                 parent,
+                tag,
                 ..
             } => {
                 dependencies.insert(AuthoritativeDependency::Occurrence(*id));
                 dependencies.insert(AuthoritativeDependency::Definition(*definition_id));
+                if let Some(tag_id) = tag {
+                    dependencies.insert(AuthoritativeDependency::Tag(*tag_id));
+                }
                 add_group_ancestry(snapshot, *parent, &mut dependencies);
             }
-            CanonicalCommand::DeleteOccurrence { id }
-            | CanonicalCommand::SetOccurrenceTransform { id, .. }
+            CanonicalCommand::DeleteOccurrence { id } => {
+                dependencies.insert(AuthoritativeDependency::Occurrence(*id));
+                dependencies.insert(AuthoritativeDependency::OccurrenceCollections(*id));
+            }
+            CanonicalCommand::SetOccurrenceTransform { id, .. }
             | CanonicalCommand::SetOccurrenceVisibility { id, .. } => {
                 dependencies.insert(AuthoritativeDependency::Occurrence(*id));
+            }
+            CanonicalCommand::SetOccurrenceTag { id, tag } => {
+                dependencies.insert(AuthoritativeDependency::Occurrence(*id));
+                if let Some(tag_id) = tag {
+                    dependencies.insert(AuthoritativeDependency::Tag(*tag_id));
+                }
             }
             CanonicalCommand::RepointOccurrence { id, definition_id } => {
                 dependencies.insert(AuthoritativeDependency::Occurrence(*id));
@@ -4533,6 +7123,9 @@ fn authoritative_dependencies(
                 dependencies.insert(AuthoritativeDependency::Definition(plan.new_definition_id));
                 for (source_id, new_id) in &plan.feature_id_map {
                     add_feature_dependency_closure(snapshot, *source_id, &mut dependencies);
+                    dependencies.insert(AuthoritativeDependency::FeatureParameterBindings(
+                        *source_id,
+                    ));
                     dependencies.insert(AuthoritativeDependency::Feature(*new_id));
                 }
                 if let Some(definition) = snapshot.definition(plan.source_definition_id) {
@@ -4557,14 +7150,31 @@ fn authoritative_dependencies(
                 dependencies.insert(AuthoritativeDependency::Definition(plan.new_definition_id));
                 dependencies.insert(AuthoritativeDependency::Occurrence(plan.new_occurrence_id));
             }
-            CanonicalCommand::CreateExpressionNode { id, .. } => {
+            CanonicalCommand::CreateExpressionNode { id, expression, .. } => {
                 dependencies.insert(AuthoritativeDependency::EvaluatorNode(*id));
+                if let Ok(expression) = ExpressionAst::parse(expression) {
+                    for dependency in expression.dependencies() {
+                        add_evaluator_dependency_closure(snapshot, dependency, &mut dependencies);
+                    }
+                }
             }
-            CanonicalCommand::CreateRuleNode { id, .. } => {
+            CanonicalCommand::CreateRuleNode { id, expression, .. } => {
                 dependencies.insert(AuthoritativeDependency::EvaluatorNode(*id));
+                if let Ok(expression) = ExpressionAst::parse(expression) {
+                    for dependency in expression.dependencies() {
+                        add_evaluator_dependency_closure(snapshot, dependency, &mut dependencies);
+                    }
+                }
             }
-            CanonicalCommand::SetNodeExpression { id, .. }
-            | CanonicalCommand::SetRuleOutputs { id, .. } => {
+            CanonicalCommand::SetNodeExpression { id, expression } => {
+                add_evaluator_dependency_closure(snapshot, *id, &mut dependencies);
+                if let Ok(expression) = ExpressionAst::parse(expression) {
+                    for dependency in expression.dependencies() {
+                        add_evaluator_dependency_closure(snapshot, dependency, &mut dependencies);
+                    }
+                }
+            }
+            CanonicalCommand::SetRuleOutputs { id, .. } => {
                 add_evaluator_dependency_closure(snapshot, *id, &mut dependencies);
             }
             CanonicalCommand::UpsertOverride(value) => {
@@ -4615,9 +7225,96 @@ fn authoritative_dependencies(
             }
             CanonicalCommand::UpsertJoint(joint) => {
                 dependencies.insert(AuthoritativeDependency::Joint(joint.id()));
+                add_evaluator_dependency_closure(
+                    snapshot,
+                    joint.participant_a().root_rule_node_id,
+                    &mut dependencies,
+                );
+                add_evaluator_dependency_closure(
+                    snapshot,
+                    joint.participant_b().root_rule_node_id,
+                    &mut dependencies,
+                );
             }
             CanonicalCommand::DeleteJoint { id } => {
                 dependencies.insert(AuthoritativeDependency::Joint(*id));
+            }
+            CanonicalCommand::UpsertSpace(space) => {
+                dependencies.insert(AuthoritativeDependency::Space(space.id()));
+                dependencies.extend(
+                    space
+                        .adjacent_to()
+                        .iter()
+                        .chain(space.accessible_to())
+                        .copied()
+                        .map(AuthoritativeDependency::Space),
+                );
+            }
+            CanonicalCommand::DeleteSpace { id } => {
+                dependencies.insert(AuthoritativeDependency::Space(*id));
+            }
+            CanonicalCommand::UpsertClearanceVolume(clearance) => {
+                dependencies.insert(AuthoritativeDependency::ClearanceVolume(clearance.id()));
+                match clearance.owner() {
+                    ClearanceOwner::Occurrence(path) => {
+                        dependencies
+                            .insert(AuthoritativeDependency::Occurrence(path.root_occurrence()));
+                    }
+                    ClearanceOwner::Space(id) => {
+                        dependencies.insert(AuthoritativeDependency::Space(*id));
+                    }
+                }
+                if let Some(identity) = clearance.derived_from() {
+                    add_evaluator_dependency_closure(
+                        snapshot,
+                        identity.root_rule_node_id,
+                        &mut dependencies,
+                    );
+                }
+            }
+            CanonicalCommand::DeleteClearanceVolume { id } => {
+                dependencies.insert(AuthoritativeDependency::ClearanceVolume(*id));
+            }
+            CanonicalCommand::UpsertPersistentDimension(dimension) => {
+                dependencies.insert(AuthoritativeDependency::PersistentDimension(dimension.id));
+                match &dimension.target {
+                    PersistentDimensionTarget::FeatureParameter(target) => {
+                        add_feature_dependency_closure(
+                            snapshot,
+                            target.feature_id,
+                            &mut dependencies,
+                        );
+                    }
+                    PersistentDimensionTarget::DerivedOutput(target) => {
+                        add_evaluator_dependency_closure(
+                            snapshot,
+                            target.root_rule_node_id,
+                            &mut dependencies,
+                        );
+                    }
+                    PersistentDimensionTarget::ExactFeatureParameter { .. } => {}
+                }
+            }
+            CanonicalCommand::DeletePersistentDimension { id } => {
+                dependencies.insert(AuthoritativeDependency::PersistentDimension(*id));
+            }
+            CanonicalCommand::CreateTag { id, .. }
+            | CanonicalCommand::DeleteTag { id }
+            | CanonicalCommand::SetTagVisibility { id, .. } => {
+                dependencies.insert(AuthoritativeDependency::Tag(*id));
+            }
+            CanonicalCommand::CreateCollection { id, .. }
+            | CanonicalCommand::DeleteCollection { id } => {
+                dependencies.insert(AuthoritativeDependency::Collection(*id));
+            }
+            CanonicalCommand::SetCollectionOccurrences { id, occurrence_ids } => {
+                dependencies.insert(AuthoritativeDependency::Collection(*id));
+                dependencies.extend(
+                    occurrence_ids
+                        .iter()
+                        .copied()
+                        .map(AuthoritativeDependency::Occurrence),
+                );
             }
         }
     }
@@ -4666,7 +7363,7 @@ fn add_feature_dependency_closure(
             FeatureKind::Shell { target, .. } | FeatureKind::BottleEdgeFinish { target, .. } => {
                 add_feature_dependency_closure(snapshot, *target, dependencies);
             }
-            FeatureKind::Profile { .. } => {}
+            FeatureKind::Profile { .. } | FeatureKind::MeshBody(_) => {}
         }
     }
 }
@@ -4747,6 +7444,26 @@ fn digest_snapshot(snapshot: &Snapshot) -> String {
     digest.u64(snapshot.product.joints.len() as u64);
     for joint in snapshot.product.joints.values() {
         digest.joint(joint);
+    }
+    digest.u64(snapshot.product.spaces.len() as u64);
+    for space in snapshot.product.spaces.values() {
+        digest.space(space);
+    }
+    digest.u64(snapshot.product.clearance_volumes.len() as u64);
+    for clearance in snapshot.product.clearance_volumes.values() {
+        digest.clearance_volume(clearance);
+    }
+    digest.u64(snapshot.product.persistent_dimensions.len() as u64);
+    for dimension in snapshot.product.persistent_dimensions.values() {
+        digest.persistent_dimension(dimension);
+    }
+    digest.u64(snapshot.product.tags.len() as u64);
+    for tag in snapshot.product.tags.values() {
+        digest.tag(tag);
+    }
+    digest.u64(snapshot.product.collections.len() as u64);
+    for collection in snapshot.product.collections.values() {
+        digest.collection(collection);
     }
     digest.u64(snapshot.product.definitions.len() as u64);
     for definition in snapshot.product.definitions.values() {
@@ -4875,6 +7592,125 @@ impl StableDigest {
         }
     }
 
+    fn space(&mut self, space: &CanonicalSpace) {
+        self.u64(space.id().0);
+        self.bytes(space.purpose().as_bytes());
+        for value in space.volume().min().into_iter().chain(space.volume().max()) {
+            self.u64(value.to_bits());
+        }
+        self.u64(space.adjacent_to().len() as u64);
+        for id in space.adjacent_to() {
+            self.u64(id.0);
+        }
+        self.u64(space.accessible_to().len() as u64);
+        for id in space.accessible_to() {
+            self.u64(id.0);
+        }
+    }
+
+    fn clearance_volume(&mut self, clearance: &CanonicalClearanceVolume) {
+        self.u64(clearance.id().0);
+        match clearance.owner() {
+            ClearanceOwner::Occurrence(path) => {
+                self.byte(1);
+                self.u64(path.root_occurrence().0);
+                self.u64(path.steps().len() as u64);
+                for step in path.steps() {
+                    match step {
+                        InstancePathStep::Group(id) => {
+                            self.byte(1);
+                            self.u64(id.0);
+                        }
+                        InstancePathStep::Occurrence(id) => {
+                            self.byte(2);
+                            self.u64(id.0);
+                        }
+                    }
+                }
+            }
+            ClearanceOwner::Space(id) => {
+                self.byte(2);
+                self.u64(id.0);
+            }
+        }
+        self.bytes(clearance.reason().as_bytes());
+        for value in clearance
+            .volume()
+            .min()
+            .into_iter()
+            .chain(clearance.volume().max())
+        {
+            self.u64(value.to_bits());
+        }
+        self.byte(match clearance.coordinate_frame() {
+            ClearanceCoordinateFrame::World => 1,
+        });
+        self.u64(clearance.tolerance().epsilon_mm().to_bits());
+        self.byte(match clearance.severity() {
+            ClearanceSeverity::Advisory => 1,
+            ClearanceSeverity::Required => 2,
+        });
+        if let Some(identity) = clearance.derived_from() {
+            self.byte(1);
+            self.u64(identity.root_rule_node_id.0);
+            self.slot_path(&identity.slot_path);
+        } else {
+            self.byte(0);
+        }
+    }
+
+    fn persistent_dimension(&mut self, dimension: &PersistentDimension) {
+        self.u64(dimension.id.0);
+        self.bytes(dimension.name.as_bytes());
+        match &dimension.target {
+            PersistentDimensionTarget::FeatureParameter(target) => {
+                self.byte(1);
+                self.u64(target.feature_id.0);
+                self.byte(feature_parameter_slot_tag(target.slot));
+            }
+            PersistentDimensionTarget::DerivedOutput(target) => {
+                self.byte(2);
+                self.u64(target.root_rule_node_id.0);
+                self.slot_path(&target.slot_path);
+            }
+            PersistentDimensionTarget::ExactFeatureParameter {
+                definition_id,
+                producer_feature_id,
+                semantic_role,
+                source_element_id,
+                slot,
+            } => {
+                self.byte(3);
+                self.u64(definition_id.0);
+                self.u64(producer_feature_id.0);
+                self.bytes(semantic_role.as_bytes());
+                self.bytes(source_element_id.as_bytes());
+                self.byte(feature_parameter_slot_tag(*slot));
+            }
+        }
+        self.byte(match dimension.presentation.unit {
+            DimensionDisplayUnit::Millimetres => 1,
+            DimensionDisplayUnit::Centimetres => 2,
+            DimensionDisplayUnit::Inches => 3,
+        });
+        self.byte(dimension.presentation.decimal_places);
+    }
+
+    fn tag(&mut self, tag: &Tag) {
+        self.u64(tag.id.0);
+        self.bytes(tag.name.as_bytes());
+        self.byte(u8::from(tag.visible));
+    }
+
+    fn collection(&mut self, collection: &Collection) {
+        self.u64(collection.id.0);
+        self.bytes(collection.name.as_bytes());
+        self.u64(collection.occurrence_ids.len() as u64);
+        for occurrence_id in &collection.occurrence_ids {
+            self.u64(occurrence_id.0);
+        }
+    }
+
     fn transform(&mut self, transform: Transform) {
         for value in transform.matrix {
             self.u64(value.to_bits());
@@ -4969,6 +7805,50 @@ impl StableDigest {
                 self.bytes(amount.source_token.as_bytes());
                 self.u64(amount.millimetres.to_bits());
             }
+            FeatureKind::MeshBody(spec) => {
+                self.byte(9);
+                self.bytes(spec.schema.as_bytes());
+                self.u64(spec.vertices_mm.len() as u64);
+                for vertex in &spec.vertices_mm {
+                    for coordinate in vertex {
+                        self.u64(coordinate.to_bits());
+                    }
+                }
+                self.u64(spec.triangles.len() as u64);
+                for triangle in &spec.triangles {
+                    for index in triangle {
+                        self.u64(u64::from(*index));
+                    }
+                }
+                match &spec.authority {
+                    MeshAuthority::Authored { provenance } => {
+                        self.byte(1);
+                        self.bytes(provenance.as_bytes());
+                    }
+                    MeshAuthority::ExactConversion(conversion) => {
+                        self.byte(2);
+                        self.u64(conversion.source_document_id.0);
+                        self.u64(conversion.source_revision);
+                        self.bytes(conversion.source_digest.as_bytes());
+                        self.u64(conversion.source_definition_id.0);
+                        self.u64(conversion.source_feature_id.0);
+                        self.bytes(conversion.source_result_fingerprint.as_bytes());
+                        self.bytes(conversion.source_evaluator.as_bytes());
+                        self.bytes(conversion.source_backend.as_bytes());
+                        self.bytes(conversion.source_tolerance.as_bytes());
+                        self.bytes(conversion.tessellation_tolerance.as_bytes());
+                        self.u64(conversion.destination_definition_id.0);
+                        self.u64(conversion.destination_feature_id.0);
+                        self.u64(conversion.unsupported_semantics.len() as u64);
+                        for semantic in &conversion.unsupported_semantics {
+                            self.bytes(semantic.as_bytes());
+                        }
+                        self.byte(match conversion.exact_reference_consequence {
+                            ExactReferenceConversionConsequence::Lost => 1,
+                        });
+                    }
+                }
+            }
         }
     }
 
@@ -5058,6 +7938,56 @@ impl StableDigest {
                 if let Some(joint) = product.joints.get(&id) {
                     self.byte(1);
                     self.joint(joint);
+                } else {
+                    self.byte(0);
+                }
+            }
+            AuthoritativeDependency::Space(id) => {
+                self.byte(19);
+                self.u64(id.0);
+                if let Some(space) = product.spaces.get(&id) {
+                    self.byte(1);
+                    self.space(space);
+                } else {
+                    self.byte(0);
+                }
+            }
+            AuthoritativeDependency::ClearanceVolume(id) => {
+                self.byte(20);
+                self.u64(id.0);
+                if let Some(clearance) = product.clearance_volumes.get(&id) {
+                    self.byte(1);
+                    self.clearance_volume(clearance);
+                } else {
+                    self.byte(0);
+                }
+            }
+            AuthoritativeDependency::PersistentDimension(id) => {
+                self.byte(15);
+                self.u64(id.0);
+                if let Some(dimension) = product.persistent_dimensions.get(&id) {
+                    self.byte(1);
+                    self.persistent_dimension(dimension);
+                } else {
+                    self.byte(0);
+                }
+            }
+            AuthoritativeDependency::Tag(id) => {
+                self.byte(16);
+                self.u64(id.0);
+                if let Some(tag) = product.tags.get(&id) {
+                    self.byte(1);
+                    self.tag(tag);
+                } else {
+                    self.byte(0);
+                }
+            }
+            AuthoritativeDependency::Collection(id) => {
+                self.byte(17);
+                self.u64(id.0);
+                if let Some(collection) = product.collections.get(&id) {
+                    self.byte(1);
+                    self.collection(collection);
                 } else {
                     self.byte(0);
                 }
@@ -5173,6 +8103,19 @@ impl StableDigest {
                     self.u64(feature_id.0);
                 }
             }
+            AuthoritativeDependency::FeatureParameterBindings(id) => {
+                self.byte(21);
+                self.u64(id.0);
+                let bindings = product
+                    .feature_parameter_bindings
+                    .values()
+                    .filter(|binding| binding.target.feature_id == id)
+                    .collect::<Vec<_>>();
+                self.u64(bindings.len() as u64);
+                for binding in bindings {
+                    self.feature_parameter_binding(binding);
+                }
+            }
             AuthoritativeDependency::GroupChildren(id) => {
                 self.byte(10);
                 self.u64(id.0);
@@ -5222,6 +8165,19 @@ impl StableDigest {
                 self.u64(occurrences.len() as u64);
                 for occurrence in occurrences {
                     self.occurrence(occurrence);
+                }
+            }
+            AuthoritativeDependency::OccurrenceCollections(id) => {
+                self.byte(18);
+                self.u64(id.0);
+                let collections = product
+                    .collections
+                    .values()
+                    .filter(|collection| collection.occurrence_ids.contains(&id))
+                    .collect::<Vec<_>>();
+                self.u64(collections.len() as u64);
+                for collection in collections {
+                    self.collection(collection);
                 }
             }
         }
@@ -5366,6 +8322,11 @@ impl StableDigest {
                 self.u64(id.0);
                 self.byte(u8::from(*visible));
             }
+            CanonicalCommand::SetOccurrenceTag { id, tag } => {
+                self.byte(41);
+                self.u64(id.0);
+                self.optional_id(tag.map(|id| id.0));
+            }
             CanonicalCommand::RepointOccurrence { id, definition_id } => {
                 self.byte(20);
                 self.u64(id.0);
@@ -5502,6 +8463,62 @@ impl StableDigest {
             CanonicalCommand::DeleteJoint { id } => {
                 self.byte(30);
                 self.u64(id.0);
+            }
+            CanonicalCommand::UpsertSpace(space) => {
+                self.byte(45);
+                self.space(space);
+            }
+            CanonicalCommand::DeleteSpace { id } => {
+                self.byte(46);
+                self.u64(id.0);
+            }
+            CanonicalCommand::UpsertClearanceVolume(clearance) => {
+                self.byte(47);
+                self.clearance_volume(clearance);
+            }
+            CanonicalCommand::DeleteClearanceVolume { id } => {
+                self.byte(48);
+                self.u64(id.0);
+            }
+            CanonicalCommand::UpsertPersistentDimension(dimension) => {
+                self.byte(36);
+                self.persistent_dimension(dimension);
+            }
+            CanonicalCommand::DeletePersistentDimension { id } => {
+                self.byte(37);
+                self.u64(id.0);
+            }
+            CanonicalCommand::CreateTag { id, name, visible } => {
+                self.byte(38);
+                self.u64(id.0);
+                self.bytes(name.as_bytes());
+                self.byte(u8::from(*visible));
+            }
+            CanonicalCommand::DeleteTag { id } => {
+                self.byte(39);
+                self.u64(id.0);
+            }
+            CanonicalCommand::SetTagVisibility { id, visible } => {
+                self.byte(40);
+                self.u64(id.0);
+                self.byte(u8::from(*visible));
+            }
+            CanonicalCommand::CreateCollection { id, name } => {
+                self.byte(42);
+                self.u64(id.0);
+                self.bytes(name.as_bytes());
+            }
+            CanonicalCommand::DeleteCollection { id } => {
+                self.byte(43);
+                self.u64(id.0);
+            }
+            CanonicalCommand::SetCollectionOccurrences { id, occurrence_ids } => {
+                self.byte(44);
+                self.u64(id.0);
+                self.u64(occurrence_ids.len() as u64);
+                for occurrence_id in occurrence_ids {
+                    self.u64(occurrence_id.0);
+                }
             }
         }
     }

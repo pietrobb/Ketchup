@@ -1676,9 +1676,11 @@ version = "0.1.0"
 dependencies = [
  "eframe",
  "egui_kittest",
+ "getrandom 0.3.4",
  "ketchup-core",
  "ketchup-interaction",
  "ketchup-scheduler",
+ "pollster",
  "rfd",
  "tempfile",
  "wgpu",
@@ -1716,6 +1718,7 @@ dependencies = [
  "ketchup-core",
  "ketchup-exact",
  "ketchup-interaction",
+ "tempfile",
  "wasmi",
 ]
 

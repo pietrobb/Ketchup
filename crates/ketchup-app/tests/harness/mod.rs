@@ -16,7 +16,7 @@
 #![allow(dead_code)]
 
 use egui_kittest::Harness;
-use egui_kittest::kittest::Queryable as _;
+use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use ketchup_app::dialogs::ScriptedFileDialogs;
 use ketchup_app::{AppCommand, KetchupApp};
 use ketchup_interaction::LocaleCatalog;
@@ -48,10 +48,20 @@ impl Shell {
         Self::with_dialogs(ScriptedFileDialogs::new())
     }
 
+    /// Start a shell with a complete injected locale catalog.
+    pub fn with_catalog(catalog: LocaleCatalog) -> Self {
+        Self::build(
+            KetchupApp::with_catalog(catalog).with_dialogs(Box::new(ScriptedFileDialogs::new())),
+        )
+    }
+
     /// Start a shell whose file dialogs answer from `dialogs` instead of the
     /// operating system, so the File workflow can be replayed offscreen.
     pub fn with_dialogs(dialogs: ScriptedFileDialogs) -> Self {
-        let app = KetchupApp::new().with_dialogs(Box::new(dialogs));
+        Self::build(KetchupApp::new().with_dialogs(Box::new(dialogs)))
+    }
+
+    fn build(app: KetchupApp) -> Self {
         let mut harness = Harness::builder()
             .with_size(SCREEN)
             // The default frame step is a quarter of a second, which is longer
@@ -120,6 +130,52 @@ impl Shell {
             .query_all_by_role_and_label(Role::Button, &label)
             .next()
             .is_some()
+    }
+
+    /// Move screen-reader focus to a command through its AccessKit action.
+    pub fn focus_command(&mut self, command: AppCommand) {
+        let label = self.app().command_label(command);
+        self.harness
+            .get_by_role_and_label(Role::Button, &label)
+            .focus();
+        self.harness.run();
+    }
+
+    /// Whether the command is the focused node in the current AccessKit tree.
+    pub fn command_is_focused(&self, command: AppCommand) -> bool {
+        let label = self.app().command_label(command);
+        self.harness
+            .query_all_by_role_and_label(Role::Button, &label)
+            .any(|node| node.is_focused())
+    }
+
+    /// Rectangle of a localized menu node in the current AccessKit tree.
+    pub fn menu_rect(&self, key: &str) -> Rect {
+        let label = self.catalog().text(key);
+        self.harness
+            .query_all_by_role_and_label(Role::Button, &label)
+            .min_by(|left, right| left.rect().top().total_cmp(&right.rect().top()))
+            .expect("the localized menu must exist")
+            .rect()
+    }
+
+    /// Bounding boxes of all visible nodes published to assistive technology.
+    pub fn visible_accesskit_rects(&self) -> Vec<(String, Rect)> {
+        self.harness
+            .query_all_by(|node| !node.is_hidden() && node.bounding_box().is_some())
+            .map(|node| {
+                let accesskit = node.accesskit_node();
+                (
+                    format!(
+                        "{:?} label={:?} value={:?}",
+                        accesskit.role(),
+                        accesskit.label().unwrap_or_default(),
+                        accesskit.value().unwrap_or_default()
+                    ),
+                    node.rect(),
+                )
+            })
+            .collect()
     }
 
     /// Click the control that dispatches `command`.

@@ -1,11 +1,14 @@
 use ketchup_core::document::{
-    BottleControlDimension, BottleEdgeFinishKind, CanonicalCommand, CanonicalError, CommandBatch,
-    ConvertedEntityId, DefinitionId, DerivedIdentity, Dimension, DocumentStore, EvaluationIdentity,
-    FeatureId, FeatureKind, FeatureParameterBinding, FeatureParameterFreshness,
+    BottleControlDimension, BottleEdgeFinishKind, CanonicalCommand, CanonicalError, CollectionId,
+    CommandBatch, ConvertedEntityId, DefinitionId, DerivedIdentity, Dimension,
+    DimensionDisplayUnit, DimensionPresentation, DimensionReferenceHealth, DocumentStore,
+    EvaluationIdentity, FeatureId, FeatureKind, FeatureParameterBinding, FeatureParameterFreshness,
     FeatureParameterSlot, FeatureParameterStaleReason, FeatureParameterTarget, GroupId,
-    InstancePathStep, LocalGroupId, LocalGroupKey, LocalOccurrenceId, LocalOccurrenceKey,
-    MappingResolution, NodeId, OccurrenceId, PortSpec, RuleOutput, SlotPath, SlotSegment, TagId,
-    Transform, UnresolvedMappingReason, WorldEntityPath,
+    InstancePath, InstancePathStep, LocalGroupId, LocalGroupKey, LocalOccurrenceId,
+    LocalOccurrenceKey, MappingResolution, NodeId, OccurrenceId, PersistentDimension,
+    PersistentDimensionId, PersistentDimensionTarget, PortSpec, RuleOutput, SceneQueryContext,
+    SceneQueryError, SlotPath, SlotSegment, TagId, Transform, UnresolvedMappingReason,
+    WorldEntityPath,
 };
 use ketchup_core::persistence;
 
@@ -137,7 +140,7 @@ fn product_schema_round_trip_preserves_identity_hierarchy_values_and_digest() {
     let expected = document.current();
     let loaded = persistence::load(&persistence::save(&expected)).unwrap();
 
-    assert_eq!(loaded.source_schema(), 11);
+    assert_eq!(loaded.source_schema(), 17);
     assert!(loaded.migration_losses().is_empty());
     let actual = loaded.snapshot();
     assert_eq!(actual.document_id(), expected.document_id());
@@ -154,10 +157,27 @@ fn product_schema_round_trip_preserves_identity_hierarchy_values_and_digest() {
         expected.feature(EXTRUSION).unwrap().kind()
     );
 
+    let mut schema_fifteen = persistence::save(&expected);
+    let manifest_length = u32::from_le_bytes(schema_fifteen[12..16].try_into().unwrap()) as usize;
+    let payload_offset = 16 + manifest_length;
+    schema_fifteen.truncate(schema_fifteen.len() - 8);
+    schema_fifteen[10..12].copy_from_slice(&15_u16.to_le_bytes());
+    let payload_length = (schema_fifteen.len() - payload_offset) as u64;
+    schema_fifteen[16..24].copy_from_slice(&payload_length.to_le_bytes());
+    let checksum = ketchup_core::graph::sha256_bytes(&schema_fifteen[payload_offset..]);
+    schema_fifteen[24..56].copy_from_slice(&checksum);
+    let previous_current = persistence::load(&schema_fifteen).unwrap();
+    assert_eq!(previous_current.source_schema(), 15);
+    assert_eq!(
+        previous_current.snapshot().canonical_digest(),
+        expected.canonical_digest()
+    );
+
     let mut schema_nine = persistence::save(&expected);
     let manifest_length = u32::from_le_bytes(schema_nine[12..16].try_into().unwrap()) as usize;
     let payload_offset = 16 + manifest_length;
     schema_nine.drain(payload_offset + 25..payload_offset + 29);
+    schema_nine.truncate(schema_nine.len() - 20);
     schema_nine[10..12].copy_from_slice(&9_u16.to_le_bytes());
     let payload_length = (schema_nine.len() - payload_offset) as u64;
     schema_nine[16..24].copy_from_slice(&payload_length.to_le_bytes());
@@ -229,6 +249,65 @@ fn profile_parameter_edit_and_history_baseline_are_canonical() {
         document.current().feature(PROFILE).unwrap().kind(),
         FeatureKind::Profile { points_mm } if points_mm[1][0] == 600.0
     ));
+}
+
+#[test]
+fn closed_profile_contract_preserves_exact_points_and_rejects_invalid_batches_atomically() {
+    let mut document = seed_product_document();
+    document.discard_history_before_current();
+    let exact_points = vec![
+        [-125.25, 40.5],
+        [300.125, 40.5],
+        [300.125, 240.75],
+        [-125.25, 240.75],
+    ];
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetProfilePoints {
+                id: PROFILE,
+                points_mm: exact_points.clone(),
+            },
+        ]))
+        .unwrap();
+    assert!(matches!(
+        document.current().feature(PROFILE).unwrap().kind(),
+        FeatureKind::Profile { points_mm } if points_mm == &exact_points
+    ));
+
+    let valid_digest = document.current().canonical_digest();
+    let undo_steps = document.visible_undo_steps();
+    let invalid_profiles = [
+        vec![[0.0, 0.0], [10.0, 0.0]],
+        vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 0.0]],
+        vec![[0.0, 0.0], [0.0, 10.0], [10.0, 10.0], [10.0, 0.0]],
+        vec![[0.0, 0.0], [10.0, 10.0], [10.0, 0.0], [0.0, 10.0]],
+        vec![[0.0, 0.0], [1.0e-10, 0.0], [10.0, 10.0], [0.0, 10.0]],
+        vec![
+            [0.0, 0.0],
+            [1_000_000.001, 0.0],
+            [1_000_000.001, 10.0],
+            [0.0, 10.0],
+        ],
+    ];
+    for points_mm in invalid_profiles {
+        let error = document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::CreateDefinition {
+                    id: DefinitionId(99),
+                    name: "Must roll back".to_owned(),
+                },
+                CanonicalCommand::SetProfilePoints {
+                    id: PROFILE,
+                    points_mm,
+                },
+            ]))
+            .err()
+            .expect("invalid closed profile must reject the entire batch");
+        assert_eq!(error, CanonicalError::InvalidProfile);
+        assert_eq!(document.current().canonical_digest(), valid_digest);
+        assert_eq!(document.visible_undo_steps(), undo_steps);
+        assert!(document.current().definition(DefinitionId(99)).is_none());
+    }
 }
 
 #[test]
@@ -322,7 +401,7 @@ fn m6_bottle_profile_and_revolve_are_canonical_persisted_and_undoable() {
     assert_eq!(document.redo().unwrap().canonical_digest(), changed_digest);
 
     let loaded = persistence::load(&persistence::save(&document.current())).unwrap();
-    assert_eq!(loaded.source_schema(), 11);
+    assert_eq!(loaded.source_schema(), 17);
     assert!(loaded.migration_losses().is_empty());
     assert_eq!(loaded.snapshot().canonical_digest(), changed_digest);
     assert!(matches!(
@@ -398,7 +477,7 @@ fn m6_shell_thickness_is_canonical_undoable_persisted_and_fail_closed() {
     assert_eq!(document.redo().unwrap().canonical_digest(), changed_digest);
 
     let reopened = persistence::load(&persistence::save(&document.current())).unwrap();
-    assert_eq!(reopened.source_schema(), 11);
+    assert_eq!(reopened.source_schema(), 17);
     assert!(reopened.migration_losses().is_empty());
     assert_eq!(reopened.snapshot().canonical_digest(), changed_digest);
 
@@ -541,7 +620,7 @@ fn m6_controlled_profile_and_edge_finish_are_atomic_persisted_and_fail_closed() 
     assert_eq!(document.redo().unwrap().canonical_digest(), changed_digest);
 
     let reopened = persistence::load(&persistence::save(&document.current())).unwrap();
-    assert_eq!(reopened.source_schema(), 11);
+    assert_eq!(reopened.source_schema(), 17);
     assert!(reopened.migration_losses().is_empty());
     assert_eq!(reopened.snapshot().canonical_digest(), changed_digest);
     assert!(matches!(
@@ -645,6 +724,104 @@ fn m6_invalid_profile_or_revolve_axis_rolls_back_atomically() {
 }
 
 #[test]
+fn bound_nested_scene_query_blocks_stale_hidden_and_out_of_context_entities() {
+    let mut document = seed_product_document();
+    let inner = document
+        .convert_group_to_component(GROUP, "Inner component")
+        .unwrap();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateGroup {
+                id: GroupId(31),
+                name: "Outer group".to_owned(),
+                transform: Transform::identity(),
+                parent: None,
+            },
+            CanonicalCommand::SetOccurrenceParent {
+                id: inner.component_occurrence_id,
+                parent: Some(GroupId(31)),
+            },
+        ]))
+        .unwrap();
+    let converted = document
+        .convert_group_to_component(GroupId(31), "Scoped component")
+        .unwrap();
+    let definition_id = converted.component_definition_id;
+    let anchor_id = converted.component_occurrence_id;
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateOccurrence {
+                id: OccurrenceId(anchor_id.0 + 1),
+                definition_id,
+                name: "Visible sibling".to_owned(),
+                transform: Transform::from_translation(500.0, 0.0, 0.0).unwrap(),
+                parent: None,
+                tag: None,
+                visible: true,
+            },
+            CanonicalCommand::CreateOccurrence {
+                id: OccurrenceId(anchor_id.0 + 2),
+                definition_id,
+                name: "Hidden sibling".to_owned(),
+                transform: Transform::from_translation(1000.0, 0.0, 0.0).unwrap(),
+                parent: None,
+                tag: None,
+                visible: false,
+            },
+        ]))
+        .unwrap();
+
+    let snapshot = document.current();
+    let anchor = InstancePath::root(anchor_id);
+    let query = snapshot
+        .bind_scene_query(SceneQueryContext::Definition {
+            definition_id,
+            instance_path: anchor.clone(),
+        })
+        .unwrap();
+    let scoped = snapshot.scene_query_in(&query).unwrap();
+    assert!(scoped.iter().all(|item| item.visible));
+    assert!(
+        scoped
+            .iter()
+            .all(|item| item.instance_path.root_occurrence() == anchor_id)
+    );
+    assert!(scoped.iter().any(|item| !item.instance_path.is_root()));
+    assert!(scoped.iter().all(|item| {
+        item.instance_path
+            .steps()
+            .iter()
+            .filter(|step| matches!(step, InstancePathStep::Occurrence(_)))
+            .count()
+            <= 1
+    }));
+    assert!(
+        scoped.iter().all(|item| item.shared_occurrence_count == 1),
+        "sharing metadata must be recomputed inside the permitted scope"
+    );
+    assert_eq!(
+        snapshot.bind_scene_query(SceneQueryContext::Definition {
+            definition_id,
+            instance_path: InstancePath::root(OccurrenceId(anchor_id.0 + 2)),
+        }),
+        Err(SceneQueryError::InvalidContext)
+    );
+
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetOccurrenceTransform {
+                id: anchor_id,
+                transform: Transform::from_translation(25.0, 0.0, 0.0).unwrap(),
+            },
+        ]))
+        .unwrap();
+    assert_eq!(
+        document.current().scene_query_in(&query),
+        Err(SceneQueryError::SnapshotMismatch)
+    );
+}
+
+#[test]
 fn nested_conversion_mapping_sharing_unique_history_and_schema_three_round_trip() {
     let mut document = seed_product_document();
     document
@@ -654,6 +831,11 @@ fn nested_conversion_mapping_sharing_unique_history_and_schema_three_round_trip(
                 name: "sole product evaluator".to_owned(),
                 dimension: height("12.5"),
                 dependencies: vec![],
+            },
+            CanonicalCommand::CreateTag {
+                id: TagId(7),
+                name: "Hardware".to_owned(),
+                visible: true,
             },
             CanonicalCommand::CreateGroup {
                 id: GroupId(31),
@@ -777,7 +959,7 @@ fn nested_conversion_mapping_sharing_unique_history_and_schema_three_round_trip(
     assert_eq!(document.redo().unwrap().canonical_digest(), unique_digest);
 
     let reopened = persistence::load(&persistence::save(&document.current())).unwrap();
-    assert_eq!(reopened.source_schema(), 11);
+    assert_eq!(reopened.source_schema(), 17);
     let snapshot = reopened.snapshot();
     assert_eq!(snapshot.canonical_digest(), unique_digest);
     assert_eq!(snapshot.evaluator_node_count(), 1);
@@ -949,7 +1131,7 @@ fn feature_parameter_bindings_are_canonical_persisted_and_never_recompute_on_ope
     let saved_revision = document.current().revision_id();
     let saved_undo = document.visible_undo_steps();
     let loaded = persistence::load(&persistence::save(&document.current())).unwrap();
-    assert_eq!(loaded.source_schema(), 11);
+    assert_eq!(loaded.source_schema(), 17);
     assert_eq!(loaded.snapshot().revision_id(), saved_revision);
     assert_eq!(loaded.snapshot().canonical_digest(), bound_digest);
     assert_eq!(
@@ -1231,4 +1413,571 @@ fn feature_parameter_recompute_rolls_back_every_target_when_one_value_is_invalid
         FeatureKind::Extrusion { height, .. }
             if height.source_token() == "3" && height.millimetres() == 3.0
     ));
+}
+
+#[test]
+fn rectangle_numeric_constraints_are_persisted_dependent_only_and_atomic() {
+    const WIDTH_SOURCE: NodeId = NodeId(301);
+    const WIDTH_RULE: NodeId = NodeId(302);
+    const HEIGHT_SOURCE: NodeId = NodeId(303);
+    const HEIGHT_RULE: NodeId = NodeId(304);
+    const UNRELATED_SOURCE: NodeId = NodeId(305);
+    const UNRELATED_RULE: NodeId = NodeId(306);
+
+    let width_segment = SlotSegment::new(WIDTH_RULE, "dimensions", "profile_width").unwrap();
+    let height_segment = SlotSegment::new(HEIGHT_RULE, "dimensions", "profile_height").unwrap();
+    let width_target = FeatureParameterTarget {
+        feature_id: PROFILE,
+        slot: FeatureParameterSlot::ProfileWidth,
+    };
+    let height_target = FeatureParameterTarget {
+        feature_id: PROFILE,
+        slot: FeatureParameterSlot::ProfileHeight,
+    };
+    let mut document = seed_product_document();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateEvaluatorNode {
+                id: WIDTH_SOURCE,
+                name: "Rectangle width".to_owned(),
+                dimension: height("600"),
+                dependencies: vec![],
+            },
+            CanonicalCommand::CreateRuleNode {
+                id: WIDTH_RULE,
+                name: "Rectangle width constraint".to_owned(),
+                expression: "$301".to_owned(),
+                input_ports: vec![PortSpec::number("width").unwrap()],
+                output_ports: vec![PortSpec::number("dimensions").unwrap()],
+                outputs: vec![RuleOutput::new(width_segment.clone(), vec![]).unwrap()],
+                override_parameters: vec![],
+            },
+            CanonicalCommand::CreateEvaluatorNode {
+                id: HEIGHT_SOURCE,
+                name: "Rectangle height".to_owned(),
+                dimension: height("580"),
+                dependencies: vec![],
+            },
+            CanonicalCommand::CreateRuleNode {
+                id: HEIGHT_RULE,
+                name: "Rectangle height constraint".to_owned(),
+                expression: "$303".to_owned(),
+                input_ports: vec![PortSpec::number("height").unwrap()],
+                output_ports: vec![PortSpec::number("dimensions").unwrap()],
+                outputs: vec![RuleOutput::new(height_segment.clone(), vec![]).unwrap()],
+                override_parameters: vec![],
+            },
+            CanonicalCommand::CreateEvaluatorNode {
+                id: UNRELATED_SOURCE,
+                name: "Unrelated source".to_owned(),
+                dimension: height("10"),
+                dependencies: vec![],
+            },
+            CanonicalCommand::CreateExpressionNode {
+                id: UNRELATED_RULE,
+                name: "Unrelated expression".to_owned(),
+                expression: "$305 * 2".to_owned(),
+            },
+            CanonicalCommand::UpsertFeatureParameterBinding(FeatureParameterBinding {
+                target: width_target,
+                derived_from: DerivedIdentity::new(
+                    WIDTH_RULE,
+                    SlotPath::new(vec![width_segment]).unwrap(),
+                )
+                .unwrap(),
+            }),
+            CanonicalCommand::UpsertFeatureParameterBinding(FeatureParameterBinding {
+                target: height_target,
+                derived_from: DerivedIdentity::new(
+                    HEIGHT_RULE,
+                    SlotPath::new(vec![height_segment]).unwrap(),
+                )
+                .unwrap(),
+            }),
+        ]))
+        .unwrap();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::RecomputeFeatureParameters {
+                identity: EvaluationIdentity::default(),
+            },
+        ]))
+        .unwrap();
+    document.discard_history_before_current();
+    let initial_digest = document.current().canonical_digest();
+    let initial_height_provenance = document
+        .current()
+        .feature_parameter_provenance(height_target)
+        .unwrap()
+        .clone();
+
+    let revision = document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetEvaluatorDimension {
+                id: WIDTH_SOURCE,
+                dimension: height("650"),
+            },
+            CanonicalCommand::RecomputeFeatureParameters {
+                identity: EvaluationIdentity::default(),
+            },
+        ]))
+        .unwrap();
+    let resized_digest = revision.snapshot().canonical_digest();
+    assert_eq!(
+        revision.recomputed_nodes(),
+        &[WIDTH_SOURCE, WIDTH_RULE].into_iter().collect()
+    );
+    assert!(!revision.recomputed_nodes().contains(&HEIGHT_SOURCE));
+    assert!(!revision.recomputed_nodes().contains(&HEIGHT_RULE));
+    assert!(!revision.recomputed_nodes().contains(&UNRELATED_SOURCE));
+    assert!(!revision.recomputed_nodes().contains(&UNRELATED_RULE));
+    assert!(matches!(
+        revision.snapshot().feature(PROFILE).unwrap().kind(),
+        FeatureKind::Profile { points_mm }
+            if points_mm == &vec![[0.0, 0.0], [650.0, 0.0], [650.0, 580.0], [0.0, 580.0]]
+    ));
+    assert_eq!(
+        revision
+            .snapshot()
+            .feature_parameter_provenance(height_target),
+        Some(&initial_height_provenance)
+    );
+    assert_eq!(
+        revision
+            .snapshot()
+            .audit_feature_parameter_freshness(&EvaluationIdentity::default())
+            .unwrap()
+            .into_iter()
+            .map(|audit| audit.freshness)
+            .collect::<Vec<_>>(),
+        vec![FeatureParameterFreshness::Current; 2]
+    );
+
+    let reopened = persistence::load(&persistence::save(revision.snapshot())).unwrap();
+    assert_eq!(reopened.source_schema(), 17);
+    assert_eq!(reopened.snapshot().canonical_digest(), resized_digest);
+    assert_eq!(reopened.snapshot().feature_parameter_bindings().count(), 2);
+    assert!(matches!(
+        reopened.snapshot().feature(PROFILE).unwrap().kind(),
+        FeatureKind::Profile { points_mm } if points_mm[1][0] == 650.0 && points_mm[2][1] == 580.0
+    ));
+
+    assert_eq!(document.undo().unwrap().canonical_digest(), initial_digest);
+    assert_eq!(document.redo().unwrap().canonical_digest(), resized_digest);
+
+    let undo_before_invalid = document.visible_undo_steps();
+    let invalid_dimension_error = match document.apply_batch(&CommandBatch::new(vec![
+        CanonicalCommand::SetEvaluatorDimension {
+            id: WIDTH_SOURCE,
+            dimension: height("-1"),
+        },
+        CanonicalCommand::RecomputeFeatureParameters {
+            identity: EvaluationIdentity::default(),
+        },
+    ])) {
+        Ok(_) => panic!("negative width constraint must fail"),
+        Err(error) => error,
+    };
+    assert_eq!(
+        invalid_dimension_error,
+        CanonicalError::DimensionOutsideEnvelope
+    );
+    assert_eq!(document.current().canonical_digest(), resized_digest);
+    assert_eq!(document.visible_undo_steps(), undo_before_invalid);
+
+    let irregular_error = match document.apply_batch(&CommandBatch::new(vec![
+        CanonicalCommand::SetProfilePoints {
+            id: PROFILE,
+            points_mm: vec![[0.0, 0.0], [650.0, 0.0], [600.0, 580.0], [0.0, 580.0]],
+        },
+    ])) {
+        Ok(_) => panic!("constrained rectangle must reject non-rectangular points"),
+        Err(error) => error,
+    };
+    assert_eq!(
+        irregular_error,
+        CanonicalError::InvalidFeatureParameterBinding(width_target)
+    );
+    assert_eq!(document.current().canonical_digest(), resized_digest);
+}
+
+#[test]
+fn persistent_associative_dimensions_preserve_targets_units_and_unresolved_state() {
+    const SOURCE: NodeId = NodeId(401);
+    const RULE: NodeId = NodeId(402);
+    const WIDTH_DIMENSION: PersistentDimensionId = PersistentDimensionId(1);
+    const SLOT_DIMENSION: PersistentDimensionId = PersistentDimensionId(2);
+    const EXACT_DIMENSION: PersistentDimensionId = PersistentDimensionId(3);
+
+    let segment = SlotSegment::new(RULE, "dimensions", "profile_height").unwrap();
+    let derived =
+        DerivedIdentity::new(RULE, SlotPath::new(vec![segment.clone()]).unwrap()).unwrap();
+    let mut document = seed_product_document();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateEvaluatorNode {
+                id: SOURCE,
+                name: "Dimension source".to_owned(),
+                dimension: height("580"),
+                dependencies: vec![],
+            },
+            CanonicalCommand::CreateRuleNode {
+                id: RULE,
+                name: "Dimension rule".to_owned(),
+                expression: "$401".to_owned(),
+                input_ports: vec![PortSpec::number("height").unwrap()],
+                output_ports: vec![PortSpec::number("dimensions").unwrap()],
+                outputs: vec![RuleOutput::new(segment, vec![]).unwrap()],
+                override_parameters: vec![],
+            },
+            CanonicalCommand::UpsertPersistentDimension(
+                PersistentDimension::new(
+                    WIDTH_DIMENSION,
+                    "Profile width",
+                    PersistentDimensionTarget::FeatureParameter(FeatureParameterTarget {
+                        feature_id: PROFILE,
+                        slot: FeatureParameterSlot::ProfileWidth,
+                    }),
+                    DimensionPresentation::new(DimensionDisplayUnit::Centimetres, 1).unwrap(),
+                )
+                .unwrap(),
+            ),
+            CanonicalCommand::UpsertPersistentDimension(
+                PersistentDimension::new(
+                    SLOT_DIMENSION,
+                    "Rule height",
+                    PersistentDimensionTarget::DerivedOutput(derived.clone()),
+                    DimensionPresentation::new(DimensionDisplayUnit::Inches, 3).unwrap(),
+                )
+                .unwrap(),
+            ),
+            CanonicalCommand::UpsertPersistentDimension(
+                PersistentDimension::new(
+                    EXACT_DIMENSION,
+                    "Exact height",
+                    PersistentDimensionTarget::ExactFeatureParameter {
+                        definition_id: CABINET,
+                        producer_feature_id: EXTRUSION,
+                        semantic_role: "top".to_owned(),
+                        source_element_id: "face:top".to_owned(),
+                        slot: FeatureParameterSlot::Height,
+                    },
+                    DimensionPresentation::new(DimensionDisplayUnit::Millimetres, 2).unwrap(),
+                )
+                .unwrap(),
+            ),
+        ]))
+        .unwrap();
+
+    let canonical = document.current();
+    let width = canonical
+        .project_persistent_dimension(WIDTH_DIMENSION)
+        .unwrap();
+    assert_eq!(width.health, DimensionReferenceHealth::Resolved);
+    assert_eq!(width.millimetres, Some(600.0));
+    assert_eq!(width.display_value, Some(60.0));
+    assert_eq!(width.display_text.as_deref(), Some("60.0 cm"));
+
+    let slot = canonical
+        .project_persistent_dimension(SLOT_DIMENSION)
+        .unwrap();
+    assert_eq!(slot.health, DimensionReferenceHealth::Resolved);
+    assert_eq!(slot.millimetres, Some(580.0));
+    assert_eq!(slot.display_text.as_deref(), Some("22.835 in"));
+
+    let exact = canonical
+        .project_persistent_dimension(EXACT_DIMENSION)
+        .unwrap();
+    assert_eq!(exact.health, DimensionReferenceHealth::Lost);
+    assert_eq!(exact.millimetres, None);
+    assert_eq!(exact.display_text, None);
+
+    let before_invalid = canonical.canonical_digest();
+    let invalid = PersistentDimension {
+        id: PersistentDimensionId(4),
+        name: "Invalid exact target".to_owned(),
+        target: PersistentDimensionTarget::ExactFeatureParameter {
+            definition_id: DefinitionId(0),
+            producer_feature_id: EXTRUSION,
+            semantic_role: String::new(),
+            source_element_id: String::new(),
+            slot: FeatureParameterSlot::Height,
+        },
+        presentation: DimensionPresentation::new(DimensionDisplayUnit::Millimetres, 2).unwrap(),
+    };
+    assert!(matches!(
+        document.apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::UpsertPersistentDimension(invalid),
+        ])),
+        Err(CanonicalError::InvalidPersistentDimensionTarget)
+    ));
+    assert_eq!(document.current().canonical_digest(), before_invalid);
+
+    let reopened = persistence::load(&persistence::save(&document.current())).unwrap();
+    assert_eq!(reopened.source_schema(), 17);
+    assert_eq!(reopened.snapshot().canonical_digest(), before_invalid);
+    assert_eq!(reopened.snapshot().persistent_dimensions().count(), 3);
+    assert_eq!(
+        reopened
+            .snapshot()
+            .project_persistent_dimension(EXACT_DIMENSION)
+            .unwrap()
+            .health,
+        DimensionReferenceHealth::Lost
+    );
+
+    document.discard_history_before_current();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::DeleteFeature { id: EXTRUSION },
+            CanonicalCommand::DeleteFeature { id: PROFILE },
+            CanonicalCommand::SetRuleOutputs {
+                id: RULE,
+                outputs: vec![
+                    RuleOutput::new(
+                        SlotSegment::new(RULE, "dimensions", "replacement").unwrap(),
+                        vec![],
+                    )
+                    .unwrap(),
+                ],
+            },
+        ]))
+        .unwrap();
+    let unresolved_digest = document.current().canonical_digest();
+    assert_eq!(document.current().persistent_dimensions().count(), 3);
+    assert_eq!(
+        document
+            .current()
+            .project_persistent_dimension(WIDTH_DIMENSION)
+            .unwrap()
+            .health,
+        DimensionReferenceHealth::Lost
+    );
+    assert_eq!(
+        document
+            .current()
+            .project_persistent_dimension(SLOT_DIMENSION)
+            .unwrap()
+            .health,
+        DimensionReferenceHealth::Lost
+    );
+    assert_eq!(
+        document
+            .current()
+            .persistent_dimension(SLOT_DIMENSION)
+            .unwrap()
+            .target,
+        PersistentDimensionTarget::DerivedOutput(derived)
+    );
+
+    assert_eq!(document.undo().unwrap().canonical_digest(), before_invalid);
+    assert_eq!(
+        document
+            .current()
+            .project_persistent_dimension(WIDTH_DIMENSION)
+            .unwrap()
+            .health,
+        DimensionReferenceHealth::Resolved
+    );
+    assert_eq!(
+        document.redo().unwrap().canonical_digest(),
+        unresolved_digest
+    );
+    let reopened_unresolved = persistence::load(&persistence::save(&document.current())).unwrap();
+    assert_eq!(
+        reopened_unresolved
+            .snapshot()
+            .project_persistent_dimension(SLOT_DIMENSION)
+            .unwrap()
+            .health,
+        DimensionReferenceHealth::Lost
+    );
+}
+
+#[test]
+fn canonical_tags_drive_visibility_persist_and_roll_back_atomically() {
+    const HIDDEN: TagId = TagId(70);
+    let mut document = seed_product_document();
+    let before = document.current().canonical_digest();
+
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateTag {
+                id: HIDDEN,
+                name: "Hidden hardware".to_owned(),
+                visible: false,
+            },
+            CanonicalCommand::SetOccurrenceTag {
+                id: FIRST,
+                tag: Some(HIDDEN),
+            },
+        ]))
+        .unwrap();
+    let tagged = document.current().canonical_digest();
+    assert_ne!(tagged, before);
+    assert_eq!(document.current().tags().count(), 1);
+    assert_eq!(
+        document
+            .current()
+            .occurrences_with_tag(HIDDEN)
+            .map(|occurrence| occurrence.id())
+            .collect::<Vec<_>>(),
+        vec![FIRST]
+    );
+    assert_eq!(
+        document.current().occurrence_effectively_visible(FIRST),
+        Some(false)
+    );
+    let scene = document.current().scene_query();
+    assert!(
+        !scene
+            .iter()
+            .find(|item| item.occurrence_id == FIRST)
+            .unwrap()
+            .visible
+    );
+    assert!(
+        scene
+            .iter()
+            .find(|item| item.occurrence_id == SECOND)
+            .unwrap()
+            .visible
+    );
+
+    let reopened = persistence::load(&persistence::save(&document.current())).unwrap();
+    assert_eq!(reopened.snapshot().canonical_digest(), tagged);
+    assert_eq!(
+        reopened.snapshot().tag(HIDDEN).unwrap().name(),
+        "Hidden hardware"
+    );
+    assert_eq!(
+        reopened.snapshot().occurrence_effectively_visible(FIRST),
+        Some(false)
+    );
+
+    assert_eq!(document.undo().unwrap().canonical_digest(), before);
+    assert_eq!(document.redo().unwrap().canonical_digest(), tagged);
+
+    let steps = document.visible_undo_steps();
+    let error = document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetTagVisibility {
+                id: HIDDEN,
+                visible: true,
+            },
+            CanonicalCommand::SetOccurrenceTag {
+                id: SECOND,
+                tag: Some(TagId(999)),
+            },
+        ]))
+        .err()
+        .unwrap();
+    assert_eq!(error, CanonicalError::TagNotFound(TagId(999)));
+    assert_eq!(document.current().canonical_digest(), tagged);
+    assert_eq!(document.visible_undo_steps(), steps);
+    assert_eq!(
+        document
+            .apply_batch(&CommandBatch::new(vec![CanonicalCommand::DeleteTag {
+                id: HIDDEN,
+            }]))
+            .err()
+            .unwrap(),
+        CanonicalError::TagInUse(HIDDEN)
+    );
+    assert_eq!(document.current().canonical_digest(), tagged);
+}
+
+#[test]
+fn canonical_collections_persist_query_and_roll_back_atomically() {
+    const SELECTED: CollectionId = CollectionId(80);
+    let mut document = seed_product_document();
+    let before = document.current().canonical_digest();
+    let first_parent = document.current().occurrence(FIRST).unwrap().parent();
+
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateCollection {
+                id: SELECTED,
+                name: "Selected cabinets".to_owned(),
+            },
+            CanonicalCommand::SetCollectionOccurrences {
+                id: SELECTED,
+                occurrence_ids: vec![FIRST, SECOND],
+            },
+        ]))
+        .unwrap();
+    let collected = document.current().canonical_digest();
+    assert_ne!(collected, before);
+    assert_eq!(document.current().collections().count(), 1);
+    assert_eq!(
+        document.current().collection(SELECTED).unwrap().name(),
+        "Selected cabinets"
+    );
+    assert_eq!(
+        document
+            .current()
+            .occurrences_in_collection(SELECTED)
+            .map(|occurrence| occurrence.id())
+            .collect::<Vec<_>>(),
+        vec![FIRST, SECOND]
+    );
+    assert_eq!(
+        document.current().occurrence(FIRST).unwrap().parent(),
+        first_parent
+    );
+
+    let reopened = persistence::load(&persistence::save(&document.current())).unwrap();
+    assert_eq!(reopened.source_schema(), 17);
+    assert_eq!(reopened.snapshot().canonical_digest(), collected);
+    assert_eq!(
+        reopened
+            .snapshot()
+            .collection(SELECTED)
+            .unwrap()
+            .occurrence_ids()
+            .collect::<Vec<_>>(),
+        vec![FIRST, SECOND]
+    );
+
+    assert_eq!(document.undo().unwrap().canonical_digest(), before);
+    assert_eq!(document.redo().unwrap().canonical_digest(), collected);
+    let steps = document.visible_undo_steps();
+    for (occurrence_ids, expected) in [
+        (
+            vec![SECOND, FIRST],
+            CanonicalError::CollectionMembershipNotCanonical(SELECTED),
+        ),
+        (
+            vec![FIRST, OccurrenceId(999)],
+            CanonicalError::OccurrenceNotFound(OccurrenceId(999)),
+        ),
+    ] {
+        let error = document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::DeleteCollection { id: SELECTED },
+                CanonicalCommand::CreateCollection {
+                    id: SELECTED,
+                    name: "Invalid replacement".to_owned(),
+                },
+                CanonicalCommand::SetCollectionOccurrences {
+                    id: SELECTED,
+                    occurrence_ids,
+                },
+            ]))
+            .err()
+            .unwrap();
+        assert_eq!(error, expected);
+        assert_eq!(document.current().canonical_digest(), collected);
+        assert_eq!(document.visible_undo_steps(), steps);
+    }
+    assert_eq!(
+        document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::DeleteOccurrence { id: FIRST }
+            ]))
+            .err()
+            .unwrap(),
+        CanonicalError::OccurrenceInCollection(FIRST)
+    );
+    assert_eq!(document.current().canonical_digest(), collected);
 }

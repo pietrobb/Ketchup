@@ -3,11 +3,11 @@ use ketchup_core::document::{
     GroupId, OccurrenceId, Transform,
 };
 use ketchup_core::state_view::encode_semantic_state;
-use ketchup_interaction::Vec3;
 use ketchup_interaction::projection::{
     CanonicalInteractionProjection, INTERACTION_PROJECTION_V1, PROXY_BACKEND_V1,
     PROXY_EVALUATOR_V1, ProjectionStatus,
 };
+use ketchup_interaction::{Axis, ElementId, Ray, Vec3};
 
 const DEFINITION: DefinitionId = DefinitionId(10);
 const UNRELATED_PROFILE: FeatureId = FeatureId(9);
@@ -119,7 +119,7 @@ fn canonical_projection_carries_every_c1a_authority_field() {
         assert!(agent.contains(&format!("occurrence.{}=", occurrence_id.0)));
     }
     assert!(agent.contains(
-        "summary.counts=evaluator_nodes:0,overrides:0,parameter_bindings:0,definitions:1,features:3,occurrences:2,groups:1,local_groups:0,local_occurrences:0"
+        "summary.counts=evaluator_nodes:0,overrides:0,parameter_bindings:0,spaces:0,clearance_volumes:0,persistent_dimensions:0,tags:0,collections:0,definitions:1,features:3,occurrences:2,groups:1,local_groups:0,local_occurrences:0"
     ));
 
     assert_eq!(projection.schema(), INTERACTION_PROJECTION_V1);
@@ -157,6 +157,60 @@ fn canonical_projection_carries_every_c1a_authority_field() {
     assert_eq!(scene.occurrence_count(), 1);
     assert_eq!(scene.authoritative_geometry_count(), 1);
     assert_eq!(snapshot.canonical_digest(), digest);
+}
+
+#[test]
+fn profile_only_definition_projects_as_a_flat_selectable_plane() {
+    let mut store = DocumentStore::new();
+    store
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DEFINITION,
+                name: "Profile only".to_owned(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: PROFILE,
+                definition_id: DEFINITION,
+                name: "Closed polyline".to_owned(),
+                kind: FeatureKind::Profile {
+                    points_mm: vec![[2.0, 3.0], [12.0, 3.0], [12.0, 9.0], [2.0, 9.0]],
+                },
+            },
+            CanonicalCommand::CreateOccurrence {
+                id: FIRST,
+                definition_id: DEFINITION,
+                name: "Profile occurrence".to_owned(),
+                transform: Transform::identity(),
+                parent: None,
+                tag: None,
+                visible: true,
+            },
+        ]))
+        .unwrap();
+
+    let projection = CanonicalInteractionProjection::from_snapshot(&store.current());
+    let occurrence = &projection.occurrences()[0];
+    assert_eq!(occurrence.body.profile_feature_id, Some(PROFILE));
+    assert_eq!(occurrence.body.extrusion_feature_id, None);
+    assert_eq!(
+        occurrence.local_box.unwrap(),
+        ketchup_interaction::projection::ProjectedBox {
+            origin_mm: Vec3::new(2.0, 3.0, 0.0),
+            size_mm: Vec3::new(10.0, 6.0, 0.0),
+        }
+    );
+    let hit = projection
+        .scene()
+        .unwrap()
+        .exact_pick(
+            Ray::new(Vec3::new(7.0, 6.0, 10.0), Vec3::new(0.0, 0.0, -1.0)).unwrap(),
+            0.01,
+        )
+        .unwrap();
+    assert!(matches!(
+        hit.primary.reference.element,
+        ElementId::Face { axis: Axis::Z, .. }
+    ));
 }
 
 #[test]

@@ -50,7 +50,7 @@ fn the_manual_capstone_runs_end_to_end_through_the_designed_shell() {
     assert_ne!(moved_geometry.0, initial_geometry.0);
     assert_eq!(moved_geometry.1, initial_geometry.1);
 
-    // 2. An exact rectangle becomes a second solid, again in one step.
+    // 2. An exact rectangle becomes a profile-only occurrence in one step.
     shell.click_command(AppCommand::Rectangle);
     shell.click_at(home);
     shell.type_text("1200,800");
@@ -58,7 +58,7 @@ fn the_manual_capstone_runs_end_to_end_through_the_designed_shell() {
     assert_eq!(
         shell.app().active_box_count(),
         2,
-        "the exact rectangle must add a solid"
+        "the exact rectangle must add a profile occurrence"
     );
     assert_eq!(shell.app().document_revision(), start + 2);
     let exact_rectangle = shell
@@ -71,7 +71,7 @@ fn the_manual_capstone_runs_end_to_end_through_the_designed_shell() {
             exact_rectangle.1.y,
             exact_rectangle.1.z,
         ],
-        [1200.0, 800.0, 20.0]
+        [1200.0, 800.0, 0.0]
     );
     let definitions = shell.app().definition_count();
 
@@ -95,7 +95,7 @@ fn the_manual_capstone_runs_end_to_end_through_the_designed_shell() {
         .expect("the extrusion must remain canonical");
     assert_eq!(
         [extruded.1.x, extruded.1.y, extruded.1.z],
-        [1200.0, 1300.0, 20.0]
+        [1200.0, 800.0, 500.0]
     );
 
     // 4. The created solid moves with the common click-object/click-destination
@@ -228,7 +228,7 @@ fn the_manual_capstone_runs_end_to_end_through_the_designed_shell() {
             .occurrence_box_geometry(occurrence_id)
             .expect("each shared occurrence must derive the edited geometry")
             .1;
-        assert_eq!([size.x, size.y, size.z], [1200.0, 1300.0, 145.0]);
+        assert_eq!([size.x, size.y, size.z], [1200.0, 800.0, 625.0]);
     }
     shell.press_key(Key::Escape);
     assert_eq!(
@@ -289,11 +289,11 @@ fn the_manual_capstone_runs_end_to_end_through_the_designed_shell() {
     let peer_size = shell.app().occurrence_box_geometry(3).unwrap().1;
     assert_eq!(
         [unique_size.x, unique_size.y, unique_size.z],
-        [1200.0, 1300.0, 170.0]
+        [1200.0, 825.0, 625.0]
     );
     assert_eq!(
         [peer_size.x, peer_size.y, peer_size.z],
-        [1200.0, 1300.0, 145.0]
+        [1200.0, 800.0, 625.0]
     );
 
     // 11. Measure reads the model without creating document history.

@@ -22,6 +22,19 @@ fn compose_two_shared_occurrences(shell: &mut Shell) {
     assert_eq!(shell.app().definition_count(), 1);
 }
 
+fn lossy_legacy_document() -> Vec<u8> {
+    let mut bytes = b"KETCHUPDOC".to_vec();
+    bytes.extend_from_slice(&0_u16.to_le_bytes());
+    bytes.extend_from_slice(&7_u64.to_le_bytes());
+    bytes.extend_from_slice(&1_u32.to_le_bytes());
+    bytes.extend_from_slice(&42_u64.to_le_bytes());
+    bytes.extend_from_slice(&1_u32.to_le_bytes());
+    bytes.push(b'x');
+    bytes.extend_from_slice(&3.5_f64.to_bits().to_le_bytes());
+    bytes.extend_from_slice(&0_u32.to_le_bytes());
+    bytes
+}
+
 /// The digest the shell would report for `key`, resolved through its own
 /// catalog so a translation change cannot break the assertion.
 fn digest_starts_like(shell: &Shell, key: &str) -> bool {
@@ -48,6 +61,19 @@ fn save_as_then_new_then_open_restores_the_same_canonical_document() {
     shell.click_menu_command("menu-file", AppCommand::SaveAs);
 
     assert!(path.is_file(), "Save As must write the document to disk");
+    let inspection = ketchup_app::inspect_native_document(&path).unwrap();
+    assert_eq!(inspection.schema_version, 17);
+    assert_eq!(inspection.definitions, 1);
+    assert_eq!(inspection.root_occurrences, 2);
+    assert_eq!(inspection.profiles, 1);
+    assert_eq!(inspection.extrusions, 1);
+    assert_eq!(inspection.profile_extrusion_definitions, 1);
+    assert_eq!(inspection.visible_profile_extrusion_root_occurrences, 2);
+    assert_eq!(inspection.canonical_digest, composed_digest);
+    assert_eq!(
+        inspection.container_sha256,
+        ketchup_core::graph::sha256_hex(&std::fs::read(&path).unwrap())
+    );
     assert!(!shell.app().is_dirty(), "a saved document must be clean");
     assert_eq!(shell.app().document_path(), Some(path.as_path()));
 
@@ -82,10 +108,133 @@ fn save_as_then_new_then_open_restores_the_same_canonical_document() {
 }
 
 #[test]
+fn native_document_inspection_counts_only_visible_modeled_root_occurrences() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("hidden-modeled-root.ketchup");
+    let script = ScriptedFileDialogs::new().queue_save(&path);
+    let mut shell = Shell::with_dialogs(script);
+
+    compose_two_shared_occurrences(&mut shell);
+    assert!(shell.app_mut().set_selection_visibility(false));
+    shell.click_menu_command("menu-file", AppCommand::SaveAs);
+
+    let inspection = ketchup_app::inspect_native_document(&path).unwrap();
+    assert_eq!(inspection.root_occurrences, 2);
+    assert_eq!(inspection.profile_extrusion_definitions, 1);
+    assert_eq!(inspection.visible_profile_extrusion_root_occurrences, 1);
+}
+
+#[test]
+fn confirmed_legacy_migration_writes_and_activates_only_a_new_copy() {
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("legacy.ketchup");
+    let destination = directory.path().join("migrated.ketchup");
+    let source_bytes = lossy_legacy_document();
+    std::fs::write(&source, &source_bytes).unwrap();
+    let script = ScriptedFileDialogs::new()
+        .queue_open(&source)
+        .always_discard();
+    let mut shell = Shell::with_dialogs(script);
+    compose_two_shared_occurrences(&mut shell);
+    let active_digest = shell.app().canonical_digest();
+
+    shell.click_menu_command("menu-file", AppCommand::Open);
+    assert!(shell.app().has_review_candidate());
+    assert_eq!(shell.app().canonical_digest(), active_digest);
+    assert!(
+        !shell
+            .app_mut()
+            .confirm_review_candidate_migration_to(&source)
+    );
+    assert!(shell.app().has_review_candidate());
+    assert_eq!(std::fs::read(&source).unwrap(), source_bytes);
+    assert!(
+        !shell
+            .app_mut()
+            .confirm_review_candidate_migration_to(directory.path())
+    );
+    assert!(shell.app().has_review_candidate());
+    assert_eq!(shell.app().canonical_digest(), active_digest);
+    assert_eq!(std::fs::read(&source).unwrap(), source_bytes);
+
+    assert!(
+        shell
+            .app_mut()
+            .confirm_review_candidate_migration_to(&destination)
+    );
+    assert!(!shell.app().has_review_candidate());
+    assert_eq!(shell.app().document_path(), Some(destination.as_path()));
+    assert_eq!(shell.app().document_revision(), 8);
+    assert!(!shell.app().is_dirty());
+    assert_eq!(std::fs::read(&source).unwrap(), source_bytes);
+    assert_eq!(
+        ketchup_core::persistence::load_file(&source)
+            .unwrap()
+            .disposition(),
+        ketchup_core::persistence::LoadDisposition::ReviewOnly
+    );
+    assert_eq!(
+        ketchup_core::persistence::load_file(&destination)
+            .unwrap()
+            .disposition(),
+        ketchup_core::persistence::LoadDisposition::EditableLossless
+    );
+}
+
+#[test]
+fn optional_unknown_extension_survives_app_open_edit_and_save() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("extended.ketchup");
+    let script = ScriptedFileDialogs::new()
+        .queue_save(&path)
+        .queue_open(&path)
+        .always_discard()
+        .always_confirm_high_risk_as(7);
+    let mut shell = Shell::with_dialogs(script);
+    shell.click_menu_command("menu-file", AppCommand::Save);
+
+    let snapshot = ketchup_core::persistence::load_file(&path)
+        .unwrap()
+        .snapshot();
+    let mut sidecars = ketchup_core::persistence::ContainerData::default();
+    sidecars
+        .insert_extension(
+            ketchup_core::persistence::ExtensionEntry::new(
+                "org.example.optional",
+                "opaque.bin",
+                false,
+                vec![7, 8, 9],
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    std::fs::write(
+        &path,
+        ketchup_core::persistence::save_container(&snapshot, &sidecars).unwrap(),
+    )
+    .unwrap();
+
+    shell.click_menu_command("menu-file", AppCommand::New);
+    shell.click_menu_command("menu-file", AppCommand::Open);
+    shell.click_at(shell.viewport_rect().center());
+    assert!(shell.app_mut().move_selected(Vec3::new(10.0, 0.0, 0.0)));
+    shell.click_menu_command("menu-file", AppCommand::Save);
+
+    let reopened = ketchup_core::persistence::load_file(&path).unwrap();
+    let extension = reopened.container_data().extensions().next().unwrap();
+    assert_eq!(extension.namespace(), "org.example.optional");
+    assert_eq!(extension.path(), "opaque.bin");
+    assert_eq!(extension.bytes(), &[7, 8, 9]);
+    assert!(!extension.required());
+}
+
+#[test]
 fn save_writes_to_the_known_path_without_asking_again() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("resaved.ketchup");
-    let script = ScriptedFileDialogs::new().queue_save(&path);
+    let script = ScriptedFileDialogs::new()
+        .queue_save(&path)
+        .always_confirm_high_risk_as(8);
     let mut shell = Shell::with_dialogs(script.clone());
 
     compose_two_shared_occurrences(&mut shell);
@@ -112,6 +261,53 @@ fn save_writes_to_the_known_path_without_asking_again() {
         "Save must persist the current state of the document"
     );
     assert!(!shell.app().is_dirty());
+}
+
+#[test]
+fn overwrite_save_requires_payload_bound_human_receipt_before_disk_write() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("existing.ketchup");
+    let original = b"existing file must survive refusal".to_vec();
+    std::fs::write(&path, &original).unwrap();
+    let script = ScriptedFileDialogs::new()
+        .queue_save(&path)
+        .queue_save(&path)
+        .queue_refused_high_risk()
+        .queue_high_risk_approval(42);
+    let mut shell = Shell::with_dialogs(script.clone());
+    compose_two_shared_occurrences(&mut shell);
+    let canonical = shell.app().canonical_digest();
+    let revision = shell.app().document_revision();
+
+    shell.click_menu_command("menu-file", AppCommand::SaveAs);
+    assert_eq!(std::fs::read(&path).unwrap(), original);
+    assert!(shell.app().is_dirty());
+    assert!(shell.app().last_side_effect_receipt().is_none());
+
+    shell.click_menu_command("menu-file", AppCommand::SaveAs);
+    let receipt = shell
+        .app()
+        .last_side_effect_receipt()
+        .expect("approved overwrite returns an authorization receipt");
+    assert_eq!(receipt.approving_human(), 42);
+    assert_eq!(receipt.revision_id(), revision);
+    assert_eq!(receipt.operation(), "overwrite-native-document");
+    assert_eq!(
+        receipt.scope().path(),
+        Some(path.display().to_string().as_str())
+    );
+    assert_eq!(shell.app().canonical_digest(), canonical);
+    assert_eq!(shell.app().document_revision(), revision);
+    assert!(!shell.app().is_dirty());
+    assert_eq!(script.high_risk_prompts().len(), 2);
+    assert!(script.high_risk_prompts()[0].contains("Payload SHA-256:"));
+    assert_eq!(
+        ketchup_core::persistence::load_file(&path)
+            .unwrap()
+            .snapshot()
+            .canonical_digest(),
+        canonical
+    );
 }
 
 #[test]

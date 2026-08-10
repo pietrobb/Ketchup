@@ -1,7 +1,8 @@
 use crate::document::{
     CanonicalCommand, CanonicalError, CanonicalOverride, CommandBatch, Dimension, DocumentStore,
-    EvaluatorNodeKind, NodeId, OverrideParameterSpec, PortSpec, RuleOutput, SlotPath,
-    SlotResolution, SlotSegment,
+    EvaluatorNodeKind, HighRiskScope, HumanConfirmationError, NodeId, OverrideParameterSpec,
+    PortSpec, ProposalPrincipal, RuleOutput, SideEffectApprovalToken, SideEffectAuthorizationError,
+    SideEffectAuthorizationReceipt, SideEffectProposal, SlotPath, SlotResolution, SlotSegment,
 };
 use crate::fabrication::{
     DimensionChain, DimensionDatumRef, DimensionSegment, FabricationProjectionEnvelope,
@@ -183,6 +184,36 @@ impl BeamWorkspace {
     #[must_use]
     pub fn snapshot(&self) -> crate::document::Snapshot {
         self.document.current()
+    }
+
+    pub fn configure_human_confirmation_policy(
+        &mut self,
+        verifying_key: [u8; 32],
+        epoch: u64,
+    ) -> Result<(), HumanConfirmationError> {
+        self.document
+            .configure_human_confirmation_policy(verifying_key, epoch)
+    }
+
+    pub fn prepare_high_risk_side_effect(
+        &self,
+        operation: &str,
+        principal: ProposalPrincipal,
+        scope: HighRiskScope,
+        payload: &[u8],
+    ) -> Result<SideEffectProposal, HumanConfirmationError> {
+        self.document
+            .prepare_high_risk_side_effect(operation, principal, scope, payload)
+    }
+
+    pub fn authorize_high_risk_side_effect(
+        &mut self,
+        proposal: &SideEffectProposal,
+        approval: &SideEffectApprovalToken,
+        now_ms: u64,
+    ) -> Result<SideEffectAuthorizationReceipt, SideEffectAuthorizationError> {
+        self.document
+            .authorize_high_risk_side_effect(proposal, approval, now_ms)
     }
 
     #[must_use]

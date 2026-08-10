@@ -1,9 +1,9 @@
 use ketchup_core::beam_m4ae::BeamWorkspace;
 use ketchup_core::document::{
-    CanonicalCommand, CanonicalOverride, CommandBatch, DefinitionId, DerivedIdentity, Dimension,
-    DocumentStore, EvaluationIdentity, FeatureId, FeatureKind, GroupId, NodeId, OccurrenceId,
-    OverrideParameterSpec, PortSpec, RuleOutput, SlotPath, SlotResolution, SlotSegment, TagId,
-    Transform,
+    CanonicalCommand, CanonicalOverride, CollectionId, CommandBatch, DefinitionId, DerivedIdentity,
+    Dimension, DocumentStore, EvaluationIdentity, FeatureId, FeatureKind, GroupId, NodeId,
+    OccurrenceId, OverrideParameterSpec, PortSpec, RuleOutput, SlotPath, SlotResolution,
+    SlotSegment, TagId, Transform,
 };
 use ketchup_core::state_view::{
     AGENT_STATE_VIEW_V1, COMPLETE_STATE_VIEW_V1, encode_semantic_state,
@@ -66,6 +66,11 @@ fn fixture_document(reverse_nodes: bool) -> DocumentStore {
                 height: Dimension::new("720.000", 720.0).unwrap(),
             },
         },
+        CanonicalCommand::CreateTag {
+            id: TagId(7),
+            name: "Casework".to_owned(),
+            visible: true,
+        },
         CanonicalCommand::CreateGroup {
             id: GroupId(20),
             name: "Kitchen run".to_owned(),
@@ -89,6 +94,14 @@ fn fixture_document(reverse_nodes: bool) -> DocumentStore {
             parent: None,
             tag: None,
             visible: false,
+        },
+        CanonicalCommand::CreateCollection {
+            id: CollectionId(8),
+            name: "Upper run".to_owned(),
+        },
+        CanonicalCommand::SetCollectionOccurrences {
+            id: CollectionId(8),
+            occurrence_ids: vec![OccurrenceId(30), OccurrenceId(31)],
         },
     ]);
     let mut store = DocumentStore::new();
@@ -319,7 +332,7 @@ fn final_m2_state_view_covers_graph_overrides_and_supplied_evaluation_without_mu
     }
 
     assert!(agent.contains(
-        "summary.counts=evaluator_nodes:3,overrides:1,parameter_bindings:0,definitions:0,features:0,occurrences:0,groups:0,local_groups:0,local_occurrences:0"
+        "summary.counts=evaluator_nodes:3,overrides:1,parameter_bindings:0,spaces:0,clearance_volumes:0,persistent_dimensions:0,tags:0,collections:0,definitions:0,features:0,occurrences:0,groups:0,local_groups:0,local_occurrences:0"
     ));
     assert!(agent.contains("evaluation.current=true"));
     assert!(!agent.contains("evaluation=not_supplied"));

@@ -124,7 +124,8 @@ impl ExactRevolveRequest {
                 }
                 FeatureKind::Extrusion { .. }
                 | FeatureKind::ThroughCut { .. }
-                | FeatureKind::Boolean { .. } => {
+                | FeatureKind::Boolean { .. }
+                | FeatureKind::MeshBody(_) => {
                     return Err(ExactProductError::UnsupportedDefinition);
                 }
             }

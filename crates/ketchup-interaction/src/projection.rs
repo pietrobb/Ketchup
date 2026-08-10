@@ -1,3 +1,4 @@
+use crate::spatial::SnapshotBinding;
 use crate::{InteractionError, InteractionScene, SharedBoxGeometry, Vec3};
 use ketchup_core::document::{
     DefinitionId, DocumentId, FeatureId, FeatureKind, GroupId, InstancePath, OccurrenceId,
@@ -44,6 +45,7 @@ pub struct ProjectedOccurrence {
 }
 
 pub struct InteractionProjection {
+    binding: SnapshotBinding,
     document_id: DocumentId,
     source_revision: u64,
     source_digest: String,
@@ -84,6 +86,7 @@ impl CanonicalInteractionProjection {
             })
             .collect();
         InteractionProjection {
+            binding: SnapshotBinding::from_snapshot(snapshot),
             document_id: snapshot.document_id(),
             source_revision: snapshot.revision_id(),
             source_digest: snapshot.canonical_digest(),
@@ -157,7 +160,7 @@ impl InteractionProjection {
         overrides: &BTreeMap<InstancePath, ProjectedBox>,
         include: impl Fn(&ProjectedOccurrence) -> bool,
     ) -> Result<InteractionScene, InteractionError> {
-        let mut scene = InteractionScene::new();
+        let mut scene = InteractionScene::new(self.binding.clone());
         let mut geometries =
             BTreeMap::<(DefinitionId, u64, u64, u64), Arc<SharedBoxGeometry>>::new();
         for occurrence in self
@@ -192,6 +195,7 @@ impl InteractionProjection {
                 geometry,
             )?;
         }
+        scene.rebuild_spatial_index();
         Ok(scene)
     }
 }
@@ -218,29 +222,36 @@ fn canonical_box(
     }) {
         return (None, None, None);
     }
+    let profiles = definition
+        .feature_ids()
+        .iter()
+        .filter_map(|feature_id| {
+            matches!(
+                snapshot.feature(*feature_id)?.kind(),
+                FeatureKind::Profile { .. }
+            )
+            .then_some(*feature_id)
+        })
+        .collect::<Vec<_>>();
     let extrusions = definition
         .feature_ids()
         .iter()
         .filter_map(|feature_id| {
-            let feature = snapshot.feature(*feature_id)?;
-            match feature.kind() {
-                FeatureKind::Extrusion { profile, height } => {
-                    Some((*feature_id, *profile, height.millimetres()))
-                }
-                FeatureKind::Profile { .. }
-                | FeatureKind::BottleProfileControl { .. }
-                | FeatureKind::Revolve { .. }
-                | FeatureKind::Shell { .. }
-                | FeatureKind::BottleEdgeFinish { .. }
-                | FeatureKind::ThroughCut { .. }
-                | FeatureKind::Boolean { .. } => None,
-            }
+            let FeatureKind::Extrusion { profile, height } = snapshot.feature(*feature_id)?.kind()
+            else {
+                return None;
+            };
+            Some((*feature_id, *profile, height.millimetres()))
         })
         .collect::<Vec<_>>();
-    let [(extrusion_id, profile_id, height)] = extrusions.as_slice() else {
-        return (None, None, None);
+    let (profile_id, extrusion_id, height) = match extrusions.as_slice() {
+        [] if definition.feature_ids().len() == 1 && profiles.len() == 1 => {
+            (profiles[0], None, 0.0)
+        }
+        [(extrusion_id, profile_id, height)] => (*profile_id, Some(*extrusion_id), *height),
+        _ => return (None, None, None),
     };
-    let Some(profile) = snapshot.feature(*profile_id) else {
+    let Some(profile) = snapshot.feature(profile_id) else {
         return (None, None, None);
     };
     if profile.definition_id() != definition_id {
@@ -250,14 +261,14 @@ fn canonical_box(
         return (None, None, None);
     };
     let Some((min_x, min_y, width, depth)) = profile_bounds(points_mm) else {
-        return (Some(*profile_id), Some(*extrusion_id), None);
+        return (Some(profile_id), extrusion_id, None);
     };
-    if !height.is_finite() || *height == 0.0 {
-        return (Some(*profile_id), Some(*extrusion_id), None);
+    if !height.is_finite() {
+        return (Some(profile_id), extrusion_id, None);
     }
     (
-        Some(*profile_id),
-        Some(*extrusion_id),
+        Some(profile_id),
+        extrusion_id,
         Some(ProjectedBox {
             origin_mm: Vec3::new(min_x, min_y, height.min(0.0)),
             size_mm: Vec3::new(width, depth, height.abs()),

@@ -5,29 +5,53 @@ use ketchup_core::beam_m4ae::{
     BeamChangeSummary, BeamSlice, BeamValidationVerdict, BeamWorkspace, GroovePosition, GroupedBom,
 };
 use ketchup_core::beam_m5::{BeamExactPiecePackage, BeamM5Products};
-use ketchup_core::bottle_m6::{BottleAuthorityReport, ExactRevolveRequest};
+use ketchup_core::bottle_m6::{BottleAuthorityReport, ExactRevolvePackage, ExactRevolveRequest};
 use ketchup_core::document::{
-    BottleControlDimension, BottleEdgeFinishKind, CanonicalCommand, CommandBatch, DefinitionId,
-    Dimension, DocumentId, DocumentStore, FeatureId, FeatureKind, GroupId, InstancePath, NodeId,
-    OccurrenceId, Proposal, ProposalGoal, ProposalValue, Snapshot, Transform,
+    AuthenticatedApprover, BottleControlDimension, BottleEdgeFinishKind, CanonicalCommand,
+    CollectionId, CommandBatch, DefinitionId, Dimension, DimensionDisplayUnit,
+    DimensionPresentation, DocumentId, DocumentStore, FeatureId, FeatureKind, FeatureParameterSlot,
+    FeatureParameterTarget, GroupId, HighRiskClass, HighRiskScope, InstancePath,
+    MAX_HUMAN_CONFIRMATION_LIFETIME_MS, NodeId, OccurrenceId, PersistentDimensionId, Proposal,
+    ProposalGoal, ProposalPrincipal, ProposalValue, SceneOccurrence, SceneQueryContext,
+    SideEffectAuthorizationReceipt, SlotPath, Snapshot, TagId, Transform,
+    TrustedConfirmationSurface,
+};
+#[cfg(test)]
+use ketchup_core::document::{
+    OverrideParameterSpec, PersistentDimension, PersistentDimensionTarget, SlotResolution,
 };
 use ketchup_core::exact_product::{
     AssemblySelectionTarget, ExactBodyPackage, ExactBodyView, ExactFaceRole,
     ExactFeatureChainRequest, ExactMeshExport, ExactResultRegistry,
 };
 use ketchup_core::fabrication::{FullBomProjection, PieceDimensionSheet};
-use ketchup_core::graph::DerivedIdentity;
+use ketchup_core::graph::{DerivedIdentity, RuleOutput, SlotSegment};
 use ketchup_core::intent::{IntentRequest, WorkflowIntent, propose_intent};
+use ketchup_core::prismatic::JointId;
+#[cfg(test)]
+use ketchup_core::prismatic::TolerancePolicy;
+#[cfg(test)]
+use ketchup_core::space::ClearanceOwner;
+use ketchup_core::space::{ClearanceSeverity, ClearanceVolumeId, SpaceId};
 use ketchup_core::validation::ValidationReport;
 use ketchup_interaction::{
-    Axis, ElementId, LocaleCatalog, Ray, SelectionId, Side, Vec3,
+    Axis, ElementId, ExactHit, LocaleCatalog, PickResult, Ray, SelectionId, Side, SnapKind,
+    SnapPolicy, SnapResult, SnapTracker, Vec3,
     exact_projection::ExactInteractionProjection,
     projection::{CanonicalInteractionProjection, ProjectedBox},
 };
 use ketchup_scheduler::ExactWorkerSupervisor;
 pub mod dialogs;
+pub mod renderer;
 
-use dialogs::{DiscardRequest, ExportRequest, FileDialogs, NativeFileDialogs, SaveRequest};
+use dialogs::{
+    DiscardRequest, ExportRequest, FileDialogs, HighRiskConfirmationRequest, NativeFileDialogs,
+    SaveRequest,
+};
+use renderer::{
+    DerivedRenderCache, GpuInstancedRenderer, InstancedRenderPlan, ScenePaintCallback,
+    feature_edges,
+};
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -36,12 +60,112 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     mpsc::{self, Receiver, TryRecvError},
 };
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const INITIAL_BOX_DEFINITION: DefinitionId = DefinitionId(1);
 const BOX_WIDTH_MM: f64 = 100.0;
 const BOX_DEPTH_MM: f64 = 60.0;
 const GRID_STEP_MM: f64 = 10.0;
+const SHELL_PANEL_FILL: Color32 = Color32::from_rgb(23, 25, 28);
+const SHELL_VIEWPORT_FILL: Color32 = Color32::from_rgb(15, 17, 19);
+const SHELL_TEXT: Color32 = Color32::from_rgb(235, 235, 235);
+const SHELL_BRAND_FILL: Color32 = Color32::from_rgb(240, 78, 35);
+const SHELL_BRAND_TEXT: Color32 = SHELL_PANEL_FILL;
+const SHELL_FOCUS: Color32 = Color32::from_rgb(255, 140, 60);
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NativeDocumentInspection {
+    pub schema_version: u16,
+    pub document_id: u64,
+    pub revision: u64,
+    pub canonical_digest: String,
+    pub container_sha256: String,
+    pub definitions: usize,
+    pub root_occurrences: usize,
+    pub profiles: usize,
+    pub extrusions: usize,
+    pub profile_extrusion_definitions: usize,
+    pub visible_profile_extrusion_root_occurrences: usize,
+}
+
+impl NativeDocumentInspection {
+    #[must_use]
+    pub fn to_json(&self) -> String {
+        format!(
+            "{{\"schema_version\":{},\"document_id\":{},\"revision\":{},\"canonical_digest\":\"{}\",\"container_sha256\":\"{}\",\"definitions\":{},\"root_occurrences\":{},\"profiles\":{},\"extrusions\":{},\"profile_extrusion_definitions\":{},\"visible_profile_extrusion_root_occurrences\":{}}}",
+            self.schema_version,
+            self.document_id,
+            self.revision,
+            self.canonical_digest,
+            self.container_sha256,
+            self.definitions,
+            self.root_occurrences,
+            self.profiles,
+            self.extrusions,
+            self.profile_extrusion_definitions,
+            self.visible_profile_extrusion_root_occurrences
+        )
+    }
+}
+
+pub fn inspect_native_document(path: &Path) -> Result<NativeDocumentInspection, String> {
+    let container_bytes = std::fs::read(path).map_err(|error| error.to_string())?;
+    let loaded = ketchup_core::persistence::load_file(path).map_err(|error| error.to_string())?;
+    if loaded.source_schema() != 17
+        || loaded.disposition() != ketchup_core::persistence::LoadDisposition::EditableLossless
+    {
+        return Err("document is not a lossless current schema-17 document".to_owned());
+    }
+    let snapshot = loaded.snapshot();
+    let profiles = snapshot
+        .features()
+        .filter(|feature| matches!(feature.kind(), FeatureKind::Profile { .. }))
+        .count();
+    let extrusions = snapshot
+        .features()
+        .filter(|feature| matches!(feature.kind(), FeatureKind::Extrusion { .. }))
+        .count();
+    let profile_extrusion_definition_ids = snapshot
+        .definitions()
+        .filter(|definition| {
+            definition.feature_ids().iter().any(|feature_id| {
+                let Some(feature) = snapshot.feature(*feature_id) else {
+                    return false;
+                };
+                let FeatureKind::Extrusion { profile, .. } = feature.kind() else {
+                    return false;
+                };
+                snapshot.feature(*profile).is_some_and(|profile_feature| {
+                    profile_feature.definition_id() == definition.id()
+                        && matches!(profile_feature.kind(), FeatureKind::Profile { .. })
+                })
+            })
+        })
+        .map(|definition| definition.id())
+        .collect::<BTreeSet<_>>();
+    let visible_profile_extrusion_root_occurrences = snapshot
+        .scene_query()
+        .into_iter()
+        .filter(|occurrence| {
+            occurrence.visible
+                && occurrence.instance_path.is_root()
+                && profile_extrusion_definition_ids.contains(&occurrence.definition_id)
+        })
+        .count();
+    Ok(NativeDocumentInspection {
+        schema_version: loaded.source_schema(),
+        document_id: snapshot.document_id().0,
+        revision: snapshot.revision_id(),
+        canonical_digest: snapshot.canonical_digest(),
+        container_sha256: ketchup_core::graph::sha256_hex(&container_bytes),
+        definitions: snapshot.definitions().count(),
+        root_occurrences: snapshot.occurrences().count(),
+        profiles,
+        extrusions,
+        profile_extrusion_definitions: profile_extrusion_definition_ids.len(),
+        visible_profile_extrusion_root_occurrences,
+    })
+}
 
 pub type SelectedAdapterInfo = Arc<Mutex<Option<eframe::wgpu::AdapterInfo>>>;
 
@@ -121,7 +245,7 @@ struct BoxFace {
 struct RenderBox {
     definition_id: DefinitionId,
     profile_feature_id: FeatureId,
-    extrusion_feature_id: FeatureId,
+    extrusion_feature_id: Option<FeatureId>,
     instance_path: InstancePath,
     origin_mm: Vec3,
     size_mm: Vec3,
@@ -129,11 +253,32 @@ struct RenderBox {
 
 #[derive(Clone, Debug, PartialEq)]
 struct EphemeralBoxPreview {
+    source_document_id: DocumentId,
     source_revision: u64,
+    source_digest: String,
+    context: Option<EditContext>,
     selection_state: Option<SelectionId>,
     target: SelectionId,
     command_digest: String,
     box_data: RenderBox,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AlignMode {
+    Minimum,
+    Center,
+    Maximum,
+}
+
+const MAX_LINEAR_PATTERN_COUNT: usize = 10_000;
+
+#[derive(Clone, Debug, PartialEq)]
+struct OccurrenceOperationPreview {
+    source_revision: u64,
+    command_digest: String,
+    batch: CommandBatch,
+    boxes: BTreeMap<OccurrenceId, RenderBox>,
+    committed_digest_key: &'static str,
 }
 
 enum ProjectedPolygon {
@@ -157,6 +302,11 @@ struct ProjectedFace {
     depth: f64,
     previewed: bool,
     out_of_context: bool,
+}
+
+struct ProjectedEdge {
+    selection: SelectionId,
+    points: [Pos2; 2],
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -587,8 +737,54 @@ struct BeamM5EvaluationTask {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AssistantIntentKind {
+    CreateEvaluatorInput,
+    CreateEvaluatorExpression,
+    CreateEvaluatorRule,
+    CreateRuleOverride,
+    DeleteRuleOverride,
+    CreateFeatureParameterBinding,
+    DeleteFeatureParameterBinding,
+    CreatePersistentDimension,
+    CreateSpace,
+    CreateClearanceVolume,
+    CreateJoint,
+    CloneProfileDefinitionAndRepoint,
+    ConvertEmptyGroupToComponent,
+    RecomputeFeatureParameter,
+    DeleteJoint,
+    DeleteSpace,
+    DeleteClearanceVolume,
+    DeletePersistentDimension,
     RuleDimension,
+    EvaluatorName,
+    EvaluatorExpression,
+    RuleOutputs,
     FeatureDimension,
+    BottleControlDimension,
+    BottleEdgeFinishKind,
+    ProfilePoints,
+    DefinitionName,
+    OccurrenceVisibility,
+    OccurrenceTranslation,
+    OccurrenceTag,
+    TagVisibility,
+    OccurrenceDefinition,
+    OccurrenceParent,
+    GroupTranslation,
+    GroupParent,
+    CollectionOccurrences,
+    CreateTag,
+    DeleteTag,
+    CreateCollection,
+    DeleteCollection,
+    DeleteGroup,
+    DeleteOccurrence,
+    CreateDefinition,
+    DeleteDefinition,
+    CreateProfileFeature,
+    DeleteProfileFeature,
+    CreateGroup,
+    CreateOccurrence,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -601,14 +797,19 @@ pub struct AssistantVerification {
 
 pub struct KetchupApp {
     document: DocumentStore,
+    container_data: ketchup_core::persistence::ContainerData,
     review_candidate: Option<ketchup_core::persistence::LoadOutcome>,
+    review_candidate_source_path: Option<PathBuf>,
     document_path: Option<PathBuf>,
     saved_digest: String,
+    confirmation_surface: TrustedConfirmationSurface,
+    last_side_effect_receipt: Option<SideEffectAuthorizationReceipt>,
     catalog: LocaleCatalog,
     push_pull_distance_input: String,
     preview: Option<CommandBatch>,
     preview_box: Option<EphemeralBoxPreview>,
     preview_definition_id: Option<DefinitionId>,
+    occurrence_operation_preview: Option<OccurrenceOperationPreview>,
     status_key: &'static str,
     yaw: f32,
     pitch: f32,
@@ -617,6 +818,10 @@ pub struct KetchupApp {
     pan: Vec2,
     selection: SelectionState,
     hovered: Option<SelectionId>,
+    hover_pick: Option<PickResult>,
+    hover_snap: Option<SnapResult>,
+    hover_overlap_index: usize,
+    snap_tracker: SnapTracker,
     active_tool: ActiveTool,
     digest: String,
     assistant_intent_kind: AssistantIntentKind,
@@ -634,7 +839,6 @@ pub struct KetchupApp {
     sketch_mode: bool,
     sketch_start: Option<Vec3>,
     sketch_cursor: Option<Vec3>,
-    sketch_height_input: String,
     value_input: String,
     focus_value_box: bool,
     occurrence_clipboard: Vec<OccurrenceId>,
@@ -657,6 +861,8 @@ pub struct KetchupApp {
     beam_exact_results: ExactResultRegistry,
     beam_m5_source: Option<ExactSource>,
     beam_m5_retry_at: Option<Instant>,
+    render_cache: DerivedRenderCache,
+    wgpu_target_format: Option<eframe::wgpu::TextureFormat>,
 }
 
 impl Default for KetchupApp {
@@ -668,8 +874,23 @@ impl Default for KetchupApp {
 impl KetchupApp {
     #[must_use]
     pub fn new() -> Self {
-        let catalog = LocaleCatalog::english();
+        Self::with_catalog(LocaleCatalog::english())
+    }
+
+    #[must_use]
+    pub fn with_catalog(catalog: LocaleCatalog) -> Self {
+        catalog
+            .validate_complete_against(&LocaleCatalog::english())
+            .expect("the active locale must match the complete English key set");
+        let mut confirmation_key = [0; 32];
+        getrandom::fill(&mut confirmation_key)
+            .expect("the operating system must provide confirmation-key entropy");
+        let confirmation_surface = TrustedConfirmationSurface::new(confirmation_key, 1)
+            .expect("the built-in non-zero confirmation policy is valid");
         let mut document = DocumentStore::new();
+        document
+            .configure_human_confirmation_policy(confirmation_surface.verifying_key(), 1)
+            .expect("a fresh document accepts the application confirmation policy");
         let box_name = catalog.format(
             "model-default-box",
             &BTreeMap::from([("number", "1".to_owned())]),
@@ -698,14 +919,19 @@ impl KetchupApp {
         let digest = catalog.text("status-ready");
         Self {
             document,
+            container_data: ketchup_core::persistence::ContainerData::default(),
             review_candidate: None,
+            review_candidate_source_path: None,
             document_path: None,
             saved_digest,
+            confirmation_surface,
+            last_side_effect_receipt: None,
             catalog,
             push_pull_distance_input: String::new(),
             preview: None,
             preview_box: None,
             preview_definition_id: None,
+            occurrence_operation_preview: None,
             status_key: "status-ready",
             yaw: -0.65,
             pitch: -0.5,
@@ -714,6 +940,10 @@ impl KetchupApp {
             pan: Vec2::ZERO,
             selection: SelectionState::default(),
             hovered: None,
+            hover_pick: None,
+            hover_snap: None,
+            hover_overlap_index: 0,
+            snap_tracker: SnapTracker::default(),
             active_tool: ActiveTool::Select,
             digest,
             assistant_intent_kind: AssistantIntentKind::FeatureDimension,
@@ -731,7 +961,6 @@ impl KetchupApp {
             sketch_mode: false,
             sketch_start: None,
             sketch_cursor: None,
-            sketch_height_input: "20".to_owned(),
             value_input: String::new(),
             focus_value_box: false,
             occurrence_clipboard: Vec::new(),
@@ -754,7 +983,26 @@ impl KetchupApp {
             beam_exact_results: ExactResultRegistry::default(),
             beam_m5_source: None,
             beam_m5_retry_at: None,
+            render_cache: DerivedRenderCache::default(),
+            wgpu_target_format: None,
         }
+    }
+
+    #[must_use]
+    pub fn from_creation_context(context: &eframe::CreationContext<'_>) -> Self {
+        let mut app = Self::new();
+        if let Some(render_state) = context.wgpu_render_state.as_ref() {
+            render_state
+                .renderer
+                .write()
+                .callback_resources
+                .insert(GpuInstancedRenderer::new(
+                    &render_state.device,
+                    render_state.target_format,
+                ));
+            app.wgpu_target_format = Some(render_state.target_format);
+        }
+        app
     }
 
     /// Answer file dialogs from `dialogs` instead of the operating system.
@@ -792,11 +1040,17 @@ impl KetchupApp {
         self.preview = None;
         self.preview_box = None;
         self.preview_definition_id = None;
+        self.occurrence_operation_preview = None;
         self.selection = SelectionState::default();
         self.hovered = None;
+        self.hover_pick = None;
+        self.hover_snap = None;
+        self.hover_overlap_index = 0;
+        self.snap_tracker.clear();
         self.active_tool = ActiveTool::Select;
         self.assistant_proposal = None;
         self.assistant_verification = None;
+        self.last_side_effect_receipt = None;
         self.push_pull_drag = None;
         self.last_push_pull = None;
         self.bottle_direct_drag = None;
@@ -830,6 +1084,7 @@ impl KetchupApp {
             Ok(outcome) => {
                 if !outcome.is_editable() {
                     self.review_candidate = Some(outcome);
+                    self.review_candidate_source_path = Some(path.to_owned());
                     self.digest = self.catalog.format(
                         "error-open-document",
                         &BTreeMap::from([
@@ -842,12 +1097,21 @@ impl KetchupApp {
                     );
                     return false;
                 }
-                let Ok(mut document) = outcome.into_editable() else {
+                let Ok((mut document, container_data)) = outcome.into_editable_with_container()
+                else {
                     unreachable!("editable load outcome must contain an editable document");
                 };
                 document.discard_history_before_current();
+                document
+                    .configure_human_confirmation_policy(
+                        self.confirmation_surface.verifying_key(),
+                        1,
+                    )
+                    .expect("an opened document accepts the application confirmation policy");
                 self.document = document;
+                self.container_data = container_data;
                 self.review_candidate = None;
+                self.review_candidate_source_path = None;
                 self.document_path = Some(path.to_owned());
                 self.saved_digest = self.document.current().canonical_digest();
                 self.reset_document_presentation();
@@ -870,9 +1134,153 @@ impl KetchupApp {
         }
     }
 
+    fn authorize_path_side_effect(
+        &mut self,
+        class: HighRiskClass,
+        operation: &str,
+        title: &str,
+        risk: &str,
+        path: &Path,
+        payload: &[u8],
+    ) -> Result<(), String> {
+        self.last_side_effect_receipt = None;
+        let scope = HighRiskScope::new(class, None, None, Some(path.display().to_string()))
+            .map_err(|error| error.to_string())?;
+        let proposal = self
+            .document
+            .prepare_high_risk_side_effect(
+                operation,
+                ProposalPrincipal::LocalAssistant,
+                scope,
+                payload,
+            )
+            .map_err(|error| error.to_string())?;
+        let description = format!(
+            "Risk: {risk}\nPath: {}\nDocument revision: {}\nPayload SHA-256: {}\nOperation digest: {}",
+            path.display(),
+            proposal.provenance_revision(),
+            proposal.payload_digest(),
+            proposal.operation_digest(),
+        );
+        let Some(approving_human) = self.dialogs.confirm_high_risk(HighRiskConfirmationRequest {
+            title,
+            description: &description,
+        }) else {
+            return Err(format!("authenticated human declined {risk}"));
+        };
+        let now_ms = current_unix_time_ms()?;
+        let approval = self
+            .confirmation_surface
+            .issue_side_effect(
+                &proposal,
+                AuthenticatedApprover::Human(approving_human),
+                now_ms,
+                now_ms
+                    .checked_add(MAX_HUMAN_CONFIRMATION_LIFETIME_MS)
+                    .ok_or_else(|| "confirmation expiry exceeds the supported clock".to_owned())?,
+            )
+            .map_err(|error| error.to_string())?;
+        let receipt = self
+            .document
+            .authorize_high_risk_side_effect(&proposal, &approval, now_ms)
+            .map_err(|error| error.to_string())?;
+        self.last_side_effect_receipt = Some(receipt);
+        Ok(())
+    }
+
+    fn authorize_beam_path_side_effect(
+        &mut self,
+        class: HighRiskClass,
+        operation: &str,
+        title: &str,
+        risk: &str,
+        path: &Path,
+        payload: &[u8],
+    ) -> Result<(), String> {
+        self.last_side_effect_receipt = None;
+        let scope = HighRiskScope::new(class, None, None, Some(path.display().to_string()))
+            .map_err(|error| error.to_string())?;
+        let proposal = self
+            .beam_workspace
+            .as_ref()
+            .ok_or_else(|| "Beam workspace is unavailable".to_owned())?
+            .prepare_high_risk_side_effect(
+                operation,
+                ProposalPrincipal::LocalAssistant,
+                scope,
+                payload,
+            )
+            .map_err(|error| error.to_string())?;
+        let description = format!(
+            "Risk: {risk}\nPath: {}\nDocument revision: {}\nPayload SHA-256: {}\nOperation digest: {}",
+            path.display(),
+            proposal.provenance_revision(),
+            proposal.payload_digest(),
+            proposal.operation_digest(),
+        );
+        let Some(approving_human) = self.dialogs.confirm_high_risk(HighRiskConfirmationRequest {
+            title,
+            description: &description,
+        }) else {
+            return Err(format!("authenticated human declined {risk}"));
+        };
+        let now_ms = current_unix_time_ms()?;
+        let approval = self
+            .confirmation_surface
+            .issue_side_effect(
+                &proposal,
+                AuthenticatedApprover::Human(approving_human),
+                now_ms,
+                now_ms
+                    .checked_add(MAX_HUMAN_CONFIRMATION_LIFETIME_MS)
+                    .ok_or_else(|| "confirmation expiry exceeds the supported clock".to_owned())?,
+            )
+            .map_err(|error| error.to_string())?;
+        let receipt = self
+            .beam_workspace
+            .as_mut()
+            .ok_or_else(|| "Beam workspace is unavailable".to_owned())?
+            .authorize_high_risk_side_effect(&proposal, &approval, now_ms)
+            .map_err(|error| error.to_string())?;
+        self.last_side_effect_receipt = Some(receipt);
+        Ok(())
+    }
+
+    fn authorize_overwrite(&mut self, path: &Path, payload: &[u8]) -> Result<(), String> {
+        self.authorize_path_side_effect(
+            HighRiskClass::Overwrite,
+            "overwrite-native-document",
+            "Confirm high-risk overwrite",
+            "overwrite existing file",
+            path,
+            payload,
+        )
+    }
+
     fn save_document_to(&mut self, path: &Path) -> bool {
         let snapshot = self.document.current();
-        match ketchup_core::persistence::save_atomic(path, &snapshot) {
+        let prepared = ketchup_core::persistence::save_container(&snapshot, &self.container_data);
+        if path.exists()
+            && let Err(error) = prepared
+                .as_ref()
+                .map_err(ToString::to_string)
+                .and_then(|bytes| self.authorize_overwrite(path, bytes))
+        {
+            self.digest = self.catalog.format(
+                "error-save-document",
+                &BTreeMap::from([("path", path.display().to_string()), ("reason", error)]),
+            );
+            return false;
+        }
+        let result = prepared.map_err(|error| error.to_string()).and_then(|_| {
+            ketchup_core::persistence::save_atomic_with_container(
+                path,
+                &snapshot,
+                &self.container_data,
+            )
+            .map_err(|error| error.to_string())
+        });
+        match result {
             Ok(()) => {
                 self.document_path = Some(path.to_owned());
                 self.saved_digest = snapshot.canonical_digest();
@@ -1007,7 +1415,13 @@ impl KetchupApp {
 
     pub fn load_beam_m4ae(&mut self) -> bool {
         match BeamWorkspace::load() {
-            Ok(workspace) => {
+            Ok(mut workspace) => {
+                workspace
+                    .configure_human_confirmation_policy(
+                        self.confirmation_surface.verifying_key(),
+                        1,
+                    )
+                    .expect("the Beam workspace accepts the application confirmation policy");
                 if let Some(task) = self.beam_m5_task.take() {
                     task.cancelled.store(true, Ordering::Release);
                 }
@@ -1127,7 +1541,17 @@ impl KetchupApp {
                     .ok_or_else(|| "current accepted Beam exact body is unavailable".to_owned())
                     .map(|package| package.mesh_export(Transform::identity()))
             })
-            .and_then(|bundle| write_exact_mesh_export(path, bundle));
+            .and_then(|bundle| {
+                self.authorize_beam_path_side_effect(
+                    HighRiskClass::LossyConversion,
+                    "export-lossy-obj-with-loss-report",
+                    "Confirm lossy mesh export",
+                    "lossy exact-to-mesh conversion",
+                    path,
+                    &exact_mesh_export_evidence(&bundle),
+                )?;
+                write_exact_mesh_export(path, bundle)
+            });
         match result {
             Ok(()) => {
                 self.digest = format!(
@@ -1170,7 +1594,17 @@ impl KetchupApp {
                     .manufacturing_export()
                     .map_err(|error| error.to_string())
             })
-            .and_then(|bytes| std::fs::write(path, bytes).map_err(|error| error.to_string()));
+            .and_then(|bytes| {
+                self.authorize_beam_path_side_effect(
+                    HighRiskClass::ReleaseManufacturingExportWithWarnings,
+                    "release-manufacturing-export-with-warnings",
+                    "Confirm manufacturing export release",
+                    "manufacturing export with unresolved warnings",
+                    path,
+                    &bytes,
+                )?;
+                std::fs::write(path, bytes).map_err(|error| error.to_string())
+            });
         match result {
             Ok(()) => {
                 self.digest = format!(
@@ -1333,10 +1767,106 @@ impl KetchupApp {
         self.viewport_rect
     }
 
+    #[must_use]
+    pub fn viewport_position(&self, point_mm: Vec3) -> Option<Pos2> {
+        self.viewport_rect.map(|rect| self.project(point_mm, rect))
+    }
+
+    #[must_use]
+    pub fn hovered_selection(&self) -> Option<&SelectionId> {
+        self.hovered.as_ref()
+    }
+
+    #[must_use]
+    pub fn hovered_snap_kind(&self) -> Option<SnapKind> {
+        self.hover_snap.as_ref().map(|snap| snap.kind)
+    }
+
+    #[must_use]
+    pub fn hovered_snap_position(&self) -> Option<Vec3> {
+        self.hover_snap.as_ref().map(|snap| snap.position_mm)
+    }
+
+    #[must_use]
+    pub fn hovered_overlap_choice(&self) -> Option<(usize, usize)> {
+        self.hover_pick
+            .as_ref()
+            .map(|pick| (self.hover_overlap_index, pick.overlapping.len()))
+    }
+
+    #[must_use]
+    pub const fn last_side_effect_receipt(&self) -> Option<&SideEffectAuthorizationReceipt> {
+        self.last_side_effect_receipt.as_ref()
+    }
+
     /// Whether the active document carries unsaved changes.
     #[must_use]
     pub fn has_review_candidate(&self) -> bool {
         self.review_candidate.is_some()
+    }
+
+    pub fn confirm_review_candidate_migration_to(&mut self, destination: &Path) -> bool {
+        let Some(source) = self.review_candidate_source_path.as_deref() else {
+            return false;
+        };
+        let comparable_path = |path: &Path| {
+            std::fs::canonicalize(path).unwrap_or_else(|_| {
+                path.parent()
+                    .and_then(|parent| std::fs::canonicalize(parent).ok())
+                    .and_then(|parent| path.file_name().map(|name| parent.join(name)))
+                    .unwrap_or_else(|| path.to_owned())
+            })
+        };
+        if comparable_path(source) == comparable_path(destination) {
+            return false;
+        }
+        let migration = self
+            .review_candidate
+            .as_ref()
+            .and_then(ketchup_core::persistence::LoadOutcome::review_candidate)
+            .ok_or(
+                ketchup_core::persistence::PersistenceError::MigrationNotConfirmable(
+                    "no review candidate is pending",
+                ),
+            )
+            .and_then(ketchup_core::persistence::ReviewCandidate::confirm_semantic_migration);
+        let confirmed = match migration {
+            Ok(confirmed) => confirmed,
+            Err(error) => {
+                self.digest = self.catalog.format(
+                    "error-migrate-document",
+                    &BTreeMap::from([("reason", error.to_string())]),
+                );
+                return false;
+            }
+        };
+        let (mut document, container_data) = confirmed.into_parts();
+        let snapshot = document.current();
+        if let Err(error) = ketchup_core::persistence::save_atomic_with_container(
+            destination,
+            &snapshot,
+            &container_data,
+        ) {
+            self.digest = self.catalog.format(
+                "error-migrate-document",
+                &BTreeMap::from([("reason", error.to_string())]),
+            );
+            return false;
+        }
+
+        document.discard_history_before_current();
+        self.document = document;
+        self.container_data = container_data;
+        self.review_candidate = None;
+        self.review_candidate_source_path = None;
+        self.document_path = Some(destination.to_owned());
+        self.saved_digest = snapshot.canonical_digest();
+        self.reset_document_presentation();
+        self.digest = self.catalog.format(
+            "digest-migrated-document",
+            &BTreeMap::from([("path", destination.display().to_string())]),
+        );
+        true
     }
 
     pub fn is_dirty(&self) -> bool {
@@ -1693,7 +2223,7 @@ impl KetchupApp {
                 Some(RenderBox {
                     definition_id: occurrence.body.definition_id,
                     profile_feature_id: occurrence.body.profile_feature_id?,
-                    extrusion_feature_id: occurrence.body.extrusion_feature_id?,
+                    extrusion_feature_id: occurrence.body.extrusion_feature_id,
                     instance_path: occurrence.instance_path.clone(),
                     origin_mm,
                     size_mm,
@@ -1758,6 +2288,12 @@ impl KetchupApp {
     }
 
     fn selected_occurrence_ids(&self) -> BTreeSet<OccurrenceId> {
+        if matches!(
+            self.selection.edit_context.last(),
+            Some(EditContext::Definition { .. })
+        ) {
+            return BTreeSet::new();
+        }
         let paths = self.selected_instance_paths();
         if paths.iter().any(|path| !path.is_root()) {
             return BTreeSet::new();
@@ -1772,28 +2308,35 @@ impl KetchupApp {
         self.selected_instance_paths().len()
     }
 
-    fn occurrence_in_active_context(&self, instance_path: &InstancePath) -> bool {
+    fn active_scene_query(&self) -> Vec<SceneOccurrence> {
         let snapshot = self.document.current();
-        let Some(occurrence) = snapshot.occurrence(instance_path.root_occurrence()) else {
-            return false;
+        let Some(context) = self.selection.edit_context.last() else {
+            return snapshot
+                .scene_query()
+                .into_iter()
+                .filter(|occurrence| occurrence.visible && occurrence.instance_path.is_root())
+                .collect();
         };
-        if snapshot.resolve_instance_path(instance_path).is_err() {
-            return false;
-        }
-        match self.selection.edit_context.last() {
-            None => true,
-            Some(EditContext::Group(group_id)) => occurrence.parent() == Some(*group_id),
-            Some(EditContext::Definition {
+        let context = match context {
+            EditContext::Group(group_id) => SceneQueryContext::Group(*group_id),
+            EditContext::Definition {
                 definition_id,
-                instance_path: context_path,
-            }) => {
-                snapshot
-                    .resolve_instance_path(context_path)
-                    .is_ok_and(|resolved| resolved.definition_id == *definition_id)
-                    && instance_path.root_occurrence() == context_path.root_occurrence()
-                    && instance_path.steps().starts_with(context_path.steps())
-            }
-        }
+                instance_path,
+            } => SceneQueryContext::Definition {
+                definition_id: *definition_id,
+                instance_path: instance_path.clone(),
+            },
+        };
+        snapshot
+            .bind_scene_query(context)
+            .and_then(|query| snapshot.scene_query_in(&query))
+            .unwrap_or_default()
+    }
+
+    fn occurrence_in_active_context(&self, instance_path: &InstancePath) -> bool {
+        self.active_scene_query()
+            .into_iter()
+            .any(|occurrence| occurrence.instance_path == *instance_path)
     }
 
     fn select_group(&mut self, group_id: GroupId) -> bool {
@@ -1801,10 +2344,13 @@ impl KetchupApp {
         let Some(group) = snapshot.group(group_id) else {
             return false;
         };
-        let ids = snapshot
-            .occurrences()
-            .filter(|occurrence| occurrence.parent() == Some(group_id))
-            .map(|occurrence| InstancePath::root(occurrence.id()))
+        let ids = self
+            .active_scene_query()
+            .into_iter()
+            .filter(|occurrence| {
+                occurrence.instance_path.is_root() && occurrence.parent == Some(group_id)
+            })
+            .map(|occurrence| occurrence.instance_path)
             .collect::<BTreeSet<_>>();
         if ids.is_empty() {
             return false;
@@ -1948,13 +2494,10 @@ impl KetchupApp {
         let Some(definition) = snapshot.definition(definition_id) else {
             return;
         };
-        let ids = snapshot
-            .scene_query()
+        let ids = self
+            .active_scene_query()
             .into_iter()
-            .filter(|item| {
-                item.definition_id == definition_id
-                    && self.occurrence_in_active_context(&item.instance_path)
-            })
+            .filter(|item| item.definition_id == definition_id)
             .map(|item| item.instance_path)
             .collect::<Vec<_>>();
         let name = definition.name().to_owned();
@@ -1970,11 +2513,8 @@ impl KetchupApp {
 
     fn select_all(&mut self) {
         let ids = self
-            .document
-            .current()
-            .scene_query()
+            .active_scene_query()
             .into_iter()
-            .filter(|item| item.visible && self.occurrence_in_active_context(&item.instance_path))
             .map(|item| item.instance_path)
             .collect::<Vec<_>>();
         self.selection.clear();
@@ -1988,8 +2528,20 @@ impl KetchupApp {
     fn outliner_query(&self) -> Vec<OutlinerDefinition> {
         let snapshot = self.document.current();
         let projection = CanonicalInteractionProjection::from_snapshot(&snapshot);
+        let scoped = !self.selection.edit_context.is_empty();
+        let scene = if scoped {
+            self.active_scene_query()
+        } else {
+            snapshot.scene_query()
+        };
         snapshot
             .definitions()
+            .filter(|definition| {
+                !scoped
+                    || scene
+                        .iter()
+                        .any(|occurrence| occurrence.definition_id == definition.id())
+            })
             .map(|definition| {
                 let size = projection
                     .occurrences()
@@ -1997,15 +2549,14 @@ impl KetchupApp {
                     .find(|occurrence| occurrence.body.definition_id == definition.id())
                     .and_then(|occurrence| occurrence.local_box.map(|local_box| local_box.size_mm))
                     .unwrap_or(Vec3::ZERO);
-                let occurrences = snapshot
-                    .scene_query()
-                    .into_iter()
+                let occurrences = scene
+                    .iter()
                     .filter(|item| item.definition_id == definition.id())
                     .map(|item| {
                         let matrix = item.transform.matrix();
                         OutlinerOccurrence {
-                            instance_path: item.instance_path,
-                            name: item.occurrence_name,
+                            instance_path: item.instance_path.clone(),
+                            name: item.occurrence_name.clone(),
                             position: format!(
                                 "{},{}",
                                 format_height(matrix[3]),
@@ -2767,6 +3318,53 @@ impl KetchupApp {
         }
     }
 
+    pub fn export_bottle_step_to(&mut self, definition_id: DefinitionId, path: &Path) -> bool {
+        let snapshot = self.document.current();
+        let result = (|| {
+            let package = self
+                .exact_results
+                .get(&definition_id)
+                .and_then(|package| package.revolve())
+                .filter(|package| package.is_current(&snapshot))
+                .cloned()
+                .ok_or_else(|| "current accepted bottle result is unavailable".to_owned())?;
+            let request = ExactRevolveRequest::from_snapshot(&snapshot, definition_id)
+                .map_err(|error| error.to_string())?;
+            let executable = self
+                .exact_worker_path
+                .clone()
+                .or_else(|| {
+                    exact_worker_candidates()
+                        .into_iter()
+                        .find(|path| path.is_file())
+                })
+                .ok_or_else(|| "exact worker is unavailable".to_owned())?;
+            let mut worker =
+                ExactWorkerSupervisor::spawn(executable).map_err(|error| error.to_string())?;
+            worker
+                .export_revolve_step(&snapshot, &request, &package, path)
+                .map_err(|error| error.to_string())?;
+            std::fs::write(
+                path.with_extension("step.loss.txt"),
+                exact_step_loss_report(&package),
+            )
+            .map_err(|error| error.to_string())
+        })();
+        match result {
+            Ok(()) => {
+                self.digest = format!(
+                    "Exported current exact bottle STEP with explicit loss report to {}",
+                    path.display()
+                );
+                true
+            }
+            Err(error) => {
+                self.digest = format!("Exact bottle STEP export blocked: {error}");
+                false
+            }
+        }
+    }
+
     pub fn exact_reference_for_occurrence(
         &self,
         instance_path: &InstancePath,
@@ -2795,7 +3393,17 @@ impl KetchupApp {
             .filter(|package| package.is_current(&snapshot))
             .ok_or_else(|| "current accepted exact body result is unavailable".to_owned())
             .map(|package| package.mesh_export(Transform::identity()))
-            .and_then(|bundle| write_exact_mesh_export(path, bundle));
+            .and_then(|bundle| {
+                self.authorize_path_side_effect(
+                    HighRiskClass::LossyConversion,
+                    "export-lossy-obj-with-loss-report",
+                    "Confirm lossy mesh export",
+                    "lossy exact-to-mesh conversion",
+                    path,
+                    &exact_mesh_export_evidence(&bundle),
+                )?;
+                write_exact_mesh_export(path, bundle)
+            });
         match result {
             Ok(()) => {
                 self.digest = format!(
@@ -2829,7 +3437,17 @@ impl KetchupApp {
                     .ok_or_else(|| "current accepted exact body result is unavailable".to_owned())
                     .map(|package| package.mesh_export(occurrence.transform))
             })
-            .and_then(|bundle| write_exact_mesh_export(path, bundle));
+            .and_then(|bundle| {
+                self.authorize_path_side_effect(
+                    HighRiskClass::LossyConversion,
+                    "export-lossy-obj-with-loss-report",
+                    "Confirm lossy mesh export",
+                    "lossy exact-to-mesh conversion",
+                    path,
+                    &exact_mesh_export_evidence(&bundle),
+                )?;
+                write_exact_mesh_export(path, bundle)
+            });
         match result {
             Ok(()) => {
                 self.digest = format!(
@@ -2843,6 +3461,92 @@ impl KetchupApp {
                 false
             }
         }
+    }
+
+    pub fn create_closed_polyline(&mut self, points_mm: Vec<[f64; 2]>) -> bool {
+        self.create_profile_at(Vec3::ZERO, points_mm)
+    }
+
+    fn create_profile_at(&mut self, origin_mm: Vec3, points_mm: Vec<[f64; 2]>) -> bool {
+        let snapshot = self.document.current();
+        let Some(definition_id) = snapshot
+            .definitions()
+            .map(|definition| definition.id().0)
+            .max()
+            .unwrap_or(0)
+            .checked_add(1)
+            .map(DefinitionId)
+        else {
+            return false;
+        };
+        let Some(profile_id) = snapshot
+            .features()
+            .map(|feature| feature.id().0)
+            .max()
+            .unwrap_or(0)
+            .checked_add(1)
+            .map(FeatureId)
+        else {
+            return false;
+        };
+        let Some(occurrence_id) = snapshot
+            .occurrences()
+            .map(|occurrence| occurrence.id().0)
+            .max()
+            .unwrap_or(0)
+            .checked_add(1)
+            .map(OccurrenceId)
+        else {
+            return false;
+        };
+        let name = self.catalog.format(
+            "model-default-box",
+            &BTreeMap::from([("number", definition_id.0.to_string())]),
+        );
+        let occurrence_name = self.catalog.format(
+            "model-default-occurrence",
+            &BTreeMap::from([("name", name.clone())]),
+        );
+        let batch = CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: definition_id,
+                name,
+            },
+            CanonicalCommand::CreateFeature {
+                id: profile_id,
+                definition_id,
+                name: self.catalog.text("model-default-profile"),
+                kind: FeatureKind::Profile { points_mm },
+            },
+            CanonicalCommand::CreateOccurrence {
+                id: occurrence_id,
+                definition_id,
+                name: occurrence_name,
+                transform: Transform::from_translation(origin_mm.x, origin_mm.y, origin_mm.z)
+                    .expect("validated profile origin is canonical"),
+                parent: None,
+                tag: None,
+                visible: true,
+            },
+        ]);
+        if self.document.apply_batch(&batch).is_err() {
+            return false;
+        }
+        self.clear_ephemeral_edit_state();
+        self.push_pull_distance_input.clear();
+        self.selection.select_exact(
+            SelectionId {
+                definition_id,
+                instance_path: InstancePath::root(occurrence_id),
+                element: ElementId::Face {
+                    axis: Axis::Z,
+                    side: Side::Maximum,
+                },
+            },
+            false,
+        );
+        self.status_key = "status-sketch-created";
+        true
     }
 
     fn create_box_at(&mut self, origin_mm: Vec3, size_mm: Vec3) -> bool {
@@ -2965,6 +3669,13 @@ impl KetchupApp {
         {
             return false;
         }
+        if matches!(
+            self.selection.edit_context.last(),
+            Some(EditContext::Definition { .. })
+        ) || !self.occurrence_in_active_context(&selection.instance_path)
+        {
+            return false;
+        }
         let snapshot = self.document.current();
         if !selection.instance_path.is_root() {
             return false;
@@ -3069,6 +3780,222 @@ impl KetchupApp {
             return false;
         };
         self.translate_occurrence(&selection, delta_mm, true)
+    }
+
+    pub fn preview_align_occurrences(
+        &mut self,
+        moving_id: OccurrenceId,
+        reference_id: OccurrenceId,
+        axis: Axis,
+        mode: AlignMode,
+    ) -> bool {
+        self.occurrence_operation_preview = None;
+        if moving_id == reference_id
+            || matches!(
+                self.selection.edit_context.last(),
+                Some(EditContext::Definition { .. })
+            )
+            || !self.occurrence_in_active_context(&InstancePath::root(moving_id))
+            || !self.occurrence_in_active_context(&InstancePath::root(reference_id))
+        {
+            return false;
+        }
+        let snapshot = self.document.current();
+        let Some(moving) = snapshot.occurrence(moving_id) else {
+            return false;
+        };
+        if snapshot.occurrence(reference_id).is_none() {
+            return false;
+        }
+        let boxes = self.active_boxes();
+        let Some(moving_box) = boxes
+            .iter()
+            .find(|item| item.instance_path == InstancePath::root(moving_id))
+        else {
+            return false;
+        };
+        let Some(reference_box) = boxes
+            .iter()
+            .find(|item| item.instance_path == InstancePath::root(reference_id))
+        else {
+            return false;
+        };
+        let moving_coordinate = alignment_coordinate(moving_box, axis, mode);
+        let reference_coordinate = alignment_coordinate(reference_box, axis, mode);
+        let offset_mm = reference_coordinate - moving_coordinate;
+        if !offset_mm.is_finite() || offset_mm.abs() <= f64::EPSILON {
+            return false;
+        }
+        let delta_mm = axis_vector(axis, offset_mm);
+        let Ok(transform) = translated_transform(moving.transform(), delta_mm) else {
+            return false;
+        };
+        let batch = CommandBatch::new(vec![CanonicalCommand::SetOccurrenceTransform {
+            id: moving_id,
+            transform,
+        }]);
+        let mut preview_box = moving_box.clone();
+        preview_box.origin_mm = preview_box.origin_mm + delta_mm;
+        let preview = OccurrenceOperationPreview {
+            source_revision: snapshot.revision_id(),
+            command_digest: batch.digest(),
+            batch,
+            boxes: BTreeMap::from([(moving_id, preview_box)]),
+            committed_digest_key: "digest-align-committed",
+        };
+        self.occurrence_operation_preview = Some(preview);
+        self.status_key = "status-preview";
+        self.digest = self.catalog.format(
+            "digest-align-live",
+            &BTreeMap::from([
+                ("axis", alignment_axis_label(axis).to_owned()),
+                ("mode", alignment_mode_label(mode).to_owned()),
+            ]),
+        );
+        true
+    }
+
+    pub fn preview_linear_pattern(
+        &mut self,
+        source_id: OccurrenceId,
+        axis: Axis,
+        spacing_mm: f64,
+        count: usize,
+    ) -> bool {
+        self.occurrence_operation_preview = None;
+        if !(2..=MAX_LINEAR_PATTERN_COUNT).contains(&count)
+            || !spacing_mm.is_finite()
+            || spacing_mm.abs() <= f64::EPSILON
+            || matches!(
+                self.selection.edit_context.last(),
+                Some(EditContext::Definition { .. })
+            )
+            || !self.occurrence_in_active_context(&InstancePath::root(source_id))
+        {
+            return false;
+        }
+        let snapshot = self.document.current();
+        let Some(source) = snapshot.occurrence(source_id) else {
+            return false;
+        };
+        let definition_id = source.definition_id();
+        let Some(definition) = snapshot.definition(definition_id) else {
+            return false;
+        };
+        let Some(source_box) = self
+            .active_boxes()
+            .into_iter()
+            .find(|item| item.instance_path == InstancePath::root(source_id))
+        else {
+            return false;
+        };
+        let Some(first_id) = snapshot
+            .occurrences()
+            .map(|occurrence| occurrence.id().0)
+            .max()
+            .unwrap_or(0)
+            .checked_add(1)
+        else {
+            return false;
+        };
+        let existing = snapshot
+            .scene_query()
+            .into_iter()
+            .filter(|item| item.definition_id == definition_id)
+            .count();
+        let mut commands = Vec::with_capacity(count - 1);
+        let mut boxes = BTreeMap::new();
+        for index in 1..count {
+            let Some(id_value) = first_id.checked_add((index - 1) as u64) else {
+                return false;
+            };
+            let offset_mm = spacing_mm * index as f64;
+            if !offset_mm.is_finite() {
+                return false;
+            }
+            let delta_mm = axis_vector(axis, offset_mm);
+            let Ok(transform) = translated_transform(source.transform(), delta_mm) else {
+                return false;
+            };
+            let id = OccurrenceId(id_value);
+            commands.push(CanonicalCommand::CreateOccurrence {
+                id,
+                definition_id,
+                name: self.catalog.format(
+                    "model-copy-occurrence",
+                    &BTreeMap::from([
+                        ("name", definition.name().to_owned()),
+                        ("number", (existing + index).to_string()),
+                    ]),
+                ),
+                transform,
+                parent: source.parent(),
+                tag: source.tag(),
+                visible: source.visible(),
+            });
+            let mut preview_box = source_box.clone();
+            preview_box.instance_path = InstancePath::root(id);
+            preview_box.origin_mm = preview_box.origin_mm + delta_mm;
+            boxes.insert(id, preview_box);
+        }
+        let batch = CommandBatch::new(commands);
+        self.occurrence_operation_preview = Some(OccurrenceOperationPreview {
+            source_revision: snapshot.revision_id(),
+            command_digest: batch.digest(),
+            batch,
+            boxes,
+            committed_digest_key: "digest-linear-pattern-committed",
+        });
+        self.status_key = "status-preview";
+        self.digest = self.catalog.format(
+            "digest-linear-pattern-live",
+            &BTreeMap::from([
+                ("axis", alignment_axis_label(axis).to_owned()),
+                ("count", count.to_string()),
+                ("spacing", format_height(spacing_mm)),
+            ]),
+        );
+        true
+    }
+
+    #[must_use]
+    pub fn has_occurrence_operation_preview(&self) -> bool {
+        self.occurrence_operation_preview
+            .as_ref()
+            .is_some_and(|preview| {
+                preview.source_revision == self.document.current().revision_id()
+                    && preview.command_digest == preview.batch.digest()
+            })
+    }
+
+    #[must_use]
+    pub fn occurrence_operation_preview_geometry(
+        &self,
+        occurrence_id: OccurrenceId,
+    ) -> Option<(Vec3, Vec3)> {
+        self.occurrence_operation_preview
+            .as_ref()?
+            .boxes
+            .get(&occurrence_id)
+            .map(|item| (item.origin_mm, item.size_mm))
+    }
+
+    pub fn confirm_occurrence_operation_preview(&mut self) -> bool {
+        if !self.has_occurrence_operation_preview() {
+            self.occurrence_operation_preview = None;
+            self.status_key = "error-preview-stale";
+            return false;
+        }
+        let Some(preview) = self.occurrence_operation_preview.take() else {
+            return false;
+        };
+        if self.document.apply_batch(&preview.batch).is_err() {
+            self.status_key = "error-preview-stale";
+            return false;
+        }
+        self.status_key = "status-ready";
+        self.digest = self.catalog.text(preview.committed_digest_key);
+        true
     }
 
     fn copy_selection_to_clipboard(&mut self) -> bool {
@@ -3259,7 +4186,7 @@ impl KetchupApp {
                 side: Side::Maximum,
             },
         });
-        if !selection.instance_path.is_root() {
+        if !self.occurrence_in_active_context(&selection.instance_path) {
             return false;
         }
         let Some(distance_mm) = parse_distance_mm(&self.push_pull_distance_input) else {
@@ -3279,8 +4206,9 @@ impl KetchupApp {
         let Some(after) = resize_box_from_face(&item, &selection.element, new_extent_mm) else {
             return false;
         };
+        let snapshot = self.document.current();
         let Some(batch) = push_pull_batch(
-            &self.document.current(),
+            &snapshot,
             &selection,
             &item,
             new_extent_mm,
@@ -3291,7 +4219,10 @@ impl KetchupApp {
         let command_digest = batch.digest();
         self.preview = Some(batch);
         self.preview_box = Some(EphemeralBoxPreview {
-            source_revision: self.document.current().revision_id(),
+            source_document_id: snapshot.document_id(),
+            source_revision: snapshot.revision_id(),
+            source_digest: snapshot.canonical_digest(),
+            context: self.selection.edit_context.last().cloned(),
             selection_state: self.selection.primary.clone(),
             target: selection.clone(),
             command_digest,
@@ -3336,7 +4267,11 @@ impl KetchupApp {
             },
         });
         self.preview_box.as_ref().is_some_and(|preview| {
-            preview.source_revision == self.document.current().revision_id()
+            let snapshot = self.document.current();
+            preview.source_document_id == snapshot.document_id()
+                && preview.source_revision == snapshot.revision_id()
+                && preview.source_digest == snapshot.canonical_digest()
+                && preview.context == self.selection.edit_context.last().cloned()
                 && preview.selection_state == self.selection.primary
                 && preview.target == expected_target
                 && self
@@ -3355,6 +4290,7 @@ impl KetchupApp {
         self.preview = None;
         self.preview_box = None;
         self.preview_definition_id = None;
+        self.occurrence_operation_preview = None;
         self.push_pull_drag = None;
         self.bottle_direct_drag = None;
         self.move_drag = None;
@@ -3390,15 +4326,33 @@ impl KetchupApp {
                 EditContext::Definition {
                     definition_id,
                     instance_path,
-                } => {
-                    snapshot.definition(*definition_id).is_none()
-                        || !snapshot
-                            .resolve_instance_path(instance_path)
-                            .is_ok_and(|resolved| resolved.definition_id == *definition_id)
-                }
+                } => snapshot
+                    .bind_scene_query(SceneQueryContext::Definition {
+                        definition_id: *definition_id,
+                        instance_path: instance_path.clone(),
+                    })
+                    .is_err(),
             })
         {
             self.selection.edit_context.pop();
+        }
+        if !self.selection.edit_context.is_empty() {
+            let allowed_paths = self
+                .active_scene_query()
+                .into_iter()
+                .map(|occurrence| occurrence.instance_path)
+                .collect::<BTreeSet<_>>();
+            self.selection
+                .occurrences
+                .retain(|path| allowed_paths.contains(path));
+            if self
+                .selection
+                .primary
+                .as_ref()
+                .is_some_and(|selection| !allowed_paths.contains(&selection.instance_path))
+            {
+                self.selection.primary = None;
+            }
         }
         if self
             .last_move
@@ -3503,8 +4457,13 @@ impl KetchupApp {
             },
         });
         let snapshot = self.document.current();
-        let occurrence = snapshot.occurrence(selection.instance_path.root_occurrence())?;
-        let definition = snapshot.definition(occurrence.definition_id())?;
+        let resolved = snapshot
+            .resolve_instance_path(&selection.instance_path)
+            .ok()?;
+        if resolved.definition_id != selection.definition_id {
+            return None;
+        }
+        let definition = snapshot.definition(resolved.definition_id)?;
         let from = self
             .active_boxes()
             .into_iter()
@@ -3715,6 +4674,15 @@ impl KetchupApp {
     }
 
     fn render_box(&self, item: RenderBox) -> RenderBox {
+        if self.has_occurrence_operation_preview()
+            && item.instance_path.is_root()
+            && let Some(preview) = self
+                .occurrence_operation_preview
+                .as_ref()
+                .and_then(|operation| operation.boxes.get(&item.instance_path.root_occurrence()))
+        {
+            return preview.clone();
+        }
         if !self.has_preview() {
             return item;
         }
@@ -3782,6 +4750,18 @@ impl KetchupApp {
                 boxes[index] = preview;
             }
         }
+        if self.has_occurrence_operation_preview()
+            && let Some(operation) = &self.occurrence_operation_preview
+        {
+            for (occurrence_id, preview_box) in &operation.boxes {
+                if !boxes
+                    .iter()
+                    .any(|item| item.instance_path == InstancePath::root(*occurrence_id))
+                {
+                    boxes.push(preview_box.clone());
+                }
+            }
+        }
         boxes.retain(|item| {
             !exact_projection.contains_occurrence(&item.instance_path)
                 || self.proxy_preview_is_active(item)
@@ -3844,8 +4824,14 @@ impl KetchupApp {
 
     /// The measured distance in millimetres, once both points are placed.
     #[must_use]
+    pub fn measured_points(&self) -> Option<(Vec3, Vec3)> {
+        Some((self.measure_start?, self.measure_end?))
+    }
+
+    /// The measured distance in millimetres, once both points are placed.
+    #[must_use]
     pub fn measured_distance_mm(&self) -> Option<f64> {
-        let (start, end) = (self.measure_start?, self.measure_end?);
+        let (start, end) = self.measured_points()?;
         Some(vector_length(Vec3::new(
             end.x - start.x,
             end.y - start.y,
@@ -3861,12 +4847,12 @@ impl KetchupApp {
     }
 
     fn complete_rectangle_sketch(&mut self, start: Vec3, end: Vec3) -> bool {
-        let Ok(height) = self.sketch_height_input.parse::<f64>() else {
-            return false;
-        };
         let origin = Vec3::new(start.x.min(end.x), start.y.min(end.y), start.z);
-        let size = Vec3::new((end.x - start.x).abs(), (end.y - start.y).abs(), height);
-        let created = self.create_box_at(origin, size);
+        let size = Vec3::new((end.x - start.x).abs(), (end.y - start.y).abs(), 0.0);
+        let created = self.create_profile_at(
+            origin,
+            vec![[0.0, 0.0], [size.x, 0.0], [size.x, size.y], [0.0, size.y]],
+        );
         if created {
             self.sketch_mode = false;
             self.sketch_start = None;
@@ -4059,25 +5045,46 @@ impl KetchupApp {
         let Some(definition) = snapshot.definition(occurrence.definition_id()) else {
             return self.catalog.text("hover-none");
         };
+        let face = self.catalog.text(match hovered.element {
+            ElementId::Face {
+                axis: Axis::Z,
+                side: Side::Maximum,
+            } => "face-top",
+            ElementId::Face {
+                axis: Axis::Z,
+                side: Side::Minimum,
+            } => "face-bottom",
+            _ => "face-side",
+        });
+        let overlap_count = self
+            .hover_pick
+            .as_ref()
+            .map_or(0, |pick| pick.overlapping.len());
+        if let Some(snap) = self.hover_snap.as_ref()
+            && (snap.kind != SnapKind::Face || overlap_count > 1)
+        {
+            return self.catalog.format(
+                "hover-inference",
+                &BTreeMap::from([
+                    ("name", definition.name().to_owned()),
+                    ("face", face),
+                    (
+                        "snap",
+                        self.catalog.text(match snap.kind {
+                            SnapKind::Endpoint => "snap-endpoint",
+                            SnapKind::Intersection => "snap-intersection",
+                            SnapKind::Midpoint => "snap-midpoint",
+                            SnapKind::Face => "snap-face",
+                        }),
+                    ),
+                    ("index", (self.hover_overlap_index + 1).to_string()),
+                    ("count", overlap_count.to_string()),
+                ]),
+            );
+        }
         self.catalog.format(
             "hover-face",
-            &BTreeMap::from([
-                ("name", definition.name().to_owned()),
-                (
-                    "face",
-                    self.catalog.text(match hovered.element {
-                        ElementId::Face {
-                            axis: Axis::Z,
-                            side: Side::Maximum,
-                        } => "face-top",
-                        ElementId::Face {
-                            axis: Axis::Z,
-                            side: Side::Minimum,
-                        } => "face-bottom",
-                        _ => "face-side",
-                    }),
-                ),
-            ]),
+            &BTreeMap::from([("name", definition.name().to_owned()), ("face", face)]),
         )
     }
 
@@ -4213,6 +5220,7 @@ impl KetchupApp {
             Stroke::new(1.0_f32, Color32::from_rgb(62, 70, 84)),
             egui::StrokeKind::Inside,
         );
+        self.update_viewport_inference(response.hover_pos(), response.rect);
 
         let primary_press = ui.input(|input| {
             input
@@ -4233,7 +5241,8 @@ impl KetchupApp {
                     || self.rectangle_plane_z(pointer, response.rect),
                     |start| start.z,
                 );
-                if let Some(point) = self.screen_to_plane(pointer, response.rect, plane_z) {
+                if let Some(point) = self.viewport_point_at_screen(pointer, response.rect, plane_z)
+                {
                     if let Some(start) = self.sketch_start {
                         self.complete_rectangle_sketch(start, point);
                     } else {
@@ -4245,12 +5254,10 @@ impl KetchupApp {
                 }
             } else if self.active_tool == ActiveTool::Select {
                 let additive = ui.input(|input| input.modifiers.shift);
-                let target = self.exact_pick_at_screen(pointer, response.rect);
-                self.select_from_viewport(target, additive);
+                self.select_from_viewport(self.hovered.clone(), additive);
             } else if self.active_tool == ActiveTool::PushPull {
                 if !self.begin_bottle_direct_drag(pointer, response.rect) {
-                    let target = self.exact_pick_at_screen(pointer, response.rect);
-                    self.select_from_viewport(target, false);
+                    self.select_from_viewport(self.hovered.clone(), false);
                     if self.push_pull_face_selected()
                         && let Some(selection) = &self.selection.primary
                         && let Some((screen_normal, pixels_per_mm)) =
@@ -4291,11 +5298,9 @@ impl KetchupApp {
                         }
                     }
                 } else {
-                    let target =
-                        self.exact_pick_at_screen(pointer, response.rect)
-                            .filter(|selection| {
-                                self.occurrence_in_active_context(&selection.instance_path)
-                            });
+                    let target = self.hovered.clone().filter(|selection| {
+                        self.occurrence_in_active_context(&selection.instance_path)
+                    });
                     if target.is_some() {
                         self.select_from_viewport(target.clone(), false);
                     } else {
@@ -4327,7 +5332,8 @@ impl KetchupApp {
                     || self.rectangle_plane_z(pointer, response.rect),
                     |start| start.z,
                 );
-                if let Some(point) = self.screen_to_plane(pointer, response.rect, plane_z) {
+                if let Some(point) = self.viewport_point_at_screen(pointer, response.rect, plane_z)
+                {
                     self.add_measured_point(point);
                 }
             }
@@ -4335,15 +5341,10 @@ impl KetchupApp {
 
         if self.active_tool == ActiveTool::Select
             && response.double_clicked()
-            && let Some(pointer) = response.interact_pointer_pos()
-            && let Some(target) = self.exact_pick_at_screen(pointer, response.rect)
+            && let Some(target) = self.hovered.clone()
         {
             self.enter_occurrence_context(target.instance_path);
         }
-
-        self.hovered = response
-            .hover_pos()
-            .and_then(|pointer| self.exact_pick_at_screen(pointer, response.rect));
 
         if self.active_tool == ActiveTool::Move
             && self.move_drag.is_none()
@@ -4473,7 +5474,7 @@ impl KetchupApp {
             && let Some(pointer) = ui.input(|input| input.pointer.hover_pos())
         {
             let plane_z = self.sketch_start.map_or(0.0, |start| start.z);
-            self.sketch_cursor = self.screen_to_plane(pointer, response.rect, plane_z);
+            self.sketch_cursor = self.viewport_point_at_screen(pointer, response.rect, plane_z);
             // Once the user starts typing, the value box owns the value: the
             // focus request only takes effect next frame, so the freshly typed
             // text would otherwise be overwritten by the hovered dimensions.
@@ -4491,7 +5492,7 @@ impl KetchupApp {
         if let Some(start) = self.measure_anchor()
             && response.hovered()
             && let Some(pointer) = ui.input(|input| input.pointer.hover_pos())
-            && let Some(cursor) = self.screen_to_plane(pointer, response.rect, start.z)
+            && let Some(cursor) = self.viewport_point_at_screen(pointer, response.rect, start.z)
         {
             self.measure_cursor = Some(cursor);
             self.digest = self.measurement_text(start, cursor, "digest-measure-live");
@@ -4516,10 +5517,40 @@ impl KetchupApp {
             -f64::from(self.pitch.cos()),
         );
         let snapshot = self.document.current();
+        let use_wgpu_scene = self.wgpu_target_format.is_some();
+        if use_wgpu_scene {
+            let plan = Arc::new(InstancedRenderPlan::from_snapshot(
+                &snapshot,
+                &self.exact_results,
+                &mut self.render_cache,
+            ));
+            if plan.is_current(&snapshot) {
+                painter.add(eframe::egui_wgpu::Callback::new_paint_callback(
+                    response.rect,
+                    ScenePaintCallback::new(plan, self.world_to_clip(response.rect)),
+                ));
+            }
+        }
         let exact_projection = self.exact_projection(&snapshot);
+        let active_context_paths = self
+            .active_scene_query()
+            .into_iter()
+            .map(|occurrence| occurrence.instance_path)
+            .collect::<BTreeSet<_>>();
         let mut faces = Vec::new();
+        let mut edges = Vec::new();
         for item in self.viewport_boxes(&exact_projection) {
             let item = self.render_box(item);
+            let needs_cpu_overlay = self.selection.contains(&item.instance_path)
+                || self
+                    .hovered
+                    .as_ref()
+                    .is_some_and(|hovered| hovered.instance_path == item.instance_path)
+                || self.proxy_preview_is_active(&item)
+                || !active_context_paths.contains(&item.instance_path);
+            if use_wgpu_scene && !needs_cpu_overlay {
+                continue;
+            }
             let corners = box_corners(item.size_mm.x, item.size_mm.y, item.size_mm.z)
                 .map(|point| point + item.origin_mm);
             let projected = corners.map(|point| self.project(point, response.rect));
@@ -4533,6 +5564,12 @@ impl KetchupApp {
                     element: face.element.clone(),
                 };
                 let points = face.corners.map(|index| projected[index]);
+                for edge in 0..points.len() {
+                    edges.push(ProjectedEdge {
+                        selection: selection.clone(),
+                        points: [points[edge], points[(edge + 1) % points.len()]],
+                    });
+                }
                 let depth = face
                     .corners
                     .iter()
@@ -4553,7 +5590,7 @@ impl KetchupApp {
                                 side: Side::Maximum,
                             }
                         ),
-                    out_of_context: !self.occurrence_in_active_context(&item.instance_path),
+                    out_of_context: !active_context_paths.contains(&item.instance_path),
                 });
             }
         }
@@ -4566,10 +5603,78 @@ impl KetchupApp {
                     && exact_projection.contains_occurrence(&occurrence.instance_path)
             })
         {
+            let needs_cpu_overlay = self.selection.contains(&occurrence.instance_path)
+                || self
+                    .hovered
+                    .as_ref()
+                    .is_some_and(|hovered| hovered.instance_path == occurrence.instance_path)
+                || !active_context_paths.contains(&occurrence.instance_path);
+            if use_wgpu_scene && !needs_cpu_overlay {
+                continue;
+            }
             let Some(package) = self.exact_results.get(&occurrence.body.definition_id) else {
                 continue;
             };
             let transform = occurrence.canonical_world_transform;
+            let positions = package
+                .vertices()
+                .iter()
+                .map(|vertex| vertex.position_mm.map(|value| value as f32))
+                .collect::<Vec<_>>();
+            let triangles = package
+                .triangles()
+                .iter()
+                .map(|triangle| triangle.vertex_indices)
+                .collect::<Vec<_>>();
+            let face_groups = package
+                .triangles()
+                .iter()
+                .map(|triangle| triangle.face_role)
+                .collect::<Vec<_>>();
+            for edge in feature_edges(&positions, &triangles, &face_groups) {
+                let points = edge.map(|index| {
+                    let position = package.vertices()[index as usize].position_mm;
+                    self.project(
+                        transform_model_point(
+                            transform,
+                            Vec3::new(position[0], position[1], position[2]),
+                        ),
+                        response.rect,
+                    )
+                });
+                let mut elements = Vec::new();
+                for triangle in package.triangles().iter().filter(|triangle| {
+                    triangle.vertex_indices.contains(&edge[0])
+                        && triangle.vertex_indices.contains(&edge[1])
+                }) {
+                    let element = triangle
+                        .face_role
+                        .and_then(exact_face_element)
+                        .unwrap_or_else(|| {
+                            let points_mm = triangle.vertex_indices.map(|index| {
+                                let position = package.vertices()[index as usize].position_mm;
+                                transform_model_point(
+                                    transform,
+                                    Vec3::new(position[0], position[1], position[2]),
+                                )
+                            });
+                            face_element_from_normal(triangle_normal(points_mm))
+                        });
+                    if !elements.contains(&element) {
+                        elements.push(element);
+                    }
+                }
+                for element in elements {
+                    edges.push(ProjectedEdge {
+                        selection: SelectionId {
+                            definition_id: occurrence.body.definition_id,
+                            instance_path: occurrence.instance_path.clone(),
+                            element,
+                        },
+                        points,
+                    });
+                }
+            }
             for triangle in package.triangles() {
                 let points_mm = triangle.vertex_indices.map(|index| {
                     let position = package.vertices()[index as usize].position_mm;
@@ -4604,7 +5709,7 @@ impl KetchupApp {
                         .sum::<f64>()
                         / 3.0,
                     previewed: false,
-                    out_of_context: !self.occurrence_in_active_context(&occurrence.instance_path),
+                    out_of_context: !active_context_paths.contains(&occurrence.instance_path),
                 });
             }
         }
@@ -4634,31 +5739,19 @@ impl KetchupApp {
         }
 
         let edge_stroke = Stroke::new(1.25_f32, Color32::from_rgb(182, 192, 207));
-        for face in &faces {
-            let points = face.polygon.points();
-            for edge in 0..points.len() {
-                painter.line_segment(
-                    [points[edge], points[(edge + 1) % points.len()]],
-                    edge_stroke,
-                );
-            }
+        for edge in &edges {
+            painter.line_segment(edge.points, edge_stroke);
         }
 
         let selection_stroke = Stroke::new(1.8_f32, Color32::from_rgb(240, 78, 35));
-        for face in faces.iter().filter(|face| {
+        for edge in edges.iter().filter(|edge| {
             if self.active_tool == ActiveTool::PushPull {
-                self.selection.primary.as_ref() == Some(&face.selection)
+                self.selection.primary.as_ref() == Some(&edge.selection)
             } else {
-                self.selection.contains(&face.selection.instance_path)
+                self.selection.contains(&edge.selection.instance_path)
             }
         }) {
-            let points = face.polygon.points();
-            for edge in 0..points.len() {
-                painter.line_segment(
-                    [points[edge], points[(edge + 1) % points.len()]],
-                    selection_stroke,
-                );
-            }
+            painter.line_segment(edge.points, selection_stroke);
         }
 
         if let (Some(start), Some(cursor)) = (self.sketch_start, self.sketch_cursor) {
@@ -4711,15 +5804,42 @@ impl KetchupApp {
                 Color32::WHITE,
             );
         }
+        if let Some(snap) = self
+            .hover_snap
+            .as_ref()
+            .filter(|snap| snap.kind != SnapKind::Face)
+        {
+            let centre = self.project(snap.position_mm, response.rect);
+            let stroke = Stroke::new(1.5_f32, Color32::from_rgb(80, 206, 190));
+            painter.circle_stroke(centre, 6.0, stroke);
+            painter.line_segment(
+                [centre - Vec2::splat(4.0), centre + Vec2::splat(4.0)],
+                stroke,
+            );
+            painter.line_segment(
+                [centre + Vec2::new(-4.0, 4.0), centre + Vec2::new(4.0, -4.0)],
+                stroke,
+            );
+        }
         self.viewport_overlays(ui, response.rect);
     }
 
-    fn exact_pick_at_screen(&self, pointer: Pos2, rect: Rect) -> Option<SelectionId> {
+    fn pick_result_at_screen(
+        &self,
+        pointer: Pos2,
+        rect: Rect,
+        tolerance_px: f64,
+    ) -> Option<PickResult> {
         let ray = self.view_ray(pointer, rect)?;
         let snapshot = self.document.current();
         let exact_projection = self.exact_projection(&snapshot);
+        let active_context_paths = self
+            .active_scene_query()
+            .into_iter()
+            .map(|occurrence| occurrence.instance_path)
+            .collect::<BTreeSet<_>>();
         if let Some(hit) = exact_projection.exact_surface_pick(ray) {
-            if !self.occurrence_in_active_context(&hit.instance_path) {
+            if !active_context_paths.contains(&hit.instance_path) {
                 return None;
             }
             let element = hit
@@ -4728,24 +5848,150 @@ impl KetchupApp {
                 .and_then(|target| target.body.role())
                 .and_then(exact_face_element)
                 .or_else(|| exact_surface_element(hit.outward_normal))?;
-            return Some(SelectionId {
+            let reference = SelectionId {
                 definition_id: hit.definition_id,
                 instance_path: hit.instance_path,
                 element,
+            };
+            let primary = ExactHit {
+                reference: reference.clone(),
+                position_mm: hit.position_mm,
+                ray_distance_mm: hit.ray_distance_mm,
+            };
+            let scale = f64::from(self.zoom) * f64::from(rect.width().min(rect.height())) / 420.0;
+            let proxy_pick = CanonicalInteractionProjection::from_snapshot(&snapshot)
+                .scene_where(|occurrence| active_context_paths.contains(&occurrence.instance_path))
+                .ok()
+                .and_then(|scene| scene.exact_pick(ray, tolerance_px / scale));
+            let snap = proxy_pick
+                .as_ref()
+                .filter(|pick| {
+                    pick.primary.reference.instance_path == primary.reference.instance_path
+                })
+                .map(|pick| pick.snap.clone())
+                .unwrap_or(SnapResult {
+                    kind: SnapKind::Face,
+                    reference,
+                    position_mm: hit.position_mm,
+                    distance_mm: 0.0,
+                });
+            let mut overlapping = vec![primary.clone()];
+            if let Some(proxy_pick) = proxy_pick {
+                overlapping.extend(proxy_pick.overlapping.into_iter().filter(|candidate| {
+                    candidate.reference.instance_path != primary.reference.instance_path
+                }));
+            }
+            return Some(PickResult {
+                primary,
+                overlapping,
+                snap,
             });
         }
 
         let projection = CanonicalInteractionProjection::from_snapshot(&snapshot);
         let scene = projection
             .scene_where(|occurrence| {
-                self.occurrence_in_active_context(&occurrence.instance_path)
+                active_context_paths.contains(&occurrence.instance_path)
                     && !exact_projection.contains_occurrence(&occurrence.instance_path)
             })
             .ok()?;
         let scale = f64::from(self.zoom) * f64::from(rect.width().min(rect.height())) / 420.0;
-        scene
-            .exact_pick(ray, 8.0 / scale)
+        scene.exact_pick(ray, tolerance_px / scale)
+    }
+
+    fn exact_pick_at_screen(&self, pointer: Pos2, rect: Rect) -> Option<SelectionId> {
+        self.pick_result_at_screen(pointer, rect, 8.0)
             .map(|result| result.primary.reference)
+    }
+
+    fn update_viewport_inference(&mut self, pointer: Option<Pos2>, rect: Rect) {
+        let pick = pointer.and_then(|pointer| self.pick_result_at_screen(pointer, rect, 12.0));
+        let previous = self.hover_pick.as_ref().map(overlap_signature);
+        let current = pick.as_ref().map(overlap_signature);
+        if previous != current {
+            self.hover_overlap_index = 0;
+        }
+        let scale = f64::from(self.zoom) * f64::from(rect.width().min(rect.height())) / 420.0;
+        let policy = SnapPolicy::new(8.0 / scale, 12.0 / scale)
+            .expect("positive viewport snap tolerances are valid");
+        self.hover_snap = self.snap_tracker.update(pick.as_ref(), policy).cloned();
+        self.hover_pick = pick;
+        self.refresh_hover_choice();
+    }
+
+    fn refresh_hover_choice(&mut self) {
+        self.hovered = self
+            .hover_pick
+            .as_ref()
+            .and_then(|pick| pick.overlap_choice(self.hover_overlap_index))
+            .map(|hit| hit.reference.clone());
+    }
+
+    pub fn cycle_hover_overlap(&mut self) -> bool {
+        let Some(count) = self
+            .hover_pick
+            .as_ref()
+            .map(|pick| pick.overlapping.len())
+            .filter(|count| *count > 1)
+        else {
+            return false;
+        };
+        self.hover_overlap_index = (self.hover_overlap_index + 1) % count;
+        self.refresh_hover_choice();
+        self.digest = self.catalog.format(
+            "digest-overlap-choice",
+            &BTreeMap::from([
+                ("index", (self.hover_overlap_index + 1).to_string()),
+                ("count", count.to_string()),
+            ]),
+        );
+        true
+    }
+
+    fn viewport_point_at_screen(&self, pointer: Pos2, rect: Rect, plane_z: f64) -> Option<Vec3> {
+        self.pick_result_at_screen(pointer, rect, 8.0)
+            .map(|pick| pick.snap)
+            .filter(|snap| snap.kind != SnapKind::Face)
+            .map(|snap| snap.position_mm)
+            .or_else(|| self.screen_to_plane(pointer, rect, plane_z))
+    }
+
+    fn world_to_clip(&self, rect: Rect) -> [f32; 16] {
+        let yaw_sin = self.yaw.sin();
+        let yaw_cos = self.yaw.cos();
+        let pitch_sin = self.pitch.sin();
+        let pitch_cos = self.pitch.cos();
+        let scale = self.zoom * rect.width().min(rect.height()) / 420.0;
+        let centre_x = BOX_WIDTH_MM as f32 * 0.5;
+        let centre_y = BOX_DEPTH_MM as f32 * 0.5;
+        let centre_z = self.camera_target_z as f32;
+        let sx = 2.0 / rect.width();
+        let sy = 2.0 / rect.height();
+        let x_constant =
+            rect.width() * 0.5 + self.pan.x - scale * (yaw_cos * centre_x - yaw_sin * centre_y);
+        let y_constant = rect.height() * 0.5
+            + self.pan.y
+            + scale
+                * (yaw_sin * pitch_cos * centre_x + yaw_cos * pitch_cos * centre_y
+                    - pitch_sin * centre_z);
+        [
+            sx * scale * yaw_cos,
+            sy * scale * yaw_sin * pitch_cos,
+            0.0,
+            0.0,
+            -sx * scale * yaw_sin,
+            sy * scale * yaw_cos * pitch_cos,
+            0.0,
+            0.0,
+            0.0,
+            -sy * scale * pitch_sin,
+            0.0,
+            0.0,
+            sx * x_constant - 1.0,
+            1.0 - sy * y_constant,
+            0.0,
+            1.0,
+        ]
     }
 
     fn project(&self, point: Vec3, rect: Rect) -> Pos2 {
@@ -4822,6 +6068,8 @@ impl KetchupApp {
             && context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::T));
         let zoom_fit = !context.wants_keyboard_input()
             && context.input_mut(|input| input.consume_key(egui::Modifiers::SHIFT, egui::Key::Z));
+        let cycle_overlap = !context.wants_keyboard_input()
+            && context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Tab));
         let shortcuts = context.input(|input| input.key_pressed(egui::Key::F1));
         let group = !context.wants_keyboard_input()
             && context.input(|input| {
@@ -4895,6 +6143,8 @@ impl KetchupApp {
             self.dispatch_command(AppCommand::Measure);
         } else if zoom_fit {
             self.dispatch_command(AppCommand::ZoomFit);
+        } else if cycle_overlap {
+            self.cycle_hover_overlap();
         } else if shortcuts {
             self.dispatch_command(AppCommand::Shortcuts);
         } else if escape {
@@ -4955,8 +6205,8 @@ impl KetchupApp {
             ui.label(
                 egui::RichText::new(self.catalog.text("brand-mark"))
                     .strong()
-                    .color(Color32::WHITE)
-                    .background_color(Color32::from_rgb(240, 78, 35)),
+                    .color(SHELL_BRAND_TEXT)
+                    .background_color(SHELL_BRAND_FILL),
             );
             ui.strong(self.catalog.text("app-title"));
             ui.separator();
@@ -5105,14 +6355,728 @@ impl KetchupApp {
         };
         let value_text = self.assistant_value_input.clone();
         let intent = match self.assistant_intent_kind {
+            AssistantIntentKind::CreateEvaluatorInput => {
+                let Some((name, value_text)) = value_text.split_once(':') else {
+                    self.digest = self.catalog.text("assistant-error-create-evaluator-input");
+                    return false;
+                };
+                WorkflowIntent::CreateEvaluatorInput {
+                    target: NodeId(target),
+                    name: name.trim().to_owned(),
+                    value_text: value_text.trim().to_owned(),
+                }
+            }
+            AssistantIntentKind::CreateEvaluatorExpression => {
+                let Some((name, expression)) = value_text.split_once(':') else {
+                    self.digest = self
+                        .catalog
+                        .text("assistant-error-create-evaluator-expression");
+                    return false;
+                };
+                WorkflowIntent::CreateEvaluatorExpression {
+                    target: NodeId(target),
+                    name: name.trim().to_owned(),
+                    expression: expression.trim().to_owned(),
+                }
+            }
+            AssistantIntentKind::CreateEvaluatorRule => {
+                let Some((name, expression)) = value_text.split_once(':') else {
+                    self.digest = self.catalog.text("assistant-error-create-evaluator-rule");
+                    return false;
+                };
+                WorkflowIntent::CreateEvaluatorRule {
+                    target: NodeId(target),
+                    name: name.trim().to_owned(),
+                    expression: expression.trim().to_owned(),
+                }
+            }
+            AssistantIntentKind::CreateRuleOverride => {
+                let fields = value_text.split(':').map(str::trim).collect::<Vec<_>>();
+                if fields.len() != 5 {
+                    self.digest = self.catalog.text("assistant-error-create-rule-override");
+                    return false;
+                }
+                let Ok(rule) = fields[0].parse::<u64>() else {
+                    self.digest = self.catalog.text("assistant-error-create-rule-override");
+                    return false;
+                };
+                WorkflowIntent::CreateRuleOverride {
+                    target,
+                    rule: NodeId(rule),
+                    output_port: fields[1].to_owned(),
+                    semantic_key: fields[2].to_owned(),
+                    parameter: fields[3].to_owned(),
+                    value_text: fields[4].to_owned(),
+                }
+            }
+            AssistantIntentKind::DeleteRuleOverride => {
+                WorkflowIntent::DeleteRuleOverride { target }
+            }
+            AssistantIntentKind::CreateFeatureParameterBinding => {
+                let fields = value_text.split(':').map(str::trim).collect::<Vec<_>>();
+                if fields.len() != 4 {
+                    self.digest = self
+                        .catalog
+                        .text("assistant-error-create-feature-parameter-binding");
+                    return false;
+                }
+                let slot = match fields[0] {
+                    "height" => FeatureParameterSlot::Height,
+                    "body_radius" => FeatureParameterSlot::BodyRadius,
+                    "body_height" => FeatureParameterSlot::BodyHeight,
+                    "shoulder_rise" => FeatureParameterSlot::ShoulderRise,
+                    "thickness" => FeatureParameterSlot::Thickness,
+                    "amount" => FeatureParameterSlot::Amount,
+                    "profile_width" => FeatureParameterSlot::ProfileWidth,
+                    "profile_height" => FeatureParameterSlot::ProfileHeight,
+                    _ => {
+                        self.digest = self
+                            .catalog
+                            .text("assistant-error-create-feature-parameter-binding");
+                        return false;
+                    }
+                };
+                let Ok(rule) = fields[1].parse::<u64>() else {
+                    self.digest = self
+                        .catalog
+                        .text("assistant-error-create-feature-parameter-binding");
+                    return false;
+                };
+                WorkflowIntent::CreateFeatureParameterBinding {
+                    target: FeatureParameterTarget {
+                        feature_id: FeatureId(target),
+                        slot,
+                    },
+                    rule: NodeId(rule),
+                    output_port: fields[2].to_owned(),
+                    semantic_key: fields[3].to_owned(),
+                }
+            }
+            AssistantIntentKind::CreatePersistentDimension => {
+                let fields = value_text.split(':').map(str::trim).collect::<Vec<_>>();
+                if fields.len() != 5 {
+                    self.digest = self
+                        .catalog
+                        .text("assistant-error-create-persistent-dimension");
+                    return false;
+                }
+                let Ok(feature_id) = fields[1].parse::<u64>() else {
+                    self.digest = self
+                        .catalog
+                        .text("assistant-error-create-persistent-dimension");
+                    return false;
+                };
+                let slot = match fields[2] {
+                    "height" => FeatureParameterSlot::Height,
+                    "body_radius" => FeatureParameterSlot::BodyRadius,
+                    "body_height" => FeatureParameterSlot::BodyHeight,
+                    "shoulder_rise" => FeatureParameterSlot::ShoulderRise,
+                    "thickness" => FeatureParameterSlot::Thickness,
+                    "amount" => FeatureParameterSlot::Amount,
+                    "profile_width" => FeatureParameterSlot::ProfileWidth,
+                    "profile_height" => FeatureParameterSlot::ProfileHeight,
+                    _ => {
+                        self.digest = self
+                            .catalog
+                            .text("assistant-error-create-persistent-dimension");
+                        return false;
+                    }
+                };
+                let unit = match fields[3] {
+                    "mm" => DimensionDisplayUnit::Millimetres,
+                    "cm" => DimensionDisplayUnit::Centimetres,
+                    "in" => DimensionDisplayUnit::Inches,
+                    _ => {
+                        self.digest = self
+                            .catalog
+                            .text("assistant-error-create-persistent-dimension");
+                        return false;
+                    }
+                };
+                let Ok(decimal_places) = fields[4].parse::<u8>() else {
+                    self.digest = self
+                        .catalog
+                        .text("assistant-error-create-persistent-dimension");
+                    return false;
+                };
+                let Ok(presentation) = DimensionPresentation::new(unit, decimal_places) else {
+                    self.digest = self
+                        .catalog
+                        .text("assistant-error-create-persistent-dimension");
+                    return false;
+                };
+                WorkflowIntent::CreatePersistentDimension {
+                    target: PersistentDimensionId(target),
+                    name: fields[0].to_owned(),
+                    dimension_target: FeatureParameterTarget {
+                        feature_id: FeatureId(feature_id),
+                        slot,
+                    },
+                    presentation,
+                }
+            }
+            AssistantIntentKind::CreateSpace => {
+                let fields = value_text.split(':').map(str::trim).collect::<Vec<_>>();
+                let parse_point = |value: &str| {
+                    let values = value
+                        .split(',')
+                        .map(str::trim)
+                        .map(str::parse::<f64>)
+                        .collect::<Result<Vec<_>, _>>()
+                        .ok()?;
+                    <[f64; 3]>::try_from(values).ok()
+                };
+                let (Some(purpose), Some(volume_min), Some(volume_max)) = (
+                    fields.first().filter(|purpose| !purpose.is_empty()),
+                    fields.get(1).and_then(|value| parse_point(value)),
+                    fields.get(2).and_then(|value| parse_point(value)),
+                ) else {
+                    self.digest = self.catalog.text("assistant-error-create-space");
+                    return false;
+                };
+                if fields.len() != 3 {
+                    self.digest = self.catalog.text("assistant-error-create-space");
+                    return false;
+                }
+                WorkflowIntent::CreateSpace {
+                    target: SpaceId(target),
+                    purpose: (*purpose).to_owned(),
+                    volume_min,
+                    volume_max,
+                }
+            }
+            AssistantIntentKind::CreateClearanceVolume => {
+                let fields = value_text.split(':').map(str::trim).collect::<Vec<_>>();
+                let parse_point = |value: &str| {
+                    let values = value
+                        .split(',')
+                        .map(str::trim)
+                        .map(str::parse::<f64>)
+                        .collect::<Result<Vec<_>, _>>()
+                        .ok()?;
+                    <[f64; 3]>::try_from(values).ok()
+                };
+                let (
+                    Some(owner),
+                    Some(reason),
+                    Some(volume_min),
+                    Some(volume_max),
+                    Some(tolerance),
+                    Some(severity),
+                ) = (
+                    fields.first().and_then(|value| value.parse::<u64>().ok()),
+                    fields.get(1).filter(|reason| !reason.is_empty()),
+                    fields.get(2).and_then(|value| parse_point(value)),
+                    fields.get(3).and_then(|value| parse_point(value)),
+                    fields.get(4).and_then(|value| value.parse::<f64>().ok()),
+                    fields.get(5).and_then(|value| match *value {
+                        "advisory" => Some(ClearanceSeverity::Advisory),
+                        "required" => Some(ClearanceSeverity::Required),
+                        _ => None,
+                    }),
+                )
+                else {
+                    self.digest = self.catalog.text("assistant-error-create-clearance-volume");
+                    return false;
+                };
+                if fields.len() != 6 {
+                    self.digest = self.catalog.text("assistant-error-create-clearance-volume");
+                    return false;
+                }
+                WorkflowIntent::CreateClearanceVolume {
+                    target: ClearanceVolumeId(target),
+                    owner: SpaceId(owner),
+                    reason: (*reason).to_owned(),
+                    volume_min,
+                    volume_max,
+                    tolerance_mm: tolerance,
+                    severity,
+                }
+            }
+            AssistantIntentKind::CreateJoint => {
+                let fields = value_text.split(':').map(str::trim).collect::<Vec<_>>();
+                let parse_participant = |value: &str| {
+                    let fields = value.split(',').map(str::trim).collect::<Vec<_>>();
+                    if fields.len() != 3 {
+                        return None;
+                    }
+                    let root = NodeId(fields[0].parse::<u64>().ok()?);
+                    let path =
+                        SlotPath::new(vec![SlotSegment::new(root, fields[1], fields[2]).ok()?])
+                            .ok()?;
+                    DerivedIdentity::new(root, path).ok()
+                };
+                let parse_point = |value: &str| {
+                    let values = value
+                        .split(',')
+                        .map(str::trim)
+                        .map(str::parse::<f64>)
+                        .collect::<Result<Vec<_>, _>>()
+                        .ok()?;
+                    <[f64; 3]>::try_from(values).ok()
+                };
+                let (Some(participant_a), Some(participant_b), Some(volume_min), Some(volume_max)) = (
+                    fields.first().and_then(|value| parse_participant(value)),
+                    fields.get(1).and_then(|value| parse_participant(value)),
+                    fields.get(2).and_then(|value| parse_point(value)),
+                    fields.get(3).and_then(|value| parse_point(value)),
+                ) else {
+                    self.digest = self.catalog.text("assistant-error-create-joint");
+                    return false;
+                };
+                if fields.len() != 4 {
+                    self.digest = self.catalog.text("assistant-error-create-joint");
+                    return false;
+                }
+                WorkflowIntent::CreateJoint {
+                    target: JointId(target),
+                    participant_a,
+                    participant_b,
+                    volume_min,
+                    volume_max,
+                }
+            }
+            AssistantIntentKind::CloneProfileDefinitionAndRepoint => {
+                let fields = value_text.splitn(5, ':').map(str::trim).collect::<Vec<_>>();
+                let [
+                    source_definition,
+                    source_feature,
+                    new_definition,
+                    new_feature,
+                    name,
+                ] = fields.as_slice()
+                else {
+                    self.digest = self
+                        .catalog
+                        .text("assistant-error-clone-profile-definition");
+                    return false;
+                };
+                let (
+                    Ok(source_definition),
+                    Ok(source_feature),
+                    Ok(new_definition),
+                    Ok(new_feature),
+                ) = (
+                    source_definition.parse::<u64>(),
+                    source_feature.parse::<u64>(),
+                    new_definition.parse::<u64>(),
+                    new_feature.parse::<u64>(),
+                )
+                else {
+                    self.digest = self
+                        .catalog
+                        .text("assistant-error-clone-profile-definition");
+                    return false;
+                };
+                WorkflowIntent::CloneProfileDefinitionAndRepoint {
+                    target: OccurrenceId(target),
+                    source_definition: DefinitionId(source_definition),
+                    source_feature: FeatureId(source_feature),
+                    new_definition: DefinitionId(new_definition),
+                    new_feature: FeatureId(new_feature),
+                    name: (*name).to_owned(),
+                }
+            }
+            AssistantIntentKind::ConvertEmptyGroupToComponent => {
+                let fields = value_text.splitn(3, ':').map(str::trim).collect::<Vec<_>>();
+                let [new_definition, new_occurrence, name] = fields.as_slice() else {
+                    self.digest = self.catalog.text("assistant-error-convert-empty-group");
+                    return false;
+                };
+                let (Ok(new_definition), Ok(new_occurrence)) =
+                    (new_definition.parse::<u64>(), new_occurrence.parse::<u64>())
+                else {
+                    self.digest = self.catalog.text("assistant-error-convert-empty-group");
+                    return false;
+                };
+                WorkflowIntent::ConvertEmptyGroupToComponent {
+                    target: GroupId(target),
+                    new_definition: DefinitionId(new_definition),
+                    new_occurrence: OccurrenceId(new_occurrence),
+                    name: (*name).to_owned(),
+                }
+            }
+            AssistantIntentKind::DeleteFeatureParameterBinding => {
+                let slot = match value_text.trim() {
+                    "height" => FeatureParameterSlot::Height,
+                    "body_radius" => FeatureParameterSlot::BodyRadius,
+                    "body_height" => FeatureParameterSlot::BodyHeight,
+                    "shoulder_rise" => FeatureParameterSlot::ShoulderRise,
+                    "thickness" => FeatureParameterSlot::Thickness,
+                    "amount" => FeatureParameterSlot::Amount,
+                    "profile_width" => FeatureParameterSlot::ProfileWidth,
+                    "profile_height" => FeatureParameterSlot::ProfileHeight,
+                    _ => {
+                        self.digest = self
+                            .catalog
+                            .text("assistant-error-delete-feature-parameter-binding");
+                        return false;
+                    }
+                };
+                WorkflowIntent::DeleteFeatureParameterBinding {
+                    target: FeatureParameterTarget {
+                        feature_id: FeatureId(target),
+                        slot,
+                    },
+                }
+            }
+            AssistantIntentKind::DeleteJoint => WorkflowIntent::DeleteJoint {
+                target: JointId(target),
+            },
+            AssistantIntentKind::DeleteSpace => WorkflowIntent::DeleteSpace {
+                target: SpaceId(target),
+            },
+            AssistantIntentKind::DeleteClearanceVolume => WorkflowIntent::DeleteClearanceVolume {
+                target: ClearanceVolumeId(target),
+            },
+            AssistantIntentKind::DeletePersistentDimension => {
+                WorkflowIntent::DeletePersistentDimension {
+                    target: PersistentDimensionId(target),
+                }
+            }
+            AssistantIntentKind::RecomputeFeatureParameter => {
+                let slot = match value_text.trim() {
+                    "height" => FeatureParameterSlot::Height,
+                    "body_radius" => FeatureParameterSlot::BodyRadius,
+                    "body_height" => FeatureParameterSlot::BodyHeight,
+                    "shoulder_rise" => FeatureParameterSlot::ShoulderRise,
+                    "thickness" => FeatureParameterSlot::Thickness,
+                    "amount" => FeatureParameterSlot::Amount,
+                    "profile_width" => FeatureParameterSlot::ProfileWidth,
+                    "profile_height" => FeatureParameterSlot::ProfileHeight,
+                    _ => {
+                        self.digest = self
+                            .catalog
+                            .text("assistant-error-recompute-feature-parameter");
+                        return false;
+                    }
+                };
+                WorkflowIntent::RecomputeFeatureParameter {
+                    target: FeatureParameterTarget {
+                        feature_id: FeatureId(target),
+                        slot,
+                    },
+                }
+            }
             AssistantIntentKind::RuleDimension => WorkflowIntent::SetRuleDimension {
                 target: NodeId(target),
                 value_text,
             },
+            AssistantIntentKind::EvaluatorName => WorkflowIntent::RenameEvaluatorNode {
+                target: NodeId(target),
+                name: value_text,
+            },
+            AssistantIntentKind::EvaluatorExpression => WorkflowIntent::SetEvaluatorExpression {
+                target: NodeId(target),
+                expression: value_text,
+            },
+            AssistantIntentKind::RuleOutputs => {
+                let outputs = if value_text.trim().eq_ignore_ascii_case("none") {
+                    Vec::new()
+                } else {
+                    let mut outputs = Vec::new();
+                    for output in value_text.split(';') {
+                        let Some((port, key)) = output.split_once(':') else {
+                            self.digest = self.catalog.text("assistant-error-rule-outputs");
+                            return false;
+                        };
+                        let Ok(segment) = SlotSegment::new(NodeId(target), port.trim(), key.trim())
+                        else {
+                            self.digest = self.catalog.text("assistant-error-rule-outputs");
+                            return false;
+                        };
+                        let Ok(output) = RuleOutput::new(segment, Vec::new()) else {
+                            self.digest = self.catalog.text("assistant-error-rule-outputs");
+                            return false;
+                        };
+                        outputs.push(output);
+                    }
+                    outputs
+                };
+                WorkflowIntent::SetRuleOutputs {
+                    target: NodeId(target),
+                    outputs,
+                }
+            }
             AssistantIntentKind::FeatureDimension => WorkflowIntent::SetFeatureDimension {
                 target: FeatureId(target),
                 value_text,
             },
+            AssistantIntentKind::BottleControlDimension => {
+                let Some((control, value_text)) = value_text.split_once('=') else {
+                    self.digest = self.catalog.text("assistant-error-bottle-control");
+                    return false;
+                };
+                let control = match control.trim().to_ascii_lowercase().as_str() {
+                    "body_radius" => BottleControlDimension::BodyRadius,
+                    "body_height" => BottleControlDimension::BodyHeight,
+                    "shoulder_rise" => BottleControlDimension::ShoulderRise,
+                    _ => {
+                        self.digest = self.catalog.text("assistant-error-bottle-control");
+                        return false;
+                    }
+                };
+                WorkflowIntent::SetBottleControlDimension {
+                    target: FeatureId(target),
+                    control,
+                    value_text: value_text.trim().to_owned(),
+                }
+            }
+            AssistantIntentKind::BottleEdgeFinishKind => {
+                let kind = match value_text.trim().to_ascii_lowercase().as_str() {
+                    "fillet" => BottleEdgeFinishKind::Fillet,
+                    "chamfer" => BottleEdgeFinishKind::Chamfer,
+                    _ => {
+                        self.digest = self.catalog.text("assistant-error-bottle-finish-kind");
+                        return false;
+                    }
+                };
+                WorkflowIntent::SetBottleEdgeFinishKind {
+                    target: FeatureId(target),
+                    kind,
+                }
+            }
+            AssistantIntentKind::ProfilePoints => {
+                let mut points_mm = Vec::new();
+                for point in value_text.split(';') {
+                    let coordinates = point.split(',').map(str::trim).collect::<Vec<_>>();
+                    if coordinates.len() != 2 {
+                        self.digest = self.catalog.text("assistant-error-profile-points");
+                        return false;
+                    }
+                    let (Ok(x_mm), Ok(y_mm)) =
+                        (coordinates[0].parse::<f64>(), coordinates[1].parse::<f64>())
+                    else {
+                        self.digest = self.catalog.text("assistant-error-profile-points");
+                        return false;
+                    };
+                    points_mm.push([x_mm, y_mm]);
+                }
+                WorkflowIntent::SetProfilePoints {
+                    target: FeatureId(target),
+                    points_mm,
+                }
+            }
+            AssistantIntentKind::DefinitionName => WorkflowIntent::RenameDefinition {
+                target: DefinitionId(target),
+                name: value_text,
+            },
+            AssistantIntentKind::OccurrenceVisibility => {
+                let Ok(visible) = value_text.trim().parse::<bool>() else {
+                    self.digest = self.catalog.text("assistant-error-boolean");
+                    return false;
+                };
+                WorkflowIntent::SetOccurrenceVisibility {
+                    target: OccurrenceId(target),
+                    visible,
+                }
+            }
+            AssistantIntentKind::TagVisibility => {
+                let Ok(visible) = value_text.trim().parse::<bool>() else {
+                    self.digest = self.catalog.text("assistant-error-boolean");
+                    return false;
+                };
+                WorkflowIntent::SetTagVisibility {
+                    target: TagId(target),
+                    visible,
+                }
+            }
+            AssistantIntentKind::OccurrenceTag => {
+                let tag = if value_text.trim().eq_ignore_ascii_case("none") {
+                    None
+                } else {
+                    let Ok(tag) = value_text.trim().parse::<u64>() else {
+                        self.digest = self.catalog.text("assistant-error-tag");
+                        return false;
+                    };
+                    Some(TagId(tag))
+                };
+                WorkflowIntent::SetOccurrenceTag {
+                    target: OccurrenceId(target),
+                    tag,
+                }
+            }
+            AssistantIntentKind::OccurrenceDefinition => {
+                let Ok(definition) = value_text.trim().parse::<u64>() else {
+                    self.digest = self.catalog.text("assistant-error-definition");
+                    return false;
+                };
+                WorkflowIntent::RepointOccurrence {
+                    target: OccurrenceId(target),
+                    definition: DefinitionId(definition),
+                }
+            }
+            AssistantIntentKind::OccurrenceParent => {
+                let parent = if value_text.trim().eq_ignore_ascii_case("none") {
+                    None
+                } else {
+                    let Ok(parent) = value_text.trim().parse::<u64>() else {
+                        self.digest = self.catalog.text("assistant-error-group");
+                        return false;
+                    };
+                    Some(GroupId(parent))
+                };
+                WorkflowIntent::SetOccurrenceParent {
+                    target: OccurrenceId(target),
+                    parent,
+                }
+            }
+            AssistantIntentKind::OccurrenceTranslation => {
+                let values = value_text.split(',').map(str::trim).collect::<Vec<_>>();
+                if values.len() != 3 {
+                    self.digest = self.catalog.text("assistant-error-translation");
+                    return false;
+                }
+                WorkflowIntent::SetOccurrenceTranslation {
+                    target: OccurrenceId(target),
+                    x_mm_text: values[0].to_owned(),
+                    y_mm_text: values[1].to_owned(),
+                    z_mm_text: values[2].to_owned(),
+                }
+            }
+            AssistantIntentKind::CreateTag => {
+                let Some((visible, name)) = value_text.split_once(':') else {
+                    self.digest = self.catalog.text("assistant-error-create-tag");
+                    return false;
+                };
+                let Ok(visible) = visible.trim().parse::<bool>() else {
+                    self.digest = self.catalog.text("assistant-error-create-tag");
+                    return false;
+                };
+                WorkflowIntent::CreateTag {
+                    target: TagId(target),
+                    name: name.trim().to_owned(),
+                    visible,
+                }
+            }
+            AssistantIntentKind::DeleteTag => WorkflowIntent::DeleteTag {
+                target: TagId(target),
+            },
+            AssistantIntentKind::CreateCollection => WorkflowIntent::CreateCollection {
+                target: CollectionId(target),
+                name: value_text,
+            },
+            AssistantIntentKind::DeleteCollection => WorkflowIntent::DeleteCollection {
+                target: CollectionId(target),
+            },
+            AssistantIntentKind::DeleteGroup => WorkflowIntent::DeleteGroup {
+                target: GroupId(target),
+            },
+            AssistantIntentKind::DeleteOccurrence => WorkflowIntent::DeleteOccurrence {
+                target: OccurrenceId(target),
+            },
+            AssistantIntentKind::CreateDefinition => WorkflowIntent::CreateDefinition {
+                target: DefinitionId(target),
+                name: value_text,
+            },
+            AssistantIntentKind::DeleteDefinition => WorkflowIntent::DeleteDefinition {
+                target: DefinitionId(target),
+            },
+            AssistantIntentKind::CreateProfileFeature => {
+                let fields = value_text.splitn(3, ':').map(str::trim).collect::<Vec<_>>();
+                if fields.len() != 3 {
+                    self.digest = self.catalog.text("assistant-error-create-profile-feature");
+                    return false;
+                }
+                let Ok(definition) = fields[0].parse::<u64>() else {
+                    self.digest = self.catalog.text("assistant-error-create-profile-feature");
+                    return false;
+                };
+                let mut points_mm = Vec::new();
+                for point in fields[2].split(';') {
+                    let coordinates = point.split(',').map(str::trim).collect::<Vec<_>>();
+                    if coordinates.len() != 2 {
+                        self.digest = self.catalog.text("assistant-error-create-profile-feature");
+                        return false;
+                    }
+                    let (Ok(x_mm), Ok(y_mm)) =
+                        (coordinates[0].parse::<f64>(), coordinates[1].parse::<f64>())
+                    else {
+                        self.digest = self.catalog.text("assistant-error-create-profile-feature");
+                        return false;
+                    };
+                    points_mm.push([x_mm, y_mm]);
+                }
+                WorkflowIntent::CreateProfileFeature {
+                    target: FeatureId(target),
+                    definition: DefinitionId(definition),
+                    name: fields[1].to_owned(),
+                    points_mm,
+                }
+            }
+            AssistantIntentKind::DeleteProfileFeature => WorkflowIntent::DeleteProfileFeature {
+                target: FeatureId(target),
+            },
+            AssistantIntentKind::CreateGroup => WorkflowIntent::CreateGroup {
+                target: GroupId(target),
+                name: value_text,
+            },
+            AssistantIntentKind::CreateOccurrence => {
+                let Some((definition, name)) = value_text.split_once(':') else {
+                    self.digest = self.catalog.text("assistant-error-create-occurrence");
+                    return false;
+                };
+                let Ok(definition) = definition.trim().parse::<u64>() else {
+                    self.digest = self.catalog.text("assistant-error-create-occurrence");
+                    return false;
+                };
+                WorkflowIntent::CreateOccurrence {
+                    target: OccurrenceId(target),
+                    definition: DefinitionId(definition),
+                    name: name.trim().to_owned(),
+                }
+            }
+            AssistantIntentKind::CollectionOccurrences => {
+                let occurrence_ids = if value_text.trim().eq_ignore_ascii_case("none") {
+                    Vec::new()
+                } else {
+                    let parsed = value_text
+                        .split(',')
+                        .map(|value| value.trim().parse::<u64>().map(OccurrenceId))
+                        .collect::<Result<Vec<_>, _>>();
+                    let Ok(occurrence_ids) = parsed else {
+                        self.digest = self.catalog.text("assistant-error-collection-occurrences");
+                        return false;
+                    };
+                    if occurrence_ids.windows(2).any(|pair| pair[0] >= pair[1]) {
+                        self.digest = self.catalog.text("assistant-error-collection-occurrences");
+                        return false;
+                    }
+                    occurrence_ids
+                };
+                WorkflowIntent::SetCollectionOccurrences {
+                    target: CollectionId(target),
+                    occurrence_ids,
+                }
+            }
+            AssistantIntentKind::GroupParent => {
+                let parent = if value_text.trim().eq_ignore_ascii_case("none") {
+                    None
+                } else {
+                    let Ok(parent) = value_text.trim().parse::<u64>() else {
+                        self.digest = self.catalog.text("assistant-error-group-parent");
+                        return false;
+                    };
+                    Some(GroupId(parent))
+                };
+                WorkflowIntent::SetGroupParent {
+                    target: GroupId(target),
+                    parent,
+                }
+            }
+            AssistantIntentKind::GroupTranslation => {
+                let values = value_text.split(',').map(str::trim).collect::<Vec<_>>();
+                if values.len() != 3 {
+                    self.digest = self.catalog.text("assistant-error-group-translation");
+                    return false;
+                }
+                WorkflowIntent::SetGroupTranslation {
+                    target: GroupId(target),
+                    x_mm_text: values[0].to_owned(),
+                    y_mm_text: values[1].to_owned(),
+                    z_mm_text: values[2].to_owned(),
+                }
+            }
         };
         self.prepare_assistant_intent(intent)
     }
@@ -5120,10 +7084,436 @@ impl KetchupApp {
     fn assistant_value_text(&self, value: &ProposalValue) -> String {
         match value {
             ProposalValue::Missing => self.catalog.text("assistant-value-missing"),
+            ProposalValue::EvaluatorInputState {
+                name,
+                dimension,
+                dependencies,
+            } => self.catalog.format(
+                "assistant-value-evaluator-input-state",
+                &BTreeMap::from([
+                    ("name", name.clone()),
+                    ("value", dimension.source_token().to_owned()),
+                    (
+                        "dependencies",
+                        dependencies
+                            .iter()
+                            .map(|id| id.0.to_string())
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                    ),
+                ]),
+            ),
+            ProposalValue::EvaluatorExpressionState {
+                name,
+                expression,
+                dependencies,
+            } => self.catalog.format(
+                "assistant-value-evaluator-expression-state",
+                &BTreeMap::from([
+                    ("name", name.clone()),
+                    ("expression", expression.clone()),
+                    (
+                        "dependencies",
+                        dependencies
+                            .iter()
+                            .map(|id| id.0.to_string())
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                    ),
+                ]),
+            ),
+            ProposalValue::EvaluatorRuleState {
+                name,
+                expression,
+                dependencies,
+                input_ports,
+                output_ports,
+                outputs,
+                override_parameters,
+            } => self.catalog.format(
+                "assistant-value-evaluator-rule-state",
+                &BTreeMap::from([
+                    ("name", name.clone()),
+                    ("expression", expression.clone()),
+                    (
+                        "dependencies",
+                        dependencies
+                            .iter()
+                            .map(|id| id.0.to_string())
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                    ),
+                    (
+                        "inputs",
+                        input_ports
+                            .iter()
+                            .map(|port| format!("{}:number", port.name()))
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                    ),
+                    (
+                        "output-ports",
+                        output_ports
+                            .iter()
+                            .map(|port| format!("{}:number", port.name()))
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                    ),
+                    ("outputs", outputs.len().to_string()),
+                    (
+                        "overrides",
+                        override_parameters
+                            .iter()
+                            .map(|parameter| format!("{}:replace", parameter.name()))
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                    ),
+                ]),
+            ),
+            ProposalValue::RuleOverrideState {
+                target,
+                parameter,
+                value,
+                health,
+            } => self.catalog.format(
+                "assistant-value-rule-override-state",
+                &BTreeMap::from([
+                    ("rule", target.root_rule_node_id.0.to_string()),
+                    (
+                        "path",
+                        target
+                            .slot_path
+                            .segments()
+                            .iter()
+                            .map(|segment| {
+                                format!("{}:{}", segment.output_port, segment.semantic_key)
+                            })
+                            .collect::<Vec<_>>()
+                            .join("/"),
+                    ),
+                    ("parameter", parameter.clone()),
+                    ("value", value.to_string()),
+                    ("health", format!("{health:?}")),
+                ]),
+            ),
+            ProposalValue::FeatureParameterBindingState {
+                target,
+                derived_from,
+            } => self.catalog.format(
+                "assistant-value-feature-parameter-binding-state",
+                &BTreeMap::from([
+                    ("feature", target.feature_id.0.to_string()),
+                    ("slot", target.slot.label().to_owned()),
+                    ("rule", derived_from.root_rule_node_id.0.to_string()),
+                    (
+                        "path",
+                        derived_from
+                            .slot_path
+                            .segments()
+                            .iter()
+                            .map(|segment| {
+                                format!("{}:{}", segment.output_port, segment.semantic_key)
+                            })
+                            .collect::<Vec<_>>()
+                            .join("/"),
+                    ),
+                ]),
+            ),
+            ProposalValue::JointState {
+                participant_a,
+                participant_b,
+                volume_min,
+                volume_max,
+            } => self.catalog.format(
+                "assistant-value-joint-state",
+                &BTreeMap::from([
+                    ("participant-a", format!("{participant_a:?}")),
+                    ("participant-b", format!("{participant_b:?}")),
+                    ("min", format!("{volume_min:?}")),
+                    ("max", format!("{volume_max:?}")),
+                ]),
+            ),
+            ProposalValue::SpaceState {
+                purpose,
+                volume_min,
+                volume_max,
+                adjacent_to,
+                accessible_to,
+            } => self.catalog.format(
+                "assistant-value-space-state",
+                &BTreeMap::from([
+                    ("purpose", purpose.clone()),
+                    ("min", format!("{volume_min:?}")),
+                    ("max", format!("{volume_max:?}")),
+                    (
+                        "adjacent",
+                        adjacent_to
+                            .iter()
+                            .map(|id| id.0.to_string())
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                    ),
+                    (
+                        "accessible",
+                        accessible_to
+                            .iter()
+                            .map(|id| id.0.to_string())
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                    ),
+                ]),
+            ),
+            ProposalValue::ClearanceVolumeState {
+                owner,
+                reason,
+                volume_min,
+                volume_max,
+                coordinate_frame,
+                tolerance_mm,
+                severity,
+                derived_from,
+            } => self.catalog.format(
+                "assistant-value-clearance-volume-state",
+                &BTreeMap::from([
+                    ("owner", format!("{owner:?}")),
+                    ("reason", reason.clone()),
+                    ("min", format!("{volume_min:?}")),
+                    ("max", format!("{volume_max:?}")),
+                    ("frame", format!("{coordinate_frame:?}")),
+                    ("tolerance", tolerance_mm.to_string()),
+                    ("severity", format!("{severity:?}")),
+                    ("derived", format!("{derived_from:?}")),
+                ]),
+            ),
+            ProposalValue::PersistentDimensionState {
+                name,
+                target,
+                presentation,
+            } => self.catalog.format(
+                "assistant-value-persistent-dimension-state",
+                &BTreeMap::from([
+                    ("name", name.clone()),
+                    ("target", format!("{target:?}")),
+                    ("unit", format!("{:?}", presentation.unit)),
+                    ("precision", presentation.decimal_places.to_string()),
+                ]),
+            ),
+            ProposalValue::Boolean(value) => self.catalog.format(
+                "assistant-value-boolean",
+                &BTreeMap::from([("value", value.to_string())]),
+            ),
             ProposalValue::Dimension(value) => self.catalog.format(
                 "assistant-value-dimension",
                 &BTreeMap::from([("value", value.source_token().to_owned())]),
             ),
+            ProposalValue::BottleEdgeFinishKind(kind) => self.catalog.text(match kind {
+                BottleEdgeFinishKind::Fillet => "assistant-value-fillet",
+                BottleEdgeFinishKind::Chamfer => "assistant-value-chamfer",
+            }),
+            ProposalValue::RuleOutputs(outputs) => {
+                let mut paths = Vec::new();
+                let mut stack = outputs
+                    .iter()
+                    .rev()
+                    .map(|output| (output, Vec::<String>::new()))
+                    .collect::<Vec<_>>();
+                while let Some((output, mut path)) = stack.pop() {
+                    let segment = output.segment();
+                    path.push(format!(
+                        "{}.{}:{}",
+                        segment.producer_rule_id.0, segment.output_port, segment.semantic_key
+                    ));
+                    paths.push(path.join("/"));
+                    stack.extend(
+                        output
+                            .children()
+                            .iter()
+                            .rev()
+                            .map(|child| (child, path.clone())),
+                    );
+                }
+                self.catalog.format(
+                    "assistant-value-rule-outputs",
+                    &BTreeMap::from([("outputs", paths.join("; "))]),
+                )
+            }
+            ProposalValue::ProfilePoints(points_mm) => self.catalog.format(
+                "assistant-value-profile-points",
+                &BTreeMap::from([(
+                    "points",
+                    points_mm
+                        .iter()
+                        .map(|point| format!("{},{}", point[0], point[1]))
+                        .collect::<Vec<_>>()
+                        .join("; "),
+                )]),
+            ),
+            ProposalValue::Transform(value) => self.catalog.format(
+                "assistant-value-translation",
+                &BTreeMap::from([
+                    ("x", value.matrix()[3].to_string()),
+                    ("y", value.matrix()[7].to_string()),
+                    ("z", value.matrix()[11].to_string()),
+                ]),
+            ),
+            ProposalValue::Tag(Some(tag)) => self.catalog.format(
+                "assistant-value-tag",
+                &BTreeMap::from([("id", tag.0.to_string())]),
+            ),
+            ProposalValue::Tag(None) => self.catalog.text("assistant-value-no-tag"),
+            ProposalValue::TagState { name, visible } => self.catalog.format(
+                "assistant-value-tag-state",
+                &BTreeMap::from([("name", name.clone()), ("visible", visible.to_string())]),
+            ),
+            ProposalValue::CollectionState {
+                name,
+                occurrence_ids,
+            } => self.catalog.format(
+                "assistant-value-collection-state",
+                &BTreeMap::from([
+                    ("name", name.clone()),
+                    (
+                        "ids",
+                        occurrence_ids
+                            .iter()
+                            .map(|id| id.0.to_string())
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                    ),
+                ]),
+            ),
+            ProposalValue::Definition(definition) => self.catalog.format(
+                "assistant-value-definition",
+                &BTreeMap::from([("id", definition.0.to_string())]),
+            ),
+            ProposalValue::DefinitionState {
+                name,
+                feature_ids,
+                local_occurrence_ids,
+                local_group_ids,
+            } => self.catalog.format(
+                "assistant-value-definition-state",
+                &BTreeMap::from([
+                    ("name", name.clone()),
+                    (
+                        "features",
+                        feature_ids
+                            .iter()
+                            .map(|id| id.0.to_string())
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                    ),
+                    (
+                        "occurrences",
+                        local_occurrence_ids
+                            .iter()
+                            .map(|id| id.0.to_string())
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                    ),
+                    (
+                        "groups",
+                        local_group_ids
+                            .iter()
+                            .map(|id| id.0.to_string())
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                    ),
+                ]),
+            ),
+            ProposalValue::DefinitionFeatures(feature_ids) => self.catalog.format(
+                "assistant-value-definition-features",
+                &BTreeMap::from([(
+                    "ids",
+                    feature_ids
+                        .iter()
+                        .map(|id| id.0.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                )]),
+            ),
+            ProposalValue::ProfileFeatureState {
+                definition,
+                name,
+                points_mm,
+            } => self.catalog.format(
+                "assistant-value-profile-feature-state",
+                &BTreeMap::from([
+                    ("definition", definition.0.to_string()),
+                    ("name", name.clone()),
+                    (
+                        "points",
+                        points_mm
+                            .iter()
+                            .map(|point| format!("{},{}", point[0], point[1]))
+                            .collect::<Vec<_>>()
+                            .join("; "),
+                    ),
+                ]),
+            ),
+            ProposalValue::Group(Some(group)) => self.catalog.format(
+                "assistant-value-group",
+                &BTreeMap::from([("id", group.0.to_string())]),
+            ),
+            ProposalValue::Group(None) => self.catalog.text("assistant-value-no-group"),
+            ProposalValue::GroupState {
+                name,
+                transform,
+                parent,
+            } => self.catalog.format(
+                "assistant-value-group-state",
+                &BTreeMap::from([
+                    ("name", name.clone()),
+                    ("x", transform.matrix()[3].to_string()),
+                    ("y", transform.matrix()[7].to_string()),
+                    ("z", transform.matrix()[11].to_string()),
+                    (
+                        "parent",
+                        parent.map_or_else(|| "none".to_owned(), |id| id.0.to_string()),
+                    ),
+                ]),
+            ),
+            ProposalValue::OccurrenceState {
+                definition,
+                name,
+                transform,
+                parent,
+                tag,
+                visible,
+            } => self.catalog.format(
+                "assistant-value-occurrence-state",
+                &BTreeMap::from([
+                    ("definition", definition.0.to_string()),
+                    ("name", name.clone()),
+                    ("x", transform.matrix()[3].to_string()),
+                    ("y", transform.matrix()[7].to_string()),
+                    ("z", transform.matrix()[11].to_string()),
+                    (
+                        "parent",
+                        parent.map_or_else(|| "none".to_owned(), |id| id.0.to_string()),
+                    ),
+                    (
+                        "tag",
+                        tag.map_or_else(|| "none".to_owned(), |id| id.0.to_string()),
+                    ),
+                    ("visible", visible.to_string()),
+                ]),
+            ),
+            ProposalValue::Occurrences(occurrence_ids) if occurrence_ids.is_empty() => {
+                self.catalog.text("assistant-value-no-occurrences")
+            }
+            ProposalValue::Occurrences(occurrence_ids) => self.catalog.format(
+                "assistant-value-occurrences",
+                &BTreeMap::from([(
+                    "ids",
+                    occurrence_ids
+                        .iter()
+                        .map(|id| id.0.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                )]),
+            ),
+            ProposalValue::Text(value) => value.clone(),
             ProposalValue::Digest(digest) => self.catalog.format(
                 "assistant-value-digest",
                 &BTreeMap::from([("digest", digest.chars().take(12).collect())]),
@@ -5136,10 +7526,193 @@ impl KetchupApp {
         ui.small(self.catalog.text("assistant-boundary"));
         egui::ComboBox::from_label(self.catalog.text("assistant-intent"))
             .selected_text(self.catalog.text(match self.assistant_intent_kind {
+                AssistantIntentKind::CreateEvaluatorInput => {
+                    "assistant-intent-create-evaluator-input"
+                }
+                AssistantIntentKind::CreateEvaluatorExpression => {
+                    "assistant-intent-create-evaluator-expression"
+                }
+                AssistantIntentKind::CreateEvaluatorRule => {
+                    "assistant-intent-create-evaluator-rule"
+                }
+                AssistantIntentKind::CreateRuleOverride => "assistant-intent-create-rule-override",
+                AssistantIntentKind::DeleteRuleOverride => "assistant-intent-delete-rule-override",
+                AssistantIntentKind::CreateFeatureParameterBinding => {
+                    "assistant-intent-create-feature-parameter-binding"
+                }
+                AssistantIntentKind::DeleteFeatureParameterBinding => {
+                    "assistant-intent-delete-feature-parameter-binding"
+                }
+                AssistantIntentKind::CreatePersistentDimension => {
+                    "assistant-intent-create-persistent-dimension"
+                }
+                AssistantIntentKind::CreateSpace => "assistant-intent-create-space",
+                AssistantIntentKind::CreateClearanceVolume => {
+                    "assistant-intent-create-clearance-volume"
+                }
+                AssistantIntentKind::CreateJoint => "assistant-intent-create-joint",
+                AssistantIntentKind::CloneProfileDefinitionAndRepoint => {
+                    "assistant-intent-clone-profile-definition"
+                }
+                AssistantIntentKind::ConvertEmptyGroupToComponent => {
+                    "assistant-intent-convert-empty-group"
+                }
+                AssistantIntentKind::RecomputeFeatureParameter => {
+                    "assistant-intent-recompute-feature-parameter"
+                }
+                AssistantIntentKind::DeleteJoint => "assistant-intent-delete-joint",
+                AssistantIntentKind::DeleteSpace => "assistant-intent-delete-space",
+                AssistantIntentKind::DeleteClearanceVolume => {
+                    "assistant-intent-delete-clearance-volume"
+                }
+                AssistantIntentKind::DeletePersistentDimension => {
+                    "assistant-intent-delete-persistent-dimension"
+                }
                 AssistantIntentKind::RuleDimension => "assistant-intent-rule",
+                AssistantIntentKind::EvaluatorName => "assistant-intent-evaluator-name",
+                AssistantIntentKind::EvaluatorExpression => "assistant-intent-evaluator-expression",
+                AssistantIntentKind::RuleOutputs => "assistant-intent-rule-outputs",
                 AssistantIntentKind::FeatureDimension => "assistant-intent-feature",
+                AssistantIntentKind::BottleControlDimension => {
+                    "assistant-intent-bottle-control-dimension"
+                }
+                AssistantIntentKind::BottleEdgeFinishKind => "assistant-intent-bottle-finish-kind",
+                AssistantIntentKind::ProfilePoints => "assistant-intent-profile-points",
+                AssistantIntentKind::DefinitionName => "assistant-intent-definition-name",
+                AssistantIntentKind::OccurrenceVisibility => {
+                    "assistant-intent-occurrence-visibility"
+                }
+                AssistantIntentKind::TagVisibility => "assistant-intent-tag-visibility",
+                AssistantIntentKind::OccurrenceTag => "assistant-intent-occurrence-tag",
+                AssistantIntentKind::OccurrenceDefinition => {
+                    "assistant-intent-occurrence-definition"
+                }
+                AssistantIntentKind::OccurrenceParent => "assistant-intent-occurrence-parent",
+                AssistantIntentKind::OccurrenceTranslation => {
+                    "assistant-intent-occurrence-translation"
+                }
+                AssistantIntentKind::GroupTranslation => "assistant-intent-group-translation",
+                AssistantIntentKind::GroupParent => "assistant-intent-group-parent",
+                AssistantIntentKind::CollectionOccurrences => {
+                    "assistant-intent-collection-occurrences"
+                }
+                AssistantIntentKind::CreateTag => "assistant-intent-create-tag",
+                AssistantIntentKind::DeleteTag => "assistant-intent-delete-tag",
+                AssistantIntentKind::CreateCollection => "assistant-intent-create-collection",
+                AssistantIntentKind::DeleteCollection => "assistant-intent-delete-collection",
+                AssistantIntentKind::DeleteGroup => "assistant-intent-delete-group",
+                AssistantIntentKind::DeleteOccurrence => "assistant-intent-delete-occurrence",
+                AssistantIntentKind::CreateDefinition => "assistant-intent-create-definition",
+                AssistantIntentKind::DeleteDefinition => "assistant-intent-delete-definition",
+                AssistantIntentKind::CreateProfileFeature => {
+                    "assistant-intent-create-profile-feature"
+                }
+                AssistantIntentKind::DeleteProfileFeature => {
+                    "assistant-intent-delete-profile-feature"
+                }
+                AssistantIntentKind::CreateGroup => "assistant-intent-create-group",
+                AssistantIntentKind::CreateOccurrence => "assistant-intent-create-occurrence",
             }))
             .show_ui(ui, |ui| {
+                ui.selectable_value(
+                    &mut self.assistant_intent_kind,
+                    AssistantIntentKind::CreateEvaluatorInput,
+                    self.catalog.text("assistant-intent-create-evaluator-input"),
+                );
+                ui.selectable_value(
+                    &mut self.assistant_intent_kind,
+                    AssistantIntentKind::CreateEvaluatorExpression,
+                    self.catalog
+                        .text("assistant-intent-create-evaluator-expression"),
+                );
+                ui.selectable_value(
+                    &mut self.assistant_intent_kind,
+                    AssistantIntentKind::CreateEvaluatorRule,
+                    self.catalog.text("assistant-intent-create-evaluator-rule"),
+                );
+                ui.selectable_value(
+                    &mut self.assistant_intent_kind,
+                    AssistantIntentKind::CreateRuleOverride,
+                    self.catalog.text("assistant-intent-create-rule-override"),
+                );
+                ui.selectable_value(
+                    &mut self.assistant_intent_kind,
+                    AssistantIntentKind::DeleteRuleOverride,
+                    self.catalog.text("assistant-intent-delete-rule-override"),
+                );
+                ui.selectable_value(
+                    &mut self.assistant_intent_kind,
+                    AssistantIntentKind::CreateFeatureParameterBinding,
+                    self.catalog
+                        .text("assistant-intent-create-feature-parameter-binding"),
+                );
+                ui.selectable_value(
+                    &mut self.assistant_intent_kind,
+                    AssistantIntentKind::DeleteFeatureParameterBinding,
+                    self.catalog
+                        .text("assistant-intent-delete-feature-parameter-binding"),
+                );
+                ui.selectable_value(
+                    &mut self.assistant_intent_kind,
+                    AssistantIntentKind::CreatePersistentDimension,
+                    self.catalog
+                        .text("assistant-intent-create-persistent-dimension"),
+                );
+                ui.selectable_value(
+                    &mut self.assistant_intent_kind,
+                    AssistantIntentKind::CreateSpace,
+                    self.catalog.text("assistant-intent-create-space"),
+                );
+                ui.selectable_value(
+                    &mut self.assistant_intent_kind,
+                    AssistantIntentKind::CreateClearanceVolume,
+                    self.catalog
+                        .text("assistant-intent-create-clearance-volume"),
+                );
+                ui.selectable_value(
+                    &mut self.assistant_intent_kind,
+                    AssistantIntentKind::CreateJoint,
+                    self.catalog.text("assistant-intent-create-joint"),
+                );
+                ui.selectable_value(
+                    &mut self.assistant_intent_kind,
+                    AssistantIntentKind::CloneProfileDefinitionAndRepoint,
+                    self.catalog
+                        .text("assistant-intent-clone-profile-definition"),
+                );
+                ui.selectable_value(
+                    &mut self.assistant_intent_kind,
+                    AssistantIntentKind::ConvertEmptyGroupToComponent,
+                    self.catalog.text("assistant-intent-convert-empty-group"),
+                );
+                ui.selectable_value(
+                    &mut self.assistant_intent_kind,
+                    AssistantIntentKind::RecomputeFeatureParameter,
+                    self.catalog
+                        .text("assistant-intent-recompute-feature-parameter"),
+                );
+                ui.selectable_value(
+                    &mut self.assistant_intent_kind,
+                    AssistantIntentKind::DeleteJoint,
+                    self.catalog.text("assistant-intent-delete-joint"),
+                );
+                ui.selectable_value(
+                    &mut self.assistant_intent_kind,
+                    AssistantIntentKind::DeleteSpace,
+                    self.catalog.text("assistant-intent-delete-space"),
+                );
+                ui.selectable_value(
+                    &mut self.assistant_intent_kind,
+                    AssistantIntentKind::DeleteClearanceVolume,
+                    self.catalog
+                        .text("assistant-intent-delete-clearance-volume"),
+                );
+                ui.selectable_value(
+                    &mut self.assistant_intent_kind,
+                    AssistantIntentKind::DeletePersistentDimension,
+                    self.catalog
+                        .text("assistant-intent-delete-persistent-dimension"),
+                );
                 ui.selectable_value(
                     &mut self.assistant_intent_kind,
                     AssistantIntentKind::RuleDimension,
@@ -5147,15 +7720,157 @@ impl KetchupApp {
                 );
                 ui.selectable_value(
                     &mut self.assistant_intent_kind,
+                    AssistantIntentKind::EvaluatorName,
+                    self.catalog.text("assistant-intent-evaluator-name"),
+                );
+                ui.selectable_value(
+                    &mut self.assistant_intent_kind,
+                    AssistantIntentKind::EvaluatorExpression,
+                    self.catalog.text("assistant-intent-evaluator-expression"),
+                );
+                ui.selectable_value(
+                    &mut self.assistant_intent_kind,
+                    AssistantIntentKind::RuleOutputs,
+                    self.catalog.text("assistant-intent-rule-outputs"),
+                );
+                ui.selectable_value(
+                    &mut self.assistant_intent_kind,
                     AssistantIntentKind::FeatureDimension,
                     self.catalog.text("assistant-intent-feature"),
+                );
+                ui.selectable_value(
+                    &mut self.assistant_intent_kind,
+                    AssistantIntentKind::BottleControlDimension,
+                    self.catalog
+                        .text("assistant-intent-bottle-control-dimension"),
+                );
+                ui.selectable_value(
+                    &mut self.assistant_intent_kind,
+                    AssistantIntentKind::BottleEdgeFinishKind,
+                    self.catalog.text("assistant-intent-bottle-finish-kind"),
+                );
+                ui.selectable_value(
+                    &mut self.assistant_intent_kind,
+                    AssistantIntentKind::ProfilePoints,
+                    self.catalog.text("assistant-intent-profile-points"),
+                );
+                ui.selectable_value(
+                    &mut self.assistant_intent_kind,
+                    AssistantIntentKind::DefinitionName,
+                    self.catalog.text("assistant-intent-definition-name"),
+                );
+                ui.selectable_value(
+                    &mut self.assistant_intent_kind,
+                    AssistantIntentKind::OccurrenceVisibility,
+                    self.catalog.text("assistant-intent-occurrence-visibility"),
+                );
+                ui.selectable_value(
+                    &mut self.assistant_intent_kind,
+                    AssistantIntentKind::TagVisibility,
+                    self.catalog.text("assistant-intent-tag-visibility"),
+                );
+                ui.selectable_value(
+                    &mut self.assistant_intent_kind,
+                    AssistantIntentKind::OccurrenceTranslation,
+                    self.catalog.text("assistant-intent-occurrence-translation"),
+                );
+                ui.selectable_value(
+                    &mut self.assistant_intent_kind,
+                    AssistantIntentKind::OccurrenceTag,
+                    self.catalog.text("assistant-intent-occurrence-tag"),
+                );
+                ui.selectable_value(
+                    &mut self.assistant_intent_kind,
+                    AssistantIntentKind::OccurrenceDefinition,
+                    self.catalog.text("assistant-intent-occurrence-definition"),
+                );
+                ui.selectable_value(
+                    &mut self.assistant_intent_kind,
+                    AssistantIntentKind::OccurrenceParent,
+                    self.catalog.text("assistant-intent-occurrence-parent"),
+                );
+                ui.selectable_value(
+                    &mut self.assistant_intent_kind,
+                    AssistantIntentKind::GroupTranslation,
+                    self.catalog.text("assistant-intent-group-translation"),
+                );
+                ui.selectable_value(
+                    &mut self.assistant_intent_kind,
+                    AssistantIntentKind::GroupParent,
+                    self.catalog.text("assistant-intent-group-parent"),
+                );
+                ui.selectable_value(
+                    &mut self.assistant_intent_kind,
+                    AssistantIntentKind::CollectionOccurrences,
+                    self.catalog.text("assistant-intent-collection-occurrences"),
+                );
+                ui.selectable_value(
+                    &mut self.assistant_intent_kind,
+                    AssistantIntentKind::CreateTag,
+                    self.catalog.text("assistant-intent-create-tag"),
+                );
+                ui.selectable_value(
+                    &mut self.assistant_intent_kind,
+                    AssistantIntentKind::DeleteTag,
+                    self.catalog.text("assistant-intent-delete-tag"),
+                );
+                ui.selectable_value(
+                    &mut self.assistant_intent_kind,
+                    AssistantIntentKind::CreateCollection,
+                    self.catalog.text("assistant-intent-create-collection"),
+                );
+                ui.selectable_value(
+                    &mut self.assistant_intent_kind,
+                    AssistantIntentKind::DeleteCollection,
+                    self.catalog.text("assistant-intent-delete-collection"),
+                );
+                ui.selectable_value(
+                    &mut self.assistant_intent_kind,
+                    AssistantIntentKind::DeleteGroup,
+                    self.catalog.text("assistant-intent-delete-group"),
+                );
+                ui.selectable_value(
+                    &mut self.assistant_intent_kind,
+                    AssistantIntentKind::DeleteOccurrence,
+                    self.catalog.text("assistant-intent-delete-occurrence"),
+                );
+                ui.selectable_value(
+                    &mut self.assistant_intent_kind,
+                    AssistantIntentKind::CreateDefinition,
+                    self.catalog.text("assistant-intent-create-definition"),
+                );
+                ui.selectable_value(
+                    &mut self.assistant_intent_kind,
+                    AssistantIntentKind::DeleteDefinition,
+                    self.catalog.text("assistant-intent-delete-definition"),
+                );
+                ui.selectable_value(
+                    &mut self.assistant_intent_kind,
+                    AssistantIntentKind::CreateProfileFeature,
+                    self.catalog.text("assistant-intent-create-profile-feature"),
+                );
+                ui.selectable_value(
+                    &mut self.assistant_intent_kind,
+                    AssistantIntentKind::DeleteProfileFeature,
+                    self.catalog.text("assistant-intent-delete-profile-feature"),
+                );
+                ui.selectable_value(
+                    &mut self.assistant_intent_kind,
+                    AssistantIntentKind::CreateGroup,
+                    self.catalog.text("assistant-intent-create-group"),
+                );
+                ui.selectable_value(
+                    &mut self.assistant_intent_kind,
+                    AssistantIntentKind::CreateOccurrence,
+                    self.catalog.text("assistant-intent-create-occurrence"),
                 );
             });
         egui::Grid::new("assistant-intent-inputs").show(ui, |ui| {
             ui.label(self.catalog.text("assistant-target"));
             ui.text_edit_singleline(&mut self.assistant_target_input);
             ui.end_row();
-            ui.label(self.catalog.text("assistant-value"));
+            ui.label(self.catalog.text("assistant-value-label"))
+                .on_hover_text(self.catalog.text("assistant-value"));
             ui.text_edit_singleline(&mut self.assistant_value_input);
             ui.end_row();
         });
@@ -5169,8 +7884,76 @@ impl KetchupApp {
             ui.separator();
             ui.strong(self.catalog.text("assistant-review-title"));
             let goal = self.catalog.text(match proposal.goal() {
+                ProposalGoal::CreateEvaluatorInput(_) => "assistant-goal-create-evaluator-input",
+                ProposalGoal::CreateEvaluatorExpression(_) => {
+                    "assistant-goal-create-evaluator-expression"
+                }
+                ProposalGoal::CreateEvaluatorRule(_) => "assistant-goal-create-evaluator-rule",
+                ProposalGoal::CreateRuleOverride(_) => "assistant-goal-create-rule-override",
+                ProposalGoal::DeleteRuleOverride(_) => "assistant-goal-delete-rule-override",
+                ProposalGoal::CreateFeatureParameterBinding(_) => {
+                    "assistant-goal-create-feature-parameter-binding"
+                }
+                ProposalGoal::DeleteFeatureParameterBinding(_) => {
+                    "assistant-goal-delete-feature-parameter-binding"
+                }
+                ProposalGoal::CreatePersistentDimension(_) => {
+                    "assistant-goal-create-persistent-dimension"
+                }
+                ProposalGoal::CreateSpace(_) => "assistant-goal-create-space",
+                ProposalGoal::CreateClearanceVolume(_) => "assistant-goal-create-clearance-volume",
+                ProposalGoal::CreateJoint(_) => "assistant-goal-create-joint",
+                ProposalGoal::RecomputeFeatureParameter(_) => {
+                    "assistant-goal-recompute-feature-parameter"
+                }
+                ProposalGoal::DeleteJoint(_) => "assistant-goal-delete-joint",
+                ProposalGoal::DeleteSpace(_) => "assistant-goal-delete-space",
+                ProposalGoal::DeleteClearanceVolume(_) => "assistant-goal-delete-clearance-volume",
+                ProposalGoal::DeletePersistentDimension(_) => {
+                    "assistant-goal-delete-persistent-dimension"
+                }
                 ProposalGoal::SetRuleDimension(_) => "assistant-goal-rule",
+                ProposalGoal::RenameEvaluatorNode(_) => "assistant-goal-evaluator-name",
+                ProposalGoal::SetEvaluatorExpression(_) => "assistant-goal-evaluator-expression",
+                ProposalGoal::SetRuleOutputs(_) => "assistant-goal-rule-outputs",
                 ProposalGoal::SetFeatureDimension(_) => "assistant-goal-feature",
+                ProposalGoal::SetBottleControlDimension(_, _) => {
+                    "assistant-goal-bottle-control-dimension"
+                }
+                ProposalGoal::SetBottleEdgeFinishKind(_) => "assistant-goal-bottle-finish-kind",
+                ProposalGoal::SetProfilePoints(_) => "assistant-goal-profile-points",
+                ProposalGoal::RenameDefinition(_) => "assistant-goal-definition-name",
+                ProposalGoal::SetOccurrenceVisibility(_) => "assistant-goal-occurrence-visibility",
+                ProposalGoal::SetOccurrenceTag(_) => "assistant-goal-occurrence-tag",
+                ProposalGoal::SetTagVisibility(_) => "assistant-goal-tag-visibility",
+                ProposalGoal::RepointOccurrence(_) => "assistant-goal-occurrence-definition",
+                ProposalGoal::SetOccurrenceParent(_) => "assistant-goal-occurrence-parent",
+                ProposalGoal::SetOccurrenceTranslation(_) => {
+                    "assistant-goal-occurrence-translation"
+                }
+                ProposalGoal::SetGroupTranslation(_) => "assistant-goal-group-translation",
+                ProposalGoal::SetGroupParent(_) => "assistant-goal-group-parent",
+                ProposalGoal::SetCollectionOccurrences(_) => {
+                    "assistant-goal-collection-occurrences"
+                }
+                ProposalGoal::CreateTag(_) => "assistant-goal-create-tag",
+                ProposalGoal::DeleteTag(_) => "assistant-goal-delete-tag",
+                ProposalGoal::CreateCollection(_) => "assistant-goal-create-collection",
+                ProposalGoal::DeleteCollection(_) => "assistant-goal-delete-collection",
+                ProposalGoal::DeleteGroup(_) => "assistant-goal-delete-group",
+                ProposalGoal::DeleteOccurrence(_) => "assistant-goal-delete-occurrence",
+                ProposalGoal::CreateDefinition(_) => "assistant-goal-create-definition",
+                ProposalGoal::DeleteDefinition(_) => "assistant-goal-delete-definition",
+                ProposalGoal::CreateProfileFeature(_) => "assistant-goal-create-profile-feature",
+                ProposalGoal::DeleteProfileFeature(_) => "assistant-goal-delete-profile-feature",
+                ProposalGoal::CreateGroup(_) => "assistant-goal-create-group",
+                ProposalGoal::CreateOccurrence(_) => "assistant-goal-create-occurrence",
+                ProposalGoal::CloneProfileDefinitionAndRepoint(_) => {
+                    "assistant-goal-clone-profile-definition"
+                }
+                ProposalGoal::ConvertEmptyGroupToComponent(_) => {
+                    "assistant-goal-convert-empty-group"
+                }
                 ProposalGoal::CanonicalPreview => "assistant-goal-canonical",
             });
             ui.label(goal);
@@ -5306,19 +8089,19 @@ impl KetchupApp {
         let export_ready = report.is_some_and(|report| report.current && report.validation_passed);
         ui.horizontal(|ui| {
             let exact = ui
-                .add_enabled(export_ready, egui::Button::new("Export exact recipe"))
+                .add_enabled(export_ready, egui::Button::new("Export STEP + loss report"))
                 .clicked();
             let mesh = ui
                 .add_enabled(export_ready, egui::Button::new("Export mesh + loss report"))
                 .clicked();
             if exact
                 && let Some(path) = self.dialogs.pick_export_path(ExportRequest {
-                    filter_label: "Ketchup exact bottle recipe",
-                    extension: "kbex",
-                    suggested_name: "editable-bottle.kbex",
+                    filter_label: "ISO 10303 STEP exact model",
+                    extension: "step",
+                    suggested_name: "editable-bottle.step",
                 })
             {
-                self.export_bottle_exact_recipe_to(definition_id, &path);
+                self.export_bottle_step_to(definition_id, &path);
             }
             if mesh
                 && let Some(path) = self.dialogs.pick_export_path(ExportRequest {
@@ -5499,15 +8282,13 @@ impl KetchupApp {
             .sum::<usize>();
         ui.horizontal(|ui| {
             ui.strong(self.catalog.text("dock-outliner"));
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.monospace(self.catalog.format(
-                    "outliner-meta",
-                    &BTreeMap::from([
-                        ("occurrences", occurrence_count.to_string()),
-                        ("definitions", entries.len().to_string()),
-                    ]),
-                ));
-            });
+            ui.monospace(self.catalog.format(
+                "outliner-meta",
+                &BTreeMap::from([
+                    ("occurrences", occurrence_count.to_string()),
+                    ("definitions", entries.len().to_string()),
+                ]),
+            ));
         });
         ui.separator();
         egui::ScrollArea::vertical()
@@ -5585,17 +8366,15 @@ impl KetchupApp {
         ui.separator();
         ui.horizontal(|ui| {
             ui.strong(self.catalog.text("dock-tags"));
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui
-                    .add_enabled(
-                        self.command_enabled(AppCommand::MakeUnique),
-                        egui::Button::new(self.catalog.text("model-make-unique")),
-                    )
-                    .clicked()
-                {
-                    self.dispatch_command(AppCommand::MakeUnique);
-                }
-            });
+            if ui
+                .add_enabled(
+                    self.command_enabled(AppCommand::MakeUnique),
+                    egui::Button::new(self.catalog.text("model-make-unique")),
+                )
+                .clicked()
+            {
+                self.dispatch_command(AppCommand::MakeUnique);
+            }
         });
         ui.label(self.catalog.format(
             "tags-visibility",
@@ -5719,11 +8498,14 @@ impl KetchupApp {
     pub fn ui(&mut self, context: &egui::Context) {
         self.refresh_exact_products(context);
         self.refresh_beam_m5_products(context);
-        context.set_visuals(egui::Visuals::dark());
+        let mut visuals = egui::Visuals::dark();
+        visuals.override_text_color = Some(SHELL_TEXT);
+        visuals.selection.stroke = Stroke::new(1.0_f32, SHELL_FOCUS);
+        context.set_visuals(visuals);
         self.handle_shortcuts(context);
 
         let panel_frame = egui::Frame::new()
-            .fill(Color32::from_rgb(23, 25, 28))
+            .fill(SHELL_PANEL_FILL)
             .stroke(Stroke::new(1.0_f32, Color32::from_rgb(43, 48, 54)));
         egui::TopBottomPanel::top("top-bar")
             .exact_height(46.0)
@@ -5746,9 +8528,12 @@ impl KetchupApp {
             .resizable(false)
             .exact_width(320.0)
             .frame(panel_frame)
-            .show(context, |ui| self.show_outliner(ui));
+            .show(context, |ui| {
+                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
+                self.show_outliner(ui);
+            });
         egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(Color32::from_rgb(15, 17, 19)))
+            .frame(egui::Frame::new().fill(SHELL_VIEWPORT_FILL))
             .show(context, |ui| self.viewport(ui));
         self.show_shortcuts_window(context);
     }
@@ -5814,6 +8599,43 @@ fn create_box_batch(
     ])
 }
 
+fn alignment_coordinate(item: &RenderBox, axis: Axis, mode: AlignMode) -> f64 {
+    let (origin, size) = match axis {
+        Axis::X => (item.origin_mm.x, item.size_mm.x),
+        Axis::Y => (item.origin_mm.y, item.size_mm.y),
+        Axis::Z => (item.origin_mm.z, item.size_mm.z),
+    };
+    match mode {
+        AlignMode::Minimum => origin,
+        AlignMode::Center => origin + size * 0.5,
+        AlignMode::Maximum => origin + size,
+    }
+}
+
+fn axis_vector(axis: Axis, value: f64) -> Vec3 {
+    match axis {
+        Axis::X => Vec3::new(value, 0.0, 0.0),
+        Axis::Y => Vec3::new(0.0, value, 0.0),
+        Axis::Z => Vec3::new(0.0, 0.0, value),
+    }
+}
+
+const fn alignment_axis_label(axis: Axis) -> &'static str {
+    match axis {
+        Axis::X => "X",
+        Axis::Y => "Y",
+        Axis::Z => "Z",
+    }
+}
+
+const fn alignment_mode_label(mode: AlignMode) -> &'static str {
+    match mode {
+        AlignMode::Minimum => "minimum",
+        AlignMode::Center => "center",
+        AlignMode::Maximum => "maximum",
+    }
+}
+
 fn translated_transform(transform: Transform, delta_mm: Vec3) -> Result<Transform, ()> {
     let mut matrix = *transform.matrix();
     matrix[3] += delta_mm.x;
@@ -5854,27 +8676,29 @@ fn push_pull_batch(
     new_extent_mm: f64,
     source_token: String,
 ) -> Option<CommandBatch> {
-    if !selection.instance_path.is_root() {
-        return None;
-    }
-    let occurrence_id = selection.instance_path.root_occurrence();
-    let occurrence = snapshot.occurrence(occurrence_id)?;
-    if occurrence.definition_id() != selection.definition_id
+    let resolved = snapshot
+        .resolve_instance_path(&selection.instance_path)
+        .ok()?;
+    if resolved.definition_id != selection.definition_id
         || item.definition_id != selection.definition_id
         || item.instance_path != selection.instance_path
     {
         return None;
     }
     let profile = snapshot.feature(item.profile_feature_id)?;
-    let extrusion = snapshot.feature(item.extrusion_feature_id)?;
-    if profile.definition_id() != selection.definition_id
-        || extrusion.definition_id() != selection.definition_id
-        || !matches!(
-            extrusion.kind(),
-            FeatureKind::Extrusion { profile, .. } if *profile == item.profile_feature_id
-        )
-    {
+    if profile.definition_id() != selection.definition_id {
         return None;
+    }
+    if let Some(extrusion_id) = item.extrusion_feature_id {
+        let extrusion = snapshot.feature(extrusion_id)?;
+        if extrusion.definition_id() != selection.definition_id
+            || !matches!(
+                extrusion.kind(),
+                FeatureKind::Extrusion { profile, .. } if *profile == item.profile_feature_id
+            )
+        {
+            return None;
+        }
     }
     let ElementId::Face { axis, side } = selection.element else {
         return None;
@@ -5882,10 +8706,31 @@ fn push_pull_batch(
     let mut commands = Vec::new();
     match axis {
         Axis::Z => {
-            commands.push(CanonicalCommand::SetFeatureDimension {
-                id: item.extrusion_feature_id,
-                dimension: Dimension::new(source_token, new_extent_mm).ok()?,
-            });
+            let dimension = Dimension::new(source_token, new_extent_mm).ok()?;
+            if let Some(extrusion_id) = item.extrusion_feature_id {
+                commands.push(CanonicalCommand::SetFeatureDimension {
+                    id: extrusion_id,
+                    dimension,
+                });
+            } else {
+                let extrusion_id = FeatureId(
+                    snapshot
+                        .features()
+                        .map(|feature| feature.id().0)
+                        .max()
+                        .unwrap_or(0)
+                        .checked_add(1)?,
+                );
+                commands.push(CanonicalCommand::CreateFeature {
+                    id: extrusion_id,
+                    definition_id: selection.definition_id,
+                    name: "Extrusion".to_owned(),
+                    kind: FeatureKind::Extrusion {
+                        profile: item.profile_feature_id,
+                        height: dimension,
+                    },
+                });
+            }
         }
         Axis::X | Axis::Y => {
             let FeatureKind::Profile { points_mm } = profile.kind() else {
@@ -5916,6 +8761,11 @@ fn push_pull_batch(
         }
     }
     if side == Side::Minimum {
+        if !selection.instance_path.is_root() {
+            return None;
+        }
+        let occurrence_id = selection.instance_path.root_occurrence();
+        let occurrence = snapshot.occurrence(occurrence_id)?;
         let delta = match axis {
             Axis::X => Vec3::new(item.size_mm.x - new_extent_mm, 0.0, 0.0),
             Axis::Y => Vec3::new(0.0, item.size_mm.y - new_extent_mm, 0.0),
@@ -6025,6 +8875,13 @@ fn exact_face_element(role: ExactFaceRole) -> Option<ElementId> {
     }
 }
 
+fn overlap_signature(pick: &PickResult) -> Vec<SelectionId> {
+    pick.overlapping
+        .iter()
+        .map(|hit| hit.reference.clone())
+        .collect()
+}
+
 fn exact_surface_element(normal: Vec3) -> Option<ElementId> {
     let components = [normal.x.abs(), normal.y.abs(), normal.z.abs()];
     let (axis_index, magnitude) = components
@@ -6047,6 +8904,33 @@ fn exact_surface_element(normal: Vec3) -> Option<ElementId> {
             Side::Minimum
         },
     })
+}
+
+fn current_unix_time_ms() -> Result<u64, String> {
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| error.to_string())?
+        .as_millis();
+    u64::try_from(millis).map_err(|_| "system time is outside the supported range".to_owned())
+}
+
+fn exact_step_loss_report(package: &ExactRevolvePackage) -> String {
+    format!(
+        "authority=accepted exact OCCT B-Rep\nformat=ISO 10303 STEP\neditability_loss=canonical Ketchup features, rules, dimensions, and Undo history are not preserved\ntopology_loss=exact B-Rep topology is preserved, but durable Ketchup subshape identity is not preserved\ntolerance_loss=no tessellation loss; receiving systems may apply a different modeling tolerance\nsource_tolerance={}\nsource_digest={}\nbackend={}\nresult_fingerprint={}\n",
+        package.identity.tolerance,
+        package.identity.source_digest,
+        package.identity.backend,
+        package.identity.result_fingerprint,
+    )
+}
+
+fn exact_mesh_export_evidence(bundle: &ExactMeshExport) -> Vec<u8> {
+    let mut evidence = b"ketchup.exact-mesh-export.v1".to_vec();
+    for artifact in [&bundle.mesh_obj, &bundle.loss_report] {
+        evidence.extend_from_slice(&(artifact.len() as u64).to_le_bytes());
+        evidence.extend_from_slice(artifact.as_bytes());
+    }
+    evidence
 }
 
 fn write_exact_mesh_export(path: &Path, bundle: ExactMeshExport) -> Result<(), String> {
@@ -6305,6 +9189,33 @@ fn box_corners(width: f64, depth: f64, height: f64) -> [Vec3; 8] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ketchup_core::graph::{EvaluatorNodeKind, PortSpec};
+
+    fn contrast_ratio(foreground: Color32, background: Color32) -> f32 {
+        fn luminance(color: Color32) -> f32 {
+            let channel = |value: u8| {
+                let value = f32::from(value) / 255.0;
+                if value <= 0.04045 {
+                    value / 12.92
+                } else {
+                    ((value + 0.055) / 1.055).powf(2.4)
+                }
+            };
+            0.2126 * channel(color.r()) + 0.7152 * channel(color.g()) + 0.0722 * channel(color.b())
+        }
+
+        let foreground = luminance(foreground);
+        let background = luminance(background);
+        (foreground.max(background) + 0.05) / (foreground.min(background) + 0.05)
+    }
+
+    #[test]
+    fn shell_palette_meets_text_and_focus_contrast_thresholds() {
+        assert!(contrast_ratio(SHELL_TEXT, SHELL_PANEL_FILL) >= 4.5);
+        assert!(contrast_ratio(SHELL_BRAND_TEXT, SHELL_BRAND_FILL) >= 4.5);
+        assert!(contrast_ratio(SHELL_FOCUS, SHELL_PANEL_FILL) >= 3.0);
+        assert!(contrast_ratio(SHELL_FOCUS, SHELL_VIEWPORT_FILL) >= 3.0);
+    }
 
     fn lossy_legacy_document() -> Vec<u8> {
         let mut bytes = b"KETCHUPDOC".to_vec();
@@ -6560,7 +9471,9 @@ mod tests {
         let exact_path = directory.path().join("bottle.kbex");
         let mesh_path = directory.path().join("bottle.obj");
         let stale_path = directory.path().join("stale.kbex");
-        let mut app = KetchupApp::new();
+        let mut app = KetchupApp::new().with_dialogs(Box::new(
+            dialogs::ScriptedFileDialogs::new().always_confirm_high_risk_as(61),
+        ));
         assert!(app.create_bottle());
         let definition_id = app.selected_bottle_definition().unwrap();
         let package = current_bottle_package(&app, definition_id);
@@ -6591,7 +9504,9 @@ mod tests {
         assert!(exact.contains("result_fingerprint=result"));
         assert!(mesh.contains("# authority=accepted exact OCCT B-Rep"));
         assert!(mesh.contains("g shell.outer.body"));
-        assert!(loss.contains("feature editability"));
+        assert!(loss.contains("editability_loss="));
+        assert!(loss.contains("topology_loss="));
+        assert!(loss.contains("tolerance_loss="));
 
         let ids = KetchupApp::bottle_feature_ids(&app.document.current(), definition_id).unwrap();
         let undo_before_drag = app.document.visible_undo_steps();
@@ -6612,6 +9527,56 @@ mod tests {
         assert!(!app.bottle_authority_report(definition_id).unwrap().current);
         assert!(!app.export_bottle_exact_recipe_to(definition_id, &stale_path));
         assert!(!stale_path.exists());
+    }
+
+    #[test]
+    fn lossy_mesh_export_requires_payload_bound_receipt_before_any_artifact_write() {
+        let directory = tempfile::tempdir().unwrap();
+        let mesh_path = directory.path().join("protected.obj");
+        let loss_path = mesh_path.with_extension("obj.loss.txt");
+        let original_mesh = b"preserve mesh until approval".to_vec();
+        let original_loss = b"preserve loss report until approval".to_vec();
+        std::fs::write(&mesh_path, &original_mesh).unwrap();
+        std::fs::write(&loss_path, &original_loss).unwrap();
+        let script = dialogs::ScriptedFileDialogs::new()
+            .queue_refused_high_risk()
+            .queue_high_risk_approval(73);
+        let mut app = KetchupApp::new().with_dialogs(Box::new(script.clone()));
+        assert!(app.create_bottle());
+        let definition_id = app.selected_bottle_definition().unwrap();
+        let package = current_bottle_package(&app, definition_id);
+        let snapshot = app.document.current();
+        app.exact_results
+            .insert_current(&snapshot, package)
+            .unwrap();
+        let canonical_before = app.document.current().canonical_digest();
+        let revision_before = app.document.current().revision_id();
+        let undo_before = app.document.visible_undo_steps();
+
+        assert!(!app.export_bottle_mesh_to(definition_id, &mesh_path));
+        assert_eq!(std::fs::read(&mesh_path).unwrap(), original_mesh);
+        assert_eq!(std::fs::read(&loss_path).unwrap(), original_loss);
+        assert!(app.last_side_effect_receipt().is_none());
+
+        assert!(app.export_bottle_mesh_to(definition_id, &mesh_path));
+        let receipt = app
+            .last_side_effect_receipt()
+            .expect("approved lossy export returns an authorization receipt");
+        assert_eq!(receipt.approving_human(), 73);
+        assert_eq!(receipt.revision_id(), revision_before);
+        assert_eq!(receipt.operation(), "export-lossy-obj-with-loss-report");
+        assert_eq!(receipt.scope().class(), HighRiskClass::LossyConversion);
+        assert_eq!(
+            receipt.scope().path(),
+            Some(mesh_path.display().to_string().as_str())
+        );
+        assert_ne!(std::fs::read(&mesh_path).unwrap(), original_mesh);
+        assert_ne!(std::fs::read(&loss_path).unwrap(), original_loss);
+        assert_eq!(app.document.current().canonical_digest(), canonical_before);
+        assert_eq!(app.document.current().revision_id(), revision_before);
+        assert_eq!(app.document.visible_undo_steps(), undo_before);
+        assert_eq!(script.high_risk_prompts().len(), 2);
+        assert!(script.high_risk_prompts()[0].contains("Payload SHA-256:"));
     }
 
     #[test]
@@ -6644,7 +9609,9 @@ mod tests {
     fn exact_occurrence_reference_and_mesh_export_use_the_canonical_world_transform() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("transformed.obj");
-        let mut app = KetchupApp::new();
+        let mut app = KetchupApp::new().with_dialogs(Box::new(
+            dialogs::ScriptedFileDialogs::new().always_confirm_high_risk_as(62),
+        ));
         let transform = Transform::from_matrix([
             0.0, -1.0, 0.0, 10.0, 1.0, 0.0, 0.0, 20.0, 0.0, 0.0, 1.0, 30.0, 0.0, 0.0, 0.0, 1.0,
         ])
@@ -6694,8 +9661,13 @@ mod tests {
             "build workspace all-targets so the exact worker exists at {}",
             executable.display()
         );
-        let mut app = KetchupApp::new();
+        let mut app = KetchupApp::new().with_dialogs(Box::new(
+            dialogs::ScriptedFileDialogs::new().always_confirm_high_risk_as(63),
+        ));
         app.document = through_cut_document();
+        app.document
+            .configure_human_confirmation_policy(app.confirmation_surface.verifying_key(), 1)
+            .unwrap();
         app.reset_document_presentation();
         app.connect_exact_worker(&executable).unwrap();
         let before = app.document.current();
@@ -6906,6 +9878,2798 @@ mod tests {
     }
 
     #[test]
+    fn assistant_evaluator_rename_review_is_typed_observational_and_undoable() {
+        let mut app = KetchupApp::new();
+        let node = NodeId(20);
+        app.document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::CreateEvaluatorNode {
+                    id: node,
+                    name: "width".to_owned(),
+                    dimension: Dimension::from_decimal("600").unwrap(),
+                    dependencies: Vec::new(),
+                },
+            ]))
+            .unwrap();
+        let revision_before = app.document_revision();
+        let digest_before = app.canonical_digest();
+        let undo_before = app.document.visible_undo_steps();
+        app.assistant_intent_kind = AssistantIntentKind::EvaluatorName;
+        app.assistant_target_input = node.0.to_string();
+        app.assistant_value_input = String::new();
+        assert!(!app.prepare_assistant_from_inputs());
+        assert!(app.assistant_proposal().is_none());
+        assert_eq!(app.document_revision(), revision_before);
+        assert_eq!(app.canonical_digest(), digest_before);
+
+        app.assistant_value_input = "cabinet width".to_owned();
+        assert!(app.prepare_assistant_from_inputs());
+        let proposal = app.assistant_proposal().unwrap();
+        assert_eq!(proposal.goal(), ProposalGoal::RenameEvaluatorNode(node));
+        assert_eq!(
+            proposal.authoritative_diff()[0].before,
+            ProposalValue::Text("width".to_owned())
+        );
+        assert_eq!(
+            proposal.authoritative_diff()[0].after,
+            ProposalValue::Text("cabinet width".to_owned())
+        );
+        assert_eq!(app.document_revision(), revision_before);
+        assert_eq!(app.canonical_digest(), digest_before);
+        assert_eq!(app.document.visible_undo_steps(), undo_before);
+
+        assert!(app.confirm_assistant_proposal());
+        assert_eq!(
+            app.document.current().evaluator_node(node).unwrap().name(),
+            "cabinet width"
+        );
+        assert_eq!(app.document.visible_undo_steps(), undo_before + 1);
+        assert!(app.undo());
+        assert_eq!(
+            app.document.current().evaluator_node(node).unwrap().name(),
+            "width"
+        );
+    }
+
+    #[test]
+    fn assistant_evaluator_expression_review_is_typed_observational_and_undoable() {
+        let mut app = KetchupApp::new();
+        let input = NodeId(20);
+        let expression = NodeId(21);
+        app.document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::CreateEvaluatorNode {
+                    id: input,
+                    name: "width".to_owned(),
+                    dimension: Dimension::from_decimal("600").unwrap(),
+                    dependencies: Vec::new(),
+                },
+                CanonicalCommand::CreateExpressionNode {
+                    id: expression,
+                    name: "double width".to_owned(),
+                    expression: "$20 * 2".to_owned(),
+                },
+            ]))
+            .unwrap();
+        let revision_before = app.document_revision();
+        let digest_before = app.canonical_digest();
+        let undo_before = app.document.visible_undo_steps();
+        app.assistant_intent_kind = AssistantIntentKind::EvaluatorExpression;
+        app.assistant_target_input = expression.0.to_string();
+        app.assistant_value_input = "(".to_owned();
+        assert!(!app.prepare_assistant_from_inputs());
+        assert!(app.assistant_proposal().is_none());
+        assert_eq!(app.document_revision(), revision_before);
+        assert_eq!(app.canonical_digest(), digest_before);
+
+        app.assistant_value_input = "$20 * 3".to_owned();
+        assert!(app.prepare_assistant_from_inputs());
+        let proposal = app.assistant_proposal().unwrap();
+        assert_eq!(
+            proposal.goal(),
+            ProposalGoal::SetEvaluatorExpression(expression)
+        );
+        assert_eq!(
+            proposal.authoritative_diff()[0].before,
+            ProposalValue::Text("$20 * 2".to_owned())
+        );
+        assert_eq!(
+            proposal.authoritative_diff()[0].after,
+            ProposalValue::Text("$20 * 3".to_owned())
+        );
+        assert_eq!(app.document_revision(), revision_before);
+        assert_eq!(app.canonical_digest(), digest_before);
+        assert_eq!(app.document.visible_undo_steps(), undo_before);
+
+        assert!(app.confirm_assistant_proposal());
+        assert_eq!(
+            app.document
+                .current()
+                .evaluator_node(expression)
+                .unwrap()
+                .kind()
+                .source(),
+            "$20 * 3"
+        );
+        assert_eq!(app.document.visible_undo_steps(), undo_before + 1);
+        assert!(app.undo());
+        assert_eq!(
+            app.document
+                .current()
+                .evaluator_node(expression)
+                .unwrap()
+                .kind()
+                .source(),
+            "$20 * 2"
+        );
+    }
+
+    #[test]
+    fn assistant_tag_visibility_review_is_observational_and_undoable() {
+        let mut app = KetchupApp::new();
+        let tag = TagId(7);
+        app.document
+            .apply_batch(&CommandBatch::new(vec![CanonicalCommand::CreateTag {
+                id: tag,
+                name: "Hardware".to_owned(),
+                visible: true,
+            }]))
+            .unwrap();
+        let revision_before = app.document_revision();
+        let digest_before = app.canonical_digest();
+        let undo_before = app.document.visible_undo_steps();
+        app.assistant_intent_kind = AssistantIntentKind::TagVisibility;
+        app.assistant_target_input = tag.0.to_string();
+        app.assistant_value_input = "yes".to_owned();
+        assert!(!app.prepare_assistant_from_inputs());
+        assert!(app.assistant_proposal().is_none());
+        assert_eq!(app.document_revision(), revision_before);
+        assert_eq!(app.canonical_digest(), digest_before);
+
+        assert!(
+            app.prepare_assistant_intent(WorkflowIntent::SetTagVisibility {
+                target: tag,
+                visible: false,
+            })
+        );
+        let proposal = app.assistant_proposal().unwrap();
+        assert_eq!(proposal.goal(), ProposalGoal::SetTagVisibility(tag));
+        assert_eq!(
+            proposal.authoritative_diff()[0].before,
+            ProposalValue::Boolean(true)
+        );
+        assert_eq!(
+            proposal.authoritative_diff()[0].after,
+            ProposalValue::Boolean(false)
+        );
+        assert_eq!(app.document_revision(), revision_before);
+        assert_eq!(app.canonical_digest(), digest_before);
+        assert_eq!(app.document.visible_undo_steps(), undo_before);
+
+        assert!(app.confirm_assistant_proposal());
+        assert!(!app.document.current().tag(tag).unwrap().visible());
+        assert_eq!(app.document.visible_undo_steps(), undo_before + 1);
+        assert!(app.undo());
+        assert!(app.document.current().tag(tag).unwrap().visible());
+    }
+
+    #[test]
+    fn assistant_occurrence_tag_review_is_typed_observational_and_undoable() {
+        let mut app = KetchupApp::new();
+        let tag = TagId(8);
+        app.document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::CreateTag {
+                    id: tag,
+                    name: "Fixtures".to_owned(),
+                    visible: true,
+                },
+                CanonicalCommand::SetOccurrenceTag {
+                    id: OccurrenceId(1),
+                    tag: Some(tag),
+                },
+            ]))
+            .unwrap();
+        let revision_before = app.document_revision();
+        let digest_before = app.canonical_digest();
+        let undo_before = app.document.visible_undo_steps();
+        app.assistant_intent_kind = AssistantIntentKind::OccurrenceTag;
+        app.assistant_target_input = "1".to_owned();
+        app.assistant_value_input = "invalid".to_owned();
+        assert!(!app.prepare_assistant_from_inputs());
+        assert!(app.assistant_proposal().is_none());
+        assert_eq!(app.document_revision(), revision_before);
+
+        app.assistant_value_input = "none".to_owned();
+        assert!(app.prepare_assistant_from_inputs());
+        let proposal = app.assistant_proposal().unwrap();
+        assert_eq!(
+            proposal.goal(),
+            ProposalGoal::SetOccurrenceTag(OccurrenceId(1))
+        );
+        assert_eq!(
+            proposal.authoritative_diff()[0].before,
+            ProposalValue::Tag(Some(tag))
+        );
+        assert_eq!(
+            proposal.authoritative_diff()[0].after,
+            ProposalValue::Tag(None)
+        );
+        assert_eq!(app.document_revision(), revision_before);
+        assert_eq!(app.canonical_digest(), digest_before);
+        assert_eq!(app.document.visible_undo_steps(), undo_before);
+
+        assert!(app.confirm_assistant_proposal());
+        assert_eq!(
+            app.document
+                .current()
+                .occurrence(OccurrenceId(1))
+                .unwrap()
+                .tag(),
+            None
+        );
+        assert_eq!(app.document.visible_undo_steps(), undo_before + 1);
+        assert!(app.undo());
+        assert_eq!(
+            app.document
+                .current()
+                .occurrence(OccurrenceId(1))
+                .unwrap()
+                .tag(),
+            Some(tag)
+        );
+    }
+
+    #[test]
+    fn assistant_occurrence_repoint_review_is_typed_observational_and_undoable() {
+        let mut app = KetchupApp::new();
+        let definition = DefinitionId(9);
+        app.document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::CreateDefinition {
+                    id: definition,
+                    name: "Alternate".to_owned(),
+                },
+            ]))
+            .unwrap();
+        let revision_before = app.document_revision();
+        let digest_before = app.canonical_digest();
+        let undo_before = app.document.visible_undo_steps();
+        app.assistant_intent_kind = AssistantIntentKind::OccurrenceDefinition;
+        app.assistant_target_input = "1".to_owned();
+        app.assistant_value_input = "invalid".to_owned();
+        assert!(!app.prepare_assistant_from_inputs());
+        assert!(app.assistant_proposal().is_none());
+        assert_eq!(app.document_revision(), revision_before);
+
+        app.assistant_value_input = definition.0.to_string();
+        assert!(app.prepare_assistant_from_inputs());
+        let proposal = app.assistant_proposal().unwrap();
+        assert_eq!(
+            proposal.goal(),
+            ProposalGoal::RepointOccurrence(OccurrenceId(1))
+        );
+        assert_eq!(
+            proposal.authoritative_diff()[0].before,
+            ProposalValue::Definition(INITIAL_BOX_DEFINITION)
+        );
+        assert_eq!(
+            proposal.authoritative_diff()[0].after,
+            ProposalValue::Definition(definition)
+        );
+        assert_eq!(app.document_revision(), revision_before);
+        assert_eq!(app.canonical_digest(), digest_before);
+        assert_eq!(app.document.visible_undo_steps(), undo_before);
+
+        assert!(app.confirm_assistant_proposal());
+        assert_eq!(
+            app.document
+                .current()
+                .occurrence(OccurrenceId(1))
+                .unwrap()
+                .definition_id(),
+            definition
+        );
+        assert_eq!(app.document.visible_undo_steps(), undo_before + 1);
+        assert!(app.undo());
+        assert_eq!(
+            app.document
+                .current()
+                .occurrence(OccurrenceId(1))
+                .unwrap()
+                .definition_id(),
+            INITIAL_BOX_DEFINITION
+        );
+    }
+
+    #[test]
+    fn assistant_occurrence_parent_review_is_typed_observational_and_undoable() {
+        let mut app = KetchupApp::new();
+        let group = GroupId(10);
+        app.document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::CreateGroup {
+                    id: group,
+                    name: "Assembly".to_owned(),
+                    transform: Transform::identity(),
+                    parent: None,
+                },
+                CanonicalCommand::SetOccurrenceParent {
+                    id: OccurrenceId(1),
+                    parent: Some(group),
+                },
+            ]))
+            .unwrap();
+        let revision_before = app.document_revision();
+        let digest_before = app.canonical_digest();
+        let undo_before = app.document.visible_undo_steps();
+        app.assistant_intent_kind = AssistantIntentKind::OccurrenceParent;
+        app.assistant_target_input = "1".to_owned();
+        app.assistant_value_input = "invalid".to_owned();
+        assert!(!app.prepare_assistant_from_inputs());
+        assert!(app.assistant_proposal().is_none());
+        assert_eq!(app.document_revision(), revision_before);
+
+        app.assistant_value_input = "none".to_owned();
+        assert!(app.prepare_assistant_from_inputs());
+        let proposal = app.assistant_proposal().unwrap();
+        assert_eq!(
+            proposal.goal(),
+            ProposalGoal::SetOccurrenceParent(OccurrenceId(1))
+        );
+        assert_eq!(
+            proposal.authoritative_diff()[0].before,
+            ProposalValue::Group(Some(group))
+        );
+        assert_eq!(
+            proposal.authoritative_diff()[0].after,
+            ProposalValue::Group(None)
+        );
+        assert_eq!(app.document_revision(), revision_before);
+        assert_eq!(app.canonical_digest(), digest_before);
+        assert_eq!(app.document.visible_undo_steps(), undo_before);
+
+        assert!(app.confirm_assistant_proposal());
+        assert_eq!(
+            app.document
+                .current()
+                .occurrence(OccurrenceId(1))
+                .unwrap()
+                .parent(),
+            None
+        );
+        assert_eq!(app.document.visible_undo_steps(), undo_before + 1);
+        assert!(app.undo());
+        assert_eq!(
+            app.document
+                .current()
+                .occurrence(OccurrenceId(1))
+                .unwrap()
+                .parent(),
+            Some(group)
+        );
+    }
+
+    #[test]
+    fn assistant_group_parent_review_is_typed_observational_and_undoable() {
+        let mut app = KetchupApp::new();
+        let group = GroupId(10);
+        let parent = GroupId(11);
+        app.document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::CreateGroup {
+                    id: group,
+                    name: "Assembly".to_owned(),
+                    transform: Transform::identity(),
+                    parent: None,
+                },
+                CanonicalCommand::CreateGroup {
+                    id: parent,
+                    name: "Parent".to_owned(),
+                    transform: Transform::identity(),
+                    parent: None,
+                },
+            ]))
+            .unwrap();
+        let revision_before = app.document_revision();
+        let digest_before = app.canonical_digest();
+        let undo_before = app.document.visible_undo_steps();
+        app.assistant_intent_kind = AssistantIntentKind::GroupParent;
+        app.assistant_target_input = group.0.to_string();
+        app.assistant_value_input = "invalid".to_owned();
+        assert!(!app.prepare_assistant_from_inputs());
+        assert!(app.assistant_proposal().is_none());
+        assert_eq!(app.document_revision(), revision_before);
+
+        app.assistant_value_input = parent.0.to_string();
+        assert!(app.prepare_assistant_from_inputs());
+        let proposal = app.assistant_proposal().unwrap();
+        assert_eq!(proposal.goal(), ProposalGoal::SetGroupParent(group));
+        assert_eq!(
+            proposal.authoritative_diff()[0].before,
+            ProposalValue::Group(None)
+        );
+        assert_eq!(
+            proposal.authoritative_diff()[0].after,
+            ProposalValue::Group(Some(parent))
+        );
+        assert_eq!(app.document_revision(), revision_before);
+        assert_eq!(app.canonical_digest(), digest_before);
+        assert_eq!(app.document.visible_undo_steps(), undo_before);
+
+        assert!(app.confirm_assistant_proposal());
+        assert_eq!(
+            app.document.current().group(group).unwrap().parent(),
+            Some(parent)
+        );
+        assert_eq!(app.document.visible_undo_steps(), undo_before + 1);
+        assert!(app.undo());
+        assert_eq!(app.document.current().group(group).unwrap().parent(), None);
+    }
+
+    #[test]
+    fn assistant_group_translation_review_is_typed_observational_and_undoable() {
+        let mut app = KetchupApp::new();
+        let group = GroupId(10);
+        app.document
+            .apply_batch(&CommandBatch::new(vec![CanonicalCommand::CreateGroup {
+                id: group,
+                name: "Assembly".to_owned(),
+                transform: Transform::identity(),
+                parent: None,
+            }]))
+            .unwrap();
+        let revision_before = app.document_revision();
+        let digest_before = app.canonical_digest();
+        let undo_before = app.document.visible_undo_steps();
+        app.assistant_intent_kind = AssistantIntentKind::GroupTranslation;
+        app.assistant_target_input = group.0.to_string();
+        app.assistant_value_input = "invalid".to_owned();
+        assert!(!app.prepare_assistant_from_inputs());
+        assert!(app.assistant_proposal().is_none());
+        assert_eq!(app.document_revision(), revision_before);
+
+        app.assistant_value_input = "4.5, -2, 11.25".to_owned();
+        assert!(app.prepare_assistant_from_inputs());
+        let proposal = app.assistant_proposal().unwrap();
+        let expected = Transform::from_translation(4.5, -2.0, 11.25).unwrap();
+        assert_eq!(proposal.goal(), ProposalGoal::SetGroupTranslation(group));
+        assert_eq!(
+            proposal.authoritative_diff()[0].before,
+            ProposalValue::Transform(Transform::identity())
+        );
+        assert_eq!(
+            proposal.authoritative_diff()[0].after,
+            ProposalValue::Transform(expected)
+        );
+        assert_eq!(app.document_revision(), revision_before);
+        assert_eq!(app.canonical_digest(), digest_before);
+        assert_eq!(app.document.visible_undo_steps(), undo_before);
+
+        assert!(app.confirm_assistant_proposal());
+        assert_eq!(
+            app.document.current().group(group).unwrap().transform(),
+            expected
+        );
+        assert_eq!(app.document.visible_undo_steps(), undo_before + 1);
+        assert!(app.undo());
+        assert_eq!(
+            app.document.current().group(group).unwrap().transform(),
+            Transform::identity()
+        );
+    }
+
+    #[test]
+    fn assistant_bottle_control_dimension_review_is_typed_observational_and_undoable() {
+        let mut app = KetchupApp::new();
+        assert!(app.create_bottle());
+        let definition_id = app.selected_bottle_definition().unwrap();
+        let control = KetchupApp::bottle_feature_ids(&app.document.current(), definition_id)
+            .unwrap()
+            .control;
+        let revision_before = app.document_revision();
+        let digest_before = app.canonical_digest();
+        let undo_before = app.document.visible_undo_steps();
+        app.assistant_intent_kind = AssistantIntentKind::BottleControlDimension;
+        app.assistant_target_input = control.0.to_string();
+        app.assistant_value_input = "waist=32".to_owned();
+        assert!(!app.prepare_assistant_from_inputs());
+        assert!(app.assistant_proposal().is_none());
+        assert_eq!(app.document_revision(), revision_before);
+        assert_eq!(app.canonical_digest(), digest_before);
+
+        app.assistant_value_input = "body_radius=32".to_owned();
+        assert!(app.prepare_assistant_from_inputs());
+        let proposal = app.assistant_proposal().unwrap();
+        assert_eq!(
+            proposal.goal(),
+            ProposalGoal::SetBottleControlDimension(control, BottleControlDimension::BodyRadius)
+        );
+        assert_eq!(
+            proposal.authoritative_diff()[0].before,
+            ProposalValue::Dimension(Dimension::from_decimal("30").unwrap())
+        );
+        assert_eq!(
+            proposal.authoritative_diff()[0].after,
+            ProposalValue::Dimension(Dimension::from_decimal("32").unwrap())
+        );
+        assert_eq!(app.document_revision(), revision_before);
+        assert_eq!(app.canonical_digest(), digest_before);
+        assert_eq!(app.document.visible_undo_steps(), undo_before);
+
+        assert!(app.confirm_assistant_proposal());
+        assert!(matches!(
+            app.document.current().feature(control).unwrap().kind(),
+            FeatureKind::BottleProfileControl { body_radius, .. }
+                if body_radius.millimetres() == 32.0
+        ));
+        assert_eq!(app.document.visible_undo_steps(), undo_before + 1);
+        assert!(app.undo());
+        assert!(matches!(
+            app.document.current().feature(control).unwrap().kind(),
+            FeatureKind::BottleProfileControl { body_radius, .. }
+                if body_radius.millimetres() == 30.0
+        ));
+    }
+
+    #[test]
+    fn assistant_bottle_finish_kind_review_is_typed_observational_and_undoable() {
+        let mut app = KetchupApp::new();
+        assert!(app.create_bottle());
+        let definition_id = app.selected_bottle_definition().unwrap();
+        let finish = KetchupApp::bottle_feature_ids(&app.document.current(), definition_id)
+            .unwrap()
+            .finish;
+        let revision_before = app.document_revision();
+        let digest_before = app.canonical_digest();
+        let undo_before = app.document.visible_undo_steps();
+        app.assistant_intent_kind = AssistantIntentKind::BottleEdgeFinishKind;
+        app.assistant_target_input = finish.0.to_string();
+        app.assistant_value_input = "round".to_owned();
+        assert!(!app.prepare_assistant_from_inputs());
+        assert!(app.assistant_proposal().is_none());
+        assert_eq!(app.document_revision(), revision_before);
+        assert_eq!(app.canonical_digest(), digest_before);
+
+        app.assistant_value_input = "chamfer".to_owned();
+        assert!(app.prepare_assistant_from_inputs());
+        let proposal = app.assistant_proposal().unwrap();
+        assert_eq!(
+            proposal.goal(),
+            ProposalGoal::SetBottleEdgeFinishKind(finish)
+        );
+        assert_eq!(
+            proposal.authoritative_diff()[0].before,
+            ProposalValue::BottleEdgeFinishKind(BottleEdgeFinishKind::Fillet)
+        );
+        assert_eq!(
+            proposal.authoritative_diff()[0].after,
+            ProposalValue::BottleEdgeFinishKind(BottleEdgeFinishKind::Chamfer)
+        );
+        assert_eq!(app.document_revision(), revision_before);
+        assert_eq!(app.canonical_digest(), digest_before);
+        assert_eq!(app.document.visible_undo_steps(), undo_before);
+
+        assert!(app.confirm_assistant_proposal());
+        assert!(matches!(
+            app.document.current().feature(finish).unwrap().kind(),
+            FeatureKind::BottleEdgeFinish {
+                kind: BottleEdgeFinishKind::Chamfer,
+                ..
+            }
+        ));
+        assert_eq!(app.document.visible_undo_steps(), undo_before + 1);
+        assert!(app.undo());
+        assert!(matches!(
+            app.document.current().feature(finish).unwrap().kind(),
+            FeatureKind::BottleEdgeFinish {
+                kind: BottleEdgeFinishKind::Fillet,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn assistant_profile_points_review_is_typed_observational_and_undoable() {
+        let mut app = KetchupApp::new();
+        let definition = DefinitionId(50);
+        let profile = FeatureId(51);
+        let original = vec![[0.0, 0.0], [10.0, 0.0], [0.0, 10.0]];
+        app.document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::CreateDefinition {
+                    id: definition,
+                    name: "Assistant profile".to_owned(),
+                },
+                CanonicalCommand::CreateFeature {
+                    id: profile,
+                    definition_id: definition,
+                    name: "Profile".to_owned(),
+                    kind: FeatureKind::Profile {
+                        points_mm: original.clone(),
+                    },
+                },
+            ]))
+            .unwrap();
+        let revision_before = app.document_revision();
+        let digest_before = app.canonical_digest();
+        let undo_before = app.document.visible_undo_steps();
+        app.assistant_intent_kind = AssistantIntentKind::ProfilePoints;
+        app.assistant_target_input = profile.0.to_string();
+        app.assistant_value_input = "0,0; invalid".to_owned();
+        assert!(!app.prepare_assistant_from_inputs());
+        assert!(app.assistant_proposal().is_none());
+        assert_eq!(app.document_revision(), revision_before);
+        assert_eq!(app.canonical_digest(), digest_before);
+
+        let requested = vec![[0.0, 0.0], [12.0, 0.0], [12.0, 8.0], [0.0, 8.0]];
+        app.assistant_value_input = "0,0; 12,0; 12,8; 0,8".to_owned();
+        assert!(app.prepare_assistant_from_inputs());
+        let proposal = app.assistant_proposal().unwrap();
+        assert_eq!(proposal.goal(), ProposalGoal::SetProfilePoints(profile));
+        assert_eq!(
+            proposal.authoritative_diff()[0].before,
+            ProposalValue::ProfilePoints(original.clone())
+        );
+        assert_eq!(
+            proposal.authoritative_diff()[0].after,
+            ProposalValue::ProfilePoints(requested.clone())
+        );
+        assert_eq!(app.document_revision(), revision_before);
+        assert_eq!(app.canonical_digest(), digest_before);
+        assert_eq!(app.document.visible_undo_steps(), undo_before);
+
+        assert!(app.confirm_assistant_proposal());
+        assert!(matches!(
+            app.document.current().feature(profile).unwrap().kind(),
+            FeatureKind::Profile { points_mm } if points_mm == &requested
+        ));
+        assert_eq!(app.document.visible_undo_steps(), undo_before + 1);
+        assert!(app.undo());
+        assert!(matches!(
+            app.document.current().feature(profile).unwrap().kind(),
+            FeatureKind::Profile { points_mm } if points_mm == &original
+        ));
+    }
+
+    #[test]
+    fn assistant_rule_outputs_review_is_typed_observational_and_undoable() {
+        let mut app = KetchupApp::new();
+        let rule = NodeId(30);
+        let output = |key: &str| {
+            RuleOutput::new(SlotSegment::new(rule, "result", key).unwrap(), Vec::new()).unwrap()
+        };
+        app.document
+            .apply_batch(&CommandBatch::new(vec![CanonicalCommand::CreateRuleNode {
+                id: rule,
+                name: "layout".to_owned(),
+                expression: "1".to_owned(),
+                input_ports: vec![PortSpec::number("source").unwrap()],
+                output_ports: vec![PortSpec::number("result").unwrap()],
+                outputs: vec![output("left")],
+                override_parameters: Vec::new(),
+            }]))
+            .unwrap();
+        let revision_before = app.document_revision();
+        let digest_before = app.canonical_digest();
+        let undo_before = app.document.visible_undo_steps();
+        app.assistant_intent_kind = AssistantIntentKind::RuleOutputs;
+        app.assistant_target_input = rule.0.to_string();
+        app.assistant_value_input = "result".to_owned();
+        assert!(!app.prepare_assistant_from_inputs());
+        assert!(app.assistant_proposal().is_none());
+        assert_eq!(app.document_revision(), revision_before);
+        assert_eq!(app.canonical_digest(), digest_before);
+
+        let requested = vec![output("center"), output("right")];
+        app.assistant_value_input = "result:center; result:right".to_owned();
+        assert!(app.prepare_assistant_from_inputs());
+        let proposal = app.assistant_proposal().unwrap();
+        assert_eq!(proposal.goal(), ProposalGoal::SetRuleOutputs(rule));
+        assert_eq!(
+            proposal.authoritative_diff()[0].before,
+            ProposalValue::RuleOutputs(vec![output("left")])
+        );
+        assert_eq!(
+            proposal.authoritative_diff()[0].after,
+            ProposalValue::RuleOutputs(requested.clone())
+        );
+        assert_eq!(app.document_revision(), revision_before);
+        assert_eq!(app.canonical_digest(), digest_before);
+        assert_eq!(app.document.visible_undo_steps(), undo_before);
+
+        assert!(app.confirm_assistant_proposal());
+        assert!(matches!(
+            app.document.current().evaluator_node(rule).unwrap().kind(),
+            EvaluatorNodeKind::Rule { outputs, .. } if outputs == &requested
+        ));
+        assert_eq!(app.document.visible_undo_steps(), undo_before + 1);
+        assert!(app.undo());
+        assert!(matches!(
+            app.document.current().evaluator_node(rule).unwrap().kind(),
+            EvaluatorNodeKind::Rule { outputs, .. } if outputs == &vec![output("left")]
+        ));
+    }
+
+    #[test]
+    fn assistant_create_tag_review_is_typed_observational_and_undoable() {
+        let mut app = KetchupApp::new();
+        let tag = TagId(24);
+        let revision_before = app.document_revision();
+        let digest_before = app.canonical_digest();
+        let undo_before = app.document.visible_undo_steps();
+        app.assistant_intent_kind = AssistantIntentKind::CreateTag;
+        app.assistant_target_input = tag.0.to_string();
+        app.assistant_value_input = "visible:Reviewed".to_owned();
+        assert!(!app.prepare_assistant_from_inputs());
+        assert!(app.assistant_proposal().is_none());
+        assert_eq!(app.document_revision(), revision_before);
+
+        app.assistant_value_input = "true:Reviewed tag".to_owned();
+        assert!(app.prepare_assistant_from_inputs());
+        let proposal = app.assistant_proposal().unwrap();
+        assert_eq!(proposal.goal(), ProposalGoal::CreateTag(tag));
+        assert_eq!(
+            proposal.authoritative_diff()[0].before,
+            ProposalValue::Missing
+        );
+        assert_eq!(
+            proposal.authoritative_diff()[0].after,
+            ProposalValue::TagState {
+                name: "Reviewed tag".to_owned(),
+                visible: true,
+            }
+        );
+        assert_eq!(app.document_revision(), revision_before);
+        assert_eq!(app.canonical_digest(), digest_before);
+        assert_eq!(app.document.visible_undo_steps(), undo_before);
+
+        assert!(app.confirm_assistant_proposal());
+        let snapshot = app.document.current();
+        let created = snapshot.tag(tag).unwrap();
+        assert_eq!(created.name(), "Reviewed tag");
+        assert!(created.visible());
+        assert_eq!(app.document.visible_undo_steps(), undo_before + 1);
+        assert!(app.undo());
+        assert!(app.document.current().tag(tag).is_none());
+    }
+
+    #[test]
+    fn assistant_create_collection_review_is_typed_observational_and_undoable() {
+        let mut app = KetchupApp::new();
+        let collection = CollectionId(24);
+        let revision_before = app.document_revision();
+        let digest_before = app.canonical_digest();
+        let undo_before = app.document.visible_undo_steps();
+        app.assistant_intent_kind = AssistantIntentKind::CreateCollection;
+        app.assistant_target_input = collection.0.to_string();
+        app.assistant_value_input = String::new();
+        assert!(!app.prepare_assistant_from_inputs());
+        assert!(app.assistant_proposal().is_none());
+        assert_eq!(app.document_revision(), revision_before);
+
+        app.assistant_value_input = "Reviewed selection".to_owned();
+        assert!(app.prepare_assistant_from_inputs());
+        let proposal = app.assistant_proposal().unwrap();
+        assert_eq!(proposal.goal(), ProposalGoal::CreateCollection(collection));
+        assert_eq!(
+            proposal.authoritative_diff()[0].before,
+            ProposalValue::Missing
+        );
+        assert_eq!(
+            proposal.authoritative_diff()[0].after,
+            ProposalValue::Text("Reviewed selection".to_owned())
+        );
+        assert_eq!(app.document_revision(), revision_before);
+        assert_eq!(app.canonical_digest(), digest_before);
+        assert_eq!(app.document.visible_undo_steps(), undo_before);
+
+        assert!(app.confirm_assistant_proposal());
+        assert_eq!(
+            app.document
+                .current()
+                .collection(collection)
+                .unwrap()
+                .name(),
+            "Reviewed selection"
+        );
+        assert_eq!(app.document.visible_undo_steps(), undo_before + 1);
+        assert!(app.undo());
+        assert!(app.document.current().collection(collection).is_none());
+    }
+
+    #[test]
+    fn assistant_delete_collection_review_is_typed_observational_and_undoable() {
+        let mut app = KetchupApp::new();
+        let collection = CollectionId(24);
+        app.document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::CreateCollection {
+                    id: collection,
+                    name: "Reviewed selection".to_owned(),
+                },
+                CanonicalCommand::SetCollectionOccurrences {
+                    id: collection,
+                    occurrence_ids: vec![OccurrenceId(1)],
+                },
+            ]))
+            .unwrap();
+        let revision_before = app.document_revision();
+        let digest_before = app.canonical_digest();
+        let undo_before = app.document.visible_undo_steps();
+        app.assistant_intent_kind = AssistantIntentKind::DeleteCollection;
+        app.assistant_target_input = collection.0.to_string();
+        app.assistant_value_input.clear();
+
+        assert!(app.prepare_assistant_from_inputs());
+        let proposal = app.assistant_proposal().unwrap();
+        assert_eq!(proposal.goal(), ProposalGoal::DeleteCollection(collection));
+        assert_eq!(
+            proposal.authoritative_diff()[0].before,
+            ProposalValue::CollectionState {
+                name: "Reviewed selection".to_owned(),
+                occurrence_ids: vec![OccurrenceId(1)],
+            }
+        );
+        assert_eq!(
+            proposal.authoritative_diff()[0].after,
+            ProposalValue::Missing
+        );
+        assert_eq!(app.document_revision(), revision_before);
+        assert_eq!(app.canonical_digest(), digest_before);
+        assert_eq!(app.document.visible_undo_steps(), undo_before);
+
+        assert!(app.confirm_assistant_proposal());
+        assert!(app.document.current().collection(collection).is_none());
+        assert_eq!(app.document.visible_undo_steps(), undo_before + 1);
+        assert!(app.undo());
+        let snapshot = app.document.current();
+        let restored = snapshot.collection(collection).unwrap();
+        assert_eq!(restored.name(), "Reviewed selection");
+        assert_eq!(
+            restored.occurrence_ids().collect::<Vec<_>>(),
+            vec![OccurrenceId(1)]
+        );
+    }
+
+    #[test]
+    fn assistant_delete_tag_review_is_typed_observational_and_undoable() {
+        let mut app = KetchupApp::new();
+        let tag = TagId(24);
+        app.document
+            .apply_batch(&CommandBatch::new(vec![CanonicalCommand::CreateTag {
+                id: tag,
+                name: "Reviewed tag".to_owned(),
+                visible: false,
+            }]))
+            .unwrap();
+        let revision_before = app.document_revision();
+        let digest_before = app.canonical_digest();
+        let undo_before = app.document.visible_undo_steps();
+        app.assistant_intent_kind = AssistantIntentKind::DeleteTag;
+        app.assistant_target_input = tag.0.to_string();
+        app.assistant_value_input.clear();
+
+        assert!(app.prepare_assistant_from_inputs());
+        let proposal = app.assistant_proposal().unwrap();
+        assert_eq!(proposal.goal(), ProposalGoal::DeleteTag(tag));
+        assert_eq!(
+            proposal.authoritative_diff()[0].before,
+            ProposalValue::TagState {
+                name: "Reviewed tag".to_owned(),
+                visible: false,
+            }
+        );
+        assert_eq!(
+            proposal.authoritative_diff()[0].after,
+            ProposalValue::Missing
+        );
+        assert_eq!(app.document_revision(), revision_before);
+        assert_eq!(app.canonical_digest(), digest_before);
+        assert_eq!(app.document.visible_undo_steps(), undo_before);
+
+        assert!(app.confirm_assistant_proposal());
+        assert!(app.document.current().tag(tag).is_none());
+        assert_eq!(app.document.visible_undo_steps(), undo_before + 1);
+        assert!(app.undo());
+        let snapshot = app.document.current();
+        let restored = snapshot.tag(tag).unwrap();
+        assert_eq!(restored.name(), "Reviewed tag");
+        assert!(!restored.visible());
+    }
+
+    #[test]
+    fn assistant_delete_group_review_is_typed_observational_and_undoable() {
+        let mut app = KetchupApp::new();
+        let group = GroupId(24);
+        app.document
+            .apply_batch(&CommandBatch::new(vec![CanonicalCommand::CreateGroup {
+                id: group,
+                name: "Reviewed group".to_owned(),
+                transform: Transform::identity(),
+                parent: None,
+            }]))
+            .unwrap();
+        let revision_before = app.document_revision();
+        let digest_before = app.canonical_digest();
+        let undo_before = app.document.visible_undo_steps();
+        app.assistant_intent_kind = AssistantIntentKind::DeleteGroup;
+        app.assistant_target_input = group.0.to_string();
+        app.assistant_value_input.clear();
+
+        assert!(app.prepare_assistant_from_inputs());
+        let proposal = app.assistant_proposal().unwrap();
+        assert_eq!(proposal.goal(), ProposalGoal::DeleteGroup(group));
+        assert_eq!(
+            proposal.authoritative_diff()[0].before,
+            ProposalValue::GroupState {
+                name: "Reviewed group".to_owned(),
+                transform: Transform::identity(),
+                parent: None,
+            }
+        );
+        assert_eq!(
+            proposal.authoritative_diff()[0].after,
+            ProposalValue::Missing
+        );
+        assert_eq!(app.document_revision(), revision_before);
+        assert_eq!(app.canonical_digest(), digest_before);
+        assert_eq!(app.document.visible_undo_steps(), undo_before);
+
+        assert!(app.confirm_assistant_proposal());
+        assert!(app.document.current().group(group).is_none());
+        assert_eq!(app.document.visible_undo_steps(), undo_before + 1);
+        assert!(app.undo());
+        let snapshot = app.document.current();
+        let restored = snapshot.group(group).unwrap();
+        assert_eq!(restored.name(), "Reviewed group");
+        assert_eq!(restored.transform(), Transform::identity());
+        assert_eq!(restored.parent(), None);
+    }
+
+    #[test]
+    fn assistant_delete_occurrence_review_is_typed_observational_and_undoable() {
+        let mut app = KetchupApp::new();
+        let occurrence = OccurrenceId(1);
+        let snapshot = app.document.current();
+        let existing = snapshot.occurrence(occurrence).unwrap();
+        let expected_definition = existing.definition_id();
+        let expected_name = existing.name().to_owned();
+        let expected_transform = existing.transform();
+        let expected_parent = existing.parent();
+        let expected_tag = existing.tag();
+        let expected_visible = existing.visible();
+        let revision_before = app.document_revision();
+        let digest_before = app.canonical_digest();
+        let undo_before = app.document.visible_undo_steps();
+        app.assistant_intent_kind = AssistantIntentKind::DeleteOccurrence;
+        app.assistant_target_input = occurrence.0.to_string();
+        app.assistant_value_input.clear();
+
+        assert!(app.prepare_assistant_from_inputs());
+        let proposal = app.assistant_proposal().unwrap();
+        assert_eq!(proposal.goal(), ProposalGoal::DeleteOccurrence(occurrence));
+        assert_eq!(
+            proposal.authoritative_diff()[0].before,
+            ProposalValue::OccurrenceState {
+                definition: expected_definition,
+                name: expected_name.clone(),
+                transform: expected_transform,
+                parent: expected_parent,
+                tag: expected_tag,
+                visible: expected_visible,
+            }
+        );
+        assert_eq!(
+            proposal.authoritative_diff()[0].after,
+            ProposalValue::Missing
+        );
+        assert_eq!(app.document_revision(), revision_before);
+        assert_eq!(app.canonical_digest(), digest_before);
+        assert_eq!(app.document.visible_undo_steps(), undo_before);
+
+        assert!(app.confirm_assistant_proposal());
+        assert!(app.document.current().occurrence(occurrence).is_none());
+        assert_eq!(app.document.visible_undo_steps(), undo_before + 1);
+        assert!(app.undo());
+        let snapshot = app.document.current();
+        let restored = snapshot.occurrence(occurrence).unwrap();
+        assert_eq!(restored.definition_id(), expected_definition);
+        assert_eq!(restored.name(), expected_name);
+        assert_eq!(restored.transform(), expected_transform);
+        assert_eq!(restored.parent(), expected_parent);
+        assert_eq!(restored.tag(), expected_tag);
+        assert_eq!(restored.visible(), expected_visible);
+    }
+
+    #[test]
+    fn assistant_create_definition_review_is_typed_observational_and_undoable() {
+        let mut app = KetchupApp::new();
+        let definition = DefinitionId(24);
+        let revision_before = app.document_revision();
+        let digest_before = app.canonical_digest();
+        let undo_before = app.document.visible_undo_steps();
+        app.assistant_intent_kind = AssistantIntentKind::CreateDefinition;
+        app.assistant_target_input = definition.0.to_string();
+        app.assistant_value_input = String::new();
+        assert!(!app.prepare_assistant_from_inputs());
+        assert!(app.assistant_proposal().is_none());
+        assert_eq!(app.document_revision(), revision_before);
+
+        app.assistant_value_input = "Reviewed component".to_owned();
+        assert!(app.prepare_assistant_from_inputs());
+        let proposal = app.assistant_proposal().unwrap();
+        assert_eq!(proposal.goal(), ProposalGoal::CreateDefinition(definition));
+        assert_eq!(
+            proposal.authoritative_diff()[0].before,
+            ProposalValue::Missing
+        );
+        assert_eq!(
+            proposal.authoritative_diff()[0].after,
+            ProposalValue::Text("Reviewed component".to_owned())
+        );
+        assert_eq!(app.document_revision(), revision_before);
+        assert_eq!(app.canonical_digest(), digest_before);
+        assert_eq!(app.document.visible_undo_steps(), undo_before);
+
+        assert!(app.confirm_assistant_proposal());
+        assert_eq!(
+            app.document
+                .current()
+                .definition(definition)
+                .unwrap()
+                .name(),
+            "Reviewed component"
+        );
+        assert_eq!(app.document.visible_undo_steps(), undo_before + 1);
+        assert!(app.undo());
+        assert!(app.document.current().definition(definition).is_none());
+    }
+
+    #[test]
+    fn assistant_create_group_review_is_typed_observational_and_undoable() {
+        let mut app = KetchupApp::new();
+        let group = GroupId(24);
+        let revision_before = app.document_revision();
+        let digest_before = app.canonical_digest();
+        let undo_before = app.document.visible_undo_steps();
+        app.assistant_intent_kind = AssistantIntentKind::CreateGroup;
+        app.assistant_target_input = group.0.to_string();
+        app.assistant_value_input = String::new();
+        assert!(!app.prepare_assistant_from_inputs());
+        assert!(app.assistant_proposal().is_none());
+        assert_eq!(app.document_revision(), revision_before);
+
+        app.assistant_value_input = "Reviewed root group".to_owned();
+        assert!(app.prepare_assistant_from_inputs());
+        let proposal = app.assistant_proposal().unwrap();
+        assert_eq!(proposal.goal(), ProposalGoal::CreateGroup(group));
+        assert_eq!(
+            proposal.authoritative_diff()[0].before,
+            ProposalValue::Missing
+        );
+        assert_eq!(
+            proposal.authoritative_diff()[0].after,
+            ProposalValue::GroupState {
+                name: "Reviewed root group".to_owned(),
+                transform: Transform::identity(),
+                parent: None,
+            }
+        );
+        assert_eq!(app.document_revision(), revision_before);
+        assert_eq!(app.canonical_digest(), digest_before);
+        assert_eq!(app.document.visible_undo_steps(), undo_before);
+
+        assert!(app.confirm_assistant_proposal());
+        let snapshot = app.document.current();
+        let created = snapshot.group(group).unwrap();
+        assert_eq!(created.name(), "Reviewed root group");
+        assert_eq!(created.transform(), Transform::identity());
+        assert_eq!(created.parent(), None);
+        assert_eq!(app.document.visible_undo_steps(), undo_before + 1);
+        assert!(app.undo());
+        assert!(app.document.current().group(group).is_none());
+    }
+
+    #[test]
+    fn assistant_create_occurrence_review_is_typed_observational_and_undoable() {
+        let mut app = KetchupApp::new();
+        let occurrence = OccurrenceId(24);
+        let revision_before = app.document_revision();
+        let digest_before = app.canonical_digest();
+        let undo_before = app.document.visible_undo_steps();
+        app.assistant_intent_kind = AssistantIntentKind::CreateOccurrence;
+        app.assistant_target_input = occurrence.0.to_string();
+        app.assistant_value_input = "invalid".to_owned();
+        assert!(!app.prepare_assistant_from_inputs());
+        assert!(app.assistant_proposal().is_none());
+        assert_eq!(app.document_revision(), revision_before);
+
+        app.assistant_value_input = "1:Reviewed occurrence".to_owned();
+        assert!(app.prepare_assistant_from_inputs());
+        let proposal = app.assistant_proposal().unwrap();
+        assert_eq!(proposal.goal(), ProposalGoal::CreateOccurrence(occurrence));
+        assert_eq!(
+            proposal.authoritative_diff()[0].before,
+            ProposalValue::Missing
+        );
+        assert_eq!(
+            proposal.authoritative_diff()[0].after,
+            ProposalValue::OccurrenceState {
+                definition: INITIAL_BOX_DEFINITION,
+                name: "Reviewed occurrence".to_owned(),
+                transform: Transform::identity(),
+                parent: None,
+                tag: None,
+                visible: true,
+            }
+        );
+        assert_eq!(app.document_revision(), revision_before);
+        assert_eq!(app.canonical_digest(), digest_before);
+        assert_eq!(app.document.visible_undo_steps(), undo_before);
+
+        assert!(app.confirm_assistant_proposal());
+        let snapshot = app.document.current();
+        let created = snapshot.occurrence(occurrence).unwrap();
+        assert_eq!(created.definition_id(), INITIAL_BOX_DEFINITION);
+        assert_eq!(created.name(), "Reviewed occurrence");
+        assert_eq!(created.transform(), Transform::identity());
+        assert_eq!(created.parent(), None);
+        assert_eq!(created.tag(), None);
+        assert!(created.visible());
+        assert_eq!(app.document.visible_undo_steps(), undo_before + 1);
+        assert!(app.undo());
+        assert!(app.document.current().occurrence(occurrence).is_none());
+    }
+
+    #[test]
+    fn assistant_create_profile_feature_review_is_typed_observational_and_undoable() {
+        let mut app = KetchupApp::new();
+        let feature = FeatureId(24);
+        let points_mm = vec![[0.0, 0.0], [20.0, 0.0], [20.0, 10.0], [0.0, 10.0]];
+        let feature_ids_before = app
+            .document
+            .current()
+            .definition(INITIAL_BOX_DEFINITION)
+            .unwrap()
+            .feature_ids()
+            .to_vec();
+        let revision_before = app.document_revision();
+        let digest_before = app.canonical_digest();
+        let undo_before = app.document.visible_undo_steps();
+        app.assistant_intent_kind = AssistantIntentKind::CreateProfileFeature;
+        app.assistant_target_input = feature.0.to_string();
+        app.assistant_value_input = "invalid".to_owned();
+        assert!(!app.prepare_assistant_from_inputs());
+        assert!(app.assistant_proposal().is_none());
+        assert_eq!(app.document_revision(), revision_before);
+
+        app.assistant_value_input = "1:Reviewed profile:0,0;20,0;20,10;0,10".to_owned();
+        assert!(app.prepare_assistant_from_inputs());
+        let proposal = app.assistant_proposal().unwrap();
+        assert_eq!(proposal.goal(), ProposalGoal::CreateProfileFeature(feature));
+        assert_eq!(proposal.authoritative_writes().len(), 2);
+        let feature_diff = proposal
+            .authoritative_diff()
+            .iter()
+            .find(|entry| {
+                entry.target == ketchup_core::document::AuthoritativeDependency::Feature(feature)
+            })
+            .unwrap();
+        assert_eq!(feature_diff.before, ProposalValue::Missing);
+        assert_eq!(
+            feature_diff.after,
+            ProposalValue::ProfileFeatureState {
+                definition: INITIAL_BOX_DEFINITION,
+                name: "Reviewed profile".to_owned(),
+                points_mm: points_mm.clone(),
+            }
+        );
+        let definition_diff = proposal
+            .authoritative_diff()
+            .iter()
+            .find(|entry| {
+                entry.target
+                    == ketchup_core::document::AuthoritativeDependency::Definition(
+                        INITIAL_BOX_DEFINITION,
+                    )
+            })
+            .unwrap();
+        let mut feature_ids_after = feature_ids_before.clone();
+        feature_ids_after.push(feature);
+        assert_eq!(
+            definition_diff.before,
+            ProposalValue::DefinitionFeatures(feature_ids_before.clone())
+        );
+        assert_eq!(
+            definition_diff.after,
+            ProposalValue::DefinitionFeatures(feature_ids_after)
+        );
+        assert_eq!(app.document_revision(), revision_before);
+        assert_eq!(app.canonical_digest(), digest_before);
+        assert_eq!(app.document.visible_undo_steps(), undo_before);
+
+        assert!(app.confirm_assistant_proposal());
+        let snapshot = app.document.current();
+        let created = snapshot.feature(feature).unwrap();
+        assert_eq!(created.definition_id(), INITIAL_BOX_DEFINITION);
+        assert_eq!(created.name(), "Reviewed profile");
+        assert!(matches!(
+            created.kind(),
+            FeatureKind::Profile { points_mm: created_points } if created_points == &points_mm
+        ));
+        assert_eq!(app.document.visible_undo_steps(), undo_before + 1);
+        assert!(app.undo());
+        assert!(app.document.current().feature(feature).is_none());
+        assert_eq!(
+            app.document
+                .current()
+                .definition(INITIAL_BOX_DEFINITION)
+                .unwrap()
+                .feature_ids(),
+            feature_ids_before
+        );
+    }
+
+    #[test]
+    fn assistant_delete_profile_feature_review_is_typed_observational_and_undoable() {
+        let mut app = KetchupApp::new();
+        let feature = FeatureId(24);
+        let points_mm = vec![[0.0, 0.0], [20.0, 0.0], [20.0, 10.0], [0.0, 10.0]];
+        app.document
+            .apply_batch(&CommandBatch::new(vec![CanonicalCommand::CreateFeature {
+                id: feature,
+                definition_id: INITIAL_BOX_DEFINITION,
+                name: "Reviewed profile".to_owned(),
+                kind: FeatureKind::Profile {
+                    points_mm: points_mm.clone(),
+                },
+            }]))
+            .unwrap();
+        let feature_ids_before = app
+            .document
+            .current()
+            .definition(INITIAL_BOX_DEFINITION)
+            .unwrap()
+            .feature_ids()
+            .to_vec();
+        let revision_before = app.document_revision();
+        let digest_before = app.canonical_digest();
+        let undo_before = app.document.visible_undo_steps();
+        app.assistant_intent_kind = AssistantIntentKind::DeleteProfileFeature;
+        app.assistant_target_input = feature.0.to_string();
+        app.assistant_value_input.clear();
+
+        assert!(app.prepare_assistant_from_inputs());
+        let proposal = app.assistant_proposal().unwrap();
+        assert_eq!(proposal.goal(), ProposalGoal::DeleteProfileFeature(feature));
+        assert_eq!(proposal.authoritative_writes().len(), 2);
+        let feature_diff = proposal
+            .authoritative_diff()
+            .iter()
+            .find(|entry| {
+                entry.target == ketchup_core::document::AuthoritativeDependency::Feature(feature)
+            })
+            .unwrap();
+        assert_eq!(
+            feature_diff.before,
+            ProposalValue::ProfileFeatureState {
+                definition: INITIAL_BOX_DEFINITION,
+                name: "Reviewed profile".to_owned(),
+                points_mm: points_mm.clone(),
+            }
+        );
+        assert_eq!(feature_diff.after, ProposalValue::Missing);
+        let definition_diff = proposal
+            .authoritative_diff()
+            .iter()
+            .find(|entry| {
+                entry.target
+                    == ketchup_core::document::AuthoritativeDependency::Definition(
+                        INITIAL_BOX_DEFINITION,
+                    )
+            })
+            .unwrap();
+        let mut feature_ids_after = feature_ids_before.clone();
+        feature_ids_after.retain(|candidate| *candidate != feature);
+        assert_eq!(
+            definition_diff.before,
+            ProposalValue::DefinitionFeatures(feature_ids_before.clone())
+        );
+        assert_eq!(
+            definition_diff.after,
+            ProposalValue::DefinitionFeatures(feature_ids_after)
+        );
+        assert_eq!(app.document_revision(), revision_before);
+        assert_eq!(app.canonical_digest(), digest_before);
+        assert_eq!(app.document.visible_undo_steps(), undo_before);
+
+        assert!(app.confirm_assistant_proposal());
+        assert!(app.document.current().feature(feature).is_none());
+        assert_eq!(app.document.visible_undo_steps(), undo_before + 1);
+        assert!(app.undo());
+        let snapshot = app.document.current();
+        let restored = snapshot.feature(feature).unwrap();
+        assert_eq!(restored.definition_id(), INITIAL_BOX_DEFINITION);
+        assert_eq!(restored.name(), "Reviewed profile");
+        assert_eq!(
+            restored.kind(),
+            &FeatureKind::Profile {
+                points_mm: points_mm.clone(),
+            }
+        );
+        assert_eq!(
+            snapshot
+                .definition(INITIAL_BOX_DEFINITION)
+                .unwrap()
+                .feature_ids(),
+            feature_ids_before
+        );
+    }
+
+    #[test]
+    fn assistant_create_evaluator_input_review_is_typed_observational_and_undoable() {
+        let mut app = KetchupApp::new();
+        let target = NodeId(99);
+        let revision_before = app.document_revision();
+        let digest_before = app.canonical_digest();
+        let undo_before = app.document.visible_undo_steps();
+        app.assistant_intent_kind = AssistantIntentKind::CreateEvaluatorInput;
+        app.assistant_target_input = target.0.to_string();
+        app.assistant_value_input = "missing delimiter".to_owned();
+        assert!(!app.prepare_assistant_from_inputs());
+        assert!(app.assistant_proposal().is_none());
+        assert_eq!(app.document_revision(), revision_before);
+
+        app.assistant_value_input = "Reviewed depth:42.5".to_owned();
+        assert!(app.prepare_assistant_from_inputs());
+        let proposal = app.assistant_proposal().unwrap();
+        assert_eq!(proposal.goal(), ProposalGoal::CreateEvaluatorInput(target));
+        assert_eq!(proposal.authoritative_writes().len(), 1);
+        assert_eq!(
+            proposal.authoritative_diff()[0].before,
+            ProposalValue::Missing
+        );
+        assert_eq!(
+            proposal.authoritative_diff()[0].after,
+            ProposalValue::EvaluatorInputState {
+                name: "Reviewed depth".to_owned(),
+                dimension: Dimension::from_decimal("42.5").unwrap(),
+                dependencies: Vec::new(),
+            }
+        );
+        assert_eq!(app.document_revision(), revision_before);
+        assert_eq!(app.canonical_digest(), digest_before);
+        assert_eq!(app.document.visible_undo_steps(), undo_before);
+
+        assert!(app.confirm_assistant_proposal());
+        let snapshot = app.document.current();
+        let created = snapshot.evaluator_node(target).unwrap();
+        assert_eq!(created.name(), "Reviewed depth");
+        assert_eq!(
+            created.dimension(),
+            Some(&Dimension::from_decimal("42.5").unwrap())
+        );
+        assert!(created.dependencies().is_empty());
+        assert_eq!(app.document.visible_undo_steps(), undo_before + 1);
+        assert!(app.undo());
+        assert!(app.document.current().evaluator_node(target).is_none());
+    }
+
+    #[test]
+    fn assistant_create_evaluator_expression_review_is_typed_observational_and_undoable() {
+        let mut app = KetchupApp::new();
+        app.document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::CreateEvaluatorNode {
+                    id: NodeId(1),
+                    name: "Reviewed source".to_owned(),
+                    dimension: Dimension::from_decimal("21").unwrap(),
+                    dependencies: Vec::new(),
+                },
+            ]))
+            .unwrap();
+        let target = NodeId(100);
+        let revision_before = app.document_revision();
+        let digest_before = app.canonical_digest();
+        let undo_before = app.document.visible_undo_steps();
+        app.assistant_intent_kind = AssistantIntentKind::CreateEvaluatorExpression;
+        app.assistant_target_input = target.0.to_string();
+        app.assistant_value_input = "missing delimiter".to_owned();
+        assert!(!app.prepare_assistant_from_inputs());
+        assert!(app.assistant_proposal().is_none());
+        assert_eq!(app.document_revision(), revision_before);
+
+        app.assistant_value_input = "Reviewed double:$1 * 2".to_owned();
+        assert!(app.prepare_assistant_from_inputs());
+        let proposal = app.assistant_proposal().unwrap();
+        assert_eq!(
+            proposal.goal(),
+            ProposalGoal::CreateEvaluatorExpression(target)
+        );
+        assert_eq!(proposal.authoritative_writes().len(), 1);
+        assert_eq!(
+            proposal.authoritative_diff()[0].before,
+            ProposalValue::Missing
+        );
+        assert_eq!(
+            proposal.authoritative_diff()[0].after,
+            ProposalValue::EvaluatorExpressionState {
+                name: "Reviewed double".to_owned(),
+                expression: "$1 * 2".to_owned(),
+                dependencies: vec![NodeId(1)],
+            }
+        );
+        assert_eq!(app.document_revision(), revision_before);
+        assert_eq!(app.canonical_digest(), digest_before);
+        assert_eq!(app.document.visible_undo_steps(), undo_before);
+
+        assert!(app.confirm_assistant_proposal());
+        let snapshot = app.document.current();
+        let created = snapshot.evaluator_node(target).unwrap();
+        assert_eq!(created.name(), "Reviewed double");
+        assert_eq!(created.kind().source(), "$1 * 2");
+        assert_eq!(created.dependencies(), &[NodeId(1)]);
+        assert_eq!(app.document.visible_undo_steps(), undo_before + 1);
+        assert!(app.undo());
+        assert!(app.document.current().evaluator_node(target).is_none());
+    }
+
+    #[test]
+    fn assistant_create_evaluator_rule_review_is_typed_observational_and_undoable() {
+        let mut app = KetchupApp::new();
+        app.document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::CreateEvaluatorNode {
+                    id: NodeId(1),
+                    name: "Reviewed source".to_owned(),
+                    dimension: Dimension::from_decimal("21").unwrap(),
+                    dependencies: Vec::new(),
+                },
+            ]))
+            .unwrap();
+        let target = NodeId(100);
+        let revision_before = app.document_revision();
+        let digest_before = app.canonical_digest();
+        let undo_before = app.document.visible_undo_steps();
+        app.assistant_intent_kind = AssistantIntentKind::CreateEvaluatorRule;
+        app.assistant_target_input = target.0.to_string();
+        app.assistant_value_input = "missing delimiter".to_owned();
+        assert!(!app.prepare_assistant_from_inputs());
+        assert!(app.assistant_proposal().is_none());
+        assert_eq!(app.document_revision(), revision_before);
+
+        app.assistant_value_input = "Reviewed rule:$1 * 2".to_owned();
+        assert!(app.prepare_assistant_from_inputs());
+        let proposal = app.assistant_proposal().unwrap();
+        assert_eq!(proposal.goal(), ProposalGoal::CreateEvaluatorRule(target));
+        assert_eq!(proposal.authoritative_writes().len(), 1);
+        assert_eq!(
+            proposal.authoritative_diff()[0].before,
+            ProposalValue::Missing
+        );
+        assert_eq!(
+            proposal.authoritative_diff()[0].after,
+            ProposalValue::EvaluatorRuleState {
+                name: "Reviewed rule".to_owned(),
+                expression: "$1 * 2".to_owned(),
+                dependencies: vec![NodeId(1)],
+                input_ports: Vec::new(),
+                output_ports: vec![ketchup_core::document::PortSpec::number("result").unwrap()],
+                outputs: Vec::new(),
+                override_parameters: Vec::new(),
+            }
+        );
+        assert_eq!(app.document_revision(), revision_before);
+        assert_eq!(app.canonical_digest(), digest_before);
+        assert_eq!(app.document.visible_undo_steps(), undo_before);
+
+        assert!(app.confirm_assistant_proposal());
+        let snapshot = app.document.current();
+        let created = snapshot.evaluator_node(target).unwrap();
+        assert_eq!(created.name(), "Reviewed rule");
+        assert_eq!(created.kind().source(), "$1 * 2");
+        assert_eq!(created.dependencies(), &[NodeId(1)]);
+        assert!(created.input_ports().is_empty());
+        assert_eq!(
+            created.output_ports(),
+            &[ketchup_core::document::PortSpec::number("result").unwrap()]
+        );
+        assert!(created.allowed_parameters().is_empty());
+        assert_eq!(app.document.visible_undo_steps(), undo_before + 1);
+        assert!(app.undo());
+        assert!(app.document.current().evaluator_node(target).is_none());
+    }
+
+    #[test]
+    fn assistant_create_rule_override_review_is_typed_observational_and_undoable() {
+        let mut app = KetchupApp::new();
+        let rule = NodeId(101);
+        let target = 102;
+        app.document
+            .apply_batch(&CommandBatch::new(vec![CanonicalCommand::CreateRuleNode {
+                id: rule,
+                name: "Reviewed override source".to_owned(),
+                expression: "1".to_owned(),
+                input_ports: Vec::new(),
+                output_ports: vec![ketchup_core::document::PortSpec::number("result").unwrap()],
+                outputs: vec![
+                    RuleOutput::new(
+                        SlotSegment::new(rule, "result", "left").unwrap(),
+                        Vec::new(),
+                    )
+                    .unwrap(),
+                ],
+                override_parameters: vec![OverrideParameterSpec::replace("offset").unwrap()],
+            }]))
+            .unwrap();
+        let identity = DerivedIdentity::new(
+            rule,
+            SlotPath::new(vec![SlotSegment::new(rule, "result", "left").unwrap()]).unwrap(),
+        )
+        .unwrap();
+        let revision_before = app.document_revision();
+        let digest_before = app.canonical_digest();
+        let undo_before = app.document.visible_undo_steps();
+        app.assistant_intent_kind = AssistantIntentKind::CreateRuleOverride;
+        app.assistant_target_input = target.to_string();
+        app.assistant_value_input = "invalid".to_owned();
+        assert!(!app.prepare_assistant_from_inputs());
+        assert!(app.assistant_proposal().is_none());
+        assert_eq!(app.document_revision(), revision_before);
+
+        app.assistant_value_input = "101:result:left:offset:2.5".to_owned();
+        assert!(app.prepare_assistant_from_inputs());
+        let proposal = app.assistant_proposal().unwrap();
+        assert_eq!(proposal.goal(), ProposalGoal::CreateRuleOverride(target));
+        assert_eq!(proposal.authoritative_writes().len(), 1);
+        assert_eq!(
+            proposal.authoritative_diff()[0].before,
+            ProposalValue::Missing
+        );
+        assert_eq!(
+            proposal.authoritative_diff()[0].after,
+            ProposalValue::RuleOverrideState {
+                target: identity.clone(),
+                parameter: "offset".to_owned(),
+                value: 2.5,
+                health: SlotResolution::Resolved,
+            }
+        );
+        assert_eq!(app.document_revision(), revision_before);
+        assert_eq!(app.canonical_digest(), digest_before);
+        assert_eq!(app.document.visible_undo_steps(), undo_before);
+
+        assert!(app.confirm_assistant_proposal());
+        let snapshot = app.document.current();
+        let created = snapshot.override_by_id(target).unwrap();
+        assert_eq!(created.target, identity);
+        assert_eq!(created.parameter, "offset");
+        assert_eq!(created.value(), 2.5);
+        assert_eq!(created.health, SlotResolution::Resolved);
+        assert_eq!(app.document.visible_undo_steps(), undo_before + 1);
+        assert!(app.undo());
+        assert!(app.document.current().override_by_id(target).is_none());
+    }
+
+    #[test]
+    fn assistant_create_feature_parameter_binding_is_typed_observational_and_undoable() {
+        let mut app = KetchupApp::new();
+        let definition = DefinitionId(200);
+        let profile = FeatureId(201);
+        let feature = FeatureId(202);
+        let rule = NodeId(203);
+        let target = FeatureParameterTarget {
+            feature_id: feature,
+            slot: FeatureParameterSlot::Height,
+        };
+        let derived_from = DerivedIdentity::new(
+            rule,
+            SlotPath::new(vec![SlotSegment::new(rule, "result", "left").unwrap()]).unwrap(),
+        )
+        .unwrap();
+        app.document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::CreateDefinition {
+                    id: definition,
+                    name: "Bound box".to_owned(),
+                },
+                CanonicalCommand::CreateFeature {
+                    id: profile,
+                    definition_id: definition,
+                    name: "Bound profile".to_owned(),
+                    kind: FeatureKind::Profile {
+                        points_mm: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0]],
+                    },
+                },
+                CanonicalCommand::CreateFeature {
+                    id: feature,
+                    definition_id: definition,
+                    name: "Bound extrusion".to_owned(),
+                    kind: FeatureKind::Extrusion {
+                        profile,
+                        height: Dimension::from_decimal("20").unwrap(),
+                    },
+                },
+                CanonicalCommand::CreateRuleNode {
+                    id: rule,
+                    name: "Binding source".to_owned(),
+                    expression: "1".to_owned(),
+                    input_ports: Vec::new(),
+                    output_ports: vec![ketchup_core::document::PortSpec::number("result").unwrap()],
+                    outputs: vec![
+                        RuleOutput::new(
+                            SlotSegment::new(rule, "result", "left").unwrap(),
+                            Vec::new(),
+                        )
+                        .unwrap(),
+                    ],
+                    override_parameters: Vec::new(),
+                },
+            ]))
+            .unwrap();
+        let revision_before = app.document_revision();
+        let digest_before = app.canonical_digest();
+        let undo_before = app.document.visible_undo_steps();
+        app.assistant_intent_kind = AssistantIntentKind::CreateFeatureParameterBinding;
+        app.assistant_target_input = feature.0.to_string();
+        app.assistant_value_input = "invalid".to_owned();
+        assert!(!app.prepare_assistant_from_inputs());
+        assert!(app.assistant_proposal().is_none());
+        assert_eq!(app.document_revision(), revision_before);
+
+        app.assistant_value_input = "height:203:result:left".to_owned();
+        assert!(app.prepare_assistant_from_inputs());
+        let proposal = app.assistant_proposal().unwrap();
+        assert_eq!(
+            proposal.goal(),
+            ProposalGoal::CreateFeatureParameterBinding(target)
+        );
+        assert_eq!(proposal.authoritative_writes().len(), 1);
+        assert_eq!(
+            proposal.authoritative_diff()[0].before,
+            ProposalValue::Missing
+        );
+        assert_eq!(
+            proposal.authoritative_diff()[0].after,
+            ProposalValue::FeatureParameterBindingState {
+                target,
+                derived_from: derived_from.clone(),
+            }
+        );
+        assert_eq!(app.document_revision(), revision_before);
+        assert_eq!(app.canonical_digest(), digest_before);
+        assert_eq!(app.document.visible_undo_steps(), undo_before);
+
+        assert!(app.confirm_assistant_proposal());
+        assert_eq!(
+            app.document
+                .current()
+                .feature_parameter_binding(target)
+                .unwrap()
+                .derived_from,
+            derived_from
+        );
+        assert_eq!(app.document.visible_undo_steps(), undo_before + 1);
+        assert!(app.undo());
+        assert!(
+            app.document
+                .current()
+                .feature_parameter_binding(target)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn assistant_delete_feature_parameter_binding_is_typed_observational_and_undoable() {
+        let mut app = KetchupApp::new();
+        let definition = DefinitionId(204);
+        let profile = FeatureId(205);
+        let feature = FeatureId(206);
+        let rule = NodeId(207);
+        let target = FeatureParameterTarget {
+            feature_id: feature,
+            slot: FeatureParameterSlot::Height,
+        };
+        let derived_from = DerivedIdentity::new(
+            rule,
+            SlotPath::new(vec![SlotSegment::new(rule, "result", "left").unwrap()]).unwrap(),
+        )
+        .unwrap();
+        app.document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::CreateDefinition {
+                    id: definition,
+                    name: "Bound box deletion".to_owned(),
+                },
+                CanonicalCommand::CreateFeature {
+                    id: profile,
+                    definition_id: definition,
+                    name: "Bound profile deletion".to_owned(),
+                    kind: FeatureKind::Profile {
+                        points_mm: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0]],
+                    },
+                },
+                CanonicalCommand::CreateFeature {
+                    id: feature,
+                    definition_id: definition,
+                    name: "Bound extrusion deletion".to_owned(),
+                    kind: FeatureKind::Extrusion {
+                        profile,
+                        height: Dimension::from_decimal("20").unwrap(),
+                    },
+                },
+                CanonicalCommand::CreateRuleNode {
+                    id: rule,
+                    name: "Binding deletion source".to_owned(),
+                    expression: "1".to_owned(),
+                    input_ports: Vec::new(),
+                    output_ports: vec![ketchup_core::document::PortSpec::number("result").unwrap()],
+                    outputs: vec![
+                        RuleOutput::new(
+                            SlotSegment::new(rule, "result", "left").unwrap(),
+                            Vec::new(),
+                        )
+                        .unwrap(),
+                    ],
+                    override_parameters: Vec::new(),
+                },
+                CanonicalCommand::UpsertFeatureParameterBinding(
+                    ketchup_core::document::FeatureParameterBinding {
+                        target,
+                        derived_from: derived_from.clone(),
+                    },
+                ),
+            ]))
+            .unwrap();
+        let revision_before = app.document_revision();
+        let digest_before = app.canonical_digest();
+        let undo_before = app.document.visible_undo_steps();
+        app.assistant_intent_kind = AssistantIntentKind::DeleteFeatureParameterBinding;
+        app.assistant_target_input = feature.0.to_string();
+        app.assistant_value_input = "invalid".to_owned();
+        assert!(!app.prepare_assistant_from_inputs());
+        assert!(app.assistant_proposal().is_none());
+        assert_eq!(app.document_revision(), revision_before);
+
+        app.assistant_value_input = "height".to_owned();
+        assert!(app.prepare_assistant_from_inputs());
+        let proposal = app.assistant_proposal().unwrap();
+        assert_eq!(
+            proposal.goal(),
+            ProposalGoal::DeleteFeatureParameterBinding(target)
+        );
+        assert_eq!(proposal.authoritative_writes().len(), 1);
+        assert_eq!(
+            proposal.authoritative_diff()[0].before,
+            ProposalValue::FeatureParameterBindingState {
+                target,
+                derived_from: derived_from.clone(),
+            }
+        );
+        assert_eq!(
+            proposal.authoritative_diff()[0].after,
+            ProposalValue::Missing
+        );
+        assert_eq!(app.document_revision(), revision_before);
+        assert_eq!(app.canonical_digest(), digest_before);
+        assert_eq!(app.document.visible_undo_steps(), undo_before);
+
+        assert!(app.confirm_assistant_proposal());
+        assert!(
+            app.document
+                .current()
+                .feature_parameter_binding(target)
+                .is_none()
+        );
+        assert_eq!(app.document.visible_undo_steps(), undo_before + 1);
+        assert!(app.undo());
+        assert_eq!(
+            app.document
+                .current()
+                .feature_parameter_binding(target)
+                .unwrap()
+                .derived_from,
+            derived_from
+        );
+    }
+
+    #[test]
+    fn assistant_recompute_feature_parameter_is_typed_observational_and_undoable() {
+        let mut app = KetchupApp::new();
+        let definition = DefinitionId(208);
+        let profile = FeatureId(209);
+        let feature = FeatureId(210);
+        let rule = NodeId(211);
+        let target = FeatureParameterTarget {
+            feature_id: feature,
+            slot: FeatureParameterSlot::Height,
+        };
+        let derived_from = DerivedIdentity::new(
+            rule,
+            SlotPath::new(vec![SlotSegment::new(rule, "result", "height").unwrap()]).unwrap(),
+        )
+        .unwrap();
+        app.document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::CreateDefinition {
+                    id: definition,
+                    name: "Recomputed box".to_owned(),
+                },
+                CanonicalCommand::CreateFeature {
+                    id: profile,
+                    definition_id: definition,
+                    name: "Recomputed profile".to_owned(),
+                    kind: FeatureKind::Profile {
+                        points_mm: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0]],
+                    },
+                },
+                CanonicalCommand::CreateFeature {
+                    id: feature,
+                    definition_id: definition,
+                    name: "Recomputed extrusion".to_owned(),
+                    kind: FeatureKind::Extrusion {
+                        profile,
+                        height: Dimension::from_decimal("20").unwrap(),
+                    },
+                },
+                CanonicalCommand::CreateRuleNode {
+                    id: rule,
+                    name: "Recompute source".to_owned(),
+                    expression: "42".to_owned(),
+                    input_ports: Vec::new(),
+                    output_ports: vec![ketchup_core::document::PortSpec::number("result").unwrap()],
+                    outputs: vec![
+                        RuleOutput::new(
+                            SlotSegment::new(rule, "result", "height").unwrap(),
+                            Vec::new(),
+                        )
+                        .unwrap(),
+                    ],
+                    override_parameters: Vec::new(),
+                },
+                CanonicalCommand::UpsertFeatureParameterBinding(
+                    ketchup_core::document::FeatureParameterBinding {
+                        target,
+                        derived_from,
+                    },
+                ),
+            ]))
+            .unwrap();
+        let revision_before = app.document_revision();
+        let digest_before = app.canonical_digest();
+        let undo_before = app.document.visible_undo_steps();
+        app.assistant_intent_kind = AssistantIntentKind::RecomputeFeatureParameter;
+        app.assistant_target_input = feature.0.to_string();
+        app.assistant_value_input = "invalid".to_owned();
+        assert!(!app.prepare_assistant_from_inputs());
+        assert!(app.assistant_proposal().is_none());
+        assert_eq!(app.document_revision(), revision_before);
+
+        app.assistant_value_input = "height".to_owned();
+        assert!(app.prepare_assistant_from_inputs());
+        let proposal = app.assistant_proposal().unwrap();
+        assert_eq!(
+            proposal.goal(),
+            ProposalGoal::RecomputeFeatureParameter(target)
+        );
+        assert_eq!(proposal.authoritative_writes().len(), 1);
+        assert_eq!(
+            proposal.authoritative_diff()[0].before,
+            ProposalValue::Dimension(Dimension::from_decimal("20").unwrap())
+        );
+        assert_eq!(
+            proposal.authoritative_diff()[0].after,
+            ProposalValue::Dimension(Dimension::from_decimal("42").unwrap())
+        );
+        assert_eq!(app.document_revision(), revision_before);
+        assert_eq!(app.canonical_digest(), digest_before);
+        assert_eq!(app.document.visible_undo_steps(), undo_before);
+
+        assert!(app.confirm_assistant_proposal());
+        assert!(matches!(
+            app.document.current().feature(feature).unwrap().kind(),
+            FeatureKind::Extrusion { height, .. }
+                if height.source_token() == "42" && height.millimetres() == 42.0
+        ));
+        assert_eq!(app.document.visible_undo_steps(), undo_before + 1);
+        assert!(app.undo());
+        assert!(matches!(
+            app.document.current().feature(feature).unwrap().kind(),
+            FeatureKind::Extrusion { height, .. }
+                if height.source_token() == "20" && height.millimetres() == 20.0
+        ));
+    }
+
+    #[test]
+    fn assistant_clone_profile_definition_is_typed_observational_and_undoable() {
+        let mut app = KetchupApp::new();
+        let source_definition = DefinitionId(300);
+        let source_feature = FeatureId(301);
+        let occurrence = OccurrenceId(302);
+        let new_definition = DefinitionId(303);
+        let new_feature = FeatureId(304);
+        let points_mm = vec![[0.0, 0.0], [10.0, 0.0], [10.0, 6.0]];
+        app.document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::CreateDefinition {
+                    id: source_definition,
+                    name: "Clone source".to_owned(),
+                },
+                CanonicalCommand::CreateFeature {
+                    id: source_feature,
+                    definition_id: source_definition,
+                    name: "Source profile".to_owned(),
+                    kind: FeatureKind::Profile {
+                        points_mm: points_mm.clone(),
+                    },
+                },
+                CanonicalCommand::CreateOccurrence {
+                    id: occurrence,
+                    definition_id: source_definition,
+                    name: "Clone occurrence".to_owned(),
+                    transform: Transform::identity(),
+                    parent: None,
+                    tag: None,
+                    visible: true,
+                },
+            ]))
+            .unwrap();
+        let revision_before = app.document_revision();
+        let digest_before = app.canonical_digest();
+        let undo_before = app.document.visible_undo_steps();
+        app.assistant_intent_kind = AssistantIntentKind::CloneProfileDefinitionAndRepoint;
+        app.assistant_target_input = occurrence.0.to_string();
+        app.assistant_value_input = "invalid".to_owned();
+        assert!(!app.prepare_assistant_from_inputs());
+        assert!(app.assistant_proposal().is_none());
+        assert_eq!(app.canonical_digest(), digest_before);
+
+        app.assistant_value_input = format!(
+            "{}:{}:{}:{}:Independent profile",
+            source_definition.0, source_feature.0, new_definition.0, new_feature.0
+        );
+        assert!(app.prepare_assistant_from_inputs());
+        let proposal = app.assistant_proposal().unwrap();
+        assert_eq!(
+            proposal.goal(),
+            ProposalGoal::CloneProfileDefinitionAndRepoint(occurrence)
+        );
+        assert_eq!(proposal.authoritative_writes().len(), 3);
+        let feature_diff = proposal
+            .authoritative_diff()
+            .iter()
+            .find(|entry| {
+                entry.target
+                    == ketchup_core::document::AuthoritativeDependency::Feature(new_feature)
+            })
+            .unwrap();
+        assert_eq!(feature_diff.before, ProposalValue::Missing);
+        assert_eq!(
+            feature_diff.after,
+            ProposalValue::ProfileFeatureState {
+                definition: new_definition,
+                name: "Source profile".to_owned(),
+                points_mm: points_mm.clone(),
+            }
+        );
+        assert_eq!(app.document_revision(), revision_before);
+        assert_eq!(app.canonical_digest(), digest_before);
+        assert_eq!(app.document.visible_undo_steps(), undo_before);
+
+        assert!(app.confirm_assistant_proposal());
+        assert_eq!(
+            app.document
+                .current()
+                .occurrence(occurrence)
+                .unwrap()
+                .definition_id(),
+            new_definition
+        );
+        assert!(matches!(
+            app.document.current().feature(new_feature).unwrap().kind(),
+            FeatureKind::Profile { points_mm: cloned } if cloned == &points_mm
+        ));
+        assert_eq!(app.document.visible_undo_steps(), undo_before + 1);
+        assert!(app.undo());
+        assert_eq!(
+            app.document
+                .current()
+                .occurrence(occurrence)
+                .unwrap()
+                .definition_id(),
+            source_definition
+        );
+        assert!(app.document.current().definition(new_definition).is_none());
+        assert!(app.document.current().feature(new_feature).is_none());
+    }
+
+    #[test]
+    fn assistant_convert_empty_group_is_typed_observational_and_undoable() {
+        let mut app = KetchupApp::new();
+        let group = GroupId(300);
+        let new_definition = DefinitionId(301);
+        let new_occurrence = OccurrenceId(302);
+        app.document
+            .apply_batch(&CommandBatch::new(vec![CanonicalCommand::CreateGroup {
+                id: group,
+                name: "Reviewed empty group".to_owned(),
+                transform: Transform::from_translation(1.0, 2.0, 3.0).unwrap(),
+                parent: None,
+            }]))
+            .unwrap();
+        let revision_before = app.document_revision();
+        let digest_before = app.canonical_digest();
+        let undo_before = app.document.visible_undo_steps();
+        app.assistant_intent_kind = AssistantIntentKind::ConvertEmptyGroupToComponent;
+        app.assistant_target_input = group.0.to_string();
+        app.assistant_value_input = "invalid".to_owned();
+        assert!(!app.prepare_assistant_from_inputs());
+        assert!(app.assistant_proposal().is_none());
+        assert_eq!(app.canonical_digest(), digest_before);
+
+        app.assistant_value_input = format!(
+            "{}:{}:Reviewed component",
+            new_definition.0, new_occurrence.0
+        );
+        assert!(app.prepare_assistant_from_inputs());
+        let proposal = app.assistant_proposal().unwrap();
+        assert_eq!(
+            proposal.goal(),
+            ProposalGoal::ConvertEmptyGroupToComponent(group)
+        );
+        assert_eq!(proposal.authoritative_writes().len(), 3);
+        let group_diff = proposal
+            .authoritative_diff()
+            .iter()
+            .find(|entry| {
+                entry.target == ketchup_core::document::AuthoritativeDependency::GroupSubtree(group)
+            })
+            .unwrap();
+        assert!(matches!(
+            group_diff.before,
+            ProposalValue::GroupState { ref name, .. } if name == "Reviewed empty group"
+        ));
+        assert_eq!(group_diff.after, ProposalValue::Missing);
+        assert_eq!(app.document_revision(), revision_before);
+        assert_eq!(app.canonical_digest(), digest_before);
+        assert_eq!(app.document.visible_undo_steps(), undo_before);
+
+        assert!(app.confirm_assistant_proposal());
+        assert!(app.document.current().group(group).is_none());
+        assert!(app.document.current().definition(new_definition).is_some());
+        assert_eq!(
+            app.document
+                .current()
+                .occurrence(new_occurrence)
+                .unwrap()
+                .transform(),
+            Transform::from_translation(1.0, 2.0, 3.0).unwrap()
+        );
+        assert_eq!(app.document.visible_undo_steps(), undo_before + 1);
+        assert!(app.undo());
+        assert!(app.document.current().group(group).is_some());
+        assert!(app.document.current().definition(new_definition).is_none());
+        assert!(app.document.current().occurrence(new_occurrence).is_none());
+    }
+
+    #[test]
+    fn assistant_create_joint_is_typed_observational_and_undoable() {
+        let mut app = KetchupApp::new();
+        let rule = NodeId(500);
+        let target = JointId(222);
+        let output = |key| {
+            RuleOutput::new(SlotSegment::new(rule, "result", key).unwrap(), Vec::new()).unwrap()
+        };
+        app.document
+            .apply_batch(&CommandBatch::new(vec![CanonicalCommand::CreateRuleNode {
+                id: rule,
+                name: "joint participants".to_owned(),
+                expression: "1".to_owned(),
+                input_ports: Vec::new(),
+                output_ports: vec![PortSpec::number("result").unwrap()],
+                outputs: vec![output("left"), output("right")],
+                override_parameters: Vec::new(),
+            }]))
+            .unwrap();
+        let participant = |key| {
+            DerivedIdentity::new(
+                rule,
+                SlotPath::new(vec![SlotSegment::new(rule, "result", key).unwrap()]).unwrap(),
+            )
+            .unwrap()
+        };
+        let revision_before = app.document_revision();
+        let digest_before = app.canonical_digest();
+        let undo_before = app.document.visible_undo_steps();
+        app.assistant_intent_kind = AssistantIntentKind::CreateJoint;
+        app.assistant_target_input = target.0.to_string();
+        app.assistant_value_input = "invalid".to_owned();
+        assert!(!app.prepare_assistant_from_inputs());
+        assert_eq!(app.canonical_digest(), digest_before);
+
+        app.assistant_value_input = "500,result,left:500,result,right:1,2,3:4,5,6".to_owned();
+        assert!(app.prepare_assistant_from_inputs());
+        let proposal = app.assistant_proposal().unwrap();
+        assert_eq!(proposal.goal(), ProposalGoal::CreateJoint(target));
+        assert_eq!(proposal.authoritative_writes().len(), 1);
+        assert_eq!(
+            proposal.authoritative_diff()[0].before,
+            ProposalValue::Missing
+        );
+        assert_eq!(
+            proposal.authoritative_diff()[0].after,
+            ProposalValue::JointState {
+                participant_a: participant("left"),
+                participant_b: participant("right"),
+                volume_min: [1.0, 2.0, 3.0],
+                volume_max: [4.0, 5.0, 6.0],
+            }
+        );
+        assert_eq!(app.document_revision(), revision_before);
+        assert_eq!(app.canonical_digest(), digest_before);
+        assert_eq!(app.document.visible_undo_steps(), undo_before);
+
+        assert!(app.confirm_assistant_proposal());
+        let joint = ketchup_core::prismatic::CanonicalJoint::new(
+            target,
+            participant("left"),
+            participant("right"),
+            ketchup_core::prismatic::Aabb::bounded_volume([1.0, 2.0, 3.0], [4.0, 5.0, 6.0])
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(app.document.current().joint(target), Some(&joint));
+        assert_eq!(app.document.visible_undo_steps(), undo_before + 1);
+        assert!(app.undo());
+        assert!(app.document.current().joint(target).is_none());
+    }
+
+    #[test]
+    fn assistant_delete_joint_is_typed_observational_and_undoable() {
+        let mut app = KetchupApp::new();
+        let target = JointId(212);
+        let participant = |key| {
+            DerivedIdentity::new(
+                NodeId(213),
+                SlotPath::new(vec![SlotSegment::new(NodeId(213), "result", key).unwrap()]).unwrap(),
+            )
+            .unwrap()
+        };
+        let joint = ketchup_core::prismatic::CanonicalJoint::new(
+            target,
+            participant("left"),
+            participant("right"),
+            ketchup_core::prismatic::Aabb::bounded_volume([0.0, 0.0, 0.0], [1.0, 2.0, 3.0])
+                .unwrap(),
+        )
+        .unwrap();
+        app.document
+            .apply_batch(&CommandBatch::new(vec![CanonicalCommand::UpsertJoint(
+                joint.clone(),
+            )]))
+            .unwrap();
+        let revision_before = app.document_revision();
+        let digest_before = app.canonical_digest();
+        let undo_before = app.document.visible_undo_steps();
+        app.assistant_intent_kind = AssistantIntentKind::DeleteJoint;
+        app.assistant_target_input = target.0.to_string();
+
+        assert!(app.prepare_assistant_from_inputs());
+        let proposal = app.assistant_proposal().unwrap();
+        assert_eq!(proposal.goal(), ProposalGoal::DeleteJoint(target));
+        assert_eq!(proposal.authoritative_writes().len(), 1);
+        assert_eq!(
+            proposal.authoritative_diff()[0].before,
+            ProposalValue::JointState {
+                participant_a: joint.participant_a().clone(),
+                participant_b: joint.participant_b().clone(),
+                volume_min: [0.0, 0.0, 0.0],
+                volume_max: [1.0, 2.0, 3.0],
+            }
+        );
+        assert_eq!(
+            proposal.authoritative_diff()[0].after,
+            ProposalValue::Missing
+        );
+        assert_eq!(app.document_revision(), revision_before);
+        assert_eq!(app.canonical_digest(), digest_before);
+        assert_eq!(app.document.visible_undo_steps(), undo_before);
+
+        assert!(app.confirm_assistant_proposal());
+        assert!(app.document.current().joint(target).is_none());
+        assert_eq!(app.document.visible_undo_steps(), undo_before + 1);
+        assert!(app.undo());
+        assert_eq!(app.document.current().joint(target), Some(&joint));
+    }
+
+    #[test]
+    fn assistant_create_space_is_typed_observational_and_undoable() {
+        let mut app = KetchupApp::new();
+        let target = SpaceId(219);
+        let revision_before = app.document_revision();
+        let digest_before = app.canonical_digest();
+        let undo_before = app.document.visible_undo_steps();
+        app.assistant_intent_kind = AssistantIntentKind::CreateSpace;
+        app.assistant_target_input = target.0.to_string();
+        app.assistant_value_input = "invalid".to_owned();
+        assert!(!app.prepare_assistant_from_inputs());
+        assert_eq!(app.canonical_digest(), digest_before);
+
+        app.assistant_value_input = "maintenance access:1,2,3:4,5,6".to_owned();
+        assert!(app.prepare_assistant_from_inputs());
+        let proposal = app.assistant_proposal().unwrap();
+        assert_eq!(proposal.goal(), ProposalGoal::CreateSpace(target));
+        assert_eq!(proposal.authoritative_writes().len(), 1);
+        assert_eq!(
+            proposal.authoritative_diff()[0].before,
+            ProposalValue::Missing
+        );
+        assert_eq!(
+            proposal.authoritative_diff()[0].after,
+            ProposalValue::SpaceState {
+                purpose: "maintenance access".to_owned(),
+                volume_min: [1.0, 2.0, 3.0],
+                volume_max: [4.0, 5.0, 6.0],
+                adjacent_to: Vec::new(),
+                accessible_to: Vec::new(),
+            }
+        );
+        assert_eq!(app.document_revision(), revision_before);
+        assert_eq!(app.canonical_digest(), digest_before);
+        assert_eq!(app.document.visible_undo_steps(), undo_before);
+
+        assert!(app.confirm_assistant_proposal());
+        let space = ketchup_core::space::CanonicalSpace::new(
+            target,
+            "maintenance access",
+            ketchup_core::prismatic::Aabb::bounded_volume([1.0, 2.0, 3.0], [4.0, 5.0, 6.0])
+                .unwrap(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .unwrap();
+        assert_eq!(app.document.current().space(target), Some(&space));
+        assert_eq!(app.document.visible_undo_steps(), undo_before + 1);
+        assert!(app.undo());
+        assert!(app.document.current().space(target).is_none());
+    }
+
+    #[test]
+    fn assistant_create_clearance_volume_is_typed_observational_and_undoable() {
+        let mut app = KetchupApp::new();
+        let owner = SpaceId(220);
+        let target = ClearanceVolumeId(221);
+        let space = ketchup_core::space::CanonicalSpace::new(
+            owner,
+            "equipment",
+            ketchup_core::prismatic::Aabb::bounded_volume([0.0, 0.0, 0.0], [5.0, 5.0, 5.0])
+                .unwrap(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .unwrap();
+        app.document
+            .apply_batch(&CommandBatch::new(vec![CanonicalCommand::UpsertSpace(
+                space,
+            )]))
+            .unwrap();
+        let revision_before = app.document_revision();
+        let digest_before = app.canonical_digest();
+        let undo_before = app.document.visible_undo_steps();
+        app.assistant_intent_kind = AssistantIntentKind::CreateClearanceVolume;
+        app.assistant_target_input = target.0.to_string();
+        app.assistant_value_input = "invalid".to_owned();
+        assert!(!app.prepare_assistant_from_inputs());
+        assert_eq!(app.canonical_digest(), digest_before);
+
+        app.assistant_value_input = "220:maintenance envelope:1,2,3:4,5,6:0.01:required".to_owned();
+        assert!(app.prepare_assistant_from_inputs());
+        let proposal = app.assistant_proposal().unwrap();
+        assert_eq!(proposal.goal(), ProposalGoal::CreateClearanceVolume(target));
+        assert_eq!(proposal.authoritative_writes().len(), 1);
+        assert_eq!(
+            proposal.authoritative_diff()[0].before,
+            ProposalValue::Missing
+        );
+        assert_eq!(
+            proposal.authoritative_diff()[0].after,
+            ProposalValue::ClearanceVolumeState {
+                owner: ClearanceOwner::Space(owner),
+                reason: "maintenance envelope".to_owned(),
+                volume_min: [1.0, 2.0, 3.0],
+                volume_max: [4.0, 5.0, 6.0],
+                coordinate_frame: ketchup_core::space::ClearanceCoordinateFrame::World,
+                tolerance_mm: 0.01,
+                severity: ClearanceSeverity::Required,
+                derived_from: None,
+            }
+        );
+        assert_eq!(app.document_revision(), revision_before);
+        assert_eq!(app.canonical_digest(), digest_before);
+        assert_eq!(app.document.visible_undo_steps(), undo_before);
+
+        assert!(app.confirm_assistant_proposal());
+        let clearance = ketchup_core::space::CanonicalClearanceVolume::new(
+            target,
+            ClearanceOwner::Space(owner),
+            "maintenance envelope",
+            ketchup_core::prismatic::Aabb::bounded_volume([1.0, 2.0, 3.0], [4.0, 5.0, 6.0])
+                .unwrap(),
+            TolerancePolicy::new(0.01).unwrap(),
+            ClearanceSeverity::Required,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            app.document.current().clearance_volume(target),
+            Some(&clearance)
+        );
+        assert_eq!(app.document.visible_undo_steps(), undo_before + 1);
+        assert!(app.undo());
+        assert!(app.document.current().clearance_volume(target).is_none());
+    }
+
+    #[test]
+    fn assistant_delete_space_is_typed_observational_and_undoable() {
+        let mut app = KetchupApp::new();
+        let target = SpaceId(214);
+        let space = ketchup_core::space::CanonicalSpace::new(
+            target,
+            "maintenance access",
+            ketchup_core::prismatic::Aabb::bounded_volume([0.0, 0.0, 0.0], [1.0, 2.0, 3.0])
+                .unwrap(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .unwrap();
+        app.document
+            .apply_batch(&CommandBatch::new(vec![CanonicalCommand::UpsertSpace(
+                space.clone(),
+            )]))
+            .unwrap();
+        let revision_before = app.document_revision();
+        let digest_before = app.canonical_digest();
+        let undo_before = app.document.visible_undo_steps();
+        app.assistant_intent_kind = AssistantIntentKind::DeleteSpace;
+        app.assistant_target_input = target.0.to_string();
+
+        assert!(app.prepare_assistant_from_inputs());
+        let proposal = app.assistant_proposal().unwrap();
+        assert_eq!(proposal.goal(), ProposalGoal::DeleteSpace(target));
+        assert_eq!(proposal.authoritative_writes().len(), 1);
+        assert_eq!(
+            proposal.authoritative_diff()[0].before,
+            ProposalValue::SpaceState {
+                purpose: "maintenance access".to_owned(),
+                volume_min: [0.0, 0.0, 0.0],
+                volume_max: [1.0, 2.0, 3.0],
+                adjacent_to: Vec::new(),
+                accessible_to: Vec::new(),
+            }
+        );
+        assert_eq!(
+            proposal.authoritative_diff()[0].after,
+            ProposalValue::Missing
+        );
+        assert_eq!(app.document_revision(), revision_before);
+        assert_eq!(app.canonical_digest(), digest_before);
+        assert_eq!(app.document.visible_undo_steps(), undo_before);
+
+        assert!(app.confirm_assistant_proposal());
+        assert!(app.document.current().space(target).is_none());
+        assert_eq!(app.document.visible_undo_steps(), undo_before + 1);
+        assert!(app.undo());
+        assert_eq!(app.document.current().space(target), Some(&space));
+    }
+
+    #[test]
+    fn assistant_delete_clearance_volume_is_typed_observational_and_undoable() {
+        let mut app = KetchupApp::new();
+        let owner = SpaceId(215);
+        let target = ClearanceVolumeId(216);
+        let space = ketchup_core::space::CanonicalSpace::new(
+            owner,
+            "equipment",
+            ketchup_core::prismatic::Aabb::bounded_volume([0.0, 0.0, 0.0], [5.0, 5.0, 5.0])
+                .unwrap(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .unwrap();
+        let clearance = ketchup_core::space::CanonicalClearanceVolume::new(
+            target,
+            ketchup_core::space::ClearanceOwner::Space(owner),
+            "maintenance envelope",
+            ketchup_core::prismatic::Aabb::bounded_volume([0.0, 0.0, 0.0], [1.0, 2.0, 3.0])
+                .unwrap(),
+            ketchup_core::prismatic::TolerancePolicy::new(0.01).unwrap(),
+            ketchup_core::space::ClearanceSeverity::Required,
+            None,
+        )
+        .unwrap();
+        app.document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::UpsertSpace(space),
+                CanonicalCommand::UpsertClearanceVolume(clearance.clone()),
+            ]))
+            .unwrap();
+        let revision_before = app.document_revision();
+        let digest_before = app.canonical_digest();
+        let undo_before = app.document.visible_undo_steps();
+        app.assistant_intent_kind = AssistantIntentKind::DeleteClearanceVolume;
+        app.assistant_target_input = target.0.to_string();
+
+        assert!(app.prepare_assistant_from_inputs());
+        let proposal = app.assistant_proposal().unwrap();
+        assert_eq!(proposal.goal(), ProposalGoal::DeleteClearanceVolume(target));
+        assert_eq!(proposal.authoritative_writes().len(), 1);
+        assert_eq!(
+            proposal.authoritative_diff()[0].before,
+            ProposalValue::ClearanceVolumeState {
+                owner: ketchup_core::space::ClearanceOwner::Space(owner),
+                reason: "maintenance envelope".to_owned(),
+                volume_min: [0.0, 0.0, 0.0],
+                volume_max: [1.0, 2.0, 3.0],
+                coordinate_frame: ketchup_core::space::ClearanceCoordinateFrame::World,
+                tolerance_mm: 0.01,
+                severity: ketchup_core::space::ClearanceSeverity::Required,
+                derived_from: None,
+            }
+        );
+        assert_eq!(
+            proposal.authoritative_diff()[0].after,
+            ProposalValue::Missing
+        );
+        assert_eq!(app.document_revision(), revision_before);
+        assert_eq!(app.canonical_digest(), digest_before);
+        assert_eq!(app.document.visible_undo_steps(), undo_before);
+
+        assert!(app.confirm_assistant_proposal());
+        assert!(app.document.current().clearance_volume(target).is_none());
+        assert_eq!(app.document.visible_undo_steps(), undo_before + 1);
+        assert!(app.undo());
+        assert_eq!(
+            app.document.current().clearance_volume(target),
+            Some(&clearance)
+        );
+    }
+
+    #[test]
+    fn assistant_delete_persistent_dimension_is_typed_observational_and_undoable() {
+        let mut app = KetchupApp::new();
+        let target = PersistentDimensionId(217);
+        let dimension_target =
+            PersistentDimensionTarget::FeatureParameter(FeatureParameterTarget {
+                feature_id: FeatureId(2),
+                slot: FeatureParameterSlot::ProfileWidth,
+            });
+        let presentation =
+            DimensionPresentation::new(DimensionDisplayUnit::Centimetres, 2).unwrap();
+        let dimension = PersistentDimension::new(
+            target,
+            "Cabinet width",
+            dimension_target.clone(),
+            presentation,
+        )
+        .unwrap();
+        app.document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::UpsertPersistentDimension(dimension.clone()),
+            ]))
+            .unwrap();
+        let revision_before = app.document_revision();
+        let digest_before = app.canonical_digest();
+        let undo_before = app.document.visible_undo_steps();
+        app.assistant_intent_kind = AssistantIntentKind::DeletePersistentDimension;
+        app.assistant_target_input = target.0.to_string();
+
+        assert!(app.prepare_assistant_from_inputs());
+        let proposal = app.assistant_proposal().unwrap();
+        assert_eq!(
+            proposal.goal(),
+            ProposalGoal::DeletePersistentDimension(target)
+        );
+        assert_eq!(proposal.authoritative_writes().len(), 1);
+        assert_eq!(
+            proposal.authoritative_diff()[0].before,
+            ProposalValue::PersistentDimensionState {
+                name: "Cabinet width".to_owned(),
+                target: dimension_target,
+                presentation,
+            }
+        );
+        assert_eq!(
+            proposal.authoritative_diff()[0].after,
+            ProposalValue::Missing
+        );
+        assert_eq!(app.document_revision(), revision_before);
+        assert_eq!(app.canonical_digest(), digest_before);
+        assert_eq!(app.document.visible_undo_steps(), undo_before);
+
+        assert!(app.confirm_assistant_proposal());
+        assert!(
+            app.document
+                .current()
+                .persistent_dimension(target)
+                .is_none()
+        );
+        assert_eq!(app.document.visible_undo_steps(), undo_before + 1);
+        assert!(app.undo());
+        assert_eq!(
+            app.document.current().persistent_dimension(target),
+            Some(&dimension)
+        );
+    }
+
+    #[test]
+    fn assistant_create_persistent_dimension_is_typed_observational_and_undoable() {
+        let mut app = KetchupApp::new();
+        let target = PersistentDimensionId(218);
+        let dimension_target = FeatureParameterTarget {
+            feature_id: FeatureId(2),
+            slot: FeatureParameterSlot::Height,
+        };
+        let presentation =
+            DimensionPresentation::new(DimensionDisplayUnit::Centimetres, 2).unwrap();
+        let revision_before = app.document_revision();
+        let digest_before = app.canonical_digest();
+        let undo_before = app.document.visible_undo_steps();
+        app.assistant_intent_kind = AssistantIntentKind::CreatePersistentDimension;
+        app.assistant_target_input = target.0.to_string();
+        app.assistant_value_input = "invalid".to_owned();
+        assert!(!app.prepare_assistant_from_inputs());
+        assert_eq!(app.canonical_digest(), digest_before);
+
+        app.assistant_value_input = "Reviewed height:2:height:cm:2".to_owned();
+        assert!(app.prepare_assistant_from_inputs());
+        let proposal = app.assistant_proposal().unwrap();
+        assert_eq!(
+            proposal.goal(),
+            ProposalGoal::CreatePersistentDimension(target)
+        );
+        assert_eq!(proposal.authoritative_writes().len(), 1);
+        assert_eq!(
+            proposal.authoritative_diff()[0].before,
+            ProposalValue::Missing
+        );
+        assert_eq!(
+            proposal.authoritative_diff()[0].after,
+            ProposalValue::PersistentDimensionState {
+                name: "Reviewed height".to_owned(),
+                target: PersistentDimensionTarget::FeatureParameter(dimension_target),
+                presentation,
+            }
+        );
+        assert_eq!(app.document_revision(), revision_before);
+        assert_eq!(app.canonical_digest(), digest_before);
+        assert_eq!(app.document.visible_undo_steps(), undo_before);
+
+        assert!(app.confirm_assistant_proposal());
+        let dimension = PersistentDimension::new(
+            target,
+            "Reviewed height",
+            PersistentDimensionTarget::FeatureParameter(dimension_target),
+            presentation,
+        )
+        .unwrap();
+        assert_eq!(
+            app.document.current().persistent_dimension(target),
+            Some(&dimension)
+        );
+        assert_eq!(app.document.visible_undo_steps(), undo_before + 1);
+        assert!(app.undo());
+        assert!(
+            app.document
+                .current()
+                .persistent_dimension(target)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn assistant_delete_rule_override_review_is_typed_observational_and_undoable() {
+        let mut app = KetchupApp::new();
+        let rule = NodeId(101);
+        let target = 102;
+        let identity = DerivedIdentity::new(
+            rule,
+            SlotPath::new(vec![SlotSegment::new(rule, "result", "left").unwrap()]).unwrap(),
+        )
+        .unwrap();
+        app.document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::CreateRuleNode {
+                    id: rule,
+                    name: "Reviewed override source".to_owned(),
+                    expression: "1".to_owned(),
+                    input_ports: Vec::new(),
+                    output_ports: vec![ketchup_core::document::PortSpec::number("result").unwrap()],
+                    outputs: vec![
+                        RuleOutput::new(
+                            SlotSegment::new(rule, "result", "left").unwrap(),
+                            Vec::new(),
+                        )
+                        .unwrap(),
+                    ],
+                    override_parameters: vec![OverrideParameterSpec::replace("offset").unwrap()],
+                },
+                CanonicalCommand::UpsertOverride(
+                    ketchup_core::document::CanonicalOverride::new(
+                        target,
+                        identity.clone(),
+                        "offset",
+                        2.5,
+                        SlotResolution::Resolved,
+                    )
+                    .unwrap(),
+                ),
+            ]))
+            .unwrap();
+        let revision_before = app.document_revision();
+        let digest_before = app.canonical_digest();
+        let undo_before = app.document.visible_undo_steps();
+        app.assistant_intent_kind = AssistantIntentKind::DeleteRuleOverride;
+        app.assistant_target_input = target.to_string();
+        app.assistant_value_input.clear();
+
+        assert!(app.prepare_assistant_from_inputs());
+        let proposal = app.assistant_proposal().unwrap();
+        assert_eq!(proposal.goal(), ProposalGoal::DeleteRuleOverride(target));
+        assert_eq!(proposal.authoritative_writes().len(), 1);
+        assert_eq!(
+            proposal.authoritative_diff()[0].before,
+            ProposalValue::RuleOverrideState {
+                target: identity.clone(),
+                parameter: "offset".to_owned(),
+                value: 2.5,
+                health: SlotResolution::Resolved,
+            }
+        );
+        assert_eq!(
+            proposal.authoritative_diff()[0].after,
+            ProposalValue::Missing
+        );
+        assert_eq!(app.document_revision(), revision_before);
+        assert_eq!(app.canonical_digest(), digest_before);
+        assert_eq!(app.document.visible_undo_steps(), undo_before);
+
+        assert!(app.confirm_assistant_proposal());
+        assert!(app.document.current().override_by_id(target).is_none());
+        assert_eq!(app.document.visible_undo_steps(), undo_before + 1);
+        assert!(app.undo());
+        let restored = app
+            .document
+            .current()
+            .override_by_id(target)
+            .unwrap()
+            .clone();
+        assert_eq!(restored.target, identity);
+        assert_eq!(restored.parameter, "offset");
+        assert_eq!(restored.value(), 2.5);
+        assert_eq!(restored.health, SlotResolution::Resolved);
+    }
+
+    #[test]
+    fn assistant_delete_definition_review_is_typed_observational_and_undoable() {
+        let mut app = KetchupApp::new();
+        let definition = DefinitionId(99);
+        app.document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::CreateDefinition {
+                    id: definition,
+                    name: "Reviewed empty definition".to_owned(),
+                },
+            ]))
+            .unwrap();
+        let revision_before = app.document_revision();
+        let digest_before = app.canonical_digest();
+        let undo_before = app.document.visible_undo_steps();
+        app.assistant_intent_kind = AssistantIntentKind::DeleteDefinition;
+        app.assistant_target_input = definition.0.to_string();
+        app.assistant_value_input.clear();
+
+        assert!(app.prepare_assistant_from_inputs());
+        let proposal = app.assistant_proposal().unwrap();
+        assert_eq!(proposal.goal(), ProposalGoal::DeleteDefinition(definition));
+        assert_eq!(proposal.authoritative_writes().len(), 1);
+        assert_eq!(
+            proposal.authoritative_diff()[0].before,
+            ProposalValue::DefinitionState {
+                name: "Reviewed empty definition".to_owned(),
+                feature_ids: Vec::new(),
+                local_occurrence_ids: Vec::new(),
+                local_group_ids: Vec::new(),
+            }
+        );
+        assert_eq!(
+            proposal.authoritative_diff()[0].after,
+            ProposalValue::Missing
+        );
+        assert_eq!(app.document_revision(), revision_before);
+        assert_eq!(app.canonical_digest(), digest_before);
+        assert_eq!(app.document.visible_undo_steps(), undo_before);
+
+        assert!(app.confirm_assistant_proposal());
+        assert!(app.document.current().definition(definition).is_none());
+        assert_eq!(app.document.visible_undo_steps(), undo_before + 1);
+        assert!(app.undo());
+        let snapshot = app.document.current();
+        let restored = snapshot.definition(definition).unwrap();
+        assert_eq!(restored.name(), "Reviewed empty definition");
+        assert!(restored.feature_ids().is_empty());
+    }
+
+    #[test]
+    fn assistant_collection_membership_review_is_typed_observational_and_undoable() {
+        let mut app = KetchupApp::new();
+        let collection = CollectionId(12);
+        app.document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::CreateCollection {
+                    id: collection,
+                    name: "Selection set".to_owned(),
+                },
+            ]))
+            .unwrap();
+        let revision_before = app.document_revision();
+        let digest_before = app.canonical_digest();
+        let undo_before = app.document.visible_undo_steps();
+        app.assistant_intent_kind = AssistantIntentKind::CollectionOccurrences;
+        app.assistant_target_input = collection.0.to_string();
+        app.assistant_value_input = "1, invalid".to_owned();
+        assert!(!app.prepare_assistant_from_inputs());
+        assert!(app.assistant_proposal().is_none());
+        assert_eq!(app.document_revision(), revision_before);
+
+        app.assistant_value_input = "1, 1".to_owned();
+        assert!(!app.prepare_assistant_from_inputs());
+        assert!(app.assistant_proposal().is_none());
+        assert_eq!(app.document_revision(), revision_before);
+
+        app.assistant_value_input = "1".to_owned();
+        assert!(app.prepare_assistant_from_inputs());
+        let proposal = app.assistant_proposal().unwrap();
+        assert_eq!(
+            proposal.goal(),
+            ProposalGoal::SetCollectionOccurrences(collection)
+        );
+        assert_eq!(
+            proposal.authoritative_diff()[0].before,
+            ProposalValue::Occurrences(Vec::new())
+        );
+        assert_eq!(
+            proposal.authoritative_diff()[0].after,
+            ProposalValue::Occurrences(vec![OccurrenceId(1)])
+        );
+        assert_eq!(app.document_revision(), revision_before);
+        assert_eq!(app.canonical_digest(), digest_before);
+        assert_eq!(app.document.visible_undo_steps(), undo_before);
+
+        assert!(app.confirm_assistant_proposal());
+        assert_eq!(
+            app.document
+                .current()
+                .collection(collection)
+                .unwrap()
+                .occurrence_ids()
+                .collect::<Vec<_>>(),
+            vec![OccurrenceId(1)]
+        );
+        assert_eq!(app.document.visible_undo_steps(), undo_before + 1);
+        assert!(app.undo());
+        assert_eq!(
+            app.document
+                .current()
+                .collection(collection)
+                .unwrap()
+                .occurrence_ids()
+                .count(),
+            0
+        );
+    }
+
+    #[test]
     fn push_pull_uses_the_projected_feature_pair_and_preserves_local_profile_origin() {
         let mut app = KetchupApp::new();
         let offset_points = vec![[10.0, 20.0], [110.0, 20.0], [110.0, 80.0], [10.0, 80.0]];
@@ -6937,7 +12701,7 @@ mod tests {
         app.selection.primary = Some(selection.clone());
         let item = app.active_boxes()[0].clone();
         assert_eq!(item.profile_feature_id, FeatureId(1));
-        assert_eq!(item.extrusion_feature_id, FeatureId(2));
+        assert_eq!(item.extrusion_feature_id, Some(FeatureId(2)));
         assert_eq!(item.origin_mm, Vec3::new(10.0, 20.0, 0.0));
         assert!(
             push_pull_batch(
@@ -6992,21 +12756,83 @@ mod tests {
     }
 
     #[test]
-    fn rectangle_sketch_creates_an_undoable_solid() {
+    fn linear_pattern_preview_adds_virtual_viewport_occurrences_only() {
         let mut app = KetchupApp::new();
-        app.sketch_height_input = "30".to_owned();
+        let revision = app.document_revision();
+        let digest = app.canonical_digest();
+        assert!(app.preview_linear_pattern(OccurrenceId(1), Axis::Z, 50.0, 4));
+
+        let snapshot = app.document.current();
+        let exact_projection = app.exact_projection(&snapshot);
+        let boxes = app.viewport_boxes(&exact_projection);
+        assert_eq!(boxes.len(), 4);
+        assert_eq!(boxes[3].origin_mm, Vec3::new(0.0, 0.0, 150.0));
+        assert_eq!(app.active_box_count(), 1);
+        assert_eq!(app.document_revision(), revision);
+        assert_eq!(app.canonical_digest(), digest);
+    }
+
+    #[test]
+    fn rectangle_sketch_creates_a_profile_then_push_pull_adds_the_extrusion() {
+        let mut app = KetchupApp::new();
 
         assert!(
             app.complete_rectangle_sketch(Vec3::new(40.0, 25.0, 0.0), Vec3::new(-10.0, -5.0, 0.0),)
         );
         assert_eq!(app.active_box_count(), 2);
-        assert_eq!(app.active_boxes()[1].origin_mm, Vec3::new(-10.0, -5.0, 0.0));
-        assert_eq!(app.active_boxes()[1].size_mm, Vec3::new(50.0, 30.0, 30.0));
+        let profile = app.active_boxes()[1].clone();
+        assert_eq!(profile.origin_mm, Vec3::new(-10.0, -5.0, 0.0));
+        assert_eq!(profile.size_mm, Vec3::new(50.0, 30.0, 0.0));
+        assert_eq!(profile.extrusion_feature_id, None);
+        let profile_digest = app.canonical_digest();
+
+        app.set_push_pull_distance_input("30");
+        assert!(app.start_preview());
+        assert!(app.confirm_preview());
+        let solid = app.active_boxes()[1].clone();
+        assert_eq!(solid.size_mm, Vec3::new(50.0, 30.0, 30.0));
+        assert!(solid.extrusion_feature_id.is_some());
 
         assert!(app.undo());
-        assert_eq!(app.active_box_count(), 1);
+        assert_eq!(app.canonical_digest(), profile_digest);
+        assert_eq!(app.active_boxes()[1].size_mm.z, 0.0);
         assert!(app.redo());
-        assert_eq!(app.active_boxes()[1].size_mm, Vec3::new(50.0, 30.0, 30.0));
+        assert_eq!(app.active_boxes()[1].size_mm.z, 30.0);
+    }
+
+    #[test]
+    fn closed_polyline_path_preserves_points_and_rejects_invalid_input_atomically() {
+        let mut app = KetchupApp::new();
+        let points_mm = vec![
+            [-12.5, 4.25],
+            [80.0, 4.25],
+            [95.5, 40.0],
+            [35.0, 72.75],
+            [-12.5, 40.0],
+        ];
+        assert!(app.create_closed_polyline(points_mm.clone()));
+        let created = app.active_boxes()[1].clone();
+        assert_eq!(created.extrusion_feature_id, None);
+        assert_eq!(created.size_mm.z, 0.0);
+        assert!(matches!(
+            app.document
+                .current()
+                .feature(created.profile_feature_id)
+                .unwrap()
+                .kind(),
+            FeatureKind::Profile { points_mm: stored } if stored == &points_mm
+        ));
+
+        let digest = app.canonical_digest();
+        let revision = app.document_revision();
+        assert!(!app.create_closed_polyline(vec![
+            [0.0, 0.0],
+            [0.0, 10.0],
+            [10.0, 10.0],
+            [10.0, 0.0],
+        ]));
+        assert_eq!(app.canonical_digest(), digest);
+        assert_eq!(app.document_revision(), revision);
     }
 
     #[test]
@@ -7041,6 +12867,30 @@ mod tests {
 
         assert!(app.redo());
         assert_eq!(app.document_height_mm(), 42.0);
+    }
+
+    #[test]
+    fn gpu_projection_matches_cpu_projection_inside_callback_viewport() {
+        let app = KetchupApp::new();
+        let rect = Rect::from_min_size(Pos2::new(87.0, 163.0), Vec2::new(1_927.0, 1_184.0));
+        let matrix = app.world_to_clip(rect);
+
+        for point in box_corners(BOX_WIDTH_MM, BOX_DEPTH_MM, app.document_height_mm()) {
+            let clip_x = matrix[0] * point.x as f32
+                + matrix[4] * point.y as f32
+                + matrix[8] * point.z as f32
+                + matrix[12];
+            let clip_y = matrix[1] * point.x as f32
+                + matrix[5] * point.y as f32
+                + matrix[9] * point.z as f32
+                + matrix[13];
+            let gpu_screen = Pos2::new(
+                rect.center().x + clip_x * rect.width() * 0.5,
+                rect.center().y - clip_y * rect.height() * 0.5,
+            );
+            let cpu_screen = app.project(point, rect);
+            assert!((gpu_screen - cpu_screen).length() < 0.01);
+        }
     }
 
     #[test]
@@ -7257,22 +13107,22 @@ mod tests {
         assert_eq!(app.active_box_count(), 2);
         let created = app.active_boxes()[1].clone();
         assert_eq!(created.origin_mm, Vec3::new(-260.0, -170.0, 20.0));
-        assert_eq!(created.size_mm, Vec3::new(300.0, 200.0, 20.0));
+        assert_eq!(created.size_mm, Vec3::new(300.0, 200.0, 0.0));
         assert_eq!(app.document.visible_undo_steps(), 1);
 
         app.dispatch_command(AppCommand::PushPull);
         app.value_input = "55".to_owned();
         assert!(app.apply_value_input());
-        assert_eq!(app.active_boxes()[1].size_mm.z, 75.0);
+        assert_eq!(app.active_boxes()[1].size_mm.z, 55.0);
         assert_eq!(app.document.visible_undo_steps(), 2);
 
         assert!(app.undo());
-        assert_eq!(app.active_boxes()[1].size_mm.z, 20.0);
+        assert_eq!(app.active_boxes()[1].size_mm.z, 0.0);
         assert!(app.undo());
         assert_eq!(app.active_box_count(), 1);
         assert!(app.redo());
         assert!(app.redo());
-        assert_eq!(app.active_boxes()[1].size_mm.z, 75.0);
+        assert_eq!(app.active_boxes()[1].size_mm.z, 55.0);
     }
 
     #[test]
@@ -7492,7 +13342,7 @@ mod tests {
     }
 
     #[test]
-    fn nested_mutations_are_rejected_without_revision_or_digest_changes() {
+    fn nested_edits_require_a_matching_snapshot_bound_context() {
         let mut app = KetchupApp::new();
         assert!(app.create_box());
         app.select_from_outliner(InstancePath::root(OccurrenceId(1)), false);
@@ -7500,24 +13350,46 @@ mod tests {
         assert!(app.group_selected());
         assert!(app.make_component());
         let nested = app.active_boxes()[0].clone();
-        app.selection.select_exact(
-            SelectionId {
-                definition_id: nested.definition_id,
-                instance_path: nested.instance_path,
-                element: ElementId::Face {
-                    axis: Axis::Z,
-                    side: Side::Maximum,
-                },
+        let selection = SelectionId {
+            definition_id: nested.definition_id,
+            instance_path: nested.instance_path.clone(),
+            element: ElementId::Face {
+                axis: Axis::Z,
+                side: Side::Maximum,
             },
-            false,
-        );
-        let revision = app.document_revision();
-        let digest = app.document.current().canonical_digest();
+        };
+        app.selection.select_exact(selection.clone(), false);
+        let before_revision = app.document_revision();
+        let before_digest = app.document.current().canonical_digest();
         app.set_push_pull_distance_input("5");
         assert!(!app.start_preview());
         assert!(!app.move_selected(Vec3::new(10.0, 0.0, 0.0)));
-        assert_eq!(app.document_revision(), revision);
-        assert_eq!(app.document.current().canonical_digest(), digest);
+        assert_eq!(app.document_revision(), before_revision);
+        assert_eq!(app.document.current().canonical_digest(), before_digest);
+
+        let component_path = InstancePath::root(nested.instance_path.root_occurrence());
+        assert!(app.enter_occurrence_context(component_path));
+        app.selection.select_exact(selection.clone(), false);
+        assert!(app.start_preview());
+        assert!(app.preview_action_digest().is_some());
+        assert!(app.confirm_preview());
+        let committed_digest = app.document.current().canonical_digest();
+        assert_ne!(committed_digest, before_digest);
+        assert_eq!(app.document_revision(), before_revision + 1);
+        assert!(app.undo());
+        assert_eq!(app.document.current().canonical_digest(), before_digest);
+        assert!(app.redo());
+        assert_eq!(app.document.current().canonical_digest(), committed_digest);
+
+        app.selection.select_exact(selection, false);
+        app.set_push_pull_distance_input("5");
+        assert!(app.start_preview());
+        let stale_revision = app.document_revision();
+        let stale_digest = app.document.current().canonical_digest();
+        assert!(app.exit_edit_context());
+        assert!(!app.confirm_preview());
+        assert_eq!(app.document_revision(), stale_revision);
+        assert_eq!(app.document.current().canonical_digest(), stale_digest);
     }
 
     #[test]
@@ -7740,7 +13612,9 @@ mod tests {
         assert!(!app.is_dirty());
         assert_eq!(app.document_path.as_deref(), Some(path.as_path()));
 
-        let mut reopened = KetchupApp::new();
+        let mut reopened = KetchupApp::new().with_dialogs(Box::new(
+            dialogs::ScriptedFileDialogs::new().always_confirm_high_risk_as(1),
+        ));
         assert!(reopened.open_document_from(&path));
         let actual = reopened.document.current();
         assert_eq!(actual.canonical_digest(), expected.canonical_digest());

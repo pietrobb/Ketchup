@@ -1,14 +1,17 @@
 use ketchup_core::bottle_m6::ExactRevolveRequest;
 use ketchup_core::document::{
-    BooleanOperation, BottleControlDimension, BottleEdgeFinishKind, CanonicalCommand, CommandBatch,
-    DefinitionId, DerivedIdentity, Dimension, DocumentStore, EvaluationIdentity, FeatureId,
-    FeatureKind, FeatureParameterBinding, FeatureParameterFreshness, FeatureParameterSlot,
-    FeatureParameterStaleReason, FeatureParameterTarget, NodeId, OccurrenceId, PortSpec,
+    BooleanOperation, BottleControlDimension, BottleEdgeFinishKind, CanonicalCommand,
+    CanonicalError, CommandBatch, DefinitionId, DerivedIdentity, Dimension, DimensionDisplayUnit,
+    DimensionPresentation, DimensionReferenceHealth, DocumentId, DocumentStore, EvaluationIdentity,
+    FeatureId, FeatureKind, FeatureParameterBinding, FeatureParameterFreshness,
+    FeatureParameterSlot, FeatureParameterStaleReason, FeatureParameterTarget, NodeId,
+    OccurrenceId, PersistentDimension, PersistentDimensionId, PersistentDimensionTarget, PortSpec,
     RuleOutput, SlotPath, SlotSegment, Transform,
 };
 use ketchup_core::exact_product::{
     EXACT_BOOLEAN_UNION_EVALUATOR_V1, EXACT_THROUGH_CUT_EVALUATOR_V1, ExactBodyPackage,
-    ExactFaceRole, ExactFeatureChainRequest, ExactProductError, ExactResultRegistry,
+    ExactFaceRole, ExactFeatureChainRequest, ExactProductError, ExactReferenceQuarantineReason,
+    ExactReferenceResolution, ExactResultRegistry, canonical_reference_lineage_digest,
 };
 use ketchup_exact::{
     ExactBackend, RectangleExtrudeSpec, ReferenceResolution, StabilityClass,
@@ -180,6 +183,244 @@ fn preregistered_c1b_product_corpus_has_zero_wrong_identities_and_survives_save_
 }
 
 #[test]
+fn exact_reference_health_is_explicit_across_transform_mutation_conflict_and_quarantine() {
+    let mut supervisor = ExactWorkerSupervisor::spawn(worker_path()).unwrap();
+    let mut document = rectangle_document(100.0, 60.0, 18.0);
+    let initial = document.current();
+    let initial_request = ExactFeatureChainRequest::from_snapshot(&initial, DEFINITION).unwrap();
+    let initial_package = supervisor.evaluate_rectangle(&initial_request).unwrap();
+    let durable_top = initial_package
+        .reference(ExactFaceRole::Top)
+        .unwrap()
+        .clone();
+    let initial_registry =
+        ExactResultRegistry::accept(&initial, [Arc::new(initial_package.into())]).unwrap();
+    assert!(matches!(
+        initial_registry.resolve_reference(&initial, &durable_top),
+        ExactReferenceResolution::Resolved { reference }
+            if reference.lineage_digest == durable_top.lineage_digest
+    ));
+
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetOccurrenceTransform {
+                id: OccurrenceId(13),
+                transform: Transform::from_translation(25.0, -10.0, 5.0).unwrap(),
+            },
+        ]))
+        .unwrap();
+    let transformed = document.current();
+    let transformed_request =
+        ExactFeatureChainRequest::from_snapshot(&transformed, DEFINITION).unwrap();
+    let transformed_package = supervisor.evaluate_rectangle(&transformed_request).unwrap();
+    let transformed_top = transformed_package
+        .reference(ExactFaceRole::Top)
+        .unwrap()
+        .clone();
+    assert_ne!(
+        durable_top.canonical_input_digest,
+        transformed_top.canonical_input_digest
+    );
+    assert_eq!(durable_top.lineage_digest, transformed_top.lineage_digest);
+    let transformed_registry =
+        ExactResultRegistry::accept(&transformed, [Arc::new(transformed_package.clone().into())])
+            .unwrap();
+    assert_eq!(
+        transformed_registry.resolve_reference(&transformed, &durable_top),
+        ExactReferenceResolution::Resolved {
+            reference: Box::new(transformed_top.clone()),
+        }
+    );
+
+    let mut cut_document = boolean_document(
+        100.0,
+        60.0,
+        18.0,
+        [30.0, 20.0, 20.0, 15.0],
+        BooleanOperation::Cut,
+    );
+    let cut_snapshot = cut_document.current();
+    let cut_request = ExactFeatureChainRequest::from_snapshot(&cut_snapshot, DEFINITION).unwrap();
+    let cut_package = supervisor.evaluate_rectangle(&cut_request).unwrap();
+    let removed_wall = cut_package
+        .reference(ExactFaceRole::CutWest)
+        .unwrap()
+        .clone();
+    cut_document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::DeleteFeature { id: THROUGH_CUT },
+            CanonicalCommand::CreateFeature {
+                id: THROUGH_CUT,
+                definition_id: DEFINITION,
+                name: "Bounded Boolean union".to_owned(),
+                kind: FeatureKind::Boolean {
+                    operation: BooleanOperation::Union,
+                    target: EXTRUSION,
+                    tool: TOOL_EXTRUSION,
+                },
+            },
+        ]))
+        .unwrap();
+    let union_snapshot = cut_document.current();
+    let union_request =
+        ExactFeatureChainRequest::from_snapshot(&union_snapshot, DEFINITION).unwrap();
+    let union_package = supervisor.evaluate_rectangle(&union_request).unwrap();
+    let union_registry =
+        ExactResultRegistry::accept(&union_snapshot, [Arc::new(union_package.into())]).unwrap();
+    assert_eq!(
+        union_registry.resolve_reference(&union_snapshot, &removed_wall),
+        ExactReferenceResolution::Lost
+    );
+
+    let mut incompatible_package = transformed_package.clone();
+    incompatible_package
+        .identity
+        .backend
+        .push_str("-incompatible");
+    for reference in &mut incompatible_package.references {
+        reference.backend = incompatible_package.identity.backend.clone();
+    }
+    let incompatible_registry = ExactResultRegistry::accept(
+        &transformed,
+        [Arc::new(incompatible_package.clone().into())],
+    )
+    .unwrap();
+    assert_eq!(
+        incompatible_registry.resolve_reference(&transformed, &durable_top),
+        ExactReferenceResolution::Quarantined {
+            reason: ExactReferenceQuarantineReason::IncompatibleEvaluationEnvelope,
+        }
+    );
+
+    let ambiguous_registry = ExactResultRegistry::accept(
+        &transformed,
+        [
+            Arc::new(transformed_package.into()),
+            Arc::new(incompatible_package.into()),
+        ],
+    )
+    .unwrap();
+    assert_eq!(
+        ambiguous_registry.resolve_reference(&transformed, &durable_top),
+        ExactReferenceResolution::Ambiguous { candidate_count: 2 }
+    );
+
+    let mut invalid = durable_top.clone();
+    invalid.lineage_digest.push_str("-tampered");
+    assert_eq!(
+        transformed_registry.resolve_reference(&transformed, &invalid),
+        ExactReferenceResolution::Quarantined {
+            reason: ExactReferenceQuarantineReason::InvalidLineage,
+        }
+    );
+
+    let mut foreign = durable_top;
+    foreign.document_id = DocumentId(999);
+    foreign.lineage_digest = canonical_reference_lineage_digest(
+        foreign.document_id,
+        foreign.producer_feature_id,
+        &foreign.semantic_role,
+        &foreign.source_element_id,
+        &foreign.expected_type,
+    );
+    assert_eq!(
+        transformed_registry.resolve_reference(&transformed, &foreign),
+        ExactReferenceResolution::Quarantined {
+            reason: ExactReferenceQuarantineReason::WrongDocument,
+        }
+    );
+}
+
+#[test]
+fn persistent_exact_dimension_resolves_only_against_current_registered_semantic_reference() {
+    const EXACT_HEIGHT: PersistentDimensionId = PersistentDimensionId(1);
+    let mut supervisor = ExactWorkerSupervisor::spawn(worker_path()).unwrap();
+    let mut document = rectangle_document(100.0, 60.0, 18.0);
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::UpsertPersistentDimension(
+                PersistentDimension::new(
+                    EXACT_HEIGHT,
+                    "Exact height",
+                    PersistentDimensionTarget::ExactFeatureParameter {
+                        definition_id: DEFINITION,
+                        producer_feature_id: EXTRUSION,
+                        semantic_role: ExactFaceRole::Top.semantic_role().to_owned(),
+                        source_element_id: ExactFaceRole::Top.source_element_id().to_owned(),
+                        slot: FeatureParameterSlot::Height,
+                    },
+                    DimensionPresentation::new(DimensionDisplayUnit::Millimetres, 2).unwrap(),
+                )
+                .unwrap(),
+            ),
+        ]))
+        .unwrap();
+    assert_eq!(
+        document
+            .current()
+            .project_persistent_dimension(EXACT_HEIGHT)
+            .unwrap()
+            .health,
+        DimensionReferenceHealth::Lost
+    );
+
+    let request = ExactFeatureChainRequest::from_snapshot(&document.current(), DEFINITION).unwrap();
+    let package = supervisor.evaluate_rectangle(&request).unwrap();
+    for reference in package.references {
+        document
+            .register_exact_reference_evidence(reference)
+            .unwrap();
+    }
+    let resolved = document
+        .current()
+        .project_persistent_dimension(EXACT_HEIGHT)
+        .unwrap();
+    assert_eq!(resolved.health, DimensionReferenceHealth::Resolved);
+    assert_eq!(resolved.millimetres, Some(18.0));
+    assert_eq!(resolved.display_text.as_deref(), Some("18.00 mm"));
+
+    let reopened =
+        ketchup_core::persistence::load(&ketchup_core::persistence::save(&document.current()))
+            .unwrap();
+    assert_eq!(reopened.source_schema(), 17);
+    assert_eq!(
+        reopened
+            .snapshot()
+            .project_persistent_dimension(EXACT_HEIGHT)
+            .unwrap()
+            .health,
+        DimensionReferenceHealth::Resolved
+    );
+
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetFeatureDimension {
+                id: EXTRUSION,
+                dimension: Dimension::new("20", 20.0).unwrap(),
+            },
+        ]))
+        .unwrap();
+    let unresolved = document
+        .current()
+        .project_persistent_dimension(EXACT_HEIGHT)
+        .unwrap();
+    assert_eq!(unresolved.health, DimensionReferenceHealth::Lost);
+    assert_eq!(unresolved.millimetres, None);
+    assert!(matches!(
+        document
+            .current()
+            .persistent_dimension(EXACT_HEIGHT)
+            .unwrap()
+            .target,
+        PersistentDimensionTarget::ExactFeatureParameter {
+            definition_id: DEFINITION,
+            producer_feature_id: EXTRUSION,
+            ..
+        }
+    ));
+}
+
+#[test]
 fn explicit_parameter_recompute_restores_exact_registry_render_pick_and_export() {
     const SOURCE: NodeId = NodeId(201);
     const RULE: NodeId = NodeId(202);
@@ -285,6 +526,103 @@ fn explicit_parameter_recompute_restores_exact_registry_render_pick_and_export()
             .contains("v 0.00000000000000000 0.00000000000000000 44.00000000000000000")
     );
     assert!(export.loss_report.contains("producer_feature_id=12"));
+}
+
+#[test]
+fn exact_to_mesh_conversion_creates_one_detached_canonical_authority_with_explicit_loss() {
+    const MESH_DEFINITION: DefinitionId = DefinitionId(80);
+    const MESH_FEATURE: FeatureId = FeatureId(81);
+    let mut supervisor = ExactWorkerSupervisor::spawn(worker_path()).unwrap();
+    let mut document = rectangle_document(100.0, 60.0, 18.0);
+    let source = document.current();
+    let request = ExactFeatureChainRequest::from_snapshot(&source, DEFINITION).unwrap();
+    let exact = ExactBodyPackage::from(supervisor.evaluate_rectangle(&request).unwrap());
+    let batch = exact
+        .detached_mesh_conversion_batch(
+            &source,
+            MESH_DEFINITION,
+            "Detached mesh",
+            MESH_FEATURE,
+            "Canonical mesh body",
+        )
+        .unwrap();
+    assert_eq!(batch.commands().len(), 2);
+    let undo_steps = document.visible_undo_steps();
+
+    document.apply_batch(&batch).unwrap();
+    assert_eq!(document.visible_undo_steps(), undo_steps + 1);
+    let converted = document.current();
+    assert_eq!(
+        converted.definition(MESH_DEFINITION).unwrap().feature_ids(),
+        &[MESH_FEATURE]
+    );
+    assert!(converted.feature(EXTRUSION).is_some());
+    let FeatureKind::MeshBody(spec) = converted.feature(MESH_FEATURE).unwrap().kind() else {
+        panic!("conversion destination must be a canonical mesh body");
+    };
+    assert_eq!(spec.vertices_mm.len(), 8);
+    assert_eq!(spec.triangles.len(), 12);
+    let loss = spec.exact_conversion_loss_report().unwrap();
+    assert!(loss.contains("authority=canonical mesh body"));
+    assert!(loss.contains("conversion=exact-to-mesh"));
+    assert!(loss.contains("destination_definition_id=80"));
+    assert!(loss.contains("destination_feature_id=81"));
+    assert!(loss.contains("exact_reference_consequence=Lost"));
+    assert!(loss.contains("editability_loss="));
+    assert!(loss.contains("topology_loss="));
+    assert!(loss.contains("tolerance_loss="));
+
+    let converted_digest = converted.canonical_digest();
+    let reopened =
+        ketchup_core::persistence::load(&ketchup_core::persistence::save(&converted)).unwrap();
+    assert_eq!(reopened.source_schema(), 17);
+    let reopened_snapshot = reopened.snapshot();
+    let reopened_spec = match reopened_snapshot.feature(MESH_FEATURE).unwrap().kind() {
+        FeatureKind::MeshBody(spec) => spec,
+        _ => panic!("mesh body must survive schema round-trip"),
+    };
+    assert_eq!(reopened_snapshot.canonical_digest(), converted_digest);
+    assert_eq!(reopened_spec, spec);
+    assert_eq!(
+        document.undo().unwrap().canonical_digest(),
+        source.canonical_digest()
+    );
+    assert_eq!(
+        document.redo().unwrap().canonical_digest(),
+        converted_digest
+    );
+
+    assert_eq!(
+        exact
+            .detached_mesh_conversion_batch(
+                &document.current(),
+                DefinitionId(82),
+                "Stale mesh",
+                FeatureId(83),
+                "Stale body",
+            )
+            .unwrap_err(),
+        ExactProductError::StaleResult
+    );
+
+    let mut invalid_spec = spec.clone();
+    invalid_spec.triangles.pop();
+    let before_invalid = document.current().canonical_digest();
+    let invalid = document.apply_batch(&CommandBatch::new(vec![
+        CanonicalCommand::CreateDefinition {
+            id: DefinitionId(84),
+            name: "Invalid mesh".to_owned(),
+        },
+        CanonicalCommand::CreateFeature {
+            id: FeatureId(85),
+            definition_id: DefinitionId(84),
+            name: "Open mesh".to_owned(),
+            kind: FeatureKind::MeshBody(invalid_spec),
+        },
+    ]));
+    assert!(matches!(invalid, Err(CanonicalError::InvalidMeshBody)));
+    assert_eq!(document.current().canonical_digest(), before_invalid);
+    assert!(document.current().definition(DefinitionId(84)).is_none());
 }
 
 #[test]
@@ -424,7 +762,7 @@ fn scheduler_evaluates_canonical_boolean_cut_with_seven_role_evidences() {
     let loaded =
         ketchup_core::persistence::load(&ketchup_core::persistence::save(&document.current()))
             .unwrap();
-    assert_eq!(loaded.source_schema(), 11);
+    assert_eq!(loaded.source_schema(), 17);
     let reopened = match loaded {
         ketchup_core::persistence::LoadOutcome::Editable { document, .. } => document,
         ketchup_core::persistence::LoadOutcome::ReviewOnly(_) => {
@@ -639,8 +977,52 @@ fn scheduler_evaluates_editable_bottle_shell_with_open_mouth_and_current_referen
     let reopened =
         ketchup_core::persistence::load(&ketchup_core::persistence::save(&document.current()))
             .unwrap();
-    assert_eq!(reopened.source_schema(), 11);
+    assert_eq!(reopened.source_schema(), 17);
     assert_eq!(reopened.snapshot().exact_reference_evidence().count(), 9);
+}
+
+#[test]
+fn worker_exports_current_bottle_as_round_trippable_step_and_rejects_stale_evidence() {
+    let directory = tempfile::tempdir().unwrap();
+    let step_path = directory.path().join("bottle.step");
+    let stale_path = directory.path().join("stale.step");
+    let mut supervisor = ExactWorkerSupervisor::spawn(worker_path()).unwrap();
+    let mut document = bottle_shell_document();
+    let snapshot = document.current();
+    let request = ExactRevolveRequest::from_snapshot(&snapshot, BOTTLE_DEFINITION).unwrap();
+    let package = supervisor.evaluate_revolve(&request).unwrap();
+
+    supervisor
+        .export_revolve_step(&snapshot, &request, &package, &step_path)
+        .unwrap();
+    let raw = std::fs::read_to_string(&step_path).unwrap();
+    assert!(raw.starts_with("ISO-10303-21;"));
+    let imported = ExactBackend::new()
+        .import_step(step_path.to_str().unwrap())
+        .unwrap();
+    assert_eq!(imported.body.topology.solid_count, 1);
+    assert!(imported.body.topology.face_count >= package.references.len() as u32);
+    assert!((imported.body.topology.bounds_mm.min.x - package.bounds_mm[0][0]).abs() < 1.0e-6);
+    assert!((imported.body.topology.bounds_mm.max.z - package.bounds_mm[1][2]).abs() < 1.0e-6);
+
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetFeatureDimension {
+                id: BOTTLE_SHELL,
+                dimension: Dimension::new("3", 3.0).unwrap(),
+            },
+        ]))
+        .unwrap();
+    std::fs::write(&stale_path, b"preserved destination").unwrap();
+    assert!(
+        supervisor
+            .export_revolve_step(&document.current(), &request, &package, &stale_path)
+            .is_err()
+    );
+    assert_eq!(
+        std::fs::read(&stale_path).unwrap(),
+        b"preserved destination"
+    );
 }
 
 #[test]
@@ -740,7 +1122,7 @@ fn scheduler_evaluates_controlled_bottle_fillet_and_chamfer_with_current_roles()
     let reopened =
         ketchup_core::persistence::load(&ketchup_core::persistence::save(&document.current()))
             .unwrap();
-    assert_eq!(reopened.source_schema(), 11);
+    assert_eq!(reopened.source_schema(), 17);
     assert_eq!(reopened.snapshot().exact_reference_evidence().count(), 9);
 }
 

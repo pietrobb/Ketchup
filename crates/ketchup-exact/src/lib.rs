@@ -113,6 +113,7 @@ mod ffi {
         ) -> UniquePtr<NativeOperationResult>;
         fn exception_probe_native() -> UniquePtr<NativeOperationResult>;
         fn import_step_native(path: &str) -> UniquePtr<NativeOperationResult>;
+        fn export_step_native(body: &NativeOperationResult, path: &str) -> String;
 
         fn status_code(self: &NativeOperationResult) -> u8;
         fn diagnostic(self: &NativeOperationResult) -> String;
@@ -557,6 +558,37 @@ impl ExactBackend {
             &input,
             HistoryConfidence::None,
         )
+    }
+
+    pub fn export_step(&self, body: &ExactBody, path: &str) -> Result<(), GeometryError> {
+        let input = format!("export_step:{}:{path}", body.result_fingerprint);
+        if path.trim().is_empty() {
+            return Err(parameter_error(
+                GeometryErrorCode::InvalidParameter,
+                "export_step",
+                &input,
+                "STEP path must not be empty".to_owned(),
+            ));
+        }
+        let native = body.native.as_ref().ok_or_else(|| GeometryError {
+            code: GeometryErrorCode::NullResult,
+            diagnostic: "Exact body lost its owned native shape".to_owned(),
+            operation: "export_step",
+            input_digest: stable_digest(&input),
+            backend_fingerprint: BACKEND_FINGERPRINT,
+        })?;
+        let diagnostic = ffi::export_step_native(native, path);
+        if diagnostic.is_empty() {
+            Ok(())
+        } else {
+            Err(GeometryError {
+                code: GeometryErrorCode::BackendException,
+                diagnostic,
+                operation: "export_step",
+                input_digest: stable_digest(&input),
+                backend_fingerprint: BACKEND_FINGERPRINT,
+            })
+        }
     }
 
     pub fn cut_box(

@@ -1,4 +1,24 @@
-use ketchup_app::KetchupApp;
+use ketchup_app::{AppCommand, KetchupApp};
+use ketchup_interaction::LocaleCatalog;
+
+#[test]
+fn shell_accepts_complete_real_and_pseudo_locale_catalogs() {
+    let slovak = KetchupApp::with_catalog(LocaleCatalog::slovak());
+    let pseudo = KetchupApp::with_catalog(LocaleCatalog::pseudo());
+
+    assert_eq!(slovak.command_label(AppCommand::Select), "Vybrať");
+    assert!(pseudo.command_label(AppCommand::Select).starts_with("[!! "));
+}
+
+#[test]
+fn shell_rejects_an_incomplete_active_locale() {
+    let incomplete = LocaleCatalog::parse("app-title = Kečup").unwrap();
+
+    assert!(
+        std::panic::catch_unwind(|| KetchupApp::with_catalog(incomplete)).is_err(),
+        "an incomplete resource must fail before the shell can render fallback markers"
+    );
+}
 
 #[test]
 fn preview_is_ephemeral_until_canonical_confirmation() {

@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+pub mod general;
 pub mod plugin;
 pub mod validator_runtime;
 
@@ -10,7 +11,9 @@ use ketchup_core::beam_m5::{
 use ketchup_core::bottle_m6::{
     ExactRevolvePackage, ExactRevolveRequest, build_revolve_package, expected_volume_mm3,
 };
-use ketchup_core::document::{BooleanOperation, DerivedIdentity, NodeId, SlotPath, SlotSegment};
+use ketchup_core::document::{
+    BooleanOperation, DerivedIdentity, NodeId, SlotPath, SlotSegment, Snapshot,
+};
 use ketchup_core::exact_product::{
     ExactFaceRole, ExactFeatureChainRequest, ExactProductError, ExactRenderPackage,
     build_box_render_package, canonical_reference_lineage_digest,
@@ -483,6 +486,7 @@ const M3_CUT_CAPABILITY: &str = "M3_CUT_V1";
 const M5_NOTCH_CAPABILITY: &str = "M5_NOTCH_V1";
 const M6_REVOLVE_CAPABILITY: &str = "M6_REVOLVE_V1";
 const M6_SHELL_CAPABILITY: &str = "M6_SHELL_V1";
+const M14_STEP_CAPABILITY: &str = "M14_STEP_V1";
 const DEFAULT_WORKER_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 const CANCELLATION_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const MAX_WORKER_RESPONSE_LINE_BYTES: usize = 64 * 1024;
@@ -602,6 +606,18 @@ impl ExactWorkerClient {
             self.terminate_worker();
             Err(WorkerError::MissingCapability(
                 M6_SHELL_CAPABILITY.to_owned(),
+            ))
+        }
+    }
+
+    fn verify_m14_step_capability(&mut self, cancelled: &AtomicBool) -> Result<(), WorkerError> {
+        let response = self.request_with_cancellation("CAPS M14_STEP_V1", cancelled)?;
+        if response == "CAPS M14_STEP_V1" {
+            Ok(())
+        } else {
+            self.terminate_worker();
+            Err(WorkerError::MissingCapability(
+                M14_STEP_CAPABILITY.to_owned(),
             ))
         }
     }
@@ -737,6 +753,77 @@ impl ExactWorkerClient {
         match parse_m6_revolve_result(&response) {
             Err(WorkerError::Protocol(response)) => self.fail_protocol(response),
             result => result,
+        }
+    }
+
+    fn export_revolve_step_request_with_cancellation(
+        &mut self,
+        request: &ExactRevolveRequest,
+        expected_result_fingerprint: &str,
+        path: &Path,
+        cancelled: &AtomicBool,
+    ) -> Result<(), WorkerError> {
+        self.verify_m14_step_capability(cancelled)?;
+        let (kind, thickness, amount) = match (
+            request.edge_finish_kind,
+            request.thickness_bits,
+            request.edge_finish_amount_bits,
+        ) {
+            (
+                Some(ketchup_core::document::BottleEdgeFinishKind::Fillet),
+                Some(thickness),
+                Some(amount),
+            ) => (
+                "fillet",
+                format!("{thickness:016x}"),
+                format!("{amount:016x}"),
+            ),
+            (
+                Some(ketchup_core::document::BottleEdgeFinishKind::Chamfer),
+                Some(thickness),
+                Some(amount),
+            ) => (
+                "chamfer",
+                format!("{thickness:016x}"),
+                format!("{amount:016x}"),
+            ),
+            (None, Some(thickness), None) => ("shell", format!("{thickness:016x}"), "-".to_owned()),
+            (None, None, None) => ("revolve", "-".to_owned(), "-".to_owned()),
+            _ => {
+                return Err(WorkerError::Protocol(
+                    "incomplete STEP export request".to_owned(),
+                ));
+            }
+        };
+        let mut line = format!(
+            "EXPORT_STEP_M14_V1 {} {} {} {} {kind} {thickness} {amount} {}",
+            request.document_id.0,
+            request.producer_feature_id().0,
+            request.canonical_input_digest,
+            expected_result_fingerprint,
+            hex_encode(path.to_string_lossy().as_bytes()),
+        );
+        for point in &request.points_bits {
+            line.push_str(&format!(" {:016x} {:016x}", point[0], point[1]));
+        }
+        let response = self.request_with_cancellation(&line, cancelled)?;
+        let fields = response.split_whitespace().collect::<Vec<_>>();
+        if fields.first() == Some(&"ERR") {
+            return match parse_error_response(&response, &fields) {
+                WorkerError::Protocol(response) => self.fail_protocol(response),
+                error => Err(error),
+            };
+        }
+        if fields.as_slice()
+            == [
+                "OK_M14_STEP_V1",
+                request.canonical_input_digest.as_str(),
+                expected_result_fingerprint,
+            ]
+        {
+            Ok(())
+        } else {
+            self.fail_protocol(response)
         }
     }
 
@@ -1118,6 +1205,52 @@ impl ExactWorkerSupervisor {
         let package = build_m6_revolve_package(request, &result)?;
         self.client.ensure_not_cancelled(cancelled)?;
         Ok(package)
+    }
+
+    pub fn export_revolve_step(
+        &mut self,
+        snapshot: &Snapshot,
+        request: &ExactRevolveRequest,
+        expected: &ExactRevolvePackage,
+        path: &Path,
+    ) -> Result<(), M6EvaluationError> {
+        if !expected.is_current(snapshot)
+            || ExactRevolveRequest::from_snapshot(snapshot, request.definition_id).as_ref()
+                != Ok(request)
+        {
+            return Err(ExactProductError::InvalidWorkerEvidence.into());
+        }
+        expected.validate_for_request(request)?;
+        let parent = path.parent().unwrap_or_else(|| Path::new("."));
+        let temporary = tempfile::Builder::new()
+            .prefix(".ketchup-step-")
+            .suffix(".tmp")
+            .tempfile_in(parent)
+            .map_err(|error| WorkerError::Transport(error.to_string()))?;
+        let temporary = temporary.into_temp_path();
+        let export = self.client.export_revolve_step_request_with_cancellation(
+            request,
+            &expected.identity.result_fingerprint,
+            &temporary,
+            &NEVER_CANCELLED,
+        );
+        match export {
+            Ok(()) => {}
+            Err(error) if error.permits_restart() => {
+                self.client = Self::spawn_verified_client(&self.executable, &NEVER_CANCELLED)?;
+                self.client.export_revolve_step_request_with_cancellation(
+                    request,
+                    &expected.identity.result_fingerprint,
+                    &temporary,
+                    &NEVER_CANCELLED,
+                )?;
+            }
+            Err(error) => return Err(error.into()),
+        }
+        temporary
+            .persist(path)
+            .map_err(|error| WorkerError::Transport(error.error.to_string()))?;
+        Ok(())
     }
 
     pub fn evaluate_beam_piece(
@@ -1533,6 +1666,10 @@ fn is_geometry_error_code(code: &str) -> bool {
     ]
     .into_iter()
     .any(|candidate| candidate.as_str() == code)
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 fn push_aabb_request(line: &mut String, bounds: Aabb) {

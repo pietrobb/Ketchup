@@ -20,6 +20,7 @@
 #include <Geom_Plane.hxx>
 #include <Standard_Failure.hxx>
 #include <STEPControl_Reader.hxx>
+#include <STEPControl_Writer.hxx>
 #include <IFSelect_ReturnStatus.hxx>
 #include <TopAbs_Orientation.hxx>
 #include <TopAbs_ShapeEnum.hxx>
@@ -904,6 +905,30 @@ std::unique_ptr<NativeOperationResult> import_step_native(rust::Str path) noexce
     }
     return success_result(reader.OneShape(), {});
   });
+}
+
+rust::String export_step_native(
+    const NativeOperationResult& body, rust::Str path) noexcept {
+  try {
+    if (!body.valid() || body.impl().shape.IsNull()) {
+      return rust::String("Exact body is unavailable or invalid");
+    }
+    const std::string native_path(path.data(), path.size());
+    STEPControl_Writer writer;
+    if (writer.Transfer(body.impl().shape, STEPControl_AsIs) != IFSelect_RetDone) {
+      return rust::String("STEP writer could not transfer the exact body");
+    }
+    if (writer.Write(native_path.c_str()) != IFSelect_RetDone) {
+      return rust::String("STEP writer could not write the target");
+    }
+    return rust::String();
+  } catch (const Standard_Failure& failure) {
+    return rust::String(standard_failure_message(failure));
+  } catch (const std::exception& failure) {
+    return rust::String(failure.what());
+  } catch (...) {
+    return rust::String("Unknown native STEP export failure");
+  }
 }
 
 } // namespace ketchup::exact

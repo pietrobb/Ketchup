@@ -57,5 +57,7 @@ std::unique_ptr<NativeOperationResult> cut_box_native(
     double size_x, double size_y, double size_z) noexcept;
 std::unique_ptr<NativeOperationResult> exception_probe_native() noexcept;
 std::unique_ptr<NativeOperationResult> import_step_native(rust::Str path) noexcept;
+rust::String export_step_native(
+    const NativeOperationResult& body, rust::Str path) noexcept;
 
 } // namespace ketchup::exact

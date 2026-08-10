@@ -1,6 +1,9 @@
 mod harness;
 use harness::Shell;
+use ketchup_app::dialogs::ScriptedFileDialogs;
 use ketchup_core::beam_m4ae::{BEAM_RULE_NODE, BeamValidationVerdict, ZONE1_GAP_NODE};
+use ketchup_core::document::HighRiskClass;
+use ketchup_core::graph::sha256_hex;
 use ketchup_core::validation::{PRISMATIC_VALIDATOR_CONTRACT_V1, ValidationState};
 
 #[test]
@@ -113,7 +116,12 @@ fn running_app_accepts_worker_notches_and_exports_current_piece_outputs() {
         executable.display()
     );
 
-    let mut shell = Shell::new();
+    let dialogs = ScriptedFileDialogs::new()
+        .queue_refused_high_risk()
+        .queue_high_risk_approval(41)
+        .queue_refused_high_risk()
+        .queue_high_risk_approval(42);
+    let mut shell = Shell::with_dialogs(dialogs.clone());
     shell.app_mut().connect_exact_worker(&executable).unwrap();
     assert!(shell.app_mut().load_beam_m4ae());
     for _ in 0..100 {
@@ -143,17 +151,99 @@ fn running_app_accepts_worker_notches_and_exports_current_piece_outputs() {
     let drawing_path = directory.path().join("beam-a.svg");
     let manufacturing_path = directory.path().join("beam-a.kfm");
     let mesh_path = directory.path().join("beam-piece.obj");
+    let loss_path = mesh_path.with_extension("obj.loss.txt");
+    let original_manufacturing = b"existing manufacturing export must survive refusal";
+    let original_mesh = b"existing mesh must survive refusal";
+    let original_loss = b"existing loss report must survive refusal";
+    std::fs::write(&manufacturing_path, original_manufacturing).unwrap();
+    std::fs::write(&mesh_path, original_mesh).unwrap();
+    std::fs::write(&loss_path, original_loss).unwrap();
+    let active_digest = shell.app().canonical_digest();
+    let active_revision = shell.app().document_revision();
+    let active_can_undo = shell.app().can_undo();
+    let beam_revision = shell.app().beam_slice().unwrap().revision_id;
     assert!(shell.app_mut().export_beam_drawing_to(&drawing_path));
+    assert!(
+        !shell
+            .app_mut()
+            .export_beam_manufacturing_to(&manufacturing_path)
+    );
+    assert_eq!(
+        std::fs::read(&manufacturing_path).unwrap(),
+        original_manufacturing
+    );
+    assert!(shell.app().last_side_effect_receipt().is_none());
     assert!(
         shell
             .app_mut()
             .export_beam_manufacturing_to(&manufacturing_path)
     );
+    let manufacturing_receipt = shell
+        .app()
+        .last_side_effect_receipt()
+        .expect("approved manufacturing export returns an authorization receipt");
+    assert_eq!(manufacturing_receipt.approving_human(), 41);
+    assert_eq!(manufacturing_receipt.revision_id(), beam_revision);
+    assert_eq!(
+        manufacturing_receipt.operation(),
+        "release-manufacturing-export-with-warnings"
+    );
+    assert_eq!(
+        manufacturing_receipt.scope().class(),
+        HighRiskClass::ReleaseManufacturingExportWithWarnings
+    );
+    assert_eq!(
+        manufacturing_receipt.scope().path(),
+        Some(manufacturing_path.display().to_string().as_str())
+    );
+    assert_eq!(
+        manufacturing_receipt.payload_digest(),
+        sha256_hex(&std::fs::read(&manufacturing_path).unwrap())
+    );
+    assert_eq!(shell.app().canonical_digest(), active_digest);
+    assert_eq!(shell.app().document_revision(), active_revision);
+    assert_eq!(shell.app().can_undo(), active_can_undo);
+    assert_eq!(shell.app().beam_slice().unwrap().revision_id, beam_revision);
+    assert!(
+        !shell
+            .app_mut()
+            .export_beam_piece_mesh_to(&first_piece, &mesh_path)
+    );
+    assert_eq!(std::fs::read(&mesh_path).unwrap(), original_mesh);
+    assert_eq!(std::fs::read(&loss_path).unwrap(), original_loss);
+    assert!(shell.app().last_side_effect_receipt().is_none());
+    assert_eq!(shell.app().canonical_digest(), active_digest);
+    assert_eq!(shell.app().document_revision(), active_revision);
+    assert_eq!(shell.app().can_undo(), active_can_undo);
+    assert_eq!(shell.app().beam_slice().unwrap().revision_id, beam_revision);
+
     assert!(
         shell
             .app_mut()
             .export_beam_piece_mesh_to(&first_piece, &mesh_path)
     );
+    let receipt = shell
+        .app()
+        .last_side_effect_receipt()
+        .expect("approved Beam lossy export returns an authorization receipt");
+    assert_eq!(receipt.approving_human(), 42);
+    assert_eq!(receipt.revision_id(), beam_revision);
+    assert_eq!(receipt.operation(), "export-lossy-obj-with-loss-report");
+    assert_eq!(receipt.scope().class(), HighRiskClass::LossyConversion);
+    assert_eq!(
+        receipt.scope().path(),
+        Some(mesh_path.display().to_string().as_str())
+    );
+    assert_eq!(shell.app().canonical_digest(), active_digest);
+    assert_eq!(shell.app().document_revision(), active_revision);
+    assert_eq!(shell.app().can_undo(), active_can_undo);
+    assert_eq!(shell.app().beam_slice().unwrap().revision_id, beam_revision);
+    assert_eq!(dialogs.high_risk_prompts().len(), 4);
+    assert!(dialogs.high_risk_prompts()[0].contains("Payload SHA-256:"));
+    assert!(
+        dialogs.high_risk_prompts()[0].contains("manufacturing export with unresolved warnings")
+    );
+    assert!(dialogs.high_risk_prompts()[2].contains("lossy exact-to-mesh conversion"));
     let drawing = std::fs::read_to_string(drawing_path).unwrap();
     let manufacturing = std::fs::read_to_string(&manufacturing_path).unwrap();
     assert!(drawing.contains("ketchup.beam-drawing-svg.v1"));

@@ -39,6 +39,16 @@ fn handle_request(backend: &ExactBackend, request: &str) -> Option<String> {
         (Some("CAPS"), Some("M6_REVOLVE_V1"), None) => Some("CAPS M6_REVOLVE_V1".to_owned()),
         (Some("CAPS"), Some("M6_SHELL_V1"), None) => Some("CAPS M6_SHELL_V1".to_owned()),
         (Some("CAPS"), Some("M6_FINISH_V1"), None) => Some("CAPS M6_FINISH_V1".to_owned()),
+        (Some("CAPS"), Some("M14_STEP_V1"), None) => Some("CAPS M14_STEP_V1".to_owned()),
+        (Some("EXPORT_STEP_M14_V1"), Some(document_id), Some(producer_feature_id)) => {
+            let remaining = fields.collect::<Vec<_>>();
+            Some(m14_step_export_response(
+                backend,
+                document_id,
+                producer_feature_id,
+                &remaining,
+            ))
+        }
         (Some("EVAL_NOTCHED_M5_V1"), Some(document_id), Some(piece_key)) => {
             let remaining = fields.collect::<Vec<_>>();
             Some(m5_notched_response(
@@ -619,6 +629,88 @@ fn m6_revolve_response(
         ));
     }
     response
+}
+
+fn m14_step_export_response(
+    backend: &ExactBackend,
+    document_id: &str,
+    producer_feature_id: &str,
+    fields: &[&str],
+) -> String {
+    if document_id.parse::<u64>().is_err()
+        || producer_feature_id.parse::<u64>().is_err()
+        || fields.len() != 18
+        || !is_canonical_digest(fields[0])
+        || fields[1].len() != 24
+        || !fields[1].starts_with("fnv1a64:")
+        || !fields[1][8..].bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return "ERR invalid_request".to_owned();
+    }
+    let parse_bits = |value: &str| u64::from_str_radix(value, 16).map(f64::from_bits);
+    let mut points = Vec::with_capacity(6);
+    for pair in fields[6..].chunks_exact(2) {
+        let (Ok(radius), Ok(z)) = (parse_bits(pair[0]), parse_bits(pair[1])) else {
+            return "ERR invalid_parameter".to_owned();
+        };
+        points.push([radius, z]);
+    }
+    let output = match fields[2] {
+        "revolve" if fields[3] == "-" && fields[4] == "-" => backend.revolve_profile(&points),
+        "shell" if fields[4] == "-" => {
+            let Ok(thickness) = parse_bits(fields[3]) else {
+                return "ERR invalid_parameter".to_owned();
+            };
+            backend.shell_revolve_profile(&points, thickness)
+        }
+        "fillet" | "chamfer" => {
+            let (Ok(thickness), Ok(amount)) = (parse_bits(fields[3]), parse_bits(fields[4])) else {
+                return "ERR invalid_parameter".to_owned();
+            };
+            backend.finish_shell_revolve_profile(
+                &points,
+                thickness,
+                if fields[2] == "fillet" {
+                    BottleEdgeFinish::Fillet
+                } else {
+                    BottleEdgeFinish::Chamfer
+                },
+                amount,
+            )
+        }
+        _ => return "ERR invalid_request".to_owned(),
+    };
+    let output = match output {
+        Ok(output) => output,
+        Err(error) => return format!("ERR {}", error.code.as_str()),
+    };
+    if output.body.result_fingerprint != fields[1] {
+        return "ERR invalid_shape".to_owned();
+    }
+    let Some(path) = decode_hex_utf8(fields[5]) else {
+        return "ERR invalid_request".to_owned();
+    };
+    match backend.export_step(&output.body, &path) {
+        Ok(()) => format!("OK_M14_STEP_V1 {} {}", fields[0], fields[1]),
+        Err(error) => format!("ERR {}", error.code.as_str()),
+    }
+}
+
+fn decode_hex_utf8(value: &str) -> Option<String> {
+    if value.is_empty() || !value.len().is_multiple_of(2) {
+        return None;
+    }
+    let bytes = value
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|pair| {
+            let pair = std::str::from_utf8(pair).ok()?;
+            u8::from_str_radix(pair, 16).ok()
+        })
+        .collect::<Option<Vec<_>>>()?;
+    String::from_utf8(bytes)
+        .ok()
+        .filter(|path| !path.is_empty() && !path.contains('\r') && !path.contains('\n'))
 }
 
 fn m5_notched_response(

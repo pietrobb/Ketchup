@@ -31,6 +31,11 @@ pub struct DiscardRequest<'a> {
     pub description: &'a str,
 }
 
+pub struct HighRiskConfirmationRequest<'a> {
+    pub title: &'a str,
+    pub description: &'a str,
+}
+
 /// How the shell obtains file paths and destructive-action confirmation.
 pub trait FileDialogs {
     /// Ask for an existing document to open. `None` cancels the command.
@@ -43,6 +48,9 @@ pub trait FileDialogs {
 
     /// Ask whether unsaved changes in the active document may be discarded.
     fn confirm_discard(&mut self, request: DiscardRequest<'_>) -> bool;
+
+    /// Return the authenticated local human who approved the exact high-risk evidence.
+    fn confirm_high_risk(&mut self, request: HighRiskConfirmationRequest<'_>) -> Option<u64>;
 }
 
 /// The desktop implementation backed by native operating system dialogs.
@@ -89,6 +97,17 @@ impl FileDialogs for NativeFileDialogs {
             .show()
             == rfd::MessageDialogResult::Yes
     }
+
+    fn confirm_high_risk(&mut self, request: HighRiskConfirmationRequest<'_>) -> Option<u64> {
+        (rfd::MessageDialog::new()
+            .set_level(rfd::MessageLevel::Warning)
+            .set_title(request.title)
+            .set_description(request.description)
+            .set_buttons(rfd::MessageButtons::YesNo)
+            .show()
+            == rfd::MessageDialogResult::Yes)
+            .then_some(1)
+    }
 }
 
 #[derive(Debug, Default)]
@@ -96,8 +115,11 @@ struct ScriptState {
     open_paths: VecDeque<Option<PathBuf>>,
     save_paths: VecDeque<Option<PathBuf>>,
     discard: bool,
+    high_risk_approvals: VecDeque<Option<u64>>,
+    default_high_risk_approver: Option<u64>,
     suggested_names: Vec<String>,
     discard_prompts: usize,
+    high_risk_prompts: Vec<String>,
 }
 
 /// A scripted stand-in for the native dialogs, used by acceptance tests.
@@ -142,6 +164,29 @@ impl ScriptedFileDialogs {
         self
     }
 
+    #[must_use]
+    pub fn queue_refused_high_risk(self) -> Self {
+        self.state().high_risk_approvals.push_back(None);
+        self
+    }
+
+    #[must_use]
+    pub fn queue_high_risk_approval(self, human_id: u64) -> Self {
+        self.state().high_risk_approvals.push_back(Some(human_id));
+        self
+    }
+
+    #[must_use]
+    pub fn always_confirm_high_risk_as(self, human_id: u64) -> Self {
+        self.state().default_high_risk_approver = Some(human_id);
+        self
+    }
+
+    #[must_use]
+    pub fn high_risk_prompts(&self) -> Vec<String> {
+        self.state().high_risk_prompts.clone()
+    }
+
     /// The file names the shell proposed to the Save dialog, in order.
     #[must_use]
     pub fn suggested_names(&self) -> Vec<String> {
@@ -184,5 +229,16 @@ impl FileDialogs for ScriptedFileDialogs {
         let mut state = self.state();
         state.discard_prompts += 1;
         state.discard
+    }
+
+    fn confirm_high_risk(&mut self, request: HighRiskConfirmationRequest<'_>) -> Option<u64> {
+        let mut state = self.state();
+        state
+            .high_risk_prompts
+            .push(format!("{}\n{}", request.title, request.description));
+        state
+            .high_risk_approvals
+            .pop_front()
+            .unwrap_or(state.default_high_risk_approver)
     }
 }

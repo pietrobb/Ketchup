@@ -37,7 +37,7 @@ Technical documentation, code, identifiers, schemas, tests, and commit messages 
 
 Use the project documents in this order:
 
-1. [Accepted ADRs](docs/adr) for the decisions they own. The latest accepted implementation consequences are [ADR 0004](docs/adr/0004-v4-p15-sequence-and-a0-disposition.md), [ADR 0005](docs/adr/0005-no-go-diagnostic-hold.md), and [ADR 0006](docs/adr/0006-canonical-and-derived-result-write-paths.md).
+1. [Accepted ADRs](docs/adr) for the decisions they own. The latest accepted implementation consequences are [ADR 0004](docs/adr/0004-v4-p15-sequence-and-a0-disposition.md), [ADR 0005](docs/adr/0005-no-go-diagnostic-hold.md), [ADR 0006](docs/adr/0006-canonical-and-derived-result-write-paths.md), and [ADR 0007](docs/adr/0007-windows-x86-64-first-release.md).
 2. The frozen [Architecture V3 Execution Contract](docs/architecture/EXECUTION_CONTRACT.md) for binding product scope, invariants, gate order, and metrics.
 3. [Architecture Specification V4c](KETCHUP_ARCHITECTURE_SPECIFICATION_V4c.md) as the latest consolidated as-built/target review document. Its post-V3 proposals remain non-binding until ratified by ADR, exactly as its status and precedence section state.
 4. The [interaction specification](docs/design/README.md) and accepted [workflow-led implementation plan](docs/design/IMPLEMENTATION_PLAN.md) for UI behavior and implementation order.

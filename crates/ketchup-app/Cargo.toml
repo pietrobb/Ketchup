@@ -12,11 +12,13 @@ eframe = { version = "0.32.3", default-features = false, features = ["accesskit"
 ketchup-core = { path = "../ketchup-core" }
 ketchup-interaction = { path = "../ketchup-interaction" }
 ketchup-scheduler = { path = "../ketchup-scheduler" }
+getrandom = "0.3.4"
 rfd = "0.15.4"
 wgpu = { version = "25.0.2", default-features = false, features = ["dx12"] }
 
 [dev-dependencies]
 egui_kittest = "0.32.0"
+pollster = "0.4.0"
 tempfile = "3.23.0"
 
 [lints]

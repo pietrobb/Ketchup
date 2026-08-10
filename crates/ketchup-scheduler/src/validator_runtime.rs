@@ -1,3 +1,4 @@
+use ketchup_core::document::{HighRiskClass, SideEffectAuthorizationReceipt};
 use ketchup_core::graph::sha256_hex;
 use ketchup_core::validator_hosting::{InstalledValidatorPackage, ValidatorRuntime};
 use std::collections::BTreeSet;
@@ -131,6 +132,13 @@ pub struct EgressRequest {
     pub payload: Vec<u8>,
 }
 
+pub const VALIDATOR_EGRESS_OPERATION: &str = "validator-remote-egress";
+
+#[must_use]
+pub fn validator_egress_destination(request: &EgressRequest) -> String {
+    format!("tcp://{}:{}", request.host, request.port)
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EgressReceipt {
     pub host: String,
@@ -145,6 +153,7 @@ pub fn perform_host_mediated_egress(
     package: &InstalledValidatorPackage,
     grant: &EgressGrant,
     request: &EgressRequest,
+    authorization: Option<SideEffectAuthorizationReceipt>,
     limits: EgressLimits,
 ) -> Result<(Vec<u8>, EgressReceipt), ValidatorRuntimeError> {
     if !grant.allows(&request.host, request.port)
@@ -158,6 +167,17 @@ pub fn perform_host_mediated_egress(
     }
     if request.port == 0 || request.payload.len() > limits.maximum_request_bytes {
         return Err(ValidatorRuntimeError::EgressRequestLimitExceeded);
+    }
+    let authorization = authorization.ok_or(ValidatorRuntimeError::EgressAuthorizationRequired)?;
+    let scope = authorization.scope();
+    if authorization.operation() != VALIDATOR_EGRESS_OPERATION
+        || authorization.payload_digest() != sha256_hex(&request.payload)
+        || scope.class() != HighRiskClass::ExternalDisclosure
+        || scope.destination() != Some(validator_egress_destination(request).as_str())
+        || scope.provider() != Some(package.manifest().package())
+        || scope.path().is_some()
+    {
+        return Err(ValidatorRuntimeError::EgressAuthorizationInvalid);
     }
     let address = (request.host.as_str(), request.port)
         .to_socket_addrs()
@@ -207,6 +227,8 @@ pub enum ValidatorRuntimeError {
     ImportsDenied,
     Execution(String),
     EgressDenied,
+    EgressAuthorizationRequired,
+    EgressAuthorizationInvalid,
     EgressRequestLimitExceeded,
     EgressResponseLimitExceeded,
     EgressTransport(String),
@@ -225,6 +247,10 @@ impl fmt::Display for ValidatorRuntimeError {
             Self::ImportsDenied => formatter.write_str("validator Wasm imports are denied"),
             Self::Execution(error) => write!(formatter, "validator Wasm execution failed: {error}"),
             Self::EgressDenied => formatter.write_str("validator egress host is not allowlisted"),
+            Self::EgressAuthorizationRequired => formatter
+                .write_str("validator egress requires human external-disclosure authorization"),
+            Self::EgressAuthorizationInvalid => formatter
+                .write_str("validator egress authorization does not match the exact disclosure"),
             Self::EgressRequestLimitExceeded => {
                 formatter.write_str("validator egress request exceeds its byte envelope")
             }

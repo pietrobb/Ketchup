@@ -1,5 +1,9 @@
 #![forbid(unsafe_code)]
 
+use crate::spatial::{
+    SPATIAL_INDEX_V1, SnapshotBinding, SpatialBounds, SpatialIndex, SpatialQueryError,
+    SpatialQueryStats,
+};
 use crate::{Ray, Vec3};
 use ketchup_core::document::{DefinitionId, InstancePath, Snapshot, Transform};
 use ketchup_core::exact_product::{AssemblySelectionTarget, ExactBodyPackage, ExactResultRegistry};
@@ -38,9 +42,11 @@ struct PhysicalTriangleHit<'a> {
     ray_distance_mm: f64,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct ExactInteractionProjection {
+    binding: SnapshotBinding,
     occurrences: Vec<ExactOccurrence>,
+    spatial_index: SpatialIndex,
 }
 
 impl ExactInteractionProjection {
@@ -63,8 +69,34 @@ impl ExactInteractionProjection {
                     package,
                 })
             })
-            .collect();
-        Self { occurrences }
+            .collect::<Vec<_>>();
+        let spatial_index =
+            SpatialIndex::build(occurrences.iter().enumerate().map(|(index, occurrence)| {
+                let bounds =
+                    transformed_bounds(occurrence.transform, occurrence.package.bounds_mm());
+                (
+                    index,
+                    SpatialBounds::from_min_max(
+                        Vec3::new(bounds[0][0], bounds[0][1], bounds[0][2]),
+                        Vec3::new(bounds[1][0], bounds[1][1], bounds[1][2]),
+                    ),
+                )
+            }));
+        Self {
+            binding: SnapshotBinding::from_snapshot(snapshot),
+            occurrences,
+            spatial_index,
+        }
+    }
+
+    #[must_use]
+    pub const fn spatial_index_schema(&self) -> &'static str {
+        SPATIAL_INDEX_V1
+    }
+
+    #[must_use]
+    pub fn is_current(&self, snapshot: &Snapshot) -> bool {
+        self.binding.is_current(snapshot)
     }
 
     #[must_use]
@@ -81,10 +113,18 @@ impl ExactInteractionProjection {
 
     #[must_use]
     pub fn exact_surface_pick(&self, ray: Ray) -> Option<ExactSurfaceHit> {
-        let hit = self
-            .occurrences
-            .iter()
-            .filter_map(|occurrence| hit_occurrence(ray, occurrence))
+        self.exact_surface_pick_with_stats(ray).0
+    }
+
+    #[must_use]
+    pub fn exact_surface_pick_with_stats(
+        &self,
+        ray: Ray,
+    ) -> (Option<ExactSurfaceHit>, SpatialQueryStats) {
+        let (candidate_indices, stats) = self.spatial_index.query_ray(ray);
+        let hit = candidate_indices
+            .into_iter()
+            .filter_map(|index| hit_occurrence(ray, &self.occurrences[index]))
             .min_by(|left, right| {
                 left.ray_distance_mm
                     .total_cmp(&right.ray_distance_mm)
@@ -94,7 +134,10 @@ impl ExactInteractionProjection {
                             .cmp(&right.occurrence.instance_path)
                     })
                     .then_with(|| left.triangle_index.cmp(&right.triangle_index))
-            })?;
+            });
+        let Some(hit) = hit else {
+            return (None, stats);
+        };
         let triangle = &hit.occurrence.package.triangles()[hit.triangle_index];
         let [first, second, third] = triangle.vertex_indices.map(|index| {
             let position = hit.occurrence.package.vertices()[index as usize].position_mm;
@@ -106,7 +149,7 @@ impl ExactInteractionProjection {
         let normal = cross(second - first, third - first);
         let normal_length = normal.length();
         if normal_length <= RAY_EPSILON {
-            return None;
+            return (None, stats);
         }
         let outward_normal = Vec3::new(
             normal.x / normal_length,
@@ -122,14 +165,28 @@ impl ExactInteractionProjection {
                     }
                 })
             });
-        Some(ExactSurfaceHit {
-            definition_id: hit.occurrence.package.definition_id(),
-            instance_path: hit.occurrence.instance_path.clone(),
-            durable_target,
-            position_mm: ray.at(hit.ray_distance_mm),
-            outward_normal,
-            ray_distance_mm: hit.ray_distance_mm,
-        })
+        (
+            Some(ExactSurfaceHit {
+                definition_id: hit.occurrence.package.definition_id(),
+                instance_path: hit.occurrence.instance_path.clone(),
+                durable_target,
+                position_mm: ray.at(hit.ray_distance_mm),
+                outward_normal,
+                ray_distance_mm: hit.ray_distance_mm,
+            }),
+            stats,
+        )
+    }
+
+    pub fn exact_surface_pick_current(
+        &self,
+        snapshot: &Snapshot,
+        ray: Ray,
+    ) -> Result<Option<ExactSurfaceHit>, SpatialQueryError> {
+        if !self.is_current(snapshot) {
+            return Err(SpatialQueryError::StaleProjection);
+        }
+        Ok(self.exact_surface_pick(ray))
     }
 
     #[must_use]
