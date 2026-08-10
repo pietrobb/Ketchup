@@ -207,10 +207,13 @@ fn profile_only_definition_projects_as_a_flat_selectable_plane() {
             0.01,
         )
         .unwrap();
-    assert!(matches!(
+    assert_eq!(
         hit.primary.reference.element,
-        ElementId::Face { axis: Axis::Z, .. }
-    ));
+        ElementId::Face {
+            axis: Axis::Z,
+            side: ketchup_interaction::Side::Maximum,
+        }
+    );
 }
 
 #[test]

@@ -607,10 +607,14 @@ fn hit_occurrence(ray: Ray, occurrence: &Occurrence) -> Option<ExactHit> {
         }
         let first = -origin / direction;
         let second = (maximum - origin) / direction;
-        let (axis_near, axis_far, axis_near_side, axis_far_side) = if first <= second {
+        let (axis_near, axis_far, axis_near_side, axis_far_side) = if first < second {
             (first, second, Side::Minimum, Side::Maximum)
-        } else {
+        } else if second < first {
             (second, first, Side::Maximum, Side::Minimum)
+        } else if direction < 0.0 {
+            (first, second, Side::Maximum, Side::Minimum)
+        } else {
+            (first, second, Side::Minimum, Side::Maximum)
         };
         if axis_near > near {
             near = axis_near;

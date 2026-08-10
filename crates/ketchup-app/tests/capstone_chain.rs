@@ -200,7 +200,7 @@ fn the_manual_capstone_runs_end_to_end_through_the_designed_shell() {
         1,
         "a double click must enter the component context"
     );
-    shell.click_at(solid);
+    shell.click_at(shell.top_face_centre(2));
     let shared_edit = shell.app().canonical_digest();
     let shared_revision = shell.app().document_revision();
     shell.click_command(AppCommand::PushPull);

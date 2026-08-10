@@ -178,8 +178,11 @@ fn an_exact_rectangle_becomes_a_solid_through_exact_push_pull() {
 
     shell.click_command(AppCommand::Rectangle);
     let before = shell.app().document_revision();
-    shell.click_at(rect.center() + Vec2::new(0.0, 120.0));
-    shell.type_text("3000,2000");
+    let rectangle_start = shell
+        .app()
+        .project_to_screen(Vec3::new(115.0, 20.0, 0.0), rect);
+    shell.click_at(rectangle_start);
+    shell.type_text("30,20");
     shell.press_key(Key::Enter);
 
     assert_eq!(
@@ -200,20 +203,44 @@ fn an_exact_rectangle_becomes_a_solid_through_exact_push_pull() {
 
     let geometry_before = shell.app().canonical_digest();
     let created = shell.app().document_revision();
-    shell.click_at(rect.center());
+    let (profile_origin, profile_size) = shell.app().occurrence_box_geometry(2).unwrap();
+    let profile_centre = profile_origin + profile_size * 0.5;
+    let drag_start = shell
+        .app()
+        .project_to_screen(profile_centre, shell.viewport_rect());
+    let projected_up = shell.app().project_to_screen(
+        profile_centre + Vec3::new(0.0, 0.0, 1.0),
+        shell.viewport_rect(),
+    );
+    let drag_direction = (projected_up - drag_start).normalized();
+    assert!(
+        rect.contains(drag_start),
+        "the direct-manipulation target must be inside the viewport, got {drag_start:?} for {profile_origin:?}"
+    );
     shell.click_command(AppCommand::PushPull);
-    shell.type_text("500");
-    shell.press_key(Key::Enter);
+    shell.drag(drag_start, drag_start + drag_direction * 120.0);
 
     assert_eq!(
         shell.app().document_revision(),
         created + 1,
-        "exact Push/Pull must commit exactly one canonical batch"
+        "a direct Push/Pull drag must commit exactly one canonical batch; value box = {:?}, selected occurrences = {}",
+        shell.app().value_input(),
+        shell.app().selected_occurrence_count()
     );
     assert_ne!(
         shell.app().canonical_digest(),
         geometry_before,
-        "exact Push/Pull must change the extruded geometry"
+        "a direct Push/Pull drag must change the extruded geometry"
+    );
+    let (extruded_origin, extruded_size) = shell.app().occurrence_box_geometry(2).unwrap();
+    assert_eq!(
+        extruded_origin, profile_origin,
+        "dragging the visible profile face upward must keep its base fixed"
+    );
+    assert!(
+        extruded_size.z > 1.0,
+        "dragging the visible profile face upward must create a real solid, got {} mm",
+        extruded_size.z
     );
 
     shell.key(Key::Z, ctrl());
