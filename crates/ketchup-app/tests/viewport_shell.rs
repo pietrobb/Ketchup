@@ -56,6 +56,10 @@ fn desktop_shell_selects_the_wgpu_renderer() {
     let options = KetchupApp::native_options();
     assert_eq!(options.renderer, eframe::Renderer::Wgpu);
     assert_eq!(
+        options.viewport.min_inner_size,
+        Some(eframe::egui::Vec2::new(1_100.0, 600.0))
+    );
+    assert_eq!(
         options.wgpu_options.present_mode,
         eframe::wgpu::PresentMode::AutoNoVsync
     );

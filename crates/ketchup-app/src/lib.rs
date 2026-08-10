@@ -1,4 +1,7 @@
-#![forbid(unsafe_code)]
+// Unsafe code is denied, not forbidden, for exactly one audited reason: the
+// native file dialogs must borrow the raw main-window handle to be owned by,
+// and modal to, the Ketchup window. See `dialogs::DialogParentWindow`.
+#![deny(unsafe_code)]
 
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, Stroke, Vec2};
 use ketchup_core::beam_m4ae::{
@@ -42,11 +45,14 @@ use ketchup_interaction::{
 };
 use ketchup_scheduler::ExactWorkerSupervisor;
 pub mod dialogs;
+pub mod theme;
+
+use theme::{Icon, Palette, ThemeKind};
 pub mod renderer;
 
 use dialogs::{
-    DiscardRequest, ExportRequest, FileDialogs, HighRiskConfirmationRequest, NativeFileDialogs,
-    SaveRequest,
+    DialogParentWindow, DiscardRequest, ExportRequest, FileDialogs, HighRiskConfirmationRequest,
+    NativeFileDialogs, SaveRequest,
 };
 use renderer::{
     DerivedRenderCache, GpuInstancedRenderer, InstancedRenderPlan, ScenePaintCallback,
@@ -66,12 +72,21 @@ const INITIAL_BOX_DEFINITION: DefinitionId = DefinitionId(1);
 const BOX_WIDTH_MM: f64 = 100.0;
 const BOX_DEPTH_MM: f64 = 60.0;
 const GRID_STEP_MM: f64 = 10.0;
-const SHELL_PANEL_FILL: Color32 = Color32::from_rgb(23, 25, 28);
-const SHELL_VIEWPORT_FILL: Color32 = Color32::from_rgb(15, 17, 19);
-const SHELL_TEXT: Color32 = Color32::from_rgb(235, 235, 235);
-const SHELL_BRAND_FILL: Color32 = Color32::from_rgb(240, 78, 35);
-const SHELL_BRAND_TEXT: Color32 = SHELL_PANEL_FILL;
-const SHELL_FOCUS: Color32 = Color32::from_rgb(255, 140, 60);
+const SHELL_TITLE_SIZE: f32 = 14.0;
+const SHELL_BODY_SIZE: f32 = 12.5;
+const SHELL_SMALL_SIZE: f32 = 11.0;
+const SHELL_MONO_SIZE: f32 = 12.0;
+const SHELL_SECTION_SIZE: f32 = 11.5;
+/// Edge of one square tool-rail button, in points.
+const TOOL_BUTTON_SIZE: f32 = 36.0;
+/// Edge of the glyph drawn inside a tool-rail button, in points.
+const TOOL_ICON_SIZE: f32 = 20.0;
+/// Width of the tool rail, in points.
+const TOOL_RAIL_WIDTH: f32 = 54.0;
+/// Closest millimetre distance a point may sit in front of a converging eye.
+const PERSPECTIVE_NEAR_MM: f64 = 1.0;
+/// How far outside the model's bounding sphere a converging eye must sit.
+const CAMERA_CLEARANCE: f64 = 2.5;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NativeDocumentInspection {
@@ -185,6 +200,10 @@ struct PushPullDrag {
 #[derive(Clone)]
 struct LastPushPull {
     selection: SelectionId,
+    /// Document revision produced by that Push/Pull. A typed value is treated as
+    /// a correction of this operation only while the document still sits on it.
+    revision: u64,
+    applied_distance_mm: f64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -385,8 +404,34 @@ pub enum AppCommand {
     ViewIso,
     ViewTop,
     ViewFront,
+    ViewProjection,
     ZoomFit,
     Shortcuts,
+}
+
+/// How the viewport maps the model onto the screen.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProjectionMode {
+    /// Converging view — parallel edges meet, the way an eye sees a room.
+    Perspective,
+    /// Parallel view — parallel edges stay parallel, the way a drawing measures.
+    Parallel,
+}
+
+impl ProjectionMode {
+    const fn toggled(self) -> Self {
+        match self {
+            Self::Perspective => Self::Parallel,
+            Self::Parallel => Self::Perspective,
+        }
+    }
+
+    const fn label_key(self) -> &'static str {
+        match self {
+            Self::Perspective => "view-projection-perspective",
+            Self::Parallel => "view-projection-parallel",
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -401,7 +446,7 @@ struct CommandSpec {
 struct CommandRegistry;
 
 impl CommandRegistry {
-    const COMMANDS: [CommandSpec; 30] = [
+    const COMMANDS: [CommandSpec; 31] = [
         CommandSpec {
             id: AppCommand::New,
             label_key: "file-new",
@@ -594,6 +639,13 @@ impl CommandRegistry {
         CommandSpec {
             id: AppCommand::ViewFront,
             label_key: "view-front",
+            shortcut_key: "shortcut-none",
+            tool: None,
+            implemented: true,
+        },
+        CommandSpec {
+            id: AppCommand::ViewProjection,
+            label_key: "view-projection",
             shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
@@ -811,6 +863,9 @@ pub struct KetchupApp {
     preview_definition_id: Option<DefinitionId>,
     occurrence_operation_preview: Option<OccurrenceOperationPreview>,
     status_key: &'static str,
+    theme: ThemeKind,
+    projection_mode: ProjectionMode,
+    camera_distance_mm: f64,
     yaw: f32,
     pitch: f32,
     camera_target_z: f64,
@@ -933,6 +988,9 @@ impl KetchupApp {
             preview_definition_id: None,
             occurrence_operation_preview: None,
             status_key: "status-ready",
+            theme: ThemeKind::default(),
+            projection_mode: ProjectionMode::Parallel,
+            camera_distance_mm: 420.0 / 2.8,
             yaw: -0.65,
             pitch: -0.5,
             camera_target_z: 10.0,
@@ -969,7 +1027,7 @@ impl KetchupApp {
             measure_end: None,
             shortcuts_open: false,
             viewport_rect: None,
-            dialogs: Box::new(NativeFileDialogs),
+            dialogs: Box::new(NativeFileDialogs::default()),
             exact_worker_path: None,
             exact_worker_attempted: false,
             exact_task: None,
@@ -991,6 +1049,9 @@ impl KetchupApp {
     #[must_use]
     pub fn from_creation_context(context: &eframe::CreationContext<'_>) -> Self {
         let mut app = Self::new();
+        app.dialogs = Box::new(NativeFileDialogs::with_parent(
+            DialogParentWindow::from_creation_context(context),
+        ));
         if let Some(render_state) = context.wgpu_render_state.as_ref() {
             render_state
                 .renderer
@@ -1074,7 +1135,7 @@ impl KetchupApp {
     }
 
     fn new_document(&mut self) {
-        let dialogs = std::mem::replace(&mut self.dialogs, Box::new(NativeFileDialogs));
+        let dialogs = std::mem::replace(&mut self.dialogs, Box::new(NativeFileDialogs::default()));
         *self = Self::new().with_dialogs(dialogs);
         self.digest = self.catalog.text("digest-new-document");
     }
@@ -1258,6 +1319,16 @@ impl KetchupApp {
     }
 
     fn save_document_to(&mut self, path: &Path) -> bool {
+        if path.is_dir() {
+            self.digest = self.catalog.format(
+                "error-save-document",
+                &BTreeMap::from([
+                    ("path", path.display().to_string()),
+                    ("reason", "the target path is a directory".to_owned()),
+                ]),
+            );
+            return false;
+        }
         let snapshot = self.document.current();
         let prepared = ketchup_core::persistence::save_container(&snapshot, &self.container_data);
         if path.exists()
@@ -1408,7 +1479,7 @@ impl KetchupApp {
             },
             viewport: egui::ViewportBuilder::default()
                 .with_inner_size([1_100.0, 720.0])
-                .with_min_inner_size([760.0, 480.0]),
+                .with_min_inner_size([1_100.0, 600.0]),
             ..Default::default()
         }
     }
@@ -2255,6 +2326,16 @@ impl KetchupApp {
             .map(|item| (item.origin_mm, item.size_mm))
     }
 
+    /// Where a world point currently lands inside the viewport.
+    ///
+    /// Callers that need to aim at real geometry must ask the camera instead of
+    /// assuming a screen offset: under a converging projection the pixels per
+    /// millimetre depend on how far the point is from the eye.
+    #[must_use]
+    pub fn project_to_screen(&self, point: Vec3, rect: Rect) -> Pos2 {
+        self.project(point, rect)
+    }
+
     /// How many occurrences are currently selected.
     #[must_use]
     pub fn selected_occurrence_count(&self) -> usize {
@@ -2741,6 +2822,7 @@ impl KetchupApp {
             AppCommand::ViewFront => {
                 self.look_from(-std::f32::consts::FRAC_PI_2, 0.02, "view-front");
             }
+            AppCommand::ViewProjection => self.toggle_projection_mode(),
             AppCommand::ZoomFit => self.zoom_fit(),
             AppCommand::Shortcuts => self.shortcuts_open = true,
             AppCommand::Select
@@ -4421,6 +4503,9 @@ impl KetchupApp {
         if let Some(selection) = self.selection.primary.clone() {
             self.last_push_pull = Some(LastPushPull {
                 selection: selection.clone(),
+                revision: self.document_revision(),
+                applied_distance_mm: parse_distance_mm(&self.push_pull_distance_input)
+                    .expect("a confirmed Push/Pull has a parsed distance"),
             });
             self.digest = self.catalog.format(
                 match selection.element {
@@ -4906,12 +4991,40 @@ impl KetchupApp {
                 self.digest = self.catalog.text("digest-nothing-to-apply");
                 return false;
             };
+            let Some(distance_mm) = parse_distance_mm(&self.value_input) else {
+                self.digest = self.catalog.text("digest-nothing-to-apply");
+                return false;
+            };
+            // A value typed straight after a Push/Pull corrects that Push/Pull
+            // instead of stacking on top of it: the distance is always measured
+            // from the geometry as it stood before the operation, so typing 0
+            // leaves the model exactly as it was. Validate the replacement before
+            // undoing the valid operation that it supersedes.
+            let correction = self.last_push_pull.as_ref().filter(|operation| {
+                operation.selection == selection && operation.revision == self.document_revision()
+            });
+            if let Some(operation) = correction {
+                let Some(item) = self
+                    .active_boxes()
+                    .into_iter()
+                    .find(|item| item.instance_path == selection.instance_path)
+                else {
+                    return false;
+                };
+                let Some(current_extent_mm) = face_extent(&item, Some(&selection.element)) else {
+                    return false;
+                };
+                let replacement_extent_mm =
+                    current_extent_mm - operation.applied_distance_mm + distance_mm;
+                if resize_box_from_face(&item, &selection.element, replacement_extent_mm).is_none()
+                    || !self.undo()
+                {
+                    return false;
+                }
+            }
             self.selection.select_exact(selection.clone(), false);
             self.push_pull_distance_input = self.value_input.clone();
             if self.start_preview() && self.confirm_preview() {
-                self.last_push_pull = Some(LastPushPull {
-                    selection: selection.clone(),
-                });
                 self.digest = self.catalog.format(
                     "digest-exact-value-applied",
                     &BTreeMap::from([(
@@ -4991,20 +5104,113 @@ impl KetchupApp {
         }
     }
 
-    fn view_ray(&self, pointer: Pos2, rect: Rect) -> Option<Ray> {
+    /// Camera axes in world space: screen right, screen up, and view direction.
+    fn camera_basis(&self) -> (Vec3, Vec3, Vec3) {
         let yaw_sin = f64::from(self.yaw.sin());
         let yaw_cos = f64::from(self.yaw.cos());
         let pitch_sin = f64::from(self.pitch.sin());
         let pitch_cos = f64::from(self.pitch.cos());
-        let right = Vec3::new(yaw_cos, -yaw_sin, 0.0);
-        let up = Vec3::new(yaw_sin * pitch_cos, yaw_cos * pitch_cos, -pitch_sin);
-        let forward = Vec3::new(-yaw_sin * pitch_sin, -yaw_cos * pitch_sin, -pitch_cos);
-        let scale = f64::from(self.zoom) * f64::from(rect.width().min(rect.height())) / 420.0;
-        let horizontal = f64::from(pointer.x - rect.center().x - self.pan.x) / scale;
-        let vertical = f64::from(rect.center().y + self.pan.y - pointer.y) / scale;
-        let model_center = Vec3::new(BOX_WIDTH_MM * 0.5, BOX_DEPTH_MM * 0.5, self.camera_target_z);
-        let view_plane_point = model_center + right * horizontal + up * vertical;
-        Ray::new(view_plane_point - forward * 10_000.0, forward).ok()
+        (
+            Vec3::new(yaw_cos, -yaw_sin, 0.0),
+            Vec3::new(yaw_sin * pitch_cos, yaw_cos * pitch_cos, -pitch_sin),
+            Vec3::new(-yaw_sin * pitch_sin, -yaw_cos * pitch_sin, -pitch_cos),
+        )
+    }
+
+    fn camera_target(&self) -> Vec3 {
+        Vec3::new(BOX_WIDTH_MM * 0.5, BOX_DEPTH_MM * 0.5, self.camera_target_z)
+    }
+
+    /// Millimetres between the eye and the orbit target — the readout's `dist`.
+    ///
+    /// The nominal distance follows the zoom, but a converging projection is
+    /// only meaningful while the eye is outside the model, so the cached value
+    /// is pushed back to clear the scene. See [`Self::refresh_camera_distance`].
+    fn camera_distance(&self) -> f64 {
+        self.camera_distance_mm
+    }
+
+    /// Recompute the eye distance for the current scene. Once per frame.
+    fn refresh_camera_distance(&mut self) {
+        let nominal = 420.0 / f64::from(self.zoom);
+        let target = self.camera_target();
+        let radius = self
+            .active_boxes()
+            .into_iter()
+            .flat_map(|item| {
+                let far = item.origin_mm + item.size_mm;
+                [
+                    vector_length(item.origin_mm - target),
+                    vector_length(far - target),
+                ]
+            })
+            .fold(0.0_f64, f64::max);
+        self.camera_distance_mm = nominal
+            .max(radius * CAMERA_CLEARANCE)
+            .max(PERSPECTIVE_NEAR_MM);
+    }
+
+    /// Pixels per millimetre at the orbit target.
+    ///
+    /// Both projections agree here by construction, so switching between them
+    /// keeps the model the same size and only changes how depth is treated.
+    fn view_scale(&self, rect: Rect) -> f64 {
+        f64::from(self.zoom) * f64::from(rect.width().min(rect.height())) / 420.0
+    }
+
+    /// Focal length in pixels, chosen so the target plane matches `view_scale`.
+    fn camera_focal(&self, rect: Rect) -> f64 {
+        self.view_scale(rect) * self.camera_distance()
+    }
+
+    pub fn toggle_projection_mode(&mut self) {
+        self.projection_mode = self.projection_mode.toggled();
+        self.digest = self.catalog.text(self.projection_mode.label_key());
+    }
+
+    /// Current viewport projection.
+    #[must_use]
+    pub const fn projection_mode(&self) -> ProjectionMode {
+        self.projection_mode
+    }
+
+    /// Colours every surface of the shell paints with.
+    #[must_use]
+    pub const fn palette(&self) -> Palette {
+        Palette::of(self.theme)
+    }
+
+    /// Which of the four appearances is showing.
+    #[must_use]
+    pub const fn theme(&self) -> ThemeKind {
+        self.theme
+    }
+
+    /// Switch appearance. Purely presentational — the document never changes.
+    pub fn set_theme(&mut self, theme: ThemeKind) {
+        self.theme = theme;
+        self.digest = self.catalog.text(theme.label_key());
+    }
+
+    fn view_ray(&self, pointer: Pos2, rect: Rect) -> Option<Ray> {
+        let (right, up, forward) = self.camera_basis();
+        let target = self.camera_target();
+        let horizontal = f64::from(pointer.x - rect.center().x - self.pan.x);
+        let vertical = f64::from(rect.center().y + self.pan.y - pointer.y);
+        match self.projection_mode {
+            ProjectionMode::Parallel => {
+                let scale = self.view_scale(rect);
+                let view_plane_point =
+                    target + right * (horizontal / scale) + up * (vertical / scale);
+                Ray::new(view_plane_point - forward * 10_000.0, forward).ok()
+            }
+            ProjectionMode::Perspective => {
+                let focal = self.camera_focal(rect);
+                let eye = target - forward * self.camera_distance();
+                let direction = right * (horizontal / focal) + up * (vertical / focal) + forward;
+                Ray::new(eye, direction).ok()
+            }
+        }
     }
 
     fn screen_to_plane(&self, pointer: Pos2, rect: Rect, plane_z: f64) -> Option<Vec3> {
@@ -5089,41 +5295,47 @@ impl KetchupApp {
     }
 
     fn viewport_overlays(&mut self, ui: &mut egui::Ui, rect: Rect) {
+        let palette = self.palette();
         let painter = ui.painter();
-        let glass = Color32::from_black_alpha(150);
-        let line = Color32::from_rgb(43, 48, 54);
-        let text = Color32::from_rgb(233, 235, 238);
-        let dim = Color32::from_rgb(152, 160, 169);
+        let glass = palette.glass();
+        let line = palette.line;
+        let text = palette.text;
+        let dim = palette.dim;
         let mono = egui::FontId::monospace(11.0);
 
-        let digest_rect = Rect::from_min_size(
-            rect.left_top() + Vec2::new(12.0, 12.0),
-            Vec2::new(390.0_f32.min(rect.width() - 24.0), 28.0),
+        // What is under the pointer, or selected, is the one thing the user
+        // looks up most often, so it sits top-left where the eye starts.
+        let hover_galley =
+            painter.layout_no_wrap(self.hover_readout(), egui::FontId::proportional(12.0), text);
+        let hover_rect = Rect::from_min_size(
+            rect.left_top() + Vec2::new(14.0, 12.0),
+            Vec2::new(hover_galley.size().x + 34.0, 28.0),
         );
-        painter.rect_filled(digest_rect, 8.0, glass);
+        painter.rect_filled(hover_rect, 8.0, glass);
         painter.rect_stroke(
-            digest_rect,
+            hover_rect,
             8.0,
             Stroke::new(1.0_f32, line),
             egui::StrokeKind::Inside,
         );
         painter.circle_filled(
-            digest_rect.left_center() + Vec2::new(12.0, 0.0),
+            Pos2::new(hover_rect.left() + 13.0, hover_rect.center().y),
             3.0,
-            Color32::from_rgb(240, 78, 35),
+            palette.accent,
         );
-        painter.text(
-            digest_rect.left_center() + Vec2::new(23.0, 0.0),
-            egui::Align2::LEFT_CENTER,
-            &self.digest,
-            egui::FontId::proportional(12.0),
+        painter.galley(
+            Pos2::new(
+                hover_rect.left() + 24.0,
+                hover_rect.center().y - hover_galley.size().y * 0.5,
+            ),
+            hover_galley,
             text,
         );
 
         let camera = self.catalog.format(
             "camera-readout",
             &BTreeMap::from([
-                ("distance", format_height(420.0 / f64::from(self.zoom))),
+                ("distance", format_height(self.camera_distance())),
                 ("azimuth", format_height(f64::from(self.yaw.to_degrees()))),
                 (
                     "elevation",
@@ -5131,68 +5343,127 @@ impl KetchupApp {
                 ),
             ]),
         );
+        // The camera readout is laid out first so the plate is sized to the text
+        // instead of to a guessed constant that the text then overflows.
+        let camera_galley = painter.layout_no_wrap(camera, mono.clone(), dim);
         let readout_rect = Rect::from_min_size(
-            Pos2::new(rect.right() - 300.0, rect.top() + 12.0),
-            Vec2::new(288.0, 48.0),
+            Pos2::new(
+                rect.right() - 14.0 - (camera_galley.size().x + 24.0),
+                rect.top() + 12.0,
+            ),
+            Vec2::new(camera_galley.size().x + 24.0, 28.0),
         );
         painter.rect_filled(readout_rect, 7.0, glass);
-        painter.text(
-            readout_rect.right_top() + Vec2::new(-10.0, 8.0),
-            egui::Align2::RIGHT_TOP,
-            camera,
-            mono.clone(),
+        painter.galley(
+            Pos2::new(
+                readout_rect.center().x - camera_galley.size().x * 0.5,
+                readout_rect.center().y - camera_galley.size().y * 0.5,
+            ),
+            camera_galley,
             dim,
         );
-        painter.text(
-            readout_rect.right_bottom() + Vec2::new(-10.0, -8.0),
-            egui::Align2::RIGHT_BOTTOM,
-            self.hover_readout(),
-            mono.clone(),
-            text,
-        );
 
-        let hint_rect = Rect::from_min_size(
-            Pos2::new(rect.left() + 14.0, rect.bottom() - 54.0),
-            Vec2::new((rect.width() * 0.46).max(240.0), 40.0),
-        );
-        painter.rect_filled(hint_rect, 9.0, glass);
-        painter.text(
-            hint_rect.left_center() + Vec2::new(12.0, 0.0),
-            egui::Align2::LEFT_CENTER,
-            self.catalog.text(self.active_tool.hint_key()),
-            egui::FontId::proportional(12.0),
-            text,
-        );
-
+        // The value box is placed first; the hint then takes whatever width is
+        // left, so the two can never paint over one another.
+        let value_size = Vec2::new(248.0_f32.min(rect.width() - 28.0), 46.0);
         let value_rect = Rect::from_min_size(
-            Pos2::new(rect.right() - 318.0, rect.bottom() - 52.0),
-            Vec2::new(304.0, 38.0),
+            Pos2::new(
+                rect.right() - 14.0 - value_size.x,
+                rect.bottom() - 14.0 - value_size.y,
+            ),
+            value_size,
         );
-        painter.rect_filled(value_rect, 10.0, Color32::from_black_alpha(180));
+        painter.rect_filled(value_rect, 8.0, glass);
         painter.rect_stroke(
             value_rect,
-            10.0,
+            8.0,
             Stroke::new(1.0_f32, line),
             egui::StrokeKind::Inside,
         );
-        let label_rect = Rect::from_min_size(value_rect.min, Vec2::new(114.0, 38.0));
+        // Label and field share one row: the label names the quantity on the
+        // left, the accent-coloured number and its unit read off the right.
         painter.text(
-            label_rect.center(),
-            egui::Align2::CENTER_CENTER,
+            Pos2::new(value_rect.left() + 14.0, value_rect.center().y),
+            egui::Align2::LEFT_CENTER,
             self.catalog.text(self.value_label_key()),
-            egui::FontId::proportional(11.0),
+            egui::FontId::proportional(SHELL_SMALL_SIZE),
             dim,
         );
-        let input_rect = Rect::from_min_max(
-            Pos2::new(label_rect.right() + 1.0, value_rect.top() + 2.0),
-            Pos2::new(value_rect.right() - 4.0, value_rect.bottom() - 2.0),
+        painter.text(
+            Pos2::new(value_rect.right() - 12.0, value_rect.center().y),
+            egui::Align2::RIGHT_CENTER,
+            self.catalog.text("unit-mm"),
+            egui::FontId::monospace(10.5),
+            palette.faint,
         );
+        let input_rect = Rect::from_min_max(
+            Pos2::new(value_rect.center().x - 6.0, value_rect.top() + 8.0),
+            Pos2::new(value_rect.right() - 34.0, value_rect.bottom() - 8.0),
+        );
+
+        // The hint card names the armed tool and then explains it, so the two
+        // read as a title and a body rather than as one wall of grey text.
+        let hint_width = (value_rect.left() - 12.0) - (rect.left() + 14.0);
+        if hint_width >= 200.0 {
+            let body_width = hint_width - 46.0;
+            let title_galley = painter.layout_no_wrap(
+                self.catalog.text(self.active_tool.label_key()),
+                egui::FontId::proportional(12.5),
+                text,
+            );
+            let hint_galley = painter.layout(
+                self.catalog.text(self.active_tool.hint_key()),
+                egui::FontId::proportional(SHELL_SMALL_SIZE),
+                dim,
+                body_width,
+            );
+            let height = title_galley.size().y + hint_galley.size().y + 24.0;
+            let hint_rect = Rect::from_min_size(
+                Pos2::new(rect.left() + 14.0, value_rect.bottom() - height),
+                Vec2::new(
+                    title_galley.size().x.max(hint_galley.size().x) + 46.0,
+                    height,
+                ),
+            );
+            painter.rect_filled(hint_rect, 8.0, glass);
+            painter.rect_stroke(
+                hint_rect,
+                8.0,
+                Stroke::new(1.0_f32, line),
+                egui::StrokeKind::Inside,
+            );
+            let badge = Pos2::new(hint_rect.left() + 20.0, hint_rect.top() + 19.0);
+            painter.circle_stroke(badge, 7.0, Stroke::new(1.4_f32, palette.accent));
+            painter.text(
+                badge,
+                egui::Align2::CENTER_CENTER,
+                "i",
+                egui::FontId::proportional(10.0),
+                palette.accent,
+            );
+            let title_top = hint_rect.top() + 12.0;
+            painter.galley(
+                Pos2::new(hint_rect.left() + 36.0, title_top),
+                title_galley.clone(),
+                text,
+            );
+            painter.galley(
+                Pos2::new(
+                    hint_rect.left() + 36.0,
+                    title_top + title_galley.size().y + 3.0,
+                ),
+                hint_galley,
+                dim,
+            );
+        }
         let response = ui.put(
             input_rect,
             egui::TextEdit::singleline(&mut self.value_input)
                 .id_salt("value-box-input")
                 .hint_text(self.catalog.text("value-placeholder"))
-                .font(egui::TextStyle::Monospace)
+                .font(egui::FontId::monospace(15.0))
+                .text_color(palette.accent)
+                .horizontal_align(egui::Align::Max)
                 .frame(false),
         );
         if self.focus_value_box {
@@ -5210,15 +5481,16 @@ impl KetchupApp {
     }
 
     fn viewport(&mut self, ui: &mut egui::Ui) {
+        self.refresh_camera_distance();
         let desired = ui.available_size().max(Vec2::new(320.0, 280.0));
         let (response, painter) = ui.allocate_painter(desired, Sense::click_and_drag());
         self.viewport_rect = Some(response.rect);
-        painter.rect_filled(response.rect, 0.0, Color32::from_rgb(24, 28, 36));
-        painter.rect_stroke(
+        let palette = self.palette();
+        theme::paint_vignette(
+            &painter,
             response.rect,
-            0.0,
-            Stroke::new(1.0_f32, Color32::from_rgb(62, 70, 84)),
-            egui::StrokeKind::Inside,
+            palette.viewport_inner,
+            palette.viewport_outer,
         );
         self.update_viewport_inference(response.hover_pos(), response.rect);
 
@@ -5715,6 +5987,8 @@ impl KetchupApp {
         }
         faces.sort_by(|left, right| right.depth.total_cmp(&left.depth));
 
+        self.paint_ground_plane(&painter, response.rect);
+
         for face in &faces {
             let color = if face.out_of_context {
                 Color32::from_rgb(43, 47, 54)
@@ -5821,7 +6095,68 @@ impl KetchupApp {
                 stroke,
             );
         }
+        if response.secondary_clicked()
+            && let Some(target) = self.hovered.clone()
+            && !self.selection.contains(&target.instance_path)
+        {
+            self.select_from_viewport(Some(target), false);
+        }
+        response.context_menu(|ui| self.show_viewport_context_menu(ui));
         self.viewport_overlays(ui, response.rect);
+    }
+
+    /// The viewport's right-click menu.
+    ///
+    /// Ordered the way SketchUp orders it: what the click landed on, then the
+    /// edits that apply to it, then the commands that only move the camera.
+    /// A right-click first selects whatever is under the pointer, so the menu
+    /// always acts on the thing the user pointed at.
+    fn show_viewport_context_menu(&mut self, ui: &mut egui::Ui) {
+        if self.selection_count() > 0 {
+            ui.label(
+                egui::RichText::new(self.catalog.format(
+                    "status-selected",
+                    &BTreeMap::from([("count", self.selection_count().to_string())]),
+                ))
+                .color(self.palette().faint)
+                .size(SHELL_SMALL_SIZE),
+            );
+            ui.separator();
+            if ui.button(self.catalog.text("context-edit")).clicked() {
+                if let Some(group_id) = self.selected_group_id() {
+                    self.enter_group_context(group_id);
+                } else if let Some(target) = self.selection.primary.clone() {
+                    self.enter_occurrence_context(target.instance_path);
+                }
+                ui.close();
+            }
+            self.menu_command(ui, AppCommand::Delete);
+            self.menu_command(ui, AppCommand::Hide);
+            ui.separator();
+            self.menu_command(ui, AppCommand::Group);
+            self.menu_command(ui, AppCommand::Ungroup);
+            self.menu_command(ui, AppCommand::MakeComponent);
+            self.menu_command(ui, AppCommand::MakeUnique);
+            ui.separator();
+            self.menu_command(ui, AppCommand::Copy);
+        }
+        self.menu_command(ui, AppCommand::Paste);
+        self.menu_command(ui, AppCommand::SelectAll);
+        self.menu_command(ui, AppCommand::Deselect);
+        self.menu_command(ui, AppCommand::Unhide);
+        if self.edit_context_depth() > 0 {
+            ui.separator();
+            if ui
+                .button(self.catalog.text("context-close-context"))
+                .clicked()
+            {
+                self.exit_edit_context();
+                ui.close();
+            }
+        }
+        ui.separator();
+        self.menu_command(ui, AppCommand::ZoomFit);
+        self.menu_command(ui, AppCommand::ViewProjection);
     }
 
     fn pick_result_at_screen(
@@ -5957,6 +6292,9 @@ impl KetchupApp {
     }
 
     fn world_to_clip(&self, rect: Rect) -> [f32; 16] {
+        if self.projection_mode == ProjectionMode::Perspective {
+            return self.perspective_world_to_clip(rect);
+        }
         let yaw_sin = self.yaw.sin();
         let yaw_cos = self.yaw.cos();
         let pitch_sin = self.pitch.sin();
@@ -5994,23 +6332,62 @@ impl KetchupApp {
         ]
     }
 
+    /// The converging counterpart of [`Self::world_to_clip`].
+    ///
+    /// The clip `w` carries the eye-space depth, so the fixed-function divide
+    /// gives exactly the same picture the CPU painter draws in
+    /// [`Self::project`]. There is no depth buffer, so clip `z` stays zero.
+    fn perspective_world_to_clip(&self, rect: Rect) -> [f32; 16] {
+        let (right, up, forward) = self.camera_basis();
+        let eye = self.camera_target() - forward * self.camera_distance();
+        let focal = self.camera_focal(rect);
+        let sx = f64::from(2.0 / rect.width());
+        let sy = f64::from(2.0 / rect.height());
+        let a = sx * f64::from(rect.width() * 0.5 + self.pan.x) - 1.0;
+        let b = 1.0 - sy * f64::from(rect.height() * 0.5 + self.pan.y);
+
+        let clip_x = forward * a + right * (sx * focal);
+        let clip_y = forward * b + up * (sy * focal);
+        let clip_w = forward;
+        [
+            clip_x.x as f32,
+            clip_y.x as f32,
+            0.0,
+            clip_w.x as f32,
+            clip_x.y as f32,
+            clip_y.y as f32,
+            0.0,
+            clip_w.y as f32,
+            clip_x.z as f32,
+            clip_y.z as f32,
+            0.0,
+            clip_w.z as f32,
+            -dot(clip_x, eye) as f32,
+            -dot(clip_y, eye) as f32,
+            0.0,
+            -dot(clip_w, eye) as f32,
+        ]
+    }
+
     fn project(&self, point: Vec3, rect: Rect) -> Pos2 {
-        let centered = Vec3::new(
-            point.x - BOX_WIDTH_MM * 0.5,
-            point.y - BOX_DEPTH_MM * 0.5,
-            point.z - self.camera_target_z,
-        );
-        let yaw_sin = f64::from(self.yaw.sin());
-        let yaw_cos = f64::from(self.yaw.cos());
-        let pitch_sin = f64::from(self.pitch.sin());
-        let pitch_cos = f64::from(self.pitch.cos());
-        let rotated_x = centered.x * yaw_cos - centered.y * yaw_sin;
-        let yaw_y = centered.x * yaw_sin + centered.y * yaw_cos;
-        let rotated_y = yaw_y * pitch_cos - centered.z * pitch_sin;
-        let scale = f64::from(self.zoom) * f64::from(rect.width().min(rect.height())) / 420.0;
+        let (right, up, forward) = self.camera_basis();
+        let centered = point - self.camera_target();
+        let view_x = dot(centered, right);
+        let view_y = dot(centered, up);
+        let scale = match self.projection_mode {
+            ProjectionMode::Parallel => self.view_scale(rect),
+            ProjectionMode::Perspective => {
+                // Depth measured from the eye. Points at or behind the eye have
+                // no on-screen position, so they are clamped to a sliver in
+                // front of it rather than folded through the origin.
+                let depth =
+                    (self.camera_distance() + dot(centered, forward)).max(PERSPECTIVE_NEAR_MM);
+                self.camera_focal(rect) / depth
+            }
+        };
         Pos2::new(
-            rect.center().x + self.pan.x + (rotated_x * scale) as f32,
-            rect.center().y + self.pan.y - (rotated_y * scale) as f32,
+            rect.center().x + self.pan.x + (view_x * scale) as f32,
+            rect.center().y + self.pan.y - (view_y * scale) as f32,
         )
     }
 
@@ -6201,30 +6578,220 @@ impl KetchupApp {
     }
 
     fn show_top_bar(&mut self, ui: &mut egui::Ui) {
+        let palette = self.palette();
         ui.horizontal_centered(|ui| {
-            ui.label(
-                egui::RichText::new(self.catalog.text("brand-mark"))
-                    .strong()
-                    .color(SHELL_BRAND_TEXT)
-                    .background_color(SHELL_BRAND_FILL),
+            ui.spacing_mut().item_spacing.x = 8.0;
+
+            let (logo, _) = ui.allocate_exact_size(Vec2::splat(24.0), Sense::hover());
+            ui.painter()
+                .rect_filled(logo, egui::CornerRadius::same(7), palette.accent);
+            theme::paint_icon(
+                ui.painter(),
+                logo,
+                Icon::Logo,
+                palette.accent_ink,
+                palette.accent_ink,
+                2.1,
             );
-            ui.strong(self.catalog.text("app-title"));
-            ui.separator();
-            ui.label(self.document_title());
-            self.command_button(ui, AppCommand::Undo);
-            self.command_button(ui, AppCommand::Redo);
-            ui.add_space(ui.available_width().max(0.0) * 0.2);
-            self.command_button(ui, AppCommand::ViewIso);
-            self.command_button(ui, AppCommand::ViewTop);
-            self.command_button(ui, AppCommand::ViewFront);
-            self.command_button(ui, AppCommand::ZoomFit);
-            ui.monospace(self.catalog.text("unit-mm"));
-            ui.add_enabled(false, egui::Button::new(self.catalog.text("theme-light")));
+            ui.label(
+                egui::RichText::new(self.catalog.text("app-title"))
+                    .size(14.0)
+                    .strong(),
+            );
+
+            vertical_rule(ui, palette);
+
+            // The extension is set in the tertiary tone so the eye lands on the
+            // model's name, and unsaved work is an accent dot instead of a `*`.
+            let title = self.document_title();
+            let (stem, extension) = title
+                .trim_end_matches(" *")
+                .rsplit_once('.')
+                .map_or((title.trim_end_matches(" *"), ""), |(stem, extension)| {
+                    (stem, extension)
+                });
+            ui.spacing_mut().item_spacing.x = 0.0;
+            ui.label(egui::RichText::new(stem).color(palette.dim));
+            if !extension.is_empty() {
+                ui.label(egui::RichText::new(format!(".{extension}")).color(palette.faint));
+            }
+            ui.spacing_mut().item_spacing.x = 8.0;
+            if title.ends_with(" *") {
+                let (dot, response) = ui.allocate_exact_size(Vec2::splat(9.0), Sense::hover());
+                ui.painter()
+                    .circle_filled(dot.center(), 2.5, palette.accent);
+                response.on_hover_text(self.catalog.text("status-unsaved"));
+            }
+
+            ui.spacing_mut().item_spacing.x = 2.0;
+            for (id, icon) in [
+                (AppCommand::Undo, Icon::Undo),
+                (AppCommand::Redo, Icon::Redo),
+            ] {
+                if self.icon_button(ui, id, icon, Vec2::new(28.0, 26.0)) {
+                    self.dispatch_command(id);
+                }
+            }
+
+            let views = [
+                AppCommand::ViewIso,
+                AppCommand::ViewTop,
+                AppCommand::ViewFront,
+                AppCommand::ZoomFit,
+            ];
+            let chips = ThemeKind::ALL;
+            // Both clusters are laid out from the right so the centre one keeps
+            // its place as the document name grows.
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.x = 6.0;
+                segmented(ui, palette, |ui| {
+                    for kind in chips {
+                        self.theme_chip(ui, palette, kind);
+                    }
+                });
+                ui.add_space(ui.available_width() * 0.5 - 150.0);
+                segmented(ui, palette, |ui| {
+                    for id in views {
+                        if self.segment_button(ui, palette, id, false) {
+                            self.dispatch_command(id);
+                        }
+                    }
+                    vertical_rule(ui, palette);
+                    if self.segment_button(ui, palette, AppCommand::ViewProjection, true) {
+                        self.dispatch_command(AppCommand::ViewProjection);
+                    }
+                });
+            });
         });
+    }
+
+    /// A frameless glyph button in the chrome, e.g. Undo.
+    fn icon_button(&self, ui: &mut egui::Ui, id: AppCommand, icon: Icon, size: Vec2) -> bool {
+        let palette = self.palette();
+        let enabled = self.command_enabled(id);
+        let label = self.command_label(id);
+        let response = ui.add_enabled(enabled, egui::Button::new("").min_size(size).frame(false));
+        let ink = if !enabled {
+            palette.faint
+        } else if response.hovered() {
+            palette.text
+        } else {
+            palette.dim
+        };
+        if enabled && response.hovered() {
+            ui.painter()
+                .rect_filled(response.rect, egui::CornerRadius::same(6), palette.panel2);
+        }
+        theme::paint_icon(
+            ui.painter(),
+            shrink_to_icon(response.rect, 15.0),
+            icon,
+            ink,
+            if enabled { palette.accent } else { ink },
+            1.7,
+        );
+        name_widget(&response, enabled, &label);
+        response
+            .on_hover_text(self.catalog.text(CommandRegistry::spec(id).shortcut_key))
+            .clicked()
+    }
+
+    /// One pill inside a segmented control. `accent_when_on` fills the pill.
+    fn segment_button(
+        &self,
+        ui: &mut egui::Ui,
+        palette: Palette,
+        id: AppCommand,
+        accent_when_on: bool,
+    ) -> bool {
+        let label = if id == AppCommand::ViewProjection {
+            self.catalog.text(self.projection_mode.label_key())
+        } else {
+            self.command_label(id)
+        };
+        let enabled = self.command_enabled(id);
+        let response =
+            ui.add_enabled(
+                enabled,
+                egui::Button::new(egui::RichText::new(&label).size(12.0).color(
+                    if accent_when_on {
+                        palette.accent_ink
+                    } else {
+                        palette.dim
+                    },
+                ))
+                .fill(if accent_when_on {
+                    palette.accent
+                } else {
+                    Color32::TRANSPARENT
+                })
+                .stroke(Stroke::NONE)
+                .corner_radius(egui::CornerRadius::same(6))
+                .min_size(Vec2::new(0.0, 26.0)),
+            );
+        name_widget(&response, enabled, &label);
+        response.clicked()
+    }
+
+    /// A theme chip: colour swatch plus name, outlined while it is the active one.
+    ///
+    /// Drawn by hand rather than as a `Button`, because the swatch has to sit
+    /// inside the chip's own padding and still belong to the same hit target.
+    fn theme_chip(&mut self, ui: &mut egui::Ui, palette: Palette, kind: ThemeKind) {
+        let selected = self.theme == kind;
+        let label = self.catalog.text(kind.label_key());
+        let font = egui::FontId::proportional(11.5);
+        let galley = ui.painter().layout_no_wrap(
+            label.clone(),
+            font,
+            if selected { palette.text } else { palette.dim },
+        );
+        let (rect, response) =
+            ui.allocate_exact_size(Vec2::new(galley.size().x + 30.0, 24.0), Sense::click());
+        let painter = ui.painter();
+        let corner = egui::CornerRadius::same(6);
+        if selected {
+            painter.rect_filled(rect, corner, palette.panel2);
+            painter.rect_stroke(
+                rect,
+                corner,
+                Stroke::new(1.0_f32, palette.line),
+                egui::StrokeKind::Inside,
+            );
+        } else if response.hovered() {
+            painter.rect_filled(rect, corner, palette.panel);
+        }
+        painter.rect_filled(
+            Rect::from_center_size(
+                Pos2::new(rect.left() + 12.0, rect.center().y),
+                Vec2::splat(12.0),
+            ),
+            egui::CornerRadius::same(4),
+            Palette::of(kind).accent,
+        );
+        painter.galley(
+            Pos2::new(rect.left() + 24.0, rect.center().y - galley.size().y * 0.5),
+            galley,
+            palette.text,
+        );
+        name_widget(&response, true, &label);
+        if response.clicked() {
+            self.set_theme(kind);
+        }
     }
 
     fn show_menu_bar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
+            // A menu bar is not a row of buttons: the top-level entries stay
+            // frameless until they are hovered, the way the platform draws them.
+            let widgets = &mut ui.visuals_mut().widgets;
+            widgets.inactive.weak_bg_fill = Color32::TRANSPARENT;
+            widgets.inactive.bg_stroke = Stroke::NONE;
+            widgets.hovered.bg_stroke = Stroke::NONE;
+            widgets.active.bg_stroke = Stroke::NONE;
+            widgets.open.bg_stroke = Stroke::NONE;
+            ui.spacing_mut().item_spacing.x = 2.0;
+            ui.spacing_mut().button_padding = Vec2::new(9.0, 3.0);
             ui.menu_button(self.catalog.text("menu-file"), |ui| {
                 self.menu_command(ui, AppCommand::New);
                 self.menu_command(ui, AppCommand::Open);
@@ -6252,6 +6819,8 @@ impl KetchupApp {
                 self.menu_command(ui, AppCommand::ViewTop);
                 self.menu_command(ui, AppCommand::ViewFront);
                 self.menu_command(ui, AppCommand::ZoomFit);
+                ui.separator();
+                self.menu_command(ui, AppCommand::ViewProjection);
                 ui.separator();
                 self.menu_command(ui, AppCommand::Hide);
                 self.menu_command(ui, AppCommand::Unhide);
@@ -6288,38 +6857,41 @@ impl KetchupApp {
     }
 
     fn show_tool_rail(&mut self, ui: &mut egui::Ui) {
-        const TOOLS: [AppCommand; 8] = [
-            AppCommand::Select,
-            AppCommand::Line,
-            AppCommand::Rectangle,
-            AppCommand::PushPull,
-            AppCommand::Move,
-            AppCommand::Measure,
-            AppCommand::Orbit,
-            AppCommand::Pan,
+        // Grouped the way the design groups them: pick, draw, modify, measure,
+        // navigate. A group boundary draws a hairline.
+        const TOOLS: [(AppCommand, u8); 8] = [
+            (AppCommand::Select, 0),
+            (AppCommand::Line, 1),
+            (AppCommand::Rectangle, 1),
+            (AppCommand::PushPull, 2),
+            (AppCommand::Move, 2),
+            (AppCommand::Measure, 3),
+            (AppCommand::Orbit, 4),
+            (AppCommand::Pan, 4),
         ];
+        let palette = self.palette();
         ui.vertical_centered(|ui| {
-            for id in TOOLS {
-                if id == AppCommand::Orbit {
-                    ui.separator();
+            ui.spacing_mut().item_spacing.y = 2.0;
+            let mut group = TOOLS[0].1;
+            for (id, tool_group) in TOOLS {
+                if tool_group != group {
+                    group = tool_group;
+                    ui.add_space(5.0);
+                    let (rule, _) = ui.allocate_exact_size(Vec2::new(20.0, 1.0), Sense::hover());
+                    ui.painter().rect_filled(rule, 0.0, palette.line);
+                    ui.add_space(5.0);
                 }
                 let spec = CommandRegistry::spec(id);
-                let icon = self.catalog.text(match id {
-                    AppCommand::Select => "icon-select",
-                    AppCommand::Line => "icon-line",
-                    AppCommand::Rectangle => "icon-rectangle",
-                    AppCommand::PushPull => "icon-push-pull",
-                    AppCommand::Move => "icon-move",
-                    AppCommand::Measure => "icon-measure",
-                    AppCommand::Orbit => "icon-orbit",
-                    AppCommand::Pan => "icon-pan",
-                    _ => unreachable!(),
-                });
                 let active = spec.tool == Some(self.active_tool);
-                let button = egui::Button::new(icon).selected(active);
                 let enabled = self.command_enabled(id);
                 let label = self.catalog.text(spec.label_key);
-                let response = ui.add_enabled(enabled, button);
+                let response = ui.add_enabled(
+                    enabled,
+                    egui::Button::new("")
+                        .frame(false)
+                        .min_size(Vec2::new(TOOL_BUTTON_SIZE, TOOL_BUTTON_SIZE)),
+                );
+                self.paint_rail_button(ui, &response, id, enabled, active);
                 name_widget(&response, enabled, &label);
                 if response
                     .on_hover_text(self.catalog.format(
@@ -6334,10 +6906,15 @@ impl KetchupApp {
                     self.dispatch_command(id);
                 }
             }
-            ui.add_space((ui.available_height() - 48.0).max(0.0));
+            ui.add_space((ui.available_height() - TOOL_BUTTON_SIZE - 12.0).max(0.0));
             let enabled = self.command_enabled(AppCommand::Delete);
-            let response =
-                ui.add_enabled(enabled, egui::Button::new(self.catalog.text("icon-delete")));
+            let response = ui.add_enabled(
+                enabled,
+                egui::Button::new("")
+                    .frame(false)
+                    .min_size(Vec2::new(TOOL_BUTTON_SIZE, TOOL_BUTTON_SIZE)),
+            );
+            self.paint_rail_button(ui, &response, AppCommand::Delete, enabled, false);
             name_widget(&response, enabled, &self.command_label(AppCommand::Delete));
             if response
                 .on_hover_text(self.catalog.text("tooltip-delete"))
@@ -6346,6 +6923,120 @@ impl KetchupApp {
                 self.dispatch_command(AppCommand::Delete);
             }
         });
+    }
+
+    /// Paint the construction grid and the three world axes on Z = 0.
+    ///
+    /// Every fourth line is a major one, which is what makes a large model
+    /// readable at a glance: the minor lines give the 10 mm rhythm and the
+    /// major ones give the 40 mm one. Lines are clipped to the viewport, so a
+    /// steep camera cannot smear them across the panels.
+    fn paint_ground_plane(&self, painter: &egui::Painter, rect: Rect) {
+        const EXTENT: usize = 14;
+        let palette = self.palette();
+        let step = GRID_STEP_MM * 4.0;
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "EXTENT is 14, far inside f64's exact integer range"
+        )]
+        let reach = step * EXTENT as f64;
+        let painter = painter.with_clip_rect(rect);
+        let segment = |from: Vec3, to: Vec3, major: bool| {
+            let stroke = Stroke::new(
+                if major { 1.2_f32 } else { 1.0_f32 },
+                if major {
+                    palette.grid_major
+                } else {
+                    palette.grid
+                },
+            );
+            painter.line_segment([self.project(from, rect), self.project(to, rect)], stroke);
+        };
+        for index in -(EXTENT as isize)..=(EXTENT as isize) {
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "the index spans -14..=14, far inside f64's exact integer range"
+            )]
+            let offset = index as f64 * step;
+            if index == 0 {
+                continue;
+            }
+            let major = index % 4 == 0;
+            segment(
+                Vec3::new(offset, -reach, 0.0),
+                Vec3::new(offset, reach, 0.0),
+                major,
+            );
+            segment(
+                Vec3::new(-reach, offset, 0.0),
+                Vec3::new(reach, offset, 0.0),
+                major,
+            );
+        }
+        // The axes are the one place the viewport does not use the palette: red,
+        // green and blue for X, Y and Z is a convention the user already knows
+        // from every other modeller, and it must not shift with the theme.
+        for (direction, color) in [
+            (Vec3::new(1.0, 0.0, 0.0), Color32::from_rgb(224, 86, 63)),
+            (Vec3::new(0.0, 1.0, 0.0), Color32::from_rgb(93, 187, 99)),
+            (Vec3::new(0.0, 0.0, 1.0), Color32::from_rgb(78, 134, 199)),
+        ] {
+            painter.line_segment(
+                [
+                    self.project(direction * -reach, rect),
+                    self.project(direction * reach, rect),
+                ],
+                Stroke::new(1.6_f32, color),
+            );
+        }
+    }
+
+    /// Paint the plate and glyph of one rail button.
+    ///
+    /// The active tool is a filled accent tile with a matching glow, hover is
+    /// the raised panel tone, and everything else is flat — so which tool is
+    /// armed is readable without reading any text.
+    fn paint_rail_button(
+        &self,
+        ui: &egui::Ui,
+        response: &egui::Response,
+        id: AppCommand,
+        enabled: bool,
+        active: bool,
+    ) {
+        let palette = self.palette();
+        let painter = ui.painter();
+        let corner = egui::CornerRadius::same(8);
+        if active {
+            painter.rect_filled(response.rect.expand(2.0), corner, palette.accent_wash(56));
+            painter.rect_filled(response.rect, corner, palette.accent);
+        } else if enabled && response.hovered() {
+            painter.rect_filled(response.rect, corner, palette.panel2);
+        }
+        let ink = if !enabled {
+            palette.faint
+        } else if active {
+            palette.accent_ink
+        } else if response.hovered() {
+            palette.text
+        } else {
+            palette.dim
+        };
+        // On the filled accent tile the accent detail would vanish into the
+        // plate, so there the whole glyph is drawn in the tile's ink instead.
+        let detail = if enabled && !active {
+            palette.accent
+        } else {
+            ink
+        };
+        theme::paint_icon(
+            painter,
+            shrink_to_icon(response.rect, TOOL_ICON_SIZE),
+            command_icon(id),
+            ink,
+            detail,
+            1.55,
+        );
     }
 
     fn prepare_assistant_from_inputs(&mut self) -> bool {
@@ -7522,7 +8213,7 @@ impl KetchupApp {
     }
 
     fn show_assistant(&mut self, ui: &mut egui::Ui) {
-        ui.heading(self.catalog.text("assistant-title"));
+        section_header(ui, self.palette(), &self.catalog.text("assistant-title"));
         ui.small(self.catalog.text("assistant-boundary"));
         egui::ComboBox::from_label(self.catalog.text("assistant-intent"))
             .selected_text(self.catalog.text(match self.assistant_intent_kind {
@@ -8005,7 +8696,7 @@ impl KetchupApp {
     }
 
     fn show_bottle_workflow(&mut self, ui: &mut egui::Ui) {
-        ui.heading("M6 editable bottle");
+        section_header(ui, self.palette(), "M6 editable bottle");
         if ui.button("Create editable bottle").clicked() {
             self.create_bottle();
         }
@@ -8117,7 +8808,7 @@ impl KetchupApp {
     }
 
     fn show_beam_m4ae(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Beam A / M5 exact fabrication");
+        section_header(ui, self.palette(), "Beam A / M5 exact fabrication");
         if ui.button("Load / reset Beam A").clicked() {
             self.load_beam_m4ae();
         }
@@ -8280,8 +8971,8 @@ impl KetchupApp {
             .iter()
             .map(|entry| entry.occurrences.len())
             .sum::<usize>();
+        section_header(ui, self.palette(), &self.catalog.text("dock-outliner"));
         ui.horizontal(|ui| {
-            ui.strong(self.catalog.text("dock-outliner"));
             ui.monospace(self.catalog.format(
                 "outliner-meta",
                 &BTreeMap::from([
@@ -8364,8 +9055,8 @@ impl KetchupApp {
                 }
             });
         ui.separator();
+        section_header(ui, self.palette(), &self.catalog.text("dock-tags"));
         ui.horizontal(|ui| {
-            ui.strong(self.catalog.text("dock-tags"));
             if ui
                 .add_enabled(
                     self.command_enabled(AppCommand::MakeUnique),
@@ -8422,15 +9113,25 @@ impl KetchupApp {
     }
 
     fn show_status_bar(&mut self, ui: &mut egui::Ui) {
+        let palette = self.palette();
         ui.horizontal_centered(|ui| {
-            ui.label(self.catalog.format(
-                "status-tool",
-                &BTreeMap::from([("tool", self.catalog.text(self.active_tool.label_key()))]),
-            ));
-            ui.label(self.catalog.format(
+            ui.spacing_mut().item_spacing.x = 7.0;
+            let (dot, _) = ui.allocate_exact_size(Vec2::splat(6.0), Sense::hover());
+            ui.painter()
+                .circle_filled(dot.center(), 3.0, palette.accent);
+            ui.label(
+                egui::RichText::new(self.catalog.text(self.active_tool.label_key()))
+                    .strong()
+                    .color(palette.text),
+            );
+
+            // Everything after the tool name is running commentary, so it is set
+            // in the tertiary tone and truncated rather than allowed to push the
+            // measured chips off the right edge.
+            let mut context = vec![self.catalog.format(
                 "status-selected",
                 &BTreeMap::from([("count", self.selection_count().to_string())]),
-            ));
+            )];
             if let Some(edit_context) = self.selection.edit_context.last() {
                 let (key, id) = match edit_context {
                     EditContext::Group(id) => ("status-editing-group", id.0),
@@ -8438,29 +9139,45 @@ impl KetchupApp {
                         ("status-editing-component", definition_id.0)
                     }
                 };
-                ui.label(
+                context.push(
                     self.catalog
                         .format(key, &BTreeMap::from([("id", id.to_string())])),
                 );
             }
-            ui.add_space(ui.available_width().max(0.0) * 0.25);
-            ui.label(self.catalog.text("status-snap-on"));
-            ui.label(
+            context.push(self.digest.clone());
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(context.join("  \u{b7}  "))
+                        .size(11.5)
+                        .color(palette.faint),
+                )
+                .truncate(),
+            );
+
+            // The measured facts are pinned right, in the same mono pill the
+            // viewport readouts use, so they line up down the whole session.
+            let mut chips = vec![
+                self.catalog.text("status-snap-on"),
                 self.catalog
                     .format("status-grid", &BTreeMap::from([("step", "10".to_owned())])),
-            );
-            ui.label(self.catalog.text("status-refs-guaranteed"));
-            if self.exact_results.is_empty() {
-                ui.label(self.catalog.text("status-exact-unavailable"));
+                self.catalog.text("status-refs-guaranteed"),
+            ];
+            chips.push(if self.exact_results.is_empty() {
+                self.catalog.text("status-exact-unavailable")
             } else {
-                ui.label(self.catalog.format(
+                self.catalog.format(
                     "status-exact-current",
                     &BTreeMap::from([
                         ("bodies", self.exact_render_body_count().to_string()),
                         ("refs", self.exact_stable_reference_count().to_string()),
                     ]),
-                ));
-            }
+                )
+            });
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                for text in chips.into_iter().rev() {
+                    status_chip(ui, palette, &text);
+                }
+            });
         });
     }
 }
@@ -8498,45 +9215,216 @@ impl KetchupApp {
     pub fn ui(&mut self, context: &egui::Context) {
         self.refresh_exact_products(context);
         self.refresh_beam_m5_products(context);
-        let mut visuals = egui::Visuals::dark();
-        visuals.override_text_color = Some(SHELL_TEXT);
-        visuals.selection.stroke = Stroke::new(1.0_f32, SHELL_FOCUS);
-        context.set_visuals(visuals);
+        let palette = self.palette();
+        apply_shell_style(context, palette);
         self.handle_shortcuts(context);
 
-        let panel_frame = egui::Frame::new()
-            .fill(SHELL_PANEL_FILL)
-            .stroke(Stroke::new(1.0_f32, Color32::from_rgb(43, 48, 54)));
+        // Chrome surfaces carry a hairline on the edge they meet the viewport
+        // on, so the shell reads as panels around a canvas rather than as one
+        // flat sheet.
+        let hairline = Stroke::new(1.0_f32, palette.line);
+        let chrome = |bottom: bool, top: bool| {
+            egui::Frame::new()
+                .fill(palette.chrome)
+                .inner_margin(egui::Margin::symmetric(12, 0))
+                .stroke(Stroke::NONE)
+                .outer_margin(egui::Margin::ZERO)
+                .shadow(egui::epaint::Shadow::NONE)
+                .stroke(if bottom || top {
+                    hairline
+                } else {
+                    Stroke::NONE
+                })
+        };
         egui::TopBottomPanel::top("top-bar")
             .exact_height(46.0)
-            .frame(panel_frame)
+            .frame(chrome(true, false))
             .show(context, |ui| self.show_top_bar(ui));
         egui::TopBottomPanel::top("menu-bar")
-            .exact_height(28.0)
-            .frame(panel_frame)
+            .exact_height(32.0)
+            .frame(chrome(true, false))
             .show(context, |ui| self.show_menu_bar(ui));
         egui::TopBottomPanel::bottom("status-bar")
-            .exact_height(26.0)
-            .frame(panel_frame)
+            .exact_height(32.0)
+            .frame(chrome(false, true))
             .show(context, |ui| self.show_status_bar(ui));
         egui::SidePanel::left("tool-rail")
             .resizable(false)
-            .exact_width(56.0)
-            .frame(panel_frame)
+            .exact_width(TOOL_RAIL_WIDTH)
+            .frame(
+                egui::Frame::new()
+                    .fill(palette.chrome)
+                    .inner_margin(egui::Margin::symmetric(0, 8))
+                    .stroke(hairline),
+            )
             .show(context, |ui| self.show_tool_rail(ui));
         egui::SidePanel::right("right-dock")
             .resizable(false)
-            .exact_width(320.0)
-            .frame(panel_frame)
+            .exact_width(340.0)
+            .frame(
+                egui::Frame::new()
+                    .fill(palette.chrome)
+                    .inner_margin(egui::Margin::symmetric(14, 8))
+                    .stroke(hairline),
+            )
             .show(context, |ui| {
                 ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
                 self.show_outliner(ui);
             });
         egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(SHELL_VIEWPORT_FILL))
+            .frame(egui::Frame::new().fill(palette.viewport_outer))
             .show(context, |ui| self.viewport(ui));
         self.show_shortcuts_window(context);
     }
+}
+
+/// One shared type scale and spacing rhythm for every surface of the shell.
+///
+/// Before this existed each panel picked its own font size, so a section title
+/// was nearly twice the size of the text under it. The whole shell now derives
+/// from four sizes: title, body, small and monospace.
+fn apply_shell_style(context: &egui::Context, palette: Palette) {
+    let mut visuals = if palette.dark {
+        egui::Visuals::dark()
+    } else {
+        egui::Visuals::light()
+    };
+    visuals.override_text_color = Some(palette.text);
+    visuals.panel_fill = palette.chrome;
+    visuals.window_fill = palette.panel;
+    visuals.window_stroke = Stroke::new(1.0_f32, palette.line);
+    visuals.extreme_bg_color = palette.bg;
+    visuals.selection.bg_fill = palette.accent_wash(90);
+    visuals.selection.stroke = Stroke::new(1.0_f32, palette.accent);
+    visuals.hyperlink_color = palette.accent;
+    visuals.widgets.noninteractive.bg_fill = palette.panel;
+    visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0_f32, palette.line);
+    visuals.widgets.noninteractive.fg_stroke = Stroke::new(1.0_f32, palette.dim);
+    visuals.widgets.inactive.weak_bg_fill = palette.panel;
+    visuals.widgets.inactive.bg_fill = palette.panel;
+    visuals.widgets.inactive.bg_stroke = Stroke::new(1.0_f32, palette.line);
+    visuals.widgets.inactive.fg_stroke = Stroke::new(1.0_f32, palette.text);
+    visuals.widgets.hovered.weak_bg_fill = palette.panel2;
+    visuals.widgets.hovered.bg_fill = palette.panel2;
+    visuals.widgets.hovered.bg_stroke = Stroke::new(1.0_f32, palette.line);
+    visuals.widgets.hovered.fg_stroke = Stroke::new(1.0_f32, palette.text);
+    visuals.widgets.active.weak_bg_fill = palette.panel2;
+    visuals.widgets.active.bg_fill = palette.panel2;
+    visuals.widgets.active.bg_stroke = Stroke::new(1.0_f32, palette.accent);
+    visuals.widgets.active.fg_stroke = Stroke::new(1.0_f32, palette.text);
+    visuals.widgets.open.weak_bg_fill = palette.panel2;
+    visuals.widgets.open.bg_stroke = Stroke::new(1.0_f32, palette.line);
+    for widget in [
+        &mut visuals.widgets.noninteractive,
+        &mut visuals.widgets.inactive,
+        &mut visuals.widgets.hovered,
+        &mut visuals.widgets.active,
+        &mut visuals.widgets.open,
+    ] {
+        widget.corner_radius = egui::CornerRadius::same(6);
+    }
+
+    let mut style = (*context.style()).clone();
+    style.text_styles = [
+        (
+            egui::TextStyle::Heading,
+            egui::FontId::proportional(SHELL_TITLE_SIZE),
+        ),
+        (
+            egui::TextStyle::Body,
+            egui::FontId::proportional(SHELL_BODY_SIZE),
+        ),
+        (
+            egui::TextStyle::Button,
+            egui::FontId::proportional(SHELL_BODY_SIZE),
+        ),
+        (
+            egui::TextStyle::Small,
+            egui::FontId::proportional(SHELL_SMALL_SIZE),
+        ),
+        (
+            egui::TextStyle::Monospace,
+            egui::FontId::monospace(SHELL_MONO_SIZE),
+        ),
+    ]
+    .into();
+    style.spacing.item_spacing = Vec2::new(6.0, 5.0);
+    style.spacing.button_padding = Vec2::new(8.0, 4.0);
+    style.spacing.interact_size.y = 22.0;
+    style.spacing.combo_width = 180.0;
+    style.spacing.text_edit_width = 160.0;
+    style.visuals = visuals;
+    context.set_style(style);
+}
+
+/// Draw a dock section title so every section reads at the same weight.
+fn section_header(ui: &mut egui::Ui, palette: Palette, title: &str) {
+    ui.add_space(9.0);
+    ui.horizontal(|ui| {
+        ui.label(
+            egui::RichText::new(title.to_uppercase())
+                .size(SHELL_SECTION_SIZE)
+                .strong()
+                .color(palette.dim),
+        );
+    });
+    ui.add_space(4.0);
+}
+
+/// One measured fact in the status bar, as a dotted monospace pill.
+fn status_chip(ui: &mut egui::Ui, palette: Palette, text: &str) {
+    let galley =
+        ui.painter()
+            .layout_no_wrap(text.to_owned(), egui::FontId::monospace(10.5), palette.dim);
+    let (rect, _) = ui.allocate_exact_size(
+        Vec2::new(galley.size().x + 26.0, galley.size().y + 6.0),
+        Sense::hover(),
+    );
+    let painter = ui.painter();
+    let corner = egui::CornerRadius::same(5);
+    painter.rect_filled(rect, corner, palette.panel);
+    painter.rect_stroke(
+        rect,
+        corner,
+        Stroke::new(1.0_f32, palette.line),
+        egui::StrokeKind::Inside,
+    );
+    painter.circle_filled(
+        Pos2::new(rect.left() + 9.0, rect.center().y),
+        2.5,
+        palette.accent,
+    );
+    painter.galley(
+        Pos2::new(rect.left() + 17.0, rect.center().y - galley.size().y * 0.5),
+        galley,
+        palette.dim,
+    );
+}
+
+/// A hairline divider between two clusters inside a horizontal bar.
+fn vertical_rule(ui: &mut egui::Ui, palette: Palette) {
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(1.0, 20.0), Sense::hover());
+    ui.painter().rect_filled(rect, 0.0, palette.line);
+}
+
+/// Wrap `content` in the shell's segmented-control shell: a raised, outlined,
+/// rounded tray whose children are flush pills.
+fn segmented(ui: &mut egui::Ui, palette: Palette, content: impl FnOnce(&mut egui::Ui)) {
+    egui::Frame::new()
+        .fill(palette.panel)
+        .stroke(Stroke::new(1.0_f32, palette.line))
+        .corner_radius(egui::CornerRadius::same(9))
+        .inner_margin(egui::Margin::same(3))
+        .show(ui, |ui| {
+            ui.spacing_mut().item_spacing.x = 3.0;
+            ui.spacing_mut().button_padding.x = 10.0;
+            ui.horizontal(content);
+        });
+}
+
+/// The square a glyph of `size` occupies inside a larger hit target.
+fn shrink_to_icon(button: Rect, size: f32) -> Rect {
+    Rect::from_center_size(button.center(), Vec2::splat(size))
 }
 
 /// Give a widget an accessible name.
@@ -8546,6 +9434,27 @@ impl KetchupApp {
 /// the accessibility tree instead.
 fn name_widget(response: &egui::Response, enabled: bool, name: &str) {
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, name));
+}
+
+/// Which drawing represents a command in the rail and the menus.
+///
+/// One glyph can serve several commands — Zoom Fit and the Zoom tool share the
+/// magnifier — so this is a mapping rather than a field on the command spec.
+const fn command_icon(id: AppCommand) -> Icon {
+    match id {
+        AppCommand::Line => Icon::Line,
+        AppCommand::Rectangle => Icon::Rectangle,
+        AppCommand::PushPull => Icon::PushPull,
+        AppCommand::Move => Icon::Move,
+        AppCommand::Measure => Icon::Tape,
+        AppCommand::Orbit => Icon::Orbit,
+        AppCommand::Pan => Icon::Pan,
+        AppCommand::Delete => Icon::Eraser,
+        AppCommand::ZoomFit => Icon::Zoom,
+        AppCommand::Undo => Icon::Undo,
+        AppCommand::Redo => Icon::Redo,
+        _ => Icon::Select,
+    }
 }
 
 fn create_box_batch(
@@ -9029,6 +9938,10 @@ fn projected_bounds(points: &[Vec3], project: impl Fn(Vec3) -> Pos2) -> Rect {
         .unwrap_or(Rect::ZERO)
 }
 
+fn dot(left: Vec3, right: Vec3) -> f64 {
+    left.x * right.x + left.y * right.y + left.z * right.z
+}
+
 fn vector_length(vector: Vec3) -> f64 {
     (vector.x * vector.x + vector.y * vector.y + vector.z * vector.z).sqrt()
 }
@@ -9191,30 +10104,39 @@ mod tests {
     use super::*;
     use ketchup_core::graph::{EvaluatorNodeKind, PortSpec};
 
-    fn contrast_ratio(foreground: Color32, background: Color32) -> f32 {
-        fn luminance(color: Color32) -> f32 {
-            let channel = |value: u8| {
-                let value = f32::from(value) / 255.0;
-                if value <= 0.04045 {
-                    value / 12.92
-                } else {
-                    ((value + 0.055) / 1.055).powf(2.4)
-                }
-            };
-            0.2126 * channel(color.r()) + 0.7152 * channel(color.g()) + 0.0722 * channel(color.b())
-        }
-
-        let foreground = luminance(foreground);
-        let background = luminance(background);
-        (foreground.max(background) + 0.05) / (foreground.min(background) + 0.05)
-    }
+    // Palette contrast is proved once for all four appearances in
+    // `theme::tests::every_palette_keeps_text_and_accent_legible`, so this file
+    // no longer keeps a second copy of the thresholds for one hardcoded set.
 
     #[test]
-    fn shell_palette_meets_text_and_focus_contrast_thresholds() {
-        assert!(contrast_ratio(SHELL_TEXT, SHELL_PANEL_FILL) >= 4.5);
-        assert!(contrast_ratio(SHELL_BRAND_TEXT, SHELL_BRAND_FILL) >= 4.5);
-        assert!(contrast_ratio(SHELL_FOCUS, SHELL_PANEL_FILL) >= 3.0);
-        assert!(contrast_ratio(SHELL_FOCUS, SHELL_VIEWPORT_FILL) >= 3.0);
+    fn switching_theme_repaints_the_shell_without_touching_the_document() {
+        let mut app = KetchupApp::new();
+        let before_revision = app.document_revision();
+        let before_digest = app.canonical_digest();
+        let graphite = app.palette();
+
+        for kind in ThemeKind::ALL {
+            app.set_theme(kind);
+            assert_eq!(app.theme(), kind);
+            assert_eq!(app.palette(), Palette::of(kind));
+            assert_eq!(
+                app.document_revision(),
+                before_revision,
+                "changing appearance must not commit a canonical batch"
+            );
+            assert_eq!(
+                app.canonical_digest(),
+                before_digest,
+                "changing appearance must not change the model"
+            );
+        }
+
+        app.set_theme(ThemeKind::Graphite);
+        assert_eq!(app.palette(), graphite);
+        assert!(
+            !app.can_undo(),
+            "appearance must never enter the undo stack"
+        );
     }
 
     fn lossy_legacy_document() -> Vec<u8> {
@@ -12870,32 +13792,142 @@ mod tests {
     }
 
     #[test]
-    fn gpu_projection_matches_cpu_projection_inside_callback_viewport() {
-        let app = KetchupApp::new();
-        let rect = Rect::from_min_size(Pos2::new(87.0, 163.0), Vec2::new(1_927.0, 1_184.0));
-        let matrix = app.world_to_clip(rect);
+    fn typed_push_pull_values_correct_the_last_one_instead_of_stacking() {
+        let mut app = KetchupApp::new();
+        let base_height = app.document_height_mm();
+        app.active_tool = ActiveTool::PushPull;
+        app.selection.select_exact(
+            SelectionId {
+                definition_id: INITIAL_BOX_DEFINITION,
+                instance_path: InstancePath::root(OccurrenceId(1)),
+                element: ElementId::Face {
+                    axis: Axis::Z,
+                    side: Side::Maximum,
+                },
+            },
+            false,
+        );
 
-        for point in box_corners(BOX_WIDTH_MM, BOX_DEPTH_MM, app.document_height_mm()) {
-            let clip_x = matrix[0] * point.x as f32
-                + matrix[4] * point.y as f32
-                + matrix[8] * point.z as f32
-                + matrix[12];
-            let clip_y = matrix[1] * point.x as f32
-                + matrix[5] * point.y as f32
-                + matrix[9] * point.z as f32
-                + matrix[13];
-            let gpu_screen = Pos2::new(
-                rect.center().x + clip_x * rect.width() * 0.5,
-                rect.center().y - clip_y * rect.height() * 0.5,
-            );
-            let cpu_screen = app.project(point, rect);
-            assert!((gpu_screen - cpu_screen).length() < 0.01);
+        app.value_input = "20".to_owned();
+        assert!(app.apply_value_input());
+        assert_eq!(app.document_height_mm(), base_height + 20.0);
+
+        app.value_input = "25".to_owned();
+        assert!(app.apply_value_input());
+        assert_eq!(
+            app.document_height_mm(),
+            base_height + 25.0,
+            "a retyped distance replaces the previous one"
+        );
+
+        app.value_input = "0".to_owned();
+        assert!(app.apply_value_input());
+        assert_eq!(
+            app.document_height_mm(),
+            base_height,
+            "zero means the Push/Pull is undone, not repeated"
+        );
+
+        assert!(app.undo());
+        assert_eq!(app.document_height_mm(), base_height);
+        assert!(!app.can_undo(), "corrections must stay one undo step");
+    }
+
+    #[test]
+    fn rejected_push_pull_correction_preserves_the_last_valid_operation() {
+        let mut app = KetchupApp::new();
+        app.active_tool = ActiveTool::PushPull;
+        app.selection.select_exact(
+            SelectionId {
+                definition_id: INITIAL_BOX_DEFINITION,
+                instance_path: InstancePath::root(OccurrenceId(1)),
+                element: ElementId::Face {
+                    axis: Axis::Z,
+                    side: Side::Maximum,
+                },
+            },
+            false,
+        );
+        app.value_input = "20".to_owned();
+        assert!(app.apply_value_input());
+        let valid_height = app.document_height_mm();
+        let valid_revision = app.document_revision();
+        let valid_digest = app.canonical_digest();
+
+        app.value_input = "-100".to_owned();
+        assert!(!app.apply_value_input());
+        assert_eq!(app.document_height_mm(), valid_height);
+        assert_eq!(app.document_revision(), valid_revision);
+        assert_eq!(app.canonical_digest(), valid_digest);
+    }
+
+    #[test]
+    fn viewport_selection_keeps_group_commands_available() {
+        let mut app = KetchupApp::new();
+        app.select_all();
+        assert!(app.copy_selection_to_clipboard());
+        assert!(app.paste_clipboard());
+        app.select_all();
+        assert!(app.group_selected());
+
+        let target = SelectionId {
+            definition_id: INITIAL_BOX_DEFINITION,
+            instance_path: InstancePath::root(OccurrenceId(1)),
+            element: ElementId::Face {
+                axis: Axis::Z,
+                side: Side::Maximum,
+            },
+        };
+        app.clear_selection();
+        app.select_from_viewport(Some(target), false);
+
+        assert_eq!(app.selection_count(), 2);
+        assert!(app.selection.primary.is_none());
+        assert!(app.selected_group_id().is_some());
+        assert!(app.command_enabled(AppCommand::Ungroup));
+        assert!(app.command_enabled(AppCommand::MakeComponent));
+    }
+
+    #[test]
+    fn gpu_projection_matches_cpu_projection_inside_callback_viewport() {
+        let mut app = KetchupApp::new();
+        let rect = Rect::from_min_size(Pos2::new(87.0, 163.0), Vec2::new(1_927.0, 1_184.0));
+
+        for mode in [ProjectionMode::Perspective, ProjectionMode::Parallel] {
+            app.projection_mode = mode;
+            let matrix = app.world_to_clip(rect);
+            for point in box_corners(BOX_WIDTH_MM, BOX_DEPTH_MM, app.document_height_mm()) {
+                let clip_x = matrix[0] * point.x as f32
+                    + matrix[4] * point.y as f32
+                    + matrix[8] * point.z as f32
+                    + matrix[12];
+                let clip_y = matrix[1] * point.x as f32
+                    + matrix[5] * point.y as f32
+                    + matrix[9] * point.z as f32
+                    + matrix[13];
+                // The rasterizer divides by clip w before it maps to the
+                // viewport, so the check has to divide as well or it would
+                // only ever be valid for the parallel projection.
+                let clip_w = matrix[3] * point.x as f32
+                    + matrix[7] * point.y as f32
+                    + matrix[11] * point.z as f32
+                    + matrix[15];
+                let gpu_screen = Pos2::new(
+                    rect.center().x + (clip_x / clip_w) * rect.width() * 0.5,
+                    rect.center().y - (clip_y / clip_w) * rect.height() * 0.5,
+                );
+                let cpu_screen = app.project(point, rect);
+                assert!((gpu_screen - cpu_screen).length() < 0.01, "{mode:?}");
+            }
         }
     }
 
     #[test]
     fn viewport_omits_edge_on_faces_that_collapse_to_a_line() {
         let mut app = KetchupApp::new();
+        // Only a parallel projection collapses an edge-on face to a line; a
+        // converging one always leaves a sliver of area.
+        app.projection_mode = ProjectionMode::Parallel;
         app.yaw = std::f32::consts::FRAC_PI_2;
         let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0));
         let projected = box_corners(BOX_WIDTH_MM, BOX_DEPTH_MM, app.document_height_mm())

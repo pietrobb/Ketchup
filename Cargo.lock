@@ -1681,6 +1681,7 @@ dependencies = [
  "ketchup-interaction",
  "ketchup-scheduler",
  "pollster",
+ "raw-window-handle",
  "rfd",
  "tempfile",
  "wgpu",

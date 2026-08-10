@@ -19,7 +19,7 @@ use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use ketchup_app::dialogs::ScriptedFileDialogs;
 use ketchup_app::{AppCommand, KetchupApp};
-use ketchup_interaction::LocaleCatalog;
+use ketchup_interaction::{LocaleCatalog, Vec3};
 
 use eframe::egui::{self, Key, Modifiers, Pos2, Rect, Vec2, accesskit::Role};
 
@@ -121,6 +121,26 @@ impl Shell {
         self.app()
             .viewport_rect()
             .expect("the viewport has not been laid out yet — run a frame first")
+    }
+
+    /// Screen position of the centre of an occurrence's top face.
+    ///
+    /// Aiming at real geometry instead of at a fixed screen offset keeps a test
+    /// valid under both the converging and the parallel projection.
+    pub fn top_face_centre(&self, occurrence_id: u64) -> Pos2 {
+        let rect = self.viewport_rect();
+        let (origin, size) = self
+            .app()
+            .occurrence_box_geometry(occurrence_id)
+            .expect("the occurrence must be part of the active scene");
+        self.app().project_to_screen(
+            Vec3::new(
+                origin.x + size.x * 0.5,
+                origin.y + size.y * 0.5,
+                origin.z + size.z,
+            ),
+            rect,
+        )
     }
 
     /// Whether `command` is currently offered anywhere in the shell.

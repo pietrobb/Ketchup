@@ -13,6 +13,7 @@ ketchup-core = { path = "../ketchup-core" }
 ketchup-interaction = { path = "../ketchup-interaction" }
 ketchup-scheduler = { path = "../ketchup-scheduler" }
 getrandom = "0.3.4"
+raw-window-handle = "0.6.2"
 rfd = "0.15.4"
 wgpu = { version = "25.0.2", default-features = false, features = ["dx12"] }
 
@@ -21,5 +22,10 @@ egui_kittest = "0.32.0"
 pollster = "0.4.0"
 tempfile = "3.23.0"
 
-[lints]
-workspace = true
+[lints.rust]
+# Denied rather than forbidden: `dialogs::DialogParentWindow` needs one audited
+# `unsafe` block to borrow the raw main-window handle for modal native dialogs.
+unsafe_code = "deny"
+
+[lints.clippy]
+all = "deny"

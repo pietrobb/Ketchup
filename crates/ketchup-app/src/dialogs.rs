@@ -9,6 +9,11 @@ use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+use raw_window_handle::{
+    DisplayHandle, HandleError, HasDisplayHandle, HasWindowHandle, RawDisplayHandle,
+    RawWindowHandle, WindowHandle,
+};
+
 /// The localized labels a dialog needs, resolved by the shell before asking.
 pub struct SaveRequest<'a> {
     /// Human readable name of the `.ketchup` file filter.
@@ -53,19 +58,92 @@ pub trait FileDialogs {
     fn confirm_high_risk(&mut self, request: HighRiskConfirmationRequest<'_>) -> Option<u64>;
 }
 
+/// The main window a native dialog is owned by.
+///
+/// Windows only treats a common item dialog as modal when it is given an owner:
+/// the owner is disabled while the dialog is up, and the dialog can never fall
+/// behind it. Without an owner the Save As window is a free floating top level
+/// window that can be lost behind the model view.
+#[derive(Clone, Copy, Debug)]
+pub struct DialogParentWindow {
+    window: RawWindowHandle,
+    display: RawDisplayHandle,
+}
+
+impl DialogParentWindow {
+    /// The handles of the window `eframe` just created, when the platform has them.
+    #[must_use]
+    pub fn from_creation_context(context: &eframe::CreationContext<'_>) -> Option<Self> {
+        Some(Self {
+            window: context.window_handle().ok()?.as_raw(),
+            display: context.display_handle().ok()?.as_raw(),
+        })
+    }
+}
+
+impl HasWindowHandle for DialogParentWindow {
+    fn window_handle(&self) -> Result<WindowHandle<'_>, HandleError> {
+        // SAFETY: the handle is the main window `eframe` created before the app
+        // existed and destroys after it is dropped, so it is valid for every
+        // borrow taken through `&self`.
+        #[allow(unsafe_code)]
+        unsafe {
+            Ok(WindowHandle::borrow_raw(self.window))
+        }
+    }
+}
+
+impl HasDisplayHandle for DialogParentWindow {
+    fn display_handle(&self) -> Result<DisplayHandle<'_>, HandleError> {
+        // SAFETY: the display outlives the main window it was read from, and so
+        // outlives every borrow taken through `&self`.
+        #[allow(unsafe_code)]
+        unsafe {
+            Ok(DisplayHandle::borrow_raw(self.display))
+        }
+    }
+}
+
 /// The desktop implementation backed by native operating system dialogs.
 #[derive(Debug, Default)]
-pub struct NativeFileDialogs;
+pub struct NativeFileDialogs {
+    parent: Option<DialogParentWindow>,
+}
+
+impl NativeFileDialogs {
+    /// Native dialogs owned by, and modal to, the given main window.
+    #[must_use]
+    pub const fn with_parent(parent: Option<DialogParentWindow>) -> Self {
+        Self { parent }
+    }
+
+    fn file_dialog(&self) -> rfd::FileDialog {
+        let dialog = rfd::FileDialog::new();
+        match self.parent.as_ref() {
+            Some(parent) => dialog.set_parent(parent),
+            None => dialog,
+        }
+    }
+
+    fn message_dialog(&self) -> rfd::MessageDialog {
+        let dialog = rfd::MessageDialog::new();
+        match self.parent.as_ref() {
+            Some(parent) => dialog.set_parent(parent),
+            None => dialog,
+        }
+    }
+}
 
 impl FileDialogs for NativeFileDialogs {
     fn pick_open_path(&mut self, filter_label: &str) -> Option<PathBuf> {
-        rfd::FileDialog::new()
+        self.file_dialog()
             .add_filter(filter_label, &["ketchup"])
             .pick_file()
     }
 
     fn pick_save_path(&mut self, request: SaveRequest<'_>) -> Option<PathBuf> {
-        let path = rfd::FileDialog::new()
+        let path = self
+            .file_dialog()
             .add_filter(request.filter_label, &["ketchup"])
             .set_file_name(request.suggested_name)
             .save_file()?;
@@ -77,7 +155,8 @@ impl FileDialogs for NativeFileDialogs {
     }
 
     fn pick_export_path(&mut self, request: ExportRequest<'_>) -> Option<PathBuf> {
-        let path = rfd::FileDialog::new()
+        let path = self
+            .file_dialog()
             .add_filter(request.filter_label, &[request.extension])
             .set_file_name(request.suggested_name)
             .save_file()?;
@@ -89,7 +168,7 @@ impl FileDialogs for NativeFileDialogs {
     }
 
     fn confirm_discard(&mut self, request: DiscardRequest<'_>) -> bool {
-        rfd::MessageDialog::new()
+        self.message_dialog()
             .set_level(rfd::MessageLevel::Warning)
             .set_title(request.title)
             .set_description(request.description)
@@ -99,7 +178,8 @@ impl FileDialogs for NativeFileDialogs {
     }
 
     fn confirm_high_risk(&mut self, request: HighRiskConfirmationRequest<'_>) -> Option<u64> {
-        (rfd::MessageDialog::new()
+        (self
+            .message_dialog()
             .set_level(rfd::MessageLevel::Warning)
             .set_title(request.title)
             .set_description(request.description)

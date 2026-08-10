@@ -190,6 +190,8 @@ fn the_manual_capstone_runs_end_to_end_through_the_designed_shell() {
     assert_eq!(shell.app().canonical_digest(), before_component_digest);
 
     // 7. Editing one shared instance changes the shared definition in context.
+    // Aim at the moved solid's own top face rather than a fixed pixel offset,
+    // so the gesture keeps hitting it whatever the camera projection is.
     shell.click_at(solid);
     assert_eq!(shell.app().selected_occurrence_count(), 1);
     shell.double_click_at(solid);

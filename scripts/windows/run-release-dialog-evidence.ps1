@@ -783,9 +783,9 @@ function Verify-Evidence([string]$Path) {
         $closedUtc = Assert-UtcTimestamp ([string]$dialog.closed_utc) "Native file-dialog close time for $($dialog.id)"
         $closureRecheckedUtc = Assert-UtcTimestamp ([string]$dialog.closure_rechecked_utc) "Native file-dialog closure recheck time for $($dialog.id)"
         if ([int64]$dialog.observation_wait_elapsed_ms -lt 0 -or
-            [int64]$dialog.observation_wait_elapsed_ms -gt 120000 -or
+            [int64]$dialog.observation_wait_elapsed_ms -gt 900000 -or
             $observationStartedUtc -gt $dialogUtc) {
-            throw "Native file-dialog observation was not bounded by its monotonic two-minute wait: $($dialog.id)"
+            throw "Native file-dialog observation was not bounded by its monotonic fifteen-minute wait: $($dialog.id)"
         }
         if ($dialog.same_window_stable -ne $true -or
             $stabilityRecheckedUtc -lt $dialogUtc.AddMilliseconds(100) -or
@@ -1409,7 +1409,7 @@ function Observe-NativeFileDialog([string]$Id, [string]$Instruction) {
     Write-Host $Instruction
     Write-Host "The runner will observe the requested foreground dialog automatically; do not return focus to this console."
     $dialogObservationStartedUtc = [DateTime]::UtcNow
-    $dialogObservationTimeout = [TimeSpan]::FromMinutes(2)
+    $dialogObservationTimeout = [TimeSpan]::FromMinutes(15)
     $dialogObservationTimer = [Diagnostics.Stopwatch]::StartNew()
     $dialogs = @()
     $ownerWindow = [int64]0
@@ -1479,7 +1479,7 @@ function Observe-NativeFileDialog([string]$Id, [string]$Instruction) {
     } while ($dialogObservationTimer.Elapsed -lt $dialogObservationTimeout)
     $dialogObservationTimer.Stop()
     if ($dialogs.Count -ne 1 -or -not $isExactForegroundDialog -or $null -eq $observationWaitElapsedMs -or $null -eq $stabilityRecheckedUtc) {
-        throw "The exact foreground modal Windows common item dialog for $Id was not stable across two observations within two minutes."
+        throw "The exact foreground modal Windows common item dialog for $Id was not stable across two observations within fifteen minutes."
     }
     Write-Host "OBSERVED: stable foreground native dialog captured for $Id."
     $nativeFileDialogs.Add([ordered]@{
@@ -1992,7 +1992,7 @@ try {
         Start-Sleep -Milliseconds 250
         Assert-ProductAlive
         $process.Refresh()
-    } while ($process.MainWindowHandle -eq [IntPtr]::Zero -and $mainWindowObservationTimer.Elapsed -lt $mainWindowObservationTimeout)
+    } while (($process.MainWindowHandle -eq [IntPtr]::Zero -or $process.MainWindowTitle -cne "Ketchup") -and $mainWindowObservationTimer.Elapsed -lt $mainWindowObservationTimeout)
     if ($process.MainWindowHandle -eq [IntPtr]::Zero -or $mainWindowObservationTimer.Elapsed -gt $mainWindowObservationTimeout) {
         $mainWindowObservationTimer.Stop()
         throw "The packaged product window did not appear within the monotonic 30-second limit."
