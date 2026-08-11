@@ -1,5 +1,7 @@
 use eframe::egui_wgpu::{CallbackResources, CallbackTrait, ScreenDescriptor};
-use ketchup_core::document::{DefinitionId, DocumentId, FeatureKind, Snapshot, Transform};
+use ketchup_core::document::{
+    DefinitionId, DocumentId, FeatureKind, InstancePath, Snapshot, Transform,
+};
 use ketchup_core::exact_product::ExactResultRegistry;
 use ketchup_interaction::projection::CanonicalInteractionProjection;
 use std::collections::{BTreeMap, BTreeSet};
@@ -109,6 +111,20 @@ impl InstancedRenderPlan {
         exact_results: &ExactResultRegistry,
         cache: &mut DerivedRenderCache,
     ) -> Self {
+        Self::from_snapshot_with_transform_overrides(
+            snapshot,
+            exact_results,
+            cache,
+            &BTreeMap::new(),
+        )
+    }
+
+    pub fn from_snapshot_with_transform_overrides(
+        snapshot: &Snapshot,
+        exact_results: &ExactResultRegistry,
+        cache: &mut DerivedRenderCache,
+        transform_overrides: &BTreeMap<InstancePath, Transform>,
+    ) -> Self {
         let projection = CanonicalInteractionProjection::from_snapshot(snapshot);
         let mut batches = BTreeMap::<(DefinitionId, String), RenderBatch>::new();
         let mut definition_geometries =
@@ -143,7 +159,12 @@ impl InstancedRenderPlan {
                 })
                 .instances
                 .push(RenderInstance {
-                    transform: transform_f32(occurrence.canonical_world_transform),
+                    transform: transform_f32(
+                        transform_overrides
+                            .get(&occurrence.instance_path)
+                            .copied()
+                            .unwrap_or(occurrence.canonical_world_transform),
+                    ),
                 });
         }
         let batches = batches.into_values().collect::<Vec<_>>();

@@ -244,6 +244,7 @@ struct MoveDrag {
     source_document_id: DocumentId,
     source_revision: u64,
     selection: SelectionId,
+    group_id: Option<GroupId>,
     pointer_start_world: Vec3,
     plane_z: f64,
     delta_mm: Vec3,
@@ -3042,23 +3043,36 @@ impl KetchupApp {
         let Some(group) = snapshot.group(group_id) else {
             return false;
         };
-        if group.transform() != Transform::identity() {
-            return false;
-        }
+        let group_transform = group.transform();
         let parent = group.parent();
-        let ids = snapshot
+        let occurrences = snapshot
             .occurrences()
             .filter(|occurrence| occurrence.parent() == Some(group_id))
-            .map(|occurrence| occurrence.id())
+            .map(|occurrence| (occurrence.id(), occurrence.transform()))
             .collect::<Vec<_>>();
-        if ids.is_empty() {
+        let child_groups = snapshot
+            .groups()
+            .filter(|child| child.parent() == Some(group_id))
+            .map(|child| (child.id(), child.transform()))
+            .collect::<Vec<_>>();
+        if occurrences.is_empty() && child_groups.is_empty() {
             return false;
         }
-        let mut commands = ids
-            .iter()
-            .copied()
-            .map(|id| CanonicalCommand::SetOccurrenceParent { id, parent })
-            .collect::<Vec<_>>();
+        let mut commands = Vec::new();
+        for (id, transform) in &occurrences {
+            commands.push(CanonicalCommand::SetOccurrenceTransform {
+                id: *id,
+                transform: group_transform.compose(*transform),
+            });
+            commands.push(CanonicalCommand::SetOccurrenceParent { id: *id, parent });
+        }
+        for (id, transform) in &child_groups {
+            commands.push(CanonicalCommand::SetGroupTransform {
+                id: *id,
+                transform: group_transform.compose(*transform),
+            });
+            commands.push(CanonicalCommand::SetGroupParent { id: *id, parent });
+        }
         commands.push(CanonicalCommand::DeleteGroup { id: group_id });
         if self
             .document
@@ -3070,10 +3084,13 @@ impl KetchupApp {
         self.selection.clear();
         self.selection
             .occurrences
-            .extend(ids.iter().copied().map(InstancePath::root));
+            .extend(occurrences.iter().map(|(id, _)| InstancePath::root(*id)));
         self.digest = self.catalog.format(
             "digest-ungrouped",
-            &BTreeMap::from([("count", ids.len().to_string())]),
+            &BTreeMap::from([(
+                "count",
+                (occurrences.len() + child_groups.len()).to_string(),
+            )]),
         );
         true
     }
@@ -3744,6 +3761,52 @@ impl KetchupApp {
         })
     }
 
+    fn translate_group(&mut self, group_id: GroupId, delta_mm: Vec3) -> bool {
+        let distance_mm = vector_length(delta_mm);
+        if !delta_mm.x.is_finite()
+            || !delta_mm.y.is_finite()
+            || !delta_mm.z.is_finite()
+            || distance_mm <= 0.0
+        {
+            return false;
+        }
+        let snapshot = self.document.current();
+        let Some(group) = snapshot.group(group_id) else {
+            return false;
+        };
+        let Ok(transform) = translated_transform(group.transform(), delta_mm) else {
+            return false;
+        };
+        if self
+            .document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::SetGroupTransform {
+                    id: group_id,
+                    transform,
+                },
+            ]))
+            .is_err()
+        {
+            return false;
+        }
+        self.select_group(group_id);
+        self.last_move = None;
+        self.status_key = "status-object-moved";
+        self.digest = self.catalog.format(
+            "digest-move-committed",
+            &BTreeMap::from([("distance", format_height(distance_mm))]),
+        );
+        true
+    }
+
+    fn commit_move_drag(&mut self, drag: &MoveDrag) -> bool {
+        if let Some(group_id) = drag.group_id {
+            self.translate_group(group_id, drag.delta_mm)
+        } else {
+            self.translate_occurrence(&drag.selection, drag.delta_mm, drag.copy)
+        }
+    }
+
     fn translate_occurrence(
         &mut self,
         selection: &SelectionId,
@@ -3858,6 +3921,9 @@ impl KetchupApp {
     }
 
     pub fn move_selected(&mut self, delta_mm: Vec3) -> bool {
+        if let Some(group_id) = self.selection.selected_group {
+            return self.translate_group(group_id, delta_mm);
+        }
         let Some(selection) = self.selected_move_reference() else {
             return false;
         };
@@ -4810,6 +4876,101 @@ impl KetchupApp {
                 .is_some_and(|occurrence| {
                     occurrence.definition_id() == drag.selection.definition_id
                 })
+            && drag
+                .group_id
+                .is_none_or(|group_id| snapshot.group(group_id).is_some())
+    }
+
+    fn group_contains_occurrence(
+        snapshot: &Snapshot,
+        group_id: GroupId,
+        occurrence_id: OccurrenceId,
+    ) -> bool {
+        let mut parent = snapshot
+            .occurrence(occurrence_id)
+            .and_then(|occurrence| occurrence.parent());
+        while let Some(candidate) = parent {
+            if candidate == group_id {
+                return true;
+            }
+            parent = snapshot.group(candidate).and_then(|group| group.parent());
+        }
+        false
+    }
+
+    fn move_drag_applies_to_path(&self, drag: &MoveDrag, instance_path: &InstancePath) -> bool {
+        if let Some(group_id) = drag.group_id {
+            Self::group_contains_occurrence(
+                &self.document.current(),
+                group_id,
+                instance_path.root_occurrence(),
+            )
+        } else {
+            drag.selection.instance_path == *instance_path
+        }
+    }
+
+    fn move_preview_transform_overrides(&self) -> BTreeMap<InstancePath, Transform> {
+        let Some(drag) = self.move_drag.as_ref().or(self.move_anchor.as_ref()) else {
+            return BTreeMap::new();
+        };
+        if !self.move_preview_is_current(drag) || drag.copy {
+            return BTreeMap::new();
+        }
+        self.document
+            .current()
+            .scene_query()
+            .into_iter()
+            .filter(|occurrence| self.move_drag_applies_to_path(drag, &occurrence.instance_path))
+            .filter_map(|occurrence| {
+                translated_transform(occurrence.transform, drag.delta_mm)
+                    .ok()
+                    .map(|transform| (occurrence.instance_path, transform))
+            })
+            .collect()
+    }
+
+    fn begin_move_drag_at(&mut self, pointer: Pos2, rect: Rect, copy: bool) -> bool {
+        let Some(selection) = self
+            .hovered
+            .clone()
+            .filter(|selection| self.occurrence_in_active_context(&selection.instance_path))
+        else {
+            self.digest = self.catalog.text("digest-move-start-missed");
+            return false;
+        };
+        self.select_from_viewport(Some(selection.clone()), false);
+        let plane_z = self
+            .hover_pick
+            .as_ref()
+            .filter(|pick| pick.primary.reference.instance_path == selection.instance_path)
+            .map(|pick| pick.primary.position_mm.z)
+            .or_else(|| {
+                self.active_boxes()
+                    .into_iter()
+                    .find(|item| item.instance_path == selection.instance_path)
+                    .map(|item| item.origin_mm.z)
+            });
+        let Some(plane_z) = plane_z else {
+            return false;
+        };
+        let Some(pointer_start_world) = self.screen_to_plane(pointer, rect, plane_z) else {
+            return false;
+        };
+        self.value_input = "0".to_owned();
+        let snapshot = self.document.current();
+        let group_id = self.selection.selected_group;
+        self.move_drag = Some(MoveDrag {
+            source_document_id: snapshot.document_id(),
+            source_revision: snapshot.revision_id(),
+            selection,
+            group_id,
+            pointer_start_world,
+            plane_z,
+            delta_mm: Vec3::ZERO,
+            copy: group_id.is_none() && copy,
+        });
+        true
     }
 
     fn proxy_preview_is_active(&self, item: &RenderBox) -> bool {
@@ -4821,7 +4982,7 @@ impl KetchupApp {
             .or(self.move_anchor.as_ref())
             .is_some_and(|drag| {
                 self.move_preview_is_current(drag)
-                    && drag.selection.instance_path == item.instance_path
+                    && self.move_drag_applies_to_path(drag, &item.instance_path)
             });
         push_pull_preview || move_preview
     }
@@ -4830,17 +4991,21 @@ impl KetchupApp {
         let mut boxes = self.active_boxes();
         if let Some(drag) = self.move_drag.as_ref().or(self.move_anchor.as_ref())
             && self.move_preview_is_current(drag)
-            && let Some(index) = boxes
-                .iter()
-                .position(|item| item.instance_path == drag.selection.instance_path)
         {
-            let mut preview = boxes[index].clone();
-            preview.origin_mm = preview.origin_mm + drag.delta_mm;
-            if drag.copy {
-                boxes.push(preview);
-            } else {
-                boxes[index] = preview;
+            let mut copies = Vec::new();
+            for item in boxes
+                .iter_mut()
+                .filter(|item| self.move_drag_applies_to_path(drag, &item.instance_path))
+            {
+                let mut preview = item.clone();
+                preview.origin_mm = preview.origin_mm + drag.delta_mm;
+                if drag.copy && drag.group_id.is_none() {
+                    copies.push(preview);
+                } else {
+                    *item = preview;
+                }
             }
+            boxes.extend(copies);
         }
         if self.has_occurrence_operation_preview()
             && let Some(operation) = &self.occurrence_operation_preview
@@ -5567,44 +5732,17 @@ impl KetchupApp {
                             );
                         }
                         if vector_length(anchor.delta_mm) >= 0.01 {
-                            self.translate_occurrence(
-                                &anchor.selection,
-                                anchor.delta_mm,
-                                anchor.copy,
-                            );
+                            self.commit_move_drag(&anchor);
                         } else {
                             self.move_anchor = Some(anchor);
                         }
                     }
                 } else {
-                    let target = self.hovered.clone().filter(|selection| {
-                        self.occurrence_in_active_context(&selection.instance_path)
-                    });
-                    if target.is_some() {
-                        self.select_from_viewport(target.clone(), false);
-                    } else {
-                        self.digest = self.catalog.text("digest-move-start-missed");
-                    }
-                    if let Some(selection) = target
-                        && let Some(item) = self
-                            .active_boxes()
-                            .into_iter()
-                            .find(|item| item.instance_path == selection.instance_path)
-                        && let Some(pointer_start_world) =
-                            self.screen_to_plane(pointer, response.rect, item.origin_mm.z)
-                    {
-                        self.value_input = "0".to_owned();
-                        let snapshot = self.document.current();
-                        self.move_drag = Some(MoveDrag {
-                            source_document_id: snapshot.document_id(),
-                            source_revision: snapshot.revision_id(),
-                            selection,
-                            pointer_start_world,
-                            plane_z: item.origin_mm.z,
-                            delta_mm: Vec3::ZERO,
-                            copy: ui.input(|input| input.modifiers.command),
-                        });
-                    }
+                    self.begin_move_drag_at(
+                        pointer,
+                        response.rect,
+                        ui.input(|input| input.modifiers.command),
+                    );
                 }
             } else if self.active_tool == ActiveTool::Measure {
                 let plane_z = self.measure_anchor().map_or_else(
@@ -5735,7 +5873,7 @@ impl KetchupApp {
                 if !self.move_preview_is_current(&drag) {
                     self.digest = self.catalog.text("error-preview-stale");
                 } else if vector_length(drag.delta_mm) >= 0.01 {
-                    self.translate_occurrence(&drag.selection, drag.delta_mm, drag.copy);
+                    self.commit_move_drag(&drag);
                 } else {
                     self.move_anchor = Some(drag);
                     self.digest = self.catalog.text("digest-move-anchor-set");
@@ -5797,13 +5935,15 @@ impl KetchupApp {
             -f64::from(self.pitch.cos()),
         );
         let snapshot = self.document.current();
+        let move_transform_overrides = self.move_preview_transform_overrides();
         let use_wgpu_scene = self.wgpu_target_format.is_some();
         let scene_plan = use_wgpu_scene
             .then(|| {
-                Arc::new(InstancedRenderPlan::from_snapshot(
+                Arc::new(InstancedRenderPlan::from_snapshot_with_transform_overrides(
                     &snapshot,
                     &self.exact_results,
                     &mut self.render_cache,
+                    &move_transform_overrides,
                 ))
             })
             .filter(|plan| plan.is_current(&snapshot));
@@ -5898,7 +6038,10 @@ impl KetchupApp {
             let Some(package) = self.exact_results.get(&occurrence.body.definition_id) else {
                 continue;
             };
-            let transform = occurrence.canonical_world_transform;
+            let transform = move_transform_overrides
+                .get(&occurrence.instance_path)
+                .copied()
+                .unwrap_or(occurrence.canonical_world_transform);
             let positions = package
                 .vertices()
                 .iter()
@@ -10418,6 +10561,85 @@ mod tests {
     }
 
     #[test]
+    fn exact_bottle_can_start_preview_and_commit_the_standard_move_tool() {
+        let mut app = KetchupApp::new();
+        assert!(app.create_bottle());
+        let definition_id = app.selected_bottle_definition().unwrap();
+        let bottle_path = app.selection.occurrences.iter().next().unwrap().clone();
+        let package = current_bottle_package(&app, definition_id);
+        let snapshot = app.document.current();
+        app.exact_results
+            .insert_current(&snapshot, package)
+            .unwrap();
+        assert!(
+            app.active_boxes()
+                .iter()
+                .all(|item| item.instance_path != bottle_path),
+            "the exact bottle intentionally has no canonical box proxy"
+        );
+
+        let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(1_000.0, 800.0));
+        let pointer = app.project(Vec3::new(120.0, 0.0, 50.0), rect);
+        app.update_viewport_inference(Some(pointer), rect);
+        assert_eq!(
+            app.hovered
+                .as_ref()
+                .map(|selection| &selection.instance_path),
+            Some(&bottle_path)
+        );
+        assert!(app.begin_move_drag_at(pointer, rect, false));
+        let mut drag = app.move_drag.take().unwrap();
+        drag.delta_mm = Vec3::new(25.0, 10.0, 0.0);
+        let overrides = app.document.current().scene_query();
+        app.move_drag = Some(drag.clone());
+        let preview = app.move_preview_transform_overrides();
+        let original = overrides
+            .iter()
+            .find(|occurrence| occurrence.instance_path == bottle_path)
+            .unwrap()
+            .transform;
+        assert_eq!(
+            preview[&bottle_path].matrix()[3],
+            original.matrix()[3] + 25.0
+        );
+        assert_eq!(
+            preview[&bottle_path].matrix()[7],
+            original.matrix()[7] + 10.0
+        );
+        let render_snapshot = app.document.current();
+        let render_plan = InstancedRenderPlan::from_snapshot_with_transform_overrides(
+            &render_snapshot,
+            &app.exact_results,
+            &mut app.render_cache,
+            &preview,
+        );
+        let bottle_instance = &render_plan
+            .batches()
+            .iter()
+            .find(|batch| batch.definition_id == definition_id)
+            .unwrap()
+            .instances[0];
+        assert_eq!(
+            bottle_instance.transform[3],
+            (original.matrix()[3] + 25.0) as f32
+        );
+        assert_eq!(
+            bottle_instance.transform[7],
+            (original.matrix()[7] + 10.0) as f32
+        );
+
+        app.move_drag = None;
+        assert!(app.commit_move_drag(&drag));
+        let moved = app
+            .document
+            .current()
+            .world_transform_for_occurrence(bottle_path.root_occurrence())
+            .unwrap();
+        assert_eq!(moved.matrix()[3], original.matrix()[3] + 25.0);
+        assert_eq!(moved.matrix()[7], original.matrix()[7] + 10.0);
+    }
+
+    #[test]
     fn bottle_numeric_workflow_is_atomic_and_round_trips_losslessly() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("editable-bottle.ketchup");
@@ -13994,6 +14216,54 @@ mod tests {
         assert!(app.selected_group_id().is_some());
         assert!(app.command_enabled(AppCommand::Ungroup));
         assert!(app.command_enabled(AppCommand::MakeComponent));
+    }
+
+    #[test]
+    fn moved_group_behaves_as_one_object_and_explodes_without_geometry_shift() {
+        let mut app = KetchupApp::new();
+        assert!(app.create_box());
+        app.select_all();
+        assert!(app.group_selected());
+        let group_id = app.selection.selected_group.unwrap();
+        let ids = [OccurrenceId(1), OccurrenceId(2)];
+        let before = ids.map(|id| {
+            app.document
+                .current()
+                .world_transform_for_occurrence(id)
+                .unwrap()
+        });
+        let revision_before_move = app.document_revision();
+
+        assert!(app.move_selected(Vec3::new(40.0, -20.0, 15.0)));
+        assert_eq!(app.document_revision(), revision_before_move + 1);
+        assert_eq!(app.selection.selected_group, Some(group_id));
+        let moved = ids.map(|id| {
+            app.document
+                .current()
+                .world_transform_for_occurrence(id)
+                .unwrap()
+        });
+        for (before, moved) in before.into_iter().zip(moved) {
+            assert_eq!(moved.matrix()[3], before.matrix()[3] + 40.0);
+            assert_eq!(moved.matrix()[7], before.matrix()[7] - 20.0);
+            assert_eq!(moved.matrix()[11], before.matrix()[11] + 15.0);
+        }
+
+        let moved = ids.map(|id| {
+            app.document
+                .current()
+                .world_transform_for_occurrence(id)
+                .unwrap()
+        });
+        assert!(app.ungroup_selected());
+        assert_eq!(app.group_count(), 0);
+        let exploded = ids.map(|id| {
+            app.document
+                .current()
+                .world_transform_for_occurrence(id)
+                .unwrap()
+        });
+        assert_eq!(exploded, moved);
     }
 
     #[test]
