@@ -489,13 +489,82 @@ struct PreparedBatch {
     instance_count: u32,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct GpuFrameDescriptor {
+    pub world_to_clip: [f32; 16],
+    pub view_depth: [f32; 4],
+    pub framebuffer_size: [u32; 2],
+    pub viewport: [u32; 4],
+}
+
 pub struct GpuInstancedRenderer {
-    pipeline: wgpu::RenderPipeline,
+    depth_pipeline: wgpu::RenderPipeline,
+    color_pipeline: wgpu::RenderPipeline,
     camera_buffer: wgpu::Buffer,
-    camera_bind_group: wgpu::BindGroup,
+    scene_bind_group: wgpu::BindGroup,
+    scene_bind_group_layout: wgpu::BindGroupLayout,
+    depth_buffer: wgpu::Buffer,
+    depth_capacity: u64,
+    depth_target: wgpu::TextureView,
+    depth_target_size: [u32; 2],
+    target_format: wgpu::TextureFormat,
     geometries: BTreeMap<String, GpuGeometry>,
     prepared: Vec<PreparedBatch>,
     stats: GpuRenderStats,
+}
+
+fn create_depth_buffer(device: &wgpu::Device, size: u64) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("Ketchup per-pixel scene depths"),
+        size,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    })
+}
+
+fn create_depth_target(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+    size: [u32; 2],
+) -> wgpu::TextureView {
+    device
+        .create_texture(&wgpu::TextureDescriptor {
+            label: Some("Ketchup scene depth-pass target"),
+            size: wgpu::Extent3d {
+                width: size[0],
+                height: size[1],
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        })
+        .create_view(&wgpu::TextureViewDescriptor::default())
+}
+
+fn create_scene_bind_group(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    camera_buffer: &wgpu::Buffer,
+    depth_buffer: &wgpu::Buffer,
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("Ketchup scene bind group"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: camera_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: depth_buffer.as_entire_binding(),
+            },
+        ],
+    })
 }
 
 impl GpuInstancedRenderer {
@@ -507,81 +576,114 @@ impl GpuInstancedRenderer {
         });
         let camera_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Ketchup camera uniform"),
-            size: 64,
+            size: 96,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let camera_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("Ketchup camera bind group layout"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            }],
-        });
-        let camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Ketchup camera bind group"),
-            layout: &camera_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: camera_buffer.as_entire_binding(),
-            }],
-        });
+        let scene_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("Ketchup scene bind group layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: false },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                ],
+            });
+        let depth_buffer = create_depth_buffer(device, 4);
+        let scene_bind_group = create_scene_bind_group(
+            device,
+            &scene_bind_group_layout,
+            &camera_buffer,
+            &depth_buffer,
+        );
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Ketchup instanced scene pipeline layout"),
-            bind_group_layouts: &[&camera_layout],
+            bind_group_layouts: &[&scene_bind_group_layout],
             push_constant_ranges: &[],
         });
         let vertex_attributes = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x3, 3 => Float32x3];
         let instance_attributes = wgpu::vertex_attr_array![4 => Float32x4, 5 => Float32x4, 6 => Float32x4, 7 => Float32x4];
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Ketchup instanced scene pipeline"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                buffers: &[
-                    wgpu::VertexBufferLayout {
-                        array_stride: 48,
-                        step_mode: wgpu::VertexStepMode::Vertex,
-                        attributes: &vertex_attributes,
-                    },
-                    wgpu::VertexBufferLayout {
-                        array_stride: 64,
-                        step_mode: wgpu::VertexStepMode::Instance,
-                        attributes: &instance_attributes,
-                    },
-                ],
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: target_format,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            primitive: wgpu::PrimitiveState {
-                cull_mode: Some(wgpu::Face::Back),
-                ..Default::default()
-            },
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview: None,
-            cache: None,
-        });
+        let create_pipeline = |label: &'static str, fragment_entry: &'static str, write_mask| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(&pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs_main"),
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    buffers: &[
+                        wgpu::VertexBufferLayout {
+                            array_stride: 48,
+                            step_mode: wgpu::VertexStepMode::Vertex,
+                            attributes: &vertex_attributes,
+                        },
+                        wgpu::VertexBufferLayout {
+                            array_stride: 64,
+                            step_mode: wgpu::VertexStepMode::Instance,
+                            attributes: &instance_attributes,
+                        },
+                    ],
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some(fragment_entry),
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: target_format,
+                        blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                        write_mask,
+                    })],
+                }),
+                primitive: wgpu::PrimitiveState {
+                    cull_mode: Some(wgpu::Face::Back),
+                    ..Default::default()
+                },
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                multiview: None,
+                cache: None,
+            })
+        };
+        let depth_pipeline = create_pipeline(
+            "Ketchup scene depth pipeline",
+            "fs_depth",
+            wgpu::ColorWrites::empty(),
+        );
+        let color_pipeline = create_pipeline(
+            "Ketchup scene color pipeline",
+            "fs_main",
+            wgpu::ColorWrites::ALL,
+        );
+        let depth_target_size = [1, 1];
+        let depth_target = create_depth_target(device, target_format, depth_target_size);
         Self {
-            pipeline,
+            depth_pipeline,
+            color_pipeline,
             camera_buffer,
-            camera_bind_group,
+            scene_bind_group,
+            scene_bind_group_layout,
+            depth_buffer,
+            depth_capacity: 4,
+            depth_target,
+            depth_target_size,
+            target_format,
             geometries: BTreeMap::new(),
             prepared: Vec::new(),
             stats: GpuRenderStats::default(),
@@ -592,10 +694,32 @@ impl GpuInstancedRenderer {
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
         plan: &InstancedRenderPlan,
-        world_to_clip: [f32; 16],
+        frame: GpuFrameDescriptor,
     ) {
-        queue.write_buffer(&self.camera_buffer, 0, &f32_bytes(&world_to_clip));
+        let framebuffer_size = frame.framebuffer_size.map(|value| value.max(1));
+        let required_depth_bytes =
+            u64::from(framebuffer_size[0]) * u64::from(framebuffer_size[1]) * 4;
+        if required_depth_bytes > self.depth_capacity {
+            self.depth_buffer = create_depth_buffer(device, required_depth_bytes);
+            self.scene_bind_group = create_scene_bind_group(
+                device,
+                &self.scene_bind_group_layout,
+                &self.camera_buffer,
+                &self.depth_buffer,
+            );
+            self.depth_capacity = required_depth_bytes;
+        }
+        if framebuffer_size != self.depth_target_size {
+            self.depth_target = create_depth_target(device, self.target_format, framebuffer_size);
+            self.depth_target_size = framebuffer_size;
+        }
+        encoder.clear_buffer(&self.depth_buffer, 0, None);
+        let mut camera_uniform = f32_bytes(&frame.world_to_clip);
+        camera_uniform.extend(f32_bytes(&frame.view_depth));
+        camera_uniform.extend(u32_bytes(&[framebuffer_size[0], framebuffer_size[1], 0, 0]));
+        queue.write_buffer(&self.camera_buffer, 0, &camera_uniform);
         self.prepared.clear();
         for batch in plan.batches() {
             let fingerprint = batch.geometry.fingerprint().to_owned();
@@ -640,11 +764,47 @@ impl GpuInstancedRenderer {
                 .any(|batch| batch.fingerprint == *fingerprint)
         });
         self.stats.gpu_geometry_entries = self.geometries.len();
+        let viewport = frame.viewport;
+        if viewport[2] > 0 && viewport[3] > 0 {
+            let mut depth_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Ketchup scene depth preparation"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &self.depth_target,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Discard,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            depth_pass.set_viewport(
+                viewport[0] as f32,
+                viewport[1] as f32,
+                viewport[2] as f32,
+                viewport[3] as f32,
+                0.0,
+                1.0,
+            );
+            depth_pass.set_scissor_rect(viewport[0], viewport[1], viewport[2], viewport[3]);
+            depth_pass.set_bind_group(0, &self.scene_bind_group, &[]);
+            depth_pass.set_pipeline(&self.depth_pipeline);
+            for prepared in &self.prepared {
+                let geometry = &self.geometries[&prepared.fingerprint];
+                depth_pass.set_vertex_buffer(0, geometry.vertex_buffer.slice(..));
+                depth_pass.set_vertex_buffer(1, prepared.instance_buffer.slice(..));
+                depth_pass
+                    .set_index_buffer(geometry.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                depth_pass.draw_indexed(0..geometry.index_count, 0, 0..prepared.instance_count);
+            }
+        }
     }
 
     pub fn paint(&mut self, render_pass: &mut wgpu::RenderPass<'_>) {
-        render_pass.set_pipeline(&self.pipeline);
-        render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
+        render_pass.set_bind_group(0, &self.scene_bind_group, &[]);
+        render_pass.set_pipeline(&self.color_pipeline);
         for prepared in &self.prepared {
             let geometry = &self.geometries[&prepared.fingerprint];
             render_pass.set_vertex_buffer(0, geometry.vertex_buffer.slice(..));
@@ -666,15 +826,24 @@ impl GpuInstancedRenderer {
 #[derive(Clone)]
 pub struct ScenePaintCallback {
     plan: Arc<InstancedRenderPlan>,
+    viewport: eframe::egui::Rect,
     world_to_clip: [f32; 16],
+    view_depth: [f32; 4],
 }
 
 impl ScenePaintCallback {
     #[must_use]
-    pub fn new(plan: Arc<InstancedRenderPlan>, world_to_clip: [f32; 16]) -> Self {
+    pub fn new(
+        plan: Arc<InstancedRenderPlan>,
+        viewport: eframe::egui::Rect,
+        world_to_clip: [f32; 16],
+        view_depth: [f32; 4],
+    ) -> Self {
         Self {
             plan,
+            viewport,
             world_to_clip,
+            view_depth,
         }
     }
 }
@@ -684,12 +853,35 @@ impl CallbackTrait for ScenePaintCallback {
         &self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        _screen_descriptor: &ScreenDescriptor,
-        _egui_encoder: &mut wgpu::CommandEncoder,
+        screen_descriptor: &ScreenDescriptor,
+        egui_encoder: &mut wgpu::CommandEncoder,
         callback_resources: &mut CallbackResources,
     ) -> Vec<wgpu::CommandBuffer> {
         if let Some(renderer) = callback_resources.get_mut::<GpuInstancedRenderer>() {
-            renderer.prepare(device, queue, &self.plan, self.world_to_clip);
+            let info = eframe::egui::PaintCallbackInfo {
+                viewport: self.viewport,
+                clip_rect: self.viewport,
+                pixels_per_point: screen_descriptor.pixels_per_point,
+                screen_size_px: screen_descriptor.size_in_pixels,
+            };
+            let viewport = info.viewport_in_pixels();
+            renderer.prepare(
+                device,
+                queue,
+                egui_encoder,
+                &self.plan,
+                GpuFrameDescriptor {
+                    world_to_clip: self.world_to_clip,
+                    view_depth: self.view_depth,
+                    framebuffer_size: screen_descriptor.size_in_pixels,
+                    viewport: [
+                        u32::try_from(viewport.left_px).unwrap_or(0),
+                        u32::try_from(viewport.top_px).unwrap_or(0),
+                        u32::try_from(viewport.width_px).unwrap_or(0),
+                        u32::try_from(viewport.height_px).unwrap_or(0),
+                    ],
+                },
+            );
         }
         Vec::new()
     }
@@ -701,8 +893,8 @@ impl CallbackTrait for ScenePaintCallback {
         callback_resources: &CallbackResources,
     ) {
         if let Some(renderer) = callback_resources.get::<GpuInstancedRenderer>() {
-            render_pass.set_pipeline(&renderer.pipeline);
-            render_pass.set_bind_group(0, &renderer.camera_bind_group, &[]);
+            render_pass.set_bind_group(0, &renderer.scene_bind_group, &[]);
+            render_pass.set_pipeline(&renderer.color_pipeline);
             for prepared in &renderer.prepared {
                 let geometry = &renderer.geometries[&prepared.fingerprint];
                 render_pass.set_vertex_buffer(0, geometry.vertex_buffer.slice(..));
@@ -764,10 +956,16 @@ fn u32_bytes(values: &[u32]) -> Vec<u8> {
 const INSTANCED_SHADER: &str = r#"
 struct Camera {
     world_to_clip: mat4x4<f32>,
+    view_depth: vec4<f32>,
+    framebuffer_size: vec2<u32>,
+    padding: vec2<u32>,
 };
 
 @group(0) @binding(0)
 var<uniform> camera: Camera;
+
+@group(0) @binding(1)
+var<storage, read_write> pixel_depths: array<atomic<u32>>;
 
 struct VertexInput {
     @location(0) position: vec3<f32>,
@@ -785,21 +983,49 @@ struct VertexOutput {
     @location(0) world_normal: vec3<f32>,
     @location(1) barycentric: vec3<f32>,
     @location(2) @interpolate(flat) edge_mask: vec3<f32>,
+    @location(3) view_depth: f32,
 };
 
 @vertex
 fn vs_main(input: VertexInput) -> VertexOutput {
     let model = mat4x4<f32>(input.model_0, input.model_1, input.model_2, input.model_3);
+    let world_position = model * vec4<f32>(input.position, 1.0);
     var output: VertexOutput;
-    output.clip_position = camera.world_to_clip * model * vec4<f32>(input.position, 1.0);
+    output.clip_position = camera.world_to_clip * world_position;
     output.world_normal = normalize((model * vec4<f32>(input.normal, 0.0)).xyz);
     output.barycentric = input.barycentric;
     output.edge_mask = input.edge_mask;
+    output.view_depth = dot(camera.view_depth, world_position);
     return output;
+}
+
+fn pixel_depth_index(input: VertexOutput) -> u32 {
+    let pixel = vec2<u32>(input.clip_position.xy);
+    return pixel.y * camera.framebuffer_size.x + pixel.x;
+}
+
+fn depth_priority(view_depth: f32) -> u32 {
+    let bits = bitcast<u32>(view_depth);
+    let ordered = select(
+        bits ^ 0x80000000u,
+        ~bits,
+        (bits & 0x80000000u) != 0u,
+    );
+    return ~ordered;
+}
+
+@fragment
+fn fs_depth(input: VertexOutput) -> @location(0) vec4<f32> {
+    atomicMax(&pixel_depths[pixel_depth_index(input)], depth_priority(input.view_depth));
+    return vec4<f32>(0.0);
 }
 
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
+    let depth = atomicLoad(&pixel_depths[pixel_depth_index(input)]);
+    if depth_priority(input.view_depth) != depth {
+        discard;
+    }
     let light_direction = normalize(vec3<f32>(-0.35, -0.45, 0.82));
     let diffuse = 0.62 + 0.38 * max(dot(normalize(input.world_normal), light_direction), 0.0);
     let face_color = vec3<f32>(0.36, 0.42, 0.50) * diffuse;

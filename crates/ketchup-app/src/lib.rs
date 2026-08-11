@@ -749,6 +749,7 @@ impl SelectionState {
 struct OutlinerOccurrence {
     instance_path: InstancePath,
     name: String,
+    #[cfg(test)]
     position: String,
     visible: bool,
     parent: Option<GroupId>,
@@ -2638,10 +2639,12 @@ impl KetchupApp {
                     .iter()
                     .filter(|item| item.definition_id == definition.id())
                     .map(|item| {
+                        #[cfg(test)]
                         let matrix = item.transform.matrix();
                         OutlinerOccurrence {
                             instance_path: item.instance_path.clone(),
                             name: item.occurrence_name.clone(),
+                            #[cfg(test)]
                             position: format!(
                                 "{},{}",
                                 format_height(matrix[3]),
@@ -5795,19 +5798,15 @@ impl KetchupApp {
         );
         let snapshot = self.document.current();
         let use_wgpu_scene = self.wgpu_target_format.is_some();
-        if use_wgpu_scene {
-            let plan = Arc::new(InstancedRenderPlan::from_snapshot(
-                &snapshot,
-                &self.exact_results,
-                &mut self.render_cache,
-            ));
-            if plan.is_current(&snapshot) {
-                painter.add(eframe::egui_wgpu::Callback::new_paint_callback(
-                    response.rect,
-                    ScenePaintCallback::new(plan, self.world_to_clip(response.rect)),
-                ));
-            }
-        }
+        let scene_plan = use_wgpu_scene
+            .then(|| {
+                Arc::new(InstancedRenderPlan::from_snapshot(
+                    &snapshot,
+                    &self.exact_results,
+                    &mut self.render_cache,
+                ))
+            })
+            .filter(|plan| plan.is_current(&snapshot));
         let exact_projection = self.exact_projection(&snapshot);
         let active_context_paths = self
             .active_scene_query()
@@ -5818,13 +5817,16 @@ impl KetchupApp {
         let mut edges = Vec::new();
         for item in self.viewport_boxes(&exact_projection) {
             let item = self.render_box(item);
+            let proxy_preview = self.proxy_preview_is_active(&item);
+            let out_of_context = !active_context_paths.contains(&item.instance_path);
             let needs_cpu_overlay = self.selection.contains(&item.instance_path)
                 || self
                     .hovered
                     .as_ref()
                     .is_some_and(|hovered| hovered.instance_path == item.instance_path)
-                || self.proxy_preview_is_active(&item)
-                || !active_context_paths.contains(&item.instance_path);
+                || proxy_preview
+                || out_of_context;
+            let needs_cpu_fill = !use_wgpu_scene || proxy_preview;
             if use_wgpu_scene && !needs_cpu_overlay {
                 continue;
             }
@@ -5853,22 +5855,24 @@ impl KetchupApp {
                     .map(|index| point_depth(corners[*index], forward))
                     .sum::<f64>()
                     / 4.0;
-                faces.push(ProjectedFace {
-                    selection,
-                    polygon: ProjectedPolygon::Quad(points),
-                    color: face.color,
-                    depth,
-                    previewed: self.has_preview()
-                        && self.preview_definition_id == Some(item.definition_id)
-                        && matches!(
-                            face.element,
-                            ElementId::Face {
-                                axis: Axis::Z,
-                                side: Side::Maximum,
-                            }
-                        ),
-                    out_of_context: !active_context_paths.contains(&item.instance_path),
-                });
+                if needs_cpu_fill {
+                    faces.push(ProjectedFace {
+                        selection,
+                        polygon: ProjectedPolygon::Quad(points),
+                        color: face.color,
+                        depth,
+                        previewed: self.has_preview()
+                            && self.preview_definition_id == Some(item.definition_id)
+                            && matches!(
+                                face.element,
+                                ElementId::Face {
+                                    axis: Axis::Z,
+                                    side: Side::Maximum,
+                                }
+                            ),
+                        out_of_context,
+                    });
+                }
             }
         }
         let canonical_projection = CanonicalInteractionProjection::from_snapshot(&snapshot);
@@ -5880,12 +5884,14 @@ impl KetchupApp {
                     && exact_projection.contains_occurrence(&occurrence.instance_path)
             })
         {
+            let out_of_context = !active_context_paths.contains(&occurrence.instance_path);
             let needs_cpu_overlay = self.selection.contains(&occurrence.instance_path)
                 || self
                     .hovered
                     .as_ref()
                     .is_some_and(|hovered| hovered.instance_path == occurrence.instance_path)
-                || !active_context_paths.contains(&occurrence.instance_path);
+                || out_of_context;
+            let needs_cpu_fill = !use_wgpu_scene;
             if use_wgpu_scene && !needs_cpu_overlay {
                 continue;
             }
@@ -5972,50 +5978,31 @@ impl KetchupApp {
                     .face_role
                     .and_then(exact_face_element)
                     .unwrap_or_else(|| face_element_from_normal(normal));
-                faces.push(ProjectedFace {
-                    selection: SelectionId {
-                        definition_id: occurrence.body.definition_id,
-                        instance_path: occurrence.instance_path.clone(),
-                        element,
-                    },
-                    polygon: ProjectedPolygon::Triangle(projected),
-                    color: face_color_from_normal(normal),
-                    depth: points_mm
-                        .into_iter()
-                        .map(|point| point_depth(point, forward))
-                        .sum::<f64>()
-                        / 3.0,
-                    previewed: false,
-                    out_of_context: !active_context_paths.contains(&occurrence.instance_path),
-                });
+                if needs_cpu_fill {
+                    faces.push(ProjectedFace {
+                        selection: SelectionId {
+                            definition_id: occurrence.body.definition_id,
+                            instance_path: occurrence.instance_path.clone(),
+                            element,
+                        },
+                        polygon: ProjectedPolygon::Triangle(projected),
+                        color: face_color_from_normal(normal),
+                        depth: points_mm
+                            .into_iter()
+                            .map(|point| point_depth(point, forward))
+                            .sum::<f64>()
+                            / 3.0,
+                        previewed: false,
+                        out_of_context,
+                    });
+                }
             }
         }
         faces.sort_by(|left, right| right.depth.total_cmp(&left.depth));
 
-        self.paint_ground_plane(&painter, response.rect);
+        self.paint_scene_base_layers(&painter, response.rect, scene_plan);
 
-        for face in &faces {
-            let color = if face.out_of_context {
-                Color32::from_rgb(43, 47, 54)
-            } else if self.active_tool == ActiveTool::PushPull
-                && self.selection.primary.as_ref() == Some(&face.selection)
-            {
-                Color32::from_rgb(194, 89, 48)
-            } else if self.selection.contains(&face.selection.instance_path) {
-                Color32::from_rgb(154, 91, 67)
-            } else if self.hovered.as_ref() == Some(&face.selection) {
-                Color32::from_rgb(76, 111, 158)
-            } else if face.previewed {
-                Color32::from_rgb(58, 126, 174)
-            } else {
-                face.color
-            };
-            painter.add(egui::Shape::convex_polygon(
-                face.polygon.points().to_vec(),
-                color,
-                Stroke::NONE,
-            ));
-        }
+        self.paint_projected_faces(&painter, &faces);
 
         let edge_stroke = Stroke::new(1.25_f32, Color32::from_rgb(182, 192, 207));
         for edge in &edges {
@@ -6928,6 +6915,70 @@ impl KetchupApp {
                 self.dispatch_command(AppCommand::Delete);
             }
         });
+    }
+
+    fn paint_projected_faces(&self, painter: &egui::Painter, faces: &[ProjectedFace]) {
+        let mut underlay = egui::Mesh::default();
+        let mut fills = Vec::with_capacity(faces.len());
+        for face in faces {
+            let color = if face.out_of_context {
+                Color32::from_rgb(43, 47, 54)
+            } else if self.active_tool == ActiveTool::PushPull
+                && self.selection.primary.as_ref() == Some(&face.selection)
+            {
+                Color32::from_rgb(194, 89, 48)
+            } else if self.selection.contains(&face.selection.instance_path) {
+                Color32::from_rgb(154, 91, 67)
+            } else if self.hovered.as_ref() == Some(&face.selection) {
+                Color32::from_rgb(76, 111, 158)
+            } else if face.previewed {
+                Color32::from_rgb(58, 126, 174)
+            } else {
+                face.color
+            };
+            fills.push(color);
+            let base = u32::try_from(underlay.vertices.len())
+                .expect("a viewport face mesh must fit in u32 indices");
+            let points = face.polygon.points();
+            for point in points {
+                underlay.colored_vertex(*point, color);
+            }
+            for index in 1..points.len() - 1 {
+                let index = u32::try_from(index).expect("a face vertex count must fit in u32");
+                underlay.add_triangle(base, base + index, base + index + 1);
+            }
+        }
+        if !underlay.indices.is_empty() {
+            painter.add(egui::Shape::mesh(underlay));
+        }
+        for (face, color) in faces.iter().zip(fills) {
+            painter.add(egui::Shape::convex_polygon(
+                face.polygon.points().to_vec(),
+                color,
+                Stroke::NONE,
+            ));
+        }
+    }
+
+    fn paint_scene_base_layers(
+        &self,
+        painter: &egui::Painter,
+        rect: Rect,
+        scene_plan: Option<Arc<InstancedRenderPlan>>,
+    ) {
+        self.paint_ground_plane(painter, rect);
+        if let Some(plan) = scene_plan {
+            let (_, _, forward) = self.camera_basis();
+            painter.add(eframe::egui_wgpu::Callback::new_paint_callback(
+                rect,
+                ScenePaintCallback::new(
+                    plan,
+                    rect,
+                    self.world_to_clip(rect),
+                    [forward.x as f32, forward.y as f32, forward.z as f32, 0.0],
+                ),
+            ));
+        }
     }
 
     /// Paint an adaptive construction grid and the three world axes on Z = 0.
@@ -8984,20 +9035,7 @@ impl KetchupApp {
         self.show_beam_m4ae(ui);
         let groups = self.outliner_groups();
         let entries = self.outliner_query();
-        let occurrence_count = entries
-            .iter()
-            .map(|entry| entry.occurrences.len())
-            .sum::<usize>();
         section_header(ui, self.palette(), &self.catalog.text("dock-outliner"));
-        ui.horizontal(|ui| {
-            ui.monospace(self.catalog.format(
-                "outliner-meta",
-                &BTreeMap::from([
-                    ("occurrences", occurrence_count.to_string()),
-                    ("definitions", entries.len().to_string()),
-                ]),
-            ));
-        });
         ui.separator();
         egui::ScrollArea::vertical()
             .max_height((ui.available_height() - 64.0).max(120.0))
@@ -9021,54 +9059,90 @@ impl KetchupApp {
                 if !entries.is_empty() {
                     ui.separator();
                 }
-                for definition in entries {
-                    egui::Frame::group(ui.style()).show(ui, |ui| {
-                        let additive = ui.input(|input| input.modifiers.shift);
+                for mut definition in entries {
+                    if definition.occurrences.len() == 1 {
+                        let occurrence = definition.occurrences.remove(0);
+                        let default_name = format!("{} #1", definition.name);
+                        let name = if occurrence.name == default_name {
+                            definition.name
+                        } else {
+                            occurrence.name.clone()
+                        };
+                        let mut arguments = BTreeMap::from([
+                            ("name", name),
+                            ("dimensions", definition.specification),
+                            (
+                                "visibility",
+                                if occurrence.visible { "◉" } else { "○" }.to_owned(),
+                            ),
+                        ]);
+                        let key = if let Some(group_id) = occurrence.parent {
+                            arguments.insert("group", group_id.0.to_string());
+                            "outliner-object-grouped"
+                        } else {
+                            "outliner-object"
+                        };
+                        let response = ui.selectable_label(
+                            self.selection.contains(&occurrence.instance_path),
+                            self.catalog.format(key, &arguments),
+                        );
+                        if response.double_clicked() {
+                            self.enter_occurrence_context(occurrence.instance_path.clone());
+                        } else if response.clicked() {
+                            let additive = ui.input(|input| input.modifiers.shift);
+                            self.select_from_outliner(occurrence.instance_path, additive);
+                        }
+                    } else {
                         let count = definition.occurrences.len();
                         let heading = self.catalog.format(
-                            "outliner-definition",
+                            "outliner-component",
                             &BTreeMap::from([
-                                ("name", definition.name.clone()),
+                                ("name", definition.name),
                                 ("count", count.to_string()),
+                                ("dimensions", definition.specification),
                             ]),
                         );
-                        if ui.button(heading).clicked() {
-                            self.select_definition(definition.id, additive);
-                        }
-                        ui.monospace(definition.specification);
-                        for occurrence in definition.occurrences {
-                            let mut arguments = BTreeMap::from([
-                                ("name", occurrence.name),
-                                ("position", occurrence.position),
-                                (
-                                    "visibility",
-                                    self.catalog.text(if occurrence.visible {
-                                        "visibility-shown"
+                        let definition_id = definition.id;
+                        let response = egui::CollapsingHeader::new(heading)
+                            .id_salt(definition_id.0)
+                            .show(ui, |ui| {
+                                for occurrence in definition.occurrences {
+                                    let mut arguments = BTreeMap::from([
+                                        ("name", occurrence.name),
+                                        (
+                                            "visibility",
+                                            if occurrence.visible { "◉" } else { "○" }.to_owned(),
+                                        ),
+                                    ]);
+                                    let key = if let Some(group_id) = occurrence.parent {
+                                        arguments.insert("group", group_id.0.to_string());
+                                        "outliner-instance-grouped"
                                     } else {
-                                        "visibility-hidden"
-                                    }),
-                                ),
-                            ]);
-                            let key = if let Some(group_id) = occurrence.parent {
-                                arguments.insert("group", group_id.0.to_string());
-                                "outliner-occurrence-grouped"
-                            } else {
-                                "outliner-occurrence"
-                            };
-                            let label = self.catalog.format(key, &arguments);
-                            let response = ui.selectable_label(
-                                self.selection.contains(&occurrence.instance_path),
-                                label,
-                            );
-                            if response.double_clicked() {
-                                self.enter_occurrence_context(occurrence.instance_path.clone());
-                            } else if response.clicked() {
-                                let additive = ui.input(|input| input.modifiers.shift);
-                                self.select_from_outliner(occurrence.instance_path, additive);
-                            }
+                                        "outliner-instance"
+                                    };
+                                    let row = ui.selectable_label(
+                                        self.selection.contains(&occurrence.instance_path),
+                                        self.catalog.format(key, &arguments),
+                                    );
+                                    if row.double_clicked() {
+                                        self.enter_occurrence_context(
+                                            occurrence.instance_path.clone(),
+                                        );
+                                    } else if row.clicked() {
+                                        let additive = ui.input(|input| input.modifiers.shift);
+                                        self.select_from_outliner(
+                                            occurrence.instance_path,
+                                            additive,
+                                        );
+                                    }
+                                }
+                            });
+                        if response.header_response.clicked() {
+                            let additive = ui.input(|input| input.modifiers.shift);
+                            self.select_definition(definition_id, additive);
                         }
-                    });
-                    ui.add_space(6.0);
+                    }
+                    ui.add_space(2.0);
                 }
             });
         ui.separator();
@@ -14313,6 +14387,91 @@ mod tests {
             assert!(screen_spacing >= 32.0);
             assert!(screen_spacing <= 80.0);
         }
+    }
+
+    #[test]
+    fn gpu_scene_is_painted_after_the_ground_grid() {
+        let mut app = KetchupApp::new();
+        let snapshot = app.document.current();
+        let plan = Arc::new(InstancedRenderPlan::from_snapshot(
+            &snapshot,
+            &app.exact_results,
+            &mut app.render_cache,
+        ));
+        let context = egui::Context::default();
+        let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0));
+        let output = context.run(egui::RawInput::default(), |context| {
+            let painter = context.layer_painter(egui::LayerId::new(
+                egui::Order::Middle,
+                egui::Id::new("scene-base-layer-order"),
+            ));
+            app.paint_scene_base_layers(&painter, rect, Some(Arc::clone(&plan)));
+        });
+
+        assert!(output.shapes.len() > 1);
+        assert!(matches!(
+            output.shapes.last().map(|shape| &shape.shape),
+            Some(egui::Shape::Callback(_))
+        ));
+    }
+
+    #[test]
+    fn adjacent_projected_triangles_share_a_fill_underlay_and_keep_antialiased_outlines() {
+        let app = KetchupApp::new();
+        let selection = SelectionId {
+            definition_id: INITIAL_BOX_DEFINITION,
+            instance_path: InstancePath::root(OccurrenceId(1)),
+            element: ElementId::Face {
+                axis: Axis::Z,
+                side: Side::Maximum,
+            },
+        };
+        let faces = vec![
+            ProjectedFace {
+                selection: selection.clone(),
+                polygon: ProjectedPolygon::Triangle([
+                    Pos2::new(10.0, 10.0),
+                    Pos2::new(110.0, 10.0),
+                    Pos2::new(10.0, 110.0),
+                ]),
+                color: Color32::GRAY,
+                depth: 0.0,
+                previewed: false,
+                out_of_context: false,
+            },
+            ProjectedFace {
+                selection,
+                polygon: ProjectedPolygon::Triangle([
+                    Pos2::new(110.0, 10.0),
+                    Pos2::new(110.0, 110.0),
+                    Pos2::new(10.0, 110.0),
+                ]),
+                color: Color32::GRAY,
+                depth: 0.0,
+                previewed: false,
+                out_of_context: false,
+            },
+        ];
+        let context = egui::Context::default();
+        let output = context.run(egui::RawInput::default(), |context| {
+            let painter = context.layer_painter(egui::LayerId::new(
+                egui::Order::Middle,
+                egui::Id::new("projected-face-fill"),
+            ));
+            app.paint_projected_faces(&painter, &faces);
+        });
+
+        assert_eq!(output.shapes.len(), 3);
+        let egui::Shape::Mesh(underlay) = &output.shapes[0].shape else {
+            panic!("projected faces must start with one shared mesh underlay");
+        };
+        assert_eq!(underlay.vertices.len(), 6);
+        assert_eq!(underlay.indices.len(), 6);
+        assert!(
+            output.shapes[1..]
+                .iter()
+                .all(|shape| matches!(shape.shape, egui::Shape::Path(_)))
+        );
     }
 
     #[test]

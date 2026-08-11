@@ -1,6 +1,6 @@
 use ketchup_app::renderer::{
-    DerivedRenderCache, GpuInstancedRenderer, InstancedRenderPlan, RENDER_BACKEND_WGPU_V1,
-    RENDER_EVALUATOR_V1, RENDER_PLAN_SCHEMA_V1,
+    DerivedRenderCache, GpuFrameDescriptor, GpuInstancedRenderer, InstancedRenderPlan,
+    RENDER_BACKEND_WGPU_V1, RENDER_EVALUATOR_V1, RENDER_PLAN_SCHEMA_V1,
 };
 use ketchup_core::document::{
     CanonicalCommand, CommandBatch, DefinitionId, DerivedIdentity, Dimension, DocumentStore,
@@ -213,11 +213,17 @@ fn real_ten_thousand_occurrence_product_uses_one_scheduled_mesh_one_bvh_and_one_
     let world_to_clip = [
         0.001, 0.0, 0.0, 0.0, 0.0, 0.001, 0.0, 0.0, 0.0, 0.0, 0.001, 0.0, -1.0, -1.0, 0.0, 1.0,
     ];
-    renderer.prepare(&device, &queue, &plan, world_to_clip);
-    renderer.prepare(&device, &queue, &rebuilt, world_to_clip);
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
         label: Some("Ketchup M16 instanced render encoder"),
     });
+    let frame = GpuFrameDescriptor {
+        world_to_clip,
+        view_depth: [0.0, 0.0, 1.0, 0.0],
+        framebuffer_size: [64, 64],
+        viewport: [0, 0, 64, 64],
+    };
+    renderer.prepare(&device, &queue, &mut encoder, &plan, frame);
+    renderer.prepare(&device, &queue, &mut encoder, &rebuilt, frame);
     {
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Ketchup M16 instanced render pass"),
