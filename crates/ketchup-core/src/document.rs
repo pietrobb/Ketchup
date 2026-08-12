@@ -179,6 +179,41 @@ pub enum BottleEdgeFinishKind {
     Chamfer,
 }
 
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct StableFaceRole(String);
+
+impl StableFaceRole {
+    pub fn new(role: impl Into<String>) -> Result<Self, CanonicalError> {
+        let role = role.into();
+        validate_stable_subshape_role(&role)?;
+        Ok(Self(role))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct StableEdgeRole(String);
+
+impl StableEdgeRole {
+    pub fn new(role: impl Into<String>) -> Result<Self, CanonicalError> {
+        let role = role.into();
+        validate_stable_subshape_role(&role)?;
+        Ok(Self(role))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+pub const BOTTLE_SHELL_OPENING_FACE_ROLE: &str = "revolve.mouth";
+pub const BOTTLE_SHOULDER_EDGE_ROLE: &str = "shell.edge.shoulder";
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, PartialOrd, Ord)]
 pub enum FeatureParameterSlot {
     Height,
@@ -256,6 +291,8 @@ pub struct FeatureParameterFreshnessAudit {
 pub enum BooleanOperation {
     Cut,
     Union,
+    Intersect,
+    Split,
 }
 
 pub const MESH_BODY_SCHEMA_V1: &str = "ketchup.mesh-body.v1";
@@ -323,9 +360,52 @@ impl MeshBodySpec {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub enum ProfileSegment {
+    Line {
+        start_mm: [f64; 2],
+        end_mm: [f64; 2],
+    },
+    CircularArc {
+        start_mm: [f64; 2],
+        end_mm: [f64; 2],
+        center_mm: [f64; 2],
+        clockwise: bool,
+    },
+}
+
+impl ProfileSegment {
+    #[must_use]
+    pub const fn start_mm(&self) -> [f64; 2] {
+        match self {
+            Self::Line { start_mm, .. } | Self::CircularArc { start_mm, .. } => *start_mm,
+        }
+    }
+
+    #[must_use]
+    pub const fn end_mm(&self) -> [f64; 2] {
+        match self {
+            Self::Line { end_mm, .. } | Self::CircularArc { end_mm, .. } => *end_mm,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct LoftSection {
+    pub profile: FeatureId,
+    pub elevation_mm: f64,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub enum FeatureKind {
     Profile {
         points_mm: Vec<[f64; 2]>,
+    },
+    SegmentProfile {
+        segments: Vec<ProfileSegment>,
+        closed: bool,
+    },
+    SplineProfile {
+        control_points_mm: Vec<[f64; 2]>,
     },
     Extrusion {
         profile: FeatureId,
@@ -339,13 +419,18 @@ pub enum FeatureKind {
     },
     Revolve {
         profile: FeatureId,
+        axis_start_mm: [f64; 2],
+        axis_end_mm: [f64; 2],
+        angle_degrees: f64,
     },
     Shell {
         target: FeatureId,
+        removed_faces: Vec<StableFaceRole>,
         thickness: Dimension,
     },
     BottleEdgeFinish {
         target: FeatureId,
+        edges: Vec<StableEdgeRole>,
         kind: BottleEdgeFinishKind,
         amount: Dimension,
     },
@@ -353,12 +438,40 @@ pub enum FeatureKind {
         target: FeatureId,
         profile: FeatureId,
     },
+    Pocket {
+        target: FeatureId,
+        profile: FeatureId,
+        depth: Dimension,
+    },
     Boolean {
         operation: BooleanOperation,
         target: FeatureId,
         tool: FeatureId,
     },
+    PlanarOffset {
+        profile: FeatureId,
+        distance: Dimension,
+    },
+    Sweep {
+        profile: FeatureId,
+        path: FeatureId,
+    },
+    Loft {
+        sections: Vec<LoftSection>,
+    },
     MeshBody(MeshBodySpec),
+}
+
+impl FeatureKind {
+    #[must_use]
+    pub const fn full_revolve(profile: FeatureId) -> Self {
+        Self::Revolve {
+            profile,
+            axis_start_mm: [0.0, 0.0],
+            axis_end_mm: [0.0, 1.0],
+            angle_degrees: 360.0,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1097,6 +1210,7 @@ pub enum CanonicalCommand {
     },
     CloneDefinitionAndRepoint(CloneDefinitionPlan),
     ConvertGroupToComponent(ConvertGroupPlan),
+    ApplySolidTool(SolidToolPlan),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1148,6 +1262,20 @@ impl ConvertGroupPlan {
             component_name,
         }
     }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct SolidToolPlan {
+    pub operation: BooleanOperation,
+    pub target_occurrence_id: OccurrenceId,
+    pub target_feature_id: FeatureId,
+    pub tool_occurrence_id: OccurrenceId,
+    pub tool_feature_id: FeatureId,
+    pub result_definition_id: DefinitionId,
+    pub result_feature_ids: [FeatureId; 5],
+    pub result_definition_name: String,
+    pub result_feature_name: String,
+    pub keep_tool: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -2499,6 +2627,18 @@ impl DocumentStore {
         self.cursor = 0;
     }
 
+    pub fn validate_batch(&self, batch: &CommandBatch) -> Result<(), CanonicalError> {
+        self.preview_batch(batch).map(|_| ())
+    }
+
+    pub fn preview_batch(&self, batch: &CommandBatch) -> Result<Snapshot, CanonicalError> {
+        let snapshot = self.current();
+        let mut candidate =
+            Self::from_product(snapshot.revision_id(), snapshot.product.as_ref().clone())?;
+        candidate.apply_batch(batch)?;
+        Ok(candidate.current())
+    }
+
     pub fn apply_batch(&mut self, batch: &CommandBatch) -> Result<Arc<Revision>, CanonicalError> {
         if batch.schema != COMMAND_SCHEMA_V1 {
             return Err(CanonicalError::UnsupportedCommandSchema);
@@ -2980,17 +3120,37 @@ impl DocumentStore {
                             profile,
                             height: dimension.clone(),
                         },
-                        FeatureKind::Shell { target, .. } => FeatureKind::Shell {
+                        FeatureKind::Shell {
                             target,
+                            ref removed_faces,
+                            ..
+                        } => FeatureKind::Shell {
+                            target,
+                            removed_faces: removed_faces.clone(),
                             thickness: dimension.clone(),
                         },
-                        FeatureKind::BottleEdgeFinish { target, kind, .. } => {
-                            FeatureKind::BottleEdgeFinish {
-                                target,
-                                kind,
-                                amount: dimension.clone(),
-                            }
-                        }
+                        FeatureKind::BottleEdgeFinish {
+                            target,
+                            ref edges,
+                            kind,
+                            ..
+                        } => FeatureKind::BottleEdgeFinish {
+                            target,
+                            edges: edges.clone(),
+                            kind,
+                            amount: dimension.clone(),
+                        },
+                        FeatureKind::Pocket {
+                            target, profile, ..
+                        } => FeatureKind::Pocket {
+                            target,
+                            profile,
+                            depth: dimension.clone(),
+                        },
+                        FeatureKind::PlanarOffset { profile, .. } => FeatureKind::PlanarOffset {
+                            profile,
+                            distance: dimension.clone(),
+                        },
                         _ => return Err(CanonicalError::FeatureHasNoDimension(*id)),
                     };
                     product.features.insert(
@@ -3054,7 +3214,13 @@ impl DocumentStore {
                         .features
                         .get(id)
                         .ok_or(CanonicalError::FeatureNotFound(*id))?;
-                    let FeatureKind::BottleEdgeFinish { target, amount, .. } = &feature.kind else {
+                    let FeatureKind::BottleEdgeFinish {
+                        target,
+                        edges,
+                        amount,
+                        ..
+                    } = &feature.kind
+                    else {
                         return Err(CanonicalError::FeatureHasNoDimension(*id));
                     };
                     product.features.insert(
@@ -3065,6 +3231,7 @@ impl DocumentStore {
                             name: feature.name.clone(),
                             kind: FeatureKind::BottleEdgeFinish {
                                 target: *target,
+                                edges: edges.clone(),
                                 kind: *kind,
                                 amount: amount.clone(),
                             },
@@ -3282,6 +3449,9 @@ impl DocumentStore {
                 }
                 CanonicalCommand::ConvertGroupToComponent(plan) => {
                     convert_group_to_component_model(&mut product, plan)?;
+                }
+                CanonicalCommand::ApplySolidTool(plan) => {
+                    apply_solid_tool(&mut product, plan)?;
                 }
             }
         }
@@ -4379,6 +4549,11 @@ pub enum CanonicalError {
     EmptySourceToken,
     InvalidDecimalToken,
     DimensionOutsideEnvelope,
+    InvalidRevolve,
+    InvalidPlanarOffset,
+    InvalidSweep,
+    InvalidSplineProfile,
+    InvalidLoft,
     ReservedNodeId,
     EmptyNodeName,
     DependenciesNotCanonical,
@@ -4392,6 +4567,8 @@ pub enum CanonicalError {
     EmptyProductName,
     InvalidTransform,
     InvalidProfile,
+    InvalidStableSubshapeRole,
+    SubshapeRolesNotCanonical,
     InvalidMeshBody,
     DefinitionAlreadyExists(DefinitionId),
     DefinitionNotFound(DefinitionId),
@@ -4411,6 +4588,8 @@ pub enum CanonicalError {
     GroupCycle(GroupId),
     InvalidFeatureOwnership(FeatureId),
     InvalidFeatureMap,
+    InvalidSolidToolPlan,
+    UnsupportedSolidToolTransform,
     OccurrenceDefinitionMismatch,
     InvalidLocalGraph,
     InvalidInstancePath,
@@ -4456,6 +4635,19 @@ impl fmt::Display for CanonicalError {
             Self::DimensionOutsideEnvelope => {
                 formatter.write_str("dimension is outside the canonical coordinate envelope")
             }
+            Self::InvalidRevolve => formatter.write_str("revolve axis or angle is invalid"),
+            Self::InvalidPlanarOffset => {
+                formatter.write_str("planar offset distance or bounded profile is invalid")
+            }
+            Self::InvalidSweep => {
+                formatter.write_str("sweep requires a bounded profile and straight open path")
+            }
+            Self::InvalidSplineProfile => {
+                formatter.write_str("spline profile requires bounded canonical control points")
+            }
+            Self::InvalidLoft => {
+                formatter.write_str("loft requires ordered bounded spline-profile sections")
+            }
             Self::ReservedNodeId => formatter.write_str("node ID zero is reserved"),
             Self::EmptyNodeName => formatter.write_str("node name is empty"),
             Self::DependenciesNotCanonical => {
@@ -4475,6 +4667,12 @@ impl fmt::Display for CanonicalError {
             Self::InvalidProfile => {
                 formatter.write_str("profile must contain finite non-degenerate points")
             }
+            Self::InvalidStableSubshapeRole => formatter.write_str(
+                "stable subshape role must be a bounded canonical semantic identifier",
+            ),
+            Self::SubshapeRolesNotCanonical => formatter.write_str(
+                "stable subshape roles must be non-empty, unique, and strictly sorted",
+            ),
             Self::InvalidMeshBody => formatter.write_str(
                 "mesh body must be finite, closed, consistently oriented, non-degenerate, and carry valid authority provenance",
             ),
@@ -4520,6 +4718,12 @@ impl fmt::Display for CanonicalError {
             Self::InvalidFeatureMap => {
                 formatter.write_str("feature clone map is incomplete or non-canonical")
             }
+            Self::InvalidSolidToolPlan => {
+                formatter.write_str("solid tool plan is incomplete or non-canonical")
+            }
+            Self::UnsupportedSolidToolTransform => formatter.write_str(
+                "solid tools currently require root occurrences with translation-only transforms on the same extrusion plane",
+            ),
             Self::OccurrenceDefinitionMismatch => {
                 formatter.write_str("occurrence does not reference the requested source definition")
             }
@@ -4742,7 +4946,10 @@ const fn feature_parameter_slot_tag(slot: FeatureParameterSlot) -> u8 {
 
 fn feature_supports_parameter_slot(kind: &FeatureKind, slot: FeatureParameterSlot) -> bool {
     match (kind, slot) {
-        (FeatureKind::Extrusion { .. }, FeatureParameterSlot::Height)
+        (
+            FeatureKind::Extrusion { .. } | FeatureKind::Pocket { .. },
+            FeatureParameterSlot::Height,
+        )
         | (
             FeatureKind::BottleProfileControl { .. },
             FeatureParameterSlot::BodyRadius
@@ -4806,6 +5013,7 @@ fn feature_parameter_dimension(
         (FeatureKind::Extrusion { height, .. }, FeatureParameterSlot::Height) => {
             Some(height.clone())
         }
+        (FeatureKind::Pocket { depth, .. }, FeatureParameterSlot::Height) => Some(depth.clone()),
         (
             FeatureKind::BottleProfileControl { body_radius, .. },
             FeatureParameterSlot::BodyRadius,
@@ -4849,6 +5057,7 @@ fn feature_parameter_value_bits(
         (FeatureKind::Extrusion { height, .. }, FeatureParameterSlot::Height) => {
             height.millimetres()
         }
+        (FeatureKind::Pocket { depth, .. }, FeatureParameterSlot::Height) => depth.millimetres(),
         (
             FeatureKind::BottleProfileControl { body_radius, .. },
             FeatureParameterSlot::BodyRadius,
@@ -4939,6 +5148,16 @@ fn set_feature_parameter(
             }
         }
         (
+            FeatureKind::Pocket {
+                target, profile, ..
+            },
+            FeatureParameterSlot::Height,
+        ) => FeatureKind::Pocket {
+            target: *target,
+            profile: *profile,
+            depth: dimension,
+        },
+        (
             FeatureKind::Profile { points_mm },
             FeatureParameterSlot::ProfileWidth | FeatureParameterSlot::ProfileHeight,
         ) => FeatureKind::Profile {
@@ -4970,19 +5189,32 @@ fn set_feature_parameter(
                 shoulder_rise.clone()
             },
         },
-        (FeatureKind::Shell { target, .. }, FeatureParameterSlot::Thickness) => {
+        (
             FeatureKind::Shell {
-                target: *target,
-                thickness: dimension,
-            }
-        }
-        (FeatureKind::BottleEdgeFinish { target, kind, .. }, FeatureParameterSlot::Amount) => {
+                target,
+                removed_faces,
+                ..
+            },
+            FeatureParameterSlot::Thickness,
+        ) => FeatureKind::Shell {
+            target: *target,
+            removed_faces: removed_faces.clone(),
+            thickness: dimension,
+        },
+        (
             FeatureKind::BottleEdgeFinish {
-                target: *target,
-                kind: *kind,
-                amount: dimension,
-            }
-        }
+                target,
+                edges,
+                kind,
+                ..
+            },
+            FeatureParameterSlot::Amount,
+        ) => FeatureKind::BottleEdgeFinish {
+            target: *target,
+            edges: edges.clone(),
+            kind: *kind,
+            amount: dimension,
+        },
         _ => return Err(CanonicalError::InvalidFeatureParameterBinding(target)),
     };
     product.features.insert(
@@ -4997,11 +5229,58 @@ fn set_feature_parameter(
     Ok(())
 }
 
+const MAX_STABLE_SUBSHAPE_ROLE_BYTES: usize = 128;
+
+fn validate_stable_subshape_role(role: &str) -> Result<(), CanonicalError> {
+    if role.is_empty()
+        || role.len() > MAX_STABLE_SUBSHAPE_ROLE_BYTES
+        || !role.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric()
+                || matches!(byte, b'.' | b'_' | b'-' | b'=' | b'(' | b')' | b',' | b':')
+        })
+    {
+        return Err(CanonicalError::InvalidStableSubshapeRole);
+    }
+    Ok(())
+}
+
+fn roles_are_strictly_sorted<T: Ord>(roles: &[T]) -> bool {
+    !roles.is_empty() && roles.windows(2).all(|pair| pair[0] < pair[1])
+}
+
+fn feature_kind_is_solid(kind: &FeatureKind) -> bool {
+    matches!(
+        kind,
+        FeatureKind::Extrusion { .. }
+            | FeatureKind::Revolve { .. }
+            | FeatureKind::Shell { .. }
+            | FeatureKind::BottleEdgeFinish { .. }
+            | FeatureKind::ThroughCut { .. }
+            | FeatureKind::Pocket { .. }
+            | FeatureKind::Boolean { .. }
+            | FeatureKind::Sweep { .. }
+            | FeatureKind::Loft { .. }
+            | FeatureKind::MeshBody(_)
+    )
+}
+
 fn validate_feature_kind(kind: &FeatureKind) -> Result<(), CanonicalError> {
     match kind {
         FeatureKind::Profile { points_mm } => {
             if !is_valid_profile(points_mm) {
                 return Err(CanonicalError::InvalidProfile);
+            }
+            Ok(())
+        }
+        FeatureKind::SegmentProfile { segments, closed } => {
+            if !is_valid_segment_profile(segments, *closed) {
+                return Err(CanonicalError::InvalidProfile);
+            }
+            Ok(())
+        }
+        FeatureKind::SplineProfile { control_points_mm } => {
+            if !is_valid_profile(control_points_mm) || control_points_mm.len() < 4 {
+                return Err(CanonicalError::InvalidSplineProfile);
             }
             Ok(())
         }
@@ -5023,24 +5302,93 @@ fn validate_feature_kind(kind: &FeatureKind) -> Result<(), CanonicalError> {
             }
             Ok(())
         }
-        FeatureKind::Shell { thickness, .. } => {
+        FeatureKind::Pocket { depth, .. } => {
+            Dimension::new(depth.source_token.clone(), depth.millimetres).map(|_| ())?;
+            if depth.millimetres <= 0.0 {
+                return Err(CanonicalError::DimensionOutsideEnvelope);
+            }
+            Ok(())
+        }
+        FeatureKind::Shell {
+            removed_faces,
+            thickness,
+            ..
+        } => {
             Dimension::new(thickness.source_token.clone(), thickness.millimetres).map(|_| ())?;
             if thickness.millimetres <= 0.0 {
                 return Err(CanonicalError::DimensionOutsideEnvelope);
             }
+            if !roles_are_strictly_sorted(removed_faces) {
+                return Err(CanonicalError::SubshapeRolesNotCanonical);
+            }
             Ok(())
         }
-        FeatureKind::BottleEdgeFinish { amount, .. } => {
+        FeatureKind::BottleEdgeFinish { edges, amount, .. } => {
             Dimension::new(amount.source_token.clone(), amount.millimetres).map(|_| ())?;
             if amount.millimetres <= 0.0 {
                 return Err(CanonicalError::DimensionOutsideEnvelope);
             }
+            if !roles_are_strictly_sorted(edges) {
+                return Err(CanonicalError::SubshapeRolesNotCanonical);
+            }
             Ok(())
         }
         FeatureKind::MeshBody(spec) => validate_mesh_body(spec),
-        FeatureKind::Revolve { .. }
-        | FeatureKind::ThroughCut { .. }
-        | FeatureKind::Boolean { .. } => Ok(()),
+        FeatureKind::Revolve {
+            axis_start_mm,
+            axis_end_mm,
+            angle_degrees,
+            ..
+        } => {
+            if axis_start_mm
+                .iter()
+                .chain(axis_end_mm)
+                .any(|value| !value.is_finite() || value.abs() > MAX_CANONICAL_ABS_MM)
+                || (axis_end_mm[0] - axis_start_mm[0]).hypot(axis_end_mm[1] - axis_start_mm[1])
+                    <= PROFILE_EPSILON_MM
+                || !angle_degrees.is_finite()
+                || *angle_degrees <= 0.0
+                || *angle_degrees > 360.0
+            {
+                return Err(CanonicalError::InvalidRevolve);
+            }
+            Ok(())
+        }
+        FeatureKind::PlanarOffset { distance, .. } => {
+            Dimension::new(distance.source_token.clone(), distance.millimetres).map(|_| ())?;
+            if distance.millimetres.abs() <= PROFILE_EPSILON_MM {
+                return Err(CanonicalError::InvalidPlanarOffset);
+            }
+            Ok(())
+        }
+        FeatureKind::Sweep { profile, path } => {
+            if profile == path {
+                return Err(CanonicalError::InvalidSweep);
+            }
+            Ok(())
+        }
+        FeatureKind::Loft { sections } => {
+            if !(2..=16).contains(&sections.len())
+                || sections.windows(2).any(|pair| {
+                    pair[0].elevation_mm >= pair[1].elevation_mm
+                        || pair[0].profile == pair[1].profile
+                })
+                || sections.iter().any(|section| {
+                    !section.elevation_mm.is_finite()
+                        || section.elevation_mm.abs() > MAX_CANONICAL_ABS_MM
+                })
+                || sections
+                    .iter()
+                    .map(|section| section.profile)
+                    .collect::<BTreeSet<_>>()
+                    .len()
+                    != sections.len()
+            {
+                return Err(CanonicalError::InvalidLoft);
+            }
+            Ok(())
+        }
+        FeatureKind::ThroughCut { .. } | FeatureKind::Boolean { .. } => Ok(()),
     }
 }
 
@@ -5191,6 +5539,56 @@ fn resize_axis_aligned_rectangle(
         points_mm: resized.clone(),
     })?;
     Ok(resized)
+}
+
+fn is_valid_segment_profile(segments: &[ProfileSegment], closed: bool) -> bool {
+    if segments.is_empty() || segments.len() > MAX_PROFILE_POINTS {
+        return false;
+    }
+    let valid_point = |point: [f64; 2]| {
+        point
+            .into_iter()
+            .all(|coordinate| coordinate.is_finite() && coordinate.abs() <= MAX_CANONICAL_ABS_MM)
+    };
+    for segment in segments {
+        let start = segment.start_mm();
+        let end = segment.end_mm();
+        if !valid_point(start)
+            || !valid_point(end)
+            || (start[0] - end[0]).hypot(start[1] - end[1]) <= PROFILE_EPSILON_MM
+        {
+            return false;
+        }
+        if let ProfileSegment::CircularArc { center_mm, .. } = segment {
+            if !valid_point(*center_mm) {
+                return false;
+            }
+            let start_radius = (start[0] - center_mm[0]).hypot(start[1] - center_mm[1]);
+            let end_radius = (end[0] - center_mm[0]).hypot(end[1] - center_mm[1]);
+            let radius_tolerance = PROFILE_EPSILON_MM * start_radius.max(end_radius).max(1.0);
+            if start_radius <= PROFILE_EPSILON_MM
+                || (start_radius - end_radius).abs() > radius_tolerance
+            {
+                return false;
+            }
+        }
+    }
+    if segments
+        .windows(2)
+        .any(|pair| pair[0].end_mm() != pair[1].start_mm())
+    {
+        return false;
+    }
+    if closed {
+        if segments.len() < 2 {
+            return false;
+        }
+        let end = segments.last().expect("non-empty profile").end_mm();
+        let start = segments[0].start_mm();
+        end == start
+    } else {
+        true
+    }
 }
 
 fn is_valid_profile(points_mm: &[[f64; 2]]) -> bool {
@@ -5420,6 +5818,13 @@ fn clone_definition_and_repoint(
             FeatureKind::Profile { points_mm } => FeatureKind::Profile {
                 points_mm: points_mm.clone(),
             },
+            FeatureKind::SegmentProfile { segments, closed } => FeatureKind::SegmentProfile {
+                segments: segments.clone(),
+                closed: *closed,
+            },
+            FeatureKind::SplineProfile { control_points_mm } => FeatureKind::SplineProfile {
+                control_points_mm: control_points_mm.clone(),
+            },
             FeatureKind::Extrusion { profile, height } => FeatureKind::Extrusion {
                 profile: *mapping
                     .get(profile)
@@ -5439,25 +5844,40 @@ fn clone_definition_and_repoint(
                 body_height: body_height.clone(),
                 shoulder_rise: shoulder_rise.clone(),
             },
-            FeatureKind::Revolve { profile } => FeatureKind::Revolve {
+            FeatureKind::Revolve {
+                profile,
+                axis_start_mm,
+                axis_end_mm,
+                angle_degrees,
+            } => FeatureKind::Revolve {
                 profile: *mapping
                     .get(profile)
                     .ok_or(CanonicalError::InvalidFeatureMap)?,
+                axis_start_mm: *axis_start_mm,
+                axis_end_mm: *axis_end_mm,
+                angle_degrees: *angle_degrees,
             },
-            FeatureKind::Shell { target, thickness } => FeatureKind::Shell {
+            FeatureKind::Shell {
+                target,
+                removed_faces,
+                thickness,
+            } => FeatureKind::Shell {
                 target: *mapping
                     .get(target)
                     .ok_or(CanonicalError::InvalidFeatureMap)?,
+                removed_faces: removed_faces.clone(),
                 thickness: thickness.clone(),
             },
             FeatureKind::BottleEdgeFinish {
                 target,
+                edges,
                 kind,
                 amount,
             } => FeatureKind::BottleEdgeFinish {
                 target: *mapping
                     .get(target)
                     .ok_or(CanonicalError::InvalidFeatureMap)?,
+                edges: edges.clone(),
                 kind: *kind,
                 amount: amount.clone(),
             },
@@ -5469,6 +5889,19 @@ fn clone_definition_and_repoint(
                     .get(profile)
                     .ok_or(CanonicalError::InvalidFeatureMap)?,
             },
+            FeatureKind::Pocket {
+                target,
+                profile,
+                depth,
+            } => FeatureKind::Pocket {
+                target: *mapping
+                    .get(target)
+                    .ok_or(CanonicalError::InvalidFeatureMap)?,
+                profile: *mapping
+                    .get(profile)
+                    .ok_or(CanonicalError::InvalidFeatureMap)?,
+                depth: depth.clone(),
+            },
             FeatureKind::Boolean {
                 operation,
                 target,
@@ -5479,6 +5912,31 @@ fn clone_definition_and_repoint(
                     .get(target)
                     .ok_or(CanonicalError::InvalidFeatureMap)?,
                 tool: *mapping.get(tool).ok_or(CanonicalError::InvalidFeatureMap)?,
+            },
+            FeatureKind::PlanarOffset { profile, distance } => FeatureKind::PlanarOffset {
+                profile: *mapping
+                    .get(profile)
+                    .ok_or(CanonicalError::InvalidFeatureMap)?,
+                distance: distance.clone(),
+            },
+            FeatureKind::Sweep { profile, path } => FeatureKind::Sweep {
+                profile: *mapping
+                    .get(profile)
+                    .ok_or(CanonicalError::InvalidFeatureMap)?,
+                path: *mapping.get(path).ok_or(CanonicalError::InvalidFeatureMap)?,
+            },
+            FeatureKind::Loft { sections } => FeatureKind::Loft {
+                sections: sections
+                    .iter()
+                    .map(|section| {
+                        Ok(LoftSection {
+                            profile: *mapping
+                                .get(&section.profile)
+                                .ok_or(CanonicalError::InvalidFeatureMap)?,
+                            elevation_mm: section.elevation_mm,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, CanonicalError>>()?,
             },
             FeatureKind::MeshBody(spec) => {
                 let mut spec = spec.clone();
@@ -5583,6 +6041,401 @@ fn clone_definition_and_repoint(
         }),
     );
     Ok(())
+}
+
+fn apply_solid_tool(
+    product: &mut ProductModel,
+    plan: &SolidToolPlan,
+) -> Result<(), CanonicalError> {
+    ensure_name(&plan.result_definition_name)?;
+    ensure_name(&plan.result_feature_name)?;
+    ensure_product_id(plan.result_definition_id.0)?;
+    if plan.target_occurrence_id == plan.tool_occurrence_id
+        || (plan.operation == BooleanOperation::Split && !plan.keep_tool)
+        || product.definitions.contains_key(&plan.result_definition_id)
+    {
+        return Err(CanonicalError::InvalidSolidToolPlan);
+    }
+    let mut output_ids = BTreeSet::new();
+    for id in plan.result_feature_ids {
+        ensure_product_id(id.0)?;
+        if !output_ids.insert(id) || product.features.contains_key(&id) {
+            return Err(CanonicalError::InvalidSolidToolPlan);
+        }
+    }
+    if !plan.keep_tool
+        && product
+            .collections
+            .values()
+            .any(|collection| collection.occurrence_ids.contains(&plan.tool_occurrence_id))
+    {
+        return Err(CanonicalError::OccurrenceInCollection(
+            plan.tool_occurrence_id,
+        ));
+    }
+
+    let target_occurrence = product
+        .occurrences
+        .get(&plan.target_occurrence_id)
+        .ok_or(CanonicalError::OccurrenceNotFound(
+            plan.target_occurrence_id,
+        ))?
+        .as_ref()
+        .clone();
+    let tool_occurrence = product
+        .occurrences
+        .get(&plan.tool_occurrence_id)
+        .ok_or(CanonicalError::OccurrenceNotFound(plan.tool_occurrence_id))?
+        .as_ref()
+        .clone();
+    let target_feature = product
+        .features
+        .get(&plan.target_feature_id)
+        .ok_or(CanonicalError::FeatureNotFound(plan.target_feature_id))?;
+    let tool_feature = product
+        .features
+        .get(&plan.tool_feature_id)
+        .ok_or(CanonicalError::FeatureNotFound(plan.tool_feature_id))?;
+    if target_feature.definition_id != target_occurrence.definition_id
+        || tool_feature.definition_id != tool_occurrence.definition_id
+    {
+        return Err(CanonicalError::OccurrenceDefinitionMismatch);
+    }
+    let (target_profile_id, target_height) = match &target_feature.kind {
+        FeatureKind::Extrusion { profile, height } => (*profile, height.clone()),
+        _ => return Err(CanonicalError::InvalidSolidToolPlan),
+    };
+    let (tool_profile_id, tool_height) = match &tool_feature.kind {
+        FeatureKind::Extrusion { profile, height } => (*profile, height.clone()),
+        _ => return Err(CanonicalError::InvalidSolidToolPlan),
+    };
+    if target_height.millimetres().to_bits() != tool_height.millimetres().to_bits() {
+        return Err(CanonicalError::InvalidSolidToolPlan);
+    }
+    let target_profile = product
+        .features
+        .get(&target_profile_id)
+        .ok_or(CanonicalError::FeatureNotFound(target_profile_id))?;
+    let tool_profile = product
+        .features
+        .get(&tool_profile_id)
+        .ok_or(CanonicalError::FeatureNotFound(tool_profile_id))?;
+    let FeatureKind::Profile {
+        points_mm: target_points,
+    } = &target_profile.kind
+    else {
+        return Err(CanonicalError::InvalidSolidToolPlan);
+    };
+    if target_profile.definition_id != target_occurrence.definition_id
+        || tool_profile.definition_id != tool_occurrence.definition_id
+    {
+        return Err(CanonicalError::OccurrenceDefinitionMismatch);
+    }
+
+    let snapshot = Snapshot {
+        revision_id: 0,
+        product: Arc::new(product.clone()),
+    };
+    let target_transform = snapshot
+        .world_transform_for_occurrence(plan.target_occurrence_id)
+        .ok_or(CanonicalError::UnsupportedSolidToolTransform)?;
+    let tool_transform = snapshot
+        .world_transform_for_occurrence(plan.tool_occurrence_id)
+        .ok_or(CanonicalError::UnsupportedSolidToolTransform)?;
+    let translation_only = |transform: Transform| {
+        let matrix = transform.matrix();
+        matrix[0] == 1.0
+            && matrix[1] == 0.0
+            && matrix[2] == 0.0
+            && matrix[4] == 0.0
+            && matrix[5] == 1.0
+            && matrix[6] == 0.0
+            && matrix[8] == 0.0
+            && matrix[9] == 0.0
+            && matrix[10] == 1.0
+    };
+    if !translation_only(target_transform)
+        || !translation_only(tool_transform)
+        || target_transform.matrix()[11].to_bits() != tool_transform.matrix()[11].to_bits()
+    {
+        return Err(CanonicalError::UnsupportedSolidToolTransform);
+    }
+    let delta_x = tool_transform.matrix()[3] - target_transform.matrix()[3];
+    let delta_y = tool_transform.matrix()[7] - target_transform.matrix()[7];
+    let shifted_tool_profile = translated_solid_tool_profile(&tool_profile.kind, delta_x, delta_y)?;
+    validate_feature_kind(&shifted_tool_profile)?;
+    if !solid_tool_profiles_supported(plan.operation, target_points, &shifted_tool_profile) {
+        return Err(CanonicalError::InvalidSolidToolPlan);
+    }
+
+    let [
+        target_profile_output,
+        target_body_output,
+        tool_profile_output,
+        tool_body_output,
+        result_output,
+    ] = plan.result_feature_ids;
+    let features = [
+        Feature {
+            id: target_profile_output,
+            definition_id: plan.result_definition_id,
+            name: target_profile.name.clone(),
+            kind: FeatureKind::Profile {
+                points_mm: target_points.clone(),
+            },
+        },
+        Feature {
+            id: target_body_output,
+            definition_id: plan.result_definition_id,
+            name: target_feature.name.clone(),
+            kind: FeatureKind::Extrusion {
+                profile: target_profile_output,
+                height: target_height,
+            },
+        },
+        Feature {
+            id: tool_profile_output,
+            definition_id: plan.result_definition_id,
+            name: tool_profile.name.clone(),
+            kind: shifted_tool_profile,
+        },
+        Feature {
+            id: tool_body_output,
+            definition_id: plan.result_definition_id,
+            name: tool_feature.name.clone(),
+            kind: FeatureKind::Extrusion {
+                profile: tool_profile_output,
+                height: tool_height,
+            },
+        },
+        Feature {
+            id: result_output,
+            definition_id: plan.result_definition_id,
+            name: plan.result_feature_name.clone(),
+            kind: FeatureKind::Boolean {
+                operation: plan.operation,
+                target: target_body_output,
+                tool: tool_body_output,
+            },
+        },
+    ];
+    product.definitions.insert(
+        plan.result_definition_id,
+        Arc::new(Definition {
+            id: plan.result_definition_id,
+            name: plan.result_definition_name.clone(),
+            feature_ids: plan.result_feature_ids.to_vec(),
+            local_occurrence_ids: Vec::new(),
+            local_group_ids: Vec::new(),
+        }),
+    );
+    for feature in features {
+        product.features.insert(feature.id, Arc::new(feature));
+    }
+    let binding_mappings = [
+        (target_profile_id, target_profile_output),
+        (plan.target_feature_id, target_body_output),
+        (tool_profile_id, tool_profile_output),
+        (plan.tool_feature_id, tool_body_output),
+    ];
+    let cloned_bindings = binding_mappings
+        .into_iter()
+        .flat_map(|(source_id, output_id)| {
+            product
+                .feature_parameter_bindings
+                .values()
+                .filter(move |binding| binding.target.feature_id == source_id)
+                .map(move |binding| {
+                    let target = FeatureParameterTarget {
+                        feature_id: output_id,
+                        slot: binding.target.slot,
+                    };
+                    (
+                        target,
+                        Arc::new(FeatureParameterBinding {
+                            target,
+                            derived_from: binding.derived_from.clone(),
+                        }),
+                    )
+                })
+        })
+        .collect::<Vec<_>>();
+    product.feature_parameter_bindings.extend(cloned_bindings);
+    product.occurrences.insert(
+        plan.target_occurrence_id,
+        Arc::new(Occurrence {
+            definition_id: plan.result_definition_id,
+            ..target_occurrence
+        }),
+    );
+    if !plan.keep_tool {
+        product.occurrences.remove(&plan.tool_occurrence_id);
+    }
+    Ok(())
+}
+
+fn translated_solid_tool_profile(
+    profile: &FeatureKind,
+    delta_x: f64,
+    delta_y: f64,
+) -> Result<FeatureKind, CanonicalError> {
+    match profile {
+        FeatureKind::Profile { points_mm } => Ok(FeatureKind::Profile {
+            points_mm: points_mm
+                .iter()
+                .map(|point| [point[0] + delta_x, point[1] + delta_y])
+                .collect(),
+        }),
+        FeatureKind::SegmentProfile {
+            segments,
+            closed: true,
+        } if circle_segment_profile_bounds(segments).is_some() => Ok(FeatureKind::SegmentProfile {
+            segments: segments
+                .iter()
+                .map(|segment| match segment {
+                    ProfileSegment::CircularArc {
+                        start_mm,
+                        end_mm,
+                        center_mm,
+                        clockwise,
+                    } => ProfileSegment::CircularArc {
+                        start_mm: [start_mm[0] + delta_x, start_mm[1] + delta_y],
+                        end_mm: [end_mm[0] + delta_x, end_mm[1] + delta_y],
+                        center_mm: [center_mm[0] + delta_x, center_mm[1] + delta_y],
+                        clockwise: *clockwise,
+                    },
+                    ProfileSegment::Line { .. } => unreachable!("an exact circle has no lines"),
+                })
+                .collect(),
+            closed: true,
+        }),
+        _ => Err(CanonicalError::InvalidSolidToolPlan),
+    }
+}
+
+fn circle_segment_profile_bounds(segments: &[ProfileSegment]) -> Option<[f64; 4]> {
+    let [
+        ProfileSegment::CircularArc {
+            start_mm: first_start,
+            end_mm: first_end,
+            center_mm: first_center,
+            clockwise: first_clockwise,
+        },
+        ProfileSegment::CircularArc {
+            start_mm: second_start,
+            end_mm: second_end,
+            center_mm: second_center,
+            clockwise: second_clockwise,
+        },
+    ] = segments
+    else {
+        return None;
+    };
+    if first_start != second_end
+        || first_end != second_start
+        || first_center != second_center
+        || first_clockwise != second_clockwise
+    {
+        return None;
+    }
+    let first_vector = [
+        first_start[0] - first_center[0],
+        first_start[1] - first_center[1],
+    ];
+    let end_vector = [
+        first_end[0] - first_center[0],
+        first_end[1] - first_center[1],
+    ];
+    if first_vector[0] != -end_vector[0] || first_vector[1] != -end_vector[1] {
+        return None;
+    }
+    let radius = first_vector[0].hypot(first_vector[1]);
+    (radius.is_finite() && radius > 0.0).then_some([
+        first_center[0] - radius,
+        first_center[1] - radius,
+        first_center[0] + radius,
+        first_center[1] + radius,
+    ])
+}
+
+fn solid_tool_profiles_supported(
+    operation: BooleanOperation,
+    target: &[[f64; 2]],
+    tool: &FeatureKind,
+) -> bool {
+    if !is_axis_aligned_rectangle(target) || target[0] != [0.0, 0.0] {
+        return false;
+    }
+    let tool_bounds = match tool {
+        FeatureKind::Profile { points_mm } if is_axis_aligned_rectangle(points_mm) => [
+            points_mm[0][0],
+            points_mm[0][1],
+            points_mm[2][0],
+            points_mm[2][1],
+        ],
+        FeatureKind::SegmentProfile {
+            segments,
+            closed: true,
+        } => match circle_segment_profile_bounds(segments) {
+            Some(bounds) => bounds,
+            None => return false,
+        },
+        _ => return false,
+    };
+    let base_width = target[2][0];
+    let base_depth = target[2][1];
+    let [tool_min_x, tool_min_y, tool_max_x, tool_max_y] = tool_bounds;
+    match operation {
+        BooleanOperation::Cut => {
+            tool_min_x > 0.0
+                && tool_min_y > 0.0
+                && tool_max_x < base_width
+                && tool_max_y < base_depth
+        }
+        BooleanOperation::Intersect => {
+            let overlap_x = base_width.min(tool_max_x) - 0.0_f64.max(tool_min_x);
+            let overlap_y = base_depth.min(tool_max_y) - 0.0_f64.max(tool_min_y);
+            overlap_x > 1.0e-6 && overlap_y > 1.0e-6
+        }
+        BooleanOperation::Split => {
+            if !matches!(tool, FeatureKind::Profile { .. }) {
+                return false;
+            }
+            let overlap_x = base_width.min(tool_max_x) - 0.0_f64.max(tool_min_x);
+            let overlap_y = base_depth.min(tool_max_y) - 0.0_f64.max(tool_min_y);
+            let boundary_crosses_target = (tool_min_x > 1.0e-6 && tool_min_x < base_width - 1.0e-6)
+                || (tool_max_x > 1.0e-6 && tool_max_x < base_width - 1.0e-6)
+                || (tool_min_y > 1.0e-6 && tool_min_y < base_depth - 1.0e-6)
+                || (tool_max_y > 1.0e-6 && tool_max_y < base_depth - 1.0e-6);
+            overlap_x > 1.0e-6 && overlap_y > 1.0e-6 && boundary_crosses_target
+        }
+        BooleanOperation::Union => {
+            if !matches!(tool, FeatureKind::Profile { .. }) {
+                return false;
+            }
+            let overlap_x = base_width.min(tool_max_x) - 0.0_f64.max(tool_min_x);
+            let overlap_y = base_depth.min(tool_max_y) - 0.0_f64.max(tool_min_y);
+            if overlap_x <= 1.0e-6 || overlap_y <= 1.0e-6 {
+                return false;
+            }
+            let bounds = [
+                0.0_f64.min(tool_min_x),
+                0.0_f64.min(tool_min_y),
+                base_width.max(tool_max_x),
+                base_depth.max(tool_max_y),
+            ];
+            let union_area = base_width * base_depth
+                + (tool_max_x - tool_min_x) * (tool_max_y - tool_min_y)
+                - overlap_x * overlap_y;
+            let bounds_area = (bounds[2] - bounds[0]) * (bounds[3] - bounds[1]);
+            let tolerance = 1.0e-6_f64.max(bounds_area.abs() * 1.0e-10);
+            (union_area - bounds_area).abs() <= tolerance
+                && (bounds[0] < -1.0e-6
+                    || bounds[1] < -1.0e-6
+                    || bounds[2] > base_width + 1.0e-6
+                    || bounds[3] > base_depth + 1.0e-6)
+        }
+    }
 }
 
 fn next_id(ids: impl Iterator<Item = u64>) -> Result<u64, CanonicalError> {
@@ -6012,7 +6865,11 @@ fn validate_product(product: &ProductModel) -> Result<(), CanonicalError> {
                     .get(&profile)
                     .ok_or(CanonicalError::FeatureNotFound(profile))?;
                 if profile.definition_id != feature.definition_id
-                    || !matches!(profile.kind, FeatureKind::Profile { .. })
+                    || !matches!(
+                        profile.kind,
+                        FeatureKind::Profile { .. }
+                            | FeatureKind::SegmentProfile { closed: true, .. }
+                    )
                 {
                     return Err(CanonicalError::InvalidFeatureOwnership(feature.id));
                 }
@@ -6043,70 +6900,96 @@ fn validate_product(product: &ProductModel) -> Result<(), CanonicalError> {
                     return Err(CanonicalError::InvalidFeatureOwnership(feature.id));
                 }
             }
-            FeatureKind::Revolve { profile } => {
+            FeatureKind::Revolve { profile, .. } => {
                 let profile_feature = product
                     .features
                     .get(&profile)
                     .ok_or(CanonicalError::FeatureNotFound(profile))?;
                 if profile_feature.definition_id != feature.definition_id
-                    || resolved_bottle_profile(product, profile).is_none()
+                    || !matches!(
+                        profile_feature.kind,
+                        FeatureKind::Profile { .. }
+                            | FeatureKind::SegmentProfile { closed: true, .. }
+                            | FeatureKind::BottleProfileControl { .. }
+                    )
                 {
                     return Err(CanonicalError::InvalidFeatureOwnership(feature.id));
                 }
             }
-            FeatureKind::Shell { target, thickness } => {
-                let target = product
-                    .features
-                    .get(&target)
-                    .ok_or(CanonicalError::FeatureNotFound(target))?;
-                let FeatureKind::Revolve { profile } = target.kind else {
-                    return Err(CanonicalError::InvalidFeatureOwnership(feature.id));
-                };
-                let profile = product
-                    .features
-                    .get(&profile)
-                    .ok_or(CanonicalError::FeatureNotFound(profile))?;
-                let valid_thickness =
-                    resolved_bottle_profile(product, profile.id).is_some_and(|points_mm| {
-                        shell_thickness_is_conservative(&points_mm, thickness.millimetres())
-                    });
-                if target.definition_id != feature.definition_id
-                    || profile.definition_id != feature.definition_id
-                    || !valid_thickness
-                {
-                    return Err(CanonicalError::InvalidFeatureOwnership(feature.id));
-                }
-            }
-            FeatureKind::BottleEdgeFinish { target, amount, .. } => {
+            FeatureKind::Shell {
+                target,
+                removed_faces,
+                thickness,
+            } => {
                 let target_feature = product
                     .features
                     .get(&target)
                     .ok_or(CanonicalError::FeatureNotFound(target))?;
-                let FeatureKind::Shell {
-                    target: revolve_id, ..
-                } = target_feature.kind
-                else {
-                    return Err(CanonicalError::InvalidFeatureOwnership(feature.id));
-                };
-                let revolve = product
-                    .features
-                    .get(&revolve_id)
-                    .ok_or(CanonicalError::FeatureNotFound(revolve_id))?;
-                let FeatureKind::Revolve { profile } = revolve.kind else {
-                    return Err(CanonicalError::InvalidFeatureOwnership(feature.id));
-                };
-                let valid_amount =
-                    resolved_bottle_profile(product, profile).is_some_and(|points| {
-                        let shoulder_length =
-                            (points[3][0] - points[2][0]).hypot(points[3][1] - points[2][1]);
-                        amount.millimetres() < shoulder_length * 0.25
-                            && amount.millimetres() < points[3][0] * 0.25
-                    });
-                if target_feature.definition_id != feature.definition_id
-                    || revolve.definition_id != feature.definition_id
-                    || !valid_amount
+                if target == feature.id
+                    || target_feature.definition_id != feature.definition_id
+                    || !feature_kind_is_solid(&target_feature.kind)
                 {
                     return Err(CanonicalError::InvalidFeatureOwnership(feature.id));
+                }
+                if removed_faces.len() == 1
+                    && removed_faces[0].as_str() == BOTTLE_SHELL_OPENING_FACE_ROLE
+                {
+                    let FeatureKind::Revolve { profile, .. } = target_feature.kind else {
+                        return Err(CanonicalError::InvalidFeatureOwnership(feature.id));
+                    };
+                    let profile = product
+                        .features
+                        .get(&profile)
+                        .ok_or(CanonicalError::FeatureNotFound(profile))?;
+                    if profile.definition_id != feature.definition_id
+                        || !resolved_bottle_profile(product, profile.id).is_some_and(|points_mm| {
+                            shell_thickness_is_conservative(&points_mm, thickness.millimetres())
+                        })
+                    {
+                        return Err(CanonicalError::InvalidFeatureOwnership(feature.id));
+                    }
+                }
+            }
+            FeatureKind::BottleEdgeFinish {
+                target,
+                edges,
+                amount,
+                ..
+            } => {
+                let target_feature = product
+                    .features
+                    .get(&target)
+                    .ok_or(CanonicalError::FeatureNotFound(target))?;
+                if target == feature.id
+                    || target_feature.definition_id != feature.definition_id
+                    || !feature_kind_is_solid(&target_feature.kind)
+                {
+                    return Err(CanonicalError::InvalidFeatureOwnership(feature.id));
+                }
+                if edges.len() == 1 && edges[0].as_str() == BOTTLE_SHOULDER_EDGE_ROLE {
+                    let FeatureKind::Shell {
+                        target: revolve_id, ..
+                    } = target_feature.kind
+                    else {
+                        return Err(CanonicalError::InvalidFeatureOwnership(feature.id));
+                    };
+                    let revolve = product
+                        .features
+                        .get(&revolve_id)
+                        .ok_or(CanonicalError::FeatureNotFound(revolve_id))?;
+                    let FeatureKind::Revolve { profile, .. } = revolve.kind else {
+                        return Err(CanonicalError::InvalidFeatureOwnership(feature.id));
+                    };
+                    let valid_amount =
+                        resolved_bottle_profile(product, profile).is_some_and(|points| {
+                            let shoulder_length =
+                                (points[3][0] - points[2][0]).hypot(points[3][1] - points[2][1]);
+                            amount.millimetres() < shoulder_length * 0.25
+                                && amount.millimetres() < points[3][0] * 0.25
+                        });
+                    if revolve.definition_id != feature.definition_id || !valid_amount {
+                        return Err(CanonicalError::InvalidFeatureOwnership(feature.id));
+                    }
                 }
             }
             FeatureKind::ThroughCut { target, profile } => {
@@ -6121,9 +7004,147 @@ fn validate_product(product: &ProductModel) -> Result<(), CanonicalError> {
                 if target.definition_id != feature.definition_id
                     || profile.definition_id != feature.definition_id
                     || !matches!(target.kind, FeatureKind::Extrusion { .. })
-                    || !matches!(profile.kind, FeatureKind::Profile { .. })
+                    || !matches!(
+                        profile.kind,
+                        FeatureKind::Profile { .. }
+                            | FeatureKind::SegmentProfile { closed: true, .. }
+                    )
                 {
                     return Err(CanonicalError::InvalidFeatureOwnership(feature.id));
+                }
+            }
+            FeatureKind::Pocket {
+                target,
+                profile,
+                depth,
+            } => {
+                let target = product
+                    .features
+                    .get(&target)
+                    .ok_or(CanonicalError::FeatureNotFound(target))?;
+                let profile = product
+                    .features
+                    .get(&profile)
+                    .ok_or(CanonicalError::FeatureNotFound(profile))?;
+                let valid_depth = matches!(
+                    &target.kind,
+                    FeatureKind::Extrusion { height, .. }
+                        if depth.millimetres() < height.millimetres()
+                );
+                if target.definition_id != feature.definition_id
+                    || profile.definition_id != feature.definition_id
+                    || !valid_depth
+                    || !matches!(
+                        profile.kind,
+                        FeatureKind::Profile { .. }
+                            | FeatureKind::SegmentProfile { closed: true, .. }
+                    )
+                {
+                    return Err(CanonicalError::InvalidFeatureOwnership(feature.id));
+                }
+            }
+            FeatureKind::PlanarOffset { profile, distance } => {
+                let source = product
+                    .features
+                    .get(&profile)
+                    .ok_or(CanonicalError::FeatureNotFound(profile))?;
+                let FeatureKind::Profile { points_mm } = &source.kind else {
+                    return Err(CanonicalError::InvalidPlanarOffset);
+                };
+                let feature_position = definition
+                    .feature_ids
+                    .iter()
+                    .position(|candidate| *candidate == feature.id)
+                    .expect("validated definition contains feature");
+                let source_precedes_offset = definition
+                    .feature_ids
+                    .iter()
+                    .position(|candidate| *candidate == profile)
+                    .is_some_and(|position| position < feature_position);
+                let distance = distance.millimetres();
+                let valid_bounds = is_axis_aligned_rectangle(points_mm)
+                    && [
+                        points_mm[0][0] - distance,
+                        points_mm[0][1] - distance,
+                        points_mm[2][0] + distance,
+                        points_mm[2][1] + distance,
+                    ]
+                    .into_iter()
+                    .all(|coordinate| {
+                        coordinate.is_finite() && coordinate.abs() <= MAX_CANONICAL_ABS_MM
+                    })
+                    && points_mm[1][0] - points_mm[0][0] + 2.0 * distance > PROFILE_EPSILON_MM
+                    && points_mm[3][1] - points_mm[0][1] + 2.0 * distance > PROFILE_EPSILON_MM;
+                if source.definition_id != feature.definition_id
+                    || !source_precedes_offset
+                    || !valid_bounds
+                {
+                    return Err(CanonicalError::InvalidPlanarOffset);
+                }
+            }
+            FeatureKind::Sweep { profile, path } => {
+                let profile_source = product
+                    .features
+                    .get(&profile)
+                    .ok_or(CanonicalError::FeatureNotFound(profile))?;
+                let path_source = product
+                    .features
+                    .get(&path)
+                    .ok_or(CanonicalError::FeatureNotFound(path))?;
+                let valid_profile = matches!(
+                    &profile_source.kind,
+                    FeatureKind::Profile { points_mm } if is_axis_aligned_rectangle(points_mm)
+                );
+                let valid_path = matches!(
+                    &path_source.kind,
+                    FeatureKind::SegmentProfile {
+                        segments,
+                        closed: false,
+                    } if matches!(segments.as_slice(), [ProfileSegment::Line { .. }])
+                );
+                let feature_position = definition
+                    .feature_ids
+                    .iter()
+                    .position(|candidate| *candidate == feature.id)
+                    .expect("validated definition contains feature");
+                let sources_precede_sweep = [profile, path].into_iter().all(|source_id| {
+                    definition
+                        .feature_ids
+                        .iter()
+                        .position(|candidate| *candidate == source_id)
+                        .is_some_and(|position| position < feature_position)
+                });
+                if profile_source.definition_id != feature.definition_id
+                    || path_source.definition_id != feature.definition_id
+                    || !valid_profile
+                    || !valid_path
+                    || !sources_precede_sweep
+                {
+                    return Err(CanonicalError::InvalidSweep);
+                }
+            }
+            FeatureKind::Loft { sections } => {
+                let feature_position = definition
+                    .feature_ids
+                    .iter()
+                    .position(|candidate| *candidate == feature.id)
+                    .expect("validated definition contains feature");
+                for section in sections {
+                    let profile = product
+                        .features
+                        .get(&section.profile)
+                        .ok_or(CanonicalError::FeatureNotFound(section.profile))?;
+                    let source_precedes_loft = definition
+                        .feature_ids
+                        .iter()
+                        .position(|candidate| *candidate == section.profile)
+                        .is_some_and(|position| position < feature_position);
+                    if profile.definition_id != feature.definition_id
+                        || !matches!(profile.kind, FeatureKind::SplineProfile { .. })
+                        || !source_precedes_loft
+                    {
+                        return Err(CanonicalError::InvalidLoft);
+                    }
                 }
             }
             FeatureKind::Boolean { target, tool, .. } => {
@@ -6143,7 +7164,10 @@ fn validate_product(product: &ProductModel) -> Result<(), CanonicalError> {
                             | FeatureKind::Shell { .. }
                             | FeatureKind::BottleEdgeFinish { .. }
                             | FeatureKind::ThroughCut { .. }
+                            | FeatureKind::Pocket { .. }
                             | FeatureKind::Boolean { .. }
+                            | FeatureKind::Sweep { .. }
+                            | FeatureKind::Loft { .. }
                     )
                 };
                 let feature_position = definition
@@ -6180,7 +7204,9 @@ fn validate_product(product: &ProductModel) -> Result<(), CanonicalError> {
                     return Err(CanonicalError::InvalidFeatureOwnership(feature.id));
                 }
             }
-            FeatureKind::Profile { .. } => {}
+            FeatureKind::Profile { .. }
+            | FeatureKind::SegmentProfile { .. }
+            | FeatureKind::SplineProfile { .. } => {}
         }
     }
     for (target, binding) in &product.feature_parameter_bindings {
@@ -6989,6 +8015,21 @@ fn authoritative_writes(
                 writes.insert(AuthoritativeDependency::Definition(plan.new_definition_id));
                 writes.insert(AuthoritativeDependency::Occurrence(plan.new_occurrence_id));
             }
+            CanonicalCommand::ApplySolidTool(plan) => {
+                writes.insert(AuthoritativeDependency::Occurrence(
+                    plan.target_occurrence_id,
+                ));
+                writes.insert(AuthoritativeDependency::Occurrence(plan.tool_occurrence_id));
+                writes.insert(AuthoritativeDependency::Definition(
+                    plan.result_definition_id,
+                ));
+                writes.extend(
+                    plan.result_feature_ids
+                        .iter()
+                        .copied()
+                        .map(AuthoritativeDependency::Feature),
+                );
+            }
         }
     }
     writes
@@ -7036,12 +8077,29 @@ fn authoritative_dependencies(
                 match kind {
                     FeatureKind::Extrusion { profile, .. }
                     | FeatureKind::BottleProfileControl { profile, .. }
-                    | FeatureKind::Revolve { profile } => {
+                    | FeatureKind::Revolve { profile, .. }
+                    | FeatureKind::PlanarOffset { profile, .. } => {
                         add_feature_dependency_closure(snapshot, *profile, &mut dependencies);
                     }
-                    FeatureKind::ThroughCut { target, profile } => {
+                    FeatureKind::ThroughCut { target, profile }
+                    | FeatureKind::Pocket {
+                        target, profile, ..
+                    } => {
                         add_feature_dependency_closure(snapshot, *target, &mut dependencies);
                         add_feature_dependency_closure(snapshot, *profile, &mut dependencies);
+                    }
+                    FeatureKind::Sweep { profile, path } => {
+                        add_feature_dependency_closure(snapshot, *profile, &mut dependencies);
+                        add_feature_dependency_closure(snapshot, *path, &mut dependencies);
+                    }
+                    FeatureKind::Loft { sections } => {
+                        for section in sections {
+                            add_feature_dependency_closure(
+                                snapshot,
+                                section.profile,
+                                &mut dependencies,
+                            );
+                        }
                     }
                     FeatureKind::Boolean { target, tool, .. } => {
                         add_feature_dependency_closure(snapshot, *target, &mut dependencies);
@@ -7051,7 +8109,10 @@ fn authoritative_dependencies(
                     | FeatureKind::BottleEdgeFinish { target, .. } => {
                         add_feature_dependency_closure(snapshot, *target, &mut dependencies);
                     }
-                    FeatureKind::Profile { .. } | FeatureKind::MeshBody(_) => {}
+                    FeatureKind::Profile { .. }
+                    | FeatureKind::SegmentProfile { .. }
+                    | FeatureKind::SplineProfile { .. }
+                    | FeatureKind::MeshBody(_) => {}
                 }
             }
             CanonicalCommand::DeleteFeature { id } => {
@@ -7149,6 +8210,26 @@ fn authoritative_dependencies(
                 dependencies.insert(AuthoritativeDependency::GroupSubtree(plan.group_id));
                 dependencies.insert(AuthoritativeDependency::Definition(plan.new_definition_id));
                 dependencies.insert(AuthoritativeDependency::Occurrence(plan.new_occurrence_id));
+            }
+            CanonicalCommand::ApplySolidTool(plan) => {
+                dependencies.insert(AuthoritativeDependency::Occurrence(
+                    plan.target_occurrence_id,
+                ));
+                dependencies.insert(AuthoritativeDependency::Occurrence(plan.tool_occurrence_id));
+                dependencies.insert(AuthoritativeDependency::OccurrenceCollections(
+                    plan.tool_occurrence_id,
+                ));
+                add_feature_dependency_closure(snapshot, plan.target_feature_id, &mut dependencies);
+                add_feature_dependency_closure(snapshot, plan.tool_feature_id, &mut dependencies);
+                dependencies.insert(AuthoritativeDependency::Definition(
+                    plan.result_definition_id,
+                ));
+                dependencies.extend(
+                    plan.result_feature_ids
+                        .iter()
+                        .copied()
+                        .map(AuthoritativeDependency::Feature),
+                );
             }
             CanonicalCommand::CreateExpressionNode { id, expression, .. } => {
                 dependencies.insert(AuthoritativeDependency::EvaluatorNode(*id));
@@ -7349,12 +8430,25 @@ fn add_feature_dependency_closure(
         match feature.kind() {
             FeatureKind::Extrusion { profile, .. }
             | FeatureKind::BottleProfileControl { profile, .. }
-            | FeatureKind::Revolve { profile } => {
+            | FeatureKind::Revolve { profile, .. }
+            | FeatureKind::PlanarOffset { profile, .. } => {
                 add_feature_dependency_closure(snapshot, *profile, dependencies);
             }
-            FeatureKind::ThroughCut { target, profile } => {
+            FeatureKind::ThroughCut { target, profile }
+            | FeatureKind::Pocket {
+                target, profile, ..
+            } => {
                 add_feature_dependency_closure(snapshot, *target, dependencies);
                 add_feature_dependency_closure(snapshot, *profile, dependencies);
+            }
+            FeatureKind::Sweep { profile, path } => {
+                add_feature_dependency_closure(snapshot, *profile, dependencies);
+                add_feature_dependency_closure(snapshot, *path, dependencies);
+            }
+            FeatureKind::Loft { sections } => {
+                for section in sections {
+                    add_feature_dependency_closure(snapshot, section.profile, dependencies);
+                }
             }
             FeatureKind::Boolean { target, tool, .. } => {
                 add_feature_dependency_closure(snapshot, *target, dependencies);
@@ -7363,7 +8457,10 @@ fn add_feature_dependency_closure(
             FeatureKind::Shell { target, .. } | FeatureKind::BottleEdgeFinish { target, .. } => {
                 add_feature_dependency_closure(snapshot, *target, dependencies);
             }
-            FeatureKind::Profile { .. } | FeatureKind::MeshBody(_) => {}
+            FeatureKind::Profile { .. }
+            | FeatureKind::SegmentProfile { .. }
+            | FeatureKind::SplineProfile { .. }
+            | FeatureKind::MeshBody(_) => {}
         }
     }
 }
@@ -7744,6 +8841,43 @@ impl StableDigest {
                     self.u64(point[1].to_bits());
                 }
             }
+            FeatureKind::SegmentProfile { segments, closed } => {
+                self.byte(11);
+                self.byte(u8::from(*closed));
+                self.u64(segments.len() as u64);
+                for segment in segments {
+                    match segment {
+                        ProfileSegment::Line { start_mm, end_mm } => {
+                            self.byte(1);
+                            for point in [start_mm, end_mm] {
+                                self.u64(point[0].to_bits());
+                                self.u64(point[1].to_bits());
+                            }
+                        }
+                        ProfileSegment::CircularArc {
+                            start_mm,
+                            end_mm,
+                            center_mm,
+                            clockwise,
+                        } => {
+                            self.byte(2);
+                            for point in [start_mm, end_mm, center_mm] {
+                                self.u64(point[0].to_bits());
+                                self.u64(point[1].to_bits());
+                            }
+                            self.byte(u8::from(*clockwise));
+                        }
+                    }
+                }
+            }
+            FeatureKind::SplineProfile { control_points_mm } => {
+                self.byte(14);
+                self.u64(control_points_mm.len() as u64);
+                for point in control_points_mm {
+                    self.u64(point[0].to_bits());
+                    self.u64(point[1].to_bits());
+                }
+            }
             FeatureKind::Extrusion { profile, height } => {
                 self.byte(2);
                 self.u64(profile.0);
@@ -7755,6 +8889,17 @@ impl StableDigest {
                 self.u64(target.0);
                 self.u64(profile.0);
             }
+            FeatureKind::Pocket {
+                target,
+                profile,
+                depth,
+            } => {
+                self.byte(10);
+                self.u64(target.0);
+                self.u64(profile.0);
+                self.bytes(depth.source_token.as_bytes());
+                self.u64(depth.millimetres.to_bits());
+            }
             FeatureKind::Boolean {
                 operation,
                 target,
@@ -7764,13 +8909,43 @@ impl StableDigest {
                 self.byte(match operation {
                     BooleanOperation::Cut => 1,
                     BooleanOperation::Union => 2,
+                    BooleanOperation::Intersect => 3,
+                    BooleanOperation::Split => 4,
                 });
                 self.u64(target.0);
                 self.u64(tool.0);
             }
-            FeatureKind::Revolve { profile } => {
+            FeatureKind::PlanarOffset { profile, distance } => {
+                self.byte(12);
+                self.u64(profile.0);
+                self.bytes(distance.source_token.as_bytes());
+                self.u64(distance.millimetres.to_bits());
+            }
+            FeatureKind::Sweep { profile, path } => {
+                self.byte(13);
+                self.u64(profile.0);
+                self.u64(path.0);
+            }
+            FeatureKind::Loft { sections } => {
+                self.byte(15);
+                self.u64(sections.len() as u64);
+                for section in sections {
+                    self.u64(section.profile.0);
+                    self.u64(section.elevation_mm.to_bits());
+                }
+            }
+            FeatureKind::Revolve {
+                profile,
+                axis_start_mm,
+                axis_end_mm,
+                angle_degrees,
+            } => {
                 self.byte(4);
                 self.u64(profile.0);
+                for coordinate in axis_start_mm.iter().chain(axis_end_mm) {
+                    self.u64(coordinate.to_bits());
+                }
+                self.u64(angle_degrees.to_bits());
             }
             FeatureKind::BottleProfileControl {
                 profile,
@@ -7785,19 +8960,32 @@ impl StableDigest {
                     self.u64(dimension.millimetres.to_bits());
                 }
             }
-            FeatureKind::Shell { target, thickness } => {
+            FeatureKind::Shell {
+                target,
+                removed_faces,
+                thickness,
+            } => {
                 self.byte(5);
                 self.u64(target.0);
+                self.u64(removed_faces.len() as u64);
+                for role in removed_faces {
+                    self.bytes(role.as_str().as_bytes());
+                }
                 self.bytes(thickness.source_token.as_bytes());
                 self.u64(thickness.millimetres.to_bits());
             }
             FeatureKind::BottleEdgeFinish {
                 target,
+                edges,
                 kind,
                 amount,
             } => {
                 self.byte(7);
                 self.u64(target.0);
+                self.u64(edges.len() as u64);
+                for role in edges {
+                    self.bytes(role.as_str().as_bytes());
+                }
                 self.byte(match kind {
                     BottleEdgeFinishKind::Fillet => 1,
                     BottleEdgeFinishKind::Chamfer => 2,
@@ -8086,9 +9274,22 @@ impl StableDigest {
                     .features
                     .values()
                     .filter_map(|feature| match feature.kind {
-                        FeatureKind::Extrusion { profile, .. } if profile == id => Some(feature.id),
+                        FeatureKind::Extrusion { profile, .. }
+                        | FeatureKind::PlanarOffset { profile, .. }
+                            if profile == id =>
+                        {
+                            Some(feature.id)
+                        }
                         FeatureKind::ThroughCut { target, profile }
                             if target == id || profile == id =>
+                        {
+                            Some(feature.id)
+                        }
+                        FeatureKind::Sweep { profile, path } if profile == id || path == id => {
+                            Some(feature.id)
+                        }
+                        FeatureKind::Loft { ref sections }
+                            if sections.iter().any(|section| section.profile == id) =>
                         {
                             Some(feature.id)
                         }
@@ -8381,6 +9582,26 @@ impl StableDigest {
                 self.u64(plan.new_definition_id.0);
                 self.u64(plan.new_occurrence_id.0);
                 self.bytes(plan.component_name.as_bytes());
+            }
+            CanonicalCommand::ApplySolidTool(plan) => {
+                self.byte(49);
+                self.byte(match plan.operation {
+                    BooleanOperation::Cut => 1,
+                    BooleanOperation::Union => 2,
+                    BooleanOperation::Intersect => 3,
+                    BooleanOperation::Split => 4,
+                });
+                self.u64(plan.target_occurrence_id.0);
+                self.u64(plan.target_feature_id.0);
+                self.u64(plan.tool_occurrence_id.0);
+                self.u64(plan.tool_feature_id.0);
+                self.u64(plan.result_definition_id.0);
+                for id in plan.result_feature_ids {
+                    self.u64(id.0);
+                }
+                self.bytes(plan.result_definition_name.as_bytes());
+                self.bytes(plan.result_feature_name.as_bytes());
+                self.byte(u8::from(plan.keep_tool));
             }
             CanonicalCommand::CreateExpressionNode {
                 id,

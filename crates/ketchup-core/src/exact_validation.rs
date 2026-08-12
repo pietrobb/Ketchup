@@ -108,6 +108,11 @@ impl ExactBodyParticipant {
             ExactFaceRole::CutEast,
             ExactFaceRole::CutSouth,
             ExactFaceRole::CutNorth,
+            ExactFaceRole::PocketFloor,
+            ExactFaceRole::PocketWest,
+            ExactFaceRole::PocketEast,
+            ExactFaceRole::PocketSouth,
+            ExactFaceRole::PocketNorth,
         ] {
             if package.reference(role).is_none() {
                 continue;
@@ -120,11 +125,23 @@ impl ExactBodyParticipant {
                 ExactFaceRole::CutEast => (0, 1),
                 ExactFaceRole::CutSouth => (1, -1),
                 ExactFaceRole::CutNorth => (1, 1),
-                ExactFaceRole::RevolveBottom
+                ExactFaceRole::PocketFloor => (2, 1),
+                ExactFaceRole::PocketWest => (0, -1),
+                ExactFaceRole::PocketEast => (0, 1),
+                ExactFaceRole::PocketSouth => (1, -1),
+                ExactFaceRole::PocketNorth => (1, 1),
+                ExactFaceRole::CircleSide
+                | ExactFaceRole::ArcSide
+                | ExactFaceRole::CutCircle
+                | ExactFaceRole::RevolveBottom
                 | ExactFaceRole::RevolveBody
                 | ExactFaceRole::RevolveShoulder
                 | ExactFaceRole::RevolveNeck
                 | ExactFaceRole::RevolveMouth
+                | ExactFaceRole::RevolveSide0
+                | ExactFaceRole::RevolveSide1
+                | ExactFaceRole::RevolveStart
+                | ExactFaceRole::RevolveEnd
                 | ExactFaceRole::ShellOuterBottom
                 | ExactFaceRole::ShellOuterBody
                 | ExactFaceRole::ShellOuterShoulder
@@ -133,7 +150,20 @@ impl ExactBodyParticipant {
                 | ExactFaceRole::ShellInnerBottom
                 | ExactFaceRole::ShellInnerBody
                 | ExactFaceRole::ShellInnerShoulder
-                | ExactFaceRole::ShellInnerNeck => {
+                | ExactFaceRole::ShellInnerNeck
+                | ExactFaceRole::BoxShellOuterBottom
+                | ExactFaceRole::BoxShellOuterEast
+                | ExactFaceRole::BoxShellRim
+                | ExactFaceRole::PlanarOffsetFace
+                | ExactFaceRole::SweepStart
+                | ExactFaceRole::SweepEnd
+                | ExactFaceRole::SweepSide0
+                | ExactFaceRole::SweepSide1
+                | ExactFaceRole::SweepSide2
+                | ExactFaceRole::SweepSide3
+                | ExactFaceRole::LoftStart
+                | ExactFaceRole::LoftEnd
+                | ExactFaceRole::LoftSide => {
                     return Err(ExactValidationError::InvalidFaceReference);
                 }
             };

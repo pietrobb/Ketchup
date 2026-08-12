@@ -172,7 +172,7 @@ fn lossy_legacy_migration_requires_one_explicit_canonical_batch() {
         persistence::load(&persistence::save_container(&document.current(), &sidecars).unwrap())
             .unwrap();
     assert_eq!(current.disposition(), LoadDisposition::EditableLossless);
-    assert_eq!(current.source_schema(), 17);
+    assert_eq!(current.source_schema(), persistence::CURRENT_SCHEMA);
     assert_eq!(current.snapshot().revision_id(), 8);
 }
 

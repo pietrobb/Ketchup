@@ -1,7 +1,12 @@
 #include "ketchup_exact.hxx"
 #include "ketchup-exact/src/lib.rs.h"
 
+#include <BRepAlgoAPI_Common.hxx>
 #include <BRepAlgoAPI_Cut.hxx>
+#include <BRepAlgoAPI_Fuse.hxx>
+#include <BOPAlgo_Splitter.hxx>
+#include <BRepAdaptor_Curve.hxx>
+#include <BRepAdaptor_Surface.hxx>
 #include <BRepBndLib.hxx>
 #include <BRepBuilderAPI_FindPlane.hxx>
 #include <BRepBuilderAPI_MakeEdge.hxx>
@@ -11,13 +16,22 @@
 #include <BRepGProp.hxx>
 #include <BRepFilletAPI_MakeChamfer.hxx>
 #include <BRepFilletAPI_MakeFillet.hxx>
+#include <BRepOffsetAPI_MakeOffset.hxx>
+#include <BRepOffsetAPI_ThruSections.hxx>
 #include <BRepPrimAPI_MakeBox.hxx>
+#include <BRepPrimAPI_MakeCylinder.hxx>
 #include <BRepPrimAPI_MakePrism.hxx>
 #include <BRepPrimAPI_MakeRevol.hxx>
 #include <BRep_Tool.hxx>
 #include <Bnd_Box.hxx>
 #include <GProp_GProps.hxx>
+#include <GC_MakeArcOfCircle.hxx>
+#include <GeomAbs_CurveType.hxx>
+#include <GeomAbs_JoinType.hxx>
+#include <GeomAbs_SurfaceType.hxx>
+#include <GeomAPI_Interpolate.hxx>
 #include <Geom_Plane.hxx>
+#include <Geom_TrimmedCurve.hxx>
 #include <Standard_Failure.hxx>
 #include <STEPControl_Reader.hxx>
 #include <STEPControl_Writer.hxx>
@@ -29,12 +43,16 @@
 #include <NCollection_List.hxx>
 #include <TopTools_IndexedDataMapOfShapeListOfShape.hxx>
 #include <TopTools_IndexedMapOfShape.hxx>
+#include <TColgp_HArray1OfPnt.hxx>
 #include <TopoDS.hxx>
 #include <TopoDS_Edge.hxx>
 #include <TopoDS_Face.hxx>
 #include <TopoDS_Shape.hxx>
 #include <TopoDS_Vertex.hxx>
+#include <TopoDS_Wire.hxx>
 #include <gp_Ax1.hxx>
+#include <gp_Ax2.hxx>
+#include <gp_Circ.hxx>
 #include <gp_Dir.hxx>
 #include <gp_Pln.hxx>
 #include <gp_Pnt.hxx>
@@ -172,6 +190,8 @@ NativeFaceEvidence inspect_face(const TopoDS_Face& face, std::uint32_t ordinal) 
     normal_x = normal.X();
     normal_y = normal.Y();
     normal_z = normal.Z();
+  } else if (BRepAdaptor_Surface(face).GetType() == GeomAbs_Cylinder) {
+    surface_kind = "cylinder";
   }
 
   return NativeFaceEvidence{
@@ -199,7 +219,9 @@ NativeFaceEvidence inspect_face(const TopoDS_Face& face, std::uint32_t ordinal) 
 
 std::unique_ptr<NativeOperationResult> success_result(
     TopoDS_Shape shape,
-    std::vector<HistoryRecord> history) {
+    std::vector<HistoryRecord> history,
+    bool allow_multi_solid = false,
+    bool allow_planar_face = false) {
   auto impl = std::make_unique<NativeOperationResult::Impl>();
   impl->shape = std::move(shape);
   impl->history = std::move(history);
@@ -281,12 +303,21 @@ std::unique_ptr<NativeOperationResult> success_result(
     }
   }
 
-  if (!analyzer.IsValid() || solids != 1 || !std::isfinite(volume) || volume <= 0.0) {
+  const bool valid_planar_face = allow_planar_face
+      && solids == 0
+      && faces.Extent() == 1
+      && std::isfinite(volume)
+      && std::abs(volume) <= 1.0e-12;
+  const bool valid_solid = !allow_planar_face
+      && ((!allow_multi_solid && solids == 1) || (allow_multi_solid && solids >= 2))
+      && std::isfinite(volume)
+      && volume > 0.0;
+  if (!analyzer.IsValid() || (!valid_planar_face && !valid_solid)) {
     impl->status = STATUS_INVALID_SHAPE;
-    impl->diagnostic = "OCCT result failed the exact-body validity oracle";
+    impl->diagnostic = "OCCT result failed the exact-shape validity oracle";
   } else {
     impl->status = STATUS_OK;
-    impl->diagnostic = "valid exact solid";
+    impl->diagnostic = valid_planar_face ? "valid exact planar face" : "valid exact solid";
   }
   return std::make_unique<NativeOperationResult>(std::move(impl));
 }
@@ -506,6 +537,597 @@ std::unique_ptr<NativeOperationResult> extrude_rectangle_native(
   });
 }
 
+std::unique_ptr<NativeOperationResult> offset_rectangle_native(
+    double min_x, double min_y, double max_x, double max_y,
+    double distance) noexcept {
+  return guarded([&] {
+    const gp_Pnt south_west(min_x, min_y, 0.0);
+    const gp_Pnt south_east(max_x, min_y, 0.0);
+    const gp_Pnt north_east(max_x, max_y, 0.0);
+    const gp_Pnt north_west(min_x, max_y, 0.0);
+    BRepBuilderAPI_MakeWire source_builder;
+    source_builder.Add(BRepBuilderAPI_MakeEdge(south_west, south_east).Edge());
+    source_builder.Add(BRepBuilderAPI_MakeEdge(south_east, north_east).Edge());
+    source_builder.Add(BRepBuilderAPI_MakeEdge(north_east, north_west).Edge());
+    source_builder.Add(BRepBuilderAPI_MakeEdge(north_west, south_west).Edge());
+    if (!source_builder.IsDone()) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT offset source wire did not complete");
+    }
+
+    BRepOffsetAPI_MakeOffset operation(source_builder.Wire(), GeomAbs_Intersection, false);
+    operation.Perform(distance);
+    if (!operation.IsDone()) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT planar offset did not complete");
+    }
+    TopoDS_Wire offset_wire;
+    for (TopExp_Explorer explorer(operation.Shape(), TopAbs_WIRE); explorer.More(); explorer.Next()) {
+      if (!offset_wire.IsNull()) {
+        return error_result(STATUS_INVALID_SHAPE, "OCCT planar offset produced multiple wires");
+      }
+      offset_wire = TopoDS::Wire(explorer.Current());
+    }
+    if (offset_wire.IsNull()) {
+      return error_result(STATUS_NULL_RESULT, "OCCT planar offset produced no wire");
+    }
+    BRepBuilderAPI_MakeFace face_builder(offset_wire, true);
+    if (!face_builder.IsDone()) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT offset face builder did not complete");
+    }
+    const TopoDS_Face result = face_builder.Face();
+    std::vector<HistoryRecord> history;
+    history.push_back(history_record(
+        "planar_offset.face", "offset_generated", "profile.face", result, result));
+    return success_result(result, std::move(history), false, true);
+  });
+}
+
+std::unique_ptr<NativeOperationResult> sweep_rectangle_native(
+    rust::Slice<const double> values) noexcept {
+  return guarded([&] {
+    if (values.size() != 8) {
+      return error_result(STATUS_INVALID_PARAMETER, "OCCT sweep payload is malformed");
+    }
+    const double min_u = values[0];
+    const double min_v = values[1];
+    const double max_u = values[2];
+    const double max_v = values[3];
+    const double path_start_x = values[4];
+    const double path_start_y = values[5];
+    const double path_end_x = values[6];
+    const double path_end_y = values[7];
+    const double path_x = path_end_x - path_start_x;
+    const double path_y = path_end_y - path_start_y;
+    const double path_length = std::hypot(path_x, path_y);
+    if (!std::isfinite(path_length) || path_length <= 1.0e-12) {
+      return error_result(STATUS_INVALID_PARAMETER, "OCCT sweep path is degenerate");
+    }
+    const double section_x = path_y / path_length;
+    const double section_y = -path_x / path_length;
+    const auto point = [&](double u, double v) {
+      return gp_Pnt(
+          path_start_x + section_x * u,
+          path_start_y + section_y * u,
+          v);
+    };
+    const gp_Pnt corners[] = {
+        point(min_u, min_v), point(max_u, min_v),
+        point(max_u, max_v), point(min_u, max_v)};
+    TopoDS_Edge profile_edges[] = {
+        BRepBuilderAPI_MakeEdge(corners[0], corners[1]).Edge(),
+        BRepBuilderAPI_MakeEdge(corners[1], corners[2]).Edge(),
+        BRepBuilderAPI_MakeEdge(corners[2], corners[3]).Edge(),
+        BRepBuilderAPI_MakeEdge(corners[3], corners[0]).Edge()};
+    BRepBuilderAPI_MakeWire wire_builder;
+    for (const TopoDS_Edge& edge : profile_edges) {
+      wire_builder.Add(edge);
+    }
+    if (!wire_builder.IsDone()) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT sweep profile wire did not complete");
+    }
+    BRepBuilderAPI_MakeFace face_builder(wire_builder.Wire(), true);
+    if (!face_builder.IsDone()) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT sweep profile face did not complete");
+    }
+    const TopoDS_Face profile = face_builder.Face();
+    TopoDS_Edge operation_edges[4];
+    for (std::size_t index = 0; index < 4; ++index) {
+      const gp_Pnt& expected_start = corners[index];
+      const gp_Pnt& expected_end = corners[(index + 1) % 4];
+      for (TopExp_Explorer explorer(profile, TopAbs_EDGE); explorer.More(); explorer.Next()) {
+        const TopoDS_Edge candidate = TopoDS::Edge(explorer.Current());
+        TopoDS_Vertex first;
+        TopoDS_Vertex last;
+        TopExp::Vertices(candidate, first, last);
+        if (first.IsNull() || last.IsNull()) {
+          continue;
+        }
+        const gp_Pnt first_point = BRep_Tool::Pnt(first);
+        const gp_Pnt last_point = BRep_Tool::Pnt(last);
+        const bool forward = first_point.Distance(expected_start) <= 1.0e-9
+            && last_point.Distance(expected_end) <= 1.0e-9;
+        const bool reversed = first_point.Distance(expected_end) <= 1.0e-9
+            && last_point.Distance(expected_start) <= 1.0e-9;
+        if (forward || reversed) {
+          if (!operation_edges[index].IsNull()) {
+            return error_result(STATUS_INVALID_SHAPE, "OCCT sweep profile edge identity is ambiguous");
+          }
+          operation_edges[index] = candidate;
+        }
+      }
+      if (operation_edges[index].IsNull()) {
+        return error_result(STATUS_INVALID_SHAPE, "OCCT sweep profile edge identity was lost");
+      }
+    }
+    BRepPrimAPI_MakePrism operation(profile, gp_Vec(path_x, path_y, 0.0), true, false);
+    const TopoDS_Shape result = operation.Shape();
+    if (!operation.IsDone()) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT sweep prism did not complete");
+    }
+    std::vector<HistoryRecord> history;
+    history.push_back(history_record(
+        "sweep.start", "first_shape", "profile.face", result, operation.FirstShape()));
+    history.push_back(history_record(
+        "sweep.end", "last_shape", "profile.face", result, operation.LastShape()));
+    const char* roles[] = {
+        "sweep.side.0", "sweep.side.1", "sweep.side.2", "sweep.side.3"};
+    for (std::size_t index = 0; index < 4; ++index) {
+      const std::string source = std::string("profile.edge.") + std::to_string(index);
+      HistoryRecord record{roles[index], "generated", source, 0, false};
+      const NCollection_List<TopoDS_Shape>& generated = operation.Generated(operation_edges[index]);
+      for (NCollection_List<TopoDS_Shape>::Iterator iterator(generated); iterator.More(); iterator.Next()) {
+        const HistoryRecord candidate = history_record(
+            roles[index], "generated", source.c_str(), result, iterator.Value());
+        if (candidate.output_present) {
+          record = candidate;
+          break;
+        }
+      }
+      history.push_back(std::move(record));
+    }
+    return success_result(result, std::move(history));
+  });
+}
+
+std::unique_ptr<NativeOperationResult> loft_spline_native(
+    rust::Slice<const double> values) noexcept {
+  return guarded([&] {
+    if (values.empty() || !std::isfinite(values[0])) {
+      return error_result(STATUS_INVALID_PARAMETER, "OCCT Loft payload is malformed");
+    }
+    const std::size_t section_count = static_cast<std::size_t>(values[0]);
+    if (section_count < 2 || section_count > 16
+        || values[0] != static_cast<double>(section_count)) {
+      return error_result(STATUS_INVALID_PARAMETER, "OCCT Loft section count is invalid");
+    }
+    std::size_t cursor = 1;
+    std::vector<TopoDS_Wire> wires;
+    std::vector<TopoDS_Edge> section_edges;
+    wires.reserve(section_count);
+    section_edges.reserve(section_count);
+    double previous_elevation = -std::numeric_limits<double>::infinity();
+    for (std::size_t section = 0; section < section_count; ++section) {
+      if (cursor + 2 > values.size() || !std::isfinite(values[cursor])) {
+        return error_result(STATUS_INVALID_PARAMETER, "OCCT Loft section payload is truncated");
+      }
+      const std::size_t point_count = static_cast<std::size_t>(values[cursor++]);
+      const double elevation = values[cursor++];
+      if (point_count < 4 || point_count > 64
+          || values[cursor - 2] != static_cast<double>(point_count)
+          || !std::isfinite(elevation) || elevation <= previous_elevation
+          || cursor + point_count * 2 > values.size()) {
+        return error_result(STATUS_INVALID_PARAMETER, "OCCT Loft section is invalid");
+      }
+      previous_elevation = elevation;
+      occ::handle<TColgp_HArray1OfPnt> points =
+          new TColgp_HArray1OfPnt(1, static_cast<Standard_Integer>(point_count));
+      for (std::size_t point = 0; point < point_count; ++point) {
+        const double x = values[cursor++];
+        const double y = values[cursor++];
+        if (!std::isfinite(x) || !std::isfinite(y)) {
+          return error_result(STATUS_NON_FINITE_PARAMETER, "OCCT Loft point is non-finite");
+        }
+        points->SetValue(
+            static_cast<Standard_Integer>(point + 1), gp_Pnt(x, y, elevation));
+      }
+      GeomAPI_Interpolate interpolation(points, true, 1.0e-9);
+      interpolation.Perform();
+      if (!interpolation.IsDone()) {
+        return error_result(STATUS_INVALID_SHAPE, "OCCT spline interpolation did not complete");
+      }
+      BRepBuilderAPI_MakeEdge edge_builder(interpolation.Curve());
+      if (!edge_builder.IsDone()) {
+        return error_result(STATUS_INVALID_SHAPE, "OCCT spline edge did not complete");
+      }
+      const TopoDS_Edge edge = edge_builder.Edge();
+      BRepBuilderAPI_MakeWire wire_builder(edge);
+      if (!wire_builder.IsDone()) {
+        return error_result(STATUS_INVALID_SHAPE, "OCCT spline wire did not complete");
+      }
+      section_edges.push_back(edge);
+      wires.push_back(wire_builder.Wire());
+    }
+    if (cursor != values.size()) {
+      return error_result(STATUS_INVALID_PARAMETER, "OCCT Loft payload has trailing values");
+    }
+    BRepOffsetAPI_ThruSections operation(true, false, 1.0e-6);
+    operation.CheckCompatibility(false);
+    operation.SetMutableInput(false);
+    for (const TopoDS_Wire& wire : wires) {
+      operation.AddWire(wire);
+    }
+    operation.Build();
+    if (!operation.IsDone()) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT Loft builder did not complete");
+    }
+    const TopoDS_Shape result = operation.Shape();
+    std::vector<HistoryRecord> history;
+    history.push_back(history_record(
+        "loft.start", "first_shape", "profile.face", result, operation.FirstShape()));
+    history.push_back(history_record(
+        "loft.end", "last_shape", "profile.face", result, operation.LastShape()));
+    history.push_back(history_record(
+        "loft.side", "generated_face", "profile.edge.spline", result,
+        operation.GeneratedFace(section_edges.front())));
+    return success_result(result, std::move(history));
+  });
+}
+
+std::unique_ptr<NativeOperationResult> extrude_circle_native(
+    double center_x, double center_y, double radius, double height) noexcept {
+  return guarded([&] {
+    BRepPrimAPI_MakeCylinder operation(
+        gp_Ax2(gp_Pnt(center_x, center_y, 0.0), gp_Dir(0.0, 0.0, 1.0)),
+        radius,
+        height);
+    operation.Build();
+    if (!operation.IsDone()) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT cylinder builder did not complete");
+    }
+    const TopoDS_Shape result = operation.Shape();
+    TopoDS_Face bottom;
+    TopoDS_Face top;
+    TopoDS_Face side;
+    for (TopExp_Explorer explorer(result, TopAbs_FACE); explorer.More(); explorer.Next()) {
+      const TopoDS_Face candidate = TopoDS::Face(explorer.Current());
+      BRepAdaptor_Surface surface(candidate);
+      if (surface.GetType() == GeomAbs_Cylinder) {
+        if (!side.IsNull()) {
+          return error_result(STATUS_INVALID_SHAPE, "OCCT cylinder has ambiguous side identity");
+        }
+        side = candidate;
+        continue;
+      }
+      BRepBuilderAPI_FindPlane plane(candidate);
+      if (!plane.Found()) {
+        continue;
+      }
+      GProp_GProps properties;
+      BRepGProp::SurfaceProperties(candidate, properties);
+      if (std::abs(properties.CentreOfMass().Z()) <= 1.0e-9) {
+        bottom = candidate;
+      } else if (std::abs(properties.CentreOfMass().Z() - height) <= 1.0e-9) {
+        top = candidate;
+      }
+    }
+    if (bottom.IsNull() || top.IsNull() || side.IsNull()) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT cylinder face identity is incomplete");
+    }
+    std::vector<HistoryRecord> history;
+    history.push_back(history_record(
+        "extrusion.bottom", "analytic_cap", "profile.face", result, bottom));
+    history.push_back(history_record(
+        "extrusion.top", "analytic_cap", "profile.face", result, top));
+    history.push_back(history_record(
+        "extrusion.side(profile_edge=circle)",
+        "analytic_generated",
+        "profile.edge.circle",
+        result,
+        side));
+    return success_result(result, std::move(history));
+  });
+}
+
+std::unique_ptr<NativeOperationResult> extrude_mixed_profile_native(
+    rust::Slice<const double> segments, double height) noexcept {
+  return guarded([&] {
+    if (segments.size() < 16 || segments.size() % 8 != 0) {
+      return error_result(STATUS_INVALID_PARAMETER, "Mixed profile segment payload is malformed");
+    }
+    BRepBuilderAPI_MakeWire wire_builder;
+    std::vector<TopoDS_Edge> profile_edges;
+    profile_edges.reserve(segments.size() / 8);
+    std::size_t first_arc_index = profile_edges.capacity();
+    for (std::size_t offset = 0; offset < segments.size(); offset += 8) {
+      const double kind = segments[offset];
+      const gp_Pnt start(segments[offset + 1], segments[offset + 2], 0.0);
+      const gp_Pnt end(segments[offset + 3], segments[offset + 4], 0.0);
+      TopoDS_Edge edge;
+      if (kind == 0.0) {
+        edge = BRepBuilderAPI_MakeEdge(start, end).Edge();
+      } else if (kind == 1.0) {
+        const double center_x = segments[offset + 5];
+        const double center_y = segments[offset + 6];
+        const bool clockwise = segments[offset + 7] != 0.0;
+        const double start_angle = std::atan2(start.Y() - center_y, start.X() - center_x);
+        const double end_angle = std::atan2(end.Y() - center_y, end.X() - center_x);
+        double sweep = end_angle - start_angle;
+        const double tau = 2.0 * std::acos(-1.0);
+        if (clockwise) {
+          while (sweep >= 0.0) sweep -= tau;
+        } else {
+          while (sweep <= 0.0) sweep += tau;
+        }
+        const double radius = start.Distance(gp_Pnt(center_x, center_y, 0.0));
+        const double middle_angle = start_angle + sweep / 2.0;
+        const gp_Pnt middle(
+            center_x + radius * std::cos(middle_angle),
+            center_y + radius * std::sin(middle_angle),
+            0.0);
+        GC_MakeArcOfCircle arc_builder(start, middle, end);
+        if (!arc_builder.IsDone()) {
+          return error_result(STATUS_INVALID_SHAPE, "OCCT mixed profile arc builder did not complete");
+        }
+        edge = BRepBuilderAPI_MakeEdge(arc_builder.Value()).Edge();
+        if (first_arc_index == profile_edges.capacity()) {
+          first_arc_index = profile_edges.size();
+        }
+      } else {
+        return error_result(STATUS_INVALID_PARAMETER, "Mixed profile segment kind is invalid");
+      }
+      if (edge.IsNull()) {
+        return error_result(STATUS_INVALID_SHAPE, "OCCT mixed profile edge is null");
+      }
+      profile_edges.push_back(edge);
+      wire_builder.Add(edge);
+    }
+    if (!wire_builder.IsDone() || first_arc_index >= profile_edges.size()) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT mixed profile wire is incomplete");
+    }
+    BRepBuilderAPI_MakeFace face_builder(wire_builder.Wire(), true);
+    if (!face_builder.IsDone()) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT mixed profile face builder did not complete");
+    }
+    const TopoDS_Face profile = face_builder.Face();
+    TopoDS_Edge profile_arc;
+    const std::size_t arc_offset = first_arc_index * 8;
+    const gp_Pnt expected_arc_start(segments[arc_offset + 1], segments[arc_offset + 2], 0.0);
+    const gp_Pnt expected_arc_end(segments[arc_offset + 3], segments[arc_offset + 4], 0.0);
+    for (TopExp_Explorer explorer(profile, TopAbs_EDGE); explorer.More(); explorer.Next()) {
+      const TopoDS_Edge candidate = TopoDS::Edge(explorer.Current());
+      if (BRepAdaptor_Curve(candidate).GetType() != GeomAbs_Circle) {
+        continue;
+      }
+      TopoDS_Vertex first;
+      TopoDS_Vertex last;
+      TopExp::Vertices(candidate, first, last);
+      if (first.IsNull() || last.IsNull()) {
+        continue;
+      }
+      const gp_Pnt first_point = BRep_Tool::Pnt(first);
+      const gp_Pnt last_point = BRep_Tool::Pnt(last);
+      const bool endpoints_match =
+          (first_point.Distance(expected_arc_start) <= 1.0e-9
+              && last_point.Distance(expected_arc_end) <= 1.0e-9)
+          || (first_point.Distance(expected_arc_end) <= 1.0e-9
+              && last_point.Distance(expected_arc_start) <= 1.0e-9);
+      if (endpoints_match) {
+        if (!profile_arc.IsNull()) {
+          return error_result(STATUS_INVALID_SHAPE, "OCCT mixed profile first arc is ambiguous");
+        }
+        profile_arc = candidate;
+      }
+    }
+    if (profile_arc.IsNull()) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT mixed profile lost its first analytic arc");
+    }
+    BRepPrimAPI_MakePrism operation(profile, gp_Vec(0.0, 0.0, height), true, false);
+    if (!operation.IsDone()) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT mixed profile prism builder did not complete");
+    }
+    const TopoDS_Shape result = operation.Shape();
+    std::vector<HistoryRecord> history;
+    history.push_back(history_record(
+        "extrusion.bottom", "first_shape", "profile.face", result, operation.FirstShape()));
+    history.push_back(history_record(
+        "extrusion.top", "last_shape", "profile.face", result, operation.LastShape()));
+    HistoryRecord arc_history{
+        "extrusion.side(profile_edge=arc.0)", "generated", "profile.edge.arc.0", 0, false};
+    const NCollection_List<TopoDS_Shape>& generated = operation.Generated(profile_arc);
+    for (NCollection_List<TopoDS_Shape>::Iterator iterator(generated); iterator.More(); iterator.Next()) {
+      const HistoryRecord candidate = history_record(
+          "extrusion.side(profile_edge=arc.0)",
+          "generated",
+          "profile.edge.arc.0",
+          result,
+          iterator.Value());
+      if (candidate.output_present) {
+        arc_history = candidate;
+        break;
+      }
+    }
+    history.push_back(std::move(arc_history));
+    return success_result(result, std::move(history));
+  });
+}
+
+std::unique_ptr<NativeOperationResult> revolve_general_profile_native(
+    rust::Slice<const double> segments,
+    double axis_start_x, double axis_start_y,
+    double axis_end_x, double axis_end_y,
+    double angle_degrees) noexcept {
+  return guarded([&] {
+    if (segments.size() < 16 || segments.size() % 8 != 0
+        || !std::isfinite(axis_start_x) || !std::isfinite(axis_start_y)
+        || !std::isfinite(axis_end_x) || !std::isfinite(axis_end_y)
+        || !std::isfinite(angle_degrees) || angle_degrees <= 0.0 || angle_degrees > 360.0) {
+      return error_result(STATUS_INVALID_PARAMETER, "General revolve payload is malformed");
+    }
+    const gp_Vec axis_vector(
+        axis_end_x - axis_start_x,
+        axis_end_y - axis_start_y,
+        0.0);
+    if (axis_vector.Magnitude() <= 1.0e-12) {
+      return error_result(STATUS_INVALID_PARAMETER, "General revolve axis is degenerate");
+    }
+
+    BRepBuilderAPI_MakeWire wire_builder;
+    std::vector<TopoDS_Edge> profile_edges;
+    profile_edges.reserve(segments.size() / 8);
+    for (std::size_t offset = 0; offset < segments.size(); offset += 8) {
+      const double kind = segments[offset];
+      const gp_Pnt start(segments[offset + 1], segments[offset + 2], 0.0);
+      const gp_Pnt end(segments[offset + 3], segments[offset + 4], 0.0);
+      TopoDS_Edge edge;
+      if (kind == 0.0) {
+        edge = BRepBuilderAPI_MakeEdge(start, end).Edge();
+      } else if (kind == 1.0) {
+        const double center_x = segments[offset + 5];
+        const double center_y = segments[offset + 6];
+        const bool clockwise = segments[offset + 7] != 0.0;
+        const double start_angle = std::atan2(start.Y() - center_y, start.X() - center_x);
+        const double end_angle = std::atan2(end.Y() - center_y, end.X() - center_x);
+        double sweep = end_angle - start_angle;
+        const double tau = 2.0 * std::acos(-1.0);
+        if (clockwise) {
+          while (sweep >= 0.0) sweep -= tau;
+        } else {
+          while (sweep <= 0.0) sweep += tau;
+        }
+        const double radius = start.Distance(gp_Pnt(center_x, center_y, 0.0));
+        const double middle_angle = start_angle + sweep / 2.0;
+        const gp_Pnt middle(
+            center_x + radius * std::cos(middle_angle),
+            center_y + radius * std::sin(middle_angle),
+            0.0);
+        GC_MakeArcOfCircle arc_builder(start, middle, end);
+        if (!arc_builder.IsDone()) {
+          return error_result(STATUS_INVALID_SHAPE, "OCCT general revolve arc builder did not complete");
+        }
+        edge = BRepBuilderAPI_MakeEdge(arc_builder.Value()).Edge();
+      } else {
+        return error_result(STATUS_INVALID_PARAMETER, "General revolve segment kind is invalid");
+      }
+      if (edge.IsNull()) {
+        return error_result(STATUS_INVALID_SHAPE, "OCCT general revolve edge is null");
+      }
+      profile_edges.push_back(edge);
+      wire_builder.Add(edge);
+    }
+    if (!wire_builder.IsDone()) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT general revolve wire builder did not complete");
+    }
+    BRepBuilderAPI_MakeFace face_builder(wire_builder.Wire(), true);
+    if (!face_builder.IsDone()) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT general revolve profile face builder did not complete");
+    }
+    const TopoDS_Face profile = face_builder.Face();
+    std::vector<TopoDS_Edge> operation_edges;
+    operation_edges.reserve(2);
+    for (std::size_t source_index = 0; source_index < 2; ++source_index) {
+      const std::size_t offset = source_index * 8;
+      const double kind = segments[offset];
+      const gp_Pnt expected_start(segments[offset + 1], segments[offset + 2], 0.0);
+      const gp_Pnt expected_end(segments[offset + 3], segments[offset + 4], 0.0);
+      gp_Pnt expected_middle(
+          (expected_start.X() + expected_end.X()) / 2.0,
+          (expected_start.Y() + expected_end.Y()) / 2.0,
+          0.0);
+      if (kind == 1.0) {
+        const double center_x = segments[offset + 5];
+        const double center_y = segments[offset + 6];
+        const bool clockwise = segments[offset + 7] != 0.0;
+        const double start_angle = std::atan2(
+            expected_start.Y() - center_y, expected_start.X() - center_x);
+        const double end_angle = std::atan2(
+            expected_end.Y() - center_y, expected_end.X() - center_x);
+        double sweep = end_angle - start_angle;
+        const double tau = 2.0 * std::acos(-1.0);
+        if (clockwise) {
+          while (sweep >= 0.0) sweep -= tau;
+        } else {
+          while (sweep <= 0.0) sweep += tau;
+        }
+        const double radius = expected_start.Distance(gp_Pnt(center_x, center_y, 0.0));
+        expected_middle = gp_Pnt(
+            center_x + radius * std::cos(start_angle + sweep / 2.0),
+            center_y + radius * std::sin(start_angle + sweep / 2.0),
+            0.0);
+      }
+      TopoDS_Edge matched;
+      for (TopExp_Explorer explorer(profile, TopAbs_EDGE); explorer.More(); explorer.Next()) {
+        const TopoDS_Edge candidate = TopoDS::Edge(explorer.Current());
+        BRepAdaptor_Curve curve(candidate);
+        if ((kind == 0.0 && curve.GetType() != GeomAbs_Line)
+            || (kind == 1.0 && curve.GetType() != GeomAbs_Circle)) {
+          continue;
+        }
+        TopoDS_Vertex first;
+        TopoDS_Vertex last;
+        TopExp::Vertices(candidate, first, last);
+        if (first.IsNull() || last.IsNull()) {
+          continue;
+        }
+        const gp_Pnt first_point = BRep_Tool::Pnt(first);
+        const gp_Pnt last_point = BRep_Tool::Pnt(last);
+        const bool endpoints_match =
+            (first_point.Distance(expected_start) <= 1.0e-9
+                && last_point.Distance(expected_end) <= 1.0e-9)
+            || (first_point.Distance(expected_end) <= 1.0e-9
+                && last_point.Distance(expected_start) <= 1.0e-9);
+        if (!endpoints_match) {
+          continue;
+        }
+        if (kind == 1.0) {
+          const gp_Pnt candidate_middle = curve.Value(
+              (curve.FirstParameter() + curve.LastParameter()) / 2.0);
+          if (candidate_middle.Distance(expected_middle) > 1.0e-8) {
+            continue;
+          }
+        }
+        matched = candidate;
+        break;
+      }
+      if (matched.IsNull()) {
+        return error_result(STATUS_INVALID_SHAPE, "OCCT general revolve profile edge identity was lost");
+      }
+      operation_edges.push_back(matched);
+    }
+    const double angle_radians = angle_degrees * std::acos(-1.0) / 180.0;
+    BRepPrimAPI_MakeRevol operation(
+        profile,
+        gp_Ax1(gp_Pnt(axis_start_x, axis_start_y, 0.0), gp_Dir(axis_vector)),
+        angle_radians,
+        true);
+    if (!operation.IsDone()) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT general revolve builder did not complete");
+    }
+    const TopoDS_Shape result = operation.Shape();
+    std::vector<HistoryRecord> history;
+    const char* side_roles[] = {"revolve.side.0", "revolve.side.1"};
+    for (std::size_t index = 0; index < 2; ++index) {
+      const std::string source = std::string("profile.edge.") + std::to_string(index);
+      HistoryRecord record{side_roles[index], "generated", source, 0, false};
+      const NCollection_List<TopoDS_Shape>& generated = operation.Generated(operation_edges[index]);
+      for (NCollection_List<TopoDS_Shape>::Iterator iterator(generated); iterator.More(); iterator.Next()) {
+        const HistoryRecord candidate = history_record(
+            side_roles[index], "generated", source, result, iterator.Value());
+        if (candidate.output_present) {
+          record = candidate;
+          break;
+        }
+      }
+      history.push_back(std::move(record));
+    }
+    if (angle_degrees < 360.0) {
+      history.push_back(history_record(
+          "revolve.start", "first_shape", "profile.face", result, operation.FirstShape()));
+      history.push_back(history_record(
+          "revolve.end", "last_shape", "profile.face", result, operation.LastShape()));
+    }
+    return success_result(result, std::move(history));
+  });
+}
+
 std::unique_ptr<NativeOperationResult> revolve_profile_native(
     rust::Slice<const double> points) noexcept {
   return guarded([&] {
@@ -599,6 +1221,165 @@ std::unique_ptr<NativeOperationResult> revolve_profile_native(
       history.push_back(std::move(record));
     }
     return success_result(result, std::move(history));
+  });
+}
+
+std::unique_ptr<NativeOperationResult> shell_box_native(
+    double width, double depth, double height, double thickness) noexcept {
+  return guarded([&] {
+    if (!std::isfinite(width) || !std::isfinite(depth) || !std::isfinite(height)
+        || !std::isfinite(thickness) || width <= 0.0 || depth <= 0.0
+        || height <= 0.0 || thickness <= 0.0
+        || thickness * 2.0 >= std::min(width, depth) || thickness >= height) {
+      return error_result(STATUS_INVALID_PARAMETER, "Box shell dimensions are outside the conservative envelope");
+    }
+    BRepPrimAPI_MakeBox outer_builder(width, depth, height);
+    BRepPrimAPI_MakeBox cavity_builder(
+        gp_Pnt(thickness, thickness, thickness),
+        width - 2.0 * thickness,
+        depth - 2.0 * thickness,
+        height);
+    const TopoDS_Shape outer = outer_builder.Shape();
+    const TopoDS_Shape cavity = cavity_builder.Shape();
+    if (!outer_builder.IsDone() || !cavity_builder.IsDone()) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT box shell operands did not complete");
+    }
+    BRepAlgoAPI_Cut operation(outer, cavity);
+    operation.Build();
+    if (!operation.IsDone() || operation.HasErrors()) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT box shell cut did not complete");
+    }
+    const TopoDS_Shape result = operation.Shape();
+    constexpr double tolerance = 1.0e-5;
+    const auto close = [tolerance](double left, double right) {
+      return std::abs(left - right) <= tolerance;
+    };
+    std::vector<HistoryRecord> history;
+    for (TopExp_Explorer explorer(result, TopAbs_FACE); explorer.More(); explorer.Next()) {
+      const TopoDS_Face face = TopoDS::Face(explorer.Current());
+      Bnd_Box bounds;
+      BRepBndLib::Add(face, bounds);
+      double min_x = 0.0;
+      double min_y = 0.0;
+      double min_z = 0.0;
+      double max_x = 0.0;
+      double max_y = 0.0;
+      double max_z = 0.0;
+      bounds.Get(min_x, min_y, min_z, max_x, max_y, max_z);
+      const char* role = nullptr;
+      const char* source = nullptr;
+      if (close(min_z, 0.0) && close(max_z, 0.0)
+          && close(min_x, 0.0) && close(max_x, width)
+          && close(min_y, 0.0) && close(max_y, depth)) {
+        role = "shell.box.outer.bottom";
+        source = "extrusion.bottom";
+      } else if (close(min_x, width) && close(max_x, width)
+          && close(min_y, 0.0) && close(max_y, depth)
+          && close(min_z, 0.0) && close(max_z, height)) {
+        role = "shell.box.outer.east";
+        source = "extrusion.side(profile_edge=east)";
+      } else if (close(min_z, height) && close(max_z, height)
+          && close(min_x, 0.0) && close(max_x, width)
+          && close(min_y, 0.0) && close(max_y, depth)) {
+        role = "shell.box.rim";
+        source = "extrusion.top";
+      }
+      if (role != nullptr) {
+        history.push_back(history_record(
+            role, "bounded_box_shell_classification", source, result, face));
+      }
+    }
+    if (history.size() != 3) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT box shell did not produce three unambiguous semantic faces");
+    }
+    return success_result(result, std::move(history));
+  });
+}
+
+std::unique_ptr<NativeOperationResult> finish_shell_box_native(
+    double width, double depth, double height, double thickness,
+    double amount, bool fillet) noexcept {
+  return guarded([&] {
+    if (!std::isfinite(amount) || amount <= 0.0) {
+      return error_result(STATUS_INVALID_PARAMETER, "Box edge finish amount must be positive and finite");
+    }
+    auto base = shell_box_native(width, depth, height, thickness);
+    if (!base || !base->valid()) {
+      return error_result(STATUS_INVALID_SHAPE, "Box edge finish could not construct its shell input");
+    }
+    const TopoDS_Shape base_shape = base->impl().shape;
+    constexpr double tolerance = 1.0e-5;
+    TopTools_IndexedMapOfShape edges;
+    TopExp::MapShapes(base_shape, TopAbs_EDGE, edges);
+    TopoDS_Edge selected;
+    for (Standard_Integer index = 1; index <= edges.Extent(); ++index) {
+      const TopoDS_Edge edge = TopoDS::Edge(edges(index));
+      Bnd_Box bounds;
+      BRepBndLib::Add(edge, bounds);
+      double min_x = 0.0;
+      double min_y = 0.0;
+      double min_z = 0.0;
+      double max_x = 0.0;
+      double max_y = 0.0;
+      double max_z = 0.0;
+      bounds.Get(min_x, min_y, min_z, max_x, max_y, max_z);
+      if (std::abs(min_x - width) <= tolerance
+          && std::abs(max_x - width) <= tolerance
+          && std::abs(min_z - height) <= tolerance
+          && std::abs(max_z - height) <= tolerance
+          && std::abs(min_y) <= tolerance
+          && std::abs(max_y - depth) <= tolerance) {
+        if (!selected.IsNull()) {
+          return error_result(STATUS_INVALID_SHAPE, "Box edge finish stable role is ambiguous");
+        }
+        selected = edge;
+      }
+    }
+    if (selected.IsNull()) {
+      return error_result(STATUS_INVALID_SHAPE, "Box edge finish stable role was not resolved");
+    }
+    const auto collect_finished = [&](auto& operation) -> std::unique_ptr<NativeOperationResult> {
+      operation.Build();
+      if (!operation.IsDone()) {
+        return error_result(STATUS_INVALID_SHAPE, "OCCT box edge finish did not complete");
+      }
+      const TopoDS_Shape result = operation.Shape();
+      if (result.IsNull()) {
+        return error_result(STATUS_NULL_RESULT, "OCCT box edge finish returned a null shape");
+      }
+      std::vector<HistoryRecord> history;
+      history.reserve(base->impl().history.size());
+      for (const HistoryRecord& source_history : base->impl().history) {
+        const TopoDS_Face source_face = face_at_ordinal(base_shape, source_history.output_ordinal);
+        if (source_face.IsNull()) {
+          return error_result(STATUS_INVALID_SHAPE, "Box edge finish lost a shell source face");
+        }
+        const TopTools_ListOfShape& modified = operation.Modified(source_face);
+        if (modified.Extent() > 1) {
+          return error_result(STATUS_INVALID_SHAPE, "Box edge finish produced ambiguous face history");
+        }
+        const TopoDS_Shape mapped_face = modified.IsEmpty() ? source_face : modified.First();
+        HistoryRecord mapped = history_record(
+            source_history.semantic_role,
+            fillet ? "bounded_box_fillet_modified" : "bounded_box_chamfer_modified",
+            source_history.source_element_id,
+            result,
+            mapped_face);
+        if (!mapped.output_present) {
+          return error_result(STATUS_INVALID_SHAPE, "Box edge finish history output is absent");
+        }
+        history.push_back(std::move(mapped));
+      }
+      return success_result(result, std::move(history));
+    };
+    if (fillet) {
+      BRepFilletAPI_MakeFillet operation(base_shape);
+      operation.Add(amount, selected);
+      return collect_finished(operation);
+    }
+    BRepFilletAPI_MakeChamfer operation(base_shape);
+    operation.Add(amount, selected);
+    return collect_finished(operation);
   });
 }
 
@@ -883,6 +1664,157 @@ std::unique_ptr<NativeOperationResult> cut_box_native(
     append_cut_history(history, operation, result, base.impl().shape, "base.face.");
     append_cut_history(history, operation, result, tool, "tool.face.");
     return success_result(result, std::move(history));
+  });
+}
+
+std::unique_ptr<NativeOperationResult> cut_cylinder_native(
+    const NativeOperationResult& base,
+    double center_x, double center_y, double origin_z,
+    double radius, double height) noexcept {
+  return guarded([&] {
+    if (!base.valid()) {
+      return error_result(STATUS_INVALID_PARAMETER, "Cylinder cut base is not a valid exact body");
+    }
+    BRepPrimAPI_MakeCylinder tool_builder(
+        gp_Ax2(gp_Pnt(center_x, center_y, origin_z), gp_Dir(0.0, 0.0, 1.0)),
+        radius,
+        height);
+    tool_builder.Build();
+    if (!tool_builder.IsDone()) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT cylinder cut tool builder did not complete");
+    }
+    const TopoDS_Shape tool = tool_builder.Shape();
+    BRepAlgoAPI_Cut operation(base.impl().shape, tool);
+    operation.Build();
+    if (!operation.IsDone() || operation.HasErrors()) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT cylinder cut operation did not complete");
+    }
+    const TopoDS_Shape result = operation.Shape();
+    if (result.IsNull()) {
+      return error_result(STATUS_NULL_RESULT, "OCCT cylinder cut returned a null shape");
+    }
+    GProp_GProps before_properties;
+    GProp_GProps after_properties;
+    BRepGProp::VolumeProperties(base.impl().shape, before_properties);
+    BRepGProp::VolumeProperties(result, after_properties);
+    const double scale = std::max(1.0, std::abs(before_properties.Mass()));
+    if (std::abs(before_properties.Mass() - after_properties.Mass()) <=
+        scale * 16.0 * std::numeric_limits<double>::epsilon()) {
+      return error_result(STATUS_NO_GEOMETRIC_CHANGE, "Cylinder cut produced no measurable geometric change");
+    }
+    std::vector<HistoryRecord> history;
+    append_cut_history(history, operation, result, base.impl().shape, "base.face.");
+    append_cut_history(history, operation, result, tool, "tool.face.");
+    return success_result(result, std::move(history));
+  });
+}
+
+std::unique_ptr<NativeOperationResult> fuse_box_native(
+    const NativeOperationResult& base,
+    double origin_x, double origin_y, double origin_z,
+    double size_x, double size_y, double size_z) noexcept {
+  return guarded([&] {
+    if (!base.valid()) {
+      return error_result(STATUS_INVALID_PARAMETER, "Fuse base is not a valid exact body");
+    }
+    BRepPrimAPI_MakeBox tool_builder(
+        gp_Pnt(origin_x, origin_y, origin_z), size_x, size_y, size_z);
+    const TopoDS_Shape tool = tool_builder.Shape();
+    if (!tool_builder.IsDone()) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT fuse tool builder did not complete");
+    }
+    BRepAlgoAPI_Fuse operation(base.impl().shape, tool);
+    operation.Build();
+    if (operation.IsDone() && !operation.HasErrors()) {
+      operation.SimplifyResult(true, true);
+    }
+    if (!operation.IsDone() || operation.HasErrors()) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT fuse operation did not complete");
+    }
+    const TopoDS_Shape result = operation.Shape();
+    if (result.IsNull()) {
+      return error_result(STATUS_NULL_RESULT, "OCCT fuse returned a null shape");
+    }
+
+    GProp_GProps before_properties;
+    GProp_GProps after_properties;
+    BRepGProp::VolumeProperties(base.impl().shape, before_properties);
+    BRepGProp::VolumeProperties(result, after_properties);
+    const double scale = std::max(1.0, std::abs(before_properties.Mass()));
+    if (after_properties.Mass() - before_properties.Mass() <=
+        scale * 16.0 * std::numeric_limits<double>::epsilon()) {
+      return error_result(STATUS_NO_GEOMETRIC_CHANGE, "Fuse produced no measurable geometric change");
+    }
+
+    return success_result(result, {});
+  });
+}
+
+std::unique_ptr<NativeOperationResult> common_box_native(
+    const NativeOperationResult& base,
+    double origin_x, double origin_y, double origin_z,
+    double size_x, double size_y, double size_z) noexcept {
+  return guarded([&] {
+    if (!base.valid()) {
+      return error_result(STATUS_INVALID_PARAMETER, "Common base is not a valid exact body");
+    }
+    BRepPrimAPI_MakeBox tool_builder(
+        gp_Pnt(origin_x, origin_y, origin_z), size_x, size_y, size_z);
+    const TopoDS_Shape tool = tool_builder.Shape();
+    if (!tool_builder.IsDone()) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT common tool builder did not complete");
+    }
+    BRepAlgoAPI_Common operation(base.impl().shape, tool);
+    operation.Build();
+    if (!operation.IsDone() || operation.HasErrors()) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT common operation did not complete");
+    }
+    const TopoDS_Shape result = operation.Shape();
+    if (result.IsNull()) {
+      return error_result(STATUS_NULL_RESULT, "OCCT common returned a null shape");
+    }
+    return success_result(result, {});
+  });
+}
+
+std::unique_ptr<NativeOperationResult> split_box_native(
+    const NativeOperationResult& base,
+    double origin_x, double origin_y, double origin_z,
+    double size_x, double size_y, double size_z) noexcept {
+  return guarded([&] {
+    if (!base.valid()) {
+      return error_result(STATUS_INVALID_PARAMETER, "Split base is not a valid exact body");
+    }
+    BRepPrimAPI_MakeBox tool_builder(
+        gp_Pnt(origin_x, origin_y, origin_z), size_x, size_y, size_z);
+    const TopoDS_Shape tool = tool_builder.Shape();
+    if (!tool_builder.IsDone()) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT split tool builder did not complete");
+    }
+    BOPAlgo_Splitter operation;
+    operation.AddArgument(base.impl().shape);
+    operation.AddTool(tool);
+    operation.Perform();
+    if (operation.HasErrors()) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT split operation did not complete");
+    }
+    const TopoDS_Shape result = operation.Shape();
+    if (result.IsNull()) {
+      return error_result(STATUS_NULL_RESULT, "OCCT split returned a null shape");
+    }
+    if (count_subshapes(result, TopAbs_SOLID) < 2) {
+      return error_result(STATUS_NO_GEOMETRIC_CHANGE, "Split did not produce multiple target fragments");
+    }
+
+    GProp_GProps before_properties;
+    GProp_GProps after_properties;
+    BRepGProp::VolumeProperties(base.impl().shape, before_properties);
+    BRepGProp::VolumeProperties(result, after_properties);
+    const double scale = std::max(1.0, std::abs(before_properties.Mass()));
+    if (std::abs(after_properties.Mass() - before_properties.Mass()) > scale * 1.0e-10) {
+      return error_result(STATUS_INVALID_SHAPE, "Split did not preserve target volume");
+    }
+    return success_result(result, {}, true);
   });
 }
 

@@ -1,17 +1,24 @@
 use ketchup_core::bottle_m6::ExactRevolveRequest;
 use ketchup_core::document::{
-    BooleanOperation, BottleControlDimension, BottleEdgeFinishKind, CanonicalCommand,
-    CanonicalError, CommandBatch, DefinitionId, DerivedIdentity, Dimension, DimensionDisplayUnit,
-    DimensionPresentation, DimensionReferenceHealth, DocumentId, DocumentStore, EvaluationIdentity,
-    FeatureId, FeatureKind, FeatureParameterBinding, FeatureParameterFreshness,
-    FeatureParameterSlot, FeatureParameterStaleReason, FeatureParameterTarget, NodeId,
+    BOTTLE_SHELL_OPENING_FACE_ROLE, BOTTLE_SHOULDER_EDGE_ROLE, BooleanOperation,
+    BottleControlDimension, BottleEdgeFinishKind, CanonicalCommand, CanonicalError, CommandBatch,
+    DefinitionId, DerivedIdentity, Dimension, DimensionDisplayUnit, DimensionPresentation,
+    DimensionReferenceHealth, DocumentId, DocumentStore, EvaluationIdentity, FeatureId,
+    FeatureKind, FeatureParameterBinding, FeatureParameterFreshness, FeatureParameterSlot,
+    FeatureParameterStaleReason, FeatureParameterTarget, LoftSection, MeshAuthority, NodeId,
     OccurrenceId, PersistentDimension, PersistentDimensionId, PersistentDimensionTarget, PortSpec,
-    RuleOutput, SlotPath, SlotSegment, Transform,
+    ProfileSegment, RuleOutput, SlotPath, SlotSegment, StableEdgeRole, StableFaceRole, Transform,
 };
 use ketchup_core::exact_product::{
-    EXACT_BOOLEAN_UNION_EVALUATOR_V1, EXACT_THROUGH_CUT_EVALUATOR_V1, ExactBodyPackage,
-    ExactFaceRole, ExactFeatureChainRequest, ExactProductError, ExactReferenceQuarantineReason,
-    ExactReferenceResolution, ExactResultRegistry, canonical_reference_lineage_digest,
+    EXACT_ARC_PROFILE_EVALUATOR_V1, EXACT_BOOLEAN_INTERSECT_EVALUATOR_V1,
+    EXACT_BOOLEAN_SPLIT_EVALUATOR_V1, EXACT_BOOLEAN_UNION_EVALUATOR_V1,
+    EXACT_BOX_FINISH_EVALUATOR_V1, EXACT_BOX_SHELL_EVALUATOR_V1, EXACT_CIRCLE_EVALUATOR_V1,
+    EXACT_CIRCULAR_CUT_EVALUATOR_V1, EXACT_LOFT_EVALUATOR_V1, EXACT_PLANAR_OFFSET_EVALUATOR_V1,
+    EXACT_POCKET_EVALUATOR_V1, EXACT_SWEEP_EVALUATOR_V1, EXACT_THROUGH_CUT_EVALUATOR_V1,
+    ExactBodyPackage, ExactFaceRole, ExactFeatureChainRequest, ExactLoftRequest,
+    ExactPlanarOffsetRequest, ExactProductError, ExactReferenceQuarantineReason,
+    ExactReferenceResolution, ExactRenderPackage, ExactResultRegistry, ExactSweepRequest,
+    canonical_reference_lineage_digest,
 };
 use ketchup_exact::{
     ExactBackend, RectangleExtrudeSpec, ReferenceResolution, StabilityClass,
@@ -29,6 +36,7 @@ const DEFINITION: DefinitionId = DefinitionId(10);
 const CUT_PROFILE: FeatureId = FeatureId(14);
 const TOOL_EXTRUSION: FeatureId = FeatureId(15);
 const THROUGH_CUT: FeatureId = FeatureId(16);
+const POCKET: FeatureId = FeatureId(17);
 const BOTTLE_DEFINITION: DefinitionId = DefinitionId(30);
 const BOTTLE_PROFILE: FeatureId = FeatureId(31);
 const BOTTLE_REVOLVE: FeatureId = FeatureId(32);
@@ -249,6 +257,10 @@ fn exact_reference_health_is_explicit_across_transform_mutation_conflict_and_qua
     cut_document
         .apply_batch(&CommandBatch::new(vec![
             CanonicalCommand::DeleteFeature { id: THROUGH_CUT },
+            CanonicalCommand::SetProfilePoints {
+                id: CUT_PROFILE,
+                points_mm: vec![[80.0, 0.0], [120.0, 0.0], [120.0, 60.0], [80.0, 60.0]],
+            },
             CanonicalCommand::CreateFeature {
                 id: THROUGH_CUT,
                 definition_id: DEFINITION,
@@ -382,7 +394,10 @@ fn persistent_exact_dimension_resolves_only_against_current_registered_semantic_
     let reopened =
         ketchup_core::persistence::load(&ketchup_core::persistence::save(&document.current()))
             .unwrap();
-    assert_eq!(reopened.source_schema(), 17);
+    assert_eq!(
+        reopened.source_schema(),
+        ketchup_core::persistence::CURRENT_SCHEMA
+    );
     assert_eq!(
         reopened
             .snapshot()
@@ -575,7 +590,10 @@ fn exact_to_mesh_conversion_creates_one_detached_canonical_authority_with_explic
     let converted_digest = converted.canonical_digest();
     let reopened =
         ketchup_core::persistence::load(&ketchup_core::persistence::save(&converted)).unwrap();
-    assert_eq!(reopened.source_schema(), 17);
+    assert_eq!(
+        reopened.source_schema(),
+        ketchup_core::persistence::CURRENT_SCHEMA
+    );
     let reopened_snapshot = reopened.snapshot();
     let reopened_spec = match reopened_snapshot.feature(MESH_FEATURE).unwrap().kind() {
         FeatureKind::MeshBody(spec) => spec,
@@ -734,12 +752,24 @@ fn scheduler_evaluates_canonical_boolean_cut_with_seven_role_evidences() {
                 ExactFaceRole::CutWest
                 | ExactFaceRole::CutEast
                 | ExactFaceRole::CutSouth
-                | ExactFaceRole::CutNorth => CUT_PROFILE,
-                ExactFaceRole::RevolveBottom
+                | ExactFaceRole::CutNorth
+                | ExactFaceRole::PocketFloor
+                | ExactFaceRole::PocketWest
+                | ExactFaceRole::PocketEast
+                | ExactFaceRole::PocketSouth
+                | ExactFaceRole::PocketNorth => CUT_PROFILE,
+                ExactFaceRole::CircleSide
+                | ExactFaceRole::ArcSide
+                | ExactFaceRole::CutCircle
+                | ExactFaceRole::RevolveBottom
                 | ExactFaceRole::RevolveBody
                 | ExactFaceRole::RevolveShoulder
                 | ExactFaceRole::RevolveNeck
                 | ExactFaceRole::RevolveMouth
+                | ExactFaceRole::RevolveSide0
+                | ExactFaceRole::RevolveSide1
+                | ExactFaceRole::RevolveStart
+                | ExactFaceRole::RevolveEnd
                 | ExactFaceRole::ShellOuterBottom
                 | ExactFaceRole::ShellOuterBody
                 | ExactFaceRole::ShellOuterShoulder
@@ -748,7 +778,20 @@ fn scheduler_evaluates_canonical_boolean_cut_with_seven_role_evidences() {
                 | ExactFaceRole::ShellInnerBottom
                 | ExactFaceRole::ShellInnerBody
                 | ExactFaceRole::ShellInnerShoulder
-                | ExactFaceRole::ShellInnerNeck => unreachable!(),
+                | ExactFaceRole::ShellInnerNeck
+                | ExactFaceRole::BoxShellOuterBottom
+                | ExactFaceRole::BoxShellOuterEast
+                | ExactFaceRole::BoxShellRim
+                | ExactFaceRole::PlanarOffsetFace
+                | ExactFaceRole::SweepStart
+                | ExactFaceRole::SweepEnd
+                | ExactFaceRole::SweepSide0
+                | ExactFaceRole::SweepSide1
+                | ExactFaceRole::SweepSide2
+                | ExactFaceRole::SweepSide3
+                | ExactFaceRole::LoftStart
+                | ExactFaceRole::LoftEnd
+                | ExactFaceRole::LoftSide => unreachable!(),
             }
         );
         assert!(matching[0].has_valid_lineage());
@@ -762,7 +805,10 @@ fn scheduler_evaluates_canonical_boolean_cut_with_seven_role_evidences() {
     let loaded =
         ketchup_core::persistence::load(&ketchup_core::persistence::save(&document.current()))
             .unwrap();
-    assert_eq!(loaded.source_schema(), 17);
+    assert_eq!(
+        loaded.source_schema(),
+        ketchup_core::persistence::CURRENT_SCHEMA
+    );
     let reopened = match loaded {
         ketchup_core::persistence::LoadOutcome::Editable { document, .. } => document,
         ketchup_core::persistence::LoadOutcome::ReviewOnly(_) => {
@@ -777,13 +823,315 @@ fn scheduler_evaluates_canonical_boolean_cut_with_seven_role_evidences() {
 }
 
 #[test]
-fn scheduler_evaluates_contained_boolean_union_as_the_target_body() {
+fn scheduler_evaluates_exact_circle_extrusion_and_circular_cut_with_typed_stable_faces() {
+    let mut supervisor = ExactWorkerSupervisor::spawn(worker_path()).unwrap();
+
+    let circle_document = circle_document([30.0, 20.0], 10.0, 18.0);
+    let circle_snapshot = circle_document.current();
+    let circle_request =
+        ExactFeatureChainRequest::from_snapshot(&circle_snapshot, DEFINITION).unwrap();
+    assert_eq!(circle_request.evaluator(), EXACT_CIRCLE_EVALUATOR_V1);
+    assert_eq!(
+        circle_request.expected_bounds_mm(),
+        [[20.0, 10.0, 0.0], [40.0, 30.0, 18.0]]
+    );
+    let circle_package = supervisor.evaluate_rectangle(&circle_request).unwrap();
+    assert!(circle_package.is_current(&circle_snapshot));
+    assert_eq!(circle_package.vertices.len(), 66);
+    assert_eq!(circle_package.triangles.len(), 128);
+    assert_closed_manifold(&circle_package);
+    for (role, expected_type) in [
+        (ExactFaceRole::Top, "planar_face"),
+        (ExactFaceRole::Bottom, "planar_face"),
+        (ExactFaceRole::CircleSide, "cylindrical_face"),
+    ] {
+        let reference = circle_package.reference(role).unwrap();
+        assert_eq!(reference.expected_type, expected_type);
+        assert_eq!(reference.profile_feature_id, PROFILE);
+        assert!(reference.has_valid_lineage());
+    }
+
+    let cut_document = circular_cut_document(100.0, 60.0, 18.0, [40.0, 30.0], 10.0);
+    let cut_snapshot = cut_document.current();
+    let cut_request = ExactFeatureChainRequest::from_snapshot(&cut_snapshot, DEFINITION).unwrap();
+    assert_eq!(cut_request.evaluator(), EXACT_CIRCULAR_CUT_EVALUATOR_V1);
+    assert_eq!(
+        cut_request.expected_bounds_mm(),
+        [[0.0, 0.0, 0.0], [100.0, 60.0, 18.0]]
+    );
+    let cut_package = supervisor.evaluate_rectangle(&cut_request).unwrap();
+    assert!(cut_package.is_current(&cut_snapshot));
+    assert_eq!(cut_package.vertices.len(), 128);
+    assert_eq!(cut_package.triangles.len(), 256);
+    assert_closed_manifold(&cut_package);
+    for (role, expected_type, profile_id) in [
+        (ExactFaceRole::Top, "planar_face", PROFILE),
+        (ExactFaceRole::Bottom, "planar_face", PROFILE),
+        (ExactFaceRole::East, "planar_face", PROFILE),
+        (ExactFaceRole::CutCircle, "cylindrical_face", CUT_PROFILE),
+    ] {
+        let reference = cut_package.reference(role).unwrap();
+        assert_eq!(reference.expected_type, expected_type);
+        assert_eq!(reference.profile_feature_id, profile_id);
+        assert!(reference.has_valid_lineage());
+    }
+}
+
+#[test]
+fn scheduler_evaluates_exact_mixed_line_arc_profile_with_derived_non_authoritative_mesh() {
+    const MESH_DEFINITION: DefinitionId = DefinitionId(90);
+    const MESH_FEATURE: FeatureId = FeatureId(91);
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DEFINITION,
+                name: "Mixed profile definition".to_owned(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: PROFILE,
+                definition_id: DEFINITION,
+                name: "Exact D profile".to_owned(),
+                kind: FeatureKind::SegmentProfile {
+                    segments: vec![
+                        ProfileSegment::Line {
+                            start_mm: [0.0, 0.0],
+                            end_mm: [20.0, 0.0],
+                        },
+                        ProfileSegment::CircularArc {
+                            start_mm: [20.0, 0.0],
+                            end_mm: [0.0, 0.0],
+                            center_mm: [10.0, 0.0],
+                            clockwise: false,
+                        },
+                    ],
+                    closed: true,
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: EXTRUSION,
+                definition_id: DEFINITION,
+                name: "Exact D extrusion".to_owned(),
+                kind: FeatureKind::Extrusion {
+                    profile: PROFILE,
+                    height: Dimension::new("8", 8.0).unwrap(),
+                },
+            },
+        ]))
+        .unwrap();
+    let snapshot = document.current();
+    let request = ExactFeatureChainRequest::from_snapshot(&snapshot, DEFINITION).unwrap();
+    assert_eq!(request.evaluator(), EXACT_ARC_PROFILE_EVALUATOR_V1);
+    assert_eq!(
+        request.expected_bounds_mm(),
+        [[0.0, 0.0, 0.0], [20.0, 10.0, 8.0]]
+    );
+    let mixed = request.mixed_profile.as_ref().unwrap();
+    assert_eq!(mixed.segments.len(), 2);
+    assert!((f64::from_bits(mixed.area_bits) - 50.0 * std::f64::consts::PI).abs() < 1.0e-9);
+
+    let mut supervisor = ExactWorkerSupervisor::spawn(worker_path()).unwrap();
+    let package = supervisor.evaluate_rectangle(&request).unwrap();
+    assert!(package.is_current(&snapshot));
+    assert_eq!(package.vertices.len(), 66);
+    assert_eq!(package.triangles.len(), 128);
+    assert_closed_manifold(&package);
+    let arc = package.reference(ExactFaceRole::ArcSide).unwrap();
+    assert_eq!(arc.expected_type, "face");
+    assert_eq!(arc.source_element_id, "profile.edge.arc.0");
+    assert!(arc.has_valid_lineage());
+
+    let exact = ExactBodyPackage::from(package.clone());
+    let conversion = exact
+        .detached_mesh_conversion_batch(
+            &snapshot,
+            MESH_DEFINITION,
+            "Derived D mesh",
+            MESH_FEATURE,
+            "Derived tessellation",
+        )
+        .unwrap();
+    document.apply_batch(&conversion).unwrap();
+    let converted = document.current();
+    let FeatureKind::MeshBody(spec) = converted.feature(MESH_FEATURE).unwrap().kind() else {
+        panic!("detached conversion must create a mesh body");
+    };
+    let MeshAuthority::ExactConversion(authority) = &spec.authority else {
+        panic!("render tessellation must remain an explicit exact conversion");
+    };
+    assert_eq!(
+        authority.source_result_fingerprint,
+        package.identity.result_fingerprint
+    );
+    assert_eq!(authority.source_evaluator, EXACT_ARC_PROFILE_EVALUATOR_V1);
+    assert!(
+        authority
+            .unsupported_semantics
+            .contains(&"analytic_surfaces".to_owned())
+    );
+}
+
+#[test]
+fn exact_circle_request_rejects_non_circular_segment_profile_before_worker_dispatch() {
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DEFINITION,
+                name: "Unsupported segment definition".to_owned(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: PROFILE,
+                definition_id: DEFINITION,
+                name: "Line segment profile".to_owned(),
+                kind: FeatureKind::SegmentProfile {
+                    segments: vec![
+                        ProfileSegment::Line {
+                            start_mm: [0.0, 0.0],
+                            end_mm: [10.0, 0.0],
+                        },
+                        ProfileSegment::Line {
+                            start_mm: [10.0, 0.0],
+                            end_mm: [10.0, 10.0],
+                        },
+                        ProfileSegment::Line {
+                            start_mm: [10.0, 10.0],
+                            end_mm: [0.0, 10.0],
+                        },
+                        ProfileSegment::Line {
+                            start_mm: [0.0, 10.0],
+                            end_mm: [0.0, 0.0],
+                        },
+                    ],
+                    closed: true,
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: EXTRUSION,
+                definition_id: DEFINITION,
+                name: "Unsupported exact extrusion".to_owned(),
+                kind: FeatureKind::Extrusion {
+                    profile: PROFILE,
+                    height: Dimension::new("18", 18.0).unwrap(),
+                },
+            },
+        ]))
+        .unwrap();
+
+    assert_eq!(
+        ExactFeatureChainRequest::from_snapshot(&document.current(), DEFINITION),
+        Err(ExactProductError::UnsupportedProfile)
+    );
+}
+
+#[test]
+fn scheduler_evaluates_canonical_depth_limited_pocket_with_stable_floor_and_walls() {
+    let mut supervisor = ExactWorkerSupervisor::spawn(worker_path()).unwrap();
+    let mut document = rectangle_document(100.0, 60.0, 18.0);
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateFeature {
+                id: CUT_PROFILE,
+                definition_id: DEFINITION,
+                name: "Pocket profile".to_owned(),
+                kind: FeatureKind::Profile {
+                    points_mm: vec![[30.0, 20.0], [50.0, 20.0], [50.0, 35.0], [30.0, 35.0]],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: POCKET,
+                definition_id: DEFINITION,
+                name: "6 mm pocket".to_owned(),
+                kind: FeatureKind::Pocket {
+                    target: EXTRUSION,
+                    profile: CUT_PROFILE,
+                    depth: Dimension::new("6 mm", 6.0).unwrap(),
+                },
+            },
+        ]))
+        .unwrap();
+    let snapshot = document.current();
+    let request = ExactFeatureChainRequest::from_snapshot(&snapshot, DEFINITION).unwrap();
+    assert_eq!(request.producer_feature_id(), POCKET);
+    assert_eq!(request.evaluator(), EXACT_POCKET_EVALUATOR_V1);
+    assert_eq!(request.pocket_depth_bits, Some(6.0_f64.to_bits()));
+
+    let package = supervisor.evaluate_rectangle(&request).unwrap();
+    assert!(package.is_current(&snapshot));
+    assert_eq!(package.identity.producer_feature_id, POCKET);
+    assert_eq!(package.identity.evaluator, EXACT_POCKET_EVALUATOR_V1);
+    assert_eq!(package.vertices.len(), 16);
+    assert_eq!(package.triangles.len(), 28);
+    assert_eq!(package.references.len(), 8);
+    for role in [
+        ExactFaceRole::Top,
+        ExactFaceRole::Bottom,
+        ExactFaceRole::East,
+        ExactFaceRole::PocketFloor,
+        ExactFaceRole::PocketWest,
+        ExactFaceRole::PocketEast,
+        ExactFaceRole::PocketSouth,
+        ExactFaceRole::PocketNorth,
+    ] {
+        let reference = package
+            .reference(role)
+            .expect("stable pocket face reference");
+        assert_eq!(reference.producer_feature_id, POCKET);
+        assert_eq!(
+            reference.profile_feature_id,
+            if matches!(
+                role,
+                ExactFaceRole::Top | ExactFaceRole::Bottom | ExactFaceRole::East
+            ) {
+                PROFILE
+            } else {
+                CUT_PROFILE
+            }
+        );
+        assert!(reference.has_valid_lineage());
+    }
+    let floor_ray = Ray::new(Vec3::new(40.0, 27.5, 30.0), Vec3::new(0.0, 0.0, -1.0)).unwrap();
+    let results =
+        ExactResultRegistry::accept(&snapshot, [Arc::new(package.clone().into())]).unwrap();
+    let projection = ExactInteractionProjection::from_snapshot(&snapshot, &results);
+    assert_eq!(
+        projection
+            .exact_pick(floor_ray)
+            .and_then(|hit| hit.target.body.role()),
+        Some(ExactFaceRole::PocketFloor)
+    );
+
+    for reference in package.references.clone() {
+        document
+            .register_exact_reference_evidence(reference)
+            .unwrap();
+    }
+    let reopened =
+        ketchup_core::persistence::load(&ketchup_core::persistence::save(&document.current()))
+            .unwrap();
+    assert_eq!(
+        reopened.source_schema(),
+        ketchup_core::persistence::CURRENT_SCHEMA
+    );
+    assert_eq!(
+        reopened.snapshot().canonical_digest(),
+        document.current().canonical_digest()
+    );
+    assert_eq!(reopened.snapshot().exact_reference_evidence().count(), 8);
+    assert!(matches!(
+        reopened.snapshot().feature(POCKET).unwrap().kind(),
+        FeatureKind::Pocket { depth, .. } if depth.millimetres() == 6.0
+    ));
+}
+
+#[test]
+fn scheduler_evaluates_overlapping_boolean_union_as_one_larger_exact_body() {
     let mut supervisor = ExactWorkerSupervisor::spawn(worker_path()).unwrap();
     let document = boolean_document(
         100.0,
         60.0,
         18.0,
-        [30.0, 20.0, 20.0, 15.0],
+        [80.0, 0.0, 40.0, 60.0],
         BooleanOperation::Union,
     );
     let snapshot = document.current();
@@ -800,15 +1148,499 @@ fn scheduler_evaluates_contained_boolean_union_as_the_target_body() {
     assert_eq!(package.vertices.len(), 8);
     assert_eq!(package.triangles.len(), 12);
     assert_eq!(package.references.len(), 3);
+    assert_eq!(package.bounds_mm, [[0.0, 0.0, 0.0], [120.0, 60.0, 18.0]]);
 
     let results = ExactResultRegistry::accept(&snapshot, [Arc::new(package.into())]).unwrap();
     let projection = ExactInteractionProjection::from_snapshot(&snapshot, &results);
-    let tool_region_ray = Ray::new(Vec3::new(40.0, 27.5, 30.0), Vec3::new(0.0, 0.0, -1.0)).unwrap();
+    let tool_region_ray =
+        Ray::new(Vec3::new(110.0, 27.5, 30.0), Vec3::new(0.0, 0.0, -1.0)).unwrap();
     assert_eq!(
         projection
             .exact_pick(tool_region_ray)
             .and_then(|hit| hit.target.body.role()),
         Some(ExactFaceRole::Top)
+    );
+}
+
+#[test]
+fn scheduler_evaluates_bounded_intersect_with_deterministic_exact_lineage() {
+    let mut supervisor = ExactWorkerSupervisor::spawn(worker_path()).unwrap();
+    let document = boolean_document(
+        100.0,
+        60.0,
+        18.0,
+        [70.0, 20.0, 60.0, 40.0],
+        BooleanOperation::Intersect,
+    );
+    let snapshot = document.current();
+    let request = ExactFeatureChainRequest::from_snapshot(&snapshot, DEFINITION).unwrap();
+    assert_eq!(request.producer_feature_id(), THROUGH_CUT);
+    assert_eq!(request.evaluator(), EXACT_BOOLEAN_INTERSECT_EVALUATOR_V1);
+    assert_eq!(
+        request.expected_bounds_mm(),
+        [[70.0, 20.0, 0.0], [100.0, 60.0, 18.0]]
+    );
+
+    let first = supervisor.evaluate_rectangle(&request).unwrap();
+    let repeated = supervisor.evaluate_rectangle(&request).unwrap();
+    assert!(first.is_current(&snapshot));
+    assert_eq!(first.identity, repeated.identity);
+    assert_eq!(first.references, repeated.references);
+    assert_eq!(first.identity.producer_feature_id, THROUGH_CUT);
+    assert_eq!(
+        first.identity.evaluator,
+        EXACT_BOOLEAN_INTERSECT_EVALUATOR_V1
+    );
+    assert_eq!(first.bounds_mm, request.expected_bounds_mm());
+    assert_eq!(first.vertices.len(), 8);
+    assert_eq!(first.triangles.len(), 12);
+    assert_eq!(first.references.len(), 3);
+    assert!(first.references.iter().all(|reference| {
+        reference.has_valid_lineage()
+            && reference.matches_request(&request)
+            && reference.producer_feature_id == THROUGH_CUT
+    }));
+
+    let results = ExactResultRegistry::accept(&snapshot, [Arc::new(first.into())]).unwrap();
+    let projection = ExactInteractionProjection::from_snapshot(&snapshot, &results);
+    let overlap_ray = Ray::new(Vec3::new(85.0, 40.0, 30.0), Vec3::new(0.0, 0.0, -1.0)).unwrap();
+    assert_eq!(
+        projection
+            .exact_pick(overlap_ray)
+            .and_then(|hit| hit.target.body.role()),
+        Some(ExactFaceRole::Top)
+    );
+}
+
+#[test]
+fn scheduler_evaluates_bounded_split_with_deterministic_exact_lineage() {
+    let mut supervisor = ExactWorkerSupervisor::spawn(worker_path()).unwrap();
+    let document = boolean_document(
+        100.0,
+        60.0,
+        18.0,
+        [70.0, 20.0, 60.0, 40.0],
+        BooleanOperation::Split,
+    );
+    let snapshot = document.current();
+    let request = ExactFeatureChainRequest::from_snapshot(&snapshot, DEFINITION).unwrap();
+    assert_eq!(request.producer_feature_id(), THROUGH_CUT);
+    assert_eq!(request.evaluator(), EXACT_BOOLEAN_SPLIT_EVALUATOR_V1);
+    assert_eq!(
+        request.expected_bounds_mm(),
+        [[0.0, 0.0, 0.0], [100.0, 60.0, 18.0]]
+    );
+
+    let first = supervisor.evaluate_rectangle(&request).unwrap();
+    let repeated = supervisor.evaluate_rectangle(&request).unwrap();
+    assert!(first.is_current(&snapshot));
+    assert_eq!(first.identity, repeated.identity);
+    assert_eq!(first.references, repeated.references);
+    assert_eq!(first.identity.producer_feature_id, THROUGH_CUT);
+    assert_eq!(first.identity.evaluator, EXACT_BOOLEAN_SPLIT_EVALUATOR_V1);
+    assert_eq!(first.bounds_mm, request.expected_bounds_mm());
+    assert_eq!(first.references.len(), 3);
+    assert!(first.references.iter().all(|reference| {
+        reference.has_valid_lineage()
+            && reference.matches_request(&request)
+            && reference.producer_feature_id == THROUGH_CUT
+    }));
+
+    let results = ExactResultRegistry::accept(&snapshot, [Arc::new(first.into())]).unwrap();
+    let projection = ExactInteractionProjection::from_snapshot(&snapshot, &results);
+    let target_ray = Ray::new(Vec3::new(30.0, 30.0, 30.0), Vec3::new(0.0, 0.0, -1.0)).unwrap();
+    assert_eq!(
+        projection
+            .exact_pick(target_ray)
+            .and_then(|hit| hit.target.body.role()),
+        Some(ExactFaceRole::Top)
+    );
+}
+
+#[test]
+fn scheduler_evaluates_bounded_planar_offset_with_deterministic_exact_lineage() {
+    const OFFSET_DEFINITION: DefinitionId = DefinitionId(701);
+    const OFFSET_PROFILE: FeatureId = FeatureId(702);
+    const OFFSET_FEATURE: FeatureId = FeatureId(703);
+
+    let mut supervisor = ExactWorkerSupervisor::spawn(worker_path()).unwrap();
+    let mut fingerprints = Vec::new();
+    for distance_mm in [5.0, -7.5] {
+        let mut document = DocumentStore::new();
+        document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::CreateDefinition {
+                    id: OFFSET_DEFINITION,
+                    name: "Offset profile".to_owned(),
+                },
+                CanonicalCommand::CreateFeature {
+                    id: OFFSET_PROFILE,
+                    definition_id: OFFSET_DEFINITION,
+                    name: "Source rectangle".to_owned(),
+                    kind: FeatureKind::Profile {
+                        points_mm: vec![[10.0, 20.0], [110.0, 20.0], [110.0, 100.0], [10.0, 100.0]],
+                    },
+                },
+                CanonicalCommand::CreateFeature {
+                    id: OFFSET_FEATURE,
+                    definition_id: OFFSET_DEFINITION,
+                    name: "Planar offset".to_owned(),
+                    kind: FeatureKind::PlanarOffset {
+                        profile: OFFSET_PROFILE,
+                        distance: Dimension::new(distance_mm.to_string(), distance_mm).unwrap(),
+                    },
+                },
+            ]))
+            .unwrap();
+        let snapshot = document.current();
+        let request =
+            ExactPlanarOffsetRequest::from_snapshot(&snapshot, OFFSET_DEFINITION).unwrap();
+        assert_eq!(request.producer_feature_id(), OFFSET_FEATURE);
+        assert_eq!(request.evaluator(), EXACT_PLANAR_OFFSET_EVALUATOR_V1);
+        assert_eq!(
+            request.expected_bounds_mm(),
+            if distance_mm > 0.0 {
+                [[5.0, 15.0, 0.0], [115.0, 105.0, 0.0]]
+            } else {
+                [[17.5, 27.5, 0.0], [102.5, 92.5, 0.0]]
+            }
+        );
+
+        let first = supervisor.evaluate_planar_offset(&request).unwrap();
+        let repeated = supervisor.evaluate_planar_offset(&request).unwrap();
+        assert!(first.is_current(&snapshot));
+        assert_eq!(first.identity, repeated.identity);
+        assert_eq!(first.reference, repeated.reference);
+        assert_eq!(first.bounds_mm, request.expected_bounds_mm());
+        assert!((first.area_mm2 - request.expected_area_mm2()).abs() <= 1.0e-6);
+        assert_eq!(first.vertices.len(), 4);
+        assert_eq!(first.triangles.len(), 2);
+        assert_eq!(
+            first.reference.role(),
+            Some(ExactFaceRole::PlanarOffsetFace)
+        );
+        assert!(first.reference.has_valid_lineage());
+        assert!(first.reference.matches_planar_offset_request(&request));
+        assert_eq!(first.reference.producer_feature_id, OFFSET_FEATURE);
+        assert_eq!(first.reference.profile_feature_id, OFFSET_PROFILE);
+        fingerprints.push(first.identity.result_fingerprint);
+    }
+    assert_ne!(fingerprints[0], fingerprints[1]);
+}
+
+#[test]
+fn scheduler_evaluates_bounded_sweep_with_deterministic_exact_lineage() {
+    const DEFINITION: DefinitionId = DefinitionId(711);
+    const PROFILE: FeatureId = FeatureId(712);
+    const PATH: FeatureId = FeatureId(713);
+    const SWEEP: FeatureId = FeatureId(714);
+
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DEFINITION,
+                name: "Sweep definition".to_owned(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: PROFILE,
+                definition_id: DEFINITION,
+                name: "Rectangular section".to_owned(),
+                kind: FeatureKind::Profile {
+                    points_mm: vec![[-5.0, -10.0], [5.0, -10.0], [5.0, 10.0], [-5.0, 10.0]],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: PATH,
+                definition_id: DEFINITION,
+                name: "Straight path".to_owned(),
+                kind: FeatureKind::SegmentProfile {
+                    segments: vec![ProfileSegment::Line {
+                        start_mm: [0.0, 0.0],
+                        end_mm: [75.0, 100.0],
+                    }],
+                    closed: false,
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: SWEEP,
+                definition_id: DEFINITION,
+                name: "Bounded sweep".to_owned(),
+                kind: FeatureKind::Sweep {
+                    profile: PROFILE,
+                    path: PATH,
+                },
+            },
+        ]))
+        .unwrap();
+    let snapshot = document.current();
+    let request = ExactSweepRequest::from_snapshot(&snapshot, DEFINITION).unwrap();
+    assert_eq!(request.producer_feature_id(), SWEEP);
+    assert_eq!(request.evaluator(), EXACT_SWEEP_EVALUATOR_V1);
+    assert_eq!(request.path_length_mm(), 125.0);
+    assert_eq!(request.expected_volume_mm3(), 25_000.0);
+    assert_eq!(
+        request.expected_bounds_mm(),
+        [[-4.0, -3.0, -10.0], [79.0, 103.0, 10.0]]
+    );
+
+    let mut supervisor = ExactWorkerSupervisor::spawn(worker_path()).unwrap();
+    let first = supervisor.evaluate_sweep(&request).unwrap();
+    let repeated = supervisor.evaluate_sweep(&request).unwrap();
+    assert!(first.is_current(&snapshot));
+    assert_eq!(first.identity, repeated.identity);
+    assert_eq!(first.references, repeated.references);
+    assert_eq!(first.bounds_mm, request.expected_bounds_mm());
+    assert!((first.volume_mm3 - request.expected_volume_mm3()).abs() <= 1.0e-6);
+    assert_eq!(first.vertices.len(), 8);
+    assert_eq!(first.triangles.len(), 12);
+    assert_eq!(
+        first
+            .references
+            .iter()
+            .map(|reference| reference.role().unwrap())
+            .collect::<Vec<_>>(),
+        [
+            ExactFaceRole::SweepStart,
+            ExactFaceRole::SweepEnd,
+            ExactFaceRole::SweepSide0,
+            ExactFaceRole::SweepSide1,
+            ExactFaceRole::SweepSide2,
+            ExactFaceRole::SweepSide3,
+        ]
+    );
+    assert!(first.references.iter().all(|reference| {
+        reference.has_valid_lineage() && reference.matches_sweep_request(&request)
+    }));
+
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::RenameDefinition {
+                id: DEFINITION,
+                name: "Changed sweep definition".to_owned(),
+            },
+        ]))
+        .unwrap();
+    assert!(!first.is_current(&document.current()));
+}
+
+#[test]
+fn scheduler_evaluates_bounded_spline_loft_with_deterministic_exact_lineage() {
+    const DEFINITION: DefinitionId = DefinitionId(721);
+    const LOWER: FeatureId = FeatureId(722);
+    const UPPER: FeatureId = FeatureId(723);
+    const LOFT: FeatureId = FeatureId(724);
+
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DEFINITION,
+                name: "Loft definition".to_owned(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: LOWER,
+                definition_id: DEFINITION,
+                name: "Lower spline".to_owned(),
+                kind: FeatureKind::SplineProfile {
+                    control_points_mm: vec![
+                        [-20.0, -10.0],
+                        [20.0, -10.0],
+                        [20.0, 10.0],
+                        [-20.0, 10.0],
+                    ],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: UPPER,
+                definition_id: DEFINITION,
+                name: "Upper spline".to_owned(),
+                kind: FeatureKind::SplineProfile {
+                    control_points_mm: vec![[-10.0, -5.0], [10.0, -5.0], [10.0, 5.0], [-10.0, 5.0]],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: LOFT,
+                definition_id: DEFINITION,
+                name: "Bounded loft".to_owned(),
+                kind: FeatureKind::Loft {
+                    sections: vec![
+                        LoftSection {
+                            profile: LOWER,
+                            elevation_mm: 0.0,
+                        },
+                        LoftSection {
+                            profile: UPPER,
+                            elevation_mm: 80.0,
+                        },
+                    ],
+                },
+            },
+        ]))
+        .unwrap();
+    let snapshot = document.current();
+    let request = ExactLoftRequest::from_snapshot(&snapshot, DEFINITION).unwrap();
+    assert_eq!(request.producer_feature_id(), LOFT);
+    assert_eq!(request.evaluator(), EXACT_LOFT_EVALUATOR_V1);
+    assert_eq!(request.control_point_count(), 8);
+    assert_eq!(request.protocol_values().len(), 21);
+
+    let mut supervisor = ExactWorkerSupervisor::spawn(worker_path()).unwrap();
+    let first = supervisor.evaluate_loft(&request).unwrap();
+    let repeated = supervisor.evaluate_loft(&request).unwrap();
+    assert!(first.is_current(&snapshot));
+    assert_eq!(first.identity, repeated.identity);
+    assert_eq!(first.references, repeated.references);
+    assert_eq!(first.topology_counts, [2, 3, 3, 1, 1]);
+    assert!(first.volume_mm3 > 0.0);
+    assert_eq!(
+        first
+            .references
+            .iter()
+            .map(|reference| reference.role().unwrap())
+            .collect::<Vec<_>>(),
+        [
+            ExactFaceRole::LoftStart,
+            ExactFaceRole::LoftEnd,
+            ExactFaceRole::LoftSide,
+        ]
+    );
+    assert_eq!(first.references[0].profile_feature_id, LOWER);
+    assert_eq!(first.references[1].profile_feature_id, UPPER);
+    assert_eq!(first.references[2].profile_feature_id, LOWER);
+    assert!(first.references.iter().all(|reference| {
+        reference.has_valid_lineage() && reference.matches_loft_request(&request)
+    }));
+
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::RenameDefinition {
+                id: DEFINITION,
+                name: "Changed Loft definition".to_owned(),
+            },
+        ]))
+        .unwrap();
+    assert!(!first.is_current(&document.current()));
+}
+
+#[test]
+fn scheduler_evaluates_general_box_shell_fillet_and_chamfer_with_stable_exact_roles() {
+    let mut supervisor = ExactWorkerSupervisor::spawn(worker_path()).unwrap();
+    let mut fingerprints = Vec::new();
+    for finish in [
+        None,
+        Some(BottleEdgeFinishKind::Fillet),
+        Some(BottleEdgeFinishKind::Chamfer),
+    ] {
+        let document = general_box_shell_document(finish);
+        let snapshot = document.current();
+        let request =
+            ExactFeatureChainRequest::from_snapshot(&snapshot, DefinitionId(950)).unwrap();
+        let shell = request.shell.as_ref().unwrap();
+        assert_eq!(
+            request.producer_feature_id(),
+            shell
+                .edge_finish_feature_id
+                .unwrap_or(shell.shell_feature_id)
+        );
+        assert_eq!(
+            request.evaluator(),
+            if finish.is_some() {
+                EXACT_BOX_FINISH_EVALUATOR_V1
+            } else {
+                EXACT_BOX_SHELL_EVALUATOR_V1
+            }
+        );
+
+        let first = supervisor.evaluate_rectangle(&request).unwrap();
+        let repeated = supervisor.evaluate_rectangle(&request).unwrap();
+        assert!(first.is_current(&snapshot));
+        assert_eq!(first.identity, repeated.identity);
+        assert_eq!(first.references, repeated.references);
+        assert_eq!(
+            first
+                .references
+                .iter()
+                .map(|reference| reference.role().unwrap())
+                .collect::<Vec<_>>(),
+            [
+                ExactFaceRole::BoxShellRim,
+                ExactFaceRole::BoxShellOuterBottom,
+                ExactFaceRole::BoxShellOuterEast,
+            ]
+        );
+        assert!(first.references.iter().all(|reference| {
+            reference.has_valid_lineage()
+                && reference.producer_feature_id == request.producer_feature_id()
+                && reference.canonical_input_digest == request.canonical_input_digest
+                && reference.evaluator == request.evaluator()
+        }));
+        fingerprints.push(first.identity.result_fingerprint);
+    }
+    fingerprints.sort();
+    fingerprints.dedup();
+    assert_eq!(fingerprints.len(), 3);
+}
+
+#[test]
+fn scheduler_evaluates_general_polygon_and_segment_revolves_with_stable_exact_roles() {
+    let mut supervisor = ExactWorkerSupervisor::spawn(worker_path()).unwrap();
+    let polygon = general_revolve_document(false);
+    let polygon_snapshot = polygon.current();
+    let polygon_request =
+        ExactRevolveRequest::from_snapshot(&polygon_snapshot, DefinitionId(901)).unwrap();
+    assert!(polygon_request.general);
+    assert_eq!(polygon_request.axis_start_mm(), [0.0, -10.0]);
+    assert_eq!(polygon_request.axis_end_mm(), [0.0, 10.0]);
+    assert_eq!(polygon_request.angle_degrees(), 180.0);
+
+    let first = supervisor.evaluate_revolve(&polygon_request).unwrap();
+    let repeated = supervisor.evaluate_revolve(&polygon_request).unwrap();
+    assert!(first.is_current(&polygon_snapshot));
+    assert_eq!(first.identity, repeated.identity);
+    assert_eq!(first.references, repeated.references);
+    assert_eq!(
+        first.identity.result_fingerprint,
+        repeated.identity.result_fingerprint
+    );
+    assert_eq!(first.references.len(), 4);
+    assert_eq!(
+        first
+            .references
+            .iter()
+            .map(|reference| reference.role().unwrap())
+            .collect::<Vec<_>>(),
+        [
+            ExactFaceRole::RevolveSide0,
+            ExactFaceRole::RevolveSide1,
+            ExactFaceRole::RevolveStart,
+            ExactFaceRole::RevolveEnd,
+        ]
+    );
+    assert!(first.references.iter().all(|reference| {
+        reference.has_valid_lineage()
+            && reference.canonical_input_digest == polygon_request.canonical_input_digest
+            && reference.evaluator == polygon_request.evaluator()
+    }));
+
+    let segment = general_revolve_document(true);
+    let segment_snapshot = segment.current();
+    let segment_request =
+        ExactRevolveRequest::from_snapshot(&segment_snapshot, DefinitionId(901)).unwrap();
+    assert!(segment_request.general);
+    assert!(segment_request.segments.is_some());
+    let segment_package = supervisor.evaluate_revolve(&segment_request).unwrap();
+    let segment_repeated = supervisor.evaluate_revolve(&segment_request).unwrap();
+    assert!(segment_package.is_current(&segment_snapshot));
+    assert_eq!(segment_package.identity, segment_repeated.identity);
+    assert_eq!(segment_package.references, segment_repeated.references);
+    assert_ne!(
+        first.identity.result_fingerprint,
+        segment_package.identity.result_fingerprint
+    );
+    assert_ne!(
+        polygon_request.canonical_input_digest,
+        segment_request.canonical_input_digest
     );
 }
 
@@ -977,7 +1809,10 @@ fn scheduler_evaluates_editable_bottle_shell_with_open_mouth_and_current_referen
     let reopened =
         ketchup_core::persistence::load(&ketchup_core::persistence::save(&document.current()))
             .unwrap();
-    assert_eq!(reopened.source_schema(), 17);
+    assert_eq!(
+        reopened.source_schema(),
+        ketchup_core::persistence::CURRENT_SCHEMA
+    );
     assert_eq!(reopened.snapshot().exact_reference_evidence().count(), 9);
 }
 
@@ -1122,7 +1957,10 @@ fn scheduler_evaluates_controlled_bottle_fillet_and_chamfer_with_current_roles()
     let reopened =
         ketchup_core::persistence::load(&ketchup_core::persistence::save(&document.current()))
             .unwrap();
-    assert_eq!(reopened.source_schema(), 17);
+    assert_eq!(
+        reopened.source_schema(),
+        ketchup_core::persistence::CURRENT_SCHEMA
+    );
     assert_eq!(reopened.snapshot().exact_reference_evidence().count(), 9);
 }
 
@@ -1164,9 +2002,7 @@ fn controlled_finished_bottle_document() -> DocumentStore {
                 id: BOTTLE_REVOLVE,
                 definition_id: BOTTLE_DEFINITION,
                 name: "Bottle revolve".to_owned(),
-                kind: FeatureKind::Revolve {
-                    profile: BOTTLE_CONTROL,
-                },
+                kind: FeatureKind::full_revolve(BOTTLE_CONTROL),
             },
             CanonicalCommand::CreateFeature {
                 id: BOTTLE_SHELL,
@@ -1174,6 +2010,9 @@ fn controlled_finished_bottle_document() -> DocumentStore {
                 name: "Bottle shell".to_owned(),
                 kind: FeatureKind::Shell {
                     target: BOTTLE_REVOLVE,
+                    removed_faces: vec![
+                        StableFaceRole::new(BOTTLE_SHELL_OPENING_FACE_ROLE).unwrap(),
+                    ],
                     thickness: Dimension::new("2", 2.0).unwrap(),
                 },
             },
@@ -1183,6 +2022,7 @@ fn controlled_finished_bottle_document() -> DocumentStore {
                 name: "Shoulder finish".to_owned(),
                 kind: FeatureKind::BottleEdgeFinish {
                     target: BOTTLE_SHELL,
+                    edges: vec![StableEdgeRole::new(BOTTLE_SHOULDER_EDGE_ROLE).unwrap()],
                     kind: BottleEdgeFinishKind::Fillet,
                     amount: Dimension::new("2", 2.0).unwrap(),
                 },
@@ -1211,6 +2051,7 @@ fn bottle_shell_document() -> DocumentStore {
             name: "Bottle shell".to_owned(),
             kind: FeatureKind::Shell {
                 target: BOTTLE_REVOLVE,
+                removed_faces: vec![StableFaceRole::new(BOTTLE_SHELL_OPENING_FACE_ROLE).unwrap()],
                 thickness: Dimension::new("2", 2.0).unwrap(),
             },
         }]))
@@ -1246,9 +2087,7 @@ fn bottle_document() -> DocumentStore {
                 id: BOTTLE_REVOLVE,
                 definition_id: BOTTLE_DEFINITION,
                 name: "Bottle revolve".to_owned(),
-                kind: FeatureKind::Revolve {
-                    profile: BOTTLE_PROFILE,
-                },
+                kind: FeatureKind::full_revolve(BOTTLE_PROFILE),
             },
             CanonicalCommand::CreateOccurrence {
                 id: BOTTLE_OCCURRENCE,
@@ -1263,6 +2102,133 @@ fn bottle_document() -> DocumentStore {
         .unwrap();
     document.discard_history_before_current();
     document
+}
+
+fn circle_segments(center: [f64; 2], radius: f64) -> Vec<ProfileSegment> {
+    vec![
+        ProfileSegment::CircularArc {
+            start_mm: [center[0] + radius, center[1]],
+            end_mm: [center[0] - radius, center[1]],
+            center_mm: center,
+            clockwise: false,
+        },
+        ProfileSegment::CircularArc {
+            start_mm: [center[0] - radius, center[1]],
+            end_mm: [center[0] + radius, center[1]],
+            center_mm: center,
+            clockwise: false,
+        },
+    ]
+}
+
+fn circle_document(center: [f64; 2], radius: f64, height: f64) -> DocumentStore {
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DEFINITION,
+                name: "Exact circle".to_owned(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: PROFILE,
+                definition_id: DEFINITION,
+                name: "Circle profile".to_owned(),
+                kind: FeatureKind::SegmentProfile {
+                    segments: circle_segments(center, radius),
+                    closed: true,
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: EXTRUSION,
+                definition_id: DEFINITION,
+                name: "Circle extrusion".to_owned(),
+                kind: FeatureKind::Extrusion {
+                    profile: PROFILE,
+                    height: Dimension::new(height.to_string(), height).unwrap(),
+                },
+            },
+            CanonicalCommand::CreateOccurrence {
+                id: OccurrenceId(13),
+                definition_id: DEFINITION,
+                name: "Circle occurrence".to_owned(),
+                transform: Transform::identity(),
+                parent: None,
+                tag: None,
+                visible: true,
+            },
+        ]))
+        .unwrap();
+    document.discard_history_before_current();
+    document
+}
+
+fn circular_cut_document(
+    width: f64,
+    depth: f64,
+    height: f64,
+    center: [f64; 2],
+    radius: f64,
+) -> DocumentStore {
+    let mut document = rectangle_document(width, depth, height);
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateFeature {
+                id: CUT_PROFILE,
+                definition_id: DEFINITION,
+                name: "Circular cut profile".to_owned(),
+                kind: FeatureKind::SegmentProfile {
+                    segments: circle_segments(center, radius),
+                    closed: true,
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: TOOL_EXTRUSION,
+                definition_id: DEFINITION,
+                name: "Circular cut tool".to_owned(),
+                kind: FeatureKind::Extrusion {
+                    profile: CUT_PROFILE,
+                    height: Dimension::new(height.to_string(), height).unwrap(),
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: THROUGH_CUT,
+                definition_id: DEFINITION,
+                name: "Circular through cut".to_owned(),
+                kind: FeatureKind::Boolean {
+                    operation: BooleanOperation::Cut,
+                    target: EXTRUSION,
+                    tool: TOOL_EXTRUSION,
+                },
+            },
+        ]))
+        .unwrap();
+    document.discard_history_before_current();
+    document
+}
+
+fn assert_closed_manifold(package: &ExactRenderPackage) {
+    let mut edge_use = BTreeMap::<(u32, u32), usize>::new();
+    for triangle in &package.triangles {
+        let [a, b, c] = triangle
+            .vertex_indices
+            .map(|index| package.vertices[index as usize].position_mm);
+        let first = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+        let second = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+        let cross = [
+            first[1] * second[2] - first[2] * second[1],
+            first[2] * second[0] - first[0] * second[2],
+            first[0] * second[1] - first[1] * second[0],
+        ];
+        assert!(cross.into_iter().map(|value| value * value).sum::<f64>() > 1.0e-12);
+        for [from, to] in [
+            [triangle.vertex_indices[0], triangle.vertex_indices[1]],
+            [triangle.vertex_indices[1], triangle.vertex_indices[2]],
+            [triangle.vertex_indices[2], triangle.vertex_indices[0]],
+        ] {
+            *edge_use.entry((from.min(to), from.max(to))).or_default() += 1;
+        }
+    }
+    assert!(edge_use.values().all(|count| *count == 2));
 }
 
 fn rectangle_document(width: f64, depth: f64, height: f64) -> DocumentStore {
@@ -1354,6 +2320,125 @@ fn boolean_document(
     document
 }
 
+fn general_box_shell_document(finish: Option<BottleEdgeFinishKind>) -> DocumentStore {
+    const DEFINITION: DefinitionId = DefinitionId(950);
+    const PROFILE: FeatureId = FeatureId(951);
+    const EXTRUSION: FeatureId = FeatureId(952);
+    const SHELL: FeatureId = FeatureId(953);
+    const FINISH: FeatureId = FeatureId(954);
+    let mut commands = vec![
+        CanonicalCommand::CreateDefinition {
+            id: DEFINITION,
+            name: "General box shell".to_owned(),
+        },
+        CanonicalCommand::CreateFeature {
+            id: PROFILE,
+            definition_id: DEFINITION,
+            name: "Rectangle".to_owned(),
+            kind: FeatureKind::Profile {
+                points_mm: vec![[0.0, 0.0], [80.0, 0.0], [80.0, 50.0], [0.0, 50.0]],
+            },
+        },
+        CanonicalCommand::CreateFeature {
+            id: EXTRUSION,
+            definition_id: DEFINITION,
+            name: "Box".to_owned(),
+            kind: FeatureKind::Extrusion {
+                profile: PROFILE,
+                height: Dimension::new("30", 30.0).unwrap(),
+            },
+        },
+        CanonicalCommand::CreateFeature {
+            id: SHELL,
+            definition_id: DEFINITION,
+            name: "Open top".to_owned(),
+            kind: FeatureKind::Shell {
+                target: EXTRUSION,
+                removed_faces: vec![StableFaceRole::new("extrusion.top").unwrap()],
+                thickness: Dimension::new("2", 2.0).unwrap(),
+            },
+        },
+    ];
+    if let Some(kind) = finish {
+        commands.push(CanonicalCommand::CreateFeature {
+            id: FINISH,
+            definition_id: DEFINITION,
+            name: "Top east finish".to_owned(),
+            kind: FeatureKind::BottleEdgeFinish {
+                target: SHELL,
+                edges: vec![StableEdgeRole::new("shell.edge.top-east").unwrap()],
+                kind,
+                amount: Dimension::new("1", 1.0).unwrap(),
+            },
+        });
+    }
+    let mut document = DocumentStore::new();
+    document.apply_batch(&CommandBatch::new(commands)).unwrap();
+    document.discard_history_before_current();
+    document
+}
+
+fn general_revolve_document(segment_profile: bool) -> DocumentStore {
+    let mut document = DocumentStore::new();
+    let profile_kind = if segment_profile {
+        FeatureKind::SegmentProfile {
+            segments: vec![
+                ProfileSegment::Line {
+                    start_mm: [10.0, 0.0],
+                    end_mm: [20.0, 0.0],
+                },
+                ProfileSegment::CircularArc {
+                    start_mm: [20.0, 0.0],
+                    end_mm: [10.0, 0.0],
+                    center_mm: [15.0, 0.0],
+                    clockwise: false,
+                },
+            ],
+            closed: true,
+        }
+    } else {
+        FeatureKind::Profile {
+            points_mm: vec![[10.0, 0.0], [20.0, 0.0], [20.0, 5.0], [10.0, 5.0]],
+        }
+    };
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DefinitionId(901),
+                name: "General revolve".to_owned(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(901),
+                definition_id: DefinitionId(901),
+                name: "Closed profile".to_owned(),
+                kind: profile_kind,
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(902),
+                definition_id: DefinitionId(901),
+                name: "General revolve".to_owned(),
+                kind: FeatureKind::Revolve {
+                    profile: FeatureId(901),
+                    axis_start_mm: [0.0, -10.0],
+                    axis_end_mm: [0.0, 10.0],
+                    angle_degrees: if segment_profile { 120.0 } else { 180.0 },
+                },
+            },
+            CanonicalCommand::CreateOccurrence {
+                id: OccurrenceId(901),
+                definition_id: DefinitionId(901),
+                name: "General revolve occurrence".to_owned(),
+                transform: Transform::identity(),
+                parent: None,
+                tag: None,
+                visible: true,
+            },
+        ]))
+        .unwrap();
+    document.discard_history_before_current();
+    document
+}
+
 fn ray_for(role: ExactFaceRole, width: f64, depth: f64, height: f64) -> Ray {
     let (origin, direction) = match role {
         ExactFaceRole::Top => (
@@ -1368,15 +2453,27 @@ fn ray_for(role: ExactFaceRole, width: f64, depth: f64, height: f64) -> Ray {
             Vec3::new(width + 10.0, depth / 2.0, height / 2.0),
             Vec3::new(-1.0, 0.0, 0.0),
         ),
-        ExactFaceRole::CutWest
+        ExactFaceRole::CircleSide
+        | ExactFaceRole::ArcSide
+        | ExactFaceRole::CutCircle
+        | ExactFaceRole::CutWest
         | ExactFaceRole::CutEast
         | ExactFaceRole::CutSouth
         | ExactFaceRole::CutNorth
+        | ExactFaceRole::PocketFloor
+        | ExactFaceRole::PocketWest
+        | ExactFaceRole::PocketEast
+        | ExactFaceRole::PocketSouth
+        | ExactFaceRole::PocketNorth
         | ExactFaceRole::RevolveBottom
         | ExactFaceRole::RevolveBody
         | ExactFaceRole::RevolveShoulder
         | ExactFaceRole::RevolveNeck
         | ExactFaceRole::RevolveMouth
+        | ExactFaceRole::RevolveSide0
+        | ExactFaceRole::RevolveSide1
+        | ExactFaceRole::RevolveStart
+        | ExactFaceRole::RevolveEnd
         | ExactFaceRole::ShellOuterBottom
         | ExactFaceRole::ShellOuterBody
         | ExactFaceRole::ShellOuterShoulder
@@ -1385,7 +2482,20 @@ fn ray_for(role: ExactFaceRole, width: f64, depth: f64, height: f64) -> Ray {
         | ExactFaceRole::ShellInnerBottom
         | ExactFaceRole::ShellInnerBody
         | ExactFaceRole::ShellInnerShoulder
-        | ExactFaceRole::ShellInnerNeck => {
+        | ExactFaceRole::ShellInnerNeck
+        | ExactFaceRole::BoxShellOuterBottom
+        | ExactFaceRole::BoxShellOuterEast
+        | ExactFaceRole::BoxShellRim
+        | ExactFaceRole::PlanarOffsetFace
+        | ExactFaceRole::SweepStart
+        | ExactFaceRole::SweepEnd
+        | ExactFaceRole::SweepSide0
+        | ExactFaceRole::SweepSide1
+        | ExactFaceRole::SweepSide2
+        | ExactFaceRole::SweepSide3
+        | ExactFaceRole::LoftStart
+        | ExactFaceRole::LoftEnd
+        | ExactFaceRole::LoftSide => {
             panic!("non-extrusion roles are outside the extrusion-only C1b corpus")
         }
     };

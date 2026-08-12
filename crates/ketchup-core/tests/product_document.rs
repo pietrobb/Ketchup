@@ -1,16 +1,22 @@
 use ketchup_core::document::{
+    BOTTLE_SHELL_OPENING_FACE_ROLE, BOTTLE_SHOULDER_EDGE_ROLE, BooleanOperation,
     BottleControlDimension, BottleEdgeFinishKind, CanonicalCommand, CanonicalError, CollectionId,
     CommandBatch, ConvertedEntityId, DefinitionId, DerivedIdentity, Dimension,
     DimensionDisplayUnit, DimensionPresentation, DimensionReferenceHealth, DocumentStore,
     EvaluationIdentity, FeatureId, FeatureKind, FeatureParameterBinding, FeatureParameterFreshness,
     FeatureParameterSlot, FeatureParameterStaleReason, FeatureParameterTarget, GroupId,
     InstancePath, InstancePathStep, LocalGroupId, LocalGroupKey, LocalOccurrenceId,
-    LocalOccurrenceKey, MappingResolution, NodeId, OccurrenceId, PersistentDimension,
-    PersistentDimensionId, PersistentDimensionTarget, PortSpec, RuleOutput, SceneQueryContext,
-    SceneQueryError, SlotPath, SlotSegment, TagId, Transform, UnresolvedMappingReason,
-    WorldEntityPath,
+    LocalOccurrenceKey, LoftSection, MappingResolution, NodeId, OccurrenceId, PersistentDimension,
+    PersistentDimensionId, PersistentDimensionTarget, PortSpec, ProfileSegment, RuleOutput,
+    SceneQueryContext, SceneQueryError, SlotPath, SlotSegment, SolidToolPlan, StableEdgeRole,
+    StableFaceRole, TagId, Transform, UnresolvedMappingReason, WorldEntityPath,
+};
+use ketchup_core::exact_product::{
+    EXACT_BOOLEAN_INTERSECT_EVALUATOR_V1, EXACT_BOOLEAN_SPLIT_EVALUATOR_V1,
+    EXACT_CIRCLE_EVALUATOR_V1, ExactFeatureChainRequest,
 };
 use ketchup_core::persistence;
+use ketchup_core::state_view::encode_semantic_state;
 
 const CABINET: DefinitionId = DefinitionId(1);
 const PROFILE: FeatureId = FeatureId(10);
@@ -140,7 +146,7 @@ fn product_schema_round_trip_preserves_identity_hierarchy_values_and_digest() {
     let expected = document.current();
     let loaded = persistence::load(&persistence::save(&expected)).unwrap();
 
-    assert_eq!(loaded.source_schema(), 17);
+    assert_eq!(loaded.source_schema(), persistence::CURRENT_SCHEMA);
     assert!(loaded.migration_losses().is_empty());
     let actual = loaded.snapshot();
     assert_eq!(actual.document_id(), expected.document_id());
@@ -356,9 +362,7 @@ fn m6_bottle_profile_and_revolve_are_canonical_persisted_and_undoable() {
                 id: BOTTLE_REVOLVE,
                 definition_id: BOTTLE,
                 name: "Bottle revolve".to_owned(),
-                kind: FeatureKind::Revolve {
-                    profile: BOTTLE_PROFILE,
-                },
+                kind: FeatureKind::full_revolve(BOTTLE_PROFILE),
             },
         ]))
         .unwrap();
@@ -394,19 +398,365 @@ fn m6_bottle_profile_and_revolve_are_canonical_persisted_and_undoable() {
     assert!(matches!(
         document.current().feature(BOTTLE_REVOLVE).unwrap().kind(),
         FeatureKind::Revolve {
-            profile: BOTTLE_PROFILE
+            profile: BOTTLE_PROFILE,
+            ..
         }
     ));
     assert_eq!(document.undo().unwrap().canonical_digest(), initial_digest);
     assert_eq!(document.redo().unwrap().canonical_digest(), changed_digest);
 
     let loaded = persistence::load(&persistence::save(&document.current())).unwrap();
-    assert_eq!(loaded.source_schema(), 17);
+    assert_eq!(loaded.source_schema(), persistence::CURRENT_SCHEMA);
     assert!(loaded.migration_losses().is_empty());
     assert_eq!(loaded.snapshot().canonical_digest(), changed_digest);
     assert!(matches!(
         loaded.snapshot().feature(BOTTLE_PROFILE).unwrap().kind(),
         FeatureKind::Profile { points_mm } if points_mm == &changed_profile
+    ));
+}
+
+#[test]
+fn general_revolve_is_canonical_atomic_cloneable_and_losslessly_persistent() {
+    const DEFINITION: DefinitionId = DefinitionId(60);
+    const PROFILE: FeatureId = FeatureId(61);
+    const REVOLVE: FeatureId = FeatureId(62);
+    const OCCURRENCE: OccurrenceId = OccurrenceId(63);
+    const AXIS_START: [f64; 2] = [0.0, -10.0];
+    const AXIS_END: [f64; 2] = [0.0, 50.0];
+    const ANGLE: f64 = 225.0;
+
+    let profile = vec![[10.0, 0.0], [30.0, 0.0], [30.0, 40.0], [10.0, 40.0]];
+    let mut document = DocumentStore::new();
+    let empty_digest = document.current().canonical_digest();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DEFINITION,
+                name: "General revolve".to_owned(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: PROFILE,
+                definition_id: DEFINITION,
+                name: "Closed profile".to_owned(),
+                kind: FeatureKind::Profile {
+                    points_mm: profile.clone(),
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: REVOLVE,
+                definition_id: DEFINITION,
+                name: "225 degree revolve".to_owned(),
+                kind: FeatureKind::Revolve {
+                    profile: PROFILE,
+                    axis_start_mm: AXIS_START,
+                    axis_end_mm: AXIS_END,
+                    angle_degrees: ANGLE,
+                },
+            },
+            CanonicalCommand::CreateOccurrence {
+                id: OCCURRENCE,
+                definition_id: DEFINITION,
+                name: "Revolved body".to_owned(),
+                transform: Transform::identity(),
+                parent: None,
+                tag: None,
+                visible: true,
+            },
+        ]))
+        .unwrap();
+    let applied_digest = document.current().canonical_digest();
+    assert_ne!(applied_digest, empty_digest);
+    assert_eq!(document.visible_undo_steps(), 1);
+    assert_eq!(document.undo().unwrap().canonical_digest(), empty_digest);
+    assert_eq!(document.redo().unwrap().canonical_digest(), applied_digest);
+
+    for (axis_start_mm, axis_end_mm, angle_degrees) in [
+        ([0.0, 0.0], [0.0, 0.0], 90.0),
+        ([f64::NAN, 0.0], [0.0, 1.0], 90.0),
+        ([0.0, 0.0], [0.0, 1.0], 0.0),
+        ([0.0, 0.0], [0.0, 1.0], 360.000_001),
+        ([0.0, 0.0], [0.0, 1.0], f64::NAN),
+    ] {
+        let before = document.current().canonical_digest();
+        let undo_steps = document.visible_undo_steps();
+        let error = document
+            .apply_batch(&CommandBatch::new(vec![CanonicalCommand::CreateFeature {
+                id: FeatureId(99),
+                definition_id: DEFINITION,
+                name: "Invalid revolve".to_owned(),
+                kind: FeatureKind::Revolve {
+                    profile: PROFILE,
+                    axis_start_mm,
+                    axis_end_mm,
+                    angle_degrees,
+                },
+            }]))
+            .err()
+            .expect("invalid revolve must reject the entire batch");
+        assert_eq!(error, CanonicalError::InvalidRevolve);
+        assert_eq!(document.current().canonical_digest(), before);
+        assert_eq!(document.visible_undo_steps(), undo_steps);
+    }
+
+    document.make_unique(OCCURRENCE, "Unique revolve").unwrap();
+    let unique = document.current();
+    let unique_definition = unique.occurrence(OCCURRENCE).unwrap().definition_id();
+    let unique_features = unique.definition(unique_definition).unwrap().feature_ids();
+    assert_eq!(unique_features, &[FeatureId(63), FeatureId(64)]);
+    assert!(matches!(
+        unique.feature(FeatureId(64)).unwrap().kind(),
+        FeatureKind::Revolve {
+            profile: FeatureId(63),
+            axis_start_mm: AXIS_START,
+            axis_end_mm: AXIS_END,
+            angle_degrees: ANGLE,
+        }
+    ));
+
+    let unique_digest = unique.canonical_digest();
+    let loaded = persistence::load(&persistence::save(&unique)).unwrap();
+    assert_eq!(loaded.source_schema(), persistence::CURRENT_SCHEMA);
+    assert!(loaded.migration_losses().is_empty());
+    assert_eq!(loaded.snapshot().canonical_digest(), unique_digest);
+    assert!(matches!(
+        loaded.snapshot().feature(FeatureId(64)).unwrap().kind(),
+        FeatureKind::Revolve {
+            profile: FeatureId(63),
+            axis_start_mm: AXIS_START,
+            axis_end_mm: AXIS_END,
+            angle_degrees: ANGLE,
+        }
+    ));
+
+    let digest_for = |axis_end_mm, angle_degrees| {
+        let mut candidate = DocumentStore::new();
+        candidate
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::CreateDefinition {
+                    id: DEFINITION,
+                    name: "General revolve".to_owned(),
+                },
+                CanonicalCommand::CreateFeature {
+                    id: PROFILE,
+                    definition_id: DEFINITION,
+                    name: "Closed profile".to_owned(),
+                    kind: FeatureKind::Profile {
+                        points_mm: profile.clone(),
+                    },
+                },
+                CanonicalCommand::CreateFeature {
+                    id: REVOLVE,
+                    definition_id: DEFINITION,
+                    name: "225 degree revolve".to_owned(),
+                    kind: FeatureKind::Revolve {
+                        profile: PROFILE,
+                        axis_start_mm: AXIS_START,
+                        axis_end_mm,
+                        angle_degrees,
+                    },
+                },
+            ]))
+            .unwrap();
+        candidate.current().canonical_digest()
+    };
+    assert_ne!(digest_for(AXIS_END, ANGLE), digest_for([1.0, 50.0], ANGLE));
+    assert_ne!(digest_for(AXIS_END, ANGLE), digest_for(AXIS_END, 180.0));
+}
+
+#[test]
+fn general_shell_and_edge_finish_roles_are_canonical_undoable_unique_and_persisted() {
+    const DEFINITION: DefinitionId = DefinitionId(40);
+    const PROFILE: FeatureId = FeatureId(41);
+    const EXTRUSION: FeatureId = FeatureId(42);
+    const SHELL: FeatureId = FeatureId(43);
+    const FINISH: FeatureId = FeatureId(44);
+    const OCCURRENCE: OccurrenceId = OccurrenceId(45);
+
+    let removed_face = StableFaceRole::new("extrusion.top").unwrap();
+    let edge = StableEdgeRole::new("shell.edge.top-east").unwrap();
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DEFINITION,
+                name: "General shell".to_owned(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: PROFILE,
+                definition_id: DEFINITION,
+                name: "Rectangle".to_owned(),
+                kind: FeatureKind::Profile {
+                    points_mm: vec![[0.0, 0.0], [80.0, 0.0], [80.0, 50.0], [0.0, 50.0]],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: EXTRUSION,
+                definition_id: DEFINITION,
+                name: "Body".to_owned(),
+                kind: FeatureKind::Extrusion {
+                    profile: PROFILE,
+                    height: height("30"),
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: SHELL,
+                definition_id: DEFINITION,
+                name: "Open top".to_owned(),
+                kind: FeatureKind::Shell {
+                    target: EXTRUSION,
+                    removed_faces: vec![removed_face.clone()],
+                    thickness: height("2"),
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: FINISH,
+                definition_id: DEFINITION,
+                name: "Top edge finish".to_owned(),
+                kind: FeatureKind::BottleEdgeFinish {
+                    target: SHELL,
+                    edges: vec![edge.clone()],
+                    kind: BottleEdgeFinishKind::Fillet,
+                    amount: height("1"),
+                },
+            },
+            CanonicalCommand::CreateOccurrence {
+                id: OCCURRENCE,
+                definition_id: DEFINITION,
+                name: "Shelled body".to_owned(),
+                transform: Transform::identity(),
+                parent: None,
+                tag: None,
+                visible: true,
+            },
+        ]))
+        .unwrap();
+    document.discard_history_before_current();
+    let initial_digest = document.current().canonical_digest();
+
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetFeatureDimension {
+                id: SHELL,
+                dimension: height("2.5"),
+            },
+            CanonicalCommand::SetFeatureDimension {
+                id: FINISH,
+                dimension: height("1.5"),
+            },
+            CanonicalCommand::SetBottleEdgeFinishKind {
+                id: FINISH,
+                kind: BottleEdgeFinishKind::Chamfer,
+            },
+        ]))
+        .unwrap();
+    let edited_digest = document.current().canonical_digest();
+    assert_ne!(edited_digest, initial_digest);
+    assert!(matches!(
+        document.current().feature(SHELL).unwrap().kind(),
+        FeatureKind::Shell { removed_faces, thickness, .. }
+            if removed_faces == std::slice::from_ref(&removed_face) && thickness.millimetres() == 2.5
+    ));
+    assert!(matches!(
+        document.current().feature(FINISH).unwrap().kind(),
+        FeatureKind::BottleEdgeFinish {
+            edges,
+            kind: BottleEdgeFinishKind::Chamfer,
+            amount,
+            ..
+        } if edges == std::slice::from_ref(&edge) && amount.millimetres() == 1.5
+    ));
+    assert_eq!(document.undo().unwrap().canonical_digest(), initial_digest);
+    assert_eq!(document.redo().unwrap().canonical_digest(), edited_digest);
+
+    for kind in [
+        FeatureKind::Shell {
+            target: EXTRUSION,
+            removed_faces: vec![removed_face.clone(), removed_face.clone()],
+            thickness: height("2"),
+        },
+        FeatureKind::BottleEdgeFinish {
+            target: SHELL,
+            edges: Vec::new(),
+            kind: BottleEdgeFinishKind::Fillet,
+            amount: height("1"),
+        },
+    ] {
+        let before = document.current().canonical_digest();
+        let undo_steps = document.visible_undo_steps();
+        let error = document
+            .apply_batch(&CommandBatch::new(vec![CanonicalCommand::CreateFeature {
+                id: FeatureId(99),
+                definition_id: DEFINITION,
+                name: "Invalid stable selection".to_owned(),
+                kind,
+            }]))
+            .err()
+            .expect("non-canonical stable roles must reject the batch");
+        assert_eq!(error, CanonicalError::SubshapeRolesNotCanonical);
+        assert_eq!(document.current().canonical_digest(), before);
+        assert_eq!(document.visible_undo_steps(), undo_steps);
+    }
+
+    let before_cross_definition = document.current().canonical_digest();
+    let undo_before_cross_definition = document.visible_undo_steps();
+    let error = document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DefinitionId(98),
+                name: "Wrong owner".to_owned(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(98),
+                definition_id: DefinitionId(98),
+                name: "Cross-definition shell".to_owned(),
+                kind: FeatureKind::Shell {
+                    target: EXTRUSION,
+                    removed_faces: vec![StableFaceRole::new("extrusion.top").unwrap()],
+                    thickness: height("2"),
+                },
+            },
+        ]))
+        .err()
+        .expect("cross-definition stable role target must reject the batch");
+    assert_eq!(
+        error,
+        CanonicalError::InvalidFeatureOwnership(FeatureId(98))
+    );
+    assert_eq!(
+        document.current().canonical_digest(),
+        before_cross_definition
+    );
+    assert_eq!(document.visible_undo_steps(), undo_before_cross_definition);
+
+    document.make_unique(OCCURRENCE, "Unique shell").unwrap();
+    let unique = document.current();
+    let unique_definition = unique.occurrence(OCCURRENCE).unwrap().definition_id();
+    let unique_features = unique.definition(unique_definition).unwrap().feature_ids();
+    let unique_shell = unique_features[2];
+    let unique_finish = unique_features[3];
+    assert!(matches!(
+        unique.feature(unique_shell).unwrap().kind(),
+        FeatureKind::Shell { removed_faces, .. } if removed_faces == &[removed_face]
+    ));
+    assert!(matches!(
+        unique.feature(unique_finish).unwrap().kind(),
+        FeatureKind::BottleEdgeFinish { edges, .. } if edges == &[edge]
+    ));
+
+    let unique_digest = unique.canonical_digest();
+    let loaded = persistence::load(&persistence::save(&unique)).unwrap();
+    assert_eq!(loaded.source_schema(), persistence::CURRENT_SCHEMA);
+    assert!(loaded.migration_losses().is_empty());
+    assert_eq!(loaded.snapshot().canonical_digest(), unique_digest);
+    assert!(matches!(
+        loaded.snapshot().feature(unique_shell).unwrap().kind(),
+        FeatureKind::Shell { removed_faces, .. }
+            if removed_faces[0].as_str() == "extrusion.top"
+    ));
+    assert!(matches!(
+        loaded.snapshot().feature(unique_finish).unwrap().kind(),
+        FeatureKind::BottleEdgeFinish { edges, .. }
+            if edges[0].as_str() == "shell.edge.top-east"
     ));
 }
 
@@ -442,7 +792,7 @@ fn m6_shell_thickness_is_canonical_undoable_persisted_and_fail_closed() {
                 id: REVOLVE,
                 definition_id: BOTTLE,
                 name: "Bottle revolve".to_owned(),
-                kind: FeatureKind::Revolve { profile: PROFILE },
+                kind: FeatureKind::full_revolve(PROFILE),
             },
             CanonicalCommand::CreateFeature {
                 id: SHELL,
@@ -450,6 +800,9 @@ fn m6_shell_thickness_is_canonical_undoable_persisted_and_fail_closed() {
                 name: "Bottle shell".to_owned(),
                 kind: FeatureKind::Shell {
                     target: REVOLVE,
+                    removed_faces: vec![
+                        StableFaceRole::new(BOTTLE_SHELL_OPENING_FACE_ROLE).unwrap(),
+                    ],
                     thickness: height("2"),
                 },
             },
@@ -470,14 +823,14 @@ fn m6_shell_thickness_is_canonical_undoable_persisted_and_fail_closed() {
     assert_ne!(changed_digest, initial_digest);
     assert!(matches!(
         document.current().feature(SHELL).unwrap().kind(),
-        FeatureKind::Shell { target: REVOLVE, thickness }
+        FeatureKind::Shell { target: REVOLVE, thickness, .. }
             if thickness.source_token() == "2.5" && thickness.millimetres() == 2.5
     ));
     assert_eq!(document.undo().unwrap().canonical_digest(), initial_digest);
     assert_eq!(document.redo().unwrap().canonical_digest(), changed_digest);
 
     let reopened = persistence::load(&persistence::save(&document.current())).unwrap();
-    assert_eq!(reopened.source_schema(), 17);
+    assert_eq!(reopened.source_schema(), persistence::CURRENT_SCHEMA);
     assert!(reopened.migration_losses().is_empty());
     assert_eq!(reopened.snapshot().canonical_digest(), changed_digest);
 
@@ -542,7 +895,7 @@ fn m6_controlled_profile_and_edge_finish_are_atomic_persisted_and_fail_closed() 
                 id: REVOLVE,
                 definition_id: BOTTLE,
                 name: "Bottle revolve".to_owned(),
-                kind: FeatureKind::Revolve { profile: CONTROL },
+                kind: FeatureKind::full_revolve(CONTROL),
             },
             CanonicalCommand::CreateFeature {
                 id: SHELL,
@@ -550,6 +903,9 @@ fn m6_controlled_profile_and_edge_finish_are_atomic_persisted_and_fail_closed() 
                 name: "Bottle shell".to_owned(),
                 kind: FeatureKind::Shell {
                     target: REVOLVE,
+                    removed_faces: vec![
+                        StableFaceRole::new(BOTTLE_SHELL_OPENING_FACE_ROLE).unwrap(),
+                    ],
                     thickness: height("2"),
                 },
             },
@@ -559,6 +915,7 @@ fn m6_controlled_profile_and_edge_finish_are_atomic_persisted_and_fail_closed() 
                 name: "Shoulder finish".to_owned(),
                 kind: FeatureKind::BottleEdgeFinish {
                     target: SHELL,
+                    edges: vec![StableEdgeRole::new(BOTTLE_SHOULDER_EDGE_ROLE).unwrap()],
                     kind: BottleEdgeFinishKind::Fillet,
                     amount: height("2"),
                 },
@@ -614,13 +971,14 @@ fn m6_controlled_profile_and_edge_finish_are_atomic_persisted_and_fail_closed() 
             target: SHELL,
             kind: BottleEdgeFinishKind::Chamfer,
             amount,
+            ..
         } if amount.source_token() == "1.5"
     ));
     assert_eq!(document.undo().unwrap().canonical_digest(), initial_digest);
     assert_eq!(document.redo().unwrap().canonical_digest(), changed_digest);
 
     let reopened = persistence::load(&persistence::save(&document.current())).unwrap();
-    assert_eq!(reopened.source_schema(), 17);
+    assert_eq!(reopened.source_schema(), persistence::CURRENT_SCHEMA);
     assert!(reopened.migration_losses().is_empty());
     assert_eq!(reopened.snapshot().canonical_digest(), changed_digest);
     assert!(matches!(
@@ -689,12 +1047,17 @@ fn m6_invalid_profile_or_revolve_axis_rolls_back_atomically() {
                 id: REVOLVE,
                 definition_id: BOTTLE,
                 name: "Invalid revolve".to_owned(),
-                kind: FeatureKind::Revolve { profile: PROFILE },
+                kind: FeatureKind::Revolve {
+                    profile: PROFILE,
+                    axis_start_mm: [5.0, 5.0],
+                    axis_end_mm: [5.0, 5.0],
+                    angle_degrees: 360.0,
+                },
             },
         ]))
         .err()
-        .expect("off-axis revolve must fail");
-    assert_eq!(error, CanonicalError::InvalidFeatureOwnership(REVOLVE));
+        .expect("zero-length revolve axis must fail");
+    assert_eq!(error, CanonicalError::InvalidRevolve);
     assert_eq!(document.current().canonical_digest(), before);
     assert!(document.current().definition(BOTTLE).is_none());
 
@@ -959,7 +1322,7 @@ fn nested_conversion_mapping_sharing_unique_history_and_schema_three_round_trip(
     assert_eq!(document.redo().unwrap().canonical_digest(), unique_digest);
 
     let reopened = persistence::load(&persistence::save(&document.current())).unwrap();
-    assert_eq!(reopened.source_schema(), 17);
+    assert_eq!(reopened.source_schema(), persistence::CURRENT_SCHEMA);
     let snapshot = reopened.snapshot();
     assert_eq!(snapshot.canonical_digest(), unique_digest);
     assert_eq!(snapshot.evaluator_node_count(), 1);
@@ -1131,7 +1494,7 @@ fn feature_parameter_bindings_are_canonical_persisted_and_never_recompute_on_ope
     let saved_revision = document.current().revision_id();
     let saved_undo = document.visible_undo_steps();
     let loaded = persistence::load(&persistence::save(&document.current())).unwrap();
-    assert_eq!(loaded.source_schema(), 17);
+    assert_eq!(loaded.source_schema(), persistence::CURRENT_SCHEMA);
     assert_eq!(loaded.snapshot().revision_id(), saved_revision);
     assert_eq!(loaded.snapshot().canonical_digest(), bound_digest);
     assert_eq!(
@@ -1554,7 +1917,7 @@ fn rectangle_numeric_constraints_are_persisted_dependent_only_and_atomic() {
     );
 
     let reopened = persistence::load(&persistence::save(revision.snapshot())).unwrap();
-    assert_eq!(reopened.source_schema(), 17);
+    assert_eq!(reopened.source_schema(), persistence::CURRENT_SCHEMA);
     assert_eq!(reopened.snapshot().canonical_digest(), resized_digest);
     assert_eq!(reopened.snapshot().feature_parameter_bindings().count(), 2);
     assert!(matches!(
@@ -1714,7 +2077,7 @@ fn persistent_associative_dimensions_preserve_targets_units_and_unresolved_state
     assert_eq!(document.current().canonical_digest(), before_invalid);
 
     let reopened = persistence::load(&persistence::save(&document.current())).unwrap();
-    assert_eq!(reopened.source_schema(), 17);
+    assert_eq!(reopened.source_schema(), persistence::CURRENT_SCHEMA);
     assert_eq!(reopened.snapshot().canonical_digest(), before_invalid);
     assert_eq!(reopened.snapshot().persistent_dimensions().count(), 3);
     assert_eq!(
@@ -1927,7 +2290,7 @@ fn canonical_collections_persist_query_and_roll_back_atomically() {
     );
 
     let reopened = persistence::load(&persistence::save(&document.current())).unwrap();
-    assert_eq!(reopened.source_schema(), 17);
+    assert_eq!(reopened.source_schema(), persistence::CURRENT_SCHEMA);
     assert_eq!(reopened.snapshot().canonical_digest(), collected);
     assert_eq!(
         reopened
@@ -1980,4 +2343,1140 @@ fn canonical_collections_persist_query_and_roll_back_atomically() {
         CanonicalError::OccurrenceInCollection(FIRST)
     );
     assert_eq!(document.current().canonical_digest(), collected);
+}
+
+fn seed_separate_solid_tool_document(
+    tool_x_mm: f64,
+    tool_y_mm: f64,
+    tool_depth_mm: f64,
+) -> DocumentStore {
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DefinitionId(101),
+                name: "Solid target".to_owned(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(102),
+                definition_id: DefinitionId(101),
+                name: "Target profile".to_owned(),
+                kind: FeatureKind::Profile {
+                    points_mm: vec![[0.0, 0.0], [100.0, 0.0], [100.0, 80.0], [0.0, 80.0]],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(103),
+                definition_id: DefinitionId(101),
+                name: "Target body".to_owned(),
+                kind: FeatureKind::Extrusion {
+                    profile: FeatureId(102),
+                    height: height("50"),
+                },
+            },
+            CanonicalCommand::CreateDefinition {
+                id: DefinitionId(201),
+                name: "Solid tool".to_owned(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(202),
+                definition_id: DefinitionId(201),
+                name: "Tool profile".to_owned(),
+                kind: FeatureKind::Profile {
+                    points_mm: vec![
+                        [0.0, 0.0],
+                        [40.0, 0.0],
+                        [40.0, tool_depth_mm],
+                        [0.0, tool_depth_mm],
+                    ],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(203),
+                definition_id: DefinitionId(201),
+                name: "Tool body".to_owned(),
+                kind: FeatureKind::Extrusion {
+                    profile: FeatureId(202),
+                    height: height("50"),
+                },
+            },
+            CanonicalCommand::CreateOccurrence {
+                id: OccurrenceId(301),
+                definition_id: DefinitionId(101),
+                name: "Target occurrence".to_owned(),
+                transform: Transform::identity(),
+                parent: None,
+                tag: None,
+                visible: true,
+            },
+            CanonicalCommand::CreateOccurrence {
+                id: OccurrenceId(302),
+                definition_id: DefinitionId(201),
+                name: "Tool occurrence".to_owned(),
+                transform: Transform::from_translation(tool_x_mm, tool_y_mm, 0.0).unwrap(),
+                parent: None,
+                tag: None,
+                visible: true,
+            },
+        ]))
+        .unwrap();
+    document.discard_history_before_current();
+    document
+}
+
+fn separate_solid_tool_plan(operation: BooleanOperation, keep_tool: bool) -> SolidToolPlan {
+    SolidToolPlan {
+        operation,
+        target_occurrence_id: OccurrenceId(301),
+        target_feature_id: FeatureId(103),
+        tool_occurrence_id: OccurrenceId(302),
+        tool_feature_id: FeatureId(203),
+        result_definition_id: DefinitionId(401),
+        result_feature_ids: [
+            FeatureId(402),
+            FeatureId(403),
+            FeatureId(404),
+            FeatureId(405),
+            FeatureId(406),
+        ],
+        result_definition_name: "Solid Tool result".to_owned(),
+        result_feature_name: "Boolean result".to_owned(),
+        keep_tool,
+    }
+}
+
+#[test]
+fn separate_occurrence_subtract_is_one_canonical_undo_step_and_persists_stable_ids() {
+    let mut document = seed_separate_solid_tool_document(20.0, 20.0, 30.0);
+    let before = document.current().canonical_digest();
+    let consume = CommandBatch::new(vec![CanonicalCommand::ApplySolidTool(
+        separate_solid_tool_plan(BooleanOperation::Cut, false),
+    )]);
+    let keep = CommandBatch::new(vec![CanonicalCommand::ApplySolidTool(
+        separate_solid_tool_plan(BooleanOperation::Cut, true),
+    )]);
+    assert_ne!(consume.digest(), keep.digest());
+
+    document.apply_batch(&consume).unwrap();
+    let applied = document.current().canonical_digest();
+    assert_ne!(applied, before);
+    assert_eq!(document.visible_undo_steps(), 1);
+    assert_eq!(
+        document
+            .current()
+            .occurrence(OccurrenceId(301))
+            .unwrap()
+            .definition_id(),
+        DefinitionId(401)
+    );
+    assert!(document.current().occurrence(OccurrenceId(302)).is_none());
+    assert_eq!(
+        document
+            .current()
+            .definition(DefinitionId(401))
+            .unwrap()
+            .feature_ids(),
+        &[
+            FeatureId(402),
+            FeatureId(403),
+            FeatureId(404),
+            FeatureId(405),
+            FeatureId(406),
+        ]
+    );
+    assert!(matches!(
+        document.current().feature(FeatureId(404)).unwrap().kind(),
+        FeatureKind::Profile { points_mm }
+            if points_mm == &vec![[20.0, 20.0], [60.0, 20.0], [60.0, 50.0], [20.0, 50.0]]
+    ));
+    assert!(matches!(
+        document.current().feature(FeatureId(406)).unwrap().kind(),
+        FeatureKind::Boolean {
+            operation: BooleanOperation::Cut,
+            target: FeatureId(403),
+            tool: FeatureId(405),
+        }
+    ));
+    let exact =
+        ExactFeatureChainRequest::from_snapshot(&document.current(), DefinitionId(401)).unwrap();
+    assert_eq!(exact.extrusion_feature_id, FeatureId(403));
+    assert!(matches!(
+        exact.boolean,
+        Some(ref boolean)
+            if boolean.feature_id == FeatureId(406)
+                && boolean.operation == BooleanOperation::Cut
+                && boolean.target_feature_id == FeatureId(403)
+                && boolean.tool_feature_id == FeatureId(405)
+    ));
+
+    assert_eq!(document.undo().unwrap().canonical_digest(), before);
+    assert_eq!(
+        document
+            .current()
+            .occurrence(OccurrenceId(301))
+            .unwrap()
+            .definition_id(),
+        DefinitionId(101)
+    );
+    assert!(document.current().occurrence(OccurrenceId(302)).is_some());
+    assert_eq!(document.redo().unwrap().canonical_digest(), applied);
+
+    let reopened = persistence::load(&persistence::save(&document.current())).unwrap();
+    assert_eq!(reopened.source_schema(), persistence::CURRENT_SCHEMA);
+    assert_eq!(reopened.snapshot().canonical_digest(), applied);
+    assert_eq!(
+        reopened
+            .snapshot()
+            .occurrence(OccurrenceId(301))
+            .unwrap()
+            .definition_id(),
+        DefinitionId(401)
+    );
+    assert!(reopened.snapshot().occurrence(OccurrenceId(302)).is_none());
+}
+
+#[test]
+fn separate_occurrence_union_keep_tool_preserves_both_occurrence_identities() {
+    let mut document = seed_separate_solid_tool_document(80.0, 0.0, 80.0);
+    let before = document.current().canonical_digest();
+    document
+        .apply_batch(&CommandBatch::new(vec![CanonicalCommand::ApplySolidTool(
+            separate_solid_tool_plan(BooleanOperation::Union, true),
+        )]))
+        .unwrap();
+    let applied = document.current().canonical_digest();
+
+    let snapshot = document.current();
+    let target = snapshot.occurrence(OccurrenceId(301)).unwrap();
+    let tool = snapshot.occurrence(OccurrenceId(302)).unwrap();
+    assert_eq!(target.id(), OccurrenceId(301));
+    assert_eq!(target.definition_id(), DefinitionId(401));
+    assert_eq!(tool.id(), OccurrenceId(302));
+    assert_eq!(tool.definition_id(), DefinitionId(201));
+    assert_eq!(tool.transform().matrix()[3], 80.0);
+    assert!(matches!(
+        document.current().feature(FeatureId(404)).unwrap().kind(),
+        FeatureKind::Profile { points_mm }
+            if points_mm == &vec![[80.0, 0.0], [120.0, 0.0], [120.0, 80.0], [80.0, 80.0]]
+    ));
+    assert!(matches!(
+        document.current().feature(FeatureId(406)).unwrap().kind(),
+        FeatureKind::Boolean {
+            operation: BooleanOperation::Union,
+            target: FeatureId(403),
+            tool: FeatureId(405),
+        }
+    ));
+    let exact =
+        ExactFeatureChainRequest::from_snapshot(&document.current(), DefinitionId(401)).unwrap();
+    assert_eq!(
+        exact.expected_bounds_mm(),
+        [[0.0, 0.0, 0.0], [120.0, 80.0, 50.0]]
+    );
+    assert!(matches!(
+        exact.boolean,
+        Some(ref boolean)
+            if boolean.feature_id == FeatureId(406)
+                && boolean.operation == BooleanOperation::Union
+                && boolean.target_feature_id == FeatureId(403)
+                && boolean.tool_feature_id == FeatureId(405)
+    ));
+    assert_eq!(document.visible_undo_steps(), 1);
+
+    let reopened = persistence::load(&persistence::save(&document.current())).unwrap();
+    assert_eq!(reopened.snapshot().canonical_digest(), applied);
+    assert!(reopened.snapshot().occurrence(OccurrenceId(302)).is_some());
+    assert_eq!(document.undo().unwrap().canonical_digest(), before);
+    assert_eq!(document.redo().unwrap().canonical_digest(), applied);
+}
+
+#[test]
+fn separate_occurrence_intersect_is_canonical_exact_unique_and_persistent() {
+    let mut document = seed_separate_solid_tool_document(70.0, 20.0, 30.0);
+    let before = document.current().canonical_digest();
+    let intersect = CommandBatch::new(vec![CanonicalCommand::ApplySolidTool(
+        separate_solid_tool_plan(BooleanOperation::Intersect, false),
+    )]);
+    let union = CommandBatch::new(vec![CanonicalCommand::ApplySolidTool(
+        separate_solid_tool_plan(BooleanOperation::Union, false),
+    )]);
+    assert_ne!(intersect.digest(), union.digest());
+
+    document.apply_batch(&intersect).unwrap();
+    let applied = document.current().canonical_digest();
+    assert_ne!(applied, before);
+    assert_eq!(document.visible_undo_steps(), 1);
+    assert!(matches!(
+        document.current().feature(FeatureId(406)).unwrap().kind(),
+        FeatureKind::Boolean {
+            operation: BooleanOperation::Intersect,
+            target: FeatureId(403),
+            tool: FeatureId(405),
+        }
+    ));
+    let state = encode_semantic_state(&document.current());
+    assert!(
+        state
+            .complete_v1()
+            .contains("feature.406.operation=intersect")
+    );
+    let exact_request =
+        ExactFeatureChainRequest::from_snapshot(&document.current(), DefinitionId(401)).unwrap();
+    assert_eq!(
+        exact_request.boolean.as_ref().unwrap().operation,
+        BooleanOperation::Intersect
+    );
+    assert_eq!(
+        exact_request.evaluator(),
+        EXACT_BOOLEAN_INTERSECT_EVALUATOR_V1
+    );
+    assert_eq!(
+        exact_request.expected_bounds_mm(),
+        [[70.0, 20.0, 0.0], [100.0, 50.0, 50.0]]
+    );
+
+    assert_eq!(document.undo().unwrap().canonical_digest(), before);
+    assert_eq!(document.redo().unwrap().canonical_digest(), applied);
+
+    document
+        .make_unique(OccurrenceId(301), "Unique intersection")
+        .unwrap();
+    let unique = document.current();
+    let unique_definition = unique
+        .occurrence(OccurrenceId(301))
+        .unwrap()
+        .definition_id();
+    let unique_features = unique.definition(unique_definition).unwrap().feature_ids();
+    let [_, unique_target, _, unique_tool, unique_result] = unique_features else {
+        panic!("Intersect Make Unique must preserve the five-feature chain");
+    };
+    assert!(matches!(
+        unique.feature(*unique_result).unwrap().kind(),
+        FeatureKind::Boolean {
+            operation: BooleanOperation::Intersect,
+            target,
+            tool,
+        } if target == unique_target && tool == unique_tool
+    ));
+
+    let unique_digest = unique.canonical_digest();
+    let reopened = persistence::load(&persistence::save(&unique)).unwrap();
+    assert_eq!(reopened.source_schema(), persistence::CURRENT_SCHEMA);
+    assert_eq!(reopened.snapshot().canonical_digest(), unique_digest);
+    assert!(reopened.snapshot().occurrence(OccurrenceId(302)).is_none());
+    assert!(matches!(
+        reopened.snapshot().feature(*unique_result).unwrap().kind(),
+        FeatureKind::Boolean {
+            operation: BooleanOperation::Intersect,
+            target,
+            tool,
+        } if target == unique_target && tool == unique_tool
+    ));
+
+    let mut touching = seed_separate_solid_tool_document(100.0, 0.0, 30.0);
+    let touching_before = touching.current().canonical_digest();
+    assert_eq!(
+        touching
+            .apply_batch(&CommandBatch::new(vec![CanonicalCommand::ApplySolidTool(
+                separate_solid_tool_plan(BooleanOperation::Intersect, true),
+            )]))
+            .err()
+            .unwrap(),
+        CanonicalError::InvalidSolidToolPlan
+    );
+    assert_eq!(touching.current().canonical_digest(), touching_before);
+    assert_eq!(touching.visible_undo_steps(), 0);
+}
+
+#[test]
+fn separate_occurrence_split_is_stable_unique_persistent_and_exact_ready() {
+    let mut document = seed_separate_solid_tool_document(70.0, 20.0, 30.0);
+    let before = document.current().canonical_digest();
+    let split = CommandBatch::new(vec![CanonicalCommand::ApplySolidTool(
+        separate_solid_tool_plan(BooleanOperation::Split, true),
+    )]);
+    let intersect = CommandBatch::new(vec![CanonicalCommand::ApplySolidTool(
+        separate_solid_tool_plan(BooleanOperation::Intersect, true),
+    )]);
+    assert_ne!(split.digest(), intersect.digest());
+
+    document.apply_batch(&split).unwrap();
+    let applied = document.current().canonical_digest();
+    assert_ne!(applied, before);
+    assert_eq!(document.visible_undo_steps(), 1);
+    assert_eq!(
+        document
+            .current()
+            .occurrence(OccurrenceId(301))
+            .unwrap()
+            .definition_id(),
+        DefinitionId(401)
+    );
+    let applied_snapshot = document.current();
+    let splitter = applied_snapshot.occurrence(OccurrenceId(302)).unwrap();
+    assert_eq!(splitter.definition_id(), DefinitionId(201));
+    assert_eq!(splitter.transform().matrix()[3], 70.0);
+    assert_eq!(splitter.transform().matrix()[7], 20.0);
+    assert!(matches!(
+        document.current().feature(FeatureId(406)).unwrap().kind(),
+        FeatureKind::Boolean {
+            operation: BooleanOperation::Split,
+            target: FeatureId(403),
+            tool: FeatureId(405),
+        }
+    ));
+    assert!(
+        encode_semantic_state(&document.current())
+            .complete_v1()
+            .contains("feature.406.operation=split")
+    );
+    let exact_request =
+        ExactFeatureChainRequest::from_snapshot(&document.current(), DefinitionId(401)).unwrap();
+    assert_eq!(
+        exact_request.boolean.as_ref().unwrap().operation,
+        BooleanOperation::Split
+    );
+    assert_eq!(exact_request.evaluator(), EXACT_BOOLEAN_SPLIT_EVALUATOR_V1);
+    assert_eq!(
+        exact_request.expected_bounds_mm(),
+        [[0.0, 0.0, 0.0], [100.0, 80.0, 50.0]]
+    );
+
+    assert_eq!(document.undo().unwrap().canonical_digest(), before);
+    assert_eq!(document.redo().unwrap().canonical_digest(), applied);
+
+    document
+        .make_unique(OccurrenceId(301), "Unique split")
+        .unwrap();
+    let unique = document.current();
+    let unique_definition = unique
+        .occurrence(OccurrenceId(301))
+        .unwrap()
+        .definition_id();
+    let unique_features = unique.definition(unique_definition).unwrap().feature_ids();
+    let [_, unique_target, _, unique_tool, unique_result] = unique_features else {
+        panic!("Split Make Unique must preserve the five-feature chain");
+    };
+    assert!(matches!(
+        unique.feature(*unique_result).unwrap().kind(),
+        FeatureKind::Boolean {
+            operation: BooleanOperation::Split,
+            target,
+            tool,
+        } if target == unique_target && tool == unique_tool
+    ));
+
+    let unique_digest = unique.canonical_digest();
+    let reopened = persistence::load(&persistence::save(&unique)).unwrap();
+    assert_eq!(reopened.source_schema(), persistence::CURRENT_SCHEMA);
+    assert_eq!(reopened.snapshot().canonical_digest(), unique_digest);
+    assert!(reopened.snapshot().occurrence(OccurrenceId(302)).is_some());
+    assert!(matches!(
+        reopened.snapshot().feature(*unique_result).unwrap().kind(),
+        FeatureKind::Boolean {
+            operation: BooleanOperation::Split,
+            target,
+            tool,
+        } if target == unique_target && tool == unique_tool
+    ));
+
+    let mut consume = seed_separate_solid_tool_document(70.0, 20.0, 30.0);
+    let consume_before = consume.current().canonical_digest();
+    assert_eq!(
+        consume
+            .apply_batch(&CommandBatch::new(vec![CanonicalCommand::ApplySolidTool(
+                separate_solid_tool_plan(BooleanOperation::Split, false),
+            )]))
+            .err()
+            .unwrap(),
+        CanonicalError::InvalidSolidToolPlan
+    );
+    assert_eq!(consume.current().canonical_digest(), consume_before);
+    assert_eq!(consume.visible_undo_steps(), 0);
+
+    let mut touching = seed_separate_solid_tool_document(100.0, 0.0, 30.0);
+    let touching_before = touching.current().canonical_digest();
+    assert_eq!(
+        touching
+            .apply_batch(&CommandBatch::new(vec![CanonicalCommand::ApplySolidTool(
+                separate_solid_tool_plan(BooleanOperation::Split, true),
+            )]))
+            .err()
+            .unwrap(),
+        CanonicalError::InvalidSolidToolPlan
+    );
+    assert_eq!(touching.current().canonical_digest(), touching_before);
+    assert_eq!(touching.visible_undo_steps(), 0);
+}
+
+#[test]
+fn bounded_planar_offset_is_dimensioned_validated_undoable_and_persistent() {
+    const DEFINITION: DefinitionId = DefinitionId(701);
+    const PROFILE: FeatureId = FeatureId(702);
+    const OFFSET: FeatureId = FeatureId(703);
+    const OCCURRENCE: OccurrenceId = OccurrenceId(704);
+
+    let mut document = DocumentStore::new();
+    let empty = document.current().canonical_digest();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DEFINITION,
+                name: "Offset profile".to_owned(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: PROFILE,
+                definition_id: DEFINITION,
+                name: "Source rectangle".to_owned(),
+                kind: FeatureKind::Profile {
+                    points_mm: vec![[10.0, 20.0], [110.0, 20.0], [110.0, 100.0], [10.0, 100.0]],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: OFFSET,
+                definition_id: DEFINITION,
+                name: "Planar offset".to_owned(),
+                kind: FeatureKind::PlanarOffset {
+                    profile: PROFILE,
+                    distance: Dimension::new("5.000", 5.0).unwrap(),
+                },
+            },
+            CanonicalCommand::CreateOccurrence {
+                id: OCCURRENCE,
+                definition_id: DEFINITION,
+                name: "Offset occurrence".to_owned(),
+                transform: Transform::identity(),
+                parent: None,
+                tag: None,
+                visible: true,
+            },
+        ]))
+        .unwrap();
+    let outward = document.current().canonical_digest();
+    assert_ne!(outward, empty);
+    assert_eq!(document.visible_undo_steps(), 1);
+    assert!(matches!(
+        document.current().feature(OFFSET).unwrap().kind(),
+        FeatureKind::PlanarOffset { profile: PROFILE, distance }
+            if distance.source_token() == "5.000" && distance.millimetres() == 5.0
+    ));
+    let state = encode_semantic_state(&document.current());
+    assert!(
+        state
+            .complete_v1()
+            .contains("feature.703.kind=planar_offset")
+    );
+    assert!(
+        state
+            .complete_v1()
+            .contains("feature.703.distance.source=\"5.000\"")
+    );
+    assert!(state.agent_v1().contains("kind:planar_offset"));
+
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetFeatureDimension {
+                id: OFFSET,
+                dimension: Dimension::new("-7.5", -7.5).unwrap(),
+            },
+        ]))
+        .unwrap();
+    let inward = document.current().canonical_digest();
+    assert_ne!(inward, outward);
+    assert_eq!(document.visible_undo_steps(), 2);
+    assert_eq!(document.undo().unwrap().canonical_digest(), outward);
+    assert_eq!(document.redo().unwrap().canonical_digest(), inward);
+
+    for invalid_distance in [0.0, -40.0, 1_000_000.0] {
+        let before = document.current().canonical_digest();
+        let undo_steps = document.visible_undo_steps();
+        let error = document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::SetFeatureDimension {
+                    id: OFFSET,
+                    dimension: Dimension::new(invalid_distance.to_string(), invalid_distance)
+                        .unwrap(),
+                },
+            ]))
+            .err()
+            .expect("invalid offset must reject the whole batch");
+        assert_eq!(error, CanonicalError::InvalidPlanarOffset);
+        assert_eq!(document.current().canonical_digest(), before);
+        assert_eq!(document.visible_undo_steps(), undo_steps);
+    }
+
+    document.make_unique(OCCURRENCE, "Unique offset").unwrap();
+    let unique = document.current();
+    let unique_definition = unique.occurrence(OCCURRENCE).unwrap().definition_id();
+    let [unique_profile, unique_offset] =
+        unique.definition(unique_definition).unwrap().feature_ids()
+    else {
+        panic!("Planar Offset Make Unique must preserve the two-feature chain");
+    };
+    assert!(matches!(
+        unique.feature(*unique_offset).unwrap().kind(),
+        FeatureKind::PlanarOffset { profile, distance }
+            if profile == unique_profile
+                && distance.source_token() == "-7.5"
+                && distance.millimetres() == -7.5
+    ));
+
+    let unique_digest = unique.canonical_digest();
+    let reopened = persistence::load(&persistence::save(&unique)).unwrap();
+    assert_eq!(reopened.source_schema(), persistence::CURRENT_SCHEMA);
+    assert_eq!(reopened.snapshot().canonical_digest(), unique_digest);
+    assert!(reopened.migration_losses().is_empty());
+    assert!(matches!(
+        reopened.snapshot().feature(*unique_offset).unwrap().kind(),
+        FeatureKind::PlanarOffset { profile, distance }
+            if profile == unique_profile
+                && distance.source_token() == "-7.5"
+                && distance.millimetres() == -7.5
+    ));
+}
+
+#[test]
+fn bounded_profile_sweep_is_validated_undoable_visible_and_persistent() {
+    const DEFINITION: DefinitionId = DefinitionId(711);
+    const PROFILE: FeatureId = FeatureId(712);
+    const PATH: FeatureId = FeatureId(713);
+    const SWEEP: FeatureId = FeatureId(714);
+    const OCCURRENCE: OccurrenceId = OccurrenceId(715);
+
+    let mut document = DocumentStore::new();
+    let empty = document.current().canonical_digest();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DEFINITION,
+                name: "Sweep definition".to_owned(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: PROFILE,
+                definition_id: DEFINITION,
+                name: "Rectangular section".to_owned(),
+                kind: FeatureKind::Profile {
+                    points_mm: vec![[-5.0, -10.0], [5.0, -10.0], [5.0, 10.0], [-5.0, 10.0]],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: PATH,
+                definition_id: DEFINITION,
+                name: "Straight path".to_owned(),
+                kind: FeatureKind::SegmentProfile {
+                    segments: vec![ProfileSegment::Line {
+                        start_mm: [0.0, 0.0],
+                        end_mm: [0.0, 125.0],
+                    }],
+                    closed: false,
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: SWEEP,
+                definition_id: DEFINITION,
+                name: "Bounded sweep".to_owned(),
+                kind: FeatureKind::Sweep {
+                    profile: PROFILE,
+                    path: PATH,
+                },
+            },
+            CanonicalCommand::CreateOccurrence {
+                id: OCCURRENCE,
+                definition_id: DEFINITION,
+                name: "Sweep occurrence".to_owned(),
+                transform: Transform::identity(),
+                parent: None,
+                tag: None,
+                visible: true,
+            },
+        ]))
+        .unwrap();
+
+    let swept = document.current().canonical_digest();
+    assert_ne!(swept, empty);
+    assert_eq!(document.visible_undo_steps(), 1);
+    assert_eq!(document.undo().unwrap().canonical_digest(), empty);
+    assert_eq!(document.redo().unwrap().canonical_digest(), swept);
+    assert!(matches!(
+        document.current().feature(SWEEP).unwrap().kind(),
+        FeatureKind::Sweep {
+            profile: PROFILE,
+            path: PATH,
+        }
+    ));
+    let state = encode_semantic_state(&document.current());
+    assert!(state.complete_v1().contains("feature.714.kind=sweep"));
+    assert!(state.complete_v1().contains("feature.714.profile=712"));
+    assert!(state.complete_v1().contains("feature.714.path=713"));
+    assert!(state.agent_v1().contains("kind:sweep"));
+
+    document.make_unique(OCCURRENCE, "Unique sweep").unwrap();
+    let unique = document.current();
+    let unique_definition = unique.occurrence(OCCURRENCE).unwrap().definition_id();
+    let [unique_profile, unique_path, unique_sweep] =
+        unique.definition(unique_definition).unwrap().feature_ids()
+    else {
+        panic!("Sweep Make Unique must preserve the three-feature chain");
+    };
+    assert!(matches!(
+        unique.feature(*unique_sweep).unwrap().kind(),
+        FeatureKind::Sweep { profile, path }
+            if profile == unique_profile && path == unique_path
+    ));
+
+    let unique_digest = unique.canonical_digest();
+    let reopened = persistence::load(&persistence::save(&unique)).unwrap();
+    assert_eq!(reopened.source_schema(), persistence::CURRENT_SCHEMA);
+    assert_eq!(reopened.snapshot().canonical_digest(), unique_digest);
+    assert!(reopened.migration_losses().is_empty());
+    assert!(matches!(
+        reopened.snapshot().feature(*unique_sweep).unwrap().kind(),
+        FeatureKind::Sweep { profile, path }
+            if profile == unique_profile && path == unique_path
+    ));
+
+    let mut invalid = DocumentStore::new();
+    let before = invalid.current().canonical_digest();
+    let error = invalid
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DEFINITION,
+                name: "Invalid sweep".to_owned(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: PROFILE,
+                definition_id: DEFINITION,
+                name: "Rectangle".to_owned(),
+                kind: FeatureKind::Profile {
+                    points_mm: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 20.0], [0.0, 20.0]],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: PATH,
+                definition_id: DEFINITION,
+                name: "Bent path".to_owned(),
+                kind: FeatureKind::SegmentProfile {
+                    segments: vec![
+                        ProfileSegment::Line {
+                            start_mm: [0.0, 0.0],
+                            end_mm: [0.0, 50.0],
+                        },
+                        ProfileSegment::Line {
+                            start_mm: [0.0, 50.0],
+                            end_mm: [25.0, 50.0],
+                        },
+                    ],
+                    closed: false,
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: SWEEP,
+                definition_id: DEFINITION,
+                name: "Unsupported bent sweep".to_owned(),
+                kind: FeatureKind::Sweep {
+                    profile: PROFILE,
+                    path: PATH,
+                },
+            },
+        ]))
+        .err()
+        .expect("bounded Sweep must reject a multi-segment path atomically");
+    assert_eq!(error, CanonicalError::InvalidSweep);
+    assert_eq!(invalid.current().canonical_digest(), before);
+    assert_eq!(invalid.visible_undo_steps(), 0);
+}
+
+#[test]
+fn bounded_spline_profile_loft_is_validated_undoable_visible_and_persistent() {
+    const DEFINITION: DefinitionId = DefinitionId(721);
+    const LOWER: FeatureId = FeatureId(722);
+    const UPPER: FeatureId = FeatureId(723);
+    const LOFT: FeatureId = FeatureId(724);
+    const OCCURRENCE: OccurrenceId = OccurrenceId(725);
+
+    let lower_points = vec![[-20.0, -10.0], [20.0, -10.0], [20.0, 10.0], [-20.0, 10.0]];
+    let upper_points = vec![[-10.0, -5.0], [10.0, -5.0], [10.0, 5.0], [-10.0, 5.0]];
+    let mut document = DocumentStore::new();
+    let empty = document.current().canonical_digest();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DEFINITION,
+                name: "Loft definition".to_owned(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: LOWER,
+                definition_id: DEFINITION,
+                name: "Lower spline".to_owned(),
+                kind: FeatureKind::SplineProfile {
+                    control_points_mm: lower_points.clone(),
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: UPPER,
+                definition_id: DEFINITION,
+                name: "Upper spline".to_owned(),
+                kind: FeatureKind::SplineProfile {
+                    control_points_mm: upper_points.clone(),
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: LOFT,
+                definition_id: DEFINITION,
+                name: "Bounded loft".to_owned(),
+                kind: FeatureKind::Loft {
+                    sections: vec![
+                        LoftSection {
+                            profile: LOWER,
+                            elevation_mm: 0.0,
+                        },
+                        LoftSection {
+                            profile: UPPER,
+                            elevation_mm: 80.0,
+                        },
+                    ],
+                },
+            },
+            CanonicalCommand::CreateOccurrence {
+                id: OCCURRENCE,
+                definition_id: DEFINITION,
+                name: "Loft occurrence".to_owned(),
+                transform: Transform::identity(),
+                parent: None,
+                tag: None,
+                visible: true,
+            },
+        ]))
+        .unwrap();
+
+    let lofted = document.current().canonical_digest();
+    assert_ne!(lofted, empty);
+    assert_eq!(document.visible_undo_steps(), 1);
+    assert_eq!(document.undo().unwrap().canonical_digest(), empty);
+    assert_eq!(document.redo().unwrap().canonical_digest(), lofted);
+    let state = encode_semantic_state(&document.current());
+    assert!(
+        state
+            .complete_v1()
+            .contains("feature.722.kind=spline_profile")
+    );
+    assert!(state.complete_v1().contains("feature.724.kind=loft"));
+    assert!(
+        state
+            .complete_v1()
+            .contains("feature.724.section.1=profile:723")
+    );
+    assert!(state.agent_v1().contains("kind:spline_profile"));
+    assert!(state.agent_v1().contains("kind:loft"));
+
+    document.make_unique(OCCURRENCE, "Unique loft").unwrap();
+    let unique = document.current();
+    let unique_definition = unique.occurrence(OCCURRENCE).unwrap().definition_id();
+    let [unique_lower, unique_upper, unique_loft] =
+        unique.definition(unique_definition).unwrap().feature_ids()
+    else {
+        panic!("Loft Make Unique must preserve the three-feature chain");
+    };
+    assert!(matches!(
+        unique.feature(*unique_lower).unwrap().kind(),
+        FeatureKind::SplineProfile { control_points_mm } if control_points_mm == &lower_points
+    ));
+    assert!(matches!(
+        unique.feature(*unique_upper).unwrap().kind(),
+        FeatureKind::SplineProfile { control_points_mm } if control_points_mm == &upper_points
+    ));
+    assert!(matches!(
+        unique.feature(*unique_loft).unwrap().kind(),
+        FeatureKind::Loft { sections }
+            if sections[0].profile == *unique_lower
+                && sections[0].elevation_mm == 0.0
+                && sections[1].profile == *unique_upper
+                && sections[1].elevation_mm == 80.0
+    ));
+
+    let unique_digest = unique.canonical_digest();
+    let reopened = persistence::load(&persistence::save(&unique)).unwrap();
+    assert_eq!(reopened.source_schema(), persistence::CURRENT_SCHEMA);
+    assert_eq!(reopened.snapshot().canonical_digest(), unique_digest);
+    assert!(reopened.migration_losses().is_empty());
+    assert!(matches!(
+        reopened.snapshot().feature(*unique_loft).unwrap().kind(),
+        FeatureKind::Loft { sections }
+            if sections[0].profile == *unique_lower
+                && sections[1].profile == *unique_upper
+    ));
+
+    let before = document.current().canonical_digest();
+    let undo_steps = document.visible_undo_steps();
+    let error = document
+        .apply_batch(&CommandBatch::new(vec![CanonicalCommand::CreateFeature {
+            id: FeatureId(726),
+            definition_id: unique_definition,
+            name: "Invalid unordered loft".to_owned(),
+            kind: FeatureKind::Loft {
+                sections: vec![
+                    LoftSection {
+                        profile: *unique_lower,
+                        elevation_mm: 80.0,
+                    },
+                    LoftSection {
+                        profile: *unique_upper,
+                        elevation_mm: 0.0,
+                    },
+                ],
+            },
+        }]))
+        .err()
+        .expect("unordered Loft sections must reject atomically");
+    assert_eq!(error, CanonicalError::InvalidLoft);
+    assert_eq!(document.current().canonical_digest(), before);
+    assert_eq!(document.visible_undo_steps(), undo_steps);
+
+    let mut invalid_spline = DocumentStore::new();
+    let empty = invalid_spline.current().canonical_digest();
+    let error = invalid_spline
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DEFINITION,
+                name: "Invalid spline definition".to_owned(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: LOWER,
+                definition_id: DEFINITION,
+                name: "Underspecified spline".to_owned(),
+                kind: FeatureKind::SplineProfile {
+                    control_points_mm: vec![[0.0, 0.0], [10.0, 0.0], [0.0, 10.0]],
+                },
+            },
+        ]))
+        .err()
+        .expect("underspecified spline profile must reject atomically");
+    assert_eq!(error, CanonicalError::InvalidSplineProfile);
+    assert_eq!(invalid_spline.current().canonical_digest(), empty);
+    assert_eq!(invalid_spline.visible_undo_steps(), 0);
+}
+
+#[test]
+fn separate_occurrence_solid_tool_rejects_unsupported_exact_geometry_atomically() {
+    let mut document = seed_separate_solid_tool_document(100.0, 0.0, 80.0);
+    let before = document.current().canonical_digest();
+    let error = document
+        .apply_batch(&CommandBatch::new(vec![CanonicalCommand::ApplySolidTool(
+            separate_solid_tool_plan(BooleanOperation::Union, true),
+        )]))
+        .err()
+        .expect("touching-only union must fail before commit");
+
+    assert_eq!(error, CanonicalError::InvalidSolidToolPlan);
+    assert_eq!(document.current().canonical_digest(), before);
+    assert_eq!(document.visible_undo_steps(), 0);
+    assert!(document.current().definition(DefinitionId(401)).is_none());
+    assert_eq!(
+        document
+            .current()
+            .occurrence(OccurrenceId(301))
+            .unwrap()
+            .definition_id(),
+        DefinitionId(101)
+    );
+    assert!(document.current().occurrence(OccurrenceId(302)).is_some());
+}
+
+fn circular_profile_segments(clockwise: bool) -> Vec<ProfileSegment> {
+    vec![
+        ProfileSegment::CircularArc {
+            start_mm: [10.0, 0.0],
+            end_mm: [-10.0, 0.0],
+            center_mm: [0.0, 0.0],
+            clockwise,
+        },
+        ProfileSegment::CircularArc {
+            start_mm: [-10.0, 0.0],
+            end_mm: [10.0, 0.0],
+            center_mm: [0.0, 0.0],
+            clockwise,
+        },
+    ]
+}
+
+#[test]
+fn segment_profile_is_canonical_undoable_persistent_and_exact_for_circle() {
+    let mut document = DocumentStore::new();
+    let before = document.current().canonical_digest();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DefinitionId(501),
+                name: "Circle definition".to_owned(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(502),
+                definition_id: DefinitionId(501),
+                name: "Exact circle".to_owned(),
+                kind: FeatureKind::SegmentProfile {
+                    segments: circular_profile_segments(false),
+                    closed: true,
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(503),
+                definition_id: DefinitionId(501),
+                name: "Pending exact cylinder".to_owned(),
+                kind: FeatureKind::Extrusion {
+                    profile: FeatureId(502),
+                    height: height("25"),
+                },
+            },
+            CanonicalCommand::CreateOccurrence {
+                id: OccurrenceId(504),
+                definition_id: DefinitionId(501),
+                name: "Circle occurrence".to_owned(),
+                transform: Transform::identity(),
+                parent: None,
+                tag: None,
+                visible: true,
+            },
+        ]))
+        .unwrap();
+    let applied = document.current().canonical_digest();
+    assert_ne!(applied, before);
+    assert_eq!(document.visible_undo_steps(), 1);
+    assert!(matches!(
+        document.current().feature(FeatureId(502)).unwrap().kind(),
+        FeatureKind::SegmentProfile { segments, closed: true }
+            if segments == &circular_profile_segments(false)
+    ));
+    let exact_request =
+        ExactFeatureChainRequest::from_snapshot(&document.current(), DefinitionId(501)).unwrap();
+    assert_eq!(exact_request.evaluator(), EXACT_CIRCLE_EVALUATOR_V1);
+    assert_eq!(
+        exact_request.expected_bounds_mm(),
+        [[-10.0, -10.0, 0.0], [10.0, 10.0, 25.0]]
+    );
+    let circle = exact_request.circle.expect("analytic circle request");
+    assert_eq!(f64::from_bits(circle.radius_bits), 10.0);
+    assert_eq!(f64::from_bits(circle.center_x_bits), 0.0);
+    assert!(!circle.clockwise);
+
+    let reopened = persistence::load(&persistence::save(&document.current())).unwrap();
+    assert_eq!(reopened.source_schema(), persistence::CURRENT_SCHEMA);
+    assert_eq!(reopened.snapshot().canonical_digest(), applied);
+    assert!(matches!(
+        reopened.snapshot().feature(FeatureId(502)).unwrap().kind(),
+        FeatureKind::SegmentProfile { segments, closed: true }
+            if segments == &circular_profile_segments(false)
+    ));
+    assert_eq!(document.undo().unwrap().canonical_digest(), before);
+    assert_eq!(document.redo().unwrap().canonical_digest(), applied);
+
+    document
+        .make_unique(OccurrenceId(504), "Unique circle")
+        .unwrap();
+    let unique_snapshot = document.current();
+    let unique_definition_id = unique_snapshot
+        .occurrence(OccurrenceId(504))
+        .unwrap()
+        .definition_id();
+    assert_ne!(unique_definition_id, DefinitionId(501));
+    let cloned_segment_profile = unique_snapshot
+        .definition(unique_definition_id)
+        .unwrap()
+        .feature_ids()
+        .iter()
+        .filter_map(|feature_id| unique_snapshot.feature(*feature_id))
+        .find(|feature| matches!(feature.kind(), FeatureKind::SegmentProfile { .. }))
+        .expect("make unique must clone the segment-authoritative profile");
+    assert!(matches!(
+        cloned_segment_profile.kind(),
+        FeatureKind::SegmentProfile { segments, closed: true }
+            if segments == &circular_profile_segments(false)
+    ));
+
+    let mut opposite = DocumentStore::new();
+    opposite
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DefinitionId(501),
+                name: "Circle definition".to_owned(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(502),
+                definition_id: DefinitionId(501),
+                name: "Exact circle".to_owned(),
+                kind: FeatureKind::SegmentProfile {
+                    segments: circular_profile_segments(true),
+                    closed: true,
+                },
+            },
+        ]))
+        .unwrap();
+    assert_ne!(
+        opposite.current().canonical_digest(),
+        reopened.snapshot().canonical_digest(),
+        "arc direction is authoritative canonical geometry"
+    );
+}
+
+#[test]
+fn segment_profile_rejects_discontinuity_and_radius_mismatch_atomically() {
+    for segments in [
+        vec![
+            ProfileSegment::Line {
+                start_mm: [0.0, 0.0],
+                end_mm: [5.0, 0.0],
+            },
+            ProfileSegment::Line {
+                start_mm: [6.0, 0.0],
+                end_mm: [0.0, 0.0],
+            },
+        ],
+        vec![
+            ProfileSegment::Line {
+                start_mm: [0.0, 0.0],
+                end_mm: [5.0, 0.0],
+            },
+            ProfileSegment::Line {
+                start_mm: [5.0 + 1.0e-12, 0.0],
+                end_mm: [0.0, 0.0],
+            },
+        ],
+        vec![
+            ProfileSegment::CircularArc {
+                start_mm: [10.0, 0.0],
+                end_mm: [-9.0, 0.0],
+                center_mm: [0.0, 0.0],
+                clockwise: false,
+            },
+            ProfileSegment::CircularArc {
+                start_mm: [-9.0, 0.0],
+                end_mm: [10.0, 0.0],
+                center_mm: [0.0, 0.0],
+                clockwise: false,
+            },
+        ],
+    ] {
+        let mut document = DocumentStore::new();
+        let before = document.current().canonical_digest();
+        let error = document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::CreateDefinition {
+                    id: DefinitionId(601),
+                    name: "Invalid profile definition".to_owned(),
+                },
+                CanonicalCommand::CreateFeature {
+                    id: FeatureId(602),
+                    definition_id: DefinitionId(601),
+                    name: "Invalid segment profile".to_owned(),
+                    kind: FeatureKind::SegmentProfile {
+                        segments,
+                        closed: true,
+                    },
+                },
+            ]))
+            .err()
+            .expect("invalid segment profile must fail");
+        assert_eq!(error, CanonicalError::InvalidProfile);
+        assert_eq!(document.current().canonical_digest(), before);
+        assert_eq!(document.visible_undo_steps(), 0);
+    }
 }

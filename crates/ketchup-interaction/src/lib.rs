@@ -176,6 +176,8 @@ pub enum SnapKind {
     Endpoint,
     Intersection,
     Midpoint,
+    Center,
+    Tangent,
     Face,
 }
 
@@ -185,7 +187,9 @@ impl SnapKind {
             Self::Endpoint => 0,
             Self::Intersection => 1,
             Self::Midpoint => 2,
-            Self::Face => 3,
+            Self::Center => 3,
+            Self::Tangent => 4,
+            Self::Face => 5,
         }
     }
 }

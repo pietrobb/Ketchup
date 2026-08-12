@@ -652,6 +652,77 @@ pub fn encode_semantic_state_with_results(
                 )
                 .unwrap();
             }
+            crate::document::FeatureKind::SegmentProfile { segments, closed } => {
+                writeln!(complete, "feature.{}.kind=segment_profile", feature.id().0).unwrap();
+                writeln!(complete, "feature.{}.closed={closed}", feature.id().0).unwrap();
+                for (index, segment) in segments.iter().enumerate() {
+                    match segment {
+                        crate::document::ProfileSegment::Line { start_mm, end_mm } => {
+                            writeln!(
+                                complete,
+                                "feature.{}.segment.{index}=line,{:016x},{:016x},{:016x},{:016x}",
+                                feature.id().0,
+                                start_mm[0].to_bits(),
+                                start_mm[1].to_bits(),
+                                end_mm[0].to_bits(),
+                                end_mm[1].to_bits()
+                            )
+                            .unwrap();
+                        }
+                        crate::document::ProfileSegment::CircularArc {
+                            start_mm,
+                            end_mm,
+                            center_mm,
+                            clockwise,
+                        } => {
+                            writeln!(
+                                complete,
+                                "feature.{}.segment.{index}=circular_arc,{:016x},{:016x},{:016x},{:016x},{:016x},{:016x},clockwise:{clockwise}",
+                                feature.id().0,
+                                start_mm[0].to_bits(),
+                                start_mm[1].to_bits(),
+                                end_mm[0].to_bits(),
+                                end_mm[1].to_bits(),
+                                center_mm[0].to_bits(),
+                                center_mm[1].to_bits()
+                            )
+                            .unwrap();
+                        }
+                    }
+                }
+                writeln!(
+                    agent,
+                    "feature.{}=name:{:?},kind:segment_profile,definition:{},segments:{},closed:{}",
+                    feature.id().0,
+                    feature.name(),
+                    feature.definition_id().0,
+                    segments.len(),
+                    closed
+                )
+                .unwrap();
+            }
+            crate::document::FeatureKind::SplineProfile { control_points_mm } => {
+                writeln!(complete, "feature.{}.kind=spline_profile", feature.id().0).unwrap();
+                for (index, point) in control_points_mm.iter().enumerate() {
+                    writeln!(
+                        complete,
+                        "feature.{}.control_point.{index}.f64_bits={:016x},{:016x}",
+                        feature.id().0,
+                        point[0].to_bits(),
+                        point[1].to_bits()
+                    )
+                    .unwrap();
+                }
+                writeln!(
+                    agent,
+                    "feature.{}=name:{:?},kind:spline_profile,definition:{},control_points:{}",
+                    feature.id().0,
+                    feature.name(),
+                    feature.definition_id().0,
+                    control_points_mm.len()
+                )
+                .unwrap();
+            }
             crate::document::FeatureKind::Extrusion { profile, height } => {
                 writeln!(complete, "feature.{}.kind=extrusion", feature.id().0).unwrap();
                 writeln!(complete, "feature.{}.profile={}", feature.id().0, profile.0).unwrap();
@@ -719,12 +790,35 @@ pub fn encode_semantic_state_with_results(
                 )
                 .unwrap();
             }
-            crate::document::FeatureKind::Revolve { profile } => {
+            crate::document::FeatureKind::Revolve {
+                profile,
+                axis_start_mm,
+                axis_end_mm,
+                angle_degrees,
+            } => {
                 writeln!(complete, "feature.{}.kind=revolve", feature.id().0).unwrap();
                 writeln!(complete, "feature.{}.profile={}", feature.id().0, profile.0).unwrap();
                 writeln!(
+                    complete,
+                    "feature.{}.axis_start_mm={axis_start_mm:?}",
+                    feature.id().0
+                )
+                .unwrap();
+                writeln!(
+                    complete,
+                    "feature.{}.axis_end_mm={axis_end_mm:?}",
+                    feature.id().0
+                )
+                .unwrap();
+                writeln!(
+                    complete,
+                    "feature.{}.angle_degrees={angle_degrees:?}",
+                    feature.id().0
+                )
+                .unwrap();
+                writeln!(
                     agent,
-                    "feature.{}=name:{:?},kind:revolve,definition:{},profile:{}",
+                    "feature.{}=name:{:?},kind:revolve,definition:{},profile:{},axis_start_mm:{axis_start_mm:?},axis_end_mm:{axis_end_mm:?},angle_degrees:{angle_degrees:?}",
                     feature.id().0,
                     feature.name(),
                     feature.definition_id().0,
@@ -732,9 +826,23 @@ pub fn encode_semantic_state_with_results(
                 )
                 .unwrap();
             }
-            crate::document::FeatureKind::Shell { target, thickness } => {
+            crate::document::FeatureKind::Shell {
+                target,
+                removed_faces,
+                thickness,
+            } => {
                 writeln!(complete, "feature.{}.kind=shell", feature.id().0).unwrap();
                 writeln!(complete, "feature.{}.target={}", feature.id().0, target.0).unwrap();
+                writeln!(
+                    complete,
+                    "feature.{}.removed_faces={:?}",
+                    feature.id().0,
+                    removed_faces
+                        .iter()
+                        .map(crate::document::StableFaceRole::as_str)
+                        .collect::<Vec<_>>()
+                )
+                .unwrap();
                 writeln!(
                     complete,
                     "feature.{}.thickness.source={:?}",
@@ -751,17 +859,22 @@ pub fn encode_semantic_state_with_results(
                 .unwrap();
                 writeln!(
                     agent,
-                    "feature.{}=name:{:?},kind:shell,definition:{},target:{},thickness_mm:{:?}",
+                    "feature.{}=name:{:?},kind:shell,definition:{},target:{},removed_faces:{:?},thickness_mm:{:?}",
                     feature.id().0,
                     feature.name(),
                     feature.definition_id().0,
                     target.0,
+                    removed_faces
+                        .iter()
+                        .map(crate::document::StableFaceRole::as_str)
+                        .collect::<Vec<_>>(),
                     thickness.millimetres()
                 )
                 .unwrap();
             }
             crate::document::FeatureKind::BottleEdgeFinish {
                 target,
+                edges,
                 kind,
                 amount,
             } => {
@@ -776,6 +889,16 @@ pub fn encode_semantic_state_with_results(
                 )
                 .unwrap();
                 writeln!(complete, "feature.{}.target={}", feature.id().0, target.0).unwrap();
+                writeln!(
+                    complete,
+                    "feature.{}.edges={:?}",
+                    feature.id().0,
+                    edges
+                        .iter()
+                        .map(crate::document::StableEdgeRole::as_str)
+                        .collect::<Vec<_>>()
+                )
+                .unwrap();
                 writeln!(complete, "feature.{}.finish_kind={kind}", feature.id().0).unwrap();
                 writeln!(
                     complete,
@@ -786,11 +909,15 @@ pub fn encode_semantic_state_with_results(
                 .unwrap();
                 writeln!(
                     agent,
-                    "feature.{}=name:{:?},kind:bottle_edge_finish,definition:{},target:{},finish_kind:{kind},amount_mm:{:?}",
+                    "feature.{}=name:{:?},kind:bottle_edge_finish,definition:{},target:{},edges:{:?},finish_kind:{kind},amount_mm:{:?}",
                     feature.id().0,
                     feature.name(),
                     feature.definition_id().0,
                     target.0,
+                    edges
+                        .iter()
+                        .map(crate::document::StableEdgeRole::as_str)
+                        .collect::<Vec<_>>(),
                     amount.millimetres()
                 )
                 .unwrap();
@@ -810,6 +937,98 @@ pub fn encode_semantic_state_with_results(
                 )
                 .unwrap();
             }
+            crate::document::FeatureKind::Pocket {
+                target,
+                profile,
+                depth,
+            } => {
+                writeln!(complete, "feature.{}.kind=pocket", feature.id().0).unwrap();
+                writeln!(complete, "feature.{}.target={}", feature.id().0, target.0).unwrap();
+                writeln!(complete, "feature.{}.profile={}", feature.id().0, profile.0).unwrap();
+                writeln!(
+                    complete,
+                    "feature.{}.depth.f64_bits={:016x}",
+                    feature.id().0,
+                    depth.millimetres().to_bits()
+                )
+                .unwrap();
+                writeln!(
+                    agent,
+                    "feature.{}=name:{:?},kind:pocket,definition:{},target:{},profile:{},depth_mm:{:?}",
+                    feature.id().0,
+                    feature.name(),
+                    feature.definition_id().0,
+                    target.0,
+                    profile.0,
+                    depth.millimetres()
+                )
+                .unwrap();
+            }
+            crate::document::FeatureKind::PlanarOffset { profile, distance } => {
+                writeln!(complete, "feature.{}.kind=planar_offset", feature.id().0).unwrap();
+                writeln!(complete, "feature.{}.profile={}", feature.id().0, profile.0).unwrap();
+                writeln!(
+                    complete,
+                    "feature.{}.distance.source={:?}",
+                    feature.id().0,
+                    distance.source_token()
+                )
+                .unwrap();
+                writeln!(
+                    complete,
+                    "feature.{}.distance.f64_bits={:016x}",
+                    feature.id().0,
+                    distance.millimetres().to_bits()
+                )
+                .unwrap();
+                writeln!(
+                    agent,
+                    "feature.{}=name:{:?},kind:planar_offset,definition:{},profile:{},distance_mm:{:?}",
+                    feature.id().0,
+                    feature.name(),
+                    feature.definition_id().0,
+                    profile.0,
+                    distance.millimetres()
+                )
+                .unwrap();
+            }
+            crate::document::FeatureKind::Sweep { profile, path } => {
+                writeln!(complete, "feature.{}.kind=sweep", feature.id().0).unwrap();
+                writeln!(complete, "feature.{}.profile={}", feature.id().0, profile.0).unwrap();
+                writeln!(complete, "feature.{}.path={}", feature.id().0, path.0).unwrap();
+                writeln!(
+                    agent,
+                    "feature.{}=name:{:?},kind:sweep,definition:{},profile:{},path:{}",
+                    feature.id().0,
+                    feature.name(),
+                    feature.definition_id().0,
+                    profile.0,
+                    path.0
+                )
+                .unwrap();
+            }
+            crate::document::FeatureKind::Loft { sections } => {
+                writeln!(complete, "feature.{}.kind=loft", feature.id().0).unwrap();
+                for (index, section) in sections.iter().enumerate() {
+                    writeln!(
+                        complete,
+                        "feature.{}.section.{index}=profile:{},elevation.f64_bits:{:016x}",
+                        feature.id().0,
+                        section.profile.0,
+                        section.elevation_mm.to_bits()
+                    )
+                    .unwrap();
+                }
+                writeln!(
+                    agent,
+                    "feature.{}=name:{:?},kind:loft,definition:{},sections:{}",
+                    feature.id().0,
+                    feature.name(),
+                    feature.definition_id().0,
+                    sections.len()
+                )
+                .unwrap();
+            }
             crate::document::FeatureKind::Boolean {
                 operation,
                 target,
@@ -818,6 +1037,8 @@ pub fn encode_semantic_state_with_results(
                 let operation = match operation {
                     crate::document::BooleanOperation::Cut => "cut",
                     crate::document::BooleanOperation::Union => "union",
+                    crate::document::BooleanOperation::Intersect => "intersect",
+                    crate::document::BooleanOperation::Split => "split",
                 };
                 writeln!(complete, "feature.{}.kind=boolean", feature.id().0).unwrap();
                 writeln!(complete, "feature.{}.operation={operation}", feature.id().0).unwrap();

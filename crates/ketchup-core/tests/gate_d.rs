@@ -1,13 +1,15 @@
 use ketchup_core::document::{
-    AuthenticatedApprover, AuthoritativeDependency, BottleControlDimension, BottleEdgeFinishKind,
-    CanonicalCommand, CollectionId, CommandBatch, DefinitionId, Dimension, DimensionDisplayUnit,
+    AuthenticatedApprover, AuthoritativeDependency, BOTTLE_SHELL_OPENING_FACE_ROLE,
+    BOTTLE_SHOULDER_EDGE_ROLE, BottleControlDimension, BottleEdgeFinishKind, CanonicalCommand,
+    CollectionId, CommandBatch, DefinitionId, Dimension, DimensionDisplayUnit,
     DimensionPresentation, DocumentStore, EvaluatorNodeKind, FeatureId, FeatureKind,
     FeatureParameterSlot, FeatureParameterTarget, GroupId, HighRiskClass, HighRiskScope,
     HumanConfirmationError, MAX_HUMAN_CONFIRMATION_LIFETIME_MS, NodeId, OccurrenceId,
     OverrideParameterSpec, PersistentDimension, PersistentDimensionId, PersistentDimensionTarget,
     PortSpec, Proposal, ProposalBudget, ProposalCommitError, ProposalConfirmation, ProposalContext,
     ProposalGoal, ProposalPrepareError, ProposalPrincipal, ProposalRisk, ProposalValue, RuleOutput,
-    SlotPath, SlotResolution, SlotSegment, TagId, Transform, TrustedConfirmationSurface,
+    SlotPath, SlotResolution, SlotSegment, StableEdgeRole, StableFaceRole, TagId, Transform,
+    TrustedConfirmationSurface,
 };
 use ketchup_core::intent::{
     IntentCapability, IntentError, IntentGrant, IntentRequest, RequestingPrincipal, WorkflowIntent,
@@ -145,9 +147,7 @@ fn seed() -> DocumentStore {
                 id: BOTTLE_REVOLVE,
                 definition_id: BOTTLE_DEFINITION,
                 name: "Bottle revolve".to_owned(),
-                kind: FeatureKind::Revolve {
-                    profile: BOTTLE_CONTROL,
-                },
+                kind: FeatureKind::full_revolve(BOTTLE_CONTROL),
             },
             CanonicalCommand::CreateFeature {
                 id: BOTTLE_SHELL,
@@ -155,6 +155,9 @@ fn seed() -> DocumentStore {
                 name: "Bottle shell".to_owned(),
                 kind: FeatureKind::Shell {
                     target: BOTTLE_REVOLVE,
+                    removed_faces: vec![
+                        StableFaceRole::new(BOTTLE_SHELL_OPENING_FACE_ROLE).unwrap(),
+                    ],
                     thickness: dimension("2", 2.0),
                 },
             },
@@ -164,6 +167,7 @@ fn seed() -> DocumentStore {
                 name: "Edge finish".to_owned(),
                 kind: FeatureKind::BottleEdgeFinish {
                     target: BOTTLE_SHELL,
+                    edges: vec![StableEdgeRole::new(BOTTLE_SHOULDER_EDGE_ROLE).unwrap()],
                     kind: BottleEdgeFinishKind::Fillet,
                     amount: dimension("2", 2.0),
                 },

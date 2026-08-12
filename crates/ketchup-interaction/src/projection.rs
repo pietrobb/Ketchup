@@ -2,7 +2,7 @@ use crate::spatial::SnapshotBinding;
 use crate::{InteractionError, InteractionScene, SharedBoxGeometry, Vec3};
 use ketchup_core::document::{
     DefinitionId, DocumentId, FeatureId, FeatureKind, GroupId, InstancePath, OccurrenceId,
-    Snapshot, Transform,
+    ProfileSegment, Snapshot, Transform,
 };
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -228,7 +228,7 @@ fn canonical_box(
         .filter_map(|feature_id| {
             matches!(
                 snapshot.feature(*feature_id)?.kind(),
-                FeatureKind::Profile { .. }
+                FeatureKind::Profile { .. } | FeatureKind::SegmentProfile { .. }
             )
             .then_some(*feature_id)
         })
@@ -257,10 +257,14 @@ fn canonical_box(
     if profile.definition_id() != definition_id {
         return (None, None, None);
     }
-    let FeatureKind::Profile { points_mm } = profile.kind() else {
-        return (None, None, None);
+    let bounds = match profile.kind() {
+        FeatureKind::Profile { points_mm } => profile_bounds(points_mm),
+        FeatureKind::SegmentProfile { segments, closed } if *closed => {
+            segment_profile_bounds(segments)
+        }
+        _ => return (None, None, None),
     };
-    let Some((min_x, min_y, width, depth)) = profile_bounds(points_mm) else {
+    let Some((min_x, min_y, width, depth)) = bounds else {
         return (Some(profile_id), extrusion_id, None);
     };
     if !height.is_finite() {
@@ -293,6 +297,35 @@ fn profile_bounds(points: &[[f64; 2]]) -> Option<(f64, f64, f64, f64)> {
         && depth.is_finite()
         && depth > 0.0)
         .then_some((min_x, min_y, width, depth))
+}
+
+fn segment_profile_bounds(segments: &[ProfileSegment]) -> Option<(f64, f64, f64, f64)> {
+    let mut points = Vec::new();
+    for segment in segments {
+        match segment {
+            ProfileSegment::Line { start_mm, end_mm } => {
+                points.extend([*start_mm, *end_mm]);
+            }
+            ProfileSegment::CircularArc {
+                start_mm,
+                end_mm,
+                center_mm,
+                ..
+            } => {
+                let radius = (start_mm[0] - center_mm[0]).hypot(start_mm[1] - center_mm[1]);
+                if !radius.is_finite() {
+                    return None;
+                }
+                points.extend([
+                    *start_mm,
+                    *end_mm,
+                    [center_mm[0] - radius, center_mm[1] - radius],
+                    [center_mm[0] + radius, center_mm[1] + radius],
+                ]);
+            }
+        }
+    }
+    profile_bounds(&points)
 }
 
 fn transformed_aabb(transform: Transform, local_box: ProjectedBox) -> Option<ProjectedBox> {

@@ -1,16 +1,19 @@
 #![forbid(unsafe_code)]
 
 use crate::document::{
-    BottleEdgeFinishKind, DefinitionId, DocumentId, FeatureId, FeatureKind, Snapshot,
+    BOTTLE_SHELL_OPENING_FACE_ROLE, BOTTLE_SHOULDER_EDGE_ROLE, BottleEdgeFinishKind, DefinitionId,
+    DocumentId, FeatureId, FeatureKind, ProfileSegment, Snapshot,
 };
 use crate::exact_product::{
-    BODY_SUBSHAPE_REF_SCHEMA_V1, BodySubshapeRef, ExactFaceRole, ExactProductError, ExactTriangle,
-    ExactVertex, canonical_reference_lineage_digest,
+    BODY_SUBSHAPE_REF_SCHEMA_V1, BodySubshapeRef, ExactFaceRole, ExactProductError,
+    ExactProfileSegment, ExactTriangle, ExactVertex, canonical_reference_lineage_digest,
 };
 use sha2::{Digest, Sha256};
 
 pub const EXACT_REVOLVE_SCHEMA_V1: &str = "ketchup.exact-revolve.v1";
 pub const EXACT_REVOLVE_EVALUATOR_V1: &str = "ketchup.exact-revolve-evaluator.v1";
+pub const EXACT_GENERAL_REVOLVE_SCHEMA_V1: &str = "ketchup.exact-general-revolve.v1";
+pub const EXACT_GENERAL_REVOLVE_EVALUATOR_V1: &str = "ketchup.exact-general-revolve-evaluator.v1";
 pub const EXACT_SHELL_SCHEMA_V1: &str = "ketchup.exact-shell.v1";
 pub const EXACT_SHELL_EVALUATOR_V1: &str = "ketchup.exact-shell-evaluator.v1";
 pub const EXACT_BOTTLE_FINISH_SCHEMA_V1: &str = "ketchup.exact-bottle-finish.v1";
@@ -21,6 +24,14 @@ pub const REVOLVE_FACE_ROLES: [ExactFaceRole; 5] = [
     ExactFaceRole::RevolveShoulder,
     ExactFaceRole::RevolveNeck,
     ExactFaceRole::RevolveMouth,
+];
+pub const GENERAL_REVOLVE_FULL_FACE_ROLES: [ExactFaceRole; 2] =
+    [ExactFaceRole::RevolveSide0, ExactFaceRole::RevolveSide1];
+pub const GENERAL_REVOLVE_PARTIAL_FACE_ROLES: [ExactFaceRole; 4] = [
+    ExactFaceRole::RevolveSide0,
+    ExactFaceRole::RevolveSide1,
+    ExactFaceRole::RevolveStart,
+    ExactFaceRole::RevolveEnd,
 ];
 pub const SHELL_FACE_ROLES: [ExactFaceRole; 9] = [
     ExactFaceRole::ShellOuterBottom,
@@ -49,6 +60,11 @@ pub struct ExactRevolveRequest {
     pub edge_finish_kind: Option<BottleEdgeFinishKind>,
     pub edge_finish_amount_bits: Option<u64>,
     pub points_bits: Vec<[u64; 2]>,
+    pub segments: Option<Vec<ExactProfileSegment>>,
+    pub axis_start_bits: [u64; 2],
+    pub axis_end_bits: [u64; 2],
+    pub angle_degrees_bits: u64,
+    pub general: bool,
     pub canonical_input_digest: String,
 }
 
@@ -60,6 +76,9 @@ impl ExactRevolveRequest {
         let definition = snapshot
             .definition(definition_id)
             .ok_or(ExactProductError::DefinitionNotFound(definition_id))?;
+        if let Some(request) = Self::try_from_general_snapshot(snapshot, definition_id)? {
+            return Ok(request);
+        }
         if !(2..=5).contains(&definition.feature_ids().len()) {
             return Err(ExactProductError::UnsupportedDefinition);
         }
@@ -97,34 +116,58 @@ impl ExactRevolveRequest {
                         return Err(ExactProductError::UnsupportedDefinition);
                     }
                 }
-                FeatureKind::Revolve { profile } => {
-                    if revolve.replace((*feature_id, *profile)).is_some() {
+                FeatureKind::Revolve {
+                    profile,
+                    axis_start_mm,
+                    axis_end_mm,
+                    angle_degrees,
+                } => {
+                    if *axis_start_mm != [0.0, 0.0]
+                        || *axis_end_mm != [0.0, 1.0]
+                        || *angle_degrees != 360.0
+                        || revolve.replace((*feature_id, *profile)).is_some()
+                    {
                         return Err(ExactProductError::UnsupportedDefinition);
                     }
                 }
-                FeatureKind::Shell { target, thickness } => {
-                    if shell
-                        .replace((*feature_id, *target, thickness.millimetres()))
-                        .is_some()
+                FeatureKind::Shell {
+                    target,
+                    removed_faces,
+                    thickness,
+                } => {
+                    if removed_faces.len() != 1
+                        || removed_faces[0].as_str() != BOTTLE_SHELL_OPENING_FACE_ROLE
+                        || shell
+                            .replace((*feature_id, *target, thickness.millimetres()))
+                            .is_some()
                     {
                         return Err(ExactProductError::UnsupportedDefinition);
                     }
                 }
                 FeatureKind::BottleEdgeFinish {
                     target,
+                    edges,
                     kind,
                     amount,
                 } => {
-                    if finish
-                        .replace((*feature_id, *target, *kind, amount.millimetres()))
-                        .is_some()
+                    if edges.len() != 1
+                        || edges[0].as_str() != BOTTLE_SHOULDER_EDGE_ROLE
+                        || finish
+                            .replace((*feature_id, *target, *kind, amount.millimetres()))
+                            .is_some()
                     {
                         return Err(ExactProductError::UnsupportedDefinition);
                     }
                 }
-                FeatureKind::Extrusion { .. }
+                FeatureKind::SegmentProfile { .. }
+                | FeatureKind::SplineProfile { .. }
+                | FeatureKind::Extrusion { .. }
                 | FeatureKind::ThroughCut { .. }
+                | FeatureKind::Pocket { .. }
                 | FeatureKind::Boolean { .. }
+                | FeatureKind::PlanarOffset { .. }
+                | FeatureKind::Sweep { .. }
+                | FeatureKind::Loft { .. }
                 | FeatureKind::MeshBody(_) => {
                     return Err(ExactProductError::UnsupportedDefinition);
                 }
@@ -232,8 +275,176 @@ impl ExactRevolveRequest {
             edge_finish_kind,
             edge_finish_amount_bits,
             points_bits,
+            segments: None,
+            axis_start_bits: [0.0_f64.to_bits(), 0.0_f64.to_bits()],
+            axis_end_bits: [0.0_f64.to_bits(), 1.0_f64.to_bits()],
+            angle_degrees_bits: 360.0_f64.to_bits(),
+            general: false,
             canonical_input_digest: sha256(&canonical),
         })
+    }
+
+    fn try_from_general_snapshot(
+        snapshot: &Snapshot,
+        definition_id: DefinitionId,
+    ) -> Result<Option<Self>, ExactProductError> {
+        let definition = snapshot
+            .definition(definition_id)
+            .ok_or(ExactProductError::DefinitionNotFound(definition_id))?;
+        if definition.feature_ids().len() != 2 {
+            return Ok(None);
+        }
+        let mut profile = None;
+        let mut revolve = None;
+        for feature_id in definition.feature_ids() {
+            let feature = snapshot
+                .feature(*feature_id)
+                .ok_or(ExactProductError::UnsupportedDefinition)?;
+            match feature.kind() {
+                FeatureKind::Profile { points_mm } => {
+                    profile = Some((*feature_id, points_mm.to_vec(), None));
+                }
+                FeatureKind::SegmentProfile { segments, closed } if *closed => {
+                    let exact_segments = segments
+                        .iter()
+                        .map(|segment| match segment {
+                            ProfileSegment::Line { start_mm, end_mm } => {
+                                ExactProfileSegment::Line {
+                                    start_bits: start_mm.map(f64::to_bits),
+                                    end_bits: end_mm.map(f64::to_bits),
+                                }
+                            }
+                            ProfileSegment::CircularArc {
+                                start_mm,
+                                end_mm,
+                                center_mm,
+                                clockwise,
+                            } => ExactProfileSegment::CircularArc {
+                                start_bits: start_mm.map(f64::to_bits),
+                                end_bits: end_mm.map(f64::to_bits),
+                                center_bits: center_mm.map(f64::to_bits),
+                                clockwise: *clockwise,
+                            },
+                        })
+                        .collect::<Vec<_>>();
+                    let points = segments
+                        .iter()
+                        .map(ProfileSegment::start_mm)
+                        .collect::<Vec<_>>();
+                    profile = Some((*feature_id, points, Some(exact_segments)));
+                }
+                FeatureKind::Revolve {
+                    profile,
+                    axis_start_mm,
+                    axis_end_mm,
+                    angle_degrees,
+                } => {
+                    revolve = Some((
+                        *feature_id,
+                        *profile,
+                        *axis_start_mm,
+                        *axis_end_mm,
+                        *angle_degrees,
+                    ));
+                }
+                _ => return Ok(None),
+            }
+        }
+        let Some((profile_feature_id, points_mm, segments)) = profile else {
+            return Ok(None);
+        };
+        let Some((revolve_feature_id, revolve_profile_id, axis_start_mm, axis_end_mm, angle)) =
+            revolve
+        else {
+            return Ok(None);
+        };
+        if revolve_profile_id != profile_feature_id
+            || !(2..=64).contains(&points_mm.len())
+            || segments.is_none()
+                && axis_start_mm == [0.0, 0.0]
+                && axis_end_mm == [0.0, 1.0]
+                && angle == 360.0
+                && is_bounded_bottle_profile(&points_mm)
+        {
+            return Ok(None);
+        }
+        let points_bits = points_mm
+            .iter()
+            .map(|point| point.map(f64::to_bits))
+            .collect::<Vec<_>>();
+        let source_digest = snapshot.canonical_digest();
+        let axis_start_bits = axis_start_mm.map(f64::to_bits);
+        let axis_end_bits = axis_end_mm.map(f64::to_bits);
+        let angle_degrees_bits = angle.to_bits();
+        let mut canonical = format!(
+            "{}:{}:{}:{}:{}:{}:{}:{:016x}:{:016x}:{:016x}:{:016x}:{:016x}:{}",
+            EXACT_GENERAL_REVOLVE_SCHEMA_V1,
+            snapshot.document_id().0,
+            snapshot.revision_id(),
+            definition_id.0,
+            profile_feature_id.0,
+            revolve_feature_id.0,
+            points_bits.len(),
+            axis_start_bits[0],
+            axis_start_bits[1],
+            axis_end_bits[0],
+            axis_end_bits[1],
+            angle_degrees_bits,
+            source_digest,
+        );
+        if let Some(segments) = &segments {
+            for segment in segments {
+                match segment {
+                    ExactProfileSegment::Line {
+                        start_bits,
+                        end_bits,
+                    } => canonical.push_str(&format!(
+                        ":L:{:016x}:{:016x}:{:016x}:{:016x}",
+                        start_bits[0], start_bits[1], end_bits[0], end_bits[1]
+                    )),
+                    ExactProfileSegment::CircularArc {
+                        start_bits,
+                        end_bits,
+                        center_bits,
+                        clockwise,
+                    } => canonical.push_str(&format!(
+                        ":A:{:016x}:{:016x}:{:016x}:{:016x}:{:016x}:{:016x}:{}",
+                        start_bits[0],
+                        start_bits[1],
+                        end_bits[0],
+                        end_bits[1],
+                        center_bits[0],
+                        center_bits[1],
+                        clockwise,
+                    )),
+                }
+            }
+        } else {
+            for point in &points_bits {
+                canonical.push_str(&format!(":P:{:016x}:{:016x}", point[0], point[1]));
+            }
+        }
+        Ok(Some(Self {
+            document_id: snapshot.document_id(),
+            source_revision: snapshot.revision_id(),
+            source_digest,
+            definition_id,
+            profile_feature_id,
+            control_feature_id: None,
+            revolve_feature_id,
+            shell_feature_id: None,
+            thickness_bits: None,
+            edge_finish_feature_id: None,
+            edge_finish_kind: None,
+            edge_finish_amount_bits: None,
+            points_bits,
+            segments,
+            axis_start_bits,
+            axis_end_bits,
+            angle_degrees_bits,
+            general: true,
+            canonical_input_digest: sha256(&canonical),
+        }))
     }
 
     #[must_use]
@@ -242,6 +453,35 @@ impl ExactRevolveRequest {
             .iter()
             .map(|point| [f64::from_bits(point[0]), f64::from_bits(point[1])])
             .collect()
+    }
+
+    #[must_use]
+    pub fn profile_segments(&self) -> Vec<ExactProfileSegment> {
+        self.segments.clone().unwrap_or_else(|| {
+            self.points_bits
+                .iter()
+                .enumerate()
+                .map(|(index, start)| ExactProfileSegment::Line {
+                    start_bits: *start,
+                    end_bits: self.points_bits[(index + 1) % self.points_bits.len()],
+                })
+                .collect()
+        })
+    }
+
+    #[must_use]
+    pub fn axis_start_mm(&self) -> [f64; 2] {
+        self.axis_start_bits.map(f64::from_bits)
+    }
+
+    #[must_use]
+    pub fn axis_end_mm(&self) -> [f64; 2] {
+        self.axis_end_bits.map(f64::from_bits)
+    }
+
+    #[must_use]
+    pub fn angle_degrees(&self) -> f64 {
+        f64::from_bits(self.angle_degrees_bits)
     }
 
     #[must_use]
@@ -258,7 +498,9 @@ impl ExactRevolveRequest {
 
     #[must_use]
     pub fn schema(&self) -> &'static str {
-        if self.edge_finish_feature_id.is_some() {
+        if self.general {
+            EXACT_GENERAL_REVOLVE_SCHEMA_V1
+        } else if self.edge_finish_feature_id.is_some() {
             EXACT_BOTTLE_FINISH_SCHEMA_V1
         } else if self.shell_feature_id.is_some() {
             EXACT_SHELL_SCHEMA_V1
@@ -269,7 +511,9 @@ impl ExactRevolveRequest {
 
     #[must_use]
     pub fn evaluator(&self) -> &'static str {
-        if self.edge_finish_feature_id.is_some() {
+        if self.general {
+            EXACT_GENERAL_REVOLVE_EVALUATOR_V1
+        } else if self.edge_finish_feature_id.is_some() {
             EXACT_BOTTLE_FINISH_EVALUATOR_V1
         } else if self.shell_feature_id.is_some() {
             EXACT_SHELL_EVALUATOR_V1
@@ -280,7 +524,11 @@ impl ExactRevolveRequest {
 
     #[must_use]
     pub fn face_roles(&self) -> &'static [ExactFaceRole] {
-        if self.shell_feature_id.is_some() {
+        if self.general && self.angle_degrees() < 360.0 {
+            &GENERAL_REVOLVE_PARTIAL_FACE_ROLES
+        } else if self.general {
+            &GENERAL_REVOLVE_FULL_FACE_ROLES
+        } else if self.shell_feature_id.is_some() {
             &SHELL_FACE_ROLES
         } else {
             &REVOLVE_FACE_ROLES
@@ -564,6 +812,17 @@ pub fn build_revolve_package(
     worker_bounds_mm: [[f64; 3]; 2],
     face_evidence: Vec<(ExactFaceRole, String, String)>,
 ) -> Result<ExactRevolvePackage, ExactProductError> {
+    if request.general {
+        return build_general_revolve_package(
+            request,
+            exact_input_digest,
+            result_fingerprint,
+            backend,
+            tolerance,
+            worker_bounds_mm,
+            face_evidence,
+        );
+    }
     let points = request.points_mm();
     let max_radius = points.iter().map(|point| point[0]).fold(0.0_f64, f64::max);
     let expected_bounds = [
@@ -639,6 +898,131 @@ pub fn build_revolve_package(
             edge_finish_feature_id: request.edge_finish_feature_id,
             edge_finish_kind: request.edge_finish_kind,
             edge_finish_amount_bits: request.edge_finish_amount_bits,
+            canonical_input_digest: request.canonical_input_digest.clone(),
+            exact_input_digest,
+            result_fingerprint,
+            evaluator: request.evaluator().to_owned(),
+            backend,
+            tolerance,
+        },
+        bounds_mm: worker_bounds_mm,
+        vertices,
+        triangles,
+        references,
+    };
+    package.validate_for_request(request)?;
+    Ok(package)
+}
+
+fn build_general_revolve_package(
+    request: &ExactRevolveRequest,
+    exact_input_digest: String,
+    result_fingerprint: String,
+    backend: String,
+    tolerance: String,
+    worker_bounds_mm: [[f64; 3]; 2],
+    face_evidence: Vec<(ExactFaceRole, String, String)>,
+) -> Result<ExactRevolvePackage, ExactProductError> {
+    let bounds_valid = worker_bounds_mm
+        .iter()
+        .flatten()
+        .all(|value| value.is_finite())
+        && (0..3).all(|axis| worker_bounds_mm[0][axis] < worker_bounds_mm[1][axis]);
+    let mut roles = face_evidence
+        .iter()
+        .map(|(role, _, _)| *role)
+        .collect::<Vec<_>>();
+    roles.sort_unstable();
+    let mut expected_roles = request.face_roles().to_vec();
+    expected_roles.sort_unstable();
+    let evidence_valid = roles == expected_roles
+        && face_evidence.iter().all(|(role, lineage, geometry)| {
+            *lineage
+                == canonical_reference_lineage_digest(
+                    request.document_id,
+                    request.producer_feature_id(),
+                    role.semantic_role(),
+                    role.source_element_id(),
+                    role.expected_type(),
+                )
+                && !geometry.is_empty()
+        });
+    if !bounds_valid
+        || !evidence_valid
+        || exact_input_digest.is_empty()
+        || result_fingerprint.is_empty()
+        || backend.is_empty()
+        || tolerance.is_empty()
+    {
+        return Err(ExactProductError::InvalidWorkerEvidence);
+    }
+    let [min, max] = worker_bounds_mm;
+    let vertices = vec![
+        ExactVertex {
+            position_mm: [min[0], min[1], min[2]],
+        },
+        ExactVertex {
+            position_mm: [max[0], min[1], min[2]],
+        },
+        ExactVertex {
+            position_mm: [max[0], max[1], min[2]],
+        },
+        ExactVertex {
+            position_mm: [min[0], max[1], min[2]],
+        },
+        ExactVertex {
+            position_mm: [min[0], min[1], max[2]],
+        },
+        ExactVertex {
+            position_mm: [max[0], min[1], max[2]],
+        },
+        ExactVertex {
+            position_mm: [max[0], max[1], max[2]],
+        },
+        ExactVertex {
+            position_mm: [min[0], max[1], max[2]],
+        },
+    ];
+    let triangle_indices = [[0, 1, 2], [0, 2, 3], [4, 5, 6], [4, 6, 7]];
+    let triangles = request
+        .face_roles()
+        .iter()
+        .enumerate()
+        .map(|(index, role)| ExactTriangle {
+            vertex_indices: triangle_indices[index],
+            face_role: Some(*role),
+        })
+        .collect::<Vec<_>>();
+    let references = face_evidence
+        .into_iter()
+        .map(|(role, _, geometry)| {
+            build_revolve_reference(
+                request,
+                role,
+                exact_input_digest.clone(),
+                result_fingerprint.clone(),
+                backend.clone(),
+                tolerance.clone(),
+                geometry,
+            )
+        })
+        .collect();
+    let package = ExactRevolvePackage {
+        identity: RevolveResultIdentity {
+            schema: request.schema().to_owned(),
+            document_id: request.document_id,
+            source_revision: request.source_revision,
+            source_digest: request.source_digest.clone(),
+            definition_id: request.definition_id,
+            profile_feature_id: request.profile_feature_id,
+            control_feature_id: None,
+            revolve_feature_id: request.revolve_feature_id,
+            producer_feature_id: request.producer_feature_id(),
+            shell_feature_id: None,
+            thickness_bits: None,
+            edge_finish_feature_id: None,
+            edge_finish_kind: None,
+            edge_finish_amount_bits: None,
             canonical_input_digest: request.canonical_input_digest.clone(),
             exact_input_digest,
             result_fingerprint,

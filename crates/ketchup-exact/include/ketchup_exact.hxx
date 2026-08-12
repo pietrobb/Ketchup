@@ -44,14 +44,51 @@ std::unique_ptr<NativeOperationResult> make_box_native(
     double size_x, double size_y, double size_z) noexcept;
 std::unique_ptr<NativeOperationResult> extrude_rectangle_native(
     double width, double depth, double height) noexcept;
+std::unique_ptr<NativeOperationResult> offset_rectangle_native(
+    double min_x, double min_y, double max_x, double max_y,
+    double distance) noexcept;
+std::unique_ptr<NativeOperationResult> sweep_rectangle_native(
+    rust::Slice<const double> values) noexcept;
+std::unique_ptr<NativeOperationResult> loft_spline_native(
+    rust::Slice<const double> values) noexcept;
+std::unique_ptr<NativeOperationResult> extrude_circle_native(
+    double center_x, double center_y, double radius, double height) noexcept;
+std::unique_ptr<NativeOperationResult> extrude_mixed_profile_native(
+    rust::Slice<const double> segments, double height) noexcept;
 std::unique_ptr<NativeOperationResult> revolve_profile_native(
     rust::Slice<const double> points) noexcept;
+std::unique_ptr<NativeOperationResult> revolve_general_profile_native(
+    rust::Slice<const double> segments,
+    double axis_start_x, double axis_start_y,
+    double axis_end_x, double axis_end_y,
+    double angle_degrees) noexcept;
+std::unique_ptr<NativeOperationResult> shell_box_native(
+    double width, double depth, double height, double thickness) noexcept;
+std::unique_ptr<NativeOperationResult> finish_shell_box_native(
+    double width, double depth, double height, double thickness,
+    double amount, bool fillet) noexcept;
 std::unique_ptr<NativeOperationResult> shell_revolve_profile_native(
     rust::Slice<const double> points, double thickness) noexcept;
 std::unique_ptr<NativeOperationResult> finish_shell_revolve_profile_native(
     rust::Slice<const double> points, double thickness, double amount,
     bool fillet) noexcept;
 std::unique_ptr<NativeOperationResult> cut_box_native(
+    const NativeOperationResult& base,
+    double origin_x, double origin_y, double origin_z,
+    double size_x, double size_y, double size_z) noexcept;
+std::unique_ptr<NativeOperationResult> cut_cylinder_native(
+    const NativeOperationResult& base,
+    double center_x, double center_y, double origin_z,
+    double radius, double height) noexcept;
+std::unique_ptr<NativeOperationResult> fuse_box_native(
+    const NativeOperationResult& base,
+    double origin_x, double origin_y, double origin_z,
+    double size_x, double size_y, double size_z) noexcept;
+std::unique_ptr<NativeOperationResult> common_box_native(
+    const NativeOperationResult& base,
+    double origin_x, double origin_y, double origin_z,
+    double size_x, double size_y, double size_z) noexcept;
+std::unique_ptr<NativeOperationResult> split_box_native(
     const NativeOperationResult& base,
     double origin_x, double origin_y, double origin_z,
     double size_x, double size_y, double size_z) noexcept;

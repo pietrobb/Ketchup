@@ -471,7 +471,7 @@ fn canonical_space_and_rule_clearance_round_trip_and_fail_closed_when_slot_is_lo
 
     let saved_digest = snapshot.canonical_digest();
     let reopened = persistence::load(&persistence::save(&snapshot)).unwrap();
-    assert_eq!(reopened.source_schema(), 17);
+    assert_eq!(reopened.source_schema(), persistence::CURRENT_SCHEMA);
     assert_eq!(reopened.snapshot().canonical_digest(), saved_digest);
     assert_eq!(
         reopened.snapshot().space(SPACE_LEFT).unwrap().purpose(),

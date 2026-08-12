@@ -6,16 +6,17 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::document::{
-    BooleanOperation, BottleEdgeFinishKind, CanonicalCommand, CanonicalError, Collection,
-    CollectionId, CommandBatch, Definition, DefinitionId, Dimension, DimensionDisplayUnit,
-    DimensionPresentation, DocumentStore, EvaluationIdentity, EvaluatorNode,
-    ExactReferenceConversionConsequence, ExactToMeshConversion, Feature, FeatureId, FeatureKind,
-    FeatureParameterBinding, FeatureParameterFreshnessAudit, FeatureParameterProvenance,
-    FeatureParameterSlot, FeatureParameterTarget, Group, GroupId, InstancePath, InstancePathStep,
-    LocalGroup, LocalGroupId, LocalGroupKey, LocalOccurrence, LocalOccurrenceId,
-    LocalOccurrenceKey, MeshAuthority, MeshBodySpec, NodeId, Occurrence, OccurrenceId,
-    PersistentDimension, PersistentDimensionId, PersistentDimensionTarget, ProductModel, Snapshot,
-    Tag, TagId, Transform, UnitSystem,
+    BOTTLE_SHELL_OPENING_FACE_ROLE, BOTTLE_SHOULDER_EDGE_ROLE, BooleanOperation,
+    BottleEdgeFinishKind, CanonicalCommand, CanonicalError, Collection, CollectionId, CommandBatch,
+    Definition, DefinitionId, Dimension, DimensionDisplayUnit, DimensionPresentation,
+    DocumentStore, EvaluationIdentity, EvaluatorNode, ExactReferenceConversionConsequence,
+    ExactToMeshConversion, Feature, FeatureId, FeatureKind, FeatureParameterBinding,
+    FeatureParameterFreshnessAudit, FeatureParameterProvenance, FeatureParameterSlot,
+    FeatureParameterTarget, Group, GroupId, InstancePath, InstancePathStep, LocalGroup,
+    LocalGroupId, LocalGroupKey, LocalOccurrence, LocalOccurrenceId, LocalOccurrenceKey,
+    LoftSection, MeshAuthority, MeshBodySpec, NodeId, Occurrence, OccurrenceId,
+    PersistentDimension, PersistentDimensionId, PersistentDimensionTarget, ProductModel,
+    ProfileSegment, Snapshot, StableEdgeRole, StableFaceRole, Tag, TagId, Transform, UnitSystem,
 };
 use crate::exact_product::{BODY_SUBSHAPE_REF_SCHEMA_V1, BodySubshapeRef, ReferenceStability};
 use crate::graph::{
@@ -33,7 +34,16 @@ const CONTAINER_MAGIC: &[u8; 10] = b"KETCHUPCTR";
 const CONTAINER_SCHEMA: u16 = 1;
 const MESH_BODY_SCHEMA: u16 = 16;
 const SPACE_CLEARANCE_SCHEMA: u16 = 17;
-const CURRENT_SCHEMA: u16 = SPACE_CLEARANCE_SCHEMA;
+const POCKET_SCHEMA: u16 = 18;
+const SEGMENT_PROFILE_SCHEMA: u16 = 19;
+const GENERAL_REVOLVE_SCHEMA: u16 = 20;
+const STABLE_SUBSHAPE_ROLE_SCHEMA: u16 = 21;
+const BOOLEAN_INTERSECT_SCHEMA: u16 = 22;
+const BOOLEAN_SPLIT_SCHEMA: u16 = 23;
+const PLANAR_OFFSET_SCHEMA: u16 = 24;
+const SWEEP_SCHEMA: u16 = 25;
+const LOFT_SPLINE_SCHEMA: u16 = 26;
+pub const CURRENT_SCHEMA: u16 = LOFT_SPLINE_SCHEMA;
 const COLLECTION_SCHEMA: u16 = 15;
 const TAG_SCHEMA: u16 = 14;
 const PERSISTENT_DIMENSION_SCHEMA: u16 = 13;
@@ -67,6 +77,15 @@ struct ProductSchemaCapabilities {
     collections: bool,
     mesh_body: bool,
     space_clearance: bool,
+    pocket: bool,
+    segment_profile: bool,
+    general_revolve: bool,
+    stable_subshape_roles: bool,
+    boolean_intersect: bool,
+    boolean_split: bool,
+    planar_offset: bool,
+    sweep: bool,
+    loft_spline: bool,
 }
 
 impl ProductSchemaCapabilities {
@@ -85,6 +104,15 @@ impl ProductSchemaCapabilities {
         collections: false,
         mesh_body: false,
         space_clearance: false,
+        pocket: false,
+        segment_profile: false,
+        general_revolve: false,
+        stable_subshape_roles: false,
+        boolean_intersect: false,
+        boolean_split: false,
+        planar_offset: false,
+        sweep: false,
+        loft_spline: false,
     };
 
     const fn current(schema: u16) -> Self {
@@ -103,6 +131,15 @@ impl ProductSchemaCapabilities {
             collections: schema >= COLLECTION_SCHEMA,
             mesh_body: schema >= MESH_BODY_SCHEMA,
             space_clearance: schema >= SPACE_CLEARANCE_SCHEMA,
+            pocket: schema >= POCKET_SCHEMA,
+            segment_profile: schema >= SEGMENT_PROFILE_SCHEMA,
+            general_revolve: schema >= GENERAL_REVOLVE_SCHEMA,
+            stable_subshape_roles: schema >= STABLE_SUBSHAPE_ROLE_SCHEMA,
+            boolean_intersect: schema >= BOOLEAN_INTERSECT_SCHEMA,
+            boolean_split: schema >= BOOLEAN_SPLIT_SCHEMA,
+            planar_offset: schema >= PLANAR_OFFSET_SCHEMA,
+            sweep: schema >= SWEEP_SCHEMA,
+            loft_spline: schema >= LOFT_SPLINE_SCHEMA,
         }
     }
 }
@@ -926,6 +963,43 @@ fn write_features(bytes: &mut Vec<u8>, product: &ProductModel) {
                     push_u64(bytes, point[1].to_bits());
                 }
             }
+            FeatureKind::SegmentProfile { segments, closed } => {
+                push_u8(bytes, 11);
+                push_u8(bytes, u8::from(*closed));
+                push_u32(bytes, segments.len() as u32);
+                for segment in segments {
+                    match segment {
+                        ProfileSegment::Line { start_mm, end_mm } => {
+                            push_u8(bytes, 1);
+                            for point in [start_mm, end_mm] {
+                                push_u64(bytes, point[0].to_bits());
+                                push_u64(bytes, point[1].to_bits());
+                            }
+                        }
+                        ProfileSegment::CircularArc {
+                            start_mm,
+                            end_mm,
+                            center_mm,
+                            clockwise,
+                        } => {
+                            push_u8(bytes, 2);
+                            for point in [start_mm, end_mm, center_mm] {
+                                push_u64(bytes, point[0].to_bits());
+                                push_u64(bytes, point[1].to_bits());
+                            }
+                            push_u8(bytes, u8::from(*clockwise));
+                        }
+                    }
+                }
+            }
+            FeatureKind::SplineProfile { control_points_mm } => {
+                push_u8(bytes, 14);
+                push_u32(bytes, control_points_mm.len() as u32);
+                for point in control_points_mm {
+                    push_u64(bytes, point[0].to_bits());
+                    push_u64(bytes, point[1].to_bits());
+                }
+            }
             FeatureKind::Extrusion { profile, height } => {
                 push_u8(bytes, 2);
                 push_u64(bytes, profile.0);
@@ -936,6 +1010,17 @@ fn write_features(bytes: &mut Vec<u8>, product: &ProductModel) {
                 push_u8(bytes, 3);
                 push_u64(bytes, target.0);
                 push_u64(bytes, profile.0);
+            }
+            FeatureKind::Pocket {
+                target,
+                profile,
+                depth,
+            } => {
+                push_u8(bytes, 10);
+                push_u64(bytes, target.0);
+                push_u64(bytes, profile.0);
+                push_string(bytes, depth.source_token());
+                push_u64(bytes, depth.millimetres().to_bits());
             }
             FeatureKind::Boolean {
                 operation,
@@ -948,14 +1033,44 @@ fn write_features(bytes: &mut Vec<u8>, product: &ProductModel) {
                     match operation {
                         BooleanOperation::Cut => 1,
                         BooleanOperation::Union => 2,
+                        BooleanOperation::Intersect => 3,
+                        BooleanOperation::Split => 4,
                     },
                 );
                 push_u64(bytes, target.0);
                 push_u64(bytes, tool.0);
             }
-            FeatureKind::Revolve { profile } => {
+            FeatureKind::PlanarOffset { profile, distance } => {
+                push_u8(bytes, 12);
+                push_u64(bytes, profile.0);
+                push_string(bytes, distance.source_token());
+                push_u64(bytes, distance.millimetres().to_bits());
+            }
+            FeatureKind::Sweep { profile, path } => {
+                push_u8(bytes, 13);
+                push_u64(bytes, profile.0);
+                push_u64(bytes, path.0);
+            }
+            FeatureKind::Loft { sections } => {
+                push_u8(bytes, 15);
+                push_u32(bytes, sections.len() as u32);
+                for section in sections {
+                    push_u64(bytes, section.profile.0);
+                    push_u64(bytes, section.elevation_mm.to_bits());
+                }
+            }
+            FeatureKind::Revolve {
+                profile,
+                axis_start_mm,
+                axis_end_mm,
+                angle_degrees,
+            } => {
                 push_u8(bytes, 4);
                 push_u64(bytes, profile.0);
+                for coordinate in axis_start_mm.iter().chain(axis_end_mm) {
+                    push_u64(bytes, coordinate.to_bits());
+                }
+                push_u64(bytes, angle_degrees.to_bits());
             }
             FeatureKind::BottleProfileControl {
                 profile,
@@ -970,19 +1085,32 @@ fn write_features(bytes: &mut Vec<u8>, product: &ProductModel) {
                     push_u64(bytes, dimension.millimetres().to_bits());
                 }
             }
-            FeatureKind::Shell { target, thickness } => {
+            FeatureKind::Shell {
+                target,
+                removed_faces,
+                thickness,
+            } => {
                 push_u8(bytes, 5);
                 push_u64(bytes, target.0);
+                push_u32(bytes, removed_faces.len() as u32);
+                for role in removed_faces {
+                    push_string(bytes, role.as_str());
+                }
                 push_string(bytes, thickness.source_token());
                 push_u64(bytes, thickness.millimetres().to_bits());
             }
             FeatureKind::BottleEdgeFinish {
                 target,
+                edges,
                 kind,
                 amount,
             } => {
                 push_u8(bytes, 7);
                 push_u64(bytes, target.0);
+                push_u32(bytes, edges.len() as u32);
+                for role in edges {
+                    push_string(bytes, role.as_str());
+                }
                 push_u8(
                     bytes,
                     match kind {
@@ -1243,6 +1371,14 @@ fn load_document(
             | TAG_SCHEMA
             | COLLECTION_SCHEMA
             | MESH_BODY_SCHEMA
+            | SPACE_CLEARANCE_SCHEMA
+            | POCKET_SCHEMA
+            | SEGMENT_PROFILE_SCHEMA
+            | GENERAL_REVOLVE_SCHEMA
+            | STABLE_SUBSHAPE_ROLE_SCHEMA
+            | BOOLEAN_INTERSECT_SCHEMA
+            | BOOLEAN_SPLIT_SCHEMA
+            | SWEEP_SCHEMA
             | CURRENT_SCHEMA
     ) {
         return Err(PersistenceError::UnsupportedSchema(schema));
@@ -1860,6 +1996,47 @@ fn read_product(
                 }
                 FeatureKind::Profile { points_mm }
             }
+            11 if capabilities.segment_profile => {
+                let closed = match reader.u8()? {
+                    0 => false,
+                    1 => true,
+                    value => return Err(PersistenceError::InvalidFeatureKind(value)),
+                };
+                let mut segments = Vec::new();
+                for _ in 0..reader.count()? {
+                    let point = |reader: &mut Reader<'_>| -> Result<[f64; 2], PersistenceError> {
+                        Ok([f64::from_bits(reader.u64()?), f64::from_bits(reader.u64()?)])
+                    };
+                    segments.push(match reader.u8()? {
+                        1 => ProfileSegment::Line {
+                            start_mm: point(reader)?,
+                            end_mm: point(reader)?,
+                        },
+                        2 => ProfileSegment::CircularArc {
+                            start_mm: point(reader)?,
+                            end_mm: point(reader)?,
+                            center_mm: point(reader)?,
+                            clockwise: match reader.u8()? {
+                                0 => false,
+                                1 => true,
+                                value => {
+                                    return Err(PersistenceError::InvalidFeatureKind(value));
+                                }
+                            },
+                        },
+                        value => return Err(PersistenceError::InvalidFeatureKind(value)),
+                    });
+                }
+                FeatureKind::SegmentProfile { segments, closed }
+            }
+            14 if capabilities.loft_spline => {
+                let mut control_points_mm = Vec::new();
+                for _ in 0..reader.count_with_limit(64)? {
+                    control_points_mm
+                        .push([f64::from_bits(reader.u64()?), f64::from_bits(reader.u64()?)]);
+                }
+                FeatureKind::SplineProfile { control_points_mm }
+            }
             2 => FeatureKind::Extrusion {
                 profile: FeatureId(reader.u64()?),
                 height: Dimension::new(reader.string()?, f64::from_bits(reader.u64()?))?,
@@ -1868,37 +2045,115 @@ fn read_product(
                 target: FeatureId(reader.u64()?),
                 profile: FeatureId(reader.u64()?),
             },
-            4 if capabilities.revolve => FeatureKind::Revolve {
-                profile: FeatureId(reader.u64()?),
-            },
-            5 if capabilities.shell => FeatureKind::Shell {
-                target: FeatureId(reader.u64()?),
-                thickness: Dimension::new(reader.string()?, f64::from_bits(reader.u64()?))?,
-            },
+            4 if capabilities.revolve => {
+                let profile = FeatureId(reader.u64()?);
+                let (axis_start_mm, axis_end_mm, angle_degrees) = if capabilities.general_revolve {
+                    (
+                        [f64::from_bits(reader.u64()?), f64::from_bits(reader.u64()?)],
+                        [f64::from_bits(reader.u64()?), f64::from_bits(reader.u64()?)],
+                        f64::from_bits(reader.u64()?),
+                    )
+                } else {
+                    ([0.0, 0.0], [0.0, 1.0], 360.0)
+                };
+                FeatureKind::Revolve {
+                    profile,
+                    axis_start_mm,
+                    axis_end_mm,
+                    angle_degrees,
+                }
+            }
+            5 if capabilities.shell => {
+                let target = FeatureId(reader.u64()?);
+                let removed_faces = if capabilities.stable_subshape_roles {
+                    let mut roles = Vec::new();
+                    for _ in 0..reader.count_with_limit(64)? {
+                        roles.push(
+                            StableFaceRole::new(reader.string()?)
+                                .map_err(|_| PersistenceError::InvalidStableSubshapeRole)?,
+                        );
+                    }
+                    roles
+                } else {
+                    vec![
+                        StableFaceRole::new(BOTTLE_SHELL_OPENING_FACE_ROLE)
+                            .expect("built-in bottle face role is valid"),
+                    ]
+                };
+                FeatureKind::Shell {
+                    target,
+                    removed_faces,
+                    thickness: Dimension::new(reader.string()?, f64::from_bits(reader.u64()?))?,
+                }
+            }
             6 if capabilities.bottle_finish => FeatureKind::BottleProfileControl {
                 profile: FeatureId(reader.u64()?),
                 body_radius: Dimension::new(reader.string()?, f64::from_bits(reader.u64()?))?,
                 body_height: Dimension::new(reader.string()?, f64::from_bits(reader.u64()?))?,
                 shoulder_rise: Dimension::new(reader.string()?, f64::from_bits(reader.u64()?))?,
             },
-            7 if capabilities.bottle_finish => FeatureKind::BottleEdgeFinish {
-                target: FeatureId(reader.u64()?),
-                kind: match reader.u8()? {
-                    1 => BottleEdgeFinishKind::Fillet,
-                    2 => BottleEdgeFinishKind::Chamfer,
-                    value => return Err(PersistenceError::InvalidFeatureKind(value)),
-                },
-                amount: Dimension::new(reader.string()?, f64::from_bits(reader.u64()?))?,
-            },
+            7 if capabilities.bottle_finish => {
+                let target = FeatureId(reader.u64()?);
+                let edges = if capabilities.stable_subshape_roles {
+                    let mut roles = Vec::new();
+                    for _ in 0..reader.count_with_limit(64)? {
+                        roles.push(
+                            StableEdgeRole::new(reader.string()?)
+                                .map_err(|_| PersistenceError::InvalidStableSubshapeRole)?,
+                        );
+                    }
+                    roles
+                } else {
+                    vec![
+                        StableEdgeRole::new(BOTTLE_SHOULDER_EDGE_ROLE)
+                            .expect("built-in bottle edge role is valid"),
+                    ]
+                };
+                FeatureKind::BottleEdgeFinish {
+                    target,
+                    edges,
+                    kind: match reader.u8()? {
+                        1 => BottleEdgeFinishKind::Fillet,
+                        2 => BottleEdgeFinishKind::Chamfer,
+                        value => return Err(PersistenceError::InvalidFeatureKind(value)),
+                    },
+                    amount: Dimension::new(reader.string()?, f64::from_bits(reader.u64()?))?,
+                }
+            }
             8 if capabilities.boolean => FeatureKind::Boolean {
                 operation: match reader.u8()? {
                     1 => BooleanOperation::Cut,
                     2 => BooleanOperation::Union,
+                    3 if capabilities.boolean_intersect => BooleanOperation::Intersect,
+                    4 if capabilities.boolean_split => BooleanOperation::Split,
                     value => return Err(PersistenceError::InvalidFeatureKind(value)),
                 },
                 target: FeatureId(reader.u64()?),
                 tool: FeatureId(reader.u64()?),
             },
+            10 if capabilities.pocket => FeatureKind::Pocket {
+                target: FeatureId(reader.u64()?),
+                profile: FeatureId(reader.u64()?),
+                depth: Dimension::new(reader.string()?, f64::from_bits(reader.u64()?))?,
+            },
+            12 if capabilities.planar_offset => FeatureKind::PlanarOffset {
+                profile: FeatureId(reader.u64()?),
+                distance: Dimension::new(reader.string()?, f64::from_bits(reader.u64()?))?,
+            },
+            13 if capabilities.sweep => FeatureKind::Sweep {
+                profile: FeatureId(reader.u64()?),
+                path: FeatureId(reader.u64()?),
+            },
+            15 if capabilities.loft_spline => {
+                let mut sections = Vec::new();
+                for _ in 0..reader.count_with_limit(16)? {
+                    sections.push(LoftSection {
+                        profile: FeatureId(reader.u64()?),
+                        elevation_mm: f64::from_bits(reader.u64()?),
+                    });
+                }
+                FeatureKind::Loft { sections }
+            }
             9 if capabilities.mesh_body => {
                 let schema = reader.string()?;
                 let mut vertices_mm = Vec::new();
@@ -2226,6 +2481,7 @@ pub enum PersistenceError {
     InvalidBoolean(u8),
     UnsupportedUnits(u8),
     InvalidFeatureKind(u8),
+    InvalidStableSubshapeRole,
     InvalidNodeKind(u8),
     InvalidPortType,
     InvalidOverrideMergePolicy,
@@ -2305,6 +2561,9 @@ impl fmt::Display for PersistenceError {
                 write!(formatter, "document unit system {units} is unsupported")
             }
             Self::InvalidFeatureKind(kind) => write!(formatter, "feature kind {kind} is invalid"),
+            Self::InvalidStableSubshapeRole => {
+                formatter.write_str("stable subshape role is invalid")
+            }
             Self::InvalidNodeKind(kind) => write!(formatter, "node kind {kind} is invalid"),
             Self::InvalidPortType => formatter.write_str("typed port kind is invalid"),
             Self::InvalidOverrideMergePolicy => {

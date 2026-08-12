@@ -10,14 +10,15 @@ use ketchup_core::beam_m4ae::{
 use ketchup_core::beam_m5::{BeamExactPiecePackage, BeamM5Products};
 use ketchup_core::bottle_m6::{BottleAuthorityReport, ExactRevolvePackage, ExactRevolveRequest};
 use ketchup_core::document::{
-    AuthenticatedApprover, BottleControlDimension, BottleEdgeFinishKind, CanonicalCommand,
-    CollectionId, CommandBatch, DefinitionId, Dimension, DimensionDisplayUnit,
-    DimensionPresentation, DocumentId, DocumentStore, FeatureId, FeatureKind, FeatureParameterSlot,
-    FeatureParameterTarget, GroupId, HighRiskClass, HighRiskScope, InstancePath,
-    MAX_HUMAN_CONFIRMATION_LIFETIME_MS, NodeId, OccurrenceId, PersistentDimensionId, Proposal,
-    ProposalGoal, ProposalPrincipal, ProposalValue, SceneOccurrence, SceneQueryContext,
-    SideEffectAuthorizationReceipt, SlotPath, Snapshot, TagId, Transform,
-    TrustedConfirmationSurface,
+    AuthenticatedApprover, BOTTLE_SHELL_OPENING_FACE_ROLE, BOTTLE_SHOULDER_EDGE_ROLE,
+    BooleanOperation, BottleControlDimension, BottleEdgeFinishKind, CanonicalCommand, CollectionId,
+    CommandBatch, DefinitionId, Dimension, DimensionDisplayUnit, DimensionPresentation, DocumentId,
+    DocumentStore, FeatureId, FeatureKind, FeatureParameterSlot, FeatureParameterTarget, GroupId,
+    HighRiskClass, HighRiskScope, InstancePath, LoftSection, MAX_HUMAN_CONFIRMATION_LIFETIME_MS,
+    NodeId, OccurrenceId, PersistentDimensionId, ProfileSegment, Proposal, ProposalGoal,
+    ProposalPrincipal, ProposalValue, SceneOccurrence, SceneQueryContext,
+    SideEffectAuthorizationReceipt, SlotPath, Snapshot, SolidToolPlan, StableEdgeRole,
+    StableFaceRole, TagId, Transform, TrustedConfirmationSurface,
 };
 #[cfg(test)]
 use ketchup_core::document::{
@@ -25,7 +26,8 @@ use ketchup_core::document::{
 };
 use ketchup_core::exact_product::{
     AssemblySelectionTarget, ExactBodyPackage, ExactBodyView, ExactFaceRole,
-    ExactFeatureChainRequest, ExactMeshExport, ExactResultRegistry,
+    ExactFeatureChainRequest, ExactLoftRequest, ExactMeshExport, ExactPlanarOffsetRequest,
+    ExactResultRegistry, ExactSweepRequest,
 };
 use ketchup_core::fabrication::{FullBomProjection, PieceDimensionSheet};
 use ketchup_core::graph::{DerivedIdentity, RuleOutput, SlotSegment};
@@ -130,15 +132,20 @@ impl NativeDocumentInspection {
 pub fn inspect_native_document(path: &Path) -> Result<NativeDocumentInspection, String> {
     let container_bytes = std::fs::read(path).map_err(|error| error.to_string())?;
     let loaded = ketchup_core::persistence::load_file(path).map_err(|error| error.to_string())?;
-    if loaded.source_schema() != 17
+    if loaded.source_schema() != ketchup_core::persistence::CURRENT_SCHEMA
         || loaded.disposition() != ketchup_core::persistence::LoadDisposition::EditableLossless
     {
-        return Err("document is not a lossless current schema-17 document".to_owned());
+        return Err("document is not a lossless current-schema document".to_owned());
     }
     let snapshot = loaded.snapshot();
     let profiles = snapshot
         .features()
-        .filter(|feature| matches!(feature.kind(), FeatureKind::Profile { .. }))
+        .filter(|feature| {
+            matches!(
+                feature.kind(),
+                FeatureKind::Profile { .. } | FeatureKind::SegmentProfile { .. }
+            )
+        })
         .count();
     let extrusions = snapshot
         .features()
@@ -156,7 +163,11 @@ pub fn inspect_native_document(path: &Path) -> Result<NativeDocumentInspection, 
                 };
                 snapshot.feature(*profile).is_some_and(|profile_feature| {
                     profile_feature.definition_id() == definition.id()
-                        && matches!(profile_feature.kind(), FeatureKind::Profile { .. })
+                        && matches!(
+                            profile_feature.kind(),
+                            FeatureKind::Profile { .. }
+                                | FeatureKind::SegmentProfile { closed: true, .. }
+                        )
                 })
             })
         })
@@ -302,7 +313,105 @@ struct OccurrenceOperationPreview {
     command_digest: String,
     batch: CommandBatch,
     boxes: BTreeMap<OccurrenceId, RenderBox>,
+    hidden_occurrences: BTreeSet<OccurrenceId>,
+    selection_after: Option<SelectionId>,
     committed_digest_key: &'static str,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct RevolveToolState {
+    source_revision: u64,
+    source_digest: String,
+    definition_id: DefinitionId,
+    profile_feature_id: FeatureId,
+    translation_mm: Vec3,
+    plane_z: f64,
+    axis_start_mm: Option<[f64; 2]>,
+    axis_end_mm: Option<[f64; 2]>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct RevolvePreview {
+    source_revision: u64,
+    source_digest: String,
+    definition_id: DefinitionId,
+    profile_feature_id: FeatureId,
+    axis_start_mm: [f64; 2],
+    axis_end_mm: [f64; 2],
+    angle_degrees: f64,
+    command_digest: String,
+    batch: CommandBatch,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GeneralFinishKind {
+    Shell,
+    Fillet,
+    Chamfer,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct PlanarOffsetPreview {
+    source_revision: u64,
+    source_digest: String,
+    definition_id: DefinitionId,
+    profile_feature_id: FeatureId,
+    distance_mm: f64,
+    bounds_mm: [[f64; 3]; 2],
+    command_digest: String,
+    batch: CommandBatch,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct SweepPreview {
+    source_revision: u64,
+    source_digest: String,
+    definition_id: DefinitionId,
+    profile_feature_id: FeatureId,
+    path_feature_id: FeatureId,
+    bounds_mm: [[f64; 3]; 2],
+    volume_mm3: f64,
+    command_digest: String,
+    batch: CommandBatch,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct LoftPreview {
+    source_revision: u64,
+    source_digest: String,
+    definition_id: DefinitionId,
+    sections: Vec<LoftSection>,
+    bounds_mm: [[f64; 3]; 2],
+    control_point_count: usize,
+    command_digest: String,
+    batch: CommandBatch,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct GeneralFinishPreview {
+    source_revision: u64,
+    source_digest: String,
+    definition_id: DefinitionId,
+    target_feature_id: FeatureId,
+    stable_role: String,
+    kind: GeneralFinishKind,
+    amount_mm: f64,
+    command_digest: String,
+    batch: CommandBatch,
+}
+
+#[derive(Clone)]
+struct PocketPreview {
+    source_document_id: DocumentId,
+    source_revision: u64,
+    source_digest: String,
+    selection: SelectionId,
+    command_digest: String,
+    batch: CommandBatch,
+    start: Vec3,
+    end: Vec3,
+    depth_mm: f64,
+    shared_count: usize,
 }
 
 enum ProjectedPolygon {
@@ -333,11 +442,37 @@ struct ProjectedEdge {
     points: [Pos2; 2],
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ArcGeometry {
+    start: Vec3,
+    end: Vec3,
+    center: Vec3,
+    clockwise: bool,
+}
+
+type ExactArcProfileGeometry = ([f64; 2], [f64; 2], [f64; 2], bool);
+pub type LoftPreviewParameters = (Vec<(FeatureId, f64)>, [[f64; 3]; 2], usize);
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ActiveTool {
     Select,
     Line,
     Rectangle,
+    Circle,
+    Arc,
+    CutThrough,
+    Pocket,
+    SolidSubtract,
+    SolidUnion,
+    SolidIntersect,
+    SolidSplit,
+    PlanarOffset,
+    Sweep,
+    Loft,
+    Revolve,
+    Shell,
+    Fillet,
+    Chamfer,
     PushPull,
     Move,
     Measure,
@@ -351,6 +486,21 @@ impl ActiveTool {
             Self::Select => "tool-select",
             Self::Line => "tool-line",
             Self::Rectangle => "tool-rectangle",
+            Self::Circle => "tool-circle",
+            Self::Arc => "tool-arc",
+            Self::CutThrough => "feature-cut-through",
+            Self::Pocket => "feature-pocket",
+            Self::SolidSubtract => "solid-tool-subtract",
+            Self::SolidUnion => "solid-tool-union",
+            Self::SolidIntersect => "solid-tool-intersect",
+            Self::SolidSplit => "solid-tool-split",
+            Self::PlanarOffset => "feature-planar-offset",
+            Self::Sweep => "feature-sweep",
+            Self::Loft => "feature-loft",
+            Self::Revolve => "feature-revolve",
+            Self::Shell => "feature-shell",
+            Self::Fillet => "feature-fillet",
+            Self::Chamfer => "feature-chamfer",
             Self::PushPull => "tool-push-pull",
             Self::Move => "tool-move",
             Self::Measure => "tool-measure",
@@ -364,6 +514,21 @@ impl ActiveTool {
             Self::Select => "hint-select",
             Self::Line => "hint-line",
             Self::Rectangle => "hint-rectangle",
+            Self::Circle => "hint-circle",
+            Self::Arc => "hint-arc",
+            Self::CutThrough => "hint-cut-through",
+            Self::Pocket => "hint-pocket",
+            Self::SolidSubtract => "hint-solid-subtract",
+            Self::SolidUnion => "hint-solid-union",
+            Self::SolidIntersect => "hint-solid-intersect",
+            Self::SolidSplit => "hint-solid-split",
+            Self::PlanarOffset => "hint-planar-offset",
+            Self::Sweep => "hint-sweep",
+            Self::Loft => "hint-loft",
+            Self::Revolve => "hint-revolve",
+            Self::Shell => "hint-shell",
+            Self::Fillet => "hint-fillet",
+            Self::Chamfer => "hint-chamfer",
             Self::PushPull => "hint-push-pull",
             Self::Move => "hint-move",
             Self::Measure => "hint-measure",
@@ -388,6 +553,21 @@ pub enum AppCommand {
     Select,
     Line,
     Rectangle,
+    Circle,
+    Arc,
+    CutThrough,
+    Pocket,
+    SolidSubtract,
+    SolidUnion,
+    SolidIntersect,
+    SolidSplit,
+    PlanarOffset,
+    Sweep,
+    Loft,
+    Revolve,
+    Shell,
+    Fillet,
+    Chamfer,
     PushPull,
     Move,
     Measure,
@@ -451,7 +631,7 @@ struct CommandSpec {
 struct CommandRegistry;
 
 impl CommandRegistry {
-    const COMMANDS: [CommandSpec; 31] = [
+    const COMMANDS: [CommandSpec; 46] = [
         CommandSpec {
             id: AppCommand::New,
             label_key: "file-new",
@@ -499,6 +679,111 @@ impl CommandRegistry {
             label_key: "tool-rectangle",
             shortcut_key: "shortcut-rectangle",
             tool: Some(ActiveTool::Rectangle),
+            implemented: true,
+        },
+        CommandSpec {
+            id: AppCommand::Circle,
+            label_key: "tool-circle",
+            shortcut_key: "shortcut-circle",
+            tool: Some(ActiveTool::Circle),
+            implemented: true,
+        },
+        CommandSpec {
+            id: AppCommand::Arc,
+            label_key: "tool-arc",
+            shortcut_key: "shortcut-arc",
+            tool: Some(ActiveTool::Arc),
+            implemented: true,
+        },
+        CommandSpec {
+            id: AppCommand::CutThrough,
+            label_key: "feature-cut-through",
+            shortcut_key: "shortcut-none",
+            tool: Some(ActiveTool::CutThrough),
+            implemented: true,
+        },
+        CommandSpec {
+            id: AppCommand::Pocket,
+            label_key: "feature-pocket",
+            shortcut_key: "shortcut-none",
+            tool: Some(ActiveTool::Pocket),
+            implemented: true,
+        },
+        CommandSpec {
+            id: AppCommand::SolidSubtract,
+            label_key: "solid-tool-subtract",
+            shortcut_key: "shortcut-none",
+            tool: Some(ActiveTool::SolidSubtract),
+            implemented: true,
+        },
+        CommandSpec {
+            id: AppCommand::SolidUnion,
+            label_key: "solid-tool-union",
+            shortcut_key: "shortcut-none",
+            tool: Some(ActiveTool::SolidUnion),
+            implemented: true,
+        },
+        CommandSpec {
+            id: AppCommand::SolidIntersect,
+            label_key: "solid-tool-intersect",
+            shortcut_key: "shortcut-none",
+            tool: Some(ActiveTool::SolidIntersect),
+            implemented: true,
+        },
+        CommandSpec {
+            id: AppCommand::SolidSplit,
+            label_key: "solid-tool-split",
+            shortcut_key: "shortcut-none",
+            tool: Some(ActiveTool::SolidSplit),
+            implemented: true,
+        },
+        CommandSpec {
+            id: AppCommand::PlanarOffset,
+            label_key: "feature-planar-offset",
+            shortcut_key: "shortcut-none",
+            tool: Some(ActiveTool::PlanarOffset),
+            implemented: true,
+        },
+        CommandSpec {
+            id: AppCommand::Sweep,
+            label_key: "feature-sweep",
+            shortcut_key: "shortcut-none",
+            tool: Some(ActiveTool::Sweep),
+            implemented: true,
+        },
+        CommandSpec {
+            id: AppCommand::Loft,
+            label_key: "feature-loft",
+            shortcut_key: "shortcut-none",
+            tool: Some(ActiveTool::Loft),
+            implemented: true,
+        },
+        CommandSpec {
+            id: AppCommand::Revolve,
+            label_key: "feature-revolve",
+            shortcut_key: "shortcut-none",
+            tool: Some(ActiveTool::Revolve),
+            implemented: true,
+        },
+        CommandSpec {
+            id: AppCommand::Shell,
+            label_key: "feature-shell",
+            shortcut_key: "shortcut-none",
+            tool: Some(ActiveTool::Shell),
+            implemented: true,
+        },
+        CommandSpec {
+            id: AppCommand::Fillet,
+            label_key: "feature-fillet",
+            shortcut_key: "shortcut-none",
+            tool: Some(ActiveTool::Fillet),
+            implemented: true,
+        },
+        CommandSpec {
+            id: AppCommand::Chamfer,
+            label_key: "feature-chamfer",
+            shortcut_key: "shortcut-none",
+            tool: Some(ActiveTool::Chamfer),
             implemented: true,
         },
         CommandSpec {
@@ -868,6 +1153,17 @@ pub struct KetchupApp {
     preview_box: Option<EphemeralBoxPreview>,
     preview_definition_id: Option<DefinitionId>,
     occurrence_operation_preview: Option<OccurrenceOperationPreview>,
+    solid_tool_target: Option<SelectionId>,
+    revolve_tool: Option<RevolveToolState>,
+    revolve_preview: Option<RevolvePreview>,
+    planar_offset_preview: Option<PlanarOffsetPreview>,
+    sweep_preview: Option<SweepPreview>,
+    loft_input_sections: Option<(DefinitionId, Vec<LoftSection>)>,
+    loft_preview: Option<LoftPreview>,
+    general_finish_preview: Option<GeneralFinishPreview>,
+    pocket_preview: Option<PocketPreview>,
+    pocket_editor_feature: Option<FeatureId>,
+    pocket_depth_input: String,
     status_key: &'static str,
     theme: ThemeKind,
     projection_mode: ProjectionMode,
@@ -899,6 +1195,7 @@ pub struct KetchupApp {
     last_move: Option<LastMove>,
     sketch_mode: bool,
     sketch_start: Option<Vec3>,
+    sketch_end: Option<Vec3>,
     sketch_cursor: Option<Vec3>,
     value_input: String,
     focus_value_box: bool,
@@ -993,6 +1290,17 @@ impl KetchupApp {
             preview_box: None,
             preview_definition_id: None,
             occurrence_operation_preview: None,
+            solid_tool_target: None,
+            revolve_tool: None,
+            revolve_preview: None,
+            planar_offset_preview: None,
+            sweep_preview: None,
+            loft_input_sections: None,
+            loft_preview: None,
+            general_finish_preview: None,
+            pocket_preview: None,
+            pocket_editor_feature: None,
+            pocket_depth_input: String::new(),
             status_key: "status-ready",
             theme: ThemeKind::default(),
             projection_mode: ProjectionMode::Parallel,
@@ -1024,6 +1332,7 @@ impl KetchupApp {
             last_move: None,
             sketch_mode: false,
             sketch_start: None,
+            sketch_end: None,
             sketch_cursor: None,
             value_input: String::new(),
             focus_value_box: false,
@@ -1108,6 +1417,17 @@ impl KetchupApp {
         self.preview_box = None;
         self.preview_definition_id = None;
         self.occurrence_operation_preview = None;
+        self.solid_tool_target = None;
+        self.revolve_tool = None;
+        self.revolve_preview = None;
+        self.planar_offset_preview = None;
+        self.sweep_preview = None;
+        self.loft_input_sections = None;
+        self.loft_preview = None;
+        self.general_finish_preview = None;
+        self.pocket_preview = None;
+        self.pocket_editor_feature = None;
+        self.pocket_depth_input.clear();
         self.selection = SelectionState::default();
         self.hovered = None;
         self.hover_pick = None;
@@ -1128,6 +1448,7 @@ impl KetchupApp {
         self.occurrence_clipboard.clear();
         self.sketch_mode = false;
         self.sketch_start = None;
+        self.sketch_end = None;
         self.sketch_cursor = None;
         self.value_input.clear();
         self.focus_value_box = false;
@@ -2732,6 +3053,1070 @@ impl KetchupApp {
             .map_or(0, |item| item.shared_occurrence_count)
     }
 
+    fn through_cut_target(&self) -> Option<(SelectionId, RenderBox, Vec3)> {
+        let selection = self.selection.primary.clone()?;
+        if selection.element
+            != (ElementId::Face {
+                axis: Axis::Z,
+                side: Side::Maximum,
+            })
+        {
+            return None;
+        }
+        let item = self
+            .active_boxes()
+            .into_iter()
+            .find(|item| item.instance_path == selection.instance_path)?;
+        item.extrusion_feature_id?;
+        let snapshot = self.document.current();
+        ExactFeatureChainRequest::from_snapshot(&snapshot, selection.definition_id).ok()?;
+        let resolved = snapshot
+            .resolve_instance_path(&selection.instance_path)
+            .ok()?;
+        if resolved.definition_id != selection.definition_id {
+            return None;
+        }
+        let matrix = resolved.world_transform.matrix();
+        if matrix[0] != 1.0
+            || matrix[1] != 0.0
+            || matrix[2] != 0.0
+            || matrix[4] != 0.0
+            || matrix[5] != 1.0
+            || matrix[6] != 0.0
+            || matrix[8] != 0.0
+            || matrix[9] != 0.0
+            || matrix[10] != 1.0
+        {
+            return None;
+        }
+        let definition = snapshot.definition(selection.definition_id)?;
+        if definition.feature_ids().iter().any(|id| {
+            snapshot.feature(*id).is_some_and(|feature| {
+                matches!(
+                    feature.kind(),
+                    FeatureKind::ThroughCut { .. }
+                        | FeatureKind::Pocket { .. }
+                        | FeatureKind::Boolean { .. }
+                )
+            })
+        }) {
+            return None;
+        }
+        Some((selection, item, Vec3::new(matrix[3], matrix[7], matrix[11])))
+    }
+
+    fn selected_revolve_profile(&self) -> Option<RevolveToolState> {
+        let selection = self.selection.primary.as_ref()?;
+        let item = self
+            .active_boxes()
+            .into_iter()
+            .find(|item| item.instance_path == selection.instance_path)?;
+        if item.extrusion_feature_id.is_some() || !item.instance_path.is_root() {
+            return None;
+        }
+        let snapshot = self.document.current();
+        let profile = snapshot.feature(item.profile_feature_id)?;
+        let is_closed = match profile.kind() {
+            FeatureKind::Profile { points_mm } => points_mm.len() >= 3,
+            FeatureKind::SegmentProfile { closed, .. } => *closed,
+            _ => false,
+        };
+        if !is_closed || profile.definition_id() != selection.definition_id {
+            return None;
+        }
+        let resolved = snapshot.resolve_instance_path(&item.instance_path).ok()?;
+        let matrix = resolved.world_transform.matrix();
+        if matrix[0] != 1.0
+            || matrix[1] != 0.0
+            || matrix[2] != 0.0
+            || matrix[4] != 0.0
+            || matrix[5] != 1.0
+            || matrix[6] != 0.0
+            || matrix[8] != 0.0
+            || matrix[9] != 0.0
+            || matrix[10] != 1.0
+        {
+            return None;
+        }
+        let translation_mm = Vec3::new(matrix[3], matrix[7], matrix[11]);
+        Some(RevolveToolState {
+            source_revision: snapshot.revision_id(),
+            source_digest: snapshot.canonical_digest(),
+            definition_id: selection.definition_id,
+            profile_feature_id: item.profile_feature_id,
+            translation_mm,
+            plane_z: translation_mm.z,
+            axis_start_mm: None,
+            axis_end_mm: None,
+        })
+    }
+
+    fn begin_revolve_tool(&mut self) -> bool {
+        let Some(tool) = self.selected_revolve_profile() else {
+            return false;
+        };
+        self.revolve_tool = Some(tool);
+        self.revolve_preview = None;
+        self.value_input = "360".to_owned();
+        self.status_key = "status-revolve-axis-start";
+        true
+    }
+
+    fn add_revolve_axis_point(&mut self, point_mm: Vec3) -> bool {
+        let Some(mut tool) = self.revolve_tool.clone() else {
+            return false;
+        };
+        let snapshot = self.document.current();
+        if snapshot.revision_id() != tool.source_revision
+            || snapshot.canonical_digest() != tool.source_digest
+        {
+            self.revolve_tool = None;
+            self.revolve_preview = None;
+            self.status_key = "error-preview-stale";
+            return false;
+        }
+        let local = [
+            point_mm.x - tool.translation_mm.x,
+            point_mm.y - tool.translation_mm.y,
+        ];
+        if let Some(start) = tool.axis_start_mm {
+            if (local[0] - start[0]).hypot(local[1] - start[1]) <= 0.01 {
+                return false;
+            }
+            tool.axis_end_mm = Some(local);
+            self.status_key = "status-revolve-angle";
+        } else {
+            tool.axis_start_mm = Some(local);
+            self.status_key = "status-revolve-axis-end";
+        }
+        self.revolve_tool = Some(tool);
+        self.refresh_revolve_preview()
+    }
+
+    fn refresh_revolve_preview(&mut self) -> bool {
+        self.revolve_preview = None;
+        let Some(tool) = self.revolve_tool.as_ref() else {
+            return false;
+        };
+        let Some(axis_start_mm) = tool.axis_start_mm else {
+            return false;
+        };
+        let Some(axis_end_mm) = tool.axis_end_mm else {
+            return false;
+        };
+        let Some(angle_degrees) =
+            parse_distance_mm(&self.value_input).filter(|angle| *angle > 0.0 && *angle <= 360.0)
+        else {
+            self.digest = self.catalog.text("digest-revolve-invalid-angle");
+            return false;
+        };
+        let snapshot = self.document.current();
+        if snapshot.revision_id() != tool.source_revision
+            || snapshot.canonical_digest() != tool.source_digest
+        {
+            self.status_key = "error-preview-stale";
+            return false;
+        }
+        let Some(feature_id) = snapshot
+            .features()
+            .map(|feature| feature.id().0)
+            .max()
+            .unwrap_or(0)
+            .checked_add(1)
+            .map(FeatureId)
+        else {
+            return false;
+        };
+        let batch = CommandBatch::new(vec![CanonicalCommand::CreateFeature {
+            id: feature_id,
+            definition_id: tool.definition_id,
+            name: self.catalog.text("model-revolve-feature"),
+            kind: FeatureKind::Revolve {
+                profile: tool.profile_feature_id,
+                axis_start_mm,
+                axis_end_mm,
+                angle_degrees,
+            },
+        }]);
+        let Ok(preview_snapshot) = self.document.preview_batch(&batch) else {
+            return false;
+        };
+        if ExactRevolveRequest::from_snapshot(&preview_snapshot, tool.definition_id).is_err() {
+            return false;
+        }
+        let command_digest = batch.digest();
+        self.revolve_preview = Some(RevolvePreview {
+            source_revision: tool.source_revision,
+            source_digest: tool.source_digest.clone(),
+            definition_id: tool.definition_id,
+            profile_feature_id: tool.profile_feature_id,
+            axis_start_mm,
+            axis_end_mm,
+            angle_degrees,
+            command_digest,
+            batch,
+        });
+        self.status_key = "status-revolve-preview";
+        self.digest = self.catalog.format(
+            "digest-revolve-live",
+            &BTreeMap::from([("angle", format_height(angle_degrees))]),
+        );
+        true
+    }
+
+    #[must_use]
+    pub fn has_revolve_preview(&self) -> bool {
+        let Some(preview) = self.revolve_preview.as_ref() else {
+            return false;
+        };
+        let snapshot = self.document.current();
+        preview.source_revision == snapshot.revision_id()
+            && preview.source_digest == snapshot.canonical_digest()
+            && preview.command_digest == preview.batch.digest()
+            && self
+                .document
+                .preview_batch(&preview.batch)
+                .ok()
+                .and_then(|snapshot| {
+                    ExactRevolveRequest::from_snapshot(&snapshot, preview.definition_id).ok()
+                })
+                .is_some()
+    }
+
+    #[must_use]
+    pub fn revolve_preview_parameters(&self) -> Option<([f64; 2], [f64; 2], f64)> {
+        self.has_revolve_preview().then(|| {
+            let preview = self
+                .revolve_preview
+                .as_ref()
+                .expect("a current Revolve preview exists");
+            (
+                preview.axis_start_mm,
+                preview.axis_end_mm,
+                preview.angle_degrees,
+            )
+        })
+    }
+
+    #[must_use]
+    pub fn latest_revolve_parameters(&self) -> Option<(FeatureId, [f64; 2], [f64; 2], f64)> {
+        self.document
+            .current()
+            .features()
+            .filter_map(|feature| {
+                let FeatureKind::Revolve {
+                    axis_start_mm,
+                    axis_end_mm,
+                    angle_degrees,
+                    ..
+                } = feature.kind()
+                else {
+                    return None;
+                };
+                Some((feature.id(), *axis_start_mm, *axis_end_mm, *angle_degrees))
+            })
+            .last()
+    }
+
+    fn confirm_revolve_preview(&mut self) -> bool {
+        if !self.has_revolve_preview() {
+            self.revolve_preview = None;
+            self.status_key = "error-preview-stale";
+            return false;
+        }
+        let Some(preview) = self.revolve_preview.take() else {
+            return false;
+        };
+        if self.document.apply_batch(&preview.batch).is_err() {
+            self.status_key = "error-preview-stale";
+            return false;
+        }
+        self.clear_ephemeral_edit_state();
+        self.value_input.clear();
+        self.status_key = "status-ready";
+        self.digest = self.catalog.format(
+            "digest-revolve-committed",
+            &BTreeMap::from([("angle", format_height(preview.angle_degrees))]),
+        );
+        true
+    }
+
+    fn selected_planar_offset_profile(&self) -> Option<(DefinitionId, FeatureId)> {
+        let selection = self.selection.primary.as_ref()?;
+        if selection.element
+            != (ElementId::Face {
+                axis: Axis::Z,
+                side: Side::Maximum,
+            })
+            || !selection.instance_path.is_root()
+        {
+            return None;
+        }
+        let item = self
+            .active_boxes()
+            .into_iter()
+            .find(|item| item.instance_path == selection.instance_path)?;
+        if item.extrusion_feature_id.is_some() {
+            return None;
+        }
+        let snapshot = self.document.current();
+        let definition = snapshot.definition(selection.definition_id)?;
+        if definition.feature_ids() != [item.profile_feature_id] {
+            return None;
+        }
+        let FeatureKind::Profile { points_mm } = snapshot.feature(item.profile_feature_id)?.kind()
+        else {
+            return None;
+        };
+        let [south_west, south_east, north_east, north_west] = points_mm.as_slice() else {
+            return None;
+        };
+        (south_west[1] == south_east[1]
+            && south_east[0] == north_east[0]
+            && north_east[1] == north_west[1]
+            && north_west[0] == south_west[0]
+            && south_east[0] > south_west[0]
+            && north_west[1] > south_west[1])
+            .then_some((selection.definition_id, item.profile_feature_id))
+    }
+
+    fn refresh_planar_offset_preview(&mut self) -> bool {
+        self.planar_offset_preview = None;
+        let Some((definition_id, profile_feature_id)) = self.selected_planar_offset_profile()
+        else {
+            return false;
+        };
+        let Some(distance_mm) =
+            parse_distance_mm(&self.value_input).filter(|distance| distance.abs() > 1.0e-6)
+        else {
+            self.digest = self.catalog.text("digest-planar-offset-invalid-distance");
+            return false;
+        };
+        let Ok(distance) = Dimension::new(self.value_input.clone(), distance_mm) else {
+            return false;
+        };
+        let snapshot = self.document.current();
+        let source_revision = snapshot.revision_id();
+        let source_digest = snapshot.canonical_digest();
+        let Some(feature_id) = snapshot
+            .features()
+            .map(|feature| feature.id().0)
+            .max()
+            .unwrap_or(0)
+            .checked_add(1)
+            .map(FeatureId)
+        else {
+            return false;
+        };
+        let batch = CommandBatch::new(vec![CanonicalCommand::CreateFeature {
+            id: feature_id,
+            definition_id,
+            name: self.catalog.text("model-planar-offset-feature"),
+            kind: FeatureKind::PlanarOffset {
+                profile: profile_feature_id,
+                distance,
+            },
+        }]);
+        let Ok(preview_snapshot) = self.document.preview_batch(&batch) else {
+            self.digest = self.catalog.text("digest-planar-offset-invalid-distance");
+            return false;
+        };
+        let Ok(request) = ExactPlanarOffsetRequest::from_snapshot(&preview_snapshot, definition_id)
+        else {
+            return false;
+        };
+        self.planar_offset_preview = Some(PlanarOffsetPreview {
+            source_revision,
+            source_digest,
+            definition_id,
+            profile_feature_id,
+            distance_mm,
+            bounds_mm: request.expected_bounds_mm(),
+            command_digest: batch.digest(),
+            batch,
+        });
+        self.status_key = "status-planar-offset-preview";
+        self.digest = self.catalog.format(
+            "digest-planar-offset-live",
+            &BTreeMap::from([("distance", format_height(distance_mm))]),
+        );
+        true
+    }
+
+    #[must_use]
+    pub fn planar_offset_preview_parameters(&self) -> Option<(FeatureId, f64, [[f64; 3]; 2])> {
+        let preview = self.planar_offset_preview.as_ref()?;
+        self.planar_offset_preview_is_current().then_some((
+            preview.profile_feature_id,
+            preview.distance_mm,
+            preview.bounds_mm,
+        ))
+    }
+
+    #[must_use]
+    pub fn planar_offset_preview_exact_evaluator(&self) -> Option<&'static str> {
+        let preview = self.planar_offset_preview.as_ref()?;
+        let snapshot = self.document.preview_batch(&preview.batch).ok()?;
+        ExactPlanarOffsetRequest::from_snapshot(&snapshot, preview.definition_id)
+            .ok()
+            .map(|request| request.evaluator())
+    }
+
+    #[must_use]
+    pub fn planar_offset_preview_is_current(&self) -> bool {
+        let Some(preview) = self.planar_offset_preview.as_ref() else {
+            return false;
+        };
+        let snapshot = self.document.current();
+        preview.source_revision == snapshot.revision_id()
+            && preview.source_digest == snapshot.canonical_digest()
+            && preview.command_digest == preview.batch.digest()
+            && self
+                .document
+                .preview_batch(&preview.batch)
+                .ok()
+                .and_then(|snapshot| {
+                    ExactPlanarOffsetRequest::from_snapshot(&snapshot, preview.definition_id).ok()
+                })
+                .is_some()
+    }
+
+    #[must_use]
+    pub fn latest_planar_offset_parameters(&self) -> Option<(FeatureId, FeatureId, f64)> {
+        self.document
+            .current()
+            .features()
+            .filter_map(|feature| {
+                let FeatureKind::PlanarOffset { profile, distance } = feature.kind() else {
+                    return None;
+                };
+                Some((feature.id(), *profile, distance.millimetres()))
+            })
+            .last()
+    }
+
+    fn confirm_planar_offset_preview(&mut self) -> bool {
+        if !self.planar_offset_preview_is_current() {
+            self.planar_offset_preview = None;
+            self.status_key = "error-preview-stale";
+            return false;
+        }
+        let Some(preview) = self.planar_offset_preview.take() else {
+            return false;
+        };
+        if self.document.apply_batch(&preview.batch).is_err() {
+            self.status_key = "error-preview-stale";
+            return false;
+        }
+        self.clear_ephemeral_edit_state();
+        self.active_tool = ActiveTool::Select;
+        self.value_input.clear();
+        self.status_key = "status-ready";
+        self.digest = self.catalog.format(
+            "digest-planar-offset-committed",
+            &BTreeMap::from([("distance", format_height(preview.distance_mm))]),
+        );
+        true
+    }
+
+    fn sweep_preview_candidate(
+        &self,
+    ) -> Option<(
+        DefinitionId,
+        FeatureId,
+        FeatureId,
+        ExactSweepRequest,
+        CommandBatch,
+    )> {
+        let selection = self.selection.primary.as_ref()?;
+        if selection.element
+            != (ElementId::Face {
+                axis: Axis::Z,
+                side: Side::Maximum,
+            })
+            || !selection.instance_path.is_root()
+        {
+            return None;
+        }
+        let snapshot = self.document.current();
+        let definition = snapshot.definition(selection.definition_id)?;
+        let [profile_feature_id, path_feature_id] = definition.feature_ids() else {
+            return None;
+        };
+        let feature_id = FeatureId(
+            snapshot
+                .features()
+                .map(|feature| feature.id().0)
+                .max()
+                .unwrap_or(0)
+                .checked_add(1)?,
+        );
+        let batch = CommandBatch::new(vec![CanonicalCommand::CreateFeature {
+            id: feature_id,
+            definition_id: selection.definition_id,
+            name: self.catalog.text("model-sweep-feature"),
+            kind: FeatureKind::Sweep {
+                profile: *profile_feature_id,
+                path: *path_feature_id,
+            },
+        }]);
+        let preview_snapshot = self.document.preview_batch(&batch).ok()?;
+        let request =
+            ExactSweepRequest::from_snapshot(&preview_snapshot, selection.definition_id).ok()?;
+        Some((
+            selection.definition_id,
+            *profile_feature_id,
+            *path_feature_id,
+            request,
+            batch,
+        ))
+    }
+
+    fn refresh_sweep_preview(&mut self) -> bool {
+        self.sweep_preview = None;
+        let Some((definition_id, profile_feature_id, path_feature_id, request, batch)) =
+            self.sweep_preview_candidate()
+        else {
+            self.digest = self.catalog.text("digest-sweep-invalid-inputs");
+            return false;
+        };
+        let snapshot = self.document.current();
+        self.sweep_preview = Some(SweepPreview {
+            source_revision: snapshot.revision_id(),
+            source_digest: snapshot.canonical_digest(),
+            definition_id,
+            profile_feature_id,
+            path_feature_id,
+            bounds_mm: request.expected_bounds_mm(),
+            volume_mm3: request.expected_volume_mm3(),
+            command_digest: batch.digest(),
+            batch,
+        });
+        self.status_key = "status-sweep-preview";
+        self.digest = self.catalog.text("digest-sweep-live");
+        true
+    }
+
+    #[must_use]
+    pub fn sweep_preview_parameters(&self) -> Option<(FeatureId, FeatureId, [[f64; 3]; 2], f64)> {
+        let preview = self.sweep_preview.as_ref()?;
+        self.sweep_preview_is_current().then_some((
+            preview.profile_feature_id,
+            preview.path_feature_id,
+            preview.bounds_mm,
+            preview.volume_mm3,
+        ))
+    }
+
+    #[must_use]
+    pub fn sweep_preview_exact_evaluator(&self) -> Option<&'static str> {
+        let preview = self.sweep_preview.as_ref()?;
+        let snapshot = self.document.preview_batch(&preview.batch).ok()?;
+        ExactSweepRequest::from_snapshot(&snapshot, preview.definition_id)
+            .ok()
+            .map(|request| request.evaluator())
+    }
+
+    #[must_use]
+    pub fn sweep_preview_is_current(&self) -> bool {
+        let Some(preview) = self.sweep_preview.as_ref() else {
+            return false;
+        };
+        let snapshot = self.document.current();
+        preview.source_revision == snapshot.revision_id()
+            && preview.source_digest == snapshot.canonical_digest()
+            && preview.command_digest == preview.batch.digest()
+            && self
+                .document
+                .preview_batch(&preview.batch)
+                .ok()
+                .and_then(|snapshot| {
+                    ExactSweepRequest::from_snapshot(&snapshot, preview.definition_id).ok()
+                })
+                .is_some()
+    }
+
+    #[must_use]
+    pub fn latest_sweep_parameters(&self) -> Option<(FeatureId, FeatureId, FeatureId)> {
+        self.document
+            .current()
+            .features()
+            .filter_map(|feature| {
+                let FeatureKind::Sweep { profile, path } = feature.kind() else {
+                    return None;
+                };
+                Some((feature.id(), *profile, *path))
+            })
+            .last()
+    }
+
+    fn confirm_sweep_preview(&mut self) -> bool {
+        if !self.sweep_preview_is_current() {
+            self.sweep_preview = None;
+            self.status_key = "error-preview-stale";
+            return false;
+        }
+        let Some(preview) = self.sweep_preview.take() else {
+            return false;
+        };
+        if self.document.apply_batch(&preview.batch).is_err() {
+            self.status_key = "error-preview-stale";
+            return false;
+        }
+        self.clear_ephemeral_edit_state();
+        self.active_tool = ActiveTool::Select;
+        self.status_key = "status-ready";
+        self.digest = self.catalog.text("digest-sweep-committed");
+        true
+    }
+
+    fn loft_preview_candidate(
+        &self,
+    ) -> Option<(
+        DefinitionId,
+        Vec<LoftSection>,
+        ExactLoftRequest,
+        CommandBatch,
+    )> {
+        let selection = self.selection.primary.as_ref()?;
+        if selection.element
+            != (ElementId::Face {
+                axis: Axis::Z,
+                side: Side::Maximum,
+            })
+            || !selection.instance_path.is_root()
+        {
+            return None;
+        }
+        let (definition_id, sections) = self.loft_input_sections.as_ref()?;
+        if selection.definition_id != *definition_id {
+            return None;
+        }
+        let snapshot = self.document.current();
+        let definition = snapshot.definition(*definition_id)?;
+        if !definition
+            .feature_ids()
+            .iter()
+            .copied()
+            .eq(sections.iter().map(|section| section.profile))
+        {
+            return None;
+        }
+        let feature_id = FeatureId(
+            snapshot
+                .features()
+                .map(|feature| feature.id().0)
+                .max()
+                .unwrap_or(0)
+                .checked_add(1)?,
+        );
+        let batch = CommandBatch::new(vec![CanonicalCommand::CreateFeature {
+            id: feature_id,
+            definition_id: *definition_id,
+            name: self.catalog.text("model-loft-feature"),
+            kind: FeatureKind::Loft {
+                sections: sections.clone(),
+            },
+        }]);
+        let preview_snapshot = self.document.preview_batch(&batch).ok()?;
+        let request = ExactLoftRequest::from_snapshot(&preview_snapshot, *definition_id).ok()?;
+        Some((*definition_id, sections.clone(), request, batch))
+    }
+
+    fn refresh_loft_preview(&mut self) -> bool {
+        self.loft_preview = None;
+        let Some((definition_id, sections, request, batch)) = self.loft_preview_candidate() else {
+            self.digest = self.catalog.text("digest-loft-invalid-inputs");
+            return false;
+        };
+        let mut minimum = [f64::INFINITY; 3];
+        let mut maximum = [f64::NEG_INFINITY; 3];
+        for section in &request.sections {
+            let elevation = f64::from_bits(section.elevation_bits);
+            minimum[2] = minimum[2].min(elevation);
+            maximum[2] = maximum[2].max(elevation);
+            for point in &section.control_point_bits {
+                for axis in 0..2 {
+                    let coordinate = f64::from_bits(point[axis]);
+                    minimum[axis] = minimum[axis].min(coordinate);
+                    maximum[axis] = maximum[axis].max(coordinate);
+                }
+            }
+        }
+        let snapshot = self.document.current();
+        self.loft_preview = Some(LoftPreview {
+            source_revision: snapshot.revision_id(),
+            source_digest: snapshot.canonical_digest(),
+            definition_id,
+            sections,
+            bounds_mm: [minimum, maximum],
+            control_point_count: request.control_point_count(),
+            command_digest: batch.digest(),
+            batch,
+        });
+        self.status_key = "status-loft-preview";
+        self.digest = self.catalog.text("digest-loft-live");
+        true
+    }
+
+    #[must_use]
+    pub fn loft_preview_parameters(&self) -> Option<LoftPreviewParameters> {
+        let preview = self.loft_preview.as_ref()?;
+        self.loft_preview_is_current().then(|| {
+            (
+                preview
+                    .sections
+                    .iter()
+                    .map(|section| (section.profile, section.elevation_mm))
+                    .collect(),
+                preview.bounds_mm,
+                preview.control_point_count,
+            )
+        })
+    }
+
+    #[must_use]
+    pub fn loft_preview_exact_evaluator(&self) -> Option<&'static str> {
+        let preview = self.loft_preview.as_ref()?;
+        let snapshot = self.document.preview_batch(&preview.batch).ok()?;
+        ExactLoftRequest::from_snapshot(&snapshot, preview.definition_id)
+            .ok()
+            .map(|request| request.evaluator())
+    }
+
+    #[must_use]
+    pub fn loft_preview_is_current(&self) -> bool {
+        let Some(preview) = self.loft_preview.as_ref() else {
+            return false;
+        };
+        let snapshot = self.document.current();
+        preview.source_revision == snapshot.revision_id()
+            && preview.source_digest == snapshot.canonical_digest()
+            && preview.command_digest == preview.batch.digest()
+            && self
+                .document
+                .preview_batch(&preview.batch)
+                .ok()
+                .and_then(|snapshot| {
+                    ExactLoftRequest::from_snapshot(&snapshot, preview.definition_id).ok()
+                })
+                .is_some()
+    }
+
+    #[must_use]
+    pub fn latest_loft_parameters(&self) -> Option<(FeatureId, Vec<(FeatureId, f64)>)> {
+        self.document
+            .current()
+            .features()
+            .filter_map(|feature| {
+                let FeatureKind::Loft { sections } = feature.kind() else {
+                    return None;
+                };
+                Some((
+                    feature.id(),
+                    sections
+                        .iter()
+                        .map(|section| (section.profile, section.elevation_mm))
+                        .collect(),
+                ))
+            })
+            .last()
+    }
+
+    fn confirm_loft_preview(&mut self) -> bool {
+        if !self.loft_preview_is_current() {
+            self.loft_preview = None;
+            self.status_key = "error-preview-stale";
+            return false;
+        }
+        let Some(preview) = self.loft_preview.take() else {
+            return false;
+        };
+        if self.document.apply_batch(&preview.batch).is_err() {
+            self.status_key = "error-preview-stale";
+            return false;
+        }
+        self.clear_ephemeral_edit_state();
+        self.active_tool = ActiveTool::Select;
+        self.status_key = "status-ready";
+        self.digest = self.catalog.text("digest-loft-committed");
+        true
+    }
+
+    fn selected_general_shell_target(&self) -> Option<(DefinitionId, FeatureId, StableFaceRole)> {
+        let selection = self.selection.primary.as_ref()?;
+        if selection.element
+            != (ElementId::Face {
+                axis: Axis::Z,
+                side: Side::Maximum,
+            })
+            || !selection.instance_path.is_root()
+        {
+            return None;
+        }
+        let item = self
+            .active_boxes()
+            .into_iter()
+            .find(|item| item.instance_path == selection.instance_path)?;
+        let extrusion = item.extrusion_feature_id?;
+        let snapshot = self.document.current();
+        let request =
+            ExactFeatureChainRequest::from_snapshot(&snapshot, selection.definition_id).ok()?;
+        if request.shell.is_some() {
+            return None;
+        }
+        Some((
+            selection.definition_id,
+            extrusion,
+            StableFaceRole::new("extrusion.top").expect("the built-in top face role is valid"),
+        ))
+    }
+
+    fn selected_general_edge_finish_target(
+        &self,
+    ) -> Option<(DefinitionId, FeatureId, StableEdgeRole)> {
+        let selection = self.selection.primary.as_ref()?;
+        if !matches!(
+            selection.element,
+            ElementId::Edge(7)
+                | ElementId::EdgeMidpoint(7)
+                | ElementId::Face {
+                    axis: Axis::Z,
+                    side: Side::Maximum,
+                }
+        ) || !selection.instance_path.is_root()
+        {
+            return None;
+        }
+        let snapshot = self.document.current();
+        let request =
+            ExactFeatureChainRequest::from_snapshot(&snapshot, selection.definition_id).ok()?;
+        let shell = request.shell?;
+        if shell.edge_finish_feature_id.is_some() {
+            return None;
+        }
+        Some((
+            selection.definition_id,
+            shell.shell_feature_id,
+            StableEdgeRole::new("shell.edge.top-east")
+                .expect("the built-in top-east edge role is valid"),
+        ))
+    }
+
+    fn refresh_general_finish_preview(&mut self) -> bool {
+        self.general_finish_preview = None;
+        let kind = match self.active_tool {
+            ActiveTool::Shell => GeneralFinishKind::Shell,
+            ActiveTool::Fillet => GeneralFinishKind::Fillet,
+            ActiveTool::Chamfer => GeneralFinishKind::Chamfer,
+            _ => return false,
+        };
+        let Some(amount_mm) = parse_distance_mm(&self.value_input).filter(|amount| *amount > 0.0)
+        else {
+            self.digest = self.catalog.text("digest-general-finish-invalid-amount");
+            return false;
+        };
+        let Ok(dimension) = Dimension::new(self.value_input.clone(), amount_mm) else {
+            return false;
+        };
+        let snapshot = self.document.current();
+        let source_revision = snapshot.revision_id();
+        let source_digest = snapshot.canonical_digest();
+        let Some(feature_id) = snapshot
+            .features()
+            .map(|feature| feature.id().0)
+            .max()
+            .unwrap_or(0)
+            .checked_add(1)
+            .map(FeatureId)
+        else {
+            return false;
+        };
+        let (definition_id, target_feature_id, stable_role, feature_kind, name_key) = match kind {
+            GeneralFinishKind::Shell => {
+                let Some((definition_id, target, role)) = self.selected_general_shell_target()
+                else {
+                    return false;
+                };
+                (
+                    definition_id,
+                    target,
+                    role.as_str().to_owned(),
+                    FeatureKind::Shell {
+                        target,
+                        removed_faces: vec![role],
+                        thickness: dimension.clone(),
+                    },
+                    "model-shell-feature",
+                )
+            }
+            GeneralFinishKind::Fillet | GeneralFinishKind::Chamfer => {
+                let Some((definition_id, target, role)) =
+                    self.selected_general_edge_finish_target()
+                else {
+                    return false;
+                };
+                (
+                    definition_id,
+                    target,
+                    role.as_str().to_owned(),
+                    FeatureKind::BottleEdgeFinish {
+                        target,
+                        edges: vec![role],
+                        kind: if kind == GeneralFinishKind::Fillet {
+                            BottleEdgeFinishKind::Fillet
+                        } else {
+                            BottleEdgeFinishKind::Chamfer
+                        },
+                        amount: dimension.clone(),
+                    },
+                    if kind == GeneralFinishKind::Fillet {
+                        "model-fillet-feature"
+                    } else {
+                        "model-chamfer-feature"
+                    },
+                )
+            }
+        };
+        let batch = CommandBatch::new(vec![CanonicalCommand::CreateFeature {
+            id: feature_id,
+            definition_id,
+            name: self.catalog.text(name_key),
+            kind: feature_kind,
+        }]);
+        let Ok(preview_snapshot) = self.document.preview_batch(&batch) else {
+            return false;
+        };
+        if ExactFeatureChainRequest::from_snapshot(&preview_snapshot, definition_id).is_err() {
+            return false;
+        }
+        self.general_finish_preview = Some(GeneralFinishPreview {
+            source_revision,
+            source_digest,
+            definition_id,
+            target_feature_id,
+            stable_role,
+            kind,
+            amount_mm,
+            command_digest: batch.digest(),
+            batch,
+        });
+        self.status_key = "status-general-finish-preview";
+        self.digest = self.catalog.format(
+            "digest-general-finish-live",
+            &BTreeMap::from([("amount", format_height(amount_mm))]),
+        );
+        true
+    }
+
+    #[must_use]
+    pub fn general_finish_preview_parameters(
+        &self,
+    ) -> Option<(FeatureId, String, GeneralFinishKind, f64)> {
+        let preview = self.general_finish_preview.as_ref()?;
+        self.general_finish_preview_is_current().then(|| {
+            (
+                preview.target_feature_id,
+                preview.stable_role.clone(),
+                preview.kind,
+                preview.amount_mm,
+            )
+        })
+    }
+
+    #[must_use]
+    pub fn general_finish_preview_is_current(&self) -> bool {
+        let Some(preview) = self.general_finish_preview.as_ref() else {
+            return false;
+        };
+        let snapshot = self.document.current();
+        preview.source_revision == snapshot.revision_id()
+            && preview.source_digest == snapshot.canonical_digest()
+            && preview.command_digest == preview.batch.digest()
+            && self
+                .document
+                .preview_batch(&preview.batch)
+                .ok()
+                .and_then(|snapshot| {
+                    ExactFeatureChainRequest::from_snapshot(&snapshot, preview.definition_id).ok()
+                })
+                .is_some()
+    }
+
+    #[must_use]
+    pub fn latest_general_shell_parameters(&self) -> Option<(FeatureId, String, f64)> {
+        self.document
+            .current()
+            .features()
+            .filter_map(|feature| {
+                let FeatureKind::Shell {
+                    removed_faces,
+                    thickness,
+                    ..
+                } = feature.kind()
+                else {
+                    return None;
+                };
+                Some((
+                    feature.id(),
+                    removed_faces.first()?.as_str().to_owned(),
+                    thickness.millimetres(),
+                ))
+            })
+            .last()
+    }
+
+    #[must_use]
+    pub fn latest_general_edge_finish_parameters(
+        &self,
+    ) -> Option<(FeatureId, String, BottleEdgeFinishKind, f64)> {
+        self.document
+            .current()
+            .features()
+            .filter_map(|feature| {
+                let FeatureKind::BottleEdgeFinish {
+                    edges,
+                    kind,
+                    amount,
+                    ..
+                } = feature.kind()
+                else {
+                    return None;
+                };
+                Some((
+                    feature.id(),
+                    edges.first()?.as_str().to_owned(),
+                    *kind,
+                    amount.millimetres(),
+                ))
+            })
+            .last()
+    }
+
+    fn confirm_general_finish_preview(&mut self) -> bool {
+        if !self.general_finish_preview_is_current() {
+            self.general_finish_preview = None;
+            self.status_key = "error-preview-stale";
+            return false;
+        }
+        let Some(preview) = self.general_finish_preview.take() else {
+            return false;
+        };
+        if self.document.apply_batch(&preview.batch).is_err() {
+            self.status_key = "error-preview-stale";
+            return false;
+        }
+        self.clear_ephemeral_edit_state();
+        self.active_tool = ActiveTool::Select;
+        self.value_input.clear();
+        self.status_key = "status-ready";
+        self.digest = self.catalog.format(
+            "digest-general-finish-committed",
+            &BTreeMap::from([("amount", format_height(preview.amount_mm))]),
+        );
+        true
+    }
+
     fn command_enabled(&self, id: AppCommand) -> bool {
         let spec = CommandRegistry::spec(id);
         spec.implemented
@@ -2742,6 +4127,27 @@ impl KetchupApp {
                 AppCommand::Paste => !self.occurrence_clipboard.is_empty(),
                 AppCommand::Delete | AppCommand::Deselect => self.selection_count() > 0,
                 AppCommand::SelectAll => self.active_box_count() > 0,
+                AppCommand::CutThrough | AppCommand::Pocket => self.through_cut_target().is_some(),
+                AppCommand::PlanarOffset => self.selected_planar_offset_profile().is_some(),
+                AppCommand::Sweep => self.sweep_preview_candidate().is_some(),
+                AppCommand::Loft => self.loft_preview_candidate().is_some(),
+                AppCommand::Revolve => self.selected_revolve_profile().is_some(),
+                AppCommand::Shell => self.selected_general_shell_target().is_some(),
+                AppCommand::Fillet | AppCommand::Chamfer => {
+                    self.selected_general_edge_finish_target().is_some()
+                }
+                AppCommand::SolidSubtract
+                | AppCommand::SolidUnion
+                | AppCommand::SolidIntersect
+                | AppCommand::SolidSplit => {
+                    self.active_boxes()
+                        .into_iter()
+                        .filter(|item| {
+                            item.instance_path.is_root() && item.extrusion_feature_id.is_some()
+                        })
+                        .count()
+                        >= 2
+                }
                 AppCommand::Group => {
                     self.selection_count() >= 2
                         && self.selection.selected_group.is_none()
@@ -2766,11 +4172,52 @@ impl KetchupApp {
             self.cancel_rectangle_sketch();
             self.active_tool = tool;
             self.value_input.clear();
-            if tool == ActiveTool::Rectangle {
+            if tool == ActiveTool::PlanarOffset {
+                self.value_input = "5".to_owned();
+                self.refresh_planar_offset_preview();
+            } else if tool == ActiveTool::Sweep {
+                self.refresh_sweep_preview();
+            } else if tool == ActiveTool::Loft {
+                self.refresh_loft_preview();
+            } else if tool == ActiveTool::Revolve {
+                self.begin_revolve_tool();
+            } else if matches!(
+                tool,
+                ActiveTool::Shell | ActiveTool::Fillet | ActiveTool::Chamfer
+            ) {
+                self.value_input = if tool == ActiveTool::Shell {
+                    "2".to_owned()
+                } else {
+                    "1".to_owned()
+                };
+                self.refresh_general_finish_preview();
+            } else if matches!(
+                tool,
+                ActiveTool::Rectangle
+                    | ActiveTool::Circle
+                    | ActiveTool::Arc
+                    | ActiveTool::CutThrough
+                    | ActiveTool::Pocket
+            ) {
                 self.sketch_mode = true;
-                self.status_key = "status-sketch-first-point";
+                self.status_key = match tool {
+                    ActiveTool::Circle => "status-circle-center",
+                    ActiveTool::Arc => "status-arc-start",
+                    ActiveTool::CutThrough => "status-cut-through-first-point",
+                    ActiveTool::Pocket => "status-pocket-first-point",
+                    _ => "status-sketch-first-point",
+                };
             } else if tool == ActiveTool::Measure {
                 self.status_key = "status-measure-first-point";
+            } else if matches!(
+                tool,
+                ActiveTool::SolidSubtract
+                    | ActiveTool::SolidUnion
+                    | ActiveTool::SolidIntersect
+                    | ActiveTool::SolidSplit
+            ) {
+                self.selection.clear();
+                self.status_key = "status-solid-tool-target";
             }
             self.digest = self.catalog.format(
                 "digest-tool-active",
@@ -2836,6 +4283,21 @@ impl KetchupApp {
             AppCommand::Select
             | AppCommand::Line
             | AppCommand::Rectangle
+            | AppCommand::Circle
+            | AppCommand::Arc
+            | AppCommand::CutThrough
+            | AppCommand::Pocket
+            | AppCommand::SolidSubtract
+            | AppCommand::SolidUnion
+            | AppCommand::SolidIntersect
+            | AppCommand::SolidSplit
+            | AppCommand::PlanarOffset
+            | AppCommand::Sweep
+            | AppCommand::Loft
+            | AppCommand::Revolve
+            | AppCommand::Shell
+            | AppCommand::Fillet
+            | AppCommand::Chamfer
             | AppCommand::PushPull
             | AppCommand::Move
             | AppCommand::Measure
@@ -2894,6 +4356,131 @@ impl KetchupApp {
     #[must_use]
     pub fn value_input(&self) -> &str {
         &self.value_input
+    }
+
+    /// Current non-authoritative Circle preview as centre and radius.
+    #[must_use]
+    pub fn circle_preview_geometry(&self) -> Option<(Vec3, f64)> {
+        (self.active_tool == ActiveTool::Circle)
+            .then_some((self.sketch_start?, self.sketch_cursor?))
+            .map(|(center, cursor)| {
+                (
+                    center,
+                    vector_length(Vec3::new(cursor.x - center.x, cursor.y - center.y, 0.0)),
+                )
+            })
+    }
+
+    /// Number of canonical closed two-arc Circle profiles in the document.
+    #[must_use]
+    pub fn circle_profile_count(&self) -> usize {
+        self.document
+            .current()
+            .features()
+            .filter(|feature| {
+                let FeatureKind::SegmentProfile { segments, closed } = feature.kind() else {
+                    return false;
+                };
+                exact_circle_geometry(segments, *closed).is_some()
+            })
+            .count()
+    }
+
+    /// Centre and radius of the newest canonical Circle occurrence.
+    #[must_use]
+    pub fn latest_circle_geometry(&self) -> Option<(Vec3, f64)> {
+        let snapshot = self.document.current();
+        snapshot
+            .occurrences()
+            .filter_map(|occurrence| {
+                let definition = snapshot.definition(occurrence.definition_id())?;
+                let (center, radius) = definition.feature_ids().iter().find_map(|feature_id| {
+                    let FeatureKind::SegmentProfile { segments, closed } =
+                        snapshot.feature(*feature_id)?.kind()
+                    else {
+                        return None;
+                    };
+                    exact_circle_geometry(segments, *closed)
+                })?;
+                let transform = occurrence.transform();
+                let matrix = transform.matrix();
+                Some((
+                    occurrence.id(),
+                    Vec3::new(
+                        matrix[0] * center[0] + matrix[1] * center[1] + matrix[3],
+                        matrix[4] * center[0] + matrix[5] * center[1] + matrix[7],
+                        matrix[8] * center[0] + matrix[9] * center[1] + matrix[11],
+                    ),
+                    radius,
+                ))
+            })
+            .max_by_key(|(id, _, _)| *id)
+            .map(|(_, center, radius)| (center, radius))
+    }
+
+    /// Current non-authoritative endpoint-bulge Arc preview.
+    #[must_use]
+    pub fn arc_preview_geometry(&self) -> Option<(Vec3, Vec3, Vec3, bool)> {
+        (self.active_tool == ActiveTool::Arc)
+            .then_some(arc_geometry(
+                self.sketch_start?,
+                self.sketch_end?,
+                self.sketch_cursor?,
+            )?)
+            .map(|arc| (arc.start, arc.end, arc.center, arc.clockwise))
+    }
+
+    /// Number of canonical closed Arc-plus-chord profiles in the document.
+    #[must_use]
+    pub fn arc_profile_count(&self) -> usize {
+        self.document
+            .current()
+            .features()
+            .filter(|feature| {
+                let FeatureKind::SegmentProfile { segments, closed } = feature.kind() else {
+                    return false;
+                };
+                exact_arc_profile_geometry(segments, *closed).is_some()
+            })
+            .count()
+    }
+
+    /// World-space geometry of the newest canonical Arc-plus-chord profile.
+    #[must_use]
+    pub fn latest_arc_geometry(&self) -> Option<(Vec3, Vec3, Vec3, bool)> {
+        let snapshot = self.document.current();
+        snapshot
+            .occurrences()
+            .filter_map(|occurrence| {
+                let definition = snapshot.definition(occurrence.definition_id())?;
+                let (start, end, center, clockwise) =
+                    definition.feature_ids().iter().find_map(|feature_id| {
+                        let FeatureKind::SegmentProfile { segments, closed } =
+                            snapshot.feature(*feature_id)?.kind()
+                        else {
+                            return None;
+                        };
+                        exact_arc_profile_geometry(segments, *closed)
+                    })?;
+                let transform = occurrence.transform();
+                let matrix = transform.matrix();
+                let world = |point: [f64; 2]| {
+                    Vec3::new(
+                        matrix[0] * point[0] + matrix[1] * point[1] + matrix[3],
+                        matrix[4] * point[0] + matrix[5] * point[1] + matrix[7],
+                        matrix[8] * point[0] + matrix[9] * point[1] + matrix[11],
+                    )
+                };
+                Some((
+                    occurrence.id(),
+                    world(start),
+                    world(end),
+                    world(center),
+                    clockwise,
+                ))
+            })
+            .max_by_key(|(id, _, _, _, _)| *id)
+            .map(|(_, start, end, center, clockwise)| (start, end, center, clockwise))
     }
 
     /// Current camera magnification, as changed by Zoom Fit and the wheel.
@@ -3282,7 +4869,7 @@ impl KetchupApp {
                 id: revolve,
                 definition_id,
                 name: "Bottle revolve".to_owned(),
-                kind: FeatureKind::Revolve { profile: control },
+                kind: FeatureKind::full_revolve(control),
             },
             CanonicalCommand::CreateFeature {
                 id: shell,
@@ -3290,6 +4877,10 @@ impl KetchupApp {
                 name: "Bottle shell".to_owned(),
                 kind: FeatureKind::Shell {
                     target: revolve,
+                    removed_faces: vec![
+                        StableFaceRole::new(BOTTLE_SHELL_OPENING_FACE_ROLE)
+                            .expect("built-in bottle face role is valid"),
+                    ],
                     thickness: Dimension::new("2", 2.0).expect("built-in thickness is valid"),
                 },
             },
@@ -3299,6 +4890,10 @@ impl KetchupApp {
                 name: "Bottle shoulder finish".to_owned(),
                 kind: FeatureKind::BottleEdgeFinish {
                     target: shell,
+                    edges: vec![
+                        StableEdgeRole::new(BOTTLE_SHOULDER_EDGE_ROLE)
+                            .expect("built-in bottle edge role is valid"),
+                    ],
                     kind: BottleEdgeFinishKind::Fillet,
                     amount: Dimension::new("2", 2.0).expect("built-in finish is valid"),
                 },
@@ -3571,6 +5166,288 @@ impl KetchupApp {
 
     pub fn create_closed_polyline(&mut self, points_mm: Vec<[f64; 2]>) -> bool {
         self.create_profile_at(Vec3::ZERO, points_mm)
+    }
+
+    pub fn create_sweep_inputs(
+        &mut self,
+        profile_points_mm: Vec<[f64; 2]>,
+        path_start_mm: [f64; 2],
+        path_end_mm: [f64; 2],
+    ) -> bool {
+        let snapshot = self.document.current();
+        let next_definition = snapshot
+            .definitions()
+            .map(|definition| definition.id().0)
+            .max()
+            .unwrap_or(0)
+            .checked_add(1);
+        let next_feature = snapshot
+            .features()
+            .map(|feature| feature.id().0)
+            .max()
+            .unwrap_or(0)
+            .checked_add(1);
+        let next_occurrence = snapshot
+            .occurrences()
+            .map(|occurrence| occurrence.id().0)
+            .max()
+            .unwrap_or(0)
+            .checked_add(1);
+        let (Some(definition), Some(profile), Some(occurrence)) =
+            (next_definition, next_feature, next_occurrence)
+        else {
+            return false;
+        };
+        let Some(path) = profile.checked_add(1) else {
+            return false;
+        };
+        let definition_id = DefinitionId(definition);
+        let profile_feature_id = FeatureId(profile);
+        let path_feature_id = FeatureId(path);
+        let occurrence_id = OccurrenceId(occurrence);
+        let name = self.catalog.format(
+            "model-default-box",
+            &BTreeMap::from([("number", definition.to_string())]),
+        );
+        let batch = CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: definition_id,
+                name: name.clone(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: profile_feature_id,
+                definition_id,
+                name: self.catalog.text("model-default-profile"),
+                kind: FeatureKind::Profile {
+                    points_mm: profile_points_mm,
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: path_feature_id,
+                definition_id,
+                name: self.catalog.text("model-sweep-path"),
+                kind: FeatureKind::SegmentProfile {
+                    segments: vec![ProfileSegment::Line {
+                        start_mm: path_start_mm,
+                        end_mm: path_end_mm,
+                    }],
+                    closed: false,
+                },
+            },
+            CanonicalCommand::CreateOccurrence {
+                id: occurrence_id,
+                definition_id,
+                name: self.catalog.format(
+                    "model-default-occurrence",
+                    &BTreeMap::from([("name", name)]),
+                ),
+                transform: Transform::identity(),
+                parent: None,
+                tag: None,
+                visible: true,
+            },
+        ]);
+        if self.document.apply_batch(&batch).is_err() {
+            return false;
+        }
+        self.clear_ephemeral_edit_state();
+        self.selection.select_exact(
+            SelectionId {
+                definition_id,
+                instance_path: InstancePath::root(occurrence_id),
+                element: ElementId::Face {
+                    axis: Axis::Z,
+                    side: Side::Maximum,
+                },
+            },
+            false,
+        );
+        self.status_key = "status-sweep-inputs-selected";
+        true
+    }
+
+    pub fn create_loft_inputs(&mut self, sections: Vec<(Vec<[f64; 2]>, f64)>) -> bool {
+        if !(2..=16).contains(&sections.len()) {
+            return false;
+        }
+        let snapshot = self.document.current();
+        let Some(definition_id) = snapshot
+            .definitions()
+            .map(|definition| definition.id().0)
+            .max()
+            .unwrap_or(0)
+            .checked_add(1)
+            .map(DefinitionId)
+        else {
+            return false;
+        };
+        let first_feature = snapshot
+            .features()
+            .map(|feature| feature.id().0)
+            .max()
+            .unwrap_or(0)
+            .checked_add(1);
+        let next_occurrence = snapshot
+            .occurrences()
+            .map(|occurrence| occurrence.id().0)
+            .max()
+            .unwrap_or(0)
+            .checked_add(1);
+        let (Some(first_feature), Some(occurrence)) = (first_feature, next_occurrence) else {
+            return false;
+        };
+        let name = self.catalog.format(
+            "model-loft-definition",
+            &BTreeMap::from([("number", definition_id.0.to_string())]),
+        );
+        let mut commands = vec![CanonicalCommand::CreateDefinition {
+            id: definition_id,
+            name: name.clone(),
+        }];
+        let mut loft_sections = Vec::with_capacity(sections.len());
+        for (index, (control_points_mm, elevation_mm)) in sections.into_iter().enumerate() {
+            let Some(feature_id) = first_feature.checked_add(index as u64).map(FeatureId) else {
+                return false;
+            };
+            commands.push(CanonicalCommand::CreateFeature {
+                id: feature_id,
+                definition_id,
+                name: self.catalog.format(
+                    "model-spline-profile",
+                    &BTreeMap::from([("number", (index + 1).to_string())]),
+                ),
+                kind: FeatureKind::SplineProfile { control_points_mm },
+            });
+            loft_sections.push(LoftSection {
+                profile: feature_id,
+                elevation_mm,
+            });
+        }
+        let occurrence_id = OccurrenceId(occurrence);
+        commands.push(CanonicalCommand::CreateOccurrence {
+            id: occurrence_id,
+            definition_id,
+            name: self.catalog.format(
+                "model-default-occurrence",
+                &BTreeMap::from([("name", name)]),
+            ),
+            transform: Transform::identity(),
+            parent: None,
+            tag: None,
+            visible: true,
+        });
+        if self
+            .document
+            .apply_batch(&CommandBatch::new(commands))
+            .is_err()
+        {
+            return false;
+        }
+        self.clear_ephemeral_edit_state();
+        self.loft_input_sections = Some((definition_id, loft_sections));
+        self.selection.select_exact(
+            SelectionId {
+                definition_id,
+                instance_path: InstancePath::root(occurrence_id),
+                element: ElementId::Face {
+                    axis: Axis::Z,
+                    side: Side::Maximum,
+                },
+            },
+            false,
+        );
+        self.status_key = "status-loft-inputs-selected";
+        true
+    }
+
+    fn create_segment_profile_at(
+        &mut self,
+        origin_mm: Vec3,
+        segments: Vec<ProfileSegment>,
+        default_name_key: &str,
+        profile_name_key: &str,
+    ) -> bool {
+        let snapshot = self.document.current();
+        let Some(definition_id) = snapshot
+            .definitions()
+            .map(|definition| definition.id().0)
+            .max()
+            .unwrap_or(0)
+            .checked_add(1)
+            .map(DefinitionId)
+        else {
+            return false;
+        };
+        let Some(profile_id) = snapshot
+            .features()
+            .map(|feature| feature.id().0)
+            .max()
+            .unwrap_or(0)
+            .checked_add(1)
+            .map(FeatureId)
+        else {
+            return false;
+        };
+        let Some(occurrence_id) = snapshot
+            .occurrences()
+            .map(|occurrence| occurrence.id().0)
+            .max()
+            .unwrap_or(0)
+            .checked_add(1)
+            .map(OccurrenceId)
+        else {
+            return false;
+        };
+        let name = self.catalog.format(
+            default_name_key,
+            &BTreeMap::from([("number", definition_id.0.to_string())]),
+        );
+        let occurrence_name = self.catalog.format(
+            "model-default-occurrence",
+            &BTreeMap::from([("name", name.clone())]),
+        );
+        let batch = CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: definition_id,
+                name,
+            },
+            CanonicalCommand::CreateFeature {
+                id: profile_id,
+                definition_id,
+                name: self.catalog.text(profile_name_key),
+                kind: FeatureKind::SegmentProfile {
+                    segments,
+                    closed: true,
+                },
+            },
+            CanonicalCommand::CreateOccurrence {
+                id: occurrence_id,
+                definition_id,
+                name: occurrence_name,
+                transform: Transform::from_translation(origin_mm.x, origin_mm.y, origin_mm.z)
+                    .expect("validated profile origin is canonical"),
+                parent: None,
+                tag: None,
+                visible: true,
+            },
+        ]);
+        if self.document.apply_batch(&batch).is_err() {
+            return false;
+        }
+        self.clear_ephemeral_edit_state();
+        self.push_pull_distance_input.clear();
+        self.selection.select_exact(
+            SelectionId {
+                definition_id,
+                instance_path: InstancePath::root(occurrence_id),
+                element: ElementId::Face {
+                    axis: Axis::Z,
+                    side: Side::Maximum,
+                },
+            },
+            false,
+        );
+        true
     }
 
     fn create_profile_at(&mut self, origin_mm: Vec3, points_mm: Vec<[f64; 2]>) -> bool {
@@ -3996,6 +5873,8 @@ impl KetchupApp {
             command_digest: batch.digest(),
             batch,
             boxes: BTreeMap::from([(moving_id, preview_box)]),
+            hidden_occurrences: BTreeSet::new(),
+            selection_after: None,
             committed_digest_key: "digest-align-committed",
         };
         self.occurrence_operation_preview = Some(preview);
@@ -4099,6 +5978,8 @@ impl KetchupApp {
             command_digest: batch.digest(),
             batch,
             boxes,
+            hidden_occurrences: BTreeSet::new(),
+            selection_after: None,
             committed_digest_key: "digest-linear-pattern-committed",
         });
         self.status_key = "status-preview";
@@ -4111,6 +5992,228 @@ impl KetchupApp {
             ]),
         );
         true
+    }
+
+    fn active_solid_tool_operation(&self) -> Option<BooleanOperation> {
+        match self.active_tool {
+            ActiveTool::SolidSubtract => Some(BooleanOperation::Cut),
+            ActiveTool::SolidUnion => Some(BooleanOperation::Union),
+            ActiveTool::SolidIntersect => Some(BooleanOperation::Intersect),
+            ActiveTool::SolidSplit => Some(BooleanOperation::Split),
+            _ => None,
+        }
+    }
+
+    fn solid_tool_candidate(&self, selection: &SelectionId) -> Option<(RenderBox, FeatureId)> {
+        if !selection.instance_path.is_root()
+            || !self.occurrence_in_active_context(&selection.instance_path)
+        {
+            return None;
+        }
+        let item = self
+            .active_boxes()
+            .into_iter()
+            .find(|item| item.instance_path == selection.instance_path)?;
+        let extrusion_id = item.extrusion_feature_id?;
+        let snapshot = self.document.current();
+        let occurrence = snapshot.occurrence(selection.instance_path.root_occurrence())?;
+        let feature = snapshot.feature(extrusion_id)?;
+        if occurrence.definition_id() != selection.definition_id
+            || feature.definition_id() != selection.definition_id
+            || !matches!(feature.kind(), FeatureKind::Extrusion { .. })
+        {
+            return None;
+        }
+        Some((item, extrusion_id))
+    }
+
+    fn prepare_solid_tool_preview(&mut self, tool_selection: SelectionId, keep_tool: bool) -> bool {
+        let Some(operation) = self.active_solid_tool_operation() else {
+            return false;
+        };
+        let keep_tool = operation == BooleanOperation::Split || keep_tool;
+        let Some(target_selection) = self.solid_tool_target.clone() else {
+            return false;
+        };
+        if target_selection.instance_path == tool_selection.instance_path {
+            self.digest = self.catalog.text("digest-solid-tool-distinct");
+            return false;
+        }
+        let Some((target_box, target_feature_id)) = self.solid_tool_candidate(&target_selection)
+        else {
+            self.digest = self.catalog.text("digest-solid-tool-invalid");
+            return false;
+        };
+        let Some((tool_box, tool_feature_id)) = self.solid_tool_candidate(&tool_selection) else {
+            self.digest = self.catalog.text("digest-solid-tool-invalid");
+            return false;
+        };
+        let snapshot = self.document.current();
+        let Some(result_definition_value) = snapshot
+            .definitions()
+            .map(|definition| definition.id().0)
+            .max()
+            .unwrap_or(0)
+            .checked_add(1)
+        else {
+            return false;
+        };
+        let Some(first_feature_value) = snapshot
+            .features()
+            .map(|feature| feature.id().0)
+            .max()
+            .unwrap_or(0)
+            .checked_add(1)
+        else {
+            return false;
+        };
+        let mut result_feature_ids = [FeatureId(0); 5];
+        for (offset, id) in result_feature_ids.iter_mut().enumerate() {
+            let Some(value) = first_feature_value.checked_add(offset as u64) else {
+                return false;
+            };
+            *id = FeatureId(value);
+        }
+        let operation_label = self.catalog.text(match operation {
+            BooleanOperation::Cut => "solid-tool-subtract",
+            BooleanOperation::Union => "solid-tool-union",
+            BooleanOperation::Intersect => "solid-tool-intersect",
+            BooleanOperation::Split => "solid-tool-split",
+        });
+        let result_definition_id = DefinitionId(result_definition_value);
+        let batch = CommandBatch::new(vec![CanonicalCommand::ApplySolidTool(SolidToolPlan {
+            operation,
+            target_occurrence_id: target_selection.instance_path.root_occurrence(),
+            target_feature_id,
+            tool_occurrence_id: tool_selection.instance_path.root_occurrence(),
+            tool_feature_id,
+            result_definition_id,
+            result_feature_ids,
+            result_definition_name: self.catalog.format(
+                "solid-tool-result-definition",
+                &BTreeMap::from([("operation", operation_label.clone())]),
+            ),
+            result_feature_name: self.catalog.format(
+                "solid-tool-result-feature",
+                &BTreeMap::from([("operation", operation_label.clone())]),
+            ),
+            keep_tool,
+        })]);
+        if self.document.validate_batch(&batch).is_err() {
+            self.digest = self.catalog.text("digest-solid-tool-invalid");
+            return false;
+        }
+        let target_occurrence_id = target_selection.instance_path.root_occurrence();
+        let tool_occurrence_id = tool_selection.instance_path.root_occurrence();
+        let mut result_box = target_box.clone();
+        result_box.definition_id = result_definition_id;
+        result_box.profile_feature_id = result_feature_ids[0];
+        result_box.extrusion_feature_id = Some(result_feature_ids[1]);
+        if operation == BooleanOperation::Union {
+            let minimum = Vec3::new(
+                target_box.origin_mm.x.min(tool_box.origin_mm.x),
+                target_box.origin_mm.y.min(tool_box.origin_mm.y),
+                target_box.origin_mm.z.min(tool_box.origin_mm.z),
+            );
+            let target_maximum = target_box.origin_mm + target_box.size_mm;
+            let tool_maximum = tool_box.origin_mm + tool_box.size_mm;
+            let maximum = Vec3::new(
+                target_maximum.x.max(tool_maximum.x),
+                target_maximum.y.max(tool_maximum.y),
+                target_maximum.z.max(tool_maximum.z),
+            );
+            result_box.origin_mm = minimum;
+            result_box.size_mm = maximum - minimum;
+        } else if operation == BooleanOperation::Intersect {
+            let minimum = Vec3::new(
+                target_box.origin_mm.x.max(tool_box.origin_mm.x),
+                target_box.origin_mm.y.max(tool_box.origin_mm.y),
+                target_box.origin_mm.z.max(tool_box.origin_mm.z),
+            );
+            let target_maximum = target_box.origin_mm + target_box.size_mm;
+            let tool_maximum = tool_box.origin_mm + tool_box.size_mm;
+            let maximum = Vec3::new(
+                target_maximum.x.min(tool_maximum.x),
+                target_maximum.y.min(tool_maximum.y),
+                target_maximum.z.min(tool_maximum.z),
+            );
+            result_box.origin_mm = minimum;
+            result_box.size_mm = maximum - minimum;
+        }
+        let selection_after = SelectionId {
+            definition_id: result_definition_id,
+            instance_path: target_selection.instance_path.clone(),
+            element: ElementId::Face {
+                axis: Axis::Z,
+                side: Side::Maximum,
+            },
+        };
+        self.occurrence_operation_preview = Some(OccurrenceOperationPreview {
+            source_revision: snapshot.revision_id(),
+            command_digest: batch.digest(),
+            batch,
+            boxes: BTreeMap::from([(target_occurrence_id, result_box)]),
+            hidden_occurrences: (!keep_tool)
+                .then_some(tool_occurrence_id)
+                .into_iter()
+                .collect(),
+            selection_after: Some(selection_after),
+            committed_digest_key: match (operation, keep_tool) {
+                (BooleanOperation::Cut, false) => "digest-solid-subtract-committed",
+                (BooleanOperation::Cut, true) => "digest-solid-subtract-kept-committed",
+                (BooleanOperation::Union, false) => "digest-solid-union-committed",
+                (BooleanOperation::Union, true) => "digest-solid-union-kept-committed",
+                (BooleanOperation::Intersect, false) => "digest-solid-intersect-committed",
+                (BooleanOperation::Intersect, true) => "digest-solid-intersect-kept-committed",
+                (BooleanOperation::Split, _) => "digest-solid-split-committed",
+            },
+        });
+        self.status_key = "status-solid-tool-preview";
+        self.digest = self.catalog.format(
+            "digest-solid-tool-live",
+            &BTreeMap::from([
+                ("operation", operation_label),
+                (
+                    "tool",
+                    self.catalog.text(if keep_tool {
+                        "solid-tool-keep-enabled"
+                    } else {
+                        "solid-tool-keep-disabled"
+                    }),
+                ),
+            ]),
+        );
+        true
+    }
+
+    fn select_solid_tool_occurrence(&mut self, selection: Option<SelectionId>, keep_tool: bool) {
+        let Some(selection) = selection else {
+            self.digest = self.catalog.text("digest-solid-tool-invalid");
+            return;
+        };
+        if self.solid_tool_candidate(&selection).is_none() {
+            self.digest = self.catalog.text("digest-solid-tool-invalid");
+            return;
+        }
+        if self.solid_tool_target.is_none() {
+            self.solid_tool_target = Some(selection.clone());
+            self.selection.select_exact(selection, false);
+            self.status_key = if self.active_solid_tool_operation() == Some(BooleanOperation::Split)
+            {
+                "status-solid-split-tool"
+            } else {
+                "status-solid-tool-tool"
+            };
+            self.digest = self.catalog.text(
+                if self.active_solid_tool_operation() == Some(BooleanOperation::Split) {
+                    "digest-solid-split-target-selected"
+                } else {
+                    "digest-solid-tool-target-selected"
+                },
+            );
+            return;
+        }
+        self.prepare_solid_tool_preview(selection, keep_tool);
     }
 
     #[must_use]
@@ -4148,6 +6251,10 @@ impl KetchupApp {
             self.status_key = "error-preview-stale";
             return false;
         }
+        if let Some(selection) = preview.selection_after {
+            self.selection.select_exact(selection, false);
+        }
+        self.solid_tool_target = None;
         self.status_key = "status-ready";
         self.digest = self.catalog.text(preview.committed_digest_key);
         true
@@ -4332,6 +6439,178 @@ impl KetchupApp {
         self.push_pull_distance_input = value.into();
     }
 
+    fn prepare_circular_hole_preview(
+        &mut self,
+        selection: &SelectionId,
+        tool_box: &RenderBox,
+        distance_mm: f64,
+    ) -> bool {
+        if distance_mm >= -0.01
+            || tool_box.extrusion_feature_id.is_some()
+            || !selection.instance_path.is_root()
+            || selection.element
+                != (ElementId::Face {
+                    axis: Axis::Z,
+                    side: Side::Maximum,
+                })
+        {
+            return false;
+        }
+        let snapshot = self.document.current();
+        let Some(FeatureKind::SegmentProfile { segments, closed }) = snapshot
+            .feature(tool_box.profile_feature_id)
+            .map(|feature| feature.kind())
+        else {
+            return false;
+        };
+        if exact_circle_geometry(segments, *closed).is_none() {
+            return false;
+        }
+        let depth_mm = -distance_mm;
+        let Some(target_box) = self.active_boxes().into_iter().find(|candidate| {
+            candidate.instance_path != selection.instance_path
+                && candidate.instance_path.is_root()
+                && candidate.extrusion_feature_id.is_some()
+                && (candidate.origin_mm.z + candidate.size_mm.z - tool_box.origin_mm.z).abs()
+                    <= 1.0e-8
+                && (candidate.size_mm.z - depth_mm).abs() <= 1.0e-8
+                && tool_box.origin_mm.x > candidate.origin_mm.x
+                && tool_box.origin_mm.y > candidate.origin_mm.y
+                && tool_box.origin_mm.x + tool_box.size_mm.x
+                    < candidate.origin_mm.x + candidate.size_mm.x
+                && tool_box.origin_mm.y + tool_box.size_mm.y
+                    < candidate.origin_mm.y + candidate.size_mm.y
+        }) else {
+            return false;
+        };
+        let target_occurrence_id = target_box.instance_path.root_occurrence();
+        let tool_occurrence_id = selection.instance_path.root_occurrence();
+        let Some(target_feature_id) = target_box.extrusion_feature_id else {
+            return false;
+        };
+        let Some(first_feature_value) = snapshot
+            .features()
+            .map(|feature| feature.id().0)
+            .max()
+            .unwrap_or(0)
+            .checked_add(1)
+        else {
+            return false;
+        };
+        let tool_feature_id = FeatureId(first_feature_value);
+        let mut result_feature_ids = [FeatureId(0); 5];
+        for (offset, id) in result_feature_ids.iter_mut().enumerate() {
+            let Some(value) = first_feature_value.checked_add(offset as u64 + 1) else {
+                return false;
+            };
+            *id = FeatureId(value);
+        }
+        let Some(result_definition_id) = snapshot
+            .definitions()
+            .map(|definition| definition.id().0)
+            .max()
+            .unwrap_or(0)
+            .checked_add(1)
+            .map(DefinitionId)
+        else {
+            return false;
+        };
+        let (Some(target_occurrence), Some(tool_occurrence)) = (
+            snapshot.occurrence(target_occurrence_id),
+            snapshot.occurrence(tool_occurrence_id),
+        ) else {
+            return false;
+        };
+        let mut tool_matrix = *tool_occurrence.transform().matrix();
+        tool_matrix[11] = target_occurrence.transform().matrix()[11];
+        let Ok(tool_transform) = Transform::from_matrix(tool_matrix) else {
+            return false;
+        };
+        let operation_label = self.catalog.text("solid-tool-subtract");
+        let batch = CommandBatch::new(vec![
+            CanonicalCommand::CreateFeature {
+                id: tool_feature_id,
+                definition_id: selection.definition_id,
+                name: self.catalog.text("model-default-extrusion"),
+                kind: FeatureKind::Extrusion {
+                    profile: tool_box.profile_feature_id,
+                    height: Dimension::new(format_height(depth_mm), depth_mm)
+                        .expect("validated circular-hole depth is canonical"),
+                },
+            },
+            CanonicalCommand::SetOccurrenceTransform {
+                id: tool_occurrence_id,
+                transform: tool_transform,
+            },
+            CanonicalCommand::ApplySolidTool(SolidToolPlan {
+                operation: BooleanOperation::Cut,
+                target_occurrence_id,
+                target_feature_id,
+                tool_occurrence_id,
+                tool_feature_id,
+                result_definition_id,
+                result_feature_ids,
+                result_definition_name: self.catalog.format(
+                    "solid-tool-result-definition",
+                    &BTreeMap::from([("operation", operation_label.clone())]),
+                ),
+                result_feature_name: self.catalog.format(
+                    "solid-tool-result-feature",
+                    &BTreeMap::from([("operation", operation_label.clone())]),
+                ),
+                keep_tool: false,
+            }),
+            CanonicalCommand::DeleteDefinition {
+                id: selection.definition_id,
+            },
+        ]);
+        let Ok(preview_snapshot) = self.document.preview_batch(&batch) else {
+            return false;
+        };
+        let Ok(exact_request) =
+            ExactFeatureChainRequest::from_snapshot(&preview_snapshot, result_definition_id)
+        else {
+            return false;
+        };
+        if exact_request
+            .boolean
+            .as_ref()
+            .and_then(|boolean| boolean.circle)
+            .is_none()
+        {
+            return false;
+        }
+        let selection_after = SelectionId {
+            definition_id: result_definition_id,
+            instance_path: target_box.instance_path.clone(),
+            element: ElementId::Face {
+                axis: Axis::Z,
+                side: Side::Maximum,
+            },
+        };
+        self.preview = None;
+        self.preview_box = None;
+        self.preview_definition_id = None;
+        self.occurrence_operation_preview = Some(OccurrenceOperationPreview {
+            source_revision: snapshot.revision_id(),
+            command_digest: batch.digest(),
+            batch,
+            boxes: BTreeMap::from([(target_occurrence_id, target_box)]),
+            hidden_occurrences: BTreeSet::from([tool_occurrence_id]),
+            selection_after: Some(selection_after),
+            committed_digest_key: "digest-solid-subtract-committed",
+        });
+        self.status_key = "status-preview";
+        self.digest = self.catalog.format(
+            "digest-solid-tool-live",
+            &BTreeMap::from([
+                ("operation", operation_label),
+                ("tool", self.catalog.text("solid-tool-keep-disabled")),
+            ]),
+        );
+        true
+    }
+
     pub fn start_preview(&mut self) -> bool {
         let selection = self.selection.primary.clone().unwrap_or(SelectionId {
             definition_id: INITIAL_BOX_DEFINITION,
@@ -4354,6 +6633,9 @@ impl KetchupApp {
         else {
             return false;
         };
+        if self.prepare_circular_hole_preview(&selection, &item, distance_mm) {
+            return true;
+        }
         let Some(current_extent_mm) = face_extent(&item, Some(&selection.element)) else {
             return false;
         };
@@ -4436,6 +6718,33 @@ impl KetchupApp {
         })
     }
 
+    #[must_use]
+    pub fn push_pull_preview_exact_evaluator(&self) -> Option<&'static str> {
+        let (batch, definition_id) = if self.has_preview() {
+            (self.preview.as_ref()?, self.preview_definition_id?)
+        } else if self.has_occurrence_operation_preview() {
+            let preview = self.occurrence_operation_preview.as_ref()?;
+            (
+                &preview.batch,
+                preview.selection_after.as_ref()?.definition_id,
+            )
+        } else {
+            return None;
+        };
+        let snapshot = self.document.preview_batch(batch).ok()?;
+        ExactFeatureChainRequest::from_snapshot(&snapshot, definition_id)
+            .ok()
+            .map(|request| request.evaluator())
+    }
+
+    fn confirm_push_pull_preview(&mut self) -> bool {
+        if self.has_occurrence_operation_preview() {
+            self.confirm_occurrence_operation_preview()
+        } else {
+            self.confirm_preview()
+        }
+    }
+
     pub fn cancel_preview(&mut self) {
         self.clear_ephemeral_edit_state();
         self.status_key = "status-ready";
@@ -4446,6 +6755,14 @@ impl KetchupApp {
         self.preview_box = None;
         self.preview_definition_id = None;
         self.occurrence_operation_preview = None;
+        self.solid_tool_target = None;
+        self.revolve_tool = None;
+        self.revolve_preview = None;
+        self.planar_offset_preview = None;
+        self.sweep_preview = None;
+        self.loft_preview = None;
+        self.general_finish_preview = None;
+        self.pocket_preview = None;
         self.push_pull_drag = None;
         self.bottle_direct_drag = None;
         self.move_drag = None;
@@ -4984,7 +7301,17 @@ impl KetchupApp {
                 self.move_preview_is_current(drag)
                     && self.move_drag_applies_to_path(drag, &item.instance_path)
             });
-        push_pull_preview || move_preview
+        let occurrence_preview = self.has_occurrence_operation_preview()
+            && item.instance_path.is_root()
+            && self
+                .occurrence_operation_preview
+                .as_ref()
+                .is_some_and(|preview| {
+                    preview
+                        .boxes
+                        .contains_key(&item.instance_path.root_occurrence())
+                });
+        push_pull_preview || move_preview || occurrence_preview
     }
 
     fn viewport_boxes(&self, exact_projection: &ExactInteractionProjection) -> Vec<RenderBox> {
@@ -5018,6 +7345,16 @@ impl KetchupApp {
                     boxes.push(preview_box.clone());
                 }
             }
+        }
+        if self.has_occurrence_operation_preview()
+            && let Some(operation) = &self.occurrence_operation_preview
+        {
+            boxes.retain(|item| {
+                !item.instance_path.is_root()
+                    || !operation
+                        .hidden_occurrences
+                        .contains(&item.instance_path.root_occurrence())
+            });
         }
         boxes.retain(|item| {
             !exact_projection.contains_occurrence(&item.instance_path)
@@ -5099,11 +7436,528 @@ impl KetchupApp {
     fn cancel_rectangle_sketch(&mut self) {
         self.sketch_mode = false;
         self.sketch_start = None;
+        self.sketch_end = None;
         self.sketch_cursor = None;
         self.status_key = "status-ready";
     }
 
+    fn complete_through_cut_sketch(&mut self, start: Vec3, end: Vec3) -> bool {
+        let Some((selection, item, translation)) = self.through_cut_target() else {
+            self.digest = self.catalog.text("digest-cut-through-invalid-target");
+            return false;
+        };
+        let target = item
+            .extrusion_feature_id
+            .expect("a Through Cut target always has an extrusion");
+        let local_start = start - translation;
+        let local_end = end - translation;
+        let minimum = [
+            local_start.x.min(local_end.x),
+            local_start.y.min(local_end.y),
+        ];
+        let maximum = [
+            local_start.x.max(local_end.x),
+            local_start.y.max(local_end.y),
+        ];
+        let width = maximum[0] - minimum[0];
+        let depth = maximum[1] - minimum[1];
+        if !width.is_finite() || !depth.is_finite() || width <= 0.01 || depth <= 0.01 {
+            self.digest = self.catalog.text("digest-cut-through-invalid-profile");
+            return false;
+        }
+
+        let snapshot = self.document.current();
+        let profile = snapshot.feature(item.profile_feature_id);
+        let Some(FeatureKind::Profile { points_mm }) = profile.map(|feature| feature.kind()) else {
+            self.digest = self.catalog.text("digest-cut-through-invalid-target");
+            return false;
+        };
+        let Some(outer_min_x) = points_mm
+            .iter()
+            .map(|point| point[0])
+            .min_by(f64::total_cmp)
+        else {
+            return false;
+        };
+        let Some(outer_max_x) = points_mm
+            .iter()
+            .map(|point| point[0])
+            .max_by(f64::total_cmp)
+        else {
+            return false;
+        };
+        let Some(outer_min_y) = points_mm
+            .iter()
+            .map(|point| point[1])
+            .min_by(f64::total_cmp)
+        else {
+            return false;
+        };
+        let Some(outer_max_y) = points_mm
+            .iter()
+            .map(|point| point[1])
+            .max_by(f64::total_cmp)
+        else {
+            return false;
+        };
+        let tolerance = 1.0e-6;
+        if minimum[0] <= outer_min_x + tolerance
+            || maximum[0] >= outer_max_x - tolerance
+            || minimum[1] <= outer_min_y + tolerance
+            || maximum[1] >= outer_max_y - tolerance
+        {
+            self.digest = self.catalog.text("digest-cut-through-invalid-profile");
+            return false;
+        }
+
+        let next_feature = snapshot
+            .features()
+            .map(|feature| feature.id().0)
+            .max()
+            .unwrap_or(0)
+            .checked_add(1);
+        let Some(profile_id) = next_feature.map(FeatureId) else {
+            return false;
+        };
+        let Some(cut_id) = profile_id.0.checked_add(1).map(FeatureId) else {
+            return false;
+        };
+        let shared_count = snapshot
+            .scene_query()
+            .into_iter()
+            .filter(|occurrence| occurrence.definition_id == selection.definition_id)
+            .count();
+        let batch = CommandBatch::new(vec![
+            CanonicalCommand::CreateFeature {
+                id: profile_id,
+                definition_id: selection.definition_id,
+                name: self.catalog.text("model-cut-through-profile"),
+                kind: FeatureKind::Profile {
+                    points_mm: vec![
+                        [minimum[0], minimum[1]],
+                        [maximum[0], minimum[1]],
+                        [maximum[0], maximum[1]],
+                        [minimum[0], maximum[1]],
+                    ],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: cut_id,
+                definition_id: selection.definition_id,
+                name: self.catalog.text("feature-cut-through"),
+                kind: FeatureKind::ThroughCut {
+                    target,
+                    profile: profile_id,
+                },
+            },
+        ]);
+        if self.document.apply_batch(&batch).is_err() {
+            self.digest = self.catalog.text("digest-cut-through-invalid-profile");
+            return false;
+        }
+        self.sketch_mode = false;
+        self.sketch_start = None;
+        self.sketch_end = None;
+        self.sketch_cursor = None;
+        self.value_input.clear();
+        self.status_key = "status-cut-through-created";
+        self.digest = self.catalog.format(
+            "digest-cut-through-committed",
+            &BTreeMap::from([
+                ("width", format_height(width)),
+                ("depth", format_height(depth)),
+                ("count", shared_count.to_string()),
+            ]),
+        );
+        true
+    }
+
+    fn prepare_pocket_preview(&mut self, start: Vec3, end: Vec3, depth_mm: f64) -> bool {
+        let Some((selection, item, translation)) = self.through_cut_target() else {
+            self.digest = self.catalog.text("digest-pocket-invalid-target");
+            return false;
+        };
+        if !depth_mm.is_finite() || depth_mm <= 0.01 || depth_mm >= item.size_mm.z {
+            self.digest = self.catalog.text("digest-pocket-invalid-depth");
+            return false;
+        }
+        let target = item
+            .extrusion_feature_id
+            .expect("a Pocket target always has an extrusion");
+        let local_start = start - translation;
+        let local_end = end - translation;
+        let minimum = [
+            local_start.x.min(local_end.x),
+            local_start.y.min(local_end.y),
+        ];
+        let maximum = [
+            local_start.x.max(local_end.x),
+            local_start.y.max(local_end.y),
+        ];
+        let width = maximum[0] - minimum[0];
+        let length = maximum[1] - minimum[1];
+        if !width.is_finite() || !length.is_finite() || width <= 0.01 || length <= 0.01 {
+            self.digest = self.catalog.text("digest-pocket-invalid-profile");
+            return false;
+        }
+
+        let snapshot = self.document.current();
+        let Some(FeatureKind::Profile { points_mm }) = snapshot
+            .feature(item.profile_feature_id)
+            .map(|feature| feature.kind())
+        else {
+            self.digest = self.catalog.text("digest-pocket-invalid-target");
+            return false;
+        };
+        let Some(outer_min_x) = points_mm
+            .iter()
+            .map(|point| point[0])
+            .min_by(f64::total_cmp)
+        else {
+            return false;
+        };
+        let Some(outer_max_x) = points_mm
+            .iter()
+            .map(|point| point[0])
+            .max_by(f64::total_cmp)
+        else {
+            return false;
+        };
+        let Some(outer_min_y) = points_mm
+            .iter()
+            .map(|point| point[1])
+            .min_by(f64::total_cmp)
+        else {
+            return false;
+        };
+        let Some(outer_max_y) = points_mm
+            .iter()
+            .map(|point| point[1])
+            .max_by(f64::total_cmp)
+        else {
+            return false;
+        };
+        let tolerance = 1.0e-6;
+        if minimum[0] <= outer_min_x + tolerance
+            || maximum[0] >= outer_max_x - tolerance
+            || minimum[1] <= outer_min_y + tolerance
+            || maximum[1] >= outer_max_y - tolerance
+        {
+            self.digest = self.catalog.text("digest-pocket-invalid-profile");
+            return false;
+        }
+
+        let Some(profile_id) = snapshot
+            .features()
+            .map(|feature| feature.id().0)
+            .max()
+            .unwrap_or(0)
+            .checked_add(1)
+            .map(FeatureId)
+        else {
+            return false;
+        };
+        let Some(pocket_id) = profile_id.0.checked_add(1).map(FeatureId) else {
+            return false;
+        };
+        let shared_count = snapshot
+            .scene_query()
+            .into_iter()
+            .filter(|occurrence| occurrence.definition_id == selection.definition_id)
+            .count();
+        let Ok(depth) = Dimension::new(format_height(depth_mm), depth_mm) else {
+            return false;
+        };
+        let batch = CommandBatch::new(vec![
+            CanonicalCommand::CreateFeature {
+                id: profile_id,
+                definition_id: selection.definition_id,
+                name: self.catalog.text("model-pocket-profile"),
+                kind: FeatureKind::Profile {
+                    points_mm: vec![
+                        [minimum[0], minimum[1]],
+                        [maximum[0], minimum[1]],
+                        [maximum[0], maximum[1]],
+                        [minimum[0], maximum[1]],
+                    ],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: pocket_id,
+                definition_id: selection.definition_id,
+                name: self.catalog.text("feature-pocket"),
+                kind: FeatureKind::Pocket {
+                    target,
+                    profile: profile_id,
+                    depth,
+                },
+            },
+        ]);
+        self.pocket_preview = Some(PocketPreview {
+            source_document_id: snapshot.document_id(),
+            source_revision: snapshot.revision_id(),
+            source_digest: snapshot.canonical_digest(),
+            selection,
+            command_digest: batch.digest(),
+            batch,
+            start,
+            end,
+            depth_mm,
+            shared_count,
+        });
+        self.sketch_mode = false;
+        self.sketch_start = Some(start);
+        self.sketch_cursor = Some(end);
+        self.value_input = format_height(depth_mm);
+        self.focus_value_box = true;
+        self.status_key = "status-pocket-depth";
+        self.digest = self.catalog.format(
+            "digest-pocket-live",
+            &BTreeMap::from([
+                ("width", format_height(width)),
+                ("length", format_height(length)),
+                ("depth", format_height(depth_mm)),
+            ]),
+        );
+        true
+    }
+
+    fn has_pocket_preview(&self) -> bool {
+        self.pocket_preview.as_ref().is_some_and(|preview| {
+            let snapshot = self.document.current();
+            preview.source_document_id == snapshot.document_id()
+                && preview.source_revision == snapshot.revision_id()
+                && preview.source_digest == snapshot.canonical_digest()
+                && self.selection.primary.as_ref() == Some(&preview.selection)
+                && preview.command_digest == preview.batch.digest()
+        })
+    }
+
+    fn confirm_pocket_preview(&mut self) -> bool {
+        if !self.has_pocket_preview() {
+            self.pocket_preview = None;
+            self.status_key = "error-preview-stale";
+            return false;
+        }
+        let Some(preview) = self.pocket_preview.take() else {
+            return false;
+        };
+        if self.document.apply_batch(&preview.batch).is_err() {
+            self.status_key = "error-preview-stale";
+            return false;
+        }
+        let width = (preview.end.x - preview.start.x).abs();
+        let length = (preview.end.y - preview.start.y).abs();
+        self.sketch_start = None;
+        self.sketch_cursor = None;
+        self.value_input = format_height(preview.depth_mm);
+        self.status_key = "status-pocket-created";
+        self.digest = self.catalog.format(
+            "digest-pocket-committed",
+            &BTreeMap::from([
+                ("width", format_height(width)),
+                ("length", format_height(length)),
+                ("depth", format_height(preview.depth_mm)),
+                ("count", preview.shared_count.to_string()),
+            ]),
+        );
+        true
+    }
+
+    fn selected_pocket(&self) -> Option<(FeatureId, Dimension)> {
+        let definition_id = self.selection.primary.as_ref()?.definition_id;
+        let snapshot = self.document.current();
+        snapshot
+            .definition(definition_id)?
+            .feature_ids()
+            .iter()
+            .rev()
+            .find_map(|feature_id| {
+                let feature = snapshot.feature(*feature_id)?;
+                let FeatureKind::Pocket { depth, .. } = feature.kind() else {
+                    return None;
+                };
+                Some((*feature_id, depth.clone()))
+            })
+    }
+
+    fn set_selected_pocket_depth(&mut self, depth_mm: f64) -> bool {
+        let Some((feature_id, _)) = self.selected_pocket() else {
+            return false;
+        };
+        let Ok(dimension) = Dimension::new(format_height(depth_mm), depth_mm) else {
+            return false;
+        };
+        if self
+            .document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::SetFeatureDimension {
+                    id: feature_id,
+                    dimension,
+                },
+            ]))
+            .is_err()
+        {
+            self.digest = self.catalog.text("digest-pocket-invalid-depth");
+            return false;
+        }
+        self.value_input = format_height(depth_mm);
+        self.status_key = "status-pocket-created";
+        self.digest = self.catalog.format(
+            "digest-pocket-depth-edited",
+            &BTreeMap::from([("depth", format_height(depth_mm))]),
+        );
+        true
+    }
+
+    fn complete_circle_sketch(&mut self, center: Vec3, radial_point: Vec3) -> bool {
+        let direction = Vec3::new(radial_point.x - center.x, radial_point.y - center.y, 0.0);
+        self.complete_circle(center, vector_length(direction), direction)
+    }
+
+    fn complete_circle(&mut self, center: Vec3, radius_mm: f64, direction: Vec3) -> bool {
+        if !radius_mm.is_finite() || radius_mm <= 0.01 {
+            return false;
+        }
+        let direction_length = vector_length(direction);
+        let unit = if direction_length > 0.01 {
+            Vec3::new(
+                direction.x / direction_length,
+                direction.y / direction_length,
+                0.0,
+            )
+        } else {
+            Vec3::new(1.0, 0.0, 0.0)
+        };
+        let radial = [unit.x * radius_mm, unit.y * radius_mm];
+        let opposite = [-radial[0], -radial[1]];
+        let created = self.create_segment_profile_at(
+            center,
+            vec![
+                ProfileSegment::CircularArc {
+                    start_mm: radial,
+                    end_mm: opposite,
+                    center_mm: [0.0, 0.0],
+                    clockwise: false,
+                },
+                ProfileSegment::CircularArc {
+                    start_mm: opposite,
+                    end_mm: radial,
+                    center_mm: [0.0, 0.0],
+                    clockwise: false,
+                },
+            ],
+            "model-default-circle",
+            "model-circle-profile",
+        );
+        if created {
+            self.sketch_mode = false;
+            self.sketch_start = None;
+            self.sketch_cursor = None;
+            self.value_input = format_height(radius_mm);
+            self.status_key = "status-circle-created";
+            self.digest = self.catalog.format(
+                "digest-exact-circle",
+                &BTreeMap::from([("radius", format_height(radius_mm))]),
+            );
+        }
+        created
+    }
+
+    fn complete_exact_circle(&mut self) -> bool {
+        let Some(center) = self.sketch_start else {
+            return false;
+        };
+        let Some(radius_mm) = parse_distance_mm(&self.value_input).filter(|radius| *radius > 0.01)
+        else {
+            return false;
+        };
+        let direction = self
+            .sketch_cursor
+            .map(|cursor| cursor - center)
+            .unwrap_or(Vec3::new(1.0, 0.0, 0.0));
+        self.complete_circle(center, radius_mm, direction)
+    }
+
+    fn complete_arc_sketch(&mut self, start: Vec3, end: Vec3, bulge_point: Vec3) -> bool {
+        let Some(arc) = arc_geometry(start, end, bulge_point) else {
+            return false;
+        };
+        let local_end = [end.x - start.x, end.y - start.y];
+        let local_center = [arc.center.x - start.x, arc.center.y - start.y];
+        let created = self.create_segment_profile_at(
+            start,
+            vec![
+                ProfileSegment::CircularArc {
+                    start_mm: [0.0, 0.0],
+                    end_mm: local_end,
+                    center_mm: local_center,
+                    clockwise: arc.clockwise,
+                },
+                ProfileSegment::Line {
+                    start_mm: local_end,
+                    end_mm: [0.0, 0.0],
+                },
+            ],
+            "model-default-arc",
+            "model-arc-profile",
+        );
+        if created {
+            let bulge_mm = point_line_signed_distance(bulge_point, start, end).abs();
+            self.sketch_mode = false;
+            self.sketch_start = None;
+            self.sketch_end = None;
+            self.sketch_cursor = None;
+            self.value_input = format_height(bulge_mm);
+            self.status_key = "status-arc-created";
+            self.digest = self.catalog.format(
+                "digest-exact-arc",
+                &BTreeMap::from([("bulge", format_height(bulge_mm))]),
+            );
+        }
+        created
+    }
+
+    fn complete_exact_arc(&mut self) -> bool {
+        let (Some(start), Some(end)) = (self.sketch_start, self.sketch_end) else {
+            return false;
+        };
+        let Some(bulge_mm) =
+            parse_distance_mm(&self.value_input).filter(|value| value.abs() > 0.01)
+        else {
+            return false;
+        };
+        let chord = end - start;
+        let chord_length = vector_length(Vec3::new(chord.x, chord.y, 0.0));
+        if chord_length <= 0.01 {
+            return false;
+        }
+        let midpoint = (start + end) * 0.5;
+        let normal = Vec3::new(-chord.y / chord_length, chord.x / chord_length, 0.0);
+        let cursor_side = self.sketch_cursor.map_or(1.0, |cursor| {
+            if point_line_signed_distance(cursor, start, end) < 0.0 {
+                -1.0
+            } else {
+                1.0
+            }
+        });
+        self.complete_arc_sketch(
+            midpoint - chord * 0.5,
+            end,
+            midpoint + normal * bulge_mm * cursor_side,
+        )
+    }
+
     fn complete_rectangle_sketch(&mut self, start: Vec3, end: Vec3) -> bool {
+        if self.active_tool == ActiveTool::CutThrough {
+            return self.complete_through_cut_sketch(start, end);
+        }
+        if self.active_tool == ActiveTool::Pocket {
+            let Some((_, item, _)) = self.through_cut_target() else {
+                return false;
+            };
+            return self.prepare_pocket_preview(start, end, (item.size_mm.z * 0.5).min(10.0));
+        }
         let origin = Vec3::new(start.x.min(end.x), start.y.min(end.y), start.z);
         let size = Vec3::new((end.x - start.x).abs(), (end.y - start.y).abs(), 0.0);
         let created = self.create_profile_at(
@@ -5151,7 +8005,39 @@ impl KetchupApp {
 
     fn apply_value_input(&mut self) -> bool {
         if self.sketch_mode && self.sketch_start.is_some() {
-            return self.complete_exact_rectangle();
+            return match self.active_tool {
+                ActiveTool::Circle => self.complete_exact_circle(),
+                ActiveTool::Arc => self.complete_exact_arc(),
+                _ => self.complete_exact_rectangle(),
+            };
+        }
+        if self.active_tool == ActiveTool::Pocket {
+            let Some(depth_mm) = parse_distance_mm(&self.value_input).filter(|depth| *depth > 0.01)
+            else {
+                self.digest = self.catalog.text("digest-pocket-invalid-depth");
+                return false;
+            };
+            if let Some(preview) = self.pocket_preview.clone() {
+                if !self.prepare_pocket_preview(preview.start, preview.end, depth_mm) {
+                    return false;
+                }
+                return self.confirm_pocket_preview();
+            }
+            if self.set_selected_pocket_depth(depth_mm) {
+                return true;
+            }
+        }
+        if self.active_tool == ActiveTool::PlanarOffset {
+            return self.refresh_planar_offset_preview() && self.confirm_planar_offset_preview();
+        }
+        if self.active_tool == ActiveTool::Revolve {
+            return self.refresh_revolve_preview() && self.confirm_revolve_preview();
+        }
+        if matches!(
+            self.active_tool,
+            ActiveTool::Shell | ActiveTool::Fillet | ActiveTool::Chamfer
+        ) {
+            return self.refresh_general_finish_preview() && self.confirm_general_finish_preview();
         }
         if self.active_tool == ActiveTool::PushPull {
             let selection = self.selection.primary.clone().or_else(|| {
@@ -5196,7 +8082,7 @@ impl KetchupApp {
             }
             self.selection.select_exact(selection.clone(), false);
             self.push_pull_distance_input = self.value_input.clone();
-            if self.start_preview() && self.confirm_preview() {
+            if self.start_preview() && self.confirm_push_pull_preview() {
                 self.digest = self.catalog.format(
                     "digest-exact-value-applied",
                     &BTreeMap::from([(
@@ -5270,7 +8156,18 @@ impl KetchupApp {
 
     fn value_label_key(&self) -> &'static str {
         match self.active_tool {
-            ActiveTool::Rectangle => "value-label-width-depth",
+            ActiveTool::Rectangle | ActiveTool::CutThrough => "value-label-width-depth",
+            ActiveTool::Circle => "value-label-radius",
+            ActiveTool::Arc => "value-label-bulge",
+            ActiveTool::Revolve => "value-label-angle",
+            ActiveTool::Shell => "value-label-thickness",
+            ActiveTool::Fillet | ActiveTool::Chamfer => "value-label-radius-distance",
+            ActiveTool::Pocket
+                if self.pocket_preview.is_some() || self.selected_pocket().is_some() =>
+            {
+                "value-label-pocket-depth"
+            }
+            ActiveTool::Pocket => "value-label-width-depth",
             ActiveTool::PushPull | ActiveTool::Move | ActiveTool::Measure => "value-label-distance",
             _ => "value-label-dimensions",
         }
@@ -5452,6 +8349,8 @@ impl KetchupApp {
                             SnapKind::Endpoint => "snap-endpoint",
                             SnapKind::Intersection => "snap-intersection",
                             SnapKind::Midpoint => "snap-midpoint",
+                            SnapKind::Center => "snap-center",
+                            SnapKind::Tangent => "snap-tangent",
                             SnapKind::Face => "snap-face",
                         }),
                     ),
@@ -5642,6 +8541,9 @@ impl KetchupApp {
             response.request_focus();
             self.focus_value_box = false;
         }
+        if response.changed() && self.active_tool == ActiveTool::PlanarOffset {
+            self.refresh_planar_offset_preview();
+        }
         // A single-line `TextEdit` surrenders focus on Enter, so the commit has
         // to be accepted on the frame the focus is lost as well.
         if (response.has_focus() || response.lost_focus())
@@ -5682,23 +8584,79 @@ impl KetchupApp {
             self.move_drag = None;
             if self.sketch_mode {
                 let plane_z = self.sketch_start.map_or_else(
-                    || self.rectangle_plane_z(pointer, response.rect),
+                    || {
+                        if matches!(
+                            self.active_tool,
+                            ActiveTool::CutThrough | ActiveTool::Pocket
+                        ) {
+                            self.through_cut_target()
+                                .map_or(0.0, |(_, item, _)| item.origin_mm.z + item.size_mm.z)
+                        } else {
+                            self.rectangle_plane_z(pointer, response.rect)
+                        }
+                    },
                     |start| start.z,
                 );
                 if let Some(point) = self.viewport_point_at_screen(pointer, response.rect, plane_z)
                 {
                     if let Some(start) = self.sketch_start {
-                        self.complete_rectangle_sketch(start, point);
+                        match self.active_tool {
+                            ActiveTool::Circle => {
+                                self.complete_circle_sketch(start, point);
+                            }
+                            ActiveTool::Arc => {
+                                if let Some(end) = self.sketch_end {
+                                    self.complete_arc_sketch(start, end, point);
+                                } else if vector_length(point - start) > 0.01 {
+                                    self.sketch_end = Some(point);
+                                    self.sketch_cursor = Some(point);
+                                    self.value_input.clear();
+                                    self.status_key = "status-arc-bulge";
+                                }
+                            }
+                            _ => {
+                                self.complete_rectangle_sketch(start, point);
+                            }
+                        }
                     } else {
                         self.sketch_start = Some(point);
                         self.sketch_cursor = Some(point);
                         self.value_input.clear();
-                        self.status_key = "status-sketch-second-point";
+                        self.status_key = match self.active_tool {
+                            ActiveTool::Circle => "status-circle-radius",
+                            ActiveTool::Arc => "status-arc-end",
+                            ActiveTool::CutThrough => "status-cut-through-second-point",
+                            ActiveTool::Pocket => "status-pocket-second-point",
+                            _ => "status-sketch-second-point",
+                        };
                     }
+                }
+            } else if self.active_tool == ActiveTool::Revolve {
+                if let Some(plane_z) = self.revolve_tool.as_ref().map(|tool| tool.plane_z)
+                    && let Some(point) =
+                        self.viewport_point_at_screen(pointer, response.rect, plane_z)
+                {
+                    self.add_revolve_axis_point(point);
                 }
             } else if self.active_tool == ActiveTool::Select {
                 let additive = ui.input(|input| input.modifiers.shift);
-                self.select_from_viewport(self.hovered.clone(), additive);
+                let target = self
+                    .hover_snap
+                    .as_ref()
+                    .filter(|snap| matches!(snap.reference.element, ElementId::EdgeMidpoint(_)))
+                    .map(|snap| snap.reference.clone())
+                    .or_else(|| self.hovered.clone());
+                self.select_from_viewport(target, additive);
+            } else if matches!(
+                self.active_tool,
+                ActiveTool::SolidSubtract
+                    | ActiveTool::SolidUnion
+                    | ActiveTool::SolidIntersect
+                    | ActiveTool::SolidSplit
+            ) {
+                let selection = self.hovered.clone();
+                let keep_tool = ui.input(|input| input.modifiers.ctrl);
+                self.select_solid_tool_occurrence(selection, keep_tool);
             } else if self.active_tool == ActiveTool::PushPull {
                 if !self.begin_bottle_direct_drag(pointer, response.rect) {
                     self.select_from_viewport(self.hovered.clone(), false);
@@ -5863,6 +8821,7 @@ impl KetchupApp {
                     self.preview = None;
                     self.preview_box = None;
                     self.preview_definition_id = None;
+                    self.occurrence_operation_preview = None;
                 }
             }
         }
@@ -5881,8 +8840,10 @@ impl KetchupApp {
             } else if let Some(drag) = self.bottle_direct_drag.take() {
                 let value = parse_distance_mm(&self.value_input).unwrap_or(drag.value_start_mm);
                 self.commit_bottle_direct_drag(drag, value);
-            } else if self.push_pull_drag.take().is_some() && self.has_preview() {
-                self.confirm_preview();
+            } else if self.push_pull_drag.take().is_some()
+                && (self.has_preview() || self.has_occurrence_operation_preview())
+            {
+                self.confirm_push_pull_preview();
             }
         }
         if self.sketch_mode
@@ -5899,11 +8860,22 @@ impl KetchupApp {
                 && !self.focus_value_box
                 && let (Some(start), Some(cursor)) = (self.sketch_start, self.sketch_cursor)
             {
-                self.value_input = format!(
-                    "{},{}",
-                    format_height((cursor.x - start.x).abs()),
-                    format_height((cursor.y - start.y).abs())
-                );
+                self.value_input = match self.active_tool {
+                    ActiveTool::Circle => format_height(vector_length(Vec3::new(
+                        cursor.x - start.x,
+                        cursor.y - start.y,
+                        0.0,
+                    ))),
+                    ActiveTool::Arc => self.sketch_end.map_or_else(
+                        || format_height(vector_length(cursor - start)),
+                        |end| format_height(point_line_signed_distance(cursor, start, end).abs()),
+                    ),
+                    _ => format!(
+                        "{},{}",
+                        format_height((cursor.x - start.x).abs()),
+                        format_height((cursor.y - start.y).abs())
+                    ),
+                };
             }
         }
         if let Some(start) = self.measure_anchor()
@@ -5936,7 +8908,8 @@ impl KetchupApp {
         );
         let snapshot = self.document.current();
         let move_transform_overrides = self.move_preview_transform_overrides();
-        let use_wgpu_scene = self.wgpu_target_format.is_some();
+        let use_wgpu_scene =
+            self.wgpu_target_format.is_some() && !self.has_occurrence_operation_preview();
         let scene_plan = use_wgpu_scene
             .then(|| {
                 Arc::new(InstancedRenderPlan::from_snapshot_with_transform_overrides(
@@ -6001,7 +8974,7 @@ impl KetchupApp {
                         polygon: ProjectedPolygon::Quad(points),
                         color: face.color,
                         depth,
-                        previewed: self.has_preview()
+                        previewed: (self.has_preview()
                             && self.preview_definition_id == Some(item.definition_id)
                             && matches!(
                                 face.element,
@@ -6009,7 +8982,16 @@ impl KetchupApp {
                                     axis: Axis::Z,
                                     side: Side::Maximum,
                                 }
-                            ),
+                            ))
+                            || (self.has_occurrence_operation_preview()
+                                && item.instance_path.is_root()
+                                && self.occurrence_operation_preview.as_ref().is_some_and(
+                                    |preview| {
+                                        preview
+                                            .boxes
+                                            .contains_key(&item.instance_path.root_occurrence())
+                                    },
+                                )),
                         out_of_context,
                     });
                 }
@@ -6022,6 +9004,16 @@ impl KetchupApp {
             .filter(|occurrence| {
                 occurrence.visible
                     && exact_projection.contains_occurrence(&occurrence.instance_path)
+                    && !(self.has_occurrence_operation_preview()
+                        && occurrence.instance_path.is_root()
+                        && self
+                            .occurrence_operation_preview
+                            .as_ref()
+                            .is_some_and(|preview| {
+                                let occurrence_id = occurrence.instance_path.root_occurrence();
+                                preview.boxes.contains_key(&occurrence_id)
+                                    || preview.hidden_occurrences.contains(&occurrence_id)
+                            }))
             })
         {
             let out_of_context = !active_context_paths.contains(&occurrence.instance_path);
@@ -6154,7 +9146,16 @@ impl KetchupApp {
 
         let selection_stroke = Stroke::new(1.8_f32, Color32::from_rgb(240, 78, 35));
         for edge in edges.iter().filter(|edge| {
-            if self.active_tool == ActiveTool::PushPull {
+            if matches!(
+                self.active_tool,
+                ActiveTool::PushPull
+                    | ActiveTool::CutThrough
+                    | ActiveTool::Pocket
+                    | ActiveTool::SolidSubtract
+                    | ActiveTool::SolidUnion
+                    | ActiveTool::SolidIntersect
+                    | ActiveTool::SolidSplit
+            ) {
                 self.selection.primary.as_ref() == Some(&edge.selection)
             } else {
                 self.selection.contains(&edge.selection.instance_path)
@@ -6164,28 +9165,118 @@ impl KetchupApp {
         }
 
         if let (Some(start), Some(cursor)) = (self.sketch_start, self.sketch_cursor) {
-            let ground = [
-                start,
-                Vec3::new(cursor.x, start.y, 0.0),
-                cursor,
-                Vec3::new(start.x, cursor.y, 0.0),
+            if self.active_tool == ActiveTool::Arc {
+                if let Some(end) = self.sketch_end
+                    && let Some(arc) = arc_geometry(start, end, cursor)
+                {
+                    let stroke = Stroke::new(2.0_f32, Color32::from_rgb(255, 199, 68));
+                    let points = arc_polyline(arc, 64)
+                        .into_iter()
+                        .map(|point| self.project(point, response.rect))
+                        .collect();
+                    painter.add(egui::Shape::line(points, stroke));
+                    painter.line_segment(
+                        [
+                            self.project(start, response.rect),
+                            self.project(end, response.rect),
+                        ],
+                        Stroke::new(1.0_f32, Color32::from_rgb(160, 160, 170)),
+                    );
+                    painter.text(
+                        self.project(cursor, response.rect),
+                        egui::Align2::CENTER_CENTER,
+                        format!(
+                            "B {} mm",
+                            format_height(point_line_signed_distance(cursor, start, end).abs())
+                        ),
+                        egui::FontId::proportional(14.0),
+                        Color32::WHITE,
+                    );
+                }
+            } else if self.active_tool == ActiveTool::Circle {
+                let radius = vector_length(Vec3::new(cursor.x - start.x, cursor.y - start.y, 0.0));
+                let stroke = Stroke::new(2.0_f32, Color32::from_rgb(255, 199, 68));
+                let mut points = Vec::with_capacity(65);
+                for segment in 0..=64 {
+                    let angle = std::f64::consts::TAU * segment as f64 / 64.0;
+                    points.push(self.project(
+                        Vec3::new(
+                            start.x + radius * angle.cos(),
+                            start.y + radius * angle.sin(),
+                            start.z,
+                        ),
+                        response.rect,
+                    ));
+                }
+                painter.add(egui::Shape::line(points, stroke));
+                painter.text(
+                    self.project(start, response.rect),
+                    egui::Align2::CENTER_CENTER,
+                    format!("R {} mm", format_height(radius)),
+                    egui::FontId::proportional(14.0),
+                    Color32::WHITE,
+                );
+            } else {
+                let ground = [
+                    start,
+                    Vec3::new(cursor.x, start.y, start.z),
+                    cursor,
+                    Vec3::new(start.x, cursor.y, start.z),
+                ];
+                let points = ground.map(|point| self.project(point, response.rect));
+                let stroke = Stroke::new(2.0_f32, Color32::from_rgb(255, 199, 68));
+                for edge in 0..points.len() {
+                    painter.line_segment([points[edge], points[(edge + 1) % points.len()]], stroke);
+                }
+                painter.text(
+                    Pos2::new(
+                        points.iter().map(|point| point.x).sum::<f32>() / 4.0,
+                        points.iter().map(|point| point.y).sum::<f32>() / 4.0,
+                    ),
+                    egui::Align2::CENTER_CENTER,
+                    format!(
+                        "{} × {} mm",
+                        format_height((cursor.x - start.x).abs()),
+                        format_height((cursor.y - start.y).abs())
+                    ),
+                    egui::FontId::proportional(14.0),
+                    Color32::WHITE,
+                );
+            }
+        }
+
+        if let Some(preview) = self
+            .pocket_preview
+            .as_ref()
+            .filter(|_| self.has_pocket_preview())
+        {
+            let top = [
+                preview.start,
+                Vec3::new(preview.end.x, preview.start.y, preview.start.z),
+                preview.end,
+                Vec3::new(preview.start.x, preview.end.y, preview.start.z),
             ];
-            let points = ground.map(|point| self.project(point, response.rect));
-            let stroke = Stroke::new(2.0_f32, Color32::from_rgb(255, 199, 68));
-            for edge in 0..points.len() {
-                painter.line_segment([points[edge], points[(edge + 1) % points.len()]], stroke);
+            let floor = top.map(|point| point - Vec3::new(0.0, 0.0, preview.depth_mm));
+            let top_screen = top.map(|point| self.project(point, response.rect));
+            let floor_screen = floor.map(|point| self.project(point, response.rect));
+            let floor_fill = Color32::from_rgba_unmultiplied(58, 126, 174, 90);
+            painter.add(egui::Shape::convex_polygon(
+                floor_screen.to_vec(),
+                floor_fill,
+                Stroke::new(1.8_f32, Color32::from_rgb(94, 183, 235)),
+            ));
+            for index in 0..4 {
+                painter.line_segment(
+                    [top_screen[index], floor_screen[index]],
+                    Stroke::new(1.4_f32, Color32::from_rgb(94, 183, 235)),
+                );
             }
             painter.text(
-                Pos2::new(
-                    points.iter().map(|point| point.x).sum::<f32>() / 4.0,
-                    points.iter().map(|point| point.y).sum::<f32>() / 4.0,
-                ),
+                floor_screen.iter().copied().fold(Pos2::ZERO, |sum, point| {
+                    Pos2::new(sum.x + point.x * 0.25, sum.y + point.y * 0.25)
+                }),
                 egui::Align2::CENTER_CENTER,
-                format!(
-                    "{} × {} mm",
-                    format_height((cursor.x - start.x).abs()),
-                    format_height((cursor.y - start.y).abs())
-                ),
+                format!("↓ {} mm", format_height(preview.depth_mm)),
                 egui::FontId::proportional(14.0),
                 Color32::WHITE,
             );
@@ -6385,6 +9476,20 @@ impl KetchupApp {
         let policy = SnapPolicy::new(8.0 / scale, 12.0 / scale)
             .expect("positive viewport snap tolerances are valid");
         self.hover_snap = self.snap_tracker.update(pick.as_ref(), policy).cloned();
+        if matches!(self.active_tool, ActiveTool::Circle | ActiveTool::Arc)
+            && self
+                .hover_snap
+                .as_ref()
+                .is_none_or(|snap| snap.kind == SnapKind::Face)
+            && let Some(pointer) = pointer
+        {
+            let plane_z = self
+                .sketch_start
+                .map_or_else(|| self.rectangle_plane_z(pointer, rect), |start| start.z);
+            if let Some(snap) = self.profile_special_snap_at_screen(pointer, rect, plane_z) {
+                self.hover_snap = Some(snap);
+            }
+        }
         self.hover_pick = pick;
         self.refresh_hover_choice();
     }
@@ -6423,7 +9528,83 @@ impl KetchupApp {
             .map(|pick| pick.snap)
             .filter(|snap| snap.kind != SnapKind::Face)
             .map(|snap| snap.position_mm)
+            .or_else(|| {
+                self.profile_special_snap_at_screen(pointer, rect, plane_z)
+                    .map(|snap| snap.position_mm)
+            })
             .or_else(|| self.screen_to_plane(pointer, rect, plane_z))
+    }
+
+    fn profile_special_snap_at_screen(
+        &self,
+        pointer: Pos2,
+        rect: Rect,
+        plane_z: f64,
+    ) -> Option<SnapResult> {
+        let snapshot = self.document.current();
+        snapshot
+            .occurrences()
+            .filter_map(|occurrence| {
+                let definition = snapshot.definition(occurrence.definition_id())?;
+                let (center, radius) = definition.feature_ids().iter().find_map(|feature_id| {
+                    let FeatureKind::SegmentProfile { segments, closed } =
+                        snapshot.feature(*feature_id)?.kind()
+                    else {
+                        return None;
+                    };
+                    exact_circle_geometry(segments, *closed)
+                })?;
+                let transform = occurrence.transform();
+                let matrix = transform.matrix();
+                let world_center = Vec3::new(
+                    matrix[0] * center[0] + matrix[1] * center[1] + matrix[3],
+                    matrix[4] * center[0] + matrix[5] * center[1] + matrix[7],
+                    matrix[8] * center[0] + matrix[9] * center[1] + matrix[11],
+                );
+                if (world_center.z - plane_z).abs() > 1.0e-6 {
+                    return None;
+                }
+                let world_radius = radius * matrix[0].hypot(matrix[4]).hypot(matrix[8]);
+                let reference = SelectionId {
+                    definition_id: occurrence.definition_id(),
+                    instance_path: InstancePath::root(occurrence.id()),
+                    element: ElementId::Face {
+                        axis: Axis::Z,
+                        side: Side::Maximum,
+                    },
+                };
+                Some((world_center, world_radius, reference))
+            })
+            .flat_map(|(center, radius, reference)| {
+                let mut candidates = vec![(SnapKind::Center, center)];
+                if self.active_tool == ActiveTool::Arc
+                    && self.sketch_end.is_none()
+                    && let Some(anchor) = self.sketch_start
+                {
+                    candidates.extend(
+                        tangent_points(anchor, center, radius)
+                            .into_iter()
+                            .map(|point| (SnapKind::Tangent, point)),
+                    );
+                }
+                candidates
+                    .into_iter()
+                    .map(move |(kind, position_mm)| (kind, position_mm, reference.clone()))
+            })
+            .filter_map(|(kind, position_mm, reference)| {
+                let distance_px = self.project(position_mm, rect).distance(pointer);
+                (distance_px <= 8.0).then_some((
+                    distance_px,
+                    SnapResult {
+                        kind,
+                        reference,
+                        position_mm,
+                        distance_mm: 0.0,
+                    },
+                ))
+            })
+            .min_by(|left, right| left.0.total_cmp(&right.0))
+            .map(|(_, snap)| snap)
     }
 
     fn world_to_clip(&self, rect: Rect) -> [f32; 16] {
@@ -6572,6 +9753,10 @@ impl KetchupApp {
                 .input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Space));
         let rectangle = !context.wants_keyboard_input()
             && context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::R));
+        let circle = !context.wants_keyboard_input()
+            && context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::C));
+        let arc = !context.wants_keyboard_input()
+            && context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::A));
         let push_pull = !context.wants_keyboard_input()
             && context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::P));
         let move_tool = !context.wants_keyboard_input()
@@ -6591,6 +9776,15 @@ impl KetchupApp {
             && context.input(|input| {
                 input.modifiers.command && input.modifiers.shift && input.key_pressed(egui::Key::G)
             });
+        let confirm_operation_preview = !context.wants_keyboard_input()
+            && self.has_occurrence_operation_preview()
+            && context.input(|input| input.key_pressed(egui::Key::Enter));
+        let confirm_sweep_preview = !context.wants_keyboard_input()
+            && self.sweep_preview.is_some()
+            && context.input(|input| input.key_pressed(egui::Key::Enter));
+        let confirm_loft_preview = !context.wants_keyboard_input()
+            && self.loft_preview.is_some()
+            && context.input(|input| input.key_pressed(egui::Key::Enter));
         let escape = context.input(|input| input.key_pressed(egui::Key::Escape));
         if !context.wants_keyboard_input() {
             let typed = context.input(|input| {
@@ -6613,6 +9807,16 @@ impl KetchupApp {
                 self.value_input.clear();
                 self.value_input.push_str(&typed);
                 self.focus_value_box = true;
+                if self.active_tool == ActiveTool::PlanarOffset {
+                    self.refresh_planar_offset_preview();
+                } else if self.active_tool == ActiveTool::Revolve {
+                    self.refresh_revolve_preview();
+                } else if matches!(
+                    self.active_tool,
+                    ActiveTool::Shell | ActiveTool::Fillet | ActiveTool::Chamfer
+                ) {
+                    self.refresh_general_finish_preview();
+                }
             }
         }
 
@@ -6647,6 +9851,10 @@ impl KetchupApp {
             self.dispatch_command(AppCommand::Select);
         } else if rectangle {
             self.dispatch_command(AppCommand::Rectangle);
+        } else if circle {
+            self.dispatch_command(AppCommand::Circle);
+        } else if arc {
+            self.dispatch_command(AppCommand::Arc);
         } else if push_pull {
             self.dispatch_command(AppCommand::PushPull);
         } else if move_tool {
@@ -6659,12 +9867,29 @@ impl KetchupApp {
             self.cycle_hover_overlap();
         } else if shortcuts {
             self.dispatch_command(AppCommand::Shortcuts);
+        } else if confirm_operation_preview {
+            self.confirm_occurrence_operation_preview();
+        } else if confirm_sweep_preview {
+            self.confirm_sweep_preview();
+        } else if confirm_loft_preview {
+            self.confirm_loft_preview();
         } else if escape {
             if self.measure_start.is_some() {
                 self.clear_measurement();
                 self.digest = self.catalog.text("digest-measure-cleared");
                 self.status_key = "status-measure-first-point";
-            } else if self.has_preview() || self.sketch_mode {
+            } else if self.has_preview()
+                || self.has_pocket_preview()
+                || self.has_occurrence_operation_preview()
+                || self.revolve_tool.is_some()
+                || self.revolve_preview.is_some()
+                || self.planar_offset_preview.is_some()
+                || self.sweep_preview.is_some()
+                || self.loft_preview.is_some()
+                || self.general_finish_preview.is_some()
+                || self.solid_tool_target.is_some()
+                || self.sketch_mode
+            {
                 self.clear_ephemeral_edit_state();
                 self.cancel_rectangle_sketch();
                 self.digest = self.catalog.text("digest-cancelled");
@@ -6963,6 +10188,8 @@ impl KetchupApp {
             ui.menu_button(self.catalog.text("menu-draw"), |ui| {
                 self.menu_command(ui, AppCommand::Line);
                 self.menu_command(ui, AppCommand::Rectangle);
+                self.menu_command(ui, AppCommand::Circle);
+                self.menu_command(ui, AppCommand::Arc);
             });
             ui.menu_button(self.catalog.text("menu-tools"), |ui| {
                 self.menu_command(ui, AppCommand::Select);
@@ -6973,6 +10200,21 @@ impl KetchupApp {
                 self.menu_command(ui, AppCommand::Pan);
             });
             ui.menu_button(self.catalog.text("menu-model"), |ui| {
+                self.menu_command(ui, AppCommand::CutThrough);
+                self.menu_command(ui, AppCommand::Pocket);
+                self.menu_command(ui, AppCommand::PlanarOffset);
+                self.menu_command(ui, AppCommand::Sweep);
+                self.menu_command(ui, AppCommand::Loft);
+                self.menu_command(ui, AppCommand::Revolve);
+                self.menu_command(ui, AppCommand::Shell);
+                self.menu_command(ui, AppCommand::Fillet);
+                self.menu_command(ui, AppCommand::Chamfer);
+                ui.separator();
+                self.menu_command(ui, AppCommand::SolidSubtract);
+                self.menu_command(ui, AppCommand::SolidUnion);
+                self.menu_command(ui, AppCommand::SolidIntersect);
+                self.menu_command(ui, AppCommand::SolidSplit);
+                ui.separator();
                 self.menu_command(ui, AppCommand::Group);
                 self.menu_command(ui, AppCommand::Ungroup);
                 self.menu_command(ui, AppCommand::MakeComponent);
@@ -6994,10 +10236,12 @@ impl KetchupApp {
     fn show_tool_rail(&mut self, ui: &mut egui::Ui) {
         // Grouped the way the design groups them: pick, draw, modify, measure,
         // navigate. A group boundary draws a hairline.
-        const TOOLS: [(AppCommand, u8); 8] = [
+        const TOOLS: [(AppCommand, u8); 10] = [
             (AppCommand::Select, 0),
             (AppCommand::Line, 1),
             (AppCommand::Rectangle, 1),
+            (AppCommand::Circle, 1),
+            (AppCommand::Arc, 1),
             (AppCommand::PushPull, 2),
             (AppCommand::Move, 2),
             (AppCommand::Measure, 3),
@@ -9172,10 +12416,46 @@ impl KetchupApp {
         ui.separator();
     }
 
+    fn show_pocket_properties(&mut self, ui: &mut egui::Ui) {
+        let Some((feature_id, depth)) = self.selected_pocket() else {
+            self.pocket_editor_feature = None;
+            self.pocket_depth_input.clear();
+            return;
+        };
+        if self.pocket_editor_feature != Some(feature_id) {
+            self.pocket_editor_feature = Some(feature_id);
+            self.pocket_depth_input = depth.source_token().to_owned();
+        }
+        section_header(
+            ui,
+            self.palette(),
+            &self.catalog.text("pocket-properties-title"),
+        );
+        ui.horizontal(|ui| {
+            ui.label(self.catalog.text("pocket-properties-depth"));
+            ui.text_edit_singleline(&mut self.pocket_depth_input);
+            ui.label(self.catalog.text("unit-mm"));
+        });
+        let apply = ui
+            .button(self.catalog.text("pocket-properties-apply"))
+            .clicked();
+        if apply {
+            if let Some(depth_mm) = parse_distance_mm(&self.pocket_depth_input) {
+                if self.set_selected_pocket_depth(depth_mm) {
+                    self.pocket_depth_input = format_height(depth_mm);
+                }
+            } else {
+                self.digest = self.catalog.text("digest-pocket-invalid-depth");
+            }
+        }
+        ui.separator();
+    }
+
     fn show_outliner(&mut self, ui: &mut egui::Ui) {
         self.show_assistant(ui);
         self.show_bottle_workflow(ui);
         self.show_beam_m4ae(ui);
+        self.show_pocket_properties(ui);
         let groups = self.outliner_groups();
         let entries = self.outliner_query();
         section_header(ui, self.palette(), &self.catalog.text("dock-outliner"));
@@ -9678,6 +12958,11 @@ const fn command_icon(id: AppCommand) -> Icon {
     match id {
         AppCommand::Line => Icon::Line,
         AppCommand::Rectangle => Icon::Rectangle,
+        AppCommand::Circle => Icon::Circle,
+        AppCommand::Arc => Icon::Arc,
+        AppCommand::Revolve => Icon::Orbit,
+        AppCommand::Shell => Icon::PushPull,
+        AppCommand::Fillet | AppCommand::Chamfer => Icon::Tape,
         AppCommand::PushPull => Icon::PushPull,
         AppCommand::Move => Icon::Move,
         AppCommand::Measure => Icon::Tape,
@@ -9977,35 +13262,49 @@ fn box_faces() -> [BoxFace; 6] {
 
 fn exact_face_element(role: ExactFaceRole) -> Option<ElementId> {
     match role {
-        ExactFaceRole::Top => Some(ElementId::Face {
+        ExactFaceRole::Top | ExactFaceRole::BoxShellRim => Some(ElementId::Face {
             axis: Axis::Z,
             side: Side::Maximum,
         }),
-        ExactFaceRole::Bottom => Some(ElementId::Face {
+        ExactFaceRole::Bottom | ExactFaceRole::BoxShellOuterBottom => Some(ElementId::Face {
             axis: Axis::Z,
             side: Side::Minimum,
         }),
-        ExactFaceRole::East | ExactFaceRole::CutEast => Some(ElementId::Face {
+        ExactFaceRole::PocketFloor => Some(ElementId::Face {
+            axis: Axis::Z,
+            side: Side::Maximum,
+        }),
+        ExactFaceRole::East
+        | ExactFaceRole::CutEast
+        | ExactFaceRole::PocketEast
+        | ExactFaceRole::BoxShellOuterEast => Some(ElementId::Face {
             axis: Axis::X,
             side: Side::Maximum,
         }),
-        ExactFaceRole::CutWest => Some(ElementId::Face {
+        ExactFaceRole::CutWest | ExactFaceRole::PocketWest => Some(ElementId::Face {
             axis: Axis::X,
             side: Side::Minimum,
         }),
-        ExactFaceRole::CutSouth => Some(ElementId::Face {
+        ExactFaceRole::CutSouth | ExactFaceRole::PocketSouth => Some(ElementId::Face {
             axis: Axis::Y,
             side: Side::Minimum,
         }),
-        ExactFaceRole::CutNorth => Some(ElementId::Face {
+        ExactFaceRole::CutNorth | ExactFaceRole::PocketNorth => Some(ElementId::Face {
             axis: Axis::Y,
             side: Side::Maximum,
         }),
-        ExactFaceRole::RevolveBottom
+        ExactFaceRole::CircleSide
+        | ExactFaceRole::ArcSide
+        | ExactFaceRole::CutCircle
+        | ExactFaceRole::RevolveBottom
         | ExactFaceRole::RevolveBody
         | ExactFaceRole::RevolveShoulder
         | ExactFaceRole::RevolveNeck
         | ExactFaceRole::RevolveMouth
+        | ExactFaceRole::RevolveSide0
+        | ExactFaceRole::RevolveSide1
+        | ExactFaceRole::RevolveStart
+        | ExactFaceRole::RevolveEnd
         | ExactFaceRole::ShellOuterBottom
         | ExactFaceRole::ShellOuterBody
         | ExactFaceRole::ShellOuterShoulder
@@ -10014,7 +13313,17 @@ fn exact_face_element(role: ExactFaceRole) -> Option<ElementId> {
         | ExactFaceRole::ShellInnerBottom
         | ExactFaceRole::ShellInnerBody
         | ExactFaceRole::ShellInnerShoulder
-        | ExactFaceRole::ShellInnerNeck => None,
+        | ExactFaceRole::ShellInnerNeck
+        | ExactFaceRole::PlanarOffsetFace
+        | ExactFaceRole::SweepStart
+        | ExactFaceRole::SweepEnd
+        | ExactFaceRole::SweepSide0
+        | ExactFaceRole::SweepSide1
+        | ExactFaceRole::SweepSide2
+        | ExactFaceRole::SweepSide3
+        | ExactFaceRole::LoftStart
+        | ExactFaceRole::LoftEnd
+        | ExactFaceRole::LoftSide => None,
     }
 }
 
@@ -10270,6 +13579,168 @@ fn push_pull_distance_from_pointer(drag: PushPullDrag, pointer: Pos2) -> f64 {
     let raw_distance =
         f64::from(pointer_delta.dot(drag.screen_normal)) / f64::from(drag.pixels_per_mm);
     ((raw_distance / GRID_STEP_MM).round() * GRID_STEP_MM).max(-drag.extent_start_mm + 0.01)
+}
+
+fn tangent_points(anchor: Vec3, center: Vec3, radius: f64) -> Vec<Vec3> {
+    let delta = anchor - center;
+    let distance_squared = delta.x * delta.x + delta.y * delta.y;
+    if !radius.is_finite() || radius <= 0.0 || distance_squared <= radius * radius + 1.0e-9 {
+        return Vec::new();
+    }
+    let base_scale = radius * radius / distance_squared;
+    let perpendicular_scale =
+        radius * (distance_squared - radius * radius).sqrt() / distance_squared;
+    let base = Vec3::new(
+        center.x + delta.x * base_scale,
+        center.y + delta.y * base_scale,
+        center.z,
+    );
+    let offset = Vec3::new(
+        -delta.y * perpendicular_scale,
+        delta.x * perpendicular_scale,
+        0.0,
+    );
+    vec![base + offset, base - offset]
+}
+
+fn point_line_signed_distance(point: Vec3, start: Vec3, end: Vec3) -> f64 {
+    let chord = end - start;
+    let length = chord.x.hypot(chord.y);
+    if length <= 1.0e-12 {
+        0.0
+    } else {
+        (chord.x * (point.y - start.y) - chord.y * (point.x - start.x)) / length
+    }
+}
+
+fn arc_geometry(start: Vec3, end: Vec3, bulge: Vec3) -> Option<ArcGeometry> {
+    if (start.z - end.z).abs() > 1.0e-6 || (start.z - bulge.z).abs() > 1.0e-6 {
+        return None;
+    }
+    let determinant = 2.0
+        * (start.x * (end.y - bulge.y) + end.x * (bulge.y - start.y) + bulge.x * (start.y - end.y));
+    if !determinant.is_finite() || determinant.abs() <= 1.0e-9 {
+        return None;
+    }
+    let start_squared = start.x * start.x + start.y * start.y;
+    let end_squared = end.x * end.x + end.y * end.y;
+    let bulge_squared = bulge.x * bulge.x + bulge.y * bulge.y;
+    let center = Vec3::new(
+        (start_squared * (end.y - bulge.y)
+            + end_squared * (bulge.y - start.y)
+            + bulge_squared * (start.y - end.y))
+            / determinant,
+        (start_squared * (bulge.x - end.x)
+            + end_squared * (start.x - bulge.x)
+            + bulge_squared * (end.x - start.x))
+            / determinant,
+        start.z,
+    );
+    let radius = vector_length(center - start);
+    let end_radius = vector_length(center - end);
+    if !radius.is_finite()
+        || radius <= 0.01
+        || (radius - end_radius).abs() > 1.0e-8 * radius.max(end_radius).max(1.0)
+    {
+        return None;
+    }
+    let cross = (end.x - start.x) * (bulge.y - start.y) - (end.y - start.y) * (bulge.x - start.x);
+    Some(ArcGeometry {
+        start,
+        end,
+        center,
+        clockwise: cross > 0.0,
+    })
+}
+
+fn arc_polyline(arc: ArcGeometry, segments: usize) -> Vec<Vec3> {
+    let radius = vector_length(arc.start - arc.center);
+    let start_angle = (arc.start.y - arc.center.y).atan2(arc.start.x - arc.center.x);
+    let end_angle = (arc.end.y - arc.center.y).atan2(arc.end.x - arc.center.x);
+    let mut sweep = end_angle - start_angle;
+    if arc.clockwise {
+        while sweep >= 0.0 {
+            sweep -= std::f64::consts::TAU;
+        }
+    } else {
+        while sweep <= 0.0 {
+            sweep += std::f64::consts::TAU;
+        }
+    }
+    (0..=segments)
+        .map(|index| {
+            let angle = start_angle + sweep * index as f64 / segments as f64;
+            Vec3::new(
+                arc.center.x + radius * angle.cos(),
+                arc.center.y + radius * angle.sin(),
+                arc.start.z,
+            )
+        })
+        .collect()
+}
+
+fn exact_arc_profile_geometry(
+    segments: &[ProfileSegment],
+    closed: bool,
+) -> Option<ExactArcProfileGeometry> {
+    let [
+        ProfileSegment::CircularArc {
+            start_mm,
+            end_mm,
+            center_mm,
+            clockwise,
+        },
+        ProfileSegment::Line {
+            start_mm: line_start,
+            end_mm: line_end,
+        },
+    ] = segments
+    else {
+        return None;
+    };
+    (closed && end_mm == line_start && start_mm == line_end)
+        .then_some((*start_mm, *end_mm, *center_mm, *clockwise))
+}
+
+fn exact_circle_geometry(segments: &[ProfileSegment], closed: bool) -> Option<([f64; 2], f64)> {
+    let [
+        ProfileSegment::CircularArc {
+            start_mm: first_start,
+            end_mm: first_end,
+            center_mm: first_center,
+            clockwise: first_clockwise,
+        },
+        ProfileSegment::CircularArc {
+            start_mm: second_start,
+            end_mm: second_end,
+            center_mm: second_center,
+            clockwise: second_clockwise,
+        },
+    ] = segments
+    else {
+        return None;
+    };
+    if !closed
+        || first_start != second_end
+        || first_end != second_start
+        || first_center != second_center
+        || first_clockwise != second_clockwise
+    {
+        return None;
+    }
+    let first_vector = [
+        first_start[0] - first_center[0],
+        first_start[1] - first_center[1],
+    ];
+    let end_vector = [
+        first_end[0] - first_center[0],
+        first_end[1] - first_center[1],
+    ];
+    if first_vector[0] != -end_vector[0] || first_vector[1] != -end_vector[1] {
+        return None;
+    }
+    let radius = first_vector[0].hypot(first_vector[1]);
+    (radius.is_finite() && radius > 0.0).then_some((*first_center, radius))
 }
 
 fn parse_distance_mm(input: &str) -> Option<f64> {
@@ -14050,6 +17521,216 @@ mod tests {
         assert_eq!(app.active_boxes()[1].size_mm.z, 0.0);
         assert!(app.redo());
         assert_eq!(app.active_boxes()[1].size_mm.z, 30.0);
+    }
+
+    #[test]
+    fn cut_through_adds_a_bounded_profile_to_the_selected_solid_as_one_undo_step() {
+        let mut app = KetchupApp::new();
+        app.selection.select_exact(
+            SelectionId {
+                definition_id: INITIAL_BOX_DEFINITION,
+                instance_path: InstancePath::root(OccurrenceId(1)),
+                element: ElementId::Face {
+                    axis: Axis::Z,
+                    side: Side::Maximum,
+                },
+            },
+            false,
+        );
+
+        app.dispatch_command(AppCommand::CutThrough);
+        assert_eq!(app.active_tool, ActiveTool::CutThrough);
+        app.sketch_start = Some(Vec3::new(20.0, 15.0, 20.0));
+        app.sketch_cursor = Some(Vec3::new(21.0, 16.0, 20.0));
+        app.value_input = "30,20".to_owned();
+        assert!(app.apply_value_input());
+
+        let snapshot = app.document.current();
+        assert!(matches!(
+            snapshot.feature(FeatureId(3)).unwrap().kind(),
+            FeatureKind::Profile { points_mm }
+                if points_mm == &vec![[20.0, 15.0], [50.0, 15.0], [50.0, 35.0], [20.0, 35.0]]
+        ));
+        assert!(matches!(
+            snapshot.feature(FeatureId(4)).unwrap().kind(),
+            FeatureKind::ThroughCut {
+                target: FeatureId(2),
+                profile: FeatureId(3),
+            }
+        ));
+        assert_eq!(app.document.visible_undo_steps(), 1);
+        assert!(ExactFeatureChainRequest::from_snapshot(&snapshot, INITIAL_BOX_DEFINITION).is_ok());
+        let reopened = ketchup_core::persistence::load(&ketchup_core::persistence::save(&snapshot))
+            .unwrap()
+            .snapshot();
+        assert_eq!(reopened.canonical_digest(), snapshot.canonical_digest());
+        assert!(matches!(
+            reopened.feature(FeatureId(4)).unwrap().kind(),
+            FeatureKind::ThroughCut { .. }
+        ));
+
+        assert!(app.undo());
+        assert!(app.document.current().feature(FeatureId(3)).is_none());
+        assert!(app.document.current().feature(FeatureId(4)).is_none());
+        assert!(app.redo());
+        assert!(matches!(
+            app.document.current().feature(FeatureId(4)).unwrap().kind(),
+            FeatureKind::ThroughCut { .. }
+        ));
+    }
+
+    #[test]
+    fn pocket_previews_then_commits_and_edits_depth_as_canonical_undo_steps() {
+        let mut app = KetchupApp::new();
+        app.selection.select_exact(
+            SelectionId {
+                definition_id: INITIAL_BOX_DEFINITION,
+                instance_path: InstancePath::root(OccurrenceId(1)),
+                element: ElementId::Face {
+                    axis: Axis::Z,
+                    side: Side::Maximum,
+                },
+            },
+            false,
+        );
+        let original_digest = app.canonical_digest();
+
+        app.dispatch_command(AppCommand::Pocket);
+        app.sketch_start = Some(Vec3::new(20.0, 15.0, 20.0));
+        app.sketch_cursor = Some(Vec3::new(21.0, 16.0, 20.0));
+        app.value_input = "30,20".to_owned();
+        assert!(app.apply_value_input());
+        assert!(app.has_pocket_preview());
+        assert_eq!(app.canonical_digest(), original_digest);
+        assert!(!app.can_undo());
+
+        app.value_input = "8".to_owned();
+        assert!(app.apply_value_input());
+        assert!(!app.has_pocket_preview());
+        let snapshot = app.document.current();
+        assert!(matches!(
+            snapshot.feature(FeatureId(3)).unwrap().kind(),
+            FeatureKind::Profile { points_mm }
+                if points_mm == &vec![[20.0, 15.0], [50.0, 15.0], [50.0, 35.0], [20.0, 35.0]]
+        ));
+        assert!(matches!(
+            snapshot.feature(FeatureId(4)).unwrap().kind(),
+            FeatureKind::Pocket {
+                target: FeatureId(2),
+                profile: FeatureId(3),
+                depth,
+            } if depth.millimetres() == 8.0
+        ));
+        assert_eq!(app.document.visible_undo_steps(), 1);
+        let reopened = ketchup_core::persistence::load(&ketchup_core::persistence::save(&snapshot))
+            .unwrap()
+            .snapshot();
+        assert_eq!(reopened.canonical_digest(), snapshot.canonical_digest());
+
+        assert!(app.set_selected_pocket_depth(12.0));
+        assert_eq!(app.document.visible_undo_steps(), 2);
+        assert!(matches!(
+            app.document.current().feature(FeatureId(4)).unwrap().kind(),
+            FeatureKind::Pocket { depth, .. } if depth.millimetres() == 12.0
+        ));
+        assert!(app.undo());
+        assert!(matches!(
+            app.document.current().feature(FeatureId(4)).unwrap().kind(),
+            FeatureKind::Pocket { depth, .. } if depth.millimetres() == 8.0
+        ));
+        assert!(app.undo());
+        assert_eq!(app.canonical_digest(), original_digest);
+        assert!(app.redo());
+        assert!(matches!(
+            app.document.current().feature(FeatureId(4)).unwrap().kind(),
+            FeatureKind::Pocket { depth, .. } if depth.millimetres() == 8.0
+        ));
+    }
+
+    #[test]
+    fn pocket_preview_fails_closed_for_invalid_or_stale_depth() {
+        let mut app = KetchupApp::new();
+        app.selection.select_exact(
+            SelectionId {
+                definition_id: INITIAL_BOX_DEFINITION,
+                instance_path: InstancePath::root(OccurrenceId(1)),
+                element: ElementId::Face {
+                    axis: Axis::Z,
+                    side: Side::Maximum,
+                },
+            },
+            false,
+        );
+        app.dispatch_command(AppCommand::Pocket);
+        let digest = app.canonical_digest();
+        assert!(!app.prepare_pocket_preview(
+            Vec3::new(20.0, 15.0, 20.0),
+            Vec3::new(50.0, 35.0, 20.0),
+            20.0,
+        ));
+        assert_eq!(app.canonical_digest(), digest);
+
+        assert!(app.prepare_pocket_preview(
+            Vec3::new(20.0, 15.0, 20.0),
+            Vec3::new(50.0, 35.0, 20.0),
+            8.0,
+        ));
+        app.document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::SetOccurrenceTransform {
+                    id: OccurrenceId(1),
+                    transform: Transform::from_translation(10.0, 0.0, 0.0).unwrap(),
+                },
+            ]))
+            .unwrap();
+        assert!(!app.has_pocket_preview());
+        assert!(!app.confirm_pocket_preview());
+        assert!(app.document.current().feature(FeatureId(3)).is_none());
+    }
+
+    #[test]
+    fn cut_through_rejects_a_profile_that_touches_the_target_boundary() {
+        let mut app = KetchupApp::new();
+        app.selection.select_exact(
+            SelectionId {
+                definition_id: INITIAL_BOX_DEFINITION,
+                instance_path: InstancePath::root(OccurrenceId(1)),
+                element: ElementId::Face {
+                    axis: Axis::Z,
+                    side: Side::Maximum,
+                },
+            },
+            false,
+        );
+        app.dispatch_command(AppCommand::CutThrough);
+        let digest = app.canonical_digest();
+
+        assert!(!app.complete_rectangle_sketch(
+            Vec3::new(0.0, 15.0, 20.0),
+            Vec3::new(50.0, 35.0, 20.0),
+        ));
+        assert_eq!(app.canonical_digest(), digest);
+        assert!(!app.can_undo());
+    }
+
+    #[test]
+    fn cut_through_stays_disabled_for_an_exact_unsupported_offset_profile() {
+        let mut app = KetchupApp::new();
+        assert!(app.create_closed_polyline(vec![
+            [10.0, 10.0],
+            [80.0, 10.0],
+            [80.0, 50.0],
+            [10.0, 50.0],
+        ]));
+        app.set_push_pull_distance_input("20");
+        assert!(app.start_preview());
+        assert!(app.confirm_preview());
+        let digest = app.canonical_digest();
+
+        assert!(!app.command_enabled(AppCommand::CutThrough));
+        app.dispatch_command(AppCommand::CutThrough);
+        assert_ne!(app.active_tool, ActiveTool::CutThrough);
+        assert_eq!(app.canonical_digest(), digest);
     }
 
     #[test]

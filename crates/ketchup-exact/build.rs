@@ -67,6 +67,7 @@ fn main() {
         "TKBool",
         "TKBO",
         "TKFillet",
+        "TKOffset",
         "TKXSBase",
         "TKDESTEP",
     ] {
