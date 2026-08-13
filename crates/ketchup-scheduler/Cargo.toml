@@ -7,10 +7,16 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+default = []
+private-oauth = ["ketchup-core/private-oauth"]
+
 [dependencies]
 ketchup-core = { path = "../ketchup-core" }
 ketchup-exact = { path = "../ketchup-exact" }
 ketchup-interaction = { path = "../ketchup-interaction" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 tempfile = "3.23.0"
 wasmi = "1.1.0"
 

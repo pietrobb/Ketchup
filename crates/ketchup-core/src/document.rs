@@ -1312,9 +1312,9 @@ pub struct ProposalBudget {
 
 impl ProposalBudget {
     pub const HOST_MAX: Self = Self {
-        max_commands: 4,
-        max_read_dependencies: 128,
-        max_write_targets: 32,
+        max_commands: 512,
+        max_read_dependencies: 1_024,
+        max_write_targets: 1_024,
     };
 
     pub const M7A_SINGLE_CHANGE: Self = Self {
@@ -1624,6 +1624,18 @@ pub struct ProposalContext {
 }
 
 impl ProposalContext {
+    #[must_use]
+    pub fn local_assistant_model() -> Self {
+        Self {
+            principal: ProposalPrincipal::LocalAssistant,
+            goal: ProposalGoal::CanonicalPreview,
+            assumptions: Vec::new(),
+            risk: ProposalRisk::Standard,
+            confirmation: ProposalConfirmation::ReviewRequired,
+            requested_budget: ProposalBudget::HOST_MAX,
+        }
+    }
+
     #[must_use]
     pub fn canonical_preview() -> Self {
         Self {

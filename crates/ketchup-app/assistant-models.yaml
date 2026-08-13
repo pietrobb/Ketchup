@@ -1,0 +1,20 @@
+# Kečup Assistant model catalog. The syntax intentionally matches Supervisor models.yaml.
+# [api] models use official API credentials; [sub] models are available only in private OAuth builds.
+
+- "── Claude ──"
+- claude-opus-4-8
+- claude-sonnet-5
+- name: claude-haiku-4-5-20251001
+  max_tokens: 32768
+
+- "── OpenAI (Subscription) ──"
+- "gpt-5.5[sub]"
+- "gpt-5.6-sol[sub]"
+
+
+- "── OpenAI (API key) ──"
+- "gpt-5.5 [api]"
+- "gpt-5.5-pro [api]"
+- "gpt-5.4 [api]"
+- "gpt-5.4-pro [api]"
+- "gpt-5.2 [api]"

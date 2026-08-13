@@ -873,6 +873,10 @@ fn viewport_snap_hysteresis_acquires_retains_and_releases_an_endpoint() {
 #[test]
 fn tab_cycles_overlapping_occurrences_and_click_selects_the_visible_choice() {
     let mut shell = Shell::new();
+    shell
+        .app_mut()
+        .set_assistant_workspace_mode(ketchup_app::AssistantWorkspaceMode::Dock);
+    shell.settle();
     let centre = shell.viewport_rect().center();
     shell.click_at(centre);
     assert!(shell.app_mut().copy_selected(Vec3::new(100.0, 0.0, 0.0)));

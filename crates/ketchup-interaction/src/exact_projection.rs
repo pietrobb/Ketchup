@@ -52,10 +52,20 @@ pub struct ExactInteractionProjection {
 impl ExactInteractionProjection {
     #[must_use]
     pub fn from_snapshot(snapshot: &Snapshot, results: &ExactResultRegistry) -> Self {
+        Self::from_snapshot_where(snapshot, results, |_| true)
+    }
+
+    #[must_use]
+    pub fn from_snapshot_where(
+        snapshot: &Snapshot,
+        results: &ExactResultRegistry,
+        include: impl Fn(&InstancePath) -> bool,
+    ) -> Self {
         let occurrences = snapshot
             .scene_query()
             .into_iter()
             .filter(|occurrence| occurrence.visible)
+            .filter(|occurrence| include(&occurrence.instance_path))
             .filter_map(|occurrence| {
                 let package = Arc::clone(results.get(&occurrence.definition_id)?);
                 if !package.is_current(snapshot)

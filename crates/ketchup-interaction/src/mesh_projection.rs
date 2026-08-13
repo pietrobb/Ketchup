@@ -57,6 +57,14 @@ pub struct MeshInteractionProjection {
 impl MeshInteractionProjection {
     #[must_use]
     pub fn from_snapshot(snapshot: &Snapshot) -> Self {
+        Self::from_snapshot_where(snapshot, |_| true)
+    }
+
+    #[must_use]
+    pub fn from_snapshot_where(
+        snapshot: &Snapshot,
+        include: impl Fn(&InstancePath) -> bool,
+    ) -> Self {
         let geometries = snapshot
             .definitions()
             .filter_map(|definition| {
@@ -83,6 +91,7 @@ impl MeshInteractionProjection {
             .scene_query()
             .into_iter()
             .filter(|occurrence| occurrence.visible)
+            .filter(|occurrence| include(&occurrence.instance_path))
             .filter_map(|occurrence| {
                 Some(MeshOccurrence {
                     instance_path: occurrence.instance_path,
@@ -118,6 +127,13 @@ impl MeshInteractionProjection {
     #[must_use]
     pub fn occurrence_count(&self) -> usize {
         self.occurrences.len()
+    }
+
+    #[must_use]
+    pub fn contains_occurrence(&self, instance_path: &InstancePath) -> bool {
+        self.occurrences
+            .iter()
+            .any(|occurrence| &occurrence.instance_path == instance_path)
     }
 
     #[must_use]

@@ -197,10 +197,13 @@ impl InstancedRenderPlan {
     }
 
     #[must_use]
+    pub fn is_same_revision(&self, snapshot: &Snapshot) -> bool {
+        self.document_id == snapshot.document_id() && self.source_revision == snapshot.revision_id()
+    }
+
+    #[must_use]
     pub fn is_current(&self, snapshot: &Snapshot) -> bool {
-        self.document_id == snapshot.document_id()
-            && self.source_revision == snapshot.revision_id()
-            && self.source_digest == snapshot.canonical_digest()
+        self.is_same_revision(snapshot) && self.source_digest == snapshot.canonical_digest()
     }
 
     #[must_use]

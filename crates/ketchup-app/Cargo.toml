@@ -7,11 +7,17 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+default = []
+private-oauth = ["ketchup-core/private-oauth", "ketchup-scheduler/private-oauth"]
+
 [dependencies]
 eframe = { version = "0.32.3", default-features = false, features = ["accesskit", "default_fonts", "wgpu"] }
 ketchup-core = { path = "../ketchup-core" }
 ketchup-interaction = { path = "../ketchup-interaction" }
 ketchup-scheduler = { path = "../ketchup-scheduler" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 getrandom = "0.3.4"
 raw-window-handle = "0.6.2"
 rfd = "0.15.4"

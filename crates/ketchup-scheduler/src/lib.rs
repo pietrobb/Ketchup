@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+pub mod assistant;
 pub mod general;
 pub mod plugin;
 pub mod validator_runtime;

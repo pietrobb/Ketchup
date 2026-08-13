@@ -237,6 +237,11 @@ impl ContainerData {
         Ok(())
     }
 
+    pub fn set_extension(&mut self, entry: ExtensionEntry) {
+        let key = (entry.namespace.clone(), entry.path.clone());
+        self.extensions.insert(key, entry);
+    }
+
     #[must_use]
     pub fn blobs(&self) -> &BTreeMap<String, Vec<u8>> {
         &self.blobs

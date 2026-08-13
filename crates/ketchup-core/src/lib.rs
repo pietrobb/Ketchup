@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 pub mod adapters;
+pub mod assistant_sidecar;
 pub mod beam_m4ae;
 pub mod beam_m5;
 pub mod bottle_m6;

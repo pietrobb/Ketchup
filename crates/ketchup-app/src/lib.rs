@@ -4,6 +4,10 @@
 #![deny(unsafe_code)]
 
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, Stroke, Vec2};
+use ketchup_core::assistant_sidecar::{
+    ASSISTANT_PROTOCOL_VERSION, AssistantBoxIntent, AssistantCapability, AssistantChatResult,
+    AssistantDistribution, AssistantHandshake, AssistantModelIntent,
+};
 use ketchup_core::beam_m4ae::{
     BeamChangeSummary, BeamSlice, BeamValidationVerdict, BeamWorkspace, GroovePosition, GroupedBom,
 };
@@ -15,10 +19,10 @@ use ketchup_core::document::{
     CommandBatch, DefinitionId, Dimension, DimensionDisplayUnit, DimensionPresentation, DocumentId,
     DocumentStore, FeatureId, FeatureKind, FeatureParameterSlot, FeatureParameterTarget, GroupId,
     HighRiskClass, HighRiskScope, InstancePath, LoftSection, MAX_HUMAN_CONFIRMATION_LIFETIME_MS,
-    NodeId, OccurrenceId, PersistentDimensionId, ProfileSegment, Proposal, ProposalGoal,
-    ProposalPrincipal, ProposalValue, SceneOccurrence, SceneQueryContext,
-    SideEffectAuthorizationReceipt, SlotPath, Snapshot, SolidToolPlan, StableEdgeRole,
-    StableFaceRole, TagId, Transform, TrustedConfirmationSurface,
+    MESH_BODY_SCHEMA_V1, MeshAuthority, MeshBodySpec, NodeId, OccurrenceId, PersistentDimensionId,
+    ProfileSegment, Proposal, ProposalContext, ProposalGoal, ProposalPrincipal, ProposalValue,
+    SceneOccurrence, SceneQueryContext, SideEffectAuthorizationReceipt, SlotPath, Snapshot,
+    SolidToolPlan, StableEdgeRole, StableFaceRole, TagId, Transform, TrustedConfirmationSurface,
 };
 #[cfg(test)]
 use ketchup_core::document::{
@@ -43,9 +47,13 @@ use ketchup_interaction::{
     Axis, ElementId, ExactHit, LocaleCatalog, PickResult, Ray, SelectionId, Side, SnapKind,
     SnapPolicy, SnapResult, SnapTracker, Vec3,
     exact_projection::ExactInteractionProjection,
+    mesh_projection::MeshInteractionProjection,
     projection::{CanonicalInteractionProjection, ProjectedBox},
 };
-use ketchup_scheduler::ExactWorkerSupervisor;
+use ketchup_scheduler::{
+    ExactWorkerSupervisor,
+    assistant::{AssistantCancellation, AssistantProcessClient},
+};
 pub mod dialogs;
 pub mod theme;
 
@@ -61,6 +69,8 @@ use renderer::{
     feature_edges,
 };
 
+use serde::{Deserialize, Serialize};
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::{
@@ -93,6 +103,10 @@ const CAMERA_CLEARANCE: f64 = 2.5;
 const MIN_CAMERA_ZOOM: f32 = 1.0e-6;
 /// Largest useful magnification before floating-point picking becomes unstable.
 const MAX_CAMERA_ZOOM: f32 = 8.0;
+const ASSISTANT_MODELS_YAML: &str = include_str!("../assistant-models.yaml");
+const ASSISTANT_CHAT_NAMESPACE: &str = "org.ketchup.assistant";
+const ASSISTANT_CHAT_PATH: &str = "conversation-v1.json";
+const ASSISTANT_TIMEOUT: Duration = Duration::from_secs(300);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NativeDocumentInspection {
@@ -440,6 +454,96 @@ struct ProjectedFace {
 struct ProjectedEdge {
     selection: SelectionId,
     points: [Pos2; 2],
+}
+
+fn assistant_subtracted_box_mesh(item: &AssistantBoxIntent) -> Option<MeshBodySpec> {
+    let [width, depth, height] = item.size_mm;
+    let mut xs = vec![0.0, width];
+    let mut ys = vec![0.0, depth];
+    let mut zs = vec![0.0, height];
+    for cut in &item.subtract_boxes {
+        xs.extend([cut.origin_mm[0], cut.origin_mm[0] + cut.size_mm[0]]);
+        ys.extend([cut.origin_mm[1], cut.origin_mm[1] + cut.size_mm[1]]);
+        zs.extend([cut.origin_mm[2], cut.origin_mm[2] + cut.size_mm[2]]);
+    }
+    for coordinates in [&mut xs, &mut ys, &mut zs] {
+        coordinates.sort_by(f64::total_cmp);
+        coordinates.dedup_by(|left, right| left.to_bits() == right.to_bits());
+    }
+    let nx = xs.len() - 1;
+    let ny = ys.len() - 1;
+    let nz = zs.len() - 1;
+    let mut solid = vec![false; nx * ny * nz];
+    let index = |x: usize, y: usize, z: usize| (z * ny + y) * nx + x;
+    for z in 0..nz {
+        for y in 0..ny {
+            for x in 0..nx {
+                let center = [
+                    f64::midpoint(xs[x], xs[x + 1]),
+                    f64::midpoint(ys[y], ys[y + 1]),
+                    f64::midpoint(zs[z], zs[z + 1]),
+                ];
+                solid[index(x, y, z)] = !item.subtract_boxes.iter().any(|cut| {
+                    (0..3).all(|axis| {
+                        center[axis] > cut.origin_mm[axis]
+                            && center[axis] < cut.origin_mm[axis] + cut.size_mm[axis]
+                    })
+                });
+            }
+        }
+    }
+    let mut vertices = Vec::<[f64; 3]>::new();
+    let mut vertex_ids = BTreeMap::<(u64, u64, u64), u32>::new();
+    let mut triangles = Vec::<[u32; 3]>::new();
+    let mut add_quad = |points: [[f64; 3]; 4]| {
+        let ids = points.map(|point| {
+            let key = (point[0].to_bits(), point[1].to_bits(), point[2].to_bits());
+            *vertex_ids.entry(key).or_insert_with(|| {
+                let id = vertices.len() as u32;
+                vertices.push(point);
+                id
+            })
+        });
+        triangles.extend([[ids[0], ids[1], ids[2]], [ids[0], ids[2], ids[3]]]);
+    };
+    for z in 0..nz {
+        for y in 0..ny {
+            for x in 0..nx {
+                if !solid[index(x, y, z)] {
+                    continue;
+                }
+                let (x0, x1) = (xs[x], xs[x + 1]);
+                let (y0, y1) = (ys[y], ys[y + 1]);
+                let (z0, z1) = (zs[z], zs[z + 1]);
+                if x == 0 || !solid[index(x - 1, y, z)] {
+                    add_quad([[x0, y0, z0], [x0, y0, z1], [x0, y1, z1], [x0, y1, z0]]);
+                }
+                if x + 1 == nx || !solid[index(x + 1, y, z)] {
+                    add_quad([[x1, y0, z0], [x1, y1, z0], [x1, y1, z1], [x1, y0, z1]]);
+                }
+                if y == 0 || !solid[index(x, y - 1, z)] {
+                    add_quad([[x0, y0, z0], [x1, y0, z0], [x1, y0, z1], [x0, y0, z1]]);
+                }
+                if y + 1 == ny || !solid[index(x, y + 1, z)] {
+                    add_quad([[x0, y1, z0], [x0, y1, z1], [x1, y1, z1], [x1, y1, z0]]);
+                }
+                if z == 0 || !solid[index(x, y, z - 1)] {
+                    add_quad([[x0, y0, z0], [x0, y1, z0], [x1, y1, z0], [x1, y0, z0]]);
+                }
+                if z + 1 == nz || !solid[index(x, y, z + 1)] {
+                    add_quad([[x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1]]);
+                }
+            }
+        }
+    }
+    Some(MeshBodySpec {
+        schema: MESH_BODY_SCHEMA_V1.to_owned(),
+        vertices_mm: vertices,
+        triangles,
+        authority: MeshAuthority::Authored {
+            provenance: "ketchup-assistant-subtracted-box-v1".to_owned(),
+        },
+    })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -973,6 +1077,18 @@ enum EditContext {
     },
 }
 
+struct InteractionProjectionCache {
+    document_id: DocumentId,
+    revision_id: u64,
+    digest: String,
+    edit_context: Vec<EditContext>,
+    exact_result_count: usize,
+    exact: ExactInteractionProjection,
+    mesh: MeshInteractionProjection,
+    boxes: ketchup_interaction::InteractionScene,
+    proxies: ketchup_interaction::InteractionScene,
+}
+
 #[derive(Default)]
 struct SelectionState {
     occurrences: BTreeSet<InstancePath>,
@@ -1079,6 +1195,102 @@ struct BeamM5EvaluationTask {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AssistantProvider {
+    AnthropicApi,
+    OpenAiApi,
+    #[cfg(feature = "private-oauth")]
+    ClaudeCodeOauth,
+    #[cfg(feature = "private-oauth")]
+    CodexOauth,
+}
+
+impl AssistantProvider {
+    const fn distribution(self) -> AssistantDistribution {
+        match self {
+            Self::AnthropicApi | Self::OpenAiApi => AssistantDistribution::PublicApi,
+            #[cfg(feature = "private-oauth")]
+            Self::ClaudeCodeOauth | Self::CodexOauth => AssistantDistribution::PrivateOauth,
+        }
+    }
+
+    const fn protocol_name(self) -> &'static str {
+        match self {
+            Self::AnthropicApi => "anthropic-api",
+            Self::OpenAiApi => "openai-api",
+            #[cfg(feature = "private-oauth")]
+            Self::ClaudeCodeOauth => "claude-code-oauth",
+            #[cfg(feature = "private-oauth")]
+            Self::CodexOauth => "codex-oauth",
+        }
+    }
+
+    const fn label_key(self) -> &'static str {
+        match self {
+            Self::AnthropicApi => "assistant-provider-anthropic-api",
+            Self::OpenAiApi => "assistant-provider-openai-api",
+            #[cfg(feature = "private-oauth")]
+            Self::ClaudeCodeOauth => "assistant-provider-claude-oauth",
+            #[cfg(feature = "private-oauth")]
+            Self::CodexOauth => "assistant-provider-codex-oauth",
+        }
+    }
+
+    const fn default_model(self) -> &'static str {
+        match self {
+            Self::AnthropicApi => "claude-sonnet-5",
+            Self::OpenAiApi => "gpt-5.2",
+            #[cfg(feature = "private-oauth")]
+            Self::ClaudeCodeOauth => "claude-sonnet-5",
+            #[cfg(feature = "private-oauth")]
+            Self::CodexOauth => "gpt-5.5",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AssistantWorkspaceMode {
+    Dock,
+    Tab,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AssistantMessageRole {
+    User,
+    Assistant,
+    Error,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AssistantChatMessage {
+    pub role: AssistantMessageRole,
+    pub text: String,
+    pub source: String,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct AssistantConversation {
+    document_id: u64,
+    messages: Vec<AssistantChatMessage>,
+}
+
+fn assistant_conversation_digest(messages: &[AssistantChatMessage]) -> String {
+    let bytes = serde_json::to_vec(messages).expect("assistant messages are serializable");
+    ketchup_core::graph::sha256_hex(&bytes)
+}
+
+struct AssistantChatTask {
+    receiver: Receiver<Result<AssistantChatResult, String>>,
+    cancellation: AssistantCancellation,
+    document_id: DocumentId,
+    revision_id: u64,
+    canonical_digest: String,
+    source: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AssistantIntentKind {
     CreateEvaluatorInput,
     CreateEvaluatorExpression,
@@ -1179,8 +1391,17 @@ pub struct KetchupApp {
     hover_snap: Option<SnapResult>,
     hover_overlap_index: usize,
     snap_tracker: SnapTracker,
+    interaction_projection_cache: RefCell<Option<InteractionProjectionCache>>,
     active_tool: ActiveTool,
     digest: String,
+    assistant_provider: AssistantProvider,
+    assistant_model: String,
+    assistant_workspace_mode: AssistantWorkspaceMode,
+    assistant_input: String,
+    assistant_messages: Vec<AssistantChatMessage>,
+    assistant_chat_task: Option<AssistantChatTask>,
+    assistant_request_sequence: u64,
+    saved_assistant_conversation_digest: String,
     assistant_intent_kind: AssistantIntentKind,
     assistant_target_input: String,
     assistant_value_input: String,
@@ -1220,6 +1441,7 @@ pub struct KetchupApp {
     beam_m5_source: Option<ExactSource>,
     beam_m5_retry_at: Option<Instant>,
     render_cache: DerivedRenderCache,
+    render_plan: Option<Arc<InstancedRenderPlan>>,
     wgpu_target_format: Option<eframe::wgpu::TextureFormat>,
 }
 
@@ -1316,8 +1538,17 @@ impl KetchupApp {
             hover_snap: None,
             hover_overlap_index: 0,
             snap_tracker: SnapTracker::default(),
+            interaction_projection_cache: RefCell::new(None),
             active_tool: ActiveTool::Select,
             digest,
+            assistant_provider: AssistantProvider::AnthropicApi,
+            assistant_model: AssistantProvider::AnthropicApi.default_model().to_owned(),
+            assistant_workspace_mode: AssistantWorkspaceMode::Dock,
+            assistant_input: String::new(),
+            assistant_messages: Vec::new(),
+            assistant_chat_task: None,
+            assistant_request_sequence: 0,
+            saved_assistant_conversation_digest: assistant_conversation_digest(&[]),
             assistant_intent_kind: AssistantIntentKind::FeatureDimension,
             assistant_target_input: "2".to_owned(),
             assistant_value_input: "35".to_owned(),
@@ -1357,6 +1588,7 @@ impl KetchupApp {
             beam_m5_source: None,
             beam_m5_retry_at: None,
             render_cache: DerivedRenderCache::default(),
+            render_plan: None,
             wgpu_target_format: None,
         }
     }
@@ -1434,9 +1666,13 @@ impl KetchupApp {
         self.hover_snap = None;
         self.hover_overlap_index = 0;
         self.snap_tracker.clear();
+        self.interaction_projection_cache.get_mut().take();
         self.active_tool = ActiveTool::Select;
         self.assistant_proposal = None;
         self.assistant_verification = None;
+        if let Some(task) = self.assistant_chat_task.take() {
+            task.cancellation.cancel();
+        }
         self.last_side_effect_receipt = None;
         self.push_pull_drag = None;
         self.last_push_pull = None;
@@ -1456,6 +1692,7 @@ impl KetchupApp {
             task.cancelled.store(true, Ordering::Release);
         }
         self.exact_results.clear();
+        self.render_plan = None;
         self.exact_source = None;
         self.exact_retry_at = None;
         self.status_key = "status-ready";
@@ -1503,6 +1740,7 @@ impl KetchupApp {
                 self.document_path = Some(path.to_owned());
                 self.saved_digest = self.document.current().canonical_digest();
                 self.reset_document_presentation();
+                self.load_assistant_conversation();
                 self.digest = self.catalog.format(
                     "digest-opened-document",
                     &BTreeMap::from([("path", path.display().to_string())]),
@@ -1656,6 +1894,7 @@ impl KetchupApp {
             );
             return false;
         }
+        self.store_assistant_conversation();
         let snapshot = self.document.current();
         let prepared = ketchup_core::persistence::save_container(&snapshot, &self.container_data);
         if path.exists()
@@ -1682,6 +1921,8 @@ impl KetchupApp {
             Ok(()) => {
                 self.document_path = Some(path.to_owned());
                 self.saved_digest = snapshot.canonical_digest();
+                self.saved_assistant_conversation_digest =
+                    assistant_conversation_digest(&self.assistant_messages);
                 self.digest = self.catalog.format(
                     "digest-saved-document",
                     &BTreeMap::from([("path", path.display().to_string())]),
@@ -2151,6 +2392,11 @@ impl KetchupApp {
         self.document.current().revision_id()
     }
 
+    #[must_use]
+    pub fn document_snapshot(&self) -> Snapshot {
+        self.document.current()
+    }
+
     /// Canonical identity of the active document: schema, units, IDs,
     /// hierarchy, parameters, transforms, and sharing folded into one value.
     #[must_use]
@@ -2269,6 +2515,8 @@ impl KetchupApp {
 
     pub fn is_dirty(&self) -> bool {
         self.document.current().canonical_digest() != self.saved_digest
+            || assistant_conversation_digest(&self.assistant_messages)
+                != self.saved_assistant_conversation_digest
     }
 
     /// Path the active document is bound to, if it has been saved or opened.
@@ -2310,6 +2558,10 @@ impl KetchupApp {
                 false
             }
         }
+    }
+
+    pub fn apply_assistant_intent(&mut self, intent: WorkflowIntent) -> bool {
+        self.prepare_assistant_intent(intent) && self.confirm_assistant_proposal()
     }
 
     pub fn confirm_assistant_proposal(&mut self) -> bool {
@@ -2357,6 +2609,554 @@ impl KetchupApp {
     #[must_use]
     pub const fn assistant_proposal(&self) -> Option<&Proposal> {
         self.assistant_proposal.as_ref()
+    }
+
+    #[must_use]
+    pub const fn assistant_provider(&self) -> AssistantProvider {
+        self.assistant_provider
+    }
+
+    #[must_use]
+    pub fn assistant_model(&self) -> &str {
+        &self.assistant_model
+    }
+
+    pub fn select_assistant_provider(&mut self, provider: AssistantProvider) {
+        self.assistant_provider = provider;
+        self.assistant_model = provider.default_model().to_owned();
+    }
+
+    pub fn set_assistant_model(&mut self, model: impl Into<String>) {
+        self.assistant_model = model.into();
+    }
+
+    #[must_use]
+    pub const fn assistant_workspace_mode(&self) -> AssistantWorkspaceMode {
+        self.assistant_workspace_mode
+    }
+
+    pub fn set_assistant_workspace_mode(&mut self, mode: AssistantWorkspaceMode) {
+        self.assistant_workspace_mode = mode;
+    }
+
+    #[must_use]
+    pub fn assistant_messages(&self) -> &[AssistantChatMessage] {
+        &self.assistant_messages
+    }
+
+    pub fn new_assistant_chat(&mut self) {
+        self.assistant_input.clear();
+        self.assistant_messages.clear();
+        if let Some(task) = self.assistant_chat_task.take() {
+            task.cancellation.cancel();
+        }
+        self.assistant_request_sequence = self.assistant_request_sequence.saturating_add(1);
+        self.store_assistant_conversation();
+    }
+
+    fn store_assistant_conversation(&mut self) {
+        let conversation = AssistantConversation {
+            document_id: self.document.current().document_id().0,
+            messages: self.assistant_messages.clone(),
+        };
+        let Ok(bytes) = serde_json::to_vec(&conversation) else {
+            return;
+        };
+        let Ok(entry) = ketchup_core::persistence::ExtensionEntry::new(
+            ASSISTANT_CHAT_NAMESPACE,
+            ASSISTANT_CHAT_PATH,
+            false,
+            bytes,
+        ) else {
+            return;
+        };
+        self.container_data.set_extension(entry);
+    }
+
+    fn load_assistant_conversation(&mut self) {
+        let document_id = self.document.current().document_id().0;
+        self.assistant_messages = self
+            .container_data
+            .extensions()
+            .find(|entry| {
+                entry.namespace() == ASSISTANT_CHAT_NAMESPACE && entry.path() == ASSISTANT_CHAT_PATH
+            })
+            .and_then(|entry| serde_json::from_slice::<AssistantConversation>(entry.bytes()).ok())
+            .filter(|conversation| conversation.document_id == document_id)
+            .map_or_else(Vec::new, |conversation| conversation.messages);
+        self.saved_assistant_conversation_digest =
+            assistant_conversation_digest(&self.assistant_messages);
+    }
+
+    #[must_use]
+    pub fn assistant_models(&self) -> Vec<String> {
+        assistant_models_for(self.assistant_provider)
+    }
+
+    fn assistant_source_label(&self) -> String {
+        format!(
+            "{} · {}",
+            self.catalog.text(self.assistant_provider.label_key()),
+            self.assistant_model
+        )
+    }
+
+    #[must_use]
+    pub fn assistant_handshake(&self) -> AssistantHandshake {
+        AssistantHandshake {
+            protocol_version: ASSISTANT_PROTOCOL_VERSION,
+            distribution: self.assistant_provider.distribution(),
+            provider: self.assistant_provider.protocol_name().to_owned(),
+            model: self.assistant_model.clone(),
+            capabilities: BTreeSet::from([
+                AssistantCapability::Chat,
+                AssistantCapability::LocalMemory,
+                AssistantCapability::QueryDocument,
+                AssistantCapability::ProposeWorkflowIntent,
+            ]),
+        }
+    }
+
+    pub fn assistant_context(&self) -> serde_json::Value {
+        let snapshot = self.document.current();
+        let box_bounds = self
+            .active_boxes()
+            .into_iter()
+            .map(|item| {
+                (
+                    item.instance_path.root_occurrence(),
+                    [item.origin_mm, item.origin_mm + item.size_mm],
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let scene_occurrences = snapshot.scene_query();
+        let occurrence_count = scene_occurrences.len();
+        let occurrences = scene_occurrences
+            .into_iter()
+            .take(100)
+            .map(|occurrence| {
+                let bounds = box_bounds
+                    .get(&occurrence.occurrence_id)
+                    .copied()
+                    .or_else(|| assistant_mesh_body_bounds(&snapshot, &occurrence));
+                serde_json::json!({
+                    "occurrence_id": occurrence.occurrence_id.0,
+                    "definition_id": occurrence.definition_id.0,
+                    "name": occurrence.occurrence_name,
+                    "visible": occurrence.visible,
+                    "copyable": occurrence.instance_path.is_root(),
+                    "bounds_mm": bounds.map(|[minimum, maximum]| serde_json::json!({
+                        "min": [minimum.x, minimum.y, minimum.z],
+                        "max": [maximum.x, maximum.y, maximum.z],
+                    })),
+                })
+            })
+            .collect::<Vec<_>>();
+        let conversation = self
+            .assistant_messages
+            .iter()
+            .rev()
+            .take(20)
+            .rev()
+            .map(|message| {
+                serde_json::json!({
+                    "role": match message.role {
+                        AssistantMessageRole::User => "user",
+                        AssistantMessageRole::Assistant => "assistant",
+                        AssistantMessageRole::Error => "error",
+                    },
+                    "text": message.text,
+                })
+            })
+            .collect::<Vec<_>>();
+        let selected_occurrence_ids = self
+            .selected_occurrence_ids()
+            .into_iter()
+            .map(|id| id.0)
+            .collect::<Vec<_>>();
+        let boxes = self
+            .active_boxes()
+            .into_iter()
+            .take(100)
+            .map(|item| {
+                serde_json::json!({
+                    "occurrence_id": item.instance_path.root_occurrence().0,
+                    "definition_id": item.definition_id.0,
+                    "origin_mm": [item.origin_mm.x, item.origin_mm.y, item.origin_mm.z],
+                    "size_mm": [item.size_mm.x, item.size_mm.y, item.size_mm.z],
+                })
+            })
+            .collect::<Vec<_>>();
+        serde_json::json!({
+            "document_id": snapshot.document_id().0,
+            "revision": snapshot.revision_id(),
+            "canonical_digest": snapshot.canonical_digest(),
+            "selected_occurrence_ids": selected_occurrence_ids,
+            "occurrence_count": occurrence_count,
+            "occurrences_complete": occurrence_count <= 100,
+            "occurrences": occurrences,
+            "boxes": boxes,
+            "conversation": conversation,
+        })
+    }
+
+    fn send_assistant_message(&mut self, context: &egui::Context) {
+        if self.assistant_chat_task.is_some() {
+            return;
+        }
+        let message = self.assistant_input.trim().to_owned();
+        if message.is_empty() {
+            return;
+        }
+        let handshake = self.assistant_handshake();
+        if let Err(error) = handshake.validate() {
+            self.assistant_messages.push(AssistantChatMessage {
+                role: AssistantMessageRole::Error,
+                text: error.to_string(),
+                source: self.assistant_source_label(),
+            });
+            return;
+        }
+        self.assistant_input.clear();
+        let document_context = self.assistant_context();
+        let request_document_id = self.document.current().document_id();
+        let request_revision_id = self.document.current().revision_id();
+        let request_canonical_digest = self.document.current().canonical_digest();
+        let source = self.assistant_source_label();
+        self.assistant_messages.push(AssistantChatMessage {
+            role: AssistantMessageRole::User,
+            text: message.clone(),
+            source: source.clone(),
+        });
+        self.assistant_request_sequence = self.assistant_request_sequence.saturating_add(1);
+        let request_id = format!("chat-{}", self.assistant_request_sequence);
+        let executable = assistant_sidecar_command(handshake.distribution);
+        let repaint = context.clone();
+        let cancellation = AssistantCancellation::default();
+        let worker_cancellation = cancellation.clone();
+        let (sender, receiver) = mpsc::channel();
+        std::thread::spawn(move || {
+            let result = executable.and_then(|(program, arguments)| {
+                let mut client = AssistantProcessClient::spawn_with_cancellation(
+                    program,
+                    &arguments,
+                    handshake,
+                    ASSISTANT_TIMEOUT,
+                    worker_cancellation,
+                )
+                .map_err(|error| error.to_string())?;
+                let answer = client
+                    .chat(&request_id, &message, &document_context)
+                    .map_err(|error| error.to_string());
+                let _ = client.shutdown();
+                answer
+            });
+            if sender.send(result).is_ok() {
+                repaint.request_repaint();
+            }
+        });
+        self.assistant_chat_task = Some(AssistantChatTask {
+            receiver,
+            cancellation,
+            document_id: request_document_id,
+            revision_id: request_revision_id,
+            canonical_digest: request_canonical_digest,
+            source,
+        });
+    }
+
+    pub fn prepare_assistant_model_intent(&mut self, intent: AssistantModelIntent) -> bool {
+        if let Err(error) = intent.validate() {
+            self.digest = self.catalog.format(
+                "assistant-digest-rejected",
+                &BTreeMap::from([("reason", error)]),
+            );
+            return false;
+        }
+        let snapshot = self.document.current();
+        let mut commands = Vec::new();
+        if intent.replace_scene {
+            commands.extend(snapshot.collections().map(|collection| {
+                CanonicalCommand::SetCollectionOccurrences {
+                    id: collection.id(),
+                    occurrence_ids: Vec::new(),
+                }
+            }));
+            commands.extend(
+                snapshot
+                    .occurrences()
+                    .map(|item| CanonicalCommand::DeleteOccurrence { id: item.id() }),
+            );
+            commands.extend(
+                snapshot
+                    .definitions()
+                    .map(|item| CanonicalCommand::DeleteDefinition { id: item.id() }),
+            );
+        }
+        let mut next_definition = snapshot
+            .definitions()
+            .map(|item| item.id().0)
+            .max()
+            .unwrap_or(0)
+            .checked_add(1);
+        let mut next_feature = snapshot
+            .features()
+            .map(|item| item.id().0)
+            .max()
+            .unwrap_or(0)
+            .checked_add(1);
+        let mut next_occurrence = snapshot
+            .occurrences()
+            .map(|item| item.id().0)
+            .max()
+            .unwrap_or(0)
+            .checked_add(1);
+        for translation in intent.translations {
+            let Some(occurrence) = snapshot.occurrence(OccurrenceId(translation.occurrence_id))
+            else {
+                self.digest = self.catalog.format(
+                    "assistant-digest-rejected",
+                    &BTreeMap::from([(
+                        "reason",
+                        format!("occurrence {} does not exist", translation.occurrence_id),
+                    )]),
+                );
+                return false;
+            };
+            let [x, y, z] = translation.delta_mm;
+            let Ok(transform) = translated_transform(occurrence.transform(), Vec3::new(x, y, z))
+            else {
+                return false;
+            };
+            commands.push(CanonicalCommand::SetOccurrenceTransform {
+                id: OccurrenceId(translation.occurrence_id),
+                transform,
+            });
+        }
+        for array in intent.linear_arrays {
+            let sources = array
+                .occurrence_ids
+                .iter()
+                .map(|id| snapshot.occurrence(OccurrenceId(*id)).cloned().ok_or(*id))
+                .collect::<Result<Vec<_>, _>>();
+            let Ok(sources) = sources else {
+                let missing_id = sources.unwrap_err();
+                self.digest = self.catalog.format(
+                    "assistant-digest-rejected",
+                    &BTreeMap::from([(
+                        "reason",
+                        format!("occurrence {missing_id} does not exist"),
+                    )]),
+                );
+                return false;
+            };
+            for instance in 1..array.instances {
+                let [step_x, step_y, step_z] = array.step_mm;
+                let delta = Vec3::new(
+                    step_x * f64::from(instance),
+                    step_y * f64::from(instance),
+                    step_z * f64::from(instance),
+                );
+                for source in &sources {
+                    let Some(occurrence) = next_occurrence.map(OccurrenceId) else {
+                        self.digest = self.catalog.format(
+                            "assistant-digest-rejected",
+                            &BTreeMap::from([(
+                                "reason",
+                                "assistant model identifiers are exhausted".to_owned(),
+                            )]),
+                        );
+                        return false;
+                    };
+                    let Ok(transform) = translated_transform(source.transform(), delta) else {
+                        return false;
+                    };
+                    commands.push(CanonicalCommand::CreateOccurrence {
+                        id: occurrence,
+                        definition_id: source.definition_id(),
+                        name: source.name().to_owned(),
+                        transform,
+                        parent: source.parent(),
+                        tag: source.tag(),
+                        visible: source.visible(),
+                    });
+                    next_occurrence = occurrence.0.checked_add(1);
+                }
+            }
+        }
+        for item in intent.boxes {
+            let feature_count = if item.subtract_boxes.is_empty() { 2 } else { 1 };
+            let (Some(definition), Some(feature), Some(occurrence)) = (
+                next_definition.map(DefinitionId),
+                next_feature.map(FeatureId),
+                next_occurrence.map(OccurrenceId),
+            ) else {
+                self.digest = self.catalog.format(
+                    "assistant-digest-rejected",
+                    &BTreeMap::from([(
+                        "reason",
+                        "assistant model identifiers are exhausted".to_owned(),
+                    )]),
+                );
+                return false;
+            };
+            let [width, depth, height] = item.size_mm;
+            let [x, y, z] = item.origin_mm;
+            let Ok(transform) = Transform::from_translation(x, y, z) else {
+                return false;
+            };
+            commands.push(CanonicalCommand::CreateDefinition {
+                id: definition,
+                name: item.name.clone(),
+            });
+            if item.subtract_boxes.is_empty() {
+                let Some(extrusion) = feature.0.checked_add(1).map(FeatureId) else {
+                    return false;
+                };
+                let Ok(height_dimension) = Dimension::new(height.to_string(), height) else {
+                    return false;
+                };
+                commands.extend([
+                    CanonicalCommand::CreateFeature {
+                        id: feature,
+                        definition_id: definition,
+                        name: format!("{} profile", item.name),
+                        kind: FeatureKind::Profile {
+                            points_mm: vec![[0.0, 0.0], [width, 0.0], [width, depth], [0.0, depth]],
+                        },
+                    },
+                    CanonicalCommand::CreateFeature {
+                        id: extrusion,
+                        definition_id: definition,
+                        name: format!("{} extrusion", item.name),
+                        kind: FeatureKind::Extrusion {
+                            profile: feature,
+                            height: height_dimension,
+                        },
+                    },
+                ]);
+            } else {
+                let Some(mesh) = assistant_subtracted_box_mesh(&item) else {
+                    return false;
+                };
+                commands.push(CanonicalCommand::CreateFeature {
+                    id: feature,
+                    definition_id: definition,
+                    name: format!("{} solid", item.name),
+                    kind: FeatureKind::MeshBody(mesh),
+                });
+            }
+            commands.push(CanonicalCommand::CreateOccurrence {
+                id: occurrence,
+                definition_id: definition,
+                name: item.name,
+                transform,
+                parent: None,
+                tag: None,
+                visible: true,
+            });
+            next_definition = definition.0.checked_add(1);
+            next_feature = feature.0.checked_add(feature_count);
+            next_occurrence = occurrence.0.checked_add(1);
+        }
+        match self.document.prepare_proposal_with_context(
+            CommandBatch::new(commands),
+            ProposalContext::local_assistant_model(),
+        ) {
+            Ok(proposal) => {
+                self.digest = self.catalog.format(
+                    "assistant-digest-preview",
+                    &BTreeMap::from([
+                        (
+                            "reads",
+                            proposal.authoritative_dependencies().len().to_string(),
+                        ),
+                        ("writes", proposal.authoritative_writes().len().to_string()),
+                    ]),
+                );
+                self.status_key = "status-preview";
+                self.assistant_verification = None;
+                self.assistant_proposal = Some(proposal);
+                true
+            }
+            Err(error) => {
+                self.assistant_proposal = None;
+                self.digest = self.catalog.format(
+                    "assistant-digest-rejected",
+                    &BTreeMap::from([("reason", error.to_string())]),
+                );
+                false
+            }
+        }
+    }
+
+    pub fn apply_assistant_model_intent(&mut self, intent: AssistantModelIntent) -> bool {
+        self.prepare_assistant_model_intent(intent) && self.confirm_assistant_proposal()
+    }
+
+    fn poll_assistant_chat(&mut self) {
+        let Some(task) = self.assistant_chat_task.as_ref() else {
+            return;
+        };
+        let source = task.source.clone();
+        let request_document_id = task.document_id;
+        let request_revision_id = task.revision_id;
+        let request_canonical_digest = task.canonical_digest.clone();
+        match task.receiver.try_recv() {
+            Ok(result) => {
+                self.assistant_chat_task = None;
+                match result {
+                    Ok(result) => {
+                        if let Some(intent) = result.model_intent {
+                            let snapshot = self.document.current();
+                            if snapshot.document_id() != request_document_id
+                                || snapshot.revision_id() != request_revision_id
+                                || snapshot.canonical_digest() != request_canonical_digest
+                            {
+                                self.assistant_messages.push(AssistantChatMessage {
+                                    role: AssistantMessageRole::Error,
+                                    text: self.catalog.text("assistant-error-stale-response"),
+                                    source: self.catalog.text("assistant-role-error"),
+                                });
+                            } else if self.apply_assistant_model_intent(intent) {
+                                self.assistant_messages.push(AssistantChatMessage {
+                                    role: AssistantMessageRole::Assistant,
+                                    text: result.message,
+                                    source,
+                                });
+                            } else {
+                                self.assistant_messages.push(AssistantChatMessage {
+                                    role: AssistantMessageRole::Error,
+                                    text: self.catalog.text("assistant-error-rejected-change"),
+                                    source: self.catalog.text("assistant-role-error"),
+                                });
+                            }
+                        } else {
+                            self.assistant_messages.push(AssistantChatMessage {
+                                role: AssistantMessageRole::Assistant,
+                                text: result.message,
+                                source,
+                            });
+                        }
+                    }
+                    Err(text) => self.assistant_messages.push(AssistantChatMessage {
+                        role: AssistantMessageRole::Error,
+                        text,
+                        source,
+                    }),
+                }
+                self.store_assistant_conversation();
+            }
+            Err(TryRecvError::Empty) => {}
+            Err(TryRecvError::Disconnected) => {
+                self.assistant_chat_task = None;
+                self.assistant_messages.push(AssistantChatMessage {
+                    role: AssistantMessageRole::Error,
+                    text: self.catalog.text("assistant-error-disconnected"),
+                    source,
+                });
+            }
+        }
     }
 
     #[must_use]
@@ -2573,6 +3373,62 @@ impl KetchupApp {
 
     fn exact_projection(&self, snapshot: &Snapshot) -> ExactInteractionProjection {
         ExactInteractionProjection::from_snapshot(snapshot, &self.exact_results)
+    }
+
+    fn refresh_interaction_projection_cache(&self, snapshot: &Snapshot) {
+        let digest = snapshot.canonical_digest();
+        let rebuild = self
+            .interaction_projection_cache
+            .borrow()
+            .as_ref()
+            .is_none_or(|cache| {
+                cache.document_id != snapshot.document_id()
+                    || cache.revision_id != snapshot.revision_id()
+                    || cache.digest != digest
+                    || cache.edit_context != self.selection.edit_context
+                    || cache.exact_result_count != self.exact_results.len()
+            });
+        if rebuild {
+            let active_context_paths = self
+                .active_scene_query()
+                .into_iter()
+                .map(|occurrence| occurrence.instance_path)
+                .collect::<BTreeSet<_>>();
+            let exact = ExactInteractionProjection::from_snapshot_where(
+                snapshot,
+                &self.exact_results,
+                |path| active_context_paths.contains(path),
+            );
+            let mesh = MeshInteractionProjection::from_snapshot_where(snapshot, |path| {
+                active_context_paths.contains(path) && !exact.contains_occurrence(path)
+            });
+            let projection = CanonicalInteractionProjection::from_snapshot(snapshot);
+            let boxes = projection
+                .scene_where(|occurrence| {
+                    active_context_paths.contains(&occurrence.instance_path)
+                        && !exact.contains_occurrence(&occurrence.instance_path)
+                        && !mesh.contains_occurrence(&occurrence.instance_path)
+                        && occurrence.local_box.is_some()
+                })
+                .expect("canonical visible box projections are valid");
+            let proxies = projection
+                .scene_where(|occurrence| {
+                    active_context_paths.contains(&occurrence.instance_path)
+                        && occurrence.local_box.is_some()
+                })
+                .expect("canonical visible proxy projections are valid");
+            *self.interaction_projection_cache.borrow_mut() = Some(InteractionProjectionCache {
+                document_id: snapshot.document_id(),
+                revision_id: snapshot.revision_id(),
+                digest,
+                edit_context: self.selection.edit_context.clone(),
+                exact_result_count: self.exact_results.len(),
+                exact,
+                mesh,
+                boxes,
+                proxies,
+            });
+        }
     }
 
     #[must_use]
@@ -8291,6 +9147,45 @@ impl KetchupApp {
         (distance >= 0.0).then(|| ray.origin + ray.direction * distance)
     }
 
+    pub fn zoom_at_screen(&mut self, pointer: Pos2, rect: Rect, scroll: f32) {
+        let anchor = self
+            .surface_point_at_screen(pointer, rect)
+            .or_else(|| self.screen_to_plane(pointer, rect, self.camera_target_z));
+        let Some(anchor) = anchor else {
+            return;
+        };
+        let old_position = self.project(anchor, rect);
+        let new_zoom = (self.zoom * (scroll * 0.001).exp()).clamp(MIN_CAMERA_ZOOM, MAX_CAMERA_ZOOM);
+        if new_zoom == self.zoom {
+            return;
+        }
+        self.zoom = new_zoom;
+        self.refresh_camera_distance();
+        let new_position = self.project(anchor, rect);
+        self.pan += old_position - new_position;
+    }
+
+    fn surface_point_at_screen(&self, pointer: Pos2, rect: Rect) -> Option<Vec3> {
+        let ray = self.view_ray(pointer, rect)?;
+        let snapshot = self.document.current();
+        let exact = self
+            .exact_projection(&snapshot)
+            .exact_surface_pick(ray)
+            .map(|hit| (hit.ray_distance_mm, hit.position_mm));
+        let mesh = MeshInteractionProjection::from_snapshot(&snapshot)
+            .exact_surface_pick(ray)
+            .map(|hit| (hit.ray_distance_mm, hit.position_mm));
+        [exact, mesh]
+            .into_iter()
+            .flatten()
+            .min_by(|left, right| left.0.total_cmp(&right.0))
+            .map(|(_, point)| point)
+            .or_else(|| {
+                self.pick_result_at_screen(pointer, rect, 8.0)
+                    .map(|pick| pick.primary.position_mm)
+            })
+    }
+
     fn rectangle_plane_z(&self, pointer: Pos2, rect: Rect) -> f64 {
         let Some(selection) = self.exact_pick_at_screen(pointer, rect) else {
             return 0.0;
@@ -8707,7 +9602,8 @@ impl KetchupApp {
                     || self.rectangle_plane_z(pointer, response.rect),
                     |start| start.z,
                 );
-                if let Some(point) = self.viewport_point_at_screen(pointer, response.rect, plane_z)
+                if let Some(point) =
+                    self.measurement_point_at_screen(pointer, response.rect, plane_z)
                 {
                     self.add_measured_point(point);
                 }
@@ -8881,7 +9777,7 @@ impl KetchupApp {
         if let Some(start) = self.measure_anchor()
             && response.hovered()
             && let Some(pointer) = ui.input(|input| input.pointer.hover_pos())
-            && let Some(cursor) = self.viewport_point_at_screen(pointer, response.rect, start.z)
+            && let Some(cursor) = self.measurement_point_at_screen(pointer, response.rect, start.z)
         {
             self.measure_cursor = Some(cursor);
             self.digest = self.measurement_text(start, cursor, "digest-measure-live");
@@ -8898,8 +9794,11 @@ impl KetchupApp {
         }
         if response.hovered() {
             let scroll = ui.input(|input| input.raw_scroll_delta.y);
-            self.zoom =
-                (self.zoom * (scroll * 0.001).exp()).clamp(MIN_CAMERA_ZOOM, MAX_CAMERA_ZOOM);
+            if scroll != 0.0
+                && let Some(pointer) = response.hover_pos()
+            {
+                self.zoom_at_screen(pointer, response.rect, scroll);
+            }
         }
         let forward = Vec3::new(
             -f64::from(self.yaw.sin() * self.pitch.sin()),
@@ -8910,16 +9809,30 @@ impl KetchupApp {
         let move_transform_overrides = self.move_preview_transform_overrides();
         let use_wgpu_scene =
             self.wgpu_target_format.is_some() && !self.has_occurrence_operation_preview();
-        let scene_plan = use_wgpu_scene
-            .then(|| {
-                Arc::new(InstancedRenderPlan::from_snapshot_with_transform_overrides(
+        let scene_plan = if use_wgpu_scene {
+            let preview_active = !move_transform_overrides.is_empty();
+            if preview_active
+                || self
+                    .render_plan
+                    .as_ref()
+                    .is_none_or(|plan| !plan.is_same_revision(&snapshot))
+            {
+                let plan = Arc::new(InstancedRenderPlan::from_snapshot_with_transform_overrides(
                     &snapshot,
                     &self.exact_results,
                     &mut self.render_cache,
                     &move_transform_overrides,
-                ))
-            })
-            .filter(|plan| plan.is_current(&snapshot));
+                ));
+                if !preview_active {
+                    self.render_plan = Some(Arc::clone(&plan));
+                }
+                Some(plan)
+            } else {
+                self.render_plan.clone()
+            }
+        } else {
+            None
+        };
         let exact_projection = self.exact_projection(&snapshot);
         let active_context_paths = self
             .active_scene_query()
@@ -9304,12 +10217,21 @@ impl KetchupApp {
                 Color32::WHITE,
             );
         }
-        if let Some(snap) = self
-            .hover_snap
-            .as_ref()
-            .filter(|snap| snap.kind != SnapKind::Face)
-        {
-            let centre = self.project(snap.position_mm, response.rect);
+        let measure_vertex = (self.active_tool == ActiveTool::Measure)
+            .then(|| {
+                ui.input(|input| input.pointer.hover_pos())
+                    .and_then(|pointer| {
+                        self.nearest_model_vertex_at_screen(pointer, response.rect, 12.0)
+                    })
+            })
+            .flatten();
+        if let Some(position) = measure_vertex.or_else(|| {
+            self.hover_snap
+                .as_ref()
+                .filter(|snap| snap.kind != SnapKind::Face)
+                .map(|snap| snap.position_mm)
+        }) {
+            let centre = self.project(position, response.rect);
             let stroke = Stroke::new(1.5_f32, Color32::from_rgb(80, 206, 190));
             painter.circle_stroke(centre, 6.0, stroke);
             painter.line_segment(
@@ -9393,16 +10315,22 @@ impl KetchupApp {
     ) -> Option<PickResult> {
         let ray = self.view_ray(pointer, rect)?;
         let snapshot = self.document.current();
-        let exact_projection = self.exact_projection(&snapshot);
-        let active_context_paths = self
-            .active_scene_query()
-            .into_iter()
-            .map(|occurrence| occurrence.instance_path)
-            .collect::<BTreeSet<_>>();
-        if let Some(hit) = exact_projection.exact_surface_pick(ray) {
-            if !active_context_paths.contains(&hit.instance_path) {
-                return None;
-            }
+        self.refresh_interaction_projection_cache(&snapshot);
+        let cache = self.interaction_projection_cache.borrow();
+        let cache = cache.as_ref().expect("interaction cache was built");
+        let scale = f64::from(self.zoom) * f64::from(rect.width().min(rect.height())) / 420.0;
+        let exact_hit = cache.exact.exact_surface_pick(ray);
+        let mesh_hit = cache.mesh.exact_surface_pick(ray);
+        let box_pick = cache.boxes.exact_pick(ray, tolerance_px / scale);
+        let prefer_exact = exact_hit.as_ref().is_some_and(|exact| {
+            mesh_hit
+                .as_ref()
+                .is_none_or(|mesh| exact.ray_distance_mm <= mesh.ray_distance_mm)
+                && box_pick
+                    .as_ref()
+                    .is_none_or(|pick| exact.ray_distance_mm <= pick.primary.ray_distance_mm)
+        });
+        if prefer_exact && let Some(hit) = exact_hit {
             let element = hit
                 .durable_target
                 .as_ref()
@@ -9420,10 +10348,7 @@ impl KetchupApp {
                 ray_distance_mm: hit.ray_distance_mm,
             };
             let scale = f64::from(self.zoom) * f64::from(rect.width().min(rect.height())) / 420.0;
-            let proxy_pick = CanonicalInteractionProjection::from_snapshot(&snapshot)
-                .scene_where(|occurrence| active_context_paths.contains(&occurrence.instance_path))
-                .ok()
-                .and_then(|scene| scene.exact_pick(ray, tolerance_px / scale));
+            let proxy_pick = cache.proxies.exact_pick(ray, tolerance_px / scale);
             let snap = proxy_pick
                 .as_ref()
                 .filter(|pick| {
@@ -9448,21 +10373,51 @@ impl KetchupApp {
                 snap,
             });
         }
+        let prefer_mesh = mesh_hit.as_ref().is_some_and(|mesh| {
+            box_pick
+                .as_ref()
+                .is_none_or(|pick| mesh.ray_distance_mm <= pick.primary.ray_distance_mm)
+        });
+        if prefer_mesh && let Some(hit) = mesh_hit {
+            let reference = SelectionId {
+                definition_id: hit.definition_id,
+                instance_path: hit.instance_path,
+                element: face_element_from_normal(hit.outward_normal),
+            };
+            let primary = ExactHit {
+                reference: reference.clone(),
+                position_mm: hit.position_mm,
+                ray_distance_mm: hit.ray_distance_mm,
+            };
+            return Some(PickResult {
+                primary: primary.clone(),
+                overlapping: vec![primary],
+                snap: SnapResult {
+                    kind: SnapKind::Face,
+                    reference,
+                    position_mm: hit.position_mm,
+                    distance_mm: 0.0,
+                },
+            });
+        }
 
-        let projection = CanonicalInteractionProjection::from_snapshot(&snapshot);
-        let scene = projection
-            .scene_where(|occurrence| {
-                active_context_paths.contains(&occurrence.instance_path)
-                    && !exact_projection.contains_occurrence(&occurrence.instance_path)
-            })
-            .ok()?;
-        let scale = f64::from(self.zoom) * f64::from(rect.width().min(rect.height())) / 420.0;
-        scene.exact_pick(ray, tolerance_px / scale)
+        box_pick
     }
 
     fn exact_pick_at_screen(&self, pointer: Pos2, rect: Rect) -> Option<SelectionId> {
         self.pick_result_at_screen(pointer, rect, 8.0)
             .map(|result| result.primary.reference)
+    }
+
+    #[cfg(test)]
+    fn interaction_projection_cache_ptrs(&self) -> Option<(*const (), *const (), *const ())> {
+        let cache = self.interaction_projection_cache.borrow();
+        let cache = cache.as_ref()?;
+        Some((
+            std::ptr::from_ref(&cache.exact).cast(),
+            std::ptr::from_ref(&cache.mesh).cast(),
+            std::ptr::from_ref(&cache.boxes).cast(),
+        ))
     }
 
     fn update_viewport_inference(&mut self, pointer: Option<Pos2>, rect: Rect) {
@@ -9533,6 +10488,49 @@ impl KetchupApp {
                     .map(|snap| snap.position_mm)
             })
             .or_else(|| self.screen_to_plane(pointer, rect, plane_z))
+    }
+
+    pub fn measurement_point_at_screen(
+        &self,
+        pointer: Pos2,
+        rect: Rect,
+        plane_z: f64,
+    ) -> Option<Vec3> {
+        self.nearest_model_vertex_at_screen(pointer, rect, 12.0)
+            .or_else(|| self.viewport_point_at_screen(pointer, rect, plane_z))
+            .or_else(|| self.surface_point_at_screen(pointer, rect))
+    }
+
+    fn nearest_model_vertex_at_screen(
+        &self,
+        pointer: Pos2,
+        rect: Rect,
+        tolerance_px: f32,
+    ) -> Option<Vec3> {
+        let snapshot = self.document.current();
+        snapshot
+            .scene_query()
+            .into_iter()
+            .filter(|occurrence| occurrence.visible)
+            .filter_map(|occurrence| {
+                let definition = snapshot.definition(occurrence.definition_id)?;
+                let vertices = definition.feature_ids().iter().find_map(|feature_id| {
+                    let FeatureKind::MeshBody(mesh) = snapshot.feature(*feature_id)?.kind() else {
+                        return None;
+                    };
+                    Some(&mesh.vertices_mm)
+                })?;
+                Some((occurrence.transform, vertices))
+            })
+            .flat_map(|(transform, vertices)| {
+                vertices.iter().map(move |point| {
+                    transform_model_point(transform, Vec3::new(point[0], point[1], point[2]))
+                })
+            })
+            .map(|point| (self.project(point, rect).distance(pointer), point))
+            .filter(|(distance, _)| *distance <= tolerance_px)
+            .min_by(|left, right| left.0.total_cmp(&right.0))
+            .map(|(_, point)| point)
     }
 
     fn profile_special_snap_at_screen(
@@ -11668,364 +12666,579 @@ impl KetchupApp {
     }
 
     fn show_assistant(&mut self, ui: &mut egui::Ui) {
-        section_header(ui, self.palette(), &self.catalog.text("assistant-title"));
-        ui.small(self.catalog.text("assistant-boundary"));
-        egui::ComboBox::from_label(self.catalog.text("assistant-intent"))
-            .selected_text(self.catalog.text(match self.assistant_intent_kind {
-                AssistantIntentKind::CreateEvaluatorInput => {
-                    "assistant-intent-create-evaluator-input"
-                }
-                AssistantIntentKind::CreateEvaluatorExpression => {
-                    "assistant-intent-create-evaluator-expression"
-                }
-                AssistantIntentKind::CreateEvaluatorRule => {
-                    "assistant-intent-create-evaluator-rule"
-                }
-                AssistantIntentKind::CreateRuleOverride => "assistant-intent-create-rule-override",
-                AssistantIntentKind::DeleteRuleOverride => "assistant-intent-delete-rule-override",
-                AssistantIntentKind::CreateFeatureParameterBinding => {
-                    "assistant-intent-create-feature-parameter-binding"
-                }
-                AssistantIntentKind::DeleteFeatureParameterBinding => {
-                    "assistant-intent-delete-feature-parameter-binding"
-                }
-                AssistantIntentKind::CreatePersistentDimension => {
-                    "assistant-intent-create-persistent-dimension"
-                }
-                AssistantIntentKind::CreateSpace => "assistant-intent-create-space",
-                AssistantIntentKind::CreateClearanceVolume => {
-                    "assistant-intent-create-clearance-volume"
-                }
-                AssistantIntentKind::CreateJoint => "assistant-intent-create-joint",
-                AssistantIntentKind::CloneProfileDefinitionAndRepoint => {
-                    "assistant-intent-clone-profile-definition"
-                }
-                AssistantIntentKind::ConvertEmptyGroupToComponent => {
-                    "assistant-intent-convert-empty-group"
-                }
-                AssistantIntentKind::RecomputeFeatureParameter => {
-                    "assistant-intent-recompute-feature-parameter"
-                }
-                AssistantIntentKind::DeleteJoint => "assistant-intent-delete-joint",
-                AssistantIntentKind::DeleteSpace => "assistant-intent-delete-space",
-                AssistantIntentKind::DeleteClearanceVolume => {
-                    "assistant-intent-delete-clearance-volume"
-                }
-                AssistantIntentKind::DeletePersistentDimension => {
-                    "assistant-intent-delete-persistent-dimension"
-                }
-                AssistantIntentKind::RuleDimension => "assistant-intent-rule",
-                AssistantIntentKind::EvaluatorName => "assistant-intent-evaluator-name",
-                AssistantIntentKind::EvaluatorExpression => "assistant-intent-evaluator-expression",
-                AssistantIntentKind::RuleOutputs => "assistant-intent-rule-outputs",
-                AssistantIntentKind::FeatureDimension => "assistant-intent-feature",
-                AssistantIntentKind::BottleControlDimension => {
-                    "assistant-intent-bottle-control-dimension"
-                }
-                AssistantIntentKind::BottleEdgeFinishKind => "assistant-intent-bottle-finish-kind",
-                AssistantIntentKind::ProfilePoints => "assistant-intent-profile-points",
-                AssistantIntentKind::DefinitionName => "assistant-intent-definition-name",
-                AssistantIntentKind::OccurrenceVisibility => {
-                    "assistant-intent-occurrence-visibility"
-                }
-                AssistantIntentKind::TagVisibility => "assistant-intent-tag-visibility",
-                AssistantIntentKind::OccurrenceTag => "assistant-intent-occurrence-tag",
-                AssistantIntentKind::OccurrenceDefinition => {
-                    "assistant-intent-occurrence-definition"
-                }
-                AssistantIntentKind::OccurrenceParent => "assistant-intent-occurrence-parent",
-                AssistantIntentKind::OccurrenceTranslation => {
-                    "assistant-intent-occurrence-translation"
-                }
-                AssistantIntentKind::GroupTranslation => "assistant-intent-group-translation",
-                AssistantIntentKind::GroupParent => "assistant-intent-group-parent",
-                AssistantIntentKind::CollectionOccurrences => {
-                    "assistant-intent-collection-occurrences"
-                }
-                AssistantIntentKind::CreateTag => "assistant-intent-create-tag",
-                AssistantIntentKind::DeleteTag => "assistant-intent-delete-tag",
-                AssistantIntentKind::CreateCollection => "assistant-intent-create-collection",
-                AssistantIntentKind::DeleteCollection => "assistant-intent-delete-collection",
-                AssistantIntentKind::DeleteGroup => "assistant-intent-delete-group",
-                AssistantIntentKind::DeleteOccurrence => "assistant-intent-delete-occurrence",
-                AssistantIntentKind::CreateDefinition => "assistant-intent-create-definition",
-                AssistantIntentKind::DeleteDefinition => "assistant-intent-delete-definition",
-                AssistantIntentKind::CreateProfileFeature => {
-                    "assistant-intent-create-profile-feature"
-                }
-                AssistantIntentKind::DeleteProfileFeature => {
-                    "assistant-intent-delete-profile-feature"
-                }
-                AssistantIntentKind::CreateGroup => "assistant-intent-create-group",
-                AssistantIntentKind::CreateOccurrence => "assistant-intent-create-occurrence",
-            }))
+        let palette = self.palette();
+        ui.horizontal(|ui| {
+            section_header(ui, palette, &self.catalog.text("assistant-title"));
+        });
+        ui.horizontal_wrapped(|ui| {
+            if ui.button(self.catalog.text("assistant-new-chat")).clicked() {
+                self.new_assistant_chat();
+            }
+            let mode_label = match self.assistant_workspace_mode {
+                AssistantWorkspaceMode::Dock => self.catalog.text("assistant-open-tab"),
+                AssistantWorkspaceMode::Tab => self.catalog.text("assistant-dock-right"),
+            };
+            if ui.button(mode_label).clicked() {
+                self.assistant_workspace_mode = match self.assistant_workspace_mode {
+                    AssistantWorkspaceMode::Dock => AssistantWorkspaceMode::Tab,
+                    AssistantWorkspaceMode::Tab => AssistantWorkspaceMode::Dock,
+                };
+            }
+        });
+        let conversation_document = self
+            .document_path
+            .as_deref()
+            .and_then(Path::file_name)
+            .map_or_else(
+                || self.catalog.text("document-untitled"),
+                |name| name.to_string_lossy().into_owned(),
+            );
+        ui.label(
+            egui::RichText::new(self.catalog.format(
+                "assistant-conversation-document",
+                &BTreeMap::from([("document", conversation_document)]),
+            ))
+            .strong()
+            .color(palette.text),
+        );
+        ui.label(
+            egui::RichText::new(self.catalog.text("assistant-boundary"))
+                .small()
+                .color(palette.dim),
+        );
+        let previous_provider = self.assistant_provider;
+        ui.label(
+            egui::RichText::new(self.catalog.text("assistant-provider"))
+                .small()
+                .color(palette.dim),
+        );
+        egui::ComboBox::from_id_salt("assistant-provider")
+            .width(ui.available_width())
+            .selected_text(self.catalog.text(self.assistant_provider.label_key()))
             .show_ui(ui, |ui| {
                 ui.selectable_value(
-                    &mut self.assistant_intent_kind,
-                    AssistantIntentKind::CreateEvaluatorInput,
-                    self.catalog.text("assistant-intent-create-evaluator-input"),
+                    &mut self.assistant_provider,
+                    AssistantProvider::AnthropicApi,
+                    self.catalog.text("assistant-provider-anthropic-api"),
                 );
                 ui.selectable_value(
-                    &mut self.assistant_intent_kind,
-                    AssistantIntentKind::CreateEvaluatorExpression,
-                    self.catalog
-                        .text("assistant-intent-create-evaluator-expression"),
+                    &mut self.assistant_provider,
+                    AssistantProvider::OpenAiApi,
+                    self.catalog.text("assistant-provider-openai-api"),
                 );
+                #[cfg(feature = "private-oauth")]
                 ui.selectable_value(
-                    &mut self.assistant_intent_kind,
-                    AssistantIntentKind::CreateEvaluatorRule,
-                    self.catalog.text("assistant-intent-create-evaluator-rule"),
+                    &mut self.assistant_provider,
+                    AssistantProvider::ClaudeCodeOauth,
+                    self.catalog.text("assistant-provider-claude-oauth"),
                 );
+                #[cfg(feature = "private-oauth")]
                 ui.selectable_value(
-                    &mut self.assistant_intent_kind,
-                    AssistantIntentKind::CreateRuleOverride,
-                    self.catalog.text("assistant-intent-create-rule-override"),
-                );
-                ui.selectable_value(
-                    &mut self.assistant_intent_kind,
-                    AssistantIntentKind::DeleteRuleOverride,
-                    self.catalog.text("assistant-intent-delete-rule-override"),
-                );
-                ui.selectable_value(
-                    &mut self.assistant_intent_kind,
-                    AssistantIntentKind::CreateFeatureParameterBinding,
-                    self.catalog
-                        .text("assistant-intent-create-feature-parameter-binding"),
-                );
-                ui.selectable_value(
-                    &mut self.assistant_intent_kind,
-                    AssistantIntentKind::DeleteFeatureParameterBinding,
-                    self.catalog
-                        .text("assistant-intent-delete-feature-parameter-binding"),
-                );
-                ui.selectable_value(
-                    &mut self.assistant_intent_kind,
-                    AssistantIntentKind::CreatePersistentDimension,
-                    self.catalog
-                        .text("assistant-intent-create-persistent-dimension"),
-                );
-                ui.selectable_value(
-                    &mut self.assistant_intent_kind,
-                    AssistantIntentKind::CreateSpace,
-                    self.catalog.text("assistant-intent-create-space"),
-                );
-                ui.selectable_value(
-                    &mut self.assistant_intent_kind,
-                    AssistantIntentKind::CreateClearanceVolume,
-                    self.catalog
-                        .text("assistant-intent-create-clearance-volume"),
-                );
-                ui.selectable_value(
-                    &mut self.assistant_intent_kind,
-                    AssistantIntentKind::CreateJoint,
-                    self.catalog.text("assistant-intent-create-joint"),
-                );
-                ui.selectable_value(
-                    &mut self.assistant_intent_kind,
-                    AssistantIntentKind::CloneProfileDefinitionAndRepoint,
-                    self.catalog
-                        .text("assistant-intent-clone-profile-definition"),
-                );
-                ui.selectable_value(
-                    &mut self.assistant_intent_kind,
-                    AssistantIntentKind::ConvertEmptyGroupToComponent,
-                    self.catalog.text("assistant-intent-convert-empty-group"),
-                );
-                ui.selectable_value(
-                    &mut self.assistant_intent_kind,
-                    AssistantIntentKind::RecomputeFeatureParameter,
-                    self.catalog
-                        .text("assistant-intent-recompute-feature-parameter"),
-                );
-                ui.selectable_value(
-                    &mut self.assistant_intent_kind,
-                    AssistantIntentKind::DeleteJoint,
-                    self.catalog.text("assistant-intent-delete-joint"),
-                );
-                ui.selectable_value(
-                    &mut self.assistant_intent_kind,
-                    AssistantIntentKind::DeleteSpace,
-                    self.catalog.text("assistant-intent-delete-space"),
-                );
-                ui.selectable_value(
-                    &mut self.assistant_intent_kind,
-                    AssistantIntentKind::DeleteClearanceVolume,
-                    self.catalog
-                        .text("assistant-intent-delete-clearance-volume"),
-                );
-                ui.selectable_value(
-                    &mut self.assistant_intent_kind,
-                    AssistantIntentKind::DeletePersistentDimension,
-                    self.catalog
-                        .text("assistant-intent-delete-persistent-dimension"),
-                );
-                ui.selectable_value(
-                    &mut self.assistant_intent_kind,
-                    AssistantIntentKind::RuleDimension,
-                    self.catalog.text("assistant-intent-rule"),
-                );
-                ui.selectable_value(
-                    &mut self.assistant_intent_kind,
-                    AssistantIntentKind::EvaluatorName,
-                    self.catalog.text("assistant-intent-evaluator-name"),
-                );
-                ui.selectable_value(
-                    &mut self.assistant_intent_kind,
-                    AssistantIntentKind::EvaluatorExpression,
-                    self.catalog.text("assistant-intent-evaluator-expression"),
-                );
-                ui.selectable_value(
-                    &mut self.assistant_intent_kind,
-                    AssistantIntentKind::RuleOutputs,
-                    self.catalog.text("assistant-intent-rule-outputs"),
-                );
-                ui.selectable_value(
-                    &mut self.assistant_intent_kind,
-                    AssistantIntentKind::FeatureDimension,
-                    self.catalog.text("assistant-intent-feature"),
-                );
-                ui.selectable_value(
-                    &mut self.assistant_intent_kind,
-                    AssistantIntentKind::BottleControlDimension,
-                    self.catalog
-                        .text("assistant-intent-bottle-control-dimension"),
-                );
-                ui.selectable_value(
-                    &mut self.assistant_intent_kind,
-                    AssistantIntentKind::BottleEdgeFinishKind,
-                    self.catalog.text("assistant-intent-bottle-finish-kind"),
-                );
-                ui.selectable_value(
-                    &mut self.assistant_intent_kind,
-                    AssistantIntentKind::ProfilePoints,
-                    self.catalog.text("assistant-intent-profile-points"),
-                );
-                ui.selectable_value(
-                    &mut self.assistant_intent_kind,
-                    AssistantIntentKind::DefinitionName,
-                    self.catalog.text("assistant-intent-definition-name"),
-                );
-                ui.selectable_value(
-                    &mut self.assistant_intent_kind,
-                    AssistantIntentKind::OccurrenceVisibility,
-                    self.catalog.text("assistant-intent-occurrence-visibility"),
-                );
-                ui.selectable_value(
-                    &mut self.assistant_intent_kind,
-                    AssistantIntentKind::TagVisibility,
-                    self.catalog.text("assistant-intent-tag-visibility"),
-                );
-                ui.selectable_value(
-                    &mut self.assistant_intent_kind,
-                    AssistantIntentKind::OccurrenceTranslation,
-                    self.catalog.text("assistant-intent-occurrence-translation"),
-                );
-                ui.selectable_value(
-                    &mut self.assistant_intent_kind,
-                    AssistantIntentKind::OccurrenceTag,
-                    self.catalog.text("assistant-intent-occurrence-tag"),
-                );
-                ui.selectable_value(
-                    &mut self.assistant_intent_kind,
-                    AssistantIntentKind::OccurrenceDefinition,
-                    self.catalog.text("assistant-intent-occurrence-definition"),
-                );
-                ui.selectable_value(
-                    &mut self.assistant_intent_kind,
-                    AssistantIntentKind::OccurrenceParent,
-                    self.catalog.text("assistant-intent-occurrence-parent"),
-                );
-                ui.selectable_value(
-                    &mut self.assistant_intent_kind,
-                    AssistantIntentKind::GroupTranslation,
-                    self.catalog.text("assistant-intent-group-translation"),
-                );
-                ui.selectable_value(
-                    &mut self.assistant_intent_kind,
-                    AssistantIntentKind::GroupParent,
-                    self.catalog.text("assistant-intent-group-parent"),
-                );
-                ui.selectable_value(
-                    &mut self.assistant_intent_kind,
-                    AssistantIntentKind::CollectionOccurrences,
-                    self.catalog.text("assistant-intent-collection-occurrences"),
-                );
-                ui.selectable_value(
-                    &mut self.assistant_intent_kind,
-                    AssistantIntentKind::CreateTag,
-                    self.catalog.text("assistant-intent-create-tag"),
-                );
-                ui.selectable_value(
-                    &mut self.assistant_intent_kind,
-                    AssistantIntentKind::DeleteTag,
-                    self.catalog.text("assistant-intent-delete-tag"),
-                );
-                ui.selectable_value(
-                    &mut self.assistant_intent_kind,
-                    AssistantIntentKind::CreateCollection,
-                    self.catalog.text("assistant-intent-create-collection"),
-                );
-                ui.selectable_value(
-                    &mut self.assistant_intent_kind,
-                    AssistantIntentKind::DeleteCollection,
-                    self.catalog.text("assistant-intent-delete-collection"),
-                );
-                ui.selectable_value(
-                    &mut self.assistant_intent_kind,
-                    AssistantIntentKind::DeleteGroup,
-                    self.catalog.text("assistant-intent-delete-group"),
-                );
-                ui.selectable_value(
-                    &mut self.assistant_intent_kind,
-                    AssistantIntentKind::DeleteOccurrence,
-                    self.catalog.text("assistant-intent-delete-occurrence"),
-                );
-                ui.selectable_value(
-                    &mut self.assistant_intent_kind,
-                    AssistantIntentKind::CreateDefinition,
-                    self.catalog.text("assistant-intent-create-definition"),
-                );
-                ui.selectable_value(
-                    &mut self.assistant_intent_kind,
-                    AssistantIntentKind::DeleteDefinition,
-                    self.catalog.text("assistant-intent-delete-definition"),
-                );
-                ui.selectable_value(
-                    &mut self.assistant_intent_kind,
-                    AssistantIntentKind::CreateProfileFeature,
-                    self.catalog.text("assistant-intent-create-profile-feature"),
-                );
-                ui.selectable_value(
-                    &mut self.assistant_intent_kind,
-                    AssistantIntentKind::DeleteProfileFeature,
-                    self.catalog.text("assistant-intent-delete-profile-feature"),
-                );
-                ui.selectable_value(
-                    &mut self.assistant_intent_kind,
-                    AssistantIntentKind::CreateGroup,
-                    self.catalog.text("assistant-intent-create-group"),
-                );
-                ui.selectable_value(
-                    &mut self.assistant_intent_kind,
-                    AssistantIntentKind::CreateOccurrence,
-                    self.catalog.text("assistant-intent-create-occurrence"),
+                    &mut self.assistant_provider,
+                    AssistantProvider::CodexOauth,
+                    self.catalog.text("assistant-provider-codex-oauth"),
                 );
             });
-        egui::Grid::new("assistant-intent-inputs").show(ui, |ui| {
-            ui.label(self.catalog.text("assistant-target"));
-            ui.text_edit_singleline(&mut self.assistant_target_input);
-            ui.end_row();
-            ui.label(self.catalog.text("assistant-value-label"))
-                .on_hover_text(self.catalog.text("assistant-value"));
-            ui.text_edit_singleline(&mut self.assistant_value_input);
-            ui.end_row();
-        });
-        if ui.button(self.catalog.text("assistant-preview")).clicked() {
-            self.prepare_assistant_from_inputs();
+        if self.assistant_provider != previous_provider {
+            self.assistant_model = self.assistant_provider.default_model().to_owned();
+        }
+        let models = self.assistant_models();
+        ui.label(
+            egui::RichText::new(self.catalog.text("assistant-model"))
+                .small()
+                .color(palette.dim),
+        );
+        egui::ComboBox::from_id_salt("assistant-model")
+            .width(ui.available_width())
+            .selected_text(&self.assistant_model)
+            .show_ui(ui, |ui| {
+                for model in models {
+                    ui.selectable_value(&mut self.assistant_model, model.clone(), model);
+                }
+            });
+        let messages_height = if self.assistant_workspace_mode == AssistantWorkspaceMode::Tab {
+            (ui.available_height() - 210.0).max(260.0)
+        } else {
+            (ui.available_height() - 330.0).clamp(220.0, 420.0)
+        };
+        egui::Frame::new()
+            .fill(palette.panel)
+            .stroke(Stroke::new(1.0_f32, palette.line))
+            .corner_radius(egui::CornerRadius::same(6))
+            .inner_margin(egui::Margin::same(10))
+            .show(ui, |ui| {
+                egui::ScrollArea::vertical()
+                    .stick_to_bottom(true)
+                    .max_height(messages_height)
+                    .show(ui, |ui| {
+                        if self.assistant_messages.is_empty() {
+                            ui.weak(self.catalog.text("assistant-empty-chat"));
+                        }
+                        for message in &self.assistant_messages {
+                            let (heading, fill, stroke) = match message.role {
+                                AssistantMessageRole::User => (
+                                    self.catalog.text("assistant-role-you"),
+                                    palette.accent_wash(if palette.dark { 42 } else { 28 }),
+                                    palette.accent,
+                                ),
+                                AssistantMessageRole::Assistant => (
+                                    self.catalog.text("assistant-role-assistant"),
+                                    palette.panel2,
+                                    palette.line,
+                                ),
+                                AssistantMessageRole::Error => (
+                                    self.catalog.text("assistant-role-error"),
+                                    Color32::from_rgba_unmultiplied(180, 44, 44, 52),
+                                    Color32::from_rgb(210, 72, 72),
+                                ),
+                            };
+                            egui::Frame::new()
+                                .fill(fill)
+                                .stroke(Stroke::new(1.0_f32, stroke))
+                                .corner_radius(egui::CornerRadius::same(6))
+                                .inner_margin(egui::Margin::same(8))
+                                .show(ui, |ui| {
+                                    ui.set_width(ui.available_width());
+                                    ui.horizontal_wrapped(|ui| {
+                                        ui.strong(heading);
+                                        ui.label(
+                                            egui::RichText::new(&message.source)
+                                                .small()
+                                                .color(palette.dim),
+                                        );
+                                    });
+                                    ui.horizontal_wrapped(|ui| {
+                                        ui.add(
+                                            egui::Label::new(&message.text).wrap().selectable(true),
+                                        );
+                                        if ui
+                                            .small_button(
+                                                self.catalog.text("assistant-copy-message"),
+                                            )
+                                            .clicked()
+                                        {
+                                            ui.ctx().copy_text(message.text.clone());
+                                        }
+                                    });
+                                });
+                            ui.add_space(8.0);
+                        }
+                        if self.assistant_chat_task.is_some() {
+                            ui.weak(self.catalog.text("assistant-thinking"));
+                        }
+                    });
+            });
+        let send_shortcut =
+            ui.input(|input| input.key_pressed(egui::Key::Enter) && input.modifiers.ctrl);
+        ui.add(
+            egui::TextEdit::multiline(&mut self.assistant_input)
+                .hint_text(self.catalog.text("assistant-input-hint"))
+                .desired_width(f32::INFINITY)
+                .desired_rows(
+                    if self.assistant_workspace_mode == AssistantWorkspaceMode::Tab {
+                        4
+                    } else {
+                        3
+                    },
+                ),
+        );
+        let send = ui
+            .add_enabled(
+                self.assistant_chat_task.is_none() && !self.assistant_input.trim().is_empty(),
+                egui::Button::new(self.catalog.text("assistant-send"))
+                    .min_size(Vec2::new(ui.available_width(), 32.0)),
+            )
+            .clicked();
+        if send || send_shortcut {
+            self.send_assistant_message(ui.ctx());
         }
 
-        let mut confirm = false;
-        let mut cancel = false;
+        egui::CollapsingHeader::new(self.catalog.text("assistant-advanced-tools"))
+            .default_open(false)
+            .show(ui, |ui| {
+                egui::ComboBox::from_label(self.catalog.text("assistant-intent"))
+                    .selected_text(self.catalog.text(match self.assistant_intent_kind {
+                        AssistantIntentKind::CreateEvaluatorInput => {
+                            "assistant-intent-create-evaluator-input"
+                        }
+                        AssistantIntentKind::CreateEvaluatorExpression => {
+                            "assistant-intent-create-evaluator-expression"
+                        }
+                        AssistantIntentKind::CreateEvaluatorRule => {
+                            "assistant-intent-create-evaluator-rule"
+                        }
+                        AssistantIntentKind::CreateRuleOverride => {
+                            "assistant-intent-create-rule-override"
+                        }
+                        AssistantIntentKind::DeleteRuleOverride => {
+                            "assistant-intent-delete-rule-override"
+                        }
+                        AssistantIntentKind::CreateFeatureParameterBinding => {
+                            "assistant-intent-create-feature-parameter-binding"
+                        }
+                        AssistantIntentKind::DeleteFeatureParameterBinding => {
+                            "assistant-intent-delete-feature-parameter-binding"
+                        }
+                        AssistantIntentKind::CreatePersistentDimension => {
+                            "assistant-intent-create-persistent-dimension"
+                        }
+                        AssistantIntentKind::CreateSpace => "assistant-intent-create-space",
+                        AssistantIntentKind::CreateClearanceVolume => {
+                            "assistant-intent-create-clearance-volume"
+                        }
+                        AssistantIntentKind::CreateJoint => "assistant-intent-create-joint",
+                        AssistantIntentKind::CloneProfileDefinitionAndRepoint => {
+                            "assistant-intent-clone-profile-definition"
+                        }
+                        AssistantIntentKind::ConvertEmptyGroupToComponent => {
+                            "assistant-intent-convert-empty-group"
+                        }
+                        AssistantIntentKind::RecomputeFeatureParameter => {
+                            "assistant-intent-recompute-feature-parameter"
+                        }
+                        AssistantIntentKind::DeleteJoint => "assistant-intent-delete-joint",
+                        AssistantIntentKind::DeleteSpace => "assistant-intent-delete-space",
+                        AssistantIntentKind::DeleteClearanceVolume => {
+                            "assistant-intent-delete-clearance-volume"
+                        }
+                        AssistantIntentKind::DeletePersistentDimension => {
+                            "assistant-intent-delete-persistent-dimension"
+                        }
+                        AssistantIntentKind::RuleDimension => "assistant-intent-rule",
+                        AssistantIntentKind::EvaluatorName => "assistant-intent-evaluator-name",
+                        AssistantIntentKind::EvaluatorExpression => {
+                            "assistant-intent-evaluator-expression"
+                        }
+                        AssistantIntentKind::RuleOutputs => "assistant-intent-rule-outputs",
+                        AssistantIntentKind::FeatureDimension => "assistant-intent-feature",
+                        AssistantIntentKind::BottleControlDimension => {
+                            "assistant-intent-bottle-control-dimension"
+                        }
+                        AssistantIntentKind::BottleEdgeFinishKind => {
+                            "assistant-intent-bottle-finish-kind"
+                        }
+                        AssistantIntentKind::ProfilePoints => "assistant-intent-profile-points",
+                        AssistantIntentKind::DefinitionName => "assistant-intent-definition-name",
+                        AssistantIntentKind::OccurrenceVisibility => {
+                            "assistant-intent-occurrence-visibility"
+                        }
+                        AssistantIntentKind::TagVisibility => "assistant-intent-tag-visibility",
+                        AssistantIntentKind::OccurrenceTag => "assistant-intent-occurrence-tag",
+                        AssistantIntentKind::OccurrenceDefinition => {
+                            "assistant-intent-occurrence-definition"
+                        }
+                        AssistantIntentKind::OccurrenceParent => {
+                            "assistant-intent-occurrence-parent"
+                        }
+                        AssistantIntentKind::OccurrenceTranslation => {
+                            "assistant-intent-occurrence-translation"
+                        }
+                        AssistantIntentKind::GroupTranslation => {
+                            "assistant-intent-group-translation"
+                        }
+                        AssistantIntentKind::GroupParent => "assistant-intent-group-parent",
+                        AssistantIntentKind::CollectionOccurrences => {
+                            "assistant-intent-collection-occurrences"
+                        }
+                        AssistantIntentKind::CreateTag => "assistant-intent-create-tag",
+                        AssistantIntentKind::DeleteTag => "assistant-intent-delete-tag",
+                        AssistantIntentKind::CreateCollection => {
+                            "assistant-intent-create-collection"
+                        }
+                        AssistantIntentKind::DeleteCollection => {
+                            "assistant-intent-delete-collection"
+                        }
+                        AssistantIntentKind::DeleteGroup => "assistant-intent-delete-group",
+                        AssistantIntentKind::DeleteOccurrence => {
+                            "assistant-intent-delete-occurrence"
+                        }
+                        AssistantIntentKind::CreateDefinition => {
+                            "assistant-intent-create-definition"
+                        }
+                        AssistantIntentKind::DeleteDefinition => {
+                            "assistant-intent-delete-definition"
+                        }
+                        AssistantIntentKind::CreateProfileFeature => {
+                            "assistant-intent-create-profile-feature"
+                        }
+                        AssistantIntentKind::DeleteProfileFeature => {
+                            "assistant-intent-delete-profile-feature"
+                        }
+                        AssistantIntentKind::CreateGroup => "assistant-intent-create-group",
+                        AssistantIntentKind::CreateOccurrence => {
+                            "assistant-intent-create-occurrence"
+                        }
+                    }))
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(
+                            &mut self.assistant_intent_kind,
+                            AssistantIntentKind::CreateEvaluatorInput,
+                            self.catalog.text("assistant-intent-create-evaluator-input"),
+                        );
+                        ui.selectable_value(
+                            &mut self.assistant_intent_kind,
+                            AssistantIntentKind::CreateEvaluatorExpression,
+                            self.catalog
+                                .text("assistant-intent-create-evaluator-expression"),
+                        );
+                        ui.selectable_value(
+                            &mut self.assistant_intent_kind,
+                            AssistantIntentKind::CreateEvaluatorRule,
+                            self.catalog.text("assistant-intent-create-evaluator-rule"),
+                        );
+                        ui.selectable_value(
+                            &mut self.assistant_intent_kind,
+                            AssistantIntentKind::CreateRuleOverride,
+                            self.catalog.text("assistant-intent-create-rule-override"),
+                        );
+                        ui.selectable_value(
+                            &mut self.assistant_intent_kind,
+                            AssistantIntentKind::DeleteRuleOverride,
+                            self.catalog.text("assistant-intent-delete-rule-override"),
+                        );
+                        ui.selectable_value(
+                            &mut self.assistant_intent_kind,
+                            AssistantIntentKind::CreateFeatureParameterBinding,
+                            self.catalog
+                                .text("assistant-intent-create-feature-parameter-binding"),
+                        );
+                        ui.selectable_value(
+                            &mut self.assistant_intent_kind,
+                            AssistantIntentKind::DeleteFeatureParameterBinding,
+                            self.catalog
+                                .text("assistant-intent-delete-feature-parameter-binding"),
+                        );
+                        ui.selectable_value(
+                            &mut self.assistant_intent_kind,
+                            AssistantIntentKind::CreatePersistentDimension,
+                            self.catalog
+                                .text("assistant-intent-create-persistent-dimension"),
+                        );
+                        ui.selectable_value(
+                            &mut self.assistant_intent_kind,
+                            AssistantIntentKind::CreateSpace,
+                            self.catalog.text("assistant-intent-create-space"),
+                        );
+                        ui.selectable_value(
+                            &mut self.assistant_intent_kind,
+                            AssistantIntentKind::CreateClearanceVolume,
+                            self.catalog
+                                .text("assistant-intent-create-clearance-volume"),
+                        );
+                        ui.selectable_value(
+                            &mut self.assistant_intent_kind,
+                            AssistantIntentKind::CreateJoint,
+                            self.catalog.text("assistant-intent-create-joint"),
+                        );
+                        ui.selectable_value(
+                            &mut self.assistant_intent_kind,
+                            AssistantIntentKind::CloneProfileDefinitionAndRepoint,
+                            self.catalog
+                                .text("assistant-intent-clone-profile-definition"),
+                        );
+                        ui.selectable_value(
+                            &mut self.assistant_intent_kind,
+                            AssistantIntentKind::ConvertEmptyGroupToComponent,
+                            self.catalog.text("assistant-intent-convert-empty-group"),
+                        );
+                        ui.selectable_value(
+                            &mut self.assistant_intent_kind,
+                            AssistantIntentKind::RecomputeFeatureParameter,
+                            self.catalog
+                                .text("assistant-intent-recompute-feature-parameter"),
+                        );
+                        ui.selectable_value(
+                            &mut self.assistant_intent_kind,
+                            AssistantIntentKind::DeleteJoint,
+                            self.catalog.text("assistant-intent-delete-joint"),
+                        );
+                        ui.selectable_value(
+                            &mut self.assistant_intent_kind,
+                            AssistantIntentKind::DeleteSpace,
+                            self.catalog.text("assistant-intent-delete-space"),
+                        );
+                        ui.selectable_value(
+                            &mut self.assistant_intent_kind,
+                            AssistantIntentKind::DeleteClearanceVolume,
+                            self.catalog
+                                .text("assistant-intent-delete-clearance-volume"),
+                        );
+                        ui.selectable_value(
+                            &mut self.assistant_intent_kind,
+                            AssistantIntentKind::DeletePersistentDimension,
+                            self.catalog
+                                .text("assistant-intent-delete-persistent-dimension"),
+                        );
+                        ui.selectable_value(
+                            &mut self.assistant_intent_kind,
+                            AssistantIntentKind::RuleDimension,
+                            self.catalog.text("assistant-intent-rule"),
+                        );
+                        ui.selectable_value(
+                            &mut self.assistant_intent_kind,
+                            AssistantIntentKind::EvaluatorName,
+                            self.catalog.text("assistant-intent-evaluator-name"),
+                        );
+                        ui.selectable_value(
+                            &mut self.assistant_intent_kind,
+                            AssistantIntentKind::EvaluatorExpression,
+                            self.catalog.text("assistant-intent-evaluator-expression"),
+                        );
+                        ui.selectable_value(
+                            &mut self.assistant_intent_kind,
+                            AssistantIntentKind::RuleOutputs,
+                            self.catalog.text("assistant-intent-rule-outputs"),
+                        );
+                        ui.selectable_value(
+                            &mut self.assistant_intent_kind,
+                            AssistantIntentKind::FeatureDimension,
+                            self.catalog.text("assistant-intent-feature"),
+                        );
+                        ui.selectable_value(
+                            &mut self.assistant_intent_kind,
+                            AssistantIntentKind::BottleControlDimension,
+                            self.catalog
+                                .text("assistant-intent-bottle-control-dimension"),
+                        );
+                        ui.selectable_value(
+                            &mut self.assistant_intent_kind,
+                            AssistantIntentKind::BottleEdgeFinishKind,
+                            self.catalog.text("assistant-intent-bottle-finish-kind"),
+                        );
+                        ui.selectable_value(
+                            &mut self.assistant_intent_kind,
+                            AssistantIntentKind::ProfilePoints,
+                            self.catalog.text("assistant-intent-profile-points"),
+                        );
+                        ui.selectable_value(
+                            &mut self.assistant_intent_kind,
+                            AssistantIntentKind::DefinitionName,
+                            self.catalog.text("assistant-intent-definition-name"),
+                        );
+                        ui.selectable_value(
+                            &mut self.assistant_intent_kind,
+                            AssistantIntentKind::OccurrenceVisibility,
+                            self.catalog.text("assistant-intent-occurrence-visibility"),
+                        );
+                        ui.selectable_value(
+                            &mut self.assistant_intent_kind,
+                            AssistantIntentKind::TagVisibility,
+                            self.catalog.text("assistant-intent-tag-visibility"),
+                        );
+                        ui.selectable_value(
+                            &mut self.assistant_intent_kind,
+                            AssistantIntentKind::OccurrenceTranslation,
+                            self.catalog.text("assistant-intent-occurrence-translation"),
+                        );
+                        ui.selectable_value(
+                            &mut self.assistant_intent_kind,
+                            AssistantIntentKind::OccurrenceTag,
+                            self.catalog.text("assistant-intent-occurrence-tag"),
+                        );
+                        ui.selectable_value(
+                            &mut self.assistant_intent_kind,
+                            AssistantIntentKind::OccurrenceDefinition,
+                            self.catalog.text("assistant-intent-occurrence-definition"),
+                        );
+                        ui.selectable_value(
+                            &mut self.assistant_intent_kind,
+                            AssistantIntentKind::OccurrenceParent,
+                            self.catalog.text("assistant-intent-occurrence-parent"),
+                        );
+                        ui.selectable_value(
+                            &mut self.assistant_intent_kind,
+                            AssistantIntentKind::GroupTranslation,
+                            self.catalog.text("assistant-intent-group-translation"),
+                        );
+                        ui.selectable_value(
+                            &mut self.assistant_intent_kind,
+                            AssistantIntentKind::GroupParent,
+                            self.catalog.text("assistant-intent-group-parent"),
+                        );
+                        ui.selectable_value(
+                            &mut self.assistant_intent_kind,
+                            AssistantIntentKind::CollectionOccurrences,
+                            self.catalog.text("assistant-intent-collection-occurrences"),
+                        );
+                        ui.selectable_value(
+                            &mut self.assistant_intent_kind,
+                            AssistantIntentKind::CreateTag,
+                            self.catalog.text("assistant-intent-create-tag"),
+                        );
+                        ui.selectable_value(
+                            &mut self.assistant_intent_kind,
+                            AssistantIntentKind::DeleteTag,
+                            self.catalog.text("assistant-intent-delete-tag"),
+                        );
+                        ui.selectable_value(
+                            &mut self.assistant_intent_kind,
+                            AssistantIntentKind::CreateCollection,
+                            self.catalog.text("assistant-intent-create-collection"),
+                        );
+                        ui.selectable_value(
+                            &mut self.assistant_intent_kind,
+                            AssistantIntentKind::DeleteCollection,
+                            self.catalog.text("assistant-intent-delete-collection"),
+                        );
+                        ui.selectable_value(
+                            &mut self.assistant_intent_kind,
+                            AssistantIntentKind::DeleteGroup,
+                            self.catalog.text("assistant-intent-delete-group"),
+                        );
+                        ui.selectable_value(
+                            &mut self.assistant_intent_kind,
+                            AssistantIntentKind::DeleteOccurrence,
+                            self.catalog.text("assistant-intent-delete-occurrence"),
+                        );
+                        ui.selectable_value(
+                            &mut self.assistant_intent_kind,
+                            AssistantIntentKind::CreateDefinition,
+                            self.catalog.text("assistant-intent-create-definition"),
+                        );
+                        ui.selectable_value(
+                            &mut self.assistant_intent_kind,
+                            AssistantIntentKind::DeleteDefinition,
+                            self.catalog.text("assistant-intent-delete-definition"),
+                        );
+                        ui.selectable_value(
+                            &mut self.assistant_intent_kind,
+                            AssistantIntentKind::CreateProfileFeature,
+                            self.catalog.text("assistant-intent-create-profile-feature"),
+                        );
+                        ui.selectable_value(
+                            &mut self.assistant_intent_kind,
+                            AssistantIntentKind::DeleteProfileFeature,
+                            self.catalog.text("assistant-intent-delete-profile-feature"),
+                        );
+                        ui.selectable_value(
+                            &mut self.assistant_intent_kind,
+                            AssistantIntentKind::CreateGroup,
+                            self.catalog.text("assistant-intent-create-group"),
+                        );
+                        ui.selectable_value(
+                            &mut self.assistant_intent_kind,
+                            AssistantIntentKind::CreateOccurrence,
+                            self.catalog.text("assistant-intent-create-occurrence"),
+                        );
+                    });
+                egui::Grid::new("assistant-intent-inputs").show(ui, |ui| {
+                    ui.label(self.catalog.text("assistant-target"));
+                    ui.text_edit_singleline(&mut self.assistant_target_input);
+                    ui.end_row();
+                    ui.label(self.catalog.text("assistant-value-label"))
+                        .on_hover_text(self.catalog.text("assistant-value"));
+                    ui.text_edit_singleline(&mut self.assistant_value_input);
+                    ui.end_row();
+                });
+                if ui.button(self.catalog.text("assistant-preview")).clicked()
+                    && self.prepare_assistant_from_inputs()
+                {
+                    self.confirm_assistant_proposal();
+                }
+            });
+        if self.assistant_proposal.is_some() {
+            self.confirm_assistant_proposal();
+        }
         if let Some(proposal) = self.assistant_proposal.as_ref() {
             ui.separator();
             ui.strong(self.catalog.text("assistant-review-title"));
@@ -12117,7 +13330,7 @@ impl KetchupApp {
                 ]),
             ));
             ui.small(self.catalog.text("assistant-risk-standard"));
-            ui.small(self.catalog.text("assistant-confirmation-review"));
+            ui.small(self.catalog.text("assistant-applied-automatically"));
             for entry in proposal.authoritative_diff() {
                 ui.monospace(self.catalog.format(
                     "assistant-diff-row",
@@ -12127,15 +13340,6 @@ impl KetchupApp {
                     ]),
                 ));
             }
-            ui.horizontal(|ui| {
-                confirm = ui.button(self.catalog.text("assistant-confirm")).clicked();
-                cancel = ui.button(self.catalog.text("assistant-cancel")).clicked();
-            });
-        }
-        if confirm {
-            self.confirm_assistant_proposal();
-        } else if cancel {
-            self.cancel_assistant_proposal();
         }
 
         if let Some(verification) = self.assistant_verification.as_ref() {
@@ -12451,8 +13655,7 @@ impl KetchupApp {
         ui.separator();
     }
 
-    fn show_outliner(&mut self, ui: &mut egui::Ui) {
-        self.show_assistant(ui);
+    fn show_outliner_without_assistant(&mut self, ui: &mut egui::Ui) {
         self.show_bottle_workflow(ui);
         self.show_beam_m4ae(ui);
         self.show_pocket_properties(ui);
@@ -12696,6 +13899,93 @@ impl KetchupApp {
     }
 }
 
+fn assistant_model_catalog_text() -> String {
+    std::env::var_os("KETCHUP_ASSISTANT_MODELS")
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::current_exe().ok().and_then(|path| {
+                path.parent()
+                    .map(|parent| parent.join("assistant-models.yaml"))
+            })
+        })
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .unwrap_or_else(|| ASSISTANT_MODELS_YAML.to_owned())
+}
+
+fn assistant_models_for(provider: AssistantProvider) -> Vec<String> {
+    let catalog = assistant_model_catalog_text();
+    catalog
+        .lines()
+        .filter_map(|line| {
+            let mut value = line.trim().strip_prefix('-')?.trim();
+            if let Some(rest) = value.strip_prefix("name:") {
+                value = rest.trim();
+            }
+            value = value.trim_matches('"');
+            if value.is_empty() || value.starts_with("──") {
+                return None;
+            }
+            let subscription = value.contains("[sub]");
+            let api = value.contains("[api]");
+            let model = value
+                .replace(" [api]", "")
+                .replace("[sub]", "")
+                .trim()
+                .to_owned();
+            let compatible = match provider {
+                AssistantProvider::AnthropicApi => model.starts_with("claude-") && !subscription,
+                AssistantProvider::OpenAiApi => model.starts_with("gpt-") && api,
+                #[cfg(feature = "private-oauth")]
+                AssistantProvider::ClaudeCodeOauth => model.starts_with("claude-") && !api,
+                #[cfg(feature = "private-oauth")]
+                AssistantProvider::CodexOauth => model.starts_with("gpt-") && subscription,
+            };
+            compatible.then_some(model)
+        })
+        .collect()
+}
+
+fn assistant_sidecar_command(
+    distribution: AssistantDistribution,
+) -> Result<(PathBuf, Vec<std::ffi::OsString>), String> {
+    match distribution {
+        AssistantDistribution::PrivateOauth => {
+            let path = std::env::var_os("KETCHUP_PRIVATE_ASSISTANT")
+                .map(PathBuf::from)
+                .or_else(|| {
+                    std::env::current_exe().ok().and_then(|path| {
+                        path.parent()
+                            .map(|parent| parent.join("KetchupPrivateAssistant.exe"))
+                    })
+                })
+                .filter(|path| path.is_file())
+                .ok_or_else(|| "KetchupPrivateAssistant.exe was not found".to_owned())?;
+            Ok((path, Vec::new()))
+        }
+        AssistantDistribution::PublicApi => {
+            let script = std::env::var_os("KETCHUP_PUBLIC_ASSISTANT")
+                .map(PathBuf::from)
+                .or_else(|| {
+                    std::env::current_dir()
+                        .ok()
+                        .map(|root| root.join("sdk/python/ketchup_assistant.py"))
+                })
+                .filter(|path| path.is_file())
+                .ok_or_else(|| "sdk/python/ketchup_assistant.py was not found".to_owned())?;
+            let python = std::env::var_os("KETCHUP_PYTHON")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| {
+                    PathBuf::from(if cfg!(windows) {
+                        "python.exe"
+                    } else {
+                        "python3"
+                    })
+                });
+            Ok((python, vec![script.into_os_string()]))
+        }
+    }
+}
+
 fn exact_worker_candidates() -> Vec<PathBuf> {
     let executable_name = if cfg!(windows) {
         "ketchup-exact-worker.exe"
@@ -12729,6 +14019,7 @@ impl KetchupApp {
     pub fn ui(&mut self, context: &egui::Context) {
         self.refresh_exact_products(context);
         self.refresh_beam_m5_products(context);
+        self.poll_assistant_chat();
         let palette = self.palette();
         apply_shell_style(context, palette);
         self.handle_shortcuts(context);
@@ -12772,22 +14063,50 @@ impl KetchupApp {
                     .stroke(hairline),
             )
             .show(context, |ui| self.show_tool_rail(ui));
-        egui::SidePanel::right("right-dock")
-            .resizable(false)
-            .exact_width(340.0)
-            .frame(
-                egui::Frame::new()
-                    .fill(palette.chrome)
-                    .inner_margin(egui::Margin::symmetric(14, 8))
-                    .stroke(hairline),
-            )
-            .show(context, |ui| {
-                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
-                self.show_outliner(ui);
-            });
-        egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(palette.viewport_outer))
-            .show(context, |ui| self.viewport(ui));
+        if self.assistant_workspace_mode == AssistantWorkspaceMode::Dock {
+            egui::SidePanel::right("right-dock")
+                .resizable(true)
+                .default_width(440.0)
+                .width_range(380.0..=720.0)
+                .frame(
+                    egui::Frame::new()
+                        .fill(palette.chrome)
+                        .inner_margin(egui::Margin::symmetric(14, 8))
+                        .stroke(hairline),
+                )
+                .show(context, |ui| {
+                    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
+                    self.show_assistant(ui);
+                });
+            egui::CentralPanel::default()
+                .frame(egui::Frame::new().fill(palette.viewport_outer))
+                .show(context, |ui| self.viewport(ui));
+        } else {
+            egui::SidePanel::right("right-dock")
+                .resizable(true)
+                .default_width(340.0)
+                .width_range(280.0..=520.0)
+                .frame(
+                    egui::Frame::new()
+                        .fill(palette.chrome)
+                        .inner_margin(egui::Margin::symmetric(14, 8))
+                        .stroke(hairline),
+                )
+                .show(context, |ui| {
+                    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
+                    self.show_outliner_without_assistant(ui);
+                });
+            egui::CentralPanel::default()
+                .frame(
+                    egui::Frame::new()
+                        .fill(palette.chrome)
+                        .inner_margin(egui::Margin::same(16)),
+                )
+                .show(context, |ui| {
+                    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
+                    self.show_assistant(ui);
+                });
+        }
         self.show_shortcuts_window(context);
     }
 }
@@ -13400,6 +14719,42 @@ fn transform_model_point(transform: Transform, point: Vec3) -> Vec3 {
     )
 }
 
+fn assistant_mesh_body_bounds(
+    snapshot: &Snapshot,
+    occurrence: &SceneOccurrence,
+) -> Option<[Vec3; 2]> {
+    let definition = snapshot.definition(occurrence.definition_id)?;
+    let vertices = definition
+        .feature_ids()
+        .iter()
+        .filter_map(|feature_id| snapshot.feature(*feature_id))
+        .find_map(|feature| match feature.kind() {
+            FeatureKind::MeshBody(mesh) => Some(mesh.vertices_mm.as_slice()),
+            _ => None,
+        })?;
+    let mut points = vertices.iter().map(|point| {
+        transform_model_point(
+            occurrence.transform,
+            Vec3::new(point[0], point[1], point[2]),
+        )
+    });
+    let first = points.next()?;
+    Some(points.fold([first, first], |[minimum, maximum], point| {
+        [
+            Vec3::new(
+                minimum.x.min(point.x),
+                minimum.y.min(point.y),
+                minimum.z.min(point.z),
+            ),
+            Vec3::new(
+                maximum.x.max(point.x),
+                maximum.y.max(point.y),
+                maximum.z.max(point.z),
+            ),
+        ]
+    }))
+}
+
 fn point_depth(point: Vec3, forward: Vec3) -> f64 {
     point.x * forward.x + point.y * forward.y + point.z * forward.z
 }
@@ -13825,6 +15180,195 @@ fn box_corners(width: f64, depth: f64, height: f64) -> [Vec3; 8] {
 mod tests {
     use super::*;
     use ketchup_core::graph::{EvaluatorNodeKind, PortSpec};
+
+    #[test]
+    fn assistant_conversation_changes_participate_in_document_dirty_state() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("chat-dirty.ketchup");
+        let mut app = KetchupApp::new().with_dialogs(Box::new(
+            dialogs::ScriptedFileDialogs::new().always_confirm_high_risk_as(1),
+        ));
+
+        assert!(app.save_document_to(&path));
+        assert!(!app.is_dirty());
+        app.assistant_messages.push(AssistantChatMessage {
+            role: AssistantMessageRole::User,
+            text: "Create a shelf.".to_owned(),
+            source: "test".to_owned(),
+        });
+        assert!(app.is_dirty());
+        assert!(app.save_document_to(&path));
+        assert!(!app.is_dirty());
+        app.new_assistant_chat();
+        assert!(app.is_dirty());
+    }
+
+    #[test]
+    fn new_chat_cancels_the_active_assistant_request() {
+        let mut app = KetchupApp::new();
+        let cancellation = AssistantCancellation::default();
+        let (_sender, receiver) = mpsc::channel();
+        app.assistant_chat_task = Some(AssistantChatTask {
+            receiver,
+            cancellation: cancellation.clone(),
+            document_id: app.document.current().document_id(),
+            revision_id: app.document.current().revision_id(),
+            canonical_digest: app.document.current().canonical_digest(),
+            source: "test".to_owned(),
+        });
+
+        app.new_assistant_chat();
+
+        assert!(cancellation.is_cancelled());
+        assert!(app.assistant_chat_task.is_none());
+    }
+
+    #[test]
+    fn assistant_replace_scene_clears_collection_references_in_the_same_undo_step() {
+        let mut app = KetchupApp::new();
+        let collection = CollectionId(1);
+        app.document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::CreateCollection {
+                    id: collection,
+                    name: "Original selection".to_owned(),
+                },
+                CanonicalCommand::SetCollectionOccurrences {
+                    id: collection,
+                    occurrence_ids: vec![OccurrenceId(1)],
+                },
+            ]))
+            .unwrap();
+        let before = app.document.current();
+
+        assert!(app.apply_assistant_model_intent(AssistantModelIntent {
+            replace_scene: true,
+            boxes: vec![AssistantBoxIntent {
+                name: "Replacement".to_owned(),
+                size_mm: [100.0, 80.0, 60.0],
+                origin_mm: [0.0, 0.0, 0.0],
+                subtract_boxes: Vec::new(),
+            }],
+            translations: Vec::new(),
+            linear_arrays: Vec::new(),
+        }));
+
+        let replaced = app.document.current();
+        assert_eq!(replaced.revision_id(), before.revision_id() + 1);
+        assert_eq!(replaced.occurrences().count(), 1);
+        assert_eq!(replaced.definitions().count(), 1);
+        assert_eq!(
+            replaced
+                .collection(collection)
+                .unwrap()
+                .occurrence_ids()
+                .count(),
+            0
+        );
+        assert!(app.undo());
+        assert_eq!(
+            app.document
+                .current()
+                .collection(collection)
+                .unwrap()
+                .occurrence_ids()
+                .collect::<Vec<_>>(),
+            vec![OccurrenceId(1)]
+        );
+        assert_eq!(
+            app.document.current().canonical_digest(),
+            before.canonical_digest()
+        );
+    }
+
+    #[test]
+    fn stale_assistant_model_result_is_reported_without_mutating_the_newer_document() {
+        let mut app = KetchupApp::new();
+        let request_document_id = app.document.current().document_id();
+        let request_revision_id = app.document.current().revision_id();
+        let request_digest = app.document.current().canonical_digest();
+        let (sender, receiver) = mpsc::channel();
+        let cancellation = AssistantCancellation::default();
+        app.assistant_chat_task = Some(AssistantChatTask {
+            receiver,
+            cancellation,
+            document_id: request_document_id,
+            revision_id: request_revision_id,
+            canonical_digest: request_digest,
+            source: "test".to_owned(),
+        });
+        app.apply_assistant_intent(WorkflowIntent::SetOccurrenceTranslation {
+            target: OccurrenceId(1),
+            x_mm_text: "10".to_owned(),
+            y_mm_text: "0".to_owned(),
+            z_mm_text: "0".to_owned(),
+        });
+        let changed_revision = app.document.current().revision_id();
+        let changed_digest = app.document.current().canonical_digest();
+        let undo_steps = app.document.visible_undo_steps();
+        sender
+            .send(Ok(AssistantChatResult {
+                message: "Moved it.".to_owned(),
+                model_intent: Some(AssistantModelIntent {
+                    replace_scene: false,
+                    boxes: Vec::new(),
+                    translations: vec![
+                        ketchup_core::assistant_sidecar::AssistantTranslationIntent {
+                            occurrence_id: 1,
+                            delta_mm: [100.0, 0.0, 0.0],
+                        },
+                    ],
+                    linear_arrays: Vec::new(),
+                }),
+            }))
+            .unwrap();
+
+        app.poll_assistant_chat();
+
+        assert_eq!(app.document.current().revision_id(), changed_revision);
+        assert_eq!(app.document.current().canonical_digest(), changed_digest);
+        assert_eq!(app.document.visible_undo_steps(), undo_steps);
+        assert!(app.assistant_messages.iter().any(|message| {
+            message.role == AssistantMessageRole::Error
+                && message.text == app.catalog.text("assistant-error-stale-response")
+        }));
+    }
+
+    #[test]
+    fn assistant_conversation_round_trips_with_its_document() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("chat-model.ketchup");
+        let mut app = KetchupApp::new().with_dialogs(Box::new(
+            dialogs::ScriptedFileDialogs::new().always_confirm_high_risk_as(1),
+        ));
+        app.assistant_messages = vec![
+            AssistantChatMessage {
+                role: AssistantMessageRole::User,
+                text: "Posuň hranol o 100 mm.".to_owned(),
+                source: "Codex OAuth · gpt-test".to_owned(),
+            },
+            AssistantChatMessage {
+                role: AssistantMessageRole::Assistant,
+                text: "Hranol som posunul.".to_owned(),
+                source: "Codex OAuth · gpt-test".to_owned(),
+            },
+        ];
+
+        assert!(app.save_document_to(&path));
+        let mut reopened = KetchupApp::new().with_dialogs(Box::new(
+            dialogs::ScriptedFileDialogs::new().always_confirm_high_risk_as(1),
+        ));
+        assert!(reopened.open_document_from(&path));
+        assert_eq!(reopened.assistant_messages, app.assistant_messages);
+        assert_eq!(reopened.document_path.as_deref(), Some(path.as_path()));
+
+        reopened.new_assistant_chat();
+        assert!(reopened.assistant_messages.is_empty());
+        assert!(reopened.save_document_to(&path));
+        let mut cleared = KetchupApp::new();
+        assert!(cleared.open_document_from(&path));
+        assert!(cleared.assistant_messages.is_empty());
+    }
 
     // Palette contrast is proved once for all four appearances in
     // `theme::tests::every_palette_keeps_text_and_accent_legible`, so this file
@@ -18041,6 +19585,84 @@ mod tests {
                 side: Side::Maximum,
             }
         );
+    }
+
+    #[test]
+    fn picking_chooses_the_frontmost_body_across_mesh_and_box_geometry() {
+        let mut app = KetchupApp::new();
+        assert!(app.apply_assistant_model_intent(AssistantModelIntent {
+            replace_scene: true,
+            boxes: vec![
+                AssistantBoxIntent {
+                    name: "Grooved behind".to_owned(),
+                    size_mm: [100.0, 60.0, 20.0],
+                    origin_mm: [0.0, 0.0, 0.0],
+                    subtract_boxes: vec![
+                        ketchup_core::assistant_sidecar::AssistantSubtractionIntent {
+                            size_mm: [10.0, 60.0, 5.0],
+                            origin_mm: [45.0, 0.0, 15.0],
+                        }
+                    ],
+                },
+                AssistantBoxIntent {
+                    name: "Plain in front".to_owned(),
+                    size_mm: [100.0, 60.0, 20.0],
+                    origin_mm: [0.0, 0.0, 40.0],
+                    subtract_boxes: Vec::new(),
+                },
+            ],
+            translations: Vec::new(),
+            linear_arrays: Vec::new(),
+        }));
+        app.projection_mode = ProjectionMode::Parallel;
+        app.yaw = 0.0;
+        app.pitch = 0.0;
+        app.camera_target_z = 30.0;
+        let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0));
+        let pointer = app.project(Vec3::new(50.0, 30.0, 60.0), rect);
+
+        let selected = app.exact_pick_at_screen(pointer, rect).unwrap();
+        assert_eq!(selected.instance_path, InstancePath::root(OccurrenceId(3)));
+    }
+
+    #[test]
+    fn repeated_large_scene_picks_reuse_revision_bound_spatial_indices() {
+        let mut app = KetchupApp::new();
+        let source = app
+            .document
+            .current()
+            .occurrence(OccurrenceId(1))
+            .unwrap()
+            .clone();
+        let commands = (2_u32..=480)
+            .map(|id| CanonicalCommand::CreateOccurrence {
+                id: OccurrenceId(u64::from(id)),
+                definition_id: source.definition_id(),
+                name: format!("Stacked {id}"),
+                transform: Transform::from_translation(
+                    f64::from((id - 1) % 24) * 120.0,
+                    0.0,
+                    f64::from((id - 1) / 24) * 280.0,
+                )
+                .unwrap(),
+                parent: None,
+                tag: None,
+                visible: true,
+            })
+            .collect();
+        app.document
+            .apply_batch(&CommandBatch::new(commands))
+            .unwrap();
+        app.zoom_fit();
+        let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(1600.0, 900.0));
+        let pointer = app.project(Vec3::new(50.0, 30.0, 20.0), rect);
+
+        assert!(app.exact_pick_at_screen(pointer, rect).is_some());
+        let cache_ptrs = app.interaction_projection_cache_ptrs().unwrap();
+        for _ in 0..480 {
+            assert!(app.exact_pick_at_screen(pointer, rect).is_some());
+            assert_eq!(app.interaction_projection_cache_ptrs(), Some(cache_ptrs));
+        }
     }
 
     #[test]

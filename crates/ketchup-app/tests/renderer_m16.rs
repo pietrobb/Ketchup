@@ -145,6 +145,17 @@ fn real_ten_thousand_occurrence_product_uses_one_scheduled_mesh_one_bvh_and_one_
     );
     assert_eq!(rebuilt.instance_count(), OCCURRENCES);
     assert_eq!(render_cache.stats().geometry_hits, 1);
+    let cached_plan = std::sync::Arc::new(rebuilt.clone());
+    let orbit_started = Instant::now();
+    for _ in 0..10_000 {
+        assert!(cached_plan.is_same_revision(&snapshot));
+        assert_eq!(cached_plan.instance_count(), OCCURRENCES);
+    }
+    let cached_orbit_elapsed = orbit_started.elapsed();
+    assert!(
+        cached_orbit_elapsed.as_millis() < 50,
+        "{cached_orbit_elapsed:?}"
+    );
 
     let target = OCCURRENCES - 1;
     let target_placement = grid_transform(target);
@@ -278,9 +289,10 @@ fn real_ten_thousand_occurrence_product_uses_one_scheduled_mesh_one_bvh_and_one_
     assert_eq!(render_cache.stats().geometry_entries, 1);
 
     eprintln!(
-        "M16_10K adapter={:?} plan_ms={:.3} gpu_submit_wait_ms={:.3} total_ms={:.3} candidates={} bounds_tested={} draw_calls={} geometry_uploads={} instances={}",
+        "M16_10K adapter={:?} plan_ms={:.3} cached_orbit_10k_checks_ms={:.3} gpu_submit_wait_ms={:.3} total_ms={:.3} candidates={} bounds_tested={} draw_calls={} geometry_uploads={} instances={}",
         adapter_info,
         plan_elapsed.as_secs_f64() * 1_000.0,
+        cached_orbit_elapsed.as_secs_f64() * 1_000.0,
         gpu_elapsed.as_secs_f64() * 1_000.0,
         total_started.elapsed().as_secs_f64() * 1_000.0,
         spatial_stats.candidate_count,
