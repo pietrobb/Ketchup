@@ -1205,9 +1205,11 @@ fn assistant_rejects_invalid_and_stale_intents_without_an_extra_mutation() {
                 value_text: "40".to_owned(),
             })
     );
-    shell.app_mut().set_push_pull_distance_input("5");
-    assert!(shell.app_mut().start_preview());
-    assert!(shell.app_mut().confirm_preview());
+    let top_face = shell.top_face_centre(1);
+    shell.click_at(top_face);
+    shell.click_command(AppCommand::PushPull);
+    shell.type_text("5");
+    shell.press_key(egui::Key::Enter);
     let changed_revision = shell.app().document_revision();
     let changed_digest = shell.app().canonical_digest();
 

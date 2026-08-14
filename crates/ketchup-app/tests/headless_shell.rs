@@ -688,6 +688,80 @@ fn arc_endpoint_bulge_is_exact_snapped_undoable_and_persistent() {
 }
 
 #[test]
+fn push_pull_without_a_selected_face_never_targets_the_initial_box() {
+    let mut shell = Shell::new();
+    let revision = shell.app().document_revision();
+    let digest = shell.app().canonical_digest();
+
+    shell.click_command(AppCommand::PushPull);
+    shell.type_text("15");
+    shell.press_key(Key::Enter);
+
+    assert_eq!(shell.app().document_revision(), revision);
+    assert_eq!(shell.app().canonical_digest(), digest);
+    assert_eq!(shell.app().document_height_mm(), 20.0);
+    assert!(!shell.app().can_undo());
+    assert!(!shell.app().has_smart_push_pull_chooser());
+    assert_eq!(
+        shell.app().action_digest(),
+        shell.catalog().text("error-push-pull-selection-required")
+    );
+}
+
+#[test]
+fn localized_smart_push_pull_chooser_cancels_without_mutation_through_accesskit() {
+    let mut shell = Shell::with_catalog(LocaleCatalog::slovak());
+    let hole_center = Vec3::new(35.0, 25.0, 20.0);
+    shell.click_command(AppCommand::Circle);
+    shell.click_at(shell.app().viewport_position(hole_center).unwrap());
+    shell.click_at(
+        shell
+            .app()
+            .viewport_position(hole_center + Vec3::new(10.0, 0.0, 0.0))
+            .unwrap(),
+    );
+    let revision = shell.app().document_revision();
+    let digest = shell.app().canonical_digest();
+
+    shell.click_command(AppCommand::PushPull);
+    shell.type_text("-20");
+    shell.press_key(Key::Enter);
+
+    let box_name = shell.catalog().format(
+        "model-default-box",
+        &BTreeMap::from([("number", "1".to_owned())]),
+    );
+    let occurrence = shell.catalog().format(
+        "model-default-occurrence",
+        &BTreeMap::from([("name", box_name)]),
+    );
+    let target_label = shell.catalog().format(
+        "choice-smart-push-pull-cut-target",
+        &BTreeMap::from([
+            ("feature", shell.catalog().text("model-default-extrusion")),
+            ("feature_id", "2".to_owned()),
+            ("occurrence", occurrence),
+            ("occurrence_id", "1".to_owned()),
+        ]),
+    );
+    let cancel_label = shell.catalog().text("choice-smart-push-pull-cancel");
+    assert!(shell.app().has_smart_push_pull_chooser());
+    assert!(shell.has_role_and_label(
+        Role::RadioButton,
+        &shell.catalog().text("choice-smart-push-pull-new-feature")
+    ));
+    assert!(shell.has_role_and_label(Role::RadioButton, &target_label));
+    assert!(shell.has_role_and_label(Role::Button, &cancel_label));
+    assert_eq!(shell.app().document_revision(), revision);
+    assert_eq!(shell.app().canonical_digest(), digest);
+
+    shell.click_role_and_label(Role::Button, &cancel_label);
+    assert!(!shell.app().has_smart_push_pull_chooser());
+    assert_eq!(shell.app().document_revision(), revision);
+    assert_eq!(shell.app().canonical_digest(), digest);
+}
+
+#[test]
 fn circle_push_pull_creates_an_exact_cylinder_and_circular_hole_with_one_step_history() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("circle-push-pull.ketchup");
@@ -771,9 +845,50 @@ fn circle_push_pull_creates_an_exact_cylinder_and_circular_hole_with_one_step_hi
     let hole_profile_revision = shell.app().document_revision();
     assert_eq!(shell.app().active_box_count(), 3);
 
+    let cut_target_label = shell.catalog().format(
+        "choice-smart-push-pull-cut-target",
+        &BTreeMap::from([
+            ("feature", "Extrusion".to_owned()),
+            ("feature_id", "2".to_owned()),
+            ("occurrence", "Box-1 #1".to_owned()),
+            ("occurrence_id", "1".to_owned()),
+        ]),
+    );
+    let continue_label = shell.catalog().text("choice-smart-push-pull-continue");
     shell.click_command(AppCommand::PushPull);
     shell.app_mut().set_push_pull_distance_input("-20");
     assert!(shell.app_mut().start_preview());
+    shell.settle();
+    assert!(shell.app().has_smart_push_pull_chooser());
+    assert!(shell.has_role_and_label(
+        Role::RadioButton,
+        &shell.catalog().text("choice-smart-push-pull-new-feature")
+    ));
+    assert!(shell.has_role_and_label(Role::RadioButton, &cut_target_label));
+    assert_eq!(shell.app().document_revision(), hole_profile_revision);
+    assert_eq!(shell.app().canonical_digest(), hole_profile_digest);
+    shell.click_role_and_label(Role::Button, &continue_label);
+    assert!(!shell.app().has_smart_push_pull_chooser());
+    assert!(!shell.app().has_occurrence_operation_preview());
+    assert!(shell.app().preview_action_digest().is_some());
+    assert_eq!(shell.app().document_revision(), hole_profile_revision);
+    assert_eq!(shell.app().canonical_digest(), hole_profile_digest);
+    shell.press_key(Key::Enter);
+    let independent_feature_digest = shell.app().canonical_digest();
+    assert_eq!(shell.app().document_revision(), hole_profile_revision + 1);
+    assert_ne!(independent_feature_digest, hole_profile_digest);
+    shell.key(Key::Z, ctrl());
+    assert_eq!(shell.app().canonical_digest(), hole_profile_digest);
+    shell.key(Key::Y, ctrl());
+    assert_eq!(shell.app().canonical_digest(), independent_feature_digest);
+    shell.key(Key::Z, ctrl());
+    assert_eq!(shell.app().canonical_digest(), hole_profile_digest);
+
+    shell.app_mut().set_push_pull_distance_input("-20");
+    assert!(shell.app_mut().start_preview());
+    shell.settle();
+    shell.click_role_and_label(Role::RadioButton, &cut_target_label);
+    shell.click_role_and_label(Role::Button, &continue_label);
     assert!(shell.app().has_occurrence_operation_preview());
     assert_eq!(
         shell.app().push_pull_preview_exact_evaluator(),
@@ -786,8 +901,13 @@ fn circle_push_pull_creates_an_exact_cylinder_and_circular_hole_with_one_step_hi
     shell.click_command(AppCommand::PushPull);
     shell.type_text("-20");
     shell.press_key(Key::Enter);
+    assert!(shell.app().has_smart_push_pull_chooser());
+    shell.click_role_and_label(Role::RadioButton, &cut_target_label);
+    shell.click_role_and_label(Role::Button, &continue_label);
+    assert!(shell.app().has_occurrence_operation_preview());
+    shell.press_key(Key::Enter);
     let hole_digest = shell.app().canonical_digest();
-    assert_eq!(shell.app().document_revision(), hole_profile_revision + 1);
+    assert!(shell.app().document_revision() > hole_profile_revision);
     assert_eq!(shell.app().active_box_count(), 2);
     assert_eq!(shell.app().circle_profile_count(), 2);
 

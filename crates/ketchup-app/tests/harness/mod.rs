@@ -289,6 +289,12 @@ impl Shell {
             .is_some()
     }
 
+    pub fn click_role_and_label(&mut self, role: Role, label: &str) {
+        self.gap();
+        self.harness.get_by_role_and_label(role, label).click();
+        self.harness.run();
+    }
+
     /// Whether the command is the focused node in the current AccessKit tree.
     pub fn command_is_focused(&self, command: AppCommand) -> bool {
         let label = self.app().command_label(command);

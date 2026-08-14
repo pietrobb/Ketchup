@@ -21,34 +21,29 @@ fn shell_rejects_an_incomplete_active_locale() {
 }
 
 #[test]
-fn preview_is_ephemeral_until_canonical_confirmation() {
+fn push_pull_requires_an_explicit_face_selection() {
     let mut app = KetchupApp::new();
     let initial_revision = app.document_revision();
+    let initial_digest = app.canonical_digest();
     assert_eq!(app.document_height_mm(), 20.0);
 
     app.set_push_pull_distance_input("15 mm");
-    assert!(app.start_preview());
+    assert!(!app.start_preview());
     assert_eq!(app.document_revision(), initial_revision);
-    assert_eq!(
-        app.preview_action_digest().as_deref(),
-        Some("Change Box-1 height from 20 mm to 35 mm")
-    );
-
-    assert!(app.confirm_preview());
-    assert_eq!(app.document_revision(), initial_revision + 1);
-    assert_eq!(app.document_height_mm(), 35.0);
+    assert_eq!(app.canonical_digest(), initial_digest);
+    assert_eq!(app.document_height_mm(), 20.0);
+    assert!(app.preview_action_digest().is_none());
 }
 
 #[test]
-fn cancelling_preview_preserves_the_document() {
+fn cancelling_without_a_preview_preserves_the_document() {
     let mut app = KetchupApp::new();
     let initial_revision = app.document_revision();
-    app.set_push_pull_distance_input("15 mm");
-    assert!(app.start_preview());
+    let initial_digest = app.canonical_digest();
     app.cancel_preview();
     assert_eq!(app.document_revision(), initial_revision);
+    assert_eq!(app.canonical_digest(), initial_digest);
     assert_eq!(app.document_height_mm(), 20.0);
-    assert!(app.preview_action_digest().is_none());
 }
 
 #[test]

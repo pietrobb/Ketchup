@@ -316,6 +316,23 @@ struct EphemeralBoxPreview {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SmartPushPullChoice {
+    NewFeature,
+    CircularCut(OccurrenceId),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct SmartPushPullChooser {
+    source_document_id: DocumentId,
+    source_revision: u64,
+    source_digest: String,
+    selection: SelectionId,
+    distance_mm: f64,
+    targets: Vec<RenderBox>,
+    selected: SmartPushPullChoice,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AlignMode {
     Minimum,
     Center,
@@ -1426,6 +1443,8 @@ pub struct KetchupApp {
     preview: Option<CommandBatch>,
     preview_box: Option<EphemeralBoxPreview>,
     preview_definition_id: Option<DefinitionId>,
+    smart_push_pull_proposal: Option<Proposal>,
+    smart_push_pull_chooser: Option<SmartPushPullChooser>,
     occurrence_operation_preview: Option<OccurrenceOperationPreview>,
     solid_tool_target: Option<SelectionId>,
     revolve_tool: Option<RevolveToolState>,
@@ -1580,6 +1599,8 @@ impl KetchupApp {
             preview: None,
             preview_box: None,
             preview_definition_id: None,
+            smart_push_pull_proposal: None,
+            smart_push_pull_chooser: None,
             occurrence_operation_preview: None,
             solid_tool_target: None,
             revolve_tool: None,
@@ -1738,6 +1759,8 @@ impl KetchupApp {
         self.preview = None;
         self.preview_box = None;
         self.preview_definition_id = None;
+        self.smart_push_pull_proposal = None;
+        self.smart_push_pull_chooser = None;
         self.occurrence_operation_preview = None;
         self.solid_tool_target = None;
         self.revolve_tool = None;
@@ -2636,8 +2659,29 @@ impl KetchupApp {
     }
 
     pub fn prepare_assistant_intent(&mut self, intent: WorkflowIntent) -> bool {
+        let is_smart_push_pull = matches!(&intent, WorkflowIntent::SetFeatureDimension { .. });
         match propose_intent(&self.document, IntentRequest::m7a(intent)) {
             Ok(proposal) => {
+                let proposal = if is_smart_push_pull {
+                    let context = ProposalContext {
+                        principal: ProposalPrincipal::LocalAssistant,
+                        goal: proposal.goal(),
+                        assumptions: proposal.assumptions().to_vec(),
+                        risk: proposal.risk(),
+                        confirmation: proposal.confirmation().clone(),
+                        requested_budget: proposal.requested_budget(),
+                    };
+                    let Some(proposal) = self.prepare_smart_push_pull_proposal_with_context(
+                        proposal.batch().clone(),
+                        context,
+                    ) else {
+                        self.assistant_proposal = None;
+                        return false;
+                    };
+                    proposal
+                } else {
+                    proposal
+                };
                 self.digest = self.catalog.format(
                     "assistant-digest-preview",
                     &BTreeMap::from([
@@ -8158,12 +8202,35 @@ impl KetchupApp {
         self.push_pull_distance_input = value.into();
     }
 
-    fn prepare_circular_hole_preview(
-        &mut self,
+    fn prepare_smart_push_pull_proposal(
+        &self,
+        batch: CommandBatch,
+        principal: ProposalPrincipal,
+    ) -> Option<Proposal> {
+        let context = match principal {
+            ProposalPrincipal::ManualClient => ProposalContext::canonical_preview(),
+            ProposalPrincipal::LocalAssistant => ProposalContext::local_assistant_model(),
+            _ => return None,
+        };
+        self.prepare_smart_push_pull_proposal_with_context(batch, context)
+    }
+
+    fn prepare_smart_push_pull_proposal_with_context(
+        &self,
+        batch: CommandBatch,
+        context: ProposalContext,
+    ) -> Option<Proposal> {
+        self.document
+            .prepare_proposal_with_context(batch, context)
+            .ok()
+    }
+
+    fn circular_hole_targets(
+        &self,
         selection: &SelectionId,
         tool_box: &RenderBox,
         distance_mm: f64,
-    ) -> bool {
+    ) -> Vec<RenderBox> {
         if distance_mm >= -0.01
             || tool_box.extrusion_feature_id.is_some()
             || !selection.instance_path.is_root()
@@ -8173,35 +8240,50 @@ impl KetchupApp {
                     side: Side::Maximum,
                 })
         {
-            return false;
+            return Vec::new();
         }
         let snapshot = self.document.current();
         let Some(FeatureKind::SegmentProfile { segments, closed }) = snapshot
             .feature(tool_box.profile_feature_id)
             .map(|feature| feature.kind())
         else {
-            return false;
+            return Vec::new();
         };
         if exact_circle_geometry(segments, *closed).is_none() {
-            return false;
+            return Vec::new();
         }
         let depth_mm = -distance_mm;
-        let Some(target_box) = self.active_boxes().into_iter().find(|candidate| {
-            candidate.instance_path != selection.instance_path
-                && candidate.instance_path.is_root()
-                && candidate.extrusion_feature_id.is_some()
-                && (candidate.origin_mm.z + candidate.size_mm.z - tool_box.origin_mm.z).abs()
-                    <= 1.0e-8
-                && (candidate.size_mm.z - depth_mm).abs() <= 1.0e-8
-                && tool_box.origin_mm.x > candidate.origin_mm.x
-                && tool_box.origin_mm.y > candidate.origin_mm.y
-                && tool_box.origin_mm.x + tool_box.size_mm.x
-                    < candidate.origin_mm.x + candidate.size_mm.x
-                && tool_box.origin_mm.y + tool_box.size_mm.y
-                    < candidate.origin_mm.y + candidate.size_mm.y
-        }) else {
-            return false;
-        };
+        let mut targets = self
+            .active_boxes()
+            .into_iter()
+            .filter(|candidate| {
+                candidate.instance_path != selection.instance_path
+                    && candidate.instance_path.is_root()
+                    && candidate.extrusion_feature_id.is_some()
+                    && (candidate.origin_mm.z + candidate.size_mm.z - tool_box.origin_mm.z).abs()
+                        <= 1.0e-8
+                    && (candidate.size_mm.z - depth_mm).abs() <= 1.0e-8
+                    && tool_box.origin_mm.x > candidate.origin_mm.x
+                    && tool_box.origin_mm.y > candidate.origin_mm.y
+                    && tool_box.origin_mm.x + tool_box.size_mm.x
+                        < candidate.origin_mm.x + candidate.size_mm.x
+                    && tool_box.origin_mm.y + tool_box.size_mm.y
+                        < candidate.origin_mm.y + candidate.size_mm.y
+            })
+            .collect::<Vec<_>>();
+        targets.sort_by_key(|target| target.instance_path.root_occurrence());
+        targets
+    }
+
+    fn prepare_circular_hole_preview(
+        &mut self,
+        selection: &SelectionId,
+        tool_box: &RenderBox,
+        distance_mm: f64,
+        target_box: RenderBox,
+    ) -> bool {
+        let snapshot = self.document.current();
+        let depth_mm = -distance_mm;
         let target_occurrence_id = target_box.instance_path.root_occurrence();
         let tool_occurrence_id = selection.instance_path.root_occurrence();
         let Some(target_feature_id) = target_box.extrusion_feature_id else {
@@ -8283,7 +8365,12 @@ impl KetchupApp {
                 id: selection.definition_id,
             },
         ]);
-        let Ok(preview_snapshot) = self.document.preview_batch(&batch) else {
+        let Some(proposal) =
+            self.prepare_smart_push_pull_proposal(batch.clone(), ProposalPrincipal::ManualClient)
+        else {
+            return false;
+        };
+        let Ok(preview_snapshot) = self.document.preview_batch(proposal.batch()) else {
             return false;
         };
         let Ok(exact_request) =
@@ -8310,6 +8397,8 @@ impl KetchupApp {
         self.preview = None;
         self.preview_box = None;
         self.preview_definition_id = None;
+        self.smart_push_pull_proposal = Some(proposal);
+        self.smart_push_pull_chooser = None;
         self.occurrence_operation_preview = Some(OccurrenceOperationPreview {
             source_revision: snapshot.revision_id(),
             command_digest: batch.digest(),
@@ -8331,14 +8420,12 @@ impl KetchupApp {
     }
 
     pub fn start_preview(&mut self) -> bool {
-        let selection = self.selection.primary.clone().unwrap_or(SelectionId {
-            definition_id: INITIAL_BOX_DEFINITION,
-            instance_path: InstancePath::root(OccurrenceId(1)),
-            element: ElementId::Face {
-                axis: Axis::Z,
-                side: Side::Maximum,
-            },
-        });
+        let Some(selection) = self.selection.primary.clone() else {
+            self.clear_ephemeral_edit_state();
+            self.status_key = "error-push-pull-selection-required";
+            self.digest = self.catalog.text("error-push-pull-selection-required");
+            return false;
+        };
         if !self.occurrence_in_active_context(&selection.instance_path) {
             return false;
         }
@@ -8352,14 +8439,62 @@ impl KetchupApp {
         else {
             return false;
         };
-        if self.prepare_circular_hole_preview(&selection, &item, distance_mm) {
+        let targets = self.circular_hole_targets(&selection, &item, distance_mm);
+        if !targets.is_empty() {
+            let snapshot = self.document.current();
+            self.preview = None;
+            self.preview_box = None;
+            self.preview_definition_id = None;
+            self.smart_push_pull_proposal = None;
+            self.occurrence_operation_preview = None;
+            self.smart_push_pull_chooser = Some(SmartPushPullChooser {
+                source_document_id: snapshot.document_id(),
+                source_revision: snapshot.revision_id(),
+                source_digest: snapshot.canonical_digest(),
+                selection,
+                distance_mm,
+                targets,
+                selected: SmartPushPullChoice::NewFeature,
+            });
+            self.status_key = "status-push-pull-choice";
+            self.digest = self.catalog.text("choice-smart-push-pull-source");
             return true;
         }
+        self.prepare_box_push_pull_preview(
+            selection,
+            item,
+            distance_mm,
+            ProposalPrincipal::ManualClient,
+        )
+    }
+
+    fn prepare_box_push_pull_preview(
+        &mut self,
+        selection: SelectionId,
+        item: RenderBox,
+        distance_mm: f64,
+        principal: ProposalPrincipal,
+    ) -> bool {
         let Some(current_extent_mm) = face_extent(&item, Some(&selection.element)) else {
             return false;
         };
         let new_extent_mm = current_extent_mm + distance_mm;
-        let Some(after) = resize_box_from_face(&item, &selection.element, new_extent_mm) else {
+        let after = resize_box_from_face(&item, &selection.element, new_extent_mm).or_else(|| {
+            (item.extrusion_feature_id.is_none()
+                && new_extent_mm < 0.0
+                && selection.element
+                    == (ElementId::Face {
+                        axis: Axis::Z,
+                        side: Side::Maximum,
+                    }))
+            .then(|| {
+                let mut after = item.clone();
+                after.origin_mm.z += new_extent_mm;
+                after.size_mm.z = -new_extent_mm;
+                after
+            })
+        });
+        let Some(after) = after else {
             return false;
         };
         let snapshot = self.document.current();
@@ -8372,8 +8507,13 @@ impl KetchupApp {
         ) else {
             return false;
         };
-        let command_digest = batch.digest();
+        let Some(proposal) = self.prepare_smart_push_pull_proposal(batch.clone(), principal) else {
+            return false;
+        };
+        let command_digest = proposal.command_digest().to_owned();
         self.preview = Some(batch);
+        self.smart_push_pull_proposal = Some(proposal);
+        self.smart_push_pull_chooser = None;
         self.preview_box = Some(EphemeralBoxPreview {
             source_document_id: snapshot.document_id(),
             source_revision: snapshot.revision_id(),
@@ -8386,7 +8526,6 @@ impl KetchupApp {
         });
         self.preview_definition_id = Some(selection.definition_id);
         self.status_key = "status-preview";
-        let snapshot = self.document.current();
         let shared_count = snapshot
             .scene_query()
             .into_iter()
@@ -8414,14 +8553,9 @@ impl KetchupApp {
     }
 
     fn has_preview(&self) -> bool {
-        let expected_target = self.selection.primary.clone().unwrap_or(SelectionId {
-            definition_id: INITIAL_BOX_DEFINITION,
-            instance_path: InstancePath::root(OccurrenceId(1)),
-            element: ElementId::Face {
-                axis: Axis::Z,
-                side: Side::Maximum,
-            },
-        });
+        let Some(expected_target) = self.selection.primary.as_ref() else {
+            return false;
+        };
         self.preview_box.as_ref().is_some_and(|preview| {
             let snapshot = self.document.current();
             preview.source_document_id == snapshot.document_id()
@@ -8429,11 +8563,21 @@ impl KetchupApp {
                 && preview.source_digest == snapshot.canonical_digest()
                 && preview.context == self.selection.edit_context.last().cloned()
                 && preview.selection_state == self.selection.primary
-                && preview.target == expected_target
+                && &preview.target == expected_target
                 && self
                     .preview
                     .as_ref()
                     .is_some_and(|batch| batch.digest() == preview.command_digest)
+                && self
+                    .smart_push_pull_proposal
+                    .as_ref()
+                    .is_some_and(|proposal| {
+                        proposal.command_digest() == preview.command_digest
+                            && proposal.batch().digest() == preview.command_digest
+                            && proposal.document_id() == snapshot.document_id()
+                            && proposal.provenance_revision() == snapshot.revision_id()
+                            && proposal.provenance_digest() == snapshot.canonical_digest()
+                    })
         })
     }
 
@@ -8456,8 +8600,98 @@ impl KetchupApp {
             .map(|request| request.evaluator())
     }
 
+    #[must_use]
+    pub const fn has_smart_push_pull_chooser(&self) -> bool {
+        self.smart_push_pull_chooser.is_some()
+    }
+
+    fn confirm_smart_push_pull_choice(&mut self) -> bool {
+        let Some(chooser) = self.smart_push_pull_chooser.take() else {
+            return false;
+        };
+        let snapshot = self.document.current();
+        if chooser.source_document_id != snapshot.document_id()
+            || chooser.source_revision != snapshot.revision_id()
+            || chooser.source_digest != snapshot.canonical_digest()
+            || self.selection.primary.as_ref() != Some(&chooser.selection)
+        {
+            self.status_key = "error-preview-stale";
+            self.digest = self.catalog.text("error-preview-stale");
+            return false;
+        }
+        let Some(tool_box) = self
+            .active_boxes()
+            .into_iter()
+            .find(|item| item.instance_path == chooser.selection.instance_path)
+        else {
+            self.status_key = "error-preview-stale";
+            return false;
+        };
+        match chooser.selected {
+            SmartPushPullChoice::NewFeature => self.prepare_box_push_pull_preview(
+                chooser.selection,
+                tool_box,
+                chooser.distance_mm,
+                ProposalPrincipal::ManualClient,
+            ),
+            SmartPushPullChoice::CircularCut(target_id) => {
+                let Some(target) = chooser
+                    .targets
+                    .into_iter()
+                    .find(|target| target.instance_path.root_occurrence() == target_id)
+                else {
+                    self.status_key = "error-preview-stale";
+                    return false;
+                };
+                self.prepare_circular_hole_preview(
+                    &chooser.selection,
+                    &tool_box,
+                    chooser.distance_mm,
+                    target,
+                )
+            }
+        }
+    }
+
+    fn confirm_circular_hole_preview(&mut self) -> bool {
+        if !self.has_occurrence_operation_preview() {
+            self.smart_push_pull_proposal = None;
+            self.occurrence_operation_preview = None;
+            self.status_key = "error-preview-stale";
+            return false;
+        }
+        let Some(proposal) = self.smart_push_pull_proposal.take() else {
+            return false;
+        };
+        let Some(preview) = self.occurrence_operation_preview.take() else {
+            return false;
+        };
+        let snapshot = self.document.current();
+        if proposal.document_id() != snapshot.document_id()
+            || proposal.provenance_revision() != snapshot.revision_id()
+            || proposal.provenance_digest() != snapshot.canonical_digest()
+            || proposal.command_digest() != preview.command_digest
+            || proposal.batch() != &preview.batch
+        {
+            self.status_key = "error-preview-stale";
+            return false;
+        }
+        if self.document.commit_verified_proposal(&proposal).is_err() {
+            self.status_key = "error-preview-stale";
+            return false;
+        }
+        if let Some(selection) = preview.selection_after {
+            self.selection.select_exact(selection, false);
+        }
+        self.status_key = "status-ready";
+        self.digest = self.catalog.text(preview.committed_digest_key);
+        true
+    }
+
     fn confirm_push_pull_preview(&mut self) -> bool {
-        if self.has_occurrence_operation_preview() {
+        if self.has_occurrence_operation_preview() && self.smart_push_pull_proposal.is_some() {
+            self.confirm_circular_hole_preview()
+        } else if self.has_occurrence_operation_preview() {
             self.confirm_occurrence_operation_preview()
         } else {
             self.confirm_preview()
@@ -8473,6 +8707,8 @@ impl KetchupApp {
         self.preview = None;
         self.preview_box = None;
         self.preview_definition_id = None;
+        self.smart_push_pull_proposal = None;
+        self.smart_push_pull_chooser = None;
         self.occurrence_operation_preview = None;
         self.solid_tool_target = None;
         self.revolve_tool = None;
@@ -8605,7 +8841,11 @@ impl KetchupApp {
         let Some(batch) = self.preview.take() else {
             return false;
         };
-        if self.document.apply_batch(&batch).is_err() {
+        let Some(proposal) = self.smart_push_pull_proposal.take() else {
+            return false;
+        };
+        if proposal.batch() != &batch || self.document.commit_verified_proposal(&proposal).is_err()
+        {
             self.preview_box = None;
             self.preview_definition_id = None;
             self.status_key = "error-preview-stale";
@@ -8652,14 +8892,7 @@ impl KetchupApp {
         if !self.has_preview() {
             return None;
         }
-        let selection = self.selection.primary.clone().unwrap_or(SelectionId {
-            definition_id: INITIAL_BOX_DEFINITION,
-            instance_path: InstancePath::root(OccurrenceId(1)),
-            element: ElementId::Face {
-                axis: Axis::Z,
-                side: Side::Maximum,
-            },
-        });
+        let selection = self.selection.primary.clone()?;
         let snapshot = self.document.current();
         let resolved = snapshot
             .resolve_instance_path(&selection.instance_path)
@@ -9769,13 +10002,10 @@ impl KetchupApp {
             return self.refresh_general_finish_preview() && self.confirm_general_finish_preview();
         }
         if self.active_tool == ActiveTool::PushPull {
-            let selection = self.selection.primary.clone().or_else(|| {
-                self.last_push_pull
-                    .as_ref()
-                    .map(|operation| operation.selection.clone())
-            });
+            let selection = self.selection.primary.clone();
             let Some(selection) = selection else {
-                self.digest = self.catalog.text("digest-nothing-to-apply");
+                self.status_key = "error-push-pull-selection-required";
+                self.digest = self.catalog.text("error-push-pull-selection-required");
                 return false;
             };
             let Some(distance_mm) = parse_distance_mm(&self.value_input) else {
@@ -9811,16 +10041,21 @@ impl KetchupApp {
             }
             self.selection.select_exact(selection.clone(), false);
             self.push_pull_distance_input = self.value_input.clone();
-            if self.start_preview() && self.confirm_push_pull_preview() {
-                self.digest = self.catalog.format(
-                    "digest-exact-value-applied",
-                    &BTreeMap::from([(
-                        "value",
-                        parse_distance_mm(&self.value_input)
-                            .map_or_else(String::new, format_signed_mm),
-                    )]),
-                );
-                return true;
+            if self.start_preview() {
+                if self.has_smart_push_pull_chooser() {
+                    return true;
+                }
+                if self.confirm_push_pull_preview() {
+                    self.digest = self.catalog.format(
+                        "digest-exact-value-applied",
+                        &BTreeMap::from([(
+                            "value",
+                            parse_distance_mm(&self.value_input)
+                                .map_or_else(String::new, format_signed_mm),
+                        )]),
+                    );
+                    return true;
+                }
             }
         }
         if self.active_tool == ActiveTool::Move {
@@ -11758,6 +11993,9 @@ impl KetchupApp {
             && context.input(|input| {
                 input.modifiers.command && input.modifiers.shift && input.key_pressed(egui::Key::G)
             });
+        let confirm_box_preview = !context.wants_keyboard_input()
+            && self.has_preview()
+            && context.input(|input| input.key_pressed(egui::Key::Enter));
         let confirm_operation_preview = !context.wants_keyboard_input()
             && self.has_occurrence_operation_preview()
             && context.input(|input| input.key_pressed(egui::Key::Enter));
@@ -11849,8 +12087,10 @@ impl KetchupApp {
             self.cycle_hover_overlap();
         } else if shortcuts {
             self.dispatch_command(AppCommand::Shortcuts);
+        } else if confirm_box_preview {
+            self.confirm_preview();
         } else if confirm_operation_preview {
-            self.confirm_occurrence_operation_preview();
+            self.confirm_push_pull_preview();
         } else if confirm_sweep_preview {
             self.confirm_sweep_preview();
         } else if confirm_loft_preview {
@@ -11861,6 +12101,7 @@ impl KetchupApp {
                 self.digest = self.catalog.text("digest-measure-cleared");
                 self.status_key = "status-measure-first-point";
             } else if self.has_preview()
+                || self.smart_push_pull_chooser.is_some()
                 || self.has_pocket_preview()
                 || self.has_occurrence_operation_preview()
                 || self.revolve_tool.is_some()
@@ -14787,6 +15028,76 @@ impl eframe::App for KetchupApp {
 }
 
 impl KetchupApp {
+    fn show_smart_push_pull_chooser(&mut self, context: &egui::Context) {
+        let Some(chooser) = self.smart_push_pull_chooser.as_ref() else {
+            return;
+        };
+        let mut selected = chooser.selected;
+        let snapshot = self.document.current();
+        let target_labels = chooser
+            .targets
+            .iter()
+            .map(|target| {
+                let occurrence_id = target.instance_path.root_occurrence();
+                let occurrence = snapshot.occurrence(occurrence_id).map_or_else(
+                    || occurrence_id.0.to_string(),
+                    |item| item.name().to_owned(),
+                );
+                let feature_id = target
+                    .extrusion_feature_id
+                    .expect("a circular cut choice always has an extrusion");
+                let feature = snapshot
+                    .feature(feature_id)
+                    .map_or_else(|| feature_id.0.to_string(), |item| item.name().to_owned());
+                (
+                    SmartPushPullChoice::CircularCut(occurrence_id),
+                    self.catalog.format(
+                        "choice-smart-push-pull-cut-target",
+                        &BTreeMap::from([
+                            ("feature", feature),
+                            ("feature_id", feature_id.0.to_string()),
+                            ("occurrence", occurrence),
+                            ("occurrence_id", occurrence_id.0.to_string()),
+                        ]),
+                    ),
+                )
+            })
+            .collect::<Vec<_>>();
+        let title = self.catalog.text("choice-smart-push-pull-source");
+        let explanation = self.catalog.text("choice-smart-push-pull-explanation");
+        let new_feature = self.catalog.text("choice-smart-push-pull-new-feature");
+        let continue_label = self.catalog.text("choice-smart-push-pull-continue");
+        let cancel_label = self.catalog.text("choice-smart-push-pull-cancel");
+        let mut confirm = false;
+        let mut cancel = false;
+        egui::Window::new(title)
+            .id(egui::Id::new("smart-push-pull-chooser"))
+            .collapsible(false)
+            .resizable(false)
+            .show(context, |ui| {
+                ui.label(explanation);
+                ui.separator();
+                ui.radio_value(&mut selected, SmartPushPullChoice::NewFeature, new_feature);
+                for (choice, label) in target_labels {
+                    ui.radio_value(&mut selected, choice, label);
+                }
+                ui.separator();
+                ui.horizontal(|ui| {
+                    confirm = ui.button(continue_label).clicked();
+                    cancel = ui.button(cancel_label).clicked();
+                });
+            });
+        if let Some(chooser) = self.smart_push_pull_chooser.as_mut() {
+            chooser.selected = selected;
+        }
+        if cancel {
+            self.cancel_preview();
+            self.digest = self.catalog.text("digest-cancelled");
+        } else if confirm {
+            self.confirm_smart_push_pull_choice();
+        }
+    }
+
     /// Draw the whole designed shell into an `egui` context.
     ///
     /// This is the single entry point used both by the windowed `eframe`
@@ -14883,6 +15194,7 @@ impl KetchupApp {
                     self.show_assistant(ui);
                 });
         }
+        self.show_smart_push_pull_chooser(context);
         self.show_shortcuts_window(context);
         self.poll_assistant_chat(context);
     }
@@ -15963,6 +16275,53 @@ mod tests {
 
     fn apply_reviewed_model_intent(app: &mut KetchupApp, intent: AssistantModelIntent) -> bool {
         app.prepare_assistant_model_intent(intent) && app.confirm_assistant_proposal()
+    }
+
+    fn select_initial_top_face(app: &mut KetchupApp) {
+        app.selection.select_exact(
+            SelectionId {
+                definition_id: INITIAL_BOX_DEFINITION,
+                instance_path: InstancePath::root(OccurrenceId(1)),
+                element: ElementId::Face {
+                    axis: Axis::Z,
+                    side: Side::Maximum,
+                },
+            },
+            false,
+        );
+    }
+
+    #[test]
+    fn manual_and_assistant_push_pull_share_the_identical_canonical_batch() {
+        let mut app = KetchupApp::new();
+        app.selection.select_exact(
+            SelectionId {
+                definition_id: INITIAL_BOX_DEFINITION,
+                instance_path: InstancePath::root(OccurrenceId(1)),
+                element: ElementId::Face {
+                    axis: Axis::Z,
+                    side: Side::Maximum,
+                },
+            },
+            false,
+        );
+        app.set_push_pull_distance_input("15");
+        assert!(app.start_preview());
+        let manual = app.smart_push_pull_proposal.as_ref().unwrap().clone();
+        app.cancel_preview();
+
+        assert!(
+            app.prepare_assistant_intent(WorkflowIntent::SetFeatureDimension {
+                target: FeatureId(2),
+                value_text: "35".to_owned(),
+            })
+        );
+        let assistant = app.assistant_proposal.as_ref().unwrap();
+        assert_eq!(manual.batch(), assistant.batch());
+        assert_eq!(manual.command_digest(), assistant.command_digest());
+        assert_eq!(manual.principal(), ProposalPrincipal::ManualClient);
+        assert_eq!(assistant.principal(), ProposalPrincipal::LocalAssistant);
+        assert_eq!(app.document_revision(), manual.provenance_revision());
     }
 
     #[test]
@@ -17155,6 +17514,7 @@ mod tests {
     #[test]
     fn push_pull_distance_accepts_units_and_moves_inward() {
         let mut app = KetchupApp::new();
+        select_initial_top_face(&mut app);
         app.set_push_pull_distance_input("-5 mm");
 
         assert!(app.start_preview());
@@ -20057,6 +20417,7 @@ mod tests {
     #[test]
     fn push_pull_preview_fails_closed_after_the_source_revision_changes() {
         let mut app = KetchupApp::new();
+        select_initial_top_face(&mut app);
         app.set_push_pull_distance_input("5");
         assert!(app.start_preview());
         app.document
@@ -20366,6 +20727,7 @@ mod tests {
     #[test]
     fn push_pull_keeps_the_opposite_face_fixed_on_screen() {
         let mut app = KetchupApp::new();
+        select_initial_top_face(&mut app);
         let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0));
         let bottom = Vec3::new(0.0, 0.0, 0.0);
         let top = Vec3::new(0.0, 0.0, app.document_height_mm());
@@ -20382,6 +20744,7 @@ mod tests {
     #[test]
     fn confirmed_push_pull_can_be_undone_and_redone() {
         let mut app = KetchupApp::new();
+        select_initial_top_face(&mut app);
         assert!(!app.can_undo());
 
         app.set_push_pull_distance_input("22");
@@ -20740,6 +21103,7 @@ mod tests {
     #[test]
     fn viewport_picks_the_geometry_currently_shown_in_preview() {
         let mut app = KetchupApp::new();
+        select_initial_top_face(&mut app);
         let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0));
         app.set_push_pull_distance_input("40");
         assert!(app.start_preview());
