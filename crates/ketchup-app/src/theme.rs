@@ -188,6 +188,8 @@ pub enum Icon {
     Zoom,
     Undo,
     Redo,
+    Copy,
+    Send,
     Logo,
 }
 
@@ -240,6 +242,8 @@ impl Icon {
             ],
             Self::Undo => ["M4 9 h10 a5 5 0 0 1 0 10 H8 M4 9 l4-4 M4 9 l4 4", ""],
             Self::Redo => ["M20 9 H10 a5 5 0 0 0 0 10 h6 M20 9 l-4-4 M20 9 l-4 4", ""],
+            Self::Copy => ["M8 8 H19 V19 H8 Z", "M5 5 H16 V8 M5 5 V16 H8"],
+            Self::Send => ["M3.5 5 L21 12 L3.5 19 L7 12 Z", "M7 12 H14"],
             Self::Logo => ["M8 5 V19 M17 5 L9.5 12 L17 19", ""],
         }
     }
@@ -675,6 +679,8 @@ mod tests {
             Icon::Zoom,
             Icon::Undo,
             Icon::Redo,
+            Icon::Copy,
+            Icon::Send,
             Icon::Logo,
         ] {
             let polylines = parse_path(icon.strokes()[0]);

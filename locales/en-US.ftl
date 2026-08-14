@@ -108,6 +108,7 @@ assistant-role-assistant = Assistant
 assistant-role-error = Error
 assistant-thinking = Thinking…
 assistant-input-hint = Ask about the model or describe what you want to create…
+assistant-send-shortcut = Enter to send · Shift+Enter for a new line
 assistant-send = Send
 assistant-advanced-tools = Advanced direct tools
 assistant-error-disconnected = The Assistant process disconnected before returning a response.

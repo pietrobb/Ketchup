@@ -12940,12 +12940,34 @@ impl KetchupApp {
                                         ui.add(
                                             egui::Label::new(&message.text).wrap().selectable(true),
                                         );
-                                        if ui
-                                            .small_button(
-                                                self.catalog.text("assistant-copy-message"),
-                                            )
-                                            .clicked()
-                                        {
+                                        let copy_label =
+                                            self.catalog.text("assistant-copy-message");
+                                        let copy = ui.add(
+                                            egui::Button::new("")
+                                                .min_size(Vec2::splat(24.0))
+                                                .frame(false),
+                                        );
+                                        if copy.hovered() {
+                                            ui.painter().rect_filled(
+                                                copy.rect,
+                                                egui::CornerRadius::same(5),
+                                                palette.panel2,
+                                            );
+                                        }
+                                        theme::paint_icon(
+                                            ui.painter(),
+                                            shrink_to_icon(copy.rect, 13.0),
+                                            Icon::Copy,
+                                            if copy.hovered() {
+                                                palette.text
+                                            } else {
+                                                palette.dim
+                                            },
+                                            palette.accent,
+                                            1.6,
+                                        );
+                                        name_widget(&copy, true, &copy_label);
+                                        if copy.on_hover_text(copy_label).clicked() {
                                             ui.ctx().copy_text(message.text.clone());
                                         }
                                     });
@@ -12957,11 +12979,13 @@ impl KetchupApp {
                         }
                     });
             });
-        let send_shortcut =
-            ui.input(|input| input.key_pressed(egui::Key::Enter) && input.modifiers.ctrl);
-        ui.add(
+        let enter_without_shift =
+            ui.input(|input| input.key_pressed(egui::Key::Enter) && !input.modifiers.shift);
+        let input_label = self.catalog.text("assistant-input-hint");
+        let input = ui.add(
             egui::TextEdit::multiline(&mut self.assistant_input)
-                .hint_text(self.catalog.text("assistant-input-hint"))
+                .id_salt("assistant-chat-input")
+                .hint_text(&input_label)
                 .desired_width(f32::INFINITY)
                 .desired_rows(
                     if self.assistant_workspace_mode == AssistantWorkspaceMode::Tab {
@@ -12971,14 +12995,54 @@ impl KetchupApp {
                     },
                 ),
         );
-        let send = ui
-            .add_enabled(
-                self.assistant_chat_task.is_none() && !self.assistant_input.trim().is_empty(),
-                egui::Button::new(self.catalog.text("assistant-send"))
-                    .min_size(Vec2::new(ui.available_width(), 32.0)),
+        let send_shortcut = input.has_focus() && enter_without_shift;
+        input.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, &input_label)
+        });
+        input.on_hover_text(self.catalog.text("assistant-send-shortcut"));
+
+        let enabled = self.assistant_chat_task.is_none() && !self.assistant_input.trim().is_empty();
+        let send_clicked = ui
+            .allocate_ui_with_layout(
+                Vec2::new(ui.available_width(), 28.0),
+                egui::Layout::right_to_left(egui::Align::Center),
+                |ui| {
+                    let send_label = self.catalog.text("assistant-send");
+                    let send = ui.add_enabled(
+                        enabled,
+                        egui::Button::new("")
+                            .min_size(Vec2::splat(28.0))
+                            .fill(if enabled {
+                                palette.accent
+                            } else {
+                                palette.panel2
+                            })
+                            .stroke(Stroke::NONE)
+                            .corner_radius(egui::CornerRadius::same(8)),
+                    );
+                    theme::paint_icon(
+                        ui.painter(),
+                        shrink_to_icon(send.rect, 14.0),
+                        Icon::Send,
+                        if enabled {
+                            palette.accent_ink
+                        } else {
+                            palette.faint
+                        },
+                        if enabled {
+                            palette.accent_ink
+                        } else {
+                            palette.faint
+                        },
+                        1.8,
+                    );
+                    name_widget(&send, enabled, &send_label);
+                    send.on_hover_text(self.catalog.text("assistant-send-shortcut"))
+                        .clicked()
+                },
             )
-            .clicked();
-        if send || send_shortcut {
+            .inner;
+        if send_clicked || send_shortcut {
             self.send_assistant_message(ui.ctx());
         }
 

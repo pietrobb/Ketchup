@@ -2,7 +2,7 @@ mod harness;
 
 use eframe::egui;
 use harness::Shell;
-use ketchup_app::{AssistantProvider, AssistantWorkspaceMode};
+use ketchup_app::{AssistantMessageRole, AssistantProvider, AssistantWorkspaceMode};
 use ketchup_core::assistant_sidecar::{
     ASSISTANT_PROTOCOL_VERSION, AssistantBoxIntent, AssistantDistribution,
     AssistantLinearArrayIntent, AssistantModelIntent, AssistantSubtractionIntent,
@@ -15,6 +15,31 @@ use ketchup_core::intent::WorkflowIntent;
 use ketchup_interaction::Vec3;
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
+
+#[test]
+fn assistant_enter_sends_and_shift_enter_keeps_composing() {
+    let mut shell = Shell::new();
+    let input_label = shell.catalog().text("assistant-input-hint");
+
+    shell.focus_text_input(&input_label);
+    shell.type_text("Move the beam");
+    shell.key(egui::Key::Enter, egui::Modifiers::SHIFT);
+    assert!(
+        shell.app().assistant_messages().is_empty(),
+        "Shift+Enter must not send the draft"
+    );
+
+    shell.type_text("up 20 mm");
+    shell.press_key(egui::Key::Enter);
+    let message = shell
+        .app()
+        .assistant_messages()
+        .first()
+        .expect("Enter must submit a user message");
+    assert_eq!(message.role, AssistantMessageRole::User);
+    assert_eq!(message.text, "Move the beam\nup 20 mm");
+    shell.app_mut().new_assistant_chat();
+}
 
 #[test]
 fn assistant_advanced_tool_applies_one_verified_undoable_batch_without_confirmation() {

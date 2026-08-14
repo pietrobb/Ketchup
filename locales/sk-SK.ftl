@@ -108,6 +108,7 @@ assistant-role-assistant = Asistent
 assistant-role-error = Chyba
 assistant-thinking = Premýšľam…
 assistant-input-hint = Spýtajte sa na model alebo opíšte, čo chcete vytvoriť…
+assistant-send-shortcut = Enter odošle · Shift+Enter vloží nový riadok
 assistant-send = Odoslať
 assistant-advanced-tools = Pokročilé priame nástroje
 assistant-error-disconnected = Proces asistenta sa odpojil skôr, než vrátil odpoveď.

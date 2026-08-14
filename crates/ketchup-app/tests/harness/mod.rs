@@ -161,6 +161,14 @@ impl Shell {
         self.harness.run();
     }
 
+    /// Move keyboard focus to a labeled text input through AccessKit.
+    pub fn focus_text_input(&mut self, label: &str) {
+        self.harness
+            .get_by_role_and_label(Role::TextInput, label)
+            .focus();
+        self.harness.run();
+    }
+
     /// Whether the command is the focused node in the current AccessKit tree.
     pub fn command_is_focused(&self, command: AppCommand) -> bool {
         let label = self.app().command_label(command);
