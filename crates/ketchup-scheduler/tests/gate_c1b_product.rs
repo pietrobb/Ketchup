@@ -1861,6 +1861,71 @@ fn worker_exports_current_bottle_as_round_trippable_step_and_rejects_stale_evide
 }
 
 #[test]
+fn worker_exports_transformed_current_model_as_rereadable_step_and_rejects_stale_evidence() {
+    let directory = tempfile::tempdir().unwrap();
+    let step_path = directory.path().join("current-model.step");
+    let stale_path = directory.path().join("stale-current-model.step");
+    let mut supervisor = ExactWorkerSupervisor::spawn(worker_path()).unwrap();
+    let mut document = rectangle_document(100.0, 60.0, 18.0);
+    let snapshot = document.current();
+    let request = ExactFeatureChainRequest::from_snapshot(&snapshot, DEFINITION).unwrap();
+    let package = supervisor.evaluate_rectangle(&request).unwrap();
+    let translated = Transform::from_translation(150.0, 25.0, 5.0).unwrap();
+    let model = [
+        (
+            ExactBodyPackage::from(package.clone()),
+            Transform::identity(),
+        ),
+        (ExactBodyPackage::from(package.clone()), translated),
+    ];
+    let before_revision = snapshot.revision_id();
+    let before_digest = snapshot.canonical_digest();
+    let before_undo = document.visible_undo_steps();
+
+    supervisor
+        .export_current_model_step(&snapshot, &model, &step_path)
+        .unwrap();
+
+    let imported = ExactBackend::new()
+        .import_step(step_path.to_str().unwrap())
+        .unwrap();
+    assert_eq!(imported.body.topology.solid_count, 2);
+    assert!((imported.body.topology.volume_mm3 - 216_000.0).abs() < 1.0e-6);
+    assert!((imported.body.topology.bounds_mm.min.x - package.bounds_mm[0][0]).abs() < 1.0e-6);
+    assert!(
+        (imported.body.topology.bounds_mm.max.x - (package.bounds_mm[1][0] + 150.0)).abs() < 1.0e-6
+    );
+    assert!(
+        (imported.body.topology.bounds_mm.max.y - (package.bounds_mm[1][1] + 25.0)).abs() < 1.0e-6
+    );
+    assert!(
+        (imported.body.topology.bounds_mm.max.z - (package.bounds_mm[1][2] + 5.0)).abs() < 1.0e-6
+    );
+    assert_eq!(document.current().revision_id(), before_revision);
+    assert_eq!(document.current().canonical_digest(), before_digest);
+    assert_eq!(document.visible_undo_steps(), before_undo);
+
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetFeatureDimension {
+                id: EXTRUSION,
+                dimension: Dimension::new("24", 24.0).unwrap(),
+            },
+        ]))
+        .unwrap();
+    std::fs::write(&stale_path, b"preserved destination").unwrap();
+    assert!(
+        supervisor
+            .export_current_model_step(&document.current(), &model, &stale_path)
+            .is_err()
+    );
+    assert_eq!(
+        std::fs::read(&stale_path).unwrap(),
+        b"preserved destination"
+    );
+}
+
+#[test]
 fn scheduler_evaluates_controlled_bottle_fillet_and_chamfer_with_current_roles() {
     let mut supervisor = ExactWorkerSupervisor::spawn(worker_path()).unwrap();
     let mut document = controlled_finished_bottle_document();

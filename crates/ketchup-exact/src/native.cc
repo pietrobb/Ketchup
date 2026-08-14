@@ -1839,7 +1839,8 @@ std::unique_ptr<NativeOperationResult> import_step_native(rust::Str path) noexce
     if (reader.TransferRoots() == 0) {
       return error_result(STATUS_INVALID_SHAPE, "STEP fixture contains no transferable roots");
     }
-    return success_result(reader.OneShape(), {});
+    const TopoDS_Shape shape = reader.OneShape();
+    return success_result(shape, {}, count_subshapes(shape, TopAbs_SOLID) >= 2);
   });
 }
 
