@@ -2,6 +2,7 @@ mod harness;
 
 use eframe::egui;
 use harness::Shell;
+use ketchup_app::dialogs::ScriptedFileDialogs;
 use ketchup_app::{AppCommand, AssistantMessageRole, AssistantProvider, AssistantWorkspaceMode};
 use ketchup_core::assistant_sidecar::{
     ASSISTANT_PROTOCOL_VERSION, AssistantBoxIntent, AssistantDistribution,
@@ -15,6 +16,11 @@ use ketchup_core::intent::WorkflowIntent;
 use ketchup_interaction::Vec3;
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
+
+fn apply_reviewed_model_intent(shell: &mut Shell, intent: AssistantModelIntent) -> bool {
+    shell.app_mut().prepare_assistant_model_intent(intent)
+        && shell.app_mut().confirm_assistant_proposal()
+}
 
 #[test]
 fn assistant_enter_sends_and_shift_enter_keeps_composing() {
@@ -128,6 +134,45 @@ fn assistant_occurrence_visibility_applies_immediately_and_is_undoable() {
 }
 
 #[test]
+fn public_apply_helpers_cannot_bypass_review_for_non_whitelisted_changes() {
+    let mut shell = Shell::new();
+    let revision = shell.app().document_revision();
+    let digest = shell.app().canonical_digest();
+
+    assert!(
+        !shell
+            .app_mut()
+            .apply_assistant_intent(WorkflowIntent::RenameDefinition {
+                target: DefinitionId(1),
+                name: "Needs review".to_owned(),
+            },)
+    );
+    assert!(shell.app().assistant_proposal().is_some());
+    assert_eq!(shell.app().document_revision(), revision);
+    assert_eq!(shell.app().canonical_digest(), digest);
+    assert!(shell.app_mut().cancel_assistant_proposal());
+
+    assert!(
+        !shell
+            .app_mut()
+            .apply_assistant_model_intent(AssistantModelIntent {
+                replace_scene: true,
+                boxes: vec![AssistantBoxIntent {
+                    name: "Replacement".to_owned(),
+                    size_mm: [10.0, 10.0, 10.0],
+                    origin_mm: [0.0, 0.0, 0.0],
+                    subtract_boxes: Vec::new(),
+                }],
+                translations: Vec::new(),
+                linear_arrays: Vec::new(),
+            })
+    );
+    assert!(shell.app().assistant_proposal().is_some());
+    assert_eq!(shell.app().document_revision(), revision);
+    assert_eq!(shell.app().canonical_digest(), digest);
+}
+
+#[test]
 fn assistant_occurrence_translation_review_is_exact_observational_and_undoable() {
     let mut shell = Shell::new();
     let revision = shell.app().document_revision();
@@ -165,6 +210,33 @@ fn assistant_occurrence_translation_review_is_exact_observational_and_undoable()
     shell.settle();
     assert!(shell.has_visible_label(&shell.catalog().text("assistant-review-title")));
     assert!(shell.has_visible_label(&shell.catalog().text("assistant-review-observational")));
+    let target = shell.catalog().format(
+        "assistant-target-identified",
+        &BTreeMap::from([
+            ("kind", shell.catalog().text("assistant-entity-occurrence")),
+            ("id", "1".to_owned()),
+        ]),
+    );
+    let before = shell.catalog().format(
+        "assistant-value-transform",
+        &BTreeMap::from([(
+            "matrix",
+            "1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1".to_owned(),
+        )]),
+    );
+    let after = shell.catalog().format(
+        "assistant-value-transform",
+        &BTreeMap::from([(
+            "matrix",
+            "1, 0, 0, 12.5, 0, 1, 0, -4, 0, 0, 1, 8.25, 0, 0, 0, 1".to_owned(),
+        )]),
+    );
+    let diff = shell.catalog().format(
+        "assistant-diff-row",
+        &BTreeMap::from([("before", before), ("after", after)]),
+    );
+    assert!(shell.has_visible_label(&target));
+    assert!(shell.has_visible_label(&diff));
     let confirm = shell.catalog().text("assistant-confirm");
     shell.click_row(&confirm);
     assert_eq!(shell.app().document_revision(), revision + 1);
@@ -240,76 +312,123 @@ fn assistant_definition_rename_review_is_textual_observational_and_undoable() {
 }
 
 #[test]
-fn assistant_draws_a_new_rectangle_through_immediate_canonical_steps() {
+fn assistant_confirmation_fails_closed_after_an_unrelated_canonical_revision() {
+    let mut shell = Shell::new();
+    let base_revision = shell.app().document_revision();
+    assert!(
+        shell
+            .app_mut()
+            .prepare_assistant_intent(WorkflowIntent::RenameDefinition {
+                target: DefinitionId(1),
+                name: "Stale rename".to_owned(),
+            },)
+    );
+    assert!(shell.app().assistant_proposal().is_some());
+
+    shell.click_menu_command("menu-edit", AppCommand::SelectAll);
+    shell.click_menu_command("menu-view", AppCommand::Hide);
+    let intervening_revision = shell.app().document_revision();
+    let intervening_digest = shell.app().canonical_digest();
+    assert_eq!(intervening_revision, base_revision + 1);
+    assert!(shell.app().assistant_proposal().is_some());
+
+    shell.settle();
+    let confirm = shell.catalog().text("assistant-confirm");
+    shell.click_row(&confirm);
+    assert!(shell.app().assistant_proposal().is_none());
+    assert_eq!(shell.app().document_revision(), intervening_revision);
+    assert_eq!(shell.app().canonical_digest(), intervening_digest);
+}
+
+#[test]
+fn new_open_and_new_chat_cancel_reviewed_work_through_accessible_shell_commands() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("assistant-cancel.ketchup");
+    let mut source = Shell::with_dialogs(ScriptedFileDialogs::new().queue_save(&path));
+    source.click_menu_command("menu-file", AppCommand::SaveAs);
+    assert!(path.is_file());
+    let opened_digest = source.app().canonical_digest();
+    drop(source);
+
+    let dialogs = ScriptedFileDialogs::new()
+        .queue_open(&path)
+        .always_discard();
+    let mut shell = Shell::with_dialogs(dialogs);
+    let revision = shell.app().document_revision();
+    let digest = shell.app().canonical_digest();
+    let prepare_review = |shell: &mut Shell| {
+        assert!(
+            shell
+                .app_mut()
+                .prepare_assistant_intent(WorkflowIntent::RenameDefinition {
+                    target: DefinitionId(1),
+                    name: "Reviewed name".to_owned(),
+                },)
+        );
+        assert!(shell.app().assistant_proposal().is_some());
+    };
+
+    prepare_review(&mut shell);
+    let new_chat = shell.catalog().text("assistant-new-chat");
+    shell.click_row(&new_chat);
+    assert!(shell.app().assistant_proposal().is_none());
+    assert_eq!(shell.app().document_revision(), revision);
+    assert_eq!(shell.app().canonical_digest(), digest);
+
+    prepare_review(&mut shell);
+    shell.click_menu_command("menu-file", AppCommand::New);
+    assert!(shell.app().assistant_proposal().is_none());
+
+    prepare_review(&mut shell);
+    shell.click_menu_command("menu-file", AppCommand::Open);
+    assert!(shell.app().assistant_proposal().is_none());
+    assert_eq!(shell.app().canonical_digest(), opened_digest);
+}
+
+#[test]
+fn assistant_creates_a_rectangular_prism_as_one_reviewed_batch_and_one_undo_step() {
     let mut shell = Shell::new();
     let initial_revision = shell.app().document_revision();
     let initial_digest = shell.app().canonical_digest();
     let initial_definitions = shell.app().definition_count();
     let initial_occurrences = shell.app().active_box_count();
-    let definition = DefinitionId(20);
-    let profile = FeatureId(30);
-    let occurrence = OccurrenceId(40);
 
-    for intent in [
-        WorkflowIntent::CreateDefinition {
-            target: definition,
-            name: "AI rectangle".to_owned(),
-        },
-        WorkflowIntent::CreateProfileFeature {
-            target: profile,
-            definition,
-            name: "AI rectangle profile".to_owned(),
-            points_mm: vec![[0.0, 0.0], [120.0, 0.0], [120.0, 80.0], [0.0, 80.0]],
-        },
-        WorkflowIntent::CreateOccurrence {
-            target: occurrence,
-            definition,
-            name: "AI rectangle occurrence".to_owned(),
-        },
-    ] {
-        let revision = shell.app().document_revision();
-        assert!(shell.app_mut().apply_assistant_intent(intent));
-        assert!(shell.app().assistant_proposal().is_none());
-        assert_eq!(shell.app().document_revision(), revision + 1);
-        assert_eq!(
-            shell.app().assistant_verification().unwrap().revision_id,
-            revision + 1
-        );
-    }
+    assert!(
+        shell
+            .app_mut()
+            .prepare_assistant_model_intent(AssistantModelIntent {
+                replace_scene: false,
+                boxes: vec![AssistantBoxIntent {
+                    name: "AI rectangular prism".to_owned(),
+                    size_mm: [120.0, 80.0, 10.0],
+                    origin_mm: [0.0, 0.0, 0.0],
+                    subtract_boxes: Vec::new(),
+                }],
+                translations: Vec::new(),
+                linear_arrays: Vec::new(),
+            })
+    );
+    assert_eq!(shell.app().document_revision(), initial_revision);
+    shell.settle();
+    let confirm = shell.catalog().text("assistant-confirm");
+    shell.click_row(&confirm);
 
+    assert_eq!(shell.app().document_revision(), initial_revision + 1);
     assert_eq!(shell.app().definition_count(), initial_definitions + 1);
     assert_eq!(shell.app().active_box_count(), initial_occurrences + 1);
-    assert_eq!(
-        shell.app().occurrence_definition_id(occurrence),
-        Some(definition)
-    );
-    assert_eq!(
-        shell.app().occurrence_box_geometry(occurrence.0),
-        Some((Vec3::new(0.0, 0.0, 0.0), Vec3::new(120.0, 80.0, 0.0)))
-    );
     let completed_digest = shell.app().canonical_digest();
     assert_ne!(completed_digest, initial_digest);
 
-    for _ in 0..3 {
-        assert!(shell.app_mut().undo());
-    }
+    assert!(shell.app_mut().undo());
     assert_eq!(shell.app().document_revision(), initial_revision);
     assert_eq!(shell.app().canonical_digest(), initial_digest);
     assert_eq!(shell.app().definition_count(), initial_definitions);
     assert_eq!(shell.app().active_box_count(), initial_occurrences);
 
-    for _ in 0..3 {
-        assert!(shell.app_mut().redo());
-    }
+    assert!(shell.app_mut().redo());
     assert_eq!(shell.app().canonical_digest(), completed_digest);
-    assert_eq!(
-        shell.app().occurrence_definition_id(occurrence),
-        Some(definition)
-    );
-    assert_eq!(
-        shell.app().occurrence_box_geometry(occurrence.0),
-        Some((Vec3::new(0.0, 0.0, 0.0), Vec3::new(120.0, 80.0, 0.0)))
-    );
+    assert_eq!(shell.app().definition_count(), initial_definitions + 1);
+    assert_eq!(shell.app().active_box_count(), initial_occurrences + 1);
 }
 
 #[test]
@@ -318,29 +437,28 @@ fn assistant_model_intent_applies_real_3d_boxes_immediately_as_one_undoable_batc
     let initial_revision = shell.app().document_revision();
     let initial_digest = shell.app().canonical_digest();
 
-    assert!(
-        shell
-            .app_mut()
-            .apply_assistant_model_intent(AssistantModelIntent {
-                replace_scene: true,
-                boxes: vec![
-                    AssistantBoxIntent {
-                        name: "Column".to_owned(),
-                        size_mm: [400.0, 400.0, 2_500.0],
-                        origin_mm: [0.0, 0.0, 0.0],
-                        subtract_boxes: Vec::new(),
-                    },
-                    AssistantBoxIntent {
-                        name: "Beam".to_owned(),
-                        size_mm: [5_000.0, 300.0, 500.0],
-                        origin_mm: [0.0, 50.0, 2_500.0],
-                        subtract_boxes: Vec::new(),
-                    },
-                ],
-                translations: Vec::new(),
-                linear_arrays: Vec::new(),
-            })
-    );
+    assert!(apply_reviewed_model_intent(
+        &mut shell,
+        AssistantModelIntent {
+            replace_scene: true,
+            boxes: vec![
+                AssistantBoxIntent {
+                    name: "Column".to_owned(),
+                    size_mm: [400.0, 400.0, 2_500.0],
+                    origin_mm: [0.0, 0.0, 0.0],
+                    subtract_boxes: Vec::new(),
+                },
+                AssistantBoxIntent {
+                    name: "Beam".to_owned(),
+                    size_mm: [5_000.0, 300.0, 500.0],
+                    origin_mm: [0.0, 50.0, 2_500.0],
+                    subtract_boxes: Vec::new(),
+                },
+            ],
+            translations: Vec::new(),
+            linear_arrays: Vec::new(),
+        }
+    ));
     assert_eq!(shell.app().document_revision(), initial_revision + 1);
     assert_ne!(shell.app().canonical_digest(), initial_digest);
     assert!(shell.app().assistant_proposal().is_none());
@@ -375,21 +493,20 @@ fn assistant_subtractions_create_one_real_grooved_body_as_one_undo_step() {
         })
         .collect();
 
-    assert!(
-        shell
-            .app_mut()
-            .apply_assistant_model_intent(AssistantModelIntent {
-                replace_scene: true,
-                boxes: vec![AssistantBoxIntent {
-                    name: "10 m grooved beam".to_owned(),
-                    size_mm: [10_000.0, 160.0, 160.0],
-                    origin_mm: [0.0, 0.0, 0.0],
-                    subtract_boxes,
-                }],
-                translations: Vec::new(),
-                linear_arrays: Vec::new(),
-            })
-    );
+    assert!(apply_reviewed_model_intent(
+        &mut shell,
+        AssistantModelIntent {
+            replace_scene: true,
+            boxes: vec![AssistantBoxIntent {
+                name: "10 m grooved beam".to_owned(),
+                size_mm: [10_000.0, 160.0, 160.0],
+                origin_mm: [0.0, 0.0, 0.0],
+                subtract_boxes,
+            }],
+            translations: Vec::new(),
+            linear_arrays: Vec::new(),
+        }
+    ));
 
     assert_eq!(shell.app().document_revision(), initial_revision + 1);
     assert_eq!(shell.app().active_box_count(), 1);
@@ -444,21 +561,20 @@ fn assistant_moves_existing_grooved_body_without_rebuilding_its_geometry() {
             origin_mm: [300.0 + index as f64 * 583.75, 0.0, 140.0],
         })
         .collect();
-    assert!(
-        shell
-            .app_mut()
-            .apply_assistant_model_intent(AssistantModelIntent {
-                replace_scene: true,
-                boxes: vec![AssistantBoxIntent {
-                    name: "10 m grooved beam".to_owned(),
-                    size_mm: [10_000.0, 160.0, 160.0],
-                    origin_mm: [0.0, 0.0, 0.0],
-                    subtract_boxes,
-                }],
-                translations: Vec::new(),
-                linear_arrays: Vec::new(),
-            })
-    );
+    assert!(apply_reviewed_model_intent(
+        &mut shell,
+        AssistantModelIntent {
+            replace_scene: true,
+            boxes: vec![AssistantBoxIntent {
+                name: "10 m grooved beam".to_owned(),
+                size_mm: [10_000.0, 160.0, 160.0],
+                origin_mm: [0.0, 0.0, 0.0],
+                subtract_boxes,
+            }],
+            translations: Vec::new(),
+            linear_arrays: Vec::new(),
+        }
+    ));
     let occurrence_id = shell
         .app()
         .document_snapshot()
@@ -470,19 +586,18 @@ fn assistant_moves_existing_grooved_body_without_rebuilding_its_geometry() {
     let feature_before = before.features().next().unwrap().clone();
     let revision = before.revision_id();
 
-    assert!(
-        shell
-            .app_mut()
-            .apply_assistant_model_intent(AssistantModelIntent {
-                replace_scene: false,
-                boxes: Vec::new(),
-                translations: vec![AssistantTranslationIntent {
-                    occurrence_id: occurrence_id.0,
-                    delta_mm: [100.0, 0.0, 0.0],
-                }],
-                linear_arrays: Vec::new(),
-            })
-    );
+    assert!(apply_reviewed_model_intent(
+        &mut shell,
+        AssistantModelIntent {
+            replace_scene: false,
+            boxes: Vec::new(),
+            translations: vec![AssistantTranslationIntent {
+                occurrence_id: occurrence_id.0,
+                delta_mm: [100.0, 0.0, 0.0],
+            }],
+            linear_arrays: Vec::new(),
+        }
+    ));
 
     assert_eq!(shell.app().document_revision(), revision + 1);
     assert_eq!(
@@ -532,16 +647,15 @@ fn assistant_context_keeps_all_17_plain_and_7_grooved_parts_copyable_with_bounds
             origin_mm: [300.0, 0.0, 140.0],
         }],
     }));
-    assert!(
-        shell
-            .app_mut()
-            .apply_assistant_model_intent(AssistantModelIntent {
-                replace_scene: true,
-                boxes,
-                translations: Vec::new(),
-                linear_arrays: Vec::new(),
-            })
-    );
+    assert!(apply_reviewed_model_intent(
+        &mut shell,
+        AssistantModelIntent {
+            replace_scene: true,
+            boxes,
+            translations: Vec::new(),
+            linear_arrays: Vec::new(),
+        }
+    ));
 
     let context = shell.app().assistant_context();
     let occurrences = context["occurrences"].as_array().unwrap();
@@ -577,16 +691,15 @@ fn assistant_stacks_24_existing_parts_into_20_layers_as_shared_occurrences_in_on
             subtract_boxes: Vec::new(),
         })
         .collect();
-    assert!(
-        shell
-            .app_mut()
-            .apply_assistant_model_intent(AssistantModelIntent {
-                replace_scene: true,
-                boxes,
-                translations: Vec::new(),
-                linear_arrays: Vec::new(),
-            })
-    );
+    assert!(apply_reviewed_model_intent(
+        &mut shell,
+        AssistantModelIntent {
+            replace_scene: true,
+            boxes,
+            translations: Vec::new(),
+            linear_arrays: Vec::new(),
+        }
+    ));
     let before = shell.app().document_snapshot();
     let revision = before.revision_id();
     let source_ids = before
@@ -598,20 +711,19 @@ fn assistant_stacks_24_existing_parts_into_20_layers_as_shared_occurrences_in_on
         .map(|definition| definition.id())
         .collect::<Vec<_>>();
 
-    assert!(
-        shell
-            .app_mut()
-            .apply_assistant_model_intent(AssistantModelIntent {
-                replace_scene: false,
-                boxes: Vec::new(),
-                translations: Vec::new(),
-                linear_arrays: vec![AssistantLinearArrayIntent {
-                    occurrence_ids: source_ids,
-                    instances: 20,
-                    step_mm: [0.0, 0.0, 280.0],
-                }],
-            })
-    );
+    assert!(apply_reviewed_model_intent(
+        &mut shell,
+        AssistantModelIntent {
+            replace_scene: false,
+            boxes: Vec::new(),
+            translations: Vec::new(),
+            linear_arrays: vec![AssistantLinearArrayIntent {
+                occurrence_ids: source_ids,
+                instances: 20,
+                step_mm: [0.0, 0.0, 280.0],
+            }],
+        }
+    ));
 
     let stacked = shell.app().document_snapshot();
     assert_eq!(stacked.revision_id(), revision + 1);

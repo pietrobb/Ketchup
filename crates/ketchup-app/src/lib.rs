@@ -14,15 +14,16 @@ use ketchup_core::beam_m4ae::{
 use ketchup_core::beam_m5::{BeamExactPiecePackage, BeamM5Products};
 use ketchup_core::bottle_m6::{BottleAuthorityReport, ExactRevolvePackage, ExactRevolveRequest};
 use ketchup_core::document::{
-    AuthenticatedApprover, BOTTLE_SHELL_OPENING_FACE_ROLE, BOTTLE_SHOULDER_EDGE_ROLE,
-    BooleanOperation, BottleControlDimension, BottleEdgeFinishKind, CanonicalCommand, CollectionId,
-    CommandBatch, DefinitionId, Dimension, DimensionDisplayUnit, DimensionPresentation, DocumentId,
-    DocumentStore, FeatureId, FeatureKind, FeatureParameterSlot, FeatureParameterTarget, GroupId,
-    HighRiskClass, HighRiskScope, InstancePath, LoftSection, MAX_HUMAN_CONFIRMATION_LIFETIME_MS,
-    MESH_BODY_SCHEMA_V1, MeshAuthority, MeshBodySpec, NodeId, OccurrenceId, PersistentDimensionId,
-    ProfileSegment, Proposal, ProposalContext, ProposalGoal, ProposalPrincipal, SceneOccurrence,
-    SceneQueryContext, SideEffectAuthorizationReceipt, SlotPath, Snapshot, SolidToolPlan,
-    StableEdgeRole, StableFaceRole, TagId, Transform, TrustedConfirmationSurface,
+    AuthenticatedApprover, AuthoritativeDependency, BOTTLE_SHELL_OPENING_FACE_ROLE,
+    BOTTLE_SHOULDER_EDGE_ROLE, BooleanOperation, BottleControlDimension, BottleEdgeFinishKind,
+    CanonicalCommand, CollectionId, CommandBatch, DefinitionId, Dimension, DimensionDisplayUnit,
+    DimensionPresentation, DocumentId, DocumentStore, FeatureId, FeatureKind, FeatureParameterSlot,
+    FeatureParameterTarget, GroupId, HighRiskClass, HighRiskScope, InstancePath, LoftSection,
+    MAX_HUMAN_CONFIRMATION_LIFETIME_MS, MESH_BODY_SCHEMA_V1, MeshAuthority, MeshBodySpec, NodeId,
+    OccurrenceId, PersistentDimensionId, ProfileSegment, Proposal, ProposalContext, ProposalGoal,
+    ProposalPrincipal, ProposalValue, SceneOccurrence, SceneQueryContext,
+    SideEffectAuthorizationReceipt, SlotPath, Snapshot, SolidToolPlan, StableEdgeRole,
+    StableFaceRole, TagId, Transform, TrustedConfirmationSurface,
 };
 #[cfg(test)]
 use ketchup_core::document::{
@@ -2590,13 +2591,33 @@ impl KetchupApp {
     }
 
     pub fn apply_assistant_intent(&mut self, intent: WorkflowIntent) -> bool {
-        self.prepare_assistant_intent(intent) && self.confirm_assistant_proposal()
+        self.prepare_assistant_intent(intent)
+            && self
+                .assistant_proposal
+                .as_ref()
+                .is_some_and(Self::assistant_proposal_is_low_risk)
+            && self.confirm_assistant_proposal()
     }
 
     pub fn confirm_assistant_proposal(&mut self) -> bool {
         let Some(proposal) = self.assistant_proposal.take() else {
             return false;
         };
+        let snapshot = self.document.current();
+        if proposal.document_id() != snapshot.document_id()
+            || proposal.provenance_revision() != snapshot.revision_id()
+            || proposal.provenance_digest() != snapshot.canonical_digest()
+        {
+            self.status_key = "status-ready";
+            self.digest = self.catalog.format(
+                "assistant-digest-rejected",
+                &BTreeMap::from([(
+                    "reason",
+                    self.catalog.text("assistant-error-stale-response"),
+                )]),
+            );
+            return false;
+        }
         match self.document.commit_verified_proposal(&proposal) {
             Ok(committed) => {
                 let verification = AssistantVerification {
@@ -2639,6 +2660,651 @@ impl KetchupApp {
     #[must_use]
     pub const fn assistant_proposal(&self) -> Option<&Proposal> {
         self.assistant_proposal.as_ref()
+    }
+
+    fn assistant_proposal_target_label(&self, target: &AuthoritativeDependency) -> String {
+        let identified = match target {
+            AuthoritativeDependency::EvaluatorNode(id) => {
+                Some(("assistant-entity-evaluator", id.0))
+            }
+            AuthoritativeDependency::Override(id) => Some(("assistant-entity-override", *id)),
+            AuthoritativeDependency::Joint(id) => Some(("assistant-entity-joint", id.0)),
+            AuthoritativeDependency::Space(id) => Some(("assistant-entity-space", id.0)),
+            AuthoritativeDependency::ClearanceVolume(id) => {
+                Some(("assistant-entity-clearance", id.0))
+            }
+            AuthoritativeDependency::PersistentDimension(id) => {
+                Some(("assistant-entity-persistent-dimension", id.0))
+            }
+            AuthoritativeDependency::Tag(id) => Some(("assistant-entity-tag", id.0)),
+            AuthoritativeDependency::Collection(id) => Some(("assistant-entity-collection", id.0)),
+            AuthoritativeDependency::Definition(id) => Some(("assistant-entity-definition", id.0)),
+            AuthoritativeDependency::DefinitionUsers(id) => {
+                Some(("assistant-entity-definition-users", id.0))
+            }
+            AuthoritativeDependency::Feature(id) => Some(("assistant-entity-feature", id.0)),
+            AuthoritativeDependency::FeatureUsers(id) => {
+                Some(("assistant-entity-feature-users", id.0))
+            }
+            AuthoritativeDependency::FeatureParameterBindings(id) => {
+                Some(("assistant-entity-feature-bindings", id.0))
+            }
+            AuthoritativeDependency::Occurrence(id) => Some(("assistant-entity-occurrence", id.0)),
+            AuthoritativeDependency::OccurrenceCollections(id) => {
+                Some(("assistant-entity-occurrence-collections", id.0))
+            }
+            AuthoritativeDependency::Group(id) => Some(("assistant-entity-group", id.0)),
+            AuthoritativeDependency::GroupChildren(id) => {
+                Some(("assistant-entity-group-children", id.0))
+            }
+            AuthoritativeDependency::GroupSubtree(id) => {
+                Some(("assistant-entity-group-subtree", id.0))
+            }
+            AuthoritativeDependency::FeatureParameterBinding(target) => {
+                return self.catalog.format(
+                    "assistant-target-feature-parameter",
+                    &BTreeMap::from([
+                        ("feature", target.feature_id.0.to_string()),
+                        ("slot", target.slot.label().to_owned()),
+                    ]),
+                );
+            }
+            AuthoritativeDependency::LocalGroup(key) => {
+                return self.catalog.format(
+                    "assistant-target-local-group",
+                    &BTreeMap::from([
+                        ("definition", key.definition_id.0.to_string()),
+                        ("local", key.local_id.0.to_string()),
+                    ]),
+                );
+            }
+            AuthoritativeDependency::LocalOccurrence(key) => {
+                return self.catalog.format(
+                    "assistant-target-local-occurrence",
+                    &BTreeMap::from([
+                        ("definition", key.definition_id.0.to_string()),
+                        ("local", key.local_id.0.to_string()),
+                    ]),
+                );
+            }
+        };
+        identified.map_or_else(
+            || self.catalog.text("assistant-target-canonical"),
+            |(kind, id)| {
+                self.catalog.format(
+                    "assistant-target-identified",
+                    &BTreeMap::from([("kind", self.catalog.text(kind)), ("id", id.to_string())]),
+                )
+            },
+        )
+    }
+
+    fn assistant_derived_identity_label(identity: &DerivedIdentity) -> String {
+        let path = identity
+            .slot_path
+            .segments()
+            .iter()
+            .map(|segment| {
+                format!(
+                    "{}:{}:{}",
+                    segment.producer_rule_id.0, segment.output_port, segment.semantic_key
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" / ");
+        format!("{} / {path}", identity.root_rule_node_id.0)
+    }
+
+    fn assistant_rule_outputs_label(outputs: &[RuleOutput]) -> String {
+        fn collect(output: &RuleOutput, prefix: &str, labels: &mut Vec<String>) {
+            let segment = output.segment();
+            let current = format!(
+                "{prefix}{}:{}:{}",
+                segment.producer_rule_id.0, segment.output_port, segment.semantic_key
+            );
+            labels.push(current.clone());
+            for child in output.children() {
+                collect(child, &format!("{current} / "), labels);
+            }
+        }
+
+        let mut labels = Vec::new();
+        for output in outputs {
+            collect(output, "", &mut labels);
+        }
+        labels.join(", ")
+    }
+
+    fn assistant_instance_path_label(path: &InstancePath) -> String {
+        let mut label = path.root_occurrence().0.to_string();
+        for step in path.steps() {
+            match step {
+                ketchup_core::document::InstancePathStep::Group(id) => {
+                    label.push_str(&format!(" / G{}", id.0));
+                }
+                ketchup_core::document::InstancePathStep::Occurrence(id) => {
+                    label.push_str(&format!(" / O{}", id.0));
+                }
+            }
+        }
+        label
+    }
+
+    fn assistant_transform_matrix_label(transform: &Transform) -> String {
+        transform
+            .matrix()
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
+    fn assistant_proposal_value_label(&self, value: &ProposalValue) -> String {
+        match value {
+            ProposalValue::Missing => self.catalog.text("assistant-value-missing"),
+            ProposalValue::Boolean(value) => self.catalog.text(if *value {
+                "assistant-value-true"
+            } else {
+                "assistant-value-false"
+            }),
+            ProposalValue::Dimension(value) => self.catalog.format(
+                "assistant-value-dimension",
+                &BTreeMap::from([("value", value.millimetres().to_string())]),
+            ),
+            ProposalValue::BottleEdgeFinishKind(BottleEdgeFinishKind::Fillet) => {
+                self.catalog.text("assistant-value-fillet")
+            }
+            ProposalValue::BottleEdgeFinishKind(BottleEdgeFinishKind::Chamfer) => {
+                self.catalog.text("assistant-value-chamfer")
+            }
+            ProposalValue::ProfilePoints(points) => self.catalog.format(
+                "assistant-value-profile-points",
+                &BTreeMap::from([(
+                    "points",
+                    points
+                        .iter()
+                        .map(|point| format!("{},{}", point[0], point[1]))
+                        .collect::<Vec<_>>()
+                        .join("; "),
+                )]),
+            ),
+            ProposalValue::Transform(value) => self.catalog.format(
+                "assistant-value-transform",
+                &BTreeMap::from([("matrix", Self::assistant_transform_matrix_label(value))]),
+            ),
+            ProposalValue::Tag(Some(id)) => self.catalog.format(
+                "assistant-value-tag",
+                &BTreeMap::from([("id", id.0.to_string())]),
+            ),
+            ProposalValue::Tag(None) => self.catalog.text("assistant-value-no-tag"),
+            ProposalValue::Definition(id) => self.catalog.format(
+                "assistant-value-definition",
+                &BTreeMap::from([("id", id.0.to_string())]),
+            ),
+            ProposalValue::Group(Some(id)) => self.catalog.format(
+                "assistant-value-group",
+                &BTreeMap::from([("id", id.0.to_string())]),
+            ),
+            ProposalValue::Group(None) => self.catalog.text("assistant-value-no-group"),
+            ProposalValue::Occurrences(ids) => self.catalog.format(
+                "assistant-value-occurrences",
+                &BTreeMap::from([(
+                    "ids",
+                    ids.iter()
+                        .map(|id| id.0.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                )]),
+            ),
+            ProposalValue::Text(value) => value.clone(),
+            ProposalValue::Digest(value) => self.catalog.format(
+                "assistant-value-digest",
+                &BTreeMap::from([("digest", value.clone())]),
+            ),
+            ProposalValue::EvaluatorInputState {
+                name,
+                dimension,
+                dependencies,
+            } => self.catalog.format(
+                "assistant-value-evaluator-input-state",
+                &BTreeMap::from([
+                    ("name", name.clone()),
+                    ("value", dimension.millimetres().to_string()),
+                    (
+                        "dependencies",
+                        dependencies
+                            .iter()
+                            .map(|id| id.0.to_string())
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                    ),
+                ]),
+            ),
+            ProposalValue::EvaluatorExpressionState {
+                name,
+                expression,
+                dependencies,
+            } => self.catalog.format(
+                "assistant-value-evaluator-expression-state",
+                &BTreeMap::from([
+                    ("name", name.clone()),
+                    ("expression", expression.clone()),
+                    (
+                        "dependencies",
+                        dependencies
+                            .iter()
+                            .map(|id| id.0.to_string())
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                    ),
+                ]),
+            ),
+            ProposalValue::EvaluatorRuleState {
+                name,
+                expression,
+                dependencies,
+                input_ports,
+                output_ports,
+                outputs,
+                override_parameters,
+            } => self.catalog.format(
+                "assistant-value-evaluator-rule-state",
+                &BTreeMap::from([
+                    ("name", name.clone()),
+                    ("expression", expression.clone()),
+                    (
+                        "dependencies",
+                        dependencies
+                            .iter()
+                            .map(|id| id.0.to_string())
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                    ),
+                    (
+                        "inputs",
+                        input_ports
+                            .iter()
+                            .map(|port| port.name().to_owned())
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                    ),
+                    (
+                        "output-ports",
+                        output_ports
+                            .iter()
+                            .map(|port| port.name().to_owned())
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                    ),
+                    ("outputs", Self::assistant_rule_outputs_label(outputs)),
+                    (
+                        "overrides",
+                        override_parameters
+                            .iter()
+                            .map(|parameter| parameter.name().to_owned())
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                    ),
+                ]),
+            ),
+            ProposalValue::RuleOverrideState {
+                target,
+                parameter,
+                value,
+                health,
+            } => {
+                let health = match health {
+                    ketchup_core::graph::SlotResolution::Resolved => {
+                        self.catalog.text("assistant-health-resolved")
+                    }
+                    ketchup_core::graph::SlotResolution::Ambiguous { segment_index } => {
+                        self.catalog.format(
+                            "assistant-health-ambiguous",
+                            &BTreeMap::from([("segment", segment_index.to_string())]),
+                        )
+                    }
+                    ketchup_core::graph::SlotResolution::Lost { segment_index } => {
+                        self.catalog.format(
+                            "assistant-health-lost",
+                            &BTreeMap::from([("segment", segment_index.to_string())]),
+                        )
+                    }
+                };
+                self.catalog.format(
+                    "assistant-value-rule-override-state",
+                    &BTreeMap::from([
+                        ("rule", target.root_rule_node_id.0.to_string()),
+                        ("path", Self::assistant_derived_identity_label(target)),
+                        ("parameter", parameter.clone()),
+                        ("value", value.to_string()),
+                        ("health", health),
+                    ]),
+                )
+            }
+            ProposalValue::FeatureParameterBindingState {
+                target,
+                derived_from,
+            } => self.catalog.format(
+                "assistant-value-feature-parameter-binding-state",
+                &BTreeMap::from([
+                    ("feature", target.feature_id.0.to_string()),
+                    ("slot", target.slot.label().to_owned()),
+                    ("rule", derived_from.root_rule_node_id.0.to_string()),
+                    ("path", Self::assistant_derived_identity_label(derived_from)),
+                ]),
+            ),
+            ProposalValue::JointState {
+                participant_a,
+                participant_b,
+                volume_min,
+                volume_max,
+            } => self.catalog.format(
+                "assistant-value-joint-state",
+                &BTreeMap::from([
+                    (
+                        "participant-a",
+                        Self::assistant_derived_identity_label(participant_a),
+                    ),
+                    (
+                        "participant-b",
+                        Self::assistant_derived_identity_label(participant_b),
+                    ),
+                    (
+                        "min",
+                        format!("{},{},{}", volume_min[0], volume_min[1], volume_min[2]),
+                    ),
+                    (
+                        "max",
+                        format!("{},{},{}", volume_max[0], volume_max[1], volume_max[2]),
+                    ),
+                ]),
+            ),
+            ProposalValue::SpaceState {
+                purpose,
+                volume_min,
+                volume_max,
+                adjacent_to,
+                accessible_to,
+            } => self.catalog.format(
+                "assistant-value-space-state",
+                &BTreeMap::from([
+                    ("purpose", purpose.clone()),
+                    (
+                        "min",
+                        format!("{},{},{}", volume_min[0], volume_min[1], volume_min[2]),
+                    ),
+                    (
+                        "max",
+                        format!("{},{},{}", volume_max[0], volume_max[1], volume_max[2]),
+                    ),
+                    (
+                        "adjacent",
+                        adjacent_to
+                            .iter()
+                            .map(|id| id.0.to_string())
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                    ),
+                    (
+                        "accessible",
+                        accessible_to
+                            .iter()
+                            .map(|id| id.0.to_string())
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                    ),
+                ]),
+            ),
+            ProposalValue::ClearanceVolumeState {
+                owner,
+                reason,
+                volume_min,
+                volume_max,
+                coordinate_frame: _,
+                tolerance_mm,
+                severity,
+                derived_from,
+            } => {
+                let owner = match owner {
+                    ketchup_core::space::ClearanceOwner::Occurrence(path) => {
+                        Self::assistant_instance_path_label(path)
+                    }
+                    ketchup_core::space::ClearanceOwner::Space(id) => id.0.to_string(),
+                };
+                let severity = match severity {
+                    ClearanceSeverity::Advisory => "assistant-severity-advisory",
+                    ClearanceSeverity::Required => "assistant-severity-required",
+                };
+                self.catalog.format(
+                    "assistant-value-clearance-volume-state",
+                    &BTreeMap::from([
+                        ("reason", reason.clone()),
+                        ("owner", owner),
+                        (
+                            "min",
+                            format!("{},{},{}", volume_min[0], volume_min[1], volume_min[2]),
+                        ),
+                        (
+                            "max",
+                            format!("{},{},{}", volume_max[0], volume_max[1], volume_max[2]),
+                        ),
+                        ("frame", self.catalog.text("assistant-frame-world")),
+                        ("tolerance", tolerance_mm.to_string()),
+                        ("severity", self.catalog.text(severity)),
+                        (
+                            "derived",
+                            derived_from.as_ref().map_or_else(
+                                || self.catalog.text("assistant-value-missing"),
+                                Self::assistant_derived_identity_label,
+                            ),
+                        ),
+                    ]),
+                )
+            }
+            ProposalValue::PersistentDimensionState {
+                name,
+                target,
+                presentation,
+            } => {
+                let target = match target {
+                    ketchup_core::document::PersistentDimensionTarget::FeatureParameter(target) => {
+                        format!("{}:{}", target.feature_id.0, target.slot.label())
+                    }
+                    ketchup_core::document::PersistentDimensionTarget::DerivedOutput(identity) => {
+                        Self::assistant_derived_identity_label(identity)
+                    }
+                    ketchup_core::document::PersistentDimensionTarget::ExactFeatureParameter {
+                        definition_id,
+                        producer_feature_id,
+                        semantic_role,
+                        source_element_id,
+                        slot,
+                    } => format!(
+                        "{}:{}:{}:{}:{}",
+                        definition_id.0,
+                        producer_feature_id.0,
+                        semantic_role,
+                        source_element_id,
+                        slot.label()
+                    ),
+                };
+                self.catalog.format(
+                    "assistant-value-persistent-dimension-state",
+                    &BTreeMap::from([
+                        ("name", name.clone()),
+                        ("target", target),
+                        ("unit", presentation.unit.label().to_owned()),
+                        ("precision", presentation.decimal_places.to_string()),
+                    ]),
+                )
+            }
+            ProposalValue::RuleOutputs(outputs) => self.catalog.format(
+                "assistant-value-rule-outputs",
+                &BTreeMap::from([("outputs", Self::assistant_rule_outputs_label(outputs))]),
+            ),
+            ProposalValue::TagState { name, visible } => self.catalog.format(
+                "assistant-value-tag-state",
+                &BTreeMap::from([
+                    ("name", name.clone()),
+                    (
+                        "visible",
+                        self.catalog.text(if *visible {
+                            "assistant-value-true"
+                        } else {
+                            "assistant-value-false"
+                        }),
+                    ),
+                ]),
+            ),
+            ProposalValue::CollectionState {
+                name,
+                occurrence_ids,
+            } => self.catalog.format(
+                "assistant-value-collection-state",
+                &BTreeMap::from([
+                    ("name", name.clone()),
+                    (
+                        "ids",
+                        occurrence_ids
+                            .iter()
+                            .map(|id| id.0.to_string())
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                    ),
+                ]),
+            ),
+            ProposalValue::DefinitionState {
+                name,
+                feature_ids,
+                local_occurrence_ids,
+                local_group_ids,
+            } => self.catalog.format(
+                "assistant-value-definition-state",
+                &BTreeMap::from([
+                    ("name", name.clone()),
+                    (
+                        "features",
+                        feature_ids
+                            .iter()
+                            .map(|id| id.0.to_string())
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                    ),
+                    (
+                        "occurrences",
+                        local_occurrence_ids
+                            .iter()
+                            .map(|id| id.0.to_string())
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                    ),
+                    (
+                        "groups",
+                        local_group_ids
+                            .iter()
+                            .map(|id| id.0.to_string())
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                    ),
+                ]),
+            ),
+            ProposalValue::DefinitionFeatures(ids) => self.catalog.format(
+                "assistant-value-definition-features",
+                &BTreeMap::from([(
+                    "ids",
+                    ids.iter()
+                        .map(|id| id.0.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                )]),
+            ),
+            ProposalValue::ProfileFeatureState {
+                definition,
+                name,
+                points_mm,
+            } => self.catalog.format(
+                "assistant-value-profile-feature-state",
+                &BTreeMap::from([
+                    ("name", name.clone()),
+                    ("definition", definition.0.to_string()),
+                    (
+                        "points",
+                        points_mm
+                            .iter()
+                            .map(|point| format!("{},{}", point[0], point[1]))
+                            .collect::<Vec<_>>()
+                            .join("; "),
+                    ),
+                ]),
+            ),
+            ProposalValue::GroupState {
+                name,
+                transform,
+                parent,
+            } => {
+                let matrix = transform.matrix();
+                self.catalog.format(
+                    "assistant-value-group-state",
+                    &BTreeMap::from([
+                        ("name", name.clone()),
+                        ("x", matrix[3].to_string()),
+                        ("y", matrix[7].to_string()),
+                        ("z", matrix[11].to_string()),
+                        ("matrix", Self::assistant_transform_matrix_label(transform)),
+                        (
+                            "parent",
+                            parent.map_or_else(
+                                || self.catalog.text("assistant-value-no-group"),
+                                |id| id.0.to_string(),
+                            ),
+                        ),
+                    ]),
+                )
+            }
+            ProposalValue::OccurrenceState {
+                definition,
+                name,
+                transform,
+                parent,
+                tag,
+                visible,
+            } => {
+                let matrix = transform.matrix();
+                self.catalog.format(
+                    "assistant-value-occurrence-state",
+                    &BTreeMap::from([
+                        ("name", name.clone()),
+                        ("definition", definition.0.to_string()),
+                        ("x", matrix[3].to_string()),
+                        ("y", matrix[7].to_string()),
+                        ("z", matrix[11].to_string()),
+                        ("matrix", Self::assistant_transform_matrix_label(transform)),
+                        (
+                            "parent",
+                            parent.map_or_else(
+                                || self.catalog.text("assistant-value-no-group"),
+                                |id| id.0.to_string(),
+                            ),
+                        ),
+                        (
+                            "tag",
+                            tag.map_or_else(
+                                || self.catalog.text("assistant-value-no-tag"),
+                                |id| id.0.to_string(),
+                            ),
+                        ),
+                        (
+                            "visible",
+                            self.catalog.text(if *visible {
+                                "assistant-value-true"
+                            } else {
+                                "assistant-value-false"
+                            }),
+                        ),
+                    ]),
+                )
+            }
+        }
     }
 
     fn assistant_proposal_is_low_risk(proposal: &Proposal) -> bool {
@@ -3132,7 +3798,12 @@ impl KetchupApp {
     }
 
     pub fn apply_assistant_model_intent(&mut self, intent: AssistantModelIntent) -> bool {
-        self.prepare_assistant_model_intent(intent) && self.confirm_assistant_proposal()
+        self.prepare_assistant_model_intent(intent)
+            && self
+                .assistant_proposal
+                .as_ref()
+                .is_some_and(Self::assistant_proposal_is_low_risk)
+            && self.confirm_assistant_proposal()
     }
 
     fn poll_assistant_chat(&mut self, context: &egui::Context) {
@@ -12670,12 +13341,18 @@ impl KetchupApp {
                         .max_height(140.0)
                         .show(ui, |ui| {
                             for entry in proposal.authoritative_diff() {
-                                ui.monospace(format!("{:?}", entry.target));
+                                ui.monospace(self.assistant_proposal_target_label(&entry.target));
                                 ui.monospace(self.catalog.format(
                                     "assistant-diff-row",
                                     &BTreeMap::from([
-                                        ("before", format!("{:?}", entry.before)),
-                                        ("after", format!("{:?}", entry.after)),
+                                        (
+                                            "before",
+                                            self.assistant_proposal_value_label(&entry.before),
+                                        ),
+                                        (
+                                            "after",
+                                            self.assistant_proposal_value_label(&entry.after),
+                                        ),
                                     ]),
                                 ));
                             }
@@ -15009,8 +15686,12 @@ mod tests {
     use super::*;
     use egui_kittest::Harness;
     use egui_kittest::kittest::Queryable as _;
-    use ketchup_core::document::{ProposalGoal, ProposalValue};
+    use ketchup_core::document::ProposalGoal;
     use ketchup_core::graph::{EvaluatorNodeKind, PortSpec};
+
+    fn apply_reviewed_model_intent(app: &mut KetchupApp, intent: AssistantModelIntent) -> bool {
+        app.prepare_assistant_model_intent(intent) && app.confirm_assistant_proposal()
+    }
 
     #[test]
     fn assistant_conversation_changes_participate_in_document_dirty_state() {
@@ -15263,17 +15944,20 @@ mod tests {
             .unwrap();
         let before = app.document.current();
 
-        assert!(app.apply_assistant_model_intent(AssistantModelIntent {
-            replace_scene: true,
-            boxes: vec![AssistantBoxIntent {
-                name: "Replacement".to_owned(),
-                size_mm: [100.0, 80.0, 60.0],
-                origin_mm: [0.0, 0.0, 0.0],
-                subtract_boxes: Vec::new(),
-            }],
-            translations: Vec::new(),
-            linear_arrays: Vec::new(),
-        }));
+        assert!(apply_reviewed_model_intent(
+            &mut app,
+            AssistantModelIntent {
+                replace_scene: true,
+                boxes: vec![AssistantBoxIntent {
+                    name: "Replacement".to_owned(),
+                    size_mm: [100.0, 80.0, 60.0],
+                    origin_mm: [0.0, 0.0, 0.0],
+                    subtract_boxes: Vec::new(),
+                }],
+                translations: Vec::new(),
+                linear_arrays: Vec::new(),
+            }
+        ));
 
         let replaced = app.document.current();
         assert_eq!(replaced.revision_id(), before.revision_id() + 1);
@@ -15319,12 +16003,15 @@ mod tests {
             canonical_digest: request_digest,
             source: "test".to_owned(),
         });
-        app.apply_assistant_intent(WorkflowIntent::SetOccurrenceTranslation {
-            target: OccurrenceId(1),
-            x_mm_text: "10".to_owned(),
-            y_mm_text: "0".to_owned(),
-            z_mm_text: "0".to_owned(),
-        });
+        assert!(
+            app.prepare_assistant_intent(WorkflowIntent::SetOccurrenceTranslation {
+                target: OccurrenceId(1),
+                x_mm_text: "10".to_owned(),
+                y_mm_text: "0".to_owned(),
+                z_mm_text: "0".to_owned(),
+            })
+        );
+        assert!(app.confirm_assistant_proposal());
         let changed_revision = app.document.current().revision_id();
         let changed_digest = app.document.current().canonical_digest();
         let undo_steps = app.document.visible_undo_steps();
@@ -15947,22 +16634,25 @@ mod tests {
     #[test]
     fn hovering_and_selecting_a_canonical_mesh_body_paints_its_outline() {
         let mut app = KetchupApp::new();
-        assert!(app.apply_assistant_model_intent(AssistantModelIntent {
-            replace_scene: true,
-            boxes: vec![AssistantBoxIntent {
-                name: "Grooved beam".to_owned(),
-                size_mm: [400.0, 100.0, 100.0],
-                origin_mm: [0.0, 0.0, 0.0],
-                subtract_boxes: vec![
-                    ketchup_core::assistant_sidecar::AssistantSubtractionIntent {
-                        size_mm: [40.0, 100.0, 30.0],
-                        origin_mm: [180.0, 0.0, 70.0],
-                    }
-                ],
-            }],
-            translations: Vec::new(),
-            linear_arrays: Vec::new(),
-        }));
+        assert!(apply_reviewed_model_intent(
+            &mut app,
+            AssistantModelIntent {
+                replace_scene: true,
+                boxes: vec![AssistantBoxIntent {
+                    name: "Grooved beam".to_owned(),
+                    size_mm: [400.0, 100.0, 100.0],
+                    origin_mm: [0.0, 0.0, 0.0],
+                    subtract_boxes: vec![
+                        ketchup_core::assistant_sidecar::AssistantSubtractionIntent {
+                            size_mm: [40.0, 100.0, 30.0],
+                            origin_mm: [180.0, 0.0, 70.0],
+                        }
+                    ],
+                }],
+                translations: Vec::new(),
+                linear_arrays: Vec::new(),
+            }
+        ));
         let snapshot = app.document.current();
         let occurrence = snapshot.occurrences().next().unwrap().id();
         assert!(
@@ -19679,30 +20369,33 @@ mod tests {
     #[test]
     fn picking_chooses_the_frontmost_body_across_mesh_and_box_geometry() {
         let mut app = KetchupApp::new();
-        assert!(app.apply_assistant_model_intent(AssistantModelIntent {
-            replace_scene: true,
-            boxes: vec![
-                AssistantBoxIntent {
-                    name: "Grooved behind".to_owned(),
-                    size_mm: [100.0, 60.0, 20.0],
-                    origin_mm: [0.0, 0.0, 0.0],
-                    subtract_boxes: vec![
-                        ketchup_core::assistant_sidecar::AssistantSubtractionIntent {
-                            size_mm: [10.0, 60.0, 5.0],
-                            origin_mm: [45.0, 0.0, 15.0],
-                        }
-                    ],
-                },
-                AssistantBoxIntent {
-                    name: "Plain in front".to_owned(),
-                    size_mm: [100.0, 60.0, 20.0],
-                    origin_mm: [0.0, 0.0, 40.0],
-                    subtract_boxes: Vec::new(),
-                },
-            ],
-            translations: Vec::new(),
-            linear_arrays: Vec::new(),
-        }));
+        assert!(apply_reviewed_model_intent(
+            &mut app,
+            AssistantModelIntent {
+                replace_scene: true,
+                boxes: vec![
+                    AssistantBoxIntent {
+                        name: "Grooved behind".to_owned(),
+                        size_mm: [100.0, 60.0, 20.0],
+                        origin_mm: [0.0, 0.0, 0.0],
+                        subtract_boxes: vec![
+                            ketchup_core::assistant_sidecar::AssistantSubtractionIntent {
+                                size_mm: [10.0, 60.0, 5.0],
+                                origin_mm: [45.0, 0.0, 15.0],
+                            }
+                        ],
+                    },
+                    AssistantBoxIntent {
+                        name: "Plain in front".to_owned(),
+                        size_mm: [100.0, 60.0, 20.0],
+                        origin_mm: [0.0, 0.0, 40.0],
+                        subtract_boxes: Vec::new(),
+                    },
+                ],
+                translations: Vec::new(),
+                linear_arrays: Vec::new(),
+            }
+        ));
         app.projection_mode = ProjectionMode::Parallel;
         app.yaw = 0.0;
         app.pitch = 0.0;
