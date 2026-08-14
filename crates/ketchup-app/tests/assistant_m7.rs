@@ -2,7 +2,7 @@ mod harness;
 
 use eframe::egui;
 use harness::Shell;
-use ketchup_app::{AssistantMessageRole, AssistantProvider, AssistantWorkspaceMode};
+use ketchup_app::{AppCommand, AssistantMessageRole, AssistantProvider, AssistantWorkspaceMode};
 use ketchup_core::assistant_sidecar::{
     ASSISTANT_PROTOCOL_VERSION, AssistantBoxIntent, AssistantDistribution,
     AssistantLinearArrayIntent, AssistantModelIntent, AssistantSubtractionIntent,
@@ -42,6 +42,34 @@ fn assistant_enter_sends_and_shift_enter_keeps_composing() {
 }
 
 #[test]
+fn assistant_selection_context_tracks_the_live_model_selection() {
+    let mut shell = Shell::new();
+    let none = shell.catalog().text("assistant-selection-none");
+    assert!(shell.has_visible_label(&none));
+    assert_eq!(
+        shell.app().assistant_context()["selected_occurrence_ids"],
+        serde_json::json!([])
+    );
+
+    shell.click_menu_command("menu-edit", AppCommand::SelectAll);
+    let context = shell.app().assistant_context();
+    assert_eq!(context["selected_occurrence_ids"], serde_json::json!([1]));
+    let name = context["occurrences"][0]["name"].as_str().unwrap();
+    let selected = shell.catalog().format(
+        "assistant-selection-one",
+        &BTreeMap::from([("name", name.to_owned())]),
+    );
+    assert!(shell.has_visible_label(&selected));
+
+    shell.click_menu_command("menu-edit", AppCommand::Deselect);
+    assert_eq!(
+        shell.app().assistant_context()["selected_occurrence_ids"],
+        serde_json::json!([])
+    );
+    assert!(shell.has_visible_label(&none));
+}
+
+#[test]
 fn assistant_advanced_tool_applies_one_verified_undoable_batch_without_confirmation() {
     let mut shell = Shell::new();
     let revision = shell.app().document_revision();
@@ -58,11 +86,24 @@ fn assistant_advanced_tool_applies_one_verified_undoable_batch_without_confirmat
     let verification = shell
         .app()
         .assistant_verification()
-        .expect("immediate application returns a verification receipt");
+        .expect("immediate application returns a verification receipt")
+        .clone();
     assert_eq!(verification.revision_id, revision + 1);
     assert_eq!(verification.verified_write_count, 1);
-    assert!(shell.app_mut().undo());
+    assert!(shell.app().assistant_change_can_undo());
+    shell.settle();
+    assert!(shell.has_visible_label(&shell.catalog().text("assistant-result-title")));
+    assert!(shell.has_visible_label(&shell.catalog().format(
+        "assistant-verification",
+        &BTreeMap::from([
+            ("revision", verification.revision_id.to_string()),
+            ("writes", verification.verified_write_count.to_string()),
+        ]),
+    )));
+    let undo_change = shell.catalog().text("assistant-undo-change");
+    shell.click_row(&undo_change);
     assert_eq!(shell.app().document_height_mm(), original_height);
+    assert!(!shell.app().assistant_change_can_undo());
 }
 
 #[test]
@@ -121,7 +162,11 @@ fn assistant_occurrence_translation_review_is_exact_observational_and_undoable()
         geometry_before
     );
 
-    assert!(shell.app_mut().confirm_assistant_proposal());
+    shell.settle();
+    assert!(shell.has_visible_label(&shell.catalog().text("assistant-review-title")));
+    assert!(shell.has_visible_label(&shell.catalog().text("assistant-review-observational")));
+    let confirm = shell.catalog().text("assistant-confirm");
+    shell.click_row(&confirm);
     assert_eq!(shell.app().document_revision(), revision + 1);
     assert_eq!(
         shell.app().occurrence_box_geometry(1).unwrap().0,
@@ -159,6 +204,19 @@ fn assistant_definition_rename_review_is_textual_observational_and_undoable() {
     );
     assert_eq!(shell.app().document_revision(), revision);
 
+    shell.settle();
+    let cancel = shell.catalog().text("assistant-cancel");
+    shell.click_row(&cancel);
+    assert_eq!(shell.app().document_revision(), revision);
+    assert!(shell.app().assistant_proposal().is_none());
+    assert!(
+        shell
+            .app_mut()
+            .prepare_assistant_intent(WorkflowIntent::RenameDefinition {
+                target: ketchup_core::document::DefinitionId(1),
+                name: "Housing".to_owned(),
+            })
+    );
     assert!(shell.app_mut().confirm_assistant_proposal());
     assert_eq!(shell.app().document_revision(), revision + 1);
     assert!(shell.app_mut().undo());

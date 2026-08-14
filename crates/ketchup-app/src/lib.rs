@@ -20,9 +20,9 @@ use ketchup_core::document::{
     DocumentStore, FeatureId, FeatureKind, FeatureParameterSlot, FeatureParameterTarget, GroupId,
     HighRiskClass, HighRiskScope, InstancePath, LoftSection, MAX_HUMAN_CONFIRMATION_LIFETIME_MS,
     MESH_BODY_SCHEMA_V1, MeshAuthority, MeshBodySpec, NodeId, OccurrenceId, PersistentDimensionId,
-    ProfileSegment, Proposal, ProposalContext, ProposalGoal, ProposalPrincipal, ProposalValue,
-    SceneOccurrence, SceneQueryContext, SideEffectAuthorizationReceipt, SlotPath, Snapshot,
-    SolidToolPlan, StableEdgeRole, StableFaceRole, TagId, Transform, TrustedConfirmationSurface,
+    ProfileSegment, Proposal, ProposalContext, ProposalGoal, ProposalPrincipal, SceneOccurrence,
+    SceneQueryContext, SideEffectAuthorizationReceipt, SlotPath, Snapshot, SolidToolPlan,
+    StableEdgeRole, StableFaceRole, TagId, Transform, TrustedConfirmationSurface,
 };
 #[cfg(test)]
 use ketchup_core::document::{
@@ -1301,6 +1301,14 @@ struct AssistantChatTask {
     source: String,
 }
 
+struct AssistantPendingExecution {
+    result: AssistantChatResult,
+    document_id: DocumentId,
+    revision_id: u64,
+    canonical_digest: String,
+    source: String,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AssistantIntentKind {
     CreateEvaluatorInput,
@@ -1358,6 +1366,7 @@ pub struct AssistantVerification {
     pub revision_id: u64,
     pub command_digest: String,
     pub result_digest: String,
+    pub canonical_digest: String,
     pub verified_write_count: usize,
 }
 
@@ -1411,6 +1420,7 @@ pub struct KetchupApp {
     assistant_input: String,
     assistant_messages: Vec<AssistantChatMessage>,
     assistant_chat_task: Option<AssistantChatTask>,
+    assistant_pending_execution: Option<AssistantPendingExecution>,
     assistant_request_sequence: u64,
     saved_assistant_conversation_digest: String,
     assistant_intent_kind: AssistantIntentKind,
@@ -1558,6 +1568,7 @@ impl KetchupApp {
             assistant_input: String::new(),
             assistant_messages: Vec::new(),
             assistant_chat_task: None,
+            assistant_pending_execution: None,
             assistant_request_sequence: 0,
             saved_assistant_conversation_digest: assistant_conversation_digest(&[]),
             assistant_intent_kind: AssistantIntentKind::FeatureDimension,
@@ -1655,6 +1666,14 @@ impl KetchupApp {
         )
     }
 
+    fn cancel_pending_assistant_work(&mut self) {
+        self.assistant_proposal = None;
+        self.assistant_pending_execution = None;
+        if let Some(task) = self.assistant_chat_task.take() {
+            task.cancellation.cancel();
+        }
+    }
+
     fn reset_document_presentation(&mut self) {
         self.preview = None;
         self.preview_box = None;
@@ -1679,11 +1698,8 @@ impl KetchupApp {
         self.snap_tracker.clear();
         self.interaction_projection_cache.get_mut().take();
         self.active_tool = ActiveTool::Select;
-        self.assistant_proposal = None;
+        self.cancel_pending_assistant_work();
         self.assistant_verification = None;
-        if let Some(task) = self.assistant_chat_task.take() {
-            task.cancellation.cancel();
-        }
         self.last_side_effect_receipt = None;
         self.push_pull_drag = None;
         self.last_push_pull = None;
@@ -1710,12 +1726,14 @@ impl KetchupApp {
     }
 
     fn new_document(&mut self) {
+        self.cancel_pending_assistant_work();
         let dialogs = std::mem::replace(&mut self.dialogs, Box::new(NativeFileDialogs::default()));
         *self = Self::new().with_dialogs(dialogs);
         self.digest = self.catalog.text("digest-new-document");
     }
 
     fn open_document_from(&mut self, path: &Path) -> bool {
+        self.cancel_pending_assistant_work();
         match ketchup_core::persistence::load_file(path) {
             Ok(outcome) => {
                 if !outcome.is_editable() {
@@ -2585,6 +2603,7 @@ impl KetchupApp {
                     revision_id: committed.revision().id(),
                     command_digest: committed.command_digest().to_owned(),
                     result_digest: committed.result_digest().to_owned(),
+                    canonical_digest: self.document.current().canonical_digest(),
                     verified_write_count: committed.verified_writes().len(),
                 };
                 self.digest = self.catalog.format(
@@ -2620,6 +2639,18 @@ impl KetchupApp {
     #[must_use]
     pub const fn assistant_proposal(&self) -> Option<&Proposal> {
         self.assistant_proposal.as_ref()
+    }
+
+    fn assistant_proposal_is_low_risk(proposal: &Proposal) -> bool {
+        matches!(
+            proposal.goal(),
+            ProposalGoal::SetRuleDimension(_)
+                | ProposalGoal::SetFeatureDimension(_)
+                | ProposalGoal::SetBottleControlDimension(_, _)
+                | ProposalGoal::SetBottleEdgeFinishKind(_)
+                | ProposalGoal::SetOccurrenceVisibility(_)
+                | ProposalGoal::SetTagVisibility(_)
+        )
     }
 
     #[must_use]
@@ -2658,9 +2689,8 @@ impl KetchupApp {
     pub fn new_assistant_chat(&mut self) {
         self.assistant_input.clear();
         self.assistant_messages.clear();
-        if let Some(task) = self.assistant_chat_task.take() {
-            task.cancellation.cancel();
-        }
+        self.cancel_pending_assistant_work();
+        self.assistant_verification = None;
         self.assistant_request_sequence = self.assistant_request_sequence.saturating_add(1);
         self.store_assistant_conversation();
     }
@@ -2812,7 +2842,7 @@ impl KetchupApp {
     }
 
     fn send_assistant_message(&mut self, context: &egui::Context) {
-        if self.assistant_chat_task.is_some() {
+        if self.assistant_chat_task.is_some() || self.assistant_pending_execution.is_some() {
             return;
         }
         let message = self.assistant_input.trim().to_owned();
@@ -3105,7 +3135,40 @@ impl KetchupApp {
         self.prepare_assistant_model_intent(intent) && self.confirm_assistant_proposal()
     }
 
-    fn poll_assistant_chat(&mut self) {
+    fn poll_assistant_chat(&mut self, context: &egui::Context) {
+        if let Some(pending) = self.assistant_pending_execution.take() {
+            let snapshot = self.document.current();
+            if snapshot.document_id() != pending.document_id
+                || snapshot.revision_id() != pending.revision_id
+                || snapshot.canonical_digest() != pending.canonical_digest
+            {
+                self.assistant_messages.push(AssistantChatMessage {
+                    role: AssistantMessageRole::Error,
+                    text: self.catalog.text("assistant-error-stale-response"),
+                    source: self.catalog.text("assistant-role-error"),
+                });
+            } else if self.prepare_assistant_model_intent(
+                pending
+                    .result
+                    .model_intent
+                    .expect("pending execution always carries a model intent"),
+            ) {
+                self.assistant_messages.push(AssistantChatMessage {
+                    role: AssistantMessageRole::Assistant,
+                    text: pending.result.message,
+                    source: pending.source,
+                });
+            } else {
+                self.assistant_messages.push(AssistantChatMessage {
+                    role: AssistantMessageRole::Error,
+                    text: self.catalog.text("assistant-error-rejected-change"),
+                    source: self.catalog.text("assistant-role-error"),
+                });
+            }
+            self.store_assistant_conversation();
+            return;
+        }
+
         let Some(task) = self.assistant_chat_task.as_ref() else {
             return;
         };
@@ -3117,39 +3180,22 @@ impl KetchupApp {
             Ok(result) => {
                 self.assistant_chat_task = None;
                 match result {
-                    Ok(result) => {
-                        if let Some(intent) = result.model_intent {
-                            let snapshot = self.document.current();
-                            if snapshot.document_id() != request_document_id
-                                || snapshot.revision_id() != request_revision_id
-                                || snapshot.canonical_digest() != request_canonical_digest
-                            {
-                                self.assistant_messages.push(AssistantChatMessage {
-                                    role: AssistantMessageRole::Error,
-                                    text: self.catalog.text("assistant-error-stale-response"),
-                                    source: self.catalog.text("assistant-role-error"),
-                                });
-                            } else if self.apply_assistant_model_intent(intent) {
-                                self.assistant_messages.push(AssistantChatMessage {
-                                    role: AssistantMessageRole::Assistant,
-                                    text: result.message,
-                                    source,
-                                });
-                            } else {
-                                self.assistant_messages.push(AssistantChatMessage {
-                                    role: AssistantMessageRole::Error,
-                                    text: self.catalog.text("assistant-error-rejected-change"),
-                                    source: self.catalog.text("assistant-role-error"),
-                                });
-                            }
-                        } else {
-                            self.assistant_messages.push(AssistantChatMessage {
-                                role: AssistantMessageRole::Assistant,
-                                text: result.message,
-                                source,
-                            });
-                        }
+                    Ok(result) if result.model_intent.is_some() => {
+                        self.assistant_pending_execution = Some(AssistantPendingExecution {
+                            result,
+                            document_id: request_document_id,
+                            revision_id: request_revision_id,
+                            canonical_digest: request_canonical_digest,
+                            source,
+                        });
+                        context.request_repaint();
+                        return;
                     }
+                    Ok(result) => self.assistant_messages.push(AssistantChatMessage {
+                        role: AssistantMessageRole::Assistant,
+                        text: result.message,
+                        source,
+                    }),
                     Err(text) => self.assistant_messages.push(AssistantChatMessage {
                         role: AssistantMessageRole::Error,
                         text,
@@ -3166,6 +3212,7 @@ impl KetchupApp {
                     text: self.catalog.text("assistant-error-disconnected"),
                     source,
                 });
+                self.store_assistant_conversation();
             }
         }
     }
@@ -3173,6 +3220,48 @@ impl KetchupApp {
     #[must_use]
     pub const fn assistant_verification(&self) -> Option<&AssistantVerification> {
         self.assistant_verification.as_ref()
+    }
+
+    #[must_use]
+    pub fn assistant_change_can_undo(&self) -> bool {
+        self.assistant_verification
+            .as_ref()
+            .is_some_and(|verification| {
+                let snapshot = self.document.current();
+                snapshot.revision_id() == verification.revision_id
+                    && snapshot.canonical_digest() == verification.canonical_digest
+                    && self.can_undo()
+            })
+    }
+
+    fn assistant_selection_summary(&self) -> String {
+        let selected = self.selected_occurrence_ids();
+        match selected.len() {
+            0 => self.catalog.text("assistant-selection-none"),
+            1 => {
+                let id = selected
+                    .first()
+                    .expect("one selected occurrence must have a first item");
+                let name = self
+                    .document
+                    .current()
+                    .scene_query()
+                    .into_iter()
+                    .find(|occurrence| {
+                        occurrence.instance_path.is_root() && occurrence.occurrence_id == *id
+                    })
+                    .map_or_else(
+                        || format!("#{}", id.0),
+                        |occurrence| occurrence.occurrence_name,
+                    );
+                self.catalog
+                    .format("assistant-selection-one", &BTreeMap::from([("name", name)]))
+            }
+            count => self.catalog.format(
+                "assistant-selection-many",
+                &BTreeMap::from([("count", count.to_string())]),
+            ),
+        }
     }
 
     /// The localization catalog the shell paints with.
@@ -7720,8 +7809,12 @@ impl KetchupApp {
     }
 
     pub fn undo(&mut self) -> bool {
+        let undoing_assistant_change = self.assistant_change_can_undo();
         if self.document.undo().is_none() {
             return false;
+        }
+        if undoing_assistant_change {
+            self.assistant_verification = None;
         }
         self.clear_ephemeral_edit_state();
         self.reconcile_selection();
@@ -12354,446 +12447,6 @@ impl KetchupApp {
         self.prepare_assistant_intent(intent)
     }
 
-    fn assistant_value_text(&self, value: &ProposalValue) -> String {
-        match value {
-            ProposalValue::Missing => self.catalog.text("assistant-value-missing"),
-            ProposalValue::EvaluatorInputState {
-                name,
-                dimension,
-                dependencies,
-            } => self.catalog.format(
-                "assistant-value-evaluator-input-state",
-                &BTreeMap::from([
-                    ("name", name.clone()),
-                    ("value", dimension.source_token().to_owned()),
-                    (
-                        "dependencies",
-                        dependencies
-                            .iter()
-                            .map(|id| id.0.to_string())
-                            .collect::<Vec<_>>()
-                            .join(", "),
-                    ),
-                ]),
-            ),
-            ProposalValue::EvaluatorExpressionState {
-                name,
-                expression,
-                dependencies,
-            } => self.catalog.format(
-                "assistant-value-evaluator-expression-state",
-                &BTreeMap::from([
-                    ("name", name.clone()),
-                    ("expression", expression.clone()),
-                    (
-                        "dependencies",
-                        dependencies
-                            .iter()
-                            .map(|id| id.0.to_string())
-                            .collect::<Vec<_>>()
-                            .join(", "),
-                    ),
-                ]),
-            ),
-            ProposalValue::EvaluatorRuleState {
-                name,
-                expression,
-                dependencies,
-                input_ports,
-                output_ports,
-                outputs,
-                override_parameters,
-            } => self.catalog.format(
-                "assistant-value-evaluator-rule-state",
-                &BTreeMap::from([
-                    ("name", name.clone()),
-                    ("expression", expression.clone()),
-                    (
-                        "dependencies",
-                        dependencies
-                            .iter()
-                            .map(|id| id.0.to_string())
-                            .collect::<Vec<_>>()
-                            .join(", "),
-                    ),
-                    (
-                        "inputs",
-                        input_ports
-                            .iter()
-                            .map(|port| format!("{}:number", port.name()))
-                            .collect::<Vec<_>>()
-                            .join(", "),
-                    ),
-                    (
-                        "output-ports",
-                        output_ports
-                            .iter()
-                            .map(|port| format!("{}:number", port.name()))
-                            .collect::<Vec<_>>()
-                            .join(", "),
-                    ),
-                    ("outputs", outputs.len().to_string()),
-                    (
-                        "overrides",
-                        override_parameters
-                            .iter()
-                            .map(|parameter| format!("{}:replace", parameter.name()))
-                            .collect::<Vec<_>>()
-                            .join(", "),
-                    ),
-                ]),
-            ),
-            ProposalValue::RuleOverrideState {
-                target,
-                parameter,
-                value,
-                health,
-            } => self.catalog.format(
-                "assistant-value-rule-override-state",
-                &BTreeMap::from([
-                    ("rule", target.root_rule_node_id.0.to_string()),
-                    (
-                        "path",
-                        target
-                            .slot_path
-                            .segments()
-                            .iter()
-                            .map(|segment| {
-                                format!("{}:{}", segment.output_port, segment.semantic_key)
-                            })
-                            .collect::<Vec<_>>()
-                            .join("/"),
-                    ),
-                    ("parameter", parameter.clone()),
-                    ("value", value.to_string()),
-                    ("health", format!("{health:?}")),
-                ]),
-            ),
-            ProposalValue::FeatureParameterBindingState {
-                target,
-                derived_from,
-            } => self.catalog.format(
-                "assistant-value-feature-parameter-binding-state",
-                &BTreeMap::from([
-                    ("feature", target.feature_id.0.to_string()),
-                    ("slot", target.slot.label().to_owned()),
-                    ("rule", derived_from.root_rule_node_id.0.to_string()),
-                    (
-                        "path",
-                        derived_from
-                            .slot_path
-                            .segments()
-                            .iter()
-                            .map(|segment| {
-                                format!("{}:{}", segment.output_port, segment.semantic_key)
-                            })
-                            .collect::<Vec<_>>()
-                            .join("/"),
-                    ),
-                ]),
-            ),
-            ProposalValue::JointState {
-                participant_a,
-                participant_b,
-                volume_min,
-                volume_max,
-            } => self.catalog.format(
-                "assistant-value-joint-state",
-                &BTreeMap::from([
-                    ("participant-a", format!("{participant_a:?}")),
-                    ("participant-b", format!("{participant_b:?}")),
-                    ("min", format!("{volume_min:?}")),
-                    ("max", format!("{volume_max:?}")),
-                ]),
-            ),
-            ProposalValue::SpaceState {
-                purpose,
-                volume_min,
-                volume_max,
-                adjacent_to,
-                accessible_to,
-            } => self.catalog.format(
-                "assistant-value-space-state",
-                &BTreeMap::from([
-                    ("purpose", purpose.clone()),
-                    ("min", format!("{volume_min:?}")),
-                    ("max", format!("{volume_max:?}")),
-                    (
-                        "adjacent",
-                        adjacent_to
-                            .iter()
-                            .map(|id| id.0.to_string())
-                            .collect::<Vec<_>>()
-                            .join(", "),
-                    ),
-                    (
-                        "accessible",
-                        accessible_to
-                            .iter()
-                            .map(|id| id.0.to_string())
-                            .collect::<Vec<_>>()
-                            .join(", "),
-                    ),
-                ]),
-            ),
-            ProposalValue::ClearanceVolumeState {
-                owner,
-                reason,
-                volume_min,
-                volume_max,
-                coordinate_frame,
-                tolerance_mm,
-                severity,
-                derived_from,
-            } => self.catalog.format(
-                "assistant-value-clearance-volume-state",
-                &BTreeMap::from([
-                    ("owner", format!("{owner:?}")),
-                    ("reason", reason.clone()),
-                    ("min", format!("{volume_min:?}")),
-                    ("max", format!("{volume_max:?}")),
-                    ("frame", format!("{coordinate_frame:?}")),
-                    ("tolerance", tolerance_mm.to_string()),
-                    ("severity", format!("{severity:?}")),
-                    ("derived", format!("{derived_from:?}")),
-                ]),
-            ),
-            ProposalValue::PersistentDimensionState {
-                name,
-                target,
-                presentation,
-            } => self.catalog.format(
-                "assistant-value-persistent-dimension-state",
-                &BTreeMap::from([
-                    ("name", name.clone()),
-                    ("target", format!("{target:?}")),
-                    ("unit", format!("{:?}", presentation.unit)),
-                    ("precision", presentation.decimal_places.to_string()),
-                ]),
-            ),
-            ProposalValue::Boolean(value) => self.catalog.format(
-                "assistant-value-boolean",
-                &BTreeMap::from([("value", value.to_string())]),
-            ),
-            ProposalValue::Dimension(value) => self.catalog.format(
-                "assistant-value-dimension",
-                &BTreeMap::from([("value", value.source_token().to_owned())]),
-            ),
-            ProposalValue::BottleEdgeFinishKind(kind) => self.catalog.text(match kind {
-                BottleEdgeFinishKind::Fillet => "assistant-value-fillet",
-                BottleEdgeFinishKind::Chamfer => "assistant-value-chamfer",
-            }),
-            ProposalValue::RuleOutputs(outputs) => {
-                let mut paths = Vec::new();
-                let mut stack = outputs
-                    .iter()
-                    .rev()
-                    .map(|output| (output, Vec::<String>::new()))
-                    .collect::<Vec<_>>();
-                while let Some((output, mut path)) = stack.pop() {
-                    let segment = output.segment();
-                    path.push(format!(
-                        "{}.{}:{}",
-                        segment.producer_rule_id.0, segment.output_port, segment.semantic_key
-                    ));
-                    paths.push(path.join("/"));
-                    stack.extend(
-                        output
-                            .children()
-                            .iter()
-                            .rev()
-                            .map(|child| (child, path.clone())),
-                    );
-                }
-                self.catalog.format(
-                    "assistant-value-rule-outputs",
-                    &BTreeMap::from([("outputs", paths.join("; "))]),
-                )
-            }
-            ProposalValue::ProfilePoints(points_mm) => self.catalog.format(
-                "assistant-value-profile-points",
-                &BTreeMap::from([(
-                    "points",
-                    points_mm
-                        .iter()
-                        .map(|point| format!("{},{}", point[0], point[1]))
-                        .collect::<Vec<_>>()
-                        .join("; "),
-                )]),
-            ),
-            ProposalValue::Transform(value) => self.catalog.format(
-                "assistant-value-translation",
-                &BTreeMap::from([
-                    ("x", value.matrix()[3].to_string()),
-                    ("y", value.matrix()[7].to_string()),
-                    ("z", value.matrix()[11].to_string()),
-                ]),
-            ),
-            ProposalValue::Tag(Some(tag)) => self.catalog.format(
-                "assistant-value-tag",
-                &BTreeMap::from([("id", tag.0.to_string())]),
-            ),
-            ProposalValue::Tag(None) => self.catalog.text("assistant-value-no-tag"),
-            ProposalValue::TagState { name, visible } => self.catalog.format(
-                "assistant-value-tag-state",
-                &BTreeMap::from([("name", name.clone()), ("visible", visible.to_string())]),
-            ),
-            ProposalValue::CollectionState {
-                name,
-                occurrence_ids,
-            } => self.catalog.format(
-                "assistant-value-collection-state",
-                &BTreeMap::from([
-                    ("name", name.clone()),
-                    (
-                        "ids",
-                        occurrence_ids
-                            .iter()
-                            .map(|id| id.0.to_string())
-                            .collect::<Vec<_>>()
-                            .join(", "),
-                    ),
-                ]),
-            ),
-            ProposalValue::Definition(definition) => self.catalog.format(
-                "assistant-value-definition",
-                &BTreeMap::from([("id", definition.0.to_string())]),
-            ),
-            ProposalValue::DefinitionState {
-                name,
-                feature_ids,
-                local_occurrence_ids,
-                local_group_ids,
-            } => self.catalog.format(
-                "assistant-value-definition-state",
-                &BTreeMap::from([
-                    ("name", name.clone()),
-                    (
-                        "features",
-                        feature_ids
-                            .iter()
-                            .map(|id| id.0.to_string())
-                            .collect::<Vec<_>>()
-                            .join(", "),
-                    ),
-                    (
-                        "occurrences",
-                        local_occurrence_ids
-                            .iter()
-                            .map(|id| id.0.to_string())
-                            .collect::<Vec<_>>()
-                            .join(", "),
-                    ),
-                    (
-                        "groups",
-                        local_group_ids
-                            .iter()
-                            .map(|id| id.0.to_string())
-                            .collect::<Vec<_>>()
-                            .join(", "),
-                    ),
-                ]),
-            ),
-            ProposalValue::DefinitionFeatures(feature_ids) => self.catalog.format(
-                "assistant-value-definition-features",
-                &BTreeMap::from([(
-                    "ids",
-                    feature_ids
-                        .iter()
-                        .map(|id| id.0.to_string())
-                        .collect::<Vec<_>>()
-                        .join(", "),
-                )]),
-            ),
-            ProposalValue::ProfileFeatureState {
-                definition,
-                name,
-                points_mm,
-            } => self.catalog.format(
-                "assistant-value-profile-feature-state",
-                &BTreeMap::from([
-                    ("definition", definition.0.to_string()),
-                    ("name", name.clone()),
-                    (
-                        "points",
-                        points_mm
-                            .iter()
-                            .map(|point| format!("{},{}", point[0], point[1]))
-                            .collect::<Vec<_>>()
-                            .join("; "),
-                    ),
-                ]),
-            ),
-            ProposalValue::Group(Some(group)) => self.catalog.format(
-                "assistant-value-group",
-                &BTreeMap::from([("id", group.0.to_string())]),
-            ),
-            ProposalValue::Group(None) => self.catalog.text("assistant-value-no-group"),
-            ProposalValue::GroupState {
-                name,
-                transform,
-                parent,
-            } => self.catalog.format(
-                "assistant-value-group-state",
-                &BTreeMap::from([
-                    ("name", name.clone()),
-                    ("x", transform.matrix()[3].to_string()),
-                    ("y", transform.matrix()[7].to_string()),
-                    ("z", transform.matrix()[11].to_string()),
-                    (
-                        "parent",
-                        parent.map_or_else(|| "none".to_owned(), |id| id.0.to_string()),
-                    ),
-                ]),
-            ),
-            ProposalValue::OccurrenceState {
-                definition,
-                name,
-                transform,
-                parent,
-                tag,
-                visible,
-            } => self.catalog.format(
-                "assistant-value-occurrence-state",
-                &BTreeMap::from([
-                    ("definition", definition.0.to_string()),
-                    ("name", name.clone()),
-                    ("x", transform.matrix()[3].to_string()),
-                    ("y", transform.matrix()[7].to_string()),
-                    ("z", transform.matrix()[11].to_string()),
-                    (
-                        "parent",
-                        parent.map_or_else(|| "none".to_owned(), |id| id.0.to_string()),
-                    ),
-                    (
-                        "tag",
-                        tag.map_or_else(|| "none".to_owned(), |id| id.0.to_string()),
-                    ),
-                    ("visible", visible.to_string()),
-                ]),
-            ),
-            ProposalValue::Occurrences(occurrence_ids) if occurrence_ids.is_empty() => {
-                self.catalog.text("assistant-value-no-occurrences")
-            }
-            ProposalValue::Occurrences(occurrence_ids) => self.catalog.format(
-                "assistant-value-occurrences",
-                &BTreeMap::from([(
-                    "ids",
-                    occurrence_ids
-                        .iter()
-                        .map(|id| id.0.to_string())
-                        .collect::<Vec<_>>()
-                        .join(", "),
-                )]),
-            ),
-            ProposalValue::Text(value) => value.clone(),
-            ProposalValue::Digest(digest) => self.catalog.format(
-                "assistant-value-digest",
-                &BTreeMap::from([("digest", digest.chars().take(12).collect())]),
-            ),
-        }
-    }
-
     fn show_assistant(&mut self, ui: &mut egui::Ui) {
         let palette = self.palette();
         ui.horizontal(|ui| {
@@ -12829,6 +12482,11 @@ impl KetchupApp {
             ))
             .strong()
             .color(palette.text),
+        );
+        ui.label(
+            egui::RichText::new(self.assistant_selection_summary())
+                .small()
+                .color(palette.accent),
         );
         ui.label(
             egui::RichText::new(self.catalog.text("assistant-boundary"))
@@ -12974,11 +12632,96 @@ impl KetchupApp {
                                 });
                             ui.add_space(8.0);
                         }
-                        if self.assistant_chat_task.is_some() {
-                            ui.weak(self.catalog.text("assistant-thinking"));
+                        if self.assistant_pending_execution.is_some() {
+                            ui.weak(self.catalog.text("assistant-progress-executing"));
+                        } else if self.assistant_chat_task.is_some() {
+                            ui.weak(self.catalog.text("assistant-progress-requesting"));
                         }
                     });
             });
+        if let Some(proposal) = self.assistant_proposal.clone() {
+            let mut confirm_clicked = false;
+            let mut cancel_clicked = false;
+            egui::Frame::new()
+                .fill(palette.panel2)
+                .stroke(Stroke::new(1.0_f32, palette.accent))
+                .corner_radius(egui::CornerRadius::same(6))
+                .inner_margin(egui::Margin::same(8))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.strong(self.catalog.text("assistant-review-title"));
+                    ui.small(self.catalog.format(
+                        "assistant-review-meta",
+                        &BTreeMap::from([
+                            ("revision", proposal.provenance_revision().to_string()),
+                            (
+                                "reads",
+                                proposal.authoritative_dependencies().len().to_string(),
+                            ),
+                            ("writes", proposal.authoritative_writes().len().to_string()),
+                            ("commands", proposal.cost().commands.to_string()),
+                            ("assumptions", proposal.assumptions().len().to_string()),
+                        ]),
+                    ));
+                    ui.small(self.catalog.text("assistant-risk-standard"));
+                    ui.weak(self.catalog.text("assistant-review-observational"));
+                    egui::ScrollArea::vertical()
+                        .id_salt("assistant-proposal-diff")
+                        .max_height(140.0)
+                        .show(ui, |ui| {
+                            for entry in proposal.authoritative_diff() {
+                                ui.monospace(format!("{:?}", entry.target));
+                                ui.monospace(self.catalog.format(
+                                    "assistant-diff-row",
+                                    &BTreeMap::from([
+                                        ("before", format!("{:?}", entry.before)),
+                                        ("after", format!("{:?}", entry.after)),
+                                    ]),
+                                ));
+                            }
+                        });
+                    ui.horizontal(|ui| {
+                        confirm_clicked =
+                            ui.button(self.catalog.text("assistant-confirm")).clicked();
+                        cancel_clicked = ui.button(self.catalog.text("assistant-cancel")).clicked();
+                    });
+                });
+            if confirm_clicked {
+                self.confirm_assistant_proposal();
+            } else if cancel_clicked {
+                self.cancel_assistant_proposal();
+            }
+        }
+        if let Some(verification) = self.assistant_verification.clone() {
+            let can_undo = self.assistant_change_can_undo();
+            let mut undo_clicked = false;
+            egui::Frame::new()
+                .fill(palette.accent_wash(if palette.dark { 32 } else { 20 }))
+                .stroke(Stroke::new(1.0_f32, palette.accent))
+                .corner_radius(egui::CornerRadius::same(6))
+                .inner_margin(egui::Margin::same(8))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.horizontal_wrapped(|ui| {
+                        ui.strong(self.catalog.text("assistant-result-title"));
+                        ui.small(self.catalog.format(
+                            "assistant-verification",
+                            &BTreeMap::from([
+                                ("revision", verification.revision_id.to_string()),
+                                ("writes", verification.verified_write_count.to_string()),
+                            ]),
+                        ));
+                    });
+                    let undo_label = self.catalog.text("assistant-undo-change");
+                    undo_clicked = ui
+                        .add_enabled(can_undo, egui::Button::new(&undo_label))
+                        .on_hover_text(self.catalog.text("shortcut-undo"))
+                        .clicked();
+                });
+            if undo_clicked {
+                self.dispatch_command(AppCommand::Undo);
+            }
+        }
         let enter_without_shift =
             ui.input(|input| input.key_pressed(egui::Key::Enter) && !input.modifiers.shift);
         let input_label = self.catalog.text("assistant-input-hint");
@@ -13001,7 +12744,9 @@ impl KetchupApp {
         });
         input.on_hover_text(self.catalog.text("assistant-send-shortcut"));
 
-        let enabled = self.assistant_chat_task.is_none() && !self.assistant_input.trim().is_empty();
+        let enabled = self.assistant_chat_task.is_none()
+            && self.assistant_pending_execution.is_none()
+            && !self.assistant_input.trim().is_empty();
         let send_clicked = ui
             .allocate_ui_with_layout(
                 Vec2::new(ui.available_width(), 28.0),
@@ -13425,125 +13170,15 @@ impl KetchupApp {
                 });
                 if ui.button(self.catalog.text("assistant-preview")).clicked()
                     && self.prepare_assistant_from_inputs()
+                    && self
+                        .assistant_proposal
+                        .as_ref()
+                        .is_some_and(Self::assistant_proposal_is_low_risk)
                 {
                     self.confirm_assistant_proposal();
                 }
             });
-        if self.assistant_proposal.is_some() {
-            self.confirm_assistant_proposal();
-        }
-        if let Some(proposal) = self.assistant_proposal.as_ref() {
-            ui.separator();
-            ui.strong(self.catalog.text("assistant-review-title"));
-            let goal = self.catalog.text(match proposal.goal() {
-                ProposalGoal::CreateEvaluatorInput(_) => "assistant-goal-create-evaluator-input",
-                ProposalGoal::CreateEvaluatorExpression(_) => {
-                    "assistant-goal-create-evaluator-expression"
-                }
-                ProposalGoal::CreateEvaluatorRule(_) => "assistant-goal-create-evaluator-rule",
-                ProposalGoal::CreateRuleOverride(_) => "assistant-goal-create-rule-override",
-                ProposalGoal::DeleteRuleOverride(_) => "assistant-goal-delete-rule-override",
-                ProposalGoal::CreateFeatureParameterBinding(_) => {
-                    "assistant-goal-create-feature-parameter-binding"
-                }
-                ProposalGoal::DeleteFeatureParameterBinding(_) => {
-                    "assistant-goal-delete-feature-parameter-binding"
-                }
-                ProposalGoal::CreatePersistentDimension(_) => {
-                    "assistant-goal-create-persistent-dimension"
-                }
-                ProposalGoal::CreateSpace(_) => "assistant-goal-create-space",
-                ProposalGoal::CreateClearanceVolume(_) => "assistant-goal-create-clearance-volume",
-                ProposalGoal::CreateJoint(_) => "assistant-goal-create-joint",
-                ProposalGoal::RecomputeFeatureParameter(_) => {
-                    "assistant-goal-recompute-feature-parameter"
-                }
-                ProposalGoal::DeleteJoint(_) => "assistant-goal-delete-joint",
-                ProposalGoal::DeleteSpace(_) => "assistant-goal-delete-space",
-                ProposalGoal::DeleteClearanceVolume(_) => "assistant-goal-delete-clearance-volume",
-                ProposalGoal::DeletePersistentDimension(_) => {
-                    "assistant-goal-delete-persistent-dimension"
-                }
-                ProposalGoal::SetRuleDimension(_) => "assistant-goal-rule",
-                ProposalGoal::RenameEvaluatorNode(_) => "assistant-goal-evaluator-name",
-                ProposalGoal::SetEvaluatorExpression(_) => "assistant-goal-evaluator-expression",
-                ProposalGoal::SetRuleOutputs(_) => "assistant-goal-rule-outputs",
-                ProposalGoal::SetFeatureDimension(_) => "assistant-goal-feature",
-                ProposalGoal::SetBottleControlDimension(_, _) => {
-                    "assistant-goal-bottle-control-dimension"
-                }
-                ProposalGoal::SetBottleEdgeFinishKind(_) => "assistant-goal-bottle-finish-kind",
-                ProposalGoal::SetProfilePoints(_) => "assistant-goal-profile-points",
-                ProposalGoal::RenameDefinition(_) => "assistant-goal-definition-name",
-                ProposalGoal::SetOccurrenceVisibility(_) => "assistant-goal-occurrence-visibility",
-                ProposalGoal::SetOccurrenceTag(_) => "assistant-goal-occurrence-tag",
-                ProposalGoal::SetTagVisibility(_) => "assistant-goal-tag-visibility",
-                ProposalGoal::RepointOccurrence(_) => "assistant-goal-occurrence-definition",
-                ProposalGoal::SetOccurrenceParent(_) => "assistant-goal-occurrence-parent",
-                ProposalGoal::SetOccurrenceTranslation(_) => {
-                    "assistant-goal-occurrence-translation"
-                }
-                ProposalGoal::SetGroupTranslation(_) => "assistant-goal-group-translation",
-                ProposalGoal::SetGroupParent(_) => "assistant-goal-group-parent",
-                ProposalGoal::SetCollectionOccurrences(_) => {
-                    "assistant-goal-collection-occurrences"
-                }
-                ProposalGoal::CreateTag(_) => "assistant-goal-create-tag",
-                ProposalGoal::DeleteTag(_) => "assistant-goal-delete-tag",
-                ProposalGoal::CreateCollection(_) => "assistant-goal-create-collection",
-                ProposalGoal::DeleteCollection(_) => "assistant-goal-delete-collection",
-                ProposalGoal::DeleteGroup(_) => "assistant-goal-delete-group",
-                ProposalGoal::DeleteOccurrence(_) => "assistant-goal-delete-occurrence",
-                ProposalGoal::CreateDefinition(_) => "assistant-goal-create-definition",
-                ProposalGoal::DeleteDefinition(_) => "assistant-goal-delete-definition",
-                ProposalGoal::CreateProfileFeature(_) => "assistant-goal-create-profile-feature",
-                ProposalGoal::DeleteProfileFeature(_) => "assistant-goal-delete-profile-feature",
-                ProposalGoal::CreateGroup(_) => "assistant-goal-create-group",
-                ProposalGoal::CreateOccurrence(_) => "assistant-goal-create-occurrence",
-                ProposalGoal::CloneProfileDefinitionAndRepoint(_) => {
-                    "assistant-goal-clone-profile-definition"
-                }
-                ProposalGoal::ConvertEmptyGroupToComponent(_) => {
-                    "assistant-goal-convert-empty-group"
-                }
-                ProposalGoal::CanonicalPreview => "assistant-goal-canonical",
-            });
-            ui.label(goal);
-            ui.small(self.catalog.format(
-                "assistant-review-meta",
-                &BTreeMap::from([
-                    ("revision", proposal.provenance_revision().to_string()),
-                    (
-                        "reads",
-                        proposal.authoritative_dependencies().len().to_string(),
-                    ),
-                    ("writes", proposal.authoritative_writes().len().to_string()),
-                    ("commands", proposal.cost().commands.to_string()),
-                    ("assumptions", proposal.assumptions().len().to_string()),
-                ]),
-            ));
-            ui.small(self.catalog.text("assistant-risk-standard"));
-            ui.small(self.catalog.text("assistant-applied-automatically"));
-            for entry in proposal.authoritative_diff() {
-                ui.monospace(self.catalog.format(
-                    "assistant-diff-row",
-                    &BTreeMap::from([
-                        ("before", self.assistant_value_text(&entry.before)),
-                        ("after", self.assistant_value_text(&entry.after)),
-                    ]),
-                ));
-            }
-        }
 
-        if let Some(verification) = self.assistant_verification.as_ref() {
-            ui.small(self.catalog.format(
-                "assistant-verification",
-                &BTreeMap::from([
-                    ("revision", verification.revision_id.to_string()),
-                    ("writes", verification.verified_write_count.to_string()),
-                ]),
-            ));
-        }
         ui.separator();
     }
 
@@ -14212,7 +13847,6 @@ impl KetchupApp {
     pub fn ui(&mut self, context: &egui::Context) {
         self.refresh_exact_products(context);
         self.refresh_beam_m5_products(context);
-        self.poll_assistant_chat();
         let palette = self.palette();
         apply_shell_style(context, palette);
         self.handle_shortcuts(context);
@@ -14301,6 +13935,7 @@ impl KetchupApp {
                 });
         }
         self.show_shortcuts_window(context);
+        self.poll_assistant_chat(context);
     }
 }
 
@@ -15372,6 +15007,9 @@ fn box_corners(width: f64, depth: f64, height: f64) -> [Vec3; 8] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use egui_kittest::Harness;
+    use egui_kittest::kittest::Queryable as _;
+    use ketchup_core::document::{ProposalGoal, ProposalValue};
     use ketchup_core::graph::{EvaluatorNodeKind, PortSpec};
 
     #[test]
@@ -15414,6 +15052,197 @@ mod tests {
 
         assert!(cancellation.is_cancelled());
         assert!(app.assistant_chat_task.is_none());
+    }
+
+    #[test]
+    fn new_and_open_cancel_active_assistant_requests() {
+        let mut app = KetchupApp::new();
+        let new_cancellation = AssistantCancellation::default();
+        let (_new_sender, new_receiver) = mpsc::channel();
+        app.assistant_chat_task = Some(AssistantChatTask {
+            receiver: new_receiver,
+            cancellation: new_cancellation.clone(),
+            document_id: app.document.current().document_id(),
+            revision_id: app.document.current().revision_id(),
+            canonical_digest: app.document.current().canonical_digest(),
+            source: "test".to_owned(),
+        });
+
+        app.new_document();
+
+        assert!(new_cancellation.is_cancelled());
+        assert!(app.assistant_chat_task.is_none());
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("assistant-open-cancel.ketchup");
+        assert!(app.save_document_to(&path));
+        let open_cancellation = AssistantCancellation::default();
+        let (_open_sender, open_receiver) = mpsc::channel();
+        app.assistant_chat_task = Some(AssistantChatTask {
+            receiver: open_receiver,
+            cancellation: open_cancellation.clone(),
+            document_id: app.document.current().document_id(),
+            revision_id: app.document.current().revision_id(),
+            canonical_digest: app.document.current().canonical_digest(),
+            source: "test".to_owned(),
+        });
+
+        assert!(app.open_document_from(&path));
+
+        assert!(open_cancellation.is_cancelled());
+        assert!(app.assistant_chat_task.is_none());
+    }
+
+    #[test]
+    fn assistant_progress_phases_are_accessible_with_deterministic_channels() {
+        let mut app = KetchupApp::new();
+        let requesting = app.catalog.text("assistant-progress-requesting");
+        let executing = app.catalog.text("assistant-progress-executing");
+        let (_sender, receiver) = mpsc::channel();
+        app.assistant_chat_task = Some(AssistantChatTask {
+            receiver,
+            cancellation: AssistantCancellation::default(),
+            document_id: app.document.current().document_id(),
+            revision_id: app.document.current().revision_id(),
+            canonical_digest: app.document.current().canonical_digest(),
+            source: "test".to_owned(),
+        });
+        let mut harness = Harness::builder()
+            .with_size(Vec2::new(1600.0, 1000.0))
+            .build_state(|context, app: &mut KetchupApp| app.ui(context), app);
+
+        harness.run();
+
+        assert!(
+            harness
+                .query_all_by(|node| {
+                    !node.is_hidden()
+                        && (node.label().as_deref() == Some(&requesting)
+                            || node.value().as_deref() == Some(&requesting))
+                })
+                .next()
+                .is_some()
+        );
+
+        let state = harness.state_mut();
+        state.assistant_chat_task = None;
+        state.assistant_pending_execution = Some(AssistantPendingExecution {
+            result: AssistantChatResult {
+                message: "Moved it.".to_owned(),
+                model_intent: Some(AssistantModelIntent {
+                    replace_scene: false,
+                    boxes: Vec::new(),
+                    translations: vec![
+                        ketchup_core::assistant_sidecar::AssistantTranslationIntent {
+                            occurrence_id: 1,
+                            delta_mm: [25.0, 0.0, 0.0],
+                        },
+                    ],
+                    linear_arrays: Vec::new(),
+                }),
+            },
+            document_id: state.document.current().document_id(),
+            revision_id: state.document.current().revision_id(),
+            canonical_digest: state.document.current().canonical_digest(),
+            source: "test".to_owned(),
+        });
+        harness.run();
+
+        assert!(
+            harness
+                .query_all_by(|node| {
+                    !node.is_hidden()
+                        && (node.label().as_deref() == Some(&executing)
+                            || node.value().as_deref() == Some(&executing))
+                })
+                .next()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn new_chat_discards_a_pending_assistant_execution_before_commit() {
+        let mut app = KetchupApp::new();
+        let revision = app.document.current().revision_id();
+        app.assistant_pending_execution = Some(AssistantPendingExecution {
+            result: AssistantChatResult {
+                message: "Moved it.".to_owned(),
+                model_intent: Some(AssistantModelIntent {
+                    replace_scene: false,
+                    boxes: Vec::new(),
+                    translations: vec![
+                        ketchup_core::assistant_sidecar::AssistantTranslationIntent {
+                            occurrence_id: 1,
+                            delta_mm: [25.0, 0.0, 0.0],
+                        },
+                    ],
+                    linear_arrays: Vec::new(),
+                }),
+            },
+            document_id: app.document.current().document_id(),
+            revision_id: revision,
+            canonical_digest: app.document.current().canonical_digest(),
+            source: "test".to_owned(),
+        });
+
+        app.new_assistant_chat();
+        app.poll_assistant_chat(&egui::Context::default());
+
+        assert!(app.assistant_pending_execution.is_none());
+        assert_eq!(app.document.current().revision_id(), revision);
+        assert!(app.assistant_verification.is_none());
+    }
+
+    #[test]
+    fn assistant_model_change_requires_explicit_confirmation_after_validation() {
+        let mut app = KetchupApp::new();
+        let revision = app.document.current().revision_id();
+        let (sender, receiver) = mpsc::channel();
+        app.assistant_chat_task = Some(AssistantChatTask {
+            receiver,
+            cancellation: AssistantCancellation::default(),
+            document_id: app.document.current().document_id(),
+            revision_id: revision,
+            canonical_digest: app.document.current().canonical_digest(),
+            source: "test".to_owned(),
+        });
+        sender
+            .send(Ok(AssistantChatResult {
+                message: "Moved it.".to_owned(),
+                model_intent: Some(AssistantModelIntent {
+                    replace_scene: false,
+                    boxes: Vec::new(),
+                    translations: vec![
+                        ketchup_core::assistant_sidecar::AssistantTranslationIntent {
+                            occurrence_id: 1,
+                            delta_mm: [25.0, 0.0, 0.0],
+                        },
+                    ],
+                    linear_arrays: Vec::new(),
+                }),
+            }))
+            .unwrap();
+        let context = egui::Context::default();
+
+        app.poll_assistant_chat(&context);
+
+        assert!(app.assistant_chat_task.is_none());
+        assert!(app.assistant_pending_execution.is_some());
+        assert_eq!(app.document.current().revision_id(), revision);
+
+        app.poll_assistant_chat(&context);
+
+        assert!(app.assistant_pending_execution.is_none());
+        assert_eq!(app.document.current().revision_id(), revision);
+        assert!(app.assistant_proposal.is_some());
+        assert!(app.assistant_verification.is_none());
+        assert!(app.assistant_messages.iter().any(|message| {
+            message.role == AssistantMessageRole::Assistant && message.text == "Moved it."
+        }));
+
+        assert!(app.confirm_assistant_proposal());
+        assert_eq!(app.document.current().revision_id(), revision + 1);
+        assert!(app.assistant_verification.is_some());
     }
 
     #[test]
@@ -15516,7 +15345,9 @@ mod tests {
             }))
             .unwrap();
 
-        app.poll_assistant_chat();
+        let context = egui::Context::default();
+        app.poll_assistant_chat(&context);
+        app.poll_assistant_chat(&context);
 
         assert_eq!(app.document.current().revision_id(), changed_revision);
         assert_eq!(app.document.current().canonical_digest(), changed_digest);

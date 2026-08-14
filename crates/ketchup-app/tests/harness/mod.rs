@@ -206,6 +206,18 @@ impl Shell {
             .collect()
     }
 
+    /// Whether assistive technology can currently see a node with `label`.
+    pub fn has_visible_label(&self, label: &str) -> bool {
+        self.harness
+            .query_all_by(|node| {
+                !node.is_hidden()
+                    && (node.label().as_deref() == Some(label)
+                        || node.value().as_deref() == Some(label))
+            })
+            .next()
+            .is_some()
+    }
+
     /// Click the control that dispatches `command`.
     ///
     /// The tool rail paints glyphs and the menus paint translated names; both
