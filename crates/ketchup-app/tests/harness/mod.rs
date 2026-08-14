@@ -18,12 +18,97 @@
 use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use ketchup_app::dialogs::ScriptedFileDialogs;
-use ketchup_app::{AppCommand, KetchupApp};
+use ketchup_app::{AppCommand, AssistantTransport, KetchupApp};
+use ketchup_core::assistant_sidecar::{AssistantChatResult, AssistantHandshake};
 use ketchup_interaction::{LocaleCatalog, Vec3};
+use ketchup_scheduler::assistant::AssistantCancellation;
 
 use eframe::egui::{self, Key, Modifiers, Pos2, Rect, Vec2, accesskit::Role};
+use std::collections::{BTreeSet, VecDeque};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicUsize, Ordering},
+};
 
 const SCREEN: Vec2 = Vec2::new(1600.0, 1000.0);
+
+pub struct ScriptedAssistantTransport {
+    responses: Mutex<VecDeque<(String, AssistantChatResult)>>,
+    request_ids: Mutex<Vec<String>>,
+    cancellation_requests: BTreeSet<String>,
+    started_cancellation_requests: AtomicUsize,
+    completed_cancellations: AtomicUsize,
+}
+
+impl ScriptedAssistantTransport {
+    pub fn new(responses: impl IntoIterator<Item = (String, AssistantChatResult)>) -> Self {
+        Self {
+            responses: Mutex::new(responses.into_iter().collect()),
+            request_ids: Mutex::new(Vec::new()),
+            cancellation_requests: BTreeSet::new(),
+            started_cancellation_requests: AtomicUsize::new(0),
+            completed_cancellations: AtomicUsize::new(0),
+        }
+    }
+
+    pub fn with_cancellation_request(mut self, message: impl Into<String>) -> Self {
+        self.cancellation_requests.insert(message.into());
+        self
+    }
+
+    pub fn remaining_responses(&self) -> usize {
+        self.responses.lock().unwrap().len()
+    }
+
+    pub fn request_ids(&self) -> Vec<String> {
+        self.request_ids.lock().unwrap().clone()
+    }
+
+    pub fn started_cancellation_requests(&self) -> usize {
+        self.started_cancellation_requests.load(Ordering::Acquire)
+    }
+
+    pub fn completed_cancellations(&self) -> usize {
+        self.completed_cancellations.load(Ordering::Acquire)
+    }
+}
+
+impl AssistantTransport for ScriptedAssistantTransport {
+    fn chat(
+        &self,
+        _handshake: AssistantHandshake,
+        request_id: &str,
+        message: &str,
+        _context: &serde_json::Value,
+        cancellation: AssistantCancellation,
+    ) -> Result<AssistantChatResult, String> {
+        self.request_ids.lock().unwrap().push(request_id.to_owned());
+        if self.cancellation_requests.contains(message) {
+            self.started_cancellation_requests
+                .fetch_add(1, Ordering::AcqRel);
+            while !cancellation.is_cancelled() {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            self.completed_cancellations.fetch_add(1, Ordering::AcqRel);
+            return Err("scripted assistant request was cancelled".to_owned());
+        }
+        if cancellation.is_cancelled() {
+            return Err("scripted assistant request was cancelled".to_owned());
+        }
+        let mut responses = self.responses.lock().unwrap();
+        if cancellation.is_cancelled() {
+            return Err("scripted assistant request was cancelled".to_owned());
+        }
+        let index = responses
+            .iter()
+            .position(|(expected, _)| expected == message)
+            .ok_or_else(|| format!("scripted assistant has no response for {message:?}"))?;
+        let (_, result) = responses
+            .remove(index)
+            .expect("the matching scripted response exists");
+        Ok(result)
+    }
+}
 
 /// A running instance of the shell, driven entirely in memory.
 pub struct Shell {
@@ -61,6 +146,21 @@ impl Shell {
     /// operating system, so the File workflow can be replayed offscreen.
     pub fn with_dialogs(dialogs: ScriptedFileDialogs) -> Self {
         Self::build(KetchupApp::new().with_dialogs(Box::new(dialogs)))
+    }
+
+    pub fn with_assistant_transport(transport: Arc<dyn AssistantTransport>) -> Self {
+        Self::with_dialogs_and_assistant_transport(ScriptedFileDialogs::new(), transport)
+    }
+
+    pub fn with_dialogs_and_assistant_transport(
+        dialogs: ScriptedFileDialogs,
+        transport: Arc<dyn AssistantTransport>,
+    ) -> Self {
+        Self::build(
+            KetchupApp::new()
+                .with_dialogs(Box::new(dialogs))
+                .with_assistant_transport(transport),
+        )
     }
 
     fn build(app: KetchupApp) -> Self {
@@ -113,6 +213,10 @@ impl Shell {
     /// Run frames until the shell stops asking for a repaint.
     pub fn settle(&mut self) {
         self.harness.run();
+    }
+
+    pub fn step(&mut self) {
+        self.harness.step();
     }
 
     /// The 3D viewport rectangle of the current layout.
@@ -396,7 +500,7 @@ impl Shell {
     /// Send a key press and release with the given modifiers held.
     pub fn key(&mut self, key: Key, modifiers: Modifiers) {
         self.harness.key_press_modifiers(modifiers, key);
-        self.harness.run();
+        self.harness.step();
     }
 
     /// Send the native event emitted by egui-winit for Ctrl+C.
@@ -414,7 +518,7 @@ impl Shell {
     /// Send a key press and release with no modifiers.
     pub fn press_key(&mut self, key: Key) {
         self.harness.key_press(key);
-        self.harness.run();
+        self.harness.step();
     }
 
     /// Type text into whatever widget currently has keyboard focus.

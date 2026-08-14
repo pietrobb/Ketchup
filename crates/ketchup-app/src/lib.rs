@@ -1295,6 +1295,45 @@ fn assistant_conversation_digest(messages: &[AssistantChatMessage]) -> String {
     ketchup_core::graph::sha256_hex(&bytes)
 }
 
+pub trait AssistantTransport: Send + Sync {
+    fn chat(
+        &self,
+        handshake: AssistantHandshake,
+        request_id: &str,
+        message: &str,
+        context: &serde_json::Value,
+        cancellation: AssistantCancellation,
+    ) -> Result<AssistantChatResult, String>;
+}
+
+struct ProcessAssistantTransport;
+
+impl AssistantTransport for ProcessAssistantTransport {
+    fn chat(
+        &self,
+        handshake: AssistantHandshake,
+        request_id: &str,
+        message: &str,
+        context: &serde_json::Value,
+        cancellation: AssistantCancellation,
+    ) -> Result<AssistantChatResult, String> {
+        let (program, arguments) = assistant_sidecar_command(handshake.distribution)?;
+        let mut client = AssistantProcessClient::spawn_with_cancellation(
+            program,
+            &arguments,
+            handshake,
+            ASSISTANT_TIMEOUT,
+            cancellation,
+        )
+        .map_err(|error| error.to_string())?;
+        let answer = client
+            .chat(request_id, message, context)
+            .map_err(|error| error.to_string());
+        let _ = client.shutdown();
+        answer
+    }
+}
+
 struct AssistantChatTask {
     receiver: Receiver<Result<AssistantChatResult, String>>,
     cancellation: AssistantCancellation,
@@ -1427,6 +1466,7 @@ pub struct KetchupApp {
     assistant_workspace_mode: AssistantWorkspaceMode,
     assistant_input: String,
     assistant_messages: Vec<AssistantChatMessage>,
+    assistant_transport: Arc<dyn AssistantTransport>,
     assistant_chat_task: Option<AssistantChatTask>,
     assistant_pending_execution: Option<AssistantPendingExecution>,
     assistant_request_sequence: u64,
@@ -1580,6 +1620,7 @@ impl KetchupApp {
             assistant_workspace_mode: AssistantWorkspaceMode::Dock,
             assistant_input: String::new(),
             assistant_messages: Vec::new(),
+            assistant_transport: Arc::new(ProcessAssistantTransport),
             assistant_chat_task: None,
             assistant_pending_execution: None,
             assistant_request_sequence: 0,
@@ -1652,6 +1693,12 @@ impl KetchupApp {
     #[must_use]
     pub fn with_dialogs(mut self, dialogs: Box<dyn FileDialogs>) -> Self {
         self.dialogs = dialogs;
+        self
+    }
+
+    #[must_use]
+    pub fn with_assistant_transport(mut self, transport: Arc<dyn AssistantTransport>) -> Self {
+        self.assistant_transport = transport;
         self
     }
 
@@ -1746,7 +1793,12 @@ impl KetchupApp {
     fn new_document(&mut self) {
         self.cancel_pending_assistant_work();
         let dialogs = std::mem::replace(&mut self.dialogs, Box::new(NativeFileDialogs::default()));
-        *self = Self::new().with_dialogs(dialogs);
+        let assistant_transport = Arc::clone(&self.assistant_transport);
+        let assistant_request_sequence = self.assistant_request_sequence;
+        *self = Self::new()
+            .with_dialogs(dialogs)
+            .with_assistant_transport(assistant_transport);
+        self.assistant_request_sequence = assistant_request_sequence;
         self.digest = self.catalog.text("digest-new-document");
     }
 
@@ -2831,7 +2883,10 @@ impl KetchupApp {
             }),
             ProposalValue::Dimension(value) => self.catalog.format(
                 "assistant-value-dimension",
-                &BTreeMap::from([("value", value.millimetres().to_string())]),
+                &BTreeMap::from([
+                    ("source", value.source_token().to_owned()),
+                    ("value", value.millimetres().to_string()),
+                ]),
             ),
             ProposalValue::BottleEdgeFinishKind(BottleEdgeFinishKind::Fillet) => {
                 self.catalog.text("assistant-value-fillet")
@@ -2891,6 +2946,7 @@ impl KetchupApp {
                 "assistant-value-evaluator-input-state",
                 &BTreeMap::from([
                     ("name", name.clone()),
+                    ("source", dimension.source_token().to_owned()),
                     ("value", dimension.millimetres().to_string()),
                     (
                         "dependencies",
@@ -3559,27 +3615,24 @@ impl KetchupApp {
         });
         self.assistant_request_sequence = self.assistant_request_sequence.saturating_add(1);
         let request_id = format!("chat-{}", self.assistant_request_sequence);
-        let executable = assistant_sidecar_command(handshake.distribution);
+        let transport = Arc::clone(&self.assistant_transport);
         let repaint = context.clone();
         let cancellation = AssistantCancellation::default();
         let worker_cancellation = cancellation.clone();
         let (sender, receiver) = mpsc::channel();
         std::thread::spawn(move || {
-            let result = executable.and_then(|(program, arguments)| {
-                let mut client = AssistantProcessClient::spawn_with_cancellation(
-                    program,
-                    &arguments,
+            let result = transport
+                .chat(
                     handshake,
-                    ASSISTANT_TIMEOUT,
+                    &request_id,
+                    &message,
+                    &document_context,
                     worker_cancellation,
                 )
-                .map_err(|error| error.to_string())?;
-                let answer = client
-                    .chat(&request_id, &message, &document_context)
-                    .map_err(|error| error.to_string());
-                let _ = client.shutdown();
-                answer
-            });
+                .and_then(|result| {
+                    result.validate()?;
+                    Ok(result)
+                });
             if sender.send(result).is_ok() {
                 repaint.request_repaint();
             }

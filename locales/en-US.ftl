@@ -261,7 +261,7 @@ assistant-entity-occurrence-collections = Occurrence collections
 assistant-entity-group = Group
 assistant-entity-group-children = Group children
 assistant-entity-group-subtree = Group subtree
-assistant-value-evaluator-input-state = Evaluator input "{ $name }" · { $value } mm · dependencies { $dependencies }
+assistant-value-evaluator-input-state = Evaluator input "{ $name }" · source { $source } · { $value } mm · dependencies { $dependencies }
 assistant-value-evaluator-expression-state = Evaluator expression "{ $name }" · { $expression } · dependencies { $dependencies }
 assistant-value-evaluator-rule-state = Evaluator rule "{ $name }" · { $expression } · dependencies { $dependencies } · inputs { $inputs } · output ports { $output-ports } · outputs { $outputs } · overrides { $overrides }
 assistant-value-rule-override-state = Rule { $rule } output { $path } · { $parameter } = { $value } · { $health }
@@ -271,7 +271,7 @@ assistant-value-space-state = Space "{ $purpose }" · volume { $min } to { $max 
 assistant-value-clearance-volume-state = Clearance "{ $reason }" for { $owner } · volume { $min } to { $max } mm · frame { $frame } · tolerance { $tolerance } mm · severity { $severity } · derived { $derived }
 assistant-value-persistent-dimension-state = Persistent dimension "{ $name }" · target { $target } · unit { $unit } · precision { $precision }
 assistant-value-boolean = { $value }
-assistant-value-dimension = { $value } mm
+assistant-value-dimension = Source { $source } · { $value } mm
 assistant-value-fillet = Fillet
 assistant-value-chamfer = Chamfer
 assistant-value-rule-outputs = Rule outputs { $outputs }

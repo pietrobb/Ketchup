@@ -1,20 +1,21 @@
 mod harness;
 
 use eframe::egui;
-use harness::Shell;
+use harness::{ScriptedAssistantTransport, Shell};
 use ketchup_app::dialogs::ScriptedFileDialogs;
 use ketchup_app::{AppCommand, AssistantMessageRole, AssistantProvider, AssistantWorkspaceMode};
 use ketchup_core::assistant_sidecar::{
-    ASSISTANT_PROTOCOL_VERSION, AssistantBoxIntent, AssistantDistribution,
+    ASSISTANT_PROTOCOL_VERSION, AssistantBoxIntent, AssistantChatResult, AssistantDistribution,
     AssistantLinearArrayIntent, AssistantModelIntent, AssistantSubtractionIntent,
     AssistantTranslationIntent,
 };
 use ketchup_core::document::{
-    DefinitionId, FeatureId, OccurrenceId, ProposalGoal, ProposalValue, Transform,
+    DefinitionId, FeatureId, NodeId, OccurrenceId, ProposalGoal, ProposalValue, Transform,
 };
 use ketchup_core::intent::WorkflowIntent;
-use ketchup_interaction::Vec3;
+use ketchup_interaction::{LocaleCatalog, Vec3};
 use std::collections::BTreeMap;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 fn apply_reviewed_model_intent(shell: &mut Shell, intent: AssistantModelIntent) -> bool {
@@ -22,9 +23,28 @@ fn apply_reviewed_model_intent(shell: &mut Shell, intent: AssistantModelIntent) 
         && shell.app_mut().confirm_assistant_proposal()
 }
 
+fn wait_for_assistant_proposal(shell: &mut Shell) {
+    let confirm = shell.catalog().text("assistant-confirm");
+    for _ in 0..100 {
+        shell.step();
+        if shell.app().assistant_proposal().is_some() && shell.has_visible_label(&confirm) {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    panic!("scripted assistant response did not reach accessible proposal review");
+}
+
 #[test]
 fn assistant_enter_sends_and_shift_enter_keeps_composing() {
-    let mut shell = Shell::new();
+    let transport = Arc::new(ScriptedAssistantTransport::new([(
+        "Move the beam\nup 20 mm".to_owned(),
+        AssistantChatResult {
+            message: "Scripted answer".to_owned(),
+            model_intent: None,
+        },
+    )]));
+    let mut shell = Shell::with_assistant_transport(transport.clone());
     let input_label = shell.catalog().text("assistant-input-hint");
 
     shell.focus_text_input(&input_label);
@@ -37,14 +57,204 @@ fn assistant_enter_sends_and_shift_enter_keeps_composing() {
 
     shell.type_text("up 20 mm");
     shell.press_key(egui::Key::Enter);
-    let message = shell
-        .app()
-        .assistant_messages()
-        .first()
-        .expect("Enter must submit a user message");
-    assert_eq!(message.role, AssistantMessageRole::User);
-    assert_eq!(message.text, "Move the beam\nup 20 mm");
-    shell.app_mut().new_assistant_chat();
+    for _ in 0..100 {
+        shell.step();
+        if shell.app().assistant_messages().len() == 2 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let messages = shell.app().assistant_messages();
+    assert_eq!(messages.len(), 2);
+    assert_eq!(messages[0].role, AssistantMessageRole::User);
+    assert_eq!(messages[0].text, "Move the beam\nup 20 mm");
+    assert_eq!(messages[1].role, AssistantMessageRole::Assistant);
+    assert_eq!(messages[1].text, "Scripted answer");
+    assert_eq!(transport.remaining_responses(), 0);
+
+    let new_chat = shell.catalog().text("assistant-new-chat");
+    shell.click_row(&new_chat);
+    assert!(shell.app().assistant_messages().is_empty());
+}
+
+#[test]
+fn scripted_assistant_in_flight_requests_cancel_and_transport_survives_new_document() {
+    let transport = Arc::new(
+        ScriptedAssistantTransport::new([(
+            "After New".to_owned(),
+            AssistantChatResult {
+                message: "Still scripted".to_owned(),
+                model_intent: None,
+            },
+        )])
+        .with_cancellation_request("Cancel by new chat")
+        .with_cancellation_request("Cancel by new document"),
+    );
+    let dialogs = ScriptedFileDialogs::new().always_discard();
+    let mut shell = Shell::with_dialogs_and_assistant_transport(dialogs, transport.clone());
+    let input_label = shell.catalog().text("assistant-input-hint");
+
+    shell.focus_text_input(&input_label);
+    shell.type_text("Cancel by new chat");
+    shell.press_key(egui::Key::Enter);
+    for _ in 0..100 {
+        if transport.started_cancellation_requests() == 1 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(transport.started_cancellation_requests(), 1);
+    let new_chat = shell.catalog().text("assistant-new-chat");
+    shell.click_row(&new_chat);
+    for _ in 0..100 {
+        if transport.completed_cancellations() == 1 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(transport.completed_cancellations(), 1);
+    assert!(shell.app().assistant_messages().is_empty());
+
+    shell.focus_text_input(&input_label);
+    shell.type_text("Cancel by new document");
+    shell.press_key(egui::Key::Enter);
+    for _ in 0..100 {
+        if transport.started_cancellation_requests() == 2 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(transport.started_cancellation_requests(), 2);
+    shell.click_menu_command("menu-file", AppCommand::New);
+    for _ in 0..100 {
+        if transport.completed_cancellations() == 2 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(transport.completed_cancellations(), 2);
+    assert!(shell.app().assistant_messages().is_empty());
+
+    shell.focus_text_input(&input_label);
+    shell.type_text("After New");
+    shell.press_key(egui::Key::Enter);
+    for _ in 0..100 {
+        shell.step();
+        if shell.app().assistant_messages().len() == 2 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(shell.app().assistant_messages().len(), 2);
+    assert_eq!(shell.app().assistant_messages()[1].text, "Still scripted");
+    assert_eq!(transport.remaining_responses(), 0);
+    assert_eq!(
+        transport.request_ids(),
+        ["chat-1", "chat-3", "chat-4"].map(str::to_owned)
+    );
+}
+
+#[test]
+fn injected_assistant_results_are_validated_fail_closed() {
+    let transport = Arc::new(ScriptedAssistantTransport::new([(
+        "Invalid result".to_owned(),
+        AssistantChatResult {
+            message: String::new(),
+            model_intent: None,
+        },
+    )]));
+    let mut shell = Shell::with_assistant_transport(transport);
+    let revision = shell.app().document_revision();
+    let digest = shell.app().canonical_digest();
+    let input_label = shell.catalog().text("assistant-input-hint");
+
+    shell.focus_text_input(&input_label);
+    shell.type_text("Invalid result");
+    shell.press_key(egui::Key::Enter);
+    for _ in 0..100 {
+        shell.step();
+        if shell.app().assistant_messages().len() == 2 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let messages = shell.app().assistant_messages();
+    assert_eq!(messages.len(), 2);
+    assert_eq!(messages[1].role, AssistantMessageRole::Error);
+    assert_eq!(messages[1].text, "assistant returned an empty message");
+    assert!(shell.app().assistant_proposal().is_none());
+    assert_eq!(shell.app().document_revision(), revision);
+    assert_eq!(shell.app().canonical_digest(), digest);
+}
+
+#[test]
+fn scripted_assistant_model_review_cancel_confirm_undo_and_redo_use_accesskit() {
+    let scripted_result = |name: &str| AssistantChatResult {
+        message: format!("Review {name}"),
+        model_intent: Some(AssistantModelIntent {
+            replace_scene: false,
+            boxes: vec![AssistantBoxIntent {
+                name: name.to_owned(),
+                size_mm: [120.0, 80.0, 10.0],
+                origin_mm: [0.0, 0.0, 0.0],
+                subtract_boxes: Vec::new(),
+            }],
+            translations: Vec::new(),
+            linear_arrays: Vec::new(),
+        }),
+    };
+    let transport = Arc::new(ScriptedAssistantTransport::new([
+        (
+            "Create a box, then let me review it".to_owned(),
+            scripted_result("Cancelled scripted box"),
+        ),
+        (
+            "Create the reviewed box".to_owned(),
+            scripted_result("Confirmed scripted box"),
+        ),
+    ]));
+    let mut shell = Shell::with_assistant_transport(transport.clone());
+    let input_label = shell.catalog().text("assistant-input-hint");
+    let initial_revision = shell.app().document_revision();
+    let initial_digest = shell.app().canonical_digest();
+    let initial_definitions = shell.app().definition_count();
+    let initial_occurrences = shell.app().active_box_count();
+
+    shell.focus_text_input(&input_label);
+    shell.type_text("Create a box, then let me review it");
+    shell.press_key(egui::Key::Enter);
+    wait_for_assistant_proposal(&mut shell);
+    assert_eq!(shell.app().document_revision(), initial_revision);
+    assert_eq!(shell.app().canonical_digest(), initial_digest);
+    let cancel = shell.catalog().text("assistant-cancel");
+    shell.click_row(&cancel);
+    assert!(shell.app().assistant_proposal().is_none());
+    assert_eq!(shell.app().document_revision(), initial_revision);
+
+    shell.focus_text_input(&input_label);
+    shell.type_text("Create the reviewed box");
+    shell.press_key(egui::Key::Enter);
+    wait_for_assistant_proposal(&mut shell);
+    let confirm = shell.catalog().text("assistant-confirm");
+    shell.click_row(&confirm);
+    assert_eq!(shell.app().document_revision(), initial_revision + 1);
+    assert_eq!(shell.app().definition_count(), initial_definitions + 1);
+    assert_eq!(shell.app().active_box_count(), initial_occurrences + 1);
+    let committed_digest = shell.app().canonical_digest();
+    assert_ne!(committed_digest, initial_digest);
+
+    let undo_change = shell.catalog().text("assistant-undo-change");
+    shell.click_row(&undo_change);
+    assert_eq!(shell.app().document_revision(), initial_revision);
+    assert_eq!(shell.app().canonical_digest(), initial_digest);
+    assert_eq!(shell.app().definition_count(), initial_definitions);
+    assert_eq!(shell.app().active_box_count(), initial_occurrences);
+
+    shell.click_menu_command("menu-edit", AppCommand::Redo);
+    assert_eq!(shell.app().canonical_digest(), committed_digest);
+    assert_eq!(shell.app().definition_count(), initial_definitions + 1);
+    assert_eq!(shell.app().active_box_count(), initial_occurrences + 1);
+    assert_eq!(transport.remaining_responses(), 0);
 }
 
 #[test]
@@ -110,6 +320,8 @@ fn assistant_advanced_tool_applies_one_verified_undoable_batch_without_confirmat
     shell.click_row(&undo_change);
     assert_eq!(shell.app().document_height_mm(), original_height);
     assert!(!shell.app().assistant_change_can_undo());
+    shell.click_menu_command("menu-edit", AppCommand::Redo);
+    assert_eq!(shell.app().document_height_mm(), 35.0);
 }
 
 #[test]
@@ -170,6 +382,66 @@ fn public_apply_helpers_cannot_bypass_review_for_non_whitelisted_changes() {
     assert!(shell.app().assistant_proposal().is_some());
     assert_eq!(shell.app().document_revision(), revision);
     assert_eq!(shell.app().canonical_digest(), digest);
+}
+
+#[test]
+fn assistant_dimension_review_preserves_source_and_normalized_value_in_both_locales() {
+    for catalog in [LocaleCatalog::english(), LocaleCatalog::slovak()] {
+        let mut shell = Shell::with_catalog(catalog);
+        assert!(
+            shell
+                .app_mut()
+                .prepare_assistant_intent(WorkflowIntent::SetFeatureDimension {
+                    target: FeatureId(2),
+                    value_text: "20.0".to_owned(),
+                })
+        );
+        shell.settle();
+        let before = shell.catalog().format(
+            "assistant-value-dimension",
+            &BTreeMap::from([("source", "20".to_owned()), ("value", "20".to_owned())]),
+        );
+        let after = shell.catalog().format(
+            "assistant-value-dimension",
+            &BTreeMap::from([("source", "20.0".to_owned()), ("value", "20".to_owned())]),
+        );
+        let diff = shell.catalog().format(
+            "assistant-diff-row",
+            &BTreeMap::from([("before", before), ("after", after)]),
+        );
+        assert!(shell.has_visible_label(&diff));
+        let cancel = shell.catalog().text("assistant-cancel");
+        shell.click_row(&cancel);
+
+        assert!(
+            shell
+                .app_mut()
+                .prepare_assistant_intent(WorkflowIntent::CreateEvaluatorInput {
+                    target: NodeId(99),
+                    name: "Reviewed depth".to_owned(),
+                    value_text: "42.50".to_owned(),
+                })
+        );
+        shell.settle();
+        let after = shell.catalog().format(
+            "assistant-value-evaluator-input-state",
+            &BTreeMap::from([
+                ("name", "Reviewed depth".to_owned()),
+                ("source", "42.50".to_owned()),
+                ("value", "42.5".to_owned()),
+                ("dependencies", String::new()),
+            ]),
+        );
+        let diff = shell.catalog().format(
+            "assistant-diff-row",
+            &BTreeMap::from([
+                ("before", shell.catalog().text("assistant-value-missing")),
+                ("after", after),
+            ]),
+        );
+        assert!(shell.has_visible_label(&diff));
+        shell.click_row(&cancel);
+    }
 }
 
 #[test]

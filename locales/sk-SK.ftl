@@ -261,7 +261,7 @@ assistant-entity-occurrence-collections = Kolekcie výskytu
 assistant-entity-group = Skupina
 assistant-entity-group-children = Potomkovia skupiny
 assistant-entity-group-subtree = Podstrom skupiny
-assistant-value-evaluator-input-state = Vstup vyhodnocovača „{ $name }“ · { $value } mm · závislosti { $dependencies }
+assistant-value-evaluator-input-state = Vstup vyhodnocovača „{ $name }“ · zdroj { $source } · { $value } mm · závislosti { $dependencies }
 assistant-value-evaluator-expression-state = Výraz vyhodnocovača „{ $name }“ · { $expression } · závislosti { $dependencies }
 assistant-value-evaluator-rule-state = Pravidlo vyhodnocovača „{ $name }“ · { $expression } · závislosti { $dependencies } · vstupy { $inputs } · výstupné porty { $output-ports } · výstupy { $outputs } · prepísania { $overrides }
 assistant-value-rule-override-state = Pravidlo { $rule }, výstup { $path } · { $parameter } = { $value } · { $health }
@@ -271,7 +271,7 @@ assistant-value-space-state = Priestor „{ $purpose }“ · objem { $min } až 
 assistant-value-clearance-volume-state = Voľný objem „{ $reason }“ pre { $owner } · objem { $min } až { $max } mm · rámec { $frame } · tolerancia { $tolerance } mm · závažnosť { $severity } · odvodené { $derived }
 assistant-value-persistent-dimension-state = Trvalá kóta „{ $name }“ · cieľ { $target } · jednotka { $unit } · presnosť { $precision }
 assistant-value-boolean = { $value }
-assistant-value-dimension = { $value } mm
+assistant-value-dimension = Zdroj { $source } · { $value } mm
 assistant-value-fillet = Zaoblenie
 assistant-value-chamfer = Zrazenie
 assistant-value-rule-outputs = Výstupy pravidla { $outputs }
