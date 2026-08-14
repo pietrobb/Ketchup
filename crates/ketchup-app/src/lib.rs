@@ -456,6 +456,17 @@ struct ProjectedEdge {
     points: [Pos2; 2],
 }
 
+fn definition_mesh_body(snapshot: &Snapshot, definition_id: DefinitionId) -> Option<&MeshBodySpec> {
+    snapshot
+        .definition(definition_id)?
+        .feature_ids()
+        .iter()
+        .find_map(|feature_id| match snapshot.feature(*feature_id)?.kind() {
+            FeatureKind::MeshBody(mesh) => Some(mesh),
+            _ => None,
+        })
+}
+
 fn assistant_subtracted_box_mesh(item: &AssistantBoxIntent) -> Option<MeshBodySpec> {
     let [width, depth, height] = item.size_mm;
     let mut xs = vec![0.0, width];
@@ -10060,6 +10071,109 @@ impl KetchupApp {
                 }
             }
         }
+        // Canonical mesh bodies are drawn by the instanced scene, but hover and
+        // selection feedback is a CPU overlay: without this loop a grooved beam
+        // is visible yet never highlights, so it reads as if it were not there.
+        for occurrence in interaction_projection_cache
+            .as_ref()
+            .expect("interaction cache was built")
+            .canonical
+            .occurrences()
+            .iter()
+            .filter(|occurrence| {
+                occurrence.visible
+                    && interaction_projection_cache
+                        .as_ref()
+                        .expect("interaction cache was built")
+                        .mesh
+                        .contains_occurrence(&occurrence.instance_path)
+            })
+        {
+            let out_of_context = !active_context_paths.contains(&occurrence.instance_path);
+            let needs_cpu_overlay = self.selection.contains(&occurrence.instance_path)
+                || self
+                    .hovered
+                    .as_ref()
+                    .is_some_and(|hovered| hovered.instance_path == occurrence.instance_path)
+                || out_of_context;
+            let needs_cpu_fill = !use_wgpu_scene;
+            if use_wgpu_scene && !needs_cpu_overlay {
+                continue;
+            }
+            let Some(mesh) = definition_mesh_body(&snapshot, occurrence.body.definition_id) else {
+                continue;
+            };
+            let transform = move_transform_overrides
+                .get(&occurrence.instance_path)
+                .copied()
+                .unwrap_or(occurrence.canonical_world_transform);
+            let points_mm = mesh
+                .vertices_mm
+                .iter()
+                .map(|point| {
+                    transform_model_point(transform, Vec3::new(point[0], point[1], point[2]))
+                })
+                .collect::<Vec<_>>();
+            let positions = mesh
+                .vertices_mm
+                .iter()
+                .map(|point| point.map(|value| value as f32))
+                .collect::<Vec<_>>();
+            let face_groups = vec![None::<u8>; mesh.triangles.len()];
+            for edge in feature_edges(&positions, &mesh.triangles, &face_groups) {
+                let projected =
+                    edge.map(|index| self.project(points_mm[index as usize], response.rect));
+                let element = mesh
+                    .triangles
+                    .iter()
+                    .find(|triangle| triangle.contains(&edge[0]) && triangle.contains(&edge[1]))
+                    .map(|triangle| {
+                        face_element_from_normal(triangle_normal(
+                            triangle.map(|index| points_mm[index as usize]),
+                        ))
+                    });
+                if let Some(element) = element {
+                    edges.push(ProjectedEdge {
+                        selection: SelectionId {
+                            definition_id: occurrence.body.definition_id,
+                            instance_path: occurrence.instance_path.clone(),
+                            element,
+                        },
+                        points: projected,
+                    });
+                }
+            }
+            if !needs_cpu_fill {
+                continue;
+            }
+            for triangle in &mesh.triangles {
+                let corners = triangle.map(|index| points_mm[index as usize]);
+                let normal = triangle_normal(corners);
+                if point_depth(normal, forward) >= -1.0e-9 {
+                    continue;
+                }
+                let projected = corners.map(|point| self.project(point, response.rect));
+                if !projected_polygon_has_area(&projected) {
+                    continue;
+                }
+                faces.push(ProjectedFace {
+                    selection: SelectionId {
+                        definition_id: occurrence.body.definition_id,
+                        instance_path: occurrence.instance_path.clone(),
+                        element: face_element_from_normal(normal),
+                    },
+                    polygon: ProjectedPolygon::Triangle(projected),
+                    color: face_color_from_normal(normal),
+                    depth: corners
+                        .into_iter()
+                        .map(|point| point_depth(point, forward))
+                        .sum::<f64>()
+                        / 3.0,
+                    previewed: false,
+                    out_of_context,
+                });
+            }
+        }
         drop(interaction_projection_cache);
         faces.sort_by(|left, right| right.depth.total_cmp(&left.depth));
 
@@ -15933,6 +16047,71 @@ mod tests {
         let loss = std::fs::read_to_string(path.with_extension("obj.loss.txt")).unwrap();
         assert!(loss.contains("exact-body-to-world-space-mesh"));
         assert!(loss.contains("producer_feature_id=2"));
+    }
+
+    #[test]
+    fn hovering_and_selecting_a_canonical_mesh_body_paints_its_outline() {
+        let mut app = KetchupApp::new();
+        assert!(app.apply_assistant_model_intent(AssistantModelIntent {
+            replace_scene: true,
+            boxes: vec![AssistantBoxIntent {
+                name: "Grooved beam".to_owned(),
+                size_mm: [400.0, 100.0, 100.0],
+                origin_mm: [0.0, 0.0, 0.0],
+                subtract_boxes: vec![
+                    ketchup_core::assistant_sidecar::AssistantSubtractionIntent {
+                        size_mm: [40.0, 100.0, 30.0],
+                        origin_mm: [180.0, 0.0, 70.0],
+                    }
+                ],
+            }],
+            translations: Vec::new(),
+            linear_arrays: Vec::new(),
+        }));
+        let snapshot = app.document.current();
+        let occurrence = snapshot.occurrences().next().unwrap().id();
+        assert!(
+            definition_mesh_body(&snapshot, snapshot.definitions().next().unwrap().id()).is_some(),
+            "the subtracted box is stored as a canonical mesh body"
+        );
+        let context = egui::Context::default();
+        let _ = context.run(egui::RawInput::default(), |context| app.ui(context));
+        app.zoom_fit();
+
+        let unselected = selection_stroke_segments(&context, &mut app);
+        app.selection.select_occurrence(occurrence, false);
+        let selected = selection_stroke_segments(&context, &mut app);
+
+        assert_eq!(unselected, 0);
+        assert!(
+            selected > 0,
+            "a selected canonical mesh body must paint its selection outline"
+        );
+    }
+
+    fn selection_stroke_segments(context: &egui::Context, app: &mut KetchupApp) -> usize {
+        let output = context.run(egui::RawInput::default(), |context| app.ui(context));
+        let mut count = 0;
+        for clipped in output.shapes {
+            count_selection_segments(&clipped.shape, &mut count);
+        }
+        count
+    }
+
+    fn count_selection_segments(shape: &egui::Shape, count: &mut usize) {
+        match shape {
+            egui::Shape::LineSegment { stroke, .. } => {
+                if stroke.color == Color32::from_rgb(240, 78, 35) {
+                    *count += 1;
+                }
+            }
+            egui::Shape::Vec(shapes) => {
+                for shape in shapes {
+                    count_selection_segments(shape, count);
+                }
+            }
+            _ => {}
+        }
     }
 
     #[test]
