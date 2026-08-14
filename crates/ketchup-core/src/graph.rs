@@ -622,15 +622,28 @@ pub fn evaluate_affected(
     let mut evaluations = BTreeMap::new();
     let mut recomputed_nodes = BTreeSet::new();
     let can_reuse = previous.is_some_and(|report| report.identity == *identity);
-    for id in order {
-        if can_reuse
-            && !affected.contains(&id)
-            && let Some(prior) = previous.and_then(|report| report.nodes.get(&id))
-        {
-            if let EvaluationStatus::Evaluated(value) = prior.status {
-                values.insert(id, value);
+    let mut required = affected.clone();
+    let mut pending = affected.iter().copied().collect::<Vec<_>>();
+    while let Some(id) = pending.pop() {
+        let node = nodes.get(&id).ok_or(GraphError::MissingDependency(id))?;
+        for dependency in &node.dependencies {
+            let reusable = can_reuse
+                && previous
+                    .and_then(|report| report.nodes.get(dependency))
+                    .is_some();
+            if !reusable && required.insert(*dependency) {
+                pending.push(*dependency);
             }
-            evaluations.insert(id, prior.clone());
+        }
+    }
+    for id in order {
+        if !required.contains(&id) {
+            if can_reuse && let Some(prior) = previous.and_then(|report| report.nodes.get(&id)) {
+                if let EvaluationStatus::Evaluated(value) = prior.status {
+                    values.insert(id, value);
+                }
+                evaluations.insert(id, prior.clone());
+            }
             continue;
         }
         recomputed_nodes.insert(id);

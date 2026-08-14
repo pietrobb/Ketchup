@@ -17,13 +17,13 @@ use ketchup_core::document::{
     AuthenticatedApprover, AuthoritativeDependency, BOTTLE_SHELL_OPENING_FACE_ROLE,
     BOTTLE_SHOULDER_EDGE_ROLE, BooleanOperation, BottleControlDimension, BottleEdgeFinishKind,
     CanonicalCommand, CollectionId, CommandBatch, DefinitionId, Dimension, DimensionDisplayUnit,
-    DimensionPresentation, DocumentId, DocumentStore, FeatureId, FeatureKind, FeatureParameterSlot,
-    FeatureParameterTarget, GroupId, HighRiskClass, HighRiskScope, InstancePath, LoftSection,
-    MAX_HUMAN_CONFIRMATION_LIFETIME_MS, MESH_BODY_SCHEMA_V1, MeshAuthority, MeshBodySpec, NodeId,
-    OccurrenceId, PersistentDimensionId, ProfileSegment, Proposal, ProposalContext, ProposalGoal,
-    ProposalPrincipal, ProposalValue, SceneOccurrence, SceneQueryContext,
-    SideEffectAuthorizationReceipt, SlotPath, Snapshot, SolidToolPlan, StableEdgeRole,
-    StableFaceRole, TagId, Transform, TrustedConfirmationSurface,
+    DimensionPresentation, DocumentId, DocumentStore, EvaluationIdentity, FeatureId, FeatureKind,
+    FeatureParameterSlot, FeatureParameterTarget, GroupId, HighRiskClass, HighRiskScope,
+    InstancePath, LoftSection, MAX_HUMAN_CONFIRMATION_LIFETIME_MS, MESH_BODY_SCHEMA_V1,
+    MeshAuthority, MeshBodySpec, NodeId, OccurrenceId, PersistentDimensionId, ProfileSegment,
+    Proposal, ProposalCommitError, ProposalContext, ProposalGoal, ProposalPrincipal, ProposalValue,
+    SceneOccurrence, SceneQueryContext, SideEffectAuthorizationReceipt, SlotPath, Snapshot,
+    SolidToolPlan, StableEdgeRole, StableFaceRole, TagId, Transform, TrustedConfirmationSurface,
 };
 #[cfg(test)]
 use ketchup_core::document::{
@@ -35,7 +35,9 @@ use ketchup_core::exact_product::{
     ExactResultRegistry, ExactSweepRequest,
 };
 use ketchup_core::fabrication::{FullBomProjection, PieceDimensionSheet};
-use ketchup_core::graph::{DerivedIdentity, RuleOutput, SlotSegment};
+use ketchup_core::graph::{
+    DerivedIdentity, EvaluationStatus, EvaluatorNodeKind, RuleOutput, SlotSegment,
+};
 use ketchup_core::intent::{IntentRequest, WorkflowIntent, propose_intent};
 use ketchup_core::prismatic::JointId;
 #[cfg(test)]
@@ -1397,6 +1399,11 @@ pub struct KetchupApp {
     pocket_preview: Option<PocketPreview>,
     pocket_editor_feature: Option<FeatureId>,
     pocket_depth_input: String,
+    parameter_editor_node: Option<NodeId>,
+    parameter_expression_input: String,
+    parameter_canonical_source: String,
+    parameter_provenance: Option<(DocumentId, u64, String)>,
+    parameter_last_recomputed_nodes: BTreeSet<NodeId>,
     status_key: &'static str,
     theme: ThemeKind,
     projection_mode: ProjectionMode,
@@ -1545,6 +1552,11 @@ impl KetchupApp {
             pocket_preview: None,
             pocket_editor_feature: None,
             pocket_depth_input: String::new(),
+            parameter_editor_node: None,
+            parameter_expression_input: String::new(),
+            parameter_canonical_source: String::new(),
+            parameter_provenance: None,
+            parameter_last_recomputed_nodes: BTreeSet::new(),
             status_key: "status-ready",
             theme: ThemeKind::default(),
             projection_mode: ProjectionMode::Parallel,
@@ -1691,6 +1703,11 @@ impl KetchupApp {
         self.pocket_preview = None;
         self.pocket_editor_feature = None;
         self.pocket_depth_input.clear();
+        self.parameter_editor_node = None;
+        self.parameter_expression_input.clear();
+        self.parameter_canonical_source.clear();
+        self.parameter_provenance = None;
+        self.parameter_last_recomputed_nodes.clear();
         self.selection = SelectionState::default();
         self.hovered = None;
         self.hover_pick = None;
@@ -2425,6 +2442,11 @@ impl KetchupApp {
     #[must_use]
     pub fn document_snapshot(&self) -> Snapshot {
         self.document.current()
+    }
+
+    #[must_use]
+    pub const fn parameter_last_recomputed_nodes(&self) -> &BTreeSet<NodeId> {
+        &self.parameter_last_recomputed_nodes
     }
 
     /// Canonical identity of the active document: schema, units, IDs,
@@ -4135,6 +4157,16 @@ impl KetchupApp {
             .values()
             .filter(|package| package.is_current(&snapshot))
             .count()
+    }
+
+    #[must_use]
+    pub fn exact_render_bounds(&self) -> Vec<[[f64; 3]; 2]> {
+        let snapshot = self.document.current();
+        self.exact_results
+            .values()
+            .filter(|package| package.is_current(&snapshot))
+            .map(|package| package.bounds_mm())
+            .collect()
     }
 
     #[must_use]
@@ -8488,6 +8520,9 @@ impl KetchupApp {
             self.assistant_verification = None;
         }
         self.clear_ephemeral_edit_state();
+        self.parameter_editor_node = None;
+        self.parameter_provenance = None;
+        self.parameter_last_recomputed_nodes.clear();
         self.reconcile_selection();
         self.status_key = "status-undo";
         true
@@ -8498,6 +8533,9 @@ impl KetchupApp {
             return false;
         }
         self.clear_ephemeral_edit_state();
+        self.parameter_editor_node = None;
+        self.parameter_provenance = None;
+        self.parameter_last_recomputed_nodes.clear();
         self.reconcile_selection();
         self.status_key = "status-redo";
         true
@@ -14125,6 +14163,185 @@ impl KetchupApp {
         ui.separator();
     }
 
+    fn parameter_expression_nodes(&self) -> Vec<(NodeId, String, String)> {
+        self.document
+            .current()
+            .evaluator_nodes()
+            .filter_map(|node| match node.kind() {
+                EvaluatorNodeKind::Expression { source, .. }
+                | EvaluatorNodeKind::Rule { source, .. } => {
+                    Some((node.id(), node.name().to_owned(), source.clone()))
+                }
+                EvaluatorNodeKind::Parameter { .. } => None,
+            })
+            .collect()
+    }
+
+    fn apply_parameter_expression(&mut self) -> bool {
+        let Some(node_id) = self.parameter_editor_node else {
+            return false;
+        };
+        let snapshot = self.document.current();
+        let current_provenance = (
+            snapshot.document_id(),
+            snapshot.revision_id(),
+            snapshot.canonical_digest(),
+        );
+        if self.parameter_provenance.as_ref() != Some(&current_provenance) {
+            self.parameter_provenance = Some(current_provenance);
+            self.digest = self.catalog.text("error-parameter-stale");
+            return false;
+        }
+        let batch = CommandBatch::new(vec![
+            CanonicalCommand::SetNodeExpression {
+                id: node_id,
+                expression: self.parameter_expression_input.clone(),
+            },
+            CanonicalCommand::RecomputeFeatureParameters {
+                identity: EvaluationIdentity::default(),
+            },
+        ]);
+        let proposal = match self.document.prepare_proposal(batch) {
+            Ok(proposal) => proposal,
+            Err(error) => {
+                self.digest = self.catalog.format(
+                    "error-parameter-expression",
+                    &BTreeMap::from([("reason", error.to_string())]),
+                );
+                return false;
+            }
+        };
+        if proposal.document_id() != snapshot.document_id()
+            || proposal.provenance_revision() != snapshot.revision_id()
+            || proposal.provenance_digest() != snapshot.canonical_digest()
+        {
+            self.digest = self.catalog.text("error-parameter-stale");
+            return false;
+        }
+        match self.document.commit_verified_proposal(&proposal) {
+            Ok(committed) => {
+                self.parameter_last_recomputed_nodes =
+                    committed.revision().recomputed_nodes().clone();
+                self.parameter_canonical_source = self.parameter_expression_input.clone();
+                let committed_snapshot = committed.revision().snapshot();
+                self.parameter_provenance = Some((
+                    committed_snapshot.document_id(),
+                    committed_snapshot.revision_id(),
+                    committed_snapshot.canonical_digest(),
+                ));
+                let value = committed
+                    .revision()
+                    .evaluation()
+                    .and_then(|report| report.node(node_id))
+                    .and_then(|node| match node.status {
+                        EvaluationStatus::Evaluated(value) => Some(format_height(value)),
+                        EvaluationStatus::Error(_) => None,
+                    })
+                    .unwrap_or_default();
+                self.digest = self.catalog.format(
+                    "digest-parameter-applied",
+                    &BTreeMap::from([("node", node_id.0.to_string()), ("value", value)]),
+                );
+                self.status_key = "status-ready";
+                true
+            }
+            Err(ProposalCommitError::Stale(_)) => {
+                self.digest = self.catalog.text("error-parameter-stale");
+                false
+            }
+            Err(error) => {
+                self.digest = self.catalog.format(
+                    "error-parameter-expression",
+                    &BTreeMap::from([("reason", error.to_string())]),
+                );
+                false
+            }
+        }
+    }
+
+    fn show_parameter_editor(&mut self, ui: &mut egui::Ui) {
+        let nodes = self.parameter_expression_nodes();
+        if nodes.is_empty() {
+            self.parameter_editor_node = None;
+            self.parameter_expression_input.clear();
+            self.parameter_canonical_source.clear();
+            self.parameter_provenance = None;
+            return;
+        }
+        let selected_is_current = self
+            .parameter_editor_node
+            .is_some_and(|selected| nodes.iter().any(|(id, _, _)| *id == selected));
+        if !selected_is_current {
+            self.parameter_editor_node = Some(nodes[0].0);
+        }
+        let mut selected = self
+            .parameter_editor_node
+            .expect("an editable evaluator node was selected");
+        let previous_selected = selected;
+        let selected_name = nodes
+            .iter()
+            .find(|(id, _, _)| *id == selected)
+            .map(|(_, name, _)| name.clone())
+            .expect("the selected evaluator node is present");
+
+        section_header(ui, self.palette(), &self.catalog.text("parameters-title"));
+        let selector_label = self.catalog.text("parameters-node");
+        ui.label(&selector_label);
+        let selector = egui::ComboBox::from_id_salt("parameter-expression-node")
+            .width(ui.available_width())
+            .selected_text(selected_name)
+            .show_ui(ui, |ui| {
+                for (id, name, _) in &nodes {
+                    ui.selectable_value(&mut selected, *id, name);
+                }
+            });
+        selector.response.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, &selector_label)
+        });
+        self.parameter_editor_node = Some(selected);
+        let canonical_source = nodes
+            .iter()
+            .find(|(id, _, _)| *id == selected)
+            .map(|(_, _, source)| source.clone())
+            .expect("the selected evaluator node is present");
+        if selected != previous_selected || canonical_source != self.parameter_canonical_source {
+            self.parameter_expression_input = canonical_source.clone();
+            self.parameter_canonical_source = canonical_source;
+            let snapshot = self.document.current();
+            self.parameter_provenance = Some((
+                snapshot.document_id(),
+                snapshot.revision_id(),
+                snapshot.canonical_digest(),
+            ));
+        }
+
+        let input_label = self.catalog.text("parameters-expression");
+        ui.label(&input_label);
+        let input = ui.add(
+            egui::TextEdit::singleline(&mut self.parameter_expression_input)
+                .hint_text(self.catalog.text("parameters-expression-hint")),
+        );
+        input.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, &input_label)
+        });
+        ui.small(self.catalog.text("parameters-expression-help"));
+
+        let snapshot = self.document.current();
+        if let Ok(report) = snapshot.evaluate(&EvaluationIdentity::default())
+            && let Some(node) = report.node(selected)
+            && let EvaluationStatus::Evaluated(value) = node.status
+        {
+            ui.label(self.catalog.format(
+                "parameters-result",
+                &BTreeMap::from([("value", format_height(value))]),
+            ));
+        }
+        if ui.button(self.catalog.text("parameters-apply")).clicked() {
+            self.apply_parameter_expression();
+        }
+        ui.separator();
+    }
+
     fn show_pocket_properties(&mut self, ui: &mut egui::Ui) {
         let Some((feature_id, depth)) = self.selected_pocket() else {
             self.pocket_editor_feature = None;
@@ -14580,6 +14797,7 @@ impl KetchupApp {
                 )
                 .show(context, |ui| {
                     ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
+                    self.show_parameter_editor(ui);
                     self.show_assistant(ui);
                 });
             egui::CentralPanel::default()
@@ -14598,6 +14816,7 @@ impl KetchupApp {
                 )
                 .show(context, |ui| {
                     ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
+                    self.show_parameter_editor(ui);
                     self.show_outliner_without_assistant(ui);
                 });
             egui::CentralPanel::default()

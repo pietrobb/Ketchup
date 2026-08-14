@@ -50,9 +50,11 @@ impl Shell {
 
     /// Start a shell with a complete injected locale catalog.
     pub fn with_catalog(catalog: LocaleCatalog) -> Self {
-        Self::build(
-            KetchupApp::with_catalog(catalog).with_dialogs(Box::new(ScriptedFileDialogs::new())),
-        )
+        Self::with_catalog_and_dialogs(catalog, ScriptedFileDialogs::new())
+    }
+
+    pub fn with_catalog_and_dialogs(catalog: LocaleCatalog, dialogs: ScriptedFileDialogs) -> Self {
+        Self::build(KetchupApp::with_catalog(catalog).with_dialogs(Box::new(dialogs)))
     }
 
     /// Start a shell whose file dialogs answer from `dialogs` instead of the
@@ -167,6 +169,20 @@ impl Shell {
             .get_by_role_and_label(Role::TextInput, label)
             .focus();
         self.harness.run();
+    }
+
+    pub fn focus_combo_box(&mut self, label: &str) {
+        self.harness
+            .get_by_role_and_label(Role::ComboBox, label)
+            .focus();
+        self.harness.run();
+    }
+
+    pub fn has_role_and_label(&self, role: Role, label: &str) -> bool {
+        self.harness
+            .query_all_by_role_and_label(role, label)
+            .next()
+            .is_some()
     }
 
     /// Whether the command is the focused node in the current AccessKit tree.

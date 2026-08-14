@@ -4,6 +4,7 @@ use ketchup_core::document::{
     RuleOutput, SlotPath, SlotResolution, SlotSegment,
 };
 use ketchup_core::graph::DiagnosticCode;
+use ketchup_core::persistence;
 
 fn segment(key: &str) -> SlotSegment {
     SlotSegment::new(NodeId(4), "result", key).unwrap()
@@ -186,6 +187,35 @@ fn affected_only_recomputation_preserves_unrelated_results_and_identity_fields_c
             base_digest
         );
     }
+}
+
+#[test]
+fn affected_recompute_after_open_skips_an_unrelated_uncached_branch() {
+    let seeded = seeded(vec![RuleOutput::new(segment("left"), vec![]).unwrap()]);
+    let mut reopened = persistence::load(&persistence::save(&seeded.current()))
+        .unwrap()
+        .into_editable()
+        .ok()
+        .unwrap();
+
+    let revision = reopened
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetNodeExpression {
+                id: NodeId(4),
+                expression: "$3 / 4".to_owned(),
+            },
+            CanonicalCommand::RecomputeFeatureParameters {
+                identity: EvaluationIdentity::default(),
+            },
+        ]))
+        .unwrap();
+
+    let report = revision.evaluation().unwrap();
+    assert_eq!(report.recomputed_nodes, [NodeId(4)].into_iter().collect());
+    assert!(report.node(NodeId(1)).is_some());
+    assert!(report.node(NodeId(2)).is_some());
+    assert!(report.node(NodeId(3)).is_some());
+    assert!(report.node(NodeId(5)).is_none());
 }
 
 #[test]

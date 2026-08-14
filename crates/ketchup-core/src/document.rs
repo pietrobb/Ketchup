@@ -2686,6 +2686,7 @@ impl DocumentStore {
         product.exact_reference_evidence.clear();
         let mut changed_evaluator_nodes = BTreeSet::new();
         let mut evaluation_identity = EvaluationIdentity::default();
+        let mut previous_evaluation = self.revisions[self.cursor].evaluation.clone();
 
         for command in &batch.commands {
             match command {
@@ -2878,8 +2879,13 @@ impl DocumentStore {
                             &changed_evaluator_nodes,
                         ))
                     };
-                    let report =
-                        recompute_feature_parameters(&mut product, identity, affected.as_ref())?;
+                    let report = recompute_feature_parameters(
+                        &mut product,
+                        identity,
+                        affected.as_ref(),
+                        previous_evaluation.as_ref(),
+                    )?;
+                    previous_evaluation = Some(report.clone());
                     if affected.is_none() {
                         changed_evaluator_nodes.extend(
                             product
@@ -3503,7 +3509,7 @@ impl DocumentStore {
         let evaluation = evaluate_affected(
             &product.evaluator_nodes,
             &evaluation_identity,
-            self.revisions[self.cursor].evaluation.as_ref(),
+            previous_evaluation.as_ref(),
             &recomputed_nodes,
         )
         .map_err(CanonicalError::Graph)?;
@@ -5129,9 +5135,17 @@ fn recompute_feature_parameters(
     product: &mut ProductModel,
     identity: &EvaluationIdentity,
     affected_nodes: Option<&BTreeSet<NodeId>>,
+    previous: Option<&EvaluationReport>,
 ) -> Result<EvaluationReport, CanonicalError> {
-    let report =
-        evaluate_graph(&product.evaluator_nodes, identity).map_err(CanonicalError::Graph)?;
+    let all_nodes;
+    let affected = if let Some(affected) = affected_nodes {
+        affected
+    } else {
+        all_nodes = product.evaluator_nodes.keys().copied().collect();
+        &all_nodes
+    };
+    let report = evaluate_affected(&product.evaluator_nodes, identity, previous, affected)
+        .map_err(CanonicalError::Graph)?;
     let bindings = product
         .feature_parameter_bindings
         .values()

@@ -6,19 +6,169 @@
 
 mod harness;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 
-use eframe::egui::{Key, Pos2, Rect, Vec2};
+use eframe::egui::{Key, Pos2, Rect, Vec2, accesskit::Role};
 use harness::{Shell, ctrl};
 use ketchup_app::dialogs::ScriptedFileDialogs;
 use ketchup_app::{AlignMode, AppCommand, GeneralFinishKind};
-use ketchup_core::document::{BottleEdgeFinishKind, InstancePath, OccurrenceId};
+use ketchup_core::document::{
+    BottleEdgeFinishKind, CanonicalCommand, CommandBatch, DefinitionId, DerivedIdentity, Dimension,
+    DocumentStore, EvaluationIdentity, FeatureId, FeatureKind, FeatureParameterBinding,
+    FeatureParameterSlot, FeatureParameterTarget, InstancePath, NodeId, OccurrenceId, PortSpec,
+    RuleOutput, SlotPath, SlotSegment, Transform,
+};
 use ketchup_core::exact_product::{
     EXACT_BOOLEAN_INTERSECT_EVALUATOR_V1, EXACT_BOOLEAN_SPLIT_EVALUATOR_V1,
     EXACT_CIRCLE_EVALUATOR_V1, EXACT_CIRCULAR_CUT_EVALUATOR_V1, EXACT_LOFT_EVALUATOR_V1,
     EXACT_PLANAR_OFFSET_EVALUATOR_V1, EXACT_SWEEP_EVALUATOR_V1,
 };
+use ketchup_core::graph::{EvaluationStatus, EvaluatorNodeKind};
+use ketchup_core::persistence;
 use ketchup_interaction::{Axis, ElementId, LocaleCatalog, SnapKind, Vec3};
+
+const PARAMETRIC_PROFILE: FeatureId = FeatureId(10);
+const PARAMETRIC_RULE: NodeId = NodeId(302);
+const PARAMETRIC_DEPENDENT: NodeId = NodeId(303);
+const PARAMETRIC_UNRELATED_SOURCE: NodeId = NodeId(305);
+const PARAMETRIC_UNRELATED: NodeId = NodeId(306);
+
+fn dimension(value: &str) -> Dimension {
+    Dimension::from_decimal(value).unwrap()
+}
+
+fn write_parametric_fixture(path: &Path) {
+    let width_output = SlotSegment::new(PARAMETRIC_RULE, "dimensions", "profile_width").unwrap();
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DefinitionId(1),
+                name: "Parametric box".to_owned(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: PARAMETRIC_PROFILE,
+                definition_id: DefinitionId(1),
+                name: "Rectangle".to_owned(),
+                kind: FeatureKind::Profile {
+                    points_mm: vec![[0.0, 0.0], [20.0, 0.0], [20.0, 30.0], [0.0, 30.0]],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(11),
+                definition_id: DefinitionId(1),
+                name: "Extrusion".to_owned(),
+                kind: FeatureKind::Extrusion {
+                    profile: PARAMETRIC_PROFILE,
+                    height: dimension("10"),
+                },
+            },
+            CanonicalCommand::CreateOccurrence {
+                id: OccurrenceId(20),
+                definition_id: DefinitionId(1),
+                name: "Parametric box #1".to_owned(),
+                transform: Transform::identity(),
+                parent: None,
+                tag: None,
+                visible: true,
+            },
+            CanonicalCommand::CreateEvaluatorNode {
+                id: NodeId(301),
+                name: "Width source".to_owned(),
+                dimension: dimension("20"),
+                dependencies: vec![],
+            },
+            CanonicalCommand::CreateRuleNode {
+                id: PARAMETRIC_RULE,
+                name: "Driven width".to_owned(),
+                expression: "$301".to_owned(),
+                input_ports: vec![PortSpec::number("width").unwrap()],
+                output_ports: vec![PortSpec::number("dimensions").unwrap()],
+                outputs: vec![RuleOutput::new(width_output.clone(), vec![]).unwrap()],
+                override_parameters: vec![],
+            },
+            CanonicalCommand::CreateExpressionNode {
+                id: PARAMETRIC_DEPENDENT,
+                name: "Width audit".to_owned(),
+                expression: "$302 + 1".to_owned(),
+            },
+            CanonicalCommand::CreateEvaluatorNode {
+                id: PARAMETRIC_UNRELATED_SOURCE,
+                name: "Unrelated source".to_owned(),
+                dimension: dimension("7"),
+                dependencies: vec![],
+            },
+            CanonicalCommand::CreateExpressionNode {
+                id: PARAMETRIC_UNRELATED,
+                name: "Unrelated result".to_owned(),
+                expression: "$305 * 3".to_owned(),
+            },
+            CanonicalCommand::UpsertFeatureParameterBinding(FeatureParameterBinding {
+                target: FeatureParameterTarget {
+                    feature_id: PARAMETRIC_PROFILE,
+                    slot: FeatureParameterSlot::ProfileWidth,
+                },
+                derived_from: DerivedIdentity::new(
+                    PARAMETRIC_RULE,
+                    SlotPath::new(vec![width_output]).unwrap(),
+                )
+                .unwrap(),
+            }),
+        ]))
+        .unwrap();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::RecomputeFeatureParameters {
+                identity: EvaluationIdentity::default(),
+            },
+        ]))
+        .unwrap();
+    document.discard_history_before_current();
+    persistence::save_atomic(path, &document.current()).unwrap();
+}
+
+fn exact_worker_path() -> PathBuf {
+    let name = if cfg!(windows) {
+        "ketchup-exact-worker.exe"
+    } else {
+        "ketchup-exact-worker"
+    };
+    let colocated = std::env::current_exe()
+        .unwrap()
+        .parent()
+        .and_then(Path::parent)
+        .unwrap()
+        .join(name);
+    if colocated.is_file() {
+        colocated
+    } else {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/debug")
+            .join(name)
+    }
+}
+
+fn wait_for_one_exact_body(shell: &mut Shell) {
+    for _ in 0..100 {
+        shell.settle();
+        if shell.app().exact_render_body_count() == 1 {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(shell.app().exact_render_body_count(), 1);
+}
+
+fn replace_parameter_expression(shell: &mut Shell, expression: &str) {
+    let input = shell.catalog().text("parameters-expression");
+    let apply = shell.catalog().text("parameters-apply");
+    shell.focus_text_input(&input);
+    shell.key(Key::A, ctrl());
+    shell.type_text(expression);
+    shell.click_row(&apply);
+}
 
 #[test]
 fn the_designed_shell_lays_itself_out_without_a_window() {
@@ -109,6 +259,202 @@ fn localized_shells_fit_and_support_screen_reader_keyboard_focus() {
         );
         shell.press_key(Key::Enter);
         assert_eq!(shell.app().action_digest(), expected_digest, "{locale}");
+    }
+}
+
+#[test]
+fn parameter_expression_recomputes_dependents_atomically_and_round_trips_through_the_shell() {
+    let directory = tempfile::tempdir().unwrap();
+    let fixture = directory.path().join("parametric-fixture.ketchup");
+    let saved = directory.path().join("parametric-saved.ketchup");
+    write_parametric_fixture(&fixture);
+    let dialogs = ScriptedFileDialogs::new()
+        .queue_open(&fixture)
+        .queue_save(&saved)
+        .queue_open(&saved)
+        .always_discard();
+    let mut shell = Shell::with_dialogs(dialogs);
+    shell.click_menu_command("menu-file", AppCommand::Open);
+    shell
+        .app_mut()
+        .connect_exact_worker(exact_worker_path())
+        .unwrap();
+    wait_for_one_exact_body(&mut shell);
+    assert_eq!(
+        shell.app().exact_render_bounds(),
+        vec![[[0.0, 0.0, 0.0], [20.0, 30.0, 10.0]]]
+    );
+
+    let initial_revision = shell.app().document_revision();
+    let initial_digest = shell.app().canonical_digest();
+    assert!(!shell.app().can_undo());
+    replace_parameter_expression(&mut shell, "$301 * 2");
+
+    let changed_revision = shell.app().document_revision();
+    let changed_digest = shell.app().canonical_digest();
+    assert_eq!(changed_revision, initial_revision + 1);
+    assert_ne!(changed_digest, initial_digest);
+    assert_eq!(
+        shell.app().parameter_last_recomputed_nodes(),
+        &BTreeSet::from([PARAMETRIC_RULE, PARAMETRIC_DEPENDENT])
+    );
+    assert!(
+        !shell
+            .app()
+            .parameter_last_recomputed_nodes()
+            .contains(&PARAMETRIC_UNRELATED_SOURCE)
+    );
+    assert!(
+        !shell
+            .app()
+            .parameter_last_recomputed_nodes()
+            .contains(&PARAMETRIC_UNRELATED)
+    );
+    assert!(matches!(
+        shell
+            .app()
+            .document_snapshot()
+            .feature(PARAMETRIC_PROFILE)
+            .unwrap()
+            .kind(),
+        FeatureKind::Profile { points_mm }
+            if points_mm == &vec![[0.0, 0.0], [40.0, 0.0], [40.0, 30.0], [0.0, 30.0]]
+    ));
+    let report = shell
+        .app()
+        .document_snapshot()
+        .evaluate(&EvaluationIdentity::default())
+        .unwrap();
+    assert!(matches!(
+        report.node(PARAMETRIC_DEPENDENT).unwrap().status,
+        EvaluationStatus::Evaluated(value) if (value - 41.0).abs() < f64::EPSILON
+    ));
+    wait_for_one_exact_body(&mut shell);
+    assert_eq!(
+        shell.app().exact_render_bounds(),
+        vec![[[0.0, 0.0, 0.0], [40.0, 30.0, 10.0]]]
+    );
+
+    replace_parameter_expression(&mut shell, "(");
+    assert_eq!(shell.app().document_revision(), changed_revision);
+    assert_eq!(shell.app().canonical_digest(), changed_digest);
+    replace_parameter_expression(&mut shell, "$303");
+    assert_eq!(shell.app().document_revision(), changed_revision);
+    assert_eq!(shell.app().canonical_digest(), changed_digest);
+
+    let input = shell.catalog().text("parameters-expression");
+    let apply = shell.catalog().text("parameters-apply");
+    shell.focus_text_input(&input);
+    shell.key(Key::A, ctrl());
+    shell.type_text("$301 * 3");
+    shell.click_command(AppCommand::Circle);
+    shell.click_at(
+        shell
+            .app()
+            .viewport_position(Vec3::new(10.0, 15.0, 10.0))
+            .unwrap(),
+    );
+    shell.click_at(
+        shell
+            .app()
+            .viewport_position(Vec3::new(15.0, 15.0, 10.0))
+            .unwrap(),
+    );
+    let intervening_revision = shell.app().document_revision();
+    let intervening_digest = shell.app().canonical_digest();
+    assert_eq!(intervening_revision, changed_revision + 1);
+    shell.click_row(&apply);
+    assert_eq!(shell.app().document_revision(), intervening_revision);
+    assert_eq!(shell.app().canonical_digest(), intervening_digest);
+    assert_eq!(
+        shell.app().action_digest(),
+        shell.catalog().text("error-parameter-stale")
+    );
+    assert!(matches!(
+        shell
+            .app()
+            .document_snapshot()
+            .evaluator_node(PARAMETRIC_RULE)
+            .unwrap()
+            .kind(),
+        EvaluatorNodeKind::Rule { source, .. } if source == "$301 * 2"
+    ));
+    shell.key(Key::Z, ctrl());
+    assert_eq!(shell.app().canonical_digest(), changed_digest);
+
+    shell.key(Key::Z, ctrl());
+    assert_eq!(shell.app().canonical_digest(), initial_digest);
+    assert!(
+        !shell.app().can_undo(),
+        "the valid edit must be one undo step"
+    );
+    wait_for_one_exact_body(&mut shell);
+    assert_eq!(
+        shell.app().exact_render_bounds(),
+        vec![[[0.0, 0.0, 0.0], [20.0, 30.0, 10.0]]]
+    );
+    shell.key(Key::Y, ctrl());
+    assert_eq!(shell.app().canonical_digest(), changed_digest);
+    wait_for_one_exact_body(&mut shell);
+    assert_eq!(
+        shell.app().exact_render_bounds(),
+        vec![[[0.0, 0.0, 0.0], [40.0, 30.0, 10.0]]]
+    );
+
+    shell.click_menu_command("menu-file", AppCommand::SaveAs);
+    assert!(saved.is_file());
+    shell.click_menu_command("menu-file", AppCommand::New);
+    shell.click_menu_command("menu-file", AppCommand::Open);
+    assert_eq!(shell.app().canonical_digest(), changed_digest);
+    assert_eq!(shell.app().document_revision(), changed_revision);
+    assert!(!shell.app().can_undo());
+    let reopened = shell.app().document_snapshot();
+    assert!(matches!(
+        reopened.evaluator_node(PARAMETRIC_RULE).unwrap().kind(),
+        EvaluatorNodeKind::Rule { source, .. } if source == "$301 * 2"
+    ));
+    assert!(matches!(
+        reopened.feature(PARAMETRIC_PROFILE).unwrap().kind(),
+        FeatureKind::Profile { points_mm }
+            if points_mm == &vec![[0.0, 0.0], [40.0, 0.0], [40.0, 30.0], [0.0, 30.0]]
+    ));
+    shell
+        .app_mut()
+        .connect_exact_worker(exact_worker_path())
+        .unwrap();
+    wait_for_one_exact_body(&mut shell);
+    assert_eq!(
+        shell.app().exact_render_bounds(),
+        vec![[[0.0, 0.0, 0.0], [40.0, 30.0, 10.0]]]
+    );
+
+    for (locale, catalog) in [
+        ("en-US", LocaleCatalog::english()),
+        ("sk-SK", LocaleCatalog::slovak()),
+        ("pseudo", LocaleCatalog::pseudo()),
+    ] {
+        let dialogs = ScriptedFileDialogs::new()
+            .queue_open(&fixture)
+            .always_discard();
+        let mut localized = Shell::with_catalog_and_dialogs(catalog, dialogs);
+        localized.click_menu_command("menu-file", AppCommand::Open);
+        let selector = localized.catalog().text("parameters-node");
+        let input = localized.catalog().text("parameters-expression");
+        let apply = localized.catalog().text("parameters-apply");
+        assert!(
+            localized.has_role_and_label(Role::ComboBox, &selector),
+            "{locale} selector"
+        );
+        assert!(
+            localized.has_role_and_label(Role::TextInput, &input),
+            "{locale} input"
+        );
+        assert!(
+            localized.has_role_and_label(Role::Button, &apply),
+            "{locale} apply"
+        );
+        localized.focus_combo_box(&selector);
+        localized.focus_text_input(&input);
     }
 }
 
