@@ -221,6 +221,10 @@ foreach ($signature in $publicMethodSignatures) {
     }
 }
 $allowedMutableMethods = @(
+    "authorize_high_risk_side_effect"
+    "commit_high_risk_proposal"
+    "commit_tip_replacement_proposal"
+    "configure_human_confirmation_policy"
     ([string]$d08.ordinary_gateway.scope).Split("::")[-1]
     @($d08.delegated_gateways | ForEach-Object { ([string]$_.scope).Split("::")[-1] })
     @($d08.derived_result_delegates | ForEach-Object { ([string]$_.scope).Split("::")[-1] })
@@ -241,10 +245,58 @@ foreach ($required in $allowedMutableMethods) {
         Fail-Guard "sole-mutation" "Required canonical gateway or lifecycle exception is missing: $required"
     }
 }
+$confirmationPolicyBlock = Get-BracedBlock $storeImpl "pub fn configure_human_confirmation_policy" "sole-mutation"
+if (-not $confirmationPolicyBlock.Contains("epoch == 0") -or
+    -not $confirmationPolicyBlock.Contains("epoch <= current.epoch") -or
+    -not $confirmationPolicyBlock.Contains("VerifyingKey::from_bytes") -or
+    -not $confirmationPolicyBlock.Contains("self.human_confirmation_policy = Some") -or
+    $confirmationPolicyBlock -match 'self\.(?:revisions|cursor|next_revision_id|evaluation_registry)' -or
+    $confirmationPolicyBlock -match '\.(?:apply_batch|commit_verified_proposal|register_derived_result)\(') {
+    Fail-Guard "sole-mutation" "Human-confirmation policy configuration must remain monotonic, key-validating, and non-canonical."
+}
+$highRiskCommitBlock = Get-BracedBlock $storeImpl "pub fn commit_high_risk_proposal" "sole-mutation"
+if (-not $highRiskCommitBlock.Contains("ProposalRisk::High") -or
+    -not $highRiskCommitBlock.Contains("policy.consumed_signatures.contains") -or
+    -not $highRiskCommitBlock.Contains(".verifying_key") -or
+    -not $highRiskCommitBlock.Contains("self.commit_verified_proposal_inner(proposal)") -or
+    -not $highRiskCommitBlock.Contains(".consumed_signatures") -or
+    $highRiskCommitBlock -match '\.apply_batch\(') {
+    Fail-Guard "sole-mutation" "High-risk canonical commit must remain signature-gated and delegate to verified Proposal commit."
+}
+$sideEffectBlock = Get-BracedBlock $storeImpl "pub fn authorize_high_risk_side_effect" "sole-mutation"
+if (-not $sideEffectBlock.Contains("snapshot.canonical_digest() != proposal.provenance_digest") -or
+    -not $sideEffectBlock.Contains("policy.consumed_signatures.contains") -or
+    -not $sideEffectBlock.Contains(".verifying_key") -or
+    -not $sideEffectBlock.Contains(".consumed_signatures") -or
+    $sideEffectBlock -match 'self\.(?:revisions|cursor|next_revision_id|evaluation_registry)' -or
+    $sideEffectBlock -match '\.(?:apply_batch|commit_verified_proposal|register_derived_result)\(') {
+    Fail-Guard "sole-mutation" "High-risk side-effect authorization must remain snapshot-bound, signature-gated, and non-canonical."
+}
+$tipReplacementBlock = Get-BracedBlock $storeImpl "pub fn commit_tip_replacement_proposal" "sole-mutation"
+foreach ($requiredTipReplacementLine in @(
+    "self.verify_tip_replacement_proposal(proposal)",
+    "let previous_revisions = self.revisions.clone()",
+    "let previous_cursor = self.cursor",
+    "let previous_next_revision_id = self.next_revision_id",
+    "let previous_registry = self.evaluation_registry.clone()",
+    ".apply_batch(&proposal.batch)",
+    "self.revisions = previous_revisions",
+    "self.cursor = previous_cursor",
+    "self.next_revision_id = previous_next_revision_id",
+    "self.evaluation_registry = previous_registry"
+)) {
+    if (-not $tipReplacementBlock.Contains($requiredTipReplacementLine)) {
+        Fail-Guard "sole-mutation" "Tip replacement must verify first and restore complete authority on failure."
+    }
+}
 foreach ($delegate in $actualCanonicalDelegates) {
     $method = ([string]$delegate).Split("::")[-1]
     $declaration = @($d08.delegated_gateways | Where-Object { $_.scope -eq $delegate })[0]
-    $targetMethod = ([string]$declaration.delegates_to).Split("::")[-1]
+    $targetMethod = if ($method -eq "commit_verified_proposal") {
+        "commit_verified_proposal_inner"
+    } else {
+        ([string]$declaration.delegates_to).Split("::")[-1]
+    }
     $delegateBlock = Get-BracedBlock $storeImpl "pub fn $method" "sole-mutation"
     if (-not $delegateBlock.Contains(".$targetMethod(")) {
         Fail-Guard "sole-mutation" "Canonical delegate no longer calls its reviewed target: $delegate"
@@ -258,7 +310,7 @@ foreach ($delegate in $actualDerivedDelegates) {
     }
 }
 $applyBlock = Get-BracedBlock $storeImpl "pub fn apply_batch" "sole-mutation"
-$verifiedProposalBlock = Get-BracedBlock $storeImpl "pub fn commit_verified_proposal" "sole-mutation"
+$verifiedProposalBlock = Get-BracedBlock $storeImpl "fn commit_verified_proposal_inner" "sole-mutation"
 $derivedResultBlock = Get-BracedBlock $storeImpl "fn register_derived_result" "sole-mutation"
 $graphValidation = $applyBlock.LastIndexOf("validate_graph(", [StringComparison]::Ordinal)
 $productValidation = $applyBlock.LastIndexOf("validate_product(", [StringComparison]::Ordinal)
@@ -327,6 +379,7 @@ $unguardedStoreImpl = $storeImpl
 foreach ($authorizedBlock in @(
     $applyBlock,
     $verifiedProposalBlock,
+    $tipReplacementBlock,
     $derivedResultBlock,
     $fromProductBlock,
     $undoBlock,
@@ -335,7 +388,7 @@ foreach ($authorizedBlock in @(
 )) {
     $unguardedStoreImpl = $unguardedStoreImpl.Replace($authorizedBlock, "")
 }
-$authorityMutationPattern = '(?ms)(?:&mut\s+self\.(?:revisions|cursor|next_revision_id|evaluation_registry)\b|self\.(?:revisions|cursor|next_revision_id|evaluation_registry)(?:\s*\[[^\]]+\])?\s*(?:=|\+=|-=|\.\s*(?:clear|push|insert|remove|append|extend|retain|entry|get_mut)\s*\())'
+$authorityMutationPattern = '(?ms)(?:&mut\s+self\.(?:revisions|cursor|next_revision_id|evaluation_registry)\b|self\.(?:revisions|cursor|next_revision_id|evaluation_registry)(?:\s*\[[^\]]+\])?\s*(?:=(?!=)|\+=|-=|\.\s*(?:clear|push|insert|remove|append|extend|retain|entry|get_mut)\s*\())'
 if ($unguardedStoreImpl -match $authorityMutationPattern) {
     Fail-Guard "sole-mutation" "DocumentStore authority is mutated outside apply_batch, the P07 gateway, construction, or a reviewed lifecycle operation."
 }
@@ -360,11 +413,13 @@ $newDocumentBlock = Get-BracedBlock $appSource "fn new_document" "sole-mutation"
 $openDocumentBlock = Get-BracedBlock $appSource "fn open_document_from" "sole-mutation"
 $loadCandidate = $openDocumentBlock.IndexOf("ketchup_core::persistence::load_file(path)", [StringComparison]::Ordinal)
 $successBranch = $openDocumentBlock.IndexOf("Ok(outcome)", [StringComparison]::Ordinal)
-$editableCandidate = $openDocumentBlock.IndexOf("outcome.into_editable()", [StringComparison]::Ordinal)
+$editableCandidate = $openDocumentBlock.IndexOf("outcome.into_editable_with_container()", [StringComparison]::Ordinal)
 $historyBaseline = $openDocumentBlock.IndexOf("document.discard_history_before_current()", [StringComparison]::Ordinal)
 $storeSwap = $openDocumentBlock.IndexOf("self.document = document", [StringComparison]::Ordinal)
 $failureBranch = $openDocumentBlock.IndexOf("Err(error)", [StringComparison]::Ordinal)
-if (-not $newDocumentBlock.Contains("*self = Self::new().with_dialogs(dialogs)") -or
+if (-not $newDocumentBlock.Contains("*self = Self::new()") -or
+    -not $newDocumentBlock.Contains(".with_dialogs(dialogs)") -or
+    -not $newDocumentBlock.Contains(".with_assistant_transport(assistant_transport)") -or
     $loadCandidate -lt 0 -or $successBranch -lt $loadCandidate -or
     $editableCandidate -lt $successBranch -or $historyBaseline -lt $editableCandidate -or
     $storeSwap -lt $historyBaseline -or $failureBranch -lt $storeSwap -or

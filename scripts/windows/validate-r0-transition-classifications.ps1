@@ -122,7 +122,7 @@ for ($index = 0; $index -lt $transitions.Count; $index++) {
 }
 
 $coverage = $ledger.upper_envelope_coverage
-if ($coverage.freeze_id -ne "m0-upper-envelope-v1" -or
+if ($coverage.freeze_id -ne "m0-upper-envelope-v2" -or
     $coverage.policy_change -ne "none" -or
     $coverage.direction -ne "tighten") {
     throw "Upper-envelope coverage must tighten evidence without changing frozen policy."

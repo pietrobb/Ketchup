@@ -200,6 +200,7 @@ fn the_manual_capstone_runs_end_to_end_through_the_designed_shell() {
         1,
         "a double click must enter the component context"
     );
+    shell.click_menu_command("menu-view", AppCommand::ZoomFit);
     shell.click_at(shell.top_face_centre(2));
     let shared_edit = shell.app().canonical_digest();
     let shared_revision = shell.app().document_revision();
@@ -246,7 +247,7 @@ fn the_manual_capstone_runs_end_to_end_through_the_designed_shell() {
     );
 
     // 8. Make Unique clones and rebinds only the selected occurrence.
-    shell.click_at(solid);
+    shell.click_at(shell.top_face_centre(2));
     shell.click_menu_command("menu-model", AppCommand::MakeUnique);
     assert_eq!(
         shell.app().definition_count(),
@@ -283,7 +284,12 @@ fn the_manual_capstone_runs_end_to_end_through_the_designed_shell() {
     assert_eq!(shell.app().document_revision(), unique_revision);
 
     // 10. Reselecting the unique instance after history navigation isolates its edit.
-    shell.click_at(solid);
+    let (origin, size) = shell.app().occurrence_box_geometry(2).unwrap();
+    let side_face = shell.app().project_to_screen(
+        ketchup_interaction::Vec3::new(origin.x + size.x * 0.5, origin.y, origin.z + size.z * 0.5),
+        shell.viewport_rect(),
+    );
+    shell.click_at(side_face);
     shell.click_command(AppCommand::PushPull);
     shell.type_text("25");
     shell.press_key(Key::Enter);

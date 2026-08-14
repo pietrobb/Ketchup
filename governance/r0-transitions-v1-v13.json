@@ -137,11 +137,11 @@
     }
   ],
   "upper_envelope_coverage": {
-    "freeze_id": "m0-upper-envelope-v1",
+    "freeze_id": "m0-upper-envelope-v2",
     "policy_change": "none",
     "direction": "tighten",
     "test_path": "crates/ketchup-exact/tests/upper_envelope.rs",
-    "test_sha256": "d588e016901257f36cbdc04670937c7b94dcea54b44ba169d4f0f53743007e9e",
+    "test_sha256": "057ff96a8a198c4758b5dfb1f99f37a7ab5c16d3f67351ec35f4400e6a83d0b4",
     "cases": [
       "boxes_may_touch_positive_and_negative_coordinate_limits",
       "maximum_length_may_end_exactly_at_positive_coordinate_limit",

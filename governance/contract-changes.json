@@ -26,9 +26,9 @@
     {
       "path": "governance/contract-changes.json",
       "direction": "tighten",
-      "old_freeze_id": "m0-p07-authority-v1",
-      "new_freeze_id": "m4b-a0-separation-v1",
-      "evidence": "KETCHUP_ARCHITECTURE_SPECIFICATION_V4c.md"
+      "old_freeze_id": "m4b-a0-separation-v1",
+      "new_freeze_id": "m21-candidate-certification-v1",
+      "evidence": "scripts/windows/test-ci-guard-red-paths.ps1"
     },
     {
       "path": "scripts/windows/invoke-ci-governance.ps1",
@@ -41,18 +41,18 @@
     {
       "path": "scripts/windows/test-architecture-guards.ps1",
       "direction": "tighten",
-      "old_freeze_id": "m0-p07-authority-v1",
-      "new_freeze_id": "m4b-a0-separation-v1",
-      "evidence": "KETCHUP_ARCHITECTURE_SPECIFICATION_V4c.md",
-      "new_sha256": "3deef97932ac02faa25712dce60c53b6806fa189b33833ebbe2d038d15f92b9a"
+      "old_freeze_id": "m4b-a0-separation-v1",
+      "new_freeze_id": "m21-candidate-certification-v1",
+      "evidence": "scripts/windows/test-ci-guard-red-paths.ps1",
+      "new_sha256": "87ad8df98da16d5c3b39d1e9862c4779d40206e4d3f263e4e805bb4b37e01cf7"
     },
     {
       "path": "scripts/windows/test-ci-guard-red-paths.ps1",
       "direction": "tighten",
-      "old_freeze_id": "m0-p07-authority-v1",
-      "new_freeze_id": "m4b-a0-separation-v1",
-      "evidence": "KETCHUP_ARCHITECTURE_SPECIFICATION_V4c.md",
-      "new_sha256": "dadcf469c4efd59ebf1e0310f808ae87e3ae1bceb13113bd0347b1a3cb51eb40"
+      "old_freeze_id": "m4b-a0-separation-v1",
+      "new_freeze_id": "m21-candidate-certification-v1",
+      "evidence": "scripts/windows/test-architecture-guards.ps1",
+      "new_sha256": "dcfcd04f9bfd6b7e0864b3f1d5745659478933adb534ef7d17432a3cc3366ce4"
     },
     {
       "path": "scripts/windows/validate-r0-v13-historical-evidence.ps1",
@@ -73,26 +73,26 @@
     {
       "path": "governance/r0-transitions-v1-v13.json",
       "direction": "tighten",
-      "old_freeze_id": "r0-v13",
-      "new_freeze_id": "m0-lifecycle-r0-envelope-v1",
+      "old_freeze_id": "m0-lifecycle-r0-envelope-v1",
+      "new_freeze_id": "m0-upper-envelope-v2",
       "evidence": "scripts/windows/validate-r0-transition-classifications.ps1",
-      "new_sha256": "01599a4166a059eb528e3c52a7c5b8550a28fce044d3eca341310b92af2c6a3b"
+      "new_sha256": "f7100f878a7b123e4555ec6ff4f79f534873d07ce764a15c229c5a6d2d139d47"
     },
     {
       "path": "scripts/windows/validate-r0-transition-classifications.ps1",
       "direction": "tighten",
-      "old_freeze_id": "r0-v13",
-      "new_freeze_id": "m0-lifecycle-r0-envelope-v1",
+      "old_freeze_id": "m0-lifecycle-r0-envelope-v1",
+      "new_freeze_id": "m0-upper-envelope-v2",
       "evidence": "governance/r0-transitions-v1-v13.json",
-      "new_sha256": "bdda434369dbc18e81023e01b7737794a442f7c46bf7f28281965f20e78b6aa9"
+      "new_sha256": "a461540b0ab451e9e65b4e845e21759e2e340ce8b3a8d6088db23b226839e164"
     },
     {
       "path": "crates/ketchup-exact/tests/upper_envelope.rs",
       "direction": "tighten",
-      "old_freeze_id": "r0-v13",
-      "new_freeze_id": "m0-upper-envelope-v1",
+      "old_freeze_id": "m0-upper-envelope-v1",
+      "new_freeze_id": "m0-upper-envelope-v2",
       "evidence": "governance/r0-transitions-v1-v13.json",
-      "new_sha256": "d588e016901257f36cbdc04670937c7b94dcea54b44ba169d4f0f53743007e9e"
+      "new_sha256": "057ff96a8a198c4758b5dfb1f99f37a7ab5c16d3f67351ec35f4400e6a83d0b4"
     },
     {
       "path": "governance/deny-ci.toml",
