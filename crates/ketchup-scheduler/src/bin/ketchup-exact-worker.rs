@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+use ketchup_core::graph::sha256_hex;
 use ketchup_exact::{
     BottleEdgeFinish, BoxSpec, CircleExtrudeSpec, CutMode, CylinderToolSpec, ExactBackend,
     HalfLapFaceRole, HalfLapNotchSpec, HalfLapParticipant, PlanarProfileSegment, Point3,
@@ -14,6 +15,10 @@ use ketchup_exact::{
     capture_rectangular_union_references, capture_revolve_references, capture_shell_references,
     capture_spline_loft_references, resolve_subshape_reference,
 };
+use ketchup_scheduler::{
+    StepAssemblyManifest, StepFeatureExportSpec, StepProfileSegment, StepRevolveExportSpec,
+};
+use std::fmt::Write as _;
 use std::io::{self, BufRead, Write};
 use std::time::{Duration, Instant};
 
@@ -59,6 +64,39 @@ fn handle_request(backend: &ExactBackend, request: &str) -> Option<String> {
         (Some("CAPS"), Some("P5_SHELL_V1"), None) => Some("CAPS P5_SHELL_V1".to_owned()),
         (Some("CAPS"), Some("P5_FINISH_V1"), None) => Some("CAPS P5_FINISH_V1".to_owned()),
         (Some("CAPS"), Some("M14_STEP_V1"), None) => Some("CAPS M14_STEP_V1".to_owned()),
+        (Some("CAPS"), Some("M21_STEP_MODEL_V1"), None) => {
+            Some("CAPS M21_STEP_MODEL_V1".to_owned())
+        }
+        (Some("EXPORT_REVOLVE_STEP_M21_V1"), Some(document_id), Some(producer_feature_id)) => {
+            let remaining = fields.collect::<Vec<_>>();
+            Some(m21_revolve_step_export_response(
+                backend,
+                document_id,
+                producer_feature_id,
+                &remaining,
+            ))
+        }
+        (Some("EXPORT_FEATURE_STEP_M21_V1"), Some(document_id), Some(producer_feature_id)) => {
+            let remaining = fields.collect::<Vec<_>>();
+            Some(m21_box_step_export_response(
+                backend,
+                document_id,
+                producer_feature_id,
+                &remaining,
+            ))
+        }
+        (Some("INSPECT_STEP_PART_M21_V1"), Some(source_sha256), Some(source_path)) => Some(
+            m21_step_part_inspection_response(backend, source_sha256, source_path),
+        ),
+        (Some("ASSEMBLE_STEP_M21_V1"), Some(assembly_digest), Some(output_path)) => {
+            let remaining = fields.collect::<Vec<_>>();
+            Some(m21_step_assembly_response(
+                backend,
+                assembly_digest,
+                output_path,
+                &remaining,
+            ))
+        }
         (Some("EXPORT_STEP_M14_V1"), Some(document_id), Some(producer_feature_id)) => {
             let remaining = fields.collect::<Vec<_>>();
             Some(m14_step_export_response(
@@ -2356,21 +2394,434 @@ fn m14_step_export_response(
     }
 }
 
-fn decode_hex_utf8(value: &str) -> Option<String> {
+fn m21_revolve_step_export_response(
+    backend: &ExactBackend,
+    document_id: &str,
+    producer_feature_id: &str,
+    fields: &[&str],
+) -> String {
+    if document_id.parse::<u64>().is_err()
+        || producer_feature_id.parse::<u64>().is_err()
+        || fields.len() != 4
+        || !is_canonical_digest(fields[0])
+        || !is_result_fingerprint(fields[1])
+    {
+        return "ERR invalid_request".to_owned();
+    }
+    let Some(path) = decode_hex_utf8(fields[2]) else {
+        return "ERR invalid_request".to_owned();
+    };
+    let Some(encoded) = decode_hex_utf8(fields[3]) else {
+        return "ERR invalid_request".to_owned();
+    };
+    let Ok(specification) = serde_json::from_str::<StepRevolveExportSpec>(&encoded) else {
+        return "ERR invalid_request".to_owned();
+    };
+    let segments = specification
+        .segments
+        .iter()
+        .map(step_profile_segment)
+        .collect::<Vec<_>>();
+    let output = match backend.revolve_general_profile(
+        &segments,
+        specification.axis_start_bits.map(f64::from_bits),
+        specification.axis_end_bits.map(f64::from_bits),
+        f64::from_bits(specification.angle_degrees_bits),
+    ) {
+        Ok(output) => output,
+        Err(error) => return geometry_error_response(&error),
+    };
+    if output.body.result_fingerprint != fields[1] {
+        return "ERR invalid_shape".to_owned();
+    }
+    match backend.export_step(&output.body, &path) {
+        Ok(()) => format!("OK_M21_REVOLVE_STEP_V1 {} {}", fields[0], fields[1]),
+        Err(error) => geometry_error_response(&error),
+    }
+}
+
+fn step_profile_segment(segment: &StepProfileSegment) -> PlanarProfileSegment {
+    match segment {
+        StepProfileSegment::Line {
+            start_bits,
+            end_bits,
+        } => PlanarProfileSegment::Line {
+            start_mm: start_bits.map(f64::from_bits),
+            end_mm: end_bits.map(f64::from_bits),
+        },
+        StepProfileSegment::Arc {
+            start_bits,
+            end_bits,
+            center_bits,
+            clockwise,
+        } => PlanarProfileSegment::CircularArc {
+            start_mm: start_bits.map(f64::from_bits),
+            end_mm: end_bits.map(f64::from_bits),
+            center_mm: center_bits.map(f64::from_bits),
+            clockwise: *clockwise,
+        },
+    }
+}
+
+fn m21_box_step_export_response(
+    backend: &ExactBackend,
+    document_id: &str,
+    producer_feature_id: &str,
+    fields: &[&str],
+) -> String {
+    if document_id.parse::<u64>().is_err()
+        || producer_feature_id.parse::<u64>().is_err()
+        || fields.len() != 4
+        || !is_canonical_digest(fields[0])
+        || fields[1].len() != 24
+        || !fields[1].starts_with("fnv1a64:")
+    {
+        return "ERR invalid_request".to_owned();
+    }
+    let Some(path) = decode_hex_utf8(fields[2]) else {
+        return "ERR invalid_request".to_owned();
+    };
+    let Some(encoded) = decode_hex_utf8(fields[3]) else {
+        return "ERR invalid_request".to_owned();
+    };
+    let Ok(specification) = serde_json::from_str::<StepFeatureExportSpec>(&encoded) else {
+        return "ERR invalid_request".to_owned();
+    };
+    let base = RectangleExtrudeSpec {
+        width_mm: f64::from_bits(specification.width_bits),
+        depth_mm: f64::from_bits(specification.depth_bits),
+        height_mm: f64::from_bits(specification.height_bits),
+    };
+    let output = if let Some(shell) = specification.shell {
+        let thickness = f64::from_bits(shell.thickness_bits);
+        match (shell.finish.as_deref(), shell.amount_bits) {
+            (None, None) => backend.shell_box(base, thickness),
+            (Some(kind), Some(amount)) => backend.finish_shell_box(
+                base,
+                thickness,
+                if kind == "fillet" {
+                    BottleEdgeFinish::Fillet
+                } else if kind == "chamfer" {
+                    BottleEdgeFinish::Chamfer
+                } else {
+                    return "ERR invalid_request".to_owned();
+                },
+                f64::from_bits(amount),
+            ),
+            _ => return "ERR invalid_request".to_owned(),
+        }
+    } else {
+        let initial = if let Some(circle) = specification.circle {
+            backend.extrude_circle(CircleExtrudeSpec {
+                center_mm: [
+                    f64::from_bits(circle.center_x_bits),
+                    f64::from_bits(circle.center_y_bits),
+                ],
+                radius_mm: f64::from_bits(circle.radius_bits),
+                height_mm: base.height_mm,
+            })
+        } else if !specification.mixed_segments.is_empty() {
+            let segments = specification
+                .mixed_segments
+                .iter()
+                .map(|segment| match segment {
+                    StepProfileSegment::Line {
+                        start_bits,
+                        end_bits,
+                    } => PlanarProfileSegment::Line {
+                        start_mm: start_bits.map(f64::from_bits),
+                        end_mm: end_bits.map(f64::from_bits),
+                    },
+                    StepProfileSegment::Arc {
+                        start_bits,
+                        end_bits,
+                        center_bits,
+                        clockwise,
+                    } => PlanarProfileSegment::CircularArc {
+                        start_mm: start_bits.map(f64::from_bits),
+                        end_mm: end_bits.map(f64::from_bits),
+                        center_mm: center_bits.map(f64::from_bits),
+                        clockwise: *clockwise,
+                    },
+                })
+                .collect::<Vec<_>>();
+            backend.extrude_mixed_profile(&segments, base.height_mm)
+        } else {
+            backend.extrude_rectangle(base)
+        };
+        initial.and_then(|base_output| {
+            let Some(boolean) = specification.boolean else {
+                return Ok(base_output);
+            };
+            if let Some(circle) = boolean.circle {
+                return backend.cut_cylinder(
+                    &base_output.body,
+                    CylinderToolSpec {
+                        center_mm: [
+                            f64::from_bits(circle.center_x_bits),
+                            f64::from_bits(circle.center_y_bits),
+                        ],
+                        origin_z_mm: -1.0,
+                        radius_mm: f64::from_bits(circle.radius_bits),
+                        height_mm: base.height_mm + 2.0,
+                    },
+                    CutMode::ThroughAll,
+                );
+            }
+            let depth = specification.pocket_depth_bits.map(f64::from_bits);
+            let (tool_z, tool_height) = if boolean.operation == "cut" {
+                depth.map_or((-1.0, base.height_mm + 2.0), |depth| {
+                    (base.height_mm - depth, depth + 1.0)
+                })
+            } else {
+                (0.0, base.height_mm)
+            };
+            let tool = BoxSpec {
+                origin_mm: Point3 {
+                    x: f64::from_bits(boolean.min_x_bits),
+                    y: f64::from_bits(boolean.min_y_bits),
+                    z: tool_z,
+                },
+                size_mm: Size3 {
+                    x: f64::from_bits(boolean.width_bits),
+                    y: f64::from_bits(boolean.depth_bits),
+                    z: tool_height,
+                },
+            };
+            match boolean.operation.as_str() {
+                "cut" => backend.cut_box(
+                    &base_output.body,
+                    tool,
+                    if depth.is_some() {
+                        CutMode::BlindPlanar
+                    } else {
+                        CutMode::ThroughAll
+                    },
+                ),
+                "union" => backend.fuse_box(&base_output.body, tool),
+                "intersect" => backend.common_box(&base_output.body, tool),
+                "split" => backend.split_box(&base_output.body, tool),
+                _ => Err(ketchup_exact::GeometryError {
+                    code: ketchup_exact::GeometryErrorCode::InvalidParameter,
+                    diagnostic: "unsupported STEP boolean".to_owned(),
+                    operation: "export_feature_step",
+                    input_digest: fields[0].to_owned(),
+                    backend_fingerprint: ketchup_exact::backend_fingerprint(),
+                }),
+            }
+        })
+    };
+    let output = match output {
+        Ok(output) => output,
+        Err(error) => return geometry_error_response(&error),
+    };
+    if output.body.result_fingerprint != fields[1] {
+        return "ERR invalid_shape".to_owned();
+    }
+    match backend.export_step(&output.body, &path) {
+        Ok(()) => format!("OK_M21_BOX_STEP_V1 {} {}", fields[0], fields[1]),
+        Err(error) => geometry_error_response(&error),
+    }
+}
+
+fn m21_step_part_inspection_response(
+    backend: &ExactBackend,
+    source_sha256: &str,
+    source_path: &str,
+) -> String {
+    if !is_canonical_digest(source_sha256) {
+        return "ERR invalid_request".to_owned();
+    }
+    let Some(source_path) = decode_hex_utf8(source_path) else {
+        return "ERR invalid_request".to_owned();
+    };
+    let source_bytes = match std::fs::read(&source_path) {
+        Ok(bytes) => bytes,
+        Err(error) => return transport_error_response("read_step_part", &error.to_string()),
+    };
+    if sha256_hex(&source_bytes) != source_sha256 {
+        return transport_error_response(
+            "inspect_step_part",
+            "STEP part bytes changed before inspection",
+        );
+    }
+    match backend.import_step(&source_path) {
+        Ok(output) => format!(
+            "OK_M21_STEP_PART_V1 {source_sha256} {}",
+            output.body.result_fingerprint
+        ),
+        Err(error) => geometry_error_response(&error),
+    }
+}
+
+fn m21_step_assembly_response(
+    backend: &ExactBackend,
+    assembly_digest: &str,
+    output_path: &str,
+    fields: &[&str],
+) -> String {
+    if !is_canonical_digest(assembly_digest) || fields.len() < 2 {
+        return "ERR invalid_request".to_owned();
+    }
+    let Some(output_path) = decode_hex_utf8(output_path) else {
+        return "ERR invalid_request".to_owned();
+    };
+    let Some(encoded_manifest) = decode_hex_bytes(fields[0]) else {
+        return "ERR invalid_request".to_owned();
+    };
+    if sha256_hex(&encoded_manifest) != assembly_digest {
+        return transport_error_response(
+            "verify_step_manifest",
+            "STEP assembly manifest digest mismatch",
+        );
+    }
+    let Ok(manifest) = serde_json::from_slice::<StepAssemblyManifest>(&encoded_manifest) else {
+        return "ERR invalid_request".to_owned();
+    };
+    if !is_snapshot_digest(&manifest.source_digest) || manifest.parts.is_empty() {
+        return transport_error_response(
+            "verify_step_manifest",
+            "STEP assembly manifest has no source digest or parts",
+        );
+    }
+    let Some(count) = fields.get(1).and_then(|value| value.parse::<usize>().ok()) else {
+        return "ERR invalid_request".to_owned();
+    };
+    if count != manifest.parts.len() || fields.len() != 2 + count {
+        return "ERR invalid_request".to_owned();
+    }
+
+    let mut transformed = Vec::with_capacity(count);
+    for (manifest_part, source_field) in manifest.parts.iter().zip(&fields[2..]) {
+        if manifest_part.document_id != manifest.document_id
+            || manifest_part.source_revision != manifest.source_revision
+            || manifest_part.source_digest != manifest.source_digest
+            || !is_result_fingerprint(&manifest_part.expected_result_fingerprint)
+            || !is_result_fingerprint(&manifest_part.imported_result_fingerprint)
+            || !is_canonical_digest(&manifest_part.source_sha256)
+        {
+            return transport_error_response(
+                "verify_step_part",
+                "STEP part manifest fingerprint or SHA-256 is malformed",
+            );
+        }
+        let Some(source_path) = decode_hex_utf8(source_field) else {
+            return "ERR invalid_request".to_owned();
+        };
+        let source_bytes = match std::fs::read(&source_path) {
+            Ok(bytes) => bytes,
+            Err(error) => return transport_error_response("read_step_part", &error.to_string()),
+        };
+        if sha256_hex(&source_bytes) != manifest_part.source_sha256 {
+            return transport_error_response(
+                "verify_step_part",
+                "STEP part bytes changed after manifest construction",
+            );
+        }
+        let imported = match backend.import_step(&source_path) {
+            Ok(output) => output,
+            Err(error) => return geometry_error_response(&error),
+        };
+        if imported.body.result_fingerprint != manifest_part.imported_result_fingerprint {
+            return transport_error_response(
+                "verify_step_part",
+                "STEP part reimport identity differs from the inspected manifest identity",
+            );
+        }
+        let matrix = manifest_part.transform_bits.map(f64::from_bits);
+        let body = match backend.transform_body(&imported.body, &matrix) {
+            Ok(output) => output.body,
+            Err(error) => return geometry_error_response(&error),
+        };
+        transformed.push(body);
+    }
+
+    let mut bodies = transformed.into_iter();
+    let Some(mut assembly) = bodies.next() else {
+        return "ERR invalid_request".to_owned();
+    };
+    for body in bodies {
+        assembly = match backend.combine_bodies(&assembly, &body) {
+            Ok(output) => output.body,
+            Err(error) => return geometry_error_response(&error),
+        };
+    }
+    if let Err(error) = backend.export_step(&assembly, &output_path) {
+        return geometry_error_response(&error);
+    }
+    let step_bytes = match std::fs::read(&output_path) {
+        Ok(bytes) => bytes,
+        Err(error) => return transport_error_response("read_step_output", &error.to_string()),
+    };
+    let step_sha256 = sha256_hex(&step_bytes);
+    let reread = match backend.import_step(&output_path) {
+        Ok(output) => output,
+        Err(error) => return geometry_error_response(&error),
+    };
+    format!(
+        "OK_M21_STEP_MODEL_V1 {assembly_digest} {} {step_sha256}",
+        reread.body.result_fingerprint
+    )
+}
+
+fn geometry_error_response(error: &ketchup_exact::GeometryError) -> String {
+    format!(
+        "ERR_DETAIL {} {} {} {} {}",
+        error.code.as_str(),
+        encode_hex(error.diagnostic.as_bytes()),
+        encode_hex(error.operation.as_bytes()),
+        error.input_digest,
+        encode_hex(error.backend_fingerprint.as_bytes()),
+    )
+}
+
+fn transport_error_response(operation: &str, diagnostic: &str) -> String {
+    format!(
+        "ERR_DETAIL backend_exception {} {} {} {}",
+        encode_hex(diagnostic.as_bytes()),
+        encode_hex(operation.as_bytes()),
+        sha256_hex(diagnostic.as_bytes()),
+        encode_hex(ketchup_exact::backend_fingerprint().as_bytes()),
+    )
+}
+
+fn encode_hex(bytes: &[u8]) -> String {
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        write!(encoded, "{byte:02x}").expect("writing to String cannot fail");
+    }
+    encoded
+}
+
+fn decode_hex_bytes(value: &str) -> Option<Vec<u8>> {
     if value.is_empty() || !value.len().is_multiple_of(2) {
         return None;
     }
-    let bytes = value
+    value
         .as_bytes()
         .chunks_exact(2)
         .map(|pair| {
             let pair = std::str::from_utf8(pair).ok()?;
             u8::from_str_radix(pair, 16).ok()
         })
-        .collect::<Option<Vec<_>>>()?;
+        .collect()
+}
+
+fn decode_hex_utf8(value: &str) -> Option<String> {
+    let bytes = decode_hex_bytes(value)?;
     String::from_utf8(bytes)
         .ok()
         .filter(|path| !path.is_empty() && !path.contains('\r') && !path.contains('\n'))
+}
+
+fn is_snapshot_digest(value: &str) -> bool {
+    value.len() == 16 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn is_result_fingerprint(value: &str) -> bool {
+    value.len() == 24
+        && value.starts_with("fnv1a64:")
+        && value[8..].bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 fn m5_notched_response(

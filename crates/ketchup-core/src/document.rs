@@ -464,6 +464,23 @@ pub enum FeatureKind {
 
 impl FeatureKind {
     #[must_use]
+    pub const fn produces_body(&self) -> bool {
+        matches!(
+            self,
+            Self::Extrusion { .. }
+                | Self::Revolve { .. }
+                | Self::Shell { .. }
+                | Self::BottleEdgeFinish { .. }
+                | Self::ThroughCut { .. }
+                | Self::Pocket { .. }
+                | Self::Boolean { .. }
+                | Self::Sweep { .. }
+                | Self::Loft { .. }
+                | Self::MeshBody(_)
+        )
+    }
+
+    #[must_use]
     pub const fn full_revolve(profile: FeatureId) -> Self {
         Self::Revolve {
             profile,
@@ -7664,20 +7681,7 @@ fn validate_product(product: &ProductModel) -> Result<(), CanonicalError> {
                     .features
                     .get(&tool)
                     .ok_or(CanonicalError::FeatureNotFound(tool))?;
-                let produces_body = |kind: &FeatureKind| {
-                    matches!(
-                        kind,
-                        FeatureKind::Extrusion { .. }
-                            | FeatureKind::Revolve { .. }
-                            | FeatureKind::Shell { .. }
-                            | FeatureKind::BottleEdgeFinish { .. }
-                            | FeatureKind::ThroughCut { .. }
-                            | FeatureKind::Pocket { .. }
-                            | FeatureKind::Boolean { .. }
-                            | FeatureKind::Sweep { .. }
-                            | FeatureKind::Loft { .. }
-                    )
-                };
+                let produces_body = FeatureKind::produces_body;
                 let feature_position = definition
                     .feature_ids
                     .iter()

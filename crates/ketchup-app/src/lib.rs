@@ -33,7 +33,7 @@ use ketchup_core::document::{
 use ketchup_core::exact_product::{
     AssemblySelectionTarget, ExactBodyPackage, ExactBodyView, ExactFaceRole,
     ExactFeatureChainRequest, ExactLoftRequest, ExactMeshExport, ExactPlanarOffsetRequest,
-    ExactResultRegistry, ExactSweepRequest,
+    ExactResultRegistry, ExactStlExport, ExactSweepRequest, exact_model_stl_export,
 };
 use ketchup_core::fabrication::{FullBomProjection, PieceDimensionSheet};
 use ketchup_core::graph::{
@@ -76,6 +76,7 @@ use renderer::{
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::{
     Arc, Mutex,
@@ -764,6 +765,8 @@ pub enum AppCommand {
     Open,
     Save,
     SaveAs,
+    ExportExactStep,
+    ExportMeshStl,
     Select,
     Line,
     Rectangle,
@@ -845,7 +848,7 @@ struct CommandSpec {
 struct CommandRegistry;
 
 impl CommandRegistry {
-    const COMMANDS: [CommandSpec; 46] = [
+    const COMMANDS: [CommandSpec; 48] = [
         CommandSpec {
             id: AppCommand::New,
             label_key: "file-new",
@@ -871,6 +874,20 @@ impl CommandRegistry {
             id: AppCommand::SaveAs,
             label_key: "file-save-as",
             shortcut_key: "shortcut-save-as",
+            tool: None,
+            implemented: true,
+        },
+        CommandSpec {
+            id: AppCommand::ExportExactStep,
+            label_key: "file-export-exact",
+            shortcut_key: "shortcut-none",
+            tool: None,
+            implemented: true,
+        },
+        CommandSpec {
+            id: AppCommand::ExportMeshStl,
+            label_key: "file-export-mesh",
+            shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
@@ -1516,7 +1533,7 @@ pub struct KetchupApp {
     document_path: Option<PathBuf>,
     saved_digest: String,
     confirmation_surface: TrustedConfirmationSurface,
-    last_side_effect_receipt: Option<SideEffectAuthorizationReceipt>,
+    side_effect_receipts: Vec<SideEffectAuthorizationReceipt>,
     catalog: LocaleCatalog,
     push_pull_distance_input: String,
     preview: Option<CommandBatch>,
@@ -1673,7 +1690,7 @@ impl KetchupApp {
             document_path: None,
             saved_digest,
             confirmation_surface,
-            last_side_effect_receipt: None,
+            side_effect_receipts: Vec::new(),
             catalog,
             push_pull_distance_input: String::new(),
             preview: None,
@@ -1870,7 +1887,7 @@ impl KetchupApp {
         self.active_tool = ActiveTool::Select;
         self.cancel_pending_assistant_work();
         self.assistant_verification = None;
-        self.last_side_effect_receipt = None;
+        self.side_effect_receipts.clear();
         self.push_pull_drag = None;
         self.last_push_pull = None;
         self.bottle_direct_drag = None;
@@ -1973,7 +1990,6 @@ impl KetchupApp {
         path: &Path,
         payload: &[u8],
     ) -> Result<(), String> {
-        self.last_side_effect_receipt = None;
         let scope = HighRiskScope::new(class, None, None, Some(path.display().to_string()))
             .map_err(|error| error.to_string())?;
         let proposal = self
@@ -2014,7 +2030,7 @@ impl KetchupApp {
             .document
             .authorize_high_risk_side_effect(&proposal, &approval, now_ms)
             .map_err(|error| error.to_string())?;
-        self.last_side_effect_receipt = Some(receipt);
+        self.side_effect_receipts.push(receipt);
         Ok(())
     }
 
@@ -2027,7 +2043,7 @@ impl KetchupApp {
         path: &Path,
         payload: &[u8],
     ) -> Result<(), String> {
-        self.last_side_effect_receipt = None;
+        self.side_effect_receipts.clear();
         let scope = HighRiskScope::new(class, None, None, Some(path.display().to_string()))
             .map_err(|error| error.to_string())?;
         let proposal = self
@@ -2072,11 +2088,12 @@ impl KetchupApp {
             .ok_or_else(|| "Beam workspace is unavailable".to_owned())?
             .authorize_high_risk_side_effect(&proposal, &approval, now_ms)
             .map_err(|error| error.to_string())?;
-        self.last_side_effect_receipt = Some(receipt);
+        self.side_effect_receipts.push(receipt);
         Ok(())
     }
 
     fn authorize_overwrite(&mut self, path: &Path, payload: &[u8]) -> Result<(), String> {
+        self.side_effect_receipts.clear();
         self.authorize_path_side_effect(
             HighRiskClass::Overwrite,
             "overwrite-native-document",
@@ -2173,6 +2190,234 @@ impl KetchupApp {
         })
     }
 
+    fn choose_export_path(&mut self, extension: &str) -> Option<PathBuf> {
+        let (filter_key, suffix) = match extension {
+            "step" => ("file-filter-step", "step"),
+            "stl" => ("file-filter-stl", "stl"),
+            _ => unreachable!("the File menu exposes only STEP and STL export"),
+        };
+        let filter_label = self.catalog.text(filter_key);
+        let stem = self
+            .document_path
+            .as_deref()
+            .and_then(Path::file_stem)
+            .and_then(|stem| stem.to_str())
+            .filter(|stem| !stem.trim().is_empty())
+            .unwrap_or("Untitled");
+        let suggested_name = format!("{stem}.{suffix}");
+        self.dialogs.pick_export_path(ExportRequest {
+            filter_label: &filter_label,
+            extension,
+            suggested_name: &suggested_name,
+        })
+    }
+
+    fn current_visible_exact_model(
+        &self,
+        snapshot: &Snapshot,
+    ) -> Result<Vec<(ExactBodyPackage, Transform)>, String> {
+        let occurrences = snapshot
+            .scene_query()
+            .into_iter()
+            .filter(|occurrence| occurrence.visible)
+            .filter(|occurrence| {
+                snapshot
+                    .definition(occurrence.definition_id)
+                    .is_some_and(|definition| {
+                        definition.feature_ids().iter().any(|feature_id| {
+                            snapshot
+                                .feature(*feature_id)
+                                .is_some_and(|feature| feature.kind().produces_body())
+                        })
+                    })
+            })
+            .collect::<Vec<_>>();
+        if occurrences.is_empty() {
+            return Err("the visible model is empty".to_owned());
+        }
+        occurrences
+            .into_iter()
+            .map(|occurrence| {
+                self.exact_results
+                    .get(&occurrence.definition_id)
+                    .filter(|package| package.is_current(snapshot))
+                    .map(|package| ((**package).clone(), occurrence.transform))
+                    .ok_or_else(|| {
+                        format!(
+                            "visible occurrence {:?} has no current accepted exact result",
+                            occurrence.instance_path
+                        )
+                    })
+            })
+            .collect()
+    }
+
+    fn export_current_model_stl_to(&mut self, path: &Path) -> bool {
+        self.side_effect_receipts.clear();
+        let snapshot = self.document.current();
+        let result = self
+            .current_visible_exact_model(&snapshot)
+            .and_then(|model| {
+                let bodies = model
+                    .iter()
+                    .map(|(package, transform)| (package, *transform))
+                    .collect::<Vec<_>>();
+                exact_model_stl_export(&snapshot, &bodies).map_err(|error| error.to_string())
+            })
+            .and_then(|bundle| {
+                let report_path = path.with_extension("stl.loss.txt");
+                let precondition = ExportBundlePrecondition::capture(path, &report_path)?;
+                let evidence = exact_stl_export_evidence(path, &bundle);
+                let title = self.catalog.text("dialog-export-lossy-title");
+                let risk = self.catalog.text("dialog-export-lossy-risk");
+                self.authorize_path_side_effect(
+                    HighRiskClass::LossyConversion,
+                    "export-current-model-stl-with-loss-report",
+                    &title,
+                    &risk,
+                    path,
+                    &evidence,
+                )?;
+                if precondition.primary_sha256.is_some() {
+                    let title = self.catalog.text("dialog-export-overwrite-title");
+                    let risk = self.catalog.text("dialog-export-overwrite-risk");
+                    self.authorize_path_side_effect(
+                        HighRiskClass::Overwrite,
+                        "overwrite-current-model-stl-export",
+                        &title,
+                        &risk,
+                        path,
+                        &evidence,
+                    )?;
+                }
+                if precondition.report_sha256.is_some() {
+                    let title = self.catalog.text("dialog-export-overwrite-title");
+                    let risk = self.catalog.text("dialog-export-overwrite-risk");
+                    self.authorize_path_side_effect(
+                        HighRiskClass::Overwrite,
+                        "overwrite-current-model-stl-loss-report",
+                        &title,
+                        &risk,
+                        &report_path,
+                        &evidence,
+                    )?;
+                }
+                write_export_bundle(
+                    path,
+                    bundle.mesh_stl.as_bytes(),
+                    &report_path,
+                    bundle.loss_report.as_bytes(),
+                    &precondition,
+                )
+            });
+        match result {
+            Ok(()) => {
+                self.digest = self.catalog.format(
+                    "digest-exported-stl",
+                    &BTreeMap::from([("path", path.display().to_string())]),
+                );
+                true
+            }
+            Err(error) => {
+                self.digest = self.catalog.format(
+                    "error-export-stl",
+                    &BTreeMap::from([("path", path.display().to_string()), ("reason", error)]),
+                );
+                false
+            }
+        }
+    }
+
+    fn export_current_model_step_to(&mut self, path: &Path) -> bool {
+        self.side_effect_receipts.clear();
+        let snapshot = self.document.current();
+        let result = (|| {
+            let model = self.current_visible_exact_model(&snapshot)?;
+            let executable = self
+                .exact_worker_path
+                .clone()
+                .or_else(|| {
+                    exact_worker_candidates()
+                        .into_iter()
+                        .find(|candidate| candidate.is_file())
+                })
+                .ok_or_else(|| "exact worker is unavailable".to_owned())?;
+            let parent = path.parent().unwrap_or_else(|| Path::new("."));
+            let prepared_directory = tempfile::Builder::new()
+                .prefix(".ketchup-prepared-export-")
+                .tempdir_in(parent)
+                .map_err(|error| error.to_string())?;
+            let prepared_step = prepared_directory.path().join("model.step");
+            let mut worker =
+                ExactWorkerSupervisor::spawn(executable).map_err(|error| error.to_string())?;
+            worker
+                .export_current_model_step(&snapshot, &model, &prepared_step)
+                .map_err(|error| error.to_string())?;
+            let step = std::fs::read(&prepared_step).map_err(|error| error.to_string())?;
+            let report = exact_model_step_loss_report(&snapshot, &model);
+            let report_path = path.with_extension("step.loss.txt");
+            let evidence = export_bundle_evidence(
+                b"ketchup.current-model-step-export.v1",
+                path,
+                &step,
+                &report_path,
+                report.as_bytes(),
+            );
+            let precondition = ExportBundlePrecondition::capture(path, &report_path)?;
+            let title = self.catalog.text("dialog-export-lossy-title");
+            let risk = self.catalog.text("dialog-export-lossy-risk");
+            self.authorize_path_side_effect(
+                HighRiskClass::LossyConversion,
+                "export-current-model-step-with-loss-report",
+                &title,
+                &risk,
+                path,
+                &evidence,
+            )?;
+            if precondition.primary_sha256.is_some() {
+                let title = self.catalog.text("dialog-export-overwrite-title");
+                let risk = self.catalog.text("dialog-export-overwrite-risk");
+                self.authorize_path_side_effect(
+                    HighRiskClass::Overwrite,
+                    "overwrite-current-model-step-export",
+                    &title,
+                    &risk,
+                    path,
+                    &evidence,
+                )?;
+            }
+            if precondition.report_sha256.is_some() {
+                let title = self.catalog.text("dialog-export-overwrite-title");
+                let risk = self.catalog.text("dialog-export-overwrite-risk");
+                self.authorize_path_side_effect(
+                    HighRiskClass::Overwrite,
+                    "overwrite-current-model-step-loss-report",
+                    &title,
+                    &risk,
+                    &report_path,
+                    &evidence,
+                )?;
+            }
+            write_export_bundle(path, &step, &report_path, report.as_bytes(), &precondition)
+        })();
+        match result {
+            Ok(()) => {
+                self.digest = self.catalog.format(
+                    "digest-exported-step",
+                    &BTreeMap::from([("path", path.display().to_string())]),
+                );
+                true
+            }
+            Err(error) => {
+                self.digest = self.catalog.format(
+                    "error-export-step",
+                    &BTreeMap::from([("path", path.display().to_string()), ("reason", error)]),
+                );
+                false
+            }
+        }
+    }
+
     fn dispatch_file_command(&mut self, id: AppCommand) {
         match id {
             AppCommand::New if self.confirm_discard_if_dirty() => self.new_document(),
@@ -2193,6 +2438,16 @@ impl KetchupApp {
             AppCommand::SaveAs => {
                 if let Some(path) = self.choose_save_path() {
                     self.save_document_to(&path);
+                }
+            }
+            AppCommand::ExportExactStep => {
+                if let Some(path) = self.choose_export_path("step") {
+                    self.export_current_model_step_to(&path);
+                }
+            }
+            AppCommand::ExportMeshStl => {
+                if let Some(path) = self.choose_export_path("stl") {
+                    self.export_current_model_stl_to(&path);
                 }
             }
             AppCommand::New | AppCommand::Open => {}
@@ -2648,8 +2903,13 @@ impl KetchupApp {
     }
 
     #[must_use]
-    pub const fn last_side_effect_receipt(&self) -> Option<&SideEffectAuthorizationReceipt> {
-        self.last_side_effect_receipt.as_ref()
+    pub fn last_side_effect_receipt(&self) -> Option<&SideEffectAuthorizationReceipt> {
+        self.side_effect_receipts.last()
+    }
+
+    #[must_use]
+    pub fn side_effect_receipt_count(&self) -> usize {
+        self.side_effect_receipts.len()
     }
 
     /// Whether the active document carries unsaved changes.
@@ -6098,7 +6358,12 @@ impl KetchupApp {
             return;
         }
         match id {
-            AppCommand::New | AppCommand::Open | AppCommand::Save | AppCommand::SaveAs => {
+            AppCommand::New
+            | AppCommand::Open
+            | AppCommand::Save
+            | AppCommand::SaveAs
+            | AppCommand::ExportExactStep
+            | AppCommand::ExportMeshStl => {
                 self.dispatch_file_command(id);
             }
             AppCommand::Undo => {
@@ -12519,8 +12784,8 @@ impl KetchupApp {
                 self.menu_command(ui, AppCommand::Save);
                 self.menu_command(ui, AppCommand::SaveAs);
                 ui.separator();
-                self.disabled_menu_item(ui, "file-export-exact");
-                self.disabled_menu_item(ui, "file-export-mesh");
+                self.menu_command(ui, AppCommand::ExportExactStep);
+                self.menu_command(ui, AppCommand::ExportMeshStl);
             });
             ui.menu_button(self.catalog.text("menu-edit"), |ui| {
                 self.menu_command(ui, AppCommand::Undo);
@@ -15925,6 +16190,289 @@ fn exact_step_loss_report(package: &ExactRevolvePackage) -> String {
     )
 }
 
+fn exact_model_step_loss_report(
+    snapshot: &Snapshot,
+    model: &[(ExactBodyPackage, Transform)],
+) -> String {
+    let fingerprints = model
+        .iter()
+        .map(|(package, _)| package.result_key().result_fingerprint)
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(
+        "authority=accepted exact OCCT B-Rep\nformat=ISO 10303 STEP\nconversion=current-visible-exact-model-to-world-space-brep\neditability_loss=canonical Ketchup features, rules, dimensions, hierarchy, and Undo history are not preserved\ntopology_loss=exact B-Rep topology is preserved, but durable Ketchup subshape and occurrence identity are not preserved\ntolerance_loss=no tessellation loss; receiving systems may apply a different modeling tolerance\nsource_digest={}\noccurrence_count={}\nresult_fingerprints={fingerprints}\n",
+        snapshot.canonical_digest(),
+        model.len(),
+    )
+}
+
+fn exact_stl_export_evidence(path: &Path, bundle: &ExactStlExport) -> Vec<u8> {
+    export_bundle_evidence(
+        b"ketchup.current-model-stl-export.v1",
+        path,
+        bundle.mesh_stl.as_bytes(),
+        &path.with_extension("stl.loss.txt"),
+        bundle.loss_report.as_bytes(),
+    )
+}
+
+fn export_bundle_evidence(
+    domain: &[u8],
+    primary_path: &Path,
+    primary: &[u8],
+    report_path: &Path,
+    report: &[u8],
+) -> Vec<u8> {
+    let mut evidence = domain.to_vec();
+    for (path, artifact) in [(primary_path, primary), (report_path, report)] {
+        let path = path.to_string_lossy();
+        evidence.extend_from_slice(&(path.len() as u64).to_le_bytes());
+        evidence.extend_from_slice(path.as_bytes());
+        evidence.extend_from_slice(&(artifact.len() as u64).to_le_bytes());
+        evidence.extend_from_slice(artifact);
+    }
+    evidence
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ExportBundlePrecondition {
+    primary_sha256: Option<String>,
+    report_sha256: Option<String>,
+}
+
+impl ExportBundlePrecondition {
+    fn capture(primary_path: &Path, report_path: &Path) -> Result<Self, String> {
+        Ok(Self {
+            primary_sha256: export_target_sha256(primary_path)?,
+            report_sha256: export_target_sha256(report_path)?,
+        })
+    }
+}
+
+fn export_target_sha256(path: &Path) -> Result<Option<String>, String> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    if !path.is_file() {
+        return Err(format!("{} is not a regular file", path.display()));
+    }
+    std::fs::read(path)
+        .map(|bytes| Some(ketchup_core::graph::sha256_hex(&bytes)))
+        .map_err(|error| error.to_string())
+}
+
+fn empty_export_temp_path(path: &Path, prefix: &str) -> Result<tempfile::TempPath, String> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let temporary = tempfile::Builder::new()
+        .prefix(prefix)
+        .tempfile_in(parent)
+        .map_err(|error| error.to_string())?
+        .into_temp_path();
+    std::fs::remove_file(&temporary).map_err(|error| error.to_string())?;
+    Ok(temporary)
+}
+
+fn persist_export_backup_noclobber(backup: tempfile::TempPath, path: &Path) -> Result<(), String> {
+    match backup.persist_noclobber(path) {
+        Ok(_) => Ok(()),
+        Err(error) => {
+            let persist_error = error.error;
+            let preserved = error
+                .path
+                .keep()
+                .map_err(|keep_error| keep_error.error.to_string())?;
+            Err(format!(
+                "{persist_error}; backup preserved at {}",
+                preserved.display()
+            ))
+        }
+    }
+}
+
+fn export_backup(
+    path: &Path,
+    expected_sha256: Option<&str>,
+) -> Result<Option<tempfile::TempPath>, String> {
+    let current_sha256 = export_target_sha256(path)?;
+    if current_sha256.as_deref() != expected_sha256 {
+        return Err(format!(
+            "export target {} changed after authorization",
+            path.display()
+        ));
+    }
+    if expected_sha256.is_none() {
+        return Ok(None);
+    }
+    let backup = empty_export_temp_path(path, ".ketchup-export-backup-")?;
+    std::fs::rename(path, &backup).map_err(|error| error.to_string())?;
+    let moved_sha256 = export_target_sha256(&backup);
+    if moved_sha256.as_ref().ok().and_then(Option::as_deref) == expected_sha256 {
+        return Ok(Some(backup));
+    }
+    let mismatch = moved_sha256
+        .err()
+        .unwrap_or_else(|| format!("export target {} changed during backup", path.display()));
+    let restore = persist_export_backup_noclobber(backup, path);
+    Err(match restore {
+        Ok(()) => mismatch,
+        Err(restore) => format!("{mismatch}; concurrent target restore failed: {restore}"),
+    })
+}
+
+fn restore_export_backup(
+    path: &Path,
+    backup: &mut Option<tempfile::TempPath>,
+    published_sha256: Option<&str>,
+) -> Result<(), String> {
+    let quarantined = if path.exists() {
+        let quarantined = empty_export_temp_path(path, ".ketchup-export-rollback-")?;
+        std::fs::rename(path, &quarantined).map_err(|error| error.to_string())?;
+        Some(quarantined)
+    } else {
+        None
+    };
+    if let Some(quarantined) = quarantined {
+        let quarantined_sha256 = export_target_sha256(&quarantined);
+        if quarantined_sha256.as_ref().ok().and_then(Option::as_deref) != published_sha256 {
+            let concurrent_restore = persist_export_backup_noclobber(quarantined, path);
+            let original_preserved = backup
+                .take()
+                .map(tempfile::TempPath::keep)
+                .transpose()
+                .map_err(|error| error.error.to_string())?;
+            return Err(match (concurrent_restore, original_preserved) {
+                (Ok(()), Some(original)) => format!(
+                    "cannot roll back {} because it changed concurrently; original preserved at {}",
+                    path.display(),
+                    original.display()
+                ),
+                (Ok(()), None) => format!(
+                    "cannot roll back {} because it changed concurrently",
+                    path.display()
+                ),
+                (Err(concurrent), Some(original)) => format!(
+                    "cannot roll back {} because it changed concurrently; {concurrent}; original preserved at {}",
+                    path.display(),
+                    original.display()
+                ),
+                (Err(concurrent), None) => format!(
+                    "cannot roll back {} because it changed concurrently; {concurrent}",
+                    path.display()
+                ),
+            });
+        }
+    }
+    if let Some(saved) = backup.take() {
+        persist_export_backup_noclobber(saved, path)?;
+    }
+    Ok(())
+}
+
+fn rollback_export_bundle(
+    primary_path: &Path,
+    primary_backup: &mut Option<tempfile::TempPath>,
+    primary_published_sha256: Option<&str>,
+    report_path: &Path,
+    report_backup: &mut Option<tempfile::TempPath>,
+    report_published_sha256: Option<&str>,
+) -> Result<(), String> {
+    let primary = restore_export_backup(primary_path, primary_backup, primary_published_sha256);
+    let report = restore_export_backup(report_path, report_backup, report_published_sha256);
+    match (primary, report) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(primary), Ok(())) => Err(format!("primary rollback failed: {primary}")),
+        (Ok(()), Err(report)) => Err(format!("loss-report rollback failed: {report}")),
+        (Err(primary), Err(report)) => Err(format!(
+            "primary rollback failed: {primary}; loss-report rollback failed: {report}"
+        )),
+    }
+}
+
+fn persist_export_temporary(temporary: tempfile::TempPath, path: &Path) -> Result<(), String> {
+    temporary
+        .persist_noclobber(path)
+        .map(|_| ())
+        .map_err(|error| error.error.to_string())
+}
+
+fn write_export_bundle(
+    primary_path: &Path,
+    primary: &[u8],
+    report_path: &Path,
+    report: &[u8],
+    precondition: &ExportBundlePrecondition,
+) -> Result<(), String> {
+    let primary_parent = primary_path.parent().unwrap_or_else(|| Path::new("."));
+    let report_parent = report_path.parent().unwrap_or_else(|| Path::new("."));
+    if primary_parent != report_parent {
+        return Err("export artifact and loss report must share a directory".to_owned());
+    }
+    if primary_path.is_dir() || report_path.is_dir() {
+        return Err("export target must be a regular file path".to_owned());
+    }
+    let mut primary_temporary = tempfile::Builder::new()
+        .prefix(".ketchup-export-primary-")
+        .tempfile_in(primary_parent)
+        .map_err(|error| error.to_string())?;
+    let mut report_temporary = tempfile::Builder::new()
+        .prefix(".ketchup-export-report-")
+        .tempfile_in(primary_parent)
+        .map_err(|error| error.to_string())?;
+    primary_temporary
+        .write_all(primary)
+        .and_then(|()| primary_temporary.as_file().sync_all())
+        .map_err(|error| error.to_string())?;
+    report_temporary
+        .write_all(report)
+        .and_then(|()| report_temporary.as_file().sync_all())
+        .map_err(|error| error.to_string())?;
+    let primary_temporary = primary_temporary.into_temp_path();
+    let report_temporary = report_temporary.into_temp_path();
+
+    let primary_published_sha256 = ketchup_core::graph::sha256_hex(primary);
+    let mut primary_backup = export_backup(primary_path, precondition.primary_sha256.as_deref())?;
+    let mut report_backup = match export_backup(report_path, precondition.report_sha256.as_deref())
+    {
+        Ok(backup) => backup,
+        Err(error) => {
+            let rollback = restore_export_backup(primary_path, &mut primary_backup, None);
+            return Err(match rollback {
+                Ok(()) => error,
+                Err(rollback) => format!("{error}; primary rollback failed: {rollback}"),
+            });
+        }
+    };
+    if let Err(error) = persist_export_temporary(primary_temporary, primary_path) {
+        let rollback = rollback_export_bundle(
+            primary_path,
+            &mut primary_backup,
+            None,
+            report_path,
+            &mut report_backup,
+            None,
+        );
+        return Err(match rollback {
+            Ok(()) => error,
+            Err(rollback) => format!("{error}; {rollback}"),
+        });
+    }
+    if let Err(error) = persist_export_temporary(report_temporary, report_path) {
+        let rollback = rollback_export_bundle(
+            primary_path,
+            &mut primary_backup,
+            Some(&primary_published_sha256),
+            report_path,
+            &mut report_backup,
+            None,
+        );
+        return Err(match rollback {
+            Ok(()) => error,
+            Err(rollback) => format!("{error}; {rollback}"),
+        });
+    }
+    Ok(())
+}
+
 fn exact_mesh_export_evidence(bundle: &ExactMeshExport) -> Vec<u8> {
     let mut evidence = b"ketchup.exact-mesh-export.v1".to_vec();
     for artifact in [&bundle.mesh_obj, &bundle.loss_report] {
@@ -16413,6 +16961,62 @@ mod tests {
     use egui_kittest::kittest::Queryable as _;
     use ketchup_core::document::ProposalGoal;
     use ketchup_core::graph::{EvaluatorNodeKind, PortSpec};
+
+    #[test]
+    fn export_rollback_preserves_concurrent_destination_and_original_backup() {
+        let directory = tempfile::tempdir().unwrap();
+        let target = directory.path().join("model.step");
+        std::fs::write(&target, b"original").unwrap();
+        let original_sha256 = export_target_sha256(&target).unwrap();
+        let mut backup = export_backup(&target, original_sha256.as_deref()).unwrap();
+        let backup_path = backup.as_ref().unwrap().to_path_buf();
+        std::fs::write(&target, b"concurrent writer").unwrap();
+
+        let error = restore_export_backup(&target, &mut backup, None).unwrap_err();
+
+        assert!(error.contains("changed concurrently"));
+        assert_eq!(std::fs::read(&target).unwrap(), b"concurrent writer");
+        assert_eq!(std::fs::read(backup_path).unwrap(), b"original");
+        assert!(backup.is_none());
+    }
+
+    #[test]
+    fn export_rollback_replaces_only_its_own_published_artifact() {
+        let directory = tempfile::tempdir().unwrap();
+        let target = directory.path().join("model.step");
+        std::fs::write(&target, b"original").unwrap();
+        let original_sha256 = export_target_sha256(&target).unwrap();
+        let mut backup = export_backup(&target, original_sha256.as_deref()).unwrap();
+        let published = b"ketchup export";
+        std::fs::write(&target, published).unwrap();
+        let published_sha256 = ketchup_core::graph::sha256_hex(published);
+
+        restore_export_backup(&target, &mut backup, Some(&published_sha256)).unwrap();
+
+        assert_eq!(std::fs::read(&target).unwrap(), b"original");
+        assert!(backup.is_none());
+    }
+
+    #[test]
+    fn only_body_producing_features_are_export_candidates() {
+        assert!(!FeatureKind::Profile { points_mm: vec![] }.produces_body());
+        assert!(
+            !FeatureKind::BottleProfileControl {
+                profile: FeatureId(1),
+                body_radius: Dimension::new("1", 1.0).unwrap(),
+                body_height: Dimension::new("1", 1.0).unwrap(),
+                shoulder_rise: Dimension::new("1", 1.0).unwrap(),
+            }
+            .produces_body()
+        );
+        assert!(
+            FeatureKind::Extrusion {
+                profile: FeatureId(1),
+                height: Dimension::new("1", 1.0).unwrap(),
+            }
+            .produces_body()
+        );
+    }
 
     fn apply_reviewed_model_intent(app: &mut KetchupApp, intent: AssistantModelIntent) -> bool {
         app.prepare_assistant_model_intent(intent) && app.confirm_assistant_proposal()

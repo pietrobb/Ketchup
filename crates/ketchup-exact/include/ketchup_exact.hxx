@@ -94,6 +94,10 @@ std::unique_ptr<NativeOperationResult> split_box_native(
     double size_x, double size_y, double size_z) noexcept;
 std::unique_ptr<NativeOperationResult> exception_probe_native() noexcept;
 std::unique_ptr<NativeOperationResult> import_step_native(rust::Str path) noexcept;
+std::unique_ptr<NativeOperationResult> transform_body_native(
+    const NativeOperationResult& body, rust::Slice<const double> matrix) noexcept;
+std::unique_ptr<NativeOperationResult> combine_bodies_native(
+    const NativeOperationResult& base, const NativeOperationResult& added) noexcept;
 rust::String export_step_native(
     const NativeOperationResult& body, rust::Str path) noexcept;
 

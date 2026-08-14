@@ -6,6 +6,10 @@
 
 mod harness;
 
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::time::Duration;
+
 use harness::Shell;
 use ketchup_app::AppCommand;
 use ketchup_app::dialogs::ScriptedFileDialogs;
@@ -41,6 +45,105 @@ fn digest_starts_like(shell: &Shell, key: &str) -> bool {
     let template = shell.catalog().text(key);
     let prefix: String = template.chars().take_while(|c| *c != '{').collect();
     !prefix.trim().is_empty() && shell.app().action_digest().starts_with(prefix.trim_end())
+}
+
+static EXACT_FILE_EXPORT_LOCK: Mutex<()> = Mutex::new(());
+
+#[derive(Debug, Eq, PartialEq)]
+struct CanonicalState {
+    revision: u64,
+    digest: String,
+    can_undo: bool,
+    can_redo: bool,
+    dirty: bool,
+}
+
+fn canonical_state(shell: &Shell) -> CanonicalState {
+    CanonicalState {
+        revision: shell.app().document_revision(),
+        digest: shell.app().canonical_digest(),
+        can_undo: shell.app().can_undo(),
+        can_redo: shell.app().can_redo(),
+        dirty: shell.app().is_dirty(),
+    }
+}
+
+fn exact_worker_path() -> PathBuf {
+    let name = if cfg!(windows) {
+        "ketchup-exact-worker.exe"
+    } else {
+        "ketchup-exact-worker"
+    };
+    let colocated = std::env::current_exe()
+        .unwrap()
+        .parent()
+        .and_then(Path::parent)
+        .unwrap()
+        .join(name);
+    if colocated.is_file() {
+        colocated
+    } else {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/debug")
+            .join(name)
+    }
+}
+
+fn wait_for_current_exact_body(shell: &mut Shell) {
+    for _ in 0..100 {
+        shell.settle();
+        if shell.app().exact_render_body_count() == 1 {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(
+        shell.app().exact_render_body_count(),
+        1,
+        "the real worker must publish current exact evidence within two seconds"
+    );
+}
+
+fn arrange_one_visible_and_one_hidden_occurrence_with_redo(shell: &mut Shell) {
+    shell.click_menu_command("menu-edit", AppCommand::SelectAll);
+    shell.click_menu_command("menu-edit", AppCommand::Copy);
+    shell.click_menu_command("menu-edit", AppCommand::Paste);
+    shell.click_menu_command("menu-view", AppCommand::Hide);
+    shell.click_menu_command("menu-edit", AppCommand::Paste);
+    shell.click_menu_command("menu-edit", AppCommand::Undo);
+
+    assert_eq!(shell.app().active_box_count(), 2);
+    assert!(shell.app().can_undo());
+    assert!(shell.app().can_redo());
+    assert!(shell.app().is_dirty());
+}
+
+fn ascii_stl_facet_count(bytes: &[u8]) -> usize {
+    assert!(bytes.is_ascii(), "File export must be ASCII STL");
+    let text = std::str::from_utf8(bytes).unwrap();
+    assert!(
+        text.lines()
+            .next()
+            .is_some_and(|line| line.starts_with("solid ")),
+        "ASCII STL must start with a solid declaration"
+    );
+    assert!(
+        text.lines()
+            .next_back()
+            .is_some_and(|line| line.starts_with("endsolid ")),
+        "ASCII STL must end with a matching solid declaration"
+    );
+    let facets = text
+        .lines()
+        .filter(|line| line.trim_start().starts_with("facet normal "))
+        .count();
+    assert_eq!(
+        text.lines()
+            .filter(|line| line.trim_start().starts_with("vertex "))
+            .count(),
+        facets * 3
+    );
+    facets
 }
 
 #[test]
@@ -383,4 +486,186 @@ fn discarding_unsaved_work_is_confirmed_before_new_replaces_it() {
         "a refused prompt must keep the composed model"
     );
     assert_eq!(shell.app().active_box_count(), 2);
+}
+
+#[test]
+fn file_menu_exports_fail_closed_when_current_exact_evidence_is_unavailable() {
+    let _serial = EXACT_FILE_EXPORT_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let directory = tempfile::tempdir().unwrap();
+    let stl = directory.path().join("preserved.stl");
+    let stl_loss = stl.with_extension("stl.loss.txt");
+    let step = directory.path().join("preserved.step");
+    let step_loss = step.with_extension("step.loss.txt");
+    let unavailable_worker = directory.path().join("not-an-exact-worker");
+    let original_stl = b"preserve STL when exact evidence is unavailable";
+    let original_stl_loss = b"preserve STL loss report when exact evidence is unavailable";
+    let original_step = b"preserve STEP when exact evidence is unavailable";
+    let original_step_loss = b"preserve STEP loss report when exact evidence is unavailable";
+    std::fs::write(&stl, original_stl).unwrap();
+    std::fs::write(&stl_loss, original_stl_loss).unwrap();
+    std::fs::write(&step, original_step).unwrap();
+    std::fs::write(&step_loss, original_step_loss).unwrap();
+    std::fs::write(&unavailable_worker, b"not an executable worker").unwrap();
+
+    let script = ScriptedFileDialogs::new()
+        .queue_export(&stl)
+        .queue_export(&step)
+        .always_confirm_high_risk_as(91);
+    let mut shell = Shell::with_dialogs(script.clone());
+    shell
+        .app_mut()
+        .connect_exact_worker(&unavailable_worker)
+        .unwrap();
+    shell.settle();
+    assert_eq!(shell.app().exact_render_body_count(), 0);
+    let before = canonical_state(&shell);
+
+    shell.click_menu_command("menu-file", AppCommand::ExportMeshStl);
+    assert_eq!(canonical_state(&shell), before);
+    shell.click_menu_command("menu-file", AppCommand::ExportExactStep);
+    assert_eq!(canonical_state(&shell), before);
+
+    assert_eq!(std::fs::read(&stl).unwrap(), original_stl);
+    assert_eq!(std::fs::read(&stl_loss).unwrap(), original_stl_loss);
+    assert_eq!(std::fs::read(&step).unwrap(), original_step);
+    assert_eq!(std::fs::read(&step_loss).unwrap(), original_step_loss);
+    assert!(
+        script.high_risk_prompts().is_empty(),
+        "missing current evidence must be rejected before lossy confirmation"
+    );
+    assert!(shell.app().last_side_effect_receipt().is_none());
+}
+
+#[test]
+fn file_menu_exports_current_visible_exact_model_without_mutating_canonical_state() {
+    let _serial = EXACT_FILE_EXPORT_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let directory = tempfile::tempdir().unwrap();
+    let protected_stl = directory.path().join("protected.stl");
+    let protected_loss = protected_stl.with_extension("stl.loss.txt");
+    let first_stl = directory.path().join("visible-a.stl");
+    let second_stl = directory.path().join("visible-b.stl");
+    let step = directory.path().join("visible.step");
+    let script = ScriptedFileDialogs::new()
+        .queue_cancelled_export()
+        .queue_cancelled_export()
+        .queue_export(&protected_stl)
+        .queue_export(&protected_stl)
+        .queue_export(&first_stl)
+        .queue_export(&second_stl)
+        .queue_export(&step)
+        .queue_refused_high_risk()
+        .queue_high_risk_approval(40)
+        .queue_high_risk_approval(41)
+        .queue_high_risk_approval(42)
+        .queue_high_risk_approval(43)
+        .queue_high_risk_approval(44)
+        .queue_high_risk_approval(45);
+    let mut shell = Shell::with_dialogs(script.clone());
+    arrange_one_visible_and_one_hidden_occurrence_with_redo(&mut shell);
+    shell
+        .app_mut()
+        .connect_exact_worker(exact_worker_path())
+        .unwrap();
+    wait_for_current_exact_body(&mut shell);
+    let before = canonical_state(&shell);
+
+    shell.click_menu_command("menu-file", AppCommand::ExportMeshStl);
+    assert_eq!(canonical_state(&shell), before);
+    shell.click_menu_command("menu-file", AppCommand::ExportExactStep);
+    assert_eq!(canonical_state(&shell), before);
+    assert_eq!(
+        std::fs::read_dir(directory.path()).unwrap().count(),
+        0,
+        "cancelling either export dialog must not create an artifact"
+    );
+    assert!(script.high_risk_prompts().is_empty());
+
+    let original_stl = b"existing STL must survive refusal";
+    let original_loss = b"existing STL loss report must survive refusal";
+    std::fs::write(&protected_stl, original_stl).unwrap();
+    std::fs::write(&protected_loss, original_loss).unwrap();
+    shell.click_menu_command("menu-file", AppCommand::ExportMeshStl);
+    assert_eq!(std::fs::read(&protected_stl).unwrap(), original_stl);
+    assert_eq!(std::fs::read(&protected_loss).unwrap(), original_loss);
+    assert!(shell.app().last_side_effect_receipt().is_none());
+    assert_eq!(canonical_state(&shell), before);
+
+    shell.click_menu_command("menu-file", AppCommand::ExportMeshStl);
+    assert_ne!(std::fs::read(&protected_stl).unwrap(), original_stl);
+    assert_ne!(std::fs::read(&protected_loss).unwrap(), original_loss);
+    assert_eq!(canonical_state(&shell), before);
+
+    shell.click_menu_command("menu-file", AppCommand::ExportMeshStl);
+    assert_eq!(canonical_state(&shell), before);
+    shell.click_menu_command("menu-file", AppCommand::ExportMeshStl);
+    assert_eq!(canonical_state(&shell), before);
+    let first_stl_bytes = std::fs::read(&first_stl).unwrap();
+    let second_stl_bytes = std::fs::read(&second_stl).unwrap();
+    assert_eq!(
+        first_stl_bytes, second_stl_bytes,
+        "the same visible exact model must produce byte-identical STL"
+    );
+    assert_eq!(
+        ascii_stl_facet_count(&first_stl_bytes),
+        12,
+        "the hidden shared occurrence must not contribute facets"
+    );
+    let stl_loss = std::fs::read_to_string(first_stl.with_extension("stl.loss.txt")).unwrap();
+    assert!(stl_loss.contains("format=ASCII STL"));
+    assert!(stl_loss.contains("editability_loss="));
+    assert!(stl_loss.contains("topology_loss="));
+    assert!(stl_loss.contains(&format!("source_digest={}", before.digest)));
+
+    shell.click_menu_command("menu-file", AppCommand::ExportExactStep);
+    assert_eq!(canonical_state(&shell), before);
+    assert!(
+        step.is_file(),
+        "STEP export failed with digest {:?}",
+        shell.app().action_digest()
+    );
+    assert!(
+        std::fs::read_to_string(&step)
+            .unwrap()
+            .starts_with("ISO-10303-21;")
+    );
+    let step_loss = std::fs::read_to_string(step.with_extension("step.loss.txt")).unwrap();
+    assert!(step_loss.contains("format=ISO 10303 STEP"));
+    assert!(step_loss.contains("editability_loss="));
+    assert!(step_loss.contains(&format!("source_digest={}", before.digest)));
+
+    let requests = script.export_requests();
+    assert_eq!(requests.len(), 7);
+    assert_eq!(
+        requests
+            .iter()
+            .map(|request| request.extension.as_str())
+            .collect::<Vec<_>>(),
+        vec!["stl", "step", "stl", "stl", "stl", "stl", "step"]
+    );
+    for request in &requests {
+        assert!(
+            request
+                .filter_label
+                .to_ascii_lowercase()
+                .contains(request.extension.as_str()),
+            "the recorded filter must identify its format: {request:?}"
+        );
+        assert_eq!(
+            request.suggested_name,
+            format!("Untitled.{}", request.extension)
+        );
+    }
+    let prompts = script.high_risk_prompts();
+    assert_eq!(prompts.len(), 7);
+    assert!(prompts[2].contains(&protected_stl.display().to_string()));
+    assert!(prompts[3].contains(&protected_loss.display().to_string()));
+    assert!(
+        prompts
+            .iter()
+            .all(|prompt| prompt.contains("Payload SHA-256:"))
+    );
 }

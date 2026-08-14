@@ -14,18 +14,20 @@ use ketchup_core::bottle_m6::{
 };
 use ketchup_core::document::{
     BooleanOperation, BottleEdgeFinishKind, DerivedIdentity, NodeId, SlotPath, SlotSegment,
-    Snapshot,
+    Snapshot, Transform,
 };
 use ketchup_core::exact_product::{
-    ExactFaceRole, ExactFeatureChainRequest, ExactLoftPackage, ExactLoftRequest,
+    ExactBodyPackage, ExactFaceRole, ExactFeatureChainRequest, ExactLoftPackage, ExactLoftRequest,
     ExactPlanarOffsetPackage, ExactPlanarOffsetRequest, ExactProductError, ExactProfileSegment,
     ExactRenderPackage, ExactSweepPackage, ExactSweepRequest, LoftWorkerEvidence,
     PlanarOffsetWorkerEvidence, SweepWorkerEvidence, SweepWorkerFaceEvidence,
     build_box_render_package, build_loft_package, build_planar_offset_package, build_sweep_package,
     canonical_reference_lineage_digest,
 };
+use ketchup_core::graph::sha256_hex;
 use ketchup_core::prismatic::{Aabb, JointId};
 use ketchup_exact::GeometryErrorCode;
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
 use std::fmt::Write as _;
@@ -544,7 +546,191 @@ const M5_NOTCH_CAPABILITY: &str = "M5_NOTCH_V1";
 const M6_REVOLVE_CAPABILITY: &str = "M6_REVOLVE_V1";
 const M6_SHELL_CAPABILITY: &str = "M6_SHELL_V1";
 const M14_STEP_CAPABILITY: &str = "M14_STEP_V1";
+const M21_STEP_MODEL_CAPABILITY: &str = "M21_STEP_MODEL_V1";
 const DEFAULT_WORKER_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct StepFeatureExportSpec {
+    pub width_bits: u64,
+    pub depth_bits: u64,
+    pub height_bits: u64,
+    pub circle: Option<StepCircleSpec>,
+    pub mixed_segments: Vec<StepProfileSegment>,
+    pub pocket_depth_bits: Option<u64>,
+    pub boolean: Option<StepBooleanSpec>,
+    pub shell: Option<StepShellSpec>,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct StepCircleSpec {
+    pub center_x_bits: u64,
+    pub center_y_bits: u64,
+    pub radius_bits: u64,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub enum StepProfileSegment {
+    Line {
+        start_bits: [u64; 2],
+        end_bits: [u64; 2],
+    },
+    Arc {
+        start_bits: [u64; 2],
+        end_bits: [u64; 2],
+        center_bits: [u64; 2],
+        clockwise: bool,
+    },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct StepRevolveExportSpec {
+    pub segments: Vec<StepProfileSegment>,
+    pub axis_start_bits: [u64; 2],
+    pub axis_end_bits: [u64; 2],
+    pub angle_degrees_bits: u64,
+}
+
+impl From<&ExactRevolveRequest> for StepRevolveExportSpec {
+    fn from(request: &ExactRevolveRequest) -> Self {
+        Self {
+            segments: request
+                .profile_segments()
+                .into_iter()
+                .map(|segment| match segment {
+                    ExactProfileSegment::Line {
+                        start_bits,
+                        end_bits,
+                    } => StepProfileSegment::Line {
+                        start_bits,
+                        end_bits,
+                    },
+                    ExactProfileSegment::CircularArc {
+                        start_bits,
+                        end_bits,
+                        center_bits,
+                        clockwise,
+                    } => StepProfileSegment::Arc {
+                        start_bits,
+                        end_bits,
+                        center_bits,
+                        clockwise,
+                    },
+                })
+                .collect(),
+            axis_start_bits: request.axis_start_bits,
+            axis_end_bits: request.axis_end_bits,
+            angle_degrees_bits: request.angle_degrees_bits,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct StepAssemblyManifest {
+    pub document_id: u64,
+    pub source_revision: u64,
+    pub source_digest: String,
+    pub parts: Vec<StepAssemblyPart>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct StepAssemblyPart {
+    pub document_id: u64,
+    pub source_revision: u64,
+    pub source_digest: String,
+    pub expected_result_fingerprint: String,
+    pub imported_result_fingerprint: String,
+    pub source_sha256: String,
+    pub transform_bits: [u64; 16],
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct StepBooleanSpec {
+    pub operation: String,
+    pub min_x_bits: u64,
+    pub min_y_bits: u64,
+    pub width_bits: u64,
+    pub depth_bits: u64,
+    pub circle: Option<StepCircleSpec>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct StepShellSpec {
+    pub thickness_bits: u64,
+    pub finish: Option<String>,
+    pub amount_bits: Option<u64>,
+}
+
+impl From<&ExactFeatureChainRequest> for StepFeatureExportSpec {
+    fn from(request: &ExactFeatureChainRequest) -> Self {
+        Self {
+            width_bits: request.width_bits,
+            depth_bits: request.depth_bits,
+            height_bits: request.height_bits,
+            circle: request.circle.map(|circle| StepCircleSpec {
+                center_x_bits: circle.center_x_bits,
+                center_y_bits: circle.center_y_bits,
+                radius_bits: circle.radius_bits,
+            }),
+            mixed_segments: request
+                .mixed_profile
+                .as_ref()
+                .map(|profile| {
+                    profile
+                        .segments
+                        .iter()
+                        .map(|segment| match segment {
+                            ExactProfileSegment::Line {
+                                start_bits,
+                                end_bits,
+                            } => StepProfileSegment::Line {
+                                start_bits: *start_bits,
+                                end_bits: *end_bits,
+                            },
+                            ExactProfileSegment::CircularArc {
+                                start_bits,
+                                end_bits,
+                                center_bits,
+                                clockwise,
+                            } => StepProfileSegment::Arc {
+                                start_bits: *start_bits,
+                                end_bits: *end_bits,
+                                center_bits: *center_bits,
+                                clockwise: *clockwise,
+                            },
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+            pocket_depth_bits: request.pocket_depth_bits,
+            boolean: request.boolean.as_ref().map(|boolean| StepBooleanSpec {
+                operation: match boolean.operation {
+                    BooleanOperation::Cut => "cut",
+                    BooleanOperation::Union => "union",
+                    BooleanOperation::Intersect => "intersect",
+                    BooleanOperation::Split => "split",
+                }
+                .to_owned(),
+                min_x_bits: boolean.min_x_bits,
+                min_y_bits: boolean.min_y_bits,
+                width_bits: boolean.width_bits,
+                depth_bits: boolean.depth_bits,
+                circle: boolean.circle.map(|circle| StepCircleSpec {
+                    center_x_bits: circle.center_x_bits,
+                    center_y_bits: circle.center_y_bits,
+                    radius_bits: circle.radius_bits,
+                }),
+            }),
+            shell: request.shell.as_ref().map(|shell| StepShellSpec {
+                thickness_bits: shell.thickness_bits,
+                finish: shell.edge_finish_kind.map(|kind| match kind {
+                    BottleEdgeFinishKind::Fillet => "fillet".to_owned(),
+                    BottleEdgeFinishKind::Chamfer => "chamfer".to_owned(),
+                }),
+                amount_bits: shell.edge_finish_amount_bits,
+            }),
+        }
+    }
+}
 const CANCELLATION_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const MAX_WORKER_RESPONSE_LINE_BYTES: usize = 64 * 1024;
 static NEVER_CANCELLED: AtomicBool = AtomicBool::new(false);
@@ -799,6 +985,21 @@ impl ExactWorkerClient {
             self.terminate_worker();
             Err(WorkerError::MissingCapability(
                 M14_STEP_CAPABILITY.to_owned(),
+            ))
+        }
+    }
+
+    fn verify_m21_step_model_capability(
+        &mut self,
+        cancelled: &AtomicBool,
+    ) -> Result<(), WorkerError> {
+        let response = self.request_with_cancellation("CAPS M21_STEP_MODEL_V1", cancelled)?;
+        if response == "CAPS M21_STEP_MODEL_V1" {
+            Ok(())
+        } else {
+            self.terminate_worker();
+            Err(WorkerError::MissingCapability(
+                M21_STEP_MODEL_CAPABILITY.to_owned(),
             ))
         }
     }
@@ -1357,6 +1558,172 @@ impl ExactWorkerClient {
         } else {
             self.fail_protocol(response)
         }
+    }
+
+    fn export_general_revolve_step_request_with_cancellation(
+        &mut self,
+        request: &ExactRevolveRequest,
+        expected_result_fingerprint: &str,
+        path: &Path,
+        cancelled: &AtomicBool,
+    ) -> Result<(), WorkerError> {
+        self.verify_m21_step_model_capability(cancelled)?;
+        let specification = serde_json::to_vec(&StepRevolveExportSpec::from(request))
+            .map_err(|error| WorkerError::Protocol(error.to_string()))?;
+        let response = self.request_with_cancellation(
+            &format!(
+                "EXPORT_REVOLVE_STEP_M21_V1 {} {} {} {} {} {}",
+                request.document_id.0,
+                request.producer_feature_id().0,
+                request.canonical_input_digest,
+                expected_result_fingerprint,
+                hex_encode(path.to_string_lossy().as_bytes()),
+                hex_encode(&specification),
+            ),
+            cancelled,
+        )?;
+        let fields = response.split_whitespace().collect::<Vec<_>>();
+        if fields.first() == Some(&"ERR") || fields.first() == Some(&"ERR_DETAIL") {
+            return match parse_error_response(&response, &fields) {
+                WorkerError::Protocol(response) => self.fail_protocol(response),
+                error => Err(error),
+            };
+        }
+        if fields.as_slice()
+            == [
+                "OK_M21_REVOLVE_STEP_V1",
+                request.canonical_input_digest.as_str(),
+                expected_result_fingerprint,
+            ]
+        {
+            Ok(())
+        } else {
+            self.fail_protocol(response)
+        }
+    }
+
+    fn export_box_step_request_with_cancellation(
+        &mut self,
+        request: &ExactFeatureChainRequest,
+        expected_result_fingerprint: &str,
+        path: &Path,
+        cancelled: &AtomicBool,
+    ) -> Result<(), WorkerError> {
+        self.verify_m21_step_model_capability(cancelled)?;
+        let specification = serde_json::to_vec(&StepFeatureExportSpec::from(request))
+            .map_err(|error| WorkerError::Protocol(error.to_string()))?;
+        let response = self.request_with_cancellation(
+            &format!(
+                "EXPORT_FEATURE_STEP_M21_V1 {} {} {} {} {} {}",
+                request.document_id.0,
+                request.producer_feature_id().0,
+                request.canonical_input_digest,
+                expected_result_fingerprint,
+                hex_encode(path.to_string_lossy().as_bytes()),
+                hex_encode(&specification),
+            ),
+            cancelled,
+        )?;
+        let fields = response.split_whitespace().collect::<Vec<_>>();
+        if matches!(fields.first(), Some(&"ERR") | Some(&"ERR_DETAIL")) {
+            return match parse_error_response(&response, &fields) {
+                WorkerError::Protocol(response) => self.fail_protocol(response),
+                error => Err(error),
+            };
+        }
+        if fields.as_slice()
+            == [
+                "OK_M21_BOX_STEP_V1",
+                request.canonical_input_digest.as_str(),
+                expected_result_fingerprint,
+            ]
+        {
+            Ok(())
+        } else {
+            self.fail_protocol(response)
+        }
+    }
+
+    fn inspect_step_part_request_with_cancellation(
+        &mut self,
+        path: &Path,
+        source_sha256: &str,
+        cancelled: &AtomicBool,
+    ) -> Result<String, WorkerError> {
+        self.verify_m21_step_model_capability(cancelled)?;
+        let response = self.request_with_cancellation(
+            &format!(
+                "INSPECT_STEP_PART_M21_V1 {source_sha256} {}",
+                hex_encode(path.to_string_lossy().as_bytes())
+            ),
+            cancelled,
+        )?;
+        let fields = response.split_whitespace().collect::<Vec<_>>();
+        if matches!(fields.first(), Some(&"ERR") | Some(&"ERR_DETAIL")) {
+            return match parse_error_response(&response, &fields) {
+                WorkerError::Protocol(response) => self.fail_protocol(response),
+                error => Err(error),
+            };
+        }
+        if fields.len() == 3
+            && fields[0] == "OK_M21_STEP_PART_V1"
+            && fields[1] == source_sha256
+            && is_fnv1a64_digest(fields[2])
+        {
+            Ok(fields[2].to_owned())
+        } else {
+            self.fail_protocol(response)
+        }
+    }
+
+    fn assemble_step_model_request_with_cancellation(
+        &mut self,
+        manifest: &StepAssemblyManifest,
+        sources: &[PathBuf],
+        path: &Path,
+        cancelled: &AtomicBool,
+    ) -> Result<(), WorkerError> {
+        self.verify_m21_step_model_capability(cancelled)?;
+        if manifest.parts.len() != sources.len() {
+            return Err(WorkerError::Protocol(
+                "STEP assembly manifest/source count mismatch".to_owned(),
+            ));
+        }
+        let manifest_bytes = serde_json::to_vec(manifest)
+            .map_err(|error| WorkerError::Protocol(error.to_string()))?;
+        let manifest_digest = sha256_hex(&manifest_bytes);
+        let mut line = format!(
+            "ASSEMBLE_STEP_M21_V1 {manifest_digest} {} {} {}",
+            hex_encode(path.to_string_lossy().as_bytes()),
+            hex_encode(&manifest_bytes),
+            sources.len(),
+        );
+        for source in sources {
+            write!(line, " {}", hex_encode(source.to_string_lossy().as_bytes()))
+                .expect("writing to String cannot fail");
+        }
+        let response = self.request_with_cancellation(&line, cancelled)?;
+        let fields = response.split_whitespace().collect::<Vec<_>>();
+        if matches!(fields.first(), Some(&"ERR") | Some(&"ERR_DETAIL")) {
+            return match parse_error_response(&response, &fields) {
+                WorkerError::Protocol(response) => self.fail_protocol(response),
+                error => Err(error),
+            };
+        }
+        if fields.len() != 4
+            || fields[0] != "OK_M21_STEP_MODEL_V1"
+            || fields[1] != manifest_digest
+            || !is_fnv1a64_digest(fields[2])
+            || !is_sha256_digest(fields[3])
+        {
+            return self.fail_protocol(response);
+        }
+        let bytes =
+            std::fs::read(path).map_err(|error| WorkerError::Transport(error.to_string()))?;
+        if sha256_hex(&bytes) != fields[3] {
+            return self.fail_protocol("worker STEP output hash mismatch".to_owned());
+        }
+        Ok(())
     }
 
     fn evaluate_beam_piece_request_with_cancellation(
@@ -1937,6 +2304,181 @@ impl ExactWorkerSupervisor {
                 self.client.export_revolve_step_request_with_cancellation(
                     request,
                     &expected.identity.result_fingerprint,
+                    &temporary,
+                    &NEVER_CANCELLED,
+                )?;
+            }
+            Err(error) => return Err(error.into()),
+        }
+        temporary
+            .persist(path)
+            .map_err(|error| WorkerError::Transport(error.error.to_string()))?;
+        Ok(())
+    }
+
+    pub fn export_current_model_step(
+        &mut self,
+        snapshot: &Snapshot,
+        occurrences: &[(ExactBodyPackage, Transform)],
+        path: &Path,
+    ) -> Result<(), M6EvaluationError> {
+        if occurrences.is_empty() {
+            return Err(ExactProductError::EmptyModelExport.into());
+        }
+        for (package, _) in occurrences {
+            if !package.is_current(snapshot) {
+                return Err(ExactProductError::StaleResult.into());
+            }
+            match package {
+                ExactBodyPackage::Rectangle(expected) => {
+                    let request = ExactFeatureChainRequest::from_snapshot(
+                        snapshot,
+                        expected.identity.definition_id,
+                    )?;
+                    expected.validate_for_request(&request)?;
+                }
+                ExactBodyPackage::Revolve(expected) => {
+                    let request = ExactRevolveRequest::from_snapshot(
+                        snapshot,
+                        expected.identity.definition_id,
+                    )?;
+                    expected.validate_for_request(&request)?;
+                }
+            }
+        }
+
+        let parent = path.parent().unwrap_or_else(|| Path::new("."));
+        let directory = tempfile::Builder::new()
+            .prefix(".ketchup-step-model-")
+            .tempdir_in(parent)
+            .map_err(|error| WorkerError::Transport(error.to_string()))?;
+        let mut sources = Vec::with_capacity(occurrences.len());
+        let mut manifest = StepAssemblyManifest {
+            document_id: snapshot.document_id().0,
+            source_revision: snapshot.revision_id(),
+            source_digest: snapshot.canonical_digest(),
+            parts: Vec::with_capacity(occurrences.len()),
+        };
+        for (index, (package, transform)) in occurrences.iter().enumerate() {
+            let source = directory.path().join(format!("part-{index}.step"));
+            let result = match package {
+                ExactBodyPackage::Rectangle(expected) => {
+                    let request = ExactFeatureChainRequest::from_snapshot(
+                        snapshot,
+                        expected.identity.definition_id,
+                    )?;
+                    self.client.export_box_step_request_with_cancellation(
+                        &request,
+                        &expected.identity.result_fingerprint,
+                        &source,
+                        &NEVER_CANCELLED,
+                    )
+                }
+                ExactBodyPackage::Revolve(expected) => {
+                    let request = ExactRevolveRequest::from_snapshot(
+                        snapshot,
+                        expected.identity.definition_id,
+                    )?;
+                    if request.general {
+                        self.client
+                            .export_general_revolve_step_request_with_cancellation(
+                                &request,
+                                &expected.identity.result_fingerprint,
+                                &source,
+                                &NEVER_CANCELLED,
+                            )
+                    } else {
+                        self.client.export_revolve_step_request_with_cancellation(
+                            &request,
+                            &expected.identity.result_fingerprint,
+                            &source,
+                            &NEVER_CANCELLED,
+                        )
+                    }
+                }
+            };
+            if let Err(error) = result {
+                if error.permits_restart() {
+                    self.client = Self::spawn_verified_client(&self.executable, &NEVER_CANCELLED)?;
+                    match package {
+                        ExactBodyPackage::Rectangle(expected) => {
+                            let request = ExactFeatureChainRequest::from_snapshot(
+                                snapshot,
+                                expected.identity.definition_id,
+                            )?;
+                            self.client.export_box_step_request_with_cancellation(
+                                &request,
+                                &expected.identity.result_fingerprint,
+                                &source,
+                                &NEVER_CANCELLED,
+                            )?;
+                        }
+                        ExactBodyPackage::Revolve(expected) => {
+                            let request = ExactRevolveRequest::from_snapshot(
+                                snapshot,
+                                expected.identity.definition_id,
+                            )?;
+                            if request.general {
+                                self.client
+                                    .export_general_revolve_step_request_with_cancellation(
+                                        &request,
+                                        &expected.identity.result_fingerprint,
+                                        &source,
+                                        &NEVER_CANCELLED,
+                                    )?;
+                            } else {
+                                self.client.export_revolve_step_request_with_cancellation(
+                                    &request,
+                                    &expected.identity.result_fingerprint,
+                                    &source,
+                                    &NEVER_CANCELLED,
+                                )?;
+                            }
+                        }
+                    }
+                } else {
+                    return Err(error.into());
+                }
+            }
+            let source_bytes = std::fs::read(&source)
+                .map_err(|error| WorkerError::Transport(error.to_string()))?;
+            let source_sha256 = sha256_hex(&source_bytes);
+            let imported_result_fingerprint =
+                self.client.inspect_step_part_request_with_cancellation(
+                    &source,
+                    &source_sha256,
+                    &NEVER_CANCELLED,
+                )?;
+            manifest.parts.push(StepAssemblyPart {
+                document_id: snapshot.document_id().0,
+                source_revision: snapshot.revision_id(),
+                source_digest: snapshot.canonical_digest(),
+                expected_result_fingerprint: package.result_key().result_fingerprint,
+                imported_result_fingerprint,
+                source_sha256,
+                transform_bits: transform.matrix().map(f64::to_bits),
+            });
+            sources.push(source);
+        }
+        let temporary = tempfile::Builder::new()
+            .prefix(".ketchup-step-")
+            .suffix(".tmp")
+            .tempfile_in(parent)
+            .map_err(|error| WorkerError::Transport(error.to_string()))?;
+        let temporary = temporary.into_temp_path();
+        let assembly = self.client.assemble_step_model_request_with_cancellation(
+            &manifest,
+            &sources,
+            &temporary,
+            &NEVER_CANCELLED,
+        );
+        match assembly {
+            Ok(()) => {}
+            Err(error) if error.permits_restart() => {
+                self.client = Self::spawn_verified_client(&self.executable, &NEVER_CANCELLED)?;
+                self.client.assemble_step_model_request_with_cancellation(
+                    &manifest,
+                    &sources,
                     &temporary,
                     &NEVER_CANCELLED,
                 )?;
@@ -2768,6 +3310,21 @@ fn hex_encode(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
+fn hex_decode_utf8(value: &str) -> Option<String> {
+    if value.is_empty() || !value.len().is_multiple_of(2) {
+        return None;
+    }
+    let bytes = value
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|pair| {
+            let pair = std::str::from_utf8(pair).ok()?;
+            u8::from_str_radix(pair, 16).ok()
+        })
+        .collect::<Option<Vec<_>>>()?;
+    String::from_utf8(bytes).ok()
+}
+
 fn push_aabb_request(line: &mut String, bounds: Aabb) {
     for value in bounds.min().into_iter().chain(bounds.max()) {
         line.push_str(&format!(" {:016x}", value.to_bits()));
@@ -3126,6 +3683,29 @@ fn parse_m5_exact_result(response: &str) -> Result<BeamWorkerResult, WorkerError
 fn parse_error_response(response: &str, fields: &[&str]) -> WorkerError {
     match fields {
         ["ERR", code] if is_geometry_error_code(code) => WorkerError::Geometry((*code).to_owned()),
+        [
+            "ERR_DETAIL",
+            code,
+            diagnostic,
+            operation,
+            input_digest,
+            backend,
+        ] if is_geometry_error_code(code)
+            && (is_sha256_digest(input_digest) || is_fnv1a64_digest(input_digest)) =>
+        {
+            match (
+                hex_decode_utf8(diagnostic),
+                hex_decode_utf8(operation),
+                hex_decode_utf8(backend),
+            ) {
+                (Some(diagnostic), Some(operation), Some(backend)) => {
+                    WorkerError::Geometry(format!(
+                        "{code}; operation={operation}; diagnostic={diagnostic}; input_digest={input_digest}; backend={backend}"
+                    ))
+                }
+                _ => WorkerError::Protocol(response.to_owned()),
+            }
+        }
         _ => WorkerError::Protocol(response.to_owned()),
     }
 }

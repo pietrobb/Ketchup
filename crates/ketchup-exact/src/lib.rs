@@ -189,6 +189,14 @@ mod ffi {
         ) -> UniquePtr<NativeOperationResult>;
         fn exception_probe_native() -> UniquePtr<NativeOperationResult>;
         fn import_step_native(path: &str) -> UniquePtr<NativeOperationResult>;
+        fn transform_body_native(
+            body: &NativeOperationResult,
+            matrix: &[f64],
+        ) -> UniquePtr<NativeOperationResult>;
+        fn combine_bodies_native(
+            base: &NativeOperationResult,
+            added: &NativeOperationResult,
+        ) -> UniquePtr<NativeOperationResult>;
         fn export_step_native(body: &NativeOperationResult, path: &str) -> String;
 
         fn status_code(self: &NativeOperationResult) -> u8;
@@ -1091,6 +1099,71 @@ impl ExactBackend {
         collect_output(
             ffi::import_step_native(path),
             "import_step",
+            &input,
+            HistoryConfidence::None,
+        )
+    }
+
+    pub fn transform_body(
+        &self,
+        body: &ExactBody,
+        matrix: &[f64; 16],
+    ) -> Result<ExactOpOutput, GeometryError> {
+        let input = format!("transform_body:{}:{matrix:?}", body.result_fingerprint);
+        if !matrix.iter().all(|value| value.is_finite())
+            || matrix[12] != 0.0
+            || matrix[13] != 0.0
+            || matrix[14] != 0.0
+            || matrix[15] != 1.0
+        {
+            return Err(parameter_error(
+                GeometryErrorCode::InvalidParameter,
+                "transform_body",
+                &input,
+                "body transform must be a finite affine 4x4 matrix".to_owned(),
+            ));
+        }
+        let native = body.native.as_ref().ok_or_else(|| GeometryError {
+            code: GeometryErrorCode::NullResult,
+            diagnostic: "Exact body lost its owned native shape".to_owned(),
+            operation: "transform_body",
+            input_digest: stable_digest(&input),
+            backend_fingerprint: BACKEND_FINGERPRINT,
+        })?;
+        collect_output(
+            ffi::transform_body_native(native, matrix),
+            "transform_body",
+            &input,
+            HistoryConfidence::None,
+        )
+    }
+
+    pub fn combine_bodies(
+        &self,
+        base: &ExactBody,
+        added: &ExactBody,
+    ) -> Result<ExactOpOutput, GeometryError> {
+        let input = format!(
+            "combine_bodies:{}:{}",
+            base.result_fingerprint, added.result_fingerprint
+        );
+        let native_base = base.native.as_ref().ok_or_else(|| GeometryError {
+            code: GeometryErrorCode::NullResult,
+            diagnostic: "Base exact body lost its owned native shape".to_owned(),
+            operation: "combine_bodies",
+            input_digest: stable_digest(&input),
+            backend_fingerprint: BACKEND_FINGERPRINT,
+        })?;
+        let native_added = added.native.as_ref().ok_or_else(|| GeometryError {
+            code: GeometryErrorCode::NullResult,
+            diagnostic: "Added exact body lost its owned native shape".to_owned(),
+            operation: "combine_bodies",
+            input_digest: stable_digest(&input),
+            backend_fingerprint: BACKEND_FINGERPRINT,
+        })?;
+        collect_output(
+            ffi::combine_bodies_native(native_base, native_added),
+            "combine_bodies",
             &input,
             HistoryConfidence::None,
         )

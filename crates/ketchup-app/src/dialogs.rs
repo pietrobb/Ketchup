@@ -28,6 +28,13 @@ pub struct ExportRequest<'a> {
     pub suggested_name: &'a str,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExportRequestRecord {
+    pub filter_label: String,
+    pub extension: String,
+    pub suggested_name: String,
+}
+
 /// The localized text of the unsaved-changes confirmation.
 pub struct DiscardRequest<'a> {
     /// Dialog title.
@@ -194,10 +201,12 @@ impl FileDialogs for NativeFileDialogs {
 struct ScriptState {
     open_paths: VecDeque<Option<PathBuf>>,
     save_paths: VecDeque<Option<PathBuf>>,
+    export_paths: VecDeque<Option<PathBuf>>,
     discard: bool,
     high_risk_approvals: VecDeque<Option<u64>>,
     default_high_risk_approver: Option<u64>,
     suggested_names: Vec<String>,
+    export_requests: Vec<ExportRequestRecord>,
     discard_prompts: usize,
     high_risk_prompts: Vec<String>,
 }
@@ -237,6 +246,18 @@ impl ScriptedFileDialogs {
         self
     }
 
+    #[must_use]
+    pub fn queue_export(self, path: impl Into<PathBuf>) -> Self {
+        self.state().export_paths.push_back(Some(path.into()));
+        self
+    }
+
+    #[must_use]
+    pub fn queue_cancelled_export(self) -> Self {
+        self.state().export_paths.push_back(None);
+        self
+    }
+
     /// Answer every unsaved-changes prompt with "discard".
     #[must_use]
     pub fn always_discard(self) -> Self {
@@ -273,6 +294,11 @@ impl ScriptedFileDialogs {
         self.state().suggested_names.clone()
     }
 
+    #[must_use]
+    pub fn export_requests(&self) -> Vec<ExportRequestRecord> {
+        self.state().export_requests.clone()
+    }
+
     /// How many times the shell asked before discarding unsaved work.
     #[must_use]
     pub fn discard_prompts(&self) -> usize {
@@ -302,7 +328,16 @@ impl FileDialogs for ScriptedFileDialogs {
         state
             .suggested_names
             .push(request.suggested_name.to_owned());
-        state.save_paths.pop_front().flatten()
+        state.export_requests.push(ExportRequestRecord {
+            filter_label: request.filter_label.to_owned(),
+            extension: request.extension.to_owned(),
+            suggested_name: request.suggested_name.to_owned(),
+        });
+        if state.export_paths.is_empty() {
+            state.save_paths.pop_front().flatten()
+        } else {
+            state.export_paths.pop_front().flatten()
+        }
     }
 
     fn confirm_discard(&mut self, _request: DiscardRequest<'_>) -> bool {

@@ -12,7 +12,9 @@
 #include <BRepBuilderAPI_MakeEdge.hxx>
 #include <BRepBuilderAPI_MakeFace.hxx>
 #include <BRepBuilderAPI_MakeWire.hxx>
+#include <BRepBuilderAPI_GTransform.hxx>
 #include <BRepCheck_Analyzer.hxx>
+#include <BRep_Builder.hxx>
 #include <BRepGProp.hxx>
 #include <BRepFilletAPI_MakeChamfer.hxx>
 #include <BRepFilletAPI_MakeFillet.hxx>
@@ -45,6 +47,7 @@
 #include <TopTools_IndexedMapOfShape.hxx>
 #include <TColgp_HArray1OfPnt.hxx>
 #include <TopoDS.hxx>
+#include <TopoDS_Compound.hxx>
 #include <TopoDS_Edge.hxx>
 #include <TopoDS_Face.hxx>
 #include <TopoDS_Shape.hxx>
@@ -54,6 +57,7 @@
 #include <gp_Ax2.hxx>
 #include <gp_Circ.hxx>
 #include <gp_Dir.hxx>
+#include <gp_GTrsf.hxx>
 #include <gp_Pln.hxx>
 #include <gp_Pnt.hxx>
 #include <gp_Vec.hxx>
@@ -1836,6 +1840,42 @@ std::unique_ptr<NativeOperationResult> import_step_native(rust::Str path) noexce
       return error_result(STATUS_INVALID_SHAPE, "STEP fixture contains no transferable roots");
     }
     return success_result(reader.OneShape(), {});
+  });
+}
+
+std::unique_ptr<NativeOperationResult> transform_body_native(
+    const NativeOperationResult& body, rust::Slice<const double> matrix) noexcept {
+  return guarded([&] {
+    if (!body.valid() || body.impl().shape.IsNull() || matrix.size() != 16) {
+      return error_result(STATUS_INVALID_PARAMETER, "Exact body or affine transform is unavailable");
+    }
+    gp_GTrsf transform;
+    for (Standard_Integer row = 1; row <= 3; ++row) {
+      for (Standard_Integer column = 1; column <= 4; ++column) {
+        transform.SetValue(row, column, matrix[static_cast<std::size_t>((row - 1) * 4 + column - 1)]);
+      }
+    }
+    BRepBuilderAPI_GTransform operation(body.impl().shape, transform, true);
+    operation.Build();
+    if (!operation.IsDone()) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT affine body transform did not complete");
+    }
+    return success_result(operation.Shape(), {});
+  });
+}
+
+std::unique_ptr<NativeOperationResult> combine_bodies_native(
+    const NativeOperationResult& base, const NativeOperationResult& added) noexcept {
+  return guarded([&] {
+    if (!base.valid() || !added.valid() || base.impl().shape.IsNull() || added.impl().shape.IsNull()) {
+      return error_result(STATUS_INVALID_PARAMETER, "Exact assembly input body is unavailable");
+    }
+    BRep_Builder builder;
+    TopoDS_Compound compound;
+    builder.MakeCompound(compound);
+    builder.Add(compound, base.impl().shape);
+    builder.Add(compound, added.impl().shape);
+    return success_result(compound, {}, true);
   });
 }
 

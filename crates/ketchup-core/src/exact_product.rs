@@ -540,6 +540,12 @@ pub struct ExactMeshExport {
     pub loss_report: String,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExactStlExport {
+    pub mesh_stl: String,
+    pub loss_report: String,
+}
+
 pub trait ExactBodyView {
     fn bounds_mm(&self) -> [[f64; 3]; 2];
     fn vertex_count(&self) -> usize;
@@ -872,6 +878,93 @@ fn mesh_export_from_view(
         mesh_obj,
         loss_report,
     }
+}
+
+pub fn exact_model_stl_export(
+    snapshot: &Snapshot,
+    bodies: &[(&ExactBodyPackage, Transform)],
+) -> Result<ExactStlExport, ExactProductError> {
+    if bodies.is_empty() {
+        return Err(ExactProductError::EmptyModelExport);
+    }
+    if bodies
+        .iter()
+        .any(|(package, _)| !package.is_current(snapshot))
+    {
+        return Err(ExactProductError::StaleResult);
+    }
+
+    let mut mesh_stl = String::from("solid ketchup_current_model\n");
+    let mut facet_count = 0_usize;
+    for (package, transform) in bodies {
+        let matrix = transform.matrix();
+        let determinant = matrix[0] * (matrix[5] * matrix[10] - matrix[6] * matrix[9])
+            - matrix[1] * (matrix[4] * matrix[10] - matrix[6] * matrix[8])
+            + matrix[2] * (matrix[4] * matrix[9] - matrix[5] * matrix[8]);
+        if !determinant.is_finite() || determinant.abs() <= f64::EPSILON {
+            return Err(ExactProductError::InvalidMeshExport);
+        }
+        for triangle in package.triangles() {
+            let mut indices = triangle.vertex_indices;
+            if determinant < 0.0 {
+                indices.swap(1, 2);
+            }
+            let points = indices.map(|index| {
+                package
+                    .vertices()
+                    .get(index as usize)
+                    .map(|vertex| transform_exact_point(matrix, vertex.position_mm))
+            });
+            let [Some(a), Some(b), Some(c)] = points else {
+                return Err(ExactProductError::InvalidMeshExport);
+            };
+            let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+            let ac = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+            let cross = [
+                ab[1] * ac[2] - ab[2] * ac[1],
+                ab[2] * ac[0] - ab[0] * ac[2],
+                ab[0] * ac[1] - ab[1] * ac[0],
+            ];
+            let length = (cross[0] * cross[0] + cross[1] * cross[1] + cross[2] * cross[2]).sqrt();
+            if !length.is_finite() || length <= f64::EPSILON {
+                return Err(ExactProductError::InvalidMeshExport);
+            }
+            let normal = [cross[0] / length, cross[1] / length, cross[2] / length];
+            writeln!(
+                mesh_stl,
+                "  facet normal {:.17} {:.17} {:.17}",
+                normal[0], normal[1], normal[2]
+            )
+            .expect("writing to a String cannot fail");
+            mesh_stl.push_str("    outer loop\n");
+            for point in [a, b, c] {
+                writeln!(
+                    mesh_stl,
+                    "      vertex {:.17} {:.17} {:.17}",
+                    point[0], point[1], point[2]
+                )
+                .expect("writing to a String cannot fail");
+            }
+            mesh_stl.push_str("    endloop\n  endfacet\n");
+            facet_count += 1;
+        }
+    }
+    mesh_stl.push_str("endsolid ketchup_current_model\n");
+
+    let fingerprints = bodies
+        .iter()
+        .map(|(package, _)| package.result_fingerprint())
+        .collect::<Vec<_>>()
+        .join(",");
+    let loss_report = format!(
+        "authority=accepted exact OCCT B-Rep\nformat=ASCII STL\nconversion=current-visible-exact-model-to-world-space-mesh\neditability_loss=canonical features, rules, dimensions, hierarchy, and Undo history are not preserved\ntopology_loss=exact topology, analytic surfaces, assembly identity, and durable face identity are not preserved\ntolerance_loss=geometry is approximated by each accepted tessellation under its source tolerance profile\nsource_digest={}\noccurrence_count={}\nfacet_count={facet_count}\nresult_fingerprints={fingerprints}\n",
+        snapshot.canonical_digest(),
+        bodies.len(),
+    );
+    Ok(ExactStlExport {
+        mesh_stl,
+        loss_report,
+    })
 }
 
 fn transform_exact_point(matrix: &[f64; 16], point: [f64; 3]) -> [f64; 3] {
@@ -2743,6 +2836,8 @@ pub enum ExactProductError {
     UnsupportedThroughCut,
     UnsupportedBoolean(BooleanOperation),
     UnsupportedShell,
+    EmptyModelExport,
+    InvalidMeshExport,
     InvalidWorkerEvidence,
     StaleResult,
     DuplicateResult {
@@ -2777,6 +2872,10 @@ impl fmt::Display for ExactProductError {
             ),
             Self::UnsupportedShell => formatter
                 .write_str("exact M6 shell thickness is outside the conservative bottle envelope"),
+            Self::EmptyModelExport => formatter.write_str("the visible exact model is empty"),
+            Self::InvalidMeshExport => {
+                formatter.write_str("the accepted exact tessellation contains an invalid facet")
+            }
             Self::InvalidWorkerEvidence => {
                 formatter.write_str("exact worker evidence does not match the canonical request")
             }
