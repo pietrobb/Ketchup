@@ -3693,6 +3693,262 @@ impl DocumentStore {
         Some(self.current())
     }
 
+    /// Captures the immediate parent of the current last tip for correction planning.
+    pub fn tip_replacement_parent(
+        &self,
+    ) -> Result<TipReplacementParent, TipReplacementProposalError> {
+        if self.cursor == 0 {
+            return Err(TipReplacementProposalError::NoCurrentTip);
+        }
+        if self.cursor + 1 != self.revisions.len() {
+            return Err(TipReplacementProposalError::RedoBranch);
+        }
+        let superseded = &self.revisions[self.cursor].snapshot;
+        let corrected_revision =
+            superseded
+                .revision_id
+                .checked_add(1)
+                .ok_or(TipReplacementProposalError::Canonical(
+                    CanonicalError::RevisionExhausted,
+                ))?;
+        if self.next_revision_id != corrected_revision {
+            return Err(TipReplacementProposalError::Stale);
+        }
+        let parent = self.revisions[self.cursor - 1].snapshot.clone();
+        Ok(TipReplacementParent {
+            snapshot: parent.clone(),
+            document_id: superseded.document_id(),
+            parent_revision: parent.revision_id(),
+            parent_digest: parent.canonical_digest(),
+            superseded_revision: superseded.revision_id(),
+            superseded_digest: superseded.canonical_digest(),
+        })
+    }
+
+    /// Prepares a correction against a previously guarded immediate-parent snapshot.
+    pub fn prepare_tip_replacement_proposal(
+        &self,
+        parent: &TipReplacementParent,
+        batch: CommandBatch,
+        context: ProposalContext,
+    ) -> Result<TipReplacementProposal, TipReplacementProposalError> {
+        validate_confirmation_requirement(&context)
+            .map_err(TipReplacementProposalError::Preparation)?;
+        let current_parent = self.validate_tip_replacement_envelope(
+            parent.document_id,
+            parent.parent_revision,
+            &parent.parent_digest,
+            parent.superseded_revision,
+            &parent.superseded_digest,
+            parent.superseded_revision.checked_add(1).ok_or(
+                TipReplacementProposalError::Canonical(CanonicalError::RevisionExhausted),
+            )?,
+        )?;
+        if parent.snapshot.document_id() != parent.document_id
+            || parent.snapshot.revision_id() != parent.parent_revision
+            || parent.snapshot.canonical_digest() != parent.parent_digest
+            || parent.snapshot.canonical_digest() != current_parent.canonical_digest()
+        {
+            return Err(TipReplacementProposalError::Stale);
+        }
+
+        let authoritative_dependencies = authoritative_dependencies(&current_parent, &batch);
+        let authoritative_writes = authoritative_writes(&current_parent, &batch);
+        let cost = ProposalCost {
+            commands: batch.commands.len(),
+            read_dependencies: authoritative_dependencies.len(),
+            write_targets: authoritative_writes.len(),
+        };
+        validate_proposal_budget(context.requested_budget, cost)
+            .map_err(TipReplacementProposalError::Preparation)?;
+        let corrected_revision = parent.superseded_revision + 1;
+        let (_, authoritative_diff, intended_result_digest) = tip_replacement_candidate(
+            &current_parent,
+            corrected_revision,
+            &batch,
+            &authoritative_writes,
+            context.goal,
+        )
+        .map_err(TipReplacementProposalError::Preparation)?;
+        Ok(TipReplacementProposal {
+            document_id: parent.document_id,
+            parent_revision: parent.parent_revision,
+            parent_digest: parent.parent_digest.clone(),
+            superseded_revision: parent.superseded_revision,
+            superseded_digest: parent.superseded_digest.clone(),
+            corrected_revision,
+            command_digest: batch.digest(),
+            dependency_digest: dependency_digest(&current_parent, &authoritative_dependencies),
+            authoritative_dependencies,
+            authoritative_writes,
+            authoritative_diff,
+            intended_result_digest,
+            principal: context.principal,
+            goal: context.goal,
+            assumptions: context.assumptions,
+            risk: context.risk,
+            confirmation: context.confirmation,
+            requested_budget: context.requested_budget,
+            cost,
+            batch,
+        })
+    }
+
+    /// Replays and verifies a correction without changing document state.
+    pub fn preview_tip_replacement_proposal(
+        &self,
+        proposal: &TipReplacementProposal,
+    ) -> Result<Snapshot, TipReplacementProposalError> {
+        self.verify_tip_replacement_proposal(proposal)
+    }
+
+    /// Atomically replaces the exact current last tip with its verified correction.
+    pub fn commit_tip_replacement_proposal(
+        &mut self,
+        proposal: &TipReplacementProposal,
+    ) -> Result<Arc<Revision>, TipReplacementProposalError> {
+        if matches!(proposal.risk, ProposalRisk::High(_)) {
+            return Err(TipReplacementProposalError::HumanApprovalRequired);
+        }
+        let expected = self.verify_tip_replacement_proposal(proposal)?;
+        let parent = self.revisions[self.cursor - 1].snapshot.clone();
+        let previous_revisions = self.revisions.clone();
+        let previous_cursor = self.cursor;
+        let previous_next_revision_id = self.next_revision_id;
+        let previous_registry = self.evaluation_registry.clone();
+
+        self.revisions.pop();
+        self.cursor -= 1;
+        let result = self
+            .apply_batch(&proposal.batch)
+            .map_err(TipReplacementProposalError::Canonical)
+            .and_then(|revision| {
+                let actual_diff: Vec<_> = proposal
+                    .authoritative_writes
+                    .iter()
+                    .copied()
+                    .map(|target| ProposalDiffEntry {
+                        target,
+                        before: proposal_value(&parent, target, proposal.goal),
+                        after: proposal_value(revision.snapshot(), target, proposal.goal),
+                    })
+                    .collect();
+                let actual_result_digest =
+                    dependency_digest(revision.snapshot(), &proposal.authoritative_writes);
+                if revision.id() != proposal.corrected_revision
+                    || revision.batch_digest() != proposal.command_digest
+                    || actual_diff != proposal.authoritative_diff
+                    || actual_result_digest != proposal.intended_result_digest
+                    || revision.snapshot().canonical_digest() != expected.canonical_digest()
+                {
+                    return Err(TipReplacementProposalError::VerificationMismatch);
+                }
+                Ok(revision)
+            });
+
+        match result {
+            Ok(revision) => {
+                self.evaluation_registry
+                    .retain(|key, _| key.revision_id != proposal.superseded_revision);
+                Ok(revision)
+            }
+            Err(error) => {
+                self.revisions = previous_revisions;
+                self.cursor = previous_cursor;
+                self.next_revision_id = previous_next_revision_id;
+                self.evaluation_registry = previous_registry;
+                Err(error)
+            }
+        }
+    }
+
+    fn validate_tip_replacement_envelope(
+        &self,
+        document_id: DocumentId,
+        parent_revision: u64,
+        parent_digest: &str,
+        superseded_revision: u64,
+        superseded_digest: &str,
+        corrected_revision: u64,
+    ) -> Result<Snapshot, TipReplacementProposalError> {
+        if self.cursor == 0 {
+            return Err(TipReplacementProposalError::NoCurrentTip);
+        }
+        if self.cursor + 1 != self.revisions.len() {
+            return Err(TipReplacementProposalError::RedoBranch);
+        }
+        let current = &self.revisions[self.cursor].snapshot;
+        let parent = &self.revisions[self.cursor - 1].snapshot;
+        if current.document_id() != document_id
+            || current.revision_id() != superseded_revision
+            || current.canonical_digest() != superseded_digest
+            || parent.document_id() != document_id
+            || parent.revision_id() != parent_revision
+            || parent.canonical_digest() != parent_digest
+            || superseded_revision.checked_add(1) != Some(corrected_revision)
+            || self.next_revision_id != corrected_revision
+        {
+            return Err(TipReplacementProposalError::Stale);
+        }
+        Ok(parent.clone())
+    }
+
+    fn verify_tip_replacement_proposal(
+        &self,
+        proposal: &TipReplacementProposal,
+    ) -> Result<Snapshot, TipReplacementProposalError> {
+        let parent = self.validate_tip_replacement_envelope(
+            proposal.document_id,
+            proposal.parent_revision,
+            &proposal.parent_digest,
+            proposal.superseded_revision,
+            &proposal.superseded_digest,
+            proposal.corrected_revision,
+        )?;
+        if proposal.command_digest != proposal.batch.digest() {
+            return Err(TipReplacementProposalError::VerificationMismatch);
+        }
+        let authoritative_dependencies = authoritative_dependencies(&parent, &proposal.batch);
+        let authoritative_writes = authoritative_writes(&parent, &proposal.batch);
+        let cost = ProposalCost {
+            commands: proposal.batch.commands.len(),
+            read_dependencies: authoritative_dependencies.len(),
+            write_targets: authoritative_writes.len(),
+        };
+        if authoritative_dependencies != proposal.authoritative_dependencies
+            || authoritative_writes != proposal.authoritative_writes
+            || dependency_digest(&parent, &authoritative_dependencies) != proposal.dependency_digest
+            || cost != proposal.cost
+        {
+            return Err(TipReplacementProposalError::VerificationMismatch);
+        }
+        validate_proposal_budget(proposal.requested_budget, cost)
+            .map_err(TipReplacementProposalError::Preparation)?;
+        validate_confirmation_requirement(&ProposalContext {
+            principal: proposal.principal,
+            goal: proposal.goal,
+            assumptions: proposal.assumptions.clone(),
+            risk: proposal.risk,
+            confirmation: proposal.confirmation.clone(),
+            requested_budget: proposal.requested_budget,
+        })
+        .map_err(TipReplacementProposalError::Preparation)?;
+        let (preview, authoritative_diff, intended_result_digest) = tip_replacement_candidate(
+            &parent,
+            proposal.corrected_revision,
+            &proposal.batch,
+            &authoritative_writes,
+            proposal.goal,
+        )
+        .map_err(TipReplacementProposalError::Preparation)?;
+        if authoritative_diff != proposal.authoritative_diff
+            || intended_result_digest != proposal.intended_result_digest
+        {
+            return Err(TipReplacementProposalError::VerificationMismatch);
+        }
+        Ok(preview)
+    }
+
     pub fn prepare_proposal(&self, batch: CommandBatch) -> Result<Proposal, ProposalPrepareError> {
         self.prepare_proposal_with_context(batch, ProposalContext::canonical_preview())
     }
@@ -3972,6 +4228,176 @@ impl DocumentStore {
             result_digest: actual_result_digest,
             verified_writes: proposal.authoritative_writes.clone(),
         })
+    }
+}
+
+/// An immutable immediate-parent snapshot guarded by the exact tip it may replace.
+#[derive(Clone)]
+pub struct TipReplacementParent {
+    snapshot: Snapshot,
+    document_id: DocumentId,
+    parent_revision: u64,
+    parent_digest: String,
+    superseded_revision: u64,
+    superseded_digest: String,
+}
+
+impl TipReplacementParent {
+    #[must_use]
+    pub const fn snapshot(&self) -> &Snapshot {
+        &self.snapshot
+    }
+
+    #[must_use]
+    pub const fn document_id(&self) -> DocumentId {
+        self.document_id
+    }
+
+    #[must_use]
+    pub const fn parent_revision(&self) -> u64 {
+        self.parent_revision
+    }
+
+    #[must_use]
+    pub fn parent_digest(&self) -> &str {
+        &self.parent_digest
+    }
+
+    #[must_use]
+    pub const fn superseded_revision(&self) -> u64 {
+        self.superseded_revision
+    }
+
+    #[must_use]
+    pub fn superseded_digest(&self) -> &str {
+        &self.superseded_digest
+    }
+}
+
+/// A canonical correction planned against the parent of the current tip.
+#[derive(Clone)]
+pub struct TipReplacementProposal {
+    document_id: DocumentId,
+    parent_revision: u64,
+    parent_digest: String,
+    superseded_revision: u64,
+    superseded_digest: String,
+    corrected_revision: u64,
+    batch: CommandBatch,
+    command_digest: String,
+    authoritative_dependencies: BTreeSet<AuthoritativeDependency>,
+    authoritative_writes: BTreeSet<AuthoritativeDependency>,
+    dependency_digest: String,
+    authoritative_diff: Vec<ProposalDiffEntry>,
+    intended_result_digest: String,
+    principal: ProposalPrincipal,
+    goal: ProposalGoal,
+    assumptions: Vec<ProposalAssumption>,
+    risk: ProposalRisk,
+    confirmation: ProposalConfirmation,
+    requested_budget: ProposalBudget,
+    cost: ProposalCost,
+}
+
+impl TipReplacementProposal {
+    #[must_use]
+    pub const fn document_id(&self) -> DocumentId {
+        self.document_id
+    }
+
+    #[must_use]
+    pub const fn parent_revision(&self) -> u64 {
+        self.parent_revision
+    }
+
+    #[must_use]
+    pub fn parent_digest(&self) -> &str {
+        &self.parent_digest
+    }
+
+    #[must_use]
+    pub const fn superseded_revision(&self) -> u64 {
+        self.superseded_revision
+    }
+
+    #[must_use]
+    pub fn superseded_digest(&self) -> &str {
+        &self.superseded_digest
+    }
+
+    #[must_use]
+    pub const fn corrected_revision(&self) -> u64 {
+        self.corrected_revision
+    }
+
+    #[must_use]
+    pub const fn batch(&self) -> &CommandBatch {
+        &self.batch
+    }
+
+    #[must_use]
+    pub fn command_digest(&self) -> &str {
+        &self.command_digest
+    }
+
+    #[must_use]
+    pub fn dependency_digest(&self) -> &str {
+        &self.dependency_digest
+    }
+
+    #[must_use]
+    pub const fn authoritative_dependencies(&self) -> &BTreeSet<AuthoritativeDependency> {
+        &self.authoritative_dependencies
+    }
+
+    #[must_use]
+    pub const fn authoritative_writes(&self) -> &BTreeSet<AuthoritativeDependency> {
+        &self.authoritative_writes
+    }
+
+    #[must_use]
+    pub fn authoritative_diff(&self) -> &[ProposalDiffEntry] {
+        &self.authoritative_diff
+    }
+
+    #[must_use]
+    pub fn intended_result_digest(&self) -> &str {
+        &self.intended_result_digest
+    }
+
+    #[must_use]
+    pub const fn principal(&self) -> ProposalPrincipal {
+        self.principal
+    }
+
+    #[must_use]
+    pub const fn goal(&self) -> ProposalGoal {
+        self.goal
+    }
+
+    #[must_use]
+    pub fn assumptions(&self) -> &[ProposalAssumption] {
+        &self.assumptions
+    }
+
+    #[must_use]
+    pub const fn risk(&self) -> ProposalRisk {
+        self.risk
+    }
+
+    #[must_use]
+    pub const fn confirmation(&self) -> &ProposalConfirmation {
+        &self.confirmation
+    }
+
+    #[must_use]
+    pub const fn requested_budget(&self) -> ProposalBudget {
+        self.requested_budget
+    }
+
+    #[must_use]
+    pub const fn cost(&self) -> ProposalCost {
+        self.cost
     }
 }
 
@@ -4514,6 +4940,40 @@ impl From<CanonicalError> for ProposalPrepareError {
         Self::Canonical(error)
     }
 }
+
+#[derive(Debug, PartialEq)]
+pub enum TipReplacementProposalError {
+    NoCurrentTip,
+    RedoBranch,
+    Stale,
+    Preparation(ProposalPrepareError),
+    Canonical(CanonicalError),
+    VerificationMismatch,
+    HumanApprovalRequired,
+}
+
+impl fmt::Display for TipReplacementProposalError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NoCurrentTip => {
+                formatter.write_str("tip replacement requires an immediate parent revision")
+            }
+            Self::RedoBranch => {
+                formatter.write_str("tip replacement requires the current last revision")
+            }
+            Self::Stale => formatter.write_str("tip replacement provenance is stale"),
+            Self::Preparation(error) => error.fmt(formatter),
+            Self::Canonical(error) => error.fmt(formatter),
+            Self::VerificationMismatch => {
+                formatter.write_str("tip replacement proposal verification failed")
+            }
+            Self::HumanApprovalRequired => formatter
+                .write_str("high-risk tip replacement requires authenticated human approval"),
+        }
+    }
+}
+
+impl std::error::Error for TipReplacementProposalError {}
 
 #[derive(Debug, PartialEq)]
 pub enum ProposalCommitError {
@@ -7557,6 +8017,30 @@ fn proposal_candidate(
         })
         .collect();
     Ok((diff, dependency_digest(after, writes)))
+}
+
+fn tip_replacement_candidate(
+    parent: &Snapshot,
+    corrected_revision: u64,
+    batch: &CommandBatch,
+    writes: &BTreeSet<AuthoritativeDependency>,
+    goal: ProposalGoal,
+) -> Result<(Snapshot, Vec<ProposalDiffEntry>, String), ProposalPrepareError> {
+    let mut candidate =
+        DocumentStore::from_product(parent.revision_id, parent.product.as_ref().clone())?;
+    candidate.next_revision_id = corrected_revision;
+    let revision = candidate.apply_batch(batch)?;
+    let after = revision.snapshot();
+    let diff = writes
+        .iter()
+        .copied()
+        .map(|target| ProposalDiffEntry {
+            target,
+            before: proposal_value(parent, target, goal),
+            after: proposal_value(after, target, goal),
+        })
+        .collect();
+    Ok((after.clone(), diff, dependency_digest(after, writes)))
 }
 
 fn proposal_value(

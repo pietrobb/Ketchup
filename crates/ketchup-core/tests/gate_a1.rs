@@ -1,7 +1,8 @@
 use ketchup_core::adapters::{CliAdapter, RpcAdapter, RpcRequestV1, UiAction, UiAdapter};
 use ketchup_core::document::{
     COMMAND_SCHEMA_V1, CanonicalCommand, CanonicalError, CommandBatch, DefinitionId, Dimension,
-    DocumentStore, FeatureId, FeatureKind, NodeId, ProposalCommitError, ProposalValidity,
+    DocumentStore, FeatureId, FeatureKind, NodeId, ProposalCommitError, ProposalContext,
+    ProposalValidity, TipReplacementProposalError,
 };
 use ketchup_core::persistence;
 
@@ -197,6 +198,190 @@ fn proposal_revalidation_accepts_unrelated_edits_and_rejects_changed_dependencie
             .millimetres(),
         800.0
     );
+}
+
+#[test]
+fn tip_replacement_prepare_preview_and_drop_are_non_mutating() {
+    let mut document = seed_document();
+    let parent_digest = document.current().canonical_digest();
+    let superseded = document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetEvaluatorDimension {
+                id: WIDTH,
+                dimension: dimension("700", 700.0),
+            },
+        ]))
+        .unwrap();
+    let superseded_revision = superseded.id();
+    let superseded_digest = superseded.snapshot().canonical_digest();
+    let revision_count = document.revision_count();
+    let undo_steps = document.visible_undo_steps();
+    let registry_len = document.evaluation_registry_len();
+
+    let parent = document.tip_replacement_parent().unwrap();
+    assert_eq!(parent.parent_digest(), parent_digest);
+    assert_eq!(parent.superseded_revision(), superseded_revision);
+    assert_eq!(parent.superseded_digest(), superseded_digest);
+    assert_eq!(
+        parent
+            .snapshot()
+            .evaluator_node(WIDTH)
+            .unwrap()
+            .dimension()
+            .unwrap()
+            .millimetres(),
+        600.0
+    );
+    let proposal = document
+        .prepare_tip_replacement_proposal(
+            &parent,
+            CommandBatch::new(vec![CanonicalCommand::SetEvaluatorDimension {
+                id: WIDTH,
+                dimension: dimension("720", 720.0),
+            }]),
+            ProposalContext::canonical_preview(),
+        )
+        .unwrap();
+    assert_eq!(proposal.parent_revision(), parent.parent_revision());
+    assert_eq!(proposal.parent_digest(), parent.parent_digest());
+    assert_eq!(proposal.superseded_revision(), superseded_revision);
+    assert_eq!(proposal.superseded_digest(), superseded_digest);
+    assert_eq!(proposal.corrected_revision(), superseded_revision + 1);
+    assert_eq!(proposal.command_digest(), proposal.batch().digest());
+
+    let preview = document
+        .preview_tip_replacement_proposal(&proposal)
+        .unwrap();
+    assert_eq!(preview.revision_id(), superseded_revision + 1);
+    assert_eq!(
+        preview
+            .evaluator_node(WIDTH)
+            .unwrap()
+            .dimension()
+            .unwrap()
+            .millimetres(),
+        720.0
+    );
+    drop(preview);
+    drop(proposal);
+    drop(parent);
+
+    assert_eq!(document.current().revision_id(), superseded_revision);
+    assert_eq!(document.current().canonical_digest(), superseded_digest);
+    assert_eq!(document.revision_count(), revision_count);
+    assert_eq!(document.visible_undo_steps(), undo_steps);
+    assert_eq!(document.visible_redo_steps(), 0);
+    assert_eq!(document.evaluation_registry_len(), registry_len);
+}
+
+#[test]
+fn tip_replacement_commits_next_revision_and_remains_one_undo_step() {
+    let mut document = DocumentStore::new();
+    let superseded = document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateEvaluatorNode {
+                id: WIDTH,
+                name: "width".to_owned(),
+                dimension: dimension("600", 600.0),
+                dependencies: vec![],
+            },
+        ]))
+        .unwrap();
+    let superseded_revision = superseded.id();
+    let parent = document.tip_replacement_parent().unwrap();
+    let proposal = document
+        .prepare_tip_replacement_proposal(
+            &parent,
+            CommandBatch::new(vec![CanonicalCommand::CreateEvaluatorNode {
+                id: WIDTH,
+                name: "width".to_owned(),
+                dimension: dimension("720", 720.0),
+                dependencies: vec![],
+            }]),
+            ProposalContext::canonical_preview(),
+        )
+        .unwrap();
+
+    let corrected = document.commit_tip_replacement_proposal(&proposal).unwrap();
+    let corrected_digest = corrected.snapshot().canonical_digest();
+    assert_eq!(corrected.id(), superseded_revision + 1);
+    assert_eq!(corrected.batch_digest(), proposal.command_digest());
+    assert_eq!(document.revision_count(), 2);
+    assert_eq!(document.visible_undo_steps(), 1);
+    assert_eq!(document.visible_redo_steps(), 0);
+    assert_eq!(
+        corrected
+            .snapshot()
+            .evaluator_node(WIDTH)
+            .unwrap()
+            .dimension()
+            .unwrap()
+            .millimetres(),
+        720.0
+    );
+
+    let parent_after_undo = document.undo().unwrap();
+    assert!(parent_after_undo.evaluator_node(WIDTH).is_none());
+    assert_eq!(document.visible_undo_steps(), 0);
+    assert_eq!(
+        document.redo().unwrap().canonical_digest(),
+        corrected_digest
+    );
+}
+
+#[test]
+fn stale_tip_replacement_failure_preserves_revision_digest_and_history() {
+    let mut document = seed_document();
+    let superseded = document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetEvaluatorDimension {
+                id: WIDTH,
+                dimension: dimension("700", 700.0),
+            },
+        ]))
+        .unwrap();
+    let superseded_digest = superseded.snapshot().canonical_digest();
+    let parent = document.tip_replacement_parent().unwrap();
+    let proposal = document
+        .prepare_tip_replacement_proposal(
+            &parent,
+            CommandBatch::new(vec![CanonicalCommand::SetEvaluatorDimension {
+                id: WIDTH,
+                dimension: dimension("720", 720.0),
+            }]),
+            ProposalContext::canonical_preview(),
+        )
+        .unwrap();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::RenameEvaluatorNode {
+                id: INDEPENDENT,
+                name: "changed_after_planning".to_owned(),
+            },
+        ]))
+        .unwrap();
+
+    let current_revision = document.current().revision_id();
+    let current_digest = document.current().canonical_digest();
+    let revision_count = document.revision_count();
+    let undo_steps = document.visible_undo_steps();
+    let redo_steps = document.visible_redo_steps();
+    let registry_len = document.evaluation_registry_len();
+    assert!(matches!(
+        document.commit_tip_replacement_proposal(&proposal),
+        Err(TipReplacementProposalError::Stale)
+    ));
+    assert_eq!(document.current().revision_id(), current_revision);
+    assert_eq!(document.current().canonical_digest(), current_digest);
+    assert_eq!(document.revision_count(), revision_count);
+    assert_eq!(document.visible_undo_steps(), undo_steps);
+    assert_eq!(document.visible_redo_steps(), redo_steps);
+    assert_eq!(document.evaluation_registry_len(), registry_len);
+    assert_eq!(
+        document.undo().unwrap().canonical_digest(),
+        superseded_digest
+    );
+    assert_eq!(document.redo().unwrap().canonical_digest(), current_digest);
 }
 
 #[test]

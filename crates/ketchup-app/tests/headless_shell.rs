@@ -762,6 +762,74 @@ fn localized_smart_push_pull_chooser_cancels_without_mutation_through_accesskit(
 }
 
 #[test]
+fn circle_push_pull_correction_chooser_and_preview_are_atomic_through_accesskit() {
+    let mut shell = Shell::new();
+    let center = Vec3::new(35.0, 25.0, 20.0);
+    shell.click_command(AppCommand::Circle);
+    shell.click_at(shell.app().viewport_position(center).unwrap());
+    shell.click_at(
+        shell
+            .app()
+            .viewport_position(center + Vec3::new(10.0, 0.0, 0.0))
+            .unwrap(),
+    );
+    let profile_revision = shell.app().document_revision();
+    let profile_digest = shell.app().canonical_digest();
+
+    shell.click_command(AppCommand::PushPull);
+    shell.type_text("10");
+    shell.press_key(Key::Enter);
+    let original_revision = shell.app().document_revision();
+    let original_digest = shell.app().canonical_digest();
+    assert_eq!(original_revision, profile_revision + 1);
+
+    let cut_target_label = shell.catalog().format(
+        "choice-smart-push-pull-cut-target",
+        &BTreeMap::from([
+            ("feature", "Extrusion".to_owned()),
+            ("feature_id", "2".to_owned()),
+            ("occurrence", "Box-1 #1".to_owned()),
+            ("occurrence_id", "1".to_owned()),
+        ]),
+    );
+    let continue_label = shell.catalog().text("choice-smart-push-pull-continue");
+    let cancel_label = shell.catalog().text("choice-smart-push-pull-cancel");
+
+    shell.type_text("-20");
+    shell.press_key(Key::Enter);
+    assert!(shell.app().has_smart_push_pull_chooser());
+    assert_eq!(shell.app().document_revision(), original_revision);
+    assert_eq!(shell.app().canonical_digest(), original_digest);
+    shell.click_role_and_label(Role::Button, &cancel_label);
+    assert_eq!(shell.app().document_revision(), original_revision);
+    assert_eq!(shell.app().canonical_digest(), original_digest);
+
+    shell.type_text("-20");
+    shell.press_key(Key::Enter);
+    shell.click_role_and_label(Role::RadioButton, &cut_target_label);
+    shell.click_role_and_label(Role::Button, &continue_label);
+    assert!(shell.app().has_occurrence_operation_preview());
+    assert_eq!(shell.app().document_revision(), original_revision);
+    assert_eq!(shell.app().canonical_digest(), original_digest);
+    shell.press_key(Key::Escape);
+    assert_eq!(shell.app().document_revision(), original_revision);
+    assert_eq!(shell.app().canonical_digest(), original_digest);
+
+    shell.type_text("-20");
+    shell.press_key(Key::Enter);
+    shell.click_role_and_label(Role::RadioButton, &cut_target_label);
+    shell.click_role_and_label(Role::Button, &continue_label);
+    shell.press_key(Key::Enter);
+    assert_eq!(shell.app().document_revision(), original_revision + 1);
+    assert_ne!(shell.app().canonical_digest(), original_digest);
+
+    shell.key(Key::Z, ctrl());
+    assert_eq!(shell.app().document_revision(), profile_revision);
+    assert_eq!(shell.app().canonical_digest(), profile_digest);
+    assert_eq!(shell.app().circle_profile_count(), 1);
+}
+
+#[test]
 fn circle_push_pull_creates_an_exact_cylinder_and_circular_hole_with_one_step_history() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("circle-push-pull.ketchup");
