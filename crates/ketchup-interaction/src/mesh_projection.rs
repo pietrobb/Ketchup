@@ -8,7 +8,7 @@ use crate::{Ray, Vec3};
 use ketchup_core::document::{
     DefinitionId, FeatureId, FeatureKind, InstancePath, Snapshot, Transform,
 };
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 const NORMAL_EPSILON: f64 = 1.0e-12;
@@ -51,6 +51,7 @@ struct PhysicalMeshHit<'a> {
 pub struct MeshInteractionProjection {
     binding: SnapshotBinding,
     occurrences: Vec<MeshOccurrence>,
+    occurrence_paths: BTreeSet<InstancePath>,
     spatial_index: SpatialIndex,
 }
 
@@ -100,6 +101,10 @@ impl MeshInteractionProjection {
                 })
             })
             .collect::<Vec<_>>();
+        let occurrence_paths = occurrences
+            .iter()
+            .map(|occurrence| occurrence.instance_path.clone())
+            .collect();
         let spatial_index =
             SpatialIndex::build(occurrences.iter().enumerate().map(|(index, occurrence)| {
                 (
@@ -110,6 +115,7 @@ impl MeshInteractionProjection {
         Self {
             binding: SnapshotBinding::from_snapshot(snapshot),
             occurrences,
+            occurrence_paths,
             spatial_index,
         }
     }
@@ -131,9 +137,7 @@ impl MeshInteractionProjection {
 
     #[must_use]
     pub fn contains_occurrence(&self, instance_path: &InstancePath) -> bool {
-        self.occurrences
-            .iter()
-            .any(|occurrence| &occurrence.instance_path == instance_path)
+        self.occurrence_paths.contains(instance_path)
     }
 
     #[must_use]

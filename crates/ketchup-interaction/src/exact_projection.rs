@@ -7,6 +7,7 @@ use crate::spatial::{
 use crate::{Ray, Vec3};
 use ketchup_core::document::{DefinitionId, InstancePath, Snapshot, Transform};
 use ketchup_core::exact_product::{AssemblySelectionTarget, ExactBodyPackage, ExactResultRegistry};
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 const RAY_EPSILON: f64 = 1.0e-12;
@@ -46,6 +47,7 @@ struct PhysicalTriangleHit<'a> {
 pub struct ExactInteractionProjection {
     binding: SnapshotBinding,
     occurrences: Vec<ExactOccurrence>,
+    occurrence_paths: BTreeSet<InstancePath>,
     spatial_index: SpatialIndex,
 }
 
@@ -80,6 +82,10 @@ impl ExactInteractionProjection {
                 })
             })
             .collect::<Vec<_>>();
+        let occurrence_paths = occurrences
+            .iter()
+            .map(|occurrence| occurrence.instance_path.clone())
+            .collect();
         let spatial_index =
             SpatialIndex::build(occurrences.iter().enumerate().map(|(index, occurrence)| {
                 let bounds =
@@ -95,6 +101,7 @@ impl ExactInteractionProjection {
         Self {
             binding: SnapshotBinding::from_snapshot(snapshot),
             occurrences,
+            occurrence_paths,
             spatial_index,
         }
     }
@@ -116,9 +123,7 @@ impl ExactInteractionProjection {
 
     #[must_use]
     pub fn contains_occurrence(&self, instance_path: &InstancePath) -> bool {
-        self.occurrences
-            .iter()
-            .any(|occurrence| &occurrence.instance_path == instance_path)
+        self.occurrence_paths.contains(instance_path)
     }
 
     #[must_use]

@@ -766,6 +766,23 @@ pub(crate) struct ProductModel {
     pub(crate) groups: BTreeMap<GroupId, Arc<Group>>,
     pub(crate) local_occurrences: BTreeMap<LocalOccurrenceKey, Arc<LocalOccurrence>>,
     pub(crate) local_groups: BTreeMap<LocalGroupKey, Arc<LocalGroup>>,
+    pub(crate) canonical_digest: DigestCache,
+}
+
+/// The canonical digest of one immutable product model, computed at most once.
+///
+/// Hashing the whole document is O(document), and interactive paths ask for the
+/// digest many times per frame to check whether a derived result is still
+/// current. A product model never changes after it is published in a snapshot,
+/// so the digest can be memoized. Cloning a model means a new revision is being
+/// built from it, so the clone starts with an empty cache.
+#[derive(Default)]
+pub(crate) struct DigestCache(OnceLock<String>);
+
+impl Clone for DigestCache {
+    fn clone(&self) -> Self {
+        Self::default()
+    }
 }
 
 impl Default for ProductModel {
@@ -790,6 +807,7 @@ impl Default for ProductModel {
             groups: BTreeMap::new(),
             local_occurrences: BTreeMap::new(),
             local_groups: BTreeMap::new(),
+            canonical_digest: DigestCache::default(),
         }
     }
 }
@@ -1961,7 +1979,11 @@ impl Snapshot {
 
     #[must_use]
     pub fn canonical_digest(&self) -> String {
-        digest_snapshot(self)
+        self.product
+            .canonical_digest
+            .0
+            .get_or_init(|| digest_snapshot(self))
+            .clone()
     }
 
     #[must_use]

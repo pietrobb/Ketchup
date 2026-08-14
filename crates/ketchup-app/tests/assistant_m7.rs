@@ -1,5 +1,6 @@
 mod harness;
 
+use eframe::egui;
 use harness::Shell;
 use ketchup_app::{AssistantProvider, AssistantWorkspaceMode};
 use ketchup_core::assistant_sidecar::{
@@ -13,6 +14,7 @@ use ketchup_core::document::{
 use ketchup_core::intent::WorkflowIntent;
 use ketchup_interaction::Vec3;
 use std::collections::BTreeMap;
+use std::time::{Duration, Instant};
 
 #[test]
 fn assistant_advanced_tool_applies_one_verified_undoable_batch_without_confirmation() {
@@ -536,6 +538,63 @@ fn assistant_stacks_24_existing_parts_into_20_layers_as_shared_occurrences_in_on
     assert_eq!(context["occurrence_count"], 480);
     assert_eq!(context["occurrences_complete"], false);
     assert_eq!(context["occurrences"].as_array().unwrap().len(), 100);
+
+    let worker_name = if cfg!(windows) {
+        "ketchup-exact-worker.exe"
+    } else {
+        "ketchup-exact-worker"
+    };
+    let colocated_worker = std::env::current_exe()
+        .unwrap()
+        .parent()
+        .and_then(std::path::Path::parent)
+        .unwrap()
+        .join(worker_name);
+    let worker = if colocated_worker.is_file() {
+        colocated_worker
+    } else {
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/debug")
+            .join(worker_name)
+    };
+    shell.app_mut().connect_exact_worker(&worker).unwrap();
+
+    let first_frame = Instant::now();
+    shell.settle();
+    assert!(
+        first_frame.elapsed() < Duration::from_secs(2),
+        "the first rendered frame of a 480-occurrence scene took {:?}",
+        first_frame.elapsed()
+    );
+    for _ in 0..100 {
+        shell.settle();
+        if shell.app().exact_render_body_count() == 24 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(shell.app().exact_render_body_count(), 24);
+    shell.app_mut().enable_headless_instanced_scene();
+    let pointer = shell.viewport_rect().center();
+    shell.move_pointer(pointer);
+    let repeated_frames = Instant::now();
+    for offset in 0..10 {
+        shell.move_pointer(pointer + egui::Vec2::new(offset as f32, 0.0));
+    }
+    assert!(
+        repeated_frames.elapsed() < Duration::from_secs(2),
+        "ten cached hovered frames of a 480-occurrence exact scene took {:?}",
+        repeated_frames.elapsed()
+    );
+
+    let orbit_frames = Instant::now();
+    shell.orbit_drag(pointer, egui::Vec2::new(3.0, -2.0), 20);
+    assert!(
+        orbit_frames.elapsed() < Duration::from_secs(1),
+        "twenty orbit frames of a 480-occurrence exact scene took {:?}",
+        orbit_frames.elapsed()
+    );
+
     assert_eq!(
         stacked
             .definitions()

@@ -330,6 +330,33 @@ impl Shell {
         self.harness.run();
     }
 
+    /// Orbit the camera by holding the secondary button and moving the pointer.
+    ///
+    /// Each step is a real frame, which is what the desktop shell paints while
+    /// the user drags, so a test can measure interactive camera cost.
+    pub fn orbit_drag(&mut self, from: Pos2, step_delta: Vec2, steps: u32) {
+        self.gap();
+        self.move_pointer(from);
+        self.event(egui::Event::PointerButton {
+            pos: from,
+            button: egui::PointerButton::Secondary,
+            pressed: true,
+            modifiers: Modifiers::NONE,
+        });
+        let mut position = from;
+        for _ in 0..steps {
+            self.advance(CLICK_STEP);
+            position += step_delta;
+            self.event(egui::Event::PointerMoved(position));
+        }
+        self.event(egui::Event::PointerButton {
+            pos: position,
+            button: egui::PointerButton::Secondary,
+            pressed: false,
+            modifiers: Modifiers::NONE,
+        });
+    }
+
     /// Send a key press and release with the given modifiers held.
     pub fn key(&mut self, key: Key, modifiers: Modifiers) {
         self.harness.key_press_modifiers(modifiers, key);

@@ -1080,9 +1080,9 @@ enum EditContext {
 struct InteractionProjectionCache {
     document_id: DocumentId,
     revision_id: u64,
-    digest: String,
     edit_context: Vec<EditContext>,
     exact_result_count: usize,
+    canonical: ketchup_interaction::projection::InteractionProjection,
     exact: ExactInteractionProjection,
     mesh: MeshInteractionProjection,
     boxes: ketchup_interaction::InteractionScene,
@@ -3352,6 +3352,11 @@ impl KetchupApp {
         Ok(())
     }
 
+    #[doc(hidden)]
+    pub fn enable_headless_instanced_scene(&mut self) {
+        self.wgpu_target_format = Some(eframe::wgpu::TextureFormat::Bgra8UnormSrgb);
+    }
+
     #[must_use]
     pub fn exact_render_body_count(&self) -> usize {
         let snapshot = self.document.current();
@@ -3376,7 +3381,6 @@ impl KetchupApp {
     }
 
     fn refresh_interaction_projection_cache(&self, snapshot: &Snapshot) {
-        let digest = snapshot.canonical_digest();
         let rebuild = self
             .interaction_projection_cache
             .borrow()
@@ -3384,7 +3388,6 @@ impl KetchupApp {
             .is_none_or(|cache| {
                 cache.document_id != snapshot.document_id()
                     || cache.revision_id != snapshot.revision_id()
-                    || cache.digest != digest
                     || cache.edit_context != self.selection.edit_context
                     || cache.exact_result_count != self.exact_results.len()
             });
@@ -3394,6 +3397,7 @@ impl KetchupApp {
                 .into_iter()
                 .map(|occurrence| occurrence.instance_path)
                 .collect::<BTreeSet<_>>();
+            let canonical = CanonicalInteractionProjection::from_snapshot(snapshot);
             let exact = ExactInteractionProjection::from_snapshot_where(
                 snapshot,
                 &self.exact_results,
@@ -3402,8 +3406,7 @@ impl KetchupApp {
             let mesh = MeshInteractionProjection::from_snapshot_where(snapshot, |path| {
                 active_context_paths.contains(path) && !exact.contains_occurrence(path)
             });
-            let projection = CanonicalInteractionProjection::from_snapshot(snapshot);
-            let boxes = projection
+            let boxes = canonical
                 .scene_where(|occurrence| {
                     active_context_paths.contains(&occurrence.instance_path)
                         && !exact.contains_occurrence(&occurrence.instance_path)
@@ -3411,7 +3414,7 @@ impl KetchupApp {
                         && occurrence.local_box.is_some()
                 })
                 .expect("canonical visible box projections are valid");
-            let proxies = projection
+            let proxies = canonical
                 .scene_where(|occurrence| {
                     active_context_paths.contains(&occurrence.instance_path)
                         && occurrence.local_box.is_some()
@@ -3420,9 +3423,9 @@ impl KetchupApp {
             *self.interaction_projection_cache.borrow_mut() = Some(InteractionProjectionCache {
                 document_id: snapshot.document_id(),
                 revision_id: snapshot.revision_id(),
-                digest,
                 edit_context: self.selection.edit_context.clone(),
                 exact_result_count: self.exact_results.len(),
+                canonical,
                 exact,
                 mesh,
                 boxes,
@@ -3441,7 +3444,12 @@ impl KetchupApp {
 
     fn active_boxes(&self) -> Vec<RenderBox> {
         let snapshot = self.document.current();
-        CanonicalInteractionProjection::from_snapshot(&snapshot)
+        self.refresh_interaction_projection_cache(&snapshot);
+        let cache = self.interaction_projection_cache.borrow();
+        cache
+            .as_ref()
+            .expect("interaction cache was built")
+            .canonical
             .occurrences()
             .iter()
             .filter(|occurrence| occurrence.visible)
@@ -3465,7 +3473,6 @@ impl KetchupApp {
                     .exact_results
                     .get(&occurrence.body.definition_id)
                     .filter(|_| translation_only)
-                    .filter(|package| package.is_current(&snapshot))
                     .map(|package| package.bounds_mm());
                 let (origin_mm, size_mm) =
                     exact_bounds.map_or((box_proxy.origin_mm, box_proxy.size_mm), |[min, max]| {
@@ -9833,7 +9840,12 @@ impl KetchupApp {
         } else {
             None
         };
-        let exact_projection = self.exact_projection(&snapshot);
+        self.refresh_interaction_projection_cache(&snapshot);
+        let interaction_projection_cache = self.interaction_projection_cache.borrow();
+        let exact_projection = &interaction_projection_cache
+            .as_ref()
+            .expect("interaction cache was built")
+            .exact;
         let active_context_paths = self
             .active_scene_query()
             .into_iter()
@@ -9841,7 +9853,7 @@ impl KetchupApp {
             .collect::<BTreeSet<_>>();
         let mut faces = Vec::new();
         let mut edges = Vec::new();
-        for item in self.viewport_boxes(&exact_projection) {
+        for item in self.viewport_boxes(exact_projection) {
             let item = self.render_box(item);
             let proxy_preview = self.proxy_preview_is_active(&item);
             let out_of_context = !active_context_paths.contains(&item.instance_path);
@@ -9910,8 +9922,10 @@ impl KetchupApp {
                 }
             }
         }
-        let canonical_projection = CanonicalInteractionProjection::from_snapshot(&snapshot);
-        for occurrence in canonical_projection
+        for occurrence in interaction_projection_cache
+            .as_ref()
+            .expect("interaction cache was built")
+            .canonical
             .occurrences()
             .iter()
             .filter(|occurrence| {
@@ -10046,6 +10060,7 @@ impl KetchupApp {
                 }
             }
         }
+        drop(interaction_projection_cache);
         faces.sort_by(|left, right| right.depth.total_cmp(&left.depth));
 
         self.paint_scene_base_layers(&painter, response.rect, scene_plan);
