@@ -1127,6 +1127,24 @@ fn file_import_exact_step_commits_undoes_and_persists_source_blob_offscreen() {
         std::thread::sleep(Duration::from_millis(20));
     }
     assert_eq!(shell.app().exact_render_body_count(), 1);
+    assert!(
+        shell.app().exact_render_triangle_count() > 0,
+        "an imported STEP body without triangles is invisible and unpickable"
+    );
+    let bounds = shell.app().exact_render_bounds()[0];
+    let centre = Vec3::new(
+        (bounds[0][0] + bounds[1][0]) * 0.5,
+        (bounds[0][1] + bounds[1][1]) * 0.5,
+        (bounds[0][2] + bounds[1][2]) * 0.5,
+    );
+    let viewport = shell.viewport_rect();
+    let screen = shell.app().project_to_screen(centre, viewport);
+    shell.click_at(screen);
+    assert_eq!(
+        shell.app().selected_occurrence_count(),
+        1,
+        "an imported STEP body must be pickable where it is painted"
+    );
     let before_export = canonical_state(&shell);
     shell.click_menu_command("menu-file", AppCommand::ExportExactStep);
     assert_eq!(canonical_state(&shell), before_export);

@@ -577,11 +577,25 @@ pub trait ExactBodyView {
     }
 }
 
+/// How far a tessellated vertex may sit outside the committed exact bounds.
+///
+/// A tessellation interpolates curved faces, so it stays inside the exact
+/// bounds; this slack only absorbs floating-point noise at the extremes.
+const IMPORTED_MESH_BOUNDS_TOLERANCE_MM: f64 = 1.0e-6;
+
 impl ImportedExactPackage {
+    /// Build the render product of an imported exact body from its canonical
+    /// specification, its content-addressed source bytes, and the derived
+    /// display mesh the isolated worker tessellated for it.
+    ///
+    /// The mesh is display-only: it never becomes canonical state, and it is
+    /// refused unless every vertex lies inside the bounds the import receipt
+    /// already committed to, so a swapped or stale mesh cannot be shown.
     pub fn from_snapshot(
         snapshot: &Snapshot,
         definition_id: DefinitionId,
         source_bytes: Vec<u8>,
+        mesh: &crate::import::StepImportMesh,
     ) -> Result<Self, ExactProductError> {
         let definition = snapshot
             .definition(definition_id)
@@ -600,8 +614,27 @@ impl ImportedExactPackage {
         {
             return Err(ExactProductError::InvalidWorkerEvidence);
         }
-        let vertices = Vec::new();
-        let triangles = Vec::new();
+        if !mesh.is_within_bounds(spec.bounds_mm, IMPORTED_MESH_BOUNDS_TOLERANCE_MM) {
+            return Err(ExactProductError::InvalidWorkerEvidence);
+        }
+        let vertices = mesh
+            .vertices_mm
+            .iter()
+            .map(|position| ExactVertex {
+                position_mm: *position,
+            })
+            .collect::<Vec<_>>();
+        let triangles = mesh
+            .triangles
+            .iter()
+            .map(|triangle| ExactTriangle {
+                vertex_indices: triangle.vertex_indices,
+                face_role: None,
+            })
+            .collect::<Vec<_>>();
+        if triangles.is_empty() {
+            return Err(ExactProductError::InvalidWorkerEvidence);
+        }
         let source_digest = snapshot.canonical_digest();
         let source_identity = spec
             .source_sha256

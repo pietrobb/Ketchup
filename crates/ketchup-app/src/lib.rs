@@ -5163,9 +5163,28 @@ impl KetchupApp {
                             if actual != expected {
                                 return Err("imported STEP worker evidence does not match canonical specification".to_owned());
                             }
-                            ImportedExactPackage::from_snapshot(&snapshot, definition_id, source)
-                                .map(ExactBodyPackage::Imported)
-                                .map_err(|error| error.to_string())?
+                            let mesh_target = tempfile::Builder::new()
+                                .prefix("ketchup-imported-step-mesh-")
+                                .suffix(".bin")
+                                .tempfile()
+                                .map_err(|error| error.to_string())?;
+                            let mesh = worker
+                                .tessellate_step_import_with_cancellation(
+                                    temporary.path(),
+                                    &source_sha256,
+                                    &spec.result_fingerprint,
+                                    mesh_target.path(),
+                                    &worker_cancelled,
+                                )
+                                .map_err(|error| error.to_string())?;
+                            ImportedExactPackage::from_snapshot(
+                                &snapshot,
+                                definition_id,
+                                source,
+                                &mesh,
+                            )
+                            .map(ExactBodyPackage::Imported)
+                            .map_err(|error| error.to_string())?
                         }
                     };
                     packages.push(Arc::new(package));
@@ -5228,6 +5247,20 @@ impl KetchupApp {
             .filter(|package| package.is_current(&snapshot))
             .map(|package| package.bounds_mm())
             .collect()
+    }
+
+    /// How many triangles the current exact render products actually carry.
+    ///
+    /// An exact body with no triangles is invisible and unpickable, which is
+    /// indistinguishable from a failed import, so tests assert on this.
+    #[must_use]
+    pub fn exact_render_triangle_count(&self) -> usize {
+        let snapshot = self.document.current();
+        self.exact_results
+            .values()
+            .filter(|package| package.is_current(&snapshot))
+            .map(|package| package.triangles().len())
+            .sum()
     }
 
     #[must_use]

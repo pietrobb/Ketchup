@@ -1,7 +1,9 @@
 #![forbid(unsafe_code)]
 
 use ketchup_core::graph::sha256_hex;
-use ketchup_core::import::MAX_STEP_SOURCE_BYTES;
+use ketchup_core::import::{
+    MAX_STEP_MESH_TRIANGLES, MAX_STEP_SOURCE_BYTES, StepImportMesh, StepMeshTriangle,
+};
 use ketchup_exact::{
     BottleEdgeFinish, BoxSpec, CircleExtrudeSpec, CutMode, CylinderToolSpec, ExactBackend,
     HalfLapFaceRole, HalfLapNotchSpec, HalfLapParticipant, PlanarProfileSegment, Point3,
@@ -89,6 +91,15 @@ fn handle_request(backend: &ExactBackend, request: &str) -> Option<String> {
         (Some("INSPECT_STEP_PART_M21_V1"), Some(source_sha256), Some(source_path)) => Some(
             m21_step_part_inspection_response(backend, source_sha256, source_path),
         ),
+        (Some("TESSELLATE_STEP_PART_M21_V1"), Some(source_sha256), Some(source_path)) => {
+            let remaining = fields.collect::<Vec<_>>();
+            Some(m21_step_part_mesh_response(
+                backend,
+                source_sha256,
+                source_path,
+                &remaining,
+            ))
+        }
         (Some("ASSEMBLE_STEP_M21_V1"), Some(assembly_digest), Some(output_path)) => {
             let remaining = fields.collect::<Vec<_>>();
             Some(m21_step_assembly_response(
@@ -2625,6 +2636,9 @@ fn m21_box_step_export_response(
     }
 }
 
+/// Fixed angular deflection so the same part always meshes identically.
+const STEP_MESH_ANGULAR_DEFLECTION: f64 = 0.35;
+
 fn step_import_result_fingerprint(
     source_sha256: &str,
     output: &ketchup_exact::ExactOpOutput,
@@ -2737,6 +2751,79 @@ fn m21_step_part_inspection_response(
         }
         Err(error) => geometry_error_response(&error),
     }
+}
+
+/// Tessellate an already-inspected STEP part into a bounded display mesh.
+///
+/// The mesh is written to the caller's path and identified by its own digest;
+/// the response repeats the result fingerprint so the caller can only bind a
+/// mesh to the exact body it already committed to.
+fn m21_step_part_mesh_response(
+    backend: &ExactBackend,
+    source_sha256: &str,
+    source_path: &str,
+    fields: &[&str],
+) -> String {
+    if !is_canonical_digest(source_sha256) || fields.len() != 1 {
+        return "ERR invalid_request".to_owned();
+    }
+    let (Some(source_path), Some(output_path)) =
+        (decode_hex_utf8(source_path), decode_hex_utf8(fields[0]))
+    else {
+        return "ERR invalid_request".to_owned();
+    };
+    let source = match verified_step_copy(&source_path, source_sha256, "tessellate_step_part") {
+        Ok(source) => source,
+        Err(response) => return response,
+    };
+    let output = match backend.import_step(&source.path().to_string_lossy()) {
+        Ok(output) => output,
+        Err(error) => return geometry_error_response(&error),
+    };
+    let bounds = output.body.topology.bounds_mm;
+    let diagonal = ((bounds.max.x - bounds.min.x).powi(2)
+        + (bounds.max.y - bounds.min.y).powi(2)
+        + (bounds.max.z - bounds.min.z).powi(2))
+    .sqrt();
+    if !diagonal.is_finite() || diagonal <= 0.0 {
+        return transport_error_response(
+            "tessellate_step_part",
+            "STEP part has no measurable extent to tessellate",
+        );
+    }
+    let deflection = (diagonal * 1.0e-3).max(1.0e-3);
+    let mesh = match backend.tessellate_body(
+        &output.body,
+        deflection,
+        STEP_MESH_ANGULAR_DEFLECTION,
+        MAX_STEP_MESH_TRIANGLES,
+    ) {
+        Ok(mesh) => mesh,
+        Err(error) => return geometry_error_response(&error),
+    };
+    let mesh = StepImportMesh {
+        vertices_mm: mesh.vertices_mm,
+        triangles: mesh
+            .triangles
+            .into_iter()
+            .map(|triangle| StepMeshTriangle {
+                vertex_indices: triangle.vertex_indices,
+                face_ordinal: triangle.face_ordinal,
+            })
+            .collect(),
+    };
+    let encoded = mesh.encode();
+    if let Err(error) = std::fs::write(&output_path, &encoded) {
+        return transport_error_response("tessellate_step_part", &error.to_string());
+    }
+    format!(
+        "OK_M21_STEP_MESH_V1 {source_sha256} {} {} {} {} {:016x}",
+        step_import_result_fingerprint(source_sha256, &output),
+        mesh.vertices_mm.len(),
+        mesh.triangles.len(),
+        sha256_hex(&encoded),
+        deflection.to_bits(),
+    )
 }
 
 fn m21_step_assembly_response(

@@ -16,6 +16,9 @@
 #include <BRepCheck_Analyzer.hxx>
 #include <BRep_Builder.hxx>
 #include <BRepGProp.hxx>
+#include <BRepMesh_IncrementalMesh.hxx>
+#include <Poly_Triangulation.hxx>
+#include <TopLoc_Location.hxx>
 #include <BRepFilletAPI_MakeChamfer.hxx>
 #include <BRepFilletAPI_MakeFillet.hxx>
 #include <BRepOffsetAPI_MakeOffset.hxx>
@@ -1927,6 +1930,131 @@ rust::String export_step_native(
     return rust::String(failure.what());
   } catch (...) {
     return rust::String("Unknown native STEP export failure");
+  }
+}
+
+struct NativeMeshResult::Impl {
+  std::uint8_t status = STATUS_NULL_RESULT;
+  std::string diagnostic = "Native tessellation did not produce a result";
+  std::vector<NativeMeshVertex> vertices;
+  std::vector<NativeMeshTriangle> triangles;
+};
+
+NativeMeshResult::NativeMeshResult(std::unique_ptr<Impl> impl) noexcept
+    : impl_(std::move(impl)) {}
+NativeMeshResult::~NativeMeshResult() = default;
+NativeMeshResult::NativeMeshResult(NativeMeshResult&&) noexcept = default;
+NativeMeshResult& NativeMeshResult::operator=(NativeMeshResult&&) noexcept = default;
+
+std::uint8_t NativeMeshResult::mesh_status_code() const noexcept {
+  return impl_ == nullptr ? STATUS_NULL_RESULT : impl_->status;
+}
+
+rust::String NativeMeshResult::mesh_diagnostic() const {
+  return rust::String(impl_ == nullptr ? "Missing native tessellation" : impl_->diagnostic);
+}
+
+rust::Vec<NativeMeshVertex> NativeMeshResult::mesh_vertices() const {
+  rust::Vec<NativeMeshVertex> output;
+  if (impl_ != nullptr) {
+    output.reserve(impl_->vertices.size());
+    for (const NativeMeshVertex& vertex : impl_->vertices) {
+      output.push_back(vertex);
+    }
+  }
+  return output;
+}
+
+rust::Vec<NativeMeshTriangle> NativeMeshResult::mesh_triangles() const {
+  rust::Vec<NativeMeshTriangle> output;
+  if (impl_ != nullptr) {
+    output.reserve(impl_->triangles.size());
+    for (const NativeMeshTriangle& triangle : impl_->triangles) {
+      output.push_back(triangle);
+    }
+  }
+  return output;
+}
+
+namespace {
+
+std::unique_ptr<NativeMeshResult> mesh_error(
+    std::uint8_t status, std::string diagnostic) noexcept {
+  auto impl = std::make_unique<NativeMeshResult::Impl>();
+  impl->status = status;
+  impl->diagnostic = std::move(diagnostic);
+  return std::make_unique<NativeMeshResult>(std::move(impl));
+}
+
+} // namespace
+
+std::unique_ptr<NativeMeshResult> tessellate_body_native(
+    const NativeOperationResult& body, double deflection,
+    double angular_deflection, std::uint32_t max_triangles) noexcept {
+  try {
+    if (!body.valid() || body.impl().shape.IsNull()) {
+      return mesh_error(STATUS_INVALID_PARAMETER, "Exact body is unavailable or invalid");
+    }
+    if (!(deflection > 0.0) || !(angular_deflection > 0.0) || max_triangles == 0) {
+      return mesh_error(STATUS_INVALID_PARAMETER, "Tessellation parameters are out of range");
+    }
+    TopoDS_Shape shape = body.impl().shape;
+    BRepMesh_IncrementalMesh mesher(shape, deflection, Standard_False, angular_deflection, Standard_True);
+    mesher.Perform();
+    if (!mesher.IsDone()) {
+      return mesh_error(STATUS_INVALID_SHAPE, "OCCT tessellation did not complete");
+    }
+    auto impl = std::make_unique<NativeMeshResult::Impl>();
+    std::uint32_t face_ordinal = 0;
+    for (TopExp_Explorer explorer(shape, TopAbs_FACE); explorer.More(); explorer.Next(), ++face_ordinal) {
+      const TopoDS_Face face = TopoDS::Face(explorer.Current());
+      TopLoc_Location location;
+      const Handle(Poly_Triangulation) triangulation = BRep_Tool::Triangulation(face, location);
+      if (triangulation.IsNull()) {
+        continue;
+      }
+      const gp_Trsf transform = location.Transformation();
+      const bool reversed = face.Orientation() == TopAbs_REVERSED;
+      const std::uint32_t base_index = static_cast<std::uint32_t>(impl->vertices.size());
+      if (impl->vertices.size() + static_cast<std::size_t>(triangulation->NbNodes()) >
+          static_cast<std::size_t>(max_triangles) * 3) {
+        return mesh_error(STATUS_INVALID_SHAPE, "Tessellation exceeds the bounded vertex budget");
+      }
+      for (Standard_Integer node = 1; node <= triangulation->NbNodes(); ++node) {
+        gp_Pnt point = triangulation->Node(node);
+        point.Transform(transform);
+        impl->vertices.push_back(NativeMeshVertex{point.X(), point.Y(), point.Z()});
+      }
+      for (Standard_Integer index = 1; index <= triangulation->NbTriangles(); ++index) {
+        if (impl->triangles.size() >= static_cast<std::size_t>(max_triangles)) {
+          return mesh_error(STATUS_INVALID_SHAPE, "Tessellation exceeds the bounded triangle budget");
+        }
+        Standard_Integer first = 0;
+        Standard_Integer second = 0;
+        Standard_Integer third = 0;
+        triangulation->Triangle(index).Get(first, second, third);
+        if (reversed) {
+          std::swap(second, third);
+        }
+        impl->triangles.push_back(NativeMeshTriangle{
+            base_index + static_cast<std::uint32_t>(first - 1),
+            base_index + static_cast<std::uint32_t>(second - 1),
+            base_index + static_cast<std::uint32_t>(third - 1),
+            face_ordinal});
+      }
+    }
+    if (impl->triangles.empty()) {
+      return mesh_error(STATUS_INVALID_SHAPE, "OCCT tessellation produced no triangles");
+    }
+    impl->status = STATUS_OK;
+    impl->diagnostic.clear();
+    return std::make_unique<NativeMeshResult>(std::move(impl));
+  } catch (const Standard_Failure& failure) {
+    return mesh_error(STATUS_BACKEND_EXCEPTION, standard_failure_message(failure));
+  } catch (const std::exception& failure) {
+    return mesh_error(STATUS_BACKEND_EXCEPTION, failure.what());
+  } catch (...) {
+    return mesh_error(STATUS_BACKEND_EXCEPTION, "Unknown native tessellation failure");
   }
 }
 

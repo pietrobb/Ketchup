@@ -63,6 +63,7 @@ fn main() {
         "TKBRep",
         "TKGeomAlgo",
         "TKTopAlgo",
+        "TKMesh",
         "TKPrim",
         "TKBool",
         "TKBO",

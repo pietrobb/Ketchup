@@ -11,6 +11,8 @@ struct NativeEdgeFaceEvidence;
 struct NativeFaceEdgeEvidence;
 struct NativeFaceEvidence;
 struct NativeHistoryEvidence;
+struct NativeMeshTriangle;
+struct NativeMeshVertex;
 struct NativeTopologySummary;
 
 class NativeOperationResult final {
@@ -101,5 +103,29 @@ std::unique_ptr<NativeOperationResult> combine_bodies_native(
     const NativeOperationResult& base, const NativeOperationResult& added) noexcept;
 rust::String export_step_native(
     const NativeOperationResult& body, rust::Str path) noexcept;
+
+class NativeMeshResult final {
+public:
+  struct Impl;
+
+  explicit NativeMeshResult(std::unique_ptr<Impl> impl) noexcept;
+  ~NativeMeshResult();
+  NativeMeshResult(NativeMeshResult&&) noexcept;
+  NativeMeshResult& operator=(NativeMeshResult&&) noexcept;
+  NativeMeshResult(const NativeMeshResult&) = delete;
+  NativeMeshResult& operator=(const NativeMeshResult&) = delete;
+
+  std::uint8_t mesh_status_code() const noexcept;
+  rust::String mesh_diagnostic() const;
+  rust::Vec<NativeMeshVertex> mesh_vertices() const;
+  rust::Vec<NativeMeshTriangle> mesh_triangles() const;
+
+private:
+  std::unique_ptr<Impl> impl_;
+};
+
+std::unique_ptr<NativeMeshResult> tessellate_body_native(
+    const NativeOperationResult& body, double deflection,
+    double angular_deflection, std::uint32_t max_triangles) noexcept;
 
 } // namespace ketchup::exact

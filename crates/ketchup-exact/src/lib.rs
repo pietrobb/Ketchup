@@ -73,10 +73,24 @@ mod ffi {
         output_present: bool,
     }
 
+    struct NativeMeshVertex {
+        x_mm: f64,
+        y_mm: f64,
+        z_mm: f64,
+    }
+
+    struct NativeMeshTriangle {
+        first: u32,
+        second: u32,
+        third: u32,
+        face_ordinal: u32,
+    }
+
     unsafe extern "C++" {
         include!("ketchup_exact.hxx");
 
         type NativeOperationResult;
+        type NativeMeshResult;
 
         fn make_box_native(
             origin_x: f64,
@@ -199,6 +213,17 @@ mod ffi {
             added: &NativeOperationResult,
         ) -> UniquePtr<NativeOperationResult>;
         fn export_step_native(body: &NativeOperationResult, path: &str) -> String;
+        fn tessellate_body_native(
+            body: &NativeOperationResult,
+            deflection: f64,
+            angular_deflection: f64,
+            max_triangles: u32,
+        ) -> UniquePtr<NativeMeshResult>;
+
+        fn mesh_status_code(self: &NativeMeshResult) -> u8;
+        fn mesh_diagnostic(self: &NativeMeshResult) -> String;
+        fn mesh_vertices(self: &NativeMeshResult) -> Vec<NativeMeshVertex>;
+        fn mesh_triangles(self: &NativeMeshResult) -> Vec<NativeMeshTriangle>;
 
         fn status_code(self: &NativeOperationResult) -> u8;
         fn diagnostic(self: &NativeOperationResult) -> String;
@@ -508,6 +533,21 @@ pub struct ToleranceReport {
     pub profile: &'static str,
     pub shape_valid: bool,
     pub accepted_exact_solid: bool,
+}
+
+/// One triangle of a derived display mesh, tagged with the ordinal of the
+/// exact face it was tessellated from so shading and picking can stay per-face.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ExactMeshTriangle {
+    pub vertex_indices: [u32; 3],
+    pub face_ordinal: u32,
+}
+
+/// A derived, non-canonical display mesh of an exact body.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExactTessellation {
+    pub vertices_mm: Vec<[f64; 3]>,
+    pub triangles: Vec<ExactMeshTriangle>,
 }
 
 pub struct ExactBody {
@@ -1205,6 +1245,91 @@ impl ExactBackend {
                 backend_fingerprint: BACKEND_FINGERPRINT,
             })
         }
+    }
+
+    /// Tessellate an exact body into a display mesh.
+    ///
+    /// The mesh is derived, never canonical: it exists so an exact body that
+    /// carries no analytic render geometry — an imported STEP part — is still
+    /// visible and pickable. Deflections are supplied by the caller so the
+    /// same body always yields the same triangles.
+    pub fn tessellate_body(
+        &self,
+        body: &ExactBody,
+        deflection: f64,
+        angular_deflection: f64,
+        max_triangles: u32,
+    ) -> Result<ExactTessellation, GeometryError> {
+        let input = format!(
+            "tessellate_body:{}:{}:{}:{max_triangles}",
+            body.result_fingerprint,
+            deflection.to_bits(),
+            angular_deflection.to_bits()
+        );
+        let input_digest = stable_digest(&input);
+        let native = body.native.as_ref().ok_or_else(|| GeometryError {
+            code: GeometryErrorCode::NullResult,
+            diagnostic: "Exact body lost its owned native shape".to_owned(),
+            operation: "tessellate_body",
+            input_digest: input_digest.clone(),
+            backend_fingerprint: BACKEND_FINGERPRINT,
+        })?;
+        let mesh =
+            ffi::tessellate_body_native(native, deflection, angular_deflection, max_triangles);
+        let mesh = mesh.as_ref().ok_or_else(|| GeometryError {
+            code: GeometryErrorCode::NullResult,
+            diagnostic: "Native facade returned no tessellation object".to_owned(),
+            operation: "tessellate_body",
+            input_digest: input_digest.clone(),
+            backend_fingerprint: BACKEND_FINGERPRINT,
+        })?;
+        if mesh.mesh_status_code() != 0 {
+            return Err(GeometryError {
+                code: native_status(mesh.mesh_status_code()),
+                diagnostic: mesh.mesh_diagnostic(),
+                operation: "tessellate_body",
+                input_digest,
+                backend_fingerprint: BACKEND_FINGERPRINT,
+            });
+        }
+        let vertices_mm = mesh
+            .mesh_vertices()
+            .into_iter()
+            .map(|vertex| [vertex.x_mm, vertex.y_mm, vertex.z_mm])
+            .collect::<Vec<_>>();
+        let triangles = mesh
+            .mesh_triangles()
+            .into_iter()
+            .map(|triangle| ExactMeshTriangle {
+                vertex_indices: [triangle.first, triangle.second, triangle.third],
+                face_ordinal: triangle.face_ordinal,
+            })
+            .collect::<Vec<_>>();
+        let vertex_count = vertices_mm.len();
+        if triangles.is_empty()
+            || vertices_mm
+                .iter()
+                .flatten()
+                .any(|coordinate| !coordinate.is_finite())
+            || triangles.iter().any(|triangle| {
+                triangle
+                    .vertex_indices
+                    .iter()
+                    .any(|index| *index as usize >= vertex_count)
+            })
+        {
+            return Err(GeometryError {
+                code: GeometryErrorCode::InvalidShape,
+                diagnostic: "Native tessellation is not a well-formed indexed mesh".to_owned(),
+                operation: "tessellate_body",
+                input_digest,
+                backend_fingerprint: BACKEND_FINGERPRINT,
+            });
+        }
+        Ok(ExactTessellation {
+            vertices_mm,
+            triangles,
+        })
     }
 
     pub fn cut_box(

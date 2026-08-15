@@ -352,6 +352,130 @@ pub struct StepImportEvidence {
     pub tolerance: String,
 }
 
+/// Upper bound on a derived STEP display mesh.
+///
+/// The mesh is a discardable render product, not canonical state, so its
+/// envelope is wider than the canonical mesh-body limits — but it is still
+/// bounded so a hostile or pathological part cannot exhaust memory.
+pub const MAX_STEP_MESH_TRIANGLES: u32 = 2_000_000;
+pub const MAX_STEP_MESH_VERTICES: u32 = 6_000_000;
+pub const STEP_MESH_MAGIC: &[u8; 12] = b"KETCHUPMESH1";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct StepMeshTriangle {
+    pub vertex_indices: [u32; 3],
+    pub face_ordinal: u32,
+}
+
+/// A derived display mesh of an imported exact STEP body.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StepImportMesh {
+    pub vertices_mm: Vec<[f64; 3]>,
+    pub triangles: Vec<StepMeshTriangle>,
+}
+
+impl StepImportMesh {
+    /// Encode the mesh in the fixed little-endian transport layout.
+    #[must_use]
+    pub fn encode(&self) -> Vec<u8> {
+        let mut bytes = STEP_MESH_MAGIC.to_vec();
+        bytes.extend_from_slice(&(self.vertices_mm.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&(self.triangles.len() as u32).to_le_bytes());
+        for coordinate in self.vertices_mm.iter().flatten() {
+            bytes.extend_from_slice(&coordinate.to_le_bytes());
+        }
+        for triangle in &self.triangles {
+            for index in triangle.vertex_indices {
+                bytes.extend_from_slice(&index.to_le_bytes());
+            }
+            bytes.extend_from_slice(&triangle.face_ordinal.to_le_bytes());
+        }
+        bytes
+    }
+
+    /// Decode a transported mesh, refusing anything that is not a complete,
+    /// in-range, finite indexed mesh of exactly the declared size.
+    pub fn decode(bytes: &[u8]) -> Result<Self, StepMeshError> {
+        if bytes.len() < STEP_MESH_MAGIC.len() + 8 || !bytes.starts_with(STEP_MESH_MAGIC) {
+            return Err(StepMeshError::Malformed);
+        }
+        let counts = &bytes[STEP_MESH_MAGIC.len()..STEP_MESH_MAGIC.len() + 8];
+        let vertex_count = u32::from_le_bytes(counts[0..4].try_into().expect("four bytes"));
+        let triangle_count = u32::from_le_bytes(counts[4..8].try_into().expect("four bytes"));
+        if vertex_count == 0
+            || triangle_count == 0
+            || vertex_count > MAX_STEP_MESH_VERTICES
+            || triangle_count > MAX_STEP_MESH_TRIANGLES
+        {
+            return Err(StepMeshError::OutOfEnvelope);
+        }
+        let vertex_bytes = vertex_count as usize * 24;
+        let triangle_bytes = triangle_count as usize * 16;
+        let payload = &bytes[STEP_MESH_MAGIC.len() + 8..];
+        if payload.len() != vertex_bytes + triangle_bytes {
+            return Err(StepMeshError::Malformed);
+        }
+        let mut vertices_mm = Vec::with_capacity(vertex_count as usize);
+        for vertex in payload[..vertex_bytes].chunks_exact(24) {
+            let mut position = [0.0_f64; 3];
+            for (axis, value) in vertex.chunks_exact(8).enumerate() {
+                position[axis] = f64::from_le_bytes(value.try_into().expect("eight bytes"));
+            }
+            if position.iter().any(|value| !value.is_finite()) {
+                return Err(StepMeshError::Malformed);
+            }
+            vertices_mm.push(position);
+        }
+        let mut triangles = Vec::with_capacity(triangle_count as usize);
+        for triangle in payload[vertex_bytes..].chunks_exact(16) {
+            let mut fields = [0_u32; 4];
+            for (slot, value) in triangle.chunks_exact(4).enumerate() {
+                fields[slot] = u32::from_le_bytes(value.try_into().expect("four bytes"));
+            }
+            if fields[..3].iter().any(|index| *index >= vertex_count) {
+                return Err(StepMeshError::Malformed);
+            }
+            triangles.push(StepMeshTriangle {
+                vertex_indices: [fields[0], fields[1], fields[2]],
+                face_ordinal: fields[3],
+            });
+        }
+        Ok(Self {
+            vertices_mm,
+            triangles,
+        })
+    }
+
+    /// Whether every vertex sits inside the canonical bounds the import
+    /// receipt already committed to, within `tolerance_mm`.
+    #[must_use]
+    pub fn is_within_bounds(&self, bounds_mm: [[f64; 3]; 2], tolerance_mm: f64) -> bool {
+        self.vertices_mm.iter().all(|vertex| {
+            (0..3).all(|axis| {
+                vertex[axis] >= bounds_mm[0][axis] - tolerance_mm
+                    && vertex[axis] <= bounds_mm[1][axis] + tolerance_mm
+            })
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StepMeshError {
+    Malformed,
+    OutOfEnvelope,
+}
+
+impl fmt::Display for StepMeshError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Malformed => "imported STEP display mesh is malformed",
+            Self::OutOfEnvelope => "imported STEP display mesh exceeds the bounded envelope",
+        })
+    }
+}
+
+impl std::error::Error for StepMeshError {}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StepImportPlanError {
     Empty,

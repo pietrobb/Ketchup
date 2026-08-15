@@ -25,7 +25,9 @@ use ketchup_core::exact_product::{
     canonical_reference_lineage_digest,
 };
 use ketchup_core::graph::sha256_hex;
-use ketchup_core::import::{ImportLengthUnit, MAX_STEP_SOURCE_BYTES, StepImportEvidence};
+use ketchup_core::import::{
+    ImportLengthUnit, MAX_STEP_SOURCE_BYTES, StepImportEvidence, StepImportMesh,
+};
 use ketchup_core::prismatic::{Aabb, JointId};
 use ketchup_exact::GeometryErrorCode;
 use serde::{Deserialize, Serialize};
@@ -1716,6 +1718,62 @@ impl ExactWorkerClient {
         }
     }
 
+    fn tessellate_step_part_request_with_cancellation(
+        &mut self,
+        path: &Path,
+        source_sha256: &str,
+        result_fingerprint: &str,
+        output_path: &Path,
+        cancelled: &AtomicBool,
+    ) -> Result<StepImportMesh, WorkerError> {
+        self.verify_m21_step_model_capability(cancelled)?;
+        let response = self.request_with_cancellation(
+            &format!(
+                "TESSELLATE_STEP_PART_M21_V1 {source_sha256} {} {}",
+                hex_encode(path.to_string_lossy().as_bytes()),
+                hex_encode(output_path.to_string_lossy().as_bytes())
+            ),
+            cancelled,
+        )?;
+        let fields = response.split_whitespace().collect::<Vec<_>>();
+        if matches!(fields.first(), Some(&"ERR") | Some(&"ERR_DETAIL")) {
+            return match parse_error_response(&response, &fields) {
+                WorkerError::Protocol(response) => self.fail_protocol(response),
+                error => Err(error),
+            };
+        }
+        if fields.len() != 7
+            || fields[0] != "OK_M21_STEP_MESH_V1"
+            || fields[1] != source_sha256
+            || fields[2] != result_fingerprint
+            || !is_sha256_digest(fields[5])
+        {
+            return self.fail_protocol(response);
+        }
+        let (Ok(vertex_count), Ok(triangle_count)) =
+            (fields[3].parse::<u32>(), fields[4].parse::<u32>())
+        else {
+            return self.fail_protocol(response);
+        };
+        let encoded = std::fs::read(output_path)
+            .map_err(|error| WorkerError::Transport(error.to_string()))?;
+        if sha256_hex(&encoded) != fields[5] {
+            return Err(WorkerError::Transport(
+                "imported STEP display mesh digest does not match the worker receipt".to_owned(),
+            ));
+        }
+        let mesh = StepImportMesh::decode(&encoded)
+            .map_err(|error| WorkerError::Protocol(error.to_string()))?;
+        if mesh.vertices_mm.len() as u32 != vertex_count
+            || mesh.triangles.len() as u32 != triangle_count
+        {
+            return Err(WorkerError::Transport(
+                "imported STEP display mesh size does not match the worker receipt".to_owned(),
+            ));
+        }
+        Ok(mesh)
+    }
+
     fn assemble_step_model_request_with_cancellation(
         &mut self,
         manifest: &StepAssemblyManifest,
@@ -2106,6 +2164,48 @@ impl ExactWorkerSupervisor {
                 self.client.inspect_step_part_request_with_cancellation(
                     path,
                     source_sha256,
+                    cancelled,
+                )
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Ask the isolated worker for a bounded display mesh of an imported STEP
+    /// part, bound to the result fingerprint the document already committed to.
+    pub fn tessellate_step_import_with_cancellation(
+        &mut self,
+        path: &Path,
+        source_sha256: &str,
+        result_fingerprint: &str,
+        output_path: &Path,
+        cancelled: &AtomicBool,
+    ) -> Result<StepImportMesh, WorkerError> {
+        if std::fs::metadata(path)
+            .map_err(|error| WorkerError::Transport(error.to_string()))?
+            .len()
+            > MAX_STEP_SOURCE_BYTES
+        {
+            return Err(WorkerError::Transport(
+                "STEP source exceeds the bounded 32 MiB envelope".to_owned(),
+            ));
+        }
+        self.client.ensure_not_cancelled(cancelled)?;
+        match self.client.tessellate_step_part_request_with_cancellation(
+            path,
+            source_sha256,
+            result_fingerprint,
+            output_path,
+            cancelled,
+        ) {
+            Ok(mesh) => Ok(mesh),
+            Err(error) if error.permits_restart() => {
+                self.client = Self::spawn_verified_client(&self.executable, cancelled)?;
+                self.client.tessellate_step_part_request_with_cancellation(
+                    path,
+                    source_sha256,
+                    result_fingerprint,
+                    output_path,
                     cancelled,
                 )
             }
