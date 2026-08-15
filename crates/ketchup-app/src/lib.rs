@@ -1565,6 +1565,7 @@ struct PendingDxfImport {
     unit_confirmed: bool,
     review: ParsedDxf,
     review_error: Option<String>,
+    invalidated: bool,
     document_id: DocumentId,
     revision_id: u64,
     canonical_digest: String,
@@ -1904,7 +1905,14 @@ impl KetchupApp {
         }
     }
 
+    fn invalidate_pending_dxf_import(&mut self) {
+        if let Some(pending) = self.pending_dxf_import.as_mut() {
+            pending.invalidated = true;
+        }
+    }
+
     fn reset_document_presentation(&mut self) {
+        self.invalidate_pending_dxf_import();
         self.preview = None;
         self.preview_box = None;
         self.preview_definition_id = None;
@@ -2400,7 +2408,8 @@ impl KetchupApp {
         let path = &pending.path;
         let result = (|| {
             let snapshot = self.document.current();
-            if snapshot.document_id() != pending.document_id
+            if pending.invalidated
+                || snapshot.document_id() != pending.document_id
                 || snapshot.revision_id() != pending.revision_id
                 || snapshot.canonical_digest() != pending.canonical_digest
             {
@@ -2719,6 +2728,7 @@ impl KetchupApp {
                                 == ImportUnitAuthority::FileDeclared,
                             review,
                             review_error: None,
+                            invalidated: false,
                             document_id: snapshot.document_id(),
                             revision_id: snapshot.revision_id(),
                             canonical_digest: snapshot.canonical_digest(),
@@ -5241,6 +5251,7 @@ impl KetchupApp {
         self.selection
             .edit_context
             .push(EditContext::Group(group_id));
+        self.invalidate_pending_dxf_import();
         self.selection.clear();
         self.digest = self.catalog.text("digest-entered-group-context");
         true
@@ -5267,6 +5278,7 @@ impl KetchupApp {
             },
         };
         self.selection.edit_context.push(context.clone());
+        self.invalidate_pending_dxf_import();
         self.selection.clear();
         self.digest = self.catalog.text(match context {
             EditContext::Group(_) => "digest-entered-group-context",
@@ -5279,6 +5291,7 @@ impl KetchupApp {
         if self.selection.edit_context.pop().is_none() {
             return false;
         }
+        self.invalidate_pending_dxf_import();
         self.selection.clear();
         self.digest = self.catalog.text("digest-exited-edit-context");
         true
@@ -9560,6 +9573,7 @@ impl KetchupApp {
         if self.document.undo().is_none() {
             return false;
         }
+        self.invalidate_pending_dxf_import();
         if undoing_assistant_change {
             self.assistant_verification = None;
         }
@@ -9576,6 +9590,7 @@ impl KetchupApp {
         if self.document.redo().is_none() {
             return false;
         }
+        self.invalidate_pending_dxf_import();
         self.clear_ephemeral_edit_state();
         self.parameter_editor_node = None;
         self.parameter_provenance = None;
@@ -18617,6 +18632,7 @@ endsolid tetrahedron\n";
             unit_confirmed: true,
             review,
             review_error: None,
+            invalidated: false,
             document_id: snapshot.document_id(),
             revision_id: snapshot.revision_id(),
             canonical_digest: snapshot.canonical_digest(),

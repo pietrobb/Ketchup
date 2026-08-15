@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
 
-use eframe::egui::accesskit::Role;
+use eframe::egui::{Key, accesskit::Role};
 use harness::Shell;
 use ketchup_app::AppCommand;
 use ketchup_app::dialogs::ScriptedFileDialogs;
@@ -1100,6 +1100,50 @@ fn file_import_dxf_rejects_source_document_history_and_open_staleness() {
     shell.click_button_label(&shell.catalog().text("dialog-import-dxf-confirm"));
     assert!(digest_starts_like(&shell, "error-import-dxf"));
     assert_state_and_history_unchanged(&mut shell, &after_open, &after_open_history);
+}
+
+#[test]
+fn file_import_dxf_undo_redo_round_trip_cannot_restore_confirmability() {
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("reviewed.dxf");
+    std::fs::write(&source, valid_dxf_subset()).unwrap();
+    let script = ScriptedFileDialogs::new().queue_import(ImportFormat::Dxf, &source);
+    let mut shell = Shell::with_dialogs(script);
+    compose_two_shared_occurrences(&mut shell);
+    let before = canonical_state(&shell);
+    let history = reachable_history_digests(&mut shell);
+
+    shell.click_menu_command("menu-file", AppCommand::ImportDrawingDxf);
+    shell.click_menu_command("menu-edit", AppCommand::Undo);
+    shell.click_menu_command("menu-edit", AppCommand::Redo);
+    assert_eq!(canonical_state(&shell), before);
+    shell.click_button_label(&shell.catalog().text("dialog-import-dxf-confirm"));
+
+    assert!(digest_starts_like(&shell, "error-import-dxf"));
+    assert_state_and_history_unchanged(&mut shell, &before, &history);
+}
+
+#[test]
+fn file_import_dxf_edit_context_navigation_invalidates_review() {
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("reviewed.dxf");
+    std::fs::write(&source, valid_dxf_subset()).unwrap();
+    let script = ScriptedFileDialogs::new().queue_import(ImportFormat::Dxf, &source);
+    let mut shell = Shell::with_dialogs(script);
+    let solid = shell.top_face_centre(1);
+    shell.click_at(solid);
+    shell.double_click_at(solid);
+    assert_eq!(shell.app().edit_context_depth(), 1);
+    let before = canonical_state(&shell);
+    let history = reachable_history_digests(&mut shell);
+
+    shell.click_menu_command("menu-file", AppCommand::ImportDrawingDxf);
+    shell.press_key(Key::Escape);
+    assert_eq!(shell.app().edit_context_depth(), 0);
+    shell.click_button_label(&shell.catalog().text("dialog-import-dxf-confirm"));
+
+    assert!(digest_starts_like(&shell, "error-import-dxf"));
+    assert_state_and_history_unchanged(&mut shell, &before, &history);
 }
 
 #[test]
