@@ -60,6 +60,8 @@ struct CanonicalState {
     redo_steps: usize,
     dirty: bool,
     definitions: usize,
+    features: usize,
+    occurrences: usize,
     mesh_bodies: usize,
     import_receipts: usize,
 }
@@ -74,6 +76,8 @@ fn canonical_state(shell: &Shell) -> CanonicalState {
         redo_steps: shell.app().redo_step_count(),
         dirty: shell.app().is_dirty(),
         definitions: shell.app().definition_count(),
+        features: shell.app().feature_count(),
+        occurrences: shell.app().occurrence_count(),
         mesh_bodies: shell.app().mesh_body_count(),
         import_receipts: shell.app().import_receipt_count(),
     }
@@ -794,13 +798,17 @@ fn file_import_binary_stl_commits_through_the_same_headless_workflow() {
 fn file_import_stl_cancel_and_every_refusal_leave_canonical_state_unchanged() {
     let directory = tempfile::tempdir().unwrap();
     let valid = directory.path().join("valid.stl");
-    let malformed = directory.path().join("zero-facets.stl");
+    let zero_facets = directory.path().join("zero-facets.stl");
+    let malformed = directory.path().join("truncated-binary.stl");
     let non_manifold = directory.path().join("open-shell.stl");
     let oversized = directory.path().join("oversized.stl");
     std::fs::write(&valid, valid_ascii_tetrahedron()).unwrap();
-    let mut zero_facets = vec![0_u8; 80];
-    zero_facets.extend_from_slice(&0_u32.to_le_bytes());
-    std::fs::write(&malformed, zero_facets).unwrap();
+    let mut zero_facet_source = vec![0_u8; 80];
+    zero_facet_source.extend_from_slice(&0_u32.to_le_bytes());
+    std::fs::write(&zero_facets, zero_facet_source).unwrap();
+    let mut truncated_binary = valid_binary_tetrahedron();
+    truncated_binary.pop();
+    std::fs::write(&malformed, truncated_binary).unwrap();
     let last_facet = std::str::from_utf8(valid_ascii_tetrahedron())
         .unwrap()
         .find("facet normal 1 1 1")
@@ -816,6 +824,7 @@ fn file_import_stl_cancel_and_every_refusal_leave_canonical_state_unchanged() {
     let script = ScriptedFileDialogs::new()
         .queue_cancelled_import(ImportFormat::Stl)
         .queue_import(ImportFormat::Stl, &valid)
+        .queue_import(ImportFormat::Stl, &zero_facets)
         .queue_import(ImportFormat::Stl, &malformed)
         .queue_import(ImportFormat::Stl, &non_manifold)
         .queue_import(ImportFormat::Stl, &oversized);
@@ -831,6 +840,11 @@ fn file_import_stl_cancel_and_every_refusal_leave_canonical_state_unchanged() {
     shell.click_menu_command("menu-file", AppCommand::ImportMeshStl);
     shell.click_button_label(&shell.catalog().text("dialog-import-stl-cancel"));
     assert_eq!(canonical_state(&shell), before);
+
+    shell.click_menu_command("menu-file", AppCommand::ImportMeshStl);
+    shell.click_button_label(&shell.catalog().text("dialog-import-stl-confirm"));
+    assert_eq!(canonical_state(&shell), before);
+    assert!(digest_starts_like(&shell, "error-import-stl"));
 
     shell.click_menu_command("menu-file", AppCommand::ImportMeshStl);
     shell.click_button_label(&shell.catalog().text("dialog-import-stl-confirm"));

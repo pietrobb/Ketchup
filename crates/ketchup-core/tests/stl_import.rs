@@ -69,9 +69,16 @@ fn ascii_tetrahedron() -> Vec<u8> {
 #[test]
 fn binary_and_ascii_stl_normalize_to_the_same_canonical_mesh() {
     let binary = parse_stl(&binary_tetrahedron(), millimetres()).unwrap();
-    let ascii = parse_stl(&ascii_tetrahedron(), millimetres()).unwrap();
+    let ascii_source = ascii_tetrahedron();
+    let ascii = parse_stl(&ascii_source, millimetres()).unwrap();
+    let crlf_source = String::from_utf8(ascii_source)
+        .unwrap()
+        .replace('\n', "\r\n");
+    let crlf = parse_stl(crlf_source.as_bytes(), millimetres()).unwrap();
 
     assert_eq!(binary.vertices_mm(), ascii.vertices_mm());
+    assert_eq!(ascii.vertices_mm(), crlf.vertices_mm());
+    assert_eq!(ascii.triangles(), crlf.triangles());
     assert_eq!(binary.triangles(), ascii.triangles());
     assert_eq!(binary.vertices_mm().len(), 4);
     assert_eq!(binary.triangles().len(), 4);
@@ -113,6 +120,12 @@ fn empty_binary_and_unbounded_ascii_records_are_typed_refusals_without_panics() 
     assert_eq!(
         parse_stl(overlong.as_bytes(), millimetres()),
         Err(StlImportError::InvalidAscii)
+    );
+
+    let too_many_blank_lines = format!("solid\n{}endsolid\n", "\n".repeat(1_600_001));
+    assert_eq!(
+        parse_stl(too_many_blank_lines.as_bytes(), millimetres()),
+        Err(StlImportError::SourceTooLarge)
     );
 }
 

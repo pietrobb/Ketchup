@@ -348,12 +348,12 @@ pub const STL_PARSER_ID: &str = "ketchup-stl";
 pub const STL_PARSER_VERSION: &str = "1";
 const MAX_STL_TRIANGLES: usize = 200_000;
 const MAX_STL_ASCII_LINE_BYTES: usize = 128;
-const MAX_STL_ASCII_LINES_PER_TRIANGLE: u64 = 7;
-// The source envelope is derived from the accepted facet and line envelopes;
-// binary STL reaches its triangle bound at only 10,000,084 bytes.
+const MAX_STL_ASCII_LINES_PER_TRIANGLE: usize = 8;
+const MAX_STL_ASCII_LINES: usize = (MAX_STL_TRIANGLES * MAX_STL_ASCII_LINES_PER_TRIANGLE) + 2;
+// Each facet requires seven structural lines. The bounded ASCII subset permits
+// one additional blank line per facet and CRLF endings without unbounded input.
 pub const MAX_STL_SOURCE_BYTES: u64 =
-    ((MAX_STL_TRIANGLES as u64 * MAX_STL_ASCII_LINES_PER_TRIANGLE) + 2)
-        * (MAX_STL_ASCII_LINE_BYTES as u64 + 1);
+    MAX_STL_ASCII_LINES as u64 * (MAX_STL_ASCII_LINE_BYTES as u64 + 2);
 const MAX_STL_VERTICES: usize = 100_000;
 const MAX_STL_ABS_MM: f64 = 1_000_000.0;
 const STL_AREA_EPSILON: f64 = 1.0e-18;
@@ -627,12 +627,18 @@ fn parse_binary_stl(source: &[u8], count: usize) -> Result<Vec<StlFacet>, StlImp
 
 fn parse_ascii_stl(source: &[u8]) -> Result<Vec<StlFacet>, StlImportError> {
     let text = std::str::from_utf8(source).map_err(|_| StlImportError::InvalidAscii)?;
-    if !text.is_ascii()
-        || text
-            .lines()
-            .any(|line| line.len() > MAX_STL_ASCII_LINE_BYTES)
-    {
+    if !text.is_ascii() {
         return Err(StlImportError::InvalidAscii);
+    }
+    let mut source_line_count = 0_usize;
+    for line in text.lines() {
+        source_line_count += 1;
+        if source_line_count > MAX_STL_ASCII_LINES {
+            return Err(StlImportError::SourceTooLarge);
+        }
+        if line.len() > MAX_STL_ASCII_LINE_BYTES {
+            return Err(StlImportError::InvalidAscii);
+        }
     }
     let mut lines = text.lines().map(str::trim).filter(|line| !line.is_empty());
     let header = lines.next().ok_or(StlImportError::InvalidAscii)?;

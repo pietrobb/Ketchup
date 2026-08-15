@@ -4940,6 +4940,16 @@ impl KetchupApp {
     }
 
     #[must_use]
+    pub fn feature_count(&self) -> usize {
+        self.document.current().features().count()
+    }
+
+    #[must_use]
+    pub fn occurrence_count(&self) -> usize {
+        self.document.current().occurrences().count()
+    }
+
+    #[must_use]
     pub fn mesh_body_count(&self) -> usize {
         self.document
             .current()
@@ -18220,6 +18230,65 @@ mod tests {
         let loss = std::fs::read_to_string(path.with_extension("obj.loss.txt")).unwrap();
         assert!(loss.contains("exact-body-to-world-space-mesh"));
         assert!(loss.contains("producer_feature_id=2"));
+    }
+
+    #[test]
+    fn imported_stl_mesh_is_rendered_picked_and_outlined_from_canonical_geometry() {
+        let source = b"solid tetrahedron\n\
+ facet normal 0 0 -1\n  outer loop\n   vertex 0 0 0\n   vertex 0 1 0\n   vertex 1 0 0\n  endloop\n endfacet\n\
+ facet normal 0 -1 0\n  outer loop\n   vertex 0 0 0\n   vertex 1 0 0\n   vertex 0 0 1\n  endloop\n endfacet\n\
+ facet normal -1 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 0 0 1\n   vertex 0 1 0\n  endloop\n endfacet\n\
+ facet normal 1 1 1\n  outer loop\n   vertex 1 0 0\n   vertex 0 1 0\n   vertex 0 0 1\n  endloop\n endfacet\n\
+endsolid tetrahedron\n";
+        let mut app = KetchupApp::new();
+        app.document = DocumentStore::new();
+        let batch = plan_stl_import(
+            &app.document.current(),
+            source,
+            "tetrahedron.stl",
+            ImportUnitDecision::new(
+                ImportLengthUnit::Millimetre,
+                ImportUnitAuthority::UserDeclared,
+            ),
+        )
+        .unwrap();
+        let proposal = app
+            .document
+            .prepare_proposal_with_context(batch, ProposalContext::canonical_preview())
+            .unwrap();
+        app.document.commit_verified_proposal(&proposal).unwrap();
+        app.reset_document_presentation();
+
+        let snapshot = app.document.current();
+        let occurrence = snapshot.occurrences().next().unwrap().id();
+        let projection = MeshInteractionProjection::from_snapshot(&snapshot);
+        let hit = projection
+            .exact_surface_pick(
+                Ray::new(Vec3::new(0.2, 0.2, 2.0), Vec3::new(0.0, 0.0, -1.0)).unwrap(),
+            )
+            .expect("the imported tetrahedron must be pickable by its canonical triangles");
+        assert_eq!(hit.instance_path, InstancePath::root(occurrence));
+
+        let mut render_cache = renderer::DerivedRenderCache::default();
+        let render_plan = renderer::InstancedRenderPlan::from_snapshot(
+            &snapshot,
+            &app.exact_results,
+            &mut render_cache,
+        );
+        let imported_batch = render_plan
+            .batches()
+            .iter()
+            .find(|batch| batch.definition_id == hit.definition_id)
+            .expect("the imported mesh must produce a render batch");
+        assert_eq!(imported_batch.geometry.index_count(), 12);
+        assert!(imported_batch.geometry.vertex_count() >= 4);
+        assert_eq!(imported_batch.instances.len(), 1);
+
+        let context = egui::Context::default();
+        let _ = context.run(egui::RawInput::default(), |context| app.ui(context));
+        app.zoom_fit();
+        app.selection.select_occurrence(occurrence, false);
+        assert!(selection_stroke_segments(&context, &mut app) > 0);
     }
 
     #[test]
