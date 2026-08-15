@@ -2013,9 +2013,13 @@ impl KetchupApp {
         let dialogs = std::mem::replace(&mut self.dialogs, Box::new(NativeFileDialogs::default()));
         let assistant_transport = Arc::clone(&self.assistant_transport);
         let assistant_request_sequence = self.assistant_request_sequence;
+        // The graphics device outlives the document: losing its target format
+        // here would silently drop the whole instanced scene until restart.
+        let wgpu_target_format = self.wgpu_target_format;
         *self = Self::new()
             .with_dialogs(dialogs)
             .with_assistant_transport(assistant_transport);
+        self.wgpu_target_format = wgpu_target_format;
         self.assistant_request_sequence = assistant_request_sequence;
         self.digest = self.catalog.text("digest-new-document");
     }
@@ -5261,6 +5265,20 @@ impl KetchupApp {
             .filter(|package| package.is_current(&snapshot))
             .map(|package| package.triangles().len())
             .sum()
+    }
+
+    /// How many triangles the instanced scene would actually paint.
+    ///
+    /// This reads the plan the last painted frame used, so a body that exists
+    /// as an exact product but never reached the scene reports zero here.
+    #[must_use]
+    pub fn instanced_scene_triangle_count(&self) -> usize {
+        self.render_plan.as_ref().map_or(0, |plan| {
+            plan.batches()
+                .iter()
+                .map(|batch| batch.geometry.index_count() / 3 * batch.instances.len())
+                .sum()
+        })
     }
 
     #[must_use]
@@ -12053,10 +12071,10 @@ impl KetchupApp {
         let scene_plan = if use_wgpu_scene {
             let preview_active = !move_transform_overrides.is_empty();
             if preview_active
-                || self
-                    .render_plan
-                    .as_ref()
-                    .is_none_or(|plan| !plan.is_same_revision(&snapshot))
+                || self.render_plan.as_ref().is_none_or(|plan| {
+                    !plan.is_same_revision(&snapshot)
+                        || !plan.matches_exact_results(&self.exact_results)
+                })
             {
                 let plan = Arc::new(InstancedRenderPlan::from_snapshot_with_transform_overrides(
                     &snapshot,

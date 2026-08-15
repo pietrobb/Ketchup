@@ -1070,6 +1070,7 @@ fn file_import_exact_step_commits_undoes_and_persists_source_blob_offscreen() {
         .always_confirm_high_risk_as(91)
         .always_discard();
     let mut shell = Shell::with_dialogs(script.clone());
+    shell.app_mut().enable_headless_instanced_scene();
     shell
         .app_mut()
         .connect_exact_worker(exact_worker_path())
@@ -1130,6 +1131,11 @@ fn file_import_exact_step_commits_undoes_and_persists_source_blob_offscreen() {
     assert!(
         shell.app().exact_render_triangle_count() > 0,
         "an imported STEP body without triangles is invisible and unpickable"
+    );
+    shell.settle();
+    assert!(
+        shell.app().instanced_scene_triangle_count() > 0,
+        "an exact product that arrives after its revision must still reach the painted scene"
     );
     let bounds = shell.app().exact_render_bounds()[0];
     let centre = Vec3::new(

@@ -2,7 +2,7 @@ use eframe::egui_wgpu::{CallbackResources, CallbackTrait, ScreenDescriptor};
 use ketchup_core::document::{
     DefinitionId, DocumentId, FeatureKind, InstancePath, Snapshot, Transform,
 };
-use ketchup_core::exact_product::ExactResultRegistry;
+use ketchup_core::exact_product::{ExactBodyView, ExactResultRegistry};
 use ketchup_interaction::projection::CanonicalInteractionProjection;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -102,6 +102,7 @@ pub struct InstancedRenderPlan {
     document_id: DocumentId,
     source_revision: u64,
     source_digest: String,
+    exact_identity: String,
     batches: Vec<RenderBatch>,
 }
 
@@ -177,6 +178,7 @@ impl InstancedRenderPlan {
             document_id: snapshot.document_id(),
             source_revision: snapshot.revision_id(),
             source_digest: snapshot.canonical_digest(),
+            exact_identity: exact_identity(exact_results),
             batches,
         }
     }
@@ -206,6 +208,16 @@ impl InstancedRenderPlan {
         self.is_same_revision(snapshot) && self.source_digest == snapshot.canonical_digest()
     }
 
+    /// Whether this plan was built from exactly `exact_results`.
+    ///
+    /// Exact products arrive from the isolated worker after the revision they
+    /// belong to is already committed, so a plan can be same-revision and yet
+    /// miss a body that has since been evaluated.
+    #[must_use]
+    pub fn matches_exact_results(&self, exact_results: &ExactResultRegistry) -> bool {
+        self.exact_identity == exact_identity(exact_results)
+    }
+
     #[must_use]
     pub fn batches(&self) -> &[RenderBatch] {
         &self.batches
@@ -220,6 +232,20 @@ impl InstancedRenderPlan {
     pub fn instance_count(&self) -> usize {
         self.batches.iter().map(|batch| batch.instances.len()).sum()
     }
+}
+
+fn exact_identity(exact_results: &ExactResultRegistry) -> String {
+    exact_results
+        .values()
+        .map(|package| {
+            format!(
+                "{}:{}",
+                package.definition_id().0,
+                package.result_fingerprint()
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("|")
 }
 
 struct GeometrySource {
