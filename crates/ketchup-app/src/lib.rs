@@ -18240,24 +18240,22 @@ mod tests {
  facet normal -1 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 0 0 1\n   vertex 0 1 0\n  endloop\n endfacet\n\
  facet normal 1 1 1\n  outer loop\n   vertex 1 0 0\n   vertex 0 1 0\n   vertex 0 0 1\n  endloop\n endfacet\n\
 endsolid tetrahedron\n";
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("tetrahedron.stl");
+        std::fs::write(&path, source).unwrap();
         let mut app = KetchupApp::new();
         app.document = DocumentStore::new();
-        let batch = plan_stl_import(
-            &app.document.current(),
-            source,
-            "tetrahedron.stl",
-            ImportUnitDecision::new(
-                ImportLengthUnit::Millimetre,
-                ImportUnitAuthority::UserDeclared,
-            ),
-        )
-        .unwrap();
-        let proposal = app
-            .document
-            .prepare_proposal_with_context(batch, ProposalContext::canonical_preview())
-            .unwrap();
-        app.document.commit_verified_proposal(&proposal).unwrap();
-        app.reset_document_presentation();
+        let snapshot = app.document.current();
+        let pending = PendingStlImport {
+            path,
+            unit: ImportLengthUnit::Millimetre,
+            document_id: snapshot.document_id(),
+            revision_id: snapshot.revision_id(),
+            canonical_digest: snapshot.canonical_digest(),
+            source_sha256: sha256_bytes(source),
+            source_byte_len: source.len() as u64,
+        };
+        assert!(app.import_stl_from(&pending));
 
         let snapshot = app.document.current();
         let occurrence = snapshot.occurrences().next().unwrap().id();

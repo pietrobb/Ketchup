@@ -10,10 +10,15 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
 
+use eframe::egui::accesskit::Role;
 use harness::Shell;
 use ketchup_app::AppCommand;
 use ketchup_app::dialogs::ScriptedFileDialogs;
-use ketchup_core::import::{ImportFormat, MAX_STL_SOURCE_BYTES};
+use ketchup_core::document::FeatureKind;
+use ketchup_core::graph::sha256_bytes;
+use ketchup_core::import::{
+    ImportFormat, ImportLengthUnit, ImportUnitAuthority, MAX_STL_SOURCE_BYTES,
+};
 use ketchup_interaction::Vec3;
 
 fn compose_two_shared_occurrences(shell: &mut Shell) {
@@ -50,7 +55,7 @@ fn digest_starts_like(shell: &Shell, key: &str) -> bool {
 
 static EXACT_FILE_EXPORT_LOCK: Mutex<()> = Mutex::new(());
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct CanonicalState {
     revision: u64,
     digest: String,
@@ -81,6 +86,38 @@ fn canonical_state(shell: &Shell) -> CanonicalState {
         mesh_bodies: shell.app().mesh_body_count(),
         import_receipts: shell.app().import_receipt_count(),
     }
+}
+
+fn reachable_history_digests(shell: &mut Shell) -> (Vec<String>, Vec<String>) {
+    let initial = canonical_state(shell);
+    let mut undo = Vec::with_capacity(initial.undo_steps);
+    for _ in 0..initial.undo_steps {
+        shell.click_menu_command("menu-edit", AppCommand::Undo);
+        undo.push(shell.app().canonical_digest());
+    }
+    for _ in 0..initial.undo_steps {
+        shell.click_menu_command("menu-edit", AppCommand::Redo);
+    }
+
+    let mut redo = Vec::with_capacity(initial.redo_steps);
+    for _ in 0..initial.redo_steps {
+        shell.click_menu_command("menu-edit", AppCommand::Redo);
+        redo.push(shell.app().canonical_digest());
+    }
+    for _ in 0..initial.redo_steps {
+        shell.click_menu_command("menu-edit", AppCommand::Undo);
+    }
+    assert_eq!(canonical_state(shell), initial);
+    (undo, redo)
+}
+
+fn assert_state_and_history_unchanged(
+    shell: &mut Shell,
+    expected_state: &CanonicalState,
+    expected_history: &(Vec<String>, Vec<String>),
+) {
+    assert_eq!(&canonical_state(shell), expected_state);
+    assert_eq!(&reachable_history_digests(shell), expected_history);
 }
 
 fn exact_worker_path() -> PathBuf {
@@ -199,6 +236,44 @@ fn valid_ascii_tetrahedron() -> &'static [u8] {
  facet normal -1 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 0 0 1\n   vertex 0 1 0\n  endloop\n endfacet\n\
  facet normal 1 1 1\n  outer loop\n   vertex 1 0 0\n   vertex 0 1 0\n   vertex 0 0 1\n  endloop\n endfacet\n\
 endsolid tetrahedron\n"
+}
+
+fn assert_persisted_stl(
+    document_path: &Path,
+    source: &[u8],
+    unit: ImportLengthUnit,
+    encoding_diagnostic: &str,
+) {
+    let loaded = ketchup_core::persistence::load_file(document_path).unwrap();
+    let snapshot = loaded.snapshot();
+    let receipt = snapshot.import_receipts().next().unwrap();
+    assert_eq!(receipt.source_sha256(), &sha256_bytes(source));
+    assert_eq!(receipt.source_byte_len(), source.len() as u64);
+    assert_eq!(receipt.units().source_unit(), unit);
+    assert_eq!(
+        receipt.units().authority(),
+        ImportUnitAuthority::UserDeclared
+    );
+    assert!(
+        receipt
+            .diagnostics()
+            .iter()
+            .any(|diagnostic| diagnostic.code() == encoding_diagnostic)
+    );
+    let mesh = snapshot
+        .features()
+        .find_map(|feature| match feature.kind() {
+            FeatureKind::MeshBody(mesh) => Some(mesh),
+            _ => None,
+        })
+        .unwrap();
+    let max_coordinate = mesh
+        .vertices_mm
+        .iter()
+        .flatten()
+        .copied()
+        .fold(0.0_f64, f64::max);
+    assert_eq!(max_coordinate, unit.millimetres_per_unit());
 }
 
 #[test]
@@ -774,14 +849,26 @@ fn file_import_stl_commits_one_canonical_mesh_transaction_offscreen() {
     assert_eq!(shell.app().canonical_digest(), imported_digest);
     assert_eq!(shell.app().mesh_body_count(), 1);
     assert_eq!(shell.app().import_receipt_count(), 1);
+    assert_persisted_stl(
+        &document_path,
+        valid_ascii_tetrahedron(),
+        ImportLengthUnit::Millimetre,
+        "stl.ascii",
+    );
 }
 
 #[test]
 fn file_import_binary_stl_commits_through_the_same_headless_workflow() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("tetrahedron-binary.stl");
-    std::fs::write(&path, valid_binary_tetrahedron()).unwrap();
-    let script = ScriptedFileDialogs::new().queue_import(ImportFormat::Stl, &path);
+    let document_path = directory.path().join("binary-import.ketchup");
+    let source = valid_binary_tetrahedron();
+    std::fs::write(&path, &source).unwrap();
+    let script = ScriptedFileDialogs::new()
+        .queue_import(ImportFormat::Stl, &path)
+        .queue_save(&document_path)
+        .queue_open(&document_path)
+        .always_discard();
     let mut shell = Shell::with_dialogs(script);
     let before = canonical_state(&shell);
 
@@ -792,6 +879,45 @@ fn file_import_binary_stl_commits_through_the_same_headless_workflow() {
     assert_eq!(shell.app().mesh_body_count(), 1);
     assert_eq!(shell.app().import_receipt_count(), 1);
     assert!(digest_starts_like(&shell, "digest-imported-stl"));
+
+    let imported_digest = shell.app().canonical_digest();
+    shell.click_menu_command("menu-file", AppCommand::Save);
+    shell.click_menu_command("menu-file", AppCommand::New);
+    shell.click_menu_command("menu-file", AppCommand::Open);
+    assert_eq!(shell.app().canonical_digest(), imported_digest);
+    assert_persisted_stl(
+        &document_path,
+        &source,
+        ImportLengthUnit::Millimetre,
+        "stl.binary",
+    );
+}
+
+#[test]
+fn file_import_stl_review_applies_and_persists_every_declared_unit() {
+    let directory = tempfile::tempdir().unwrap();
+    for (index, unit, label_key) in [
+        (0, ImportLengthUnit::Millimetre, "unit-millimetre"),
+        (1, ImportLengthUnit::Centimetre, "unit-centimetre"),
+        (2, ImportLengthUnit::Metre, "unit-metre"),
+        (3, ImportLengthUnit::Inch, "unit-inch"),
+        (4, ImportLengthUnit::Foot, "unit-foot"),
+    ] {
+        let source_path = directory.path().join(format!("unit-{index}.stl"));
+        let document_path = directory.path().join(format!("unit-{index}.ketchup"));
+        std::fs::write(&source_path, valid_ascii_tetrahedron()).unwrap();
+        let script = ScriptedFileDialogs::new()
+            .queue_import(ImportFormat::Stl, &source_path)
+            .queue_save(&document_path);
+        let mut shell = Shell::with_dialogs(script);
+
+        shell.click_menu_command("menu-file", AppCommand::ImportMeshStl);
+        shell.click_role_and_label(Role::RadioButton, &shell.catalog().text(label_key));
+        shell.click_button_label(&shell.catalog().text("dialog-import-stl-confirm"));
+        shell.click_menu_command("menu-file", AppCommand::Save);
+
+        assert_persisted_stl(&document_path, valid_ascii_tetrahedron(), unit, "stl.ascii");
+    }
 }
 
 #[test]
@@ -832,60 +958,97 @@ fn file_import_stl_cancel_and_every_refusal_leave_canonical_state_unchanged() {
     compose_two_shared_occurrences(&mut shell);
     shell.click_menu_command("menu-edit", AppCommand::Undo);
     let before = canonical_state(&shell);
+    let before_history = reachable_history_digests(&mut shell);
     assert!(before.redo_steps > 0);
 
     shell.click_menu_command("menu-file", AppCommand::ImportMeshStl);
-    assert_eq!(canonical_state(&shell), before);
+    assert_state_and_history_unchanged(&mut shell, &before, &before_history);
 
     shell.click_menu_command("menu-file", AppCommand::ImportMeshStl);
     shell.click_button_label(&shell.catalog().text("dialog-import-stl-cancel"));
-    assert_eq!(canonical_state(&shell), before);
+    assert_state_and_history_unchanged(&mut shell, &before, &before_history);
 
     shell.click_menu_command("menu-file", AppCommand::ImportMeshStl);
     shell.click_button_label(&shell.catalog().text("dialog-import-stl-confirm"));
-    assert_eq!(canonical_state(&shell), before);
     assert!(digest_starts_like(&shell, "error-import-stl"));
+    assert_state_and_history_unchanged(&mut shell, &before, &before_history);
 
     shell.click_menu_command("menu-file", AppCommand::ImportMeshStl);
     shell.click_button_label(&shell.catalog().text("dialog-import-stl-confirm"));
-    assert_eq!(canonical_state(&shell), before);
     assert!(digest_starts_like(&shell, "error-import-stl"));
+    assert_state_and_history_unchanged(&mut shell, &before, &before_history);
 
     shell.click_menu_command("menu-file", AppCommand::ImportMeshStl);
     shell.click_button_label(&shell.catalog().text("dialog-import-stl-confirm"));
-    assert_eq!(canonical_state(&shell), before);
     assert!(digest_starts_like(&shell, "error-import-stl"));
+    assert_state_and_history_unchanged(&mut shell, &before, &before_history);
 
     shell.click_menu_command("menu-file", AppCommand::ImportMeshStl);
-    assert_eq!(canonical_state(&shell), before);
     assert!(digest_starts_like(&shell, "error-import-stl"));
+    assert_state_and_history_unchanged(&mut shell, &before, &before_history);
 }
 
 #[test]
-fn file_import_stl_rejects_changed_source_and_document_after_review() {
+fn file_import_stl_rejects_source_document_history_and_open_staleness() {
     let directory = tempfile::tempdir().unwrap();
     let source = directory.path().join("reviewed.stl");
+    let replacement = directory.path().join("replacement.ketchup");
     std::fs::write(&source, valid_ascii_tetrahedron()).unwrap();
+    let mut replacement_shell =
+        Shell::with_dialogs(ScriptedFileDialogs::new().queue_save(&replacement));
+    replacement_shell.click_menu_command("menu-file", AppCommand::Save);
+
     let script = ScriptedFileDialogs::new()
         .queue_import(ImportFormat::Stl, &source)
-        .queue_import(ImportFormat::Stl, &source);
+        .queue_import(ImportFormat::Stl, &source)
+        .queue_import(ImportFormat::Stl, &source)
+        .queue_import(ImportFormat::Stl, &source)
+        .queue_import(ImportFormat::Stl, &source)
+        .queue_open(&replacement)
+        .always_discard();
     let mut shell = Shell::with_dialogs(script);
 
     let before_source_change = canonical_state(&shell);
+    let before_source_history = reachable_history_digests(&mut shell);
     shell.click_menu_command("menu-file", AppCommand::ImportMeshStl);
     let mut same_length_change = valid_ascii_tetrahedron().to_vec();
     same_length_change[0] = b'S';
     std::fs::write(&source, same_length_change).unwrap();
     shell.click_button_label(&shell.catalog().text("dialog-import-stl-confirm"));
-    assert_eq!(canonical_state(&shell), before_source_change);
     assert!(digest_starts_like(&shell, "error-import-stl"));
+    assert_state_and_history_unchanged(&mut shell, &before_source_change, &before_source_history);
 
     std::fs::write(&source, valid_ascii_tetrahedron()).unwrap();
     compose_two_shared_occurrences(&mut shell);
     shell.click_menu_command("menu-file", AppCommand::ImportMeshStl);
     assert!(shell.app_mut().move_selected(Vec3::new(10.0, 0.0, 0.0)));
     let after_document_change = canonical_state(&shell);
+    let after_document_history = reachable_history_digests(&mut shell);
     shell.click_button_label(&shell.catalog().text("dialog-import-stl-confirm"));
-    assert_eq!(canonical_state(&shell), after_document_change);
     assert!(digest_starts_like(&shell, "error-import-stl"));
+    assert_state_and_history_unchanged(&mut shell, &after_document_change, &after_document_history);
+
+    shell.click_menu_command("menu-file", AppCommand::ImportMeshStl);
+    shell.click_menu_command("menu-edit", AppCommand::Undo);
+    let after_undo = canonical_state(&shell);
+    let after_undo_history = reachable_history_digests(&mut shell);
+    shell.click_button_label(&shell.catalog().text("dialog-import-stl-confirm"));
+    assert!(digest_starts_like(&shell, "error-import-stl"));
+    assert_state_and_history_unchanged(&mut shell, &after_undo, &after_undo_history);
+
+    shell.click_menu_command("menu-file", AppCommand::ImportMeshStl);
+    shell.click_menu_command("menu-edit", AppCommand::Redo);
+    let after_redo = canonical_state(&shell);
+    let after_redo_history = reachable_history_digests(&mut shell);
+    shell.click_button_label(&shell.catalog().text("dialog-import-stl-confirm"));
+    assert!(digest_starts_like(&shell, "error-import-stl"));
+    assert_state_and_history_unchanged(&mut shell, &after_redo, &after_redo_history);
+
+    shell.click_menu_command("menu-file", AppCommand::ImportMeshStl);
+    shell.click_menu_command("menu-file", AppCommand::Open);
+    let after_open = canonical_state(&shell);
+    let after_open_history = reachable_history_digests(&mut shell);
+    shell.click_button_label(&shell.catalog().text("dialog-import-stl-confirm"));
+    assert!(digest_starts_like(&shell, "error-import-stl"));
+    assert_state_and_history_unchanged(&mut shell, &after_open, &after_open_history);
 }
