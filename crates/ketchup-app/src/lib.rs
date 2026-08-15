@@ -3138,6 +3138,7 @@ impl KetchupApp {
             }
             AuthoritativeDependency::Tag(id) => Some(("assistant-entity-tag", id.0)),
             AuthoritativeDependency::Collection(id) => Some(("assistant-entity-collection", id.0)),
+            AuthoritativeDependency::Import(_) => None,
             AuthoritativeDependency::Definition(id) => Some(("assistant-entity-definition", id.0)),
             AuthoritativeDependency::DefinitionUsers(id) => {
                 Some(("assistant-entity-definition-users", id.0))

@@ -9,6 +9,7 @@ use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+use ketchup_core::import::ImportFormat;
 use raw_window_handle::{
     DisplayHandle, HandleError, HasDisplayHandle, HasWindowHandle, RawDisplayHandle,
     RawWindowHandle, WindowHandle,
@@ -35,6 +36,19 @@ pub struct ExportRequestRecord {
     pub suggested_name: String,
 }
 
+pub struct ImportDialogRequest<'a> {
+    pub format: ImportFormat,
+    pub filter_label: &'a str,
+    pub extensions: &'a [&'a str],
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ImportDialogRequestRecord {
+    pub format: ImportFormat,
+    pub filter_label: String,
+    pub extensions: Vec<String>,
+}
+
 /// The localized text of the unsaved-changes confirmation.
 pub struct DiscardRequest<'a> {
     /// Dialog title.
@@ -57,6 +71,8 @@ pub trait FileDialogs {
     fn pick_save_path(&mut self, request: SaveRequest<'_>) -> Option<PathBuf>;
 
     fn pick_export_path(&mut self, request: ExportRequest<'_>) -> Option<PathBuf>;
+
+    fn pick_import_path(&mut self, request: ImportDialogRequest<'_>) -> Option<PathBuf>;
 
     /// Ask whether unsaved changes in the active document may be discarded.
     fn confirm_discard(&mut self, request: DiscardRequest<'_>) -> bool;
@@ -174,6 +190,12 @@ impl FileDialogs for NativeFileDialogs {
         }
     }
 
+    fn pick_import_path(&mut self, request: ImportDialogRequest<'_>) -> Option<PathBuf> {
+        self.file_dialog()
+            .add_filter(request.filter_label, request.extensions)
+            .pick_file()
+    }
+
     fn confirm_discard(&mut self, request: DiscardRequest<'_>) -> bool {
         self.message_dialog()
             .set_level(rfd::MessageLevel::Warning)
@@ -202,11 +224,13 @@ struct ScriptState {
     open_paths: VecDeque<Option<PathBuf>>,
     save_paths: VecDeque<Option<PathBuf>>,
     export_paths: VecDeque<Option<PathBuf>>,
+    import_paths: VecDeque<(ImportFormat, Option<PathBuf>)>,
     discard: bool,
     high_risk_approvals: VecDeque<Option<u64>>,
     default_high_risk_approver: Option<u64>,
     suggested_names: Vec<String>,
     export_requests: Vec<ExportRequestRecord>,
+    import_requests: Vec<ImportDialogRequestRecord>,
     discard_prompts: usize,
     high_risk_prompts: Vec<String>,
 }
@@ -258,6 +282,20 @@ impl ScriptedFileDialogs {
         self
     }
 
+    #[must_use]
+    pub fn queue_import(self, format: ImportFormat, path: impl Into<PathBuf>) -> Self {
+        self.state()
+            .import_paths
+            .push_back((format, Some(path.into())));
+        self
+    }
+
+    #[must_use]
+    pub fn queue_cancelled_import(self, format: ImportFormat) -> Self {
+        self.state().import_paths.push_back((format, None));
+        self
+    }
+
     /// Answer every unsaved-changes prompt with "discard".
     #[must_use]
     pub fn always_discard(self) -> Self {
@@ -297,6 +335,11 @@ impl ScriptedFileDialogs {
     #[must_use]
     pub fn export_requests(&self) -> Vec<ExportRequestRecord> {
         self.state().export_requests.clone()
+    }
+
+    #[must_use]
+    pub fn import_requests(&self) -> Vec<ImportDialogRequestRecord> {
+        self.state().import_requests.clone()
     }
 
     /// How many times the shell asked before discarding unsaved work.
@@ -340,6 +383,28 @@ impl FileDialogs for ScriptedFileDialogs {
         }
     }
 
+    fn pick_import_path(&mut self, request: ImportDialogRequest<'_>) -> Option<PathBuf> {
+        let mut state = self.state();
+        state.import_requests.push(ImportDialogRequestRecord {
+            format: request.format,
+            filter_label: request.filter_label.to_owned(),
+            extensions: request
+                .extensions
+                .iter()
+                .map(|extension| (*extension).to_owned())
+                .collect(),
+        });
+        if state
+            .import_paths
+            .front()
+            .is_some_and(|(format, _)| *format == request.format)
+        {
+            state.import_paths.pop_front().and_then(|(_, path)| path)
+        } else {
+            None
+        }
+    }
+
     fn confirm_discard(&mut self, _request: DiscardRequest<'_>) -> bool {
         let mut state = self.state();
         state.discard_prompts += 1;
@@ -355,5 +420,47 @@ impl FileDialogs for ScriptedFileDialogs {
             .high_risk_approvals
             .pop_front()
             .unwrap_or(state.default_high_risk_approver)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scripted_import_dialog_is_format_bound_and_records_the_filter() {
+        let script = ScriptedFileDialogs::new().queue_import(ImportFormat::Dxf, "drawing.dxf");
+        let mut dialogs = script.clone();
+        assert_eq!(
+            dialogs.pick_import_path(ImportDialogRequest {
+                format: ImportFormat::Stl,
+                filter_label: "STL mesh",
+                extensions: &["stl"],
+            }),
+            None
+        );
+        assert_eq!(
+            dialogs.pick_import_path(ImportDialogRequest {
+                format: ImportFormat::Dxf,
+                filter_label: "DXF drawing",
+                extensions: &["dxf"],
+            }),
+            Some(PathBuf::from("drawing.dxf"))
+        );
+        assert_eq!(
+            script.import_requests(),
+            vec![
+                ImportDialogRequestRecord {
+                    format: ImportFormat::Stl,
+                    filter_label: "STL mesh".to_owned(),
+                    extensions: vec!["stl".to_owned()],
+                },
+                ImportDialogRequestRecord {
+                    format: ImportFormat::Dxf,
+                    filter_label: "DXF drawing".to_owned(),
+                    extensions: vec!["dxf".to_owned()],
+                },
+            ]
+        );
     }
 }

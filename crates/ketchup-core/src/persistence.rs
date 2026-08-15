@@ -23,6 +23,11 @@ use crate::graph::{
     CanonicalOverride, DerivedIdentity, EvaluatorNodeKind, OverrideMergePolicy,
     OverrideParameterSpec, PortSpec, RuleOutput, SlotPath, SlotResolution, SlotSegment,
 };
+use crate::import::{
+    ImportDiagnostic, ImportDiagnosticSeverity, ImportFormat, ImportId, ImportLengthUnit,
+    ImportOutputRef, ImportReceipt, ImportUnitAuthority, ImportUnitDecision,
+    MAX_IMPORT_DIAGNOSTICS, MAX_IMPORT_OUTPUTS,
+};
 use crate::prismatic::{Aabb, CanonicalJoint, JointId, TolerancePolicy};
 use crate::space::{
     CanonicalClearanceVolume, CanonicalSpace, ClearanceCoordinateFrame, ClearanceOwner,
@@ -43,7 +48,8 @@ const BOOLEAN_SPLIT_SCHEMA: u16 = 23;
 const PLANAR_OFFSET_SCHEMA: u16 = 24;
 const SWEEP_SCHEMA: u16 = 25;
 const LOFT_SPLINE_SCHEMA: u16 = 26;
-pub const CURRENT_SCHEMA: u16 = LOFT_SPLINE_SCHEMA;
+const IMPORT_RECEIPT_SCHEMA: u16 = 27;
+pub const CURRENT_SCHEMA: u16 = IMPORT_RECEIPT_SCHEMA;
 const COLLECTION_SCHEMA: u16 = 15;
 const TAG_SCHEMA: u16 = 14;
 const PERSISTENT_DIMENSION_SCHEMA: u16 = 13;
@@ -86,6 +92,7 @@ struct ProductSchemaCapabilities {
     planar_offset: bool,
     sweep: bool,
     loft_spline: bool,
+    import_receipts: bool,
 }
 
 impl ProductSchemaCapabilities {
@@ -113,6 +120,7 @@ impl ProductSchemaCapabilities {
         planar_offset: false,
         sweep: false,
         loft_spline: false,
+        import_receipts: false,
     };
 
     const fn current(schema: u16) -> Self {
@@ -140,6 +148,7 @@ impl ProductSchemaCapabilities {
             planar_offset: schema >= PLANAR_OFFSET_SCHEMA,
             sweep: schema >= SWEEP_SCHEMA,
             loft_spline: schema >= LOFT_SPLINE_SCHEMA,
+            import_receipts: schema >= IMPORT_RECEIPT_SCHEMA,
         }
     }
 }
@@ -588,6 +597,10 @@ pub fn save(snapshot: &Snapshot) -> Vec<u8> {
         push_u64(&mut payload, collection.id().0);
         push_string(&mut payload, collection.name());
         write_ids(&mut payload, collection.occurrence_ids().map(|id| id.0));
+    }
+    push_u32(&mut payload, product.import_receipts.len() as u32);
+    for receipt in product.import_receipts.values() {
+        write_import_receipt(&mut payload, receipt);
     }
     push_u32(&mut payload, product.spaces.len() as u32);
     for space in product.spaces.values() {
@@ -1384,6 +1397,7 @@ fn load_document(
             | BOOLEAN_INTERSECT_SCHEMA
             | BOOLEAN_SPLIT_SCHEMA
             | SWEEP_SCHEMA
+            | LOFT_SPLINE_SCHEMA
             | CURRENT_SCHEMA
     ) {
         return Err(PersistenceError::UnsupportedSchema(schema));
@@ -1916,6 +1930,148 @@ fn read_exact_reference(reader: &mut Reader<'_>) -> Result<BodySubshapeRef, Pers
     Ok(reference)
 }
 
+fn write_import_receipt(bytes: &mut Vec<u8>, receipt: &ImportReceipt) {
+    push_u64(bytes, receipt.id().0);
+    push_u8(
+        bytes,
+        match receipt.format() {
+            ImportFormat::Stl => 1,
+            ImportFormat::Dxf => 2,
+            ImportFormat::Step => 3,
+        },
+    );
+    bytes.extend_from_slice(receipt.source_sha256());
+    push_u64(bytes, receipt.source_byte_len());
+    push_string(bytes, receipt.source_name());
+    push_u8(
+        bytes,
+        match receipt.units().source_unit() {
+            ImportLengthUnit::Millimetre => 1,
+            ImportLengthUnit::Centimetre => 2,
+            ImportLengthUnit::Metre => 3,
+            ImportLengthUnit::Inch => 4,
+            ImportLengthUnit::Foot => 5,
+        },
+    );
+    push_u8(
+        bytes,
+        match receipt.units().authority() {
+            ImportUnitAuthority::FileDeclared => 1,
+            ImportUnitAuthority::UserDeclared => 2,
+        },
+    );
+    push_string(bytes, receipt.parser_id());
+    push_string(bytes, receipt.parser_version());
+    push_u32(bytes, receipt.diagnostics().len() as u32);
+    for diagnostic in receipt.diagnostics() {
+        push_u8(
+            bytes,
+            match diagnostic.severity() {
+                ImportDiagnosticSeverity::Info => 1,
+                ImportDiagnosticSeverity::Warning => 2,
+            },
+        );
+        push_string(bytes, diagnostic.code());
+        match diagnostic.subject() {
+            Some(subject) => {
+                push_u8(bytes, 1);
+                push_string(bytes, subject);
+            }
+            None => push_u8(bytes, 0),
+        }
+        push_u32(bytes, diagnostic.count());
+    }
+    push_u32(bytes, receipt.outputs().len() as u32);
+    for output in receipt.outputs() {
+        match output {
+            ImportOutputRef::Definition(id) => {
+                push_u8(bytes, 1);
+                push_u64(bytes, id.0);
+            }
+            ImportOutputRef::Feature(id) => {
+                push_u8(bytes, 2);
+                push_u64(bytes, id.0);
+            }
+            ImportOutputRef::Occurrence(id) => {
+                push_u8(bytes, 3);
+                push_u64(bytes, id.0);
+            }
+        }
+    }
+}
+
+fn read_import_receipt(reader: &mut Reader<'_>) -> Result<ImportReceipt, PersistenceError> {
+    let id = ImportId(reader.u64()?);
+    let format = match reader.u8()? {
+        1 => ImportFormat::Stl,
+        2 => ImportFormat::Dxf,
+        3 => ImportFormat::Step,
+        value => return Err(PersistenceError::InvalidImportFormat(value)),
+    };
+    let source_sha256 = reader
+        .take(32)?
+        .try_into()
+        .map_err(|_| PersistenceError::Truncated)?;
+    let source_byte_len = reader.u64()?;
+    let source_name = reader.string()?;
+    let source_unit = match reader.u8()? {
+        1 => ImportLengthUnit::Millimetre,
+        2 => ImportLengthUnit::Centimetre,
+        3 => ImportLengthUnit::Metre,
+        4 => ImportLengthUnit::Inch,
+        5 => ImportLengthUnit::Foot,
+        value => return Err(PersistenceError::InvalidImportUnit(value)),
+    };
+    let authority = match reader.u8()? {
+        1 => ImportUnitAuthority::FileDeclared,
+        2 => ImportUnitAuthority::UserDeclared,
+        value => return Err(PersistenceError::InvalidImportUnit(value)),
+    };
+    let parser_id = reader.string()?;
+    let parser_version = reader.string()?;
+    let mut diagnostics = Vec::new();
+    for _ in 0..reader.count_with_limit(MAX_IMPORT_DIAGNOSTICS as u32)? {
+        let severity = match reader.u8()? {
+            1 => ImportDiagnosticSeverity::Info,
+            2 => ImportDiagnosticSeverity::Warning,
+            value => return Err(PersistenceError::InvalidImportDiagnostic(value)),
+        };
+        let code = reader.string()?;
+        let subject = match reader.u8()? {
+            0 => None,
+            1 => Some(reader.string()?),
+            value => return Err(PersistenceError::InvalidOptionalMarker(value)),
+        };
+        diagnostics.push(
+            ImportDiagnostic::new(severity, code, subject, reader.u32()?).map_err(|_| {
+                PersistenceError::InvalidCanonicalData(CanonicalError::InvalidImportReceipt)
+            })?,
+        );
+    }
+    let mut outputs = Vec::new();
+    for _ in 0..reader.count_with_limit(MAX_IMPORT_OUTPUTS as u32)? {
+        outputs.push(match reader.u8()? {
+            1 => ImportOutputRef::Definition(DefinitionId(reader.u64()?)),
+            2 => ImportOutputRef::Feature(FeatureId(reader.u64()?)),
+            3 => ImportOutputRef::Occurrence(OccurrenceId(reader.u64()?)),
+            value => return Err(PersistenceError::InvalidImportOutput(value)),
+        });
+    }
+    ImportReceipt::new(
+        id,
+        format,
+        source_sha256,
+        source_byte_len,
+        source_name,
+        ImportUnitDecision::new(source_unit, authority),
+        parser_id,
+        parser_version,
+        diagnostics,
+        outputs,
+    )
+    .map_err(|_| PersistenceError::InvalidCanonicalData(CanonicalError::InvalidImportReceipt))
+}
+
 fn read_product(
     reader: &mut Reader<'_>,
     capabilities: ProductSchemaCapabilities,
@@ -2386,6 +2542,19 @@ fn read_product(
                 }
             }
         }
+        if capabilities.import_receipts {
+            for _ in 0..reader.count_with_limit(MAX_IMPORT_OUTPUTS as u32)? {
+                let receipt = read_import_receipt(reader)?;
+                let id = receipt.id();
+                if product
+                    .import_receipts
+                    .insert(id, Arc::new(receipt))
+                    .is_some()
+                {
+                    return Err(PersistenceError::DuplicateImport(id));
+                }
+            }
+        }
         if capabilities.space_clearance {
             for _ in 0..reader.count()? {
                 let space = read_space(reader)?;
@@ -2486,6 +2655,10 @@ pub enum PersistenceError {
     InvalidBoolean(u8),
     UnsupportedUnits(u8),
     InvalidFeatureKind(u8),
+    InvalidImportFormat(u8),
+    InvalidImportUnit(u8),
+    InvalidImportDiagnostic(u8),
+    InvalidImportOutput(u8),
     InvalidStableSubshapeRole,
     InvalidNodeKind(u8),
     InvalidPortType,
@@ -2512,6 +2685,7 @@ pub enum PersistenceError {
     DuplicatePersistentDimension(PersistentDimensionId),
     DuplicateTag(TagId),
     DuplicateCollection(CollectionId),
+    DuplicateImport(ImportId),
     DuplicateNode(NodeId),
     DuplicateDefinition(DefinitionId),
     DuplicateFeature(FeatureId),
@@ -2566,6 +2740,16 @@ impl fmt::Display for PersistenceError {
                 write!(formatter, "document unit system {units} is unsupported")
             }
             Self::InvalidFeatureKind(kind) => write!(formatter, "feature kind {kind} is invalid"),
+            Self::InvalidImportFormat(value) => {
+                write!(formatter, "import format {value} is invalid")
+            }
+            Self::InvalidImportUnit(value) => write!(formatter, "import unit {value} is invalid"),
+            Self::InvalidImportDiagnostic(value) => {
+                write!(formatter, "import diagnostic severity {value} is invalid")
+            }
+            Self::InvalidImportOutput(value) => {
+                write!(formatter, "import output kind {value} is invalid")
+            }
             Self::InvalidStableSubshapeRole => {
                 formatter.write_str("stable subshape role is invalid")
             }
@@ -2627,6 +2811,9 @@ impl fmt::Display for PersistenceError {
             Self::DuplicateTag(id) => write!(formatter, "document repeats tag {}", id.0),
             Self::DuplicateCollection(id) => {
                 write!(formatter, "document repeats collection {}", id.0)
+            }
+            Self::DuplicateImport(id) => {
+                write!(formatter, "document repeats import {}", id.0)
             }
             Self::DuplicateNode(id) => write!(formatter, "document repeats node {}", id.0),
             Self::DuplicateDefinition(id) => {

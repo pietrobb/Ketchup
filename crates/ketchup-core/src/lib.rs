@@ -11,6 +11,7 @@ pub mod exact_validation;
 pub mod extension;
 pub mod fabrication;
 pub mod graph;
+pub mod import;
 pub mod intent;
 pub mod persistence;
 pub mod prismatic;

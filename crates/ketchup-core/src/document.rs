@@ -9,6 +9,10 @@ use crate::graph::{
     ExpressionAst, evaluate_affected, evaluate_graph, resolve_derived_identity,
     validate_graph as validate_typed_graph,
 };
+use crate::import::{
+    ImportDiagnosticSeverity, ImportFormat, ImportId, ImportLengthUnit, ImportOutputRef,
+    ImportReceipt, ImportUnitAuthority,
+};
 use crate::prismatic::{CanonicalJoint, JointId, PrismaticError};
 use crate::space::{
     CanonicalClearanceVolume, CanonicalSpace, ClearanceCoordinateFrame, ClearanceOwner,
@@ -777,6 +781,7 @@ pub(crate) struct ProductModel {
     pub(crate) persistent_dimensions: BTreeMap<PersistentDimensionId, Arc<PersistentDimension>>,
     pub(crate) tags: BTreeMap<TagId, Arc<Tag>>,
     pub(crate) collections: BTreeMap<CollectionId, Arc<Collection>>,
+    pub(crate) import_receipts: BTreeMap<ImportId, Arc<ImportReceipt>>,
     pub(crate) definitions: BTreeMap<DefinitionId, Arc<Definition>>,
     pub(crate) features: BTreeMap<FeatureId, Arc<Feature>>,
     pub(crate) occurrences: BTreeMap<OccurrenceId, Arc<Occurrence>>,
@@ -818,6 +823,7 @@ impl Default for ProductModel {
             persistent_dimensions: BTreeMap::new(),
             tags: BTreeMap::new(),
             collections: BTreeMap::new(),
+            import_receipts: BTreeMap::new(),
             definitions: BTreeMap::new(),
             features: BTreeMap::new(),
             occurrences: BTreeMap::new(),
@@ -1157,6 +1163,7 @@ pub enum CanonicalCommand {
         id: CollectionId,
         occurrence_ids: Vec<OccurrenceId>,
     },
+    RecordImport(ImportReceipt),
     CreateDefinition {
         id: DefinitionId,
         name: String,
@@ -1324,6 +1331,7 @@ pub enum AuthoritativeDependency {
     PersistentDimension(PersistentDimensionId),
     Tag(TagId),
     Collection(CollectionId),
+    Import(ImportId),
     Definition(DefinitionId),
     Feature(FeatureId),
     Occurrence(OccurrenceId),
@@ -2037,6 +2045,19 @@ impl Snapshot {
 
     pub fn collections(&self) -> impl Iterator<Item = &Collection> {
         self.product.collections.values().map(Arc::as_ref)
+    }
+
+    #[must_use]
+    pub fn import_receipt(&self, id: ImportId) -> Option<&ImportReceipt> {
+        self.product.import_receipts.get(&id).map(Arc::as_ref)
+    }
+
+    pub fn import_receipts(&self) -> impl Iterator<Item = &ImportReceipt> {
+        self.product.import_receipts.values().map(Arc::as_ref)
+    }
+
+    pub fn next_import_id(&self) -> Result<ImportId, CanonicalError> {
+        next_id(self.product.import_receipts.keys().map(|id| id.0)).map(ImportId)
     }
 
     pub fn occurrences_in_collection(&self, id: CollectionId) -> impl Iterator<Item = &Occurrence> {
@@ -3043,6 +3064,27 @@ impl DocumentStore {
                             ..existing.as_ref().clone()
                         }),
                     );
+                }
+                CanonicalCommand::RecordImport(receipt) => {
+                    receipt
+                        .validate()
+                        .map_err(|_| CanonicalError::InvalidImportReceipt)?;
+                    if product.import_receipts.contains_key(&receipt.id()) {
+                        return Err(CanonicalError::ImportAlreadyExists(receipt.id()));
+                    }
+                    for output in receipt.outputs() {
+                        let exists = match output {
+                            ImportOutputRef::Definition(id) => product.definitions.contains_key(id),
+                            ImportOutputRef::Feature(id) => product.features.contains_key(id),
+                            ImportOutputRef::Occurrence(id) => product.occurrences.contains_key(id),
+                        };
+                        if !exists {
+                            return Err(CanonicalError::InvalidImportReceipt);
+                        }
+                    }
+                    product
+                        .import_receipts
+                        .insert(receipt.id(), Arc::new(receipt.clone()));
                 }
                 CanonicalCommand::CreateDefinition { id, name } => {
                     ensure_product_id(id.0)?;
@@ -5129,6 +5171,8 @@ pub enum CanonicalError {
     CollectionNotFound(CollectionId),
     CollectionMembershipNotCanonical(CollectionId),
     OccurrenceInCollection(OccurrenceId),
+    InvalidImportReceipt,
+    ImportAlreadyExists(ImportId),
     InvalidPersistentDimensionTarget,
     InvalidDimensionPresentation,
     UndeclaredOverrideParameter,
@@ -5282,6 +5326,10 @@ impl fmt::Display for CanonicalError {
             ),
             Self::OccurrenceInCollection(id) => {
                 write!(formatter, "occurrence {} is still in a collection", id.0)
+            }
+            Self::InvalidImportReceipt => formatter.write_str("import receipt is invalid"),
+            Self::ImportAlreadyExists(id) => {
+                write!(formatter, "import {} already exists", id.0)
             }
             Self::InvalidPersistentDimensionTarget => {
                 formatter.write_str("persistent dimension target is invalid")
@@ -7334,6 +7382,21 @@ fn validate_product(product: &ProductModel) -> Result<(), CanonicalError> {
             }
         }
     }
+    for (id, receipt) in &product.import_receipts {
+        if *id != receipt.id() || receipt.validate().is_err() {
+            return Err(CanonicalError::InvalidImportReceipt);
+        }
+        for output in receipt.outputs() {
+            let exists = match output {
+                ImportOutputRef::Definition(id) => product.definitions.contains_key(id),
+                ImportOutputRef::Feature(id) => product.features.contains_key(id),
+                ImportOutputRef::Occurrence(id) => product.occurrences.contains_key(id),
+            };
+            if !exists {
+                return Err(CanonicalError::InvalidImportReceipt);
+            }
+        }
+    }
     for definition in product.definitions.values() {
         ensure_product_id(definition.id.0)?;
         ensure_name(&definition.name)?;
@@ -8501,6 +8564,9 @@ fn authoritative_writes(
             | CanonicalCommand::SetCollectionOccurrences { id, .. } => {
                 writes.insert(AuthoritativeDependency::Collection(*id));
             }
+            CanonicalCommand::RecordImport(receipt) => {
+                writes.insert(AuthoritativeDependency::Import(receipt.id()));
+            }
             CanonicalCommand::CreateDefinition { id, .. }
             | CanonicalCommand::DeleteDefinition { id }
             | CanonicalCommand::RenameDefinition { id, .. } => {
@@ -8591,6 +8657,16 @@ fn authoritative_dependencies(
             CanonicalCommand::SetEvaluatorDimension { id, .. }
             | CanonicalCommand::RenameEvaluatorNode { id, .. } => {
                 add_evaluator_dependency_closure(snapshot, *id, &mut dependencies);
+            }
+            CanonicalCommand::RecordImport(receipt) => {
+                dependencies.insert(AuthoritativeDependency::Import(receipt.id()));
+                for output in receipt.outputs() {
+                    dependencies.insert(match output {
+                        ImportOutputRef::Definition(id) => AuthoritativeDependency::Definition(*id),
+                        ImportOutputRef::Feature(id) => AuthoritativeDependency::Feature(*id),
+                        ImportOutputRef::Occurrence(id) => AuthoritativeDependency::Occurrence(*id),
+                    });
+                }
             }
             CanonicalCommand::CreateDefinition { id, .. } => {
                 dependencies.insert(AuthoritativeDependency::Definition(*id));
@@ -9098,6 +9174,10 @@ fn digest_snapshot(snapshot: &Snapshot) -> String {
     for collection in snapshot.product.collections.values() {
         digest.collection(collection);
     }
+    digest.u64(snapshot.product.import_receipts.len() as u64);
+    for receipt in snapshot.product.import_receipts.values() {
+        digest.import_receipt(receipt);
+    }
     digest.u64(snapshot.product.definitions.len() as u64);
     for definition in snapshot.product.definitions.values() {
         digest.definition(definition);
@@ -9341,6 +9421,65 @@ impl StableDigest {
         self.u64(collection.occurrence_ids.len() as u64);
         for occurrence_id in &collection.occurrence_ids {
             self.u64(occurrence_id.0);
+        }
+    }
+
+    fn import_receipt(&mut self, receipt: &ImportReceipt) {
+        self.bytes(receipt.schema().as_bytes());
+        self.u64(receipt.id().0);
+        self.byte(match receipt.format() {
+            ImportFormat::Stl => 1,
+            ImportFormat::Dxf => 2,
+            ImportFormat::Step => 3,
+        });
+        self.bytes(receipt.source_sha256());
+        self.u64(receipt.source_byte_len());
+        self.bytes(receipt.source_name().as_bytes());
+        self.byte(match receipt.units().source_unit() {
+            ImportLengthUnit::Millimetre => 1,
+            ImportLengthUnit::Centimetre => 2,
+            ImportLengthUnit::Metre => 3,
+            ImportLengthUnit::Inch => 4,
+            ImportLengthUnit::Foot => 5,
+        });
+        self.byte(match receipt.units().authority() {
+            ImportUnitAuthority::FileDeclared => 1,
+            ImportUnitAuthority::UserDeclared => 2,
+        });
+        self.bytes(receipt.parser_id().as_bytes());
+        self.bytes(receipt.parser_version().as_bytes());
+        self.u64(receipt.diagnostics().len() as u64);
+        for diagnostic in receipt.diagnostics() {
+            self.byte(match diagnostic.severity() {
+                ImportDiagnosticSeverity::Info => 1,
+                ImportDiagnosticSeverity::Warning => 2,
+            });
+            self.bytes(diagnostic.code().as_bytes());
+            match diagnostic.subject() {
+                Some(subject) => {
+                    self.byte(1);
+                    self.bytes(subject.as_bytes());
+                }
+                None => self.byte(0),
+            }
+            self.u64(u64::from(diagnostic.count()));
+        }
+        self.u64(receipt.outputs().len() as u64);
+        for output in receipt.outputs() {
+            match output {
+                ImportOutputRef::Definition(id) => {
+                    self.byte(1);
+                    self.u64(id.0);
+                }
+                ImportOutputRef::Feature(id) => {
+                    self.byte(2);
+                    self.u64(id.0);
+                }
+                ImportOutputRef::Occurrence(id) => {
+                    self.byte(3);
+                    self.u64(id.0);
+                }
+            }
         }
     }
 
@@ -9716,6 +9855,16 @@ impl StableDigest {
                     self.byte(0);
                 }
             }
+            AuthoritativeDependency::Import(id) => {
+                self.byte(22);
+                self.u64(id.0);
+                if let Some(receipt) = product.import_receipts.get(&id) {
+                    self.byte(1);
+                    self.import_receipt(receipt);
+                } else {
+                    self.byte(0);
+                }
+            }
             AuthoritativeDependency::Definition(id) => {
                 self.byte(2);
                 self.u64(id.0);
@@ -9958,6 +10107,10 @@ impl StableDigest {
                 self.byte(3);
                 self.u64(id.0);
                 self.bytes(name.as_bytes());
+            }
+            CanonicalCommand::RecordImport(receipt) => {
+                self.byte(50);
+                self.import_receipt(receipt);
             }
             CanonicalCommand::CreateDefinition { id, name } => {
                 self.byte(10);
