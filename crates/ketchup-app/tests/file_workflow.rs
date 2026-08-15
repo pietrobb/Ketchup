@@ -13,7 +13,7 @@ use std::time::Duration;
 use harness::Shell;
 use ketchup_app::AppCommand;
 use ketchup_app::dialogs::ScriptedFileDialogs;
-use ketchup_core::import::ImportFormat;
+use ketchup_core::import::{ImportFormat, MAX_STL_SOURCE_BYTES};
 use ketchup_interaction::Vec3;
 
 fn compose_two_shared_occurrences(shell: &mut Shell) {
@@ -56,7 +56,12 @@ struct CanonicalState {
     digest: String,
     can_undo: bool,
     can_redo: bool,
+    undo_steps: usize,
+    redo_steps: usize,
     dirty: bool,
+    definitions: usize,
+    mesh_bodies: usize,
+    import_receipts: usize,
 }
 
 fn canonical_state(shell: &Shell) -> CanonicalState {
@@ -65,7 +70,12 @@ fn canonical_state(shell: &Shell) -> CanonicalState {
         digest: shell.app().canonical_digest(),
         can_undo: shell.app().can_undo(),
         can_redo: shell.app().can_redo(),
+        undo_steps: shell.app().undo_step_count(),
+        redo_steps: shell.app().redo_step_count(),
         dirty: shell.app().is_dirty(),
+        definitions: shell.app().definition_count(),
+        mesh_bodies: shell.app().mesh_body_count(),
+        import_receipts: shell.app().import_receipt_count(),
     }
 }
 
@@ -145,6 +155,46 @@ fn ascii_stl_facet_count(bytes: &[u8]) -> usize {
         facets * 3
     );
     facets
+}
+
+fn valid_binary_tetrahedron() -> Vec<u8> {
+    let facets: [([[f32; 3]; 3], [f32; 3]); 4] = [
+        (
+            [[0.0, 0.0, 0.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0]],
+            [0.0, 0.0, -1.0],
+        ),
+        (
+            [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
+            [0.0, -1.0, 0.0],
+        ),
+        (
+            [[0.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, 1.0, 0.0]],
+            [-1.0, 0.0, 0.0],
+        ),
+        (
+            [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+            [1.0, 1.0, 1.0],
+        ),
+    ];
+    let mut bytes = vec![0_u8; 80];
+    bytes[..21].copy_from_slice(b"deterministic binary ");
+    bytes.extend_from_slice(&(facets.len() as u32).to_le_bytes());
+    for (vertices, normal) in facets {
+        for value in normal.into_iter().chain(vertices.into_iter().flatten()) {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        bytes.extend_from_slice(&0_u16.to_le_bytes());
+    }
+    bytes
+}
+
+fn valid_ascii_tetrahedron() -> &'static [u8] {
+    b"solid tetrahedron\n\
+ facet normal 0 0 -1\n  outer loop\n   vertex 0 0 0\n   vertex 0 1 0\n   vertex 1 0 0\n  endloop\n endfacet\n\
+ facet normal 0 -1 0\n  outer loop\n   vertex 0 0 0\n   vertex 1 0 0\n   vertex 0 0 1\n  endloop\n endfacet\n\
+ facet normal -1 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 0 0 1\n   vertex 0 1 0\n  endloop\n endfacet\n\
+ facet normal 1 1 1\n  outer loop\n   vertex 1 0 0\n   vertex 0 1 0\n   vertex 0 0 1\n  endloop\n endfacet\n\
+endsolid tetrahedron\n"
 }
 
 #[test]
@@ -675,17 +725,13 @@ fn file_menu_exports_current_visible_exact_model_without_mutating_canonical_stat
 fn file_import_stl_commits_one_canonical_mesh_transaction_offscreen() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("tetrahedron.stl");
-    std::fs::write(
-        &path,
-        b"solid tetrahedron\n\
- facet normal 0 0 -1\n  outer loop\n   vertex 0 0 0\n   vertex 0 1 0\n   vertex 1 0 0\n  endloop\n endfacet\n\
- facet normal 0 -1 0\n  outer loop\n   vertex 0 0 0\n   vertex 1 0 0\n   vertex 0 0 1\n  endloop\n endfacet\n\
- facet normal -1 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 0 0 1\n   vertex 0 1 0\n  endloop\n endfacet\n\
- facet normal 1 1 1\n  outer loop\n   vertex 1 0 0\n   vertex 0 1 0\n   vertex 0 0 1\n  endloop\n endfacet\n\
-endsolid tetrahedron\n",
-    )
-    .unwrap();
-    let script = ScriptedFileDialogs::new().queue_import(ImportFormat::Stl, &path);
+    let document_path = directory.path().join("imported.ketchup");
+    std::fs::write(&path, valid_ascii_tetrahedron()).unwrap();
+    let script = ScriptedFileDialogs::new()
+        .queue_import(ImportFormat::Stl, &path)
+        .queue_save(&document_path)
+        .queue_open(&document_path)
+        .always_discard();
     let mut shell = Shell::with_dialogs(script.clone());
     let before = canonical_state(&shell);
     let before_definitions = shell.app().definition_count();
@@ -715,4 +761,117 @@ endsolid tetrahedron\n",
     shell.click_menu_command("menu-edit", AppCommand::Redo);
     assert_eq!(shell.app().mesh_body_count(), 1);
     assert_eq!(shell.app().import_receipt_count(), 1);
+
+    let imported_digest = shell.app().canonical_digest();
+    shell.click_menu_command("menu-file", AppCommand::Save);
+    assert!(!shell.app().is_dirty());
+    shell.click_menu_command("menu-file", AppCommand::New);
+    shell.click_menu_command("menu-file", AppCommand::Open);
+    assert_eq!(shell.app().canonical_digest(), imported_digest);
+    assert_eq!(shell.app().mesh_body_count(), 1);
+    assert_eq!(shell.app().import_receipt_count(), 1);
+}
+
+#[test]
+fn file_import_binary_stl_commits_through_the_same_headless_workflow() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("tetrahedron-binary.stl");
+    std::fs::write(&path, valid_binary_tetrahedron()).unwrap();
+    let script = ScriptedFileDialogs::new().queue_import(ImportFormat::Stl, &path);
+    let mut shell = Shell::with_dialogs(script);
+    let before = canonical_state(&shell);
+
+    shell.click_menu_command("menu-file", AppCommand::ImportMeshStl);
+    shell.click_button_label(&shell.catalog().text("dialog-import-stl-confirm"));
+
+    assert_eq!(shell.app().document_revision(), before.revision + 1);
+    assert_eq!(shell.app().mesh_body_count(), 1);
+    assert_eq!(shell.app().import_receipt_count(), 1);
+    assert!(digest_starts_like(&shell, "digest-imported-stl"));
+}
+
+#[test]
+fn file_import_stl_cancel_and_every_refusal_leave_canonical_state_unchanged() {
+    let directory = tempfile::tempdir().unwrap();
+    let valid = directory.path().join("valid.stl");
+    let malformed = directory.path().join("zero-facets.stl");
+    let non_manifold = directory.path().join("open-shell.stl");
+    let oversized = directory.path().join("oversized.stl");
+    std::fs::write(&valid, valid_ascii_tetrahedron()).unwrap();
+    let mut zero_facets = vec![0_u8; 80];
+    zero_facets.extend_from_slice(&0_u32.to_le_bytes());
+    std::fs::write(&malformed, zero_facets).unwrap();
+    let last_facet = std::str::from_utf8(valid_ascii_tetrahedron())
+        .unwrap()
+        .find("facet normal 1 1 1")
+        .unwrap();
+    let mut open_shell = valid_ascii_tetrahedron()[..last_facet].to_vec();
+    open_shell.extend_from_slice(b"endsolid tetrahedron\n");
+    std::fs::write(&non_manifold, open_shell).unwrap();
+    std::fs::File::create(&oversized)
+        .unwrap()
+        .set_len(MAX_STL_SOURCE_BYTES + 1)
+        .unwrap();
+
+    let script = ScriptedFileDialogs::new()
+        .queue_cancelled_import(ImportFormat::Stl)
+        .queue_import(ImportFormat::Stl, &valid)
+        .queue_import(ImportFormat::Stl, &malformed)
+        .queue_import(ImportFormat::Stl, &non_manifold)
+        .queue_import(ImportFormat::Stl, &oversized);
+    let mut shell = Shell::with_dialogs(script);
+    compose_two_shared_occurrences(&mut shell);
+    shell.click_menu_command("menu-edit", AppCommand::Undo);
+    let before = canonical_state(&shell);
+    assert!(before.redo_steps > 0);
+
+    shell.click_menu_command("menu-file", AppCommand::ImportMeshStl);
+    assert_eq!(canonical_state(&shell), before);
+
+    shell.click_menu_command("menu-file", AppCommand::ImportMeshStl);
+    shell.click_button_label(&shell.catalog().text("dialog-import-stl-cancel"));
+    assert_eq!(canonical_state(&shell), before);
+
+    shell.click_menu_command("menu-file", AppCommand::ImportMeshStl);
+    shell.click_button_label(&shell.catalog().text("dialog-import-stl-confirm"));
+    assert_eq!(canonical_state(&shell), before);
+    assert!(digest_starts_like(&shell, "error-import-stl"));
+
+    shell.click_menu_command("menu-file", AppCommand::ImportMeshStl);
+    shell.click_button_label(&shell.catalog().text("dialog-import-stl-confirm"));
+    assert_eq!(canonical_state(&shell), before);
+    assert!(digest_starts_like(&shell, "error-import-stl"));
+
+    shell.click_menu_command("menu-file", AppCommand::ImportMeshStl);
+    assert_eq!(canonical_state(&shell), before);
+    assert!(digest_starts_like(&shell, "error-import-stl"));
+}
+
+#[test]
+fn file_import_stl_rejects_changed_source_and_document_after_review() {
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("reviewed.stl");
+    std::fs::write(&source, valid_ascii_tetrahedron()).unwrap();
+    let script = ScriptedFileDialogs::new()
+        .queue_import(ImportFormat::Stl, &source)
+        .queue_import(ImportFormat::Stl, &source);
+    let mut shell = Shell::with_dialogs(script);
+
+    let before_source_change = canonical_state(&shell);
+    shell.click_menu_command("menu-file", AppCommand::ImportMeshStl);
+    let mut same_length_change = valid_ascii_tetrahedron().to_vec();
+    same_length_change[0] = b'S';
+    std::fs::write(&source, same_length_change).unwrap();
+    shell.click_button_label(&shell.catalog().text("dialog-import-stl-confirm"));
+    assert_eq!(canonical_state(&shell), before_source_change);
+    assert!(digest_starts_like(&shell, "error-import-stl"));
+
+    std::fs::write(&source, valid_ascii_tetrahedron()).unwrap();
+    compose_two_shared_occurrences(&mut shell);
+    shell.click_menu_command("menu-file", AppCommand::ImportMeshStl);
+    assert!(shell.app_mut().move_selected(Vec3::new(10.0, 0.0, 0.0)));
+    let after_document_change = canonical_state(&shell);
+    shell.click_button_label(&shell.catalog().text("dialog-import-stl-confirm"));
+    assert_eq!(canonical_state(&shell), after_document_change);
+    assert!(digest_starts_like(&shell, "error-import-stl"));
 }

@@ -80,14 +80,39 @@ fn binary_and_ascii_stl_normalize_to_the_same_canonical_mesh() {
 }
 
 #[test]
-fn declared_units_are_applied_before_canonical_validation() {
-    let inches = ImportUnitDecision::new(ImportLengthUnit::Inch, ImportUnitAuthority::UserDeclared);
-    let mesh = parse_stl(&binary_tetrahedron(), inches).unwrap();
-    assert!(
-        mesh.vertices_mm()
-            .iter()
-            .flatten()
-            .all(|value| matches!(*value, 0.0 | 25.4))
+fn every_declared_unit_is_applied_before_canonical_validation() {
+    for unit in [
+        ImportLengthUnit::Millimetre,
+        ImportLengthUnit::Centimetre,
+        ImportLengthUnit::Metre,
+        ImportLengthUnit::Inch,
+        ImportLengthUnit::Foot,
+    ] {
+        let decision = ImportUnitDecision::new(unit, ImportUnitAuthority::UserDeclared);
+        let mesh = parse_stl(&binary_tetrahedron(), decision).unwrap();
+        let scale = unit.millimetres_per_unit();
+        assert!(
+            mesh.vertices_mm()
+                .iter()
+                .flatten()
+                .all(|value| *value == 0.0 || *value == scale)
+        );
+    }
+}
+
+#[test]
+fn empty_binary_and_unbounded_ascii_records_are_typed_refusals_without_panics() {
+    let mut zero_facets = vec![0_u8; 80];
+    zero_facets.extend_from_slice(&0_u32.to_le_bytes());
+    assert_eq!(
+        parse_stl(&zero_facets, millimetres()),
+        Err(StlImportError::NoTriangles)
+    );
+
+    let overlong = format!("solid {}\nendsolid\n", "x".repeat(129));
+    assert_eq!(
+        parse_stl(overlong.as_bytes(), millimetres()),
+        Err(StlImportError::InvalidAscii)
     );
 }
 

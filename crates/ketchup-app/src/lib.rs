@@ -37,11 +37,11 @@ use ketchup_core::exact_product::{
 };
 use ketchup_core::fabrication::{FullBomProjection, PieceDimensionSheet};
 use ketchup_core::graph::{
-    DerivedIdentity, EvaluationStatus, EvaluatorNodeKind, RuleOutput, SlotSegment,
+    DerivedIdentity, EvaluationStatus, EvaluatorNodeKind, RuleOutput, SlotSegment, sha256_bytes,
 };
 use ketchup_core::import::{
-    ImportFormat, ImportLengthUnit, ImportUnitAuthority, ImportUnitDecision,
-    MAX_IMPORT_SOURCE_BYTES, plan_stl_import,
+    ImportFormat, ImportLengthUnit, ImportUnitAuthority, ImportUnitDecision, MAX_STL_SOURCE_BYTES,
+    plan_stl_import,
 };
 use ketchup_core::intent::{IntentRequest, WorkflowIntent, propose_intent};
 use ketchup_core::prismatic::JointId;
@@ -1541,6 +1541,11 @@ pub struct AssistantVerification {
 struct PendingStlImport {
     path: PathBuf,
     unit: ImportLengthUnit,
+    document_id: DocumentId,
+    revision_id: u64,
+    canonical_digest: String,
+    source_sha256: [u8; 32],
+    source_byte_len: u64,
 }
 
 pub struct KetchupApp {
@@ -2241,23 +2246,47 @@ impl KetchupApp {
         })
     }
 
-    fn import_stl_from(&mut self, path: &Path, unit: ImportLengthUnit) -> bool {
+    fn read_stl_source(path: &Path) -> Result<Vec<u8>, String> {
+        if std::fs::metadata(path)
+            .map_err(|error| error.to_string())?
+            .len()
+            > MAX_STL_SOURCE_BYTES
+        {
+            return Err("STL source exceeds the bounded 200,000-facet text envelope".to_owned());
+        }
+        let mut file = std::fs::File::open(path).map_err(|error| error.to_string())?;
+        let mut source = Vec::new();
+        std::io::Read::by_ref(&mut file)
+            .take(MAX_STL_SOURCE_BYTES + 1)
+            .read_to_end(&mut source)
+            .map_err(|error| error.to_string())?;
+        if source.len() as u64 > MAX_STL_SOURCE_BYTES {
+            return Err("STL source exceeds the bounded 200,000-facet text envelope".to_owned());
+        }
+        Ok(source)
+    }
+
+    fn import_stl_from(&mut self, pending: &PendingStlImport) -> bool {
+        let path = &pending.path;
         let result = (|| {
-            let mut file = std::fs::File::open(path).map_err(|error| error.to_string())?;
-            let mut source = Vec::new();
-            std::io::Read::by_ref(&mut file)
-                .take(MAX_IMPORT_SOURCE_BYTES + 1)
-                .read_to_end(&mut source)
-                .map_err(|error| error.to_string())?;
-            if source.len() as u64 > MAX_IMPORT_SOURCE_BYTES {
-                return Err("STL source exceeds the 32 MiB import limit".to_owned());
+            let snapshot = self.document.current();
+            if snapshot.document_id() != pending.document_id
+                || snapshot.revision_id() != pending.revision_id
+                || snapshot.canonical_digest() != pending.canonical_digest
+            {
+                return Err("STL import review is stale for the active document".to_owned());
+            }
+            let source = Self::read_stl_source(path)?;
+            if source.len() as u64 != pending.source_byte_len
+                || sha256_bytes(&source) != pending.source_sha256
+            {
+                return Err("STL source changed after it was selected for review".to_owned());
             }
             let source_name = path
                 .file_name()
                 .and_then(|name| name.to_str())
                 .ok_or_else(|| "STL source name is not valid UTF-8".to_owned())?;
-            let units = ImportUnitDecision::new(unit, ImportUnitAuthority::UserDeclared);
-            let snapshot = self.document.current();
+            let units = ImportUnitDecision::new(pending.unit, ImportUnitAuthority::UserDeclared);
             let batch = std::panic::catch_unwind(|| {
                 plan_stl_import(&snapshot, &source, source_name, units)
             })
@@ -2520,10 +2549,29 @@ impl KetchupApp {
             }
             AppCommand::ImportMeshStl => {
                 if let Some(path) = self.choose_stl_import_path() {
-                    self.pending_stl_import = Some(PendingStlImport {
-                        path,
-                        unit: ImportLengthUnit::Millimetre,
-                    });
+                    match Self::read_stl_source(&path) {
+                        Ok(source) => {
+                            let snapshot = self.document.current();
+                            self.pending_stl_import = Some(PendingStlImport {
+                                path,
+                                unit: ImportLengthUnit::Millimetre,
+                                document_id: snapshot.document_id(),
+                                revision_id: snapshot.revision_id(),
+                                canonical_digest: snapshot.canonical_digest(),
+                                source_sha256: sha256_bytes(&source),
+                                source_byte_len: source.len() as u64,
+                            });
+                        }
+                        Err(reason) => {
+                            self.digest = self.catalog.format(
+                                "error-import-stl",
+                                &BTreeMap::from([
+                                    ("path", path.display().to_string()),
+                                    ("reason", reason),
+                                ]),
+                            );
+                        }
+                    }
                 }
             }
             AppCommand::ExportExactStep => {
@@ -9320,6 +9368,16 @@ impl KetchupApp {
         self.document.visible_redo_steps() > 0
     }
 
+    #[must_use]
+    pub fn undo_step_count(&self) -> usize {
+        self.document.visible_undo_steps()
+    }
+
+    #[must_use]
+    pub fn redo_step_count(&self) -> usize {
+        self.document.visible_redo_steps()
+    }
+
     pub fn undo(&mut self) -> bool {
         let undoing_assistant_change = self.assistant_change_can_undo();
         if self.document.undo().is_none() {
@@ -15364,8 +15422,11 @@ impl KetchupApp {
             self.pending_stl_import = None;
             self.digest = self.catalog.text("digest-cancelled");
         } else if import {
-            self.pending_stl_import = None;
-            self.import_stl_from(&path, unit);
+            let pending = self
+                .pending_stl_import
+                .take()
+                .expect("the STL review window has a pending import");
+            self.import_stl_from(&pending);
         }
     }
 

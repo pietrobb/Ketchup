@@ -8,7 +8,7 @@ use crate::document::{
 use crate::graph::sha256_bytes;
 
 pub const IMPORT_RECEIPT_SCHEMA_V1: &str = "ketchup.import-receipt.v1";
-pub const MAX_IMPORT_SOURCE_BYTES: u64 = 32 * 1024 * 1024;
+pub const MAX_IMPORT_SOURCE_BYTES: u64 = 1024 * 1024 * 1024 * 1024;
 pub const MAX_IMPORT_DIAGNOSTICS: usize = 1_024;
 pub const MAX_IMPORT_OUTPUTS: usize = 1_024;
 const MAX_IMPORT_TEXT_BYTES: usize = 1_024;
@@ -347,6 +347,13 @@ fn validate_text(value: &str) -> Result<(), ImportContractError> {
 pub const STL_PARSER_ID: &str = "ketchup-stl";
 pub const STL_PARSER_VERSION: &str = "1";
 const MAX_STL_TRIANGLES: usize = 200_000;
+const MAX_STL_ASCII_LINE_BYTES: usize = 128;
+const MAX_STL_ASCII_LINES_PER_TRIANGLE: u64 = 7;
+// The source envelope is derived from the accepted facet and line envelopes;
+// binary STL reaches its triangle bound at only 10,000,084 bytes.
+pub const MAX_STL_SOURCE_BYTES: u64 =
+    ((MAX_STL_TRIANGLES as u64 * MAX_STL_ASCII_LINES_PER_TRIANGLE) + 2)
+        * (MAX_STL_ASCII_LINE_BYTES as u64 + 1);
 const MAX_STL_VERTICES: usize = 100_000;
 const MAX_STL_ABS_MM: f64 = 1_000_000.0;
 const STL_AREA_EPSILON: f64 = 1.0e-18;
@@ -379,6 +386,7 @@ impl ParsedStlMesh {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StlImportError {
     Empty,
+    NoTriangles,
     SourceTooLarge,
     UnrecognizedEncoding,
     InvalidBinaryLength,
@@ -400,7 +408,8 @@ impl fmt::Display for StlImportError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
             Self::Empty => "STL source is empty",
-            Self::SourceTooLarge => "STL source exceeds the 32 MiB import limit",
+            Self::NoTriangles => "STL source contains no triangles",
+            Self::SourceTooLarge => "STL source exceeds the bounded 200,000-facet text envelope",
             Self::UnrecognizedEncoding => "source is neither a bounded binary nor ASCII STL",
             Self::InvalidBinaryLength => "binary STL triangle count does not match its byte length",
             Self::InvalidAscii => "ASCII STL structure is malformed or contains unsupported text",
@@ -444,7 +453,7 @@ pub fn parse_stl(
     if source.is_empty() {
         return Err(StlImportError::Empty);
     }
-    if source.len() as u64 > MAX_IMPORT_SOURCE_BYTES {
+    if source.len() as u64 > MAX_STL_SOURCE_BYTES {
         return Err(StlImportError::SourceTooLarge);
     }
     if units.authority() != ImportUnitAuthority::UserDeclared {
@@ -468,6 +477,9 @@ pub fn parse_stl(
         Some((_, Some(_))) => return Err(StlImportError::InvalidBinaryLength),
         _ => return Err(StlImportError::UnrecognizedEncoding),
     };
+    if facets.is_empty() {
+        return Err(StlImportError::NoTriangles);
+    }
     if facets.len() > MAX_STL_TRIANGLES {
         return Err(StlImportError::TooManyTriangles);
     }
@@ -615,7 +627,11 @@ fn parse_binary_stl(source: &[u8], count: usize) -> Result<Vec<StlFacet>, StlImp
 
 fn parse_ascii_stl(source: &[u8]) -> Result<Vec<StlFacet>, StlImportError> {
     let text = std::str::from_utf8(source).map_err(|_| StlImportError::InvalidAscii)?;
-    if !text.is_ascii() {
+    if !text.is_ascii()
+        || text
+            .lines()
+            .any(|line| line.len() > MAX_STL_ASCII_LINE_BYTES)
+    {
         return Err(StlImportError::InvalidAscii);
     }
     let mut lines = text.lines().map(str::trim).filter(|line| !line.is_empty());
@@ -652,7 +668,7 @@ fn parse_ascii_stl(source: &[u8]) -> Result<Vec<StlFacet>, StlImportError> {
 }
 
 fn parse_ascii_vector(line: &str, prefix: &str) -> Result<[f64; 3], StlImportError> {
-    let values = line
+    let mut values = line
         .strip_prefix(prefix)
         .filter(|rest| rest.starts_with(char::is_whitespace))
         .ok_or(StlImportError::InvalidAscii)?
@@ -661,15 +677,19 @@ fn parse_ascii_vector(line: &str, prefix: &str) -> Result<[f64; 3], StlImportErr
             token
                 .parse::<f64>()
                 .map_err(|_| StlImportError::InvalidNumber)
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    let [x, y, z] = values.as_slice() else {
+        });
+    let coordinates = [
+        values.next().ok_or(StlImportError::InvalidAscii)??,
+        values.next().ok_or(StlImportError::InvalidAscii)??,
+        values.next().ok_or(StlImportError::InvalidAscii)??,
+    ];
+    if values.next().is_some() {
         return Err(StlImportError::InvalidAscii);
-    };
-    if [x, y, z].into_iter().any(|value| !value.is_finite()) {
+    }
+    if coordinates.into_iter().any(|value| !value.is_finite()) {
         return Err(StlImportError::InvalidNumber);
     }
-    Ok([*x, *y, *z])
+    Ok(coordinates)
 }
 
 fn normalize_and_validate_stl(
