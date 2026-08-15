@@ -1337,6 +1337,107 @@ fn moving_an_imported_step_body_keeps_it_painted_and_drops_it_when_the_import_is
 }
 
 #[test]
+fn rotating_an_imported_step_body_keeps_it_painted_pickable_and_turnable_again() {
+    let source_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../corpora/r0/step/self-authored-box.step");
+    let script = ScriptedFileDialogs::new()
+        .queue_import(ImportFormat::Step, &source_path)
+        .always_confirm_high_risk_as(103);
+    let mut shell = Shell::with_dialogs(script);
+    shell.app_mut().enable_headless_instanced_scene();
+    shell
+        .app_mut()
+        .connect_exact_worker(exact_worker_path())
+        .expect("the imported STEP rotate workflow requires the real exact worker");
+    shell.click_at(shell.viewport_rect().center());
+    assert!(shell.app_mut().delete_selected());
+    shell.settle();
+
+    shell.click_menu_command("menu-file", AppCommand::ImportExactStep);
+    shell.click_button_label(&shell.catalog().text("dialog-import-step-confirm"));
+    for _ in 0..100 {
+        shell.settle();
+        if shell.app().exact_render_body_count() == 1 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    shell.settle();
+    let painted = shell.app().instanced_scene_triangle_count();
+    assert!(painted > 0);
+
+    let bounds = shell.app().exact_render_bounds()[0];
+    let centre = Vec3::new(
+        (bounds[0][0] + bounds[1][0]) * 0.5,
+        (bounds[0][1] + bounds[1][1]) * 0.5,
+        (bounds[0][2] + bounds[1][2]) * 0.5,
+    );
+    let span = (bounds[1][0] - bounds[0][0]).max(bounds[1][1] - bounds[0][1]);
+    let viewport = shell.viewport_rect();
+    shell.click_at(shell.app().project_to_screen(centre, viewport));
+    assert_eq!(shell.app().selected_occurrence_count(), 1);
+
+    // An imported body carries no canonical box, so its pivot has to come from
+    // the painted exact geometry. Turning it is a pure occurrence transform:
+    // the accepted product stays valid and the worker is never asked again.
+    shell.click_command(AppCommand::Rotate);
+    let before_steps = shell.app().undo_step_count();
+    let from = shell
+        .app()
+        .project_to_screen(centre + Vec3::new(span * 0.4, 0.0, 0.0), viewport);
+    let to = shell
+        .app()
+        .project_to_screen(centre + Vec3::new(0.0, span * 0.4, 0.0), viewport);
+    let mut blank_frames = 0;
+    shell.drag_observing(from, to, |app| {
+        if app.instanced_scene_triangle_count() == 0 {
+            blank_frames += 1;
+        }
+    });
+    assert_eq!(
+        blank_frames, 0,
+        "no frame of a rotation may paint an empty scene"
+    );
+    shell.settle();
+    assert_eq!(
+        shell.app().undo_step_count(),
+        before_steps + 1,
+        "one Rotate drag must be exactly one undo step: {:?}",
+        shell.app().action_digest()
+    );
+    assert_eq!(
+        shell.app().exact_render_body_count(),
+        1,
+        "rotating an imported STEP body must not invalidate it"
+    );
+    assert_eq!(
+        shell.app().instanced_scene_triangle_count(),
+        painted,
+        "an imported STEP body must stay painted across a rotation"
+    );
+
+    // The body turned about its own centre, so it is still under the same point
+    // and a second rotation must be able to start there.
+    let viewport = shell.viewport_rect();
+    let centre_screen = shell.app().project_to_screen(centre, viewport);
+    shell.click_at(centre_screen);
+    assert!(
+        shell.app().hovered_selection().is_some(),
+        "a rotated imported STEP body must be hoverable where it is painted"
+    );
+    let before_steps = shell.app().undo_step_count();
+    shell.click_command(AppCommand::Rotate);
+    shell.drag(from, to);
+    shell.settle();
+    assert_eq!(
+        shell.app().undo_step_count(),
+        before_steps + 1,
+        "a second rotation of an imported STEP body must still commit: {:?}",
+        shell.app().action_digest()
+    );
+}
+
+#[test]
 fn file_import_transformed_multi_solid_step_round_trips_through_save_open_and_occt() {
     let directory = tempfile::tempdir().unwrap();
     let source_path = directory.path().join("transformed-multi-solid.step");

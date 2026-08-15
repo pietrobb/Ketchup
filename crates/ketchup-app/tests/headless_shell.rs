@@ -1692,6 +1692,106 @@ fn a_viewport_drag_in_move_commits_exactly_one_canonical_batch() {
 }
 
 #[test]
+fn a_viewport_drag_in_rotate_turns_the_occurrence_and_the_arrow_keys_pick_the_axis() {
+    let mut shell = Shell::new();
+    let rect = shell.viewport_rect();
+    shell.click_at(shell.top_face_centre(1));
+    let (origin, size) = shell
+        .app()
+        .occurrence_box_geometry(1)
+        .expect("the default scene has one box");
+    // The default box is 100 x 60, so a quarter turn about the blue axis has to
+    // swap those two extents. Reading the extents proves the body really turned
+    // instead of merely reporting that it did.
+    assert_eq!((size.x, size.y), (100.0, 60.0));
+    let centre = Vec3::new(
+        origin.x + size.x * 0.5,
+        origin.y + size.y * 0.5,
+        origin.z + size.z,
+    );
+
+    shell.click_command(AppCommand::Rotate);
+    let before_revision = shell.app().document_revision();
+    let before_digest = shell.app().canonical_digest();
+    // Grab an arm on the top face and swing it a quarter turn.
+    let from = shell.app().project_to_screen(
+        Vec3::new(centre.x + size.x * 0.25, centre.y, centre.z),
+        rect,
+    );
+    let to = shell.app().project_to_screen(
+        Vec3::new(centre.x, centre.y + size.x * 0.25, centre.z),
+        rect,
+    );
+    shell.drag(from, to);
+
+    assert_eq!(
+        shell.app().document_revision(),
+        before_revision + 1,
+        "one completed Rotate drag must produce exactly one canonical revision: {:?}",
+        shell.app().action_digest()
+    );
+    assert_eq!(
+        shell.app().active_box_count(),
+        1,
+        "Rotate must not create geometry"
+    );
+    let turned = shell.app().occurrence_box_geometry(1).unwrap().1;
+    assert_eq!(
+        (turned.x, turned.y),
+        (60.0, 100.0),
+        "a quarter turn about the blue axis must swap the width and the depth"
+    );
+
+    shell.key(Key::Z, ctrl());
+    assert_eq!(
+        shell.app().canonical_digest(),
+        before_digest,
+        "one Rotate drag must be exactly one undo step"
+    );
+
+    // The arrow keys pin the protractor to a coloured axis, the way SketchUp
+    // does, and pressing the same arrow again releases the pin.
+    shell.click_command(AppCommand::Rotate);
+    shell.press_key(Key::ArrowRight);
+    let before_steps = shell.app().undo_step_count();
+    shell.type_text("90");
+    shell.press_key(Key::Enter);
+    assert_eq!(
+        shell.app().undo_step_count(),
+        before_steps + 1,
+        "a typed angle must commit exactly one undo step: {:?}",
+        shell.app().action_digest()
+    );
+    let about_x = shell.app().occurrence_box_geometry(1).unwrap().1;
+    assert_eq!(
+        rounded_extents(about_x),
+        (100.0, 20.0, 60.0),
+        "a locked red axis must turn the depth into the height"
+    );
+
+    // Pressing the same arrow again releases the pin, so the protractor falls
+    // back to blue Z and a quarter turn swaps the width and the depth instead.
+    shell.press_key(Key::ArrowRight);
+    let before_steps = shell.app().undo_step_count();
+    shell.type_text("90");
+    shell.press_key(Key::Enter);
+    assert_eq!(shell.app().undo_step_count(), before_steps + 1);
+    let released = shell.app().occurrence_box_geometry(1).unwrap().1;
+    assert_eq!(
+        rounded_extents(released),
+        (20.0, 100.0, 60.0),
+        "pressing the locked arrow again must release the lock back to blue Z"
+    );
+}
+
+/// Extents rounded to a micrometre, so a quarter turn can be compared exactly
+/// without asserting on the last bit of a sine.
+fn rounded_extents(size: Vec3) -> (f64, f64, f64) {
+    let round = |value: f64| (value * 1_000.0).round() / 1_000.0;
+    (round(size.x), round(size.y), round(size.z))
+}
+
+#[test]
 fn cut_through_commits_one_canonical_undo_step_from_the_headless_shell() {
     let mut shell = Shell::new();
     shell.click_at(shell.top_face_centre(1));

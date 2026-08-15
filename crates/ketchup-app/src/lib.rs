@@ -93,6 +93,11 @@ const INITIAL_BOX_DEFINITION: DefinitionId = DefinitionId(1);
 const BOX_WIDTH_MM: f64 = 100.0;
 const BOX_DEPTH_MM: f64 = 60.0;
 const GRID_STEP_MM: f64 = 10.0;
+/// Rotate snaps to this many degrees unless Shift asks for a free angle.
+const ROTATION_SNAP_DEGREES: f64 = 15.0;
+/// Below this arm length the pointer is effectively on the rotation centre and
+/// its angle is noise, so the gesture holds its previous value.
+const ROTATION_MIN_ARM_MM: f64 = 0.5;
 const SHELL_TITLE_SIZE: f32 = 14.0;
 const SHELL_BODY_SIZE: f32 = 12.5;
 const SHELL_SMALL_SIZE: f32 = 11.0;
@@ -282,6 +287,29 @@ struct MoveDrag {
     pointer_start_world: Vec3,
     plane_z: f64,
     delta_mm: Vec3,
+    copy: bool,
+}
+
+/// One in-progress Rotate gesture.
+///
+/// The rotation happens in the plane through `centre_mm` whose normal is
+/// `axis`, so the live angle is read from where the pointer meets that plane
+/// rather than from raw screen motion.
+#[derive(Clone)]
+struct RotateDrag {
+    source_document_id: DocumentId,
+    source_revision: u64,
+    selection: SelectionId,
+    group_id: Option<GroupId>,
+    centre_mm: Vec3,
+    axis: Axis,
+    /// The starting arm, measured from `centre_mm` inside the rotation plane.
+    ///
+    /// A press that lands on the centre of the body has no arm to measure yet,
+    /// so this is established by the first pointer sample far enough out. Until
+    /// then the gesture reads zero rather than refusing to start.
+    reference_mm: Option<Vec3>,
+    angle_degrees: f64,
     copy: bool,
 }
 
@@ -694,6 +722,7 @@ enum ActiveTool {
     Chamfer,
     PushPull,
     Move,
+    Rotate,
     Measure,
     Orbit,
     Pan,
@@ -722,6 +751,7 @@ impl ActiveTool {
             Self::Chamfer => "feature-chamfer",
             Self::PushPull => "tool-push-pull",
             Self::Move => "tool-move",
+            Self::Rotate => "tool-rotate",
             Self::Measure => "tool-measure",
             Self::Orbit => "tool-orbit",
             Self::Pan => "tool-pan",
@@ -750,6 +780,7 @@ impl ActiveTool {
             Self::Chamfer => "hint-chamfer",
             Self::PushPull => "hint-push-pull",
             Self::Move => "hint-move",
+            Self::Rotate => "hint-rotate",
             Self::Measure => "hint-measure",
             Self::Orbit => "hint-orbit",
             Self::Pan => "hint-pan",
@@ -794,6 +825,7 @@ pub enum AppCommand {
     Chamfer,
     PushPull,
     Move,
+    Rotate,
     Measure,
     Orbit,
     Pan,
@@ -855,7 +887,7 @@ struct CommandSpec {
 struct CommandRegistry;
 
 impl CommandRegistry {
-    const COMMANDS: [CommandSpec; 51] = [
+    const COMMANDS: [CommandSpec; 52] = [
         CommandSpec {
             id: AppCommand::New,
             label_key: "file-new",
@@ -1057,6 +1089,13 @@ impl CommandRegistry {
             label_key: "tool-move",
             shortcut_key: "shortcut-move",
             tool: Some(ActiveTool::Move),
+            implemented: true,
+        },
+        CommandSpec {
+            id: AppCommand::Rotate,
+            label_key: "tool-rotate",
+            shortcut_key: "shortcut-rotate",
+            tool: Some(ActiveTool::Rotate),
             implemented: true,
         },
         CommandSpec {
@@ -1676,6 +1715,11 @@ pub struct KetchupApp {
     bottle_editor: Option<BottleEditorInputs>,
     move_drag: Option<MoveDrag>,
     move_anchor: Option<MoveDrag>,
+    rotate_drag: Option<RotateDrag>,
+    rotate_anchor: Option<RotateDrag>,
+    /// The axis the arrow keys pinned the Rotate tool to, kept across gestures
+    /// so a locked axis survives releasing and re-grabbing the same body.
+    rotate_axis_lock: Option<Axis>,
     last_move: Option<LastMove>,
     sketch_mode: bool,
     sketch_start: Option<Vec3>,
@@ -1837,6 +1881,9 @@ impl KetchupApp {
             bottle_editor: None,
             move_drag: None,
             move_anchor: None,
+            rotate_drag: None,
+            rotate_anchor: None,
+            rotate_axis_lock: None,
             last_move: None,
             sketch_mode: false,
             sketch_start: None,
@@ -1990,6 +2037,9 @@ impl KetchupApp {
         self.bottle_editor = None;
         self.move_drag = None;
         self.move_anchor = None;
+        self.rotate_drag = None;
+        self.rotate_anchor = None;
+        self.rotate_axis_lock = None;
         self.last_move = None;
         self.occurrence_clipboard.clear();
         self.sketch_mode = false;
@@ -7188,6 +7238,7 @@ impl KetchupApp {
             | AppCommand::Chamfer
             | AppCommand::PushPull
             | AppCommand::Move
+            | AppCommand::Rotate
             | AppCommand::Measure
             | AppCommand::Orbit
             | AppCommand::Pan => {}
@@ -8572,6 +8623,194 @@ impl KetchupApp {
         }
     }
 
+    fn commit_rotate_drag(&mut self, drag: &RotateDrag) -> bool {
+        if let Some(group_id) = drag.group_id {
+            self.rotate_group(group_id, drag.centre_mm, drag.axis, drag.angle_degrees)
+        } else {
+            self.rotate_occurrence(
+                &drag.selection,
+                drag.centre_mm,
+                drag.axis,
+                drag.angle_degrees,
+                drag.copy,
+            )
+        }
+    }
+
+    fn rotate_group(
+        &mut self,
+        group_id: GroupId,
+        centre_mm: Vec3,
+        axis: Axis,
+        angle_degrees: f64,
+    ) -> bool {
+        if !rotation_is_meaningful(angle_degrees) {
+            return false;
+        }
+        let snapshot = self.document.current();
+        let Some(group) = snapshot.group(group_id) else {
+            return false;
+        };
+        let Ok(rotation) = world_rotation_transform(centre_mm, axis, angle_degrees) else {
+            return false;
+        };
+        let transform = rotation.compose(group.transform());
+        if self
+            .document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::SetGroupTransform {
+                    id: group_id,
+                    transform,
+                },
+            ]))
+            .is_err()
+        {
+            return false;
+        }
+        self.select_group(group_id);
+        self.last_move = None;
+        self.status_key = "status-object-rotated";
+        self.digest = self.catalog.format(
+            "digest-rotate-committed",
+            &BTreeMap::from([
+                ("angle", format_angle(angle_degrees)),
+                ("axis", self.catalog.text(axis_name_key(axis))),
+            ]),
+        );
+        true
+    }
+
+    fn rotate_occurrence(
+        &mut self,
+        selection: &SelectionId,
+        centre_mm: Vec3,
+        axis: Axis,
+        angle_degrees: f64,
+        copy: bool,
+    ) -> bool {
+        if !rotation_is_meaningful(angle_degrees) {
+            return false;
+        }
+        if matches!(
+            self.selection.edit_context.last(),
+            Some(EditContext::Definition { .. })
+        ) || !self.occurrence_in_active_context(&selection.instance_path)
+        {
+            return false;
+        }
+        let snapshot = self.document.current();
+        if !selection.instance_path.is_root() {
+            return false;
+        }
+        let source_id = selection.instance_path.root_occurrence();
+        let Some(source) = snapshot.occurrence(source_id) else {
+            return false;
+        };
+        let definition_id = source.definition_id();
+        if definition_id != selection.definition_id {
+            return false;
+        }
+        let Ok(rotation) = world_rotation_transform(centre_mm, axis, angle_degrees) else {
+            return false;
+        };
+        let transform = rotation.compose(source.transform());
+        let target_id = if copy {
+            OccurrenceId(
+                snapshot
+                    .occurrences()
+                    .map(|occurrence| occurrence.id().0)
+                    .max()
+                    .unwrap_or(0)
+                    + 1,
+            )
+        } else {
+            source_id
+        };
+        let command = if copy {
+            let Some(definition) = snapshot.definition(definition_id) else {
+                return false;
+            };
+            let number = snapshot
+                .scene_query()
+                .into_iter()
+                .filter(|item| item.definition_id == definition_id)
+                .count()
+                + 1;
+            CanonicalCommand::CreateOccurrence {
+                id: target_id,
+                definition_id,
+                name: self.catalog.format(
+                    "model-copy-occurrence",
+                    &BTreeMap::from([
+                        ("name", definition.name().to_owned()),
+                        ("number", number.to_string()),
+                    ]),
+                ),
+                transform,
+                parent: source.parent(),
+                tag: source.tag(),
+                visible: source.visible(),
+            }
+        } else {
+            CanonicalCommand::SetOccurrenceTransform {
+                id: target_id,
+                transform,
+            }
+        };
+        if self
+            .document
+            .apply_batch(&CommandBatch::new(vec![command]))
+            .is_err()
+        {
+            return false;
+        }
+        self.selection.select_exact(
+            SelectionId {
+                definition_id,
+                instance_path: InstancePath::root(target_id),
+                element: selection.element.clone(),
+            },
+            false,
+        );
+        self.last_move = None;
+        self.status_key = "status-object-rotated";
+        self.digest = self.catalog.format(
+            "digest-rotate-committed",
+            &BTreeMap::from([
+                ("angle", format_angle(angle_degrees)),
+                ("axis", self.catalog.text(axis_name_key(axis))),
+            ]),
+        );
+        true
+    }
+
+    /// Turn the current selection by `angle_degrees` about the locked axis.
+    ///
+    /// This is the same commit the viewport gesture performs, exposed so a
+    /// typed angle and the headless shell reach it without synthesising a drag.
+    pub fn rotate_selected(&mut self, angle_degrees: f64) -> bool {
+        let axis = self.rotate_axis_lock.unwrap_or(Axis::Z);
+        if let Some(group_id) = self.selection.selected_group {
+            let snapshot = self.document.current();
+            let applies = move |path: &InstancePath| {
+                Self::group_contains_occurrence(&snapshot, group_id, path.root_occurrence())
+            };
+            let Some(centre_mm) = self.rotation_centre_for(&applies) else {
+                return false;
+            };
+            return self.rotate_group(group_id, centre_mm, axis, angle_degrees);
+        }
+        let Some(selection) = self.selected_move_reference() else {
+            return false;
+        };
+        let target = selection.instance_path.clone();
+        let applies = move |path: &InstancePath| *path == target;
+        let Some(centre_mm) = self.rotation_centre_for(&applies) else {
+            return false;
+        };
+        self.rotate_occurrence(&selection, centre_mm, axis, angle_degrees, false)
+    }
+
     fn translate_occurrence(
         &mut self,
         selection: &SelectionId,
@@ -9891,6 +10130,8 @@ impl KetchupApp {
         self.bottle_direct_drag = None;
         self.move_drag = None;
         self.move_anchor = None;
+        self.rotate_drag = None;
+        self.rotate_anchor = None;
         self.clear_measurement();
     }
 
@@ -10325,18 +10566,40 @@ impl KetchupApp {
             .unwrap_or(item)
     }
 
-    fn move_preview_is_current(&self, drag: &MoveDrag) -> bool {
+    /// Whether a gesture started against `source_revision` still describes the
+    /// document, so its preview may be painted and its commit accepted.
+    fn occurrence_gesture_is_current(
+        &self,
+        source_document_id: DocumentId,
+        source_revision: u64,
+        selection: &SelectionId,
+        group_id: Option<GroupId>,
+    ) -> bool {
         let snapshot = self.document.current();
-        drag.source_document_id == snapshot.document_id()
-            && drag.source_revision == snapshot.revision_id()
+        source_document_id == snapshot.document_id()
+            && source_revision == snapshot.revision_id()
             && snapshot
-                .occurrence(drag.selection.instance_path.root_occurrence())
-                .is_some_and(|occurrence| {
-                    occurrence.definition_id() == drag.selection.definition_id
-                })
-            && drag
-                .group_id
-                .is_none_or(|group_id| snapshot.group(group_id).is_some())
+                .occurrence(selection.instance_path.root_occurrence())
+                .is_some_and(|occurrence| occurrence.definition_id() == selection.definition_id)
+            && group_id.is_none_or(|group_id| snapshot.group(group_id).is_some())
+    }
+
+    fn move_preview_is_current(&self, drag: &MoveDrag) -> bool {
+        self.occurrence_gesture_is_current(
+            drag.source_document_id,
+            drag.source_revision,
+            &drag.selection,
+            drag.group_id,
+        )
+    }
+
+    fn rotate_preview_is_current(&self, drag: &RotateDrag) -> bool {
+        self.occurrence_gesture_is_current(
+            drag.source_document_id,
+            drag.source_revision,
+            &drag.selection,
+            drag.group_id,
+        )
     }
 
     fn group_contains_occurrence(
@@ -10431,6 +10694,237 @@ impl KetchupApp {
         true
     }
 
+    /// The Rotate gesture currently driving a preview, if any.
+    fn active_rotate_gesture(&self) -> Option<&RotateDrag> {
+        self.rotate_drag
+            .as_ref()
+            .or(self.rotate_anchor.as_ref())
+            .filter(|drag| self.rotate_preview_is_current(drag))
+    }
+
+    fn rotate_drag_applies_to_path(&self, drag: &RotateDrag, instance_path: &InstancePath) -> bool {
+        if let Some(group_id) = drag.group_id {
+            Self::group_contains_occurrence(
+                &self.document.current(),
+                group_id,
+                instance_path.root_occurrence(),
+            )
+        } else {
+            drag.selection.instance_path == *instance_path
+        }
+    }
+
+    fn rotate_preview_transform_overrides(&self) -> BTreeMap<InstancePath, Transform> {
+        let Some(drag) = self.active_rotate_gesture().filter(|drag| !drag.copy) else {
+            return BTreeMap::new();
+        };
+        let Ok(rotation) = world_rotation_transform(drag.centre_mm, drag.axis, drag.angle_degrees)
+        else {
+            return BTreeMap::new();
+        };
+        self.document
+            .current()
+            .scene_query()
+            .into_iter()
+            .filter(|occurrence| self.rotate_drag_applies_to_path(drag, &occurrence.instance_path))
+            .map(|occurrence| {
+                (
+                    occurrence.instance_path,
+                    rotation.compose(occurrence.transform),
+                )
+            })
+            .collect()
+    }
+
+    /// Every occurrence transform the live Move and Rotate previews replace.
+    ///
+    /// Only one of the two gestures can be running at a time, so this is a
+    /// plain union rather than a composition.
+    fn preview_transform_overrides(&self) -> BTreeMap<InstancePath, Transform> {
+        let mut overrides = self.move_preview_transform_overrides();
+        overrides.extend(self.rotate_preview_transform_overrides());
+        overrides
+    }
+
+    /// The bounds of `definition_id` in its own space, taken from whatever
+    /// geometry the viewport actually paints for it.
+    ///
+    /// An imported exact body carries no canonical box, so a Rotate pivot read
+    /// from the box proxies alone would silently miss every STEP part.
+    fn definition_local_bounds(
+        &self,
+        snapshot: &Snapshot,
+        definition_id: DefinitionId,
+        local_box: Option<ProjectedBox>,
+    ) -> Option<[Vec3; 2]> {
+        if let Some(package) = self
+            .exact_results
+            .get(&definition_id)
+            .filter(|package| package.is_current(snapshot))
+        {
+            let [minimum, maximum] = package.bounds_mm();
+            return Some([
+                Vec3::new(minimum[0], minimum[1], minimum[2]),
+                Vec3::new(maximum[0], maximum[1], maximum[2]),
+            ]);
+        }
+        if let Some(definition) = snapshot.definition(definition_id) {
+            for feature_id in definition.feature_ids() {
+                if let Some(feature) = snapshot.feature(*feature_id)
+                    && let FeatureKind::MeshBody(mesh) = feature.kind()
+                {
+                    return bounds_of(
+                        mesh.vertices_mm
+                            .iter()
+                            .map(|vertex| Vec3::new(vertex[0], vertex[1], vertex[2])),
+                    );
+                }
+            }
+        }
+        local_box.map(|item| [item.origin_mm, item.origin_mm + item.size_mm])
+    }
+
+    /// The world point a Rotate gesture turns about: the centre of the painted
+    /// bounds of everything the gesture applies to.
+    fn rotation_centre_for(&self, applies: &dyn Fn(&InstancePath) -> bool) -> Option<Vec3> {
+        let snapshot = self.document.current();
+        let projection = CanonicalInteractionProjection::from_snapshot(&snapshot);
+        let corners = projection
+            .occurrences()
+            .iter()
+            .filter(|occurrence| occurrence.visible && applies(&occurrence.instance_path))
+            .filter_map(|occurrence| {
+                let [minimum, maximum] = self.definition_local_bounds(
+                    &snapshot,
+                    occurrence.body.definition_id,
+                    occurrence.local_box,
+                )?;
+                let size = maximum - minimum;
+                Some(box_corners(size.x, size.y, size.z).map(|corner| {
+                    transform_model_point(occurrence.canonical_world_transform, corner + minimum)
+                }))
+            })
+            .flatten()
+            .collect::<Vec<_>>();
+        let [minimum, maximum] = bounds_of(corners.into_iter())?;
+        Some((minimum + maximum) * 0.5)
+    }
+
+    fn screen_to_rotation_plane(
+        &self,
+        pointer: Pos2,
+        rect: Rect,
+        centre_mm: Vec3,
+        axis: Axis,
+    ) -> Option<Vec3> {
+        let ray = self.view_ray(pointer, rect)?;
+        let normal = axis_direction(axis);
+        let denominator = dot(ray.direction, normal);
+        if denominator.abs() <= 1.0e-9 {
+            return None;
+        }
+        let distance = dot(centre_mm - ray.origin, normal) / denominator;
+        (distance >= 0.0 && distance.is_finite()).then(|| ray.origin + ray.direction * distance)
+    }
+
+    /// Re-read the live angle from where the pointer meets the rotation plane,
+    /// establishing the starting arm the first time the pointer is far enough
+    /// from the centre to define one.
+    fn advance_rotation(&self, drag: &mut RotateDrag, pointer: Pos2, rect: Rect, free: bool) {
+        let Some(world) = self.screen_to_rotation_plane(pointer, rect, drag.centre_mm, drag.axis)
+        else {
+            return;
+        };
+        let arm = world - drag.centre_mm;
+        let Some(reference_mm) = drag.reference_mm else {
+            if vector_length(arm) >= ROTATION_MIN_ARM_MM {
+                drag.reference_mm = Some(arm);
+            }
+            drag.angle_degrees = 0.0;
+            return;
+        };
+        if let Some(angle) = rotation_angle_degrees(reference_mm, arm, drag.axis) {
+            drag.angle_degrees = snapped_rotation_degrees(angle, free);
+        }
+    }
+
+    fn begin_rotate_drag_at(&mut self, pointer: Pos2, rect: Rect, copy: bool) -> bool {
+        let Some(selection) = self
+            .hovered
+            .clone()
+            .filter(|selection| self.occurrence_in_active_context(&selection.instance_path))
+        else {
+            self.digest = self.catalog.text("digest-rotate-start-missed");
+            return false;
+        };
+        self.select_from_viewport(Some(selection.clone()), false);
+        let snapshot = self.document.current();
+        let group_id = self.selection.selected_group;
+        let axis = self.rotate_axis_lock.unwrap_or(Axis::Z);
+        let applies: Box<dyn Fn(&InstancePath) -> bool> = match group_id {
+            Some(group_id) => {
+                let snapshot = snapshot.clone();
+                Box::new(move |path: &InstancePath| {
+                    Self::group_contains_occurrence(&snapshot, group_id, path.root_occurrence())
+                })
+            }
+            None => {
+                let target = selection.instance_path.clone();
+                Box::new(move |path: &InstancePath| *path == target)
+            }
+        };
+        let Some(centre_mm) = self.rotation_centre_for(&applies) else {
+            return false;
+        };
+        let reference_mm = self
+            .screen_to_rotation_plane(pointer, rect, centre_mm, axis)
+            .map(|world| world - centre_mm)
+            .filter(|arm| vector_length(*arm) >= ROTATION_MIN_ARM_MM);
+        self.value_input = "0".to_owned();
+        self.rotate_drag = Some(RotateDrag {
+            source_document_id: snapshot.document_id(),
+            source_revision: snapshot.revision_id(),
+            selection,
+            group_id,
+            centre_mm,
+            axis,
+            reference_mm,
+            angle_degrees: 0.0,
+            copy: group_id.is_none() && copy,
+        });
+        true
+    }
+
+    /// Pin the Rotate tool to `axis`, or release the pin when `axis` is `None`.
+    ///
+    /// A live gesture keeps its centre but drops its starting arm, so the next
+    /// pointer sample re-establishes one in the new plane and the body does not
+    /// jump when the axis changes mid-gesture.
+    fn set_rotate_axis_lock(&mut self, axis: Option<Axis>) {
+        self.rotate_axis_lock = axis;
+        let resolved = axis.unwrap_or(Axis::Z);
+        for slot in [&mut self.rotate_drag, &mut self.rotate_anchor] {
+            if let Some(drag) = slot.as_mut() {
+                drag.axis = resolved;
+                drag.reference_mm = None;
+                drag.angle_degrees = 0.0;
+            }
+        }
+        self.value_input = "0".to_owned();
+        self.digest = self.catalog.format(
+            "digest-rotate-axis-locked",
+            &BTreeMap::from([(
+                "axis",
+                self.catalog.text(match axis {
+                    Some(Axis::X) => "axis-name-x",
+                    Some(Axis::Y) => "axis-name-y",
+                    Some(Axis::Z) => "axis-name-z",
+                    None => "axis-name-free",
+                }),
+            )]),
+        );
+    }
+
     fn proxy_preview_is_active(&self, item: &RenderBox) -> bool {
         let push_pull_preview =
             self.has_preview() && self.preview_definition_id == Some(item.definition_id);
@@ -10442,6 +10936,9 @@ impl KetchupApp {
                 self.move_preview_is_current(drag)
                     && self.move_drag_applies_to_path(drag, &item.instance_path)
             });
+        let rotate_preview = self
+            .active_rotate_gesture()
+            .is_some_and(|drag| self.rotate_drag_applies_to_path(drag, &item.instance_path));
         let occurrence_preview = self.has_occurrence_operation_preview()
             && item.instance_path.is_root()
             && self
@@ -10452,7 +10949,7 @@ impl KetchupApp {
                         .boxes
                         .contains_key(&item.instance_path.root_occurrence())
                 });
-        push_pull_preview || move_preview || occurrence_preview
+        push_pull_preview || move_preview || rotate_preview || occurrence_preview
     }
 
     fn viewport_boxes(&self, exact_projection: &ExactInteractionProjection) -> Vec<RenderBox> {
@@ -10467,6 +10964,48 @@ impl KetchupApp {
             {
                 let mut preview = item.clone();
                 preview.origin_mm = preview.origin_mm + drag.delta_mm;
+                if drag.copy && drag.group_id.is_none() {
+                    copies.push(preview);
+                } else {
+                    *item = preview;
+                }
+            }
+            boxes.extend(copies);
+        }
+        if let Some(drag) = self.active_rotate_gesture()
+            && let Ok(rotation) =
+                world_rotation_transform(drag.centre_mm, drag.axis, drag.angle_degrees)
+        {
+            let mut copies = Vec::new();
+            for item in boxes
+                .iter_mut()
+                .filter(|item| self.rotate_drag_applies_to_path(drag, &item.instance_path))
+            {
+                let mut preview = item.clone();
+                let corners = box_corners(preview.size_mm.x, preview.size_mm.y, preview.size_mm.z)
+                    .map(|corner| transform_model_point(rotation, corner + preview.origin_mm));
+                let (minimum, maximum) = corners.into_iter().fold(
+                    (
+                        Vec3::new(f64::MAX, f64::MAX, f64::MAX),
+                        Vec3::new(f64::MIN, f64::MIN, f64::MIN),
+                    ),
+                    |(minimum, maximum), corner| {
+                        (
+                            Vec3::new(
+                                minimum.x.min(corner.x),
+                                minimum.y.min(corner.y),
+                                minimum.z.min(corner.z),
+                            ),
+                            Vec3::new(
+                                maximum.x.max(corner.x),
+                                maximum.y.max(corner.y),
+                                maximum.z.max(corner.z),
+                            ),
+                        )
+                    },
+                );
+                preview.origin_mm = minimum;
+                preview.size_mm = maximum - minimum;
                 if drag.copy && drag.group_id.is_none() {
                     copies.push(preview);
                 } else {
@@ -11168,6 +11707,29 @@ impl KetchupApp {
                 return true;
             }
         }
+        if self.active_tool == ActiveTool::Rotate {
+            let Some(angle_degrees) = parse_angle_degrees(&self.value_input)
+                .filter(|angle| rotation_is_meaningful(*angle))
+            else {
+                self.digest = self.catalog.text("digest-rotate-invalid-angle");
+                return false;
+            };
+            // A gesture in flight already knows its centre and axis; typing an
+            // angle replaces the one read from the pointer.
+            if let Some(mut drag) = self
+                .rotate_drag
+                .take()
+                .or_else(|| self.rotate_anchor.take())
+            {
+                if !self.rotate_preview_is_current(&drag) {
+                    self.digest = self.catalog.text("error-preview-stale");
+                    return false;
+                }
+                drag.angle_degrees = angle_degrees;
+                return self.commit_rotate_drag(&drag);
+            }
+            return self.rotate_selected(angle_degrees);
+        }
         if self.active_tool == ActiveTool::PlanarOffset {
             return self.refresh_planar_offset_preview() && self.confirm_planar_offset_preview();
         }
@@ -11298,6 +11860,7 @@ impl KetchupApp {
                 "value-label-pocket-depth"
             }
             ActiveTool::Pocket => "value-label-width-depth",
+            ActiveTool::Rotate => "value-label-angle",
             ActiveTool::PushPull | ActiveTool::Move | ActiveTool::Measure => "value-label-distance",
             _ => "value-label-dimensions",
         }
@@ -11871,6 +12434,30 @@ impl KetchupApp {
                         ui.input(|input| input.modifiers.command),
                     );
                 }
+            } else if self.active_tool == ActiveTool::Rotate {
+                if let Some(mut anchor) = self.rotate_anchor.take() {
+                    if !self.rotate_preview_is_current(&anchor) {
+                        self.digest = self.catalog.text("error-preview-stale");
+                    } else {
+                        self.advance_rotation(
+                            &mut anchor,
+                            pointer,
+                            response.rect,
+                            ui.input(|input| input.modifiers.shift),
+                        );
+                        if rotation_is_meaningful(anchor.angle_degrees) {
+                            self.commit_rotate_drag(&anchor);
+                        } else {
+                            self.rotate_anchor = Some(anchor);
+                        }
+                    }
+                } else {
+                    self.begin_rotate_drag_at(
+                        pointer,
+                        response.rect,
+                        ui.input(|input| input.modifiers.command),
+                    );
+                }
             } else if self.active_tool == ActiveTool::Measure {
                 let plane_z = self.measure_anchor().map_or_else(
                     || self.rectangle_plane_z(pointer, response.rect),
@@ -11917,6 +12504,36 @@ impl KetchupApp {
                 &BTreeMap::from([
                     ("distance", format_height(distance)),
                     ("vector", format_vector_mm(delta_mm)),
+                ]),
+            );
+        }
+
+        if self.active_tool == ActiveTool::Rotate
+            && self.rotate_drag.is_none()
+            && let Some(mut anchor) = self.rotate_anchor.clone()
+            && self.rotate_preview_is_current(&anchor)
+            && let Some(pointer) = response.hover_pos()
+        {
+            self.advance_rotation(
+                &mut anchor,
+                pointer,
+                response.rect,
+                ui.input(|input| input.modifiers.shift),
+            );
+            let angle = anchor.angle_degrees;
+            let axis = anchor.axis;
+            let copy = anchor.copy;
+            self.rotate_anchor = Some(anchor);
+            self.value_input = format_angle(angle);
+            self.digest = self.catalog.format(
+                if copy {
+                    "digest-rotate-copy-live"
+                } else {
+                    "digest-rotate-live"
+                },
+                &BTreeMap::from([
+                    ("angle", format_angle(angle)),
+                    ("axis", self.catalog.text(axis_name_key(axis))),
                 ]),
             );
         }
@@ -11969,6 +12586,31 @@ impl KetchupApp {
                         ]),
                     );
                 }
+            } else if let (Some(mut drag), Some(pointer)) =
+                (self.rotate_drag.clone(), response.interact_pointer_pos())
+            {
+                self.advance_rotation(
+                    &mut drag,
+                    pointer,
+                    response.rect,
+                    ui.input(|input| input.modifiers.shift),
+                );
+                let angle = drag.angle_degrees;
+                let axis = drag.axis;
+                let copy = drag.copy;
+                self.rotate_drag = Some(drag);
+                self.value_input = format_angle(angle);
+                self.digest = self.catalog.format(
+                    if copy {
+                        "digest-rotate-copy-live"
+                    } else {
+                        "digest-rotate-live"
+                    },
+                    &BTreeMap::from([
+                        ("angle", format_angle(angle)),
+                        ("axis", self.catalog.text(axis_name_key(axis))),
+                    ]),
+                );
             } else if let (Some(drag), Some(pointer)) =
                 (self.bottle_direct_drag, response.interact_pointer_pos())
             {
@@ -12006,6 +12648,15 @@ impl KetchupApp {
                 } else {
                     self.move_anchor = Some(drag);
                     self.digest = self.catalog.text("digest-move-anchor-set");
+                }
+            } else if let Some(drag) = self.rotate_drag.take() {
+                if !self.rotate_preview_is_current(&drag) {
+                    self.digest = self.catalog.text("error-preview-stale");
+                } else if rotation_is_meaningful(drag.angle_degrees) {
+                    self.commit_rotate_drag(&drag);
+                } else {
+                    self.rotate_anchor = Some(drag);
+                    self.digest = self.catalog.text("digest-rotate-anchor-set");
                 }
             } else if let Some(drag) = self.bottle_direct_drag.take() {
                 let value = parse_distance_mm(&self.value_input).unwrap_or(drag.value_start_mm);
@@ -12081,7 +12732,7 @@ impl KetchupApp {
         );
         let snapshot = self.document.current();
         self.rebind_exact_results(&snapshot);
-        let move_transform_overrides = self.move_preview_transform_overrides();
+        let move_transform_overrides = self.preview_transform_overrides();
         let use_wgpu_scene =
             self.wgpu_target_format.is_some() && !self.has_occurrence_operation_preview();
         let scene_plan = if use_wgpu_scene {
@@ -13157,6 +13808,8 @@ impl KetchupApp {
             && context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::P));
         let move_tool = !context.wants_keyboard_input()
             && context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::M));
+        let rotate_tool = !context.wants_keyboard_input()
+            && context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Q));
         let measure = !context.wants_keyboard_input()
             && context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::T));
         let zoom_fit = !context.wants_keyboard_input()
@@ -13219,6 +13872,32 @@ impl KetchupApp {
             }
         }
 
+        // SketchUp pins the protractor to a coloured axis with the arrow keys.
+        // The lock is read before the command chain because an arrow must never
+        // fall through to a tool shortcut.
+        if self.active_tool == ActiveTool::Rotate && !context.wants_keyboard_input() {
+            let requested = [
+                (egui::Key::ArrowRight, Some(Axis::X)),
+                (egui::Key::ArrowLeft, Some(Axis::Y)),
+                (egui::Key::ArrowUp, Some(Axis::Z)),
+                (egui::Key::ArrowDown, None),
+            ]
+            .into_iter()
+            .find(|(key, _)| {
+                context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, *key))
+            });
+            if let Some((_, axis)) = requested {
+                // Pressing the axis already held releases it, so one key both
+                // locks and unlocks.
+                let axis = if axis.is_some() && axis == self.rotate_axis_lock {
+                    None
+                } else {
+                    axis
+                };
+                self.set_rotate_axis_lock(axis);
+            }
+        }
+
         if new_document {
             self.dispatch_command(AppCommand::New);
         } else if open_document {
@@ -13258,6 +13937,8 @@ impl KetchupApp {
             self.dispatch_command(AppCommand::PushPull);
         } else if move_tool {
             self.dispatch_command(AppCommand::Move);
+        } else if rotate_tool {
+            self.dispatch_command(AppCommand::Rotate);
         } else if measure {
             self.dispatch_command(AppCommand::Measure);
         } else if zoom_fit {
@@ -13601,6 +14282,7 @@ impl KetchupApp {
                 self.menu_command(ui, AppCommand::Select);
                 self.menu_command(ui, AppCommand::PushPull);
                 self.menu_command(ui, AppCommand::Move);
+                self.menu_command(ui, AppCommand::Rotate);
                 self.menu_command(ui, AppCommand::Measure);
                 self.menu_command(ui, AppCommand::Orbit);
                 self.menu_command(ui, AppCommand::Pan);
@@ -13642,7 +14324,7 @@ impl KetchupApp {
     fn show_tool_rail(&mut self, ui: &mut egui::Ui) {
         // Grouped the way the design groups them: pick, draw, modify, measure,
         // navigate. A group boundary draws a hairline.
-        const TOOLS: [(AppCommand, u8); 10] = [
+        const TOOLS: [(AppCommand, u8); 11] = [
             (AppCommand::Select, 0),
             (AppCommand::Line, 1),
             (AppCommand::Rectangle, 1),
@@ -13650,6 +14332,7 @@ impl KetchupApp {
             (AppCommand::Arc, 1),
             (AppCommand::PushPull, 2),
             (AppCommand::Move, 2),
+            (AppCommand::Rotate, 2),
             (AppCommand::Measure, 3),
             (AppCommand::Orbit, 4),
             (AppCommand::Pan, 4),
@@ -16806,6 +17489,7 @@ const fn command_icon(id: AppCommand) -> Icon {
         AppCommand::Fillet | AppCommand::Chamfer => Icon::Tape,
         AppCommand::PushPull => Icon::PushPull,
         AppCommand::Move => Icon::Move,
+        AppCommand::Rotate => Icon::Orbit,
         AppCommand::Measure => Icon::Tape,
         AppCommand::Orbit => Icon::Orbit,
         AppCommand::Pan => Icon::Pan,
@@ -16911,6 +17595,141 @@ fn translated_transform(transform: Transform, delta_mm: Vec3) -> Result<Transfor
     matrix[7] += delta_mm.y;
     matrix[11] += delta_mm.z;
     Transform::from_matrix(matrix).map_err(|_| ())
+}
+
+fn bounds_of(points: impl Iterator<Item = Vec3>) -> Option<[Vec3; 2]> {
+    points.fold(None, |bounds, point| {
+        Some(
+            bounds.map_or([point, point], |[minimum, maximum]: [Vec3; 2]| {
+                [
+                    Vec3::new(
+                        minimum.x.min(point.x),
+                        minimum.y.min(point.y),
+                        minimum.z.min(point.z),
+                    ),
+                    Vec3::new(
+                        maximum.x.max(point.x),
+                        maximum.y.max(point.y),
+                        maximum.z.max(point.z),
+                    ),
+                ]
+            }),
+        )
+    })
+}
+
+fn cross(left: Vec3, right: Vec3) -> Vec3 {
+    Vec3::new(
+        left.y * right.z - left.z * right.y,
+        left.z * right.x - left.x * right.z,
+        left.x * right.y - left.y * right.x,
+    )
+}
+
+const fn axis_direction(axis: Axis) -> Vec3 {
+    match axis {
+        Axis::X => Vec3 {
+            x: 1.0,
+            y: 0.0,
+            z: 0.0,
+        },
+        Axis::Y => Vec3 {
+            x: 0.0,
+            y: 1.0,
+            z: 0.0,
+        },
+        Axis::Z => Vec3 {
+            x: 0.0,
+            y: 0.0,
+            z: 1.0,
+        },
+    }
+}
+
+/// The world transform that turns `angle_degrees` about `axis` through
+/// `centre_mm`, ready to be composed in front of an occurrence transform.
+fn world_rotation_transform(
+    centre_mm: Vec3,
+    axis: Axis,
+    angle_degrees: f64,
+) -> Result<Transform, ()> {
+    if !angle_degrees.is_finite() {
+        return Err(());
+    }
+    let (sin, cos) = angle_degrees.to_radians().sin_cos();
+    let unit = axis_direction(axis);
+    let one_minus_cos = 1.0 - cos;
+    let basis = [
+        [
+            cos + unit.x * unit.x * one_minus_cos,
+            unit.x * unit.y * one_minus_cos - unit.z * sin,
+            unit.x * unit.z * one_minus_cos + unit.y * sin,
+        ],
+        [
+            unit.y * unit.x * one_minus_cos + unit.z * sin,
+            cos + unit.y * unit.y * one_minus_cos,
+            unit.y * unit.z * one_minus_cos - unit.x * sin,
+        ],
+        [
+            unit.z * unit.x * one_minus_cos - unit.y * sin,
+            unit.z * unit.y * one_minus_cos + unit.x * sin,
+            cos + unit.z * unit.z * one_minus_cos,
+        ],
+    ];
+    let centre = [centre_mm.x, centre_mm.y, centre_mm.z];
+    let mut matrix = [0.0; 16];
+    for row in 0..3 {
+        let rotated = (0..3).map(|column| basis[row][column] * centre[column]);
+        matrix[row * 4] = basis[row][0];
+        matrix[row * 4 + 1] = basis[row][1];
+        matrix[row * 4 + 2] = basis[row][2];
+        matrix[row * 4 + 3] = centre[row] - rotated.sum::<f64>();
+    }
+    matrix[15] = 1.0;
+    Transform::from_matrix(matrix).map_err(|_| ())
+}
+
+/// The turn from `reference` to `current` about `axis`, both measured from the
+/// rotation centre, in degrees within (-180, 180].
+fn rotation_angle_degrees(reference: Vec3, current: Vec3, axis: Axis) -> Option<f64> {
+    let unit = axis_direction(axis);
+    let flatten = |arm: Vec3| arm - unit * dot(arm, unit);
+    let (from, to) = (flatten(reference), flatten(current));
+    if vector_length(from) < ROTATION_MIN_ARM_MM || vector_length(to) < ROTATION_MIN_ARM_MM {
+        return None;
+    }
+    let angle = dot(cross(from, to), unit).atan2(dot(from, to)).to_degrees();
+    angle.is_finite().then_some(angle)
+}
+
+/// Whether an angle turns the body far enough to be worth a canonical revision.
+fn rotation_is_meaningful(angle_degrees: f64) -> bool {
+    angle_degrees.is_finite() && angle_degrees.abs() >= 0.01 && angle_degrees.abs() <= 360.0
+}
+
+const fn axis_name_key(axis: Axis) -> &'static str {
+    match axis {
+        Axis::X => "axis-name-x",
+        Axis::Y => "axis-name-y",
+        Axis::Z => "axis-name-z",
+    }
+}
+
+fn format_angle(angle_degrees: f64) -> String {
+    let rounded = (angle_degrees * 10.0).round() / 10.0;
+    if (rounded - rounded.round()).abs() < f64::EPSILON {
+        format!("{}", rounded.round() as i64)
+    } else {
+        format!("{rounded:.1}")
+    }
+}
+
+fn snapped_rotation_degrees(angle_degrees: f64, free: bool) -> f64 {
+    if free {
+        (angle_degrees * 10.0).round() / 10.0
+    } else {
+        (angle_degrees / ROTATION_SNAP_DEGREES).round() * ROTATION_SNAP_DEGREES
+    }
 }
 
 fn rotate_transform_90(transform: Transform, local_box: ProjectedBox) -> Result<Transform, ()> {
@@ -17912,6 +18731,18 @@ fn parse_distance_mm(input: &str) -> Option<f64> {
         .trim();
     let distance = numeric.parse::<f64>().ok()?;
     distance.is_finite().then_some(distance)
+}
+
+fn parse_angle_degrees(input: &str) -> Option<f64> {
+    let trimmed = input.trim();
+    let numeric = trimmed
+        .strip_suffix('\u{b0}')
+        .or_else(|| trimmed.strip_suffix("deg"))
+        .or_else(|| trimmed.strip_suffix("DEG"))
+        .unwrap_or(trimmed)
+        .trim();
+    let degrees = numeric.parse::<f64>().ok()?;
+    degrees.is_finite().then_some(degrees)
 }
 
 fn parse_dimension(input: &str) -> Option<Dimension> {
