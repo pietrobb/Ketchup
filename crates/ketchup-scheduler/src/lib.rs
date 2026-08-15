@@ -25,6 +25,7 @@ use ketchup_core::exact_product::{
     canonical_reference_lineage_digest,
 };
 use ketchup_core::graph::sha256_hex;
+use ketchup_core::import::{MAX_STEP_SOURCE_BYTES, StepImportEvidence};
 use ketchup_core::prismatic::{Aabb, JointId};
 use ketchup_exact::GeometryErrorCode;
 use serde::{Deserialize, Serialize};
@@ -1649,7 +1650,7 @@ impl ExactWorkerClient {
         path: &Path,
         source_sha256: &str,
         cancelled: &AtomicBool,
-    ) -> Result<String, WorkerError> {
+    ) -> Result<StepImportEvidence, WorkerError> {
         self.verify_m21_step_model_capability(cancelled)?;
         let response = self.request_with_cancellation(
             &format!(
@@ -1665,14 +1666,44 @@ impl ExactWorkerClient {
                 error => Err(error),
             };
         }
-        if fields.len() == 3
-            && fields[0] == "OK_M21_STEP_PART_V1"
-            && fields[1] == source_sha256
-            && is_fnv1a64_digest(fields[2])
-        {
-            Ok(fields[2].to_owned())
-        } else {
-            self.fail_protocol(response)
+        let parse_bits = |index: usize| {
+            fields
+                .get(index)
+                .and_then(|value| u64::from_str_radix(value, 16).ok())
+                .map(f64::from_bits)
+        };
+        let evidence = (|| {
+            if fields.len() != 17
+                || fields[0] != "OK_M21_STEP_PART_V2"
+                || fields[1] != source_sha256
+                || !is_fnv1a64_digest(fields[2])
+            {
+                return None;
+            }
+            let solid_count = fields[3].parse::<u32>().ok()?;
+            let volume_mm3 = parse_bits(4)?;
+            let bounds_mm = [
+                [parse_bits(5)?, parse_bits(6)?, parse_bits(7)?],
+                [parse_bits(8)?, parse_bits(9)?, parse_bits(10)?],
+            ];
+            if fields[11..=14]
+                .iter()
+                .any(|value| value.parse::<u32>().is_err())
+            {
+                return None;
+            }
+            Some(StepImportEvidence {
+                result_fingerprint: fields[2].to_owned(),
+                solid_count,
+                volume_mm3,
+                bounds_mm,
+                backend: hex_decode_utf8(fields[15])?,
+                tolerance: hex_decode_utf8(fields[16])?,
+            })
+        })();
+        match evidence {
+            Some(evidence) => Ok(evidence),
+            None => self.fail_protocol(response),
         }
     }
 
@@ -2039,6 +2070,40 @@ impl ExactWorkerSupervisor {
         Ok(client)
     }
 
+    pub fn inspect_step_import_with_cancellation(
+        &mut self,
+        path: &Path,
+        source_sha256: &str,
+        cancelled: &AtomicBool,
+    ) -> Result<StepImportEvidence, WorkerError> {
+        if std::fs::metadata(path)
+            .map_err(|error| WorkerError::Transport(error.to_string()))?
+            .len()
+            > MAX_STEP_SOURCE_BYTES
+        {
+            return Err(WorkerError::Transport(
+                "STEP source exceeds the bounded 32 MiB envelope".to_owned(),
+            ));
+        }
+        self.client.ensure_not_cancelled(cancelled)?;
+        match self.client.inspect_step_part_request_with_cancellation(
+            path,
+            source_sha256,
+            cancelled,
+        ) {
+            Ok(evidence) => Ok(evidence),
+            Err(error) if error.permits_restart() => {
+                self.client = Self::spawn_verified_client(&self.executable, cancelled)?;
+                self.client.inspect_step_part_request_with_cancellation(
+                    path,
+                    source_sha256,
+                    cancelled,
+                )
+            }
+            Err(error) => Err(error),
+        }
+    }
+
     pub fn evaluate_planar_offset(
         &mut self,
         request: &ExactPlanarOffsetRequest,
@@ -2344,6 +2409,17 @@ impl ExactWorkerSupervisor {
                     )?;
                     expected.validate_for_request(&request)?;
                 }
+                ExactBodyPackage::Imported(expected) => {
+                    if sha256_hex(&expected.source_bytes)
+                        != expected
+                            .source_sha256
+                            .iter()
+                            .map(|byte| format!("{byte:02x}"))
+                            .collect::<String>()
+                    {
+                        return Err(ExactProductError::InvalidWorkerEvidence.into());
+                    }
+                }
             }
         }
 
@@ -2396,6 +2472,10 @@ impl ExactWorkerSupervisor {
                         )
                     }
                 }
+                ExactBodyPackage::Imported(expected) => {
+                    std::fs::write(&source, &expected.source_bytes)
+                        .map_err(|error| WorkerError::Transport(error.to_string()))
+                }
             };
             if let Err(error) = result {
                 if error.permits_restart() {
@@ -2435,6 +2515,10 @@ impl ExactWorkerSupervisor {
                                 )?;
                             }
                         }
+                        ExactBodyPackage::Imported(expected) => {
+                            std::fs::write(&source, &expected.source_bytes)
+                                .map_err(|error| WorkerError::Transport(error.to_string()))?;
+                        }
                     }
                 } else {
                     return Err(error.into());
@@ -2443,12 +2527,14 @@ impl ExactWorkerSupervisor {
             let source_bytes = std::fs::read(&source)
                 .map_err(|error| WorkerError::Transport(error.to_string()))?;
             let source_sha256 = sha256_hex(&source_bytes);
-            let imported_result_fingerprint =
-                self.client.inspect_step_part_request_with_cancellation(
+            let imported_result_fingerprint = self
+                .client
+                .inspect_step_part_request_with_cancellation(
                     &source,
                     &source_sha256,
                     &NEVER_CANCELLED,
-                )?;
+                )?
+                .result_fingerprint;
             manifest.parts.push(StepAssemblyPart {
                 document_id: snapshot.document_id().0,
                 source_revision: snapshot.revision_id(),

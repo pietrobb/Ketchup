@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 use ketchup_core::graph::sha256_hex;
+use ketchup_core::import::MAX_STEP_SOURCE_BYTES;
 use ketchup_exact::{
     BottleEdgeFinish, BoxSpec, CircleExtrudeSpec, CutMode, CylinderToolSpec, ExactBackend,
     HalfLapFaceRole, HalfLapNotchSpec, HalfLapParticipant, PlanarProfileSegment, Point3,
@@ -19,7 +20,7 @@ use ketchup_scheduler::{
     StepAssemblyManifest, StepFeatureExportSpec, StepProfileSegment, StepRevolveExportSpec,
 };
 use std::fmt::Write as _;
-use std::io::{self, BufRead, Write};
+use std::io::{self, BufRead, Read, Write};
 use std::time::{Duration, Instant};
 
 fn main() {
@@ -2624,6 +2625,71 @@ fn m21_box_step_export_response(
     }
 }
 
+fn step_import_result_fingerprint(
+    source_sha256: &str,
+    output: &ketchup_exact::ExactOpOutput,
+) -> String {
+    let topology = &output.body.topology;
+    let signature = format!(
+        "{source_sha256}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}",
+        output.backend_fingerprint,
+        output.tolerance_report.profile,
+        topology.vertex_count,
+        topology.edge_count,
+        topology.face_count,
+        topology.shell_count,
+        topology.solid_count,
+        topology.volume_mm3.to_bits(),
+        topology.bounds_mm.min.x.to_bits(),
+        topology.bounds_mm.min.y.to_bits(),
+        topology.bounds_mm.min.z.to_bits(),
+        topology.bounds_mm.max.x.to_bits(),
+        topology.bounds_mm.max.y.to_bits(),
+        topology.bounds_mm.max.z.to_bits(),
+    );
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    for byte in signature.bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("fnv1a64:{hash:016x}")
+}
+
+fn verified_step_copy(
+    source_path: &str,
+    source_sha256: &str,
+    operation: &'static str,
+) -> Result<tempfile::NamedTempFile, String> {
+    let mut source = std::fs::File::open(source_path)
+        .map_err(|error| transport_error_response(operation, &error.to_string()))?;
+    let mut source_bytes = Vec::new();
+    std::io::Read::by_ref(&mut source)
+        .take(MAX_STEP_SOURCE_BYTES + 1)
+        .read_to_end(&mut source_bytes)
+        .map_err(|error| transport_error_response(operation, &error.to_string()))?;
+    if source_bytes.len() as u64 > MAX_STEP_SOURCE_BYTES {
+        return Err(transport_error_response(
+            operation,
+            "STEP source exceeds the bounded 32 MiB envelope",
+        ));
+    }
+    if sha256_hex(&source_bytes) != source_sha256 {
+        return Err(transport_error_response(
+            operation,
+            "STEP part bytes do not match the declared SHA-256",
+        ));
+    }
+    let mut copy = tempfile::Builder::new()
+        .prefix("ketchup-verified-step-")
+        .suffix(".step")
+        .tempfile()
+        .map_err(|error| transport_error_response(operation, &error.to_string()))?;
+    copy.write_all(&source_bytes)
+        .and_then(|()| copy.flush())
+        .map_err(|error| transport_error_response(operation, &error.to_string()))?;
+    Ok(copy)
+}
+
 fn m21_step_part_inspection_response(
     backend: &ExactBackend,
     source_sha256: &str,
@@ -2635,21 +2701,32 @@ fn m21_step_part_inspection_response(
     let Some(source_path) = decode_hex_utf8(source_path) else {
         return "ERR invalid_request".to_owned();
     };
-    let source_bytes = match std::fs::read(&source_path) {
-        Ok(bytes) => bytes,
-        Err(error) => return transport_error_response("read_step_part", &error.to_string()),
+    let source = match verified_step_copy(&source_path, source_sha256, "inspect_step_part") {
+        Ok(source) => source,
+        Err(response) => return response,
     };
-    if sha256_hex(&source_bytes) != source_sha256 {
-        return transport_error_response(
-            "inspect_step_part",
-            "STEP part bytes changed before inspection",
-        );
-    }
-    match backend.import_step(&source_path) {
-        Ok(output) => format!(
-            "OK_M21_STEP_PART_V1 {source_sha256} {}",
-            output.body.result_fingerprint
-        ),
+    match backend.import_step(&source.path().to_string_lossy()) {
+        Ok(output) => {
+            let topology = &output.body.topology;
+            format!(
+                "OK_M21_STEP_PART_V2 {source_sha256} {} {} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {} {} {} {} {} {}",
+                step_import_result_fingerprint(source_sha256, &output),
+                topology.solid_count,
+                topology.volume_mm3.to_bits(),
+                topology.bounds_mm.min.x.to_bits(),
+                topology.bounds_mm.min.y.to_bits(),
+                topology.bounds_mm.min.z.to_bits(),
+                topology.bounds_mm.max.x.to_bits(),
+                topology.bounds_mm.max.y.to_bits(),
+                topology.bounds_mm.max.z.to_bits(),
+                topology.vertex_count,
+                topology.edge_count,
+                topology.face_count,
+                topology.shell_count,
+                encode_hex(output.backend_fingerprint.as_bytes()),
+                encode_hex(output.tolerance_report.profile.as_bytes()),
+            )
+        }
         Err(error) => geometry_error_response(&error),
     }
 }
@@ -2708,21 +2785,21 @@ fn m21_step_assembly_response(
         let Some(source_path) = decode_hex_utf8(source_field) else {
             return "ERR invalid_request".to_owned();
         };
-        let source_bytes = match std::fs::read(&source_path) {
-            Ok(bytes) => bytes,
-            Err(error) => return transport_error_response("read_step_part", &error.to_string()),
+        let source = match verified_step_copy(
+            &source_path,
+            &manifest_part.source_sha256,
+            "verify_step_part",
+        ) {
+            Ok(source) => source,
+            Err(response) => return response,
         };
-        if sha256_hex(&source_bytes) != manifest_part.source_sha256 {
-            return transport_error_response(
-                "verify_step_part",
-                "STEP part bytes changed after manifest construction",
-            );
-        }
-        let imported = match backend.import_step(&source_path) {
+        let imported = match backend.import_step(&source.path().to_string_lossy()) {
             Ok(output) => output,
             Err(error) => return geometry_error_response(&error),
         };
-        if imported.body.result_fingerprint != manifest_part.imported_result_fingerprint {
+        if step_import_result_fingerprint(&manifest_part.source_sha256, &imported)
+            != manifest_part.imported_result_fingerprint
+        {
             return transport_error_response(
                 "verify_step_part",
                 "STEP part reimport identity differs from the inspected manifest identity",

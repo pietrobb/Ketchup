@@ -1,10 +1,11 @@
 use ketchup_core::document::{
-    CanonicalCommand, CanonicalError, CommandBatch, DefinitionId, DocumentStore, OccurrenceId,
-    ProposalCommitError, Transform,
+    CanonicalCommand, CanonicalError, CommandBatch, DefinitionId, DocumentStore, FeatureKind,
+    OccurrenceId, ProposalCommitError, Transform,
 };
 use ketchup_core::import::{
     ImportDiagnostic, ImportDiagnosticSeverity, ImportFormat, ImportId, ImportLengthUnit,
-    ImportOutputRef, ImportReceipt, ImportUnitAuthority, ImportUnitDecision,
+    ImportOutputRef, ImportReceipt, ImportUnitAuthority, ImportUnitDecision, StepImportEvidence,
+    StepImportPlanError, plan_step_import,
 };
 use ketchup_core::persistence;
 
@@ -89,6 +90,104 @@ fn reviewed_import_is_one_undoable_persistent_deterministic_batch() {
 
     let second_batch = import_batch(1, 1, 1, source);
     assert_eq!(second_batch.digest(), batch_digest);
+}
+
+#[test]
+fn exact_step_import_is_one_deterministic_persistent_undoable_transaction() {
+    let source = b"ISO-10303-21;DATA;#1=SI_UNIT(.MILLI.,.METRE.);ENDSEC;END-ISO-10303-21;";
+    let evidence = StepImportEvidence {
+        result_fingerprint: "0123456789abcdef".to_owned(),
+        solid_count: 1,
+        volume_mm3: 1_000.0,
+        bounds_mm: [[0.0, 0.0, 0.0], [10.0, 10.0, 10.0]],
+        backend: "occt-test".to_owned(),
+        tolerance: "test-tolerance".to_owned(),
+    };
+    let mut document = DocumentStore::new();
+    let before = document.current().canonical_digest();
+    let batch = plan_step_import(&document.current(), source, "part.step", &evidence).unwrap();
+    assert_eq!(
+        batch.digest(),
+        plan_step_import(&document.current(), source, "part.step", &evidence)
+            .unwrap()
+            .digest()
+    );
+    let proposal = document.prepare_proposal(batch).unwrap();
+    document.commit_verified_proposal(&proposal).unwrap();
+    let committed = document.current();
+    let committed_digest = committed.canonical_digest();
+    let exact = committed
+        .features()
+        .find_map(|feature| match feature.kind() {
+            FeatureKind::ImportedExactBody(spec) => Some(spec),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(exact.source_byte_len, source.len() as u64);
+    assert_eq!(exact.result_fingerprint, evidence.result_fingerprint);
+    let mut container = persistence::ContainerData::default();
+    let source_hash = container.insert_import_blob(source.to_vec()).unwrap();
+    assert_eq!(document.visible_undo_steps(), 1);
+    assert_eq!(document.undo().unwrap().canonical_digest(), before);
+    let undone =
+        persistence::load(&persistence::save_container(&document.current(), &container).unwrap())
+            .unwrap();
+    assert!(!undone.container_data().blobs().contains_key(&source_hash));
+    assert_eq!(
+        document.redo().unwrap().canonical_digest(),
+        committed_digest
+    );
+    assert!(matches!(
+        persistence::load(&persistence::save(&document.current())),
+        Err(persistence::PersistenceError::InvalidBlobHash)
+    ));
+
+    let encoded = persistence::save_container(&document.current(), &container).unwrap();
+    let reopened = persistence::load(&encoded).unwrap();
+    assert_eq!(reopened.snapshot().canonical_digest(), committed_digest);
+    assert_eq!(
+        reopened
+            .container_data()
+            .blobs()
+            .get(&source_hash)
+            .map(Vec::as_slice),
+        Some(source.as_slice())
+    );
+    assert_eq!(
+        persistence::save_container(&reopened.snapshot(), reopened.container_data()).unwrap(),
+        encoded
+    );
+}
+
+#[test]
+fn exact_step_plan_refuses_missing_units_and_invalid_worker_evidence_without_mutation() {
+    let document = DocumentStore::new();
+    let before = document.current().canonical_digest();
+    let valid = StepImportEvidence {
+        result_fingerprint: "0123456789abcdef".to_owned(),
+        solid_count: 1,
+        volume_mm3: 1.0,
+        bounds_mm: [[0.0; 3], [1.0; 3]],
+        backend: "occt-test".to_owned(),
+        tolerance: "test-tolerance".to_owned(),
+    };
+    assert_eq!(
+        plan_step_import(&document.current(), b"ISO-10303-21;", "part.step", &valid),
+        Err(StepImportPlanError::MissingOrAmbiguousUnits)
+    );
+    let mut invalid = valid;
+    invalid.result_fingerprint.clear();
+    assert_eq!(
+        plan_step_import(
+            &document.current(),
+            b"#1=SI_UNIT(.MILLI.,.METRE.);",
+            "part.step",
+            &invalid,
+        ),
+        Err(StepImportPlanError::InvalidWorkerEvidence)
+    );
+    assert_eq!(document.current().canonical_digest(), before);
+    assert_eq!(document.visible_undo_steps(), 0);
 }
 
 #[test]

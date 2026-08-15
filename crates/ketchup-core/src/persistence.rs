@@ -12,9 +12,9 @@ use crate::document::{
     DocumentStore, EvaluationIdentity, EvaluatorNode, ExactReferenceConversionConsequence,
     ExactToMeshConversion, Feature, FeatureId, FeatureKind, FeatureParameterBinding,
     FeatureParameterFreshnessAudit, FeatureParameterProvenance, FeatureParameterSlot,
-    FeatureParameterTarget, Group, GroupId, InstancePath, InstancePathStep, LocalGroup,
-    LocalGroupId, LocalGroupKey, LocalOccurrence, LocalOccurrenceId, LocalOccurrenceKey,
-    LoftSection, MeshAuthority, MeshBodySpec, NodeId, Occurrence, OccurrenceId,
+    FeatureParameterTarget, Group, GroupId, ImportedExactBodySpec, InstancePath, InstancePathStep,
+    LocalGroup, LocalGroupId, LocalGroupKey, LocalOccurrence, LocalOccurrenceId,
+    LocalOccurrenceKey, LoftSection, MeshAuthority, MeshBodySpec, NodeId, Occurrence, OccurrenceId,
     PersistentDimension, PersistentDimensionId, PersistentDimensionTarget, ProductModel,
     ProfileSegment, Snapshot, StableEdgeRole, StableFaceRole, Tag, TagId, Transform, UnitSystem,
 };
@@ -49,8 +49,8 @@ const PLANAR_OFFSET_SCHEMA: u16 = 24;
 const SWEEP_SCHEMA: u16 = 25;
 const LOFT_SPLINE_SCHEMA: u16 = 26;
 const IMPORT_RECEIPT_SCHEMA: u16 = 27;
-const IMPORTED_MESH_AUTHORITY_SCHEMA: u16 = 28;
-pub const CURRENT_SCHEMA: u16 = IMPORTED_MESH_AUTHORITY_SCHEMA;
+const IMPORTED_EXACT_BODY_SCHEMA: u16 = 29;
+pub const CURRENT_SCHEMA: u16 = IMPORTED_EXACT_BODY_SCHEMA;
 const COLLECTION_SCHEMA: u16 = 15;
 const TAG_SCHEMA: u16 = 14;
 const PERSISTENT_DIMENSION_SCHEMA: u16 = 13;
@@ -94,6 +94,7 @@ struct ProductSchemaCapabilities {
     sweep: bool,
     loft_spline: bool,
     import_receipts: bool,
+    imported_exact_body: bool,
 }
 
 impl ProductSchemaCapabilities {
@@ -122,6 +123,7 @@ impl ProductSchemaCapabilities {
         sweep: false,
         loft_spline: false,
         import_receipts: false,
+        imported_exact_body: false,
     };
 
     const fn current(schema: u16) -> Self {
@@ -150,6 +152,7 @@ impl ProductSchemaCapabilities {
             sweep: schema >= SWEEP_SCHEMA,
             loft_spline: schema >= LOFT_SPLINE_SCHEMA,
             import_receipts: schema >= IMPORT_RECEIPT_SCHEMA,
+            imported_exact_body: schema >= IMPORTED_EXACT_BODY_SCHEMA,
         }
     }
 }
@@ -226,6 +229,7 @@ impl ExtensionEntry {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ContainerData {
     blobs: BTreeMap<String, Vec<u8>>,
+    imported_source_blobs: Arc<BTreeSet<String>>,
     extensions: BTreeMap<(String, String), ExtensionEntry>,
 }
 
@@ -236,6 +240,12 @@ impl ContainerData {
         }
         let hash = crate::graph::sha256_hex(&bytes);
         self.blobs.entry(hash.clone()).or_insert(bytes);
+        Ok(hash)
+    }
+
+    pub fn insert_import_blob(&mut self, bytes: Vec<u8>) -> Result<String, PersistenceError> {
+        let hash = self.insert_blob(bytes)?;
+        Arc::make_mut(&mut self.imported_source_blobs).insert(hash.clone());
         Ok(hash)
     }
 
@@ -628,17 +638,41 @@ pub fn save(snapshot: &Snapshot) -> Vec<u8> {
     bytes
 }
 
+fn imported_source_blob_hashes(snapshot: &Snapshot) -> BTreeSet<String> {
+    snapshot
+        .features()
+        .filter_map(|feature| match feature.kind() {
+            FeatureKind::ImportedExactBody(spec) => Some(
+                spec.source_sha256
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect(),
+            ),
+            _ => None,
+        })
+        .collect()
+}
+
 pub fn save_container(
     snapshot: &Snapshot,
     container_data: &ContainerData,
 ) -> Result<Vec<u8>, PersistenceError> {
     let mut entries = BTreeMap::<String, (bool, Vec<u8>)>::new();
     entries.insert("document.bin".to_owned(), (true, save(snapshot)));
+    let imported_sources = imported_source_blob_hashes(snapshot);
+    if imported_sources
+        .iter()
+        .any(|hash| !container_data.blobs.contains_key(hash))
+    {
+        return Err(PersistenceError::InvalidBlobHash);
+    }
     for (hash, bytes) in &container_data.blobs {
         if crate::graph::sha256_hex(bytes) != *hash {
             return Err(PersistenceError::InvalidBlobHash);
         }
-        entries.insert(format!("blobs/{hash}"), (false, bytes.clone()));
+        if !container_data.imported_source_blobs.contains(hash) || imported_sources.contains(hash) {
+            entries.insert(format!("blobs/{hash}"), (false, bytes.clone()));
+        }
     }
     for extension in container_data.extensions.values() {
         let path = format!("extensions/{}/{}", extension.namespace, extension.path);
@@ -1140,6 +1174,21 @@ fn write_features(bytes: &mut Vec<u8>, product: &ProductModel) {
                 push_string(bytes, amount.source_token());
                 push_u64(bytes, amount.millimetres().to_bits());
             }
+            FeatureKind::ImportedExactBody(spec) => {
+                push_u8(bytes, 16);
+                push_string(bytes, &spec.schema);
+                push_u64(bytes, spec.import_id.0);
+                bytes.extend_from_slice(&spec.source_sha256);
+                push_u64(bytes, spec.source_byte_len);
+                push_string(bytes, &spec.result_fingerprint);
+                push_u32(bytes, spec.solid_count);
+                push_u64(bytes, spec.volume_mm3.to_bits());
+                for coordinate in spec.bounds_mm.iter().flatten() {
+                    push_u64(bytes, coordinate.to_bits());
+                }
+                push_string(bytes, &spec.backend);
+                push_string(bytes, &spec.tolerance);
+            }
             FeatureKind::MeshBody(spec) => {
                 push_u8(bytes, 9);
                 push_string(bytes, &spec.schema);
@@ -1365,7 +1414,7 @@ fn load_container(bytes: &[u8]) -> Result<LoadOutcome, PersistenceError> {
 
 fn load_document(
     bytes: &[u8],
-    container_data: ContainerData,
+    mut container_data: ContainerData,
 ) -> Result<LoadOutcome, PersistenceError> {
     if bytes.len() > MAX_FILE_BYTES {
         return Err(PersistenceError::ResourceLimit);
@@ -1505,6 +1554,29 @@ fn load_document(
         recovered_from_backup: false,
     };
     let loaded_snapshot = document.current();
+    let imported_sources = loaded_snapshot
+        .features()
+        .filter_map(|feature| match feature.kind() {
+            FeatureKind::ImportedExactBody(spec) => Some((
+                spec.source_sha256
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect::<String>(),
+                spec.source_byte_len,
+            )),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    for (hash, byte_len) in imported_sources {
+        if !container_data
+            .blobs
+            .get(&hash)
+            .is_some_and(|bytes| bytes.len() as u64 == byte_len)
+        {
+            return Err(PersistenceError::InvalidBlobHash);
+        }
+        Arc::make_mut(&mut container_data.imported_source_blobs).insert(hash);
+    }
     for reference in loaded_snapshot.exact_reference_evidence() {
         let matches_request = crate::exact_product::ExactFeatureChainRequest::from_snapshot(
             &loaded_snapshot,
@@ -2320,6 +2392,34 @@ fn read_product(
                     });
                 }
                 FeatureKind::Loft { sections }
+            }
+            16 if capabilities.imported_exact_body => {
+                let schema = reader.string()?;
+                let import_id = ImportId(reader.u64()?);
+                let source_sha256 = reader
+                    .take(32)?
+                    .try_into()
+                    .map_err(|_| PersistenceError::Truncated)?;
+                let source_byte_len = reader.u64()?;
+                let result_fingerprint = reader.string()?;
+                let solid_count = reader.u32()?;
+                let volume_mm3 = f64::from_bits(reader.u64()?);
+                let mut bounds_mm = [[0.0; 3]; 2];
+                for coordinate in bounds_mm.iter_mut().flatten() {
+                    *coordinate = f64::from_bits(reader.u64()?);
+                }
+                FeatureKind::ImportedExactBody(ImportedExactBodySpec {
+                    schema,
+                    import_id,
+                    source_sha256,
+                    source_byte_len,
+                    result_fingerprint,
+                    solid_count,
+                    volume_mm3,
+                    bounds_mm,
+                    backend: reader.string()?,
+                    tolerance: reader.string()?,
+                })
             }
             9 if capabilities.mesh_body => {
                 let schema = reader.string()?;

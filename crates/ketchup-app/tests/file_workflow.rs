@@ -17,7 +17,8 @@ use ketchup_app::dialogs::ScriptedFileDialogs;
 use ketchup_core::document::FeatureKind;
 use ketchup_core::graph::sha256_bytes;
 use ketchup_core::import::{
-    ImportFormat, ImportLengthUnit, ImportUnitAuthority, MAX_DXF_SOURCE_BYTES, MAX_STL_SOURCE_BYTES,
+    ImportFormat, ImportLengthUnit, ImportUnitAuthority, MAX_DXF_SOURCE_BYTES,
+    MAX_STEP_SOURCE_BYTES, MAX_STL_SOURCE_BYTES,
 };
 use ketchup_interaction::Vec3;
 
@@ -935,6 +936,189 @@ fn file_import_dxf_reviews_and_commits_one_canonical_profile_transaction_offscre
             .count(),
         2
     );
+}
+
+#[test]
+fn file_import_exact_step_commits_undoes_and_persists_source_blob_offscreen() {
+    let source_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../corpora/r0/step/self-authored-box.step");
+    let source = std::fs::read(&source_path).unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let document_path = directory.path().join("imported-step.ketchup");
+    let exported_path = directory.path().join("reexported-step.step");
+    let script = ScriptedFileDialogs::new()
+        .queue_import(ImportFormat::Step, &source_path)
+        .queue_save(&document_path)
+        .queue_open(&document_path)
+        .queue_export(&exported_path)
+        .always_confirm_high_risk_as(91)
+        .always_discard();
+    let mut shell = Shell::with_dialogs(script.clone());
+    shell
+        .app_mut()
+        .connect_exact_worker(exact_worker_path())
+        .expect("the focused STEP workflow requires the real exact worker");
+    let before = canonical_state(&shell);
+
+    shell.click_menu_command("menu-file", AppCommand::ImportExactStep);
+    shell.click_button_label(&shell.catalog().text("dialog-import-step-confirm"));
+
+    assert_eq!(shell.app().document_revision(), before.revision + 1);
+    assert_eq!(shell.app().definition_count(), before.definitions + 1);
+    assert_eq!(shell.app().feature_count(), before.features + 1);
+    assert_eq!(shell.app().occurrence_count(), before.occurrences + 1);
+    assert_eq!(
+        shell.app().import_receipt_count(),
+        before.import_receipts + 1
+    );
+    assert_eq!(shell.app().undo_step_count(), before.undo_steps + 1);
+    assert!(digest_starts_like(&shell, "digest-imported-step"));
+    assert_eq!(
+        script.import_requests(),
+        vec![ketchup_app::dialogs::ImportDialogRequestRecord {
+            format: ImportFormat::Step,
+            filter_label: shell.catalog().text("file-filter-step"),
+            extensions: vec!["step".to_owned(), "stp".to_owned()],
+        }]
+    );
+
+    shell.click_menu_command("menu-edit", AppCommand::Undo);
+    assert_eq!(shell.app().canonical_digest(), before.digest);
+    assert_eq!(shell.app().import_receipt_count(), before.import_receipts);
+    shell.click_menu_command("menu-edit", AppCommand::Redo);
+    let imported_digest = shell.app().canonical_digest();
+    assert_eq!(
+        shell.app().import_receipt_count(),
+        before.import_receipts + 1
+    );
+
+    shell.click_menu_command("menu-file", AppCommand::Save);
+    shell.click_menu_command("menu-file", AppCommand::New);
+    shell.click_menu_command("menu-file", AppCommand::Open);
+    assert_eq!(shell.app().canonical_digest(), imported_digest);
+    assert_eq!(
+        shell.app().import_receipt_count(),
+        before.import_receipts + 1
+    );
+    for _ in 0..100 {
+        shell.settle();
+        if shell.app().exact_render_body_count() == 2 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(shell.app().exact_render_body_count(), 2);
+    let before_export = canonical_state(&shell);
+    shell.click_menu_command("menu-file", AppCommand::ExportExactStep);
+    assert_eq!(canonical_state(&shell), before_export);
+    assert!(
+        exported_path.is_file(),
+        "STEP re-export failed with digest {:?}",
+        shell.app().action_digest()
+    );
+    assert!(
+        std::fs::read_to_string(&exported_path)
+            .unwrap()
+            .starts_with("ISO-10303-21;")
+    );
+
+    let loaded = ketchup_core::persistence::load_file(&document_path).unwrap();
+    let snapshot = loaded.snapshot();
+    let receipt = snapshot
+        .import_receipts()
+        .find(|receipt| receipt.format() == ImportFormat::Step)
+        .unwrap();
+    assert_eq!(receipt.source_sha256(), &sha256_bytes(&source));
+    assert_eq!(receipt.source_byte_len(), source.len() as u64);
+    let spec = snapshot
+        .features()
+        .find_map(|feature| match feature.kind() {
+            FeatureKind::ImportedExactBody(spec) => Some(spec),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(spec.source_sha256, sha256_bytes(&source));
+    assert_eq!(spec.source_byte_len, source.len() as u64);
+    let hash = ketchup_core::graph::sha256_hex(&source);
+    assert_eq!(loaded.container_data().blobs().get(&hash), Some(&source));
+    assert_eq!(std::fs::read(&source_path).unwrap(), source);
+}
+
+#[test]
+fn file_import_step_cancel_worker_source_stale_and_oversize_refuse_without_mutation() {
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../corpora/r0/step/self-authored-box.step");
+    let original = std::fs::read(&fixture).unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("reviewed.step");
+    let oversized = directory.path().join("oversized.step");
+    let unavailable_worker = directory.path().join("unavailable-worker");
+    std::fs::write(&source, &original).unwrap();
+    std::fs::File::create(&oversized)
+        .unwrap()
+        .set_len(MAX_STEP_SOURCE_BYTES + 1)
+        .unwrap();
+    std::fs::write(&unavailable_worker, b"not an exact worker").unwrap();
+
+    let script = ScriptedFileDialogs::new()
+        .queue_cancelled_import(ImportFormat::Step)
+        .queue_import(ImportFormat::Step, &source)
+        .queue_import(ImportFormat::Step, &source)
+        .queue_import(ImportFormat::Step, &source)
+        .queue_import(ImportFormat::Step, &source)
+        .queue_import(ImportFormat::Step, &oversized);
+    let mut shell = Shell::with_dialogs(script);
+    shell
+        .app_mut()
+        .connect_exact_worker(exact_worker_path())
+        .unwrap();
+    compose_two_shared_occurrences(&mut shell);
+    shell.click_menu_command("menu-edit", AppCommand::Undo);
+    let before = canonical_state(&shell);
+    let before_history = reachable_history_digests(&mut shell);
+
+    shell.click_menu_command("menu-file", AppCommand::ImportExactStep);
+    assert_state_and_history_unchanged(&mut shell, &before, &before_history);
+
+    shell.click_menu_command("menu-file", AppCommand::ImportExactStep);
+    shell.click_button_label(&shell.catalog().text("dialog-import-step-cancel"));
+    assert_state_and_history_unchanged(&mut shell, &before, &before_history);
+
+    shell
+        .app_mut()
+        .connect_exact_worker(&unavailable_worker)
+        .unwrap();
+    shell.click_menu_command("menu-file", AppCommand::ImportExactStep);
+    assert!(digest_starts_like(&shell, "error-import-step"));
+    assert_state_and_history_unchanged(&mut shell, &before, &before_history);
+    shell
+        .app_mut()
+        .connect_exact_worker(exact_worker_path())
+        .unwrap();
+
+    shell.click_menu_command("menu-file", AppCommand::ImportExactStep);
+    let mut changed = original.clone();
+    changed[0] ^= 1;
+    std::fs::write(&source, &changed).unwrap();
+    shell.click_button_label(&shell.catalog().text("dialog-import-step-confirm"));
+    assert!(digest_starts_like(&shell, "error-import-step"));
+    assert_state_and_history_unchanged(&mut shell, &before, &before_history);
+    std::fs::write(&source, &original).unwrap();
+
+    shell.click_menu_command("menu-file", AppCommand::ImportExactStep);
+    shell.click_menu_command("menu-edit", AppCommand::Redo);
+    let after_redo = canonical_state(&shell);
+    let after_redo_history = reachable_history_digests(&mut shell);
+    shell.click_button_label(&shell.catalog().text("dialog-import-step-confirm"));
+    assert!(digest_starts_like(&shell, "error-import-step"));
+    assert_state_and_history_unchanged(&mut shell, &after_redo, &after_redo_history);
+
+    let before_oversize = canonical_state(&shell);
+    let before_oversize_history = reachable_history_digests(&mut shell);
+    shell.click_menu_command("menu-file", AppCommand::ImportExactStep);
+    assert!(digest_starts_like(&shell, "error-import-step"));
+    assert_state_and_history_unchanged(&mut shell, &before_oversize, &before_oversize_history);
+    assert_eq!(std::fs::read(&source).unwrap(), original);
 }
 
 #[test]

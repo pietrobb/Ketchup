@@ -168,6 +168,7 @@ impl ExactRevolveRequest {
                 | FeatureKind::PlanarOffset { .. }
                 | FeatureKind::Sweep { .. }
                 | FeatureKind::Loft { .. }
+                | FeatureKind::ImportedExactBody(_)
                 | FeatureKind::MeshBody(_) => {
                     return Err(ExactProductError::UnsupportedDefinition);
                 }

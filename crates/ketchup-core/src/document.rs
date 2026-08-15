@@ -300,6 +300,7 @@ pub enum BooleanOperation {
 }
 
 pub const MESH_BODY_SCHEMA_V1: &str = "ketchup.mesh-body.v1";
+pub const IMPORTED_EXACT_BODY_SCHEMA_V1: &str = "ketchup.imported-exact-body.v1";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ExactReferenceConversionConsequence {
@@ -329,6 +330,20 @@ pub enum MeshAuthority {
     Authored { provenance: String },
     ExactConversion(ExactToMeshConversion),
     ImportedStl { import_id: ImportId },
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ImportedExactBodySpec {
+    pub schema: String,
+    pub import_id: ImportId,
+    pub source_sha256: [u8; 32],
+    pub source_byte_len: u64,
+    pub result_fingerprint: String,
+    pub solid_count: u32,
+    pub volume_mm3: f64,
+    pub bounds_mm: [[f64; 3]; 2],
+    pub backend: String,
+    pub tolerance: String,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -464,6 +479,7 @@ pub enum FeatureKind {
     Loft {
         sections: Vec<LoftSection>,
     },
+    ImportedExactBody(ImportedExactBodySpec),
     MeshBody(MeshBodySpec),
 }
 
@@ -481,6 +497,7 @@ impl FeatureKind {
                 | Self::Boolean { .. }
                 | Self::Sweep { .. }
                 | Self::Loft { .. }
+                | Self::ImportedExactBody(_)
                 | Self::MeshBody(_)
         )
     }
@@ -5834,6 +5851,7 @@ fn feature_kind_is_solid(kind: &FeatureKind) -> bool {
             | FeatureKind::Boolean { .. }
             | FeatureKind::Sweep { .. }
             | FeatureKind::Loft { .. }
+            | FeatureKind::ImportedExactBody(_)
             | FeatureKind::MeshBody(_)
     )
 }
@@ -5907,6 +5925,7 @@ fn validate_feature_kind(kind: &FeatureKind) -> Result<(), CanonicalError> {
             }
             Ok(())
         }
+        FeatureKind::ImportedExactBody(spec) => validate_imported_exact_body(spec),
         FeatureKind::MeshBody(spec) => validate_mesh_body(spec),
         FeatureKind::Revolve {
             axis_start_mm,
@@ -5964,6 +5983,35 @@ fn validate_feature_kind(kind: &FeatureKind) -> Result<(), CanonicalError> {
         }
         FeatureKind::ThroughCut { .. } | FeatureKind::Boolean { .. } => Ok(()),
     }
+}
+
+fn validate_imported_exact_body(spec: &ImportedExactBodySpec) -> Result<(), CanonicalError> {
+    let bounds_valid = spec
+        .bounds_mm
+        .iter()
+        .flatten()
+        .all(|coordinate| coordinate.is_finite() && coordinate.abs() <= MAX_CANONICAL_ABS_MM)
+        && (0..3).all(|axis| spec.bounds_mm[0][axis] <= spec.bounds_mm[1][axis]);
+    if spec.schema != IMPORTED_EXACT_BODY_SCHEMA_V1
+        || spec.import_id.0 == 0
+        || spec.source_byte_len == 0
+        || spec.source_byte_len > 32 * 1024 * 1024
+        || spec.source_sha256.iter().all(|byte| *byte == 0)
+        || spec.result_fingerprint.is_empty()
+        || spec.result_fingerprint.len() > 128
+        || spec.solid_count == 0
+        || spec.solid_count > 1_024
+        || !spec.volume_mm3.is_finite()
+        || spec.volume_mm3 <= 0.0
+        || !bounds_valid
+        || spec.backend.is_empty()
+        || spec.backend.len() > 1_024
+        || spec.tolerance.is_empty()
+        || spec.tolerance.len() > 1_024
+    {
+        return Err(CanonicalError::InvalidImportReceipt);
+    }
+    Ok(())
 }
 
 const MAX_MESH_VERTICES: usize = 100_000;
@@ -6581,6 +6629,7 @@ fn clone_definition_and_repoint(
                     })
                     .collect::<Result<Vec<_>, CanonicalError>>()?,
             },
+            FeatureKind::ImportedExactBody(spec) => FeatureKind::ImportedExactBody(spec.clone()),
             FeatureKind::MeshBody(spec) => {
                 let mut spec = spec.clone();
                 if let MeshAuthority::ExactConversion(conversion) = &mut spec.authority {
@@ -7827,6 +7876,20 @@ fn validate_product(product: &ProductModel) -> Result<(), CanonicalError> {
                     return Err(CanonicalError::InvalidFeatureOwnership(feature.id));
                 }
             }
+            FeatureKind::ImportedExactBody(spec) => {
+                let receipt_is_invalid =
+                    product
+                        .import_receipts
+                        .get(&spec.import_id)
+                        .is_none_or(|receipt| {
+                            receipt.format() != ImportFormat::Step
+                                || receipt.source_sha256() != &spec.source_sha256
+                                || receipt.source_byte_len() != spec.source_byte_len
+                        });
+                if definition.feature_ids.as_slice() != [feature.id] || receipt_is_invalid {
+                    return Err(CanonicalError::InvalidFeatureOwnership(feature.id));
+                }
+            }
             FeatureKind::MeshBody(spec) => {
                 let authority_is_invalid = match &spec.authority {
                     MeshAuthority::ExactConversion(conversion) => {
@@ -8788,6 +8851,7 @@ fn authoritative_dependencies(
                     FeatureKind::Profile { .. }
                     | FeatureKind::SegmentProfile { .. }
                     | FeatureKind::SplineProfile { .. }
+                    | FeatureKind::ImportedExactBody(_)
                     | FeatureKind::MeshBody(_) => {}
                 }
             }
@@ -9136,6 +9200,7 @@ fn add_feature_dependency_closure(
             FeatureKind::Profile { .. }
             | FeatureKind::SegmentProfile { .. }
             | FeatureKind::SplineProfile { .. }
+            | FeatureKind::ImportedExactBody(_)
             | FeatureKind::MeshBody(_) => {}
         }
     }
@@ -9731,6 +9796,21 @@ impl StableDigest {
                 });
                 self.bytes(amount.source_token.as_bytes());
                 self.u64(amount.millimetres.to_bits());
+            }
+            FeatureKind::ImportedExactBody(spec) => {
+                self.byte(16);
+                self.bytes(spec.schema.as_bytes());
+                self.u64(spec.import_id.0);
+                self.bytes(&spec.source_sha256);
+                self.u64(spec.source_byte_len);
+                self.bytes(spec.result_fingerprint.as_bytes());
+                self.u64(u64::from(spec.solid_count));
+                self.u64(spec.volume_mm3.to_bits());
+                for coordinate in spec.bounds_mm.iter().flatten() {
+                    self.u64(coordinate.to_bits());
+                }
+                self.bytes(spec.backend.as_bytes());
+                self.bytes(spec.tolerance.as_bytes());
             }
             FeatureKind::MeshBody(spec) => {
                 self.byte(9);

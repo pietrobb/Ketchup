@@ -529,9 +529,22 @@ pub struct ExactRenderPackage {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub struct ImportedExactPackage {
+    pub identity: BodyResultIdentity,
+    pub source_sha256: [u8; 32],
+    pub source_bytes: Vec<u8>,
+    pub solid_count: u32,
+    pub volume_mm3: f64,
+    pub bounds_mm: [[f64; 3]; 2],
+    pub vertices: Vec<ExactVertex>,
+    pub triangles: Vec<ExactTriangle>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub enum ExactBodyPackage {
     Rectangle(ExactRenderPackage),
     Revolve(crate::bottle_m6::ExactRevolvePackage),
+    Imported(ImportedExactPackage),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -564,12 +577,95 @@ pub trait ExactBodyView {
     }
 }
 
+impl ImportedExactPackage {
+    pub fn from_snapshot(
+        snapshot: &Snapshot,
+        definition_id: DefinitionId,
+        source_bytes: Vec<u8>,
+    ) -> Result<Self, ExactProductError> {
+        let definition = snapshot
+            .definition(definition_id)
+            .ok_or(ExactProductError::DefinitionNotFound(definition_id))?;
+        let [feature_id] = definition.feature_ids() else {
+            return Err(ExactProductError::UnsupportedDefinition);
+        };
+        let feature = snapshot
+            .feature(*feature_id)
+            .ok_or(ExactProductError::UnsupportedDefinition)?;
+        let FeatureKind::ImportedExactBody(spec) = feature.kind() else {
+            return Err(ExactProductError::UnsupportedDefinition);
+        };
+        let source_sha256: [u8; 32] = Sha256::digest(&source_bytes).into();
+        if source_bytes.len() as u64 != spec.source_byte_len || source_sha256 != spec.source_sha256
+        {
+            return Err(ExactProductError::InvalidWorkerEvidence);
+        }
+        let vertices = Vec::new();
+        let triangles = Vec::new();
+        let source_digest = snapshot.canonical_digest();
+        let source_identity = spec
+            .source_sha256
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        Ok(Self {
+            identity: BodyResultIdentity {
+                schema: EXACT_PRODUCT_SCHEMA_V1.to_owned(),
+                document_id: snapshot.document_id(),
+                source_revision: snapshot.revision_id(),
+                source_digest,
+                definition_id,
+                profile_feature_id: *feature_id,
+                extrusion_feature_id: *feature_id,
+                producer_feature_id: *feature_id,
+                canonical_input_digest: source_identity.clone(),
+                exact_input_digest: source_identity,
+                result_fingerprint: spec.result_fingerprint.clone(),
+                evaluator: "ketchup.imported-step-evaluator.v1".to_owned(),
+                backend: spec.backend.clone(),
+                tolerance: spec.tolerance.clone(),
+            },
+            source_sha256,
+            source_bytes,
+            solid_count: spec.solid_count,
+            volume_mm3: spec.volume_mm3,
+            bounds_mm: spec.bounds_mm,
+            vertices,
+            triangles,
+        })
+    }
+
+    #[must_use]
+    pub fn is_current(&self, snapshot: &Snapshot) -> bool {
+        self.identity.document_id == snapshot.document_id()
+            && self.identity.source_revision == snapshot.revision_id()
+            && self.identity.source_digest == snapshot.canonical_digest()
+            && snapshot
+                .feature(self.identity.producer_feature_id)
+                .is_some_and(|feature| match feature.kind() {
+                    FeatureKind::ImportedExactBody(spec) => {
+                        feature.definition_id() == self.identity.definition_id
+                            && spec.source_sha256 == self.source_sha256
+                            && spec.source_byte_len == self.source_bytes.len() as u64
+                            && spec.result_fingerprint == self.identity.result_fingerprint
+                            && spec.solid_count == self.solid_count
+                            && spec.volume_mm3 == self.volume_mm3
+                            && spec.bounds_mm == self.bounds_mm
+                            && spec.backend == self.identity.backend
+                            && spec.tolerance == self.identity.tolerance
+                    }
+                    _ => false,
+                })
+    }
+}
+
 impl ExactBodyPackage {
     #[must_use]
     pub fn definition_id(&self) -> DefinitionId {
         match self {
             Self::Rectangle(package) => package.identity.definition_id,
             Self::Revolve(package) => package.identity.definition_id,
+            Self::Imported(package) => package.identity.definition_id,
         }
     }
 
@@ -578,6 +674,7 @@ impl ExactBodyPackage {
         match self {
             Self::Rectangle(package) => package.identity.producer_feature_id,
             Self::Revolve(package) => package.identity.producer_feature_id,
+            Self::Imported(package) => package.identity.producer_feature_id,
         }
     }
 
@@ -612,6 +709,20 @@ impl ExactBodyPackage {
                 schema: package.identity.schema.clone(),
                 result_fingerprint: package.identity.result_fingerprint.clone(),
             },
+            Self::Imported(package) => ExactResultKey {
+                document_id: package.identity.document_id,
+                source_revision: package.identity.source_revision,
+                source_digest: package.identity.source_digest.clone(),
+                definition_id: package.identity.definition_id,
+                producer_feature_id: package.identity.producer_feature_id,
+                canonical_input_digest: package.identity.canonical_input_digest.clone(),
+                exact_input_digest: package.identity.exact_input_digest.clone(),
+                evaluator: package.identity.evaluator.clone(),
+                backend: package.identity.backend.clone(),
+                tolerance: package.identity.tolerance.clone(),
+                schema: package.identity.schema.clone(),
+                result_fingerprint: package.identity.result_fingerprint.clone(),
+            },
         }
     }
 
@@ -620,6 +731,7 @@ impl ExactBodyPackage {
         match self {
             Self::Rectangle(package) => package.is_current(snapshot),
             Self::Revolve(package) => package.is_current(snapshot),
+            Self::Imported(package) => package.is_current(snapshot),
         }
     }
 
@@ -628,6 +740,7 @@ impl ExactBodyPackage {
         match self {
             Self::Rectangle(package) => package.bounds_mm,
             Self::Revolve(package) => package.bounds_mm,
+            Self::Imported(package) => package.bounds_mm,
         }
     }
 
@@ -636,6 +749,7 @@ impl ExactBodyPackage {
         match self {
             Self::Rectangle(package) => &package.vertices,
             Self::Revolve(package) => &package.vertices,
+            Self::Imported(package) => &package.vertices,
         }
     }
 
@@ -644,6 +758,7 @@ impl ExactBodyPackage {
         match self {
             Self::Rectangle(package) => &package.triangles,
             Self::Revolve(package) => &package.triangles,
+            Self::Imported(package) => &package.triangles,
         }
     }
 
@@ -652,6 +767,7 @@ impl ExactBodyPackage {
         match self {
             Self::Rectangle(package) => &package.references,
             Self::Revolve(package) => &package.references,
+            Self::Imported(_) => &[],
         }
     }
 
@@ -671,7 +787,7 @@ impl ExactBodyPackage {
     pub fn revolve(&self) -> Option<&crate::bottle_m6::ExactRevolvePackage> {
         match self {
             Self::Revolve(package) => Some(package),
-            Self::Rectangle(_) => None,
+            Self::Rectangle(_) | Self::Imported(_) => None,
         }
     }
 
@@ -685,6 +801,9 @@ impl ExactBodyPackage {
     ) -> Result<CommandBatch, ExactProductError> {
         if !self.is_current(snapshot) {
             return Err(ExactProductError::StaleResult);
+        }
+        if matches!(self, Self::Imported(_)) {
+            return Err(ExactProductError::InvalidWorkerEvidence);
         }
         let key = self.result_key();
         let spec = MeshBodySpec {
@@ -767,6 +886,7 @@ impl ExactBodyView for ExactBodyPackage {
         match self {
             Self::Rectangle(package) => &package.identity.tolerance,
             Self::Revolve(package) => &package.identity.tolerance,
+            Self::Imported(package) => &package.identity.tolerance,
         }
     }
 
@@ -774,6 +894,7 @@ impl ExactBodyView for ExactBodyPackage {
         match self {
             Self::Rectangle(package) => &package.identity.source_digest,
             Self::Revolve(package) => &package.identity.source_digest,
+            Self::Imported(package) => &package.identity.source_digest,
         }
     }
 
@@ -785,6 +906,7 @@ impl ExactBodyView for ExactBodyPackage {
         match self {
             Self::Rectangle(package) => &package.identity.result_fingerprint,
             Self::Revolve(package) => &package.identity.result_fingerprint,
+            Self::Imported(package) => &package.identity.result_fingerprint,
         }
     }
 }

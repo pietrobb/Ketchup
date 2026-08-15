@@ -1055,6 +1055,92 @@ pub fn encode_semantic_state_with_results(
                 )
                 .unwrap();
             }
+            crate::document::FeatureKind::ImportedExactBody(spec) => {
+                let source_sha256 = spec
+                    .source_sha256
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect::<String>();
+                writeln!(
+                    complete,
+                    "feature.{}.kind=imported_exact_body",
+                    feature.id().0
+                )
+                .unwrap();
+                writeln!(
+                    complete,
+                    "feature.{}.import_id={}",
+                    feature.id().0,
+                    spec.import_id.0
+                )
+                .unwrap();
+                writeln!(
+                    complete,
+                    "feature.{}.source_sha256={source_sha256}",
+                    feature.id().0
+                )
+                .unwrap();
+                writeln!(
+                    complete,
+                    "feature.{}.source_byte_len={}",
+                    feature.id().0,
+                    spec.source_byte_len
+                )
+                .unwrap();
+                writeln!(
+                    complete,
+                    "feature.{}.result_fingerprint={:?}",
+                    feature.id().0,
+                    spec.result_fingerprint
+                )
+                .unwrap();
+                writeln!(
+                    complete,
+                    "feature.{}.solid_count={}",
+                    feature.id().0,
+                    spec.solid_count
+                )
+                .unwrap();
+                writeln!(
+                    complete,
+                    "feature.{}.volume_mm3={:?}",
+                    feature.id().0,
+                    spec.volume_mm3
+                )
+                .unwrap();
+                writeln!(
+                    complete,
+                    "feature.{}.bounds_mm={:?}",
+                    feature.id().0,
+                    spec.bounds_mm
+                )
+                .unwrap();
+                writeln!(
+                    complete,
+                    "feature.{}.backend={:?}",
+                    feature.id().0,
+                    spec.backend
+                )
+                .unwrap();
+                writeln!(
+                    complete,
+                    "feature.{}.tolerance={:?}",
+                    feature.id().0,
+                    spec.tolerance
+                )
+                .unwrap();
+                writeln!(
+                    agent,
+                    "feature.{}=name:{:?},kind:imported_exact_body,definition:{},import:{},solids:{},volume_mm3:{:?}",
+                    feature.id().0,
+                    feature.name(),
+                    feature.definition_id().0,
+                    spec.import_id.0,
+                    spec.solid_count,
+                    spec.volume_mm3
+                )
+                .unwrap();
+            }
             crate::document::FeatureKind::MeshBody(spec) => {
                 writeln!(complete, "feature.{}.kind=mesh_body", feature.id().0).unwrap();
                 writeln!(

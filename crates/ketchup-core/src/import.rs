@@ -2,8 +2,9 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
 
 use crate::document::{
-    CanonicalCommand, CommandBatch, DefinitionId, FeatureId, FeatureKind, MESH_BODY_SCHEMA_V1,
-    MeshAuthority, MeshBodySpec, OccurrenceId, Snapshot, Transform,
+    CanonicalCommand, CommandBatch, DefinitionId, FeatureId, FeatureKind,
+    IMPORTED_EXACT_BODY_SCHEMA_V1, ImportedExactBodySpec, MESH_BODY_SCHEMA_V1, MeshAuthority,
+    MeshBodySpec, OccurrenceId, Snapshot, Transform,
 };
 use crate::graph::sha256_bytes;
 
@@ -23,7 +24,7 @@ pub enum ImportFormat {
     Step,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum ImportLengthUnit {
     Millimetre,
     Centimetre,
@@ -335,6 +336,219 @@ impl std::error::Error for ImportContractError {}
 
 mod dxf;
 pub use dxf::*;
+
+pub const STEP_PARSER_ID: &str = "ketchup-occt-step";
+pub const STEP_PARSER_VERSION: &str = "1";
+pub const MAX_STEP_SOURCE_BYTES: u64 = 32 * 1024 * 1024;
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct StepImportEvidence {
+    pub result_fingerprint: String,
+    pub solid_count: u32,
+    pub volume_mm3: f64,
+    pub bounds_mm: [[f64; 3]; 2],
+    pub backend: String,
+    pub tolerance: String,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StepImportPlanError {
+    Empty,
+    SourceTooLarge,
+    InvalidSourceIdentity,
+    MissingOrAmbiguousUnits,
+    InvalidWorkerEvidence,
+    IdSpaceExhausted,
+}
+
+impl fmt::Display for StepImportPlanError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Empty => "STEP source is empty",
+            Self::SourceTooLarge => "STEP source exceeds the bounded 32 MiB envelope",
+            Self::InvalidSourceIdentity => "STEP source name or provenance is invalid",
+            Self::MissingOrAmbiguousUnits => {
+                "STEP source has missing or ambiguous declared length units"
+            }
+            Self::InvalidWorkerEvidence => "STEP worker evidence is incomplete or invalid",
+            Self::IdSpaceExhausted => "canonical import ID space is exhausted",
+        })
+    }
+}
+
+impl std::error::Error for StepImportPlanError {}
+
+#[must_use]
+pub fn detect_step_length_unit(source: &[u8]) -> Option<ImportLengthUnit> {
+    let uppercase = source
+        .iter()
+        .map(u8::to_ascii_uppercase)
+        .collect::<Vec<_>>();
+    let contains = |needle: &[u8]| {
+        uppercase
+            .windows(needle.len())
+            .any(|window| window == needle)
+    };
+    let mut units = BTreeSet::new();
+    if contains(b".MILLI.") && contains(b".METRE.") {
+        units.insert(ImportLengthUnit::Millimetre);
+    }
+    if contains(b".CENTI.") && contains(b".METRE.") {
+        units.insert(ImportLengthUnit::Centimetre);
+    }
+    if contains(b"SI_UNIT($,.METRE.)") || contains(b"SI_UNIT(*,.METRE.)") {
+        units.insert(ImportLengthUnit::Metre);
+    }
+    if contains(b"CONVERSION_BASED_UNIT('INCH") || contains(b"CONVERSION_BASED_UNIT(\"INCH") {
+        units.insert(ImportLengthUnit::Inch);
+    }
+    if contains(b"CONVERSION_BASED_UNIT('FOOT") || contains(b"CONVERSION_BASED_UNIT(\"FOOT") {
+        units.insert(ImportLengthUnit::Foot);
+    }
+    (units.len() == 1).then(|| *units.first().expect("one STEP unit"))
+}
+
+/// Build one detached canonical transaction for a reviewed, worker-validated exact STEP body.
+pub fn plan_step_import(
+    snapshot: &Snapshot,
+    source: &[u8],
+    source_name: &str,
+    evidence: &StepImportEvidence,
+) -> Result<CommandBatch, StepImportPlanError> {
+    if source.is_empty() {
+        return Err(StepImportPlanError::Empty);
+    }
+    if source.len() as u64 > MAX_STEP_SOURCE_BYTES {
+        return Err(StepImportPlanError::SourceTooLarge);
+    }
+    let unit =
+        detect_step_length_unit(source).ok_or(StepImportPlanError::MissingOrAmbiguousUnits)?;
+    let bounds_valid = evidence
+        .bounds_mm
+        .iter()
+        .flatten()
+        .all(|value| value.is_finite())
+        && (0..3).all(|axis| evidence.bounds_mm[0][axis] <= evidence.bounds_mm[1][axis]);
+    if evidence.result_fingerprint.is_empty()
+        || evidence.solid_count == 0
+        || evidence.solid_count > 1_024
+        || !evidence.volume_mm3.is_finite()
+        || evidence.volume_mm3 <= 0.0
+        || !bounds_valid
+        || evidence.backend.is_empty()
+        || evidence.tolerance.is_empty()
+    {
+        return Err(StepImportPlanError::InvalidWorkerEvidence);
+    }
+    let next_id = |ids: Vec<u64>| {
+        ids.into_iter()
+            .max()
+            .unwrap_or(0)
+            .checked_add(1)
+            .filter(|id| *id != 0)
+            .ok_or(StepImportPlanError::IdSpaceExhausted)
+    };
+    let import_id = snapshot
+        .next_import_id()
+        .map_err(|_| StepImportPlanError::IdSpaceExhausted)?;
+    let definition_id = DefinitionId(next_id(
+        snapshot.definitions().map(|item| item.id().0).collect(),
+    )?);
+    let feature_id = FeatureId(next_id(
+        snapshot.features().map(|item| item.id().0).collect(),
+    )?);
+    let occurrence_id = OccurrenceId(next_id(
+        snapshot.occurrences().map(|item| item.id().0).collect(),
+    )?);
+    let outputs = vec![
+        ImportOutputRef::Definition(definition_id),
+        ImportOutputRef::Feature(feature_id),
+        ImportOutputRef::Occurrence(occurrence_id),
+    ];
+    let diagnostics = vec![
+        ImportDiagnostic::new(
+            ImportDiagnosticSeverity::Info,
+            "step_exact_brep_preserved",
+            None,
+            1,
+        ),
+        ImportDiagnostic::new(
+            ImportDiagnosticSeverity::Warning,
+            "step_color_metadata_unavailable",
+            None,
+            1,
+        ),
+        ImportDiagnostic::new(
+            ImportDiagnosticSeverity::Warning,
+            "step_hierarchy_flattened",
+            None,
+            1,
+        ),
+        ImportDiagnostic::new(
+            ImportDiagnosticSeverity::Warning,
+            "step_name_metadata_unavailable",
+            None,
+            1,
+        ),
+    ]
+    .into_iter()
+    .collect::<Result<Vec<_>, _>>()
+    .map_err(|_| StepImportPlanError::InvalidWorkerEvidence)?;
+    let units = ImportUnitDecision::new(unit, ImportUnitAuthority::FileDeclared);
+    let receipt = ImportReceipt::from_source_bytes(
+        import_id,
+        ImportFormat::Step,
+        source,
+        source_name,
+        units,
+        STEP_PARSER_ID,
+        STEP_PARSER_VERSION,
+        diagnostics,
+        outputs,
+    )
+    .map_err(|_| StepImportPlanError::InvalidSourceIdentity)?;
+    let display_name = source_name
+        .strip_suffix(".step")
+        .or_else(|| source_name.strip_suffix(".stp"))
+        .or_else(|| source_name.strip_suffix(".STEP"))
+        .or_else(|| source_name.strip_suffix(".STP"))
+        .filter(|name| !name.is_empty())
+        .unwrap_or(source_name)
+        .to_owned();
+    Ok(CommandBatch::new(vec![
+        CanonicalCommand::CreateDefinition {
+            id: definition_id,
+            name: display_name.clone(),
+        },
+        CanonicalCommand::CreateFeature {
+            id: feature_id,
+            definition_id,
+            name: "Imported STEP exact body".to_owned(),
+            kind: FeatureKind::ImportedExactBody(ImportedExactBodySpec {
+                schema: IMPORTED_EXACT_BODY_SCHEMA_V1.to_owned(),
+                import_id,
+                source_sha256: sha256_bytes(source),
+                source_byte_len: source.len() as u64,
+                result_fingerprint: evidence.result_fingerprint.clone(),
+                solid_count: evidence.solid_count,
+                volume_mm3: evidence.volume_mm3,
+                bounds_mm: evidence.bounds_mm,
+                backend: evidence.backend.clone(),
+                tolerance: evidence.tolerance.clone(),
+            }),
+        },
+        CanonicalCommand::CreateOccurrence {
+            id: occurrence_id,
+            definition_id,
+            name: display_name,
+            transform: Transform::identity(),
+            parent: None,
+            tag: None,
+            visible: true,
+        },
+        CanonicalCommand::RecordImport(receipt),
+    ]))
+}
 
 fn validate_text(value: &str) -> Result<(), ImportContractError> {
     if value.is_empty()

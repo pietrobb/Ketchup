@@ -33,7 +33,8 @@ use ketchup_core::document::{
 use ketchup_core::exact_product::{
     AssemblySelectionTarget, ExactBodyPackage, ExactBodyView, ExactFaceRole,
     ExactFeatureChainRequest, ExactLoftRequest, ExactMeshExport, ExactPlanarOffsetRequest,
-    ExactResultRegistry, ExactStlExport, ExactSweepRequest, exact_model_stl_export,
+    ExactResultRegistry, ExactStlExport, ExactSweepRequest, ImportedExactPackage,
+    exact_model_stl_export,
 };
 use ketchup_core::fabrication::{FullBomProjection, PieceDimensionSheet};
 use ketchup_core::graph::{
@@ -41,8 +42,9 @@ use ketchup_core::graph::{
 };
 use ketchup_core::import::{
     DxfImportOptions, ImportDiagnosticSeverity, ImportFormat, ImportLengthUnit,
-    ImportUnitAuthority, ImportUnitDecision, MAX_DXF_SOURCE_BYTES, MAX_STL_SOURCE_BYTES, ParsedDxf,
-    inspect_dxf, plan_dxf_import, plan_stl_import,
+    ImportUnitAuthority, ImportUnitDecision, MAX_DXF_SOURCE_BYTES, MAX_STEP_SOURCE_BYTES,
+    MAX_STL_SOURCE_BYTES, ParsedDxf, StepImportEvidence, inspect_dxf, plan_dxf_import,
+    plan_step_import, plan_stl_import,
 };
 use ketchup_core::intent::{IntentRequest, WorkflowIntent, propose_intent};
 use ketchup_core::prismatic::JointId;
@@ -772,6 +774,7 @@ pub enum AppCommand {
     SaveAs,
     ImportMeshStl,
     ImportDrawingDxf,
+    ImportExactStep,
     ExportExactStep,
     ExportMeshStl,
     Select,
@@ -855,7 +858,7 @@ struct CommandSpec {
 struct CommandRegistry;
 
 impl CommandRegistry {
-    const COMMANDS: [CommandSpec; 50] = [
+    const COMMANDS: [CommandSpec; 51] = [
         CommandSpec {
             id: AppCommand::New,
             label_key: "file-new",
@@ -894,6 +897,13 @@ impl CommandRegistry {
         CommandSpec {
             id: AppCommand::ImportDrawingDxf,
             label_key: "file-import-dxf",
+            shortcut_key: "shortcut-none",
+            tool: None,
+            implemented: true,
+        },
+        CommandSpec {
+            id: AppCommand::ImportExactStep,
+            label_key: "file-import-step",
             shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
@@ -1326,6 +1336,7 @@ type ExactEvaluationResult = Result<Vec<Arc<ExactBodyPackage>>, String>;
 enum ExactEvaluationRequest {
     Rectangle(ExactFeatureChainRequest),
     Revolve(ExactRevolveRequest),
+    Imported(DefinitionId, Vec<u8>),
 }
 
 struct ExactEvaluationTask {
@@ -1558,6 +1569,19 @@ struct PendingStlImport {
 }
 
 #[derive(Clone, Debug)]
+struct PendingStepImport {
+    path: PathBuf,
+    source: Vec<u8>,
+    evidence: StepImportEvidence,
+    invalidated: bool,
+    document_id: DocumentId,
+    revision_id: u64,
+    canonical_digest: String,
+    source_sha256: [u8; 32],
+    source_byte_len: u64,
+}
+
+#[derive(Clone, Debug)]
 struct PendingDxfImport {
     path: PathBuf,
     source: Vec<u8>,
@@ -1660,6 +1684,7 @@ pub struct KetchupApp {
     shortcuts_open: bool,
     pending_stl_import: Option<PendingStlImport>,
     pending_dxf_import: Option<PendingDxfImport>,
+    pending_step_import: Option<PendingStepImport>,
     viewport_rect: Option<Rect>,
     dialogs: Box<dyn FileDialogs>,
     exact_worker_path: Option<PathBuf>,
@@ -1819,6 +1844,7 @@ impl KetchupApp {
             shortcuts_open: false,
             pending_stl_import: None,
             pending_dxf_import: None,
+            pending_step_import: None,
             viewport_rect: None,
             dialogs: Box::new(NativeFileDialogs::default()),
             exact_worker_path: None,
@@ -1905,14 +1931,17 @@ impl KetchupApp {
         }
     }
 
-    fn invalidate_pending_dxf_import(&mut self) {
+    fn invalidate_pending_import_reviews(&mut self) {
         if let Some(pending) = self.pending_dxf_import.as_mut() {
+            pending.invalidated = true;
+        }
+        if let Some(pending) = self.pending_step_import.as_mut() {
             pending.invalidated = true;
         }
     }
 
     fn reset_document_presentation(&mut self) {
-        self.invalidate_pending_dxf_import();
+        self.invalidate_pending_import_reviews();
         self.preview = None;
         self.preview_box = None;
         self.preview_definition_id = None;
@@ -2458,6 +2487,129 @@ impl KetchupApp {
         }
     }
 
+    fn choose_step_import_path(&mut self) -> Option<PathBuf> {
+        let filter_label = self.catalog.text("file-filter-step");
+        self.dialogs.pick_import_path(ImportDialogRequest {
+            format: ImportFormat::Step,
+            filter_label: &filter_label,
+            extensions: &["step", "stp"],
+        })
+    }
+
+    fn read_step_source(path: &Path) -> Result<Vec<u8>, String> {
+        if std::fs::metadata(path)
+            .map_err(|error| error.to_string())?
+            .len()
+            > MAX_STEP_SOURCE_BYTES
+        {
+            return Err("STEP source exceeds the bounded 32 MiB envelope".to_owned());
+        }
+        let mut file = std::fs::File::open(path).map_err(|error| error.to_string())?;
+        let mut source = Vec::new();
+        std::io::Read::by_ref(&mut file)
+            .take(MAX_STEP_SOURCE_BYTES + 1)
+            .read_to_end(&mut source)
+            .map_err(|error| error.to_string())?;
+        if source.len() as u64 > MAX_STEP_SOURCE_BYTES {
+            return Err("STEP source exceeds the bounded 32 MiB envelope".to_owned());
+        }
+        Ok(source)
+    }
+
+    fn exact_worker_executable(&mut self) -> Result<PathBuf, String> {
+        if !self.exact_worker_attempted {
+            self.exact_worker_attempted = true;
+            self.exact_worker_path = exact_worker_candidates()
+                .into_iter()
+                .find(|path| path.is_file());
+        }
+        self.exact_worker_path
+            .clone()
+            .ok_or_else(|| "exact worker is unavailable".to_owned())
+    }
+
+    fn inspect_step_for_review(
+        &mut self,
+        path: &Path,
+        source_sha256: &[u8; 32],
+    ) -> Result<StepImportEvidence, String> {
+        let executable = self.exact_worker_executable()?;
+        let source_sha256 = source_sha256
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let cancelled = AtomicBool::new(false);
+        let mut worker = ExactWorkerSupervisor::spawn_with_cancellation(executable, &cancelled)
+            .map_err(|error| error.to_string())?;
+        worker
+            .inspect_step_import_with_cancellation(path, &source_sha256, &cancelled)
+            .map_err(|error| error.to_string())
+    }
+
+    fn import_step_from(&mut self, pending: &PendingStepImport) -> bool {
+        let path = &pending.path;
+        let result = (|| {
+            let snapshot = self.document.current();
+            if pending.invalidated
+                || snapshot.document_id() != pending.document_id
+                || snapshot.revision_id() != pending.revision_id
+                || snapshot.canonical_digest() != pending.canonical_digest
+            {
+                return Err("STEP import review is stale for the active document".to_owned());
+            }
+            let source = Self::read_step_source(path)?;
+            if source.len() as u64 != pending.source_byte_len
+                || sha256_bytes(&source) != pending.source_sha256
+                || source != pending.source
+            {
+                return Err("STEP source changed after it was selected for review".to_owned());
+            }
+            let evidence = self.inspect_step_for_review(path, &pending.source_sha256)?;
+            if evidence != pending.evidence {
+                return Err("STEP worker evidence changed after review".to_owned());
+            }
+            let source_name = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or_else(|| "STEP source name is not valid UTF-8".to_owned())?;
+            let batch = plan_step_import(&snapshot, &source, source_name, &evidence)
+                .map_err(|error| error.to_string())?;
+            let mut staged_container = self.container_data.clone();
+            let blob_hash = staged_container
+                .insert_import_blob(source.clone())
+                .map_err(|error| error.to_string())?;
+            let expected_hash = ketchup_core::graph::sha256_hex(&source);
+            if blob_hash != expected_hash {
+                return Err("STEP content-addressed blob identity mismatch".to_owned());
+            }
+            let proposal = self
+                .document
+                .prepare_proposal_with_context(batch, ProposalContext::canonical_preview())
+                .map_err(|error| error.to_string())?;
+            self.document
+                .commit_verified_proposal(&proposal)
+                .map_err(|error| error.to_string())?;
+            self.container_data = staged_container;
+            Ok::<(), String>(())
+        })();
+        match result {
+            Ok(()) => {
+                self.digest = self.catalog.format(
+                    "digest-imported-step",
+                    &BTreeMap::from([("path", path.display().to_string())]),
+                );
+                true
+            }
+            Err(reason) => {
+                self.digest = self.catalog.format(
+                    "error-import-step",
+                    &BTreeMap::from([("path", path.display().to_string()), ("reason", reason)]),
+                );
+                false
+            }
+        }
+    }
+
     fn current_visible_exact_model(
         &self,
         snapshot: &Snapshot,
@@ -2504,6 +2656,12 @@ impl KetchupApp {
         let result = self
             .current_visible_exact_model(&snapshot)
             .and_then(|model| {
+                if model
+                    .iter()
+                    .any(|(package, _)| matches!(package, ExactBodyPackage::Imported(_)))
+                {
+                    return Err("imported STEP bounds proxies cannot be exported as STL".to_owned());
+                }
                 let bodies = model
                     .iter()
                     .map(|(package, transform)| (package, *transform))
@@ -2704,6 +2862,39 @@ impl KetchupApp {
                         Err(reason) => {
                             self.digest = self.catalog.format(
                                 "error-import-stl",
+                                &BTreeMap::from([
+                                    ("path", path.display().to_string()),
+                                    ("reason", reason),
+                                ]),
+                            );
+                        }
+                    }
+                }
+            }
+            AppCommand::ImportExactStep => {
+                if let Some(path) = self.choose_step_import_path() {
+                    let result = Self::read_step_source(&path).and_then(|source| {
+                        let snapshot = self.document.current();
+                        let source_sha256 = sha256_bytes(&source);
+                        let evidence = self.inspect_step_for_review(&path, &source_sha256)?;
+                        Ok(PendingStepImport {
+                            path: path.clone(),
+                            source_byte_len: source.len() as u64,
+                            source,
+                            evidence,
+                            invalidated: false,
+                            document_id: snapshot.document_id(),
+                            revision_id: snapshot.revision_id(),
+                            canonical_digest: snapshot.canonical_digest(),
+                            source_sha256,
+                        })
+                    });
+                    match result {
+                        Ok(pending) => self.pending_step_import = Some(pending),
+                        Err(reason) => {
+                            self.pending_step_import = None;
+                            self.digest = self.catalog.format(
+                                "error-import-step",
                                 &BTreeMap::from([
                                     ("path", path.display().to_string()),
                                     ("reason", reason),
@@ -4817,17 +5008,67 @@ impl KetchupApp {
             .map(|occurrence| occurrence.definition_id)
             .collect::<BTreeSet<_>>()
             .into_iter()
-            .filter_map(|definition_id| {
-                ExactFeatureChainRequest::from_snapshot(&snapshot, definition_id)
-                    .map(ExactEvaluationRequest::Rectangle)
-                    .or_else(|_| {
-                        ExactRevolveRequest::from_snapshot(&snapshot, definition_id)
-                            .map(ExactEvaluationRequest::Revolve)
-                    })
-                    .ok()
-                    .map(|request| (definition_id, request))
+            .map(|definition_id| {
+                if let Ok(request) =
+                    ExactFeatureChainRequest::from_snapshot(&snapshot, definition_id)
+                {
+                    return Ok(Some((
+                        definition_id,
+                        ExactEvaluationRequest::Rectangle(request),
+                    )));
+                }
+                if let Ok(request) = ExactRevolveRequest::from_snapshot(&snapshot, definition_id) {
+                    return Ok(Some((
+                        definition_id,
+                        ExactEvaluationRequest::Revolve(request),
+                    )));
+                }
+                let Some(definition) = snapshot.definition(definition_id) else {
+                    return Ok(None);
+                };
+                let [feature_id] = definition.feature_ids() else {
+                    return Ok(None);
+                };
+                let Some(feature) = snapshot.feature(*feature_id) else {
+                    return Ok(None);
+                };
+                let FeatureKind::ImportedExactBody(spec) = feature.kind() else {
+                    return Ok(None);
+                };
+                let hash = spec
+                    .source_sha256
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect::<String>();
+                let source = self
+                    .container_data
+                    .blobs()
+                    .get(&hash)
+                    .cloned()
+                    .ok_or_else(|| "imported STEP source blob is missing".to_owned())?;
+                if source.len() as u64 != spec.source_byte_len
+                    || sha256_bytes(&source) != spec.source_sha256
+                {
+                    return Err(
+                        "imported STEP source blob does not match canonical identity".to_owned(),
+                    );
+                }
+                Ok(Some((
+                    definition_id,
+                    ExactEvaluationRequest::Imported(definition_id, source),
+                )))
             })
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>, String>>()
+            .map(|requests| requests.into_iter().flatten().collect::<Vec<_>>());
+        let requests = match requests {
+            Ok(requests) => requests,
+            Err(_) => {
+                self.exact_results.clear();
+                self.exact_source = None;
+                self.exact_retry_at = Some(Instant::now() + Duration::from_secs(1));
+                return;
+            }
+        };
         if requests.is_empty() {
             self.exact_results.clear();
             self.exact_source = Some(source);
@@ -4856,6 +5097,53 @@ impl KetchupApp {
                             .evaluate_revolve_with_cancellation(&request, &worker_cancelled)
                             .map(ExactBodyPackage::from)
                             .map_err(|error| error.to_string())?,
+                        ExactEvaluationRequest::Imported(definition_id, source) => {
+                            let definition =
+                                snapshot.definition(definition_id).ok_or_else(|| {
+                                    "imported STEP definition is unavailable".to_owned()
+                                })?;
+                            let [feature_id] = definition.feature_ids() else {
+                                return Err("imported STEP definition is not singular".to_owned());
+                            };
+                            let feature = snapshot
+                                .feature(*feature_id)
+                                .ok_or_else(|| "imported STEP feature is unavailable".to_owned())?;
+                            let FeatureKind::ImportedExactBody(spec) = feature.kind() else {
+                                return Err("imported STEP canonical specification is unavailable"
+                                    .to_owned());
+                            };
+                            let expected = StepImportEvidence {
+                                result_fingerprint: spec.result_fingerprint.clone(),
+                                solid_count: spec.solid_count,
+                                volume_mm3: spec.volume_mm3,
+                                bounds_mm: spec.bounds_mm,
+                                backend: spec.backend.clone(),
+                                tolerance: spec.tolerance.clone(),
+                            };
+                            let mut temporary = tempfile::Builder::new()
+                                .prefix("ketchup-imported-step-")
+                                .suffix(".step")
+                                .tempfile()
+                                .map_err(|error| error.to_string())?;
+                            temporary
+                                .write_all(&source)
+                                .and_then(|_| temporary.flush())
+                                .map_err(|error| error.to_string())?;
+                            let source_sha256 = ketchup_core::graph::sha256_hex(&source);
+                            let actual = worker
+                                .inspect_step_import_with_cancellation(
+                                    temporary.path(),
+                                    &source_sha256,
+                                    &worker_cancelled,
+                                )
+                                .map_err(|error| error.to_string())?;
+                            if actual != expected {
+                                return Err("imported STEP worker evidence does not match canonical specification".to_owned());
+                            }
+                            ImportedExactPackage::from_snapshot(&snapshot, definition_id, source)
+                                .map(ExactBodyPackage::Imported)
+                                .map_err(|error| error.to_string())?
+                        }
                     };
                     packages.push(Arc::new(package));
                 }
@@ -5251,7 +5539,7 @@ impl KetchupApp {
         self.selection
             .edit_context
             .push(EditContext::Group(group_id));
-        self.invalidate_pending_dxf_import();
+        self.invalidate_pending_import_reviews();
         self.selection.clear();
         self.digest = self.catalog.text("digest-entered-group-context");
         true
@@ -5278,7 +5566,7 @@ impl KetchupApp {
             },
         };
         self.selection.edit_context.push(context.clone());
-        self.invalidate_pending_dxf_import();
+        self.invalidate_pending_import_reviews();
         self.selection.clear();
         self.digest = self.catalog.text(match context {
             EditContext::Group(_) => "digest-entered-group-context",
@@ -5291,7 +5579,7 @@ impl KetchupApp {
         if self.selection.edit_context.pop().is_none() {
             return false;
         }
-        self.invalidate_pending_dxf_import();
+        self.invalidate_pending_import_reviews();
         self.selection.clear();
         self.digest = self.catalog.text("digest-exited-edit-context");
         true
@@ -6702,6 +6990,7 @@ impl KetchupApp {
             | AppCommand::SaveAs
             | AppCommand::ImportMeshStl
             | AppCommand::ImportDrawingDxf
+            | AppCommand::ImportExactStep
             | AppCommand::ExportExactStep
             | AppCommand::ExportMeshStl => {
                 self.dispatch_file_command(id);
@@ -9573,7 +9862,7 @@ impl KetchupApp {
         if self.document.undo().is_none() {
             return false;
         }
-        self.invalidate_pending_dxf_import();
+        self.invalidate_pending_import_reviews();
         if undoing_assistant_change {
             self.assistant_verification = None;
         }
@@ -9590,7 +9879,7 @@ impl KetchupApp {
         if self.document.redo().is_none() {
             return false;
         }
-        self.invalidate_pending_dxf_import();
+        self.invalidate_pending_import_reviews();
         self.clear_ephemeral_edit_state();
         self.parameter_editor_node = None;
         self.parameter_provenance = None;
@@ -13138,6 +13427,7 @@ impl KetchupApp {
                 ui.separator();
                 self.menu_command(ui, AppCommand::ImportMeshStl);
                 self.menu_command(ui, AppCommand::ImportDrawingDxf);
+                self.menu_command(ui, AppCommand::ImportExactStep);
                 ui.separator();
                 self.menu_command(ui, AppCommand::ExportExactStep);
                 self.menu_command(ui, AppCommand::ExportMeshStl);
@@ -15760,6 +16050,61 @@ impl KetchupApp {
         }
     }
 
+    fn show_step_import_window(&mut self, context: &egui::Context) {
+        let Some(pending) = self.pending_step_import.as_ref() else {
+            return;
+        };
+        let path = pending.path.clone();
+        let evidence = pending.evidence.clone();
+        let mut import = false;
+        let mut cancel = false;
+        egui::Window::new(self.catalog.text("dialog-import-step-title"))
+            .id(egui::Id::new("step-import-review"))
+            .collapsible(false)
+            .resizable(true)
+            .show(context, |ui| {
+                ui.label(self.catalog.format(
+                    "dialog-import-step-source",
+                    &BTreeMap::from([("path", path.display().to_string())]),
+                ));
+                ui.label(self.catalog.format(
+                    "dialog-import-step-summary",
+                    &BTreeMap::from([
+                        ("solids", evidence.solid_count.to_string()),
+                        ("volume", format!("{:.6}", evidence.volume_mm3)),
+                    ]),
+                ));
+                ui.label(self.catalog.text("dialog-import-step-preserved"));
+                ui.colored_label(
+                    Color32::YELLOW,
+                    self.catalog.text("dialog-import-step-root-warning"),
+                );
+                ui.colored_label(
+                    Color32::YELLOW,
+                    self.catalog.text("dialog-import-step-metadata-warning"),
+                );
+                ui.separator();
+                ui.horizontal(|ui| {
+                    import = ui
+                        .button(self.catalog.text("dialog-import-step-confirm"))
+                        .clicked();
+                    cancel = ui
+                        .button(self.catalog.text("dialog-import-step-cancel"))
+                        .clicked();
+                });
+            });
+        if cancel {
+            self.pending_step_import = None;
+            self.digest = self.catalog.text("digest-cancelled");
+        } else if import {
+            let pending = self
+                .pending_step_import
+                .take()
+                .expect("the STEP review window has a pending import");
+            self.import_step_from(&pending);
+        }
+    }
+
     fn show_shortcuts_window(&mut self, context: &egui::Context) {
         if !self.shortcuts_open {
             return;
@@ -16147,6 +16492,7 @@ impl KetchupApp {
         self.show_smart_push_pull_chooser(context);
         self.show_stl_import_window(context);
         self.show_dxf_import_window(context);
+        self.show_step_import_window(context);
         self.show_shortcuts_window(context);
         self.poll_assistant_chat(context);
     }
