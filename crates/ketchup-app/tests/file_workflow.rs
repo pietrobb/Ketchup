@@ -13,6 +13,7 @@ use std::time::Duration;
 use harness::Shell;
 use ketchup_app::AppCommand;
 use ketchup_app::dialogs::ScriptedFileDialogs;
+use ketchup_core::import::ImportFormat;
 use ketchup_interaction::Vec3;
 
 fn compose_two_shared_occurrences(shell: &mut Shell) {
@@ -668,4 +669,50 @@ fn file_menu_exports_current_visible_exact_model_without_mutating_canonical_stat
             .iter()
             .all(|prompt| prompt.contains("Payload SHA-256:"))
     );
+}
+
+#[test]
+fn file_import_stl_commits_one_canonical_mesh_transaction_offscreen() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("tetrahedron.stl");
+    std::fs::write(
+        &path,
+        b"solid tetrahedron\n\
+ facet normal 0 0 -1\n  outer loop\n   vertex 0 0 0\n   vertex 0 1 0\n   vertex 1 0 0\n  endloop\n endfacet\n\
+ facet normal 0 -1 0\n  outer loop\n   vertex 0 0 0\n   vertex 1 0 0\n   vertex 0 0 1\n  endloop\n endfacet\n\
+ facet normal -1 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 0 0 1\n   vertex 0 1 0\n  endloop\n endfacet\n\
+ facet normal 1 1 1\n  outer loop\n   vertex 1 0 0\n   vertex 0 1 0\n   vertex 0 0 1\n  endloop\n endfacet\n\
+endsolid tetrahedron\n",
+    )
+    .unwrap();
+    let script = ScriptedFileDialogs::new().queue_import(ImportFormat::Stl, &path);
+    let mut shell = Shell::with_dialogs(script.clone());
+    let before = canonical_state(&shell);
+    let before_definitions = shell.app().definition_count();
+
+    shell.click_menu_command("menu-file", AppCommand::ImportMeshStl);
+    shell.click_button_label(&shell.catalog().text("dialog-import-stl-confirm"));
+
+    assert_eq!(shell.app().mesh_body_count(), 1);
+    assert_eq!(shell.app().import_receipt_count(), 1);
+    assert_eq!(shell.app().definition_count(), before_definitions + 1);
+    assert_eq!(shell.app().document_revision(), before.revision + 1);
+    assert!(shell.app().can_undo());
+    assert!(digest_starts_like(&shell, "digest-imported-stl"));
+    assert_eq!(
+        script.import_requests(),
+        vec![ketchup_app::dialogs::ImportDialogRequestRecord {
+            format: ImportFormat::Stl,
+            filter_label: shell.catalog().text("file-filter-stl"),
+            extensions: vec!["stl".to_owned()],
+        }]
+    );
+
+    shell.click_menu_command("menu-edit", AppCommand::Undo);
+    assert_eq!(shell.app().canonical_digest(), before.digest);
+    assert_eq!(shell.app().mesh_body_count(), 0);
+    assert_eq!(shell.app().import_receipt_count(), 0);
+    shell.click_menu_command("menu-edit", AppCommand::Redo);
+    assert_eq!(shell.app().mesh_body_count(), 1);
+    assert_eq!(shell.app().import_receipt_count(), 1);
 }

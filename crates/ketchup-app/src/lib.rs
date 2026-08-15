@@ -39,6 +39,10 @@ use ketchup_core::fabrication::{FullBomProjection, PieceDimensionSheet};
 use ketchup_core::graph::{
     DerivedIdentity, EvaluationStatus, EvaluatorNodeKind, RuleOutput, SlotSegment,
 };
+use ketchup_core::import::{
+    ImportFormat, ImportLengthUnit, ImportUnitAuthority, ImportUnitDecision,
+    MAX_IMPORT_SOURCE_BYTES, plan_stl_import,
+};
 use ketchup_core::intent::{IntentRequest, WorkflowIntent, propose_intent};
 use ketchup_core::prismatic::JointId;
 #[cfg(test)]
@@ -66,7 +70,7 @@ pub mod renderer;
 
 use dialogs::{
     DialogParentWindow, DiscardRequest, ExportRequest, FileDialogs, HighRiskConfirmationRequest,
-    NativeFileDialogs, SaveRequest,
+    ImportDialogRequest, NativeFileDialogs, SaveRequest,
 };
 use renderer::{
     DerivedRenderCache, GpuInstancedRenderer, InstancedRenderPlan, ScenePaintCallback,
@@ -76,7 +80,7 @@ use renderer::{
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::Write as _;
+use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::sync::{
     Arc, Mutex,
@@ -765,6 +769,7 @@ pub enum AppCommand {
     Open,
     Save,
     SaveAs,
+    ImportMeshStl,
     ExportExactStep,
     ExportMeshStl,
     Select,
@@ -848,7 +853,7 @@ struct CommandSpec {
 struct CommandRegistry;
 
 impl CommandRegistry {
-    const COMMANDS: [CommandSpec; 48] = [
+    const COMMANDS: [CommandSpec; 49] = [
         CommandSpec {
             id: AppCommand::New,
             label_key: "file-new",
@@ -874,6 +879,13 @@ impl CommandRegistry {
             id: AppCommand::SaveAs,
             label_key: "file-save-as",
             shortcut_key: "shortcut-save-as",
+            tool: None,
+            implemented: true,
+        },
+        CommandSpec {
+            id: AppCommand::ImportMeshStl,
+            label_key: "file-import-stl",
+            shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
         },
@@ -1525,6 +1537,12 @@ pub struct AssistantVerification {
     pub verified_write_count: usize,
 }
 
+#[derive(Clone, Debug)]
+struct PendingStlImport {
+    path: PathBuf,
+    unit: ImportLengthUnit,
+}
+
 pub struct KetchupApp {
     document: DocumentStore,
     container_data: ketchup_core::persistence::ContainerData,
@@ -1610,6 +1628,7 @@ pub struct KetchupApp {
     measure_cursor: Option<Vec3>,
     measure_end: Option<Vec3>,
     shortcuts_open: bool,
+    pending_stl_import: Option<PendingStlImport>,
     viewport_rect: Option<Rect>,
     dialogs: Box<dyn FileDialogs>,
     exact_worker_path: Option<PathBuf>,
@@ -1767,6 +1786,7 @@ impl KetchupApp {
             measure_cursor: None,
             measure_end: None,
             shortcuts_open: false,
+            pending_stl_import: None,
             viewport_rect: None,
             dialogs: Box::new(NativeFileDialogs::default()),
             exact_worker_path: None,
@@ -2212,6 +2232,64 @@ impl KetchupApp {
         })
     }
 
+    fn choose_stl_import_path(&mut self) -> Option<PathBuf> {
+        let filter_label = self.catalog.text("file-filter-stl");
+        self.dialogs.pick_import_path(ImportDialogRequest {
+            format: ImportFormat::Stl,
+            filter_label: &filter_label,
+            extensions: &["stl"],
+        })
+    }
+
+    fn import_stl_from(&mut self, path: &Path, unit: ImportLengthUnit) -> bool {
+        let result = (|| {
+            let mut file = std::fs::File::open(path).map_err(|error| error.to_string())?;
+            let mut source = Vec::new();
+            std::io::Read::by_ref(&mut file)
+                .take(MAX_IMPORT_SOURCE_BYTES + 1)
+                .read_to_end(&mut source)
+                .map_err(|error| error.to_string())?;
+            if source.len() as u64 > MAX_IMPORT_SOURCE_BYTES {
+                return Err("STL source exceeds the 32 MiB import limit".to_owned());
+            }
+            let source_name = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or_else(|| "STL source name is not valid UTF-8".to_owned())?;
+            let units = ImportUnitDecision::new(unit, ImportUnitAuthority::UserDeclared);
+            let snapshot = self.document.current();
+            let batch = std::panic::catch_unwind(|| {
+                plan_stl_import(&snapshot, &source, source_name, units)
+            })
+            .map_err(|_| "bounded STL parser stopped without publishing geometry".to_owned())?
+            .map_err(|error| error.to_string())?;
+            let proposal = self
+                .document
+                .prepare_proposal_with_context(batch, ProposalContext::canonical_preview())
+                .map_err(|error| error.to_string())?;
+            self.document
+                .commit_verified_proposal(&proposal)
+                .map_err(|error| error.to_string())?;
+            Ok::<(), String>(())
+        })();
+        match result {
+            Ok(()) => {
+                self.digest = self.catalog.format(
+                    "digest-imported-stl",
+                    &BTreeMap::from([("path", path.display().to_string())]),
+                );
+                true
+            }
+            Err(reason) => {
+                self.digest = self.catalog.format(
+                    "error-import-stl",
+                    &BTreeMap::from([("path", path.display().to_string()), ("reason", reason)]),
+                );
+                false
+            }
+        }
+    }
+
     fn current_visible_exact_model(
         &self,
         snapshot: &Snapshot,
@@ -2438,6 +2516,14 @@ impl KetchupApp {
             AppCommand::SaveAs => {
                 if let Some(path) = self.choose_save_path() {
                     self.save_document_to(&path);
+                }
+            }
+            AppCommand::ImportMeshStl => {
+                if let Some(path) = self.choose_stl_import_path() {
+                    self.pending_stl_import = Some(PendingStlImport {
+                        path,
+                        unit: ImportLengthUnit::Millimetre,
+                    });
                 }
             }
             AppCommand::ExportExactStep => {
@@ -4805,6 +4891,20 @@ impl KetchupApp {
         self.document.current().definitions().count()
     }
 
+    #[must_use]
+    pub fn mesh_body_count(&self) -> usize {
+        self.document
+            .current()
+            .features()
+            .filter(|feature| matches!(feature.kind(), FeatureKind::MeshBody(_)))
+            .count()
+    }
+
+    #[must_use]
+    pub fn import_receipt_count(&self) -> usize {
+        self.document.current().import_receipts().count()
+    }
+
     /// How many groups the active document holds.
     #[must_use]
     pub fn group_count(&self) -> usize {
@@ -6363,6 +6463,7 @@ impl KetchupApp {
             | AppCommand::Open
             | AppCommand::Save
             | AppCommand::SaveAs
+            | AppCommand::ImportMeshStl
             | AppCommand::ExportExactStep
             | AppCommand::ExportMeshStl => {
                 self.dispatch_file_command(id);
@@ -12785,6 +12886,8 @@ impl KetchupApp {
                 self.menu_command(ui, AppCommand::Save);
                 self.menu_command(ui, AppCommand::SaveAs);
                 ui.separator();
+                self.menu_command(ui, AppCommand::ImportMeshStl);
+                ui.separator();
                 self.menu_command(ui, AppCommand::ExportExactStep);
                 self.menu_command(ui, AppCommand::ExportMeshStl);
             });
@@ -15217,6 +15320,55 @@ impl KetchupApp {
         });
     }
 
+    fn show_stl_import_window(&mut self, context: &egui::Context) {
+        let Some(pending) = self.pending_stl_import.as_ref() else {
+            return;
+        };
+        let path = pending.path.clone();
+        let mut unit = pending.unit;
+        let mut import = false;
+        let mut cancel = false;
+        egui::Window::new(self.catalog.text("dialog-import-stl-title"))
+            .id(egui::Id::new("stl-import-units"))
+            .collapsible(false)
+            .resizable(false)
+            .show(context, |ui| {
+                ui.label(self.catalog.format(
+                    "dialog-import-stl-source",
+                    &BTreeMap::from([("path", path.display().to_string())]),
+                ));
+                ui.label(self.catalog.text("dialog-import-stl-units"));
+                for (candidate, key) in [
+                    (ImportLengthUnit::Millimetre, "unit-millimetre"),
+                    (ImportLengthUnit::Centimetre, "unit-centimetre"),
+                    (ImportLengthUnit::Metre, "unit-metre"),
+                    (ImportLengthUnit::Inch, "unit-inch"),
+                    (ImportLengthUnit::Foot, "unit-foot"),
+                ] {
+                    ui.radio_value(&mut unit, candidate, self.catalog.text(key));
+                }
+                ui.separator();
+                ui.horizontal(|ui| {
+                    import = ui
+                        .button(self.catalog.text("dialog-import-stl-confirm"))
+                        .clicked();
+                    cancel = ui
+                        .button(self.catalog.text("dialog-import-stl-cancel"))
+                        .clicked();
+                });
+            });
+        if let Some(pending) = self.pending_stl_import.as_mut() {
+            pending.unit = unit;
+        }
+        if cancel {
+            self.pending_stl_import = None;
+            self.digest = self.catalog.text("digest-cancelled");
+        } else if import {
+            self.pending_stl_import = None;
+            self.import_stl_from(&path, unit);
+        }
+    }
+
     fn show_shortcuts_window(&mut self, context: &egui::Context) {
         if !self.shortcuts_open {
             return;
@@ -15602,6 +15754,7 @@ impl KetchupApp {
                 });
         }
         self.show_smart_push_pull_chooser(context);
+        self.show_stl_import_window(context);
         self.show_shortcuts_window(context);
         self.poll_assistant_chat(context);
     }

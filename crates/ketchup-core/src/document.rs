@@ -328,6 +328,7 @@ pub struct ExactToMeshConversion {
 pub enum MeshAuthority {
     Authored { provenance: String },
     ExactConversion(ExactToMeshConversion),
+    ImportedStl { import_id: ImportId },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -5986,6 +5987,9 @@ fn validate_mesh_body(spec: &MeshBodySpec) -> Result<(), CanonicalError> {
         MeshAuthority::Authored { provenance } if provenance.is_empty() => {
             return Err(CanonicalError::InvalidMeshBody);
         }
+        MeshAuthority::ImportedStl { import_id } if import_id.0 == 0 => {
+            return Err(CanonicalError::InvalidMeshBody);
+        }
         MeshAuthority::ExactConversion(conversion)
             if conversion.source_document_id.0 == 0
                 || conversion.source_revision == 0
@@ -6010,10 +6014,12 @@ fn validate_mesh_body(spec: &MeshBodySpec) -> Result<(), CanonicalError> {
         _ => {}
     }
 
-    let mut edges = BTreeMap::<(u32, u32), (u32, i32)>::new();
+    let mut edges = BTreeMap::<(u32, u32), (u32, i32, Vec<usize>)>::new();
     let mut seen_triangles = BTreeSet::new();
+    let volume_origin = spec.vertices_mm[0];
     let mut signed_volume_times_six = 0.0;
-    for indices in &spec.triangles {
+    let mut volume_compensation = 0.0;
+    for (triangle_index, indices) in spec.triangles.iter().enumerate() {
         let [a, b, c] = *indices;
         if a == b
             || b == c
@@ -6050,24 +6056,88 @@ fn validate_mesh_body(spec: &MeshBodySpec) -> Result<(), CanonicalError> {
         if cross.into_iter().map(|value| value * value).sum::<f64>() <= MESH_AREA_EPSILON {
             return Err(CanonicalError::InvalidMeshBody);
         }
-        signed_volume_times_six += first[0] * (second[1] * third[2] - second[2] * third[1])
-            + first[1] * (second[2] * third[0] - second[0] * third[2])
-            + first[2] * (second[0] * third[1] - second[1] * third[0]);
+        let shifted = [first, second, third].map(|point| {
+            [
+                point[0] - volume_origin[0],
+                point[1] - volume_origin[1],
+                point[2] - volume_origin[2],
+            ]
+        });
+        let volume_term = shifted[0][0]
+            * (shifted[1][1] * shifted[2][2] - shifted[1][2] * shifted[2][1])
+            + shifted[0][1] * (shifted[1][2] * shifted[2][0] - shifted[1][0] * shifted[2][2])
+            + shifted[0][2] * (shifted[1][0] * shifted[2][1] - shifted[1][1] * shifted[2][0]);
+        let corrected = volume_term - volume_compensation;
+        let next = signed_volume_times_six + corrected;
+        volume_compensation = (next - signed_volume_times_six) - corrected;
+        signed_volume_times_six = next;
         for (from, to) in [(a, b), (b, c), (c, a)] {
             let key = (from.min(to), from.max(to));
             let entry = edges.entry(key).or_default();
             entry.0 += 1;
             entry.1 += if from < to { 1 } else { -1 };
+            entry.2.push(triangle_index);
         }
     }
     if edges
         .values()
-        .any(|(uses, orientation)| *uses != 2 || *orientation != 0)
+        .any(|(uses, orientation, _)| *uses != 2 || *orientation != 0)
+        || !mesh_vertex_fans_are_manifold(spec.vertices_mm.len(), &spec.triangles, &edges)
         || signed_volume_times_six <= MESH_VOLUME_EPSILON
     {
         return Err(CanonicalError::InvalidMeshBody);
     }
     Ok(())
+}
+
+fn mesh_vertex_fans_are_manifold(
+    vertex_count: usize,
+    triangles: &[[u32; 3]],
+    edges: &BTreeMap<(u32, u32), (u32, i32, Vec<usize>)>,
+) -> bool {
+    let mut incident = vec![BTreeSet::new(); vertex_count];
+    let mut adjacency = vec![BTreeMap::<usize, BTreeSet<usize>>::new(); vertex_count];
+    for (triangle_index, triangle) in triangles.iter().enumerate() {
+        for vertex in triangle {
+            incident[*vertex as usize].insert(triangle_index);
+        }
+    }
+    for ((first, second), (_, _, uses)) in edges {
+        if let [left, right] = uses.as_slice() {
+            for vertex in [*first, *second] {
+                adjacency[vertex as usize]
+                    .entry(*left)
+                    .or_default()
+                    .insert(*right);
+                adjacency[vertex as usize]
+                    .entry(*right)
+                    .or_default()
+                    .insert(*left);
+            }
+        }
+    }
+    incident.iter().enumerate().all(|(vertex, faces)| {
+        let Some(start) = faces.first().copied() else {
+            return false;
+        };
+        if faces.iter().any(|face| {
+            adjacency[vertex]
+                .get(face)
+                .is_none_or(|neighbours| neighbours.len() != 2)
+        }) {
+            return false;
+        }
+        let mut visited = BTreeSet::new();
+        let mut pending = vec![start];
+        while let Some(face) = pending.pop() {
+            if visited.insert(face)
+                && let Some(neighbours) = adjacency[vertex].get(&face)
+            {
+                pending.extend(neighbours.iter().copied());
+            }
+        }
+        &visited == faces
+    })
 }
 
 const MAX_PROFILE_POINTS: usize = 1_024;
@@ -7386,16 +7456,6 @@ fn validate_product(product: &ProductModel) -> Result<(), CanonicalError> {
         if *id != receipt.id() || receipt.validate().is_err() {
             return Err(CanonicalError::InvalidImportReceipt);
         }
-        for output in receipt.outputs() {
-            let exists = match output {
-                ImportOutputRef::Definition(id) => product.definitions.contains_key(id),
-                ImportOutputRef::Feature(id) => product.features.contains_key(id),
-                ImportOutputRef::Occurrence(id) => product.occurrences.contains_key(id),
-            };
-            if !exists {
-                return Err(CanonicalError::InvalidImportReceipt);
-            }
-        }
     }
     for definition in product.definitions.values() {
         ensure_product_id(definition.id.0)?;
@@ -7768,14 +7828,18 @@ fn validate_product(product: &ProductModel) -> Result<(), CanonicalError> {
                 }
             }
             FeatureKind::MeshBody(spec) => {
-                if definition.feature_ids.as_slice() != [feature.id]
-                    || matches!(
-                        &spec.authority,
-                        MeshAuthority::ExactConversion(conversion)
-                            if conversion.destination_definition_id != feature.definition_id
-                                || conversion.destination_feature_id != feature.id
-                    )
-                {
+                let authority_is_invalid = match &spec.authority {
+                    MeshAuthority::ExactConversion(conversion) => {
+                        conversion.destination_definition_id != feature.definition_id
+                            || conversion.destination_feature_id != feature.id
+                    }
+                    MeshAuthority::ImportedStl { import_id } => product
+                        .import_receipts
+                        .get(import_id)
+                        .is_none_or(|receipt| receipt.format() != ImportFormat::Stl),
+                    MeshAuthority::Authored { .. } => false,
+                };
+                if definition.feature_ids.as_slice() != [feature.id] || authority_is_invalid {
                     return Err(CanonicalError::InvalidFeatureOwnership(feature.id));
                 }
             }
@@ -9687,6 +9751,10 @@ impl StableDigest {
                     MeshAuthority::Authored { provenance } => {
                         self.byte(1);
                         self.bytes(provenance.as_bytes());
+                    }
+                    MeshAuthority::ImportedStl { import_id } => {
+                        self.byte(3);
+                        self.u64(import_id.0);
                     }
                     MeshAuthority::ExactConversion(conversion) => {
                         self.byte(2);

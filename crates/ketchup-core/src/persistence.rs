@@ -49,7 +49,8 @@ const PLANAR_OFFSET_SCHEMA: u16 = 24;
 const SWEEP_SCHEMA: u16 = 25;
 const LOFT_SPLINE_SCHEMA: u16 = 26;
 const IMPORT_RECEIPT_SCHEMA: u16 = 27;
-pub const CURRENT_SCHEMA: u16 = IMPORT_RECEIPT_SCHEMA;
+const IMPORTED_MESH_AUTHORITY_SCHEMA: u16 = 28;
+pub const CURRENT_SCHEMA: u16 = IMPORTED_MESH_AUTHORITY_SCHEMA;
 const COLLECTION_SCHEMA: u16 = 15;
 const TAG_SCHEMA: u16 = 14;
 const PERSISTENT_DIMENSION_SCHEMA: u16 = 13;
@@ -1159,6 +1160,10 @@ fn write_features(bytes: &mut Vec<u8>, product: &ProductModel) {
                         push_u8(bytes, 1);
                         push_string(bytes, provenance);
                     }
+                    MeshAuthority::ImportedStl { import_id } => {
+                        push_u8(bytes, 3);
+                        push_u64(bytes, import_id.0);
+                    }
                     MeshAuthority::ExactConversion(conversion) => {
                         push_u8(bytes, 2);
                         push_u64(bytes, conversion.source_document_id.0);
@@ -1398,6 +1403,7 @@ fn load_document(
             | BOOLEAN_SPLIT_SCHEMA
             | SWEEP_SCHEMA
             | LOFT_SPLINE_SCHEMA
+            | IMPORT_RECEIPT_SCHEMA
             | CURRENT_SCHEMA
     ) {
         return Err(PersistenceError::UnsupportedSchema(schema));
@@ -2332,6 +2338,9 @@ fn read_product(
                 let authority = match reader.u8()? {
                     1 => MeshAuthority::Authored {
                         provenance: reader.string()?,
+                    },
+                    3 => MeshAuthority::ImportedStl {
+                        import_id: crate::import::ImportId(reader.u64()?),
                     },
                     2 => {
                         let source_document_id = crate::document::DocumentId(reader.u64()?);

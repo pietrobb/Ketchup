@@ -1095,6 +1095,15 @@ pub fn encode_semantic_state_with_results(
                         )
                         .unwrap();
                     }
+                    crate::document::MeshAuthority::ImportedStl { import_id } => {
+                        writeln!(
+                            complete,
+                            "feature.{}.mesh.authority=imported_stl:{}",
+                            feature.id().0,
+                            import_id.0
+                        )
+                        .unwrap();
+                    }
                     crate::document::MeshAuthority::ExactConversion(conversion) => {
                         writeln!(
                             complete,
@@ -1214,6 +1223,7 @@ pub fn encode_semantic_state_with_results(
                     match &spec.authority {
                         crate::document::MeshAuthority::Authored { .. } => "authored",
                         crate::document::MeshAuthority::ExactConversion(_) => "exact_conversion",
+                        crate::document::MeshAuthority::ImportedStl { .. } => "imported_stl",
                     }
                 )
                 .unwrap();

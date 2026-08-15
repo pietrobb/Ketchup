@@ -380,6 +380,14 @@ impl Shell {
         self.harness.run();
     }
 
+    pub fn click_button_label(&mut self, label: &str) {
+        self.gap();
+        self.harness
+            .get_by_role_and_label(Role::Button, label)
+            .click();
+        self.harness.run();
+    }
+
     /// Open a menu of the menu bar, identified by its localization key.
     pub fn open_menu(&mut self, key: &str) {
         self.gap();
