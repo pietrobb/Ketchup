@@ -18596,6 +18596,61 @@ endsolid tetrahedron\n";
     }
 
     #[test]
+    fn imported_dxf_profiles_remain_projected_and_pickable_after_persistence() {
+        let source = b"0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n\
+0\nSECTION\n2\nENTITIES\n\
+0\nLINE\n8\nopen\n10\n0\n20\n0\n11\n10\n21\n0\n\
+0\nLWPOLYLINE\n8\nclosed\n90\n3\n70\n1\n\
+10\n20\n20\n0\n10\n30\n20\n0\n10\n20\n20\n10\n\
+0\nENDSEC\n0\nEOF\n";
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("profiles.dxf");
+        std::fs::write(&path, source).unwrap();
+        let mut app = KetchupApp::new();
+        app.document = DocumentStore::new();
+        let snapshot = app.document.current();
+        let review = KetchupApp::inspect_dxf_for_review(source).unwrap();
+        let pending = PendingDxfImport {
+            path,
+            source: source.to_vec(),
+            unit: review.units().source_unit(),
+            unit_confirmed: true,
+            review,
+            review_error: None,
+            document_id: snapshot.document_id(),
+            revision_id: snapshot.revision_id(),
+            canonical_digest: snapshot.canonical_digest(),
+            source_sha256: sha256_bytes(source),
+            source_byte_len: source.len() as u64,
+        };
+        assert!(app.import_dxf_from(&pending));
+
+        let committed = app.document.current();
+        let reopened =
+            ketchup_core::persistence::load(&ketchup_core::persistence::save(&committed)).unwrap();
+        let snapshot = reopened.snapshot();
+        let projection = CanonicalInteractionProjection::from_snapshot(&snapshot);
+        let scene = projection.scene().unwrap();
+        assert_eq!(scene.occurrence_count(), 2);
+        let open_hit = scene
+            .exact_pick(
+                Ray::new(Vec3::new(5.0, 0.0, 10.0), Vec3::new(0.0, 0.0, -1.0)).unwrap(),
+                0.01,
+            )
+            .expect("the persisted open DXF profile must remain pickable");
+        let closed_hit = scene
+            .exact_pick(
+                Ray::new(Vec3::new(25.0, 5.0, 10.0), Vec3::new(0.0, 0.0, -1.0)).unwrap(),
+                0.01,
+            )
+            .expect("the persisted closed DXF profile must remain pickable");
+        assert_ne!(
+            open_hit.primary.reference.instance_path,
+            closed_hit.primary.reference.instance_path
+        );
+    }
+
+    #[test]
     fn hovering_and_selecting_a_canonical_mesh_body_paints_its_outline() {
         let mut app = KetchupApp::new();
         assert!(apply_reviewed_model_intent(

@@ -259,9 +259,7 @@ fn canonical_box(
     }
     let bounds = match profile.kind() {
         FeatureKind::Profile { points_mm } => profile_bounds(points_mm),
-        FeatureKind::SegmentProfile { segments, closed } if *closed => {
-            segment_profile_bounds(segments)
-        }
+        FeatureKind::SegmentProfile { segments, .. } => segment_profile_bounds(segments),
         _ => return (None, None, None),
     };
     let Some((min_x, min_y, width, depth)) = bounds else {
@@ -325,7 +323,34 @@ fn segment_profile_bounds(segments: &[ProfileSegment]) -> Option<(f64, f64, f64,
             }
         }
     }
-    profile_bounds(&points)
+    if let Some(bounds) = profile_bounds(&points) {
+        return Some(bounds);
+    }
+    let first = points.first()?;
+    let (mut min_x, mut max_x, mut min_y, mut max_y) = (first[0], first[0], first[1], first[1]);
+    for point in &points[1..] {
+        min_x = min_x.min(point[0]);
+        max_x = max_x.max(point[0]);
+        min_y = min_y.min(point[1]);
+        max_y = max_y.max(point[1]);
+    }
+    const MINIMUM_PROXY_SPAN_MM: f64 = 1.0e-9;
+    let mut width = max_x - min_x;
+    let mut depth = max_y - min_y;
+    if width == 0.0 && depth > 0.0 {
+        min_x -= MINIMUM_PROXY_SPAN_MM * 0.5;
+        width = MINIMUM_PROXY_SPAN_MM;
+    } else if depth == 0.0 && width > 0.0 {
+        min_y -= MINIMUM_PROXY_SPAN_MM * 0.5;
+        depth = MINIMUM_PROXY_SPAN_MM;
+    }
+    (min_x.is_finite()
+        && min_y.is_finite()
+        && width.is_finite()
+        && width > 0.0
+        && depth.is_finite()
+        && depth > 0.0)
+        .then_some((min_x, min_y, width, depth))
 }
 
 fn transformed_aabb(transform: Transform, local_box: ProjectedBox) -> Option<ProjectedBox> {

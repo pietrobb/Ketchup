@@ -17,7 +17,7 @@ use ketchup_app::dialogs::ScriptedFileDialogs;
 use ketchup_core::document::FeatureKind;
 use ketchup_core::graph::sha256_bytes;
 use ketchup_core::import::{
-    ImportFormat, ImportLengthUnit, ImportUnitAuthority, MAX_STL_SOURCE_BYTES,
+    ImportFormat, ImportLengthUnit, ImportUnitAuthority, MAX_DXF_SOURCE_BYTES, MAX_STL_SOURCE_BYTES,
 };
 use ketchup_interaction::Vec3;
 
@@ -880,6 +880,7 @@ fn file_import_dxf_reviews_and_commits_one_canonical_profile_transaction_offscre
         .always_discard();
     let mut shell = Shell::with_dialogs(script.clone());
     let before = canonical_state(&shell);
+    let before_box_count = shell.app().active_box_count();
 
     shell.click_menu_command("menu-file", AppCommand::ImportDrawingDxf);
     shell.click_button_label(&shell.catalog().text("dialog-import-dxf-confirm"));
@@ -888,6 +889,7 @@ fn file_import_dxf_reviews_and_commits_one_canonical_profile_transaction_offscre
     assert_eq!(shell.app().definition_count(), before.definitions + 2);
     assert_eq!(shell.app().feature_count(), before.features + 2);
     assert_eq!(shell.app().occurrence_count(), before.occurrences + 2);
+    assert_eq!(shell.app().active_box_count(), before_box_count + 2);
     assert_eq!(shell.app().import_receipt_count(), 1);
     assert!(digest_starts_like(&shell, "digest-imported-dxf"));
     assert_eq!(
@@ -989,6 +991,115 @@ fn file_import_dxf_dialog_and_review_cancel_leave_canonical_state_unchanged() {
     shell.click_menu_command("menu-file", AppCommand::ImportDrawingDxf);
     shell.click_button_label(&shell.catalog().text("dialog-import-dxf-cancel"));
     assert_state_and_history_unchanged(&mut shell, &before, &history);
+}
+
+#[test]
+fn file_import_dxf_refusals_preserve_exact_state_and_reachable_history() {
+    let directory = tempfile::tempdir().unwrap();
+    let malformed = directory.path().join("malformed.dxf");
+    let ambiguous = directory.path().join("ambiguous.dxf");
+    let oversized = directory.path().join("oversized.dxf");
+    std::fs::write(
+        &malformed,
+        b"0\nSECTION\n2\nENTITIES\n0\nLINE\n10\n0\n20\n0\n11\n1\n",
+    )
+    .unwrap();
+    std::fs::write(
+        &ambiguous,
+        b"0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n\
+0\nSECTION\n2\nENTITIES\n\
+0\nLINE\n10\n0\n20\n0\n11\n1\n21\n0\n\
+0\nLINE\n10\n0\n20\n0\n11\n0\n21\n1\n\
+0\nLINE\n10\n0\n20\n0\n11\n-1\n21\n0\n\
+0\nENDSEC\n0\nEOF\n",
+    )
+    .unwrap();
+    std::fs::File::create(&oversized)
+        .unwrap()
+        .set_len(MAX_DXF_SOURCE_BYTES + 1)
+        .unwrap();
+
+    let script = ScriptedFileDialogs::new()
+        .queue_import(ImportFormat::Dxf, &malformed)
+        .queue_import(ImportFormat::Dxf, &ambiguous)
+        .queue_import(ImportFormat::Dxf, &oversized);
+    let mut shell = Shell::with_dialogs(script);
+    compose_two_shared_occurrences(&mut shell);
+    shell.click_menu_command("menu-edit", AppCommand::Undo);
+    let before = canonical_state(&shell);
+    let history = reachable_history_digests(&mut shell);
+    assert!(before.redo_steps > 0);
+
+    for _ in 0..3 {
+        shell.click_menu_command("menu-file", AppCommand::ImportDrawingDxf);
+        assert!(digest_starts_like(&shell, "error-import-dxf"));
+        assert_state_and_history_unchanged(&mut shell, &before, &history);
+    }
+}
+
+#[test]
+fn file_import_dxf_rejects_source_document_history_and_open_staleness() {
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("reviewed.dxf");
+    let replacement = directory.path().join("replacement.ketchup");
+    std::fs::write(&source, valid_dxf_subset()).unwrap();
+    let mut replacement_shell =
+        Shell::with_dialogs(ScriptedFileDialogs::new().queue_save(&replacement));
+    replacement_shell.click_menu_command("menu-file", AppCommand::Save);
+
+    let script = ScriptedFileDialogs::new()
+        .queue_import(ImportFormat::Dxf, &source)
+        .queue_import(ImportFormat::Dxf, &source)
+        .queue_import(ImportFormat::Dxf, &source)
+        .queue_import(ImportFormat::Dxf, &source)
+        .queue_import(ImportFormat::Dxf, &source)
+        .queue_open(&replacement)
+        .always_discard();
+    let mut shell = Shell::with_dialogs(script);
+
+    let before_source_change = canonical_state(&shell);
+    let before_source_history = reachable_history_digests(&mut shell);
+    shell.click_menu_command("menu-file", AppCommand::ImportDrawingDxf);
+    let mut same_length_change = valid_dxf_subset().to_vec();
+    same_length_change[0] = b'1';
+    std::fs::write(&source, same_length_change).unwrap();
+    shell.click_button_label(&shell.catalog().text("dialog-import-dxf-confirm"));
+    assert!(digest_starts_like(&shell, "error-import-dxf"));
+    assert_state_and_history_unchanged(&mut shell, &before_source_change, &before_source_history);
+
+    std::fs::write(&source, valid_dxf_subset()).unwrap();
+    compose_two_shared_occurrences(&mut shell);
+    shell.click_menu_command("menu-file", AppCommand::ImportDrawingDxf);
+    assert!(shell.app_mut().move_selected(Vec3::new(10.0, 0.0, 0.0)));
+    let after_document_change = canonical_state(&shell);
+    let after_document_history = reachable_history_digests(&mut shell);
+    shell.click_button_label(&shell.catalog().text("dialog-import-dxf-confirm"));
+    assert!(digest_starts_like(&shell, "error-import-dxf"));
+    assert_state_and_history_unchanged(&mut shell, &after_document_change, &after_document_history);
+
+    shell.click_menu_command("menu-file", AppCommand::ImportDrawingDxf);
+    shell.click_menu_command("menu-edit", AppCommand::Undo);
+    let after_undo = canonical_state(&shell);
+    let after_undo_history = reachable_history_digests(&mut shell);
+    shell.click_button_label(&shell.catalog().text("dialog-import-dxf-confirm"));
+    assert!(digest_starts_like(&shell, "error-import-dxf"));
+    assert_state_and_history_unchanged(&mut shell, &after_undo, &after_undo_history);
+
+    shell.click_menu_command("menu-file", AppCommand::ImportDrawingDxf);
+    shell.click_menu_command("menu-edit", AppCommand::Redo);
+    let after_redo = canonical_state(&shell);
+    let after_redo_history = reachable_history_digests(&mut shell);
+    shell.click_button_label(&shell.catalog().text("dialog-import-dxf-confirm"));
+    assert!(digest_starts_like(&shell, "error-import-dxf"));
+    assert_state_and_history_unchanged(&mut shell, &after_redo, &after_redo_history);
+
+    shell.click_menu_command("menu-file", AppCommand::ImportDrawingDxf);
+    shell.click_menu_command("menu-file", AppCommand::Open);
+    let after_open = canonical_state(&shell);
+    let after_open_history = reachable_history_digests(&mut shell);
+    shell.click_button_label(&shell.catalog().text("dialog-import-dxf-confirm"));
+    assert!(digest_starts_like(&shell, "error-import-dxf"));
+    assert_state_and_history_unchanged(&mut shell, &after_open, &after_open_history);
 }
 
 #[test]

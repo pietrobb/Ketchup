@@ -1,6 +1,6 @@
 use ketchup_core::document::{
     CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId, FeatureKind,
-    GroupId, OccurrenceId, Transform,
+    GroupId, InstancePath, OccurrenceId, ProfileSegment, Transform,
 };
 use ketchup_core::state_view::encode_semantic_state;
 use ketchup_interaction::projection::{
@@ -213,6 +213,61 @@ fn profile_only_definition_projects_as_a_flat_selectable_plane() {
             axis: Axis::Z,
             side: ketchup_interaction::Side::Maximum,
         }
+    );
+}
+
+#[test]
+fn open_segment_profile_projects_and_picks_with_a_bounded_flat_proxy() {
+    let mut store = DocumentStore::new();
+    store
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DEFINITION,
+                name: "Open DXF profile".to_owned(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: PROFILE,
+                definition_id: DEFINITION,
+                name: "Open line".to_owned(),
+                kind: FeatureKind::SegmentProfile {
+                    segments: vec![ProfileSegment::Line {
+                        start_mm: [2.0, 3.0],
+                        end_mm: [12.0, 3.0],
+                    }],
+                    closed: false,
+                },
+            },
+            CanonicalCommand::CreateOccurrence {
+                id: FIRST,
+                definition_id: DEFINITION,
+                name: "Open profile occurrence".to_owned(),
+                transform: Transform::identity(),
+                parent: None,
+                tag: None,
+                visible: true,
+            },
+        ]))
+        .unwrap();
+
+    let projection = CanonicalInteractionProjection::from_snapshot(&store.current());
+    let occurrence = &projection.occurrences()[0];
+    assert_eq!(occurrence.body.profile_feature_id, Some(PROFILE));
+    let local_box = occurrence.local_box.unwrap();
+    assert_eq!(local_box.origin_mm.x, 2.0);
+    assert_eq!(local_box.size_mm.x, 10.0);
+    assert!(local_box.origin_mm.y < 3.0);
+    assert!(local_box.size_mm.y > 0.0);
+    let hit = projection
+        .scene()
+        .unwrap()
+        .exact_pick(
+            Ray::new(Vec3::new(7.0, 3.0, 10.0), Vec3::new(0.0, 0.0, -1.0)).unwrap(),
+            0.01,
+        )
+        .unwrap();
+    assert_eq!(
+        hit.primary.reference.instance_path,
+        InstancePath::root(FIRST)
     );
 }
 

@@ -733,6 +733,7 @@ fn parse_arc(
         normalize_coordinate(center[0] + radius * end_cos)?,
         normalize_coordinate(center[1] + radius * end_sin)?,
     ];
+    validate_arc_sweep_envelope(start, end, center, radius, false, sweep > 180.0)?;
     ensure_distinct(start, end)?;
     Ok(LooseSegment {
         layer,
@@ -897,6 +898,14 @@ fn segment_from_bulge(
     {
         return Err(DxfImportError::InvalidBulge);
     }
+    validate_arc_sweep_envelope(
+        start,
+        end,
+        center,
+        radius_squared.sqrt(),
+        bulge < 0.0,
+        bulge.abs() > 1.0,
+    )?;
     Ok(ProfileSegment::CircularArc {
         start_mm: start,
         end_mm: end,
@@ -1076,6 +1085,114 @@ fn ensure_distinct(start: [f64; 2], end: [f64; 2]) -> Result<(), DxfImportError>
     }
 }
 
+fn validate_arc_sweep_envelope(
+    start: [f64; 2],
+    end: [f64; 2],
+    center: [f64; 2],
+    radius: f64,
+    clockwise: bool,
+    major: bool,
+) -> Result<(), DxfImportError> {
+    let start_vector = [start[0] - center[0], start[1] - center[1]];
+    let end_vector = [end[0] - center[0], end[1] - center[1]];
+    for direction in [[1.0, 0.0], [0.0, 1.0], [-1.0, 0.0], [0.0, -1.0]] {
+        if directed_arc_contains(
+            start_vector,
+            end_vector,
+            direction,
+            clockwise,
+            major,
+            radius,
+        ) {
+            normalize_coordinate(center[0] + radius * direction[0])?;
+            normalize_coordinate(center[1] + radius * direction[1])?;
+        }
+    }
+    Ok(())
+}
+
+fn directed_arc_contains(
+    start: [f64; 2],
+    end: [f64; 2],
+    direction: [f64; 2],
+    clockwise: bool,
+    major: bool,
+    radius: f64,
+) -> bool {
+    let (from, to) = if clockwise {
+        (end, start)
+    } else {
+        (start, end)
+    };
+    let tolerance = DXF_GEOMETRY_EPSILON_MM * radius.max(1.0);
+    if major {
+        !(cross(to, direction) > tolerance && cross(direction, from) > tolerance)
+    } else {
+        cross(from, direction) >= -tolerance && cross(direction, to) >= -tolerance
+    }
+}
+
+fn cross(left: [f64; 2], right: [f64; 2]) -> f64 {
+    left[0] * right[1] - left[1] * right[0]
+}
+
+fn snap_lines_to_unambiguous_arc_endpoints(
+    segments: &mut [LooseSegment],
+) -> Result<(), DxfImportError> {
+    let mut arc_endpoints: BTreeMap<[i64; 2], Vec<[f64; 2]>> = BTreeMap::new();
+    for segment in segments.iter() {
+        if matches!(segment.segment, ProfileSegment::CircularArc { .. }) {
+            for point in [segment.segment.start_mm(), segment.segment.end_mm()] {
+                arc_endpoints
+                    .entry(connectivity_bucket(point))
+                    .or_default()
+                    .push(point);
+            }
+        }
+    }
+    for segment in segments.iter_mut() {
+        let ProfileSegment::Line { start_mm, end_mm } = &mut segment.segment else {
+            continue;
+        };
+        *start_mm = unambiguous_arc_endpoint(*start_mm, &arc_endpoints)?;
+        *end_mm = unambiguous_arc_endpoint(*end_mm, &arc_endpoints)?;
+        ensure_distinct(*start_mm, *end_mm)?;
+    }
+    Ok(())
+}
+
+fn unambiguous_arc_endpoint(
+    point: [f64; 2],
+    arc_endpoints: &BTreeMap<[i64; 2], Vec<[f64; 2]>>,
+) -> Result<[f64; 2], DxfImportError> {
+    let bucket = connectivity_bucket(point);
+    let mut candidates = BTreeMap::new();
+    for x_offset in -1..=1 {
+        for y_offset in -1..=1 {
+            let nearby = [bucket[0] + x_offset, bucket[1] + y_offset];
+            for candidate in arc_endpoints.get(&nearby).into_iter().flatten() {
+                if (point[0] - candidate[0]).hypot(point[1] - candidate[1])
+                    <= DXF_GEOMETRY_EPSILON_MM
+                {
+                    candidates.insert(point_key(*candidate), *candidate);
+                }
+            }
+        }
+    }
+    match candidates.len() {
+        0 => Ok(point),
+        1 => Ok(*candidates.values().next().expect("one endpoint candidate")),
+        _ => Err(DxfImportError::AmbiguousGeometry),
+    }
+}
+
+fn connectivity_bucket(point: [f64; 2]) -> [i64; 2] {
+    [
+        (point[0] / DXF_GEOMETRY_EPSILON_MM).floor() as i64,
+        (point[1] / DXF_GEOMETRY_EPSILON_MM).floor() as i64,
+    ]
+}
+
 fn assemble_loose_segments(
     loose: Vec<LooseSegment>,
 ) -> Result<Vec<OrderedProfile>, DxfImportError> {
@@ -1087,7 +1204,8 @@ fn assemble_loose_segments(
             .push(segment);
     }
     let mut profiles = Vec::new();
-    for (layer, segments) in by_layer {
+    for (layer, mut segments) in by_layer {
+        snap_lines_to_unambiguous_arc_endpoints(&mut segments)?;
         let mut endpoints: BTreeMap<[u64; 2], Vec<usize>> = BTreeMap::new();
         let mut duplicate_lines = BTreeSet::new();
         for (index, segment) in segments.iter().enumerate() {

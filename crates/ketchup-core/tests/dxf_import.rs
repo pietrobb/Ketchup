@@ -222,6 +222,84 @@ fn malformed_non_planar_and_ambiguous_geometry_fail_closed_with_typed_errors() {
 }
 
 #[test]
+fn arc_and_bulge_sweeps_must_remain_inside_the_coordinate_envelope() {
+    let options = DxfImportOptions::new(None);
+    let outward_arc = dxf(
+        Some(4),
+        "0\nARC\n8\n0\n10\n999999.5\n20\n0\n40\n1\n50\n270\n51\n90\n",
+    );
+    assert_eq!(
+        inspect_dxf(&outward_arc, options),
+        Err(DxfImportError::CoordinateOutOfRange)
+    );
+    let inward_arc = dxf(
+        Some(4),
+        "0\nARC\n8\n0\n10\n999999.5\n20\n0\n40\n1\n50\n90\n51\n270\n",
+    );
+    assert!(inspect_dxf(&inward_arc, options).is_ok());
+
+    for (x, bulge) in [(999999.5, 1.0), (-999999.5, -1.0), (999998.5, 2.0)] {
+        let source = dxf(
+            Some(4),
+            &format!(
+                "0\nLWPOLYLINE\n8\n0\n90\n2\n70\n0\n10\n{x}\n20\n-1\n42\n{bulge}\n10\n{x}\n20\n1\n"
+            ),
+        );
+        assert_eq!(
+            inspect_dxf(&source, options),
+            Err(DxfImportError::CoordinateOutOfRange)
+        );
+    }
+    let inward_bulge = dxf(
+        Some(4),
+        "0\nLWPOLYLINE\n8\n0\n90\n2\n70\n0\n10\n999999.5\n20\n-1\n42\n-1\n10\n999999.5\n20\n1\n",
+    );
+    assert!(inspect_dxf(&inward_bulge, options).is_ok());
+}
+
+#[test]
+fn loose_line_arc_joins_are_bounded_deterministic_and_fail_on_ambiguity() {
+    let options = DxfImportOptions::new(None);
+    let arc = "0\nARC\n8\n0\n10\n0\n20\n0\n40\n1\n50\n0\n51\n45\n";
+    let line = "0\nLINE\n8\n0\n10\n0.7071067811865476\n20\n0.7071067811865475\n11\n2\n21\n2\n";
+    let forward = dxf(Some(4), &format!("{arc}{line}"));
+    let reversed = dxf(
+        Some(4),
+        &format!(
+            "0\nLINE\n8\n0\n10\n2\n20\n2\n11\n0.7071067811865476\n21\n0.7071067811865475\n{arc}"
+        ),
+    );
+    let parsed = inspect_dxf(&forward, options).unwrap();
+    let repeated = inspect_dxf(&reversed, options).unwrap();
+    assert_eq!(parsed.profiles(), repeated.profiles());
+    assert_eq!(parsed.profiles().len(), 1);
+    let segments = parsed.profiles()[0].segments();
+    assert_eq!(segments[0].end_mm(), segments[1].start_mm());
+
+    let separated = dxf(
+        Some(4),
+        &format!("{arc}0\nLINE\n8\n0\n10\n0.7071067832\n20\n0.7071067811865475\n11\n2\n21\n2\n"),
+    );
+    assert_eq!(
+        inspect_dxf(&separated, options).unwrap().profiles().len(),
+        2
+    );
+
+    let ambiguous = dxf(
+        Some(4),
+        concat!(
+            "0\nARC\n8\n0\n10\n0\n20\n0\n40\n1\n50\n270\n51\n0\n",
+            "0\nARC\n8\n0\n10\n0\n20\n0.0000000005\n40\n1\n50\n270\n51\n0\n",
+            "0\nLINE\n8\n0\n10\n1\n20\n0.00000000025\n11\n2\n21\n0\n"
+        ),
+    );
+    assert_eq!(
+        inspect_dxf(&ambiguous, options),
+        Err(DxfImportError::AmbiguousGeometry)
+    );
+}
+
+#[test]
 fn dxf_plan_is_deterministic_one_step_undoable_and_persistent() {
     let source = supported_fixture();
     let mut document = DocumentStore::new();
