@@ -75,10 +75,7 @@ use dialogs::{
     DialogParentWindow, DiscardRequest, ExportRequest, FileDialogs, HighRiskConfirmationRequest,
     ImportDialogRequest, NativeFileDialogs, SaveRequest,
 };
-use renderer::{
-    DerivedRenderCache, GpuInstancedRenderer, InstancedRenderPlan, ScenePaintCallback,
-    feature_edges,
-};
+use renderer::{DerivedRenderCache, GpuInstancedRenderer, InstancedRenderPlan, ScenePaintCallback};
 
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
@@ -1235,6 +1232,15 @@ enum EditContext {
     },
 }
 
+/// Feature edges of one body, kept between frames.
+///
+/// `identity` names the geometry the edges were derived from, so a recomputed
+/// body invalidates them without a document-wide cache flush.
+struct OverlayEdges {
+    identity: String,
+    edges: Arc<Vec<([u32; 2], Vec<u32>)>>,
+}
+
 struct InteractionProjectionCache {
     document_id: DocumentId,
     revision_id: u64,
@@ -1702,6 +1708,7 @@ pub struct KetchupApp {
     beam_m5_retry_at: Option<Instant>,
     render_cache: DerivedRenderCache,
     render_plan: Option<Arc<InstancedRenderPlan>>,
+    overlay_edge_cache: RefCell<BTreeMap<DefinitionId, OverlayEdges>>,
     wgpu_target_format: Option<eframe::wgpu::TextureFormat>,
 }
 
@@ -1862,6 +1869,7 @@ impl KetchupApp {
             beam_m5_retry_at: None,
             render_cache: DerivedRenderCache::default(),
             render_plan: None,
+            overlay_edge_cache: RefCell::new(BTreeMap::new()),
             wgpu_target_format: None,
         }
     }
@@ -5234,6 +5242,39 @@ impl KetchupApp {
 
     fn exact_projection(&self, snapshot: &Snapshot) -> ExactInteractionProjection {
         ExactInteractionProjection::from_snapshot(snapshot, &self.exact_results)
+    }
+
+    /// The cached feature edges of `definition_id`, rebuilt only when
+    /// `identity` changes.
+    ///
+    /// Deriving them costs seconds on an imported mesh, so recomputing them
+    /// every frame freezes the viewport while a body is hovered or selected.
+    fn overlay_feature_edges<G: Copy + Ord>(
+        &self,
+        definition_id: DefinitionId,
+        identity: &str,
+        build: impl FnOnce() -> (Vec<[f32; 3]>, Vec<[u32; 3]>, Vec<Option<G>>),
+    ) -> Arc<Vec<([u32; 2], Vec<u32>)>> {
+        let mut cache = self.overlay_edge_cache.borrow_mut();
+        if let Some(cached) = cache.get(&definition_id)
+            && cached.identity == identity
+        {
+            return Arc::clone(&cached.edges);
+        }
+        let (positions, triangles, face_groups) = build();
+        let edges = Arc::new(renderer::feature_edge_triangles(
+            &positions,
+            &triangles,
+            &face_groups,
+        ));
+        cache.insert(
+            definition_id,
+            OverlayEdges {
+                identity: identity.to_owned(),
+                edges: Arc::clone(&edges),
+            },
+        );
+        edges
     }
 
     fn refresh_interaction_projection_cache(&self, snapshot: &Snapshot) {
@@ -12121,22 +12162,30 @@ impl KetchupApp {
                 .get(&occurrence.instance_path)
                 .copied()
                 .unwrap_or(occurrence.canonical_world_transform);
-            let positions = package
-                .vertices()
-                .iter()
-                .map(|vertex| vertex.position_mm.map(|value| value as f32))
-                .collect::<Vec<_>>();
-            let triangles = package
-                .triangles()
-                .iter()
-                .map(|triangle| triangle.vertex_indices)
-                .collect::<Vec<_>>();
-            let face_groups = package
-                .triangles()
-                .iter()
-                .map(|triangle| triangle.face_role)
-                .collect::<Vec<_>>();
-            for edge in feature_edges(&positions, &triangles, &face_groups) {
+            let overlay_edges = self.overlay_feature_edges(
+                occurrence.body.definition_id,
+                &format!("exact:{}", package.result_fingerprint()),
+                || {
+                    (
+                        package
+                            .vertices()
+                            .iter()
+                            .map(|vertex| vertex.position_mm.map(|value| value as f32))
+                            .collect(),
+                        package
+                            .triangles()
+                            .iter()
+                            .map(|triangle| triangle.vertex_indices)
+                            .collect(),
+                        package
+                            .triangles()
+                            .iter()
+                            .map(|triangle| triangle.face_role)
+                            .collect(),
+                    )
+                },
+            );
+            for (edge, uses) in overlay_edges.iter() {
                 let points = edge.map(|index| {
                     let position = package.vertices()[index as usize].position_mm;
                     self.project(
@@ -12148,10 +12197,10 @@ impl KetchupApp {
                     )
                 });
                 let mut elements = Vec::new();
-                for triangle in package.triangles().iter().filter(|triangle| {
-                    triangle.vertex_indices.contains(&edge[0])
-                        && triangle.vertex_indices.contains(&edge[1])
-                }) {
+                for triangle in uses
+                    .iter()
+                    .map(|index| &package.triangles()[*index as usize])
+                {
                     let element = triangle
                         .face_role
                         .and_then(exact_face_element)
@@ -12263,24 +12312,28 @@ impl KetchupApp {
                     transform_model_point(transform, Vec3::new(point[0], point[1], point[2]))
                 })
                 .collect::<Vec<_>>();
-            let positions = mesh
-                .vertices_mm
-                .iter()
-                .map(|point| point.map(|value| value as f32))
-                .collect::<Vec<_>>();
-            let face_groups = vec![None::<u8>; mesh.triangles.len()];
-            for edge in feature_edges(&positions, &mesh.triangles, &face_groups) {
+            let overlay_edges = self.overlay_feature_edges(
+                occurrence.body.definition_id,
+                &format!("mesh:{}", snapshot.canonical_digest()),
+                || {
+                    (
+                        mesh.vertices_mm
+                            .iter()
+                            .map(|point| point.map(|value| value as f32))
+                            .collect(),
+                        mesh.triangles.clone(),
+                        vec![None::<u8>; mesh.triangles.len()],
+                    )
+                },
+            );
+            for (edge, uses) in overlay_edges.iter() {
                 let projected =
                     edge.map(|index| self.project(points_mm[index as usize], response.rect));
-                let element = mesh
-                    .triangles
-                    .iter()
-                    .find(|triangle| triangle.contains(&edge[0]) && triangle.contains(&edge[1]))
-                    .map(|triangle| {
-                        face_element_from_normal(triangle_normal(
-                            triangle.map(|index| points_mm[index as usize]),
-                        ))
-                    });
+                let element = uses.first().map(|index| {
+                    face_element_from_normal(triangle_normal(
+                        mesh.triangles[*index as usize].map(|index| points_mm[index as usize]),
+                    ))
+                });
                 if let Some(element) = element {
                     edges.push(ProjectedEdge {
                         selection: SelectionId {
@@ -18969,6 +19022,126 @@ endsolid tetrahedron\n";
         app.zoom_fit();
         app.selection.select_occurrence(occurrence, false);
         assert!(selection_stroke_segments(&context, &mut app) > 0);
+    }
+
+    /// A closed jagged sphere: every edge separates differently oriented
+    /// triangles, so the whole tessellation counts as feature edges.
+    fn jagged_sphere_binary_stl(stacks: usize, slices: usize) -> Vec<u8> {
+        let point = |stack: usize, slice: usize| {
+            if stack == 0 {
+                return [0.0, 0.0, 10.0];
+            }
+            if stack == stacks {
+                return [0.0, 0.0, -10.0];
+            }
+            let radius = 10.0 + f64::from(u8::from((stack + slice).is_multiple_of(2))) * 1.5;
+            let polar = std::f64::consts::PI * stack as f64 / stacks as f64;
+            let azimuth = std::f64::consts::TAU * (slice % slices) as f64 / slices as f64;
+            [
+                radius * polar.sin() * azimuth.cos(),
+                radius * polar.sin() * azimuth.sin(),
+                radius * polar.cos(),
+            ]
+        };
+        let mut facets = Vec::new();
+        for stack in 0..stacks {
+            for slice in 0..slices {
+                let corners = [
+                    point(stack, slice),
+                    point(stack, slice + 1),
+                    point(stack + 1, slice + 1),
+                    point(stack + 1, slice),
+                ];
+                if stack > 0 {
+                    facets.push([corners[0], corners[2], corners[1]]);
+                }
+                if stack + 1 < stacks {
+                    facets.push([corners[0], corners[3], corners[2]]);
+                }
+            }
+        }
+        let mut source = vec![0_u8; 80];
+        source.extend_from_slice(&(facets.len() as u32).to_le_bytes());
+        for facet in &facets {
+            let normal =
+                triangle_normal(facet.map(|point| Vec3::new(point[0], point[1], point[2])));
+            for value in [normal.x, normal.y, normal.z] {
+                source.extend_from_slice(&(value as f32).to_le_bytes());
+            }
+            for corner in facet {
+                for value in corner {
+                    source.extend_from_slice(&(*value as f32).to_le_bytes());
+                }
+            }
+            source.extend_from_slice(&0_u16.to_le_bytes());
+        }
+        source
+    }
+
+    /// Hovering or selecting a body must not re-derive its feature edges every
+    /// frame: on an imported mesh that cost seconds per frame and froze the
+    /// viewport as soon as the pointer touched the model.
+    #[test]
+    fn selected_imported_mesh_paints_its_outline_without_per_frame_edge_derivation() {
+        let source = jagged_sphere_binary_stl(90, 90);
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("jagged-sphere.stl");
+        std::fs::write(&path, &source).unwrap();
+        let mut app = KetchupApp::new();
+        app.document = DocumentStore::new();
+        let snapshot = app.document.current();
+        let pending = PendingStlImport {
+            path,
+            unit: ImportLengthUnit::Millimetre,
+            document_id: snapshot.document_id(),
+            revision_id: snapshot.revision_id(),
+            canonical_digest: snapshot.canonical_digest(),
+            source_sha256: sha256_bytes(&source),
+            source_byte_len: source.len() as u64,
+        };
+        assert!(app.import_stl_from(&pending), "{}", app.action_digest());
+
+        let snapshot = app.document.current();
+        let mesh = definition_mesh_body(&snapshot, snapshot.definitions().next().unwrap().id())
+            .expect("the import produces a canonical mesh body");
+        assert!(mesh.triangles.len() > 10_000);
+        let occurrence = snapshot.occurrences().next().unwrap().id();
+        let context = egui::Context::default();
+        let _ = context.run(egui::RawInput::default(), |context| app.ui(context));
+        app.zoom_fit();
+        app.selection.select_occurrence(occurrence, false);
+        assert!(selection_stroke_segments(&context, &mut app) > 0);
+
+        let cached = Arc::clone(
+            &app.overlay_edge_cache
+                .borrow()
+                .values()
+                .next()
+                .unwrap()
+                .edges,
+        );
+        let started = Instant::now();
+        for _ in 0..8 {
+            let _ = context.run(egui::RawInput::default(), |context| app.ui(context));
+        }
+        let elapsed = started.elapsed();
+        assert!(
+            Arc::ptr_eq(
+                &cached,
+                &app.overlay_edge_cache
+                    .borrow()
+                    .values()
+                    .next()
+                    .unwrap()
+                    .edges
+            ),
+            "the feature edges of an unchanged body must be derived once, not per frame"
+        );
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "eight frames of a selected {} triangle mesh took {elapsed:?}",
+            mesh.triangles.len()
+        );
     }
 
     #[test]

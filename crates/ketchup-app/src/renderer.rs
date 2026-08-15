@@ -336,13 +336,29 @@ pub(crate) fn feature_edges<G: Copy + Ord>(
     triangles: &[[u32; 3]],
     face_groups: &[Option<G>],
 ) -> BTreeSet<[u32; 2]> {
+    feature_edge_triangles(positions, triangles, face_groups)
+        .into_iter()
+        .map(|(edge, _)| edge)
+        .collect()
+}
+
+/// The feature edges of a mesh, each paired with the triangles that use it.
+///
+/// Overlay painting needs the owning triangles to name the picked face, and
+/// rescanning the whole triangle list per edge is quadratic: on an imported
+/// mesh of fifty thousand triangles that alone stalls the frame for seconds.
+pub(crate) fn feature_edge_triangles<G: Copy + Ord>(
+    positions: &[[f32; 3]],
+    triangles: &[[u32; 3]],
+    face_groups: &[Option<G>],
+) -> Vec<([u32; 2], Vec<u32>)> {
     assert_eq!(triangles.len(), face_groups.len());
     let normals = triangles
         .iter()
         .map(|triangle| triangle_normal(positions, *triangle))
         .collect::<Vec<_>>();
-    let mut edge_uses = BTreeMap::<[u32; 2], Vec<(Option<G>, [f32; 3])>>::new();
-    for ((triangle, face_group), normal) in triangles.iter().zip(face_groups).zip(&normals) {
+    let mut edge_uses = BTreeMap::<[u32; 2], Vec<u32>>::new();
+    for (index, triangle) in triangles.iter().enumerate() {
         for [first, second] in [
             [triangle[0], triangle[1]],
             [triangle[1], triangle[2]],
@@ -351,22 +367,27 @@ pub(crate) fn feature_edges<G: Copy + Ord>(
             edge_uses
                 .entry(ordered_edge(first, second))
                 .or_default()
-                .push((*face_group, *normal));
+                .push(index as u32);
         }
     }
     edge_uses
         .into_iter()
-        .filter_map(|(edge, uses)| {
-            let is_feature = if uses.len() == 1 {
+        .filter(|(_, uses)| {
+            let first = uses[0] as usize;
+            if uses.len() == 1 {
                 true
-            } else if uses.iter().all(|(group, _)| group.is_some()) {
-                uses.iter().skip(1).any(|use_| use_.0 != uses[0].0)
+            } else if uses
+                .iter()
+                .all(|index| face_groups[*index as usize].is_some())
+            {
+                uses.iter()
+                    .skip(1)
+                    .any(|index| face_groups[*index as usize] != face_groups[first])
             } else {
                 uses.iter()
                     .skip(1)
-                    .any(|use_| dot(uses[0].1, use_.1).abs() < 0.95)
-            };
-            is_feature.then_some(edge)
+                    .any(|index| dot(normals[first], normals[*index as usize]).abs() < 0.95)
+            }
         })
         .collect()
 }
