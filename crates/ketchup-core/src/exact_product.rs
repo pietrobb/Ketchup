@@ -1185,10 +1185,28 @@ pub struct ExactResultKey {
     pub result_fingerprint: String,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct ExactResultRegistry {
     packages: BTreeMap<ExactResultKey, Arc<ExactBodyPackage>>,
     beam_packages: BTreeMap<BeamExactResultKey, Arc<BeamExactPiecePackage>>,
+    contents_stamp: u64,
+}
+
+impl Default for ExactResultRegistry {
+    fn default() -> Self {
+        Self {
+            packages: BTreeMap::new(),
+            beam_packages: BTreeMap::new(),
+            contents_stamp: next_contents_stamp(),
+        }
+    }
+}
+
+fn next_contents_stamp() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
 }
 
 impl ExactResultRegistry {
@@ -1259,6 +1277,7 @@ impl ExactResultRegistry {
             });
         }
         self.packages.insert(key, package);
+        self.contents_stamp = next_contents_stamp();
         Ok(())
     }
 
@@ -1287,7 +1306,19 @@ impl ExactResultRegistry {
             });
         }
         self.beam_packages.insert(key, package);
+        self.contents_stamp = next_contents_stamp();
         Ok(())
+    }
+
+    /// A process-unique stamp of what this registry currently holds.
+    ///
+    /// Products are rebound to a new revision without changing how many there
+    /// are, so a consumer that caches derived work cannot invalidate on the
+    /// package count. Comparing this integer is exact and costs nothing in a
+    /// hot path, unlike re-deriving every package's freshness per frame.
+    #[must_use]
+    pub const fn contents_stamp(&self) -> u64 {
+        self.contents_stamp
     }
 
     #[must_use]
@@ -1416,6 +1447,7 @@ impl ExactResultRegistry {
     pub fn clear(&mut self) {
         self.packages.clear();
         self.beam_packages.clear();
+        self.contents_stamp = next_contents_stamp();
     }
 }
 

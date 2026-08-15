@@ -1245,7 +1245,7 @@ struct InteractionProjectionCache {
     document_id: DocumentId,
     revision_id: u64,
     edit_context: Vec<EditContext>,
-    exact_result_count: usize,
+    exact_results_stamp: u64,
     canonical: ketchup_interaction::projection::InteractionProjection,
     exact: ExactInteractionProjection,
     mesh: MeshInteractionProjection,
@@ -5338,7 +5338,7 @@ impl KetchupApp {
                 cache.document_id != snapshot.document_id()
                     || cache.revision_id != snapshot.revision_id()
                     || cache.edit_context != self.selection.edit_context
-                    || cache.exact_result_count != self.exact_results.len()
+                    || cache.exact_results_stamp != self.exact_results.contents_stamp()
             });
         if rebuild {
             let active_context_paths = self
@@ -5373,7 +5373,7 @@ impl KetchupApp {
                 document_id: snapshot.document_id(),
                 revision_id: snapshot.revision_id(),
                 edit_context: self.selection.edit_context.clone(),
-                exact_result_count: self.exact_results.len(),
+                exact_results_stamp: self.exact_results.contents_stamp(),
                 canonical,
                 exact,
                 mesh,

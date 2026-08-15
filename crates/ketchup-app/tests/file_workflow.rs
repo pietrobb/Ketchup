@@ -1283,14 +1283,36 @@ fn moving_an_imported_step_body_keeps_it_painted_and_drops_it_when_the_import_is
     let viewport = shell.viewport_rect();
     let moved = shell.app().project_to_screen(centre + offset, viewport);
     shell.click_at(moved);
+    assert!(
+        shell.app().hovered_selection().is_some(),
+        "a moved imported STEP body must be hoverable where it is painted"
+    );
     assert_eq!(
         shell.app().selected_occurrence_count(),
         1,
         "a moved imported STEP body must be pickable where it is painted"
     );
 
+    // Move only starts on a hovered occurrence, so a pick projection that stops
+    // following the carried-forward products leaves the body painted but dead:
+    // the first move works and no later one does.
+    let before_second_move = shell.app().document_revision();
+    shell.click_command(AppCommand::Move);
+    let further = shell
+        .app()
+        .project_to_screen(centre + offset + offset, viewport);
+    shell.drag(moved, further);
+    shell.settle();
+    assert_eq!(
+        shell.app().document_revision(),
+        before_second_move + 1,
+        "a second move of an imported STEP body must still commit: {:?}",
+        shell.app().action_digest()
+    );
+
     // Carrying the product forward must stay fail-closed: undoing the import
     // removes the feature it was derived from, so it must disappear at once.
+    shell.click_menu_command("menu-edit", AppCommand::Undo);
     shell.click_menu_command("menu-edit", AppCommand::Undo);
     shell.click_menu_command("menu-edit", AppCommand::Undo);
     shell.settle();
