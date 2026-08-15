@@ -178,7 +178,7 @@ impl InstancedRenderPlan {
             document_id: snapshot.document_id(),
             source_revision: snapshot.revision_id(),
             source_digest: snapshot.canonical_digest(),
-            exact_identity: exact_identity(exact_results),
+            exact_identity: exact_identity(snapshot, exact_results),
             batches,
         }
     }
@@ -208,14 +208,21 @@ impl InstancedRenderPlan {
         self.is_same_revision(snapshot) && self.source_digest == snapshot.canonical_digest()
     }
 
-    /// Whether this plan was built from exactly `exact_results`.
+    /// Whether this plan was built from exactly the exact products `snapshot`
+    /// can paint right now.
     ///
-    /// Exact products arrive from the isolated worker after the revision they
-    /// belong to is already committed, so a plan can be same-revision and yet
-    /// miss a body that has since been evaluated.
+    /// Exact products arrive from the isolated worker, or are rebound to a new
+    /// revision, after the revision they belong to is already committed, so a
+    /// plan can be same-revision and yet miss a body that has since become
+    /// paintable. Only products that are current for `snapshot` count, because
+    /// those are exactly the ones the plan draws geometry from.
     #[must_use]
-    pub fn matches_exact_results(&self, exact_results: &ExactResultRegistry) -> bool {
-        self.exact_identity == exact_identity(exact_results)
+    pub fn matches_exact_results(
+        &self,
+        snapshot: &Snapshot,
+        exact_results: &ExactResultRegistry,
+    ) -> bool {
+        self.exact_identity == exact_identity(snapshot, exact_results)
     }
 
     #[must_use]
@@ -234,9 +241,10 @@ impl InstancedRenderPlan {
     }
 }
 
-fn exact_identity(exact_results: &ExactResultRegistry) -> String {
+fn exact_identity(snapshot: &Snapshot, exact_results: &ExactResultRegistry) -> String {
     exact_results
         .values()
+        .filter(|package| package.is_current(snapshot))
         .map(|package| {
             format!(
                 "{}:{}",

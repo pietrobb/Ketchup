@@ -1261,8 +1261,14 @@ fn moving_an_imported_step_body_keeps_it_painted_and_drops_it_when_the_import_is
     // A move publishes a new revision without touching the import, and the
     // isolated worker needs seconds to re-derive the body. The body must stay
     // painted in the very next frame instead of blinking out until it catches up.
+    // The move goes through a real viewport drag: a drag ends its preview in the
+    // same frame that commits the revision, so the scene plan is rebuilt at the
+    // moment the carried-forward products are still bound to the old revision.
     let offset = Vec3::new(40.0, 0.0, 0.0);
-    assert!(shell.app_mut().move_selected(offset));
+    shell.click_command(AppCommand::Move);
+    let from = shell.app().project_to_screen(centre, viewport);
+    let to = shell.app().project_to_screen(centre + offset, viewport);
+    shell.drag(from, to);
     shell.settle();
     assert_eq!(
         shell.app().exact_render_body_count(),

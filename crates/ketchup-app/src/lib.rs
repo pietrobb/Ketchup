@@ -12074,7 +12074,7 @@ impl KetchupApp {
             if preview_active
                 || self.render_plan.as_ref().is_none_or(|plan| {
                     !plan.is_same_revision(&snapshot)
-                        || !plan.matches_exact_results(&self.exact_results)
+                        || !plan.matches_exact_results(&snapshot, &self.exact_results)
                 })
             {
                 let plan = Arc::new(InstancedRenderPlan::from_snapshot_with_transform_overrides(
