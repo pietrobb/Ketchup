@@ -333,6 +333,9 @@ impl fmt::Display for ImportContractError {
 
 impl std::error::Error for ImportContractError {}
 
+mod dxf;
+pub use dxf::*;
+
 fn validate_text(value: &str) -> Result<(), ImportContractError> {
     if value.is_empty()
         || value.len() > MAX_IMPORT_TEXT_BYTES

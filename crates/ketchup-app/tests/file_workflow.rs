@@ -238,6 +238,16 @@ fn valid_ascii_tetrahedron() -> &'static [u8] {
 endsolid tetrahedron\n"
 }
 
+fn valid_dxf_subset() -> &'static [u8] {
+    b"0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n\
+0\nSECTION\n2\nENTITIES\n\
+0\nLINE\n8\noutline\n10\n0\n20\n0\n11\n10\n21\n0\n\
+0\nARC\n8\noutline\n10\n10\n20\n10\n40\n10\n50\n270\n51\n0\n\
+0\nLWPOLYLINE\n8\ncut\n90\n3\n70\n1\n10\n0\n20\n0\n42\n0\n10\n10\n20\n0\n42\n1\n10\n0\n20\n10\n42\n0\n\
+0\nTEXT\n8\nnotes\n10\n0\n20\n0\n1\nunsupported\n\
+0\nENDSEC\n0\nEOF\n"
+}
+
 fn assert_persisted_stl(
     document_path: &Path,
     source: &[u8],
@@ -855,6 +865,130 @@ fn file_import_stl_commits_one_canonical_mesh_transaction_offscreen() {
         ImportLengthUnit::Millimetre,
         "stl.ascii",
     );
+}
+
+#[test]
+fn file_import_dxf_reviews_and_commits_one_canonical_profile_transaction_offscreen() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("profiles.dxf");
+    let document_path = directory.path().join("imported-dxf.ketchup");
+    std::fs::write(&path, valid_dxf_subset()).unwrap();
+    let script = ScriptedFileDialogs::new()
+        .queue_import(ImportFormat::Dxf, &path)
+        .queue_save(&document_path)
+        .queue_open(&document_path)
+        .always_discard();
+    let mut shell = Shell::with_dialogs(script.clone());
+    let before = canonical_state(&shell);
+
+    shell.click_menu_command("menu-file", AppCommand::ImportDrawingDxf);
+    shell.click_button_label(&shell.catalog().text("dialog-import-dxf-confirm"));
+
+    assert_eq!(shell.app().document_revision(), before.revision + 1);
+    assert_eq!(shell.app().definition_count(), before.definitions + 2);
+    assert_eq!(shell.app().feature_count(), before.features + 2);
+    assert_eq!(shell.app().occurrence_count(), before.occurrences + 2);
+    assert_eq!(shell.app().import_receipt_count(), 1);
+    assert!(digest_starts_like(&shell, "digest-imported-dxf"));
+    assert_eq!(
+        script.import_requests(),
+        vec![ketchup_app::dialogs::ImportDialogRequestRecord {
+            format: ImportFormat::Dxf,
+            filter_label: shell.catalog().text("file-filter-dxf"),
+            extensions: vec!["dxf".to_owned()],
+        }]
+    );
+
+    shell.click_menu_command("menu-edit", AppCommand::Undo);
+    assert_eq!(shell.app().canonical_digest(), before.digest);
+    assert_eq!(shell.app().definition_count(), before.definitions);
+    assert_eq!(shell.app().feature_count(), before.features);
+    assert_eq!(shell.app().occurrence_count(), before.occurrences);
+    assert_eq!(shell.app().import_receipt_count(), before.import_receipts);
+    assert!(shell.app().can_redo());
+    shell.click_menu_command("menu-edit", AppCommand::Redo);
+    let imported_digest = shell.app().canonical_digest();
+    shell.click_menu_command("menu-file", AppCommand::Save);
+    shell.click_menu_command("menu-file", AppCommand::New);
+    shell.click_menu_command("menu-file", AppCommand::Open);
+    assert_eq!(shell.app().canonical_digest(), imported_digest);
+
+    let loaded = ketchup_core::persistence::load_file(&document_path).unwrap();
+    let loaded_snapshot = loaded.snapshot();
+    let receipt = loaded_snapshot.import_receipts().next().unwrap();
+    assert_eq!(receipt.format(), ImportFormat::Dxf);
+    assert_eq!(receipt.source_sha256(), &sha256_bytes(valid_dxf_subset()));
+    assert_eq!(receipt.source_byte_len(), valid_dxf_subset().len() as u64);
+    assert_eq!(
+        receipt.units().authority(),
+        ImportUnitAuthority::FileDeclared
+    );
+    assert!(receipt.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code() == "dxf.entity-unsupported" && diagnostic.subject() == Some("TEXT")
+    }));
+    assert_eq!(
+        loaded_snapshot
+            .features()
+            .filter(|feature| matches!(feature.kind(), FeatureKind::SegmentProfile { .. }))
+            .count(),
+        2
+    );
+}
+
+#[test]
+fn file_import_unitless_dxf_requires_and_persists_explicit_user_units() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("unitless.dxf");
+    let document_path = directory.path().join("unitless.ketchup");
+    let source = std::str::from_utf8(valid_dxf_subset())
+        .unwrap()
+        .replace("9\n$INSUNITS\n70\n4\n", "")
+        .into_bytes();
+    std::fs::write(&path, &source).unwrap();
+    let script = ScriptedFileDialogs::new()
+        .queue_import(ImportFormat::Dxf, &path)
+        .queue_save(&document_path);
+    let mut shell = Shell::with_dialogs(script);
+    let before = canonical_state(&shell);
+
+    shell.click_menu_command("menu-file", AppCommand::ImportDrawingDxf);
+    shell.click_button_label(&shell.catalog().text("dialog-import-dxf-confirm"));
+    assert_eq!(canonical_state(&shell), before);
+
+    shell.click_role_and_label(Role::RadioButton, &shell.catalog().text("unit-centimetre"));
+    shell.click_button_label(&shell.catalog().text("dialog-import-dxf-confirm"));
+    assert_eq!(shell.app().document_revision(), before.revision + 1);
+    assert_eq!(shell.app().import_receipt_count(), 1);
+    shell.click_menu_command("menu-file", AppCommand::Save);
+
+    let loaded = ketchup_core::persistence::load_file(&document_path).unwrap();
+    let loaded_snapshot = loaded.snapshot();
+    let receipt = loaded_snapshot.import_receipts().next().unwrap();
+    assert_eq!(receipt.source_sha256(), &sha256_bytes(&source));
+    assert_eq!(receipt.units().source_unit(), ImportLengthUnit::Centimetre);
+    assert_eq!(
+        receipt.units().authority(),
+        ImportUnitAuthority::UserDeclared
+    );
+}
+
+#[test]
+fn file_import_dxf_dialog_and_review_cancel_leave_canonical_state_unchanged() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("profiles.dxf");
+    std::fs::write(&path, valid_dxf_subset()).unwrap();
+    let script = ScriptedFileDialogs::new()
+        .queue_cancelled_import(ImportFormat::Dxf)
+        .queue_import(ImportFormat::Dxf, &path);
+    let mut shell = Shell::with_dialogs(script);
+    let before = canonical_state(&shell);
+    let history = reachable_history_digests(&mut shell);
+
+    shell.click_menu_command("menu-file", AppCommand::ImportDrawingDxf);
+    assert_state_and_history_unchanged(&mut shell, &before, &history);
+    shell.click_menu_command("menu-file", AppCommand::ImportDrawingDxf);
+    shell.click_button_label(&shell.catalog().text("dialog-import-dxf-cancel"));
+    assert_state_and_history_unchanged(&mut shell, &before, &history);
 }
 
 #[test]

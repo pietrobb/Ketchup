@@ -40,8 +40,9 @@ use ketchup_core::graph::{
     DerivedIdentity, EvaluationStatus, EvaluatorNodeKind, RuleOutput, SlotSegment, sha256_bytes,
 };
 use ketchup_core::import::{
-    ImportFormat, ImportLengthUnit, ImportUnitAuthority, ImportUnitDecision, MAX_STL_SOURCE_BYTES,
-    plan_stl_import,
+    DxfImportOptions, ImportDiagnosticSeverity, ImportFormat, ImportLengthUnit,
+    ImportUnitAuthority, ImportUnitDecision, MAX_DXF_SOURCE_BYTES, MAX_STL_SOURCE_BYTES, ParsedDxf,
+    inspect_dxf, plan_dxf_import, plan_stl_import,
 };
 use ketchup_core::intent::{IntentRequest, WorkflowIntent, propose_intent};
 use ketchup_core::prismatic::JointId;
@@ -770,6 +771,7 @@ pub enum AppCommand {
     Save,
     SaveAs,
     ImportMeshStl,
+    ImportDrawingDxf,
     ExportExactStep,
     ExportMeshStl,
     Select,
@@ -853,7 +855,7 @@ struct CommandSpec {
 struct CommandRegistry;
 
 impl CommandRegistry {
-    const COMMANDS: [CommandSpec; 49] = [
+    const COMMANDS: [CommandSpec; 50] = [
         CommandSpec {
             id: AppCommand::New,
             label_key: "file-new",
@@ -885,6 +887,13 @@ impl CommandRegistry {
         CommandSpec {
             id: AppCommand::ImportMeshStl,
             label_key: "file-import-stl",
+            shortcut_key: "shortcut-none",
+            tool: None,
+            implemented: true,
+        },
+        CommandSpec {
+            id: AppCommand::ImportDrawingDxf,
+            label_key: "file-import-dxf",
             shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
@@ -1548,6 +1557,21 @@ struct PendingStlImport {
     source_byte_len: u64,
 }
 
+#[derive(Clone, Debug)]
+struct PendingDxfImport {
+    path: PathBuf,
+    source: Vec<u8>,
+    unit: ImportLengthUnit,
+    unit_confirmed: bool,
+    review: ParsedDxf,
+    review_error: Option<String>,
+    document_id: DocumentId,
+    revision_id: u64,
+    canonical_digest: String,
+    source_sha256: [u8; 32],
+    source_byte_len: u64,
+}
+
 pub struct KetchupApp {
     document: DocumentStore,
     container_data: ketchup_core::persistence::ContainerData,
@@ -1634,6 +1658,7 @@ pub struct KetchupApp {
     measure_end: Option<Vec3>,
     shortcuts_open: bool,
     pending_stl_import: Option<PendingStlImport>,
+    pending_dxf_import: Option<PendingDxfImport>,
     viewport_rect: Option<Rect>,
     dialogs: Box<dyn FileDialogs>,
     exact_worker_path: Option<PathBuf>,
@@ -1792,6 +1817,7 @@ impl KetchupApp {
             measure_end: None,
             shortcuts_open: false,
             pending_stl_import: None,
+            pending_dxf_import: None,
             viewport_rect: None,
             dialogs: Box::new(NativeFileDialogs::default()),
             exact_worker_path: None,
@@ -2319,6 +2345,110 @@ impl KetchupApp {
         }
     }
 
+    fn choose_dxf_import_path(&mut self) -> Option<PathBuf> {
+        let filter_label = self.catalog.text("file-filter-dxf");
+        self.dialogs.pick_import_path(ImportDialogRequest {
+            format: ImportFormat::Dxf,
+            filter_label: &filter_label,
+            extensions: &["dxf"],
+        })
+    }
+
+    fn read_dxf_source(path: &Path) -> Result<Vec<u8>, String> {
+        if std::fs::metadata(path)
+            .map_err(|error| error.to_string())?
+            .len()
+            > MAX_DXF_SOURCE_BYTES
+        {
+            return Err("DXF source exceeds the bounded 8 MiB envelope".to_owned());
+        }
+        let mut file = std::fs::File::open(path).map_err(|error| error.to_string())?;
+        let mut source = Vec::new();
+        std::io::Read::by_ref(&mut file)
+            .take(MAX_DXF_SOURCE_BYTES + 1)
+            .read_to_end(&mut source)
+            .map_err(|error| error.to_string())?;
+        if source.len() as u64 > MAX_DXF_SOURCE_BYTES {
+            return Err("DXF source exceeds the bounded 8 MiB envelope".to_owned());
+        }
+        Ok(source)
+    }
+
+    fn inspect_dxf_for_review(source: &[u8]) -> Result<ParsedDxf, String> {
+        let mut last_error = None;
+        for unit in [
+            ImportLengthUnit::Millimetre,
+            ImportLengthUnit::Centimetre,
+            ImportLengthUnit::Metre,
+            ImportLengthUnit::Inch,
+            ImportLengthUnit::Foot,
+        ] {
+            match std::panic::catch_unwind(|| {
+                inspect_dxf(source, DxfImportOptions::new(Some(unit)))
+            }) {
+                Ok(Ok(review)) => return Ok(review),
+                Ok(Err(error)) => last_error = Some(error.to_string()),
+                Err(_) => {
+                    return Err("bounded DXF parser stopped without publishing geometry".to_owned());
+                }
+            }
+        }
+        Err(last_error.unwrap_or_else(|| "DXF review could not be prepared".to_owned()))
+    }
+
+    fn import_dxf_from(&mut self, pending: &PendingDxfImport) -> bool {
+        let path = &pending.path;
+        let result = (|| {
+            let snapshot = self.document.current();
+            if snapshot.document_id() != pending.document_id
+                || snapshot.revision_id() != pending.revision_id
+                || snapshot.canonical_digest() != pending.canonical_digest
+            {
+                return Err("DXF import review is stale for the active document".to_owned());
+            }
+            let source = Self::read_dxf_source(path)?;
+            if source.len() as u64 != pending.source_byte_len
+                || sha256_bytes(&source) != pending.source_sha256
+            {
+                return Err("DXF source changed after it was selected for review".to_owned());
+            }
+            let source_name = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or_else(|| "DXF source name is not valid UTF-8".to_owned())?;
+            let options = DxfImportOptions::new(Some(pending.unit));
+            let batch = std::panic::catch_unwind(|| {
+                plan_dxf_import(&snapshot, &source, source_name, options)
+            })
+            .map_err(|_| "bounded DXF parser stopped without publishing geometry".to_owned())?
+            .map_err(|error| error.to_string())?;
+            let proposal = self
+                .document
+                .prepare_proposal_with_context(batch, ProposalContext::canonical_preview())
+                .map_err(|error| error.to_string())?;
+            self.document
+                .commit_verified_proposal(&proposal)
+                .map_err(|error| error.to_string())?;
+            Ok::<(), String>(())
+        })();
+        match result {
+            Ok(()) => {
+                self.digest = self.catalog.format(
+                    "digest-imported-dxf",
+                    &BTreeMap::from([("path", path.display().to_string())]),
+                );
+                true
+            }
+            Err(reason) => {
+                self.digest = self.catalog.format(
+                    "error-import-dxf",
+                    &BTreeMap::from([("path", path.display().to_string()), ("reason", reason)]),
+                );
+                false
+            }
+        }
+    }
+
     fn current_visible_exact_model(
         &self,
         snapshot: &Snapshot,
@@ -2565,6 +2695,42 @@ impl KetchupApp {
                         Err(reason) => {
                             self.digest = self.catalog.format(
                                 "error-import-stl",
+                                &BTreeMap::from([
+                                    ("path", path.display().to_string()),
+                                    ("reason", reason),
+                                ]),
+                            );
+                        }
+                    }
+                }
+            }
+            AppCommand::ImportDrawingDxf => {
+                if let Some(path) = self.choose_dxf_import_path() {
+                    let result = Self::read_dxf_source(&path).and_then(|source| {
+                        let review = Self::inspect_dxf_for_review(&source)?;
+                        let snapshot = self.document.current();
+                        let source_sha256 = sha256_bytes(&source);
+                        let source_byte_len = source.len() as u64;
+                        Ok(PendingDxfImport {
+                            path: path.clone(),
+                            source,
+                            unit: review.units().source_unit(),
+                            unit_confirmed: review.units().authority()
+                                == ImportUnitAuthority::FileDeclared,
+                            review,
+                            review_error: None,
+                            document_id: snapshot.document_id(),
+                            revision_id: snapshot.revision_id(),
+                            canonical_digest: snapshot.canonical_digest(),
+                            source_sha256,
+                            source_byte_len,
+                        })
+                    });
+                    match result {
+                        Ok(pending) => self.pending_dxf_import = Some(pending),
+                        Err(reason) => {
+                            self.digest = self.catalog.format(
+                                "error-import-dxf",
                                 &BTreeMap::from([
                                     ("path", path.display().to_string()),
                                     ("reason", reason),
@@ -6522,6 +6688,7 @@ impl KetchupApp {
             | AppCommand::Save
             | AppCommand::SaveAs
             | AppCommand::ImportMeshStl
+            | AppCommand::ImportDrawingDxf
             | AppCommand::ExportExactStep
             | AppCommand::ExportMeshStl => {
                 self.dispatch_file_command(id);
@@ -12955,6 +13122,7 @@ impl KetchupApp {
                 self.menu_command(ui, AppCommand::SaveAs);
                 ui.separator();
                 self.menu_command(ui, AppCommand::ImportMeshStl);
+                self.menu_command(ui, AppCommand::ImportDrawingDxf);
                 ui.separator();
                 self.menu_command(ui, AppCommand::ExportExactStep);
                 self.menu_command(ui, AppCommand::ExportMeshStl);
@@ -15440,6 +15608,143 @@ impl KetchupApp {
         }
     }
 
+    fn show_dxf_import_window(&mut self, context: &egui::Context) {
+        let Some(pending) = self.pending_dxf_import.as_ref() else {
+            return;
+        };
+        let path = pending.path.clone();
+        let review = pending.review.clone();
+        let review_error = pending.review_error.clone();
+        let mut unit = pending.unit;
+        let mut unit_confirmed = pending.unit_confirmed;
+        let mut import = false;
+        let mut cancel = false;
+        egui::Window::new(self.catalog.text("dialog-import-dxf-title"))
+            .id(egui::Id::new("dxf-import-review"))
+            .collapsible(false)
+            .resizable(true)
+            .show(context, |ui| {
+                ui.label(self.catalog.format(
+                    "dialog-import-dxf-source",
+                    &BTreeMap::from([("path", path.display().to_string())]),
+                ));
+                ui.label(self.catalog.format(
+                    "dialog-import-dxf-summary",
+                    &BTreeMap::from([
+                        ("profiles", review.profiles().len().to_string()),
+                        ("layers", review.layers().len().to_string()),
+                    ]),
+                ));
+                ui.label(self.catalog.text("dialog-import-dxf-origin"));
+                ui.label(self.catalog.format(
+                    "dialog-import-dxf-layers",
+                    &BTreeMap::from([("layers", review.layers().join(", "))]),
+                ));
+                if review.units().authority() == ImportUnitAuthority::UserDeclared {
+                    ui.label(self.catalog.text("dialog-import-dxf-units"));
+                    for (candidate, key) in [
+                        (ImportLengthUnit::Millimetre, "unit-millimetre"),
+                        (ImportLengthUnit::Centimetre, "unit-centimetre"),
+                        (ImportLengthUnit::Metre, "unit-metre"),
+                        (ImportLengthUnit::Inch, "unit-inch"),
+                        (ImportLengthUnit::Foot, "unit-foot"),
+                    ] {
+                        if ui
+                            .radio_value(&mut unit, candidate, self.catalog.text(key))
+                            .clicked()
+                        {
+                            unit_confirmed = true;
+                        }
+                    }
+                } else {
+                    let unit_key = match review.units().source_unit() {
+                        ImportLengthUnit::Millimetre => "unit-millimetre",
+                        ImportLengthUnit::Centimetre => "unit-centimetre",
+                        ImportLengthUnit::Metre => "unit-metre",
+                        ImportLengthUnit::Inch => "unit-inch",
+                        ImportLengthUnit::Foot => "unit-foot",
+                    };
+                    ui.label(self.catalog.format(
+                        "dialog-import-dxf-file-units",
+                        &BTreeMap::from([("unit", self.catalog.text(unit_key))]),
+                    ));
+                }
+                ui.separator();
+                ui.label(self.catalog.text("dialog-import-dxf-losses"));
+                egui::ScrollArea::vertical()
+                    .max_height(160.0)
+                    .show(ui, |ui| {
+                        for diagnostic in review.diagnostics() {
+                            let severity_key = match diagnostic.severity() {
+                                ImportDiagnosticSeverity::Info => {
+                                    "dialog-import-dxf-diagnostic-info"
+                                }
+                                ImportDiagnosticSeverity::Warning => {
+                                    "dialog-import-dxf-diagnostic-warning"
+                                }
+                            };
+                            let subject = diagnostic
+                                .subject()
+                                .map(|value| format!(" · {value}"))
+                                .unwrap_or_default();
+                            ui.label(format!(
+                                "{} · {}{} · {}",
+                                self.catalog.text(severity_key),
+                                diagnostic.code(),
+                                subject,
+                                diagnostic.count()
+                            ));
+                        }
+                    });
+                ui.label(self.catalog.text("dialog-import-dxf-subset-warning"));
+                if let Some(error) = review_error.as_deref() {
+                    ui.colored_label(Color32::LIGHT_RED, error);
+                }
+                ui.separator();
+                ui.horizontal(|ui| {
+                    import = ui
+                        .add_enabled(
+                            review_error.is_none() && unit_confirmed,
+                            egui::Button::new(self.catalog.text("dialog-import-dxf-confirm")),
+                        )
+                        .clicked();
+                    cancel = ui
+                        .button(self.catalog.text("dialog-import-dxf-cancel"))
+                        .clicked();
+                });
+            });
+        if let Some(pending) = self.pending_dxf_import.as_mut() {
+            pending.unit_confirmed = unit_confirmed;
+            if pending.unit != unit {
+                pending.unit = unit;
+                match std::panic::catch_unwind(|| {
+                    inspect_dxf(&pending.source, DxfImportOptions::new(Some(unit)))
+                }) {
+                    Ok(Ok(review)) => {
+                        pending.review = review;
+                        pending.review_error = None;
+                    }
+                    Ok(Err(error)) => pending.review_error = Some(error.to_string()),
+                    Err(_) => {
+                        pending.review_error = Some(
+                            "bounded DXF parser stopped without publishing geometry".to_owned(),
+                        );
+                    }
+                }
+            }
+        }
+        if cancel {
+            self.pending_dxf_import = None;
+            self.digest = self.catalog.text("digest-cancelled");
+        } else if import {
+            let pending = self
+                .pending_dxf_import
+                .take()
+                .expect("the DXF review window has a pending import");
+            self.import_dxf_from(&pending);
+        }
+    }
+
     fn show_shortcuts_window(&mut self, context: &egui::Context) {
         if !self.shortcuts_open {
             return;
@@ -15826,6 +16131,7 @@ impl KetchupApp {
         }
         self.show_smart_push_pull_chooser(context);
         self.show_stl_import_window(context);
+        self.show_dxf_import_window(context);
         self.show_shortcuts_window(context);
         self.poll_assistant_chat(context);
     }
