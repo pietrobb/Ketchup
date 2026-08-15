@@ -1219,6 +1219,84 @@ fn file_import_exact_step_commits_undoes_and_persists_source_blob_offscreen() {
 }
 
 #[test]
+fn moving_an_imported_step_body_keeps_it_painted_and_drops_it_when_the_import_is_undone() {
+    let source_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../corpora/r0/step/self-authored-box.step");
+    let script = ScriptedFileDialogs::new()
+        .queue_import(ImportFormat::Step, &source_path)
+        .always_confirm_high_risk_as(103);
+    let mut shell = Shell::with_dialogs(script);
+    shell.app_mut().enable_headless_instanced_scene();
+    shell
+        .app_mut()
+        .connect_exact_worker(exact_worker_path())
+        .expect("the imported STEP move workflow requires the real exact worker");
+    shell.click_at(shell.viewport_rect().center());
+    assert!(shell.app_mut().delete_selected());
+    shell.settle();
+
+    shell.click_menu_command("menu-file", AppCommand::ImportExactStep);
+    shell.click_button_label(&shell.catalog().text("dialog-import-step-confirm"));
+    for _ in 0..100 {
+        shell.settle();
+        if shell.app().exact_render_body_count() == 1 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    shell.settle();
+    let painted = shell.app().instanced_scene_triangle_count();
+    assert!(painted > 0);
+
+    let bounds = shell.app().exact_render_bounds()[0];
+    let centre = Vec3::new(
+        (bounds[0][0] + bounds[1][0]) * 0.5,
+        (bounds[0][1] + bounds[1][1]) * 0.5,
+        (bounds[0][2] + bounds[1][2]) * 0.5,
+    );
+    let viewport = shell.viewport_rect();
+    shell.click_at(shell.app().project_to_screen(centre, viewport));
+    assert_eq!(shell.app().selected_occurrence_count(), 1);
+
+    // A move publishes a new revision without touching the import, and the
+    // isolated worker needs seconds to re-derive the body. The body must stay
+    // painted in the very next frame instead of blinking out until it catches up.
+    let offset = Vec3::new(40.0, 0.0, 0.0);
+    assert!(shell.app_mut().move_selected(offset));
+    shell.settle();
+    assert_eq!(
+        shell.app().exact_render_body_count(),
+        1,
+        "moving an imported STEP body must not invalidate it"
+    );
+    assert_eq!(
+        shell.app().instanced_scene_triangle_count(),
+        painted,
+        "an imported STEP body must stay painted across a move"
+    );
+    let viewport = shell.viewport_rect();
+    let moved = shell.app().project_to_screen(centre + offset, viewport);
+    shell.click_at(moved);
+    assert_eq!(
+        shell.app().selected_occurrence_count(),
+        1,
+        "a moved imported STEP body must be pickable where it is painted"
+    );
+
+    // Carrying the product forward must stay fail-closed: undoing the import
+    // removes the feature it was derived from, so it must disappear at once.
+    shell.click_menu_command("menu-edit", AppCommand::Undo);
+    shell.click_menu_command("menu-edit", AppCommand::Undo);
+    shell.settle();
+    assert_eq!(
+        shell.app().exact_render_body_count(),
+        0,
+        "an imported body whose feature is gone must not be carried forward"
+    );
+    assert_eq!(shell.app().instanced_scene_triangle_count(), 0);
+}
+
+#[test]
 fn file_import_transformed_multi_solid_step_round_trips_through_save_open_and_occt() {
     let directory = tempfile::tempdir().unwrap();
     let source_path = directory.path().join("transformed-multi-solid.step");

@@ -4950,7 +4950,8 @@ impl KetchupApp {
             .as_ref()
             .is_some_and(|known| known != &source)
         {
-            self.exact_results.clear();
+            self.exact_results =
+                ExactResultRegistry::carried_forward(&snapshot, &self.exact_results);
             self.exact_source = None;
         }
         if self

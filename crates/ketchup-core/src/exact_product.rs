@@ -668,11 +668,14 @@ impl ImportedExactPackage {
         })
     }
 
-    #[must_use]
-    pub fn is_current(&self, snapshot: &Snapshot) -> bool {
+    /// Whether `snapshot` still carries exactly the canonical evidence this
+    /// product was built from, ignoring which revision published it.
+    ///
+    /// An imported exact body is content-addressed by its source bytes and by
+    /// the worker fingerprint that produced it, so nothing it depends on lives
+    /// outside its own feature.
+    fn matches_snapshot_evidence(&self, snapshot: &Snapshot) -> bool {
         self.identity.document_id == snapshot.document_id()
-            && self.identity.source_revision == snapshot.revision_id()
-            && self.identity.source_digest == snapshot.canonical_digest()
             && snapshot
                 .feature(self.identity.producer_feature_id)
                 .is_some_and(|feature| match feature.kind() {
@@ -689,6 +692,30 @@ impl ImportedExactPackage {
                     }
                     _ => false,
                 })
+    }
+
+    #[must_use]
+    pub fn is_current(&self, snapshot: &Snapshot) -> bool {
+        self.identity.source_revision == snapshot.revision_id()
+            && self.identity.source_digest == snapshot.canonical_digest()
+            && self.matches_snapshot_evidence(snapshot)
+    }
+
+    /// The same product rebound to `snapshot`, or `None` when `snapshot` no
+    /// longer carries the evidence it was built from.
+    ///
+    /// Editing anything else in the document — moving the occurrence, for
+    /// instance — publishes a new revision without touching this import, and
+    /// re-deriving it costs an isolated worker round trip.
+    #[must_use]
+    pub fn rebound_to(&self, snapshot: &Snapshot) -> Option<Self> {
+        if !self.matches_snapshot_evidence(snapshot) {
+            return None;
+        }
+        let mut rebound = self.clone();
+        rebound.identity.source_revision = snapshot.revision_id();
+        rebound.identity.source_digest = snapshot.canonical_digest();
+        Some(rebound)
     }
 }
 
@@ -1185,6 +1212,35 @@ impl ExactResultRegistry {
             registry.insert_current_beam(snapshot, package)?;
         }
         Ok(registry)
+    }
+
+    /// Every imported product of `previous` whose evidence `snapshot` still
+    /// carries, rebound to `snapshot`.
+    ///
+    /// Imported exact bodies are content-addressed and are re-derived by an
+    /// isolated worker that takes seconds, so dropping them on every commit
+    /// blanks the body after an edit that never touched it. Only imported
+    /// products carry forward: parametric products are derived from features
+    /// an edit may have changed, and anything whose evidence no longer matches
+    /// is dropped rather than shown.
+    #[must_use]
+    pub fn carried_forward(snapshot: &Snapshot, previous: &Self) -> Self {
+        let mut registry = Self::default();
+        for package in previous.packages.values() {
+            let ExactBodyPackage::Imported(imported) = package.as_ref() else {
+                continue;
+            };
+            let Some(rebound) = imported.rebound_to(snapshot) else {
+                continue;
+            };
+            if registry
+                .insert_current(snapshot, Arc::new(ExactBodyPackage::Imported(rebound)))
+                .is_err()
+            {
+                continue;
+            }
+        }
+        registry
     }
 
     pub fn insert_current(
