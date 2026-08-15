@@ -484,6 +484,31 @@ impl Shell {
         self.harness.run();
     }
 
+    /// Drag from `from` to `to`, calling `observe` after every single frame of
+    /// the gesture and of the frames that follow the release.
+    ///
+    /// A gesture that commits a revision can leave one frame painted from state
+    /// that the commit invalidated; that frame is gone by the time [`Self::drag`]
+    /// returns, so only per-frame observation can see it.
+    pub fn drag_observing(&mut self, from: Pos2, to: Pos2, mut observe: impl FnMut(&KetchupApp)) {
+        self.gap();
+        self.move_pointer(from);
+        self.button(from, Modifiers::NONE, true);
+        observe(self.app());
+        for step in 1..=8_u8 {
+            let t = f32::from(step) / 8.0;
+            self.advance(CLICK_STEP);
+            self.event(egui::Event::PointerMoved(from + (to - from) * t));
+            observe(self.app());
+        }
+        self.button(to, Modifiers::NONE, false);
+        observe(self.app());
+        for _ in 0..8 {
+            self.step();
+            observe(self.app());
+        }
+    }
+
     /// Orbit the camera by holding the secondary button and moving the pointer.
     ///
     /// Each step is a real frame, which is what the desktop shell paints while

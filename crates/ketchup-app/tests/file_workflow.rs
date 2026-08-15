@@ -1268,7 +1268,19 @@ fn moving_an_imported_step_body_keeps_it_painted_and_drops_it_when_the_import_is
     shell.click_command(AppCommand::Move);
     let from = shell.app().project_to_screen(centre, viewport);
     let to = shell.app().project_to_screen(centre + offset, viewport);
-    shell.drag(from, to);
+    // Every single frame of the gesture counts, not just the settled result: the
+    // frame that commits the revision paints before the next one can repair it,
+    // and a shell only repaints on demand, so one blank frame stays on screen.
+    let mut blank_frames = 0;
+    shell.drag_observing(from, to, |app| {
+        if app.instanced_scene_triangle_count() == 0 {
+            blank_frames += 1;
+        }
+    });
+    assert_eq!(
+        blank_frames, 0,
+        "no frame of a move may paint an empty scene"
+    );
     shell.settle();
     assert_eq!(
         shell.app().exact_render_body_count(),

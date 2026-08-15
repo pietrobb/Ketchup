@@ -1444,6 +1444,20 @@ impl ExactResultRegistry {
         self.packages.is_empty()
     }
 
+    /// Whether every product held here is already bound to `snapshot`.
+    ///
+    /// Products are keyed by the source they were accepted for, so this reads
+    /// their keys instead of revalidating their evidence, which makes it cheap
+    /// enough to ask once per painted frame.
+    #[must_use]
+    pub fn is_bound_to(&self, snapshot: &Snapshot) -> bool {
+        self.packages.keys().all(|key| {
+            key.document_id == snapshot.document_id()
+                && key.source_revision == snapshot.revision_id()
+                && key.source_digest == snapshot.canonical_digest()
+        })
+    }
+
     pub fn clear(&mut self) {
         self.packages.clear();
         self.beam_packages.clear();

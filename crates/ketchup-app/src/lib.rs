@@ -4938,6 +4938,21 @@ impl KetchupApp {
             .map(|item| item.size_mm.z)
     }
 
+    /// Carry the exact products of the previous revision over to `snapshot`.
+    ///
+    /// A viewport drag commits its revision in the same frame that paints it,
+    /// so products still bound to the revision before it would leave that one
+    /// frame with nothing to draw and nothing to pick. Rebinding here, before
+    /// the frame reads them, keeps the frame whole. Nothing is loosened:
+    /// carrying forward re-checks every product against `snapshot` and drops
+    /// whatever it no longer carries the evidence for.
+    fn rebind_exact_results(&mut self, snapshot: &Snapshot) {
+        if self.exact_results.is_bound_to(snapshot) {
+            return;
+        }
+        self.exact_results = ExactResultRegistry::carried_forward(snapshot, &self.exact_results);
+    }
+
     fn refresh_exact_products(&mut self, context: &egui::Context) {
         let snapshot = self.document.current();
         let source = (
@@ -4950,10 +4965,9 @@ impl KetchupApp {
             .as_ref()
             .is_some_and(|known| known != &source)
         {
-            self.exact_results =
-                ExactResultRegistry::carried_forward(&snapshot, &self.exact_results);
             self.exact_source = None;
         }
+        self.rebind_exact_results(&snapshot);
         if self
             .exact_task
             .as_ref()
@@ -12066,6 +12080,7 @@ impl KetchupApp {
             -f64::from(self.pitch.cos()),
         );
         let snapshot = self.document.current();
+        self.rebind_exact_results(&snapshot);
         let move_transform_overrides = self.move_preview_transform_overrides();
         let use_wgpu_scene =
             self.wgpu_target_format.is_some() && !self.has_occurrence_operation_preview();
