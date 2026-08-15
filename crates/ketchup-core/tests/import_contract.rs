@@ -96,6 +96,7 @@ fn reviewed_import_is_one_undoable_persistent_deterministic_batch() {
 fn exact_step_import_is_one_deterministic_persistent_undoable_transaction() {
     let source = b"ISO-10303-21;DATA;#1=SI_UNIT(.MILLI.,.METRE.);ENDSEC;END-ISO-10303-21;";
     let evidence = StepImportEvidence {
+        source_unit: ImportLengthUnit::Millimetre,
         result_fingerprint: "0123456789abcdef".to_owned(),
         solid_count: 1,
         volume_mm3: 1_000.0,
@@ -160,10 +161,11 @@ fn exact_step_import_is_one_deterministic_persistent_undoable_transaction() {
 }
 
 #[test]
-fn exact_step_plan_refuses_missing_units_and_invalid_worker_evidence_without_mutation() {
+fn exact_step_plan_refuses_invalid_worker_evidence_without_mutation() {
     let document = DocumentStore::new();
     let before = document.current().canonical_digest();
     let valid = StepImportEvidence {
+        source_unit: ImportLengthUnit::Millimetre,
         result_fingerprint: "0123456789abcdef".to_owned(),
         solid_count: 1,
         volume_mm3: 1.0,
@@ -171,10 +173,6 @@ fn exact_step_plan_refuses_missing_units_and_invalid_worker_evidence_without_mut
         backend: "occt-test".to_owned(),
         tolerance: "test-tolerance".to_owned(),
     };
-    assert_eq!(
-        plan_step_import(&document.current(), b"ISO-10303-21;", "part.step", &valid),
-        Err(StepImportPlanError::MissingOrAmbiguousUnits)
-    );
     let mut invalid = valid;
     invalid.result_fingerprint.clear();
     assert_eq!(

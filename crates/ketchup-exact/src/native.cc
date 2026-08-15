@@ -63,6 +63,7 @@
 #include <gp_Vec.hxx>
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <exception>
@@ -1844,6 +1845,30 @@ std::unique_ptr<NativeOperationResult> import_step_native(rust::Str path) noexce
   });
 }
 
+rust::String step_length_unit_native(rust::Str path) noexcept {
+  try {
+    const std::string native_path(path.data(), path.size());
+    STEPControl_Reader reader;
+    if (reader.ReadFile(native_path.c_str()) != IFSelect_RetDone) {
+      return rust::String();
+    }
+    NCollection_Sequence<TCollection_AsciiString> length_units;
+    NCollection_Sequence<TCollection_AsciiString> angle_units;
+    NCollection_Sequence<TCollection_AsciiString> solid_angle_units;
+    reader.FileUnits(length_units, angle_units, solid_angle_units);
+    if (length_units.Length() != 1) {
+      return rust::String();
+    }
+    std::string unit(length_units.Value(1).ToCString());
+    std::transform(unit.begin(), unit.end(), unit.begin(), [](unsigned char character) {
+      return static_cast<char>(std::tolower(character));
+    });
+    return rust::String(unit);
+  } catch (...) {
+    return rust::String();
+  }
+}
+
 std::unique_ptr<NativeOperationResult> transform_body_native(
     const NativeOperationResult& body, rust::Slice<const double> matrix) noexcept {
   return guarded([&] {
@@ -1861,7 +1886,8 @@ std::unique_ptr<NativeOperationResult> transform_body_native(
     if (!operation.IsDone()) {
       return error_result(STATUS_INVALID_SHAPE, "OCCT affine body transform did not complete");
     }
-    return success_result(operation.Shape(), {});
+    return success_result(
+        operation.Shape(), {}, count_subshapes(body.impl().shape, TopAbs_SOLID) >= 2);
   });
 }
 

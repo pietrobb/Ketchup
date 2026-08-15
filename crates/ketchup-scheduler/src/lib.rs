@@ -25,7 +25,7 @@ use ketchup_core::exact_product::{
     canonical_reference_lineage_digest,
 };
 use ketchup_core::graph::sha256_hex;
-use ketchup_core::import::{MAX_STEP_SOURCE_BYTES, StepImportEvidence};
+use ketchup_core::import::{ImportLengthUnit, MAX_STEP_SOURCE_BYTES, StepImportEvidence};
 use ketchup_core::prismatic::{Aabb, JointId};
 use ketchup_exact::GeometryErrorCode;
 use serde::{Deserialize, Serialize};
@@ -1673,8 +1673,8 @@ impl ExactWorkerClient {
                 .map(f64::from_bits)
         };
         let evidence = (|| {
-            if fields.len() != 17
-                || fields[0] != "OK_M21_STEP_PART_V2"
+            if fields.len() != 18
+                || fields[0] != "OK_M21_STEP_PART_V3"
                 || fields[1] != source_sha256
                 || !is_fnv1a64_digest(fields[2])
             {
@@ -1692,13 +1692,22 @@ impl ExactWorkerClient {
             {
                 return None;
             }
+            let source_unit = match hex_decode_utf8(fields[15])?.as_str() {
+                "millimetre" => ImportLengthUnit::Millimetre,
+                "centimetre" => ImportLengthUnit::Centimetre,
+                "metre" => ImportLengthUnit::Metre,
+                "inch" => ImportLengthUnit::Inch,
+                "foot" => ImportLengthUnit::Foot,
+                _ => return None,
+            };
             Some(StepImportEvidence {
+                source_unit,
                 result_fingerprint: fields[2].to_owned(),
                 solid_count,
                 volume_mm3,
                 bounds_mm,
-                backend: hex_decode_utf8(fields[15])?,
-                tolerance: hex_decode_utf8(fields[16])?,
+                backend: hex_decode_utf8(fields[16])?,
+                tolerance: hex_decode_utf8(fields[17])?,
             })
         })();
         match evidence {

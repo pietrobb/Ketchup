@@ -2705,11 +2705,18 @@ fn m21_step_part_inspection_response(
         Ok(source) => source,
         Err(response) => return response,
     };
-    match backend.import_step(&source.path().to_string_lossy()) {
+    let source_path = source.path().to_string_lossy();
+    let Some(source_unit) = backend.step_length_unit_name(&source_path) else {
+        return transport_error_response(
+            "inspect_step_part",
+            "STEP source has missing or ambiguous representation length units",
+        );
+    };
+    match backend.import_step(&source_path) {
         Ok(output) => {
             let topology = &output.body.topology;
             format!(
-                "OK_M21_STEP_PART_V2 {source_sha256} {} {} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {} {} {} {} {} {}",
+                "OK_M21_STEP_PART_V3 {source_sha256} {} {} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {} {} {} {} {} {} {}",
                 step_import_result_fingerprint(source_sha256, &output),
                 topology.solid_count,
                 topology.volume_mm3.to_bits(),
@@ -2723,6 +2730,7 @@ fn m21_step_part_inspection_response(
                 topology.edge_count,
                 topology.face_count,
                 topology.shell_count,
+                encode_hex(source_unit.as_bytes()),
                 encode_hex(output.backend_fingerprint.as_bytes()),
                 encode_hex(output.tolerance_report.profile.as_bytes()),
             )

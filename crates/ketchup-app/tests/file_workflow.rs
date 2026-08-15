@@ -7,7 +7,7 @@
 mod harness;
 
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Mutex, atomic::AtomicBool};
 use std::time::Duration;
 
 use eframe::egui::{Key, accesskit::Role};
@@ -21,6 +21,7 @@ use ketchup_core::import::{
     MAX_STEP_SOURCE_BYTES, MAX_STL_SOURCE_BYTES,
 };
 use ketchup_interaction::Vec3;
+use ketchup_scheduler::ExactWorkerSupervisor;
 
 fn compose_two_shared_occurrences(shell: &mut Shell) {
     shell.click_at(shell.viewport_rect().center());
@@ -812,6 +813,70 @@ fn file_menu_exports_current_visible_exact_model_without_mutating_canonical_stat
 }
 
 #[test]
+fn file_menu_step_export_requires_bound_overwrite_approval_without_canonical_mutation() {
+    let _serial = EXACT_FILE_EXPORT_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let directory = tempfile::tempdir().unwrap();
+    let step = directory.path().join("protected.step");
+    let loss = step.with_extension("step.loss.txt");
+    let original_step = b"preserve STEP until overwrite approval";
+    let original_loss = b"preserve STEP loss report until overwrite approval";
+    std::fs::write(&step, original_step).unwrap();
+    std::fs::write(&loss, original_loss).unwrap();
+    let script = ScriptedFileDialogs::new()
+        .queue_export(&step)
+        .queue_export(&step)
+        .queue_refused_high_risk()
+        .queue_high_risk_approval(111)
+        .queue_high_risk_approval(112)
+        .queue_high_risk_approval(113);
+    let mut shell = Shell::with_dialogs(script.clone());
+    shell
+        .app_mut()
+        .connect_exact_worker(exact_worker_path())
+        .unwrap();
+    wait_for_current_exact_body(&mut shell);
+    let before = canonical_state(&shell);
+    let history = reachable_history_digests(&mut shell);
+
+    shell.click_menu_command("menu-file", AppCommand::ExportExactStep);
+    assert_eq!(std::fs::read(&step).unwrap(), original_step);
+    assert_eq!(std::fs::read(&loss).unwrap(), original_loss);
+    assert!(shell.app().last_side_effect_receipt().is_none());
+    assert_state_and_history_unchanged(&mut shell, &before, &history);
+
+    shell.click_menu_command("menu-file", AppCommand::ExportExactStep);
+    assert_ne!(std::fs::read(&step).unwrap(), original_step);
+    assert_ne!(std::fs::read(&loss).unwrap(), original_loss);
+    assert!(
+        std::fs::read_to_string(&step)
+            .unwrap()
+            .starts_with("ISO-10303-21;")
+    );
+    assert!(shell.app().last_side_effect_receipt().is_some());
+    assert_state_and_history_unchanged(&mut shell, &before, &history);
+
+    let prompts = script.high_risk_prompts();
+    assert_eq!(prompts.len(), 4);
+    assert!(
+        prompts
+            .iter()
+            .all(|prompt| prompt.contains("Payload SHA-256:"))
+    );
+    assert!(
+        prompts
+            .iter()
+            .any(|prompt| prompt.contains(&step.display().to_string()))
+    );
+    assert!(
+        prompts
+            .iter()
+            .any(|prompt| prompt.contains(&loss.display().to_string()))
+    );
+}
+
+#[test]
 fn file_import_stl_commits_one_canonical_mesh_transaction_offscreen() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("tetrahedron.stl");
@@ -939,10 +1004,61 @@ fn file_import_dxf_reviews_and_commits_one_canonical_profile_transaction_offscre
 }
 
 #[test]
+fn exact_worker_derives_step_units_from_representation_context() {
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../corpora/r0/step/self-authored-box.step");
+    let original = std::fs::read_to_string(&fixture).unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let mut inspector = ExactWorkerSupervisor::spawn(exact_worker_path()).unwrap();
+    for (name, source, expected) in [
+        (
+            "millimetre",
+            original.replace(
+                "END-ISO-10303-21;",
+                "/* misleading SI_UNIT(.CENTI.,.METRE.) comment */\nEND-ISO-10303-21;",
+            ),
+            ImportLengthUnit::Millimetre,
+        ),
+        (
+            "centimetre",
+            original.replace(".MILLI.", ".CENTI."),
+            ImportLengthUnit::Centimetre,
+        ),
+        (
+            "metre",
+            original.replace(".MILLI.", "$"),
+            ImportLengthUnit::Metre,
+        ),
+    ] {
+        let path = directory.path().join(format!("{name}.step"));
+        std::fs::write(&path, source.as_bytes()).unwrap();
+        let evidence = inspector
+            .inspect_step_import_with_cancellation(
+                &path,
+                &ketchup_core::graph::sha256_hex(source.as_bytes()),
+                &AtomicBool::new(false),
+            )
+            .unwrap();
+        assert_eq!(evidence.source_unit, expected);
+    }
+}
+
+#[test]
 fn file_import_exact_step_commits_undoes_and_persists_source_blob_offscreen() {
     let source_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../corpora/r0/step/self-authored-box.step");
     let source = std::fs::read(&source_path).unwrap();
+    let source_hash = ketchup_core::graph::sha256_hex(&source);
+    let mut inspector = ExactWorkerSupervisor::spawn(exact_worker_path()).unwrap();
+    let source_evidence = inspector
+        .inspect_step_import_with_cancellation(&source_path, &source_hash, &AtomicBool::new(false))
+        .unwrap();
+    let repeated_evidence = inspector
+        .inspect_step_import_with_cancellation(&source_path, &source_hash, &AtomicBool::new(false))
+        .unwrap();
+    assert_eq!(repeated_evidence, source_evidence);
+    assert!(!source_evidence.backend.is_empty());
+    assert!(!source_evidence.tolerance.is_empty());
     let directory = tempfile::tempdir().unwrap();
     let document_path = directory.path().join("imported-step.ketchup");
     let exported_path = directory.path().join("reexported-step.step");
@@ -958,6 +1074,9 @@ fn file_import_exact_step_commits_undoes_and_persists_source_blob_offscreen() {
         .app_mut()
         .connect_exact_worker(exact_worker_path())
         .expect("the focused STEP workflow requires the real exact worker");
+    shell.click_at(shell.viewport_rect().center());
+    assert!(shell.app_mut().delete_selected());
+    shell.settle();
     let before = canonical_state(&shell);
 
     shell.click_menu_command("menu-file", AppCommand::ImportExactStep);
@@ -1002,12 +1121,12 @@ fn file_import_exact_step_commits_undoes_and_persists_source_blob_offscreen() {
     );
     for _ in 0..100 {
         shell.settle();
-        if shell.app().exact_render_body_count() == 2 {
+        if shell.app().exact_render_body_count() == 1 {
             break;
         }
         std::thread::sleep(Duration::from_millis(20));
     }
-    assert_eq!(shell.app().exact_render_body_count(), 2);
+    assert_eq!(shell.app().exact_render_body_count(), 1);
     let before_export = canonical_state(&shell);
     shell.click_menu_command("menu-file", AppCommand::ExportExactStep);
     assert_eq!(canonical_state(&shell), before_export);
@@ -1021,6 +1140,27 @@ fn file_import_exact_step_commits_undoes_and_persists_source_blob_offscreen() {
             .unwrap()
             .starts_with("ISO-10303-21;")
     );
+    let exported = std::fs::read(&exported_path).unwrap();
+    let exported_evidence = inspector
+        .inspect_step_import_with_cancellation(
+            &exported_path,
+            &ketchup_core::graph::sha256_hex(&exported),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+    assert_eq!(exported_evidence.source_unit, source_evidence.source_unit);
+    assert_eq!(exported_evidence.solid_count, source_evidence.solid_count);
+    assert!((exported_evidence.volume_mm3 - source_evidence.volume_mm3).abs() < 1.0e-6);
+    for axis in 0..3 {
+        assert!(
+            (exported_evidence.bounds_mm[0][axis] - source_evidence.bounds_mm[0][axis]).abs()
+                < 1.0e-6
+        );
+        assert!(
+            (exported_evidence.bounds_mm[1][axis] - source_evidence.bounds_mm[1][axis]).abs()
+                < 1.0e-6
+        );
+    }
 
     let loaded = ketchup_core::persistence::load_file(&document_path).unwrap();
     let snapshot = loaded.snapshot();
@@ -1030,6 +1170,16 @@ fn file_import_exact_step_commits_undoes_and_persists_source_blob_offscreen() {
         .unwrap();
     assert_eq!(receipt.source_sha256(), &sha256_bytes(&source));
     assert_eq!(receipt.source_byte_len(), source.len() as u64);
+    assert_eq!(receipt.units().source_unit(), source_evidence.source_unit);
+    assert_eq!(
+        receipt.units().authority(),
+        ImportUnitAuthority::FileDeclared
+    );
+    assert_eq!(receipt.parser_id(), ketchup_core::import::STEP_PARSER_ID);
+    assert_eq!(
+        receipt.parser_version(),
+        ketchup_core::import::STEP_PARSER_VERSION
+    );
     let spec = snapshot
         .features()
         .find_map(|feature| match feature.kind() {
@@ -1045,20 +1195,160 @@ fn file_import_exact_step_commits_undoes_and_persists_source_blob_offscreen() {
 }
 
 #[test]
+fn file_import_transformed_multi_solid_step_round_trips_through_save_open_and_occt() {
+    let directory = tempfile::tempdir().unwrap();
+    let source_path = directory.path().join("transformed-multi-solid.step");
+    let document_path = directory.path().join("transformed-multi-solid.ketchup");
+    let exported_path = directory
+        .path()
+        .join("transformed-multi-solid-reexport.step");
+
+    let source_script = ScriptedFileDialogs::new()
+        .queue_export(&source_path)
+        .always_confirm_high_risk_as(101);
+    let mut source_shell = Shell::with_dialogs(source_script);
+    source_shell
+        .app_mut()
+        .connect_exact_worker(exact_worker_path())
+        .unwrap();
+    compose_two_shared_occurrences(&mut source_shell);
+    for _ in 0..100 {
+        source_shell.settle();
+        if source_shell.app().exact_render_body_count() == 1 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(source_shell.app().exact_render_body_count(), 1);
+    source_shell.click_menu_command("menu-file", AppCommand::ExportExactStep);
+    assert!(
+        source_path.is_file(),
+        "multi-solid STEP source export failed with digest {:?}",
+        source_shell.app().action_digest()
+    );
+
+    let source = std::fs::read(&source_path).unwrap();
+    let mut inspector = ExactWorkerSupervisor::spawn(exact_worker_path()).unwrap();
+    let source_evidence = inspector
+        .inspect_step_import_with_cancellation(
+            &source_path,
+            &ketchup_core::graph::sha256_hex(&source),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+    assert_eq!(source_evidence.solid_count, 2);
+    assert!(source_evidence.bounds_mm[1][0] > 150.0);
+    assert!(source_evidence.bounds_mm[1][1] > 25.0);
+
+    let script = ScriptedFileDialogs::new()
+        .queue_import(ImportFormat::Step, &source_path)
+        .queue_save(&document_path)
+        .queue_open(&document_path)
+        .queue_export(&exported_path)
+        .always_confirm_high_risk_as(102)
+        .always_discard();
+    let mut shell = Shell::with_dialogs(script);
+    shell
+        .app_mut()
+        .connect_exact_worker(exact_worker_path())
+        .unwrap();
+    shell.click_at(shell.viewport_rect().center());
+    assert!(shell.app_mut().delete_selected());
+    shell.settle();
+    let before = canonical_state(&shell);
+
+    shell.click_menu_command("menu-file", AppCommand::ImportExactStep);
+    shell.click_button_label(&shell.catalog().text("dialog-import-step-confirm"));
+    assert_eq!(shell.app().document_revision(), before.revision + 1);
+    assert_eq!(shell.app().undo_step_count(), before.undo_steps + 1);
+    let imported_digest = shell.app().canonical_digest();
+    shell.click_menu_command("menu-edit", AppCommand::Undo);
+    assert_eq!(shell.app().canonical_digest(), before.digest);
+    shell.click_menu_command("menu-edit", AppCommand::Redo);
+    assert_eq!(shell.app().canonical_digest(), imported_digest);
+
+    shell.click_menu_command("menu-file", AppCommand::Save);
+    shell.click_menu_command("menu-file", AppCommand::New);
+    shell.click_menu_command("menu-file", AppCommand::Open);
+    assert_eq!(shell.app().canonical_digest(), imported_digest);
+    for _ in 0..100 {
+        shell.settle();
+        if shell.app().exact_render_body_count() == 1 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(shell.app().exact_render_body_count(), 1);
+
+    let before_export = canonical_state(&shell);
+    shell.click_menu_command("menu-file", AppCommand::ExportExactStep);
+    assert_eq!(canonical_state(&shell), before_export);
+    assert!(
+        exported_path.is_file(),
+        "multi-solid STEP re-export failed with digest {:?}",
+        shell.app().action_digest()
+    );
+    let exported = std::fs::read(&exported_path).unwrap();
+    let exported_evidence = inspector
+        .inspect_step_import_with_cancellation(
+            &exported_path,
+            &ketchup_core::graph::sha256_hex(&exported),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+    assert_eq!(exported_evidence.source_unit, source_evidence.source_unit);
+    assert_eq!(exported_evidence.solid_count, source_evidence.solid_count);
+    assert!((exported_evidence.volume_mm3 - source_evidence.volume_mm3).abs() < 1.0e-6);
+    for axis in 0..3 {
+        assert!(
+            (exported_evidence.bounds_mm[0][axis] - source_evidence.bounds_mm[0][axis]).abs()
+                < 1.0e-6
+        );
+        assert!(
+            (exported_evidence.bounds_mm[1][axis] - source_evidence.bounds_mm[1][axis]).abs()
+                < 1.0e-6
+        );
+    }
+
+    let loaded = ketchup_core::persistence::load_file(&document_path).unwrap();
+    let loaded_snapshot = loaded.snapshot();
+    let receipt = loaded_snapshot
+        .import_receipts()
+        .find(|receipt| receipt.format() == ImportFormat::Step)
+        .unwrap();
+    assert_eq!(receipt.source_sha256(), &sha256_bytes(&source));
+    assert_eq!(receipt.units().source_unit(), source_evidence.source_unit);
+    assert_eq!(std::fs::read(&source_path).unwrap(), source);
+}
+
+#[test]
 fn file_import_step_cancel_worker_source_stale_and_oversize_refuse_without_mutation() {
     let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../corpora/r0/step/self-authored-box.step");
     let original = std::fs::read(&fixture).unwrap();
     let directory = tempfile::tempdir().unwrap();
     let source = directory.path().join("reviewed.step");
+    let corrupt = directory.path().join("corrupt.step");
+    let unsupported_unit = directory.path().join("unsupported-unit.step");
     let oversized = directory.path().join("oversized.step");
+    let replacement = directory.path().join("replacement.ketchup");
     let unavailable_worker = directory.path().join("unavailable-worker");
     std::fs::write(&source, &original).unwrap();
+    std::fs::write(&corrupt, b"not an ISO-10303-21 exchange file").unwrap();
+    let unsupported_source = String::from_utf8(original.clone())
+        .unwrap()
+        .replace(".MILLI.", ".MICRO.")
+        .into_bytes();
+    assert_ne!(unsupported_source, original);
+    std::fs::write(&unsupported_unit, unsupported_source).unwrap();
     std::fs::File::create(&oversized)
         .unwrap()
         .set_len(MAX_STEP_SOURCE_BYTES + 1)
         .unwrap();
     std::fs::write(&unavailable_worker, b"not an exact worker").unwrap();
+    let mut replacement_shell =
+        Shell::with_dialogs(ScriptedFileDialogs::new().queue_save(&replacement));
+    replacement_shell.click_menu_command("menu-file", AppCommand::Save);
 
     let script = ScriptedFileDialogs::new()
         .queue_cancelled_import(ImportFormat::Step)
@@ -1066,7 +1356,14 @@ fn file_import_step_cancel_worker_source_stale_and_oversize_refuse_without_mutat
         .queue_import(ImportFormat::Step, &source)
         .queue_import(ImportFormat::Step, &source)
         .queue_import(ImportFormat::Step, &source)
-        .queue_import(ImportFormat::Step, &oversized);
+        .queue_import(ImportFormat::Step, &corrupt)
+        .queue_import(ImportFormat::Step, &unsupported_unit)
+        .queue_import(ImportFormat::Step, &source)
+        .queue_import(ImportFormat::Step, &source)
+        .queue_import(ImportFormat::Step, &source)
+        .queue_import(ImportFormat::Step, &oversized)
+        .queue_open(&replacement)
+        .always_discard();
     let mut shell = Shell::with_dialogs(script);
     shell
         .app_mut()
@@ -1112,6 +1409,43 @@ fn file_import_step_cancel_worker_source_stale_and_oversize_refuse_without_mutat
     shell.click_button_label(&shell.catalog().text("dialog-import-step-confirm"));
     assert!(digest_starts_like(&shell, "error-import-step"));
     assert_state_and_history_unchanged(&mut shell, &after_redo, &after_redo_history);
+
+    for _ in 0..2 {
+        let before_refusal = canonical_state(&shell);
+        let before_refusal_history = reachable_history_digests(&mut shell);
+        shell.click_menu_command("menu-file", AppCommand::ImportExactStep);
+        assert!(digest_starts_like(&shell, "error-import-step"));
+        assert_state_and_history_unchanged(&mut shell, &before_refusal, &before_refusal_history);
+    }
+
+    shell.click_at(shell.viewport_rect().center());
+    shell.click_menu_command("menu-file", AppCommand::ImportExactStep);
+    assert!(shell.app_mut().move_selected(Vec3::new(10.0, 0.0, 0.0)));
+    let after_document_change = canonical_state(&shell);
+    let after_document_change_history = reachable_history_digests(&mut shell);
+    shell.click_button_label(&shell.catalog().text("dialog-import-step-confirm"));
+    assert!(digest_starts_like(&shell, "error-import-step"));
+    assert_state_and_history_unchanged(
+        &mut shell,
+        &after_document_change,
+        &after_document_change_history,
+    );
+
+    shell.click_menu_command("menu-file", AppCommand::ImportExactStep);
+    shell.click_menu_command("menu-edit", AppCommand::Undo);
+    let after_undo = canonical_state(&shell);
+    let after_undo_history = reachable_history_digests(&mut shell);
+    shell.click_button_label(&shell.catalog().text("dialog-import-step-confirm"));
+    assert!(digest_starts_like(&shell, "error-import-step"));
+    assert_state_and_history_unchanged(&mut shell, &after_undo, &after_undo_history);
+
+    shell.click_menu_command("menu-file", AppCommand::ImportExactStep);
+    shell.click_menu_command("menu-file", AppCommand::Open);
+    let after_open = canonical_state(&shell);
+    let after_open_history = reachable_history_digests(&mut shell);
+    shell.click_button_label(&shell.catalog().text("dialog-import-step-confirm"));
+    assert!(digest_starts_like(&shell, "error-import-step"));
+    assert_state_and_history_unchanged(&mut shell, &after_open, &after_open_history);
 
     let before_oversize = canonical_state(&shell);
     let before_oversize_history = reachable_history_digests(&mut shell);

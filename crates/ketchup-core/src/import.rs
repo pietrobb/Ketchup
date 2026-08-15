@@ -338,11 +338,12 @@ mod dxf;
 pub use dxf::*;
 
 pub const STEP_PARSER_ID: &str = "ketchup-occt-step";
-pub const STEP_PARSER_VERSION: &str = "1";
+pub const STEP_PARSER_VERSION: &str = "2";
 pub const MAX_STEP_SOURCE_BYTES: u64 = 32 * 1024 * 1024;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct StepImportEvidence {
+    pub source_unit: ImportLengthUnit,
     pub result_fingerprint: String,
     pub solid_count: u32,
     pub volume_mm3: f64,
@@ -378,36 +379,6 @@ impl fmt::Display for StepImportPlanError {
 
 impl std::error::Error for StepImportPlanError {}
 
-#[must_use]
-pub fn detect_step_length_unit(source: &[u8]) -> Option<ImportLengthUnit> {
-    let uppercase = source
-        .iter()
-        .map(u8::to_ascii_uppercase)
-        .collect::<Vec<_>>();
-    let contains = |needle: &[u8]| {
-        uppercase
-            .windows(needle.len())
-            .any(|window| window == needle)
-    };
-    let mut units = BTreeSet::new();
-    if contains(b".MILLI.") && contains(b".METRE.") {
-        units.insert(ImportLengthUnit::Millimetre);
-    }
-    if contains(b".CENTI.") && contains(b".METRE.") {
-        units.insert(ImportLengthUnit::Centimetre);
-    }
-    if contains(b"SI_UNIT($,.METRE.)") || contains(b"SI_UNIT(*,.METRE.)") {
-        units.insert(ImportLengthUnit::Metre);
-    }
-    if contains(b"CONVERSION_BASED_UNIT('INCH") || contains(b"CONVERSION_BASED_UNIT(\"INCH") {
-        units.insert(ImportLengthUnit::Inch);
-    }
-    if contains(b"CONVERSION_BASED_UNIT('FOOT") || contains(b"CONVERSION_BASED_UNIT(\"FOOT") {
-        units.insert(ImportLengthUnit::Foot);
-    }
-    (units.len() == 1).then(|| *units.first().expect("one STEP unit"))
-}
-
 /// Build one detached canonical transaction for a reviewed, worker-validated exact STEP body.
 pub fn plan_step_import(
     snapshot: &Snapshot,
@@ -421,8 +392,6 @@ pub fn plan_step_import(
     if source.len() as u64 > MAX_STEP_SOURCE_BYTES {
         return Err(StepImportPlanError::SourceTooLarge);
     }
-    let unit =
-        detect_step_length_unit(source).ok_or(StepImportPlanError::MissingOrAmbiguousUnits)?;
     let bounds_valid = evidence
         .bounds_mm
         .iter()
@@ -494,7 +463,7 @@ pub fn plan_step_import(
     .into_iter()
     .collect::<Result<Vec<_>, _>>()
     .map_err(|_| StepImportPlanError::InvalidWorkerEvidence)?;
-    let units = ImportUnitDecision::new(unit, ImportUnitAuthority::FileDeclared);
+    let units = ImportUnitDecision::new(evidence.source_unit, ImportUnitAuthority::FileDeclared);
     let receipt = ImportReceipt::from_source_bytes(
         import_id,
         ImportFormat::Step,

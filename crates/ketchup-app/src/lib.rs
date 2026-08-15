@@ -43,8 +43,8 @@ use ketchup_core::graph::{
 use ketchup_core::import::{
     DxfImportOptions, ImportDiagnosticSeverity, ImportFormat, ImportLengthUnit,
     ImportUnitAuthority, ImportUnitDecision, MAX_DXF_SOURCE_BYTES, MAX_STEP_SOURCE_BYTES,
-    MAX_STL_SOURCE_BYTES, ParsedDxf, StepImportEvidence, inspect_dxf, plan_dxf_import,
-    plan_step_import, plan_stl_import,
+    MAX_STL_SOURCE_BYTES, ParsedDxf, STEP_PARSER_ID, STEP_PARSER_VERSION, StepImportEvidence,
+    inspect_dxf, plan_dxf_import, plan_step_import, plan_stl_import,
 };
 use ketchup_core::intent::{IntentRequest, WorkflowIntent, propose_intent};
 use ketchup_core::prismatic::JointId;
@@ -5112,7 +5112,22 @@ impl KetchupApp {
                                 return Err("imported STEP canonical specification is unavailable"
                                     .to_owned());
                             };
+                            let receipt = snapshot
+                                .import_receipt(spec.import_id)
+                                .ok_or_else(|| "imported STEP receipt is unavailable".to_owned())?;
+                            if receipt.format() != ImportFormat::Step
+                                || receipt.units().authority() != ImportUnitAuthority::FileDeclared
+                                || receipt.parser_id() != STEP_PARSER_ID
+                                || receipt.parser_version() != STEP_PARSER_VERSION
+                            {
+                                return Err(
+                                    "imported STEP receipt provenance is not authoritative"
+                                        .to_owned(),
+                                );
+                            }
+                            let source_unit = receipt.units().source_unit();
                             let expected = StepImportEvidence {
+                                source_unit,
                                 result_fingerprint: spec.result_fingerprint.clone(),
                                 solid_count: spec.solid_count,
                                 volume_mm3: spec.volume_mm3,

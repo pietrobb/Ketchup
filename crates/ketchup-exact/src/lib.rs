@@ -189,6 +189,7 @@ mod ffi {
         ) -> UniquePtr<NativeOperationResult>;
         fn exception_probe_native() -> UniquePtr<NativeOperationResult>;
         fn import_step_native(path: &str) -> UniquePtr<NativeOperationResult>;
+        fn step_length_unit_native(path: &str) -> String;
         fn transform_body_native(
             body: &NativeOperationResult,
             matrix: &[f64],
@@ -1102,6 +1103,12 @@ impl ExactBackend {
             &input,
             HistoryConfidence::None,
         )
+    }
+
+    #[must_use]
+    pub fn step_length_unit_name(&self, path: &str) -> Option<String> {
+        let unit = ffi::step_length_unit_native(path);
+        (!unit.is_empty()).then_some(unit)
     }
 
     pub fn transform_body(
