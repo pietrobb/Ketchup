@@ -1272,6 +1272,7 @@ fn file_import_transformed_multi_solid_step_round_trips_through_save_open_and_oc
         .always_confirm_high_risk_as(102)
         .always_discard();
     let mut shell = Shell::with_dialogs(script);
+    shell.app_mut().enable_headless_instanced_scene();
     shell
         .app_mut()
         .connect_exact_worker(exact_worker_path())
@@ -1303,6 +1304,29 @@ fn file_import_transformed_multi_solid_step_round_trips_through_save_open_and_oc
         std::thread::sleep(Duration::from_millis(20));
     }
     assert_eq!(shell.app().exact_render_body_count(), 1);
+    shell.settle();
+    assert!(
+        shell.app().instanced_scene_triangle_count() > 0,
+        "a reopened multi-solid STEP body must reach the painted scene"
+    );
+    // The two source solids are disjoint and offset by (150, 25, 0), so the
+    // centre of their combined bounding box is empty space. Aim at the centre
+    // of the first solid instead, which is the only point guaranteed to be on
+    // material.
+    let bounds = shell.app().exact_render_bounds()[0];
+    let centre = Vec3::new(
+        (bounds[0][0] + bounds[1][0] - 150.0) * 0.5,
+        (bounds[0][1] + bounds[1][1] - 25.0) * 0.5,
+        (bounds[0][2] + bounds[1][2]) * 0.5,
+    );
+    let viewport = shell.viewport_rect();
+    let screen = shell.app().project_to_screen(centre, viewport);
+    shell.click_at(screen);
+    assert_eq!(
+        shell.app().selected_occurrence_count(),
+        1,
+        "a reopened multi-solid STEP body must be pickable where it is painted"
+    );
 
     let before_export = canonical_state(&shell);
     shell.click_menu_command("menu-file", AppCommand::ExportExactStep);
