@@ -1784,6 +1784,84 @@ fn a_viewport_drag_in_rotate_turns_the_occurrence_and_the_arrow_keys_pick_the_ax
     );
 }
 
+/// SketchUp treats a value typed straight after a rotation as a correction of
+/// that rotation, not as a second one. Choosing 45 and then thinking better of
+/// it and typing 40 has to leave the body at 40, not at 85.
+#[test]
+fn a_typed_angle_corrects_the_last_rotate_instead_of_stacking_onto_it() {
+    let mut shell = Shell::new();
+    shell.click_at(shell.top_face_centre(1));
+    let size = shell
+        .app()
+        .occurrence_box_geometry(1)
+        .expect("the default scene has one box")
+        .1;
+    assert_eq!((size.x, size.y), (100.0, 60.0));
+    // The axis-aligned extents of a box turned about the blue axis, which is
+    // what reading the geometry back can prove.
+    let turned_extents = |degrees: f64| {
+        let (sin, cos) = degrees.to_radians().sin_cos();
+        let round = |value: f64| (value * 1_000.0).round() / 1_000.0;
+        (
+            round(size.x.mul_add(cos.abs(), size.y * sin.abs())),
+            round(size.x.mul_add(sin.abs(), size.y * cos.abs())),
+        )
+    };
+    let base_digest = shell.app().canonical_digest();
+
+    shell.click_command(AppCommand::Rotate);
+    let before_steps = shell.app().undo_step_count();
+    shell.type_text("45");
+    shell.press_key(Key::Enter);
+    assert_eq!(shell.app().undo_step_count(), before_steps + 1);
+    let first = shell.app().occurrence_box_geometry(1).unwrap().1;
+    assert_eq!(
+        (
+            (first.x * 1_000.0).round() / 1_000.0,
+            (first.y * 1_000.0).round() / 1_000.0
+        ),
+        turned_extents(45.0)
+    );
+
+    // Thinking better of it: 40 replaces the 45, so the extents are those of a
+    // single 40° turn and the history still holds exactly one step.
+    shell.type_text("40");
+    shell.press_key(Key::Enter);
+    let corrected = shell.app().occurrence_box_geometry(1).unwrap().1;
+    assert_eq!(
+        (
+            (corrected.x * 1_000.0).round() / 1_000.0,
+            (corrected.y * 1_000.0).round() / 1_000.0
+        ),
+        turned_extents(40.0),
+        "a typed angle must replace the last rotation, not add to it: {:?}",
+        shell.app().action_digest()
+    );
+    assert_eq!(
+        shell.app().undo_step_count(),
+        before_steps + 1,
+        "corrections must stay one undo step"
+    );
+
+    // Zero is a legitimate correction back to where the body started.
+    shell.type_text("0");
+    shell.press_key(Key::Enter);
+    assert_eq!(
+        shell.app().canonical_digest(),
+        base_digest,
+        "typing zero must undo the turn rather than refuse the value"
+    );
+    assert_eq!(shell.app().undo_step_count(), before_steps + 1);
+
+    shell.key(Key::Z, ctrl());
+    assert_eq!(shell.app().canonical_digest(), base_digest);
+    assert_eq!(
+        shell.app().undo_step_count(),
+        before_steps,
+        "the whole correction chain must undo in a single step"
+    );
+}
+
 #[test]
 fn a_pinned_move_travels_along_the_blue_axis_and_the_arrow_releases_the_pin() {
     let mut shell = Shell::new();

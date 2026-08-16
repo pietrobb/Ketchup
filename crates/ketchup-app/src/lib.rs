@@ -341,6 +341,25 @@ struct LastMove {
     applied_distance_mm: f64,
 }
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum RotateTarget {
+    Occurrence(OccurrenceId),
+    Group(GroupId),
+}
+
+/// The turn a typed angle corrects instead of stacking a second turn onto.
+///
+/// Recorded with the revision and digest it produced, so the correction only
+/// fires while that rotation is still the tip of the history.
+#[derive(Clone)]
+struct LastRotate {
+    target: RotateTarget,
+    centre_mm: Vec3,
+    axis: Axis,
+    revision: u64,
+    canonical_digest: String,
+}
+
 #[derive(Clone)]
 struct BoxFace {
     element: ElementId,
@@ -1745,6 +1764,7 @@ pub struct KetchupApp {
     /// so a locked axis survives releasing and re-grabbing the same body.
     rotate_axis_lock: Option<Axis>,
     last_move: Option<LastMove>,
+    last_rotate: Option<LastRotate>,
     sketch_mode: bool,
     sketch_start: Option<Vec3>,
     sketch_end: Option<Vec3>,
@@ -1910,6 +1930,7 @@ impl KetchupApp {
             rotate_anchor: None,
             rotate_axis_lock: None,
             last_move: None,
+            last_rotate: None,
             sketch_mode: false,
             sketch_start: None,
             sketch_end: None,
@@ -2067,6 +2088,7 @@ impl KetchupApp {
         self.rotate_anchor = None;
         self.rotate_axis_lock = None;
         self.last_move = None;
+        self.last_rotate = None;
         self.occurrence_clipboard.clear();
         self.sketch_mode = false;
         self.sketch_start = None;
@@ -8695,6 +8717,13 @@ impl KetchupApp {
         }
         self.select_group(group_id);
         self.last_move = None;
+        self.last_rotate = Some(LastRotate {
+            target: RotateTarget::Group(group_id),
+            centre_mm,
+            axis,
+            revision: self.document_revision(),
+            canonical_digest: self.canonical_digest(),
+        });
         self.status_key = "status-object-rotated";
         self.digest = self.catalog.format(
             "digest-rotate-committed",
@@ -8799,6 +8828,15 @@ impl KetchupApp {
             false,
         );
         self.last_move = None;
+        // A rotate-copy has no turn to correct: the typed angle would have to
+        // choose between the original and the copy, so it starts a fresh one.
+        self.last_rotate = (!copy).then(|| LastRotate {
+            target: RotateTarget::Occurrence(target_id),
+            centre_mm,
+            axis,
+            revision: self.document_revision(),
+            canonical_digest: self.canonical_digest(),
+        });
         self.status_key = "status-object-rotated";
         self.digest = self.catalog.format(
             "digest-rotate-committed",
@@ -8835,6 +8873,102 @@ impl KetchupApp {
             return false;
         };
         self.rotate_occurrence(&selection, centre_mm, axis, angle_degrees, false)
+    }
+
+    /// Whether the current selection is still the thing `target` turned.
+    ///
+    /// Without this a typed angle would silently correct the previous body
+    /// after the user has already clicked a different one.
+    fn selection_matches_rotate_target(&self, target: RotateTarget) -> bool {
+        match target {
+            RotateTarget::Group(group_id) => self.selection.selected_group == Some(group_id),
+            RotateTarget::Occurrence(occurrence_id) => {
+                self.selection.selected_group.is_none()
+                    && self.selected_move_reference().is_some_and(|selection| {
+                        selection.instance_path.is_root()
+                            && selection.instance_path.root_occurrence() == occurrence_id
+                    })
+            }
+        }
+    }
+
+    /// Re-turn the last rotation to `angle_degrees` instead of adding to it.
+    ///
+    /// The correction is planned against the guarded parent of the tip, so the
+    /// body lands on exactly the angle typed — 45 followed by 40 ends at 40,
+    /// not 85 — and the whole thing stays a single undo step. Zero is a
+    /// legitimate correction back to where the body started.
+    fn correct_last_rotation(&mut self, angle_degrees: f64) -> bool {
+        let Some(previous) = self.last_rotate.clone() else {
+            return false;
+        };
+        let current = self.document.current();
+        // Picking a different axis means the user wants another turn, not a
+        // different value for the one already made.
+        if previous.axis != self.rotate_axis_lock.unwrap_or(Axis::Z)
+            || previous.revision != current.revision_id()
+            || previous.canonical_digest != current.canonical_digest()
+            || !self.selection_matches_rotate_target(previous.target)
+        {
+            return false;
+        }
+        let Ok(parent) = self.document.tip_replacement_parent() else {
+            return false;
+        };
+        let Ok(rotation) =
+            world_rotation_transform(previous.centre_mm, previous.axis, angle_degrees)
+        else {
+            return false;
+        };
+        let base = parent.snapshot();
+        let command = match previous.target {
+            RotateTarget::Group(group_id) => {
+                let Some(group) = base.group(group_id) else {
+                    return false;
+                };
+                CanonicalCommand::SetGroupTransform {
+                    id: group_id,
+                    transform: rotation.compose(group.transform()),
+                }
+            }
+            RotateTarget::Occurrence(occurrence_id) => {
+                let Some(occurrence) = base.occurrence(occurrence_id) else {
+                    return false;
+                };
+                CanonicalCommand::SetOccurrenceTransform {
+                    id: occurrence_id,
+                    transform: rotation.compose(occurrence.transform()),
+                }
+            }
+        };
+        let Ok(proposal) = self.document.prepare_tip_replacement_proposal(
+            &parent,
+            CommandBatch::new(vec![command]),
+            ProposalContext::canonical_preview(),
+        ) else {
+            return false;
+        };
+        if self
+            .document
+            .commit_tip_replacement_proposal(&proposal)
+            .is_err()
+        {
+            return false;
+        }
+        self.last_rotate = Some(LastRotate {
+            revision: self.document_revision(),
+            canonical_digest: self.canonical_digest(),
+            ..previous
+        });
+        self.status_key = "status-object-rotated";
+        self.digest = self.catalog.format(
+            "digest-rotate-committed",
+            &BTreeMap::from([
+                ("angle", format_angle(angle_degrees)),
+                ("axis", self.catalog.text(axis_name_key(previous.axis))),
+            ]),
+        );
+        true
     }
 
     fn translate_occurrence(
@@ -11968,12 +12102,24 @@ impl KetchupApp {
             }
         }
         if self.active_tool == ActiveTool::Rotate {
-            let Some(angle_degrees) = parse_angle_degrees(&self.value_input)
-                .filter(|angle| rotation_is_meaningful(*angle))
+            let Some(angle_degrees) =
+                parse_angle_degrees(&self.value_input).filter(|angle| angle.abs() <= 360.0)
             else {
                 self.digest = self.catalog.text("digest-rotate-invalid-angle");
                 return false;
             };
+            // With no gesture in flight the value box edits the turn that just
+            // happened rather than adding a second one.
+            if self.rotate_drag.is_none()
+                && self.rotate_anchor.is_none()
+                && self.correct_last_rotation(angle_degrees)
+            {
+                return true;
+            }
+            if !rotation_is_meaningful(angle_degrees) {
+                self.digest = self.catalog.text("digest-rotate-invalid-angle");
+                return false;
+            }
             // A gesture in flight already knows its centre and axis; typing an
             // angle replaces the one read from the pointer.
             if let Some(mut drag) = self
