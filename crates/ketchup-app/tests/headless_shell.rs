@@ -1784,6 +1784,98 @@ fn a_viewport_drag_in_rotate_turns_the_occurrence_and_the_arrow_keys_pick_the_ax
     );
 }
 
+#[test]
+fn a_pinned_move_travels_along_the_blue_axis_and_the_arrow_releases_the_pin() {
+    let mut shell = Shell::new();
+    let rect = shell.viewport_rect();
+    shell.click_at(shell.top_face_centre(1));
+    let (origin, size) = shell
+        .app()
+        .occurrence_box_geometry(1)
+        .expect("the default scene has one box");
+    assert_eq!(origin.z, 0.0);
+    let top_centre = Vec3::new(
+        origin.x + size.x * 0.5,
+        origin.y + size.y * 0.5,
+        origin.z + size.z,
+    );
+
+    // Without a pin the pointer stays on the plane it grabbed, which is exactly
+    // why a part could never be set down on top of another one.
+    shell.click_command(AppCommand::Move);
+    let before_digest = shell.app().canonical_digest();
+    let from = shell.app().project_to_screen(top_centre, rect);
+    let lifted = Vec3::new(top_centre.x, top_centre.y, top_centre.z + 40.0);
+    shell.drag(from, shell.app().project_to_screen(lifted, rect));
+    assert_eq!(
+        shell.app().occurrence_box_geometry(1).unwrap().0.z,
+        0.0,
+        "an unpinned Move must keep its own plane: {:?}",
+        shell.app().action_digest()
+    );
+    if shell.app().canonical_digest() != before_digest {
+        shell.key(Key::Z, ctrl());
+    }
+    assert_eq!(shell.app().canonical_digest(), before_digest);
+
+    // The up arrow pins the travel to blue Z, and then the very same drag lifts
+    // the body by the full distance it was dragged.
+    shell.press_key(Key::ArrowUp);
+    let before_steps = shell.app().undo_step_count();
+    let from = shell.app().project_to_screen(top_centre, rect);
+    shell.drag(from, shell.app().project_to_screen(lifted, rect));
+    assert_eq!(
+        shell.app().undo_step_count(),
+        before_steps + 1,
+        "one pinned drag must be exactly one undo step: {:?}",
+        shell.app().action_digest()
+    );
+    assert_eq!(
+        shell.app().active_box_count(),
+        1,
+        "Move must not create geometry"
+    );
+    let raised = shell.app().occurrence_box_geometry(1).unwrap().0;
+    assert_eq!(
+        (raised.x, raised.y, raised.z),
+        (origin.x, origin.y, 40.0),
+        "a Move pinned to blue Z must travel only along it"
+    );
+
+    // The pin outlives the gesture, so a typed distance is read along the same
+    // axis instead of needing the whole vector spelled out.
+    shell.click_command(AppCommand::Move);
+    let anchor = Vec3::new(top_centre.x, top_centre.y, raised.z + size.z);
+    shell.click_at(shell.app().project_to_screen(anchor, rect));
+    let before_steps = shell.app().undo_step_count();
+    shell.type_text("25");
+    shell.press_key(Key::Enter);
+    assert_eq!(
+        shell.app().undo_step_count(),
+        before_steps + 1,
+        "a typed distance along the pinned axis must commit: {:?}",
+        shell.app().action_digest()
+    );
+    assert_eq!(
+        shell.app().occurrence_box_geometry(1).unwrap().0.z,
+        65.0,
+        "a typed distance must be read along the pinned axis"
+    );
+
+    // Pressing the same arrow again releases the pin, and an exact vector can
+    // still reach the blue axis on its own.
+    shell.press_key(Key::ArrowUp);
+    let before_steps = shell.app().undo_step_count();
+    shell.type_text("0,0,-15");
+    shell.press_key(Key::Enter);
+    assert_eq!(shell.app().undo_step_count(), before_steps + 1);
+    assert_eq!(
+        shell.app().occurrence_box_geometry(1).unwrap().0.z,
+        50.0,
+        "an exact x,y,z vector must move in Z with no pin at all"
+    );
+}
+
 /// Extents rounded to a micrometre, so a quarter turn can be compared exactly
 /// without asserting on the last bit of a sine.
 fn rounded_extents(size: Vec3) -> (f64, f64, f64) {

@@ -93,6 +93,9 @@ const INITIAL_BOX_DEFINITION: DefinitionId = DefinitionId(1);
 const BOX_WIDTH_MM: f64 = 100.0;
 const BOX_DEPTH_MM: f64 = 60.0;
 const GRID_STEP_MM: f64 = 10.0;
+/// A Move pinned to one axis snaps this finely, because a part being stacked on
+/// another is placed to the millimetre rather than to the layout grid.
+const MOVE_AXIS_STEP_MM: f64 = 1.0;
 /// Rotate snaps to this many degrees unless Shift asks for a free angle.
 const ROTATION_SNAP_DEGREES: f64 = 15.0;
 /// Below this arm length the pointer is effectively on the rotation centre and
@@ -286,6 +289,12 @@ struct MoveDrag {
     group_id: Option<GroupId>,
     pointer_start_world: Vec3,
     plane_z: f64,
+    /// The axis the arrow keys pinned this gesture to, if any. Without a pin
+    /// the pointer stays on the horizontal plane it started on.
+    axis: Option<Axis>,
+    /// Where along the pinned axis the gesture started, established from the
+    /// first pointer sample after the pin so the body never jumps.
+    axis_reference: Option<f64>,
     delta_mm: Vec3,
     copy: bool,
 }
@@ -1715,6 +1724,9 @@ pub struct KetchupApp {
     bottle_editor: Option<BottleEditorInputs>,
     move_drag: Option<MoveDrag>,
     move_anchor: Option<MoveDrag>,
+    /// The axis the arrow keys pinned the Move tool to, kept across gestures the
+    /// same way the Rotate lock is.
+    move_axis_lock: Option<Axis>,
     rotate_drag: Option<RotateDrag>,
     rotate_anchor: Option<RotateDrag>,
     /// The axis the arrow keys pinned the Rotate tool to, kept across gestures
@@ -1881,6 +1893,7 @@ impl KetchupApp {
             bottle_editor: None,
             move_drag: None,
             move_anchor: None,
+            move_axis_lock: None,
             rotate_drag: None,
             rotate_anchor: None,
             rotate_axis_lock: None,
@@ -2037,6 +2050,7 @@ impl KetchupApp {
         self.bottle_editor = None;
         self.move_drag = None;
         self.move_anchor = None;
+        self.move_axis_lock = None;
         self.rotate_drag = None;
         self.rotate_anchor = None;
         self.rotate_axis_lock = None;
@@ -10681,6 +10695,13 @@ impl KetchupApp {
         self.value_input = "0".to_owned();
         let snapshot = self.document.current();
         let group_id = self.selection.selected_group;
+        // The press itself is where the travel starts. Waiting for the first
+        // pointer sample instead would silently drop the opening slice of the
+        // gesture, and the body would land short of where it was dragged.
+        let axis_reference = self.move_axis_lock.and_then(|axis| {
+            let ray = self.view_ray(pointer, rect)?;
+            axis_travel_along(&ray, pointer_start_world, axis)
+        });
         self.move_drag = Some(MoveDrag {
             source_document_id: snapshot.document_id(),
             source_revision: snapshot.revision_id(),
@@ -10688,10 +10709,71 @@ impl KetchupApp {
             group_id,
             pointer_start_world,
             plane_z,
+            axis: self.move_axis_lock,
+            axis_reference,
             delta_mm: Vec3::ZERO,
             copy: group_id.is_none() && copy,
         });
         true
+    }
+
+    /// Re-read the live translation from the pointer, either along the pinned
+    /// axis or across the horizontal plane the gesture started on.
+    ///
+    /// The first sample after a pin only establishes where the gesture sits on
+    /// that axis, so pinning mid-drag never makes the body jump.
+    fn advance_move(&self, drag: &mut MoveDrag, pointer: Pos2, rect: Rect, free: bool) {
+        let Some(axis) = drag.axis else {
+            if let Some(world) = self.screen_to_plane(pointer, rect, drag.plane_z) {
+                drag.delta_mm = snapped_move_delta(drag.pointer_start_world, world, free);
+            }
+            return;
+        };
+        let Some(ray) = self.view_ray(pointer, rect) else {
+            return;
+        };
+        let Some(travel) = axis_travel_along(&ray, drag.pointer_start_world, axis) else {
+            return;
+        };
+        let Some(reference) = drag.axis_reference else {
+            drag.axis_reference = Some(travel);
+            drag.delta_mm = Vec3::ZERO;
+            return;
+        };
+        let distance = travel - reference;
+        let snapped = if free {
+            (distance * 10.0).round() / 10.0
+        } else {
+            (distance / MOVE_AXIS_STEP_MM).round() * MOVE_AXIS_STEP_MM
+        };
+        drag.delta_mm = axis_direction(axis) * snapped;
+    }
+
+    /// Whether the value box currently owns the keyboard, either because it
+    /// already has focus or because a keystroke this frame asked for it.
+    fn value_box_is_being_typed_into(&self, context: &egui::Context) -> bool {
+        self.focus_value_box || context.wants_keyboard_input()
+    }
+
+    /// Pin the Move tool to `axis`, or release the pin when `axis` is `None`.
+    fn set_move_axis_lock(&mut self, axis: Option<Axis>) {
+        self.move_axis_lock = axis;
+        for slot in [&mut self.move_drag, &mut self.move_anchor] {
+            if let Some(drag) = slot.as_mut() {
+                drag.axis = axis;
+                drag.axis_reference = None;
+                drag.delta_mm = Vec3::ZERO;
+            }
+        }
+        self.value_input = "0".to_owned();
+        self.digest = self.catalog.format(
+            "digest-move-axis-locked",
+            &BTreeMap::from([(
+                "axis",
+                self.catalog
+                    .text(axis.map_or("axis-name-plane", axis_name_key)),
+            )]),
+        );
     }
 
     /// The Rotate gesture currently driving a preview, if any.
@@ -11787,7 +11869,33 @@ impl KetchupApp {
             }
         }
         if self.active_tool == ActiveTool::Move {
-            if let Some(delta_mm) = parse_move_vector(&self.value_input) {
+            // A pinned axis turns a plain number into travel along that axis,
+            // which is how a part gets set down exactly 25 mm higher.
+            let typed = parse_move_vector(&self.value_input).or_else(|| {
+                let axis = self.move_axis_lock?;
+                let distance = parse_distance_mm(&self.value_input)?;
+                (distance.abs() >= 0.01).then(|| axis_direction(axis) * distance)
+            });
+            // A gesture in flight already knows its target and its copy mode;
+            // typing a value replaces the one the pointer is showing.
+            if let Some(delta_mm) = typed
+                && let Some(mut drag) = self.move_drag.take().or_else(|| self.move_anchor.take())
+            {
+                if !self.move_preview_is_current(&drag) {
+                    self.digest = self.catalog.text("error-preview-stale");
+                    return false;
+                }
+                drag.delta_mm = delta_mm;
+                if self.commit_move_drag(&drag) {
+                    self.digest = self.catalog.format(
+                        "digest-exact-move-applied",
+                        &BTreeMap::from([("value", format_vector_mm(delta_mm))]),
+                    );
+                    return true;
+                }
+                return false;
+            }
+            if let Some(delta_mm) = typed {
                 if self.move_selected(delta_mm) {
                     self.digest = self.catalog.format(
                         "digest-exact-move-applied",
@@ -12412,15 +12520,12 @@ impl KetchupApp {
                     if !self.move_preview_is_current(&anchor) {
                         self.digest = self.catalog.text("error-preview-stale");
                     } else {
-                        if let Some(pointer_world) =
-                            self.screen_to_plane(pointer, response.rect, anchor.plane_z)
-                        {
-                            anchor.delta_mm = snapped_move_delta(
-                                anchor.pointer_start_world,
-                                pointer_world,
-                                ui.input(|input| input.modifiers.shift),
-                            );
-                        }
+                        self.advance_move(
+                            &mut anchor,
+                            pointer,
+                            response.rect,
+                            ui.input(|input| input.modifiers.shift),
+                        );
                         if vector_length(anchor.delta_mm) >= 0.01 {
                             self.commit_move_drag(&anchor);
                         } else {
@@ -12481,20 +12586,25 @@ impl KetchupApp {
         if self.active_tool == ActiveTool::Move
             && self.move_drag.is_none()
             && let Some(mut anchor) = self.move_anchor.clone()
+            && self.move_preview_is_current(&anchor)
             && let Some(pointer) = response.hover_pos()
-            && let Some(pointer_world) =
-                self.screen_to_plane(pointer, response.rect, anchor.plane_z)
         {
-            anchor.delta_mm = snapped_move_delta(
-                anchor.pointer_start_world,
-                pointer_world,
+            self.advance_move(
+                &mut anchor,
+                pointer,
+                response.rect,
                 ui.input(|input| input.modifiers.shift),
             );
             let distance = vector_length(anchor.delta_mm);
             let delta_mm = anchor.delta_mm;
             let copy = anchor.copy;
             self.move_anchor = Some(anchor);
-            self.value_input = format_height(distance);
+            // While an anchor waits, the pointer only proposes a value. Typing
+            // one is the stronger statement, so the live reading must not
+            // overwrite what is being entered.
+            if !self.value_box_is_being_typed_into(ui.ctx()) {
+                self.value_input = format_height(distance);
+            }
             self.digest = self.catalog.format(
                 if copy {
                     "digest-copy-live"
@@ -12524,7 +12634,9 @@ impl KetchupApp {
             let axis = anchor.axis;
             let copy = anchor.copy;
             self.rotate_anchor = Some(anchor);
-            self.value_input = format_angle(angle);
+            if !self.value_box_is_being_typed_into(ui.ctx()) {
+                self.value_input = format_angle(angle);
+            }
             self.digest = self.catalog.format(
                 if copy {
                     "digest-rotate-copy-live"
@@ -12561,31 +12673,28 @@ impl KetchupApp {
             } else if let (Some(mut drag), Some(pointer)) =
                 (self.move_drag.clone(), response.interact_pointer_pos())
             {
-                if let Some(pointer_world) =
-                    self.screen_to_plane(pointer, response.rect, drag.plane_z)
-                {
-                    drag.delta_mm = snapped_move_delta(
-                        drag.pointer_start_world,
-                        pointer_world,
-                        ui.input(|input| input.modifiers.shift),
-                    );
-                    let distance = vector_length(drag.delta_mm);
-                    let delta_mm = drag.delta_mm;
-                    let copy = drag.copy;
-                    self.move_drag = Some(drag);
-                    self.value_input = format_height(distance);
-                    self.digest = self.catalog.format(
-                        if copy {
-                            "digest-copy-live"
-                        } else {
-                            "digest-move-live"
-                        },
-                        &BTreeMap::from([
-                            ("distance", format_height(distance)),
-                            ("vector", format_vector_mm(delta_mm)),
-                        ]),
-                    );
-                }
+                self.advance_move(
+                    &mut drag,
+                    pointer,
+                    response.rect,
+                    ui.input(|input| input.modifiers.shift),
+                );
+                let distance = vector_length(drag.delta_mm);
+                let delta_mm = drag.delta_mm;
+                let copy = drag.copy;
+                self.move_drag = Some(drag);
+                self.value_input = format_height(distance);
+                self.digest = self.catalog.format(
+                    if copy {
+                        "digest-copy-live"
+                    } else {
+                        "digest-move-live"
+                    },
+                    &BTreeMap::from([
+                        ("distance", format_height(distance)),
+                        ("vector", format_vector_mm(delta_mm)),
+                    ]),
+                );
             } else if let (Some(mut drag), Some(pointer)) =
                 (self.rotate_drag.clone(), response.interact_pointer_pos())
             {
@@ -13875,7 +13984,9 @@ impl KetchupApp {
         // SketchUp pins the protractor to a coloured axis with the arrow keys.
         // The lock is read before the command chain because an arrow must never
         // fall through to a tool shortcut.
-        if self.active_tool == ActiveTool::Rotate && !context.wants_keyboard_input() {
+        if matches!(self.active_tool, ActiveTool::Rotate | ActiveTool::Move)
+            && !context.wants_keyboard_input()
+        {
             let requested = [
                 (egui::Key::ArrowRight, Some(Axis::X)),
                 (egui::Key::ArrowLeft, Some(Axis::Y)),
@@ -13887,14 +13998,23 @@ impl KetchupApp {
                 context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, *key))
             });
             if let Some((_, axis)) = requested {
+                let held = if self.active_tool == ActiveTool::Move {
+                    self.move_axis_lock
+                } else {
+                    self.rotate_axis_lock
+                };
                 // Pressing the axis already held releases it, so one key both
                 // locks and unlocks.
-                let axis = if axis.is_some() && axis == self.rotate_axis_lock {
+                let axis = if axis.is_some() && axis == held {
                     None
                 } else {
                     axis
                 };
-                self.set_rotate_axis_lock(axis);
+                if self.active_tool == ActiveTool::Move {
+                    self.set_move_axis_lock(axis);
+                } else {
+                    self.set_rotate_axis_lock(axis);
+                }
             }
         }
 
@@ -17624,6 +17744,32 @@ fn cross(left: Vec3, right: Vec3) -> Vec3 {
         left.z * right.x - left.x * right.z,
         left.x * right.y - left.y * right.x,
     )
+}
+
+/// How far along the line through `anchor` in direction `axis` the pointer has
+/// reached, measured at the point where that line passes closest to the view
+/// ray.
+///
+/// Intersecting a plane is not enough here: the blue axis is vertical, and the
+/// vertical plane that would carry it is not defined by the axis alone. Taking
+/// the closest approach instead works for all three axes and only fails when the
+/// axis points almost straight at the eye, where the reading would be noise
+/// anyway.
+fn axis_travel_along(ray: &Ray, anchor: Vec3, axis: Axis) -> Option<f64> {
+    let unit = axis_direction(axis);
+    let separation = anchor - ray.origin;
+    let ray_length_squared = dot(ray.direction, ray.direction);
+    let alignment = dot(unit, ray.direction);
+    // `unit` is a unit vector, so its own square length is exactly one.
+    let denominator = ray_length_squared - alignment * alignment;
+    if denominator.abs() <= 1.0e-9 {
+        return None;
+    }
+    let travel = alignment.mul_add(
+        dot(ray.direction, separation),
+        -ray_length_squared * dot(unit, separation),
+    ) / denominator;
+    travel.is_finite().then_some(travel)
 }
 
 const fn axis_direction(axis: Axis) -> Vec3 {
