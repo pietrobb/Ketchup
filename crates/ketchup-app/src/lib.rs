@@ -322,6 +322,18 @@ struct RotateDrag {
     copy: bool,
 }
 
+/// The on-screen protractor a frame draws for the Rotate tool.
+#[derive(Clone, Copy)]
+struct RotationGuide {
+    centre_mm: Vec3,
+    axis: Axis,
+    radius_mm: f64,
+    /// Where the starting arm points inside the rotation plane, once a gesture
+    /// has established one. `None` means the tool is merely armed.
+    start_degrees: Option<f64>,
+    angle_degrees: f64,
+}
+
 #[derive(Clone, Copy)]
 struct LastMove {
     occurrence_id: OccurrenceId,
@@ -10869,8 +10881,22 @@ impl KetchupApp {
     /// The world point a Rotate gesture turns about: the centre of the painted
     /// bounds of everything the gesture applies to.
     fn rotation_centre_for(&self, applies: &dyn Fn(&InstancePath) -> bool) -> Option<Vec3> {
+        let [minimum, maximum] = self.rotation_bounds_for(applies)?;
+        Some((minimum + maximum) * 0.5)
+    }
+
+    /// The painted world bounds of everything a Rotate gesture applies to.
+    ///
+    /// The guide needs the extent as well as the centre, so the protractor is
+    /// drawn around the body instead of at an arbitrary fixed radius.
+    fn rotation_bounds_for(&self, applies: &dyn Fn(&InstancePath) -> bool) -> Option<[Vec3; 2]> {
         let snapshot = self.document.current();
-        let projection = CanonicalInteractionProjection::from_snapshot(&snapshot);
+        self.refresh_interaction_projection_cache(&snapshot);
+        let cache = self.interaction_projection_cache.borrow();
+        let projection = &cache
+            .as_ref()
+            .expect("interaction cache was built")
+            .canonical;
         let corners = projection
             .occurrences()
             .iter()
@@ -10888,8 +10914,7 @@ impl KetchupApp {
             })
             .flatten()
             .collect::<Vec<_>>();
-        let [minimum, maximum] = bounds_of(corners.into_iter())?;
-        Some((minimum + maximum) * 0.5)
+        bounds_of(corners.into_iter())
     }
 
     fn screen_to_rotation_plane(
@@ -11004,6 +11029,159 @@ impl KetchupApp {
                     None => "axis-name-free",
                 }),
             )]),
+        );
+    }
+
+    /// What the Rotate guide should draw this frame, if anything.
+    ///
+    /// The guide appears as soon as the tool is armed on a selection, not only
+    /// once a gesture is in flight: the whole point is to show which body will
+    /// turn and about which coloured axis before anything moves.
+    fn rotation_guide(&self) -> Option<RotationGuide> {
+        if self.active_tool != ActiveTool::Rotate {
+            return None;
+        }
+        if let Some(drag) = self.active_rotate_gesture() {
+            let bounds = self.rotation_bounds_for(&|path: &InstancePath| {
+                self.rotate_drag_applies_to_path(drag, path)
+            })?;
+            return Some(RotationGuide {
+                centre_mm: drag.centre_mm,
+                axis: drag.axis,
+                radius_mm: rotation_guide_radius(bounds, drag.axis),
+                start_degrees: drag
+                    .reference_mm
+                    .and_then(|arm| plane_angle_degrees(arm, drag.axis)),
+                angle_degrees: drag.angle_degrees,
+            });
+        }
+        let axis = self.rotate_axis_lock.unwrap_or(Axis::Z);
+        let bounds = if let Some(group_id) = self.selection.selected_group {
+            let snapshot = self.document.current();
+            self.rotation_bounds_for(&|path: &InstancePath| {
+                Self::group_contains_occurrence(&snapshot, group_id, path.root_occurrence())
+            })?
+        } else {
+            let target = self.selected_move_reference()?.instance_path;
+            self.rotation_bounds_for(&|path: &InstancePath| *path == target)?
+        };
+        Some(RotationGuide {
+            centre_mm: (bounds[0] + bounds[1]) * 0.5,
+            axis,
+            radius_mm: rotation_guide_radius(bounds, axis),
+            start_degrees: None,
+            angle_degrees: 0.0,
+        })
+    }
+
+    /// Paint the Rotate protractor: the coloured axis through the body, the
+    /// ring it turns in, its snap ticks, and the swept angle once a gesture has
+    /// an arm to measure from.
+    fn paint_rotation_guide(&self, painter: &egui::Painter, rect: Rect) {
+        let Some(guide) = self.rotation_guide() else {
+            return;
+        };
+        let colour = axis_color(guide.axis);
+        let faint = Color32::from_rgba_unmultiplied(colour.r(), colour.g(), colour.b(), 130);
+        let at = |scale: f64, degrees: f64| {
+            self.project(
+                rotation_plane_point(
+                    guide.centre_mm,
+                    guide.axis,
+                    guide.radius_mm * scale,
+                    degrees,
+                ),
+                rect,
+            )
+        };
+
+        let reach = axis_direction(guide.axis) * (guide.radius_mm * 1.8);
+        painter.line_segment(
+            [
+                self.project(guide.centre_mm - reach, rect),
+                self.project(guide.centre_mm + reach, rect),
+            ],
+            Stroke::new(
+                if self.rotate_axis_lock.is_some() {
+                    2.4_f32
+                } else {
+                    1.4_f32
+                },
+                colour,
+            ),
+        );
+
+        // The ring is sampled in the rotation plane rather than drawn as a
+        // screen circle, so it projects to the ellipse the camera really sees
+        // and reads as a plane in space.
+        const RING_SAMPLES: u32 = 72;
+        painter.add(egui::Shape::line(
+            (0..=RING_SAMPLES)
+                .map(|step| at(1.0, f64::from(step) * 360.0 / f64::from(RING_SAMPLES)))
+                .collect(),
+            Stroke::new(1.6_f32, faint),
+        ));
+        let ticks = (360.0 / ROTATION_SNAP_DEGREES).round() as i32;
+        for index in 0..ticks {
+            let degrees = f64::from(index) * ROTATION_SNAP_DEGREES;
+            let quarter = index % (ticks / 4).max(1) == 0;
+            painter.line_segment(
+                [
+                    at(if quarter { 0.88 } else { 0.95 }, degrees),
+                    at(1.0, degrees),
+                ],
+                Stroke::new(if quarter { 1.6_f32 } else { 1.0_f32 }, faint),
+            );
+        }
+        painter.circle_filled(self.project(guide.centre_mm, rect), 3.5, colour);
+
+        let Some(start) = guide.start_degrees else {
+            return;
+        };
+        let end = start + guide.angle_degrees;
+        painter.line_segment(
+            [self.project(guide.centre_mm, rect), at(1.0, start)],
+            Stroke::new(1.6_f32, Color32::from_gray(190)),
+        );
+        painter.line_segment(
+            [self.project(guide.centre_mm, rect), at(1.06, end)],
+            Stroke::new(2.0_f32, colour),
+        );
+        if guide.angle_degrees.abs() >= 0.5 {
+            let steps = (guide.angle_degrees.abs() / 3.0).ceil().max(1.0) as u32;
+            painter.add(egui::Shape::line(
+                (0..=steps)
+                    .map(|step| {
+                        at(
+                            0.86,
+                            start + guide.angle_degrees * f64::from(step) / f64::from(steps),
+                        )
+                    })
+                    .collect(),
+                Stroke::new(2.6_f32, colour),
+            ));
+            let tip = at(0.86, end);
+            let tail = at(0.86, end - 6.0 * guide.angle_degrees.signum());
+            if (tip - tail).length() > 0.5 {
+                let along = (tip - tail).normalized();
+                let across = Vec2::new(-along.y, along.x);
+                painter.add(egui::Shape::convex_polygon(
+                    vec![
+                        tip + along * 7.0,
+                        tip - along * 4.0 + across * 4.5,
+                        tip - along * 4.0 - across * 4.5,
+                    ],
+                    colour,
+                    Stroke::NONE,
+                ));
+            }
+        }
+        painter.text(
+            at(1.22, end),
+            egui::Align2::CENTER_CENTER,
+            format!("{}°", format_angle(guide.angle_degrees)),
+            egui::FontId::proportional(14.0),
+            Color32::WHITE,
         );
     }
 
@@ -13353,6 +13531,8 @@ impl KetchupApp {
             );
         }
 
+        self.paint_rotation_guide(&painter, response.rect);
+
         if let Some((start, end)) = self.measure_span() {
             let from = self.project(start, response.rect);
             let to = self.project(end, response.rect);
@@ -14635,17 +14815,17 @@ impl KetchupApp {
             (
                 Vec3::new(x_min, 0.0, 0.0),
                 Vec3::new(x_max, 0.0, 0.0),
-                Color32::from_rgb(224, 86, 63),
+                axis_color(Axis::X),
             ),
             (
                 Vec3::new(0.0, y_min, 0.0),
                 Vec3::new(0.0, y_max, 0.0),
-                Color32::from_rgb(93, 187, 99),
+                axis_color(Axis::Y),
             ),
             (
                 Vec3::new(0.0, 0.0, -half_reach),
                 Vec3::new(0.0, 0.0, half_reach),
-                Color32::from_rgb(78, 134, 199),
+                axis_color(Axis::Z),
             ),
         ] {
             painter.line_segment(
@@ -17853,6 +18033,52 @@ fn rotation_is_meaningful(angle_degrees: f64) -> bool {
     angle_degrees.is_finite() && angle_degrees.abs() >= 0.01 && angle_degrees.abs() <= 360.0
 }
 
+/// Red X, green Y, blue Z — the convention every modeller shares, so it is
+/// deliberately independent of the theme palette.
+const fn axis_color(axis: Axis) -> Color32 {
+    match axis {
+        Axis::X => Color32::from_rgb(224, 86, 63),
+        Axis::Y => Color32::from_rgb(93, 187, 99),
+        Axis::Z => Color32::from_rgb(78, 134, 199),
+    }
+}
+
+/// The two in-plane unit vectors of the rotation plane, ordered so that turning
+/// from the first towards the second is the positive direction about `axis`.
+const fn axis_plane_frame(axis: Axis) -> (Vec3, Vec3) {
+    match axis {
+        Axis::X => (axis_direction(Axis::Y), axis_direction(Axis::Z)),
+        Axis::Y => (axis_direction(Axis::Z), axis_direction(Axis::X)),
+        Axis::Z => (axis_direction(Axis::X), axis_direction(Axis::Y)),
+    }
+}
+
+fn rotation_plane_point(centre_mm: Vec3, axis: Axis, radius_mm: f64, degrees: f64) -> Vec3 {
+    let (first, second) = axis_plane_frame(axis);
+    let (sin, cos) = degrees.to_radians().sin_cos();
+    centre_mm + first * (radius_mm * cos) + second * (radius_mm * sin)
+}
+
+/// Where an arm points inside the rotation plane, in the same degrees the
+/// gesture reports.
+fn plane_angle_degrees(arm_mm: Vec3, axis: Axis) -> Option<f64> {
+    let (first, second) = axis_plane_frame(axis);
+    let (along, across) = (dot(arm_mm, first), dot(arm_mm, second));
+    (along.hypot(across) >= ROTATION_MIN_ARM_MM).then(|| across.atan2(along).to_degrees())
+}
+
+/// A protractor radius that clears the body it turns, taken from the extent in
+/// the rotation plane rather than from a fixed screen size.
+fn rotation_guide_radius(bounds: [Vec3; 2], axis: Axis) -> f64 {
+    let size = bounds[1] - bounds[0];
+    let (first, second) = match axis {
+        Axis::X => (size.y, size.z),
+        Axis::Y => (size.z, size.x),
+        Axis::Z => (size.x, size.y),
+    };
+    (first.max(second) * 0.62).max(1.0)
+}
+
 const fn axis_name_key(axis: Axis) -> &'static str {
     match axis {
         Axis::X => "axis-name-x",
@@ -20285,6 +20511,102 @@ endsolid tetrahedron\n";
             selected > 0,
             "a selected canonical mesh body must paint its selection outline"
         );
+    }
+
+    /// The Rotate tool is useless if the user cannot see what will turn and
+    /// about which axis, so the protractor is asserted on the painted frame
+    /// rather than trusted because the state exists.
+    #[test]
+    fn the_armed_rotate_tool_paints_a_protractor_on_the_axis_it_will_turn_about() {
+        let mut app = KetchupApp::new();
+        let context = egui::Context::default();
+        select_initial_top_face(&mut app);
+
+        let blue = guide_tick_colour(Axis::Z);
+        let red = guide_tick_colour(Axis::X);
+        assert_eq!(
+            painted_segments(&context, &mut app, blue),
+            0,
+            "no other tool may paint a rotation protractor"
+        );
+
+        app.dispatch_command(AppCommand::Rotate);
+        let ticks = (360.0 / ROTATION_SNAP_DEGREES).round() as usize;
+        assert_eq!(
+            painted_segments(&context, &mut app, blue),
+            ticks,
+            "arming Rotate on a selection must show the blue Z protractor before any gesture"
+        );
+
+        // Pinning an axis has to move the protractor with it, otherwise the
+        // arrow keys change the outcome invisibly.
+        app.set_rotate_axis_lock(Some(Axis::X));
+        assert_eq!(painted_segments(&context, &mut app, blue), 0);
+        assert_eq!(painted_segments(&context, &mut app, red), ticks);
+
+        // A gesture in flight must additionally show where it started and how
+        // far it has come, which is the part that answers "which way".
+        app.set_rotate_axis_lock(Some(Axis::Z));
+        let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(1_000.0, 800.0));
+        app.viewport_rect = Some(rect);
+        let grab = app.project(Vec3::new(90.0, 30.0, 20.0), rect);
+        app.update_viewport_inference(Some(grab), rect);
+        assert!(app.begin_rotate_drag_at(grab, rect, false));
+        let mut drag = app.rotate_drag.take().expect("the gesture has started");
+        app.advance_rotation(
+            &mut drag,
+            app.project(Vec3::new(50.0, 90.0, 20.0), rect),
+            rect,
+            false,
+        );
+        app.rotate_drag = Some(drag);
+        let guide = app.rotation_guide().expect("a live gesture has a guide");
+        assert!(
+            guide.start_degrees.is_some(),
+            "the starting arm must be drawn so the turn has a visible origin"
+        );
+        assert!(
+            rotation_is_meaningful(guide.angle_degrees),
+            "the swept angle must reach the guide: {:?}",
+            guide.angle_degrees
+        );
+
+        app.dispatch_command(AppCommand::Select);
+        app.clear_selection();
+        app.dispatch_command(AppCommand::Rotate);
+        assert_eq!(
+            painted_segments(&context, &mut app, blue),
+            0,
+            "with nothing selected there is no body to turn and nothing to draw"
+        );
+    }
+
+    /// The faint ring-and-tick colour the guide uses, which no other viewport
+    /// layer paints — the solid axis lines of the ground plane are opaque.
+    fn guide_tick_colour(axis: Axis) -> Color32 {
+        let solid = axis_color(axis);
+        Color32::from_rgba_unmultiplied(solid.r(), solid.g(), solid.b(), 130)
+    }
+
+    fn painted_segments(context: &egui::Context, app: &mut KetchupApp, colour: Color32) -> usize {
+        let output = context.run(egui::RawInput::default(), |context| app.ui(context));
+        let mut count = 0;
+        for clipped in output.shapes {
+            count_segments_coloured(&clipped.shape, colour, &mut count);
+        }
+        count
+    }
+
+    fn count_segments_coloured(shape: &egui::Shape, colour: Color32, count: &mut usize) {
+        match shape {
+            egui::Shape::LineSegment { stroke, .. } if stroke.color == colour => *count += 1,
+            egui::Shape::Vec(shapes) => {
+                for shape in shapes {
+                    count_segments_coloured(shape, colour, count);
+                }
+            }
+            _ => {}
+        }
     }
 
     fn selection_stroke_segments(context: &egui::Context, app: &mut KetchupApp) -> usize {
