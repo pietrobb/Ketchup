@@ -42,9 +42,10 @@ use ketchup_core::graph::{
 };
 use ketchup_core::import::{
     DxfImportOptions, ImportDiagnosticSeverity, ImportFormat, ImportLengthUnit,
-    ImportUnitAuthority, ImportUnitDecision, MAX_DXF_SOURCE_BYTES, MAX_STEP_SOURCE_BYTES,
-    MAX_STL_SOURCE_BYTES, ParsedDxf, STEP_PARSER_ID, STEP_PARSER_VERSION, StepImportEvidence,
-    inspect_dxf, plan_dxf_import, plan_step_import, plan_stl_import,
+    ImportUnitAuthority, ImportUnitDecision, MAX_DXF_SOURCE_BYTES, MAX_SKETCHUP_SCENE_SOURCE_BYTES,
+    MAX_STEP_SOURCE_BYTES, MAX_STL_SOURCE_BYTES, ParsedDxf, ParsedSketchupScene, STEP_PARSER_ID,
+    STEP_PARSER_VERSION, StepImportEvidence, inspect_dxf, inspect_sketchup_scene, plan_dxf_import,
+    plan_sketchup_scene_import, plan_step_import, plan_stl_import,
 };
 use ketchup_core::intent::{IntentRequest, WorkflowIntent, propose_intent};
 use ketchup_core::prismatic::JointId;
@@ -843,6 +844,7 @@ pub enum AppCommand {
     ImportMeshStl,
     ImportDrawingDxf,
     ImportExactStep,
+    ImportSketchupScene,
     ExportExactStep,
     ExportMeshStl,
     Select,
@@ -927,7 +929,7 @@ struct CommandSpec {
 struct CommandRegistry;
 
 impl CommandRegistry {
-    const COMMANDS: [CommandSpec; 52] = [
+    const COMMANDS: [CommandSpec; 53] = [
         CommandSpec {
             id: AppCommand::New,
             label_key: "file-new",
@@ -973,6 +975,13 @@ impl CommandRegistry {
         CommandSpec {
             id: AppCommand::ImportExactStep,
             label_key: "file-import-step",
+            shortcut_key: "shortcut-none",
+            tool: None,
+            implemented: true,
+        },
+        CommandSpec {
+            id: AppCommand::ImportSketchupScene,
+            label_key: "file-import-sketchup-scene",
             shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
@@ -1682,6 +1691,19 @@ struct PendingDxfImport {
     source_byte_len: u64,
 }
 
+#[derive(Clone, Debug)]
+struct PendingSketchupSceneImport {
+    path: PathBuf,
+    source: Vec<u8>,
+    review: ParsedSketchupScene,
+    invalidated: bool,
+    document_id: DocumentId,
+    revision_id: u64,
+    canonical_digest: String,
+    source_sha256: [u8; 32],
+    source_byte_len: u64,
+}
+
 pub struct KetchupApp {
     document: DocumentStore,
     container_data: ketchup_core::persistence::ContainerData,
@@ -1779,6 +1801,7 @@ pub struct KetchupApp {
     pending_stl_import: Option<PendingStlImport>,
     pending_dxf_import: Option<PendingDxfImport>,
     pending_step_import: Option<PendingStepImport>,
+    pending_sketchup_scene_import: Option<PendingSketchupSceneImport>,
     viewport_rect: Option<Rect>,
     dialogs: Box<dyn FileDialogs>,
     exact_worker_path: Option<PathBuf>,
@@ -1945,6 +1968,7 @@ impl KetchupApp {
             pending_stl_import: None,
             pending_dxf_import: None,
             pending_step_import: None,
+            pending_sketchup_scene_import: None,
             viewport_rect: None,
             dialogs: Box::new(NativeFileDialogs::default()),
             exact_worker_path: None,
@@ -2037,6 +2061,9 @@ impl KetchupApp {
             pending.invalidated = true;
         }
         if let Some(pending) = self.pending_step_import.as_mut() {
+            pending.invalidated = true;
+        }
+        if let Some(pending) = self.pending_sketchup_scene_import.as_mut() {
             pending.invalidated = true;
         }
     }
@@ -2720,6 +2747,95 @@ impl KetchupApp {
         }
     }
 
+    fn choose_sketchup_scene_import_path(&mut self) -> Option<PathBuf> {
+        let filter_label = self.catalog.text("file-filter-sketchup-scene");
+        self.dialogs.pick_import_path(ImportDialogRequest {
+            format: ImportFormat::SketchupScene,
+            filter_label: &filter_label,
+            extensions: &["kscene"],
+        })
+    }
+
+    fn read_sketchup_scene_source(path: &Path) -> Result<Vec<u8>, String> {
+        if std::fs::metadata(path)
+            .map_err(|error| error.to_string())?
+            .len()
+            > MAX_SKETCHUP_SCENE_SOURCE_BYTES
+        {
+            return Err("SketchUp scene package exceeds the bounded 32 MiB envelope".to_owned());
+        }
+        let mut file = std::fs::File::open(path).map_err(|error| error.to_string())?;
+        let mut source = Vec::new();
+        std::io::Read::by_ref(&mut file)
+            .take(MAX_SKETCHUP_SCENE_SOURCE_BYTES + 1)
+            .read_to_end(&mut source)
+            .map_err(|error| error.to_string())?;
+        if source.len() as u64 > MAX_SKETCHUP_SCENE_SOURCE_BYTES {
+            return Err("SketchUp scene package exceeds the bounded 32 MiB envelope".to_owned());
+        }
+        Ok(source)
+    }
+
+    fn import_sketchup_scene_from(&mut self, pending: &PendingSketchupSceneImport) -> bool {
+        let path = &pending.path;
+        let result = (|| {
+            let snapshot = self.document.current();
+            if pending.invalidated
+                || snapshot.document_id() != pending.document_id
+                || snapshot.revision_id() != pending.revision_id
+                || snapshot.canonical_digest() != pending.canonical_digest
+            {
+                return Err(
+                    "SketchUp scene import review is stale for the active document".to_owned(),
+                );
+            }
+            let source = Self::read_sketchup_scene_source(path)?;
+            if source.len() as u64 != pending.source_byte_len
+                || sha256_bytes(&source) != pending.source_sha256
+                || source != pending.source
+            {
+                return Err(
+                    "SketchUp scene package changed after it was selected for review".to_owned(),
+                );
+            }
+            let source_name = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or_else(|| "SketchUp scene source name is not valid UTF-8".to_owned())?;
+            let batch = std::panic::catch_unwind(|| {
+                plan_sketchup_scene_import(&snapshot, &source, source_name)
+            })
+            .map_err(|_| {
+                "bounded SketchUp scene parser stopped without publishing geometry".to_owned()
+            })?
+            .map_err(|error| error.to_string())?;
+            let proposal = self
+                .document
+                .prepare_proposal_with_context(batch, ProposalContext::canonical_preview())
+                .map_err(|error| error.to_string())?;
+            self.document
+                .commit_verified_proposal(&proposal)
+                .map_err(|error| error.to_string())?;
+            Ok::<(), String>(())
+        })();
+        match result {
+            Ok(()) => {
+                self.digest = self.catalog.format(
+                    "digest-imported-sketchup-scene",
+                    &BTreeMap::from([("path", path.display().to_string())]),
+                );
+                true
+            }
+            Err(reason) => {
+                self.digest = self.catalog.format(
+                    "error-import-sketchup-scene",
+                    &BTreeMap::from([("path", path.display().to_string()), ("reason", reason)]),
+                );
+                false
+            }
+        }
+    }
+
     fn current_visible_exact_model(
         &self,
         snapshot: &Snapshot,
@@ -3005,6 +3121,57 @@ impl KetchupApp {
                             self.pending_step_import = None;
                             self.digest = self.catalog.format(
                                 "error-import-step",
+                                &BTreeMap::from([
+                                    ("path", path.display().to_string()),
+                                    ("reason", reason),
+                                ]),
+                            );
+                        }
+                    }
+                }
+            }
+            AppCommand::ImportSketchupScene => {
+                if let Some(path) = self.choose_sketchup_scene_import_path() {
+                    let result = Self::read_sketchup_scene_source(&path).and_then(|source| {
+                        let review = std::panic::catch_unwind(|| inspect_sketchup_scene(&source))
+                            .map_err(|_| {
+                                "bounded SketchUp scene parser stopped without publishing geometry"
+                                    .to_owned()
+                            })?
+                            .map_err(|error| error.to_string())?;
+                        let snapshot = self.document.current();
+                        let source_name = path
+                            .file_name()
+                            .and_then(|name| name.to_str())
+                            .ok_or_else(|| {
+                                "SketchUp scene source name is not valid UTF-8".to_owned()
+                            })?;
+                        let batch = plan_sketchup_scene_import(&snapshot, &source, source_name)
+                            .map_err(|error| error.to_string())?;
+                        self.document
+                            .prepare_proposal_with_context(
+                                batch,
+                                ProposalContext::canonical_preview(),
+                            )
+                            .map_err(|error| error.to_string())?;
+                        Ok(PendingSketchupSceneImport {
+                            path: path.clone(),
+                            source_byte_len: source.len() as u64,
+                            source_sha256: sha256_bytes(&source),
+                            source,
+                            review,
+                            invalidated: false,
+                            document_id: snapshot.document_id(),
+                            revision_id: snapshot.revision_id(),
+                            canonical_digest: snapshot.canonical_digest(),
+                        })
+                    });
+                    match result {
+                        Ok(pending) => self.pending_sketchup_scene_import = Some(pending),
+                        Err(reason) => {
+                            self.pending_sketchup_scene_import = None;
+                            self.digest = self.catalog.format(
+                                "error-import-sketchup-scene",
                                 &BTreeMap::from([
                                     ("path", path.display().to_string()),
                                     ("reason", reason),
@@ -7211,6 +7378,7 @@ impl KetchupApp {
             | AppCommand::ImportMeshStl
             | AppCommand::ImportDrawingDxf
             | AppCommand::ImportExactStep
+            | AppCommand::ImportSketchupScene
             | AppCommand::ExportExactStep
             | AppCommand::ExportMeshStl => {
                 self.dispatch_file_command(id);
@@ -14690,6 +14858,7 @@ impl KetchupApp {
                 self.menu_command(ui, AppCommand::ImportMeshStl);
                 self.menu_command(ui, AppCommand::ImportDrawingDxf);
                 self.menu_command(ui, AppCommand::ImportExactStep);
+                self.menu_command(ui, AppCommand::ImportSketchupScene);
                 ui.separator();
                 self.menu_command(ui, AppCommand::ExportExactStep);
                 self.menu_command(ui, AppCommand::ExportMeshStl);
@@ -17369,6 +17538,89 @@ impl KetchupApp {
         }
     }
 
+    fn show_sketchup_scene_import_window(&mut self, context: &egui::Context) {
+        let Some(pending) = self.pending_sketchup_scene_import.as_ref() else {
+            return;
+        };
+        let path = pending.path.display().to_string();
+        let definition_count = pending.review.definition_count().to_string();
+        let instance_count = pending.review.instance_count().to_string();
+        let triangle_count = pending.review.triangle_count().to_string();
+        let diagnostics = pending
+            .review
+            .diagnostics()
+            .iter()
+            .map(|diagnostic| {
+                (
+                    diagnostic.severity(),
+                    diagnostic.code().to_owned(),
+                    diagnostic.count(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let mut import = false;
+        let mut cancel = false;
+        egui::Window::new(self.catalog.text("dialog-import-sketchup-scene-title"))
+            .id(egui::Id::new("sketchup-scene-import-review"))
+            .collapsible(false)
+            .resizable(true)
+            .show(context, |ui| {
+                ui.label(self.catalog.format(
+                    "dialog-import-sketchup-scene-source",
+                    &BTreeMap::from([("path", path.clone())]),
+                ));
+                ui.label(self.catalog.format(
+                    "dialog-import-sketchup-scene-summary",
+                    &BTreeMap::from([
+                        ("definitions", definition_count.clone()),
+                        ("instances", instance_count.clone()),
+                        ("triangles", triangle_count.clone()),
+                    ]),
+                ));
+                ui.label(self.catalog.text("dialog-import-sketchup-scene-preserved"));
+                ui.separator();
+                ui.label(self.catalog.text("dialog-import-sketchup-scene-losses"));
+                egui::ScrollArea::vertical()
+                    .max_height(160.0)
+                    .show(ui, |ui| {
+                        for (diagnostic_severity, code, count) in &diagnostics {
+                            let severity = match diagnostic_severity {
+                                ImportDiagnosticSeverity::Info => self
+                                    .catalog
+                                    .text("dialog-import-sketchup-scene-diagnostic-info"),
+                                ImportDiagnosticSeverity::Warning => self
+                                    .catalog
+                                    .text("dialog-import-sketchup-scene-diagnostic-warning"),
+                            };
+                            ui.label(format!("{severity} · {code} · {count}"));
+                        }
+                    });
+                ui.colored_label(
+                    Color32::YELLOW,
+                    self.catalog.text("dialog-import-sketchup-scene-warning"),
+                );
+                ui.separator();
+                ui.horizontal(|ui| {
+                    import = ui
+                        .button(self.catalog.text("dialog-import-sketchup-scene-confirm"))
+                        .clicked();
+                    cancel = ui
+                        .button(self.catalog.text("dialog-import-sketchup-scene-cancel"))
+                        .clicked();
+                });
+            });
+        if cancel {
+            self.pending_sketchup_scene_import = None;
+            self.digest = self.catalog.text("digest-cancelled");
+        } else if import {
+            let pending = self
+                .pending_sketchup_scene_import
+                .take()
+                .expect("the SketchUp scene review window has a pending import");
+            self.import_sketchup_scene_from(&pending);
+        }
+    }
+
     fn show_shortcuts_window(&mut self, context: &egui::Context) {
         if !self.shortcuts_open {
             return;
@@ -17757,6 +18009,7 @@ impl KetchupApp {
         self.show_stl_import_window(context);
         self.show_dxf_import_window(context);
         self.show_step_import_window(context);
+        self.show_sketchup_scene_import_window(context);
         self.show_shortcuts_window(context);
         self.poll_assistant_chat(context);
     }

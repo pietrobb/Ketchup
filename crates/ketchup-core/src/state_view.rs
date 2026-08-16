@@ -1190,6 +1190,15 @@ pub fn encode_semantic_state_with_results(
                         )
                         .unwrap();
                     }
+                    crate::document::MeshAuthority::ImportedSketchupScene { import_id } => {
+                        writeln!(
+                            complete,
+                            "feature.{}.mesh.authority=imported_sketchup_scene:{}",
+                            feature.id().0,
+                            import_id.0
+                        )
+                        .unwrap();
+                    }
                     crate::document::MeshAuthority::ExactConversion(conversion) => {
                         writeln!(
                             complete,
@@ -1310,6 +1319,9 @@ pub fn encode_semantic_state_with_results(
                         crate::document::MeshAuthority::Authored { .. } => "authored",
                         crate::document::MeshAuthority::ExactConversion(_) => "exact_conversion",
                         crate::document::MeshAuthority::ImportedStl { .. } => "imported_stl",
+                        crate::document::MeshAuthority::ImportedSketchupScene { .. } => {
+                            "imported_sketchup_scene"
+                        }
                     }
                 )
                 .unwrap();

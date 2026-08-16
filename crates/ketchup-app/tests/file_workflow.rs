@@ -250,6 +250,41 @@ fn valid_dxf_subset() -> &'static [u8] {
 0\nENDSEC\n0\nEOF\n"
 }
 
+fn valid_sketchup_scene_bridge() -> Vec<u8> {
+    serde_json::to_vec(&serde_json::json!({
+        "schema": "ketchup.sketchup-scene.v1",
+        "units": "inch",
+        "definitions": [{
+            "id": "component:shared:solid:1",
+            "name": "Shared solid",
+            "vertices": [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+            "triangles": [[0, 2, 1], [0, 1, 3], [0, 3, 2], [1, 2, 3]]
+        }],
+        "instances": [
+            {
+                "definition": "component:shared:solid:1",
+                "name": "First",
+                "transform": [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0],
+                "visible": true
+            },
+            {
+                "definition": "component:shared:solid:1",
+                "name": "Second",
+                "transform": [1.0, 0.0, 0.0, 2.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0],
+                "visible": true
+            }
+        ],
+        "metadata": {
+            "material_assignments": 1,
+            "textures": 0,
+            "tags": 1,
+            "scenes": 0,
+            "unsupported_entities": 0
+        }
+    }))
+    .unwrap()
+}
+
 fn assert_persisted_stl(
     document_path: &Path,
     source: &[u8],
@@ -874,6 +909,99 @@ fn file_menu_step_export_requires_bound_overwrite_approval_without_canonical_mut
             .iter()
             .any(|prompt| prompt.contains(&loss.display().to_string()))
     );
+}
+
+#[test]
+fn file_import_sketchup_scene_preserves_shared_instances_offscreen() {
+    let directory = tempfile::tempdir().unwrap();
+    let source = valid_sketchup_scene_bridge();
+    let path = directory.path().join("shared.kscene");
+    let document_path = directory.path().join("shared.ketchup");
+    std::fs::write(&path, &source).unwrap();
+    let script = ScriptedFileDialogs::new()
+        .queue_import(ImportFormat::SketchupScene, &path)
+        .queue_save(&document_path)
+        .queue_open(&document_path)
+        .always_discard();
+    let mut shell = Shell::with_dialogs(script.clone());
+    let before = canonical_state(&shell);
+
+    shell.click_menu_command("menu-file", AppCommand::ImportSketchupScene);
+    shell.click_button_label(&shell.catalog().text("dialog-import-sketchup-scene-confirm"));
+
+    assert_eq!(shell.app().document_revision(), before.revision + 1);
+    assert_eq!(shell.app().definition_count(), before.definitions + 1);
+    assert_eq!(shell.app().feature_count(), before.features + 1);
+    assert_eq!(shell.app().occurrence_count(), before.occurrences + 2);
+    assert_eq!(shell.app().mesh_body_count(), before.mesh_bodies + 1);
+    assert_eq!(
+        shell.app().import_receipt_count(),
+        before.import_receipts + 1
+    );
+    assert_eq!(shell.app().undo_step_count(), before.undo_steps + 1);
+    assert!(digest_starts_like(&shell, "digest-imported-sketchup-scene"));
+    assert_eq!(
+        script.import_requests(),
+        vec![ketchup_app::dialogs::ImportDialogRequestRecord {
+            format: ImportFormat::SketchupScene,
+            filter_label: shell.catalog().text("file-filter-sketchup-scene"),
+            extensions: vec!["kscene".to_owned()],
+        }]
+    );
+
+    shell.click_menu_command("menu-edit", AppCommand::Undo);
+    assert_eq!(shell.app().canonical_digest(), before.digest);
+    shell.click_menu_command("menu-edit", AppCommand::Redo);
+    let imported_digest = shell.app().canonical_digest();
+    shell.click_menu_command("menu-file", AppCommand::Save);
+    shell.click_menu_command("menu-file", AppCommand::New);
+    shell.click_menu_command("menu-file", AppCommand::Open);
+    assert_eq!(shell.app().canonical_digest(), imported_digest);
+
+    let loaded = ketchup_core::persistence::load_file(&document_path).unwrap();
+    let snapshot = loaded.snapshot();
+    let receipt = snapshot.import_receipts().next().unwrap();
+    assert_eq!(receipt.format(), ImportFormat::SketchupScene);
+    assert_eq!(receipt.source_sha256(), &sha256_bytes(&source));
+    assert_eq!(receipt.units().source_unit(), ImportLengthUnit::Inch);
+    assert_eq!(
+        receipt.units().authority(),
+        ImportUnitAuthority::FileDeclared
+    );
+    assert_eq!(snapshot.definitions().count(), before.definitions + 1);
+    assert_eq!(snapshot.occurrences().count(), before.occurrences + 2);
+    let imported_mesh = snapshot
+        .features()
+        .find_map(|feature| match feature.kind() {
+            FeatureKind::MeshBody(mesh)
+                if matches!(
+                    mesh.authority,
+                    ketchup_core::document::MeshAuthority::ImportedSketchupScene { .. }
+                ) =>
+            {
+                Some(mesh)
+            }
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(imported_mesh.vertices_mm[1], [25.4, 0.0, 0.0]);
+}
+
+#[test]
+fn file_import_sketchup_scene_rejects_source_substitution_after_review() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("reviewed.kscene");
+    std::fs::write(&path, valid_sketchup_scene_bridge()).unwrap();
+    let script = ScriptedFileDialogs::new().queue_import(ImportFormat::SketchupScene, &path);
+    let mut shell = Shell::with_dialogs(script);
+    let before = canonical_state(&shell);
+
+    shell.click_menu_command("menu-file", AppCommand::ImportSketchupScene);
+    std::fs::write(&path, b"{}" as &[u8]).unwrap();
+    shell.click_button_label(&shell.catalog().text("dialog-import-sketchup-scene-confirm"));
+
+    assert_eq!(canonical_state(&shell), before);
+    assert!(digest_starts_like(&shell, "error-import-sketchup-scene"));
 }
 
 #[test]

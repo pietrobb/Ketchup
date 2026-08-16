@@ -22,6 +22,7 @@ pub enum ImportFormat {
     Stl,
     Dxf,
     Step,
+    SketchupScene,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -336,6 +337,8 @@ impl std::error::Error for ImportContractError {}
 
 mod dxf;
 pub use dxf::*;
+mod sketchup_scene;
+pub use sketchup_scene::*;
 
 pub const STEP_PARSER_ID: &str = "ketchup-occt-step";
 pub const STEP_PARSER_VERSION: &str = "2";

@@ -50,7 +50,8 @@ const SWEEP_SCHEMA: u16 = 25;
 const LOFT_SPLINE_SCHEMA: u16 = 26;
 const IMPORT_RECEIPT_SCHEMA: u16 = 27;
 const IMPORTED_EXACT_BODY_SCHEMA: u16 = 29;
-pub const CURRENT_SCHEMA: u16 = IMPORTED_EXACT_BODY_SCHEMA;
+const SKETCHUP_SCENE_SCHEMA: u16 = 30;
+pub const CURRENT_SCHEMA: u16 = SKETCHUP_SCENE_SCHEMA;
 const COLLECTION_SCHEMA: u16 = 15;
 const TAG_SCHEMA: u16 = 14;
 const PERSISTENT_DIMENSION_SCHEMA: u16 = 13;
@@ -95,6 +96,7 @@ struct ProductSchemaCapabilities {
     loft_spline: bool,
     import_receipts: bool,
     imported_exact_body: bool,
+    sketchup_scene: bool,
 }
 
 impl ProductSchemaCapabilities {
@@ -124,6 +126,7 @@ impl ProductSchemaCapabilities {
         loft_spline: false,
         import_receipts: false,
         imported_exact_body: false,
+        sketchup_scene: false,
     };
 
     const fn current(schema: u16) -> Self {
@@ -153,6 +156,7 @@ impl ProductSchemaCapabilities {
             loft_spline: schema >= LOFT_SPLINE_SCHEMA,
             import_receipts: schema >= IMPORT_RECEIPT_SCHEMA,
             imported_exact_body: schema >= IMPORTED_EXACT_BODY_SCHEMA,
+            sketchup_scene: schema >= SKETCHUP_SCENE_SCHEMA,
         }
     }
 }
@@ -1213,6 +1217,10 @@ fn write_features(bytes: &mut Vec<u8>, product: &ProductModel) {
                         push_u8(bytes, 3);
                         push_u64(bytes, import_id.0);
                     }
+                    MeshAuthority::ImportedSketchupScene { import_id } => {
+                        push_u8(bytes, 4);
+                        push_u64(bytes, import_id.0);
+                    }
                     MeshAuthority::ExactConversion(conversion) => {
                         push_u8(bytes, 2);
                         push_u64(bytes, conversion.source_document_id.0);
@@ -1453,6 +1461,7 @@ fn load_document(
             | SWEEP_SCHEMA
             | LOFT_SPLINE_SCHEMA
             | IMPORT_RECEIPT_SCHEMA
+            | IMPORTED_EXACT_BODY_SCHEMA
             | CURRENT_SCHEMA
     ) {
         return Err(PersistenceError::UnsupportedSchema(schema));
@@ -2016,6 +2025,7 @@ fn write_import_receipt(bytes: &mut Vec<u8>, receipt: &ImportReceipt) {
             ImportFormat::Stl => 1,
             ImportFormat::Dxf => 2,
             ImportFormat::Step => 3,
+            ImportFormat::SketchupScene => 4,
         },
     );
     bytes.extend_from_slice(receipt.source_sha256());
@@ -2078,12 +2088,16 @@ fn write_import_receipt(bytes: &mut Vec<u8>, receipt: &ImportReceipt) {
     }
 }
 
-fn read_import_receipt(reader: &mut Reader<'_>) -> Result<ImportReceipt, PersistenceError> {
+fn read_import_receipt(
+    reader: &mut Reader<'_>,
+    sketchup_scene: bool,
+) -> Result<ImportReceipt, PersistenceError> {
     let id = ImportId(reader.u64()?);
     let format = match reader.u8()? {
         1 => ImportFormat::Stl,
         2 => ImportFormat::Dxf,
         3 => ImportFormat::Step,
+        4 if sketchup_scene => ImportFormat::SketchupScene,
         value => return Err(PersistenceError::InvalidImportFormat(value)),
     };
     let source_sha256 = reader
@@ -2442,6 +2456,9 @@ fn read_product(
                     3 => MeshAuthority::ImportedStl {
                         import_id: crate::import::ImportId(reader.u64()?),
                     },
+                    4 if capabilities.sketchup_scene => MeshAuthority::ImportedSketchupScene {
+                        import_id: crate::import::ImportId(reader.u64()?),
+                    },
                     2 => {
                         let source_document_id = crate::document::DocumentId(reader.u64()?);
                         let source_revision = reader.u64()?;
@@ -2653,7 +2670,7 @@ fn read_product(
         }
         if capabilities.import_receipts {
             for _ in 0..reader.count_with_limit(MAX_IMPORT_OUTPUTS as u32)? {
-                let receipt = read_import_receipt(reader)?;
+                let receipt = read_import_receipt(reader, capabilities.sketchup_scene)?;
                 let id = receipt.id();
                 if product
                     .import_receipts

@@ -330,6 +330,7 @@ pub enum MeshAuthority {
     Authored { provenance: String },
     ExactConversion(ExactToMeshConversion),
     ImportedStl { import_id: ImportId },
+    ImportedSketchupScene { import_id: ImportId },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -6035,7 +6036,10 @@ fn validate_mesh_body(spec: &MeshBodySpec) -> Result<(), CanonicalError> {
         MeshAuthority::Authored { provenance } if provenance.is_empty() => {
             return Err(CanonicalError::InvalidMeshBody);
         }
-        MeshAuthority::ImportedStl { import_id } if import_id.0 == 0 => {
+        MeshAuthority::ImportedStl { import_id }
+        | MeshAuthority::ImportedSketchupScene { import_id }
+            if import_id.0 == 0 =>
+        {
             return Err(CanonicalError::InvalidMeshBody);
         }
         MeshAuthority::ExactConversion(conversion)
@@ -7900,6 +7904,10 @@ fn validate_product(product: &ProductModel) -> Result<(), CanonicalError> {
                         .import_receipts
                         .get(import_id)
                         .is_none_or(|receipt| receipt.format() != ImportFormat::Stl),
+                    MeshAuthority::ImportedSketchupScene { import_id } => product
+                        .import_receipts
+                        .get(import_id)
+                        .is_none_or(|receipt| receipt.format() != ImportFormat::SketchupScene),
                     MeshAuthority::Authored { .. } => false,
                 };
                 if definition.feature_ids.as_slice() != [feature.id] || authority_is_invalid {
@@ -9560,6 +9568,7 @@ impl StableDigest {
             ImportFormat::Stl => 1,
             ImportFormat::Dxf => 2,
             ImportFormat::Step => 3,
+            ImportFormat::SketchupScene => 4,
         });
         self.bytes(receipt.source_sha256());
         self.u64(receipt.source_byte_len());
@@ -9834,6 +9843,10 @@ impl StableDigest {
                     }
                     MeshAuthority::ImportedStl { import_id } => {
                         self.byte(3);
+                        self.u64(import_id.0);
+                    }
+                    MeshAuthority::ImportedSketchupScene { import_id } => {
+                        self.byte(4);
                         self.u64(import_id.0);
                     }
                     MeshAuthority::ExactConversion(conversion) => {
