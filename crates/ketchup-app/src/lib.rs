@@ -19579,7 +19579,12 @@ mod tests {
             canonical_digest: state.document.current().canonical_digest(),
             source: "test".to_owned(),
         });
-        harness.run();
+        // The executing phase lasts exactly one frame: the panel announces it,
+        // and `poll_assistant_chat` consumes the pending execution at the end of
+        // that same frame. `run` would keep stepping while anything still asks
+        // for an immediate repaint, so it must not be used to observe a state
+        // that is gone by the next frame.
+        harness.step();
 
         assert!(
             harness
@@ -19590,6 +19595,10 @@ mod tests {
                 })
                 .next()
                 .is_some()
+        );
+        assert!(
+            harness.state().assistant_pending_execution.is_none(),
+            "the announced execution must be consumed by the frame that announced it"
         );
     }
 
