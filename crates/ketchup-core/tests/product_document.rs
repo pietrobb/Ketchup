@@ -9,8 +9,8 @@ use ketchup_core::document::{
     InstancePath, InstancePathStep, LocalGroupId, LocalGroupKey, LocalOccurrenceId,
     LocalOccurrenceKey, LoftSection, MappingResolution, NodeId, OccurrenceId, PersistentDimension,
     PersistentDimensionId, PersistentDimensionTarget, PortSpec, ProfileSegment, RuleOutput,
-    SceneQueryContext, SceneQueryError, SlotPath, SlotSegment, SolidToolPlan, StableEdgeRole,
-    StableFaceRole, TagId, Transform, UnresolvedMappingReason, WorldEntityPath,
+    SceneQueryContext, SceneQueryError, SlotPath, SlotSegment, Snapshot, SolidToolPlan,
+    StableEdgeRole, StableFaceRole, TagId, Transform, UnresolvedMappingReason, WorldEntityPath,
 };
 use ketchup_core::exact_product::{
     EXACT_BOOLEAN_INTERSECT_EVALUATOR_V1, EXACT_BOOLEAN_SPLIT_EVALUATOR_V1,
@@ -28,6 +28,40 @@ const GROUP: GroupId = GroupId(30);
 
 fn height(value: &str) -> Dimension {
     Dimension::from_decimal(value).unwrap()
+}
+
+fn body_contract_tail_len(snapshot: &Snapshot) -> usize {
+    4 + snapshot
+        .definitions()
+        .map(|definition| {
+            let bodies = definition
+                .bodies()
+                .map(|body| {
+                    8 + 4
+                        + body.name().len()
+                        + 1
+                        + 1
+                        + usize::from(body.consumed_by().is_some()) * 8
+                })
+                .sum::<usize>();
+            let ownership = definition
+                .feature_ids()
+                .iter()
+                .map(|feature_id| {
+                    let ownership = definition.feature_body_ownership(*feature_id).unwrap();
+                    8 + 4
+                        + ownership.input_body_ids().len() * 8
+                        + 1
+                        + usize::from(ownership.output_body_id().is_some()) * 8
+                })
+                .sum::<usize>();
+            8 + 4 + bodies + 8 + 4 + ownership
+        })
+        .sum::<usize>()
+}
+
+fn strip_schema_34_tail(bytes: &mut Vec<u8>, snapshot: &Snapshot) {
+    bytes.truncate(bytes.len() - body_contract_tail_len(snapshot) - 8);
 }
 
 fn seed_product_document() -> DocumentStore {
@@ -167,7 +201,8 @@ fn product_schema_round_trip_preserves_identity_hierarchy_values_and_digest() {
     let mut schema_fifteen = persistence::save(&expected);
     let manifest_length = u32::from_le_bytes(schema_fifteen[12..16].try_into().unwrap()) as usize;
     let payload_offset = 16 + manifest_length;
-    schema_fifteen.truncate(schema_fifteen.len() - 12);
+    strip_schema_34_tail(&mut schema_fifteen, &expected);
+    schema_fifteen.truncate(schema_fifteen.len() - 20);
     schema_fifteen[10..12].copy_from_slice(&15_u16.to_le_bytes());
     let payload_length = (schema_fifteen.len() - payload_offset) as u64;
     schema_fifteen[16..24].copy_from_slice(&payload_length.to_le_bytes());
@@ -183,8 +218,9 @@ fn product_schema_round_trip_preserves_identity_hierarchy_values_and_digest() {
     let mut schema_nine = persistence::save(&expected);
     let manifest_length = u32::from_le_bytes(schema_nine[12..16].try_into().unwrap()) as usize;
     let payload_offset = 16 + manifest_length;
+    strip_schema_34_tail(&mut schema_nine, &expected);
     schema_nine.drain(payload_offset + 25..payload_offset + 29);
-    schema_nine.truncate(schema_nine.len() - 24);
+    schema_nine.truncate(schema_nine.len() - 32);
     schema_nine[10..12].copy_from_slice(&9_u16.to_le_bytes());
     let payload_length = (schema_nine.len() - payload_offset) as u64;
     schema_nine[16..24].copy_from_slice(&payload_length.to_le_bytes());

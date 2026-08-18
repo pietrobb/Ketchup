@@ -7,7 +7,7 @@ use crate::spatial::{
 use crate::{Ray, Vec3};
 use ketchup_core::document::{DefinitionId, InstancePath, Snapshot, Transform};
 use ketchup_core::exact_product::{AssemblySelectionTarget, ExactBodyPackage, ExactResultRegistry};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 const RAY_EPSILON: f64 = 1.0e-12;
@@ -63,26 +63,32 @@ impl ExactInteractionProjection {
         results: &ExactResultRegistry,
         include: impl Fn(&InstancePath) -> bool,
     ) -> Self {
-        let render_packages = results.render_by_definition(snapshot);
-        let occurrences = snapshot
+        let mut render_packages = BTreeMap::<DefinitionId, Vec<&Arc<ExactBodyPackage>>>::new();
+        for package in results.render_values(snapshot) {
+            render_packages
+                .entry(package.definition_id())
+                .or_default()
+                .push(package);
+        }
+        let mut occurrences = Vec::new();
+        for occurrence in snapshot
             .scene_query()
             .into_iter()
             .filter(|occurrence| occurrence.visible)
             .filter(|occurrence| include(&occurrence.instance_path))
-            .filter_map(|occurrence| {
-                let package = Arc::clone(render_packages.get(&occurrence.definition_id)?);
-                if !package.is_current(snapshot)
-                    || package.definition_id() != occurrence.definition_id
-                {
-                    return None;
-                }
-                Some(ExactOccurrence {
-                    instance_path: occurrence.instance_path,
+        {
+            for package in render_packages
+                .get(&occurrence.definition_id)
+                .into_iter()
+                .flat_map(|packages| packages.iter())
+            {
+                occurrences.push(ExactOccurrence {
+                    instance_path: occurrence.instance_path.clone(),
                     transform: occurrence.transform,
-                    package,
-                })
-            })
-            .collect::<Vec<_>>();
+                    package: Arc::clone(package),
+                });
+            }
+        }
         let occurrence_paths = occurrences
             .iter()
             .map(|occurrence| occurrence.instance_path.clone())

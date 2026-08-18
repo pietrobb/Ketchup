@@ -5,19 +5,25 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use crate::assembly::{
+    ASSEMBLY_MATE_SCHEMA_V1, AssemblyMate, AssemblyMateEndpoint, AssemblyMateId, AssemblyMateKind,
+    AssemblyReferenceHealth,
+};
 use crate::document::{
-    BOTTLE_SHELL_OPENING_FACE_ROLE, BOTTLE_SHOULDER_EDGE_ROLE, BooleanOperation,
+    BOTTLE_SHELL_OPENING_FACE_ROLE, BOTTLE_SHOULDER_EDGE_ROLE, Body, BodyId, BooleanOperation,
     BottleEdgeFinishKind, CanonicalCommand, CanonicalError, Collection, CollectionId, CommandBatch,
     Definition, DefinitionId, Dimension, DimensionDisplayUnit, DimensionPresentation,
     DocumentStore, EvaluationIdentity, EvaluatorNode, ExactReferenceConversionConsequence,
-    ExactToMeshConversion, Feature, FeatureId, FeatureKind, FeatureParameterBinding,
-    FeatureParameterFreshnessAudit, FeatureParameterProvenance, FeatureParameterSlot,
-    FeatureParameterTarget, Group, GroupId, ImportedExactBodySpec, InstancePath, InstancePathStep,
-    LocalGroup, LocalGroupId, LocalGroupKey, LocalOccurrence, LocalOccurrenceId,
-    LocalOccurrenceKey, LoftSection, MeshAuthority, MeshBodySpec, NodeId, Occurrence, OccurrenceId,
-    PersistentDimension, PersistentDimensionId, PersistentDimensionTarget, ProductModel,
-    ProfileSegment, Snapshot, StableEdgeRole, StableFaceRole, Tag, TagId, Transform, UnitSystem,
+    ExactToMeshConversion, Feature, FeatureBodyOwnership, FeatureId, FeatureKind,
+    FeatureParameterBinding, FeatureParameterFreshnessAudit, FeatureParameterProvenance,
+    FeatureParameterSlot, FeatureParameterTarget, Group, GroupId, ImportedExactBodySpec,
+    InstancePath, InstancePathStep, LocalGroup, LocalGroupId, LocalGroupKey, LocalOccurrence,
+    LocalOccurrenceId, LocalOccurrenceKey, LoftSection, MeshAuthority, MeshBodySpec, NodeId,
+    Occurrence, OccurrenceId, PersistentDimension, PersistentDimensionId,
+    PersistentDimensionTarget, ProductModel, ProfileSegment, Snapshot, StableEdgeRole,
+    StableFaceRole, Tag, TagId, Transform, UnitSystem,
 };
+use crate::drawing::{DrawingSheet, DrawingSheetId, DrawingSource, ORTHOGRAPHIC_DRAWING_SCHEMA_V1};
 use crate::exact_product::{BODY_SUBSHAPE_REF_SCHEMA_V1, BodySubshapeRef, ReferenceStability};
 use crate::graph::{
     CanonicalOverride, DerivedIdentity, EvaluatorNodeKind, OverrideMergePolicy,
@@ -58,7 +64,12 @@ const IMPORT_RECEIPT_SCHEMA: u16 = 27;
 const IMPORTED_EXACT_BODY_SCHEMA: u16 = 29;
 const SKETCHUP_SCENE_SCHEMA: u16 = 30;
 const WORKPLANE_SKETCH_SCHEMA: u16 = 31;
-pub const CURRENT_SCHEMA: u16 = WORKPLANE_SKETCH_SCHEMA;
+const ASSEMBLY_CONTRACT_SCHEMA: u16 = 32;
+const ORTHOGRAPHIC_DRAWING_SCHEMA: u16 = 33;
+const BODY_CONTRACT_SCHEMA: u16 = 34;
+const BODY_CONSUMPTION_SCHEMA: u16 = 35;
+const BODY_FEATURE_SUPPRESSION_SCHEMA: u16 = 36;
+pub const CURRENT_SCHEMA: u16 = BODY_FEATURE_SUPPRESSION_SCHEMA;
 const COLLECTION_SCHEMA: u16 = 15;
 const TAG_SCHEMA: u16 = 14;
 const PERSISTENT_DIMENSION_SCHEMA: u16 = 13;
@@ -105,6 +116,11 @@ struct ProductSchemaCapabilities {
     imported_exact_body: bool,
     sketchup_scene: bool,
     workplane_sketch: bool,
+    assembly_contract: bool,
+    orthographic_drawing: bool,
+    body_contract: bool,
+    body_consumption: bool,
+    body_feature_suppression: bool,
 }
 
 impl ProductSchemaCapabilities {
@@ -136,6 +152,11 @@ impl ProductSchemaCapabilities {
         imported_exact_body: false,
         sketchup_scene: false,
         workplane_sketch: false,
+        assembly_contract: false,
+        orthographic_drawing: false,
+        body_contract: false,
+        body_consumption: false,
+        body_feature_suppression: false,
     };
 
     const fn current(schema: u16) -> Self {
@@ -167,6 +188,11 @@ impl ProductSchemaCapabilities {
             imported_exact_body: schema >= IMPORTED_EXACT_BODY_SCHEMA,
             sketchup_scene: schema >= SKETCHUP_SCENE_SCHEMA,
             workplane_sketch: schema >= WORKPLANE_SKETCH_SCHEMA,
+            assembly_contract: schema >= ASSEMBLY_CONTRACT_SCHEMA,
+            orthographic_drawing: schema >= ORTHOGRAPHIC_DRAWING_SCHEMA,
+            body_contract: schema >= BODY_CONTRACT_SCHEMA,
+            body_consumption: schema >= BODY_CONSUMPTION_SCHEMA,
+            body_feature_suppression: schema >= BODY_FEATURE_SUPPRESSION_SCHEMA,
         }
     }
 }
@@ -634,6 +660,45 @@ pub fn save(snapshot: &Snapshot) -> Vec<u8> {
     push_u32(&mut payload, product.clearance_volumes.len() as u32);
     for clearance in product.clearance_volumes.values() {
         write_clearance_volume(&mut payload, clearance);
+    }
+    push_u32(&mut payload, product.grounded_occurrences.len() as u32);
+    for occurrence_id in &product.grounded_occurrences {
+        push_u64(&mut payload, occurrence_id.0);
+    }
+    push_u32(&mut payload, product.assembly_mates.len() as u32);
+    for mate in product.assembly_mates.values() {
+        write_assembly_mate(&mut payload, mate);
+    }
+    push_u32(&mut payload, product.drawing_sheets.len() as u32);
+    for sheet in product.drawing_sheets.values() {
+        write_drawing_sheet(&mut payload, sheet);
+    }
+    push_u32(&mut payload, product.definitions.len() as u32);
+    for definition in product.definitions.values() {
+        push_u64(&mut payload, definition.id().0);
+        push_u32(&mut payload, definition.bodies.len() as u32);
+        for body in definition.bodies.values() {
+            push_u64(&mut payload, body.id().0);
+            push_string(&mut payload, body.name());
+            push_u8(&mut payload, u8::from(body.visible()));
+            push_optional_id(&mut payload, body.consumed_by().map(|id| id.0));
+        }
+        push_u64(&mut payload, definition.active_body_id().0);
+        push_u32(&mut payload, definition.feature_body_ownership.len() as u32);
+        for (feature_id, ownership) in &definition.feature_body_ownership {
+            push_u64(&mut payload, feature_id.0);
+            write_ids(
+                &mut payload,
+                ownership.input_body_ids().iter().map(|id| id.0),
+            );
+            push_optional_id(&mut payload, ownership.output_body_id().map(|id| id.0));
+        }
+    }
+    push_u32(&mut payload, product.body_feature_suppression.len() as u32);
+    for ((definition_id, body_id), suppressed) in &product.body_feature_suppression {
+        push_u64(&mut payload, definition_id.0);
+        push_u64(&mut payload, body_id.0);
+        write_ids(&mut payload, suppressed.iter().map(|id| id.0));
     }
 
     let mut manifest = Vec::new();
@@ -1450,6 +1515,62 @@ fn write_occurrences(bytes: &mut Vec<u8>, product: &ProductModel) {
     }
 }
 
+fn write_assembly_mate(bytes: &mut Vec<u8>, mate: &AssemblyMate) {
+    push_string(bytes, mate.schema());
+    push_u64(bytes, mate.id().0);
+    for endpoint in [mate.endpoint_a(), mate.endpoint_b()] {
+        push_u64(bytes, endpoint.occurrence_id().0);
+        write_exact_reference(bytes, endpoint.reference());
+        match endpoint.health() {
+            AssemblyReferenceHealth::Resolved => push_u8(bytes, 1),
+            AssemblyReferenceHealth::Ambiguous { candidate_count } => {
+                push_u8(bytes, 2);
+                push_u32(bytes, candidate_count);
+            }
+            AssemblyReferenceHealth::Lost => push_u8(bytes, 3),
+            AssemblyReferenceHealth::Broken => push_u8(bytes, 4),
+        }
+    }
+    match mate.kind() {
+        AssemblyMateKind::CoincidentPlanar {
+            offset_mm,
+            reversed,
+        } => {
+            push_u8(bytes, 1);
+            push_u64(bytes, offset_mm.to_bits());
+            push_u8(bytes, u8::from(reversed));
+        }
+        AssemblyMateKind::ConcentricAxial { reversed } => {
+            push_u8(bytes, 2);
+            push_u8(bytes, u8::from(reversed));
+        }
+        AssemblyMateKind::Distance { distance_mm } => {
+            push_u8(bytes, 3);
+            push_u64(bytes, distance_mm.to_bits());
+        }
+        AssemblyMateKind::Angle { angle_degrees } => {
+            push_u8(bytes, 4);
+            push_u64(bytes, angle_degrees.to_bits());
+        }
+    }
+}
+
+fn write_drawing_sheet(bytes: &mut Vec<u8>, sheet: &DrawingSheet) {
+    push_string(bytes, sheet.schema());
+    push_u64(bytes, sheet.id().0);
+    push_string(bytes, sheet.name());
+    match sheet.source() {
+        DrawingSource::Definition(id) => {
+            push_u8(bytes, 1);
+            push_u64(bytes, id.0);
+        }
+        DrawingSource::RigidAssembly { occurrence_ids } => {
+            push_u8(bytes, 2);
+            write_ids(bytes, occurrence_ids.iter().map(|id| id.0));
+        }
+    }
+}
+
 fn write_groups(bytes: &mut Vec<u8>, product: &ProductModel) {
     push_u32(bytes, product.groups.len() as u32);
     for group in product.groups.values() {
@@ -1654,6 +1775,10 @@ fn load_document(
             | IMPORT_RECEIPT_SCHEMA
             | IMPORTED_EXACT_BODY_SCHEMA
             | SKETCHUP_SCENE_SCHEMA
+            | WORKPLANE_SKETCH_SCHEMA
+            | ASSEMBLY_CONTRACT_SCHEMA
+            | ORTHOGRAPHIC_DRAWING_SCHEMA
+            | BODY_CONTRACT_SCHEMA
             | CURRENT_SCHEMA
     ) {
         return Err(PersistenceError::UnsupportedSchema(schema));
@@ -2495,6 +2620,80 @@ fn read_sketch(reader: &mut Reader<'_>) -> Result<SketchSpec, PersistenceError> 
     })
 }
 
+fn read_assembly_mate(reader: &mut Reader<'_>) -> Result<AssemblyMate, PersistenceError> {
+    let schema = reader.string()?;
+    if schema != ASSEMBLY_MATE_SCHEMA_V1 {
+        return Err(PersistenceError::InvalidAssemblyMate);
+    }
+    let id = AssemblyMateId(reader.u64()?);
+    let mut endpoint = || -> Result<AssemblyMateEndpoint, PersistenceError> {
+        let occurrence_id = OccurrenceId(reader.u64()?);
+        let reference = read_exact_reference(reader)?;
+        let health = match reader.u8()? {
+            1 => AssemblyReferenceHealth::Resolved,
+            2 => AssemblyReferenceHealth::Ambiguous {
+                candidate_count: reader.u32()?,
+            },
+            3 => AssemblyReferenceHealth::Lost,
+            4 => AssemblyReferenceHealth::Broken,
+            _ => return Err(PersistenceError::InvalidAssemblyMate),
+        };
+        Ok(AssemblyMateEndpoint {
+            occurrence_id,
+            reference,
+            health,
+        })
+    };
+    let endpoint_a = endpoint()?;
+    let endpoint_b = endpoint()?;
+    let kind = match reader.u8()? {
+        1 => AssemblyMateKind::CoincidentPlanar {
+            offset_mm: f64::from_bits(reader.u64()?),
+            reversed: reader.boolean()?,
+        },
+        2 => AssemblyMateKind::ConcentricAxial {
+            reversed: reader.boolean()?,
+        },
+        3 => AssemblyMateKind::Distance {
+            distance_mm: f64::from_bits(reader.u64()?),
+        },
+        4 => AssemblyMateKind::Angle {
+            angle_degrees: f64::from_bits(reader.u64()?),
+        },
+        _ => return Err(PersistenceError::InvalidAssemblyMate),
+    };
+    Ok(AssemblyMate {
+        schema,
+        id,
+        endpoint_a: Box::new(endpoint_a),
+        endpoint_b: Box::new(endpoint_b),
+        kind,
+    })
+}
+
+fn read_drawing_sheet(reader: &mut Reader<'_>) -> Result<DrawingSheet, PersistenceError> {
+    if reader.string()? != ORTHOGRAPHIC_DRAWING_SCHEMA_V1 {
+        return Err(PersistenceError::InvalidCanonicalData(
+            CanonicalError::Drawing(crate::drawing::DrawingError::InvalidSheet),
+        ));
+    }
+    let id = DrawingSheetId(reader.u64()?);
+    let name = reader.string()?;
+    let source = match reader.u8()? {
+        1 => DrawingSource::Definition(DefinitionId(reader.u64()?)),
+        2 => DrawingSource::RigidAssembly {
+            occurrence_ids: read_ids(reader)?.into_iter().map(OccurrenceId).collect(),
+        },
+        _ => {
+            return Err(PersistenceError::InvalidCanonicalData(
+                CanonicalError::Drawing(crate::drawing::DrawingError::InvalidSheet),
+            ));
+        }
+    };
+    DrawingSheet::new(id, name, source)
+        .map_err(|error| PersistenceError::InvalidCanonicalData(CanonicalError::Drawing(error)))
+}
+
 fn read_product(
     reader: &mut Reader<'_>,
     capabilities: ProductSchemaCapabilities,
@@ -2542,23 +2741,32 @@ fn read_product(
     }
     for _ in 0..reader.count()? {
         let id = DefinitionId(reader.u64()?);
+        let name = reader.string()?;
+        let feature_ids = read_ids(reader)?.into_iter().map(FeatureId).collect();
+        let local_group_ids = if capabilities.current {
+            read_ids(reader)?.into_iter().map(LocalGroupId).collect()
+        } else {
+            Vec::new()
+        };
+        let local_occurrence_ids = if capabilities.current {
+            read_ids(reader)?
+                .into_iter()
+                .map(LocalOccurrenceId)
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let (bodies, active_body_id, feature_body_ownership) =
+            (BTreeMap::new(), BodyId(1), BTreeMap::new());
         let definition = Definition {
             id,
-            name: reader.string()?,
-            feature_ids: read_ids(reader)?.into_iter().map(FeatureId).collect(),
-            local_group_ids: if capabilities.current {
-                read_ids(reader)?.into_iter().map(LocalGroupId).collect()
-            } else {
-                Vec::new()
-            },
-            local_occurrence_ids: if capabilities.current {
-                read_ids(reader)?
-                    .into_iter()
-                    .map(LocalOccurrenceId)
-                    .collect()
-            } else {
-                Vec::new()
-            },
+            name,
+            feature_ids,
+            bodies,
+            active_body_id,
+            feature_body_ownership,
+            local_group_ids,
+            local_occurrence_ids,
         };
         if product
             .definitions
@@ -3060,6 +3268,124 @@ fn read_product(
                 }
             }
         }
+        if capabilities.assembly_contract {
+            for _ in 0..reader.count()? {
+                let id = OccurrenceId(reader.u64()?);
+                if !product.grounded_occurrences.insert(id) {
+                    return Err(PersistenceError::DuplicateGroundedOccurrence(id));
+                }
+            }
+            for _ in 0..reader.count()? {
+                let mate = read_assembly_mate(reader)?;
+                if product
+                    .assembly_mates
+                    .insert(mate.id(), Arc::new(mate))
+                    .is_some()
+                {
+                    return Err(PersistenceError::DuplicateAssemblyMate);
+                }
+            }
+        }
+        if capabilities.orthographic_drawing && !reader.is_finished() {
+            for _ in 0..reader.count()? {
+                let sheet = read_drawing_sheet(reader)?;
+                let id = sheet.id();
+                if product.drawing_sheets.insert(id, Arc::new(sheet)).is_some() {
+                    return Err(PersistenceError::InvalidCanonicalData(
+                        CanonicalError::DrawingSheetAlreadyExists(id),
+                    ));
+                }
+            }
+        }
+        if capabilities.body_contract {
+            let mut seen_definitions = BTreeSet::new();
+            for _ in 0..reader.count()? {
+                let definition_id = DefinitionId(reader.u64()?);
+                if !seen_definitions.insert(definition_id) {
+                    return Err(PersistenceError::DuplicateDefinition(definition_id));
+                }
+                let existing = product.definitions.get(&definition_id).ok_or(
+                    PersistenceError::InvalidCanonicalData(CanonicalError::DefinitionNotFound(
+                        definition_id,
+                    )),
+                )?;
+                let mut bodies = BTreeMap::new();
+                for _ in 0..reader.count()? {
+                    let body_id = BodyId(reader.u64()?);
+                    let body = Body {
+                        id: body_id,
+                        name: reader.string()?,
+                        visible: reader.boolean()?,
+                        consumed_by: capabilities
+                            .body_consumption
+                            .then(|| reader.optional_id().map(|id| id.map(FeatureId)))
+                            .transpose()?
+                            .flatten(),
+                    };
+                    if bodies.insert(body_id, body).is_some() {
+                        return Err(PersistenceError::InvalidCanonicalData(
+                            CanonicalError::BodyAlreadyExists(definition_id, body_id),
+                        ));
+                    }
+                }
+                let active_body_id = BodyId(reader.u64()?);
+                let mut feature_body_ownership = BTreeMap::new();
+                for _ in 0..reader.count()? {
+                    let feature_id = FeatureId(reader.u64()?);
+                    let input_body_ids = read_ids(reader)?.into_iter().map(BodyId).collect();
+                    let output_body_id = reader.optional_id()?.map(BodyId);
+                    let ownership = FeatureBodyOwnership::new(input_body_ids, output_body_id)?;
+                    if feature_body_ownership
+                        .insert(feature_id, ownership)
+                        .is_some()
+                    {
+                        return Err(PersistenceError::InvalidCanonicalData(
+                            CanonicalError::InvalidBodyOwnership(feature_id),
+                        ));
+                    }
+                }
+                product.definitions.insert(
+                    definition_id,
+                    Arc::new(Definition {
+                        bodies,
+                        active_body_id,
+                        feature_body_ownership,
+                        ..existing.as_ref().clone()
+                    }),
+                );
+            }
+            if seen_definitions.len() != product.definitions.len() {
+                return Err(PersistenceError::InvalidCanonicalData(
+                    CanonicalError::InvalidBodyContract,
+                ));
+            }
+        }
+        if capabilities.body_feature_suppression {
+            for _ in 0..reader.count()? {
+                let definition_id = DefinitionId(reader.u64()?);
+                let body_id = BodyId(reader.u64()?);
+                let encoded_suppressed = read_ids(reader)?;
+                let suppressed = encoded_suppressed
+                    .iter()
+                    .copied()
+                    .map(FeatureId)
+                    .collect::<BTreeSet<_>>();
+                if suppressed.is_empty()
+                    || suppressed.len() != encoded_suppressed.len()
+                    || product
+                        .body_feature_suppression
+                        .insert((definition_id, body_id), suppressed)
+                        .is_some()
+                {
+                    return Err(PersistenceError::InvalidCanonicalData(
+                        CanonicalError::InvalidFeatureSuppression(definition_id, body_id),
+                    ));
+                }
+            }
+        }
+    }
+    if !capabilities.body_contract {
+        crate::document::migrate_legacy_body_contract(&mut product)?;
     }
     Ok(product)
 }
@@ -3160,6 +3486,7 @@ pub enum PersistenceError {
     InvalidClearanceCoordinateFrame,
     InvalidClearanceSeverity(u8),
     InvalidExactReference,
+    InvalidAssemblyMate,
     ChecksumMismatch,
     ResourceLimit,
     UnsupportedEnvelopeIdentity,
@@ -3177,6 +3504,8 @@ pub enum PersistenceError {
     DuplicateDefinition(DefinitionId),
     DuplicateFeature(FeatureId),
     DuplicateOccurrence(OccurrenceId),
+    DuplicateGroundedOccurrence(OccurrenceId),
+    DuplicateAssemblyMate,
     DuplicateGroup(GroupId),
     DuplicateLocalGroup(LocalGroupKey),
     DuplicateLocalOccurrence(LocalOccurrenceKey),
@@ -3275,6 +3604,7 @@ impl fmt::Display for PersistenceError {
             Self::InvalidExactReference => {
                 formatter.write_str("exact reference evidence is invalid")
             }
+            Self::InvalidAssemblyMate => formatter.write_str("assembly mate is invalid"),
             Self::ChecksumMismatch => formatter.write_str("document checksum does not match"),
             Self::ResourceLimit => formatter.write_str("document exceeds a resource limit"),
             Self::UnsupportedEnvelopeIdentity => {
@@ -3310,6 +3640,10 @@ impl fmt::Display for PersistenceError {
             Self::DuplicateOccurrence(id) => {
                 write!(formatter, "document repeats occurrence {}", id.0)
             }
+            Self::DuplicateGroundedOccurrence(id) => {
+                write!(formatter, "document repeats grounded occurrence {}", id.0)
+            }
+            Self::DuplicateAssemblyMate => formatter.write_str("document repeats an assembly mate"),
             Self::DuplicateGroup(id) => write!(formatter, "document repeats group {}", id.0),
             Self::DuplicateLocalGroup(key) => write!(
                 formatter,

@@ -2,7 +2,7 @@
 
 use crate::beam_m5::{BeamExactPiecePackage, BeamExactResultKey};
 use crate::document::{
-    BooleanOperation, BottleEdgeFinishKind, CanonicalCommand, CommandBatch, DefinitionId,
+    BodyId, BooleanOperation, BottleEdgeFinishKind, CanonicalCommand, CommandBatch, DefinitionId,
     DocumentId, ExactReferenceConversionConsequence, ExactToMeshConversion, FeatureId, FeatureKind,
     InstancePath, MESH_BODY_SCHEMA_V1, MeshAuthority, MeshBodySpec, ProfileSegment, Snapshot,
     Transform,
@@ -13,7 +13,7 @@ use crate::sketch::{
     WorkplaneSupport, WorkplaneSupportHealth,
 };
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fmt::Write as _;
 use std::sync::Arc;
@@ -1298,6 +1298,13 @@ pub struct ExactResultKey {
     pub result_fingerprint: String,
 }
 
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct ExactBodyResultKey {
+    pub definition_id: DefinitionId,
+    pub body_id: BodyId,
+    pub producer_feature_id: FeatureId,
+}
+
 #[derive(Clone, Debug)]
 pub struct ExactResultRegistry {
     packages: BTreeMap<ExactResultKey, Arc<ExactBodyPackage>>,
@@ -1320,6 +1327,98 @@ fn next_contents_stamp() -> u64 {
 
     static NEXT: AtomicU64 = AtomicU64::new(1);
     NEXT.fetch_add(1, Ordering::Relaxed)
+}
+
+pub fn exact_body_terminal_features(
+    snapshot: &Snapshot,
+    definition_id: DefinitionId,
+) -> Result<BTreeMap<BodyId, FeatureId>, ExactProductError> {
+    let definition = snapshot
+        .definition(definition_id)
+        .ok_or(ExactProductError::DefinitionNotFound(definition_id))?;
+    let graph = snapshot
+        .feature_dependency_graph()
+        .map_err(|_| ExactProductError::UnsupportedDefinition)?;
+    let mut terminals = BTreeMap::new();
+    for body in definition.bodies() {
+        if body.consumed_by().is_some() {
+            continue;
+        }
+        let candidates = definition
+            .feature_ids()
+            .iter()
+            .copied()
+            .filter(|feature_id| {
+                definition
+                    .feature_body_ownership(*feature_id)
+                    .and_then(|ownership| ownership.output_body_id())
+                    == Some(body.id())
+                    && !snapshot.feature_is_suppressed(*feature_id)
+                    && snapshot
+                        .feature(*feature_id)
+                        .is_some_and(|feature| feature.kind().produces_body())
+            })
+            .filter(|feature_id| {
+                graph.dependents(*feature_id).is_some_and(|dependents| {
+                    dependents.iter().all(|dependent| {
+                        snapshot.feature_is_suppressed(*dependent)
+                            || definition
+                                .feature_body_ownership(*dependent)
+                                .and_then(|ownership| ownership.output_body_id())
+                                != Some(body.id())
+                            || snapshot
+                                .feature(*dependent)
+                                .is_none_or(|feature| !feature.kind().produces_body())
+                    })
+                })
+            })
+            .collect::<Vec<_>>();
+        match candidates.as_slice() {
+            [] => {}
+            [producer_feature_id] => {
+                terminals.insert(body.id(), *producer_feature_id);
+            }
+            _ => {
+                return Err(ExactProductError::ConflictingBodyTerminals {
+                    definition_id,
+                    body_id: body.id(),
+                });
+            }
+        }
+    }
+    Ok(terminals)
+}
+
+fn exact_body_result_key(
+    snapshot: &Snapshot,
+    package: &ExactBodyPackage,
+) -> Result<ExactBodyResultKey, ExactProductError> {
+    if !package.is_current(snapshot) {
+        return Err(ExactProductError::StaleResult);
+    }
+    let definition_id = package.definition_id();
+    let producer_feature_id = package.producer_feature_id();
+    let definition = snapshot
+        .definition(definition_id)
+        .ok_or(ExactProductError::DefinitionNotFound(definition_id))?;
+    let body_id = definition
+        .feature_body_ownership(producer_feature_id)
+        .and_then(|ownership| ownership.output_body_id())
+        .ok_or(ExactProductError::InvalidWorkerEvidence)?;
+    if exact_body_terminal_features(snapshot, definition_id)?.get(&body_id)
+        != Some(&producer_feature_id)
+    {
+        return Err(ExactProductError::NonTerminalBodyResult {
+            definition_id,
+            body_id,
+            producer_feature_id,
+        });
+    }
+    Ok(ExactBodyResultKey {
+        definition_id,
+        body_id,
+        producer_feature_id,
+    })
 }
 
 impl ExactResultRegistry {
@@ -1366,6 +1465,86 @@ impl ExactResultRegistry {
             }
         }
         registry
+    }
+
+    pub fn publish_body_results(
+        snapshot: &Snapshot,
+        previous: &Self,
+        packages: impl IntoIterator<Item = Arc<ExactBodyPackage>>,
+    ) -> Result<Self, ExactProductError> {
+        let mut staged = Self::carried_forward(snapshot, previous);
+        let mut occupied = staged
+            .body_values(snapshot)?
+            .keys()
+            .map(|key| (key.definition_id, key.body_id))
+            .collect::<BTreeSet<_>>();
+        for package in packages {
+            let key = exact_body_result_key(snapshot, &package)?;
+            if !occupied.insert((key.definition_id, key.body_id)) {
+                return Err(ExactProductError::ConflictingBodyPublication {
+                    definition_id: key.definition_id,
+                    body_id: key.body_id,
+                });
+            }
+            staged.insert_current(snapshot, package)?;
+        }
+        Ok(staged)
+    }
+
+    pub fn body_values<'a>(
+        &'a self,
+        snapshot: &Snapshot,
+    ) -> Result<BTreeMap<ExactBodyResultKey, &'a Arc<ExactBodyPackage>>, ExactProductError> {
+        let mut values = BTreeMap::new();
+        let mut occupied = BTreeSet::new();
+        for package in self.packages.values() {
+            if !package.is_current(snapshot) {
+                continue;
+            }
+            let definition_id = package.definition_id();
+            let producer_feature_id = package.producer_feature_id();
+            let definition = snapshot
+                .definition(definition_id)
+                .ok_or(ExactProductError::DefinitionNotFound(definition_id))?;
+            let body_id = definition
+                .feature_body_ownership(producer_feature_id)
+                .and_then(|ownership| ownership.output_body_id())
+                .ok_or(ExactProductError::InvalidWorkerEvidence)?;
+            if exact_body_terminal_features(snapshot, definition_id)?.get(&body_id)
+                != Some(&producer_feature_id)
+            {
+                continue;
+            }
+            if !occupied.insert((definition_id, body_id)) {
+                return Err(ExactProductError::ConflictingBodyPublication {
+                    definition_id,
+                    body_id,
+                });
+            }
+            values.insert(
+                ExactBodyResultKey {
+                    definition_id,
+                    body_id,
+                    producer_feature_id,
+                },
+                package,
+            );
+        }
+        Ok(values)
+    }
+
+    pub fn get_body(
+        &self,
+        snapshot: &Snapshot,
+        definition_id: DefinitionId,
+        body_id: BodyId,
+    ) -> Result<Option<&Arc<ExactBodyPackage>>, ExactProductError> {
+        Ok(self
+            .body_values(snapshot)?
+            .into_iter()
+            .find_map(|(key, package)| {
+                (key.definition_id == definition_id && key.body_id == body_id).then_some(package)
+            }))
     }
 
     pub fn insert_current(
@@ -1464,21 +1643,16 @@ impl ExactResultRegistry {
         &'a self,
         snapshot: &'a Snapshot,
     ) -> impl Iterator<Item = &'a Arc<ExactBodyPackage>> {
-        let graph = snapshot.feature_dependency_graph().ok();
-        self.packages.values().filter(move |package| {
-            package.is_current(snapshot)
-                && graph.as_ref().is_some_and(|graph| {
-                    graph
-                        .dependents(package.producer_feature_id())
-                        .is_some_and(|dependents| {
-                            dependents.iter().all(|dependent| {
-                                snapshot
-                                    .feature(*dependent)
-                                    .is_none_or(|feature| !feature.kind().produces_body())
-                            })
-                        })
-                })
-        })
+        self.body_values(snapshot)
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(move |(key, package)| {
+                snapshot
+                    .definition(key.definition_id)
+                    .and_then(|definition| definition.body(key.body_id))
+                    .is_some_and(|body| body.visible())
+                    .then_some(package)
+            })
     }
 
     #[must_use]
@@ -2570,10 +2744,53 @@ impl ExactFeatureChainRequest {
         snapshot: &Snapshot,
         definition_id: DefinitionId,
     ) -> Result<Self, ExactProductError> {
+        Self::from_scoped_snapshot(snapshot, definition_id, None)
+    }
+
+    fn from_scoped_snapshot(
+        snapshot: &Snapshot,
+        definition_id: DefinitionId,
+        producer_feature_id: Option<FeatureId>,
+    ) -> Result<Self, ExactProductError> {
         let definition = snapshot
             .definition(definition_id)
             .ok_or(ExactProductError::DefinitionNotFound(definition_id))?;
-        if definition.feature_ids().iter().any(|feature_id| {
+        let feature_ids = if let Some(producer_feature_id) = producer_feature_id {
+            if snapshot.feature_is_suppressed(producer_feature_id) {
+                return Err(ExactProductError::UnsupportedDefinition);
+            }
+            let graph = snapshot
+                .feature_dependency_graph()
+                .map_err(|_| ExactProductError::UnsupportedDefinition)?;
+            let mut relevant = BTreeSet::from([producer_feature_id]);
+            let mut pending = vec![producer_feature_id];
+            while let Some(feature_id) = pending.pop() {
+                let dependencies = graph
+                    .dependencies(feature_id)
+                    .ok_or(ExactProductError::UnsupportedDefinition)?;
+                for dependency in dependencies {
+                    if relevant.insert(*dependency) {
+                        pending.push(*dependency);
+                    }
+                }
+            }
+            definition
+                .feature_ids()
+                .iter()
+                .copied()
+                .filter(|feature_id| {
+                    relevant.contains(feature_id) && !snapshot.feature_is_suppressed(*feature_id)
+                })
+                .collect::<Vec<_>>()
+        } else {
+            definition
+                .feature_ids()
+                .iter()
+                .copied()
+                .filter(|feature_id| !snapshot.feature_is_suppressed(*feature_id))
+                .collect()
+        };
+        if feature_ids.iter().any(|feature_id| {
             snapshot
                 .feature(*feature_id)
                 .is_some_and(|feature| matches!(feature.kind(), FeatureKind::Pad(_)))
@@ -2581,8 +2798,7 @@ impl ExactFeatureChainRequest {
             let graph = snapshot
                 .feature_dependency_graph()
                 .map_err(|_| ExactProductError::UnsupportedDefinition)?;
-            let producers = definition
-                .feature_ids()
+            let producers = feature_ids
                 .iter()
                 .copied()
                 .filter(|feature_id| {
@@ -2605,7 +2821,7 @@ impl ExactFeatureChainRequest {
             };
             return Self::from_pad_pocket_snapshot(snapshot, definition_id, *producer);
         }
-        if definition.feature_ids().iter().any(|feature_id| {
+        if feature_ids.iter().any(|feature_id| {
             snapshot.feature(*feature_id).is_some_and(|feature| {
                 matches!(
                     feature.kind(),
@@ -2615,8 +2831,7 @@ impl ExactFeatureChainRequest {
         }) {
             return Err(ExactProductError::UnsupportedDefinition);
         }
-        let extrusions = definition
-            .feature_ids()
+        let extrusions = feature_ids
             .iter()
             .filter_map(|id| {
                 let feature = snapshot.feature(*id)?;
@@ -2626,8 +2841,7 @@ impl ExactFeatureChainRequest {
                 Some((*id, *profile, height.millimetres()))
             })
             .collect::<Vec<_>>();
-        let legacy_cuts = definition
-            .feature_ids()
+        let legacy_cuts = feature_ids
             .iter()
             .filter_map(|id| {
                 let feature = snapshot.feature(*id)?;
@@ -2638,8 +2852,7 @@ impl ExactFeatureChainRequest {
             })
             .collect::<Vec<_>>();
         let legacy_through_cut = !legacy_cuts.is_empty();
-        let pockets = definition
-            .feature_ids()
+        let pockets = feature_ids
             .iter()
             .filter_map(|id| {
                 let feature = snapshot.feature(*id)?;
@@ -2654,8 +2867,7 @@ impl ExactFeatureChainRequest {
                 Some((*id, *target, *profile, depth.millimetres()))
             })
             .collect::<Vec<_>>();
-        let booleans = definition
-            .feature_ids()
+        let booleans = feature_ids
             .iter()
             .filter_map(|id| {
                 let feature = snapshot.feature(*id)?;
@@ -2670,8 +2882,7 @@ impl ExactFeatureChainRequest {
                 Some((*id, *operation, *target, *tool))
             })
             .collect::<Vec<_>>();
-        let shells = definition
-            .feature_ids()
+        let shells = feature_ids
             .iter()
             .filter_map(|id| {
                 let feature = snapshot.feature(*id)?;
@@ -2686,8 +2897,7 @@ impl ExactFeatureChainRequest {
                 Some((*id, *target, removed_faces, thickness.millimetres()))
             })
             .collect::<Vec<_>>();
-        let finishes = definition
-            .feature_ids()
+        let finishes = feature_ids
             .iter()
             .filter_map(|id| {
                 let feature = snapshot.feature(*id)?;
@@ -3142,11 +3352,42 @@ impl ExactFeatureChainRequest {
         })
     }
 
+    pub fn terminal_body_requests(
+        snapshot: &Snapshot,
+        definition_id: DefinitionId,
+    ) -> Result<BTreeMap<BodyId, Self>, ExactProductError> {
+        exact_body_terminal_features(snapshot, definition_id)?
+            .into_iter()
+            .map(|(body_id, producer_feature_id)| {
+                Self::from_snapshot_for_producer(snapshot, definition_id, producer_feature_id)
+                    .map(|request| (body_id, request))
+            })
+            .collect()
+    }
+
+    pub fn from_snapshot_for_body(
+        snapshot: &Snapshot,
+        definition_id: DefinitionId,
+        body_id: BodyId,
+    ) -> Result<Self, ExactProductError> {
+        let producer_feature_id = exact_body_terminal_features(snapshot, definition_id)?
+            .get(&body_id)
+            .copied()
+            .ok_or(ExactProductError::BodyOutputNotFound {
+                definition_id,
+                body_id,
+            })?;
+        Self::from_snapshot_for_producer(snapshot, definition_id, producer_feature_id)
+    }
+
     pub fn from_snapshot_for_producer(
         snapshot: &Snapshot,
         definition_id: DefinitionId,
         producer_feature_id: FeatureId,
     ) -> Result<Self, ExactProductError> {
+        if snapshot.feature_is_suppressed(producer_feature_id) {
+            return Err(ExactProductError::UnsupportedDefinition);
+        }
         let producer = snapshot
             .feature(producer_feature_id)
             .ok_or(ExactProductError::UnsupportedDefinition)?;
@@ -3156,7 +3397,7 @@ impl ExactFeatureChainRequest {
         ) {
             Self::from_pad_pocket_snapshot(snapshot, definition_id, producer_feature_id)?
         } else {
-            Self::from_snapshot(snapshot, definition_id)?
+            Self::from_scoped_snapshot(snapshot, definition_id, Some(producer_feature_id))?
         };
         if request.producer_feature_id() != producer_feature_id {
             return Err(ExactProductError::UnsupportedDefinition);
@@ -3535,6 +3776,23 @@ pub enum ExactProductError {
     InvalidMeshExport,
     InvalidWorkerEvidence,
     StaleResult,
+    BodyOutputNotFound {
+        definition_id: DefinitionId,
+        body_id: BodyId,
+    },
+    NonTerminalBodyResult {
+        definition_id: DefinitionId,
+        body_id: BodyId,
+        producer_feature_id: FeatureId,
+    },
+    ConflictingBodyTerminals {
+        definition_id: DefinitionId,
+        body_id: BodyId,
+    },
+    ConflictingBodyPublication {
+        definition_id: DefinitionId,
+        body_id: BodyId,
+    },
     DuplicateResult {
         definition_id: DefinitionId,
         producer_feature_id: FeatureId,
@@ -3575,6 +3833,39 @@ impl fmt::Display for ExactProductError {
                 formatter.write_str("exact worker evidence does not match the canonical request")
             }
             Self::StaleResult => formatter.write_str("exact result is stale for the snapshot"),
+            Self::BodyOutputNotFound {
+                definition_id,
+                body_id,
+            } => write!(
+                formatter,
+                "body {} in definition {} has no exact terminal output",
+                body_id.0, definition_id.0
+            ),
+            Self::NonTerminalBodyResult {
+                definition_id,
+                body_id,
+                producer_feature_id,
+            } => write!(
+                formatter,
+                "feature {} is not the terminal output of body {} in definition {}",
+                producer_feature_id.0, body_id.0, definition_id.0
+            ),
+            Self::ConflictingBodyTerminals {
+                definition_id,
+                body_id,
+            } => write!(
+                formatter,
+                "body {} in definition {} has conflicting terminal outputs",
+                body_id.0, definition_id.0
+            ),
+            Self::ConflictingBodyPublication {
+                definition_id,
+                body_id,
+            } => write!(
+                formatter,
+                "body {} in definition {} has conflicting exact publications",
+                body_id.0, definition_id.0
+            ),
             Self::DuplicateResult {
                 definition_id,
                 producer_feature_id,

@@ -589,6 +589,14 @@ pub fn shift() -> Modifiers {
     }
 }
 
+/// The `Alt` modifier used for deliberate pick-through without desktop input.
+pub fn alt() -> Modifiers {
+    Modifiers {
+        alt: true,
+        ..Modifiers::NONE
+    }
+}
+
 /// The `Ctrl`/`Cmd` modifier as the shell's shortcuts expect it.
 pub fn ctrl() -> Modifiers {
     Modifiers {

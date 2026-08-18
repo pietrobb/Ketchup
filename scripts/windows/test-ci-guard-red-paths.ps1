@@ -63,6 +63,7 @@ try {
     $d08Source = Get-Content (Join-Path $repoRoot "governance\d08-lifecycle-exceptions.json") -Raw
     $transitionSource = Get-Content (Join-Path $repoRoot "governance\r0-transitions-v1-v13.json") -Raw
     $appSource = Get-Content (Join-Path $repoRoot "crates\ketchup-app\src\lib.rs") -Raw
+    $rendererSource = Get-Content (Join-Path $repoRoot "crates\ketchup-app\src\renderer.rs") -Raw
     $exactManifestSource = Get-Content (Join-Path $repoRoot "crates\ketchup-exact\Cargo.toml") -Raw
     $exactProjectionSource = Get-Content (Join-Path $repoRoot "crates\ketchup-interaction\src\exact_projection.rs") -Raw
     $ciGovernanceSource = Get-Content (Join-Path $repoRoot "scripts\windows\invoke-ci-governance.ps1") -Raw
@@ -76,6 +77,7 @@ try {
     Write-Utf8NoBom (Join-Path $tempRoot "crates\ketchup-core\tests\fixtures\state-view\complete-v1.txt") "complete`n"
     Write-Utf8NoBom (Join-Path $tempRoot "crates\ketchup-core\tests\fixtures\state-view\agent-v1.txt") "agent`n"
     Write-Utf8NoBom (Join-Path $tempRoot "crates\ketchup-app\src\lib.rs") $appSource
+    Write-Utf8NoBom (Join-Path $tempRoot "crates\ketchup-app\src\renderer.rs") $rendererSource
     Write-Utf8NoBom (Join-Path $tempRoot "crates\ketchup-exact\Cargo.toml") $exactManifestSource
     Write-Utf8NoBom (Join-Path $tempRoot "crates\ketchup-interaction\src\exact_projection.rs") $exactProjectionSource
     Write-Utf8NoBom (Join-Path $tempRoot "scripts\windows\invoke-ci-governance.ps1") $ciGovernanceSource

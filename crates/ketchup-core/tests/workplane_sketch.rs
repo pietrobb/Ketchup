@@ -104,7 +104,7 @@ fn principal_offset_and_fully_constrained_sketch_are_one_undoable_lossless_batch
     let committed_digest = committed.canonical_digest();
     let bytes = persistence::save(&committed);
     let reopened = persistence::load(&bytes).unwrap();
-    assert_eq!(reopened.source_schema(), 31);
+    assert_eq!(reopened.source_schema(), persistence::CURRENT_SCHEMA);
     assert!(reopened.migration_losses().is_empty());
     assert_eq!(reopened.snapshot().canonical_digest(), committed_digest);
     assert_eq!(persistence::save(&reopened.snapshot()), bytes);

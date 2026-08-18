@@ -1,4 +1,9 @@
+use crate::assembly::{
+    ASSEMBLY_MATE_SCHEMA_V1, AssemblyDofDiagnostic, AssemblyDofStatus, AssemblyMate,
+    AssemblyMateId, AssemblyMateKind, AssemblyReferenceHealth,
+};
 use crate::bottle_m6::{ExactRevolveRequest, reference_matches_revolve_request};
+use crate::drawing::{DrawingError, DrawingSheet, DrawingSheetId, DrawingSource};
 use crate::exact_product::{
     BodySubshapeRef, ExactFaceRole, ExactFeatureChainRequest, ExactReferenceResolution,
     ExactResultRegistry,
@@ -18,9 +23,9 @@ use crate::import::{
 };
 use crate::prismatic::{CanonicalJoint, JointId, PrismaticError};
 use crate::sketch::{
-    PadPocketOperation, PadSpec, PocketSpec, PrincipalPlane, SketchConstraintKind, SketchEntity,
-    SketchError, SketchPointKind, SketchSpec, WorkplaneFrame, WorkplaneSpec, WorkplaneSupport,
-    WorkplaneSupportHealth,
+    PadPocketOperation, PadSpec, PocketSpec, PrincipalPlane, SketchConstraintId,
+    SketchConstraintKind, SketchEntity, SketchError, SketchPointKind, SketchSpec, WorkplaneFrame,
+    WorkplaneSpec, WorkplaneSupport, WorkplaneSupportHealth,
 };
 use crate::space::{
     CanonicalClearanceVolume, CanonicalSpace, ClearanceCoordinateFrame, ClearanceOwner,
@@ -47,6 +52,7 @@ macro_rules! typed_id {
 
 typed_id!(DocumentId);
 typed_id!(DefinitionId);
+typed_id!(BodyId);
 typed_id!(OccurrenceId);
 typed_id!(GroupId);
 typed_id!(FeatureId);
@@ -565,6 +571,67 @@ impl FeatureKind {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Body {
+    pub(crate) id: BodyId,
+    pub(crate) name: String,
+    pub(crate) visible: bool,
+    pub(crate) consumed_by: Option<FeatureId>,
+}
+
+impl Body {
+    #[must_use]
+    pub const fn id(&self) -> BodyId {
+        self.id
+    }
+
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    #[must_use]
+    pub const fn visible(&self) -> bool {
+        self.visible
+    }
+
+    #[must_use]
+    pub const fn consumed_by(&self) -> Option<FeatureId> {
+        self.consumed_by
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FeatureBodyOwnership {
+    input_body_ids: Vec<BodyId>,
+    output_body_id: Option<BodyId>,
+}
+
+impl FeatureBodyOwnership {
+    pub fn new(
+        input_body_ids: Vec<BodyId>,
+        output_body_id: Option<BodyId>,
+    ) -> Result<Self, CanonicalError> {
+        if input_body_ids.windows(2).any(|pair| pair[0] >= pair[1]) {
+            return Err(CanonicalError::BodyInputsNotCanonical);
+        }
+        Ok(Self {
+            input_body_ids,
+            output_body_id,
+        })
+    }
+
+    #[must_use]
+    pub fn input_body_ids(&self) -> &[BodyId] {
+        &self.input_body_ids
+    }
+
+    #[must_use]
+    pub const fn output_body_id(&self) -> Option<BodyId> {
+        self.output_body_id
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Feature {
     pub(crate) id: FeatureId,
@@ -750,6 +817,9 @@ pub struct Definition {
     pub(crate) id: DefinitionId,
     pub(crate) name: String,
     pub(crate) feature_ids: Vec<FeatureId>,
+    pub(crate) bodies: BTreeMap<BodyId, Body>,
+    pub(crate) active_body_id: BodyId,
+    pub(crate) feature_body_ownership: BTreeMap<FeatureId, FeatureBodyOwnership>,
     pub(crate) local_occurrence_ids: Vec<LocalOccurrenceId>,
     pub(crate) local_group_ids: Vec<LocalGroupId>,
 }
@@ -770,6 +840,25 @@ impl Definition {
         &self.feature_ids
     }
 
+    pub fn bodies(&self) -> impl Iterator<Item = &Body> {
+        self.bodies.values()
+    }
+
+    #[must_use]
+    pub fn body(&self, id: BodyId) -> Option<&Body> {
+        self.bodies.get(&id)
+    }
+
+    #[must_use]
+    pub const fn active_body_id(&self) -> BodyId {
+        self.active_body_id
+    }
+
+    #[must_use]
+    pub fn feature_body_ownership(&self, id: FeatureId) -> Option<&FeatureBodyOwnership> {
+        self.feature_body_ownership.get(&id)
+    }
+
     #[must_use]
     pub fn local_occurrence_ids(&self) -> &[LocalOccurrenceId] {
         &self.local_occurrence_ids
@@ -778,6 +867,30 @@ impl Definition {
     #[must_use]
     pub fn local_group_ids(&self) -> &[LocalGroupId] {
         &self.local_group_ids
+    }
+}
+
+const DEFAULT_BODY_ID: BodyId = BodyId(1);
+
+fn default_body() -> Body {
+    Body {
+        id: DEFAULT_BODY_ID,
+        name: "Body".to_owned(),
+        visible: true,
+        consumed_by: None,
+    }
+}
+
+fn new_definition(id: DefinitionId, name: String) -> Definition {
+    Definition {
+        id,
+        name,
+        feature_ids: Vec::new(),
+        bodies: BTreeMap::from([(DEFAULT_BODY_ID, default_body())]),
+        active_body_id: DEFAULT_BODY_ID,
+        feature_body_ownership: BTreeMap::new(),
+        local_occurrence_ids: Vec::new(),
+        local_group_ids: Vec::new(),
     }
 }
 
@@ -1004,7 +1117,11 @@ pub(crate) struct ProductModel {
     pub(crate) import_receipts: BTreeMap<ImportId, Arc<ImportReceipt>>,
     pub(crate) definitions: BTreeMap<DefinitionId, Arc<Definition>>,
     pub(crate) features: BTreeMap<FeatureId, Arc<Feature>>,
+    pub(crate) body_feature_suppression: BTreeMap<(DefinitionId, BodyId), BTreeSet<FeatureId>>,
     pub(crate) occurrences: BTreeMap<OccurrenceId, Arc<Occurrence>>,
+    pub(crate) grounded_occurrences: BTreeSet<OccurrenceId>,
+    pub(crate) assembly_mates: BTreeMap<AssemblyMateId, Arc<AssemblyMate>>,
+    pub(crate) drawing_sheets: BTreeMap<DrawingSheetId, Arc<DrawingSheet>>,
     pub(crate) groups: BTreeMap<GroupId, Arc<Group>>,
     pub(crate) local_occurrences: BTreeMap<LocalOccurrenceKey, Arc<LocalOccurrence>>,
     pub(crate) local_groups: BTreeMap<LocalGroupKey, Arc<LocalGroup>>,
@@ -1046,7 +1163,11 @@ impl Default for ProductModel {
             import_receipts: BTreeMap::new(),
             definitions: BTreeMap::new(),
             features: BTreeMap::new(),
+            body_feature_suppression: BTreeMap::new(),
             occurrences: BTreeMap::new(),
+            grounded_occurrences: BTreeSet::new(),
+            assembly_mates: BTreeMap::new(),
+            drawing_sheets: BTreeMap::new(),
             groups: BTreeMap::new(),
             local_occurrences: BTreeMap::new(),
             local_groups: BTreeMap::new(),
@@ -1395,6 +1516,44 @@ pub enum CanonicalCommand {
         id: DefinitionId,
         name: String,
     },
+    CreateBody {
+        definition_id: DefinitionId,
+        id: BodyId,
+        name: String,
+        visible: bool,
+    },
+    DeleteBody {
+        definition_id: DefinitionId,
+        id: BodyId,
+    },
+    RenameBody {
+        definition_id: DefinitionId,
+        id: BodyId,
+        name: String,
+    },
+    SetActiveBody {
+        definition_id: DefinitionId,
+        id: BodyId,
+    },
+    SetBodyVisibility {
+        definition_id: DefinitionId,
+        id: BodyId,
+        visible: bool,
+    },
+    ConsumeBody {
+        definition_id: DefinitionId,
+        id: BodyId,
+        by_feature_id: FeatureId,
+    },
+    SetFeatureBodyOwnership {
+        id: FeatureId,
+        ownership: FeatureBodyOwnership,
+    },
+    SetBodyFeatureSuppression {
+        definition_id: DefinitionId,
+        body_id: BodyId,
+        suppressed_feature_ids: Vec<FeatureId>,
+    },
     CreateFeature {
         id: FeatureId,
         definition_id: DefinitionId,
@@ -1406,6 +1565,11 @@ pub enum CanonicalCommand {
     },
     SetFeatureDimension {
         id: FeatureId,
+        dimension: Dimension,
+    },
+    SetSketchConstraintDimension {
+        id: FeatureId,
+        constraint_id: SketchConstraintId,
         dimension: Dimension,
     },
     SetBottleControlDimension {
@@ -1436,6 +1600,33 @@ pub enum CanonicalCommand {
     SetOccurrenceTransform {
         id: OccurrenceId,
         transform: Transform,
+    },
+    ApplyAssemblySolve {
+        source_revision: u64,
+        source_digest: String,
+        transforms: Vec<(OccurrenceId, Transform)>,
+    },
+    GuardAssemblyRecompute {
+        source_revision: u64,
+        source_digest: String,
+    },
+    SetOccurrenceGrounded {
+        id: OccurrenceId,
+        grounded: bool,
+    },
+    CreateAssemblyMate(AssemblyMate),
+    RebindAssemblyMate(AssemblyMate),
+    SetAssemblyMateKind {
+        id: AssemblyMateId,
+        kind: AssemblyMateKind,
+    },
+    DeleteAssemblyMate {
+        id: AssemblyMateId,
+    },
+    CreateDrawingSheet(DrawingSheet),
+    UpdateDrawingSheet(DrawingSheet),
+    DeleteDrawingSheet {
+        id: DrawingSheetId,
     },
     SetOccurrenceVisibility {
         id: OccurrenceId,
@@ -1540,6 +1731,35 @@ pub struct SolidToolPlan {
     pub keep_tool: bool,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct NewBodyFeaturePlan {
+    pub definition_id: DefinitionId,
+    pub body_id: BodyId,
+    pub body_name: String,
+    pub feature_id: FeatureId,
+    pub feature_name: String,
+    pub feature_kind: FeatureKind,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ToolBodyPolicy {
+    Preserve,
+    Consume,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MultiBodyBooleanPlan {
+    pub definition_id: DefinitionId,
+    pub operation: BooleanOperation,
+    pub target_body_id: BodyId,
+    pub target_feature_id: FeatureId,
+    pub tool_body_id: BodyId,
+    pub tool_feature_id: FeatureId,
+    pub result_feature_id: FeatureId,
+    pub result_feature_name: String,
+    pub tool_policy: ToolBodyPolicy,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum AuthoritativeDependency {
     EvaluatorNode(NodeId),
@@ -1554,7 +1774,11 @@ pub enum AuthoritativeDependency {
     Import(ImportId),
     Definition(DefinitionId),
     Feature(FeatureId),
+    BodyFeatureSuppression(DefinitionId, BodyId),
     Occurrence(OccurrenceId),
+    GroundedOccurrence(OccurrenceId),
+    AssemblyMate(AssemblyMateId),
+    DrawingSheet(DrawingSheetId),
     Group(GroupId),
     LocalGroup(LocalGroupKey),
     LocalOccurrence(LocalOccurrenceKey),
@@ -2032,6 +2256,13 @@ pub struct Snapshot {
 }
 
 impl Snapshot {
+    pub(crate) fn preview_batch(&self, batch: &CommandBatch) -> Result<Self, CanonicalError> {
+        let mut candidate =
+            DocumentStore::from_product(self.revision_id, self.product.as_ref().clone())?;
+        candidate.apply_batch(batch)?;
+        Ok(candidate.current())
+    }
+
     #[must_use]
     pub const fn revision_id(&self) -> u64 {
         self.revision_id
@@ -2317,8 +2548,80 @@ impl Snapshot {
     }
 
     #[must_use]
+    pub fn suppressed_feature_ids(
+        &self,
+        definition_id: DefinitionId,
+        body_id: BodyId,
+    ) -> Option<&BTreeSet<FeatureId>> {
+        self.product
+            .body_feature_suppression
+            .get(&(definition_id, body_id))
+    }
+
+    #[must_use]
+    pub fn feature_is_suppressed(&self, id: FeatureId) -> bool {
+        self.product
+            .body_feature_suppression
+            .values()
+            .any(|suppressed| suppressed.contains(&id))
+    }
+
+    #[must_use]
     pub fn occurrence(&self, id: OccurrenceId) -> Option<&Occurrence> {
         self.product.occurrences.get(&id).map(Arc::as_ref)
+    }
+
+    #[must_use]
+    pub fn occurrence_is_grounded(&self, id: OccurrenceId) -> bool {
+        self.product.grounded_occurrences.contains(&id)
+    }
+
+    pub fn grounded_occurrences(&self) -> impl Iterator<Item = OccurrenceId> + '_ {
+        self.product.grounded_occurrences.iter().copied()
+    }
+
+    #[must_use]
+    pub fn assembly_mate(&self, id: AssemblyMateId) -> Option<&AssemblyMate> {
+        self.product.assembly_mates.get(&id).map(Arc::as_ref)
+    }
+
+    pub fn assembly_mates(&self) -> impl Iterator<Item = &AssemblyMate> {
+        self.product.assembly_mates.values().map(Arc::as_ref)
+    }
+
+    #[must_use]
+    pub fn drawing_sheet(&self, id: DrawingSheetId) -> Option<&DrawingSheet> {
+        self.product.drawing_sheets.get(&id).map(Arc::as_ref)
+    }
+
+    pub fn drawing_sheets(&self) -> impl Iterator<Item = &DrawingSheet> {
+        self.product.drawing_sheets.values().map(Arc::as_ref)
+    }
+
+    #[must_use]
+    pub fn assembly_dof_diagnostic(&self, id: OccurrenceId) -> Option<AssemblyDofDiagnostic> {
+        self.product.occurrences.contains_key(&id).then(|| {
+            let grounded = self.occurrence_is_grounded(id);
+            AssemblyDofDiagnostic {
+                occurrence_id: id,
+                status: if grounded {
+                    AssemblyDofStatus::Grounded
+                } else {
+                    AssemblyDofStatus::PendingSolve
+                },
+                remaining_dof: grounded.then_some(0),
+                incident_mate_ids: self
+                    .product
+                    .assembly_mates
+                    .values()
+                    .filter(|mate| {
+                        mate.endpoint_a().occurrence_id() == id
+                            || mate.endpoint_b().occurrence_id() == id
+                    })
+                    .map(|mate| mate.id())
+                    .collect(),
+            }
+        })
     }
 
     #[must_use]
@@ -3144,6 +3447,7 @@ impl DocumentStore {
             .exact_reference_evidence
             .retain(|lineage, _| anchored_reference_lineages.contains(lineage));
         let mut changed_evaluator_nodes = BTreeSet::new();
+        let mut explicit_dirty_features = BTreeSet::new();
         let mut evaluation_identity = EvaluationIdentity::default();
         let mut previous_evaluation = self.revisions[self.cursor].evaluation.clone();
 
@@ -3513,16 +3817,9 @@ impl DocumentStore {
                     if product.definitions.contains_key(id) {
                         return Err(CanonicalError::DefinitionAlreadyExists(*id));
                     }
-                    product.definitions.insert(
-                        *id,
-                        Arc::new(Definition {
-                            id: *id,
-                            name: name.clone(),
-                            feature_ids: Vec::new(),
-                            local_occurrence_ids: Vec::new(),
-                            local_group_ids: Vec::new(),
-                        }),
-                    );
+                    product
+                        .definitions
+                        .insert(*id, Arc::new(new_definition(*id, name.clone())));
                 }
                 CanonicalCommand::DeleteDefinition { id } => {
                     if product
@@ -3536,6 +3833,9 @@ impl DocumentStore {
                         .definitions
                         .remove(id)
                         .ok_or(CanonicalError::DefinitionNotFound(*id))?;
+                    product
+                        .body_feature_suppression
+                        .retain(|(definition_id, _), _| definition_id != id);
                     for feature_id in &definition.feature_ids {
                         product.features.remove(feature_id);
                         product
@@ -3555,13 +3855,231 @@ impl DocumentStore {
                     product.definitions.insert(
                         *id,
                         Arc::new(Definition {
-                            id: *id,
                             name: name.clone(),
-                            feature_ids: existing.feature_ids.clone(),
-                            local_occurrence_ids: existing.local_occurrence_ids.clone(),
-                            local_group_ids: existing.local_group_ids.clone(),
+                            ..existing.as_ref().clone()
                         }),
                     );
+                }
+                CanonicalCommand::CreateBody {
+                    definition_id,
+                    id,
+                    name,
+                    visible,
+                } => {
+                    ensure_product_id(id.0)?;
+                    ensure_name(name)?;
+                    let definition = product
+                        .definitions
+                        .get(definition_id)
+                        .ok_or(CanonicalError::DefinitionNotFound(*definition_id))?;
+                    if definition.bodies.contains_key(id) {
+                        return Err(CanonicalError::BodyAlreadyExists(*definition_id, *id));
+                    }
+                    let mut replacement = definition.as_ref().clone();
+                    replacement.bodies.insert(
+                        *id,
+                        Body {
+                            id: *id,
+                            name: name.clone(),
+                            visible: *visible,
+                            consumed_by: None,
+                        },
+                    );
+                    product
+                        .definitions
+                        .insert(*definition_id, Arc::new(replacement));
+                }
+                CanonicalCommand::DeleteBody { definition_id, id } => {
+                    let definition = product
+                        .definitions
+                        .get(definition_id)
+                        .ok_or(CanonicalError::DefinitionNotFound(*definition_id))?;
+                    if !definition.bodies.contains_key(id) {
+                        return Err(CanonicalError::BodyNotFound(*definition_id, *id));
+                    }
+                    if definition.active_body_id == *id {
+                        return Err(CanonicalError::BodyIsActive(*definition_id, *id));
+                    }
+                    if definition.feature_body_ownership.values().any(|ownership| {
+                        ownership.output_body_id == Some(*id)
+                            || ownership.input_body_ids.contains(id)
+                    }) {
+                        return Err(CanonicalError::BodyInUse(*definition_id, *id));
+                    }
+                    let mut replacement = definition.as_ref().clone();
+                    replacement.bodies.remove(id);
+                    product
+                        .definitions
+                        .insert(*definition_id, Arc::new(replacement));
+                }
+                CanonicalCommand::RenameBody {
+                    definition_id,
+                    id,
+                    name,
+                } => {
+                    ensure_name(name)?;
+                    let definition = product
+                        .definitions
+                        .get(definition_id)
+                        .ok_or(CanonicalError::DefinitionNotFound(*definition_id))?;
+                    let body = definition
+                        .bodies
+                        .get(id)
+                        .ok_or(CanonicalError::BodyNotFound(*definition_id, *id))?;
+                    let mut replacement = definition.as_ref().clone();
+                    replacement.bodies.insert(
+                        *id,
+                        Body {
+                            name: name.clone(),
+                            ..body.clone()
+                        },
+                    );
+                    product
+                        .definitions
+                        .insert(*definition_id, Arc::new(replacement));
+                }
+                CanonicalCommand::SetActiveBody { definition_id, id } => {
+                    let definition = product
+                        .definitions
+                        .get(definition_id)
+                        .ok_or(CanonicalError::DefinitionNotFound(*definition_id))?;
+                    let body = definition
+                        .bodies
+                        .get(id)
+                        .ok_or(CanonicalError::BodyNotFound(*definition_id, *id))?;
+                    if body.consumed_by.is_some() {
+                        return Err(CanonicalError::InvalidBodyAuthoringPlan);
+                    }
+                    let mut replacement = definition.as_ref().clone();
+                    replacement.active_body_id = *id;
+                    product
+                        .definitions
+                        .insert(*definition_id, Arc::new(replacement));
+                }
+                CanonicalCommand::SetBodyVisibility {
+                    definition_id,
+                    id,
+                    visible,
+                } => {
+                    let definition = product
+                        .definitions
+                        .get(definition_id)
+                        .ok_or(CanonicalError::DefinitionNotFound(*definition_id))?;
+                    let body = definition
+                        .bodies
+                        .get(id)
+                        .ok_or(CanonicalError::BodyNotFound(*definition_id, *id))?;
+                    let mut replacement = definition.as_ref().clone();
+                    replacement.bodies.insert(
+                        *id,
+                        Body {
+                            visible: *visible,
+                            ..body.clone()
+                        },
+                    );
+                    product
+                        .definitions
+                        .insert(*definition_id, Arc::new(replacement));
+                }
+                CanonicalCommand::ConsumeBody {
+                    definition_id,
+                    id,
+                    by_feature_id,
+                } => {
+                    let definition = product
+                        .definitions
+                        .get(definition_id)
+                        .ok_or(CanonicalError::DefinitionNotFound(*definition_id))?;
+                    let body = definition
+                        .bodies
+                        .get(id)
+                        .ok_or(CanonicalError::BodyNotFound(*definition_id, *id))?;
+                    let feature = product
+                        .features
+                        .get(by_feature_id)
+                        .ok_or(CanonicalError::FeatureNotFound(*by_feature_id))?;
+                    let ownership = definition
+                        .feature_body_ownership
+                        .get(by_feature_id)
+                        .ok_or(CanonicalError::InvalidBodyAuthoringPlan)?;
+                    if body.consumed_by.is_some()
+                        || definition.active_body_id == *id
+                        || feature.definition_id != *definition_id
+                        || !matches!(feature.kind, FeatureKind::Boolean { .. })
+                        || !ownership.input_body_ids.contains(id)
+                        || ownership.output_body_id == Some(*id)
+                    {
+                        return Err(CanonicalError::InvalidBodyAuthoringPlan);
+                    }
+                    let mut replacement = definition.as_ref().clone();
+                    replacement.bodies.insert(
+                        *id,
+                        Body {
+                            consumed_by: Some(*by_feature_id),
+                            ..body.clone()
+                        },
+                    );
+                    product
+                        .definitions
+                        .insert(*definition_id, Arc::new(replacement));
+                }
+                CanonicalCommand::SetFeatureBodyOwnership { id, ownership } => {
+                    let feature = product
+                        .features
+                        .get(id)
+                        .ok_or(CanonicalError::FeatureNotFound(*id))?;
+                    validate_feature_body_ownership_change(&product, feature, ownership)?;
+                    let definition = &product.definitions[&feature.definition_id];
+                    let mut replacement = definition.as_ref().clone();
+                    replacement
+                        .feature_body_ownership
+                        .insert(*id, ownership.clone());
+                    product
+                        .definitions
+                        .insert(feature.definition_id, Arc::new(replacement));
+                }
+                CanonicalCommand::SetBodyFeatureSuppression {
+                    definition_id,
+                    body_id,
+                    suppressed_feature_ids,
+                } => {
+                    let graph = FeatureDependencyGraph::from_product(&product)?;
+                    validate_body_feature_suppression(
+                        &product,
+                        *definition_id,
+                        *body_id,
+                        suppressed_feature_ids,
+                        &graph,
+                    )?;
+                    let key = (*definition_id, *body_id);
+                    let current_suppressed = product
+                        .body_feature_suppression
+                        .get(&key)
+                        .cloned()
+                        .unwrap_or_default();
+                    let requested_suppressed = suppressed_feature_ids
+                        .iter()
+                        .copied()
+                        .collect::<BTreeSet<_>>();
+                    if current_suppressed == requested_suppressed {
+                        return Err(CanonicalError::FeatureSuppressionUnchanged(
+                            *definition_id,
+                            *body_id,
+                        ));
+                    }
+                    explicit_dirty_features.extend(
+                        current_suppressed
+                            .iter()
+                            .chain(&requested_suppressed)
+                            .copied(),
+                    );
+                    if requested_suppressed.is_empty() {
+                        product.body_feature_suppression.remove(&key);
+                    } else {
+                        product
+                            .body_feature_suppression
+                            .insert(key, requested_suppressed);
+                    }
                 }
                 CanonicalCommand::CreateFeature {
                     id,
@@ -3594,18 +4112,13 @@ impl DocumentStore {
                         .definitions
                         .get(definition_id)
                         .ok_or(CanonicalError::DefinitionNotFound(*definition_id))?;
-                    let mut feature_ids = definition.feature_ids.clone();
-                    feature_ids.push(*id);
-                    product.definitions.insert(
-                        *definition_id,
-                        Arc::new(Definition {
-                            id: *definition_id,
-                            name: definition.name.clone(),
-                            feature_ids,
-                            local_occurrence_ids: definition.local_occurrence_ids.clone(),
-                            local_group_ids: definition.local_group_ids.clone(),
-                        }),
-                    );
+                    let ownership = inferred_feature_body_ownership(&product, definition, kind)?;
+                    let mut replacement = definition.as_ref().clone();
+                    replacement.feature_ids.push(*id);
+                    replacement.feature_body_ownership.insert(*id, ownership);
+                    product
+                        .definitions
+                        .insert(*definition_id, Arc::new(replacement));
                     product.features.insert(
                         *id,
                         Arc::new(Feature {
@@ -3628,6 +4141,14 @@ impl DocumentStore {
                         .copied()
                         .filter(|candidate| candidate != id)
                         .collect();
+                    let mut feature_body_ownership = definition.feature_body_ownership.clone();
+                    feature_body_ownership.remove(id);
+                    for suppressed in product.body_feature_suppression.values_mut() {
+                        suppressed.remove(id);
+                    }
+                    product
+                        .body_feature_suppression
+                        .retain(|_, suppressed| !suppressed.is_empty());
                     product
                         .feature_parameter_bindings
                         .retain(|target, _| target.feature_id != *id);
@@ -3637,11 +4158,9 @@ impl DocumentStore {
                     product.definitions.insert(
                         feature.definition_id,
                         Arc::new(Definition {
-                            id: definition.id,
-                            name: definition.name.clone(),
                             feature_ids,
-                            local_occurrence_ids: definition.local_occurrence_ids.clone(),
-                            local_group_ids: definition.local_group_ids.clone(),
+                            feature_body_ownership,
+                            ..definition.as_ref().clone()
                         }),
                     );
                 }
@@ -3727,6 +4246,43 @@ impl DocumentStore {
                             definition_id: feature.definition_id,
                             name: feature.name.clone(),
                             kind,
+                        }),
+                    );
+                }
+                CanonicalCommand::SetSketchConstraintDimension {
+                    id,
+                    constraint_id,
+                    dimension,
+                } => {
+                    let feature = product
+                        .features
+                        .get(id)
+                        .ok_or(CanonicalError::FeatureNotFound(*id))?;
+                    let FeatureKind::Sketch(spec) = &feature.kind else {
+                        return Err(CanonicalError::FeatureHasNoDimension(*id));
+                    };
+                    let mut updated = spec.clone();
+                    let constraint = updated
+                        .constraints
+                        .iter_mut()
+                        .find(|constraint| constraint.id == *constraint_id)
+                        .ok_or(CanonicalError::Sketch(
+                            SketchError::InvalidConstraintReference(*constraint_id),
+                        ))?;
+                    match &mut constraint.kind {
+                        SketchConstraintKind::Distance { value, .. }
+                        | SketchConstraintKind::Radius { value, .. } => {
+                            *value = dimension.clone();
+                        }
+                        _ => return Err(CanonicalError::FeatureHasNoDimension(*id)),
+                    }
+                    product.features.insert(
+                        *id,
+                        Arc::new(Feature {
+                            id: *id,
+                            definition_id: feature.definition_id,
+                            name: feature.name.clone(),
+                            kind: FeatureKind::Sketch(updated),
                         }),
                     );
                 }
@@ -3869,10 +4425,17 @@ impl DocumentStore {
                     {
                         return Err(CanonicalError::OccurrenceInCollection(*id));
                     }
+                    if product.assembly_mates.values().any(|mate| {
+                        mate.endpoint_a().occurrence_id() == *id
+                            || mate.endpoint_b().occurrence_id() == *id
+                    }) {
+                        return Err(CanonicalError::OccurrenceInAssemblyMate(*id));
+                    }
                     product
                         .occurrences
                         .remove(id)
                         .ok_or(CanonicalError::OccurrenceNotFound(*id))?;
+                    product.grounded_occurrences.remove(id);
                 }
                 CanonicalCommand::SetOccurrenceTransform { id, transform } => {
                     validate_transform(*transform)?;
@@ -3887,6 +4450,127 @@ impl DocumentStore {
                             ..existing.as_ref().clone()
                         }),
                     );
+                }
+                CanonicalCommand::GuardAssemblyRecompute {
+                    source_revision,
+                    source_digest,
+                } => {
+                    if current.revision_id() != *source_revision
+                        || current.canonical_digest() != *source_digest
+                    {
+                        return Err(CanonicalError::StaleAssemblySolve);
+                    }
+                }
+                CanonicalCommand::ApplyAssemblySolve {
+                    source_revision,
+                    source_digest,
+                    transforms,
+                } => {
+                    if current.revision_id() != *source_revision
+                        || current.canonical_digest() != *source_digest
+                    {
+                        return Err(CanonicalError::StaleAssemblySolve);
+                    }
+                    if transforms.is_empty()
+                        || transforms.windows(2).any(|pair| pair[0].0 >= pair[1].0)
+                    {
+                        return Err(CanonicalError::InvalidAssemblySolvePublication);
+                    }
+                    for (id, transform) in transforms {
+                        validate_transform(*transform)?;
+                        if product.grounded_occurrences.contains(id) {
+                            return Err(CanonicalError::InvalidAssemblySolvePublication);
+                        }
+                        let existing = product
+                            .occurrences
+                            .get(id)
+                            .ok_or(CanonicalError::OccurrenceNotFound(*id))?;
+                        product.occurrences.insert(
+                            *id,
+                            Arc::new(Occurrence {
+                                transform: *transform,
+                                ..existing.as_ref().clone()
+                            }),
+                        );
+                    }
+                }
+                CanonicalCommand::SetOccurrenceGrounded { id, grounded } => {
+                    if !product.occurrences.contains_key(id) {
+                        return Err(CanonicalError::OccurrenceNotFound(*id));
+                    }
+                    if *grounded {
+                        product.grounded_occurrences.insert(*id);
+                    } else {
+                        product.grounded_occurrences.remove(id);
+                    }
+                }
+                CanonicalCommand::CreateAssemblyMate(mate) => {
+                    ensure_product_id(mate.id().0)?;
+                    if product.assembly_mates.contains_key(&mate.id()) {
+                        return Err(CanonicalError::AssemblyMateAlreadyExists(mate.id()));
+                    }
+                    validate_assembly_mate(&product, mate, true)?;
+                    product
+                        .assembly_mates
+                        .insert(mate.id(), Arc::new(mate.clone()));
+                }
+                CanonicalCommand::RebindAssemblyMate(mate) => {
+                    let existing = product
+                        .assembly_mates
+                        .get(&mate.id())
+                        .ok_or(CanonicalError::AssemblyMateNotFound(mate.id()))?;
+                    if existing.kind() != mate.kind() {
+                        return Err(CanonicalError::InvalidAssemblyMate(mate.id()));
+                    }
+                    validate_assembly_mate(&product, mate, false)?;
+                    product
+                        .assembly_mates
+                        .insert(mate.id(), Arc::new(mate.clone()));
+                }
+                CanonicalCommand::SetAssemblyMateKind { id, kind } => {
+                    if !kind.is_valid() {
+                        return Err(CanonicalError::InvalidAssemblyMate(*id));
+                    }
+                    let existing = product
+                        .assembly_mates
+                        .get(id)
+                        .ok_or(CanonicalError::AssemblyMateNotFound(*id))?;
+                    let replacement = AssemblyMate {
+                        kind: *kind,
+                        ..existing.as_ref().clone()
+                    };
+                    validate_assembly_mate(&product, &replacement, true)?;
+                    product.assembly_mates.insert(*id, Arc::new(replacement));
+                }
+                CanonicalCommand::DeleteAssemblyMate { id } => {
+                    product
+                        .assembly_mates
+                        .remove(id)
+                        .ok_or(CanonicalError::AssemblyMateNotFound(*id))?;
+                }
+                CanonicalCommand::CreateDrawingSheet(sheet) => {
+                    if product.drawing_sheets.contains_key(&sheet.id()) {
+                        return Err(CanonicalError::DrawingSheetAlreadyExists(sheet.id()));
+                    }
+                    validate_drawing_sheet(&product, sheet)?;
+                    product
+                        .drawing_sheets
+                        .insert(sheet.id(), Arc::new(sheet.clone()));
+                }
+                CanonicalCommand::UpdateDrawingSheet(sheet) => {
+                    if !product.drawing_sheets.contains_key(&sheet.id()) {
+                        return Err(CanonicalError::DrawingSheetNotFound(sheet.id()));
+                    }
+                    validate_drawing_sheet(&product, sheet)?;
+                    product
+                        .drawing_sheets
+                        .insert(sheet.id(), Arc::new(sheet.clone()));
+                }
+                CanonicalCommand::DeleteDrawingSheet { id } => {
+                    product
+                        .drawing_sheets
+                        .remove(id)
+                        .ok_or(CanonicalError::DrawingSheetNotFound(*id))?;
                 }
                 CanonicalCommand::SetOccurrenceVisibility { id, visible } => {
                     let existing = product
@@ -4093,6 +4777,7 @@ impl DocumentStore {
         let dirty_features = feature_graph.dependent_closure(
             changed_features
                 .iter()
+                .chain(&explicit_dirty_features)
                 .copied()
                 .filter(|id| product.features.contains_key(id)),
         );
@@ -4556,6 +5241,164 @@ impl DocumentStore {
             }]),
             context,
         )
+    }
+
+    pub fn plan_new_body_feature(
+        &self,
+        plan: NewBodyFeaturePlan,
+        context: ProposalContext,
+    ) -> Result<Proposal, ProposalPrepareError> {
+        if !matches!(
+            plan.feature_kind,
+            FeatureKind::Extrusion { .. } | FeatureKind::Pad(_)
+        ) {
+            return Err(CanonicalError::InvalidBodyAuthoringPlan.into());
+        }
+        let snapshot = self.current();
+        for dependency in plan.feature_kind.dependencies() {
+            let feature = snapshot
+                .feature(dependency)
+                .ok_or(CanonicalError::FeatureNotFound(dependency))?;
+            if feature.definition_id() != plan.definition_id
+                || !feature_references_are_resolved(
+                    snapshot.product(),
+                    dependency,
+                    &mut BTreeSet::new(),
+                )
+            {
+                return Err(CanonicalError::InvalidBodyAuthoringPlan.into());
+            }
+        }
+        self.prepare_proposal_with_context(
+            CommandBatch::new(vec![
+                CanonicalCommand::CreateBody {
+                    definition_id: plan.definition_id,
+                    id: plan.body_id,
+                    name: plan.body_name,
+                    visible: true,
+                },
+                CanonicalCommand::SetActiveBody {
+                    definition_id: plan.definition_id,
+                    id: plan.body_id,
+                },
+                CanonicalCommand::CreateFeature {
+                    id: plan.feature_id,
+                    definition_id: plan.definition_id,
+                    name: plan.feature_name,
+                    kind: plan.feature_kind,
+                },
+            ]),
+            context,
+        )
+    }
+
+    pub fn plan_multibody_boolean(
+        &self,
+        plan: MultiBodyBooleanPlan,
+        context: ProposalContext,
+    ) -> Result<Proposal, ProposalPrepareError> {
+        if plan.target_body_id == plan.tool_body_id
+            || plan.target_feature_id == plan.tool_feature_id
+            || plan.operation == BooleanOperation::Split
+        {
+            return Err(CanonicalError::InvalidBodyAuthoringPlan.into());
+        }
+        let snapshot = self.current();
+        let definition = snapshot
+            .definition(plan.definition_id)
+            .ok_or(CanonicalError::DefinitionNotFound(plan.definition_id))?;
+        for body_id in [plan.target_body_id, plan.tool_body_id] {
+            let body = definition
+                .body(body_id)
+                .ok_or(CanonicalError::BodyNotFound(plan.definition_id, body_id))?;
+            if body.consumed_by().is_some() {
+                return Err(CanonicalError::InvalidBodyAuthoringPlan.into());
+            }
+        }
+        for (feature_id, body_id) in [
+            (plan.target_feature_id, plan.target_body_id),
+            (plan.tool_feature_id, plan.tool_body_id),
+        ] {
+            let feature = snapshot
+                .feature(feature_id)
+                .ok_or(CanonicalError::FeatureNotFound(feature_id))?;
+            if feature.definition_id() != plan.definition_id
+                || !matches!(
+                    feature.kind(),
+                    FeatureKind::Extrusion { .. } | FeatureKind::Pad(_)
+                )
+                || definition
+                    .feature_body_ownership(feature_id)
+                    .and_then(FeatureBodyOwnership::output_body_id)
+                    != Some(body_id)
+                || !feature_references_are_resolved(
+                    snapshot.product(),
+                    feature_id,
+                    &mut BTreeSet::new(),
+                )
+                || definition
+                    .feature_ids()
+                    .iter()
+                    .copied()
+                    .any(|dependent_id| {
+                        dependent_id != feature_id
+                            && snapshot.feature(dependent_id).is_some_and(|dependent| {
+                                dependent.kind().dependencies().contains(&feature_id)
+                                    && definition
+                                        .feature_body_ownership(dependent_id)
+                                        .and_then(FeatureBodyOwnership::output_body_id)
+                                        == Some(body_id)
+                            })
+                    })
+            {
+                return Err(CanonicalError::InvalidBodyAuthoringPlan.into());
+            }
+        }
+        let mut commands = vec![
+            CanonicalCommand::SetActiveBody {
+                definition_id: plan.definition_id,
+                id: plan.target_body_id,
+            },
+            CanonicalCommand::CreateFeature {
+                id: plan.result_feature_id,
+                definition_id: plan.definition_id,
+                name: plan.result_feature_name,
+                kind: FeatureKind::Boolean {
+                    operation: plan.operation,
+                    target: plan.target_feature_id,
+                    tool: plan.tool_feature_id,
+                },
+            },
+        ];
+        if plan.tool_policy == ToolBodyPolicy::Consume {
+            commands.push(CanonicalCommand::ConsumeBody {
+                definition_id: plan.definition_id,
+                id: plan.tool_body_id,
+                by_feature_id: plan.result_feature_id,
+            });
+        }
+        self.prepare_proposal_with_context(CommandBatch::new(commands), context)
+    }
+
+    pub fn plan_body_command(
+        &self,
+        command: CanonicalCommand,
+    ) -> Result<Proposal, ProposalPrepareError> {
+        if !matches!(
+            command,
+            CanonicalCommand::CreateBody { .. }
+                | CanonicalCommand::DeleteBody { .. }
+                | CanonicalCommand::RenameBody { .. }
+                | CanonicalCommand::SetActiveBody { .. }
+                | CanonicalCommand::SetBodyVisibility { .. }
+                | CanonicalCommand::ConsumeBody { .. }
+                | CanonicalCommand::SetFeatureBodyOwnership { .. }
+        ) {
+            return Err(ProposalPrepareError::Canonical(
+                CanonicalError::InvalidBodyCommand,
+            ));
+        }
+        self.prepare_proposal(CommandBatch::new(vec![command]))
     }
 
     pub fn prepare_proposal(&self, batch: CommandBatch) -> Result<Proposal, ProposalPrepareError> {
@@ -5684,15 +6527,37 @@ pub enum CanonicalError {
     DefinitionNotFound(DefinitionId),
     DefinitionInUse(DefinitionId),
     DefinitionNotEmpty(DefinitionId),
+    BodyAlreadyExists(DefinitionId, BodyId),
+    BodyNotFound(DefinitionId, BodyId),
+    BodyInUse(DefinitionId, BodyId),
+    BodyIsActive(DefinitionId, BodyId),
+    BodyInputsNotCanonical,
+    InvalidBodyCommand,
+    InvalidBodyAuthoringPlan,
+    InvalidBodyContract,
+    InvalidBodyOwnership(FeatureId),
+    BodyDependencyCycle(DefinitionId),
+    UnresolvedBodyOwnershipReference(FeatureId),
     FeatureAlreadyExists(FeatureId),
     FeatureNotFound(FeatureId),
     FeatureHasNoDimension(FeatureId),
     FeatureIsNotProfile(FeatureId),
     FeatureDependencyCycle(FeatureId),
+    InvalidFeatureSuppression(DefinitionId, BodyId),
+    FeatureSuppressionUnchanged(DefinitionId, BodyId),
     InvalidFeatureParameterBinding(FeatureParameterTarget),
     FeatureParameterBindingNotFound(FeatureParameterTarget),
     OccurrenceAlreadyExists(OccurrenceId),
     OccurrenceNotFound(OccurrenceId),
+    OccurrenceInAssemblyMate(OccurrenceId),
+    AssemblyMateAlreadyExists(AssemblyMateId),
+    AssemblyMateNotFound(AssemblyMateId),
+    InvalidAssemblyMate(AssemblyMateId),
+    StaleAssemblySolve,
+    InvalidAssemblySolvePublication,
+    DrawingSheetAlreadyExists(DrawingSheetId),
+    DrawingSheetNotFound(DrawingSheetId),
+    Drawing(DrawingError),
     GroupAlreadyExists(GroupId),
     GroupNotFound(GroupId),
     GroupNotEmpty(GroupId),
@@ -5796,6 +6661,46 @@ impl fmt::Display for CanonicalError {
             Self::DefinitionNotFound(id) => write!(formatter, "definition {} does not exist", id.0),
             Self::DefinitionInUse(id) => write!(formatter, "definition {} is still used", id.0),
             Self::DefinitionNotEmpty(id) => write!(formatter, "definition {} is not empty", id.0),
+            Self::BodyAlreadyExists(definition, body) => write!(
+                formatter,
+                "body {} already exists in definition {}",
+                body.0, definition.0
+            ),
+            Self::BodyNotFound(definition, body) => write!(
+                formatter,
+                "body {} does not exist in definition {}",
+                body.0, definition.0
+            ),
+            Self::BodyInUse(definition, body) => write!(
+                formatter,
+                "body {} in definition {} is still used",
+                body.0, definition.0
+            ),
+            Self::BodyIsActive(definition, body) => write!(
+                formatter,
+                "body {} in definition {} is active",
+                body.0, definition.0
+            ),
+            Self::BodyInputsNotCanonical => formatter
+                .write_str("feature input bodies must be unique and strictly sorted"),
+            Self::InvalidBodyCommand => formatter.write_str("command is not a body mutation"),
+            Self::InvalidBodyAuthoringPlan => formatter.write_str(
+                "multi-body authoring requires distinct bodies with resolved terminal Pad or Extrusion outputs",
+            ),
+            Self::InvalidBodyContract => {
+                formatter.write_str("definition body contract is incomplete or non-canonical")
+            }
+            Self::InvalidBodyOwnership(id) => {
+                write!(formatter, "feature {} has invalid body ownership", id.0)
+            }
+            Self::BodyDependencyCycle(id) => {
+                write!(formatter, "body dependency cycle in definition {}", id.0)
+            }
+            Self::UnresolvedBodyOwnershipReference(id) => write!(
+                formatter,
+                "feature {} body ownership depends on an ambiguous or lost reference",
+                id.0
+            ),
             Self::FeatureAlreadyExists(id) => write!(formatter, "feature {} already exists", id.0),
             Self::FeatureNotFound(id) => write!(formatter, "feature {} does not exist", id.0),
             Self::FeatureHasNoDimension(id) => {
@@ -5807,6 +6712,16 @@ impl fmt::Display for CanonicalError {
             Self::FeatureDependencyCycle(id) => {
                 write!(formatter, "feature dependency cycle at {}", id.0)
             }
+            Self::InvalidFeatureSuppression(definition, body) => write!(
+                formatter,
+                "feature suppression for body {} in definition {} is not a dependency-closed suffix",
+                body.0, definition.0
+            ),
+            Self::FeatureSuppressionUnchanged(definition, body) => write!(
+                formatter,
+                "feature suppression for body {} in definition {} is unchanged",
+                body.0, definition.0
+            ),
             Self::InvalidFeatureParameterBinding(target) => write!(
                 formatter,
                 "feature {} parameter {} has an invalid derived binding",
@@ -5823,6 +6738,31 @@ impl fmt::Display for CanonicalError {
                 write!(formatter, "occurrence {} already exists", id.0)
             }
             Self::OccurrenceNotFound(id) => write!(formatter, "occurrence {} does not exist", id.0),
+            Self::OccurrenceInAssemblyMate(id) => {
+                write!(formatter, "occurrence {} is still used by an assembly mate", id.0)
+            }
+            Self::AssemblyMateAlreadyExists(id) => {
+                write!(formatter, "assembly mate {} already exists", id.0)
+            }
+            Self::AssemblyMateNotFound(id) => {
+                write!(formatter, "assembly mate {} does not exist", id.0)
+            }
+            Self::InvalidAssemblyMate(id) => {
+                write!(formatter, "assembly mate {} is invalid or unresolved", id.0)
+            }
+            Self::StaleAssemblySolve => {
+                formatter.write_str("assembly solve source revision or digest is stale")
+            }
+            Self::InvalidAssemblySolvePublication => {
+                formatter.write_str("assembly solve publication is empty, non-canonical, or grounded")
+            }
+            Self::DrawingSheetAlreadyExists(id) => {
+                write!(formatter, "drawing sheet {} already exists", id.0)
+            }
+            Self::DrawingSheetNotFound(id) => {
+                write!(formatter, "drawing sheet {} does not exist", id.0)
+            }
+            Self::Drawing(error) => write!(formatter, "invalid drawing sheet: {error}"),
             Self::GroupAlreadyExists(id) => write!(formatter, "group {} already exists", id.0),
             Self::GroupNotFound(id) => write!(formatter, "group {} does not exist", id.0),
             Self::GroupNotEmpty(id) => write!(formatter, "group {} is not empty", id.0),
@@ -6403,6 +7343,299 @@ fn feature_kind_is_solid(kind: &FeatureKind) -> bool {
             | FeatureKind::ImportedExactBody(_)
             | FeatureKind::MeshBody(_)
     )
+}
+
+fn primary_solid_dependency(kind: &FeatureKind) -> Option<FeatureId> {
+    match kind {
+        FeatureKind::SketchPocket(spec) => Some(spec.target),
+        FeatureKind::Shell { target, .. }
+        | FeatureKind::BottleEdgeFinish { target, .. }
+        | FeatureKind::ThroughCut { target, .. }
+        | FeatureKind::Pocket { target, .. }
+        | FeatureKind::Boolean { target, .. } => Some(*target),
+        _ => None,
+    }
+}
+
+fn inferred_feature_body_ownership(
+    _product: &ProductModel,
+    definition: &Definition,
+    kind: &FeatureKind,
+) -> Result<FeatureBodyOwnership, CanonicalError> {
+    let input_body_ids = kind
+        .dependencies()
+        .into_iter()
+        .filter_map(|dependency| {
+            definition
+                .feature_body_ownership
+                .get(&dependency)
+                .and_then(FeatureBodyOwnership::output_body_id)
+        })
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let output_body_id = if feature_kind_is_solid(kind) {
+        primary_solid_dependency(kind)
+            .and_then(|dependency| {
+                definition
+                    .feature_body_ownership
+                    .get(&dependency)
+                    .and_then(FeatureBodyOwnership::output_body_id)
+            })
+            .or(Some(definition.active_body_id))
+    } else {
+        None
+    };
+    FeatureBodyOwnership::new(input_body_ids, output_body_id)
+}
+
+fn feature_references_are_resolved(
+    product: &ProductModel,
+    id: FeatureId,
+    visited: &mut BTreeSet<FeatureId>,
+) -> bool {
+    if !visited.insert(id) {
+        return true;
+    }
+    let Some(feature) = product.features.get(&id) else {
+        return false;
+    };
+    if matches!(
+        &feature.kind,
+        FeatureKind::Workplane(WorkplaneSpec {
+            support: WorkplaneSupport::PlanarFace { health, .. },
+            ..
+        }) if *health != WorkplaneSupportHealth::Resolved
+    ) {
+        return false;
+    }
+    feature
+        .kind
+        .dependencies()
+        .into_iter()
+        .all(|dependency| feature_references_are_resolved(product, dependency, visited))
+}
+
+fn validate_feature_body_ownership_change(
+    product: &ProductModel,
+    feature: &Feature,
+    ownership: &FeatureBodyOwnership,
+) -> Result<(), CanonicalError> {
+    let definition = &product.definitions[&feature.definition_id];
+    if ownership
+        .input_body_ids
+        .iter()
+        .chain(ownership.output_body_id.iter())
+        .any(|id| !definition.bodies.contains_key(id))
+    {
+        return Err(CanonicalError::BodyNotFound(
+            definition.id,
+            ownership
+                .input_body_ids
+                .iter()
+                .chain(ownership.output_body_id.iter())
+                .find(|id| !definition.bodies.contains_key(id))
+                .copied()
+                .expect("a missing body was detected"),
+        ));
+    }
+    if ownership
+        .input_body_ids
+        .windows(2)
+        .any(|pair| pair[0] >= pair[1])
+    {
+        return Err(CanonicalError::BodyInputsNotCanonical);
+    }
+    let inferred = inferred_feature_body_ownership(product, definition, &feature.kind)?;
+    if ownership.input_body_ids != inferred.input_body_ids
+        || feature_kind_is_solid(&feature.kind) != ownership.output_body_id.is_some()
+    {
+        return Err(CanonicalError::InvalidBodyOwnership(feature.id));
+    }
+    if !feature_references_are_resolved(product, feature.id, &mut BTreeSet::new()) {
+        return Err(CanonicalError::UnresolvedBodyOwnershipReference(feature.id));
+    }
+    let mut candidate = definition.as_ref().clone();
+    candidate
+        .feature_body_ownership
+        .insert(feature.id, ownership.clone());
+    validate_body_dependency_graph(&candidate)?;
+    Ok(())
+}
+
+fn ordered_body_feature_history(
+    product: &ProductModel,
+    definition_id: DefinitionId,
+    body_id: BodyId,
+    graph: &FeatureDependencyGraph,
+) -> Result<Vec<FeatureId>, CanonicalError> {
+    let definition = product
+        .definitions
+        .get(&definition_id)
+        .ok_or(CanonicalError::DefinitionNotFound(definition_id))?;
+    if !definition.bodies.contains_key(&body_id) {
+        return Err(CanonicalError::BodyNotFound(definition_id, body_id));
+    }
+    let mut history = BTreeSet::new();
+    let mut pending = graph
+        .topological_order()
+        .iter()
+        .copied()
+        .filter(|id| {
+            definition
+                .feature_body_ownership
+                .get(id)
+                .and_then(FeatureBodyOwnership::output_body_id)
+                == Some(body_id)
+        })
+        .collect::<Vec<_>>();
+    while let Some(feature_id) = pending.pop() {
+        if !history.insert(feature_id) {
+            continue;
+        }
+        for dependency in graph
+            .dependencies(feature_id)
+            .ok_or(CanonicalError::FeatureNotFound(feature_id))?
+        {
+            let ownership = definition
+                .feature_body_ownership
+                .get(dependency)
+                .ok_or(CanonicalError::FeatureNotFound(*dependency))?;
+            if ownership
+                .output_body_id()
+                .is_none_or(|output| output == body_id)
+            {
+                pending.push(*dependency);
+            }
+        }
+    }
+    Ok(graph
+        .topological_order()
+        .iter()
+        .copied()
+        .filter(|id| history.contains(id))
+        .collect())
+}
+
+fn validate_body_feature_suppression(
+    product: &ProductModel,
+    definition_id: DefinitionId,
+    body_id: BodyId,
+    suppressed_feature_ids: &[FeatureId],
+    graph: &FeatureDependencyGraph,
+) -> Result<(), CanonicalError> {
+    let ordered_history = ordered_body_feature_history(product, definition_id, body_id, graph)?;
+    if suppressed_feature_ids.is_empty() {
+        return Ok(());
+    }
+    let Some(boundary) = ordered_history
+        .iter()
+        .position(|id| *id == suppressed_feature_ids[0])
+    else {
+        return Err(CanonicalError::InvalidFeatureSuppression(
+            definition_id,
+            body_id,
+        ));
+    };
+    if ordered_history[boundary..] != *suppressed_feature_ids {
+        return Err(CanonicalError::InvalidFeatureSuppression(
+            definition_id,
+            body_id,
+        ));
+    }
+    let suppressed = suppressed_feature_ids
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    if suppressed.len() != suppressed_feature_ids.len()
+        || suppressed.iter().any(|id| {
+            graph.dependents(*id).is_some_and(|dependents| {
+                dependents
+                    .iter()
+                    .any(|dependent| !suppressed.contains(dependent))
+            })
+        })
+    {
+        return Err(CanonicalError::InvalidFeatureSuppression(
+            definition_id,
+            body_id,
+        ));
+    }
+    Ok(())
+}
+
+fn validate_body_dependency_graph(definition: &Definition) -> Result<(), CanonicalError> {
+    let mut edges = definition
+        .bodies
+        .keys()
+        .copied()
+        .map(|id| (id, BTreeSet::new()))
+        .collect::<BTreeMap<_, _>>();
+    let mut indegree = definition
+        .bodies
+        .keys()
+        .copied()
+        .map(|id| (id, 0_usize))
+        .collect::<BTreeMap<_, _>>();
+    for ownership in definition.feature_body_ownership.values() {
+        let Some(output) = ownership.output_body_id else {
+            continue;
+        };
+        for input in &ownership.input_body_ids {
+            if *input != output && edges.get_mut(input).is_some_and(|set| set.insert(output)) {
+                *indegree
+                    .get_mut(&output)
+                    .expect("validated body output exists") += 1;
+            }
+        }
+    }
+    let mut ready = indegree
+        .iter()
+        .filter_map(|(id, degree)| (*degree == 0).then_some(*id))
+        .collect::<BTreeSet<_>>();
+    let mut visited = 0;
+    while let Some(id) = ready.pop_first() {
+        visited += 1;
+        for dependent in &edges[&id] {
+            let degree = indegree
+                .get_mut(dependent)
+                .expect("body dependency target exists");
+            *degree -= 1;
+            if *degree == 0 {
+                ready.insert(*dependent);
+            }
+        }
+    }
+    if visited != definition.bodies.len() {
+        return Err(CanonicalError::BodyDependencyCycle(definition.id));
+    }
+    Ok(())
+}
+
+pub(crate) fn migrate_legacy_body_contract(
+    product: &mut ProductModel,
+) -> Result<(), CanonicalError> {
+    let definition_ids = product.definitions.keys().copied().collect::<Vec<_>>();
+    for definition_id in definition_ids {
+        let mut definition = product.definitions[&definition_id].as_ref().clone();
+        definition.bodies = BTreeMap::from([(DEFAULT_BODY_ID, default_body())]);
+        definition.active_body_id = DEFAULT_BODY_ID;
+        definition.feature_body_ownership.clear();
+        for feature_id in definition.feature_ids.clone() {
+            let feature = product
+                .features
+                .get(&feature_id)
+                .ok_or(CanonicalError::FeatureNotFound(feature_id))?;
+            let ownership = inferred_feature_body_ownership(product, &definition, &feature.kind)?;
+            definition
+                .feature_body_ownership
+                .insert(feature_id, ownership);
+        }
+        product
+            .definitions
+            .insert(definition_id, Arc::new(definition));
+    }
+    Ok(())
 }
 
 fn validate_feature_kind(kind: &FeatureKind) -> Result<(), CanonicalError> {
@@ -7255,12 +8488,48 @@ fn clone_definition_and_repoint(
         }));
     }
 
+    let feature_body_ownership = source
+        .feature_body_ownership
+        .iter()
+        .map(|(source_id, ownership)| {
+            Ok((
+                *mapping
+                    .get(source_id)
+                    .ok_or(CanonicalError::InvalidFeatureMap)?,
+                ownership.clone(),
+            ))
+        })
+        .collect::<Result<BTreeMap<_, _>, CanonicalError>>()?;
+    let bodies = source
+        .bodies
+        .iter()
+        .map(|(id, body)| {
+            Ok((
+                *id,
+                Body {
+                    consumed_by: body
+                        .consumed_by
+                        .map(|feature_id| {
+                            mapping
+                                .get(&feature_id)
+                                .copied()
+                                .ok_or(CanonicalError::InvalidFeatureMap)
+                        })
+                        .transpose()?,
+                    ..body.clone()
+                },
+            ))
+        })
+        .collect::<Result<BTreeMap<_, _>, CanonicalError>>()?;
     product.definitions.insert(
         new_definition_id,
         Arc::new(Definition {
             id: new_definition_id,
             name: new_definition_name.to_owned(),
             feature_ids: feature_id_map.iter().map(|(_, new_id)| *new_id).collect(),
+            bodies,
+            active_body_id: source.active_body_id,
+            feature_body_ownership,
             local_occurrence_ids: source.local_occurrence_ids.clone(),
             local_group_ids: source.local_group_ids.clone(),
         }),
@@ -7310,6 +8579,25 @@ fn clone_definition_and_repoint(
     }
     for feature in cloned_features {
         product.features.insert(feature.id, feature);
+    }
+    for ((_, body_id), suppressed) in product
+        .body_feature_suppression
+        .clone()
+        .into_iter()
+        .filter(|((definition_id, _), _)| *definition_id == source_definition_id)
+    {
+        let mapped = suppressed
+            .into_iter()
+            .map(|feature_id| {
+                mapping
+                    .get(&feature_id)
+                    .copied()
+                    .ok_or(CanonicalError::InvalidFeatureMap)
+            })
+            .collect::<Result<BTreeSet<_>, _>>()?;
+        product
+            .body_feature_suppression
+            .insert((new_definition_id, body_id), mapped);
     }
     let cloned_bindings = product
         .feature_parameter_bindings
@@ -7525,6 +8813,9 @@ fn apply_solid_tool(
             id: plan.result_definition_id,
             name: plan.result_definition_name.clone(),
             feature_ids: plan.result_feature_ids.to_vec(),
+            bodies: BTreeMap::from([(DEFAULT_BODY_ID, default_body())]),
+            active_body_id: DEFAULT_BODY_ID,
+            feature_body_ownership: BTreeMap::new(),
             local_occurrence_ids: Vec::new(),
             local_group_ids: Vec::new(),
         }),
@@ -7532,6 +8823,20 @@ fn apply_solid_tool(
     for feature in features {
         product.features.insert(feature.id, Arc::new(feature));
     }
+    let mut result_definition = product.definitions[&plan.result_definition_id]
+        .as_ref()
+        .clone();
+    for feature_id in result_definition.feature_ids.clone() {
+        let feature = &product.features[&feature_id];
+        let ownership =
+            inferred_feature_body_ownership(product, &result_definition, &feature.kind)?;
+        result_definition
+            .feature_body_ownership
+            .insert(feature_id, ownership);
+    }
+    product
+        .definitions
+        .insert(plan.result_definition_id, Arc::new(result_definition));
     let binding_mappings = [
         (target_profile_id, target_profile_output),
         (plan.target_feature_id, target_body_output),
@@ -7947,11 +9252,9 @@ fn convert_group_to_component_model(
     product.definitions.insert(
         plan.new_definition_id,
         Arc::new(Definition {
-            id: plan.new_definition_id,
-            name: plan.component_name.clone(),
-            feature_ids: Vec::new(),
             local_occurrence_ids: local_occurrence_ids.clone(),
             local_group_ids: local_group_ids.clone(),
+            ..new_definition(plan.new_definition_id, plan.component_name.clone())
         }),
     );
     for id in groups.iter().copied().filter(|id| *id != plan.group_id) {
@@ -8311,8 +9614,104 @@ fn refresh_supported_planar_face_frames(
     Ok(())
 }
 
+fn validate_assembly_mate(
+    product: &ProductModel,
+    mate: &AssemblyMate,
+    require_resolved: bool,
+) -> Result<(), CanonicalError> {
+    if mate.schema() != ASSEMBLY_MATE_SCHEMA_V1
+        || mate.id().0 == 0
+        || !mate.kind().is_valid()
+        || mate.endpoint_a().occurrence_id() == mate.endpoint_b().occurrence_id()
+    {
+        return Err(CanonicalError::InvalidAssemblyMate(mate.id()));
+    }
+    for endpoint in [mate.endpoint_a(), mate.endpoint_b()] {
+        let occurrence = product
+            .occurrences
+            .get(&endpoint.occurrence_id())
+            .ok_or(CanonicalError::OccurrenceNotFound(endpoint.occurrence_id()))?;
+        let reference = endpoint.reference();
+        let health_is_valid = match endpoint.health() {
+            AssemblyReferenceHealth::Resolved => true,
+            AssemblyReferenceHealth::Broken | AssemblyReferenceHealth::Lost => !require_resolved,
+            AssemblyReferenceHealth::Ambiguous { candidate_count } => {
+                !require_resolved && candidate_count > 1
+            }
+        };
+        if !health_is_valid
+            || !reference.has_valid_lineage()
+            || reference.document_id != product.document_id
+            || reference.definition_id != occurrence.definition_id
+            || product
+                .features
+                .get(&reference.profile_feature_id)
+                .is_none_or(|feature| feature.definition_id != occurrence.definition_id)
+            || product
+                .features
+                .get(&reference.producer_feature_id)
+                .is_none_or(|feature| feature.definition_id != occurrence.definition_id)
+        {
+            return Err(CanonicalError::InvalidAssemblyMate(mate.id()));
+        }
+    }
+    let type_is_valid = match mate.kind() {
+        AssemblyMateKind::CoincidentPlanar { .. }
+        | AssemblyMateKind::Distance { .. }
+        | AssemblyMateKind::Angle { .. } => [mate.endpoint_a(), mate.endpoint_b()]
+            .iter()
+            .all(|endpoint| endpoint.reference().expected_type == "planar_face"),
+        AssemblyMateKind::ConcentricAxial { .. } => [mate.endpoint_a(), mate.endpoint_b()]
+            .iter()
+            .all(|endpoint| {
+                endpoint.reference().expected_type.ends_with("_face")
+                    || endpoint.reference().expected_type.ends_with("_edge")
+                    || matches!(endpoint.reference().expected_type.as_str(), "face" | "edge")
+            }),
+    };
+    if !type_is_valid {
+        return Err(CanonicalError::InvalidAssemblyMate(mate.id()));
+    }
+    Ok(())
+}
+
+fn validate_drawing_sheet(
+    product: &ProductModel,
+    sheet: &DrawingSheet,
+) -> Result<(), CanonicalError> {
+    ensure_product_id(sheet.id().0)?;
+    ensure_name(sheet.name())?;
+    if sheet.schema() != crate::drawing::ORTHOGRAPHIC_DRAWING_SCHEMA_V1 {
+        return Err(CanonicalError::Drawing(DrawingError::InvalidSheet));
+    }
+    let snapshot = Snapshot {
+        revision_id: 0,
+        product: Arc::new(product.clone()),
+    };
+    crate::drawing::validate_source(&snapshot, sheet.source()).map_err(CanonicalError::Drawing)
+}
+
 fn validate_product(product: &ProductModel) -> Result<(), CanonicalError> {
     ensure_product_id(product.document_id.0)?;
+    if let Some(id) = product
+        .grounded_occurrences
+        .iter()
+        .find(|id| !product.occurrences.contains_key(id))
+    {
+        return Err(CanonicalError::OccurrenceNotFound(*id));
+    }
+    for (id, mate) in &product.assembly_mates {
+        if *id != mate.id() {
+            return Err(CanonicalError::InvalidAssemblyMate(*id));
+        }
+        validate_assembly_mate(product, mate, false)?;
+    }
+    for (id, sheet) in &product.drawing_sheets {
+        if *id != sheet.id() {
+            return Err(CanonicalError::Drawing(DrawingError::InvalidSheet));
+        }
+        validate_drawing_sheet(product, sheet)?;
+    }
     FeatureDependencyGraph::from_product(product)?;
     for (id, joint) in &product.joints {
         if *id != joint.id() || !joint.volume().has_positive_volume() {
@@ -8388,6 +9787,39 @@ fn validate_product(product: &ProductModel) -> Result<(), CanonicalError> {
     for definition in product.definitions.values() {
         ensure_product_id(definition.id.0)?;
         ensure_name(&definition.name)?;
+        if definition.bodies.is_empty()
+            || !definition.bodies.contains_key(&definition.active_body_id)
+        {
+            return Err(CanonicalError::BodyNotFound(
+                definition.id,
+                definition.active_body_id,
+            ));
+        }
+        for (id, body) in &definition.bodies {
+            if *id != body.id {
+                return Err(CanonicalError::BodyNotFound(definition.id, *id));
+            }
+            ensure_product_id(body.id.0)?;
+            ensure_name(&body.name)?;
+            if let Some(feature_id) = body.consumed_by {
+                let feature = product
+                    .features
+                    .get(&feature_id)
+                    .ok_or(CanonicalError::InvalidBodyAuthoringPlan)?;
+                let ownership = definition
+                    .feature_body_ownership
+                    .get(&feature_id)
+                    .ok_or(CanonicalError::InvalidBodyAuthoringPlan)?;
+                if feature.definition_id != definition.id
+                    || !matches!(feature.kind, FeatureKind::Boolean { .. })
+                    || !ownership.input_body_ids.contains(id)
+                    || ownership.output_body_id == Some(*id)
+                    || definition.active_body_id == *id
+                {
+                    return Err(CanonicalError::InvalidBodyAuthoringPlan);
+                }
+            }
+        }
         let mut seen = BTreeSet::new();
         for feature_id in &definition.feature_ids {
             if !seen.insert(*feature_id) {
@@ -8400,7 +9832,38 @@ fn validate_product(product: &ProductModel) -> Result<(), CanonicalError> {
             if feature.definition_id != definition.id {
                 return Err(CanonicalError::InvalidFeatureOwnership(*feature_id));
             }
+            let ownership = definition
+                .feature_body_ownership
+                .get(feature_id)
+                .ok_or(CanonicalError::InvalidBodyOwnership(*feature_id))?;
+            if ownership
+                .input_body_ids
+                .windows(2)
+                .any(|pair| pair[0] >= pair[1])
+                || ownership
+                    .input_body_ids
+                    .iter()
+                    .chain(ownership.output_body_id.iter())
+                    .any(|id| !definition.bodies.contains_key(id))
+                || feature_kind_is_solid(&feature.kind) != ownership.output_body_id.is_some()
+                || inferred_feature_body_ownership(product, definition, &feature.kind)?
+                    .input_body_ids
+                    != ownership.input_body_ids
+            {
+                return Err(CanonicalError::InvalidBodyOwnership(*feature_id));
+            }
         }
+        if definition.feature_body_ownership.len() != definition.feature_ids.len() {
+            return Err(CanonicalError::InvalidFeatureOwnership(
+                definition
+                    .feature_body_ownership
+                    .keys()
+                    .find(|id| !seen.contains(id))
+                    .copied()
+                    .unwrap_or(FeatureId(0)),
+            ));
+        }
+        validate_body_dependency_graph(definition)?;
         let mut local_ids = BTreeSet::new();
         for local_id in &definition.local_group_ids {
             if !local_ids.insert(local_id.0)
@@ -9081,6 +10544,34 @@ fn validate_product(product: &ProductModel) -> Result<(), CanonicalError> {
             return Err(CanonicalError::TagNotFound(tag));
         }
     }
+    let feature_graph = FeatureDependencyGraph::from_product(product)?;
+    for ((definition_id, body_id), suppressed) in &product.body_feature_suppression {
+        if suppressed.is_empty() {
+            return Err(CanonicalError::InvalidFeatureSuppression(
+                *definition_id,
+                *body_id,
+            ));
+        }
+        let ordered =
+            ordered_body_feature_history(product, *definition_id, *body_id, &feature_graph)?;
+        let ordered_suppressed = ordered
+            .into_iter()
+            .filter(|id| suppressed.contains(id))
+            .collect::<Vec<_>>();
+        if ordered_suppressed.len() != suppressed.len() {
+            return Err(CanonicalError::InvalidFeatureSuppression(
+                *definition_id,
+                *body_id,
+            ));
+        }
+        validate_body_feature_suppression(
+            product,
+            *definition_id,
+            *body_id,
+            &ordered_suppressed,
+            &feature_graph,
+        )?;
+    }
     validate_definition_ownership_graph(product)
 }
 
@@ -9755,6 +11246,30 @@ fn authoritative_writes(
             | CanonicalCommand::RenameDefinition { id, .. } => {
                 writes.insert(AuthoritativeDependency::Definition(*id));
             }
+            CanonicalCommand::CreateBody { definition_id, .. }
+            | CanonicalCommand::DeleteBody { definition_id, .. }
+            | CanonicalCommand::RenameBody { definition_id, .. }
+            | CanonicalCommand::SetActiveBody { definition_id, .. }
+            | CanonicalCommand::SetBodyVisibility { definition_id, .. }
+            | CanonicalCommand::ConsumeBody { definition_id, .. } => {
+                writes.insert(AuthoritativeDependency::Definition(*definition_id));
+            }
+            CanonicalCommand::SetFeatureBodyOwnership { id, .. } => {
+                writes.insert(AuthoritativeDependency::Feature(*id));
+                if let Some(feature) = snapshot.feature(*id) {
+                    writes.insert(AuthoritativeDependency::Definition(feature.definition_id()));
+                }
+            }
+            CanonicalCommand::SetBodyFeatureSuppression {
+                definition_id,
+                body_id,
+                ..
+            } => {
+                writes.insert(AuthoritativeDependency::BodyFeatureSuppression(
+                    *definition_id,
+                    *body_id,
+                ));
+            }
             CanonicalCommand::CreateFeature {
                 id, definition_id, ..
             } => {
@@ -9768,10 +11283,37 @@ fn authoritative_writes(
                 }
             }
             CanonicalCommand::SetFeatureDimension { id, .. }
+            | CanonicalCommand::SetSketchConstraintDimension { id, .. }
             | CanonicalCommand::SetBottleControlDimension { id, .. }
             | CanonicalCommand::SetBottleEdgeFinishKind { id, .. }
             | CanonicalCommand::SetProfilePoints { id, .. } => {
                 writes.insert(AuthoritativeDependency::Feature(*id));
+            }
+            CanonicalCommand::GuardAssemblyRecompute { .. } => {}
+            CanonicalCommand::ApplyAssemblySolve { transforms, .. } => {
+                writes.extend(
+                    transforms
+                        .iter()
+                        .map(|(id, _)| AuthoritativeDependency::Occurrence(*id)),
+                );
+            }
+            CanonicalCommand::SetOccurrenceGrounded { id, .. } => {
+                writes.insert(AuthoritativeDependency::GroundedOccurrence(*id));
+            }
+            CanonicalCommand::CreateAssemblyMate(mate)
+            | CanonicalCommand::RebindAssemblyMate(mate) => {
+                writes.insert(AuthoritativeDependency::AssemblyMate(mate.id()));
+            }
+            CanonicalCommand::SetAssemblyMateKind { id, .. }
+            | CanonicalCommand::DeleteAssemblyMate { id } => {
+                writes.insert(AuthoritativeDependency::AssemblyMate(*id));
+            }
+            CanonicalCommand::CreateDrawingSheet(sheet)
+            | CanonicalCommand::UpdateDrawingSheet(sheet) => {
+                writes.insert(AuthoritativeDependency::DrawingSheet(sheet.id()));
+            }
+            CanonicalCommand::DeleteDrawingSheet { id } => {
+                writes.insert(AuthoritativeDependency::DrawingSheet(*id));
             }
             CanonicalCommand::CreateOccurrence { id, .. }
             | CanonicalCommand::DeleteOccurrence { id }
@@ -9861,6 +11403,47 @@ fn authoritative_dependencies(
             CanonicalCommand::RenameDefinition { id, .. } => {
                 dependencies.insert(AuthoritativeDependency::Definition(*id));
             }
+            CanonicalCommand::CreateBody { definition_id, .. }
+            | CanonicalCommand::DeleteBody { definition_id, .. }
+            | CanonicalCommand::RenameBody { definition_id, .. }
+            | CanonicalCommand::SetActiveBody { definition_id, .. }
+            | CanonicalCommand::SetBodyVisibility { definition_id, .. } => {
+                dependencies.insert(AuthoritativeDependency::Definition(*definition_id));
+            }
+            CanonicalCommand::ConsumeBody {
+                definition_id,
+                by_feature_id,
+                ..
+            } => {
+                dependencies.insert(AuthoritativeDependency::Definition(*definition_id));
+                add_feature_dependency_closure(snapshot, *by_feature_id, &mut dependencies);
+            }
+            CanonicalCommand::SetFeatureBodyOwnership { id, .. } => {
+                add_feature_dependency_closure(snapshot, *id, &mut dependencies);
+                if let Some(feature) = snapshot.feature(*id) {
+                    dependencies
+                        .insert(AuthoritativeDependency::Definition(feature.definition_id()));
+                }
+            }
+            CanonicalCommand::SetBodyFeatureSuppression {
+                definition_id,
+                body_id,
+                suppressed_feature_ids,
+            } => {
+                dependencies.insert(AuthoritativeDependency::Definition(*definition_id));
+                dependencies.insert(AuthoritativeDependency::BodyFeatureSuppression(
+                    *definition_id,
+                    *body_id,
+                ));
+                for feature_id in suppressed_feature_ids {
+                    add_feature_dependency_closure(snapshot, *feature_id, &mut dependencies);
+                }
+                if let Some(current) = snapshot.suppressed_feature_ids(*definition_id, *body_id) {
+                    for feature_id in current {
+                        add_feature_dependency_closure(snapshot, *feature_id, &mut dependencies);
+                    }
+                }
+            }
             CanonicalCommand::CreateFeature {
                 id,
                 definition_id,
@@ -9939,10 +11522,135 @@ fn authoritative_dependencies(
                 dependencies.insert(AuthoritativeDependency::FeatureUsers(*id));
             }
             CanonicalCommand::SetFeatureDimension { id, .. }
+            | CanonicalCommand::SetSketchConstraintDimension { id, .. }
             | CanonicalCommand::SetBottleControlDimension { id, .. }
             | CanonicalCommand::SetBottleEdgeFinishKind { id, .. }
             | CanonicalCommand::SetProfilePoints { id, .. } => {
                 add_feature_dependency_closure(snapshot, *id, &mut dependencies);
+            }
+            CanonicalCommand::GuardAssemblyRecompute { .. } => {
+                dependencies.extend(
+                    snapshot
+                        .occurrences()
+                        .map(|occurrence| AuthoritativeDependency::Occurrence(occurrence.id())),
+                );
+                dependencies.extend(
+                    snapshot
+                        .grounded_occurrences()
+                        .map(AuthoritativeDependency::GroundedOccurrence),
+                );
+                for mate in snapshot.assembly_mates() {
+                    dependencies.insert(AuthoritativeDependency::AssemblyMate(mate.id()));
+                    for endpoint in [mate.endpoint_a(), mate.endpoint_b()] {
+                        add_feature_dependency_closure(
+                            snapshot,
+                            endpoint.reference().producer_feature_id,
+                            &mut dependencies,
+                        );
+                    }
+                }
+            }
+            CanonicalCommand::ApplyAssemblySolve { transforms, .. } => {
+                dependencies.extend(
+                    transforms
+                        .iter()
+                        .map(|(id, _)| AuthoritativeDependency::Occurrence(*id)),
+                );
+                dependencies.extend(
+                    snapshot
+                        .grounded_occurrences()
+                        .map(AuthoritativeDependency::GroundedOccurrence),
+                );
+                for mate in snapshot.assembly_mates() {
+                    dependencies.insert(AuthoritativeDependency::AssemblyMate(mate.id()));
+                    for endpoint in [mate.endpoint_a(), mate.endpoint_b()] {
+                        dependencies.insert(AuthoritativeDependency::Occurrence(
+                            endpoint.occurrence_id(),
+                        ));
+                        add_feature_dependency_closure(
+                            snapshot,
+                            endpoint.reference().producer_feature_id,
+                            &mut dependencies,
+                        );
+                    }
+                }
+            }
+            CanonicalCommand::SetOccurrenceGrounded { id, .. } => {
+                dependencies.insert(AuthoritativeDependency::Occurrence(*id));
+                dependencies.insert(AuthoritativeDependency::GroundedOccurrence(*id));
+            }
+            CanonicalCommand::CreateAssemblyMate(mate)
+            | CanonicalCommand::RebindAssemblyMate(mate) => {
+                dependencies.insert(AuthoritativeDependency::AssemblyMate(mate.id()));
+                for endpoint in [mate.endpoint_a(), mate.endpoint_b()] {
+                    dependencies.insert(AuthoritativeDependency::Occurrence(
+                        endpoint.occurrence_id(),
+                    ));
+                    add_feature_dependency_closure(
+                        snapshot,
+                        endpoint.reference().profile_feature_id,
+                        &mut dependencies,
+                    );
+                    add_feature_dependency_closure(
+                        snapshot,
+                        endpoint.reference().producer_feature_id,
+                        &mut dependencies,
+                    );
+                }
+            }
+            CanonicalCommand::SetAssemblyMateKind { id, .. } => {
+                dependencies.insert(AuthoritativeDependency::AssemblyMate(*id));
+                if let Some(mate) = snapshot.assembly_mate(*id) {
+                    for endpoint in [mate.endpoint_a(), mate.endpoint_b()] {
+                        dependencies.insert(AuthoritativeDependency::Occurrence(
+                            endpoint.occurrence_id(),
+                        ));
+                        add_feature_dependency_closure(
+                            snapshot,
+                            endpoint.reference().producer_feature_id,
+                            &mut dependencies,
+                        );
+                    }
+                }
+            }
+            CanonicalCommand::DeleteAssemblyMate { id } => {
+                dependencies.insert(AuthoritativeDependency::AssemblyMate(*id));
+            }
+            CanonicalCommand::CreateDrawingSheet(sheet)
+            | CanonicalCommand::UpdateDrawingSheet(sheet) => {
+                dependencies.insert(AuthoritativeDependency::DrawingSheet(sheet.id()));
+                match sheet.source() {
+                    DrawingSource::Definition(id) => {
+                        dependencies.insert(AuthoritativeDependency::Definition(*id));
+                    }
+                    DrawingSource::RigidAssembly { occurrence_ids } => {
+                        dependencies.extend(
+                            occurrence_ids
+                                .iter()
+                                .copied()
+                                .map(AuthoritativeDependency::Occurrence),
+                        );
+                        dependencies.extend(
+                            occurrence_ids
+                                .iter()
+                                .copied()
+                                .map(AuthoritativeDependency::GroundedOccurrence),
+                        );
+                        dependencies.extend(
+                            snapshot
+                                .assembly_mates()
+                                .filter(|mate| {
+                                    occurrence_ids.contains(&mate.endpoint_a().occurrence_id())
+                                        || occurrence_ids
+                                            .contains(&mate.endpoint_b().occurrence_id())
+                                })
+                                .map(|mate| AuthoritativeDependency::AssemblyMate(mate.id())),
+                        );
+                    }
+                }
+            }
+            CanonicalCommand::DeleteDrawingSheet { id } => {
+                dependencies.insert(AuthoritativeDependency::DrawingSheet(*id));
             }
             CanonicalCommand::CreateOccurrence {
                 id,
@@ -10417,9 +12125,33 @@ fn digest_snapshot(snapshot: &Snapshot) -> String {
     for feature in snapshot.product.features.values() {
         digest.feature(feature);
     }
+    digest.u64(snapshot.product.body_feature_suppression.len() as u64);
+    for ((definition_id, body_id), suppressed) in &snapshot.product.body_feature_suppression {
+        digest.u64(definition_id.0);
+        digest.u64(body_id.0);
+        digest.u64(suppressed.len() as u64);
+        for feature_id in suppressed {
+            digest.u64(feature_id.0);
+        }
+    }
     digest.u64(snapshot.product.occurrences.len() as u64);
     for occurrence in snapshot.product.occurrences.values() {
         digest.occurrence(occurrence);
+    }
+    digest.u64(snapshot.product.grounded_occurrences.len() as u64);
+    for occurrence_id in &snapshot.product.grounded_occurrences {
+        digest.u64(occurrence_id.0);
+    }
+    digest.u64(snapshot.product.assembly_mates.len() as u64);
+    for mate in snapshot.product.assembly_mates.values() {
+        digest.assembly_mate(mate);
+    }
+    if !snapshot.product.drawing_sheets.is_empty() {
+        digest.bytes(b"canonical-drawing-sheets.v1");
+        digest.u64(snapshot.product.drawing_sheets.len() as u64);
+        for sheet in snapshot.product.drawing_sheets.values() {
+            digest.drawing_sheet(sheet);
+        }
     }
     digest.u64(snapshot.product.groups.len() as u64);
     for group in snapshot.product.groups.values() {
@@ -10727,6 +12459,23 @@ impl StableDigest {
         self.u64(definition.feature_ids.len() as u64);
         for feature_id in &definition.feature_ids {
             self.u64(feature_id.0);
+        }
+        self.u64(definition.bodies.len() as u64);
+        for body in definition.bodies.values() {
+            self.u64(body.id.0);
+            self.bytes(body.name.as_bytes());
+            self.byte(u8::from(body.visible));
+            self.optional_id(body.consumed_by.map(|id| id.0));
+        }
+        self.u64(definition.active_body_id.0);
+        self.u64(definition.feature_body_ownership.len() as u64);
+        for (feature_id, ownership) in &definition.feature_body_ownership {
+            self.u64(feature_id.0);
+            self.u64(ownership.input_body_ids.len() as u64);
+            for body_id in &ownership.input_body_ids {
+                self.u64(body_id.0);
+            }
+            self.optional_id(ownership.output_body_id.map(|body_id| body_id.0));
         }
         self.u64(definition.local_group_ids.len() as u64);
         for id in &definition.local_group_ids {
@@ -11145,6 +12894,64 @@ impl StableDigest {
         self.feature_kind(&feature.kind);
     }
 
+    fn assembly_mate(&mut self, mate: &AssemblyMate) {
+        self.u64(mate.id().0);
+        for endpoint in [mate.endpoint_a(), mate.endpoint_b()] {
+            self.u64(endpoint.occurrence_id().0);
+            self.body_subshape_reference(endpoint.reference());
+            match endpoint.health() {
+                AssemblyReferenceHealth::Resolved => self.byte(1),
+                AssemblyReferenceHealth::Ambiguous { candidate_count } => {
+                    self.byte(2);
+                    self.u64(u64::from(candidate_count));
+                }
+                AssemblyReferenceHealth::Lost => self.byte(3),
+                AssemblyReferenceHealth::Broken => self.byte(4),
+            }
+        }
+        match mate.kind() {
+            AssemblyMateKind::CoincidentPlanar {
+                offset_mm,
+                reversed,
+            } => {
+                self.byte(1);
+                self.u64(offset_mm.to_bits());
+                self.byte(u8::from(reversed));
+            }
+            AssemblyMateKind::ConcentricAxial { reversed } => {
+                self.byte(2);
+                self.byte(u8::from(reversed));
+            }
+            AssemblyMateKind::Distance { distance_mm } => {
+                self.byte(3);
+                self.u64(distance_mm.to_bits());
+            }
+            AssemblyMateKind::Angle { angle_degrees } => {
+                self.byte(4);
+                self.u64(angle_degrees.to_bits());
+            }
+        }
+    }
+
+    fn drawing_sheet(&mut self, sheet: &DrawingSheet) {
+        self.bytes(sheet.schema().as_bytes());
+        self.u64(sheet.id().0);
+        self.bytes(sheet.name().as_bytes());
+        match sheet.source() {
+            DrawingSource::Definition(id) => {
+                self.byte(1);
+                self.u64(id.0);
+            }
+            DrawingSource::RigidAssembly { occurrence_ids } => {
+                self.byte(2);
+                self.u64(occurrence_ids.len() as u64);
+                for id in occurrence_ids {
+                    self.u64(id.0);
+                }
+            }
+        }
+    }
+
     fn occurrence(&mut self, occurrence: &Occurrence) {
         self.u64(occurrence.id.0);
         self.u64(occurrence.definition_id.0);
@@ -11308,12 +13115,54 @@ impl StableDigest {
                     self.byte(0);
                 }
             }
+            AuthoritativeDependency::BodyFeatureSuppression(definition_id, body_id) => {
+                self.byte(26);
+                self.u64(definition_id.0);
+                self.u64(body_id.0);
+                if let Some(suppressed) = product
+                    .body_feature_suppression
+                    .get(&(definition_id, body_id))
+                {
+                    self.byte(1);
+                    self.u64(suppressed.len() as u64);
+                    for feature_id in suppressed {
+                        self.u64(feature_id.0);
+                    }
+                } else {
+                    self.byte(0);
+                }
+            }
             AuthoritativeDependency::Occurrence(id) => {
                 self.byte(4);
                 self.u64(id.0);
                 if let Some(occurrence) = product.occurrences.get(&id) {
                     self.byte(1);
                     self.occurrence(occurrence);
+                } else {
+                    self.byte(0);
+                }
+            }
+            AuthoritativeDependency::GroundedOccurrence(id) => {
+                self.byte(23);
+                self.u64(id.0);
+                self.byte(u8::from(product.grounded_occurrences.contains(&id)));
+            }
+            AuthoritativeDependency::AssemblyMate(id) => {
+                self.byte(24);
+                self.u64(id.0);
+                if let Some(mate) = product.assembly_mates.get(&id) {
+                    self.byte(1);
+                    self.assembly_mate(mate);
+                } else {
+                    self.byte(0);
+                }
+            }
+            AuthoritativeDependency::DrawingSheet(id) => {
+                self.byte(25);
+                self.u64(id.0);
+                if let Some(sheet) = product.drawing_sheets.get(&id) {
+                    self.byte(1);
+                    self.drawing_sheet(sheet);
                 } else {
                     self.byte(0);
                 }
@@ -11488,6 +13337,7 @@ impl StableDigest {
             AuthoritativeDependency::OccurrenceCollections(id) => {
                 self.byte(18);
                 self.u64(id.0);
+                self.byte(u8::from(product.grounded_occurrences.contains(&id)));
                 let collections = product
                     .collections
                     .values()
@@ -11496,6 +13346,18 @@ impl StableDigest {
                 self.u64(collections.len() as u64);
                 for collection in collections {
                     self.collection(collection);
+                }
+                let mates = product
+                    .assembly_mates
+                    .values()
+                    .filter(|mate| {
+                        mate.endpoint_a().occurrence_id() == id
+                            || mate.endpoint_b().occurrence_id() == id
+                    })
+                    .collect::<Vec<_>>();
+                self.u64(mates.len() as u64);
+                for mate in mates {
+                    self.assembly_mate(mate);
                 }
             }
         }
@@ -11558,6 +13420,80 @@ impl StableDigest {
                 self.u64(id.0);
                 self.bytes(name.as_bytes());
             }
+            CanonicalCommand::CreateBody {
+                definition_id,
+                id,
+                name,
+                visible,
+            } => {
+                self.byte(60);
+                self.u64(definition_id.0);
+                self.u64(id.0);
+                self.bytes(name.as_bytes());
+                self.byte(u8::from(*visible));
+            }
+            CanonicalCommand::DeleteBody { definition_id, id } => {
+                self.byte(61);
+                self.u64(definition_id.0);
+                self.u64(id.0);
+            }
+            CanonicalCommand::RenameBody {
+                definition_id,
+                id,
+                name,
+            } => {
+                self.byte(62);
+                self.u64(definition_id.0);
+                self.u64(id.0);
+                self.bytes(name.as_bytes());
+            }
+            CanonicalCommand::SetActiveBody { definition_id, id } => {
+                self.byte(63);
+                self.u64(definition_id.0);
+                self.u64(id.0);
+            }
+            CanonicalCommand::SetBodyVisibility {
+                definition_id,
+                id,
+                visible,
+            } => {
+                self.byte(64);
+                self.u64(definition_id.0);
+                self.u64(id.0);
+                self.byte(u8::from(*visible));
+            }
+            CanonicalCommand::ConsumeBody {
+                definition_id,
+                id,
+                by_feature_id,
+            } => {
+                self.byte(66);
+                self.u64(definition_id.0);
+                self.u64(id.0);
+                self.u64(by_feature_id.0);
+            }
+            CanonicalCommand::SetFeatureBodyOwnership { id, ownership } => {
+                self.byte(65);
+                self.u64(id.0);
+                self.u64(ownership.input_body_ids.len() as u64);
+                for body_id in &ownership.input_body_ids {
+                    self.u64(body_id.0);
+                }
+                self.optional_id(ownership.output_body_id.map(|body_id| body_id.0));
+            }
+            CanonicalCommand::SetBodyFeatureSuppression {
+                definition_id,
+                body_id,
+                suppressed_feature_ids,
+            } => {
+                self.byte(68);
+                self.u64(definition_id.0);
+                self.u64(body_id.0);
+                self.u64(suppressed_feature_ids.len() as u64);
+                for feature_id in suppressed_feature_ids {
+                    self.u64(feature_id.0);
+                }
+            }
             CanonicalCommand::CreateFeature {
                 id,
                 definition_id,
@@ -11577,6 +13513,17 @@ impl StableDigest {
             CanonicalCommand::SetFeatureDimension { id, dimension } => {
                 self.byte(15);
                 self.u64(id.0);
+                self.bytes(dimension.source_token.as_bytes());
+                self.u64(dimension.millimetres.to_bits());
+            }
+            CanonicalCommand::SetSketchConstraintDimension {
+                id,
+                constraint_id,
+                dimension,
+            } => {
+                self.byte(67);
+                self.u64(id.0);
+                self.u64(constraint_id.0);
                 self.bytes(dimension.source_token.as_bytes());
                 self.u64(dimension.millimetres.to_bits());
             }
@@ -11638,6 +13585,83 @@ impl StableDigest {
                 self.byte(18);
                 self.u64(id.0);
                 self.transform(*transform);
+            }
+            CanonicalCommand::GuardAssemblyRecompute {
+                source_revision,
+                source_digest,
+            } => {
+                self.byte(56);
+                self.u64(*source_revision);
+                self.bytes(source_digest.as_bytes());
+            }
+            CanonicalCommand::ApplyAssemblySolve {
+                source_revision,
+                source_digest,
+                transforms,
+            } => {
+                self.byte(54);
+                self.u64(*source_revision);
+                self.bytes(source_digest.as_bytes());
+                self.u64(transforms.len() as u64);
+                for (id, transform) in transforms {
+                    self.u64(id.0);
+                    self.transform(*transform);
+                }
+            }
+            CanonicalCommand::SetOccurrenceGrounded { id, grounded } => {
+                self.byte(50);
+                self.u64(id.0);
+                self.byte(u8::from(*grounded));
+            }
+            CanonicalCommand::CreateAssemblyMate(mate) => {
+                self.byte(51);
+                self.assembly_mate(mate);
+            }
+            CanonicalCommand::RebindAssemblyMate(mate) => {
+                self.byte(55);
+                self.assembly_mate(mate);
+            }
+            CanonicalCommand::SetAssemblyMateKind { id, kind } => {
+                self.byte(52);
+                self.u64(id.0);
+                match kind {
+                    AssemblyMateKind::CoincidentPlanar {
+                        offset_mm,
+                        reversed,
+                    } => {
+                        self.byte(1);
+                        self.u64(offset_mm.to_bits());
+                        self.byte(u8::from(*reversed));
+                    }
+                    AssemblyMateKind::ConcentricAxial { reversed } => {
+                        self.byte(2);
+                        self.byte(u8::from(*reversed));
+                    }
+                    AssemblyMateKind::Distance { distance_mm } => {
+                        self.byte(3);
+                        self.u64(distance_mm.to_bits());
+                    }
+                    AssemblyMateKind::Angle { angle_degrees } => {
+                        self.byte(4);
+                        self.u64(angle_degrees.to_bits());
+                    }
+                }
+            }
+            CanonicalCommand::DeleteAssemblyMate { id } => {
+                self.byte(53);
+                self.u64(id.0);
+            }
+            CanonicalCommand::CreateDrawingSheet(sheet) => {
+                self.byte(57);
+                self.drawing_sheet(sheet);
+            }
+            CanonicalCommand::UpdateDrawingSheet(sheet) => {
+                self.byte(58);
+                self.drawing_sheet(sheet);
+            }
+            CanonicalCommand::DeleteDrawingSheet { id } => {
+                self.byte(59);
+                self.u64(id.0);
             }
             CanonicalCommand::SetOccurrenceVisibility { id, visible } => {
                 self.byte(19);

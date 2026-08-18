@@ -436,17 +436,30 @@ $exactProjectionSource = if (Test-Path $exactProjectionPath -PathType Leaf) {
 } else {
     ""
 }
+$rendererPath = Join-Path $RepoRoot "crates\ketchup-app\src\renderer.rs"
+$rendererSource = if (Test-Path $rendererPath -PathType Leaf) {
+    Get-Content $rendererPath -Raw
+} else {
+    ""
+}
 $viewportBlock = Get-BracedBlock $appSource "fn viewport(" "exact-body-authority"
 $viewportBoxesBlock = Get-BracedBlock $appSource "fn viewport_boxes" "exact-body-authority"
+$visibleModelBlock = Get-BracedBlock $appSource "fn current_visible_exact_model(" "exact-body-authority"
 $exactExportBlock = Get-BracedBlock $appSource "pub fn export_exact_occurrence_mesh_to" "exact-body-authority"
-if ($exactProjectionSource -notmatch 'package\.is_current\(snapshot\)' -or
+$geometrySourcesBlock = Get-BracedBlock $rendererSource "fn geometry_sources(" "exact-body-authority"
+if ($exactProjectionSource -notmatch 'results\.render_values\(snapshot\)' -or
+    $exactProjectionSource -notmatch 'BTreeMap::<DefinitionId, Vec<&Arc<ExactBodyPackage>>>' -or
     $exactProjectionSource -notmatch 'ray_triangle_distance' -or
     -not $viewportBoxesBlock.Contains('!exact_projection.contains_occurrence(&item.instance_path)') -or
     -not $viewportBlock.Contains('exact_projection.contains_occurrence(&occurrence.instance_path)') -or
     -not $viewportBlock.Contains('for triangle in package.triangles()') -or
-    -not $exactExportBlock.Contains('.filter(|package| package.is_current(&snapshot))') -or
+    -not $geometrySourcesBlock.Contains('.render_values(snapshot)') -or
+    -not $geometrySourcesBlock.Contains('.filter(|package| package.definition_id() == definition_id)') -or
+    -not $visibleModelBlock.Contains('.render_values(snapshot)') -or
+    -not $visibleModelBlock.Contains('model.extend(') -or
+    -not $exactExportBlock.Contains('.get_render(&snapshot, occurrence.definition_id)') -or
     -not $exactExportBlock.Contains('package.mesh_export(occurrence.transform)')) {
-    Fail-Guard "exact-body-authority" "Current exact bodies must suppress box proxies and share triangle render, pick, and transformed export authority."
+    Fail-Guard "exact-body-authority" "Current visible body-terminal results must suppress box proxies and share deterministic multi-body render, pick, and transformed export authority."
 }
 $stateViewPath = Join-Path $RepoRoot "crates\ketchup-core\src\state_view.rs"
 $completeFixture = Join-Path $RepoRoot "crates\ketchup-core\tests\fixtures\state-view\complete-v1.txt"

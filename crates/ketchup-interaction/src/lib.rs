@@ -1,8 +1,11 @@
 #![forbid(unsafe_code)]
 
 pub mod exact_projection;
+pub mod face_intent;
 pub mod mesh_projection;
 pub mod projection;
+pub mod push_pull_gesture;
+pub mod rectangle_face_authoring;
 pub mod spatial;
 
 use crate::spatial::{

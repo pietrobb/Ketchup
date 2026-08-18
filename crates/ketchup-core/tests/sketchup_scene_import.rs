@@ -122,7 +122,46 @@ fn schema_30_sketchup_document_remains_losslessly_loadable() {
     document.apply_batch(&batch).unwrap();
     let snapshot = document.current();
     let mut encoded = persistence::save(&snapshot);
+    let manifest_length = u32::from_le_bytes(encoded[12..16].try_into().unwrap()) as usize;
+    let payload_offset = 16 + manifest_length;
+    let body_contract_bytes = 4 + snapshot
+        .definitions()
+        .map(|definition| {
+            8 + 4
+                + definition
+                    .bodies()
+                    .map(|body| {
+                        8 + 4
+                            + body.name().len()
+                            + 1
+                            + 1
+                            + usize::from(body.consumed_by().is_some()) * 8
+                    })
+                    .sum::<usize>()
+                + 8
+                + 4
+                + definition
+                    .feature_ids()
+                    .iter()
+                    .filter_map(|feature_id| {
+                        definition
+                            .feature_body_ownership(*feature_id)
+                            .map(|ownership| {
+                                8 + 4
+                                    + ownership.input_body_ids().len() * 8
+                                    + 1
+                                    + usize::from(ownership.output_body_id().is_some()) * 8
+                            })
+                    })
+                    .sum::<usize>()
+        })
+        .sum::<usize>();
+    encoded.truncate(encoded.len() - 16 - body_contract_bytes);
     encoded[10..12].copy_from_slice(&30_u16.to_le_bytes());
+    let payload_length = (encoded.len() - payload_offset) as u64;
+    encoded[16..24].copy_from_slice(&payload_length.to_le_bytes());
+    let checksum = ketchup_core::graph::sha256_bytes(&encoded[payload_offset..]);
+    encoded[24..56].copy_from_slice(&checksum);
 
     let reopened = persistence::load(&encoded).unwrap();
     assert_eq!(reopened.source_schema(), 30);

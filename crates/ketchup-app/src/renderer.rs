@@ -2,7 +2,7 @@ use eframe::egui_wgpu::{CallbackResources, CallbackTrait, ScreenDescriptor};
 use ketchup_core::document::{
     DefinitionId, DocumentId, FeatureKind, InstancePath, Snapshot, Transform,
 };
-use ketchup_core::exact_product::{ExactBodyView, ExactResultRegistry};
+use ketchup_core::exact_product::ExactResultRegistry;
 use ketchup_interaction::projection::CanonicalInteractionProjection;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -102,7 +102,7 @@ pub struct InstancedRenderPlan {
     document_id: DocumentId,
     source_revision: u64,
     source_digest: String,
-    exact_identity: String,
+    exact_contents_stamp: u64,
     batches: Vec<RenderBatch>,
 }
 
@@ -129,7 +129,7 @@ impl InstancedRenderPlan {
         let projection = CanonicalInteractionProjection::from_snapshot(snapshot);
         let mut batches = BTreeMap::<(DefinitionId, String), RenderBatch>::new();
         let mut definition_geometries =
-            BTreeMap::<DefinitionId, (String, Arc<RenderGeometry>)>::new();
+            BTreeMap::<DefinitionId, Vec<(String, Arc<RenderGeometry>)>>::new();
         for occurrence in projection
             .occurrences()
             .iter()
@@ -139,34 +139,44 @@ impl InstancedRenderPlan {
             if let std::collections::btree_map::Entry::Vacant(entry) =
                 definition_geometries.entry(definition_id)
             {
-                let Some(source) = geometry_source(snapshot, exact_results, definition_id) else {
+                let sources = geometry_sources(snapshot, exact_results, definition_id);
+                if sources.is_empty() {
                     continue;
-                };
-                let fingerprint = source.fingerprint.clone();
-                let geometry = cache.geometry(source);
-                entry.insert((fingerprint, geometry));
+                }
+                entry.insert(
+                    sources
+                        .into_iter()
+                        .map(|source| {
+                            let fingerprint = source.fingerprint.clone();
+                            let geometry = cache.geometry(source);
+                            (fingerprint, geometry)
+                        })
+                        .collect(),
+                );
             }
-            let Some((fingerprint, geometry)) = definition_geometries.get(&definition_id) else {
+            let Some(geometries) = definition_geometries.get(&definition_id) else {
                 continue;
             };
-            let key = (definition_id, fingerprint.clone());
-            let geometry = Arc::clone(geometry);
-            batches
-                .entry(key)
-                .or_insert_with(|| RenderBatch {
-                    definition_id,
-                    geometry,
-                    instances: Vec::new(),
-                })
-                .instances
-                .push(RenderInstance {
-                    transform: transform_f32(
-                        transform_overrides
-                            .get(&occurrence.instance_path)
-                            .copied()
-                            .unwrap_or(occurrence.canonical_world_transform),
-                    ),
-                });
+            for (fingerprint, geometry) in geometries {
+                let key = (definition_id, fingerprint.clone());
+                let geometry = Arc::clone(geometry);
+                batches
+                    .entry(key)
+                    .or_insert_with(|| RenderBatch {
+                        definition_id,
+                        geometry,
+                        instances: Vec::new(),
+                    })
+                    .instances
+                    .push(RenderInstance {
+                        transform: transform_f32(
+                            transform_overrides
+                                .get(&occurrence.instance_path)
+                                .copied()
+                                .unwrap_or(occurrence.canonical_world_transform),
+                        ),
+                    });
+            }
         }
         let batches = batches.into_values().collect::<Vec<_>>();
         cache.geometries.retain(|fingerprint, _| {
@@ -178,7 +188,7 @@ impl InstancedRenderPlan {
             document_id: snapshot.document_id(),
             source_revision: snapshot.revision_id(),
             source_digest: snapshot.canonical_digest(),
-            exact_identity: exact_identity(snapshot, exact_results),
+            exact_contents_stamp: exact_results.contents_stamp(),
             batches,
         }
     }
@@ -222,7 +232,7 @@ impl InstancedRenderPlan {
         snapshot: &Snapshot,
         exact_results: &ExactResultRegistry,
     ) -> bool {
-        self.exact_identity == exact_identity(snapshot, exact_results)
+        self.is_current(snapshot) && self.exact_contents_stamp == exact_results.contents_stamp()
     }
 
     #[must_use]
@@ -241,79 +251,76 @@ impl InstancedRenderPlan {
     }
 }
 
-fn exact_identity(snapshot: &Snapshot, exact_results: &ExactResultRegistry) -> String {
-    exact_results
-        .render_values(snapshot)
-        .map(|package| {
-            format!(
-                "{}:{}",
-                package.definition_id().0,
-                package.result_fingerprint()
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("|")
-}
-
 struct GeometrySource {
     fingerprint: String,
     vertices: Vec<RenderVertex>,
     indices: Vec<u32>,
 }
 
-fn geometry_source(
+fn geometry_sources(
     snapshot: &Snapshot,
     exact_results: &ExactResultRegistry,
     definition_id: DefinitionId,
-) -> Option<GeometrySource> {
-    if let Some(package) = exact_results.get_render(snapshot, definition_id) {
-        let positions = package
-            .vertices()
-            .iter()
-            .map(|vertex| vertex.position_mm.map(|value| value as f32))
-            .collect::<Vec<_>>();
-        let triangles = package
-            .triangles()
-            .iter()
-            .map(|triangle| triangle.vertex_indices)
-            .collect::<Vec<_>>();
-        let face_groups = package
-            .triangles()
-            .iter()
-            .map(|triangle| triangle.face_role)
-            .collect::<Vec<_>>();
-        return Some(build_render_geometry(
-            "exact",
-            &positions,
-            &triangles,
-            &face_groups,
-        ));
+) -> Vec<GeometrySource> {
+    let exact = exact_results
+        .render_values(snapshot)
+        .filter(|package| package.definition_id() == definition_id)
+        .map(|package| {
+            let positions = package
+                .vertices()
+                .iter()
+                .map(|vertex| vertex.position_mm.map(|value| value as f32))
+                .collect::<Vec<_>>();
+            let triangles = package
+                .triangles()
+                .iter()
+                .map(|triangle| triangle.vertex_indices)
+                .collect::<Vec<_>>();
+            let face_groups = package
+                .triangles()
+                .iter()
+                .map(|triangle| triangle.face_role)
+                .collect::<Vec<_>>();
+            build_render_geometry("exact", &positions, &triangles, &face_groups)
+        })
+        .collect::<Vec<_>>();
+    if !exact.is_empty() {
+        return exact;
     }
 
-    let definition = snapshot.definition(definition_id)?;
+    let Some(definition) = snapshot.definition(definition_id) else {
+        return Vec::new();
+    };
     for feature_id in definition.feature_ids() {
-        let feature = snapshot.feature(*feature_id)?;
+        let Some(feature) = snapshot.feature(*feature_id) else {
+            return Vec::new();
+        };
         if let FeatureKind::MeshBody(mesh) = feature.kind() {
             let positions = mesh
                 .vertices_mm
                 .iter()
                 .map(|vertex| vertex.map(|value| value as f32))
                 .collect::<Vec<_>>();
-            return Some(build_render_geometry(
+            return vec![build_render_geometry(
                 "canonical-mesh",
                 &positions,
                 &mesh.triangles,
                 &vec![None::<u8>; mesh.triangles.len()],
-            ));
+            )];
         }
     }
 
-    let occurrence = CanonicalInteractionProjection::from_snapshot(snapshot)
+    let projection = CanonicalInteractionProjection::from_snapshot(snapshot);
+    let Some(occurrence) = projection
         .occurrences()
         .iter()
-        .find(|occurrence| occurrence.body.definition_id == definition_id)?
-        .clone();
-    let local_box = occurrence.local_box?;
+        .find(|occurrence| occurrence.body.definition_id == definition_id)
+    else {
+        return Vec::new();
+    };
+    let Some(local_box) = occurrence.local_box else {
+        return Vec::new();
+    };
     let min = local_box.origin_mm;
     let max = local_box.origin_mm + local_box.size_mm;
     let positions = vec![
@@ -340,7 +347,7 @@ fn geometry_source(
         [1, 3, 5],
         [3, 7, 5],
     ];
-    Some(build_render_geometry(
+    vec![build_render_geometry(
         "canonical-box",
         &positions,
         &triangles,
@@ -358,7 +365,7 @@ fn geometry_source(
             Some(5),
             Some(5),
         ],
-    ))
+    )]
 }
 
 pub(crate) fn feature_edges<G: Copy + Ord>(

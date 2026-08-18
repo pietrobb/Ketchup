@@ -1,3 +1,4 @@
+use crate::assembly::{AssemblyDofStatus, AssemblyMateKind, AssemblyReferenceHealth};
 use crate::document::{
     EvaluationReport, EvaluationStatus, EvaluatorNodeKind, InstancePathStep, Snapshot, Transform,
     UnitSystem,
@@ -42,10 +43,10 @@ pub fn encode_semantic_state_with_results(
     write_header(&mut agent, AGENT_STATE_VIEW_V1, snapshot);
     writeln!(
         agent,
-        "summary.counts=evaluator_nodes:{},overrides:{},parameter_bindings:{},spaces:{},clearance_volumes:{},persistent_dimensions:{},tags:{},collections:{},definitions:{},features:{},occurrences:{},groups:{},local_groups:{},local_occurrences:{}",
+        "summary.counts=evaluator_nodes:{},overrides:{},parameter_bindings:{},spaces:{},clearance_volumes:{},persistent_dimensions:{},tags:{},collections:{},definitions:{},features:{},occurrences:{},grounded_occurrences:{},assembly_mates:{},groups:{},local_groups:{},local_occurrences:{}",
         snapshot.evaluator_node_count(), snapshot.overrides().count(),
         snapshot.feature_parameter_bindings().count(), snapshot.spaces().count(), snapshot.clearance_volumes().count(), snapshot.persistent_dimensions().count(), snapshot.tags().count(), snapshot.collections().count(),
-        snapshot.definitions().count(), snapshot.features().count(), snapshot.occurrences().count(), snapshot.groups().count(),
+        snapshot.definitions().count(), snapshot.features().count(), snapshot.occurrences().count(), snapshot.grounded_occurrences().count(), snapshot.assembly_mates().count(), snapshot.groups().count(),
         snapshot.local_groups().count(), snapshot.local_occurrences().count()
     ).unwrap();
 
@@ -606,11 +607,39 @@ pub fn encode_semantic_state_with_results(
         )
         .unwrap();
         writeln!(
+            complete,
+            "definition.{}.active_body={}",
+            definition.id().0,
+            definition.active_body_id().0
+        )
+        .unwrap();
+        writeln!(
+            complete,
+            "definition.{}.bodies={}",
+            definition.id().0,
+            id_list(definition.bodies().map(|body| body.id().0))
+        )
+        .unwrap();
+        for body in definition.bodies() {
+            writeln!(
+                complete,
+                "definition.{}.body.{}=name:{:?},visible:{},consumed_by:{}",
+                definition.id().0,
+                body.id().0,
+                body.name(),
+                body.visible(),
+                optional_id(body.consumed_by().map(|id| id.0))
+            )
+            .unwrap();
+        }
+        writeln!(
             agent,
-            "definition.{}=name:{:?},features:{}",
+            "definition.{}=name:{:?},features:{},bodies:{},active_body:{}",
             definition.id().0,
             definition.name(),
-            id_list(definition.feature_ids().iter().map(|id| id.0))
+            id_list(definition.feature_ids().iter().map(|id| id.0)),
+            id_list(definition.bodies().map(|body| body.id().0)),
+            definition.active_body_id().0
         )
         .unwrap();
     }
@@ -627,6 +656,34 @@ pub fn encode_semantic_state_with_results(
             "feature.{}.name={:?}",
             feature.id().0,
             feature.name()
+        )
+        .unwrap();
+        let ownership = snapshot
+            .definition(feature.definition_id())
+            .and_then(|definition| definition.feature_body_ownership(feature.id()))
+            .expect("validated feature body ownership is projected");
+        writeln!(
+            complete,
+            "feature.{}.input_bodies={}",
+            feature.id().0,
+            id_list(ownership.input_body_ids().iter().map(|id| id.0))
+        )
+        .unwrap();
+        let output_body = ownership
+            .output_body_id()
+            .map_or_else(|| "none".to_owned(), |id| id.0.to_string());
+        writeln!(
+            complete,
+            "feature.{}.output_body={output_body}",
+            feature.id().0
+        )
+        .unwrap();
+        writeln!(
+            agent,
+            "feature.{}.body_ownership=inputs:{},output:{}",
+            feature.id().0,
+            id_list(ownership.input_body_ids().iter().map(|id| id.0)),
+            output_body
         )
         .unwrap();
         match feature.kind() {
@@ -1680,14 +1737,108 @@ pub fn encode_semantic_state_with_results(
         )
         .unwrap();
         writeln!(
+            complete,
+            "occurrence.{}.grounded={}",
+            occurrence.id().0,
+            snapshot.occurrence_is_grounded(occurrence.id())
+        )
+        .unwrap();
+        let dof = snapshot
+            .assembly_dof_diagnostic(occurrence.id())
+            .expect("canonical occurrence has a DOF diagnostic");
+        let dof_status = match dof.status() {
+            AssemblyDofStatus::Grounded => "grounded",
+            AssemblyDofStatus::PendingSolve => "pending_solve",
+        };
+        let remaining_dof = dof
+            .remaining_dof()
+            .map_or_else(|| "unknown".to_owned(), |value| value.to_string());
+        let incident_mates = id_list(dof.incident_mate_ids().iter().map(|id| id.0));
+        writeln!(
+            complete,
+            "occurrence.{}.dof=status:{dof_status},remaining:{remaining_dof},incident_mates:{incident_mates}",
+            occurrence.id().0
+        )
+        .unwrap();
+        writeln!(
             agent,
-            "occurrence.{}=name:{:?},definition:{},parent:{},tag:{},visible:{}",
+            "occurrence.{}=name:{:?},definition:{},parent:{},tag:{},visible:{},grounded:{},dof_status:{dof_status},remaining_dof:{remaining_dof},incident_mates:{incident_mates}",
             occurrence.id().0,
             occurrence.name(),
             occurrence.definition_id().0,
             optional_id(occurrence.parent().map(|id| id.0)),
             optional_id(occurrence.tag().map(|id| id.0)),
-            occurrence.visible()
+            occurrence.visible(),
+            snapshot.occurrence_is_grounded(occurrence.id())
+        )
+        .unwrap();
+    }
+    for mate in snapshot.assembly_mates() {
+        let health = |value: AssemblyReferenceHealth| match value {
+            AssemblyReferenceHealth::Resolved => "resolved".to_owned(),
+            AssemblyReferenceHealth::Broken => "broken".to_owned(),
+            AssemblyReferenceHealth::Ambiguous { candidate_count } => {
+                format!("ambiguous:{candidate_count}")
+            }
+            AssemblyReferenceHealth::Lost => "lost".to_owned(),
+        };
+        writeln!(
+            complete,
+            "assembly_mate.{}.schema={:?}",
+            mate.id().0,
+            mate.schema()
+        )
+        .unwrap();
+        for (label, endpoint) in [("a", mate.endpoint_a()), ("b", mate.endpoint_b())] {
+            writeln!(
+                complete,
+                "assembly_mate.{}.endpoint_{label}.occurrence={}",
+                mate.id().0,
+                endpoint.occurrence_id().0
+            )
+            .unwrap();
+            writeln!(
+                complete,
+                "assembly_mate.{}.endpoint_{label}.lineage={:?}",
+                mate.id().0,
+                endpoint.reference().lineage_digest
+            )
+            .unwrap();
+            writeln!(
+                complete,
+                "assembly_mate.{}.endpoint_{label}.health={}",
+                mate.id().0,
+                health(endpoint.health())
+            )
+            .unwrap();
+        }
+        let kind = match mate.kind() {
+            AssemblyMateKind::CoincidentPlanar {
+                offset_mm,
+                reversed,
+            } => format!(
+                "coincident_planar,offset_f64_bits:{:016x},reversed:{reversed}",
+                offset_mm.to_bits()
+            ),
+            AssemblyMateKind::ConcentricAxial { reversed } => {
+                format!("concentric_axial,reversed:{reversed}")
+            }
+            AssemblyMateKind::Distance { distance_mm } => {
+                format!("distance,distance_f64_bits:{:016x}", distance_mm.to_bits())
+            }
+            AssemblyMateKind::Angle { angle_degrees } => {
+                format!("angle,angle_f64_bits:{:016x}", angle_degrees.to_bits())
+            }
+        };
+        writeln!(complete, "assembly_mate.{}.kind={kind}", mate.id().0).unwrap();
+        writeln!(
+            agent,
+            "assembly_mate.{}=a:{},b:{},a_health:{},b_health:{},kind:{kind}",
+            mate.id().0,
+            mate.endpoint_a().occurrence_id().0,
+            mate.endpoint_b().occurrence_id().0,
+            health(mate.endpoint_a().health()),
+            health(mate.endpoint_b().health())
         )
         .unwrap();
     }
