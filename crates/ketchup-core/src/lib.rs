@@ -15,6 +15,7 @@ pub mod import;
 pub mod intent;
 pub mod persistence;
 pub mod prismatic;
+pub mod sketch;
 pub mod space;
 pub mod state_view;
 pub mod validation;

@@ -29,6 +29,12 @@ use crate::import::{
     MAX_IMPORT_DIAGNOSTICS, MAX_IMPORT_OUTPUTS,
 };
 use crate::prismatic::{Aabb, CanonicalJoint, JointId, TolerancePolicy};
+use crate::sketch::{
+    FeatureDirection, FeatureExtent, MAX_SKETCH_CONSTRAINTS, MAX_SKETCH_ENTITIES, PadSpec,
+    PocketSpec, PrincipalPlane, SketchConstraint, SketchConstraintId, SketchConstraintKind,
+    SketchEntity, SketchEntityId, SketchPointKind, SketchPointRef, SketchRegionId, SketchSpec,
+    WorkplaneFrame, WorkplaneSpec, WorkplaneSupport, WorkplaneSupportHealth,
+};
 use crate::space::{
     CanonicalClearanceVolume, CanonicalSpace, ClearanceCoordinateFrame, ClearanceOwner,
     ClearanceSeverity, ClearanceVolumeId, SpaceId,
@@ -51,7 +57,8 @@ const LOFT_SPLINE_SCHEMA: u16 = 26;
 const IMPORT_RECEIPT_SCHEMA: u16 = 27;
 const IMPORTED_EXACT_BODY_SCHEMA: u16 = 29;
 const SKETCHUP_SCENE_SCHEMA: u16 = 30;
-pub const CURRENT_SCHEMA: u16 = SKETCHUP_SCENE_SCHEMA;
+const WORKPLANE_SKETCH_SCHEMA: u16 = 31;
+pub const CURRENT_SCHEMA: u16 = WORKPLANE_SKETCH_SCHEMA;
 const COLLECTION_SCHEMA: u16 = 15;
 const TAG_SCHEMA: u16 = 14;
 const PERSISTENT_DIMENSION_SCHEMA: u16 = 13;
@@ -97,6 +104,7 @@ struct ProductSchemaCapabilities {
     import_receipts: bool,
     imported_exact_body: bool,
     sketchup_scene: bool,
+    workplane_sketch: bool,
 }
 
 impl ProductSchemaCapabilities {
@@ -127,6 +135,7 @@ impl ProductSchemaCapabilities {
         import_receipts: false,
         imported_exact_body: false,
         sketchup_scene: false,
+        workplane_sketch: false,
     };
 
     const fn current(schema: u16) -> Self {
@@ -157,6 +166,7 @@ impl ProductSchemaCapabilities {
             import_receipts: schema >= IMPORT_RECEIPT_SCHEMA,
             imported_exact_body: schema >= IMPORTED_EXACT_BODY_SCHEMA,
             sketchup_scene: schema >= SKETCHUP_SCENE_SCHEMA,
+            workplane_sketch: schema >= WORKPLANE_SKETCH_SCHEMA,
         }
     }
 }
@@ -1005,6 +1015,148 @@ fn write_ids(bytes: &mut Vec<u8>, ids: impl Iterator<Item = u64>) {
     }
 }
 
+fn write_workplane(bytes: &mut Vec<u8>, spec: &WorkplaneSpec) {
+    match &spec.support {
+        WorkplaneSupport::Principal(plane) => {
+            push_u8(bytes, 1);
+            push_u8(
+                bytes,
+                match plane {
+                    PrincipalPlane::Xy => 1,
+                    PrincipalPlane::Yz => 2,
+                    PrincipalPlane::Xz => 3,
+                },
+            );
+        }
+        WorkplaneSupport::Offset { base, distance } => {
+            push_u8(bytes, 2);
+            push_u64(bytes, base.0);
+            push_string(bytes, distance.source_token());
+            push_u64(bytes, distance.millimetres().to_bits());
+        }
+        WorkplaneSupport::PlanarFace { reference, health } => {
+            push_u8(bytes, 3);
+            write_exact_reference(bytes, reference);
+            push_u8(
+                bytes,
+                match health {
+                    WorkplaneSupportHealth::Resolved => 1,
+                    WorkplaneSupportHealth::Ambiguous => 2,
+                    WorkplaneSupportHealth::Lost => 3,
+                    WorkplaneSupportHealth::Stale => 4,
+                },
+            );
+        }
+    }
+    for coordinate in spec
+        .frame
+        .origin_mm
+        .iter()
+        .chain(spec.frame.x_axis.iter())
+        .chain(spec.frame.y_axis.iter())
+        .chain(spec.frame.normal.iter())
+    {
+        push_u64(bytes, coordinate.to_bits());
+    }
+}
+
+fn write_sketch_point_ref(bytes: &mut Vec<u8>, reference: SketchPointRef) {
+    push_u64(bytes, reference.entity.0);
+    push_u8(
+        bytes,
+        match reference.point {
+            SketchPointKind::Start => 1,
+            SketchPointKind::End => 2,
+            SketchPointKind::Center => 3,
+        },
+    );
+}
+
+fn write_sketch(bytes: &mut Vec<u8>, spec: &SketchSpec) {
+    push_u64(bytes, spec.workplane.0);
+    push_u32(bytes, spec.entities.len() as u32);
+    for entity in &spec.entities {
+        match entity {
+            SketchEntity::Line {
+                id,
+                start_mm,
+                end_mm,
+            } => {
+                push_u8(bytes, 1);
+                push_u64(bytes, id.0);
+                for point in [start_mm, end_mm] {
+                    push_u64(bytes, point[0].to_bits());
+                    push_u64(bytes, point[1].to_bits());
+                }
+            }
+            SketchEntity::Arc {
+                id,
+                start_mm,
+                end_mm,
+                center_mm,
+                clockwise,
+            } => {
+                push_u8(bytes, 2);
+                push_u64(bytes, id.0);
+                for point in [start_mm, end_mm, center_mm] {
+                    push_u64(bytes, point[0].to_bits());
+                    push_u64(bytes, point[1].to_bits());
+                }
+                push_u8(bytes, u8::from(*clockwise));
+            }
+            SketchEntity::Circle {
+                id,
+                center_mm,
+                radius_mm,
+            } => {
+                push_u8(bytes, 3);
+                push_u64(bytes, id.0);
+                push_u64(bytes, center_mm[0].to_bits());
+                push_u64(bytes, center_mm[1].to_bits());
+                push_u64(bytes, radius_mm.to_bits());
+            }
+        }
+    }
+    push_u32(bytes, spec.constraints.len() as u32);
+    for constraint in &spec.constraints {
+        push_u64(bytes, constraint.id.0);
+        match &constraint.kind {
+            SketchConstraintKind::Horizontal { entity } => {
+                push_u8(bytes, 1);
+                push_u64(bytes, entity.0);
+            }
+            SketchConstraintKind::Vertical { entity } => {
+                push_u8(bytes, 2);
+                push_u64(bytes, entity.0);
+            }
+            SketchConstraintKind::Coincident { a, b } => {
+                push_u8(bytes, 3);
+                write_sketch_point_ref(bytes, *a);
+                write_sketch_point_ref(bytes, *b);
+            }
+            SketchConstraintKind::Distance { a, b, value } => {
+                push_u8(bytes, 4);
+                write_sketch_point_ref(bytes, *a);
+                write_sketch_point_ref(bytes, *b);
+                push_string(bytes, value.source_token());
+                push_u64(bytes, value.millimetres().to_bits());
+            }
+            SketchConstraintKind::Radius { entity, value } => {
+                push_u8(bytes, 5);
+                push_u64(bytes, entity.0);
+                push_string(bytes, value.source_token());
+                push_u64(bytes, value.millimetres().to_bits());
+            }
+            SketchConstraintKind::FixedPoint { point, position_mm } => {
+                push_u8(bytes, 6);
+                write_sketch_point_ref(bytes, *point);
+                push_u64(bytes, position_mm[0].to_bits());
+                push_u64(bytes, position_mm[1].to_bits());
+            }
+        }
+    }
+}
+
 fn write_features(bytes: &mut Vec<u8>, product: &ProductModel) {
     push_u32(bytes, product.features.len() as u32);
     for feature in product.features.values() {
@@ -1012,6 +1164,14 @@ fn write_features(bytes: &mut Vec<u8>, product: &ProductModel) {
         push_u64(bytes, feature.definition_id().0);
         push_string(bytes, feature.name());
         match feature.kind() {
+            FeatureKind::Workplane(spec) => {
+                push_u8(bytes, 17);
+                write_workplane(bytes, spec);
+            }
+            FeatureKind::Sketch(spec) => {
+                push_u8(bytes, 18);
+                write_sketch(bytes, spec);
+            }
             FeatureKind::Profile { points_mm } => {
                 push_u8(bytes, 1);
                 push_u32(bytes, points_mm.len() as u32);
@@ -1062,6 +1222,36 @@ fn write_features(bytes: &mut Vec<u8>, product: &ProductModel) {
                 push_u64(bytes, profile.0);
                 push_string(bytes, height.source_token());
                 push_u64(bytes, height.millimetres().to_bits());
+            }
+            FeatureKind::Pad(spec) => {
+                push_u8(bytes, 19);
+                push_u64(bytes, spec.sketch.0);
+                push_u64(bytes, spec.region.0);
+                push_u8(
+                    bytes,
+                    match spec.direction {
+                        FeatureDirection::AlongNormal => 1,
+                        FeatureDirection::OppositeNormal => 2,
+                    },
+                );
+                push_string(bytes, spec.extent.distance().source_token());
+                push_u64(bytes, spec.extent.distance().millimetres().to_bits());
+            }
+            FeatureKind::SketchPocket(spec) => {
+                push_u8(bytes, 20);
+                push_u64(bytes, spec.target.0);
+                push_u64(bytes, spec.sketch.0);
+                push_u64(bytes, spec.region.0);
+                push_u8(
+                    bytes,
+                    match spec.direction {
+                        FeatureDirection::AlongNormal => 1,
+                        FeatureDirection::OppositeNormal => 2,
+                    },
+                );
+                push_string(bytes, spec.extent.distance().source_token());
+                push_u64(bytes, spec.extent.distance().millimetres().to_bits());
+                write_exact_reference(bytes, &spec.support);
             }
             FeatureKind::ThroughCut { target, profile } => {
                 push_u8(bytes, 3);
@@ -1458,10 +1648,12 @@ fn load_document(
             | STABLE_SUBSHAPE_ROLE_SCHEMA
             | BOOLEAN_INTERSECT_SCHEMA
             | BOOLEAN_SPLIT_SCHEMA
+            | PLANAR_OFFSET_SCHEMA
             | SWEEP_SCHEMA
             | LOFT_SPLINE_SCHEMA
             | IMPORT_RECEIPT_SCHEMA
             | IMPORTED_EXACT_BODY_SCHEMA
+            | SKETCHUP_SCENE_SCHEMA
             | CURRENT_SCHEMA
     ) {
         return Err(PersistenceError::UnsupportedSchema(schema));
@@ -1587,19 +1779,38 @@ fn load_document(
         Arc::make_mut(&mut container_data.imported_source_blobs).insert(hash);
     }
     for reference in loaded_snapshot.exact_reference_evidence() {
-        let matches_request = crate::exact_product::ExactFeatureChainRequest::from_snapshot(
-            &loaded_snapshot,
-            reference.definition_id,
-        )
-        .is_ok_and(|request| reference.matches_request(&request))
-            || crate::bottle_m6::ExactRevolveRequest::from_snapshot(
+        let matches_current_request =
+            crate::exact_product::ExactFeatureChainRequest::from_snapshot_for_producer(
+                &loaded_snapshot,
+                reference.definition_id,
+                reference.producer_feature_id,
+            )
+            .is_ok_and(|request| {
+                reference.matches_request(&request) || reference.matches_legacy_request(&request)
+            }) || crate::bottle_m6::ExactRevolveRequest::from_snapshot(
                 &loaded_snapshot,
                 reference.definition_id,
             )
             .is_ok_and(|request| {
                 crate::bottle_m6::reference_matches_revolve_request(reference, &request)
             });
-        if !matches_request {
+        let matches_durable_anchor =
+            crate::exact_product::ExactFeatureChainRequest::from_snapshot_for_producer(
+                &loaded_snapshot,
+                reference.definition_id,
+                reference.producer_feature_id,
+            )
+            .is_ok_and(|request| reference.matches_durable_request_identity(&request))
+                && loaded_snapshot.features().any(|feature| {
+                    matches!(
+                        feature.kind(),
+                        FeatureKind::Workplane(WorkplaneSpec {
+                            support: WorkplaneSupport::PlanarFace { reference: support, .. },
+                            ..
+                        }) if support.as_ref() == reference
+                    )
+                });
+        if !matches_current_request && !matches_durable_anchor {
             return Err(PersistenceError::InvalidExactReference);
         }
     }
@@ -2164,6 +2375,126 @@ fn read_import_receipt(
     .map_err(|_| PersistenceError::InvalidCanonicalData(CanonicalError::InvalidImportReceipt))
 }
 
+fn read_workplane(reader: &mut Reader<'_>) -> Result<WorkplaneSpec, PersistenceError> {
+    let support = match reader.u8()? {
+        1 => WorkplaneSupport::Principal(match reader.u8()? {
+            1 => PrincipalPlane::Xy,
+            2 => PrincipalPlane::Yz,
+            3 => PrincipalPlane::Xz,
+            value => return Err(PersistenceError::InvalidFeatureKind(value)),
+        }),
+        2 => WorkplaneSupport::Offset {
+            base: FeatureId(reader.u64()?),
+            distance: Dimension::new(reader.string()?, f64::from_bits(reader.u64()?))?,
+        },
+        3 => WorkplaneSupport::PlanarFace {
+            reference: Box::new(read_exact_reference(reader)?),
+            health: match reader.u8()? {
+                1 => WorkplaneSupportHealth::Resolved,
+                2 => WorkplaneSupportHealth::Ambiguous,
+                3 => WorkplaneSupportHealth::Lost,
+                4 => WorkplaneSupportHealth::Stale,
+                value => return Err(PersistenceError::InvalidFeatureKind(value)),
+            },
+        },
+        value => return Err(PersistenceError::InvalidFeatureKind(value)),
+    };
+    let point = |reader: &mut Reader<'_>| -> Result<[f64; 3], PersistenceError> {
+        Ok([
+            f64::from_bits(reader.u64()?),
+            f64::from_bits(reader.u64()?),
+            f64::from_bits(reader.u64()?),
+        ])
+    };
+    Ok(WorkplaneSpec {
+        support,
+        frame: WorkplaneFrame {
+            origin_mm: point(reader)?,
+            x_axis: point(reader)?,
+            y_axis: point(reader)?,
+            normal: point(reader)?,
+        },
+    })
+}
+
+fn read_sketch_point_ref(reader: &mut Reader<'_>) -> Result<SketchPointRef, PersistenceError> {
+    Ok(SketchPointRef {
+        entity: SketchEntityId(reader.u64()?),
+        point: match reader.u8()? {
+            1 => SketchPointKind::Start,
+            2 => SketchPointKind::End,
+            3 => SketchPointKind::Center,
+            value => return Err(PersistenceError::InvalidFeatureKind(value)),
+        },
+    })
+}
+
+fn read_sketch(reader: &mut Reader<'_>) -> Result<SketchSpec, PersistenceError> {
+    let workplane = FeatureId(reader.u64()?);
+    let point = |reader: &mut Reader<'_>| -> Result<[f64; 2], PersistenceError> {
+        Ok([f64::from_bits(reader.u64()?), f64::from_bits(reader.u64()?)])
+    };
+    let mut entities = Vec::new();
+    for _ in 0..reader.count_with_limit(MAX_SKETCH_ENTITIES as u32)? {
+        entities.push(match reader.u8()? {
+            1 => SketchEntity::Line {
+                id: SketchEntityId(reader.u64()?),
+                start_mm: point(reader)?,
+                end_mm: point(reader)?,
+            },
+            2 => SketchEntity::Arc {
+                id: SketchEntityId(reader.u64()?),
+                start_mm: point(reader)?,
+                end_mm: point(reader)?,
+                center_mm: point(reader)?,
+                clockwise: reader.boolean()?,
+            },
+            3 => SketchEntity::Circle {
+                id: SketchEntityId(reader.u64()?),
+                center_mm: point(reader)?,
+                radius_mm: f64::from_bits(reader.u64()?),
+            },
+            value => return Err(PersistenceError::InvalidFeatureKind(value)),
+        });
+    }
+    let mut constraints = Vec::new();
+    for _ in 0..reader.count_with_limit(MAX_SKETCH_CONSTRAINTS as u32)? {
+        let id = SketchConstraintId(reader.u64()?);
+        let kind = match reader.u8()? {
+            1 => SketchConstraintKind::Horizontal {
+                entity: SketchEntityId(reader.u64()?),
+            },
+            2 => SketchConstraintKind::Vertical {
+                entity: SketchEntityId(reader.u64()?),
+            },
+            3 => SketchConstraintKind::Coincident {
+                a: read_sketch_point_ref(reader)?,
+                b: read_sketch_point_ref(reader)?,
+            },
+            4 => SketchConstraintKind::Distance {
+                a: read_sketch_point_ref(reader)?,
+                b: read_sketch_point_ref(reader)?,
+                value: Dimension::new(reader.string()?, f64::from_bits(reader.u64()?))?,
+            },
+            5 => SketchConstraintKind::Radius {
+                entity: SketchEntityId(reader.u64()?),
+                value: Dimension::new(reader.string()?, f64::from_bits(reader.u64()?))?,
+            },
+            6 => SketchConstraintKind::FixedPoint {
+                point: read_sketch_point_ref(reader)?,
+                position_mm: point(reader)?,
+            },
+            value => return Err(PersistenceError::InvalidFeatureKind(value)),
+        };
+        constraints.push(SketchConstraint { id, kind });
+    }
+    Ok(SketchSpec {
+        workplane,
+        entities,
+        constraints,
+    })
+}
+
 fn read_product(
     reader: &mut Reader<'_>,
     capabilities: ProductSchemaCapabilities,
@@ -2242,6 +2573,8 @@ fn read_product(
         let definition_id = DefinitionId(reader.u64()?);
         let name = reader.string()?;
         let kind = match reader.u8()? {
+            17 if capabilities.workplane_sketch => FeatureKind::Workplane(read_workplane(reader)?),
+            18 if capabilities.workplane_sketch => FeatureKind::Sketch(read_sketch(reader)?),
             1 => {
                 let mut points_mm = Vec::new();
                 for _ in 0..reader.count()? {
@@ -2294,6 +2627,34 @@ fn read_product(
                 profile: FeatureId(reader.u64()?),
                 height: Dimension::new(reader.string()?, f64::from_bits(reader.u64()?))?,
             },
+            19 if capabilities.workplane_sketch => FeatureKind::Pad(PadSpec {
+                sketch: FeatureId(reader.u64()?),
+                region: SketchRegionId(reader.u64()?),
+                direction: match reader.u8()? {
+                    1 => FeatureDirection::AlongNormal,
+                    2 => FeatureDirection::OppositeNormal,
+                    value => return Err(PersistenceError::InvalidFeatureKind(value)),
+                },
+                extent: FeatureExtent::Blind(Dimension::new(
+                    reader.string()?,
+                    f64::from_bits(reader.u64()?),
+                )?),
+            }),
+            20 if capabilities.workplane_sketch => FeatureKind::SketchPocket(PocketSpec {
+                target: FeatureId(reader.u64()?),
+                sketch: FeatureId(reader.u64()?),
+                region: SketchRegionId(reader.u64()?),
+                direction: match reader.u8()? {
+                    1 => FeatureDirection::AlongNormal,
+                    2 => FeatureDirection::OppositeNormal,
+                    value => return Err(PersistenceError::InvalidFeatureKind(value)),
+                },
+                extent: FeatureExtent::Blind(Dimension::new(
+                    reader.string()?,
+                    f64::from_bits(reader.u64()?),
+                )?),
+                support: Box::new(read_exact_reference(reader)?),
+            }),
             3 if capabilities.through_cut => FeatureKind::ThroughCut {
                 target: FeatureId(reader.u64()?),
                 profile: FeatureId(reader.u64()?),

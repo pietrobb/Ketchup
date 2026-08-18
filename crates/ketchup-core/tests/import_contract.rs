@@ -126,6 +126,21 @@ fn exact_step_import_is_one_deterministic_persistent_undoable_transaction() {
         .unwrap();
     assert_eq!(exact.source_byte_len, source.len() as u64);
     assert_eq!(exact.result_fingerprint, evidence.result_fingerprint);
+    assert_eq!(
+        committed
+            .import_receipt(ImportId(1))
+            .unwrap()
+            .diagnostics()
+            .iter()
+            .map(|diagnostic| diagnostic.code())
+            .collect::<Vec<_>>(),
+        vec![
+            "step_exact_brep_preserved",
+            "step_color_metadata_unavailable",
+            "step_hierarchy_flattened",
+            "step_name_metadata_unavailable",
+        ]
+    );
     let mut container = persistence::ContainerData::default();
     let source_hash = container.insert_import_blob(source.to_vec()).unwrap();
     assert_eq!(document.visible_undo_steps(), 1);

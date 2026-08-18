@@ -97,6 +97,14 @@ struct HistoryRecord {
   bool output_present = false;
 };
 
+struct EdgeHistoryRecord {
+  std::string semantic_role;
+  std::string relation;
+  std::string source_element_id;
+  std::uint32_t output_ordinal = 0;
+  bool output_present = false;
+};
+
 std::uint32_t count_subshapes(const TopoDS_Shape& shape, TopAbs_ShapeEnum kind) {
   std::uint32_t count = 0;
   for (TopExp_Explorer explorer(shape, kind); explorer.More(); explorer.Next()) {
@@ -137,6 +145,23 @@ HistoryRecord history_record(
       std::move(role), std::move(relation), std::move(source), ordinal, present};
 }
 
+EdgeHistoryRecord edge_history_record(
+    std::string role,
+    std::string relation,
+    std::string source,
+    const TopoDS_Shape& result,
+    const TopoDS_Shape& output) {
+  std::uint32_t ordinal = 0;
+  for (TopExp_Explorer explorer(result, TopAbs_EDGE); explorer.More(); explorer.Next(), ++ordinal) {
+    if (explorer.Current().IsSame(output)) {
+      return EdgeHistoryRecord{
+          std::move(role), std::move(relation), std::move(source), ordinal, true};
+    }
+  }
+  return EdgeHistoryRecord{
+      std::move(role), std::move(relation), std::move(source), 0, false};
+}
+
 std::string standard_failure_message(const Standard_Failure& failure) {
   const char* message = failure.what();
   return message == nullptr ? "OCCT Standard_Failure without a message" : message;
@@ -153,6 +178,7 @@ struct NativeOperationResult::Impl {
   std::vector<NativeFaceEdgeEvidence> face_edges;
   std::vector<NativeEdgeFaceEvidence> edge_faces;
   std::vector<HistoryRecord> history;
+  std::vector<EdgeHistoryRecord> edge_history;
 };
 
 namespace {
@@ -229,10 +255,12 @@ std::unique_ptr<NativeOperationResult> success_result(
     TopoDS_Shape shape,
     std::vector<HistoryRecord> history,
     bool allow_multi_solid = false,
-    bool allow_planar_face = false) {
+    bool allow_planar_face = false,
+    std::vector<EdgeHistoryRecord> edge_history = {}) {
   auto impl = std::make_unique<NativeOperationResult::Impl>();
   impl->shape = std::move(shape);
   impl->history = std::move(history);
+  impl->edge_history = std::move(edge_history);
 
   if (impl->shape.IsNull()) {
     impl->status = STATUS_NULL_RESULT;
@@ -343,6 +371,60 @@ std::unique_ptr<NativeOperationResult> guarded(Operation&& operation) noexcept {
   }
 }
 
+template <typename Operation>
+void append_propagated_history(
+    std::vector<HistoryRecord>& history,
+    Operation& operation,
+    const TopoDS_Shape& result,
+    const NativeOperationResult::Impl& source) {
+  for (const HistoryRecord& source_history : source.history) {
+    if (!source_history.output_present) {
+      continue;
+    }
+    const TopoDS_Face source_face =
+        face_at_ordinal(source.shape, source_history.output_ordinal);
+    if (source_face.IsNull()) {
+      continue;
+    }
+    if (operation.IsDeleted(source_face)) {
+      history.push_back(HistoryRecord{
+          source_history.semantic_role,
+          "deleted",
+          source_history.source_element_id,
+          0,
+          false});
+    }
+    const NCollection_List<TopoDS_Shape>& modified = operation.Modified(source_face);
+    for (NCollection_List<TopoDS_Shape>::Iterator iterator(modified);
+         iterator.More(); iterator.Next()) {
+      history.push_back(history_record(
+          source_history.semantic_role,
+          "modified",
+          source_history.source_element_id,
+          result,
+          iterator.Value()));
+    }
+    const NCollection_List<TopoDS_Shape>& generated = operation.Generated(source_face);
+    for (NCollection_List<TopoDS_Shape>::Iterator iterator(generated);
+         iterator.More(); iterator.Next()) {
+      history.push_back(history_record(
+          source_history.semantic_role,
+          "generated",
+          source_history.source_element_id,
+          result,
+          iterator.Value()));
+    }
+    if (!operation.IsDeleted(source_face) && modified.IsEmpty() && generated.IsEmpty()) {
+      history.push_back(history_record(
+          source_history.semantic_role,
+          "unchanged",
+          source_history.source_element_id,
+          result,
+          source_face));
+    }
+  }
+}
+
 void append_cut_history(
     std::vector<HistoryRecord>& history,
     BRepAlgoAPI_Cut& cut,
@@ -440,6 +522,22 @@ rust::Vec<NativeHistoryEvidence> NativeOperationResult::history_evidence() const
   return output;
 }
 
+rust::Vec<NativeEdgeHistoryEvidence> NativeOperationResult::edge_history_evidence() const {
+  rust::Vec<NativeEdgeHistoryEvidence> output;
+  if (impl_ != nullptr) {
+    output.reserve(impl_->edge_history.size());
+    for (const EdgeHistoryRecord& record : impl_->edge_history) {
+      output.push_back(NativeEdgeHistoryEvidence{
+          rust::String(record.semantic_role),
+          rust::String(record.relation),
+          rust::String(record.source_element_id),
+          record.output_ordinal,
+          record.output_present});
+    }
+  }
+  return output;
+}
+
 const NativeOperationResult::Impl& NativeOperationResult::impl() const noexcept {
   return *impl_;
 }
@@ -484,11 +582,19 @@ std::unique_ptr<NativeOperationResult> extrude_rectangle_native(
     }
     const TopoDS_Face profile = face_builder.Face();
     TopoDS_Edge profile_east;
+    TopoDS_Vertex profile_north_east;
     for (TopExp_Explorer explorer(profile, TopAbs_EDGE); explorer.More(); explorer.Next()) {
       const TopoDS_Edge candidate = TopoDS::Edge(explorer.Current());
       TopoDS_Vertex first;
       TopoDS_Vertex last;
       TopExp::Vertices(candidate, first, last);
+      for (const TopoDS_Vertex& vertex : {first, last}) {
+        if (!vertex.IsNull()
+            && std::abs(BRep_Tool::Pnt(vertex).X() - width) <= 1.0e-9
+            && std::abs(BRep_Tool::Pnt(vertex).Y() - depth) <= 1.0e-9) {
+          profile_north_east = vertex;
+        }
+      }
       if (!first.IsNull()
           && !last.IsNull()
           && std::abs(BRep_Tool::Pnt(first).X() - width) <= 1.0e-9
@@ -499,8 +605,8 @@ std::unique_ptr<NativeOperationResult> extrude_rectangle_native(
         profile_east = candidate;
       }
     }
-    if (profile_east.IsNull()) {
-      return error_result(STATUS_INVALID_SHAPE, "OCCT profile lacks east edge identity");
+    if (profile_east.IsNull() || profile_north_east.IsNull()) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT profile lacks stable east-edge or north-east-vertex identity");
     }
     BRepPrimAPI_MakePrism operation(profile, gp_Vec(0.0, 0.0, height), true, false);
     const TopoDS_Shape result = operation.Shape();
@@ -541,7 +647,22 @@ std::unique_ptr<NativeOperationResult> extrude_rectangle_native(
       }
     }
     history.push_back(std::move(east_history));
-    return success_result(result, std::move(history));
+    std::vector<EdgeHistoryRecord> edge_history;
+    const NCollection_List<TopoDS_Shape>& north_east_generated =
+        operation.Generated(profile_north_east);
+    for (NCollection_List<TopoDS_Shape>::Iterator iterator(north_east_generated);
+         iterator.More(); iterator.Next()) {
+      const EdgeHistoryRecord candidate = edge_history_record(
+          "extrusion.edge(profile_vertex=north_east)",
+          "generated",
+          "profile.vertex.north_east",
+          result,
+          iterator.Value());
+      if (candidate.output_present) {
+        edge_history.push_back(candidate);
+      }
+    }
+    return success_result(result, std::move(history), false, false, std::move(edge_history));
   });
 }
 
@@ -1669,6 +1790,7 @@ std::unique_ptr<NativeOperationResult> cut_box_native(
     }
 
     std::vector<HistoryRecord> history;
+    append_propagated_history(history, operation, result, base.impl());
     append_cut_history(history, operation, result, base.impl().shape, "base.face.");
     append_cut_history(history, operation, result, tool, "tool.face.");
     return success_result(result, std::move(history));
@@ -1711,6 +1833,7 @@ std::unique_ptr<NativeOperationResult> cut_cylinder_native(
       return error_result(STATUS_NO_GEOMETRIC_CHANGE, "Cylinder cut produced no measurable geometric change");
     }
     std::vector<HistoryRecord> history;
+    append_propagated_history(history, operation, result, base.impl());
     append_cut_history(history, operation, result, base.impl().shape, "base.face.");
     append_cut_history(history, operation, result, tool, "tool.face.");
     return success_result(result, std::move(history));
@@ -1822,7 +1945,9 @@ std::unique_ptr<NativeOperationResult> split_box_native(
     if (std::abs(after_properties.Mass() - before_properties.Mass()) > scale * 1.0e-10) {
       return error_result(STATUS_INVALID_SHAPE, "Split did not preserve target volume");
     }
-    return success_result(result, {}, true);
+    std::vector<HistoryRecord> history;
+    append_propagated_history(history, operation, result, base.impl());
+    return success_result(result, std::move(history), true);
   });
 }
 

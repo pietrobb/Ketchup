@@ -1,3 +1,4 @@
+use ketchup_core::bottle_m6::ExactRevolveRequest;
 use ketchup_core::document::{
     BOTTLE_SHELL_OPENING_FACE_ROLE, BOTTLE_SHOULDER_EDGE_ROLE, BooleanOperation,
     BottleControlDimension, BottleEdgeFinishKind, CanonicalCommand, CanonicalError, CollectionId,
@@ -393,7 +394,14 @@ fn m6_bottle_profile_and_revolve_are_canonical_persisted_and_undoable() {
             },
         ]))
         .unwrap();
-    let changed_digest = document.current().canonical_digest();
+    let changed_snapshot = document.current();
+    let changed_digest = changed_snapshot.canonical_digest();
+    let request = ExactRevolveRequest::from_snapshot(&changed_snapshot, BOTTLE).unwrap();
+    assert_eq!(
+        request
+            .canonical_input_digest_for_envelope(request.source_revision, &request.source_digest,),
+        request.canonical_input_digest
+    );
     assert_ne!(changed_digest, initial_digest);
     assert!(matches!(
         document.current().feature(BOTTLE_REVOLVE).unwrap().kind(),

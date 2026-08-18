@@ -73,6 +73,14 @@ mod ffi {
         output_present: bool,
     }
 
+    struct NativeEdgeHistoryEvidence {
+        semantic_role: String,
+        relation: String,
+        source_element_id: String,
+        output_ordinal: u32,
+        output_present: bool,
+    }
+
     struct NativeMeshVertex {
         x_mm: f64,
         y_mm: f64,
@@ -233,6 +241,7 @@ mod ffi {
         fn face_edge_evidence(self: &NativeOperationResult) -> Vec<NativeFaceEdgeEvidence>;
         fn edge_face_evidence(self: &NativeOperationResult) -> Vec<NativeEdgeFaceEvidence>;
         fn history_evidence(self: &NativeOperationResult) -> Vec<NativeHistoryEvidence>;
+        fn edge_history_evidence(self: &NativeOperationResult) -> Vec<NativeEdgeHistoryEvidence>;
     }
 }
 
@@ -427,6 +436,7 @@ pub struct HistoryEvidence {
     pub relation: String,
     pub source_element_id: String,
     pub output_face_ordinal: Option<u32>,
+    pub output_edge_ordinal: Option<u32>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -511,6 +521,10 @@ pub struct SubshapeRef {
 pub enum ReferenceResolution {
     Resolved {
         face_ordinal: u32,
+        migrated_backend: bool,
+    },
+    ResolvedEdge {
+        edge_ordinal: u32,
         migrated_backend: bool,
     },
     Ambiguous {
@@ -1638,7 +1652,7 @@ fn collect_output(
         topology.bounds_mm
     );
     let result_fingerprint = stable_digest(&result_signature);
-    let history = native_ref
+    let mut history = native_ref
         .history_evidence()
         .into_iter()
         .map(|entry| HistoryEvidence {
@@ -1646,8 +1660,21 @@ fn collect_output(
             relation: entry.relation,
             source_element_id: entry.source_element_id,
             output_face_ordinal: entry.output_present.then_some(entry.output_ordinal),
+            output_edge_ordinal: None,
         })
         .collect::<Vec<_>>();
+    history.extend(
+        native_ref
+            .edge_history_evidence()
+            .into_iter()
+            .map(|entry| HistoryEvidence {
+                semantic_role: (!entry.semantic_role.is_empty()).then_some(entry.semantic_role),
+                relation: entry.relation,
+                source_element_id: entry.source_element_id,
+                output_face_ordinal: None,
+                output_edge_ordinal: entry.output_present.then_some(entry.output_ordinal),
+            }),
+    );
 
     Ok(ExactOpOutput {
         body: ExactBody {
@@ -1827,6 +1854,75 @@ pub fn capture_guaranteed_references(
         });
     }
     Ok(references)
+}
+
+pub fn capture_guaranteed_edge_references(
+    output: &ExactOpOutput,
+    document_id: &str,
+    producer_feature_id: &str,
+) -> Result<Vec<SubshapeRef>, GeometryError> {
+    let required = [(
+        "extrusion.edge(profile_vertex=north_east)",
+        "profile.vertex.north_east",
+    )];
+    required
+        .into_iter()
+        .map(|(semantic_role, source_element_id)| {
+            let mut candidates = output
+                .topology_history
+                .iter()
+                .filter(|entry| {
+                    entry.semantic_role.as_deref() == Some(semantic_role)
+                        && entry.source_element_id == source_element_id
+                })
+                .filter_map(|entry| entry.output_edge_ordinal)
+                .collect::<Vec<_>>();
+            candidates.sort_unstable();
+            candidates.dedup();
+            let [ordinal] = candidates.as_slice() else {
+                return Err(parameter_error(
+                    GeometryErrorCode::InvalidShape,
+                    "capture_guaranteed_edge_references",
+                    &output.input_digest,
+                    format!(
+                        "Guaranteed edge role {semantic_role} has {} candidates",
+                        candidates.len()
+                    ),
+                ));
+            };
+            let edge = output
+                .body
+                .topology
+                .edges
+                .iter()
+                .find(|edge| edge.ordinal == *ordinal)
+                .ok_or_else(|| {
+                    parameter_error(
+                        GeometryErrorCode::InvalidShape,
+                        "capture_guaranteed_edge_references",
+                        &output.input_digest,
+                        format!("Guaranteed edge role {semantic_role} is absent"),
+                    )
+                })?;
+            let lineage = format!(
+                "{document_id}:{producer_feature_id}:{semantic_role}:{source_element_id}:edge"
+            );
+            Ok(SubshapeRef {
+                document_id: document_id.to_owned(),
+                producer_feature_id: producer_feature_id.to_owned(),
+                semantic_role: semantic_role.to_owned(),
+                source_element_id: source_element_id.to_owned(),
+                expected_type: "edge".to_owned(),
+                stability_class: StabilityClass::Guaranteed,
+                backend_fingerprint: output.backend_fingerprint.to_owned(),
+                lineage_digest: stable_digest(&lineage),
+                corroborating_geometry_fingerprint: stable_digest(&format!(
+                    "edge:{}:{:?}",
+                    edge.ordinal, edge.adjacent_face_ordinals
+                )),
+            })
+        })
+        .collect()
 }
 
 fn has_closed_revolve_adjacency(topology: &TopologyEvidence) -> bool {
@@ -2082,6 +2178,7 @@ pub fn capture_circular_through_cut_references(
             relation: "geometric_identity".to_owned(),
             source_element_id: source_element_id.to_owned(),
             output_face_ordinal: Some(face.ordinal),
+            output_edge_ordinal: None,
         });
         let lineage = format!(
             "{document_id}:{producer_feature_id}:{semantic_role}:{source_element_id}:{expected_type}"
@@ -2491,6 +2588,7 @@ pub fn capture_bounded_through_cut_references(
                 relation: "bounded_cut_classification".to_owned(),
                 source_element_id: source_element_id.to_owned(),
                 output_face_ordinal: Some(face_ordinal),
+                output_edge_ordinal: None,
             });
         }
         let lineage = format!(
@@ -2603,6 +2701,7 @@ pub fn capture_bounded_pocket_references(
                 relation: "bounded_pocket_classification".to_owned(),
                 source_element_id: source_element_id.to_owned(),
                 output_face_ordinal: Some(face_ordinal),
+                output_edge_ordinal: None,
             });
         }
         let lineage = format!(
@@ -2690,6 +2789,7 @@ pub fn capture_rectangular_union_references(
             relation: "rectangular_union_classification".to_owned(),
             source_element_id: source_element_id.to_owned(),
             output_face_ordinal: Some(face_ordinal),
+            output_edge_ordinal: None,
         });
         let lineage = format!(
             "{document_id}:{producer_feature_id}:{semantic_role}:{source_element_id}:planar_face"
@@ -2935,6 +3035,7 @@ pub fn capture_planar_offset_reference(
         relation: "rectangular_offset_classification".to_owned(),
         source_element_id: "profile.face".to_owned(),
         output_face_ordinal: Some(face_ordinal),
+        output_edge_ordinal: None,
     });
     let lineage =
         format!("{document_id}:{producer_feature_id}:planar_offset.face:profile.face:planar_face");
@@ -3018,6 +3119,7 @@ pub fn capture_rectangular_intersection_references(
             relation: "rectangular_intersection_classification".to_owned(),
             source_element_id: source_element_id.to_owned(),
             output_face_ordinal: Some(face_ordinal),
+            output_edge_ordinal: None,
         });
         let lineage = format!(
             "{document_id}:{producer_feature_id}:{semantic_role}:{source_element_id}:planar_face"
@@ -3107,6 +3209,7 @@ pub fn capture_rectangular_split_references(
             relation: "rectangular_split_classification".to_owned(),
             source_element_id: source_element_id.to_owned(),
             output_face_ordinal: Some(face_ordinal),
+            output_edge_ordinal: None,
         });
         let lineage = format!(
             "{document_id}:{producer_feature_id}:{semantic_role}:{source_element_id}:planar_face"
@@ -3422,6 +3525,43 @@ pub fn resolve_subshape_reference(
             }
         } else {
             ReferenceResolution::Lost
+        };
+    }
+    if reference.expected_type == "edge" {
+        let mut candidates = output
+            .topology_history
+            .iter()
+            .filter(|entry| {
+                entry.semantic_role.as_deref() == Some(reference.semantic_role.as_str())
+                    && entry.source_element_id == reference.source_element_id
+            })
+            .filter_map(|entry| entry.output_edge_ordinal)
+            .filter(|ordinal| {
+                output
+                    .body
+                    .topology
+                    .edges
+                    .iter()
+                    .any(|edge| edge.ordinal == *ordinal)
+            })
+            .collect::<Vec<_>>();
+        candidates.sort_unstable();
+        candidates.dedup();
+        return match candidates.as_slice() {
+            [edge_ordinal] => ReferenceResolution::ResolvedEdge {
+                edge_ordinal: *edge_ordinal,
+                migrated_backend,
+            },
+            [] if migrated_backend => ReferenceResolution::QuarantinedMigration {
+                reason: format!(
+                    "No lineage match for {} after backend migration",
+                    reference.semantic_role
+                ),
+            },
+            [] => ReferenceResolution::Lost,
+            _ => ReferenceResolution::Ambiguous {
+                candidate_ordinals: candidates,
+            },
         };
     }
     let mut candidates = output
@@ -4228,6 +4368,108 @@ mod tests {
         }
         assert!(output.input_digest.starts_with("fnv1a64:"));
         assert!(output.body.result_fingerprint.starts_with("fnv1a64:"));
+    }
+
+    #[test]
+    fn occt_history_resolves_edges_and_reports_real_face_split_or_loss() {
+        let backend = ExactBackend::new();
+        let base = backend
+            .extrude_rectangle(RectangleExtrudeSpec {
+                width_mm: 100.0,
+                depth_mm: 60.0,
+                height_mm: 20.0,
+            })
+            .unwrap();
+        let face_references =
+            capture_guaranteed_references(&base, "unit-document", "extrusion-001").unwrap();
+        let edge_reference =
+            capture_guaranteed_edge_references(&base, "unit-document", "extrusion-001")
+                .unwrap()
+                .pop()
+                .unwrap();
+        assert!(matches!(
+            resolve_subshape_reference(&edge_reference, &base),
+            ReferenceResolution::ResolvedEdge {
+                migrated_backend: false,
+                ..
+            }
+        ));
+
+        let edited = backend
+            .extrude_rectangle(RectangleExtrudeSpec {
+                width_mm: 120.0,
+                depth_mm: 75.0,
+                height_mm: 25.0,
+            })
+            .unwrap();
+        assert!(matches!(
+            resolve_subshape_reference(&edge_reference, &edited),
+            ReferenceResolution::ResolvedEdge {
+                migrated_backend: false,
+                ..
+            }
+        ));
+        assert!(face_references.iter().all(|reference| matches!(
+            resolve_subshape_reference(reference, &edited),
+            ReferenceResolution::Resolved {
+                migrated_backend: false,
+                ..
+            }
+        )));
+
+        let split = backend
+            .split_box(
+                &base.body,
+                BoxSpec {
+                    origin_mm: Point3 {
+                        x: 70.0,
+                        y: 20.0,
+                        z: 0.0,
+                    },
+                    size_mm: Size3 {
+                        x: 60.0,
+                        y: 40.0,
+                        z: 20.0,
+                    },
+                },
+            )
+            .unwrap();
+        let top = face_references
+            .iter()
+            .find(|reference| reference.semantic_role == "extrusion.top")
+            .unwrap();
+        assert!(matches!(
+            resolve_subshape_reference(top, &split),
+            ReferenceResolution::Ambiguous { ref candidate_ordinals }
+                if candidate_ordinals.len() > 1
+        ));
+
+        let cut = backend
+            .cut_box(
+                &base.body,
+                BoxSpec {
+                    origin_mm: Point3 {
+                        x: 50.0,
+                        y: 0.0,
+                        z: -1.0,
+                    },
+                    size_mm: Size3 {
+                        x: 60.0,
+                        y: 60.0,
+                        z: 22.0,
+                    },
+                },
+                CutMode::ThroughAll,
+            )
+            .unwrap();
+        let east = face_references
+            .iter()
+            .find(|reference| reference.semantic_role == "extrusion.side(profile_edge=east)")
+            .unwrap();
+        assert_eq!(
+            resolve_subshape_reference(east, &cut),
+            ReferenceResolution::Lost
+        );
     }
 
     #[test]

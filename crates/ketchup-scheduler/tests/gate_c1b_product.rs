@@ -225,7 +225,7 @@ fn exact_reference_health_is_explicit_across_transform_mutation_conflict_and_qua
         .reference(ExactFaceRole::Top)
         .unwrap()
         .clone();
-    assert_ne!(
+    assert_eq!(
         durable_top.canonical_input_digest,
         transformed_top.canonical_input_digest
     );

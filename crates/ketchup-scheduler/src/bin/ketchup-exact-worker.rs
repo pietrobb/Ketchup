@@ -1779,14 +1779,30 @@ fn p6_split_response(
                 let [reference] = candidates.as_slice() else {
                     return Err(());
                 };
-                let ReferenceResolution::Resolved {
-                    face_ordinal,
-                    migrated_backend: false,
-                } = resolve_subshape_reference(reference, &output)
-                else {
+                let mut ordinals = output
+                    .topology_history
+                    .iter()
+                    .filter(|entry| {
+                        entry.relation == "rectangular_split_classification"
+                            && entry.semantic_role.as_deref() == Some(role)
+                            && entry.source_element_id == source
+                    })
+                    .filter_map(|entry| entry.output_face_ordinal)
+                    .collect::<Vec<_>>();
+                ordinals.sort_unstable();
+                ordinals.dedup();
+                let [face_ordinal] = ordinals.as_slice() else {
                     return Err(());
                 };
-                Ok((face_ordinal, *reference))
+                let face_matches = output.body.topology.faces.iter().any(|face| {
+                    face.ordinal == *face_ordinal
+                        && face.geometric_fingerprint
+                            == reference.corroborating_geometry_fingerprint
+                });
+                if !face_matches {
+                    return Err(());
+                }
+                Ok((*face_ordinal, *reference))
             });
             let [Ok(top), Ok(bottom), Ok(east)] = evidence else {
                 return "ERR incomplete_history".to_owned();

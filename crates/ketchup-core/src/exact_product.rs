@@ -8,6 +8,10 @@ use crate::document::{
     Transform,
 };
 use crate::graph::DerivedIdentity;
+use crate::sketch::{
+    FeatureDirection, SolvedSketchRegion, SolvedSketchRegionProfile, WorkplaneSpec,
+    WorkplaneSupport, WorkplaneSupportHealth,
+};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fmt;
@@ -283,6 +287,32 @@ impl ExactFaceRole {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum ExactEdgeRole {
+    NorthEastVertical,
+}
+
+impl ExactEdgeRole {
+    #[must_use]
+    pub const fn semantic_role(self) -> &'static str {
+        match self {
+            Self::NorthEastVertical => "extrusion.edge(profile_vertex=north_east)",
+        }
+    }
+
+    #[must_use]
+    pub const fn source_element_id(self) -> &'static str {
+        match self {
+            Self::NorthEastVertical => "profile.vertex.north_east",
+        }
+    }
+
+    #[must_use]
+    pub const fn expected_type(self) -> &'static str {
+        "edge"
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ReferenceStability {
     Guaranteed,
@@ -369,12 +399,23 @@ impl BodySubshapeRef {
     }
 
     #[must_use]
+    pub fn edge_role(&self) -> Option<ExactEdgeRole> {
+        [ExactEdgeRole::NorthEastVertical].into_iter().find(|role| {
+            self.semantic_role == role.semantic_role()
+                && self.source_element_id == role.source_element_id()
+        })
+    }
+
+    #[must_use]
     pub fn has_valid_lineage(&self) -> bool {
         self.schema == BODY_SUBSHAPE_REF_SCHEMA_V1
             && self.expected_cardinality == 1
-            && self
+            && (self
                 .role()
                 .is_some_and(|role| self.expected_type == role.expected_type())
+                || self
+                    .edge_role()
+                    .is_some_and(|role| self.expected_type == role.expected_type()))
             && self.lineage_digest == reference_lineage_digest(self)
     }
 
@@ -450,16 +491,38 @@ impl BodySubshapeRef {
     }
 
     #[must_use]
-    pub fn matches_request(&self, request: &ExactFeatureChainRequest) -> bool {
-        let Some(role) = self.role() else {
-            return false;
+    pub fn matches_durable_request_identity(&self, request: &ExactFeatureChainRequest) -> bool {
+        let profile_matches = if let Some(role) = self.role() {
+            request.expected_face_roles().contains(&role)
+                && request.profile_feature_id_for_role(role) == Some(self.profile_feature_id)
+        } else {
+            self.edge_role() == Some(ExactEdgeRole::NorthEastVertical)
+                && request.profile_feature_id == self.profile_feature_id
         };
         self.has_valid_lineage()
+            && profile_matches
             && self.document_id == request.document_id
             && self.definition_id == request.definition_id
-            && request.profile_feature_id_for_role(role) == Some(self.profile_feature_id)
             && self.producer_feature_id == request.producer_feature_id()
-            && self.canonical_input_digest == request.canonical_input_digest
+    }
+
+    #[must_use]
+    pub fn matches_request(&self, request: &ExactFeatureChainRequest) -> bool {
+        self.matches_request_digest(request, &request.canonical_input_digest)
+    }
+
+    #[must_use]
+    pub fn matches_legacy_request(&self, request: &ExactFeatureChainRequest) -> bool {
+        self.matches_request_digest(request, &request.legacy_canonical_input_digest)
+    }
+
+    fn matches_request_digest(
+        &self,
+        request: &ExactFeatureChainRequest,
+        canonical_input_digest: &str,
+    ) -> bool {
+        self.matches_durable_request_identity(request)
+            && self.canonical_input_digest == canonical_input_digest
             && self.evaluator == request.evaluator()
             && !self.exact_input_digest.is_empty()
             && !self.result_fingerprint.is_empty()
@@ -792,6 +855,56 @@ impl ExactBodyPackage {
             Self::Rectangle(package) => package.is_current(snapshot),
             Self::Revolve(package) => package.is_current(snapshot),
             Self::Imported(package) => package.is_current(snapshot),
+        }
+    }
+
+    #[must_use]
+    pub fn rebound_to(&self, snapshot: &Snapshot) -> Option<Self> {
+        match self {
+            Self::Rectangle(package) => {
+                let request = ExactFeatureChainRequest::from_snapshot_for_producer(
+                    snapshot,
+                    package.identity.definition_id,
+                    package.identity.producer_feature_id,
+                )
+                .ok()?;
+                if request.canonical_input_digest != package.identity.canonical_input_digest
+                    || request.evaluator() != package.identity.evaluator
+                {
+                    return None;
+                }
+                let mut rebound = package.clone();
+                rebound.identity.source_revision = snapshot.revision_id();
+                rebound.identity.source_digest = snapshot.canonical_digest();
+                rebound.validate_for_request(&request).ok()?;
+                Some(Self::Rectangle(rebound))
+            }
+            Self::Revolve(package) => {
+                let request = crate::bottle_m6::ExactRevolveRequest::from_snapshot(
+                    snapshot,
+                    package.identity.definition_id,
+                )
+                .ok()?;
+                if request.producer_feature_id() != package.identity.producer_feature_id
+                    || request.canonical_input_digest_for_envelope(
+                        package.identity.source_revision,
+                        &package.identity.source_digest,
+                    ) != package.identity.canonical_input_digest
+                    || request.evaluator() != package.identity.evaluator
+                {
+                    return None;
+                }
+                let mut rebound = package.clone();
+                rebound.identity.source_revision = snapshot.revision_id();
+                rebound.identity.source_digest = snapshot.canonical_digest();
+                rebound.identity.canonical_input_digest = request.canonical_input_digest.clone();
+                for reference in &mut rebound.references {
+                    reference.canonical_input_digest = request.canonical_input_digest.clone();
+                }
+                rebound.validate_for_request(&request).ok()?;
+                Some(Self::Revolve(rebound))
+            }
+            Self::Imported(package) => package.rebound_to(snapshot).map(Self::Imported),
         }
     }
 
@@ -1232,27 +1345,21 @@ impl ExactResultRegistry {
         Ok(registry)
     }
 
-    /// Every imported product of `previous` whose evidence `snapshot` still
-    /// carries, rebound to `snapshot`.
+    /// Every product of `previous` whose producer inputs are unchanged in
+    /// `snapshot`, rebound to the new revision envelope.
     ///
-    /// Imported exact bodies are content-addressed and are re-derived by an
-    /// isolated worker that takes seconds, so dropping them on every commit
-    /// blanks the body after an edit that never touched it. Only imported
-    /// products carry forward: parametric products are derived from features
-    /// an edit may have changed, and anything whose evidence no longer matches
-    /// is dropped rather than shown.
+    /// Derived geometry remains outside canonical state. Rebinding re-derives
+    /// the producer request and requires the same dependency-local input digest;
+    /// changed branches are dropped while unrelated current branches survive.
     #[must_use]
     pub fn carried_forward(snapshot: &Snapshot, previous: &Self) -> Self {
         let mut registry = Self::default();
         for package in previous.packages.values() {
-            let ExactBodyPackage::Imported(imported) = package.as_ref() else {
-                continue;
-            };
-            let Some(rebound) = imported.rebound_to(snapshot) else {
+            let Some(rebound) = package.rebound_to(snapshot) else {
                 continue;
             };
             if registry
-                .insert_current(snapshot, Arc::new(ExactBodyPackage::Imported(rebound)))
+                .insert_current(snapshot, Arc::new(rebound))
                 .is_err()
             {
                 continue;
@@ -1349,6 +1456,58 @@ impl ExactResultRegistry {
             .iter()
             .filter(|(key, _)| key.definition_id == *definition_id)
             .map(|(_, package)| package);
+        let package = matches.next()?;
+        matches.next().is_none().then_some(package)
+    }
+
+    pub fn render_values<'a>(
+        &'a self,
+        snapshot: &'a Snapshot,
+    ) -> impl Iterator<Item = &'a Arc<ExactBodyPackage>> {
+        let graph = snapshot.feature_dependency_graph().ok();
+        self.packages.values().filter(move |package| {
+            package.is_current(snapshot)
+                && graph.as_ref().is_some_and(|graph| {
+                    graph
+                        .dependents(package.producer_feature_id())
+                        .is_some_and(|dependents| {
+                            dependents.iter().all(|dependent| {
+                                snapshot
+                                    .feature(*dependent)
+                                    .is_none_or(|feature| !feature.kind().produces_body())
+                            })
+                        })
+                })
+        })
+    }
+
+    #[must_use]
+    pub fn render_by_definition<'a>(
+        &'a self,
+        snapshot: &'a Snapshot,
+    ) -> BTreeMap<DefinitionId, &'a Arc<ExactBodyPackage>> {
+        let mut matches = BTreeMap::new();
+        for package in self.render_values(snapshot) {
+            matches
+                .entry(package.definition_id())
+                .and_modify(|candidate| *candidate = None)
+                .or_insert(Some(package));
+        }
+        matches
+            .into_iter()
+            .filter_map(|(definition_id, package)| package.map(|package| (definition_id, package)))
+            .collect()
+    }
+
+    #[must_use]
+    pub fn get_render<'a>(
+        &'a self,
+        snapshot: &'a Snapshot,
+        definition_id: DefinitionId,
+    ) -> Option<&'a Arc<ExactBodyPackage>> {
+        let mut matches = self
+            .render_values(snapshot)
+            .filter(|package| package.definition_id() == definition_id);
         let package = matches.next()?;
         matches.next().is_none().then_some(package)
     }
@@ -1478,8 +1637,12 @@ impl ExactRenderPackage {
         self.identity.document_id == snapshot.document_id()
             && self.identity.source_revision == snapshot.revision_id()
             && self.identity.source_digest == snapshot.canonical_digest()
-            && ExactFeatureChainRequest::from_snapshot(snapshot, self.identity.definition_id)
-                .is_ok_and(|request| self.validate_for_request(&request).is_ok())
+            && ExactFeatureChainRequest::from_snapshot_for_producer(
+                snapshot,
+                self.identity.definition_id,
+                self.identity.producer_feature_id,
+            )
+            .is_ok_and(|request| self.validate_for_request(&request).is_ok())
     }
 
     pub fn validate_for_request(
@@ -2395,9 +2558,11 @@ pub struct ExactFeatureChainRequest {
     pub circle: Option<ExactCircleProfile>,
     pub mixed_profile: Option<ExactMixedProfile>,
     pub pocket_depth_bits: Option<u64>,
+    pub workplane_frame_bits: Option<[u64; 12]>,
     pub boolean: Option<ExactBooleanRequest>,
     pub shell: Option<ExactBoxShellRequest>,
     pub canonical_input_digest: String,
+    pub legacy_canonical_input_digest: String,
 }
 
 impl ExactFeatureChainRequest {
@@ -2408,6 +2573,38 @@ impl ExactFeatureChainRequest {
         let definition = snapshot
             .definition(definition_id)
             .ok_or(ExactProductError::DefinitionNotFound(definition_id))?;
+        if definition.feature_ids().iter().any(|feature_id| {
+            snapshot
+                .feature(*feature_id)
+                .is_some_and(|feature| matches!(feature.kind(), FeatureKind::Pad(_)))
+        }) {
+            let graph = snapshot
+                .feature_dependency_graph()
+                .map_err(|_| ExactProductError::UnsupportedDefinition)?;
+            let producers = definition
+                .feature_ids()
+                .iter()
+                .copied()
+                .filter(|feature_id| {
+                    snapshot.feature(*feature_id).is_some_and(|feature| {
+                        matches!(
+                            feature.kind(),
+                            FeatureKind::Pad(_) | FeatureKind::SketchPocket(_)
+                        )
+                    }) && graph.dependents(*feature_id).is_some_and(|dependents| {
+                        dependents.iter().all(|dependent| {
+                            snapshot
+                                .feature(*dependent)
+                                .is_none_or(|feature| !feature.kind().produces_body())
+                        })
+                    })
+                })
+                .collect::<Vec<_>>();
+            let [producer] = producers.as_slice() else {
+                return Err(ExactProductError::UnsupportedDefinition);
+            };
+            return Self::from_pad_pocket_snapshot(snapshot, definition_id, *producer);
+        }
         if definition.feature_ids().iter().any(|feature_id| {
             snapshot.feature(*feature_id).is_some_and(|feature| {
                 matches!(
@@ -2767,6 +2964,16 @@ impl ExactFeatureChainRequest {
             .transpose()?;
         let source_digest = snapshot.canonical_digest();
         let canonical_input = format!(
+            "{}:{}:{}:{}:{:016x}:{:016x}:{:016x}",
+            EXACT_PRODUCT_SCHEMA_V1,
+            snapshot.document_id().0,
+            definition_id.0,
+            extrusion_feature_id.0,
+            width_mm.to_bits(),
+            depth_mm.to_bits(),
+            height_mm.to_bits()
+        );
+        let legacy_canonical_input = format!(
             "{}:{}:{}:{}:{}:{:016x}:{:016x}:{:016x}:{}",
             EXACT_PRODUCT_SCHEMA_V1,
             snapshot.document_id().0,
@@ -2778,43 +2985,51 @@ impl ExactFeatureChainRequest {
             height_mm.to_bits(),
             source_digest
         );
-        let mut canonical_input_digest = boolean.as_ref().map_or_else(
-            || digest(&canonical_input),
-            |cut| {
-                if legacy_through_cut {
-                    digest(&format!(
-                        "{canonical_input}:{}:{}:{:016x}:{:016x}:{:016x}:{:016x}",
-                        cut.feature_id.0,
-                        cut.profile_feature_id.0,
-                        cut.min_x_bits,
-                        cut.min_y_bits,
-                        cut.width_bits,
-                        cut.depth_bits
-                    ))
-                } else {
-                    digest(&format!(
-                        "{canonical_input}:{}:{}:{}:{}:{}:{:016x}:{:016x}:{:016x}:{:016x}",
-                        cut.feature_id.0,
-                        match cut.operation {
-                            BooleanOperation::Cut => "cut",
-                            BooleanOperation::Union => "union",
-                            BooleanOperation::Intersect => "intersect",
-                            BooleanOperation::Split => "split",
-                        },
-                        cut.target_feature_id.0,
-                        cut.tool_feature_id.0,
-                        cut.profile_feature_id.0,
-                        cut.min_x_bits,
-                        cut.min_y_bits,
-                        cut.width_bits,
-                        cut.depth_bits
-                    ))
-                }
-            },
-        );
+        let initial_input_digest = |input: &str| {
+            boolean.as_ref().map_or_else(
+                || digest(input),
+                |cut| {
+                    if legacy_through_cut {
+                        digest(&format!(
+                            "{input}:{}:{}:{:016x}:{:016x}:{:016x}:{:016x}",
+                            cut.feature_id.0,
+                            cut.profile_feature_id.0,
+                            cut.min_x_bits,
+                            cut.min_y_bits,
+                            cut.width_bits,
+                            cut.depth_bits
+                        ))
+                    } else {
+                        digest(&format!(
+                            "{input}:{}:{}:{}:{}:{}:{:016x}:{:016x}:{:016x}:{:016x}",
+                            cut.feature_id.0,
+                            match cut.operation {
+                                BooleanOperation::Cut => "cut",
+                                BooleanOperation::Union => "union",
+                                BooleanOperation::Intersect => "intersect",
+                                BooleanOperation::Split => "split",
+                            },
+                            cut.target_feature_id.0,
+                            cut.tool_feature_id.0,
+                            cut.profile_feature_id.0,
+                            cut.min_x_bits,
+                            cut.min_y_bits,
+                            cut.width_bits,
+                            cut.depth_bits
+                        ))
+                    }
+                },
+            )
+        };
+        let mut canonical_input_digest = initial_input_digest(&canonical_input);
+        let mut legacy_canonical_input_digest = initial_input_digest(&legacy_canonical_input);
         if let Some(circle) = circle {
             canonical_input_digest = digest(&format!(
                 "{canonical_input_digest}:circle:{:016x}:{:016x}:{:016x}:{}",
+                circle.center_x_bits, circle.center_y_bits, circle.radius_bits, circle.clockwise
+            ));
+            legacy_canonical_input_digest = digest(&format!(
+                "{legacy_canonical_input_digest}:circle:{:016x}:{:016x}:{:016x}:{}",
                 circle.center_x_bits, circle.center_y_bits, circle.radius_bits, circle.clockwise
             ));
         }
@@ -2854,10 +3069,21 @@ impl ExactFeatureChainRequest {
                 "{canonical_input_digest}:mixed{}:{:016x}",
                 exact_segments, mixed.area_bits
             ));
+            legacy_canonical_input_digest = digest(&format!(
+                "{legacy_canonical_input_digest}:mixed{}:{:016x}",
+                exact_segments, mixed.area_bits
+            ));
         }
         if let Some(tool_circle) = boolean.as_ref().and_then(|boolean| boolean.circle) {
             canonical_input_digest = digest(&format!(
                 "{canonical_input_digest}:cut-circle:{:016x}:{:016x}:{:016x}:{}",
+                tool_circle.center_x_bits,
+                tool_circle.center_y_bits,
+                tool_circle.radius_bits,
+                tool_circle.clockwise
+            ));
+            legacy_canonical_input_digest = digest(&format!(
+                "{legacy_canonical_input_digest}:cut-circle:{:016x}:{:016x}:{:016x}:{}",
                 tool_circle.center_x_bits,
                 tool_circle.center_y_bits,
                 tool_circle.radius_bits,
@@ -2869,17 +3095,29 @@ impl ExactFeatureChainRequest {
             canonical_input_digest = digest(&format!(
                 "{canonical_input_digest}:pocket:{depth_bits:016x}"
             ));
+            legacy_canonical_input_digest = digest(&format!(
+                "{legacy_canonical_input_digest}:pocket:{depth_bits:016x}"
+            ));
         }
         if let Some(shell) = &shell {
+            let finish_kind = shell.edge_finish_kind.map_or("none", |kind| match kind {
+                BottleEdgeFinishKind::Fillet => "fillet",
+                BottleEdgeFinishKind::Chamfer => "chamfer",
+            });
             canonical_input_digest = digest(&format!(
                 "{canonical_input_digest}:shell:{}:{:016x}:finish:{}:{}:{:016x}",
                 shell.shell_feature_id.0,
                 shell.thickness_bits,
                 shell.edge_finish_feature_id.map_or(0, |id| id.0),
-                shell.edge_finish_kind.map_or("none", |kind| match kind {
-                    BottleEdgeFinishKind::Fillet => "fillet",
-                    BottleEdgeFinishKind::Chamfer => "chamfer",
-                }),
+                finish_kind,
+                shell.edge_finish_amount_bits.unwrap_or(0),
+            ));
+            legacy_canonical_input_digest = digest(&format!(
+                "{legacy_canonical_input_digest}:shell:{}:{:016x}:finish:{}:{}:{:016x}",
+                shell.shell_feature_id.0,
+                shell.thickness_bits,
+                shell.edge_finish_feature_id.map_or(0, |id| id.0),
+                finish_kind,
                 shell.edge_finish_amount_bits.unwrap_or(0),
             ));
         }
@@ -2896,9 +3134,209 @@ impl ExactFeatureChainRequest {
             circle,
             mixed_profile,
             pocket_depth_bits,
+            workplane_frame_bits: None,
             boolean,
             shell,
             canonical_input_digest,
+            legacy_canonical_input_digest,
+        })
+    }
+
+    pub fn from_snapshot_for_producer(
+        snapshot: &Snapshot,
+        definition_id: DefinitionId,
+        producer_feature_id: FeatureId,
+    ) -> Result<Self, ExactProductError> {
+        let producer = snapshot
+            .feature(producer_feature_id)
+            .ok_or(ExactProductError::UnsupportedDefinition)?;
+        let request = if matches!(
+            producer.kind(),
+            FeatureKind::Pad(_) | FeatureKind::SketchPocket(_)
+        ) {
+            Self::from_pad_pocket_snapshot(snapshot, definition_id, producer_feature_id)?
+        } else {
+            Self::from_snapshot(snapshot, definition_id)?
+        };
+        if request.producer_feature_id() != producer_feature_id {
+            return Err(ExactProductError::UnsupportedDefinition);
+        }
+        Ok(request)
+    }
+
+    fn from_pad_pocket_snapshot(
+        snapshot: &Snapshot,
+        definition_id: DefinitionId,
+        producer_feature_id: FeatureId,
+    ) -> Result<Self, ExactProductError> {
+        let producer = snapshot
+            .feature(producer_feature_id)
+            .filter(|feature| feature.definition_id() == definition_id)
+            .ok_or(ExactProductError::UnsupportedDefinition)?;
+        let (pad_id, pad, pocket) = match producer.kind() {
+            FeatureKind::Pad(pad) => (producer_feature_id, pad, None),
+            FeatureKind::SketchPocket(pocket) => {
+                let pad = snapshot
+                    .feature(pocket.target)
+                    .and_then(|feature| match feature.kind() {
+                        FeatureKind::Pad(spec) if feature.definition_id() == definition_id => {
+                            Some(spec)
+                        }
+                        _ => None,
+                    })
+                    .ok_or(ExactProductError::UnsupportedDefinition)?;
+                (
+                    pocket.target,
+                    pad,
+                    Some((producer_feature_id, pocket.clone())),
+                )
+            }
+            _ => return Err(ExactProductError::UnsupportedDefinition),
+        };
+        let pad_sketch = snapshot
+            .feature(pad.sketch)
+            .and_then(|feature| match feature.kind() {
+                FeatureKind::Sketch(spec) => Some(spec),
+                _ => None,
+            })
+            .ok_or(ExactProductError::UnsupportedProfile)?;
+        let pad_workplane = snapshot
+            .feature(pad_sketch.workplane)
+            .and_then(|feature| match feature.kind() {
+                FeatureKind::Workplane(spec) => Some(spec),
+                _ => None,
+            })
+            .ok_or(ExactProductError::UnsupportedDefinition)?;
+        let pad_region = selected_solved_region(pad_sketch, pad.region)?;
+        let height_mm = pad.extent.distance().millimetres();
+        let direction_sign = match pad.direction {
+            FeatureDirection::AlongNormal => 1.0,
+            FeatureDirection::OppositeNormal => -1.0,
+        };
+        let (width_mm, depth_mm, circle, mut frame) =
+            exact_region_profile(pad_region, pad_workplane)?;
+        let (boolean, pocket_depth_bits) = if let Some((feature_id, pocket)) = pocket {
+            if pocket.target != pad_id
+                || circle.is_some()
+                || pocket.direction == pad.direction
+                || pocket.extent.distance().millimetres() >= height_mm
+                || pocket.support.producer_feature_id != pad_id
+            {
+                return Err(ExactProductError::UnsupportedThroughCut);
+            }
+            let pocket_sketch = snapshot
+                .feature(pocket.sketch)
+                .and_then(|feature| match feature.kind() {
+                    FeatureKind::Sketch(spec) => Some(spec),
+                    _ => None,
+                })
+                .ok_or(ExactProductError::UnsupportedProfile)?;
+            let pocket_workplane = snapshot
+                .feature(pocket_sketch.workplane)
+                .and_then(|feature| match feature.kind() {
+                    FeatureKind::Workplane(spec) => Some(spec),
+                    _ => None,
+                })
+                .ok_or(ExactProductError::UnsupportedDefinition)?;
+            let support_is_resolved = matches!(
+                &pocket_workplane.support,
+                WorkplaneSupport::PlanarFace {
+                    reference,
+                    health: WorkplaneSupportHealth::Resolved,
+                } if reference.as_ref() == pocket.support.as_ref()
+            );
+            if !support_is_resolved || !parallel_frame_axes(pad_workplane, pocket_workplane) {
+                return Err(ExactProductError::UnsupportedDefinition);
+            }
+            let pocket_region = selected_solved_region(pocket_sketch, pocket.region)?;
+            let SolvedSketchRegionProfile::Polyline(points) = &pocket_region.profile else {
+                return Err(ExactProductError::UnsupportedProfile);
+            };
+            let [min_x, min_y, max_x, max_y] =
+                rectangle_bounds(points).ok_or(ExactProductError::UnsupportedProfile)?;
+            if min_x <= 0.0 || min_y <= 0.0 || max_x >= width_mm || max_y >= depth_mm {
+                return Err(ExactProductError::UnsupportedThroughCut);
+            }
+            (
+                Some(ExactBooleanRequest {
+                    feature_id,
+                    operation: BooleanOperation::Cut,
+                    target_feature_id: pad_id,
+                    tool_feature_id: pocket.sketch,
+                    profile_feature_id: pocket.sketch,
+                    min_x_bits: min_x.to_bits(),
+                    min_y_bits: min_y.to_bits(),
+                    width_bits: (max_x - min_x).to_bits(),
+                    depth_bits: (max_y - min_y).to_bits(),
+                    circle: None,
+                }),
+                Some(pocket.extent.distance().millimetres().to_bits()),
+            )
+        } else {
+            (None, None)
+        };
+        frame[9] *= direction_sign;
+        frame[10] *= direction_sign;
+        frame[11] *= direction_sign;
+        let frame_bits = frame.map(f64::to_bits);
+        let source_digest = snapshot.canonical_digest();
+        let mut canonical_input = format!(
+            "{}:{}:{}:{}:{}:{}:{:016x}:{:016x}:{:016x}",
+            EXACT_PRODUCT_SCHEMA_V1,
+            snapshot.document_id().0,
+            definition_id.0,
+            pad_sketch.workplane.0,
+            pad.sketch.0,
+            pad.region.0,
+            width_mm.to_bits(),
+            depth_mm.to_bits(),
+            height_mm.to_bits(),
+        );
+        for bits in frame_bits {
+            write!(canonical_input, ":{bits:016x}").expect("writing to String cannot fail");
+        }
+        if let Some(circle) = circle {
+            write!(
+                canonical_input,
+                ":circle:{:016x}:{:016x}:{:016x}:{}",
+                circle.center_x_bits, circle.center_y_bits, circle.radius_bits, circle.clockwise,
+            )
+            .expect("writing to String cannot fail");
+        }
+        if let Some(cut) = &boolean {
+            write!(
+                canonical_input,
+                ":pocket:{}:{}:{}:{:016x}:{:016x}:{:016x}:{:016x}:{}",
+                cut.feature_id.0,
+                cut.profile_feature_id.0,
+                cut.target_feature_id.0,
+                cut.min_x_bits,
+                cut.min_y_bits,
+                cut.width_bits,
+                cut.depth_bits,
+                pocket_depth_bits.unwrap_or_default(),
+            )
+            .expect("writing to String cannot fail");
+        }
+        let canonical_input_digest = digest(&canonical_input);
+        Ok(Self {
+            document_id: snapshot.document_id(),
+            source_revision: snapshot.revision_id(),
+            source_digest,
+            definition_id,
+            profile_feature_id: pad.sketch,
+            extrusion_feature_id: pad_id,
+            width_bits: width_mm.to_bits(),
+            depth_bits: depth_mm.to_bits(),
+            height_bits: height_mm.to_bits(),
+            circle,
+            mixed_profile: None,
+            pocket_depth_bits,
+            workplane_frame_bits: Some(frame_bits),
+            boolean,
+            shell: None,
+            canonical_input_digest: canonical_input_digest.clone(),
+            legacy_canonical_input_digest: canonical_input_digest,
         })
     }
 
@@ -3529,6 +3967,14 @@ pub fn build_loft_package(
     Ok(package)
 }
 
+fn transform_workplane_point(frame: [f64; 12], point: [f64; 3]) -> [f64; 3] {
+    [
+        frame[0] + frame[3] * point[0] + frame[6] * point[1] + frame[9] * point[2],
+        frame[1] + frame[4] * point[0] + frame[7] * point[1] + frame[10] * point[2],
+        frame[2] + frame[5] * point[0] + frame[8] * point[1] + frame[11] * point[2],
+    ]
+}
+
 pub fn build_box_render_package<const N: usize>(
     request: &ExactFeatureChainRequest,
     exact_input_digest: String,
@@ -3561,9 +4007,32 @@ pub fn build_box_render_package<const N: usize>(
     {
         return Err(ExactProductError::InvalidWorkerEvidence);
     }
-    let min = expected_min;
-    let max = expected_max;
-    let (vertices, triangles) = render_mesh(request)?;
+    let (mut vertices, mut triangles) = render_mesh(request)?;
+    let (min, max) = if let Some(frame_bits) = request.workplane_frame_bits {
+        let frame = frame_bits.map(f64::from_bits);
+        let determinant = frame[3] * (frame[7] * frame[11] - frame[8] * frame[10])
+            - frame[6] * (frame[4] * frame[11] - frame[5] * frame[10])
+            + frame[9] * (frame[4] * frame[8] - frame[5] * frame[7]);
+        if determinant < 0.0 {
+            for triangle in &mut triangles {
+                triangle.vertex_indices.swap(1, 2);
+            }
+        }
+        for vertex in &mut vertices {
+            vertex.position_mm = transform_workplane_point(frame, vertex.position_mm);
+        }
+        let mut min = [f64::INFINITY; 3];
+        let mut max = [f64::NEG_INFINITY; 3];
+        for vertex in &vertices {
+            for axis in 0..3 {
+                min[axis] = min[axis].min(vertex.position_mm[axis]);
+                max[axis] = max[axis].max(vertex.position_mm[axis]);
+            }
+        }
+        (min, max)
+    } else {
+        (expected_min, expected_max)
+    };
     let references = face_evidence
         .into_iter()
         .map(
@@ -4445,6 +4914,69 @@ fn rectangular_split_supported(base_width: f64, base_depth: f64, tool: [f64; 4])
             || (tool_max_x > 1.0e-6 && tool_max_x < base_width - 1.0e-6)
             || (tool_min_y > 1.0e-6 && tool_min_y < base_depth - 1.0e-6)
             || (tool_max_y > 1.0e-6 && tool_max_y < base_depth - 1.0e-6))
+}
+
+fn selected_solved_region(
+    sketch: &crate::sketch::SketchSpec,
+    region_id: crate::sketch::SketchRegionId,
+) -> Result<SolvedSketchRegion, ExactProductError> {
+    sketch
+        .solved_regions()
+        .map_err(|_| ExactProductError::UnsupportedProfile)?
+        .into_iter()
+        .find(|region| region.id == region_id)
+        .ok_or(ExactProductError::UnsupportedProfile)
+}
+
+fn exact_region_profile(
+    region: SolvedSketchRegion,
+    workplane: &WorkplaneSpec,
+) -> Result<(f64, f64, Option<ExactCircleProfile>, [f64; 12]), ExactProductError> {
+    let frame = workplane.frame;
+    let mut transform = [
+        frame.origin_mm[0],
+        frame.origin_mm[1],
+        frame.origin_mm[2],
+        frame.x_axis[0],
+        frame.x_axis[1],
+        frame.x_axis[2],
+        frame.y_axis[0],
+        frame.y_axis[1],
+        frame.y_axis[2],
+        frame.normal[0],
+        frame.normal[1],
+        frame.normal[2],
+    ];
+    match region.profile {
+        SolvedSketchRegionProfile::Polyline(points) => {
+            let [min_x, min_y, max_x, max_y] =
+                rectangle_bounds(&points).ok_or(ExactProductError::UnsupportedProfile)?;
+            for (axis, coordinate) in transform.iter_mut().take(3).enumerate() {
+                *coordinate += frame.x_axis[axis] * min_x + frame.y_axis[axis] * min_y;
+            }
+            Ok((max_x - min_x, max_y - min_y, None, transform))
+        }
+        SolvedSketchRegionProfile::Circle {
+            center_mm,
+            radius_mm,
+        } => Ok((
+            radius_mm * 2.0,
+            radius_mm * 2.0,
+            Some(ExactCircleProfile {
+                center_x_bits: center_mm[0].to_bits(),
+                center_y_bits: center_mm[1].to_bits(),
+                radius_bits: radius_mm.to_bits(),
+                clockwise: false,
+            }),
+            transform,
+        )),
+    }
+}
+
+fn parallel_frame_axes(left: &WorkplaneSpec, right: &WorkplaneSpec) -> bool {
+    left.frame.x_axis == right.frame.x_axis
+        && left.frame.y_axis == right.frame.y_axis
+        && left.frame.normal == right.frame.normal
 }
 
 fn rectangle_bounds(points: &[[f64; 2]]) -> Option<[f64; 4]> {

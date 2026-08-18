@@ -1,5 +1,8 @@
 use crate::bottle_m6::{ExactRevolveRequest, reference_matches_revolve_request};
-use crate::exact_product::{BodySubshapeRef, ExactFeatureChainRequest};
+use crate::exact_product::{
+    BodySubshapeRef, ExactFaceRole, ExactFeatureChainRequest, ExactReferenceResolution,
+    ExactResultRegistry,
+};
 pub use crate::graph::{
     CanonicalOverride, DerivedIdentity, DerivedOutput, EvaluationIdentity, EvaluationReport,
     EvaluationStatus, EvaluatorNode, EvaluatorNodeKind, GraphError, OverrideMergePolicy,
@@ -14,6 +17,11 @@ use crate::import::{
     ImportReceipt, ImportUnitAuthority,
 };
 use crate::prismatic::{CanonicalJoint, JointId, PrismaticError};
+use crate::sketch::{
+    PadPocketOperation, PadSpec, PocketSpec, PrincipalPlane, SketchConstraintKind, SketchEntity,
+    SketchError, SketchPointKind, SketchSpec, WorkplaneFrame, WorkplaneSpec, WorkplaneSupport,
+    WorkplaneSupportHealth,
+};
 use crate::space::{
     CanonicalClearanceVolume, CanonicalSpace, ClearanceCoordinateFrame, ClearanceOwner,
     ClearanceSeverity, ClearanceVolumeId, SpaceError, SpaceId,
@@ -418,6 +426,8 @@ pub struct LoftSection {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum FeatureKind {
+    Workplane(WorkplaneSpec),
+    Sketch(SketchSpec),
     Profile {
         points_mm: Vec<[f64; 2]>,
     },
@@ -432,6 +442,8 @@ pub enum FeatureKind {
         profile: FeatureId,
         height: Dimension,
     },
+    Pad(PadSpec),
+    SketchPocket(PocketSpec),
     BottleProfileControl {
         profile: FeatureId,
         body_radius: Dimension,
@@ -486,10 +498,49 @@ pub enum FeatureKind {
 
 impl FeatureKind {
     #[must_use]
+    pub fn dependencies(&self) -> BTreeSet<FeatureId> {
+        match self {
+            Self::Workplane(spec) => match &spec.support {
+                WorkplaneSupport::Principal(_) => BTreeSet::new(),
+                WorkplaneSupport::Offset { base, .. } => [*base].into_iter().collect(),
+                WorkplaneSupport::PlanarFace { reference, .. } => {
+                    [reference.profile_feature_id, reference.producer_feature_id]
+                        .into_iter()
+                        .collect()
+                }
+            },
+            Self::Sketch(spec) => [spec.workplane].into_iter().collect(),
+            Self::Profile { .. }
+            | Self::SegmentProfile { .. }
+            | Self::SplineProfile { .. }
+            | Self::ImportedExactBody(_)
+            | Self::MeshBody(_) => BTreeSet::new(),
+            Self::Extrusion { profile, .. }
+            | Self::BottleProfileControl { profile, .. }
+            | Self::Revolve { profile, .. }
+            | Self::PlanarOffset { profile, .. } => [*profile].into_iter().collect(),
+            Self::Pad(spec) => [spec.sketch].into_iter().collect(),
+            Self::SketchPocket(spec) => [spec.target, spec.sketch].into_iter().collect(),
+            Self::Shell { target, .. } | Self::BottleEdgeFinish { target, .. } => {
+                [*target].into_iter().collect()
+            }
+            Self::ThroughCut { target, profile }
+            | Self::Pocket {
+                target, profile, ..
+            } => [*target, *profile].into_iter().collect(),
+            Self::Boolean { target, tool, .. } => [*target, *tool].into_iter().collect(),
+            Self::Sweep { profile, path } => [*profile, *path].into_iter().collect(),
+            Self::Loft { sections } => sections.iter().map(|section| section.profile).collect(),
+        }
+    }
+
+    #[must_use]
     pub const fn produces_body(&self) -> bool {
         matches!(
             self,
             Self::Extrusion { .. }
+                | Self::Pad(_)
+                | Self::SketchPocket(_)
                 | Self::Revolve { .. }
                 | Self::Shell { .. }
                 | Self::BottleEdgeFinish { .. }
@@ -520,6 +571,156 @@ pub struct Feature {
     pub(crate) definition_id: DefinitionId,
     pub(crate) name: String,
     pub(crate) kind: FeatureKind,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FeatureDependencyGraph {
+    dependencies: BTreeMap<FeatureId, BTreeSet<FeatureId>>,
+    dependents: BTreeMap<FeatureId, BTreeSet<FeatureId>>,
+    topological_order: Vec<FeatureId>,
+}
+
+impl FeatureDependencyGraph {
+    fn from_product(product: &ProductModel) -> Result<Self, CanonicalError> {
+        let mut dependencies = BTreeMap::new();
+        let mut dependents = product
+            .features
+            .keys()
+            .copied()
+            .map(|id| (id, BTreeSet::new()))
+            .collect::<BTreeMap<_, _>>();
+        let mut indegree = BTreeMap::new();
+        for (id, feature) in &product.features {
+            let feature_dependencies = feature.kind.dependencies();
+            for dependency in &feature_dependencies {
+                let source = product
+                    .features
+                    .get(dependency)
+                    .ok_or(CanonicalError::FeatureNotFound(*dependency))?;
+                if source.definition_id != feature.definition_id {
+                    return Err(CanonicalError::InvalidFeatureOwnership(*id));
+                }
+                dependents.entry(*dependency).or_default().insert(*id);
+            }
+            indegree.insert(*id, feature_dependencies.len());
+            dependencies.insert(*id, feature_dependencies);
+        }
+
+        let mut ready = indegree
+            .iter()
+            .filter_map(|(id, degree)| (*degree == 0).then_some(*id))
+            .collect::<BTreeSet<_>>();
+        let mut topological_order = Vec::with_capacity(indegree.len());
+        while let Some(id) = ready.pop_first() {
+            topological_order.push(id);
+            for dependent in &dependents[&id] {
+                let degree = indegree
+                    .get_mut(dependent)
+                    .expect("every dependent is a feature");
+                *degree -= 1;
+                if *degree == 0 {
+                    ready.insert(*dependent);
+                }
+            }
+        }
+        if topological_order.len() != indegree.len() {
+            let cycle = indegree
+                .into_iter()
+                .filter_map(|(id, degree)| (degree != 0).then_some(id))
+                .min()
+                .expect("a rejected graph contains a cycle");
+            return Err(
+                if product
+                    .features
+                    .get(&cycle)
+                    .is_some_and(|feature| matches!(feature.kind, FeatureKind::Workplane(_)))
+                {
+                    CanonicalError::Sketch(SketchError::WorkplaneCycle(cycle))
+                } else {
+                    CanonicalError::FeatureDependencyCycle(cycle)
+                },
+            );
+        }
+        Ok(Self {
+            dependencies,
+            dependents,
+            topological_order,
+        })
+    }
+
+    #[must_use]
+    pub fn dependencies(&self, id: FeatureId) -> Option<&BTreeSet<FeatureId>> {
+        self.dependencies.get(&id)
+    }
+
+    #[must_use]
+    pub fn dependents(&self, id: FeatureId) -> Option<&BTreeSet<FeatureId>> {
+        self.dependents.get(&id)
+    }
+
+    #[must_use]
+    pub fn topological_order(&self) -> &[FeatureId] {
+        &self.topological_order
+    }
+
+    #[must_use]
+    pub fn dependent_closure(
+        &self,
+        roots: impl IntoIterator<Item = FeatureId>,
+    ) -> BTreeSet<FeatureId> {
+        let mut closure = roots.into_iter().collect::<BTreeSet<_>>();
+        let mut pending = closure.iter().copied().collect::<Vec<_>>();
+        while let Some(id) = pending.pop() {
+            if let Some(dependents) = self.dependents.get(&id) {
+                for dependent in dependents {
+                    if closure.insert(*dependent) {
+                        pending.push(*dependent);
+                    }
+                }
+            }
+        }
+        closure
+    }
+
+    #[must_use]
+    pub fn evaluation_states(
+        &self,
+        stale: &BTreeSet<FeatureId>,
+        errors: &BTreeSet<FeatureId>,
+    ) -> BTreeMap<FeatureId, FeatureEvaluationState> {
+        let mut states = BTreeMap::new();
+        for id in &self.topological_order {
+            let failed_dependency =
+                self.dependencies[id]
+                    .iter()
+                    .find_map(|dependency| match states.get(dependency) {
+                        Some(FeatureEvaluationState::Error { failed_at }) => Some(*failed_at),
+                        _ => None,
+                    });
+            let state = if errors.contains(id) {
+                FeatureEvaluationState::Error { failed_at: *id }
+            } else if let Some(failed_at) = failed_dependency {
+                FeatureEvaluationState::Error { failed_at }
+            } else if stale.contains(id)
+                || self.dependencies[id].iter().any(|dependency| {
+                    states.get(dependency) == Some(&FeatureEvaluationState::Stale)
+                })
+            {
+                FeatureEvaluationState::Stale
+            } else {
+                FeatureEvaluationState::Current
+            };
+            states.insert(*id, state);
+        }
+        states
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FeatureEvaluationState {
+    Current,
+    Stale,
+    Error { failed_at: FeatureId },
 }
 
 impl Feature {
@@ -2035,6 +2236,10 @@ impl Snapshot {
         self.product.document_id
     }
 
+    pub fn feature_dependency_graph(&self) -> Result<FeatureDependencyGraph, CanonicalError> {
+        FeatureDependencyGraph::from_product(&self.product)
+    }
+
     #[must_use]
     pub fn units(&self) -> UnitSystem {
         self.product.units
@@ -2437,6 +2642,8 @@ pub struct Revision {
     snapshot: Snapshot,
     batch_digest: String,
     recomputed_nodes: BTreeSet<NodeId>,
+    dirty_features: BTreeSet<FeatureId>,
+    feature_states: BTreeMap<FeatureId, FeatureEvaluationState>,
     evaluation: Option<EvaluationReport>,
 }
 
@@ -2459,6 +2666,16 @@ impl Revision {
     #[must_use]
     pub const fn recomputed_nodes(&self) -> &BTreeSet<NodeId> {
         &self.recomputed_nodes
+    }
+
+    #[must_use]
+    pub const fn dirty_features(&self) -> &BTreeSet<FeatureId> {
+        &self.dirty_features
+    }
+
+    #[must_use]
+    pub const fn feature_states(&self) -> &BTreeMap<FeatureId, FeatureEvaluationState> {
+        &self.feature_states
     }
 
     #[must_use]
@@ -2487,9 +2704,16 @@ pub enum DerivedResultClassification {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExactReferenceRebind {
+    pub lineage_digest: String,
+    pub resolution: ExactReferenceResolution,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DerivedResultPayload {
     Evaluation(DerivedResultKey),
     ExactReference(BodySubshapeRef),
+    ExactReferenceRebinds(Vec<ExactReferenceRebind>),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -2499,6 +2723,23 @@ pub struct DerivedResultEvent {
     pub canonical_digest: String,
     pub classification: DerivedResultClassification,
     pub payload: DerivedResultPayload,
+}
+
+pub enum ExactReferenceEvidence {
+    Reference(Box<BodySubshapeRef>),
+    Registry(ExactResultRegistry),
+}
+
+impl From<BodySubshapeRef> for ExactReferenceEvidence {
+    fn from(reference: BodySubshapeRef) -> Self {
+        Self::Reference(Box::new(reference))
+    }
+}
+
+impl From<&ExactResultRegistry> for ExactReferenceEvidence {
+    fn from(results: &ExactResultRegistry) -> Self {
+        Self::Registry(results.clone())
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -2586,6 +2827,8 @@ impl DocumentStore {
         let next_revision_id = revision_id
             .checked_add(1)
             .ok_or(CanonicalError::RevisionExhausted)?;
+        let feature_states = FeatureDependencyGraph::from_product(&product)?
+            .evaluation_states(&BTreeSet::new(), &BTreeSet::new());
         let snapshot = Snapshot {
             revision_id,
             product: Arc::new(product),
@@ -2595,6 +2838,8 @@ impl DocumentStore {
             snapshot,
             batch_digest: String::new(),
             recomputed_nodes: BTreeSet::new(),
+            dirty_features: BTreeSet::new(),
+            feature_states,
             evaluation: None,
         });
         Ok(Self {
@@ -2613,39 +2858,76 @@ impl DocumentStore {
 
     pub fn register_exact_reference_evidence(
         &mut self,
-        reference: BodySubshapeRef,
+        evidence: impl Into<ExactReferenceEvidence>,
     ) -> Result<(), ReferenceEvidenceError> {
-        let current = &self.revisions[self.cursor];
-        if !reference.has_valid_lineage() {
-            return Err(ReferenceEvidenceError::InvalidLineage);
-        }
-        if reference.document_id != current.snapshot.document_id() {
-            return Err(ReferenceEvidenceError::WrongDocument);
-        }
-        let producer = current
-            .snapshot
-            .feature(reference.producer_feature_id)
-            .ok_or(ReferenceEvidenceError::ProducerNotFound)?;
-        if producer.definition_id() != reference.definition_id {
-            return Err(ReferenceEvidenceError::ProducerDefinitionMismatch);
-        }
-        let matches_request =
-            ExactFeatureChainRequest::from_snapshot(&current.snapshot, reference.definition_id)
+        match evidence.into() {
+            ExactReferenceEvidence::Reference(reference) => {
+                let current = &self.revisions[self.cursor];
+                if !reference.has_valid_lineage() {
+                    return Err(ReferenceEvidenceError::InvalidLineage);
+                }
+                if reference.document_id != current.snapshot.document_id() {
+                    return Err(ReferenceEvidenceError::WrongDocument);
+                }
+                let producer = current
+                    .snapshot
+                    .feature(reference.producer_feature_id)
+                    .ok_or(ReferenceEvidenceError::ProducerNotFound)?;
+                if producer.definition_id() != reference.definition_id {
+                    return Err(ReferenceEvidenceError::ProducerDefinitionMismatch);
+                }
+                let matches_request = ExactFeatureChainRequest::from_snapshot_for_producer(
+                    &current.snapshot,
+                    reference.definition_id,
+                    reference.producer_feature_id,
+                )
                 .is_ok_and(|request| reference.matches_request(&request))
-                || ExactRevolveRequest::from_snapshot(&current.snapshot, reference.definition_id)
+                    || ExactRevolveRequest::from_snapshot(
+                        &current.snapshot,
+                        reference.definition_id,
+                    )
                     .is_ok_and(|request| reference_matches_revolve_request(&reference, &request));
-        if !matches_request {
-            return Err(ReferenceEvidenceError::InvalidLineage);
-        }
-        let event = DerivedResultEvent {
-            document_id: current.snapshot.document_id(),
-            revision_id: current.snapshot.revision_id(),
-            canonical_digest: current.snapshot.canonical_digest(),
-            classification: DerivedResultClassification::Current,
-            payload: DerivedResultPayload::ExactReference(reference),
-        };
-        if !self.register_derived_result(event) {
-            return Err(ReferenceEvidenceError::WrongDocument);
+                if !matches_request {
+                    return Err(ReferenceEvidenceError::InvalidLineage);
+                }
+                let event = DerivedResultEvent {
+                    document_id: current.snapshot.document_id(),
+                    revision_id: current.snapshot.revision_id(),
+                    canonical_digest: current.snapshot.canonical_digest(),
+                    classification: DerivedResultClassification::Current,
+                    payload: DerivedResultPayload::ExactReference(*reference),
+                };
+                if !self.register_derived_result(event) {
+                    return Err(ReferenceEvidenceError::WrongDocument);
+                }
+            }
+            ExactReferenceEvidence::Registry(results) => {
+                let current = &self.revisions[self.cursor];
+                let rebinds = current
+                    .snapshot
+                    .features()
+                    .filter_map(|feature| match feature.kind() {
+                        FeatureKind::Workplane(WorkplaneSpec {
+                            support: WorkplaneSupport::PlanarFace { reference, .. },
+                            ..
+                        }) => Some(ExactReferenceRebind {
+                            lineage_digest: reference.lineage_digest.clone(),
+                            resolution: results.resolve_reference(&current.snapshot, reference),
+                        }),
+                        _ => None,
+                    })
+                    .collect();
+                let event = DerivedResultEvent {
+                    document_id: current.snapshot.document_id(),
+                    revision_id: current.snapshot.revision_id(),
+                    canonical_digest: current.snapshot.canonical_digest(),
+                    classification: DerivedResultClassification::Current,
+                    payload: DerivedResultPayload::ExactReferenceRebinds(rebinds),
+                };
+                if !self.register_derived_result(event) {
+                    return Err(ReferenceEvidenceError::InvalidLineage);
+                }
+            }
         }
         Ok(())
     }
@@ -2676,11 +2958,44 @@ impl DocumentStore {
                 self.evaluation_registry.insert(key.clone(), event);
             }
             DerivedResultPayload::ExactReference(reference) => {
+                let anchor_is_current = |support: &BodySubshapeRef| {
+                    ExactFeatureChainRequest::from_snapshot_for_producer(
+                        &current.snapshot,
+                        support.definition_id,
+                        support.producer_feature_id,
+                    )
+                    .is_ok_and(|request| support.matches_request(&request))
+                };
+                let conflicts_with_anchor = current.snapshot.features().any(|feature| {
+                    matches!(
+                        feature.kind(),
+                        FeatureKind::Workplane(WorkplaneSpec {
+                            support: WorkplaneSupport::PlanarFace {
+                                reference: support,
+                                ..
+                            },
+                            ..
+                        }) if support.lineage_digest == reference.lineage_digest
+                            && (support.definition_id != reference.definition_id
+                                || support.profile_feature_id != reference.profile_feature_id
+                                || support.producer_feature_id != reference.producer_feature_id
+                                || support.semantic_role != reference.semantic_role
+                                || support.source_element_id != reference.source_element_id
+                                || support.expected_type != reference.expected_type
+                                || (anchor_is_current(support) && support.as_ref() != reference))
+                    )
+                });
+                if conflicts_with_anchor {
+                    return false;
+                }
                 let mut product = current.snapshot.product.as_ref().clone();
                 product.exact_reference_evidence.insert(
                     reference.lineage_digest.clone(),
                     Arc::new(reference.clone()),
                 );
+                if rebind_planar_face_reference(&mut product, reference).is_err() {
+                    return false;
+                }
                 self.revisions[self.cursor] = Arc::new(Revision {
                     id: current.id,
                     snapshot: Snapshot {
@@ -2689,6 +3004,80 @@ impl DocumentStore {
                     },
                     batch_digest: current.batch_digest.clone(),
                     recomputed_nodes: current.recomputed_nodes.clone(),
+                    dirty_features: current.dirty_features.clone(),
+                    feature_states: current.feature_states.clone(),
+                    evaluation: current.evaluation.clone(),
+                });
+            }
+            DerivedResultPayload::ExactReferenceRebinds(rebinds) => {
+                let mut product = current.snapshot.product.as_ref().clone();
+                for rebind in rebinds {
+                    match &rebind.resolution {
+                        ExactReferenceResolution::Resolved { reference } => {
+                            let matches_request =
+                                ExactFeatureChainRequest::from_snapshot_for_producer(
+                                    &current.snapshot,
+                                    reference.definition_id,
+                                    reference.producer_feature_id,
+                                )
+                                .is_ok_and(|request| reference.matches_request(&request));
+                            if !matches_request || reference.lineage_digest != rebind.lineage_digest
+                            {
+                                return false;
+                            }
+                            product.exact_reference_evidence.insert(
+                                rebind.lineage_digest.clone(),
+                                Arc::new(reference.as_ref().clone()),
+                            );
+                            if rebind_planar_face_reference(&mut product, reference).is_err() {
+                                return false;
+                            }
+                        }
+                        ExactReferenceResolution::Ambiguous { .. } => {
+                            product
+                                .exact_reference_evidence
+                                .remove(&rebind.lineage_digest);
+                            set_planar_face_reference_health(
+                                &mut product,
+                                &rebind.lineage_digest,
+                                WorkplaneSupportHealth::Ambiguous,
+                            );
+                        }
+                        ExactReferenceResolution::Lost => {
+                            product
+                                .exact_reference_evidence
+                                .remove(&rebind.lineage_digest);
+                            set_planar_face_reference_health(
+                                &mut product,
+                                &rebind.lineage_digest,
+                                WorkplaneSupportHealth::Lost,
+                            );
+                        }
+                        ExactReferenceResolution::Quarantined { .. } => {
+                            product
+                                .exact_reference_evidence
+                                .remove(&rebind.lineage_digest);
+                            set_planar_face_reference_health(
+                                &mut product,
+                                &rebind.lineage_digest,
+                                WorkplaneSupportHealth::Stale,
+                            );
+                        }
+                    }
+                }
+                if validate_product(&product).is_err() {
+                    return false;
+                }
+                self.revisions[self.cursor] = Arc::new(Revision {
+                    id: current.id,
+                    snapshot: Snapshot {
+                        revision_id: current.snapshot.revision_id,
+                        product: Arc::new(product),
+                    },
+                    batch_digest: current.batch_digest.clone(),
+                    recomputed_nodes: current.recomputed_nodes.clone(),
+                    dirty_features: current.dirty_features.clone(),
+                    feature_states: current.feature_states.clone(),
                     evaluation: current.evaluation.clone(),
                 });
             }
@@ -2740,7 +3129,20 @@ impl DocumentStore {
 
         let current = self.current();
         let mut product = current.product.as_ref().clone();
-        product.exact_reference_evidence.clear();
+        let anchored_reference_lineages = product
+            .features
+            .values()
+            .filter_map(|feature| match &feature.kind {
+                FeatureKind::Workplane(WorkplaneSpec {
+                    support: WorkplaneSupport::PlanarFace { reference, .. },
+                    ..
+                }) => Some(reference.lineage_digest.clone()),
+                _ => None,
+            })
+            .collect::<BTreeSet<_>>();
+        product
+            .exact_reference_evidence
+            .retain(|lineage, _| anchored_reference_lineages.contains(lineage));
         let mut changed_evaluator_nodes = BTreeSet::new();
         let mut evaluation_identity = EvaluationIdentity::default();
         let mut previous_evaluation = self.revisions[self.cursor].evaluation.clone();
@@ -3170,6 +3572,21 @@ impl DocumentStore {
                     ensure_product_id(id.0)?;
                     ensure_name(name)?;
                     validate_feature_kind(kind)?;
+                    if let FeatureKind::Workplane(WorkplaneSpec {
+                        support: WorkplaneSupport::PlanarFace { reference, .. },
+                        ..
+                    }) = kind
+                    {
+                        let evidence = current
+                            .exact_reference_by_lineage(&reference.lineage_digest)
+                            .filter(|evidence| *evidence == reference.as_ref())
+                            .ok_or(CanonicalError::Sketch(
+                                SketchError::InvalidPlanarFaceSupport,
+                            ))?;
+                        product
+                            .exact_reference_evidence
+                            .insert(reference.lineage_digest.clone(), Arc::new(evidence.clone()));
+                    }
                     if product.features.contains_key(id) {
                         return Err(CanonicalError::FeatureAlreadyExists(*id));
                     }
@@ -3238,6 +3655,38 @@ impl DocumentStore {
                             profile,
                             height: dimension.clone(),
                         },
+                        FeatureKind::Pad(ref spec) => {
+                            let mut updated = spec.clone();
+                            updated.extent = crate::sketch::FeatureExtent::Blind(dimension.clone());
+                            FeatureKind::Pad(updated)
+                        }
+                        FeatureKind::SketchPocket(ref spec) => {
+                            let mut updated = spec.clone();
+                            updated.extent = crate::sketch::FeatureExtent::Blind(dimension.clone());
+                            FeatureKind::SketchPocket(updated)
+                        }
+                        FeatureKind::Workplane(WorkplaneSpec {
+                            support: WorkplaneSupport::Offset { base, .. },
+                            ..
+                        }) => {
+                            let base_frame = product
+                                .features
+                                .get(&base)
+                                .and_then(|feature| match &feature.kind {
+                                    FeatureKind::Workplane(spec) => Some(spec.frame),
+                                    _ => None,
+                                })
+                                .ok_or(CanonicalError::Sketch(
+                                    SketchError::MissingWorkplaneSupport(base),
+                                ))?;
+                            FeatureKind::Workplane(WorkplaneSpec {
+                                support: WorkplaneSupport::Offset {
+                                    base,
+                                    distance: dimension.clone(),
+                                },
+                                frame: base_frame.offset(dimension.millimetres()),
+                            })
+                        }
                         FeatureKind::Shell {
                             target,
                             ref removed_faces,
@@ -3574,6 +4023,45 @@ impl DocumentStore {
             }
         }
 
+        refresh_supported_planar_face_frames(&mut product, Some(&current))?;
+        let mut anchored_reference_lineages = BTreeSet::new();
+        let mut stale_reference_lineages = BTreeSet::new();
+        for feature in product.features.values() {
+            let FeatureKind::Workplane(WorkplaneSpec {
+                support: WorkplaneSupport::PlanarFace { reference, .. },
+                ..
+            }) = &feature.kind
+            else {
+                continue;
+            };
+            let mut producer_dependencies = BTreeSet::new();
+            add_feature_dependency_closure(
+                &current,
+                reference.producer_feature_id,
+                &mut producer_dependencies,
+            );
+            let producer_inputs_unchanged = producer_dependencies.iter().all(|dependency| {
+                let AuthoritativeDependency::Feature(id) = dependency else {
+                    return true;
+                };
+                current
+                    .feature(*id)
+                    .zip(product.features.get(id))
+                    .is_some_and(|(before, after)| before.kind() == &after.kind)
+            });
+            if !producer_inputs_unchanged {
+                stale_reference_lineages.insert(reference.lineage_digest.clone());
+            }
+            anchored_reference_lineages.insert(reference.lineage_digest.clone());
+        }
+        for lineage in &stale_reference_lineages {
+            set_planar_face_reference_health(&mut product, lineage, WorkplaneSupportHealth::Stale);
+            product.exact_reference_evidence.remove(lineage);
+        }
+        product
+            .exact_reference_evidence
+            .retain(|lineage, _| anchored_reference_lineages.contains(lineage));
+
         validate_graph(&product.evaluator_nodes)?;
         refresh_override_health(&mut product);
         validate_overrides(&product)?;
@@ -3591,6 +4079,24 @@ impl DocumentStore {
             &recomputed_nodes,
         )
         .map_err(CanonicalError::Graph)?;
+        let changed_features = current
+            .product
+            .features
+            .keys()
+            .chain(product.features.keys())
+            .copied()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .filter(|id| current.product.features.get(id) != product.features.get(id))
+            .collect::<BTreeSet<_>>();
+        let feature_graph = FeatureDependencyGraph::from_product(&product)?;
+        let dirty_features = feature_graph.dependent_closure(
+            changed_features
+                .iter()
+                .copied()
+                .filter(|id| product.features.contains_key(id)),
+        );
+        let feature_states = feature_graph.evaluation_states(&dirty_features, &BTreeSet::new());
         let snapshot = Snapshot {
             revision_id,
             product: Arc::new(product),
@@ -3600,6 +4106,8 @@ impl DocumentStore {
             snapshot,
             batch_digest: batch.digest(),
             recomputed_nodes,
+            dirty_features,
+            feature_states,
             evaluation: Some(evaluation),
         });
 
@@ -4025,6 +4533,29 @@ impl DocumentStore {
             return Err(TipReplacementProposalError::VerificationMismatch);
         }
         Ok(preview)
+    }
+
+    pub fn plan_pad_pocket(
+        &self,
+        id: FeatureId,
+        definition_id: DefinitionId,
+        name: impl Into<String>,
+        operation: PadPocketOperation,
+        context: ProposalContext,
+    ) -> Result<Proposal, ProposalPrepareError> {
+        let kind = match operation {
+            PadPocketOperation::Pad(spec) => FeatureKind::Pad(spec),
+            PadPocketOperation::Pocket(spec) => FeatureKind::SketchPocket(spec),
+        };
+        self.prepare_proposal_with_context(
+            CommandBatch::new(vec![CanonicalCommand::CreateFeature {
+                id,
+                definition_id,
+                name: name.into(),
+                kind,
+            }]),
+            context,
+        )
     }
 
     pub fn prepare_proposal(&self, batch: CommandBatch) -> Result<Proposal, ProposalPrepareError> {
@@ -5145,6 +5676,7 @@ pub enum CanonicalError {
     EmptyProductName,
     InvalidTransform,
     InvalidProfile,
+    Sketch(SketchError),
     InvalidStableSubshapeRole,
     SubshapeRolesNotCanonical,
     InvalidMeshBody,
@@ -5156,6 +5688,7 @@ pub enum CanonicalError {
     FeatureNotFound(FeatureId),
     FeatureHasNoDimension(FeatureId),
     FeatureIsNotProfile(FeatureId),
+    FeatureDependencyCycle(FeatureId),
     InvalidFeatureParameterBinding(FeatureParameterTarget),
     FeatureParameterBindingNotFound(FeatureParameterTarget),
     OccurrenceAlreadyExists(OccurrenceId),
@@ -5247,6 +5780,7 @@ impl fmt::Display for CanonicalError {
             Self::InvalidProfile => {
                 formatter.write_str("profile must contain finite non-degenerate points")
             }
+            Self::Sketch(error) => write!(formatter, "invalid workplane or sketch: {error}"),
             Self::InvalidStableSubshapeRole => formatter.write_str(
                 "stable subshape role must be a bounded canonical semantic identifier",
             ),
@@ -5269,6 +5803,9 @@ impl fmt::Display for CanonicalError {
             }
             Self::FeatureIsNotProfile(id) => {
                 write!(formatter, "feature {} is not a profile", id.0)
+            }
+            Self::FeatureDependencyCycle(id) => {
+                write!(formatter, "feature dependency cycle at {}", id.0)
             }
             Self::InvalidFeatureParameterBinding(target) => write!(
                 formatter,
@@ -5378,6 +5915,12 @@ impl fmt::Display for CanonicalError {
 }
 
 impl std::error::Error for CanonicalError {}
+
+impl From<SketchError> for CanonicalError {
+    fn from(error: SketchError) -> Self {
+        Self::Sketch(error)
+    }
+}
 
 impl From<PrismaticError> for CanonicalError {
     fn from(error: PrismaticError) -> Self {
@@ -5531,7 +6074,10 @@ const fn feature_parameter_slot_tag(slot: FeatureParameterSlot) -> u8 {
 fn feature_supports_parameter_slot(kind: &FeatureKind, slot: FeatureParameterSlot) -> bool {
     match (kind, slot) {
         (
-            FeatureKind::Extrusion { .. } | FeatureKind::Pocket { .. },
+            FeatureKind::Extrusion { .. }
+            | FeatureKind::Pocket { .. }
+            | FeatureKind::Pad(_)
+            | FeatureKind::SketchPocket(_),
             FeatureParameterSlot::Height,
         )
         | (
@@ -5844,6 +6390,8 @@ fn feature_kind_is_solid(kind: &FeatureKind) -> bool {
     matches!(
         kind,
         FeatureKind::Extrusion { .. }
+            | FeatureKind::Pad(_)
+            | FeatureKind::SketchPocket(_)
             | FeatureKind::Revolve { .. }
             | FeatureKind::Shell { .. }
             | FeatureKind::BottleEdgeFinish { .. }
@@ -5859,6 +6407,21 @@ fn feature_kind_is_solid(kind: &FeatureKind) -> bool {
 
 fn validate_feature_kind(kind: &FeatureKind) -> Result<(), CanonicalError> {
     match kind {
+        FeatureKind::Workplane(spec) => {
+            let mut canonical = spec.clone();
+            if let WorkplaneSupport::PlanarFace {
+                reference,
+                health: _,
+            } = &canonical.support
+            {
+                canonical.support = WorkplaneSupport::PlanarFace {
+                    reference: reference.clone(),
+                    health: WorkplaneSupportHealth::Resolved,
+                };
+            }
+            canonical.validate_local().map_err(CanonicalError::from)
+        }
+        FeatureKind::Sketch(spec) => spec.solve().map(|_| ()).map_err(CanonicalError::from),
         FeatureKind::Profile { points_mm } => {
             if !is_valid_profile(points_mm) {
                 return Err(CanonicalError::InvalidProfile);
@@ -5879,6 +6442,19 @@ fn validate_feature_kind(kind: &FeatureKind) -> Result<(), CanonicalError> {
         }
         FeatureKind::Extrusion { height, .. } => {
             Dimension::new(height.source_token.clone(), height.millimetres).map(|_| ())
+        }
+        FeatureKind::Pad(spec) => spec.extent.validate().map_err(CanonicalError::from),
+        FeatureKind::SketchPocket(spec) => {
+            spec.extent.validate().map_err(CanonicalError::from)?;
+            if spec.support.expected_type != "planar_face"
+                || spec.support.expected_cardinality != 1
+                || !spec.support.has_valid_lineage()
+            {
+                return Err(CanonicalError::Sketch(
+                    SketchError::InvalidPlanarFaceSupport,
+                ));
+            }
+            Ok(())
         }
         FeatureKind::BottleProfileControl {
             body_radius,
@@ -6510,6 +7086,26 @@ fn clone_definition_and_repoint(
             .get(source_id)
             .ok_or(CanonicalError::FeatureNotFound(*source_id))?;
         let kind = match &source_feature.kind {
+            FeatureKind::Workplane(spec) => {
+                let mut cloned = spec.clone();
+                match &mut cloned.support {
+                    WorkplaneSupport::Principal(_) => {}
+                    WorkplaneSupport::Offset { base, .. } => {
+                        *base = *mapping.get(base).ok_or(CanonicalError::InvalidFeatureMap)?;
+                    }
+                    WorkplaneSupport::PlanarFace { .. } => {
+                        return Err(CanonicalError::InvalidFeatureMap);
+                    }
+                }
+                FeatureKind::Workplane(cloned)
+            }
+            FeatureKind::Sketch(spec) => {
+                let mut cloned = spec.clone();
+                cloned.workplane = *mapping
+                    .get(&spec.workplane)
+                    .ok_or(CanonicalError::InvalidFeatureMap)?;
+                FeatureKind::Sketch(cloned)
+            }
             FeatureKind::Profile { points_mm } => FeatureKind::Profile {
                 points_mm: points_mm.clone(),
             },
@@ -6526,6 +7122,14 @@ fn clone_definition_and_repoint(
                     .ok_or(CanonicalError::InvalidFeatureMap)?,
                 height: height.clone(),
             },
+            FeatureKind::Pad(spec) => {
+                let mut cloned = spec.clone();
+                cloned.sketch = *mapping
+                    .get(&spec.sketch)
+                    .ok_or(CanonicalError::InvalidFeatureMap)?;
+                FeatureKind::Pad(cloned)
+            }
+            FeatureKind::SketchPocket(_) => return Err(CanonicalError::InvalidFeatureMap),
             FeatureKind::BottleProfileControl {
                 profile,
                 body_radius,
@@ -7437,8 +8041,279 @@ fn validate_overrides(product: &ProductModel) -> Result<(), CanonicalError> {
     Ok(())
 }
 
+fn supported_planar_face_frame(
+    product: &ProductModel,
+    reference: &BodySubshapeRef,
+) -> Option<WorkplaneFrame> {
+    let snapshot = Snapshot {
+        revision_id: 0,
+        product: Arc::new(product.clone()),
+    };
+    let request = ExactFeatureChainRequest::from_snapshot_for_producer(
+        &snapshot,
+        reference.definition_id,
+        reference.producer_feature_id,
+    )
+    .ok()?;
+    if !reference.matches_durable_request_identity(&request) {
+        return None;
+    }
+    let width_mm = f64::from_bits(request.width_bits);
+    let height_mm = f64::from_bits(request.height_bits);
+    if let Some(frame_bits) = request.workplane_frame_bits {
+        let frame = frame_bits.map(f64::from_bits);
+        let origin = [frame[0], frame[1], frame[2]];
+        let x_axis = [frame[3], frame[4], frame[5]];
+        let y_axis = [frame[6], frame[7], frame[8]];
+        let normal = [frame[9], frame[10], frame[11]];
+        let cross_xy = [
+            x_axis[1] * y_axis[2] - x_axis[2] * y_axis[1],
+            x_axis[2] * y_axis[0] - x_axis[0] * y_axis[2],
+            x_axis[0] * y_axis[1] - x_axis[1] * y_axis[0],
+        ];
+        let right_handed =
+            cross_xy[0] * normal[0] + cross_xy[1] * normal[1] + cross_xy[2] * normal[2] > 0.0;
+        let negate = |axis: [f64; 3]| [-axis[0], -axis[1], -axis[2]];
+        let translated = |axis: [f64; 3], distance: f64| {
+            [
+                origin[0] + axis[0] * distance,
+                origin[1] + axis[1] * distance,
+                origin[2] + axis[2] * distance,
+            ]
+        };
+        return match reference.role()? {
+            ExactFaceRole::Top => Some(WorkplaneFrame {
+                origin_mm: translated(normal, height_mm),
+                x_axis: if right_handed { x_axis } else { negate(x_axis) },
+                y_axis,
+                normal,
+            }),
+            ExactFaceRole::Bottom => Some(WorkplaneFrame {
+                origin_mm: origin,
+                x_axis,
+                y_axis: if right_handed { negate(y_axis) } else { y_axis },
+                normal: negate(normal),
+            }),
+            ExactFaceRole::East
+                if request.boolean.is_none()
+                    && request.shell.is_none()
+                    && request.pocket_depth_bits.is_none() =>
+            {
+                Some(WorkplaneFrame {
+                    origin_mm: translated(x_axis, width_mm),
+                    x_axis: y_axis,
+                    y_axis: if right_handed { normal } else { negate(normal) },
+                    normal: x_axis,
+                })
+            }
+            _ => None,
+        };
+    }
+    match reference.role()? {
+        ExactFaceRole::Top => Some(WorkplaneFrame::principal(PrincipalPlane::Xy).offset(height_mm)),
+        ExactFaceRole::Bottom => Some(WorkplaneFrame {
+            origin_mm: [0.0, 0.0, 0.0],
+            x_axis: [1.0, 0.0, 0.0],
+            y_axis: [0.0, -1.0, 0.0],
+            normal: [0.0, 0.0, -1.0],
+        }),
+        ExactFaceRole::East
+            if request.boolean.is_none()
+                && request.shell.is_none()
+                && request.pocket_depth_bits.is_none() =>
+        {
+            Some(WorkplaneFrame {
+                origin_mm: [width_mm, 0.0, 0.0],
+                x_axis: [0.0, 1.0, 0.0],
+                y_axis: [0.0, 0.0, 1.0],
+                normal: [1.0, 0.0, 0.0],
+            })
+        }
+        _ => None,
+    }
+}
+
+fn set_planar_face_reference_health(
+    product: &mut ProductModel,
+    lineage_digest: &str,
+    health: WorkplaneSupportHealth,
+) {
+    let anchored = product
+        .features
+        .values()
+        .filter_map(|feature| match &feature.kind {
+            FeatureKind::Workplane(WorkplaneSpec {
+                support: WorkplaneSupport::PlanarFace { reference, .. },
+                ..
+            }) if reference.lineage_digest == lineage_digest => Some(feature.id),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    for id in anchored {
+        let feature = Arc::clone(
+            product
+                .features
+                .get(&id)
+                .expect("collected workplane exists"),
+        );
+        let FeatureKind::Workplane(spec) = &feature.kind else {
+            unreachable!("collected feature is a workplane");
+        };
+        let WorkplaneSupport::PlanarFace { reference, .. } = &spec.support else {
+            unreachable!("collected workplane has planar-face support");
+        };
+        let mut updated = spec.clone();
+        updated.support = WorkplaneSupport::PlanarFace {
+            reference: reference.clone(),
+            health,
+        };
+        product.features.insert(
+            id,
+            Arc::new(Feature {
+                kind: FeatureKind::Workplane(updated),
+                ..feature.as_ref().clone()
+            }),
+        );
+    }
+}
+
+fn rebind_planar_face_reference(
+    product: &mut ProductModel,
+    reference: &BodySubshapeRef,
+) -> Result<(), CanonicalError> {
+    let anchored = product
+        .features
+        .values()
+        .filter_map(|feature| match &feature.kind {
+            FeatureKind::Workplane(WorkplaneSpec {
+                support:
+                    WorkplaneSupport::PlanarFace {
+                        reference: support, ..
+                    },
+                ..
+            }) if support.lineage_digest == reference.lineage_digest => Some(feature.id),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    for id in anchored {
+        let feature = Arc::clone(
+            product
+                .features
+                .get(&id)
+                .expect("collected workplane exists"),
+        );
+        let FeatureKind::Workplane(spec) = &feature.kind else {
+            unreachable!("collected feature is a workplane");
+        };
+        let mut updated = spec.clone();
+        updated.support = WorkplaneSupport::PlanarFace {
+            reference: Box::new(reference.clone()),
+            health: WorkplaneSupportHealth::Resolved,
+        };
+        product.features.insert(
+            id,
+            Arc::new(Feature {
+                kind: FeatureKind::Workplane(updated),
+                ..feature.as_ref().clone()
+            }),
+        );
+    }
+    let dependent_pockets = product
+        .features
+        .values()
+        .filter_map(|feature| match &feature.kind {
+            FeatureKind::SketchPocket(spec)
+                if spec.support.lineage_digest == reference.lineage_digest =>
+            {
+                Some(feature.id)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    for id in dependent_pockets {
+        let feature = Arc::clone(product.features.get(&id).expect("collected Pocket exists"));
+        let FeatureKind::SketchPocket(spec) = &feature.kind else {
+            unreachable!("collected feature is a Pocket");
+        };
+        let mut updated = spec.clone();
+        updated.support = Box::new(reference.clone());
+        product.features.insert(
+            id,
+            Arc::new(Feature {
+                kind: FeatureKind::SketchPocket(updated),
+                ..feature.as_ref().clone()
+            }),
+        );
+    }
+    refresh_supported_planar_face_frames(product, None)
+}
+
+fn refresh_supported_planar_face_frames(
+    product: &mut ProductModel,
+    previous: Option<&Snapshot>,
+) -> Result<(), CanonicalError> {
+    let updates = product
+        .features
+        .values()
+        .filter_map(|feature| {
+            let FeatureKind::Workplane(WorkplaneSpec {
+                support: WorkplaneSupport::PlanarFace { reference, .. },
+                ..
+            }) = &feature.kind
+            else {
+                return None;
+            };
+            if let Some(previous) = previous {
+                let anchor_existed = matches!(
+                    previous.feature(feature.id).map(Feature::kind),
+                    Some(FeatureKind::Workplane(WorkplaneSpec {
+                        support: WorkplaneSupport::PlanarFace { reference: prior, .. },
+                        ..
+                    })) if prior.lineage_digest == reference.lineage_digest
+                );
+                let producer_changed = previous
+                    .feature(reference.producer_feature_id)
+                    .zip(product.features.get(&reference.producer_feature_id))
+                    .is_some_and(|(before, after)| before.kind() != &after.kind);
+                if !anchor_existed || !producer_changed {
+                    return None;
+                }
+            }
+            Some((
+                feature.id,
+                supported_planar_face_frame(product, reference).ok_or(CanonicalError::Sketch(
+                    SketchError::InvalidPlanarFaceSupport,
+                )),
+            ))
+        })
+        .collect::<Vec<_>>();
+    for (id, frame) in updates {
+        let frame = frame?;
+        let feature = Arc::clone(
+            product
+                .features
+                .get(&id)
+                .expect("collected workplane exists"),
+        );
+        let FeatureKind::Workplane(spec) = &feature.kind else {
+            unreachable!("collected feature is a workplane");
+        };
+        let mut updated = spec.clone();
+        updated.frame = frame;
+        product.features.insert(
+            id,
+            Arc::new(Feature {
+                kind: FeatureKind::Workplane(updated),
+                ..feature.as_ref().clone()
+            }),
+        );
+    }
+    Ok(())
+}
+
 fn validate_product(product: &ProductModel) -> Result<(), CanonicalError> {
     ensure_product_id(product.document_id.0)?;
+    FeatureDependencyGraph::from_product(product)?;
     for (id, joint) in &product.joints {
         if *id != joint.id() || !joint.volume().has_positive_volume() {
             return Err(CanonicalError::Prismatic(PrismaticError::EmptyVolume));
@@ -7571,6 +8446,72 @@ fn validate_product(product: &ProductModel) -> Result<(), CanonicalError> {
                         FeatureKind::Profile { .. }
                             | FeatureKind::SegmentProfile { closed: true, .. }
                     )
+                {
+                    return Err(CanonicalError::InvalidFeatureOwnership(feature.id));
+                }
+            }
+            FeatureKind::Pad(spec) => {
+                let sketch = product
+                    .features
+                    .get(&spec.sketch)
+                    .ok_or(CanonicalError::FeatureNotFound(spec.sketch))?;
+                let FeatureKind::Sketch(sketch_spec) = &sketch.kind else {
+                    return Err(CanonicalError::InvalidFeatureOwnership(feature.id));
+                };
+                let workplane = product
+                    .features
+                    .get(&sketch_spec.workplane)
+                    .ok_or(CanonicalError::FeatureNotFound(sketch_spec.workplane))?;
+                let region_exists = sketch_spec
+                    .solved_regions()
+                    .map_err(CanonicalError::from)?
+                    .iter()
+                    .any(|region| region.id == spec.region);
+                if sketch.definition_id != feature.definition_id
+                    || workplane.definition_id != feature.definition_id
+                    || !matches!(workplane.kind, FeatureKind::Workplane(_))
+                    || !region_exists
+                {
+                    return Err(CanonicalError::InvalidFeatureOwnership(feature.id));
+                }
+            }
+            FeatureKind::SketchPocket(spec) => {
+                let target = product
+                    .features
+                    .get(&spec.target)
+                    .ok_or(CanonicalError::FeatureNotFound(spec.target))?;
+                let sketch = product
+                    .features
+                    .get(&spec.sketch)
+                    .ok_or(CanonicalError::FeatureNotFound(spec.sketch))?;
+                let FeatureKind::Sketch(sketch_spec) = &sketch.kind else {
+                    return Err(CanonicalError::InvalidFeatureOwnership(feature.id));
+                };
+                let workplane = product
+                    .features
+                    .get(&sketch_spec.workplane)
+                    .ok_or(CanonicalError::FeatureNotFound(sketch_spec.workplane))?;
+                let support_matches = matches!(
+                    &workplane.kind,
+                    FeatureKind::Workplane(WorkplaneSpec {
+                        support: WorkplaneSupport::PlanarFace { reference, health },
+                        ..
+                    }) if reference.lineage_digest == spec.support.lineage_digest
+                        && (*health != WorkplaneSupportHealth::Resolved
+                            || reference.as_ref() == spec.support.as_ref())
+                );
+                let region_exists = sketch_spec
+                    .solved_regions()
+                    .map_err(CanonicalError::from)?
+                    .iter()
+                    .any(|region| region.id == spec.region);
+                if target.definition_id != feature.definition_id
+                    || sketch.definition_id != feature.definition_id
+                    || workplane.definition_id != feature.definition_id
+                    || !matches!(target.kind, FeatureKind::Pad(_))
+                    || spec.support.producer_feature_id != spec.target
+                    || !support_matches
+                    || !region_exists
                 {
                     return Err(CanonicalError::InvalidFeatureOwnership(feature.id));
                 }
@@ -7912,6 +8853,113 @@ fn validate_product(product: &ProductModel) -> Result<(), CanonicalError> {
                 };
                 if definition.feature_ids.as_slice() != [feature.id] || authority_is_invalid {
                     return Err(CanonicalError::InvalidFeatureOwnership(feature.id));
+                }
+            }
+            FeatureKind::Workplane(spec) => match &spec.support {
+                WorkplaneSupport::Principal(_) => {}
+                WorkplaneSupport::PlanarFace { reference, health } => {
+                    let producer = product.features.get(&reference.producer_feature_id).ok_or(
+                        CanonicalError::Sketch(SketchError::InvalidPlanarFaceSupport),
+                    )?;
+                    let profile = product.features.get(&reference.profile_feature_id).ok_or(
+                        CanonicalError::Sketch(SketchError::InvalidPlanarFaceSupport),
+                    )?;
+                    let feature_position = definition
+                        .feature_ids
+                        .iter()
+                        .position(|candidate| *candidate == feature.id)
+                        .expect("validated definition contains feature");
+                    let producer_position = definition
+                        .feature_ids
+                        .iter()
+                        .position(|candidate| *candidate == reference.producer_feature_id);
+                    let profile_position = definition
+                        .feature_ids
+                        .iter()
+                        .position(|candidate| *candidate == reference.profile_feature_id);
+                    let evidence = product
+                        .exact_reference_evidence
+                        .get(&reference.lineage_digest);
+                    let evidence_and_frame_are_valid = match health {
+                        WorkplaneSupportHealth::Resolved => {
+                            evidence.is_some_and(|evidence| evidence.as_ref() == reference.as_ref())
+                                && supported_planar_face_frame(product, reference)
+                                    == Some(spec.frame)
+                        }
+                        WorkplaneSupportHealth::Ambiguous
+                        | WorkplaneSupportHealth::Lost
+                        | WorkplaneSupportHealth::Stale => evidence.is_none(),
+                    };
+                    if !evidence_and_frame_are_valid
+                        || reference.document_id != product.document_id
+                        || reference.definition_id != feature.definition_id
+                        || producer.definition_id != feature.definition_id
+                        || profile.definition_id != feature.definition_id
+                        || !feature_kind_is_solid(&producer.kind)
+                        || producer_position.is_none_or(|position| position >= feature_position)
+                        || profile_position.is_none_or(|position| {
+                            producer_position.is_none_or(|producer| position >= producer)
+                        })
+                    {
+                        return Err(CanonicalError::Sketch(
+                            SketchError::InvalidPlanarFaceSupport,
+                        ));
+                    }
+                }
+                WorkplaneSupport::Offset { base, distance } => {
+                    let base_feature = product.features.get(base).ok_or(CanonicalError::Sketch(
+                        SketchError::MissingWorkplaneSupport(*base),
+                    ))?;
+                    let FeatureKind::Workplane(base_spec) = &base_feature.kind else {
+                        return Err(CanonicalError::Sketch(
+                            SketchError::MissingWorkplaneSupport(*base),
+                        ));
+                    };
+                    let feature_position = definition
+                        .feature_ids
+                        .iter()
+                        .position(|candidate| *candidate == feature.id)
+                        .expect("validated definition contains feature");
+                    let base_precedes = definition
+                        .feature_ids
+                        .iter()
+                        .position(|candidate| *candidate == *base)
+                        .is_some_and(|position| position < feature_position);
+                    if base_feature.definition_id != feature.definition_id
+                        || !base_precedes
+                        || spec.frame != base_spec.frame.offset(distance.millimetres())
+                    {
+                        return Err(CanonicalError::Sketch(SketchError::WorkplaneCycle(
+                            feature.id,
+                        )));
+                    }
+                }
+            },
+            FeatureKind::Sketch(spec) => {
+                let workplane =
+                    product
+                        .features
+                        .get(&spec.workplane)
+                        .ok_or(CanonicalError::Sketch(
+                            SketchError::MissingWorkplaneSupport(spec.workplane),
+                        ))?;
+                let feature_position = definition
+                    .feature_ids
+                    .iter()
+                    .position(|candidate| *candidate == feature.id)
+                    .expect("validated definition contains feature");
+                let workplane_precedes = definition
+                    .feature_ids
+                    .iter()
+                    .position(|candidate| *candidate == spec.workplane)
+                    .is_some_and(|position| position < feature_position);
+                if workplane.definition_id != feature.definition_id
+                    || !matches!(workplane.kind, FeatureKind::Workplane(_))
+                    || !workplane_precedes
+                {
+                    return Err(CanonicalError::Sketch(
+                        SketchError::MissingWorkplaneSupport(spec.workplane),
+                    ));
                 }
             }
             FeatureKind::Profile { .. }
@@ -8822,6 +9870,29 @@ fn authoritative_dependencies(
                 dependencies.insert(AuthoritativeDependency::Feature(*id));
                 dependencies.insert(AuthoritativeDependency::Definition(*definition_id));
                 match kind {
+                    FeatureKind::Workplane(spec) => match &spec.support {
+                        WorkplaneSupport::Principal(_) => {}
+                        WorkplaneSupport::Offset { base, .. } => {
+                            add_feature_dependency_closure(snapshot, *base, &mut dependencies);
+                        }
+                        WorkplaneSupport::PlanarFace { reference, .. } => {
+                            add_feature_dependency_closure(
+                                snapshot,
+                                reference.producer_feature_id,
+                                &mut dependencies,
+                            );
+                        }
+                    },
+                    FeatureKind::Sketch(spec) => {
+                        add_feature_dependency_closure(snapshot, spec.workplane, &mut dependencies);
+                    }
+                    FeatureKind::Pad(spec) => {
+                        add_feature_dependency_closure(snapshot, spec.sketch, &mut dependencies);
+                    }
+                    FeatureKind::SketchPocket(spec) => {
+                        add_feature_dependency_closure(snapshot, spec.target, &mut dependencies);
+                        add_feature_dependency_closure(snapshot, spec.sketch, &mut dependencies);
+                    }
                     FeatureKind::Extrusion { profile, .. }
                     | FeatureKind::BottleProfileControl { profile, .. }
                     | FeatureKind::Revolve { profile, .. }
@@ -9176,6 +10247,29 @@ fn add_feature_dependency_closure(
     if let Some(feature) = snapshot.feature(id) {
         dependencies.insert(AuthoritativeDependency::Definition(feature.definition_id()));
         match feature.kind() {
+            FeatureKind::Workplane(spec) => match &spec.support {
+                WorkplaneSupport::Principal(_) => {}
+                WorkplaneSupport::Offset { base, .. } => {
+                    add_feature_dependency_closure(snapshot, *base, dependencies);
+                }
+                WorkplaneSupport::PlanarFace { reference, .. } => {
+                    add_feature_dependency_closure(
+                        snapshot,
+                        reference.producer_feature_id,
+                        dependencies,
+                    );
+                }
+            },
+            FeatureKind::Sketch(spec) => {
+                add_feature_dependency_closure(snapshot, spec.workplane, dependencies);
+            }
+            FeatureKind::Pad(spec) => {
+                add_feature_dependency_closure(snapshot, spec.sketch, dependencies);
+            }
+            FeatureKind::SketchPocket(spec) => {
+                add_feature_dependency_closure(snapshot, spec.target, dependencies);
+                add_feature_dependency_closure(snapshot, spec.sketch, dependencies);
+            }
             FeatureKind::Extrusion { profile, .. }
             | FeatureKind::BottleProfileControl { profile, .. }
             | FeatureKind::Revolve { profile, .. }
@@ -9644,8 +10738,152 @@ impl StableDigest {
         }
     }
 
+    fn sketch_point_ref(&mut self, reference: crate::sketch::SketchPointRef) {
+        self.u64(reference.entity.0);
+        self.byte(match reference.point {
+            SketchPointKind::Start => 1,
+            SketchPointKind::End => 2,
+            SketchPointKind::Center => 3,
+        });
+    }
+
+    fn body_subshape_reference(&mut self, reference: &BodySubshapeRef) {
+        self.u64(reference.document_id.0);
+        self.u64(reference.definition_id.0);
+        self.u64(reference.profile_feature_id.0);
+        self.u64(reference.producer_feature_id.0);
+        self.bytes(reference.semantic_role.as_bytes());
+        self.bytes(reference.source_element_id.as_bytes());
+        self.bytes(reference.expected_type.as_bytes());
+        self.u64(u64::from(reference.expected_cardinality));
+        self.byte(match reference.stability {
+            crate::exact_product::ReferenceStability::Guaranteed => 1,
+        });
+        self.bytes(reference.lineage_digest.as_bytes());
+    }
+
     fn feature_kind(&mut self, kind: &FeatureKind) {
         match kind {
+            FeatureKind::Workplane(spec) => {
+                self.byte(17);
+                match &spec.support {
+                    WorkplaneSupport::Principal(plane) => {
+                        self.byte(1);
+                        self.byte(match plane {
+                            PrincipalPlane::Xy => 1,
+                            PrincipalPlane::Yz => 2,
+                            PrincipalPlane::Xz => 3,
+                        });
+                    }
+                    WorkplaneSupport::Offset { base, distance } => {
+                        self.byte(2);
+                        self.u64(base.0);
+                        self.bytes(distance.source_token().as_bytes());
+                        self.u64(distance.millimetres().to_bits());
+                    }
+                    WorkplaneSupport::PlanarFace { reference, .. } => {
+                        self.byte(3);
+                        self.body_subshape_reference(reference);
+                    }
+                }
+                if !matches!(&spec.support, WorkplaneSupport::PlanarFace { .. }) {
+                    for coordinate in spec
+                        .frame
+                        .origin_mm
+                        .iter()
+                        .chain(spec.frame.x_axis.iter())
+                        .chain(spec.frame.y_axis.iter())
+                        .chain(spec.frame.normal.iter())
+                    {
+                        self.u64(coordinate.to_bits());
+                    }
+                }
+            }
+            FeatureKind::Sketch(spec) => {
+                self.byte(18);
+                self.u64(spec.workplane.0);
+                self.u64(spec.entities.len() as u64);
+                for entity in &spec.entities {
+                    match entity {
+                        SketchEntity::Line {
+                            id,
+                            start_mm,
+                            end_mm,
+                        } => {
+                            self.byte(1);
+                            self.u64(id.0);
+                            for point in [start_mm, end_mm] {
+                                self.u64(point[0].to_bits());
+                                self.u64(point[1].to_bits());
+                            }
+                        }
+                        SketchEntity::Arc {
+                            id,
+                            start_mm,
+                            end_mm,
+                            center_mm,
+                            clockwise,
+                        } => {
+                            self.byte(2);
+                            self.u64(id.0);
+                            for point in [start_mm, end_mm, center_mm] {
+                                self.u64(point[0].to_bits());
+                                self.u64(point[1].to_bits());
+                            }
+                            self.byte(u8::from(*clockwise));
+                        }
+                        SketchEntity::Circle {
+                            id,
+                            center_mm,
+                            radius_mm,
+                        } => {
+                            self.byte(3);
+                            self.u64(id.0);
+                            self.u64(center_mm[0].to_bits());
+                            self.u64(center_mm[1].to_bits());
+                            self.u64(radius_mm.to_bits());
+                        }
+                    }
+                }
+                self.u64(spec.constraints.len() as u64);
+                for constraint in &spec.constraints {
+                    self.u64(constraint.id.0);
+                    match &constraint.kind {
+                        SketchConstraintKind::Horizontal { entity } => {
+                            self.byte(1);
+                            self.u64(entity.0);
+                        }
+                        SketchConstraintKind::Vertical { entity } => {
+                            self.byte(2);
+                            self.u64(entity.0);
+                        }
+                        SketchConstraintKind::Coincident { a, b } => {
+                            self.byte(3);
+                            self.sketch_point_ref(*a);
+                            self.sketch_point_ref(*b);
+                        }
+                        SketchConstraintKind::Distance { a, b, value } => {
+                            self.byte(4);
+                            self.sketch_point_ref(*a);
+                            self.sketch_point_ref(*b);
+                            self.bytes(value.source_token().as_bytes());
+                            self.u64(value.millimetres().to_bits());
+                        }
+                        SketchConstraintKind::Radius { entity, value } => {
+                            self.byte(5);
+                            self.u64(entity.0);
+                            self.bytes(value.source_token().as_bytes());
+                            self.u64(value.millimetres().to_bits());
+                        }
+                        SketchConstraintKind::FixedPoint { point, position_mm } => {
+                            self.byte(6);
+                            self.sketch_point_ref(*point);
+                            self.u64(position_mm[0].to_bits());
+                            self.u64(position_mm[1].to_bits());
+                        }
+                    }
+                }
+            }
             FeatureKind::Profile { points_mm } => {
                 self.byte(1);
                 self.u64(points_mm.len() as u64);
@@ -9696,6 +10934,30 @@ impl StableDigest {
                 self.u64(profile.0);
                 self.bytes(height.source_token.as_bytes());
                 self.u64(height.millimetres.to_bits());
+            }
+            FeatureKind::Pad(spec) => {
+                self.byte(19);
+                self.u64(spec.sketch.0);
+                self.u64(spec.region.0);
+                self.byte(match spec.direction {
+                    crate::sketch::FeatureDirection::AlongNormal => 1,
+                    crate::sketch::FeatureDirection::OppositeNormal => 2,
+                });
+                self.bytes(spec.extent.distance().source_token().as_bytes());
+                self.u64(spec.extent.distance().millimetres().to_bits());
+            }
+            FeatureKind::SketchPocket(spec) => {
+                self.byte(20);
+                self.u64(spec.target.0);
+                self.u64(spec.sketch.0);
+                self.u64(spec.region.0);
+                self.byte(match spec.direction {
+                    crate::sketch::FeatureDirection::AlongNormal => 1,
+                    crate::sketch::FeatureDirection::OppositeNormal => 2,
+                });
+                self.bytes(spec.extent.distance().source_token().as_bytes());
+                self.u64(spec.extent.distance().millimetres().to_bits());
+                self.body_subshape_reference(&spec.support);
             }
             FeatureKind::ThroughCut { target, profile } => {
                 self.byte(3);
@@ -10120,6 +11382,15 @@ impl StableDigest {
                     .features
                     .values()
                     .filter_map(|feature| match feature.kind {
+                        FeatureKind::Workplane(WorkplaneSpec {
+                            support: WorkplaneSupport::Offset { base, .. },
+                            ..
+                        }) if base == id => Some(feature.id),
+                        FeatureKind::Workplane(WorkplaneSpec {
+                            support: WorkplaneSupport::PlanarFace { ref reference, .. },
+                            ..
+                        }) if reference.producer_feature_id == id => Some(feature.id),
+                        FeatureKind::Sketch(ref spec) if spec.workplane == id => Some(feature.id),
                         FeatureKind::Extrusion { profile, .. }
                         | FeatureKind::PlanarOffset { profile, .. }
                             if profile == id =>

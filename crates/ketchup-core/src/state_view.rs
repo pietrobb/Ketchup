@@ -630,6 +630,223 @@ pub fn encode_semantic_state_with_results(
         )
         .unwrap();
         match feature.kind() {
+            crate::document::FeatureKind::Workplane(spec) => {
+                use crate::sketch::WorkplaneSupport;
+                writeln!(complete, "feature.{}.kind=workplane", feature.id().0).unwrap();
+                match &spec.support {
+                    WorkplaneSupport::Principal(plane) => {
+                        writeln!(
+                            complete,
+                            "feature.{}.support=principal,{plane:?}",
+                            feature.id().0
+                        )
+                        .unwrap();
+                    }
+                    WorkplaneSupport::Offset { base, distance } => {
+                        writeln!(
+                            complete,
+                            "feature.{}.support=offset,base:{},distance_bits:{:016x},token:{:?}",
+                            feature.id().0,
+                            base.0,
+                            distance.millimetres().to_bits(),
+                            distance.source_token()
+                        )
+                        .unwrap();
+                    }
+                    WorkplaneSupport::PlanarFace { reference, health } => {
+                        let id = feature.id().0;
+                        writeln!(complete, "feature.{id}.support=planar_face").unwrap();
+                        writeln!(
+                            complete,
+                            "feature.{id}.support.document_id={}",
+                            reference.document_id.0
+                        )
+                        .unwrap();
+                        writeln!(
+                            complete,
+                            "feature.{id}.support.definition_id={}",
+                            reference.definition_id.0
+                        )
+                        .unwrap();
+                        writeln!(
+                            complete,
+                            "feature.{id}.support.profile_feature_id={}",
+                            reference.profile_feature_id.0
+                        )
+                        .unwrap();
+                        writeln!(
+                            complete,
+                            "feature.{id}.support.producer_feature_id={}",
+                            reference.producer_feature_id.0
+                        )
+                        .unwrap();
+                        writeln!(
+                            complete,
+                            "feature.{id}.support.semantic_role={:?}",
+                            reference.semantic_role
+                        )
+                        .unwrap();
+                        writeln!(
+                            complete,
+                            "feature.{id}.support.source_element_id={:?}",
+                            reference.source_element_id
+                        )
+                        .unwrap();
+                        writeln!(
+                            complete,
+                            "feature.{id}.support.expected_type={:?}",
+                            reference.expected_type
+                        )
+                        .unwrap();
+                        writeln!(
+                            complete,
+                            "feature.{id}.support.expected_cardinality={}",
+                            reference.expected_cardinality
+                        )
+                        .unwrap();
+                        writeln!(
+                            complete,
+                            "feature.{id}.support.stability={:?}",
+                            reference.stability
+                        )
+                        .unwrap();
+                        writeln!(
+                            complete,
+                            "feature.{id}.support.canonical_input_digest={:?}",
+                            reference.canonical_input_digest
+                        )
+                        .unwrap();
+                        writeln!(
+                            complete,
+                            "feature.{id}.support.exact_input_digest={:?}",
+                            reference.exact_input_digest
+                        )
+                        .unwrap();
+                        writeln!(
+                            complete,
+                            "feature.{id}.support.result_fingerprint={:?}",
+                            reference.result_fingerprint
+                        )
+                        .unwrap();
+                        writeln!(
+                            complete,
+                            "feature.{id}.support.evaluator={:?}",
+                            reference.evaluator
+                        )
+                        .unwrap();
+                        writeln!(
+                            complete,
+                            "feature.{id}.support.backend={:?}",
+                            reference.backend
+                        )
+                        .unwrap();
+                        writeln!(
+                            complete,
+                            "feature.{id}.support.tolerance={:?}",
+                            reference.tolerance
+                        )
+                        .unwrap();
+                        writeln!(
+                            complete,
+                            "feature.{id}.support.lineage_digest={:?}",
+                            reference.lineage_digest
+                        )
+                        .unwrap();
+                        writeln!(
+                            complete,
+                            "feature.{id}.support.geometry_fingerprint={:?}",
+                            reference.corroborating_geometry_fingerprint
+                        )
+                        .unwrap();
+                        writeln!(complete, "feature.{id}.support.health={health:?}").unwrap();
+                    }
+                }
+                writeln!(
+                    complete,
+                    "feature.{}.frame_bits={}",
+                    feature.id().0,
+                    spec.frame
+                        .origin_mm
+                        .iter()
+                        .chain(spec.frame.x_axis.iter())
+                        .chain(spec.frame.y_axis.iter())
+                        .chain(spec.frame.normal.iter())
+                        .map(|value| format!("{:016x}", value.to_bits()))
+                        .collect::<Vec<_>>()
+                        .join(",")
+                )
+                .unwrap();
+                let support = match &spec.support {
+                    WorkplaneSupport::Principal(plane) => format!("principal:{plane:?}"),
+                    WorkplaneSupport::Offset { base, distance } => format!(
+                        "offset:base:{},distance_bits:{:016x}",
+                        base.0,
+                        distance.millimetres().to_bits()
+                    ),
+                    WorkplaneSupport::PlanarFace { reference, health } => format!(
+                        "planar_face:producer:{},role:{:?},health:{health:?}",
+                        reference.producer_feature_id.0, reference.semantic_role
+                    ),
+                };
+                writeln!(
+                    agent,
+                    "feature.{}=name:{:?},kind:workplane,definition:{},support:{}",
+                    feature.id().0,
+                    feature.name(),
+                    feature.definition_id().0,
+                    support
+                )
+                .unwrap();
+            }
+            crate::document::FeatureKind::Sketch(spec) => {
+                let report = spec.solve().expect("canonical sketch remains solvable");
+                writeln!(complete, "feature.{}.kind=sketch", feature.id().0).unwrap();
+                writeln!(
+                    complete,
+                    "feature.{}.workplane={}",
+                    feature.id().0,
+                    spec.workplane.0
+                )
+                .unwrap();
+                writeln!(
+                    complete,
+                    "feature.{}.solve_status={:?}",
+                    feature.id().0,
+                    report.status
+                )
+                .unwrap();
+                for entity in &spec.entities {
+                    writeln!(
+                        complete,
+                        "feature.{}.entity.{}={entity:?}",
+                        feature.id().0,
+                        entity.id().0
+                    )
+                    .unwrap();
+                }
+                for constraint in &spec.constraints {
+                    writeln!(
+                        complete,
+                        "feature.{}.constraint.{}={:?}",
+                        feature.id().0,
+                        constraint.id.0,
+                        constraint.kind
+                    )
+                    .unwrap();
+                }
+                writeln!(
+                    agent,
+                    "feature.{}=name:{:?},kind:sketch,definition:{},workplane:{},entities:{},constraints:{},status:{:?}",
+                    feature.id().0,
+                    feature.name(),
+                    feature.definition_id().0,
+                    spec.workplane.0,
+                    report.entity_count,
+                    report.constraint_count,
+                    report.status
+                )
+                .unwrap();
+            }
             crate::document::FeatureKind::Profile { points_mm } => {
                 writeln!(complete, "feature.{}.kind=profile", feature.id().0).unwrap();
                 for (index, point) in points_mm.iter().enumerate() {
@@ -750,6 +967,98 @@ pub fn encode_semantic_state_with_results(
                     height.millimetres()
                 )
                 .unwrap();
+            }
+            crate::document::FeatureKind::Pad(spec) => {
+                writeln!(complete, "feature.{}.kind=pad", feature.id().0).unwrap();
+                writeln!(
+                    complete,
+                    "feature.{}.sketch={}",
+                    feature.id().0,
+                    spec.sketch.0
+                )
+                .unwrap();
+                writeln!(
+                    complete,
+                    "feature.{}.region={}",
+                    feature.id().0,
+                    spec.region.0
+                )
+                .unwrap();
+                writeln!(
+                    complete,
+                    "feature.{}.direction={:?}",
+                    feature.id().0,
+                    spec.direction
+                )
+                .unwrap();
+                writeln!(
+                    complete,
+                    "feature.{}.extent.source={:?}",
+                    feature.id().0,
+                    spec.extent.distance().source_token()
+                )
+                .unwrap();
+                writeln!(
+                    complete,
+                    "feature.{}.extent.f64_bits={:016x}",
+                    feature.id().0,
+                    spec.extent.distance().millimetres().to_bits()
+                )
+                .unwrap();
+                writeln!(agent, "feature.{}=name:{:?},kind:pad,definition:{},sketch:{},region:{},direction:{:?},extent_mm:{:?}", feature.id().0, feature.name(), feature.definition_id().0, spec.sketch.0, spec.region.0, spec.direction, spec.extent.distance().millimetres()).unwrap();
+            }
+            crate::document::FeatureKind::SketchPocket(spec) => {
+                writeln!(complete, "feature.{}.kind=sketch_pocket", feature.id().0).unwrap();
+                writeln!(
+                    complete,
+                    "feature.{}.target={}",
+                    feature.id().0,
+                    spec.target.0
+                )
+                .unwrap();
+                writeln!(
+                    complete,
+                    "feature.{}.sketch={}",
+                    feature.id().0,
+                    spec.sketch.0
+                )
+                .unwrap();
+                writeln!(
+                    complete,
+                    "feature.{}.region={}",
+                    feature.id().0,
+                    spec.region.0
+                )
+                .unwrap();
+                writeln!(
+                    complete,
+                    "feature.{}.direction={:?}",
+                    feature.id().0,
+                    spec.direction
+                )
+                .unwrap();
+                writeln!(
+                    complete,
+                    "feature.{}.extent.source={:?}",
+                    feature.id().0,
+                    spec.extent.distance().source_token()
+                )
+                .unwrap();
+                writeln!(
+                    complete,
+                    "feature.{}.extent.f64_bits={:016x}",
+                    feature.id().0,
+                    spec.extent.distance().millimetres().to_bits()
+                )
+                .unwrap();
+                writeln!(
+                    complete,
+                    "feature.{}.support={:?}",
+                    feature.id().0,
+                    spec.support
+                )
+                .unwrap();
+                writeln!(agent, "feature.{}=name:{:?},kind:sketch_pocket,definition:{},target:{},sketch:{},region:{},direction:{:?},extent_mm:{:?},support_lineage:{:?}", feature.id().0, feature.name(), feature.definition_id().0, spec.target.0, spec.sketch.0, spec.region.0, spec.direction, spec.extent.distance().millimetres(), spec.support.lineage_digest).unwrap();
             }
             crate::document::FeatureKind::BottleProfileControl {
                 profile,

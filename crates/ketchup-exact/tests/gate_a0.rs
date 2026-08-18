@@ -250,7 +250,8 @@ fn run_guaranteed_mutations_and_migration(backend: &ExactBackend, metrics: &mut 
                         metrics.guaranteed_history_complete += 1;
                     }
                 }
-                ReferenceResolution::Ambiguous { .. }
+                ReferenceResolution::ResolvedEdge { .. }
+                | ReferenceResolution::Ambiguous { .. }
                 | ReferenceResolution::Lost
                 | ReferenceResolution::QuarantinedMigration { .. } => {}
             }

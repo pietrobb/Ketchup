@@ -8,6 +8,7 @@
 namespace ketchup::exact {
 
 struct NativeEdgeFaceEvidence;
+struct NativeEdgeHistoryEvidence;
 struct NativeFaceEdgeEvidence;
 struct NativeFaceEvidence;
 struct NativeHistoryEvidence;
@@ -34,6 +35,7 @@ public:
   rust::Vec<NativeFaceEdgeEvidence> face_edge_evidence() const;
   rust::Vec<NativeEdgeFaceEvidence> edge_face_evidence() const;
   rust::Vec<NativeHistoryEvidence> history_evidence() const;
+  rust::Vec<NativeEdgeHistoryEvidence> edge_history_evidence() const;
 
   const Impl& impl() const noexcept;
 

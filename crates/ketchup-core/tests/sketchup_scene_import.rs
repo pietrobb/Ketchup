@@ -100,14 +100,36 @@ fn sketchup_scene_preserves_shared_instances_and_is_one_persistent_undo_step() {
 
     let committed_digest = committed.canonical_digest();
     let encoded = persistence::save(&committed);
-    assert_eq!(persistence::CURRENT_SCHEMA, 30);
-    assert_eq!(u16::from_le_bytes([encoded[10], encoded[11]]), 30);
+    assert_eq!(
+        u16::from_le_bytes([encoded[10], encoded[11]]),
+        persistence::CURRENT_SCHEMA
+    );
     let reopened = persistence::load(&encoded).unwrap();
     assert_eq!(reopened.snapshot().canonical_digest(), committed_digest);
     assert_eq!(document.undo().unwrap().canonical_digest(), before);
     assert_eq!(
         document.redo().unwrap().canonical_digest(),
         committed_digest
+    );
+}
+
+#[test]
+fn schema_30_sketchup_document_remains_losslessly_loadable() {
+    let source = shared_tetrahedron_scene();
+    let mut document = DocumentStore::new();
+    let batch =
+        plan_sketchup_scene_import(&document.current(), &source, "schema-30.kscene").unwrap();
+    document.apply_batch(&batch).unwrap();
+    let snapshot = document.current();
+    let mut encoded = persistence::save(&snapshot);
+    encoded[10..12].copy_from_slice(&30_u16.to_le_bytes());
+
+    let reopened = persistence::load(&encoded).unwrap();
+    assert_eq!(reopened.source_schema(), 30);
+    assert!(reopened.migration_losses().is_empty());
+    assert_eq!(
+        reopened.snapshot().canonical_digest(),
+        snapshot.canonical_digest()
     );
 }
 

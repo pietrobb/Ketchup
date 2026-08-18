@@ -10,11 +10,11 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, atomic::AtomicBool};
 use std::time::Duration;
 
-use eframe::egui::{Key, accesskit::Role};
+use eframe::egui::{Key, Pos2, accesskit::Role};
 use harness::Shell;
 use ketchup_app::AppCommand;
 use ketchup_app::dialogs::ScriptedFileDialogs;
-use ketchup_core::document::FeatureKind;
+use ketchup_core::document::{FeatureId, FeatureKind};
 use ketchup_core::graph::sha256_bytes;
 use ketchup_core::import::{
     ImportFormat, ImportLengthUnit, ImportUnitAuthority, MAX_DXF_SOURCE_BYTES,
@@ -141,6 +141,31 @@ fn exact_worker_path() -> PathBuf {
             .join("../../target/debug")
             .join(name)
     }
+}
+
+fn imported_exact_feature_id(shell: &Shell) -> FeatureId {
+    shell
+        .app()
+        .document_snapshot()
+        .features()
+        .find(|feature| matches!(feature.kind(), FeatureKind::ImportedExactBody(_)))
+        .map(ketchup_core::document::Feature::id)
+        .expect("the confirmed STEP import must create one imported exact body feature")
+}
+
+fn wait_for_hovered_pick(shell: &mut Shell, position: Pos2) {
+    for _ in 0..100 {
+        shell.move_pointer(position);
+        if shell.app().hovered_selection().is_some() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    panic!(
+        "the current painted exact body must become pickable: producers={:?}, triangles={}",
+        shell.app().exact_current_producer_ids(),
+        shell.app().instanced_scene_triangle_count()
+    );
 }
 
 fn wait_for_current_exact_body(shell: &mut Shell) {
@@ -1210,6 +1235,7 @@ fn file_import_exact_step_commits_undoes_and_persists_source_blob_offscreen() {
 
     shell.click_menu_command("menu-file", AppCommand::ImportExactStep);
     shell.click_button_label(&shell.catalog().text("dialog-import-step-confirm"));
+    let imported_feature_id = imported_exact_feature_id(&shell);
 
     assert_eq!(shell.app().document_revision(), before.revision + 1);
     assert_eq!(shell.app().definition_count(), before.definitions + 1);
@@ -1250,7 +1276,9 @@ fn file_import_exact_step_commits_undoes_and_persists_source_blob_offscreen() {
     );
     for _ in 0..100 {
         shell.settle();
-        if shell.app().exact_render_body_count() == 1 {
+        if shell.app().exact_current_producer_ids() == [imported_feature_id]
+            && shell.app().instanced_scene_triangle_count() > 0
+        {
             break;
         }
         std::thread::sleep(Duration::from_millis(20));
@@ -1365,14 +1393,16 @@ fn moving_an_imported_step_body_keeps_it_painted_and_drops_it_when_the_import_is
 
     shell.click_menu_command("menu-file", AppCommand::ImportExactStep);
     shell.click_button_label(&shell.catalog().text("dialog-import-step-confirm"));
+    let imported_feature_id = imported_exact_feature_id(&shell);
     for _ in 0..100 {
         shell.settle();
-        if shell.app().exact_render_body_count() == 1 {
+        if shell.app().exact_current_producer_ids() == [imported_feature_id]
+            && shell.app().instanced_scene_triangle_count() > 0
+        {
             break;
         }
         std::thread::sleep(Duration::from_millis(20));
     }
-    shell.settle();
     let painted = shell.app().instanced_scene_triangle_count();
     assert!(painted > 0);
 
@@ -1382,8 +1412,12 @@ fn moving_an_imported_step_body_keeps_it_painted_and_drops_it_when_the_import_is
         (bounds[0][1] + bounds[1][1]) * 0.5,
         (bounds[0][2] + bounds[1][2]) * 0.5,
     );
+    let span = (bounds[1][0] - bounds[0][0]).max(bounds[1][1] - bounds[0][1]);
+    let interaction_point = centre + Vec3::new(span * 0.17, span * 0.09, 0.0);
     let viewport = shell.viewport_rect();
-    shell.click_at(shell.app().project_to_screen(centre, viewport));
+    let interaction_screen = shell.app().project_to_screen(interaction_point, viewport);
+    wait_for_hovered_pick(&mut shell, interaction_screen);
+    shell.click_at(interaction_screen);
     assert_eq!(shell.app().selected_occurrence_count(), 1);
 
     // A move publishes a new revision without touching the import, and the
@@ -1394,8 +1428,10 @@ fn moving_an_imported_step_body_keeps_it_painted_and_drops_it_when_the_import_is
     // moment the carried-forward products are still bound to the old revision.
     let offset = Vec3::new(40.0, 0.0, 0.0);
     shell.click_command(AppCommand::Move);
-    let from = shell.app().project_to_screen(centre, viewport);
-    let to = shell.app().project_to_screen(centre + offset, viewport);
+    let from = shell.app().project_to_screen(interaction_point, viewport);
+    let to = shell
+        .app()
+        .project_to_screen(interaction_point + offset, viewport);
     // Every single frame of the gesture counts, not just the settled result: the
     // frame that commits the revision paints before the next one can repair it,
     // and a shell only repaints on demand, so one blank frame stays on screen.
@@ -1421,7 +1457,9 @@ fn moving_an_imported_step_body_keeps_it_painted_and_drops_it_when_the_import_is
         "an imported STEP body must stay painted across a move"
     );
     let viewport = shell.viewport_rect();
-    let moved = shell.app().project_to_screen(centre + offset, viewport);
+    let moved = shell
+        .app()
+        .project_to_screen(interaction_point + offset, viewport);
     shell.click_at(moved);
     assert!(
         shell.app().hovered_selection().is_some(),
@@ -1440,7 +1478,7 @@ fn moving_an_imported_step_body_keeps_it_painted_and_drops_it_when_the_import_is
     shell.click_command(AppCommand::Move);
     let further = shell
         .app()
-        .project_to_screen(centre + offset + offset, viewport);
+        .project_to_screen(interaction_point + offset + offset, viewport);
     shell.drag(moved, further);
     shell.settle();
     assert_eq!(
@@ -1483,14 +1521,16 @@ fn rotating_an_imported_step_body_keeps_it_painted_pickable_and_turnable_again()
 
     shell.click_menu_command("menu-file", AppCommand::ImportExactStep);
     shell.click_button_label(&shell.catalog().text("dialog-import-step-confirm"));
+    let imported_feature_id = imported_exact_feature_id(&shell);
     for _ in 0..100 {
         shell.settle();
-        if shell.app().exact_render_body_count() == 1 {
+        if shell.app().exact_current_producer_ids() == [imported_feature_id]
+            && shell.app().instanced_scene_triangle_count() > 0
+        {
             break;
         }
         std::thread::sleep(Duration::from_millis(20));
     }
-    shell.settle();
     let painted = shell.app().instanced_scene_triangle_count();
     assert!(painted > 0);
 
@@ -1501,8 +1541,11 @@ fn rotating_an_imported_step_body_keeps_it_painted_pickable_and_turnable_again()
         (bounds[0][2] + bounds[1][2]) * 0.5,
     );
     let span = (bounds[1][0] - bounds[0][0]).max(bounds[1][1] - bounds[0][1]);
+    let interaction_point = centre + Vec3::new(span * 0.17, span * 0.09, 0.0);
     let viewport = shell.viewport_rect();
-    shell.click_at(shell.app().project_to_screen(centre, viewport));
+    let interaction_screen = shell.app().project_to_screen(interaction_point, viewport);
+    wait_for_hovered_pick(&mut shell, interaction_screen);
+    shell.click_at(interaction_screen);
     assert_eq!(shell.app().selected_occurrence_count(), 1);
 
     // An imported body carries no canonical box, so its pivot has to come from
@@ -1547,8 +1590,9 @@ fn rotating_an_imported_step_body_keeps_it_painted_pickable_and_turnable_again()
     // The body turned about its own centre, so it is still under the same point
     // and a second rotation must be able to start there.
     let viewport = shell.viewport_rect();
-    let centre_screen = shell.app().project_to_screen(centre, viewport);
-    shell.click_at(centre_screen);
+    let interaction_screen = shell.app().project_to_screen(interaction_point, viewport);
+    wait_for_hovered_pick(&mut shell, interaction_screen);
+    shell.click_at(interaction_screen);
     assert!(
         shell.app().hovered_selection().is_some(),
         "a rotated imported STEP body must be hoverable where it is painted"
@@ -1631,6 +1675,7 @@ fn file_import_transformed_multi_solid_step_round_trips_through_save_open_and_oc
 
     shell.click_menu_command("menu-file", AppCommand::ImportExactStep);
     shell.click_button_label(&shell.catalog().text("dialog-import-step-confirm"));
+    let imported_feature_id = imported_exact_feature_id(&shell);
     assert_eq!(shell.app().document_revision(), before.revision + 1);
     assert_eq!(shell.app().undo_step_count(), before.undo_steps + 1);
     let imported_digest = shell.app().canonical_digest();
@@ -1645,7 +1690,9 @@ fn file_import_transformed_multi_solid_step_round_trips_through_save_open_and_oc
     assert_eq!(shell.app().canonical_digest(), imported_digest);
     for _ in 0..100 {
         shell.settle();
-        if shell.app().exact_render_body_count() == 1 {
+        if shell.app().exact_current_producer_ids() == [imported_feature_id]
+            && shell.app().instanced_scene_triangle_count() > 0
+        {
             break;
         }
         std::thread::sleep(Duration::from_millis(20));

@@ -243,8 +243,7 @@ impl InstancedRenderPlan {
 
 fn exact_identity(snapshot: &Snapshot, exact_results: &ExactResultRegistry) -> String {
     exact_results
-        .values()
-        .filter(|package| package.is_current(snapshot))
+        .render_values(snapshot)
         .map(|package| {
             format!(
                 "{}:{}",
@@ -267,10 +266,7 @@ fn geometry_source(
     exact_results: &ExactResultRegistry,
     definition_id: DefinitionId,
 ) -> Option<GeometrySource> {
-    if let Some(package) = exact_results
-        .get(&definition_id)
-        .filter(|package| package.is_current(snapshot))
-    {
+    if let Some(package) = exact_results.get_render(snapshot, definition_id) {
         let positions = package
             .vertices()
             .iter()

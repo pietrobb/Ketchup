@@ -63,13 +63,14 @@ impl ExactInteractionProjection {
         results: &ExactResultRegistry,
         include: impl Fn(&InstancePath) -> bool,
     ) -> Self {
+        let render_packages = results.render_by_definition(snapshot);
         let occurrences = snapshot
             .scene_query()
             .into_iter()
             .filter(|occurrence| occurrence.visible)
             .filter(|occurrence| include(&occurrence.instance_path))
             .filter_map(|occurrence| {
-                let package = Arc::clone(results.get(&occurrence.definition_id)?);
+                let package = Arc::clone(render_packages.get(&occurrence.definition_id)?);
                 if !package.is_current(snapshot)
                     || package.definition_id() != occurrence.definition_id
                 {

@@ -51,6 +51,7 @@ use ketchup_core::intent::{IntentRequest, WorkflowIntent, propose_intent};
 use ketchup_core::prismatic::JointId;
 #[cfg(test)]
 use ketchup_core::prismatic::TolerancePolicy;
+use ketchup_core::sketch::{WorkplaneSpec, WorkplaneSupport};
 #[cfg(test)]
 use ketchup_core::space::ClearanceOwner;
 use ketchup_core::space::{ClearanceSeverity, ClearanceVolumeId, SpaceId};
@@ -1428,8 +1429,8 @@ type ExactSource = (DocumentId, u64, String);
 type ExactEvaluationResult = Result<Vec<Arc<ExactBodyPackage>>, String>;
 
 enum ExactEvaluationRequest {
-    Rectangle(ExactFeatureChainRequest),
-    Revolve(ExactRevolveRequest),
+    Rectangle(Box<ExactFeatureChainRequest>),
+    Revolve(Box<ExactRevolveRequest>),
     Imported(DefinitionId, Vec<u8>),
 }
 
@@ -5247,22 +5248,31 @@ impl KetchupApp {
                     let task = self.exact_task.take().expect("the completed task exists");
                     if task.source == source && !task.cancelled.load(Ordering::Acquire) {
                         match result.and_then(|packages| {
-                            ExactResultRegistry::accept(&snapshot, packages)
-                                .map_err(|error| error.to_string())
+                            let mut results = self.exact_results.clone();
+                            for package in packages {
+                                results
+                                    .insert_current(&snapshot, package)
+                                    .map_err(|error| error.to_string())?;
+                            }
+                            Ok(results)
                         }) {
                             Ok(results) => {
-                                let references = results
-                                    .values()
-                                    .flat_map(|package| package.references().iter().cloned())
-                                    .collect::<Vec<_>>();
-                                if references.into_iter().all(|reference| {
-                                    self.document
-                                        .register_exact_reference_evidence(reference)
-                                        .is_ok()
-                                }) {
+                                if self
+                                    .document
+                                    .register_exact_reference_evidence(&results)
+                                    .is_ok()
+                                {
                                     self.exact_results = results;
-                                    self.exact_source = Some(source.clone());
+                                    self.render_plan =
+                                        Some(Arc::new(InstancedRenderPlan::from_snapshot(
+                                            &snapshot,
+                                            &self.exact_results,
+                                            &mut self.render_cache,
+                                        )));
+                                    self.interaction_projection_cache.get_mut().take();
+                                    self.exact_source = None;
                                     self.exact_retry_at = None;
+                                    return;
                                 }
                             }
                             Err(_) => {
@@ -5294,34 +5304,80 @@ impl KetchupApp {
         let Some(executable) = self.exact_worker_path.clone() else {
             return;
         };
+        let feature_graph = match snapshot.feature_dependency_graph() {
+            Ok(graph) => graph,
+            Err(_) => {
+                self.exact_results.clear();
+                self.exact_source = None;
+                return;
+            }
+        };
+        let referenced_producers = snapshot
+            .features()
+            .filter_map(|feature| match feature.kind() {
+                FeatureKind::Workplane(WorkplaneSpec {
+                    support: WorkplaneSupport::PlanarFace { reference, .. },
+                    ..
+                }) => Some(reference.producer_feature_id),
+                _ => None,
+            })
+            .collect::<BTreeSet<_>>();
         let requests = snapshot
             .scene_query()
             .into_iter()
             .map(|occurrence| occurrence.definition_id)
             .collect::<BTreeSet<_>>()
             .into_iter()
-            .map(|definition_id| {
-                if let Ok(request) =
-                    ExactFeatureChainRequest::from_snapshot(&snapshot, definition_id)
+            .flat_map(|definition_id| {
+                snapshot
+                    .definition(definition_id)
+                    .into_iter()
+                    .flat_map(|definition| definition.feature_ids().iter().copied())
+                    .filter(|feature_id| {
+                        snapshot.feature(*feature_id).is_some_and(|feature| {
+                            feature.kind().produces_body()
+                                && (referenced_producers.contains(feature_id)
+                                    || feature_graph.dependents(*feature_id).is_some_and(
+                                        |dependents| {
+                                            dependents.iter().all(|dependent| {
+                                                snapshot.feature(*dependent).is_none_or(|feature| {
+                                                    !feature.kind().produces_body()
+                                                })
+                                            })
+                                        },
+                                    ))
+                        })
+                    })
+                    .map(move |feature_id| (definition_id, feature_id))
+                    .collect::<Vec<_>>()
+            })
+            .map(|(definition_id, feature_id)| {
+                if self.exact_results.values().any(|package| {
+                    package.definition_id() == definition_id
+                        && package.producer_feature_id() == feature_id
+                        && package.is_current(&snapshot)
+                }) {
+                    return Ok(None);
+                }
+                if let Ok(request) = ExactFeatureChainRequest::from_snapshot_for_producer(
+                    &snapshot,
+                    definition_id,
+                    feature_id,
+                ) {
+                    return Ok(Some((
+                        definition_id,
+                        ExactEvaluationRequest::Rectangle(Box::new(request)),
+                    )));
+                }
+                if let Ok(request) = ExactRevolveRequest::from_snapshot(&snapshot, definition_id)
+                    && request.producer_feature_id() == feature_id
                 {
                     return Ok(Some((
                         definition_id,
-                        ExactEvaluationRequest::Rectangle(request),
+                        ExactEvaluationRequest::Revolve(Box::new(request)),
                     )));
                 }
-                if let Ok(request) = ExactRevolveRequest::from_snapshot(&snapshot, definition_id) {
-                    return Ok(Some((
-                        definition_id,
-                        ExactEvaluationRequest::Revolve(request),
-                    )));
-                }
-                let Some(definition) = snapshot.definition(definition_id) else {
-                    return Ok(None);
-                };
-                let [feature_id] = definition.feature_ids() else {
-                    return Ok(None);
-                };
-                let Some(feature) = snapshot.feature(*feature_id) else {
+                let Some(feature) = snapshot.feature(feature_id) else {
                     return Ok(None);
                 };
                 let FeatureKind::ImportedExactBody(spec) = feature.kind() else {
@@ -5362,7 +5418,6 @@ impl KetchupApp {
             }
         };
         if requests.is_empty() {
-            self.exact_results.clear();
             self.exact_source = Some(source);
             return;
         }
@@ -5514,21 +5569,48 @@ impl KetchupApp {
         self.wgpu_target_format = Some(eframe::wgpu::TextureFormat::Bgra8UnormSrgb);
     }
 
+    fn visible_exact_packages<'a>(
+        &'a self,
+        snapshot: &'a Snapshot,
+    ) -> Vec<&'a Arc<ExactBodyPackage>> {
+        let visible_definitions = snapshot
+            .scene_query()
+            .into_iter()
+            .filter(|occurrence| occurrence.visible)
+            .map(|occurrence| occurrence.definition_id)
+            .collect::<BTreeSet<_>>();
+        self.exact_results
+            .render_by_definition(snapshot)
+            .into_iter()
+            .filter_map(|(definition_id, package)| {
+                visible_definitions
+                    .contains(&definition_id)
+                    .then_some(package)
+            })
+            .collect()
+    }
+
     #[must_use]
     pub fn exact_render_body_count(&self) -> usize {
         let snapshot = self.document.current();
-        self.exact_results
-            .values()
-            .filter(|package| package.is_current(&snapshot))
-            .count()
+        self.visible_exact_packages(&snapshot).len()
+    }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub fn exact_current_producer_ids(&self) -> Vec<FeatureId> {
+        let snapshot = self.document.current();
+        self.visible_exact_packages(&snapshot)
+            .into_iter()
+            .map(|package| package.producer_feature_id())
+            .collect()
     }
 
     #[must_use]
     pub fn exact_render_bounds(&self) -> Vec<[[f64; 3]; 2]> {
         let snapshot = self.document.current();
-        self.exact_results
-            .values()
-            .filter(|package| package.is_current(&snapshot))
+        self.visible_exact_packages(&snapshot)
+            .into_iter()
             .map(|package| package.bounds_mm())
             .collect()
     }
@@ -5540,9 +5622,8 @@ impl KetchupApp {
     #[must_use]
     pub fn exact_render_triangle_count(&self) -> usize {
         let snapshot = self.document.current();
-        self.exact_results
-            .values()
-            .filter(|package| package.is_current(&snapshot))
+        self.visible_exact_packages(&snapshot)
+            .into_iter()
             .map(|package| package.triangles().len())
             .sum()
     }
@@ -5564,9 +5645,8 @@ impl KetchupApp {
     #[must_use]
     pub fn exact_stable_reference_count(&self) -> usize {
         let snapshot = self.document.current();
-        self.exact_results
-            .values()
-            .filter(|package| package.is_current(&snapshot))
+        self.visible_exact_packages(&snapshot)
+            .into_iter()
             .map(|package| package.references().len())
             .sum()
     }
@@ -5701,6 +5781,9 @@ impl KetchupApp {
         projection: &InteractionProjection,
         use_exact_bounds: bool,
     ) -> Vec<RenderBox> {
+        let snapshot = self.document.current();
+        let exact_packages =
+            use_exact_bounds.then(|| self.exact_results.render_by_definition(&snapshot));
         projection
             .occurrences()
             .iter()
@@ -5721,9 +5804,9 @@ impl KetchupApp {
                     && matrix[13] == 0.0
                     && matrix[14] == 0.0
                     && matrix[15] == 1.0;
-                let exact_bounds = use_exact_bounds
-                    .then(|| self.exact_results.get(&occurrence.body.definition_id))
-                    .flatten()
+                let exact_bounds = exact_packages
+                    .as_ref()
+                    .and_then(|packages| packages.get(&occurrence.body.definition_id))
                     .filter(|_| translation_only)
                     .map(|package| package.bounds_mm());
                 let (origin_mm, size_mm) =
@@ -11153,11 +11236,7 @@ impl KetchupApp {
         definition_id: DefinitionId,
         local_box: Option<ProjectedBox>,
     ) -> Option<[Vec3; 2]> {
-        if let Some(package) = self
-            .exact_results
-            .get(&definition_id)
-            .filter(|package| package.is_current(snapshot))
-        {
+        if let Some(package) = self.exact_results.get_render(snapshot, definition_id) {
             let [minimum, maximum] = package.bounds_mm();
             return Some([
                 Vec3::new(minimum[0], minimum[1], minimum[2]),
@@ -13474,7 +13553,10 @@ impl KetchupApp {
             if use_wgpu_scene && !needs_cpu_overlay {
                 continue;
             }
-            let Some(package) = self.exact_results.get(&occurrence.body.definition_id) else {
+            let Some(package) = self
+                .exact_results
+                .get_render(&snapshot, occurrence.body.definition_id)
+            else {
                 continue;
             };
             let transform = move_transform_overrides

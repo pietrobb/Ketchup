@@ -159,9 +159,13 @@ impl ExactRevolveRequest {
                         return Err(ExactProductError::UnsupportedDefinition);
                     }
                 }
-                FeatureKind::SegmentProfile { .. }
+                FeatureKind::Workplane(_)
+                | FeatureKind::Sketch(_)
+                | FeatureKind::SegmentProfile { .. }
                 | FeatureKind::SplineProfile { .. }
                 | FeatureKind::Extrusion { .. }
+                | FeatureKind::Pad(_)
+                | FeatureKind::SketchPocket(_)
                 | FeatureKind::ThroughCut { .. }
                 | FeatureKind::Pocket { .. }
                 | FeatureKind::Boolean { .. }
@@ -521,6 +525,92 @@ impl ExactRevolveRequest {
         } else {
             EXACT_REVOLVE_EVALUATOR_V1
         }
+    }
+
+    #[must_use]
+    pub fn canonical_input_digest_for_envelope(
+        &self,
+        source_revision: u64,
+        source_digest: &str,
+    ) -> String {
+        let mut canonical = if self.general {
+            format!(
+                "{}:{}:{}:{}:{}:{}:{}:{:016x}:{:016x}:{:016x}:{:016x}:{:016x}:{}",
+                self.schema(),
+                self.document_id.0,
+                source_revision,
+                self.definition_id.0,
+                self.profile_feature_id.0,
+                self.revolve_feature_id.0,
+                self.points_bits.len(),
+                self.axis_start_bits[0],
+                self.axis_start_bits[1],
+                self.axis_end_bits[0],
+                self.axis_end_bits[1],
+                self.angle_degrees_bits,
+                source_digest,
+            )
+        } else {
+            format!(
+                "{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}",
+                self.schema(),
+                self.document_id.0,
+                source_revision,
+                self.definition_id.0,
+                self.profile_feature_id.0,
+                self.control_feature_id.map_or(0, |id| id.0),
+                self.revolve_feature_id.0,
+                self.shell_feature_id.map_or(0, |id| id.0),
+                self.thickness_bits.map_or(0, |bits| bits),
+                self.edge_finish_feature_id.map_or(0, |id| id.0),
+                self.edge_finish_kind.map_or(0, |kind| match kind {
+                    BottleEdgeFinishKind::Fillet => 1,
+                    BottleEdgeFinishKind::Chamfer => 2,
+                }),
+                self.edge_finish_amount_bits.map_or(0, |bits| bits),
+                source_digest,
+                self.points_bits.len(),
+            )
+        };
+        if self.general {
+            if let Some(segments) = &self.segments {
+                for segment in segments {
+                    match segment {
+                        ExactProfileSegment::Line {
+                            start_bits,
+                            end_bits,
+                        } => canonical.push_str(&format!(
+                            ":L:{:016x}:{:016x}:{:016x}:{:016x}",
+                            start_bits[0], start_bits[1], end_bits[0], end_bits[1]
+                        )),
+                        ExactProfileSegment::CircularArc {
+                            start_bits,
+                            end_bits,
+                            center_bits,
+                            clockwise,
+                        } => canonical.push_str(&format!(
+                            ":A:{:016x}:{:016x}:{:016x}:{:016x}:{:016x}:{:016x}:{}",
+                            start_bits[0],
+                            start_bits[1],
+                            end_bits[0],
+                            end_bits[1],
+                            center_bits[0],
+                            center_bits[1],
+                            clockwise,
+                        )),
+                    }
+                }
+            } else {
+                for point in &self.points_bits {
+                    canonical.push_str(&format!(":P:{:016x}:{:016x}", point[0], point[1]));
+                }
+            }
+        } else {
+            for point in &self.points_bits {
+                canonical.push_str(&format!(":{:016x}:{:016x}", point[0], point[1]));
+            }
+        }
+        sha256(&canonical)
     }
 
     #[must_use]
