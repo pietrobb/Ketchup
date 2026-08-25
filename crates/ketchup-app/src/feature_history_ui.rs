@@ -5,9 +5,12 @@ use ketchup_core::feature_history::{
     prepare_body_history_mutation, prepare_body_parameter_edit, project_feature_history,
 };
 use ketchup_core::shared_change::{
-    SharedChangeExportEligibility, SharedChangeExportFormat, SharedChangeImpactError,
-    SharedChangeImpactProjection, SharedDefinitionChangeRequest, commit_shared_definition_change,
-    project_shared_change_impact,
+    ComponentReplacementImpactProjection, ComponentReplacementImpactRequest,
+    OccurrenceForkChangeRequest, OccurrenceForkImpactProjection, SharedChangeExportEligibility,
+    SharedChangeExportFormat, SharedChangeImpactError, SharedChangeImpactProjection,
+    SharedDefinitionChangeRequest, commit_component_replacement, commit_occurrence_fork_change,
+    commit_shared_definition_change, project_component_replacement_impact,
+    project_occurrence_fork_impact, project_shared_change_impact,
 };
 use ketchup_core::sketch::SketchConstraintKind;
 
@@ -16,6 +19,15 @@ enum FeatureHistoryPreviewKind {
     ExactEdit,
     Suppress { boundary: FeatureId },
     Resume,
+    ReplaceComponent,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum FeatureHistoryChangeScope {
+    #[default]
+    Shared,
+    MakeUnique,
+    ReplaceComponent,
 }
 
 #[derive(Clone, Debug)]
@@ -26,6 +38,8 @@ struct FeatureHistoryUiPreview {
     affected_feature_ids: Vec<FeatureId>,
     suppressed_feature_ids: Vec<FeatureId>,
     shared_impact: Option<SharedChangeImpactProjection>,
+    fork_impact: Option<OccurrenceForkImpactProjection>,
+    replacement_impact: Option<ComponentReplacementImpactProjection>,
 }
 
 #[derive(Clone, Debug)]
@@ -43,6 +57,8 @@ pub(super) struct FeatureHistoryUiState {
     selected_parameter: Option<ExactParameterEditTarget>,
     parameter_source: Option<(u64, ExactParameterEditTarget)>,
     value_input: String,
+    change_scope: FeatureHistoryChangeScope,
+    replacement_target: Option<DefinitionId>,
     preview: Option<FeatureHistoryUiPreview>,
 }
 
@@ -51,9 +67,11 @@ enum FeatureHistoryUiAction {
     SelectBody(ketchup_core::document::BodyId),
     SelectFeature(FeatureId),
     SelectParameter(ExactParameterEditTarget),
+    SelectReplacementTarget(DefinitionId),
     PreviewEdit,
     PreviewSuppress,
     PreviewResume,
+    PreviewReplacement,
     Confirm,
     Cancel,
 }
@@ -192,6 +210,26 @@ impl KetchupApp {
         references.next().is_none().then_some(reference)
     }
 
+    fn selected_fork_occurrence(&self, definition_id: DefinitionId) -> Option<OccurrenceId> {
+        let snapshot = self.document.current();
+        let mut selected = self.selected_occurrence_ids().into_iter().filter(|id| {
+            snapshot
+                .occurrence(*id)
+                .is_some_and(|occurrence| occurrence.definition_id() == definition_id)
+        });
+        let occurrence_id = selected.next()?;
+        selected.next().is_none().then_some(occurrence_id)
+    }
+
+    fn fork_definition_name(&self, snapshot: &Snapshot, definition_id: DefinitionId) -> String {
+        let name = snapshot.definition(definition_id).map_or_else(
+            || definition_id.0.to_string(),
+            |definition| definition.name().to_owned(),
+        );
+        self.catalog
+            .format("model-unique-name", &BTreeMap::from([("name", name)]))
+    }
+
     fn reconcile_feature_history(
         &mut self,
         snapshot: &Snapshot,
@@ -270,9 +308,9 @@ impl KetchupApp {
                             first_suppressed_feature_id: boundary,
                         })
                     }
-                    FeatureHistoryPreviewKind::ExactEdit | FeatureHistoryPreviewKind::Resume => {
-                        None
-                    }
+                    FeatureHistoryPreviewKind::ExactEdit
+                    | FeatureHistoryPreviewKind::Resume
+                    | FeatureHistoryPreviewKind::ReplaceComponent => None,
                 },
             ),
         };
@@ -303,39 +341,74 @@ impl KetchupApp {
             body_id,
             edits: vec![ExactParameterEdit { target, dimension }],
         };
-        let (proposal, affected_feature_ids, shared_impact) = match project_shared_change_impact(
-            &self.document,
-            &self.exact_results,
-            SharedDefinitionChangeRequest::exact_parameter_edit(
-                &self.document.current(),
-                request.clone(),
-            ),
-            ProposalPrincipal::ManualClient,
-        ) {
-            Ok(impact) => (
-                impact.proposal.clone(),
-                impact.affected_feature_ids.clone(),
-                Some(impact),
-            ),
-            Err(SharedChangeImpactError::DefinitionNotReused(_)) => {
-                let preview = match prepare_body_parameter_edit(
+        let snapshot = self.document.current();
+        let (proposal, affected_feature_ids, shared_impact, fork_impact) =
+            match self.feature_history.change_scope {
+                FeatureHistoryChangeScope::Shared => match project_shared_change_impact(
                     &self.document,
-                    request,
+                    &self.exact_results,
+                    SharedDefinitionChangeRequest::exact_parameter_edit(&snapshot, request.clone()),
                     ProposalPrincipal::ManualClient,
                 ) {
-                    Ok(preview) => preview,
+                    Ok(impact) => (
+                        impact.proposal.clone(),
+                        impact.affected_feature_ids.clone(),
+                        Some(impact),
+                        None,
+                    ),
+                    Err(SharedChangeImpactError::DefinitionNotReused(_)) => {
+                        let preview = match prepare_body_parameter_edit(
+                            &self.document,
+                            request,
+                            ProposalPrincipal::ManualClient,
+                        ) {
+                            Ok(preview) => preview,
+                            Err(error) => {
+                                self.feature_history_error(error);
+                                return false;
+                            }
+                        };
+                        (preview.proposal, preview.affected_feature_ids, None, None)
+                    }
                     Err(error) => {
                         self.feature_history_error(error);
                         return false;
                     }
-                };
-                (preview.proposal, preview.affected_feature_ids, None)
-            }
-            Err(error) => {
-                self.feature_history_error(error);
-                return false;
-            }
-        };
+                },
+                FeatureHistoryChangeScope::MakeUnique => {
+                    let Some(occurrence_id) = self.selected_fork_occurrence(definition_id) else {
+                        self.feature_history_error(
+                            self.catalog.text("feature-history-error-select-occurrence"),
+                        );
+                        return false;
+                    };
+                    let fork_name = self.fork_definition_name(&snapshot, definition_id);
+                    let impact = match project_occurrence_fork_impact(
+                        &self.document,
+                        &self.exact_results,
+                        OccurrenceForkChangeRequest::exact_parameter_edit(
+                            &snapshot,
+                            occurrence_id,
+                            fork_name,
+                            request,
+                        ),
+                        ProposalPrincipal::ManualClient,
+                    ) {
+                        Ok(impact) => impact,
+                        Err(error) => {
+                            self.feature_history_error(error);
+                            return false;
+                        }
+                    };
+                    (
+                        impact.proposal.clone(),
+                        impact.affected_fork_feature_ids.clone(),
+                        None,
+                        Some(impact),
+                    )
+                }
+                FeatureHistoryChangeScope::ReplaceComponent => return false,
+            };
         if let Err(error) = self.document.preview_batch(proposal.batch()) {
             self.feature_history_error(error);
             return false;
@@ -348,6 +421,8 @@ impl KetchupApp {
             affected_feature_ids,
             suppressed_feature_ids: Vec::new(),
             shared_impact,
+            fork_impact,
+            replacement_impact: None,
         });
         self.digest = self.catalog.format(
             "feature-history-preview-ready",
@@ -375,54 +450,98 @@ impl KetchupApp {
             body_id,
             mutation,
         };
-        let (proposal, affected_feature_ids, suppressed_feature_ids, shared_impact) =
-            match project_shared_change_impact(
-                &self.document,
-                &self.exact_results,
-                SharedDefinitionChangeRequest::body_history_mutation(
-                    &self.document.current(),
-                    request,
-                ),
-                ProposalPrincipal::ManualClient,
-            ) {
-                Ok(impact) => (
-                    impact.proposal.clone(),
-                    impact.affected_feature_ids.clone(),
-                    match kind {
-                        FeatureHistoryPreviewKind::Suppress { boundary } => impact
-                            .affected_feature_ids
-                            .iter()
-                            .copied()
-                            .filter(|feature_id| *feature_id >= boundary)
-                            .collect(),
-                        FeatureHistoryPreviewKind::Resume
-                        | FeatureHistoryPreviewKind::ExactEdit => Vec::new(),
-                    },
-                    Some(impact),
-                ),
-                Err(SharedChangeImpactError::DefinitionNotReused(_)) => {
-                    let preview = match prepare_body_history_mutation(
+        let snapshot = self.document.current();
+        let (proposal, affected_feature_ids, suppressed_feature_ids, shared_impact, fork_impact) =
+            match self.feature_history.change_scope {
+                FeatureHistoryChangeScope::Shared => match project_shared_change_impact(
+                    &self.document,
+                    &self.exact_results,
+                    SharedDefinitionChangeRequest::body_history_mutation(&snapshot, request),
+                    ProposalPrincipal::ManualClient,
+                ) {
+                    Ok(impact) => (
+                        impact.proposal.clone(),
+                        impact.affected_feature_ids.clone(),
+                        match kind {
+                            FeatureHistoryPreviewKind::Suppress { boundary } => impact
+                                .affected_feature_ids
+                                .iter()
+                                .copied()
+                                .filter(|feature_id| *feature_id >= boundary)
+                                .collect(),
+                            FeatureHistoryPreviewKind::Resume
+                            | FeatureHistoryPreviewKind::ExactEdit
+                            | FeatureHistoryPreviewKind::ReplaceComponent => Vec::new(),
+                        },
+                        Some(impact),
+                        None,
+                    ),
+                    Err(SharedChangeImpactError::DefinitionNotReused(_)) => {
+                        let preview = match prepare_body_history_mutation(
+                            &self.document,
+                            request,
+                            ProposalPrincipal::ManualClient,
+                        ) {
+                            Ok(preview) => preview,
+                            Err(error) => {
+                                self.feature_history_error(error);
+                                return false;
+                            }
+                        };
+                        (
+                            preview.proposal,
+                            preview.affected_feature_ids,
+                            preview.suppressed_feature_ids,
+                            None,
+                            None,
+                        )
+                    }
+                    Err(error) => {
+                        self.feature_history_error(error);
+                        return false;
+                    }
+                },
+                FeatureHistoryChangeScope::MakeUnique => {
+                    let Some(occurrence_id) = self.selected_fork_occurrence(definition_id) else {
+                        self.feature_history_error(
+                            self.catalog.text("feature-history-error-select-occurrence"),
+                        );
+                        return false;
+                    };
+                    let fork_name = self.fork_definition_name(&snapshot, definition_id);
+                    let impact = match project_occurrence_fork_impact(
                         &self.document,
-                        request,
+                        &self.exact_results,
+                        OccurrenceForkChangeRequest::body_history_mutation(
+                            &snapshot,
+                            occurrence_id,
+                            fork_name,
+                            request,
+                        ),
                         ProposalPrincipal::ManualClient,
                     ) {
-                        Ok(preview) => preview,
+                        Ok(impact) => impact,
                         Err(error) => {
                             self.feature_history_error(error);
                             return false;
                         }
                     };
+                    let affected = impact.affected_fork_feature_ids.clone();
+                    let suppressed = match kind {
+                        FeatureHistoryPreviewKind::Suppress { .. } => affected.clone(),
+                        FeatureHistoryPreviewKind::Resume
+                        | FeatureHistoryPreviewKind::ExactEdit
+                        | FeatureHistoryPreviewKind::ReplaceComponent => Vec::new(),
+                    };
                     (
-                        preview.proposal,
-                        preview.affected_feature_ids,
-                        preview.suppressed_feature_ids,
+                        impact.proposal.clone(),
+                        affected,
+                        suppressed,
                         None,
+                        Some(impact),
                     )
                 }
-                Err(error) => {
-                    self.feature_history_error(error);
-                    return false;
-                }
+                FeatureHistoryChangeScope::ReplaceComponent => return false,
             };
         if let Err(error) = self.document.preview_batch(proposal.batch()) {
             self.feature_history_error(error);
@@ -431,7 +550,9 @@ impl KetchupApp {
         let action = self.catalog.text(match kind {
             FeatureHistoryPreviewKind::Suppress { .. } => "feature-history-action-suppress",
             FeatureHistoryPreviewKind::Resume => "feature-history-action-resume",
-            FeatureHistoryPreviewKind::ExactEdit => unreachable!(),
+            FeatureHistoryPreviewKind::ExactEdit | FeatureHistoryPreviewKind::ReplaceComponent => {
+                unreachable!()
+            }
         });
         self.feature_history.preview = Some(FeatureHistoryUiPreview {
             proposal,
@@ -440,6 +561,137 @@ impl KetchupApp {
             affected_feature_ids,
             suppressed_feature_ids,
             shared_impact,
+            fork_impact,
+            replacement_impact: None,
+        });
+        self.digest = self.catalog.format(
+            "feature-history-preview-ready",
+            &BTreeMap::from([("action", action)]),
+        );
+        true
+    }
+
+    fn prepare_component_replacement(&mut self) -> bool {
+        let Some(source_definition_id) = self.feature_history.definition else {
+            self.feature_history_error(
+                self.catalog.text("feature-history-error-select-occurrence"),
+            );
+            return false;
+        };
+        let Some(selected_occurrence_id) = self.selected_fork_occurrence(source_definition_id)
+        else {
+            self.feature_history_error(
+                self.catalog.text("feature-history-error-select-occurrence"),
+            );
+            return false;
+        };
+        let Some(target_definition_id) = self.feature_history.replacement_target else {
+            self.feature_history_error(
+                self.catalog
+                    .text("feature-history-error-no-replacement-target"),
+            );
+            return false;
+        };
+        let snapshot = self.document.current();
+        let missing_target_bodies = snapshot
+            .definition(target_definition_id)
+            .into_iter()
+            .flat_map(|definition| definition.bodies())
+            .filter(|body| body.visible() && body.consumed_by().is_none())
+            .filter_map(|body| {
+                self.exact_results
+                    .get_body(&snapshot, target_definition_id, body.id())
+                    .ok()
+                    .flatten()
+                    .is_none()
+                    .then_some(body.id())
+            })
+            .collect::<Vec<_>>();
+        if !missing_target_bodies.is_empty() {
+            let executable = match self.exact_worker_executable() {
+                Ok(executable) => executable,
+                Err(error) => {
+                    self.feature_history_error(error);
+                    return false;
+                }
+            };
+            let mut worker = match ExactWorkerSupervisor::spawn(executable) {
+                Ok(worker) => worker,
+                Err(error) => {
+                    self.feature_history_error(error);
+                    return false;
+                }
+            };
+            let mut packages = Vec::with_capacity(missing_target_bodies.len());
+            for body_id in missing_target_bodies {
+                let request = match ExactFeatureChainRequest::from_snapshot_for_body(
+                    &snapshot,
+                    target_definition_id,
+                    body_id,
+                ) {
+                    Ok(request) => request,
+                    Err(error) => {
+                        self.feature_history_error(error);
+                        return false;
+                    }
+                };
+                let package = match worker.evaluate_rectangle(&request) {
+                    Ok(package) => Arc::new(ExactBodyPackage::from(package)),
+                    Err(error) => {
+                        self.feature_history_error(error);
+                        return false;
+                    }
+                };
+                packages.push(package);
+            }
+            self.exact_results = match ExactResultRegistry::publish_body_results(
+                &snapshot,
+                &self.exact_results,
+                packages,
+            ) {
+                Ok(results) => results,
+                Err(error) => {
+                    self.feature_history_error(error);
+                    return false;
+                }
+            };
+        }
+        let impact = match project_component_replacement_impact(
+            &self.document,
+            &self.exact_results,
+            ComponentReplacementImpactRequest::new(
+                &snapshot,
+                selected_occurrence_id,
+                target_definition_id,
+            ),
+        ) {
+            Ok(impact) => impact,
+            Err(error) => {
+                self.feature_history_error(error);
+                return false;
+            }
+        };
+        let Some(proposal) = impact.proposal.clone() else {
+            self.feature_history_error("component replacement has no reviewed proposal");
+            return false;
+        };
+        let affected_feature_ids = impact
+            .feature_correspondence
+            .iter()
+            .map(|mapping| mapping.source_feature_id)
+            .collect();
+        let action = self
+            .catalog
+            .text("feature-history-action-replace-component");
+        self.feature_history.preview = Some(FeatureHistoryUiPreview {
+            proposal,
+            kind: FeatureHistoryPreviewKind::ReplaceComponent,
+            action: action.clone(),
+            affected_feature_ids,
+            suppressed_feature_ids: Vec::new(),
+            shared_impact: None,
+            fork_impact: None,
+            replacement_impact: Some(impact),
         });
         self.digest = self.catalog.format(
             "feature-history-preview-ready",
@@ -452,7 +704,14 @@ impl KetchupApp {
         let Some(preview) = self.feature_history.preview.take() else {
             return false;
         };
-        let result = if let Some(impact) = preview.shared_impact.as_ref() {
+        let propagated = preview.shared_impact.is_some()
+            || preview.fork_impact.is_some()
+            || preview.replacement_impact.is_some();
+        let result = if let Some(impact) = preview.replacement_impact.as_ref() {
+            commit_component_replacement(&mut self.document, &mut self.exact_results, impact)
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+        } else if propagated {
             let executable = match self.exact_worker_executable() {
                 Ok(executable) => executable,
                 Err(error) => {
@@ -470,20 +729,40 @@ impl KetchupApp {
             if let Some(task) = self.exact_task.take() {
                 task.cancelled.store(true, Ordering::Release);
             }
-            commit_shared_definition_change(
-                &mut self.document,
-                &mut self.exact_results,
-                impact,
-                |request| {
-                    worker
-                        .evaluate_rectangle(request)
-                        .map(ExactBodyPackage::from)
-                        .map(Arc::new)
-                        .map_err(|error| error.to_string())
-                },
-            )
-            .map(|_| ())
-            .map_err(|error| error.to_string())
+            if let Some(impact) = preview.fork_impact.as_ref() {
+                commit_occurrence_fork_change(
+                    &mut self.document,
+                    &mut self.exact_results,
+                    impact,
+                    |request| {
+                        worker
+                            .evaluate_rectangle(request)
+                            .map(ExactBodyPackage::from)
+                            .map(Arc::new)
+                            .map_err(|error| error.to_string())
+                    },
+                )
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+            } else {
+                commit_shared_definition_change(
+                    &mut self.document,
+                    &mut self.exact_results,
+                    preview
+                        .shared_impact
+                        .as_ref()
+                        .expect("propagated shared preview has an impact"),
+                    |request| {
+                        worker
+                            .evaluate_rectangle(request)
+                            .map(ExactBodyPackage::from)
+                            .map(Arc::new)
+                            .map_err(|error| error.to_string())
+                    },
+                )
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+            }
         } else {
             self.document
                 .commit_verified_proposal(&preview.proposal)
@@ -494,7 +773,7 @@ impl KetchupApp {
             Ok(()) => {
                 self.feature_history.parameter_source = None;
                 self.reconcile_selection();
-                if preview.shared_impact.is_some() {
+                if propagated {
                     let snapshot = self.document.current();
                     self.render_plan = Some(Arc::new(InstancedRenderPlan::from_snapshot(
                         &snapshot,
@@ -663,6 +942,347 @@ impl KetchupApp {
         ));
     }
 
+    fn show_occurrence_fork_impact(
+        &self,
+        ui: &mut egui::Ui,
+        impact: &OccurrenceForkImpactProjection,
+    ) {
+        ui.label(self.catalog.text("feature-history-fork-impact-title"));
+        ui.label(self.catalog.format(
+            "feature-history-fork-impact-identity",
+            &BTreeMap::from([
+                ("occurrence", impact.selected_occurrence_id.0.to_string()),
+                ("source", impact.source_definition_id.0.to_string()),
+                ("fork", impact.fork_definition_id.0.to_string()),
+            ]),
+        ));
+        let siblings = impact
+            .unchanged_sibling_occurrences
+            .iter()
+            .map(|occurrence| {
+                self.catalog.format(
+                    "feature-history-shared-impact-occurrence",
+                    &BTreeMap::from([
+                        ("id", occurrence.occurrence_id.0.to_string()),
+                        (
+                            "visibility",
+                            self.catalog.text(if occurrence.visible {
+                                "feature-history-shared-impact-visible"
+                            } else {
+                                "feature-history-shared-impact-hidden"
+                            }),
+                        ),
+                    ]),
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        ui.label(self.catalog.format(
+            "feature-history-fork-impact-siblings",
+            &BTreeMap::from([(
+                "items",
+                if siblings.is_empty() {
+                    "—".to_owned()
+                } else {
+                    siblings
+                },
+            )]),
+        ));
+        ui.label(self.catalog.format(
+            "feature-history-shared-impact-bodies",
+            &BTreeMap::from([("items", body_ids(&impact.affected_fork_body_ids))]),
+        ));
+        let mates = impact
+            .mate_references
+            .iter()
+            .map(|reference| format!("{}@{}", reference.mate_id.0, reference.occurrence_id.0))
+            .collect::<Vec<_>>()
+            .join(", ");
+        ui.label(self.catalog.format(
+            "feature-history-shared-impact-mates",
+            &BTreeMap::from([(
+                "items",
+                if mates.is_empty() {
+                    "—".to_owned()
+                } else {
+                    mates
+                },
+            )]),
+        ));
+        let views = impact
+            .drawing_views
+            .iter()
+            .map(|view| {
+                let kind = self.catalog.text(match view.view {
+                    ketchup_core::drawing::OrthographicViewKind::Front => {
+                        "feature-history-shared-impact-view-front"
+                    }
+                    ketchup_core::drawing::OrthographicViewKind::Top => {
+                        "feature-history-shared-impact-view-top"
+                    }
+                    ketchup_core::drawing::OrthographicViewKind::Right => {
+                        "feature-history-shared-impact-view-right"
+                    }
+                });
+                format!("{}:{kind}", view.sheet_id.0)
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        ui.label(self.catalog.format(
+            "feature-history-shared-impact-views",
+            &BTreeMap::from([(
+                "items",
+                if views.is_empty() {
+                    "—".to_owned()
+                } else {
+                    views
+                },
+            )]),
+        ));
+        let jobs = impact
+            .exact_jobs
+            .iter()
+            .map(|job| format!("{}:{}", job.body_id.0, job.producer_feature_id.0))
+            .collect::<Vec<_>>()
+            .join(", ");
+        ui.label(self.catalog.format(
+            "feature-history-shared-impact-jobs",
+            &BTreeMap::from([(
+                "items",
+                if jobs.is_empty() {
+                    "—".to_owned()
+                } else {
+                    jobs
+                },
+            )]),
+        ));
+        let exports = impact
+            .exports
+            .iter()
+            .map(|export| {
+                let format = self.catalog.text(match export.format {
+                    SharedChangeExportFormat::Step => "feature-history-shared-impact-export-step",
+                    SharedChangeExportFormat::Stl => "feature-history-shared-impact-export-stl",
+                });
+                let eligibility = self.catalog.text(match export.eligibility {
+                    SharedChangeExportEligibility::PendingExactRecompute => {
+                        "feature-history-shared-impact-export-pending"
+                    }
+                    SharedChangeExportEligibility::CurrentExact => {
+                        "feature-history-shared-impact-export-current"
+                    }
+                });
+                format!("{format}: {eligibility}")
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        ui.label(self.catalog.format(
+            "feature-history-shared-impact-exports",
+            &BTreeMap::from([(
+                "items",
+                if exports.is_empty() {
+                    self.catalog
+                        .text("feature-history-shared-impact-export-none")
+                } else {
+                    exports
+                },
+            )]),
+        ));
+        ui.label(self.catalog.format(
+            "feature-history-fork-impact-diagnostics",
+            &BTreeMap::from([
+                ("revision", impact.source_revision.to_string()),
+                ("source", impact.source_definition_id.0.to_string()),
+                ("fork", impact.fork_definition_id.0.to_string()),
+            ]),
+        ));
+    }
+
+    fn show_component_replacement_impact(
+        &self,
+        ui: &mut egui::Ui,
+        impact: &ComponentReplacementImpactProjection,
+    ) {
+        ui.label(
+            self.catalog
+                .text("feature-history-replacement-impact-title"),
+        );
+        ui.label(self.catalog.format(
+            "feature-history-replacement-impact-identity",
+            &BTreeMap::from([
+                ("occurrence", impact.selected_occurrence_id.0.to_string()),
+                ("source", impact.source_definition_id.0.to_string()),
+                ("target", impact.target_definition_id.0.to_string()),
+            ]),
+        ));
+        let bodies = impact
+            .body_correspondence
+            .iter()
+            .map(|mapping| format!("{}→{}", mapping.source_body_id.0, mapping.target_body_id.0))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let features = impact
+            .feature_correspondence
+            .iter()
+            .map(|mapping| {
+                format!(
+                    "{}→{}",
+                    mapping.source_feature_id.0, mapping.target_feature_id.0
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let subshapes = impact
+            .subshape_correspondence
+            .iter()
+            .map(|mapping| {
+                format!(
+                    "{}:{}→{}",
+                    mapping.semantic_role,
+                    mapping.source_producer_feature_id.0,
+                    mapping.target_producer_feature_id.0
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        ui.label(self.catalog.format(
+            "feature-history-replacement-impact-bodies",
+            &BTreeMap::from([("items", bodies)]),
+        ));
+        ui.label(self.catalog.format(
+            "feature-history-replacement-impact-features",
+            &BTreeMap::from([("items", features)]),
+        ));
+        ui.label(self.catalog.format(
+            "feature-history-replacement-impact-subshapes",
+            &BTreeMap::from([("items", subshapes)]),
+        ));
+        let siblings = impact
+            .unchanged_source_occurrences
+            .iter()
+            .map(|occurrence| format!("S{}", occurrence.occurrence_id.0))
+            .chain(
+                impact
+                    .unchanged_target_occurrences
+                    .iter()
+                    .map(|occurrence| format!("T{}", occurrence.occurrence_id.0)),
+            )
+            .collect::<Vec<_>>()
+            .join(", ");
+        ui.label(self.catalog.format(
+            "feature-history-replacement-impact-siblings",
+            &BTreeMap::from([(
+                "items",
+                if siblings.is_empty() {
+                    "—".to_owned()
+                } else {
+                    siblings
+                },
+            )]),
+        ));
+        let mates = impact
+            .mate_references
+            .iter()
+            .map(|reference| format!("{}@{}", reference.mate_id.0, reference.occurrence_id.0))
+            .collect::<Vec<_>>()
+            .join(", ");
+        ui.label(self.catalog.format(
+            "feature-history-shared-impact-mates",
+            &BTreeMap::from([(
+                "items",
+                if mates.is_empty() {
+                    "—".to_owned()
+                } else {
+                    mates
+                },
+            )]),
+        ));
+        let views = impact
+            .drawing_views
+            .iter()
+            .map(|view| {
+                let kind = self.catalog.text(match view.view {
+                    ketchup_core::drawing::OrthographicViewKind::Front => {
+                        "feature-history-shared-impact-view-front"
+                    }
+                    ketchup_core::drawing::OrthographicViewKind::Top => {
+                        "feature-history-shared-impact-view-top"
+                    }
+                    ketchup_core::drawing::OrthographicViewKind::Right => {
+                        "feature-history-shared-impact-view-right"
+                    }
+                });
+                format!("{}:{kind}", view.sheet_id.0)
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        ui.label(self.catalog.format(
+            "feature-history-shared-impact-views",
+            &BTreeMap::from([(
+                "items",
+                if views.is_empty() {
+                    "—".to_owned()
+                } else {
+                    views
+                },
+            )]),
+        ));
+        let jobs = impact
+            .exact_jobs
+            .iter()
+            .map(|job| {
+                format!(
+                    "{}:{}:{}",
+                    job.definition_id.0, job.body_id.0, job.producer_feature_id.0
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        ui.label(self.catalog.format(
+            "feature-history-replacement-impact-jobs",
+            &BTreeMap::from([("items", jobs)]),
+        ));
+        let exports = impact
+            .exports
+            .iter()
+            .map(|export| {
+                let format = self.catalog.text(match export.format {
+                    SharedChangeExportFormat::Step => "feature-history-shared-impact-export-step",
+                    SharedChangeExportFormat::Stl => "feature-history-shared-impact-export-stl",
+                });
+                let eligibility = self.catalog.text(match export.eligibility {
+                    SharedChangeExportEligibility::PendingExactRecompute => {
+                        "feature-history-shared-impact-export-pending"
+                    }
+                    SharedChangeExportEligibility::CurrentExact => {
+                        "feature-history-shared-impact-export-current"
+                    }
+                });
+                format!("{format}: {eligibility}")
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        ui.label(self.catalog.format(
+            "feature-history-shared-impact-exports",
+            &BTreeMap::from([("items", exports)]),
+        ));
+        ui.label(
+            self.catalog.format(
+                "feature-history-replacement-impact-diagnostics",
+                &BTreeMap::from([
+                    ("revision", impact.source_revision.to_string()),
+                    (
+                        "candidate",
+                        impact
+                            .candidate_digest
+                            .clone()
+                            .unwrap_or_else(|| "—".to_owned()),
+                    ),
+                ]),
+            ),
+        );
+    }
+
     pub(super) fn show_feature_history(&mut self, ui: &mut egui::Ui) {
         egui::CollapsingHeader::new(self.catalog.text("feature-history-title"))
             .id_salt("feature-history")
@@ -687,6 +1307,19 @@ impl KetchupApp {
             .definitions()
             .map(|definition| (definition.id(), definition.name().to_owned()))
             .collect::<Vec<_>>();
+        let replacement_targets = definitions
+            .iter()
+            .filter(|(id, _)| Some(*id) != self.feature_history.definition)
+            .cloned()
+            .collect::<Vec<_>>();
+        if self
+            .feature_history
+            .replacement_target
+            .is_none_or(|id| !replacement_targets.iter().any(|(target, _)| *target == id))
+        {
+            self.feature_history.replacement_target =
+                replacement_targets.first().map(|(id, _)| *id);
+        }
         if let Some(mut selected) = self.feature_history.definition {
             let label = self.catalog.text("feature-history-definition");
             let selected_text = definitions
@@ -809,6 +1442,66 @@ impl KetchupApp {
             ));
         }
 
+        let definition_reused = snapshot
+            .scene_query()
+            .into_iter()
+            .filter(|occurrence| {
+                occurrence.instance_path.is_root()
+                    && occurrence.definition_id == projection.definition_id
+            })
+            .count()
+            >= 2;
+        let can_replace = !replacement_targets.is_empty();
+        if !definition_reused
+            && self.feature_history.change_scope == FeatureHistoryChangeScope::MakeUnique
+        {
+            self.feature_history.change_scope = FeatureHistoryChangeScope::Shared;
+        }
+        if !can_replace
+            && self.feature_history.change_scope == FeatureHistoryChangeScope::ReplaceComponent
+        {
+            self.feature_history.change_scope = FeatureHistoryChangeScope::Shared;
+        }
+        if self.feature_history.preview.is_none() && (definition_reused || can_replace) {
+            ui.separator();
+            ui.label(self.catalog.text("feature-history-change-scope"));
+            ui.vertical(|ui| {
+                ui.radio_value(
+                    &mut self.feature_history.change_scope,
+                    FeatureHistoryChangeScope::Shared,
+                    self.catalog.text("feature-history-change-scope-shared"),
+                );
+                if definition_reused {
+                    ui.radio_value(
+                        &mut self.feature_history.change_scope,
+                        FeatureHistoryChangeScope::MakeUnique,
+                        self.catalog
+                            .text("feature-history-change-scope-make-unique"),
+                    );
+                }
+                if can_replace {
+                    ui.radio_value(
+                        &mut self.feature_history.change_scope,
+                        FeatureHistoryChangeScope::ReplaceComponent,
+                        self.catalog
+                            .text("feature-history-change-scope-replace-component"),
+                    );
+                }
+            });
+            if matches!(
+                self.feature_history.change_scope,
+                FeatureHistoryChangeScope::MakeUnique | FeatureHistoryChangeScope::ReplaceComponent
+            ) && self
+                .selected_fork_occurrence(projection.definition_id)
+                .is_none()
+            {
+                ui.label(
+                    self.catalog
+                        .text("feature-history-change-scope-select-occurrence"),
+                );
+            }
+        }
+
         if let Some(preview) = self.feature_history.preview.as_ref() {
             ui.separator();
             ui.label(self.catalog.format(
@@ -822,6 +1515,12 @@ impl KetchupApp {
             if let Some(impact) = preview.shared_impact.as_ref() {
                 self.show_shared_change_impact(ui, impact);
             }
+            if let Some(impact) = preview.fork_impact.as_ref() {
+                self.show_occurrence_fork_impact(ui, impact);
+            }
+            if let Some(impact) = preview.replacement_impact.as_ref() {
+                self.show_component_replacement_impact(ui, impact);
+            }
             if ui
                 .button(self.catalog.text("feature-history-confirm"))
                 .clicked()
@@ -833,6 +1532,43 @@ impl KetchupApp {
                 .clicked()
             {
                 action = Some(FeatureHistoryUiAction::Cancel);
+            }
+        } else if self.feature_history.change_scope == FeatureHistoryChangeScope::ReplaceComponent {
+            if let Some(mut target) = self.feature_history.replacement_target {
+                let label = self.catalog.text("feature-history-replacement-target");
+                let selected_text = replacement_targets
+                    .iter()
+                    .find(|(id, _)| *id == target)
+                    .map_or_else(|| target.0.to_string(), |(_, name)| name.clone());
+                let response = egui::ComboBox::from_id_salt("feature-history-replacement-target")
+                    .width(ui.available_width())
+                    .selected_text(selected_text)
+                    .show_ui(ui, |ui| {
+                        for (id, name) in &replacement_targets {
+                            ui.selectable_value(&mut target, *id, name);
+                        }
+                    });
+                response.response.widget_info(|| {
+                    egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, &label)
+                });
+                if self.feature_history.replacement_target != Some(target) {
+                    action = Some(FeatureHistoryUiAction::SelectReplacementTarget(target));
+                }
+            }
+            if ui
+                .add_enabled(
+                    self.feature_history.replacement_target.is_some()
+                        && self
+                            .selected_fork_occurrence(projection.definition_id)
+                            .is_some(),
+                    egui::Button::new(
+                        self.catalog
+                            .text("feature-history-preview-replace-component"),
+                    ),
+                )
+                .clicked()
+            {
+                action = Some(FeatureHistoryUiAction::PreviewReplacement);
             }
         } else if let Some(feature_id) = self.feature_history.selected_feature {
             let choices = self.feature_parameter_choices(&snapshot, feature_id);
@@ -919,6 +1655,7 @@ impl KetchupApp {
                 self.feature_history.selected_feature = None;
                 self.feature_history.selected_parameter = None;
                 self.feature_history.parameter_source = None;
+                self.feature_history.replacement_target = None;
             }
             Some(FeatureHistoryUiAction::SelectBody(id)) => {
                 self.feature_history.selected_body = Some(id);
@@ -943,6 +1680,9 @@ impl KetchupApp {
                 self.feature_history.selected_parameter = Some(target);
                 self.feature_history.parameter_source = None;
             }
+            Some(FeatureHistoryUiAction::SelectReplacementTarget(target)) => {
+                self.feature_history.replacement_target = Some(target);
+            }
             Some(FeatureHistoryUiAction::PreviewEdit) => {
                 self.prepare_feature_history_edit();
             }
@@ -955,6 +1695,9 @@ impl KetchupApp {
             }
             Some(FeatureHistoryUiAction::PreviewResume) => {
                 self.prepare_feature_history_mutation(BodyHistoryMutation::Resume);
+            }
+            Some(FeatureHistoryUiAction::PreviewReplacement) => {
+                self.prepare_component_replacement();
             }
             Some(FeatureHistoryUiAction::Confirm) => {
                 self.confirm_feature_history_preview();
@@ -972,6 +1715,22 @@ impl KetchupApp {
     #[must_use]
     pub fn feature_history_selected_body_id(&self) -> Option<ketchup_core::document::BodyId> {
         self.feature_history.selected_body
+    }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub fn feature_history_selection_ids(
+        &self,
+    ) -> (
+        Option<DefinitionId>,
+        Option<ketchup_core::document::BodyId>,
+        Option<DefinitionId>,
+    ) {
+        (
+            self.feature_history.definition,
+            self.feature_history.selected_body,
+            self.feature_history.replacement_target,
+        )
     }
 
     #[must_use]
@@ -1018,6 +1777,75 @@ impl KetchupApp {
             .len();
         }
         Some([mate_count, drawing_view_count])
+    }
+
+    #[must_use]
+    pub fn feature_history_fork_impact_counts(&self) -> Option<[usize; 6]> {
+        self.feature_history
+            .preview
+            .as_ref()
+            .and_then(|preview| preview.fork_impact.as_ref())
+            .map(|impact| {
+                [
+                    impact.unchanged_sibling_occurrences.len(),
+                    impact.affected_fork_body_ids.len(),
+                    impact.mate_references.len(),
+                    impact.drawing_views.len(),
+                    impact.exact_jobs.len(),
+                    impact.exports.len(),
+                ]
+            })
+    }
+
+    #[must_use]
+    pub fn feature_history_fork_identity(&self) -> Option<[u64; 3]> {
+        self.feature_history
+            .preview
+            .as_ref()
+            .and_then(|preview| preview.fork_impact.as_ref())
+            .map(|impact| {
+                [
+                    impact.selected_occurrence_id.0,
+                    impact.source_definition_id.0,
+                    impact.fork_definition_id.0,
+                ]
+            })
+    }
+
+    #[must_use]
+    pub fn feature_history_replacement_identity(&self) -> Option<[u64; 3]> {
+        self.feature_history
+            .preview
+            .as_ref()
+            .and_then(|preview| preview.replacement_impact.as_ref())
+            .map(|impact| {
+                [
+                    impact.selected_occurrence_id.0,
+                    impact.source_definition_id.0,
+                    impact.target_definition_id.0,
+                ]
+            })
+    }
+
+    #[must_use]
+    pub fn feature_history_replacement_impact_counts(&self) -> Option<[usize; 9]> {
+        self.feature_history
+            .preview
+            .as_ref()
+            .and_then(|preview| preview.replacement_impact.as_ref())
+            .map(|impact| {
+                [
+                    impact.body_correspondence.len(),
+                    impact.feature_correspondence.len(),
+                    impact.subshape_correspondence.len(),
+                    impact.unchanged_source_occurrences.len(),
+                    impact.unchanged_target_occurrences.len(),
+                    impact.mate_references.len(),
+                    impact.drawing_views.len(),
+                    impact.exact_jobs.len(),
+                    impact.exports.len(),
+                ]
+            })
     }
 
     #[must_use]

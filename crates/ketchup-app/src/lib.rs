@@ -16,15 +16,16 @@ use ketchup_core::bottle_m6::{BottleAuthorityReport, ExactRevolvePackage, ExactR
 use ketchup_core::document::{
     AuthenticatedApprover, AuthoritativeDependency, BOTTLE_SHELL_OPENING_FACE_ROLE,
     BOTTLE_SHOULDER_EDGE_ROLE, BooleanOperation, BottleControlDimension, BottleEdgeFinishKind,
-    CanonicalCommand, CollectionId, CommandBatch, DefinitionId, Dimension, DimensionDisplayUnit,
-    DimensionPresentation, DocumentId, DocumentStore, EvaluationIdentity, FeatureId, FeatureKind,
-    FeatureParameterSlot, FeatureParameterTarget, GroupId, HighRiskClass, HighRiskScope,
-    InstancePath, LoftSection, MAX_HUMAN_CONFIRMATION_LIFETIME_MS, MESH_BODY_SCHEMA_V1,
-    MeshAuthority, MeshBodySpec, NodeId, OccurrenceId, PersistentDimensionId, ProfileSegment,
-    Proposal, ProposalCommitError, ProposalContext, ProposalGoal, ProposalPrincipal, ProposalValue,
-    SceneOccurrence, SceneQueryContext, SideEffectAuthorizationReceipt, SlotPath, Snapshot,
-    SolidToolPlan, StableEdgeRole, StableFaceRole, TagId, TipReplacementParent,
-    TipReplacementProposal, Transform, TrustedConfirmationSurface,
+    CanonicalCommand, CloneDefinitionPlan, CollectionId, CommandBatch, DefinitionId, Dimension,
+    DimensionDisplayUnit, DimensionPresentation, DocumentId, DocumentStore, EvaluationIdentity,
+    FeatureId, FeatureKind, FeatureParameterSlot, FeatureParameterTarget, GroupId, HighRiskClass,
+    HighRiskScope, InstancePath, LoftSection, MAX_HUMAN_CONFIRMATION_LIFETIME_MS,
+    MESH_BODY_SCHEMA_V1, MeshAuthority, MeshBodySpec, NodeId, OccurrenceId, PersistentDimensionId,
+    ProfileSegment, Proposal, ProposalCommitError, ProposalContext, ProposalGoal,
+    ProposalPrincipal, ProposalValue, SceneOccurrence, SceneQueryContext,
+    SideEffectAuthorizationReceipt, SlotPath, Snapshot, SolidToolPlan, StableEdgeRole,
+    StableFaceRole, TagId, TipReplacementParent, TipReplacementProposal, Transform,
+    TrustedConfirmationSurface,
 };
 #[cfg(test)]
 use ketchup_core::document::{
@@ -34,7 +35,7 @@ use ketchup_core::exact_product::{
     AssemblySelectionTarget, ExactBodyPackage, ExactBodyView, ExactFaceRole,
     ExactFeatureChainRequest, ExactLoftRequest, ExactMeshExport, ExactPlanarOffsetRequest,
     ExactResultRegistry, ExactStlExport, ExactSweepRequest, ImportedExactPackage,
-    exact_model_stl_export,
+    exact_model_stl_export, is_line_arc_capsule_profile,
 };
 use ketchup_core::fabrication::{FullBomProjection, PieceDimensionSheet};
 use ketchup_core::graph::{
@@ -55,6 +56,7 @@ use ketchup_core::sketch::{PrincipalPlane, WorkplaneFrame, WorkplaneSpec, Workpl
 #[cfg(test)]
 use ketchup_core::space::ClearanceOwner;
 use ketchup_core::space::{ClearanceSeverity, ClearanceVolumeId, SpaceId};
+use ketchup_core::state_view::{AGENT_STATE_VIEW_V1, encode_semantic_state};
 use ketchup_core::validation::ValidationReport;
 use ketchup_interaction::{
     Axis, ElementId, ExactHit, LocaleCatalog, PickResult, Ray, SelectionId, Side, SnapKind,
@@ -76,6 +78,7 @@ mod body_ui;
 pub mod dialogs;
 mod face_workflow_ui;
 mod feature_history_ui;
+mod part_authoring_ui;
 #[cfg(debug_assertions)]
 #[doc(hidden)]
 pub use face_workflow_ui::HeadlessFaceWorkflowFailure;
@@ -136,7 +139,15 @@ const MAX_CAMERA_ZOOM: f32 = 8.0;
 const ASSISTANT_MODELS_YAML: &str = include_str!("../assistant-models.yaml");
 const ASSISTANT_CHAT_NAMESPACE: &str = "org.ketchup.assistant";
 const ASSISTANT_CHAT_PATH: &str = "conversation-v1.json";
+const ASSISTANT_MEMORY_PATH: &str = "project-memory-v1.json";
+const ASSISTANT_MEMORY_SCHEMA: &str = "ketchup.project-memory.v1";
 const ASSISTANT_TIMEOUT: Duration = Duration::from_secs(300);
+const MAX_ASSISTANT_STATE_VIEW_BYTES: usize = 12 * 1024;
+const MAX_ASSISTANT_MEMORY_ENTRIES: usize = 128;
+const MAX_ASSISTANT_MEMORY_TEXT_BYTES: usize = 1024;
+const MAX_ASSISTANT_MEMORY_RETRIEVAL_ENTRIES: usize = 4;
+const MAX_ASSISTANT_MEMORY_RETRIEVAL_BYTES: usize = 8 * 1024;
+const MAX_ASSISTANT_MEMORY_STORAGE_BYTES: usize = 320 * 1024;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NativeDocumentInspection {
@@ -409,7 +420,7 @@ struct EphemeralBoxPreview {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum SmartPushPullChoice {
     NewFeature,
-    CircularCut(OccurrenceId),
+    ProfileCut(OccurrenceId),
 }
 
 #[derive(Clone)]
@@ -1028,7 +1039,7 @@ impl CommandRegistry {
             label_key: "tool-line",
             shortcut_key: "shortcut-line",
             tool: Some(ActiveTool::Line),
-            implemented: false,
+            implemented: true,
         },
         CommandSpec {
             id: AppCommand::Rectangle,
@@ -1545,9 +1556,178 @@ struct AssistantConversation {
     messages: Vec<AssistantChatMessage>,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct AssistantMemoryEntry {
+    sequence: u64,
+    user: String,
+    assistant: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct AssistantProjectMemory {
+    schema: String,
+    document_id: u64,
+    next_sequence: u64,
+    entries: Vec<AssistantMemoryEntry>,
+}
+
+impl AssistantProjectMemory {
+    fn empty(document_id: u64) -> Self {
+        Self {
+            schema: ASSISTANT_MEMORY_SCHEMA.to_owned(),
+            document_id,
+            next_sequence: 1,
+            entries: Vec::new(),
+        }
+    }
+
+    fn validate(&self, document_id: u64) -> bool {
+        if self.schema != ASSISTANT_MEMORY_SCHEMA
+            || self.document_id != document_id
+            || self.entries.len() > MAX_ASSISTANT_MEMORY_ENTRIES
+            || self.next_sequence == 0
+        {
+            return false;
+        }
+        let mut previous = 0;
+        for entry in &self.entries {
+            if entry.sequence <= previous
+                || entry.user.is_empty()
+                || entry.assistant.is_empty()
+                || entry.user.len() > MAX_ASSISTANT_MEMORY_TEXT_BYTES
+                || entry.assistant.len() > MAX_ASSISTANT_MEMORY_TEXT_BYTES
+            {
+                return false;
+            }
+            previous = entry.sequence;
+        }
+        self.next_sequence > previous
+    }
+
+    fn remember(&mut self, user: &str, assistant: &str) {
+        if self.next_sequence == u64::MAX {
+            return;
+        }
+        let user = bounded_assistant_memory_text(user);
+        let assistant = bounded_assistant_memory_text(assistant);
+        if user.is_empty() || assistant.is_empty() {
+            return;
+        }
+        self.entries.push(AssistantMemoryEntry {
+            sequence: self.next_sequence,
+            user,
+            assistant,
+        });
+        self.next_sequence += 1;
+        if self.entries.len() > MAX_ASSISTANT_MEMORY_ENTRIES {
+            self.entries
+                .drain(..self.entries.len() - MAX_ASSISTANT_MEMORY_ENTRIES);
+        }
+    }
+
+    fn retrieval_context(&self, query: &str) -> serde_json::Value {
+        let query_tokens = assistant_memory_tokens(query);
+        let mut ranked = self
+            .entries
+            .iter()
+            .map(|entry| {
+                let entry_tokens =
+                    assistant_memory_tokens(&format!("{} {}", entry.user, entry.assistant));
+                let score = query_tokens.intersection(&entry_tokens).count();
+                (score, entry)
+            })
+            .collect::<Vec<_>>();
+        ranked.sort_by(|left, right| {
+            right
+                .0
+                .cmp(&left.0)
+                .then_with(|| right.1.sequence.cmp(&left.1.sequence))
+        });
+        let has_positive_match = ranked.first().is_some_and(|item| item.0 > 0);
+        let mut entries = Vec::new();
+        for (score, entry) in ranked {
+            if has_positive_match && score == 0 {
+                continue;
+            }
+            let value = serde_json::json!({
+                "sequence": entry.sequence,
+                "user": entry.user,
+                "assistant": entry.assistant,
+                "sha256": assistant_memory_entry_sha256(entry),
+            });
+            entries.push(value);
+            if entries.len() > MAX_ASSISTANT_MEMORY_RETRIEVAL_ENTRIES
+                || serde_json::to_vec(&entries)
+                    .is_ok_and(|bytes| bytes.len() > MAX_ASSISTANT_MEMORY_RETRIEVAL_BYTES)
+            {
+                entries.pop();
+                break;
+            }
+        }
+        let byte_length = serde_json::to_vec(&entries).map_or(0, |bytes| bytes.len());
+        serde_json::json!({
+            "schema": ASSISTANT_MEMORY_SCHEMA,
+            "document_id": self.document_id,
+            "stored_count": self.entries.len(),
+            "retrieved_count": entries.len(),
+            "complete": entries.len() == self.entries.len(),
+            "byte_length": byte_length,
+            "entries": entries,
+        })
+    }
+}
+
+fn bounded_assistant_memory_text(text: &str) -> String {
+    let text = text.trim();
+    if text.len() <= MAX_ASSISTANT_MEMORY_TEXT_BYTES {
+        return text.to_owned();
+    }
+    let mut end = MAX_ASSISTANT_MEMORY_TEXT_BYTES;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text[..end].trim_end().to_owned()
+}
+
+fn assistant_memory_tokens(text: &str) -> BTreeSet<String> {
+    text.split(|character: char| !character.is_alphanumeric())
+        .filter(|token| token.chars().count() >= 2)
+        .map(str::to_lowercase)
+        .collect()
+}
+
+fn assistant_memory_entry_sha256(entry: &AssistantMemoryEntry) -> String {
+    ketchup_core::graph::sha256_hex(
+        format!("{}\n{}\n{}", entry.sequence, entry.user, entry.assistant).as_bytes(),
+    )
+}
+
 fn assistant_conversation_digest(messages: &[AssistantChatMessage]) -> String {
     let bytes = serde_json::to_vec(messages).expect("assistant messages are serializable");
     ketchup_core::graph::sha256_hex(&bytes)
+}
+
+fn bounded_assistant_state_view(content: &str) -> serde_json::Value {
+    let complete = content.len() <= MAX_ASSISTANT_STATE_VIEW_BYTES;
+    let bounded = if complete {
+        content
+    } else {
+        let mut end = MAX_ASSISTANT_STATE_VIEW_BYTES.min(content.len());
+        while !content.is_char_boundary(end) {
+            end -= 1;
+        }
+        let line_end = content[..end].rfind('\n').map_or(end, |index| index + 1);
+        &content[..line_end]
+    };
+    serde_json::json!({
+        "format": AGENT_STATE_VIEW_V1,
+        "complete": complete,
+        "byte_length": content.len(),
+        "sha256": ketchup_core::graph::sha256_hex(content.as_bytes()),
+        "content": bounded,
+    })
 }
 
 pub trait AssistantTransport: Send + Sync {
@@ -1734,6 +1914,7 @@ pub struct KetchupApp {
     body_editor: body_ui::BodyEditorState,
     face_workflow: face_workflow_ui::FaceWorkflowUiState,
     feature_history: feature_history_ui::FeatureHistoryUiState,
+    part_authoring: part_authoring_ui::PartAuthoringUiState,
     push_pull_distance_input: String,
     preview: Option<CommandBatch>,
     preview_box: Option<EphemeralBoxPreview>,
@@ -1781,6 +1962,7 @@ pub struct KetchupApp {
     assistant_workspace_mode: AssistantWorkspaceMode,
     assistant_input: String,
     assistant_messages: Vec<AssistantChatMessage>,
+    assistant_memory: AssistantProjectMemory,
     assistant_transport: Arc<dyn AssistantTransport>,
     assistant_chat_task: Option<AssistantChatTask>,
     assistant_pending_execution: Option<AssistantPendingExecution>,
@@ -1812,6 +1994,9 @@ pub struct KetchupApp {
     sketch_start: Option<Vec3>,
     sketch_end: Option<Vec3>,
     sketch_cursor: Option<Vec3>,
+    line_chain_origin: Option<Vec3>,
+    line_chain_points: Vec<Vec3>,
+    line_chain_items: Vec<(DefinitionId, OccurrenceId)>,
     value_input: String,
     focus_value_box: bool,
     occurrence_clipboard: Vec<OccurrenceId>,
@@ -1894,6 +2079,7 @@ impl KetchupApp {
             ))
             .expect("the built-in initial document is valid");
         document.discard_history_before_current();
+        let assistant_memory = AssistantProjectMemory::empty(document.current().document_id().0);
         let saved_digest = document.current().canonical_digest();
         let digest = catalog.text("status-ready");
         Self {
@@ -1910,6 +2096,7 @@ impl KetchupApp {
             body_editor: body_ui::BodyEditorState::default(),
             face_workflow: face_workflow_ui::FaceWorkflowUiState::default(),
             feature_history: feature_history_ui::FeatureHistoryUiState::default(),
+            part_authoring: part_authoring_ui::PartAuthoringUiState::default(),
             push_pull_distance_input: String::new(),
             preview: None,
             preview_box: None,
@@ -1957,6 +2144,7 @@ impl KetchupApp {
             assistant_workspace_mode: AssistantWorkspaceMode::Dock,
             assistant_input: String::new(),
             assistant_messages: Vec::new(),
+            assistant_memory,
             assistant_transport: Arc::new(ProcessAssistantTransport),
             assistant_chat_task: None,
             assistant_pending_execution: None,
@@ -1984,6 +2172,9 @@ impl KetchupApp {
             sketch_start: None,
             sketch_end: None,
             sketch_cursor: None,
+            line_chain_origin: None,
+            line_chain_points: Vec::new(),
+            line_chain_items: Vec::new(),
             value_input: String::new(),
             focus_value_box: false,
             occurrence_clipboard: Vec::new(),
@@ -2123,6 +2314,7 @@ impl KetchupApp {
         self.body_editor = body_ui::BodyEditorState::default();
         self.face_workflow = face_workflow_ui::FaceWorkflowUiState::default();
         self.feature_history = feature_history_ui::FeatureHistoryUiState::default();
+        self.part_authoring = part_authoring_ui::PartAuthoringUiState::default();
         self.selection = SelectionState::default();
         self.hovered = None;
         self.hover_pick = None;
@@ -2218,6 +2410,7 @@ impl KetchupApp {
                 self.saved_digest = self.document.current().canonical_digest();
                 self.reset_document_presentation();
                 self.load_assistant_conversation();
+                self.load_assistant_memory();
                 self.digest = self.catalog.format(
                     "digest-opened-document",
                     &BTreeMap::from([("path", path.display().to_string())]),
@@ -2372,6 +2565,7 @@ impl KetchupApp {
             return false;
         }
         self.store_assistant_conversation();
+        self.store_assistant_memory();
         let snapshot = self.document.current();
         let prepared = ketchup_core::persistence::save_container(&snapshot, &self.container_data);
         if path.exists()
@@ -3019,7 +3213,23 @@ impl KetchupApp {
             worker
                 .export_current_model_step(&snapshot, &model, &prepared_step)
                 .map_err(|error| error.to_string())?;
-            let step = std::fs::read(&prepared_step).map_err(|error| error.to_string())?;
+            let mut step = String::from_utf8(
+                std::fs::read(&prepared_step).map_err(|error| error.to_string())?,
+            )
+            .map_err(|error| error.to_string())?;
+            let timestamp_marker = "FILE_NAME('Open CASCADE Shape Model','";
+            let timestamp_start = step
+                .find(timestamp_marker)
+                .map(|index| index + timestamp_marker.len())
+                .ok_or_else(|| {
+                    "STEP export is missing the canonical FILE_NAME header".to_owned()
+                })?;
+            let timestamp_end = step[timestamp_start..]
+                .find("',(")
+                .map(|index| timestamp_start + index)
+                .ok_or_else(|| "STEP export has an invalid FILE_NAME header".to_owned())?;
+            step.replace_range(timestamp_start..timestamp_end, "1970-01-01T00:00:00");
+            let step = step.into_bytes();
             let report = exact_model_step_loss_report(&snapshot, &model);
             let report_path = path.with_extension("step.loss.txt");
             let evidence = export_bundle_evidence(
@@ -4675,6 +4885,38 @@ impl KetchupApp {
         self.container_data.set_extension(entry);
     }
 
+    fn store_assistant_memory(&mut self) {
+        let Ok(bytes) = serde_json::to_vec(&self.assistant_memory) else {
+            return;
+        };
+        if bytes.len() > MAX_ASSISTANT_MEMORY_STORAGE_BYTES {
+            return;
+        }
+        let Ok(entry) = ketchup_core::persistence::ExtensionEntry::new(
+            ASSISTANT_CHAT_NAMESPACE,
+            ASSISTANT_MEMORY_PATH,
+            false,
+            bytes,
+        ) else {
+            return;
+        };
+        self.container_data.set_extension(entry);
+    }
+
+    fn remember_latest_assistant_exchange(&mut self, answer: &str) {
+        let Some(user) = self
+            .assistant_messages
+            .iter()
+            .rev()
+            .find(|message| message.role == AssistantMessageRole::User)
+            .map(|message| message.text.clone())
+        else {
+            return;
+        };
+        self.assistant_memory.remember(&user, answer);
+        self.store_assistant_memory();
+    }
+
     fn load_assistant_conversation(&mut self) {
         let document_id = self.document.current().document_id().0;
         self.assistant_messages = self
@@ -4688,6 +4930,21 @@ impl KetchupApp {
             .map_or_else(Vec::new, |conversation| conversation.messages);
         self.saved_assistant_conversation_digest =
             assistant_conversation_digest(&self.assistant_messages);
+    }
+
+    fn load_assistant_memory(&mut self) {
+        let document_id = self.document.current().document_id().0;
+        self.assistant_memory = self
+            .container_data
+            .extensions()
+            .find(|entry| {
+                entry.namespace() == ASSISTANT_CHAT_NAMESPACE
+                    && entry.path() == ASSISTANT_MEMORY_PATH
+            })
+            .filter(|entry| entry.bytes().len() <= MAX_ASSISTANT_MEMORY_STORAGE_BYTES)
+            .and_then(|entry| serde_json::from_slice::<AssistantProjectMemory>(entry.bytes()).ok())
+            .filter(|memory| memory.validate(document_id))
+            .unwrap_or_else(|| AssistantProjectMemory::empty(document_id));
     }
 
     #[must_use]
@@ -4720,7 +4977,14 @@ impl KetchupApp {
     }
 
     pub fn assistant_context(&self) -> serde_json::Value {
+        self.assistant_context_for("")
+    }
+
+    fn assistant_context_for(&self, query: &str) -> serde_json::Value {
         let snapshot = self.document.current();
+        let semantic_state = encode_semantic_state(&snapshot);
+        let state_view = bounded_assistant_state_view(&semantic_state.agent_v1());
+        let project_memory = self.assistant_memory.retrieval_context(query);
         let box_bounds = self
             .active_boxes()
             .into_iter()
@@ -4793,6 +5057,8 @@ impl KetchupApp {
             "document_id": snapshot.document_id().0,
             "revision": snapshot.revision_id(),
             "canonical_digest": snapshot.canonical_digest(),
+            "state_view": state_view,
+            "project_memory": project_memory,
             "selected_occurrence_ids": selected_occurrence_ids,
             "occurrence_count": occurrence_count,
             "occurrences_complete": occurrence_count <= 100,
@@ -4820,7 +5086,7 @@ impl KetchupApp {
             return;
         }
         self.assistant_input.clear();
-        let document_context = self.assistant_context();
+        let document_context = self.assistant_context_for(&message);
         let request_document_id = self.document.current().document_id();
         let request_revision_id = self.document.current().revision_id();
         let request_canonical_digest = self.document.current().canonical_digest();
@@ -5116,9 +5382,11 @@ impl KetchupApp {
                     .model_intent
                     .expect("pending execution always carries a model intent"),
             ) {
+                let answer = pending.result.message;
+                self.remember_latest_assistant_exchange(&answer);
                 self.assistant_messages.push(AssistantChatMessage {
                     role: AssistantMessageRole::Assistant,
-                    text: pending.result.message,
+                    text: answer,
                     source: pending.source,
                 });
             } else {
@@ -5154,11 +5422,14 @@ impl KetchupApp {
                         context.request_repaint();
                         return;
                     }
-                    Ok(result) => self.assistant_messages.push(AssistantChatMessage {
-                        role: AssistantMessageRole::Assistant,
-                        text: result.message,
-                        source,
-                    }),
+                    Ok(result) => {
+                        self.remember_latest_assistant_exchange(&result.message);
+                        self.assistant_messages.push(AssistantChatMessage {
+                            role: AssistantMessageRole::Assistant,
+                            text: result.message,
+                            source,
+                        });
+                    }
                     Err(text) => self.assistant_messages.push(AssistantChatMessage {
                         role: AssistantMessageRole::Error,
                         text,
@@ -5308,7 +5579,16 @@ impl KetchupApp {
                             Ok(results)
                         }) {
                             Ok(results) => {
-                                if self
+                                let references = results
+                                    .values()
+                                    .flat_map(|package| package.references())
+                                    .cloned()
+                                    .collect::<Vec<_>>();
+                                if references.into_iter().all(|reference| {
+                                    self.document
+                                        .register_exact_reference_evidence(reference)
+                                        .is_ok()
+                                }) && self
                                     .document
                                     .register_exact_reference_evidence(&results)
                                     .is_ok()
@@ -5401,19 +5681,25 @@ impl KetchupApp {
                             else {
                                 return false;
                             };
+                            let suppressed =
+                                snapshot.suppressed_feature_ids(definition_id, body_id);
+                            if suppressed.is_some_and(|ids| ids.contains(feature_id)) {
+                                return false;
+                            }
                             feature_graph
                                 .dependents(*feature_id)
                                 .is_some_and(|dependents| {
                                     dependents.iter().all(|dependent| {
-                                        snapshot.feature(*dependent).is_none_or(|feature| {
-                                            !feature.kind().produces_body()
-                                                || definition
-                                                    .feature_body_ownership(*dependent)
-                                                    .and_then(|ownership| {
-                                                        ownership.output_body_id()
-                                                    })
-                                                    != Some(body_id)
-                                        })
+                                        suppressed.is_some_and(|ids| ids.contains(dependent))
+                                            || snapshot.feature(*dependent).is_none_or(|feature| {
+                                                !feature.kind().produces_body()
+                                                    || definition
+                                                        .feature_body_ownership(*dependent)
+                                                        .and_then(|ownership| {
+                                                            ownership.output_body_id()
+                                                        })
+                                                        != Some(body_id)
+                                            })
                                     })
                                 })
                         })
@@ -5481,7 +5767,6 @@ impl KetchupApp {
         let requests = match requests {
             Ok(requests) => requests,
             Err(_) => {
-                self.exact_results.clear();
                 self.exact_source = None;
                 self.exact_retry_at = Some(Instant::now() + Duration::from_secs(1));
                 return;
@@ -5609,6 +5894,13 @@ impl KetchupApp {
             cancelled,
             receiver,
         });
+    }
+
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn headless_force_exact_worker_path(&mut self, executable: impl AsRef<Path>) {
+        self.exact_worker_path = Some(executable.as_ref().to_owned());
+        self.exact_worker_attempted = true;
     }
 
     pub fn connect_exact_worker(&mut self, executable: impl AsRef<Path>) -> Result<(), String> {
@@ -5754,16 +6046,16 @@ impl KetchupApp {
     }
 
     fn refresh_interaction_projection_cache(&self, snapshot: &Snapshot) {
-        let rebuild = self
-            .interaction_projection_cache
-            .borrow()
-            .as_ref()
-            .is_none_or(|cache| {
-                cache.document_id != snapshot.document_id()
-                    || cache.revision_id != snapshot.revision_id()
-                    || cache.edit_context != self.selection.edit_context
-                    || cache.exact_results_stamp != self.exact_results.contents_stamp()
-            });
+        let Ok(cache) = self.interaction_projection_cache.try_borrow() else {
+            return;
+        };
+        let rebuild = cache.as_ref().is_none_or(|cache| {
+            cache.document_id != snapshot.document_id()
+                || cache.revision_id != snapshot.revision_id()
+                || cache.edit_context != self.selection.edit_context
+                || cache.exact_results_stamp != self.exact_results.contents_stamp()
+        });
+        drop(cache);
         if rebuild {
             let active_context_paths = self
                 .active_scene_query()
@@ -5793,17 +6085,19 @@ impl KetchupApp {
                         && occurrence.local_box.is_some()
                 })
                 .expect("canonical visible proxy projections are valid");
-            *self.interaction_projection_cache.borrow_mut() = Some(InteractionProjectionCache {
-                document_id: snapshot.document_id(),
-                revision_id: snapshot.revision_id(),
-                edit_context: self.selection.edit_context.clone(),
-                exact_results_stamp: self.exact_results.contents_stamp(),
-                canonical,
-                exact,
-                mesh,
-                boxes,
-                proxies,
-            });
+            if let Ok(mut cache) = self.interaction_projection_cache.try_borrow_mut() {
+                *cache = Some(InteractionProjectionCache {
+                    document_id: snapshot.document_id(),
+                    revision_id: snapshot.revision_id(),
+                    edit_context: self.selection.edit_context.clone(),
+                    exact_results_stamp: self.exact_results.contents_stamp(),
+                    canonical,
+                    exact,
+                    mesh,
+                    boxes,
+                    proxies,
+                });
+            }
         }
     }
 
@@ -7500,7 +7794,8 @@ impl KetchupApp {
                 self.refresh_general_finish_preview();
             } else if matches!(
                 tool,
-                ActiveTool::Rectangle
+                ActiveTool::Line
+                    | ActiveTool::Rectangle
                     | ActiveTool::Circle
                     | ActiveTool::Arc
                     | ActiveTool::CutThrough
@@ -7508,6 +7803,7 @@ impl KetchupApp {
             ) {
                 self.sketch_mode = true;
                 self.status_key = match tool {
+                    ActiveTool::Line => "status-line-start",
                     ActiveTool::Circle => "status-circle-center",
                     ActiveTool::Arc => "status-arc-start",
                     ActiveTool::CutThrough => "status-cut-through-first-point",
@@ -8485,6 +8781,23 @@ impl KetchupApp {
         self.create_profile_at(Vec3::ZERO, points_mm)
     }
 
+    pub fn create_capsule_profile(
+        &mut self,
+        origin_mm: Vec3,
+        segments: Vec<ProfileSegment>,
+    ) -> bool {
+        if !is_line_arc_capsule_profile(&segments, true) {
+            return false;
+        }
+        self.create_segment_profile_at(
+            origin_mm,
+            segments,
+            true,
+            "model-default-arc",
+            "model-arc-profile",
+        )
+    }
+
     pub fn create_sweep_inputs(
         &mut self,
         profile_points_mm: Vec<[f64; 2]>,
@@ -8681,6 +8994,7 @@ impl KetchupApp {
         &mut self,
         origin_mm: Vec3,
         segments: Vec<ProfileSegment>,
+        closed: bool,
         default_name_key: &str,
         profile_name_key: &str,
     ) -> bool {
@@ -8732,10 +9046,7 @@ impl KetchupApp {
                 id: profile_id,
                 definition_id,
                 name: self.catalog.text(profile_name_key),
-                kind: FeatureKind::SegmentProfile {
-                    segments,
-                    closed: true,
-                },
+                kind: FeatureKind::SegmentProfile { segments, closed },
             },
             CanonicalCommand::CreateOccurrence {
                 id: occurrence_id,
@@ -10106,7 +10417,7 @@ impl KetchupApp {
         }
     }
 
-    fn circular_hole_targets(
+    fn profile_cut_targets(
         &self,
         selection: &SelectionId,
         tool_box: &RenderBox,
@@ -10130,7 +10441,16 @@ impl KetchupApp {
         else {
             return Vec::new();
         };
-        if exact_circle_geometry(segments, *closed).is_none() {
+        let is_line_profile = *closed
+            && segments.len() >= 3
+            && segments
+                .iter()
+                .all(|segment| matches!(segment, ProfileSegment::Line { .. }));
+        if exact_circle_geometry(segments, *closed).is_none()
+            && exact_arc_profile_geometry(segments, *closed).is_none()
+            && !is_line_arc_capsule_profile(segments, *closed)
+            && !is_line_profile
+        {
             return Vec::new();
         }
         let depth_mm = -distance_mm;
@@ -10143,7 +10463,7 @@ impl KetchupApp {
                     && candidate.extrusion_feature_id.is_some()
                     && (candidate.origin_mm.z + candidate.size_mm.z - tool_box.origin_mm.z).abs()
                         <= 1.0e-8
-                    && (candidate.size_mm.z - depth_mm).abs() <= 1.0e-8
+                    && depth_mm <= candidate.size_mm.z + 1.0e-8
                     && tool_box.origin_mm.x > candidate.origin_mm.x
                     && tool_box.origin_mm.y > candidate.origin_mm.y
                     && tool_box.origin_mm.x + tool_box.size_mm.x
@@ -10156,7 +10476,7 @@ impl KetchupApp {
         targets
     }
 
-    fn prepare_circular_hole_preview(
+    fn prepare_through_cut_preview(
         &mut self,
         selection: &SelectionId,
         tool_box: &RenderBox,
@@ -10260,8 +10580,240 @@ impl KetchupApp {
         if exact_request
             .boolean
             .as_ref()
-            .and_then(|boolean| boolean.circle)
-            .is_none()
+            .is_none_or(|boolean| boolean.operation != BooleanOperation::Cut)
+        {
+            return false;
+        }
+        let selection_after = SelectionId {
+            definition_id: result_definition_id,
+            instance_path: target_box.instance_path.clone(),
+            element: ElementId::Face {
+                axis: Axis::Z,
+                side: Side::Maximum,
+            },
+        };
+        self.preview = None;
+        self.preview_box = None;
+        self.preview_definition_id = None;
+        self.smart_push_pull_proposal = Some(proposal);
+        self.smart_push_pull_chooser = None;
+        self.occurrence_operation_preview = Some(OccurrenceOperationPreview {
+            source_revision: self.document.current().revision_id(),
+            command_digest: batch.digest(),
+            batch,
+            boxes: BTreeMap::from([(target_occurrence_id, target_box)]),
+            hidden_occurrences: BTreeSet::from([tool_occurrence_id]),
+            selection_after: Some(selection_after),
+            committed_digest_key: "digest-solid-subtract-committed",
+        });
+        self.status_key = "status-preview";
+        self.digest = self.catalog.format(
+            "digest-solid-tool-live",
+            &BTreeMap::from([
+                ("operation", operation_label),
+                ("tool", self.catalog.text("solid-tool-keep-disabled")),
+            ]),
+        );
+        true
+    }
+
+    fn prepare_profile_pocket_preview(
+        &mut self,
+        selection: &SelectionId,
+        tool_box: &RenderBox,
+        distance_mm: f64,
+        target_box: RenderBox,
+    ) -> bool {
+        let snapshot = self.push_pull_planning_snapshot();
+        let depth_mm = -distance_mm;
+        if depth_mm <= 0.01 || depth_mm >= target_box.size_mm.z {
+            return false;
+        }
+        let target_occurrence_id = target_box.instance_path.root_occurrence();
+        let tool_occurrence_id = selection.instance_path.root_occurrence();
+        let Some(target_feature_id) = target_box.extrusion_feature_id else {
+            return false;
+        };
+        let (Some(target_occurrence), Some(tool_occurrence)) = (
+            snapshot.occurrence(target_occurrence_id),
+            snapshot.occurrence(tool_occurrence_id),
+        ) else {
+            return false;
+        };
+        if target_occurrence.definition_id() == selection.definition_id {
+            return false;
+        }
+        let target_transform = target_occurrence.transform();
+        let tool_transform = tool_occurrence.transform();
+        let target_matrix = target_transform.matrix();
+        let tool_matrix = tool_transform.matrix();
+        let translation_only = |matrix: &[f64; 16]| {
+            matrix[0] == 1.0
+                && matrix[1] == 0.0
+                && matrix[2] == 0.0
+                && matrix[4] == 0.0
+                && matrix[5] == 1.0
+                && matrix[6] == 0.0
+                && matrix[8] == 0.0
+                && matrix[9] == 0.0
+                && matrix[10] == 1.0
+        };
+        if !translation_only(target_matrix) || !translation_only(tool_matrix) {
+            return false;
+        }
+        let Some(FeatureKind::SegmentProfile {
+            segments,
+            closed: true,
+        }) = snapshot
+            .feature(tool_box.profile_feature_id)
+            .map(|feature| feature.kind())
+        else {
+            return false;
+        };
+        if !segments
+            .iter()
+            .all(|segment| matches!(segment, ProfileSegment::Line { .. }))
+            && exact_circle_geometry(segments, true).is_none()
+            && exact_arc_profile_geometry(segments, true).is_none()
+            && !is_line_arc_capsule_profile(segments, true)
+        {
+            return false;
+        }
+        let delta_x = tool_matrix[3] - target_matrix[3];
+        let delta_y = tool_matrix[7] - target_matrix[7];
+        let translated_segments = segments
+            .iter()
+            .map(|segment| match segment {
+                ProfileSegment::Line { start_mm, end_mm } => Some(ProfileSegment::Line {
+                    start_mm: [start_mm[0] + delta_x, start_mm[1] + delta_y],
+                    end_mm: [end_mm[0] + delta_x, end_mm[1] + delta_y],
+                }),
+                ProfileSegment::CircularArc {
+                    start_mm,
+                    end_mm,
+                    center_mm,
+                    clockwise,
+                } => Some(ProfileSegment::CircularArc {
+                    start_mm: [start_mm[0] + delta_x, start_mm[1] + delta_y],
+                    end_mm: [end_mm[0] + delta_x, end_mm[1] + delta_y],
+                    center_mm: [center_mm[0] + delta_x, center_mm[1] + delta_y],
+                    clockwise: *clockwise,
+                }),
+            })
+            .collect::<Option<Vec<_>>>();
+        let Some(translated_segments) = translated_segments else {
+            return false;
+        };
+        let Some(target_definition) = snapshot.definition(target_occurrence.definition_id()) else {
+            return false;
+        };
+        let Ok(target_request) =
+            ExactFeatureChainRequest::from_snapshot(&snapshot, target_occurrence.definition_id())
+        else {
+            return false;
+        };
+        if target_request.producer_feature_id() != target_feature_id
+            || target_request.boolean.is_some()
+            || target_request.pocket_depth_bits.is_some()
+        {
+            return false;
+        }
+
+        let Some(mut next_feature_value) = snapshot
+            .features()
+            .map(|feature| feature.id().0)
+            .max()
+            .unwrap_or(0)
+            .checked_add(1)
+        else {
+            return false;
+        };
+        let mut feature_id_map = Vec::with_capacity(target_definition.feature_ids().len());
+        for source_id in target_definition.feature_ids() {
+            feature_id_map.push((*source_id, FeatureId(next_feature_value)));
+            let Some(next) = next_feature_value.checked_add(1) else {
+                return false;
+            };
+            next_feature_value = next;
+        }
+        let Some(mapped_target_feature_id) = feature_id_map
+            .iter()
+            .find_map(|(source, mapped)| (*source == target_feature_id).then_some(*mapped))
+        else {
+            return false;
+        };
+        let profile_id = FeatureId(next_feature_value);
+        let Some(pocket_value) = next_feature_value.checked_add(1) else {
+            return false;
+        };
+        let pocket_id = FeatureId(pocket_value);
+        let Some(result_definition_id) = snapshot
+            .definitions()
+            .map(|definition| definition.id().0)
+            .max()
+            .unwrap_or(0)
+            .checked_add(1)
+            .map(DefinitionId)
+        else {
+            return false;
+        };
+        let operation_label = self.catalog.text("solid-tool-subtract");
+        let Ok(depth) = Dimension::new(format_height(depth_mm), depth_mm) else {
+            return false;
+        };
+        let batch = CommandBatch::new(vec![
+            CanonicalCommand::CloneDefinitionAndRepoint(CloneDefinitionPlan::new(
+                target_occurrence_id,
+                target_occurrence.definition_id(),
+                result_definition_id,
+                self.catalog.format(
+                    "solid-tool-result-definition",
+                    &BTreeMap::from([("operation", operation_label.clone())]),
+                ),
+                feature_id_map,
+            )),
+            CanonicalCommand::CreateFeature {
+                id: profile_id,
+                definition_id: result_definition_id,
+                name: self.catalog.text("model-pocket-profile"),
+                kind: FeatureKind::SegmentProfile {
+                    segments: translated_segments,
+                    closed: true,
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: pocket_id,
+                definition_id: result_definition_id,
+                name: self.catalog.text("feature-pocket"),
+                kind: FeatureKind::Pocket {
+                    target: mapped_target_feature_id,
+                    profile: profile_id,
+                    depth,
+                },
+            },
+            CanonicalCommand::DeleteOccurrence {
+                id: tool_occurrence_id,
+            },
+            CanonicalCommand::DeleteDefinition {
+                id: selection.definition_id,
+            },
+        ]);
+        let Some(proposal) = self.prepare_manual_push_pull_proposal(batch.clone()) else {
+            return false;
+        };
+        let Some(preview_snapshot) = proposal.preview(&self.document) else {
+            return false;
+        };
+        let Ok(exact_request) =
+            ExactFeatureChainRequest::from_snapshot(&preview_snapshot, result_definition_id)
+        else {
+            return false;
+        };
+        if exact_request.pocket_depth_bits != Some(depth_mm.to_bits())
+            || exact_request
+                .boolean
+                .as_ref()
+                .is_none_or(|boolean| boolean.operation != BooleanOperation::Cut)
         {
             return false;
         }
@@ -10341,7 +10893,7 @@ impl KetchupApp {
         else {
             return false;
         };
-        let targets = self.circular_hole_targets(&selection, &item, distance_mm);
+        let targets = self.profile_cut_targets(&selection, &item, distance_mm);
         if !targets.is_empty() {
             let snapshot = self.document.current();
             self.preview = None;
@@ -10362,6 +10914,13 @@ impl KetchupApp {
             self.status_key = "status-push-pull-choice";
             self.digest = self.catalog.text("choice-smart-push-pull-source");
             return true;
+        }
+        if distance_mm < -0.01
+            && planning_snapshot
+                .feature(item.profile_feature_id)
+                .is_some_and(|feature| matches!(feature.kind(), FeatureKind::SegmentProfile { .. }))
+        {
+            return false;
         }
         self.prepare_box_push_pull_preview(
             selection,
@@ -10550,7 +11109,7 @@ impl KetchupApp {
                 chooser.distance_mm,
                 ProposalPrincipal::ManualClient,
             ),
-            SmartPushPullChoice::CircularCut(target_id) => {
+            SmartPushPullChoice::ProfileCut(target_id) => {
                 let Some(target) = chooser
                     .targets
                     .into_iter()
@@ -10559,17 +11118,41 @@ impl KetchupApp {
                     self.status_key = "error-preview-stale";
                     return false;
                 };
-                self.prepare_circular_hole_preview(
-                    &chooser.selection,
-                    &tool_box,
-                    chooser.distance_mm,
-                    target,
-                )
+                let supports_pocket = planning_snapshot
+                    .feature(tool_box.profile_feature_id)
+                    .is_some_and(|feature| match feature.kind() {
+                        FeatureKind::SegmentProfile { segments, closed } => {
+                            exact_circle_geometry(segments, *closed).is_some()
+                                || exact_arc_profile_geometry(segments, *closed).is_some()
+                                || is_line_arc_capsule_profile(segments, *closed)
+                                || (*closed
+                                    && segments.len() >= 3
+                                    && segments.iter().all(|segment| {
+                                        matches!(segment, ProfileSegment::Line { .. })
+                                    }))
+                        }
+                        _ => false,
+                    });
+                if supports_pocket && -chooser.distance_mm < target.size_mm.z - 1.0e-8 {
+                    self.prepare_profile_pocket_preview(
+                        &chooser.selection,
+                        &tool_box,
+                        chooser.distance_mm,
+                        target,
+                    )
+                } else {
+                    self.prepare_through_cut_preview(
+                        &chooser.selection,
+                        &tool_box,
+                        chooser.distance_mm,
+                        target,
+                    )
+                }
             }
         }
     }
 
-    fn confirm_circular_hole_preview(&mut self) -> bool {
+    fn confirm_profile_cut_preview(&mut self) -> bool {
         if !self.has_occurrence_operation_preview() {
             self.smart_push_pull_proposal = None;
             self.occurrence_operation_preview = None;
@@ -10604,7 +11187,7 @@ impl KetchupApp {
 
     fn confirm_push_pull_preview(&mut self) -> bool {
         if self.has_occurrence_operation_preview() && self.smart_push_pull_proposal.is_some() {
-            self.confirm_circular_hole_preview()
+            self.confirm_profile_cut_preview()
         } else if self.has_occurrence_operation_preview() {
             self.confirm_occurrence_operation_preview()
         } else {
@@ -11218,7 +11801,16 @@ impl KetchupApp {
         let Some(plane_z) = plane_z else {
             return false;
         };
-        let Some(pointer_start_world) = self.screen_to_plane(pointer, rect, plane_z) else {
+        let pointer_start_world = self
+            .hover_snap
+            .as_ref()
+            .filter(|snap| {
+                snap.kind == SnapKind::Endpoint
+                    && snap.reference.instance_path == selection.instance_path
+            })
+            .map(|snap| snap.position_mm)
+            .or_else(|| self.screen_to_plane(pointer, rect, plane_z));
+        let Some(pointer_start_world) = pointer_start_world else {
             return false;
         };
         self.value_input = "0".to_owned();
@@ -11253,7 +11845,12 @@ impl KetchupApp {
     /// that axis, so pinning mid-drag never makes the body jump.
     fn advance_move(&self, drag: &mut MoveDrag, pointer: Pos2, rect: Rect, free: bool) {
         let Some(axis) = drag.axis else {
-            if let Some(world) = self.screen_to_plane(pointer, rect, drag.plane_z) {
+            if let Some(snap) = self.hover_snap.as_ref().filter(|snap| {
+                snap.kind == SnapKind::Endpoint
+                    && snap.reference.instance_path != drag.selection.instance_path
+            }) {
+                drag.delta_mm = snap.position_mm - drag.pointer_start_world;
+            } else if let Some(world) = self.screen_to_plane(pointer, rect, drag.plane_z) {
                 drag.delta_mm = snapped_move_delta(drag.pointer_start_world, world, free);
             }
             return;
@@ -11891,6 +12488,9 @@ impl KetchupApp {
         self.sketch_start = None;
         self.sketch_end = None;
         self.sketch_cursor = None;
+        self.line_chain_origin = None;
+        self.line_chain_points.clear();
+        self.line_chain_items.clear();
         self.status_key = "status-ready";
     }
 
@@ -12263,6 +12863,228 @@ impl KetchupApp {
         true
     }
 
+    fn complete_line_sketch(&mut self, start: Vec3, end: Vec3) -> bool {
+        if let Some(origin) = self.line_chain_origin {
+            let close_distance = vector_length(Vec3::new(
+                end.x - origin.x,
+                end.y - origin.y,
+                end.z - origin.z,
+            ));
+            if close_distance.is_finite() && close_distance <= 0.1 {
+                return self.line_chain_points.len() >= 3 && self.close_line_chain();
+            }
+        }
+
+        let delta = end - start;
+        let length_mm = vector_length(Vec3::new(delta.x, delta.y, 0.0));
+        if !length_mm.is_finite() || length_mm <= 0.01 {
+            return false;
+        }
+        let created = self.create_segment_profile_at(
+            start,
+            vec![ProfileSegment::Line {
+                start_mm: [0.0, 0.0],
+                end_mm: [delta.x, delta.y],
+            }],
+            false,
+            "model-default-line",
+            "model-line-profile",
+        );
+        if created {
+            if let Some(selection) = self.selection.primary.as_ref() {
+                self.line_chain_items.push((
+                    selection.definition_id,
+                    selection.instance_path.root_occurrence(),
+                ));
+            }
+            self.line_chain_points.push(end);
+            self.sketch_mode = true;
+            self.sketch_start = Some(end);
+            self.sketch_cursor = Some(end);
+            self.value_input.clear();
+            self.status_key = "status-line-end";
+            self.digest = self.catalog.format(
+                "digest-exact-line",
+                &BTreeMap::from([("length", format_height(length_mm))]),
+            );
+        }
+        created
+    }
+
+    fn close_line_chain(&mut self) -> bool {
+        let Some(origin) = self.line_chain_origin else {
+            return false;
+        };
+        let mut twice_area = 0.0;
+        for edge in self.line_chain_points.windows(2) {
+            twice_area += edge[0].x * edge[1].y - edge[1].x * edge[0].y;
+        }
+        if let Some(last) = self.line_chain_points.last() {
+            twice_area += last.x * origin.y - origin.x * last.y;
+        }
+        if !twice_area.is_finite() || twice_area.abs() <= 1.0e-6 {
+            return false;
+        }
+
+        let mut segments = self
+            .line_chain_points
+            .windows(2)
+            .map(|edge| ProfileSegment::Line {
+                start_mm: [edge[0].x - origin.x, edge[0].y - origin.y],
+                end_mm: [edge[1].x - origin.x, edge[1].y - origin.y],
+            })
+            .collect::<Vec<_>>();
+        let last = *self.line_chain_points.last().expect("validated line chain");
+        segments.push(ProfileSegment::Line {
+            start_mm: [last.x - origin.x, last.y - origin.y],
+            end_mm: [0.0, 0.0],
+        });
+
+        let snapshot = self.document.current();
+        if self
+            .line_chain_items
+            .iter()
+            .any(|(definition_id, occurrence_id)| {
+                snapshot
+                    .occurrence(*occurrence_id)
+                    .is_none_or(|occurrence| occurrence.definition_id() != *definition_id)
+            })
+        {
+            return false;
+        }
+        let Some(definition_id) = snapshot
+            .definitions()
+            .map(|definition| definition.id().0)
+            .max()
+            .unwrap_or(0)
+            .checked_add(1)
+            .map(DefinitionId)
+        else {
+            return false;
+        };
+        let Some(profile_id) = snapshot
+            .features()
+            .map(|feature| feature.id().0)
+            .max()
+            .unwrap_or(0)
+            .checked_add(1)
+            .map(FeatureId)
+        else {
+            return false;
+        };
+        let Some(occurrence_id) = snapshot
+            .occurrences()
+            .map(|occurrence| occurrence.id().0)
+            .max()
+            .unwrap_or(0)
+            .checked_add(1)
+            .map(OccurrenceId)
+        else {
+            return false;
+        };
+        let name = self.catalog.format(
+            "model-default-line",
+            &BTreeMap::from([("number", definition_id.0.to_string())]),
+        );
+        let occurrence_name = self.catalog.format(
+            "model-default-occurrence",
+            &BTreeMap::from([("name", name.clone())]),
+        );
+        let mut commands = self
+            .line_chain_items
+            .iter()
+            .map(|(_, occurrence_id)| CanonicalCommand::DeleteOccurrence { id: *occurrence_id })
+            .collect::<Vec<_>>();
+        commands.extend(
+            self.line_chain_items.iter().map(|(definition_id, _)| {
+                CanonicalCommand::DeleteDefinition { id: *definition_id }
+            }),
+        );
+        commands.extend([
+            CanonicalCommand::CreateDefinition {
+                id: definition_id,
+                name,
+            },
+            CanonicalCommand::CreateFeature {
+                id: profile_id,
+                definition_id,
+                name: self.catalog.text("model-line-profile"),
+                kind: FeatureKind::SegmentProfile {
+                    segments,
+                    closed: true,
+                },
+            },
+            CanonicalCommand::CreateOccurrence {
+                id: occurrence_id,
+                definition_id,
+                name: occurrence_name,
+                transform: Transform::from_translation(origin.x, origin.y, origin.z)
+                    .expect("validated line-chain origin is canonical"),
+                parent: None,
+                tag: None,
+                visible: true,
+            },
+        ]);
+        if self
+            .document
+            .apply_batch(&CommandBatch::new(commands))
+            .is_err()
+        {
+            return false;
+        }
+        let segment_count = self.line_chain_points.len();
+        self.clear_ephemeral_edit_state();
+        self.sketch_mode = false;
+        self.sketch_start = None;
+        self.sketch_cursor = None;
+        self.line_chain_origin = None;
+        self.line_chain_points.clear();
+        self.line_chain_items.clear();
+        self.value_input.clear();
+        self.selection.select_exact(
+            SelectionId {
+                definition_id,
+                instance_path: InstancePath::root(occurrence_id),
+                element: ElementId::Face {
+                    axis: Axis::Z,
+                    side: Side::Maximum,
+                },
+            },
+            false,
+        );
+        self.status_key = "status-line-closed";
+        self.digest = self.catalog.format(
+            "digest-line-closed",
+            &BTreeMap::from([("count", segment_count.to_string())]),
+        );
+        true
+    }
+
+    fn complete_exact_line(&mut self) -> bool {
+        let Some(start) = self.sketch_start else {
+            return false;
+        };
+        let Some(length_mm) = parse_distance_mm(&self.value_input).filter(|value| *value > 0.01)
+        else {
+            return false;
+        };
+        let direction = self
+            .sketch_cursor
+            .map(|cursor| cursor - start)
+            .unwrap_or(Vec3::new(1.0, 0.0, 0.0));
+        let direction_length = vector_length(Vec3::new(direction.x, direction.y, 0.0));
+        let unit = if direction_length > 0.01 {
+            Vec3::new(
+                direction.x / direction_length,
+                direction.y / direction_length,
+                0.0,
+            )
+        } else {
+            Vec3::new(1.0, 0.0, 0.0)
+        };
+        self.complete_line_sketch(start, start + unit * length_mm)
+    }
+
     fn complete_circle_sketch(&mut self, center: Vec3, radial_point: Vec3) -> bool {
         let direction = Vec3::new(radial_point.x - center.x, radial_point.y - center.y, 0.0);
         self.complete_circle(center, vector_length(direction), direction)
@@ -12300,6 +13122,7 @@ impl KetchupApp {
                     clockwise: false,
                 },
             ],
+            true,
             "model-default-circle",
             "model-circle-profile",
         );
@@ -12352,6 +13175,7 @@ impl KetchupApp {
                     end_mm: [0.0, 0.0],
                 },
             ],
+            true,
             "model-default-arc",
             "model-arc-profile",
         );
@@ -12590,6 +13414,7 @@ impl KetchupApp {
     fn apply_value_input(&mut self) -> bool {
         if self.sketch_mode && self.sketch_start.is_some() {
             return match self.active_tool {
+                ActiveTool::Line => self.complete_exact_line(),
                 ActiveTool::Circle => self.complete_exact_circle(),
                 ActiveTool::Arc => self.complete_exact_arc(),
                 _ => self.complete_exact_rectangle(),
@@ -12792,6 +13617,7 @@ impl KetchupApp {
 
     fn value_label_key(&self) -> &'static str {
         match self.active_tool {
+            ActiveTool::Line => "value-label-distance",
             ActiveTool::Rectangle | ActiveTool::CutThrough => "value-label-width-depth",
             ActiveTool::Circle => "value-label-radius",
             ActiveTool::Arc => "value-label-bulge",
@@ -13344,6 +14170,9 @@ impl KetchupApp {
                 if let Some(point) = point {
                     if let Some(start) = self.sketch_start {
                         match self.active_tool {
+                            ActiveTool::Line => {
+                                self.complete_line_sketch(start, point);
+                            }
                             ActiveTool::Circle => {
                                 self.complete_circle_sketch(start, point);
                             }
@@ -13364,8 +14193,15 @@ impl KetchupApp {
                     } else {
                         self.sketch_start = Some(point);
                         self.sketch_cursor = Some(point);
+                        if self.active_tool == ActiveTool::Line {
+                            self.line_chain_origin = Some(point);
+                            self.line_chain_points.clear();
+                            self.line_chain_points.push(point);
+                            self.line_chain_items.clear();
+                        }
                         self.value_input.clear();
                         self.status_key = match self.active_tool {
+                            ActiveTool::Line => "status-line-end",
                             ActiveTool::Circle => "status-circle-radius",
                             ActiveTool::Arc => "status-arc-end",
                             ActiveTool::CutThrough => "status-cut-through-second-point",
@@ -13722,6 +14558,11 @@ impl KetchupApp {
                 && let (Some(start), Some(cursor)) = (self.sketch_start, self.sketch_cursor)
             {
                 self.value_input = match self.active_tool {
+                    ActiveTool::Line => format_height(vector_length(Vec3::new(
+                        cursor.x - start.x,
+                        cursor.y - start.y,
+                        0.0,
+                    ))),
                     ActiveTool::Circle => format_height(vector_length(Vec3::new(
                         cursor.x - start.x,
                         cursor.y - start.y,
@@ -14180,7 +15021,28 @@ impl KetchupApp {
         }
 
         if let (Some(start), Some(cursor)) = (self.sketch_start, self.sketch_cursor) {
-            if self.active_tool == ActiveTool::Arc {
+            if self.active_tool == ActiveTool::Line {
+                let from = self.project(start, response.rect);
+                let to = self.project(cursor, response.rect);
+                painter.line_segment(
+                    [from, to],
+                    Stroke::new(2.0_f32, Color32::from_rgb(255, 199, 68)),
+                );
+                painter.text(
+                    from.lerp(to, 0.5) - Vec2::new(0.0, 14.0),
+                    egui::Align2::CENTER_CENTER,
+                    format!(
+                        "{} mm",
+                        format_height(vector_length(Vec3::new(
+                            cursor.x - start.x,
+                            cursor.y - start.y,
+                            0.0,
+                        )))
+                    ),
+                    egui::FontId::proportional(14.0),
+                    Color32::WHITE,
+                );
+            } else if self.active_tool == ActiveTool::Arc {
                 if let Some(end) = self.sketch_end
                     && let Some(arc) = arc_geometry(start, end, cursor)
                 {
@@ -15045,7 +15907,9 @@ impl KetchupApp {
             self.confirm_loft_preview();
         } else if escape {
             self.face_workflow.set_xray_preview(false);
-            if self.feature_history_preview_pending() {
+            if self.part_authoring_preview_pending() {
+                self.cancel_part_authoring_preview();
+            } else if self.feature_history_preview_pending() {
                 self.cancel_feature_history_preview();
             } else if self.measure_start.is_some() {
                 self.clear_measurement();
@@ -18343,7 +19207,7 @@ impl KetchupApp {
                     .feature(feature_id)
                     .map_or_else(|| feature_id.0.to_string(), |item| item.name().to_owned());
                 (
-                    SmartPushPullChoice::CircularCut(occurrence_id),
+                    SmartPushPullChoice::ProfileCut(occurrence_id),
                     self.catalog.format(
                         "choice-smart-push-pull-cut-target",
                         &BTreeMap::from([
@@ -18455,6 +19319,7 @@ impl KetchupApp {
                 .show(context, |ui| {
                     ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
                     self.show_face_workflow_ui(ui);
+                    self.show_part_authoring_ui(ui);
                     self.show_feature_history(ui);
                     self.show_body_editor(ui);
                     self.show_assembly_editor(ui);
@@ -18478,6 +19343,7 @@ impl KetchupApp {
                 .show(context, |ui| {
                     ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
                     self.show_face_workflow_ui(ui);
+                    self.show_part_authoring_ui(ui);
                     self.show_feature_history(ui);
                     self.show_body_editor(ui);
                     self.show_assembly_editor(ui);
@@ -19216,7 +20082,9 @@ fn exact_face_element(role: ExactFaceRole) -> Option<ElementId> {
         }),
         ExactFaceRole::CircleSide
         | ExactFaceRole::ArcSide
+        | ExactFaceRole::LinearSide
         | ExactFaceRole::CutCircle
+        | ExactFaceRole::CutLinear
         | ExactFaceRole::RevolveBottom
         | ExactFaceRole::RevolveBody
         | ExactFaceRole::RevolveShoulder
@@ -19928,23 +20796,40 @@ fn exact_arc_profile_geometry(
     segments: &[ProfileSegment],
     closed: bool,
 ) -> Option<ExactArcProfileGeometry> {
-    let [
-        ProfileSegment::CircularArc {
-            start_mm,
-            end_mm,
-            center_mm,
-            clockwise,
-        },
-        ProfileSegment::Line {
-            start_mm: line_start,
-            end_mm: line_end,
-        },
-    ] = segments
-    else {
+    if !closed {
         return None;
-    };
-    (closed && end_mm == line_start && start_mm == line_end)
-        .then_some((*start_mm, *end_mm, *center_mm, *clockwise))
+    }
+    match segments {
+        [
+            ProfileSegment::CircularArc {
+                start_mm,
+                end_mm,
+                center_mm,
+                clockwise,
+            },
+            ProfileSegment::Line {
+                start_mm: line_start,
+                end_mm: line_end,
+            },
+        ] if end_mm == line_start && start_mm == line_end => {
+            Some((*start_mm, *end_mm, *center_mm, *clockwise))
+        }
+        [
+            ProfileSegment::Line {
+                start_mm: line_start,
+                end_mm: line_end,
+            },
+            ProfileSegment::CircularArc {
+                start_mm,
+                end_mm,
+                center_mm,
+                clockwise,
+            },
+        ] if line_end == start_mm && line_start == end_mm => {
+            Some((*start_mm, *end_mm, *center_mm, *clockwise))
+        }
+        _ => None,
+    }
 }
 
 fn exact_circle_geometry(segments: &[ProfileSegment], closed: bool) -> Option<([f64; 2], f64)> {
@@ -20122,6 +21007,38 @@ mod tests {
     }
 
     #[test]
+    fn interaction_projection_refresh_defers_while_the_current_frame_reads_the_cache() {
+        let app = KetchupApp::new();
+        let snapshot = app.document.current();
+        app.refresh_interaction_projection_cache(&snapshot);
+        let expected_revision = snapshot.revision_id();
+        let expected_exact_stamp = app.exact_results.contents_stamp();
+        {
+            let mut cache = app.interaction_projection_cache.borrow_mut();
+            let cache = cache.as_mut().expect("the initial projection is cached");
+            cache.revision_id = expected_revision.wrapping_add(1);
+            cache.exact_results_stamp = expected_exact_stamp.wrapping_add(1);
+        }
+
+        let current_frame = app.interaction_projection_cache.borrow();
+        app.refresh_interaction_projection_cache(&snapshot);
+        let deferred = current_frame
+            .as_ref()
+            .expect("an active reader keeps the last valid projection");
+        assert_ne!(deferred.revision_id, expected_revision);
+        assert_ne!(deferred.exact_results_stamp, expected_exact_stamp);
+        drop(current_frame);
+
+        app.refresh_interaction_projection_cache(&snapshot);
+        let refreshed = app.interaction_projection_cache.borrow();
+        let refreshed = refreshed
+            .as_ref()
+            .expect("the deferred projection rebuild completes next frame");
+        assert_eq!(refreshed.revision_id, expected_revision);
+        assert_eq!(refreshed.exact_results_stamp, expected_exact_stamp);
+    }
+
+    #[test]
     fn only_body_producing_features_are_export_candidates() {
         assert!(!FeatureKind::Profile { points_mm: vec![] }.produces_body());
         assert!(
@@ -20213,6 +21130,198 @@ mod tests {
         assert!(!app.is_dirty());
         app.new_assistant_chat();
         assert!(app.is_dirty());
+    }
+
+    #[test]
+    fn assistant_context_exposes_bounded_identified_read_only_agent_state_view() {
+        let app = KetchupApp::new();
+        let before = (
+            app.document.current().revision_id(),
+            app.document.current().canonical_digest(),
+            app.document.visible_undo_steps(),
+        );
+
+        let context = app.assistant_context();
+        let state_view = context["state_view"].as_object().unwrap();
+        let content = state_view["content"].as_str().unwrap();
+        assert_eq!(state_view["format"], AGENT_STATE_VIEW_V1);
+        assert_eq!(state_view["complete"], true);
+        assert_eq!(state_view["byte_length"], content.len());
+        assert_eq!(
+            state_view["sha256"],
+            ketchup_core::graph::sha256_hex(content.as_bytes())
+        );
+        assert!(content.starts_with("schema=ketchup.state-view.agent.v1\n"));
+        assert!(content.contains(&format!(
+            "source.canonical_digest={}",
+            app.document.current().canonical_digest()
+        )));
+        assert_eq!(
+            (
+                app.document.current().revision_id(),
+                app.document.current().canonical_digest(),
+                app.document.visible_undo_steps(),
+            ),
+            before
+        );
+
+        let oversized = "semantic.line=bounded\n".repeat(MAX_ASSISTANT_STATE_VIEW_BYTES);
+        let bounded = bounded_assistant_state_view(&oversized);
+        let bounded_content = bounded["content"].as_str().unwrap();
+        assert_eq!(bounded["complete"], false);
+        assert_eq!(bounded["byte_length"], oversized.len());
+        assert_eq!(
+            bounded["sha256"],
+            ketchup_core::graph::sha256_hex(oversized.as_bytes())
+        );
+        assert!(bounded_content.len() <= MAX_ASSISTANT_STATE_VIEW_BYTES);
+        assert!(bounded_content.ends_with('\n'));
+    }
+
+    #[test]
+    fn only_successful_assistant_completion_enters_project_memory() {
+        let mut app = KetchupApp::new();
+        app.assistant_messages.push(AssistantChatMessage {
+            role: AssistantMessageRole::User,
+            text: "Remember the shelf spacing.".to_owned(),
+            source: "test".to_owned(),
+        });
+        let (sender, receiver) = mpsc::channel();
+        sender
+            .send(Ok(AssistantChatResult {
+                message: "The shelf spacing is 320 mm.".to_owned(),
+                model_intent: None,
+            }))
+            .unwrap();
+        app.assistant_chat_task = Some(AssistantChatTask {
+            receiver,
+            cancellation: AssistantCancellation::default(),
+            document_id: app.document.current().document_id(),
+            revision_id: app.document.current().revision_id(),
+            canonical_digest: app.document.current().canonical_digest(),
+            source: "test".to_owned(),
+        });
+        app.poll_assistant_chat(&egui::Context::default());
+        assert_eq!(app.assistant_memory.entries.len(), 1);
+        assert!(app.container_data.extensions().any(|entry| {
+            entry.namespace() == ASSISTANT_CHAT_NAMESPACE && entry.path() == ASSISTANT_MEMORY_PATH
+        }));
+
+        let mut failed = KetchupApp::new();
+        failed.assistant_messages.push(AssistantChatMessage {
+            role: AssistantMessageRole::User,
+            text: "Do not remember a failed request.".to_owned(),
+            source: "test".to_owned(),
+        });
+        let (sender, receiver) = mpsc::channel();
+        sender.send(Err("provider unavailable".to_owned())).unwrap();
+        failed.assistant_chat_task = Some(AssistantChatTask {
+            receiver,
+            cancellation: AssistantCancellation::default(),
+            document_id: failed.document.current().document_id(),
+            revision_id: failed.document.current().revision_id(),
+            canonical_digest: failed.document.current().canonical_digest(),
+            source: "test".to_owned(),
+        });
+        failed.poll_assistant_chat(&egui::Context::default());
+        assert!(failed.assistant_memory.entries.is_empty());
+    }
+
+    #[test]
+    fn assistant_project_memory_retrieval_is_bounded_relevant_and_read_only() {
+        let mut app = KetchupApp::new();
+        for index in 0..140 {
+            app.assistant_memory.remember(
+                &format!("Fixture note {index}"),
+                &format!("Fixture answer {index}"),
+            );
+        }
+        app.assistant_memory
+            .remember("Remember shelf spacing", "The shelf spacing is 320 mm.");
+        let before = (
+            app.document.current().revision_id(),
+            app.document.current().canonical_digest(),
+            app.document.visible_undo_steps(),
+        );
+
+        let context = app.assistant_context_for("What is the shelf spacing?");
+        let memory = context["project_memory"].as_object().unwrap();
+        let entries = memory["entries"].as_array().unwrap();
+        assert_eq!(memory["schema"], ASSISTANT_MEMORY_SCHEMA);
+        assert_eq!(
+            memory["document_id"],
+            app.document.current().document_id().0
+        );
+        assert_eq!(memory["stored_count"], MAX_ASSISTANT_MEMORY_ENTRIES);
+        assert!(entries.len() <= MAX_ASSISTANT_MEMORY_RETRIEVAL_ENTRIES);
+        assert!(entries.iter().any(|entry| {
+            entry["assistant"] == "The shelf spacing is 320 mm."
+                && entry["sha256"]
+                    .as_str()
+                    .is_some_and(|hash| hash.len() == 64)
+        }));
+        let encoded = serde_json::to_vec(entries).unwrap();
+        assert_eq!(memory["byte_length"], encoded.len());
+        assert!(encoded.len() <= MAX_ASSISTANT_MEMORY_RETRIEVAL_BYTES);
+        assert_eq!(
+            (
+                app.document.current().revision_id(),
+                app.document.current().canonical_digest(),
+                app.document.visible_undo_steps(),
+            ),
+            before
+        );
+    }
+
+    #[test]
+    fn assistant_project_memory_persists_in_its_document_and_rejects_foreign_scope() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("assistant-memory.ketchup");
+        let mut app = KetchupApp::new().with_dialogs(Box::new(
+            dialogs::ScriptedFileDialogs::new().always_confirm_high_risk_as(1),
+        ));
+        app.assistant_memory
+            .remember("Shelf material", "Use birch plywood.");
+        assert!(app.save_document_to(&path));
+
+        let mut reopened = KetchupApp::new();
+        assert!(reopened.open_document_from(&path));
+        let context = reopened.assistant_context_for("Which shelf material?");
+        let memory = context["project_memory"]["entries"].as_array().unwrap();
+        assert_eq!(memory.len(), 1);
+        assert_eq!(memory[0]["assistant"], "Use birch plywood.");
+        reopened.new_assistant_chat();
+        assert_eq!(
+            reopened.assistant_context_for("material")["project_memory"]["retrieved_count"],
+            1
+        );
+
+        let document_id = reopened.document.current().document_id().0;
+        let foreign = AssistantProjectMemory::empty(document_id + 1);
+        let entry = ketchup_core::persistence::ExtensionEntry::new(
+            ASSISTANT_CHAT_NAMESPACE,
+            ASSISTANT_MEMORY_PATH,
+            false,
+            serde_json::to_vec(&foreign).unwrap(),
+        )
+        .unwrap();
+        reopened.container_data.set_extension(entry);
+        let before = (
+            reopened.document.current().revision_id(),
+            reopened.document.current().canonical_digest(),
+            reopened.document.visible_undo_steps(),
+        );
+        reopened.load_assistant_memory();
+        assert_eq!(reopened.assistant_memory.document_id, document_id);
+        assert!(reopened.assistant_memory.entries.is_empty());
+        assert_eq!(
+            (
+                reopened.document.current().revision_id(),
+                reopened.document.current().canonical_digest(),
+                reopened.document.visible_undo_steps(),
+            ),
+            before
+        );
     }
 
     #[test]
@@ -21324,6 +22433,7 @@ endsolid tetrahedron\n";
 0\nLINE\n8\nopen\n10\n0\n20\n0\n11\n10\n21\n0\n\
 0\nLWPOLYLINE\n8\nclosed\n90\n3\n70\n1\n\
 10\n20\n20\n0\n10\n30\n20\n0\n10\n20\n20\n10\n\
+0\nCIRCLE\n8\nround\n10\n50\n20\n5\n40\n4\n\
 0\nENDSEC\n0\nEOF\n";
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("profiles.dxf");
@@ -21354,7 +22464,13 @@ endsolid tetrahedron\n";
         let snapshot = reopened.snapshot();
         let projection = CanonicalInteractionProjection::from_snapshot(&snapshot);
         let scene = projection.scene().unwrap();
-        assert_eq!(scene.occurrence_count(), 2);
+        assert_eq!(scene.occurrence_count(), 3);
+        assert!(snapshot.features().any(|feature| {
+            let FeatureKind::SegmentProfile { segments, closed } = feature.kind() else {
+                return false;
+            };
+            exact_circle_geometry(segments, *closed) == Some(([50.0, 5.0], 4.0))
+        }));
         let open_hit = scene
             .exact_pick(
                 Ray::new(Vec3::new(5.0, 0.0, 10.0), Vec3::new(0.0, 0.0, -1.0)).unwrap(),
@@ -21367,9 +22483,19 @@ endsolid tetrahedron\n";
                 0.01,
             )
             .expect("the persisted closed DXF profile must remain pickable");
+        let circle_hit = scene
+            .exact_pick(
+                Ray::new(Vec3::new(54.0, 5.0, 10.0), Vec3::new(0.0, 0.0, -1.0)).unwrap(),
+                0.01,
+            )
+            .expect("the persisted exact DXF circle must remain pickable");
         assert_ne!(
             open_hit.primary.reference.instance_path,
             closed_hit.primary.reference.instance_path
+        );
+        assert_ne!(
+            closed_hit.primary.reference.instance_path,
+            circle_hit.primary.reference.instance_path
         );
     }
 
@@ -24699,6 +25825,738 @@ endsolid tetrahedron\n";
         assert_eq!(app.active_boxes()[1].size_mm.z, 0.0);
         assert!(app.redo());
         assert_eq!(app.active_boxes()[1].size_mm.z, 30.0);
+    }
+
+    #[test]
+    fn contained_slanted_polygon_solid_tools_round_trip_atomically() {
+        fn add_polygon_tool(app: &mut KetchupApp, points: &[[f64; 2]]) {
+            let mut segments = points
+                .windows(2)
+                .map(|pair| ProfileSegment::Line {
+                    start_mm: pair[0],
+                    end_mm: pair[1],
+                })
+                .collect::<Vec<_>>();
+            segments.push(ProfileSegment::Line {
+                start_mm: *points.last().unwrap(),
+                end_mm: points[0],
+            });
+            app.document
+                .apply_batch(&CommandBatch::new(vec![
+                    CanonicalCommand::CreateDefinition {
+                        id: DefinitionId(2),
+                        name: "Polygon tool".to_owned(),
+                    },
+                    CanonicalCommand::CreateFeature {
+                        id: FeatureId(3),
+                        definition_id: DefinitionId(2),
+                        name: "Slanted containing profile".to_owned(),
+                        kind: FeatureKind::SegmentProfile {
+                            segments,
+                            closed: true,
+                        },
+                    },
+                    CanonicalCommand::CreateFeature {
+                        id: FeatureId(4),
+                        definition_id: DefinitionId(2),
+                        name: "Polygon tool extrusion".to_owned(),
+                        kind: FeatureKind::Extrusion {
+                            profile: FeatureId(3),
+                            height: Dimension::new("20", 20.0).unwrap(),
+                        },
+                    },
+                    CanonicalCommand::CreateOccurrence {
+                        id: OccurrenceId(2),
+                        definition_id: DefinitionId(2),
+                        name: "Polygon tool occurrence".to_owned(),
+                        transform: Transform::identity(),
+                        parent: None,
+                        tag: None,
+                        visible: true,
+                    },
+                ]))
+                .unwrap();
+            app.document.discard_history_before_current();
+        }
+
+        let target = SelectionId {
+            definition_id: INITIAL_BOX_DEFINITION,
+            instance_path: InstancePath::root(OccurrenceId(1)),
+            element: ElementId::Face {
+                axis: Axis::Z,
+                side: Side::Maximum,
+            },
+        };
+        let tool = SelectionId {
+            definition_id: DefinitionId(2),
+            instance_path: InstancePath::root(OccurrenceId(2)),
+            element: ElementId::Face {
+                axis: Axis::Z,
+                side: Side::Maximum,
+            },
+        };
+
+        let mut app = KetchupApp::new();
+        add_polygon_tool(
+            &mut app,
+            &[[-20.0, -10.0], [110.0, -15.0], [125.0, 70.0], [-15.0, 80.0]],
+        );
+        app.active_tool = ActiveTool::SolidUnion;
+        let before_digest = app.canonical_digest();
+        let before_revision = app.document_revision();
+        let before_undo = app.document.visible_undo_steps();
+        app.solid_tool_target = Some(target.clone());
+        assert!(app.prepare_solid_tool_preview(tool.clone(), false));
+        assert!(app.has_occurrence_operation_preview());
+        assert_eq!(app.canonical_digest(), before_digest);
+        assert_eq!(app.document_revision(), before_revision);
+        assert_eq!(app.document.visible_undo_steps(), before_undo);
+        assert_eq!(
+            app.occurrence_operation_preview_geometry(OccurrenceId(1)),
+            Some((Vec3::new(-20.0, -15.0, 0.0), Vec3::new(145.0, 95.0, 20.0)))
+        );
+        app.clear_ephemeral_edit_state();
+        assert!(!app.has_occurrence_operation_preview());
+        assert_eq!(app.canonical_digest(), before_digest);
+
+        app.active_tool = ActiveTool::SolidUnion;
+        app.solid_tool_target = Some(target);
+        assert!(app.prepare_solid_tool_preview(tool, false));
+        assert!(app.confirm_occurrence_operation_preview());
+        assert_eq!(app.document.visible_undo_steps(), before_undo + 1);
+        let committed = app.document.current();
+        let result_definition = committed
+            .occurrence(OccurrenceId(1))
+            .unwrap()
+            .definition_id();
+        assert!(committed.occurrence(OccurrenceId(2)).is_none());
+        let request =
+            ExactFeatureChainRequest::from_snapshot(&committed, result_definition).unwrap();
+        assert_eq!(
+            request.boolean.as_ref().map(|boolean| boolean.operation),
+            Some(BooleanOperation::Union)
+        );
+        assert!(
+            request
+                .boolean
+                .as_ref()
+                .and_then(|boolean| boolean.profile.as_ref())
+                .is_some()
+        );
+        let committed_digest = committed.canonical_digest();
+        let reopened =
+            ketchup_core::persistence::load(&ketchup_core::persistence::save(&committed))
+                .unwrap()
+                .snapshot();
+        assert_eq!(reopened.canonical_digest(), committed_digest);
+        assert!(ExactFeatureChainRequest::from_snapshot(&reopened, result_definition).is_ok());
+        assert!(app.undo());
+        assert_eq!(app.canonical_digest(), before_digest);
+        assert!(app.redo());
+        assert_eq!(app.canonical_digest(), committed_digest);
+
+        let mut partial = KetchupApp::new();
+        add_polygon_tool(
+            &mut partial,
+            &[[20.0, 15.0], [115.0, 12.0], [110.0, 45.0], [18.0, 42.0]],
+        );
+        partial.active_tool = ActiveTool::SolidUnion;
+        let partial_digest = partial.canonical_digest();
+        partial.solid_tool_target = Some(SelectionId {
+            definition_id: INITIAL_BOX_DEFINITION,
+            instance_path: InstancePath::root(OccurrenceId(1)),
+            element: ElementId::Face {
+                axis: Axis::Z,
+                side: Side::Maximum,
+            },
+        });
+        assert!(!partial.prepare_solid_tool_preview(
+            SelectionId {
+                definition_id: DefinitionId(2),
+                instance_path: InstancePath::root(OccurrenceId(2)),
+                element: ElementId::Face {
+                    axis: Axis::Z,
+                    side: Side::Maximum,
+                },
+            },
+            false,
+        ));
+        assert_eq!(partial.canonical_digest(), partial_digest);
+        assert!(!partial.has_occurrence_operation_preview());
+
+        let intersect_target = SelectionId {
+            definition_id: INITIAL_BOX_DEFINITION,
+            instance_path: InstancePath::root(OccurrenceId(1)),
+            element: ElementId::Face {
+                axis: Axis::Z,
+                side: Side::Maximum,
+            },
+        };
+        let intersect_tool = SelectionId {
+            definition_id: DefinitionId(2),
+            instance_path: InstancePath::root(OccurrenceId(2)),
+            element: ElementId::Face {
+                axis: Axis::Z,
+                side: Side::Maximum,
+            },
+        };
+        let mut intersection = KetchupApp::new();
+        add_polygon_tool(
+            &mut intersection,
+            &[
+                [12.0, 10.0],
+                [70.0, 8.0],
+                [88.0, 40.0],
+                [55.0, 52.0],
+                [15.0, 45.0],
+            ],
+        );
+        intersection.active_tool = ActiveTool::SolidIntersect;
+        let intersect_before_digest = intersection.canonical_digest();
+        let intersect_before_revision = intersection.document_revision();
+        let intersect_before_undo = intersection.document.visible_undo_steps();
+        intersection.solid_tool_target = Some(intersect_target.clone());
+        assert!(intersection.prepare_solid_tool_preview(intersect_tool.clone(), false));
+        assert!(intersection.has_occurrence_operation_preview());
+        assert_eq!(intersection.canonical_digest(), intersect_before_digest);
+        assert_eq!(intersection.document_revision(), intersect_before_revision);
+        assert_eq!(
+            intersection.document.visible_undo_steps(),
+            intersect_before_undo
+        );
+        assert_eq!(
+            intersection.occurrence_operation_preview_geometry(OccurrenceId(1)),
+            Some((Vec3::new(12.0, 8.0, 0.0), Vec3::new(76.0, 44.0, 20.0)))
+        );
+        intersection.clear_ephemeral_edit_state();
+        assert!(!intersection.has_occurrence_operation_preview());
+        assert_eq!(intersection.canonical_digest(), intersect_before_digest);
+
+        intersection.active_tool = ActiveTool::SolidIntersect;
+        intersection.solid_tool_target = Some(intersect_target);
+        assert!(intersection.prepare_solid_tool_preview(intersect_tool, false));
+        assert!(intersection.confirm_occurrence_operation_preview());
+        assert_eq!(
+            intersection.document.visible_undo_steps(),
+            intersect_before_undo + 1
+        );
+        let intersected = intersection.document.current();
+        let intersect_definition = intersected
+            .occurrence(OccurrenceId(1))
+            .unwrap()
+            .definition_id();
+        assert!(intersected.occurrence(OccurrenceId(2)).is_none());
+        let intersect_request =
+            ExactFeatureChainRequest::from_snapshot(&intersected, intersect_definition).unwrap();
+        assert_eq!(
+            intersect_request
+                .boolean
+                .as_ref()
+                .map(|boolean| boolean.operation),
+            Some(BooleanOperation::Intersect)
+        );
+        assert!(
+            intersect_request
+                .boolean
+                .as_ref()
+                .and_then(|boolean| boolean.profile.as_ref())
+                .is_some()
+        );
+        let intersect_digest = intersected.canonical_digest();
+        let reopened =
+            ketchup_core::persistence::load(&ketchup_core::persistence::save(&intersected))
+                .unwrap()
+                .snapshot();
+        assert_eq!(reopened.canonical_digest(), intersect_digest);
+        assert!(ExactFeatureChainRequest::from_snapshot(&reopened, intersect_definition).is_ok());
+        assert!(intersection.undo());
+        assert_eq!(intersection.canonical_digest(), intersect_before_digest);
+        assert!(intersection.redo());
+        assert_eq!(intersection.canonical_digest(), intersect_digest);
+
+        let mut crossing = KetchupApp::new();
+        add_polygon_tool(
+            &mut crossing,
+            &[[20.0, 10.0], [105.0, 8.0], [80.0, 50.0], [15.0, 45.0]],
+        );
+        crossing.active_tool = ActiveTool::SolidIntersect;
+        let crossing_digest = crossing.canonical_digest();
+        crossing.solid_tool_target = Some(SelectionId {
+            definition_id: INITIAL_BOX_DEFINITION,
+            instance_path: InstancePath::root(OccurrenceId(1)),
+            element: ElementId::Face {
+                axis: Axis::Z,
+                side: Side::Maximum,
+            },
+        });
+        assert!(!crossing.prepare_solid_tool_preview(
+            SelectionId {
+                definition_id: DefinitionId(2),
+                instance_path: InstancePath::root(OccurrenceId(2)),
+                element: ElementId::Face {
+                    axis: Axis::Z,
+                    side: Side::Maximum,
+                },
+            },
+            false,
+        ));
+        assert_eq!(crossing.canonical_digest(), crossing_digest);
+        assert!(!crossing.has_occurrence_operation_preview());
+
+        let mut split = KetchupApp::new();
+        add_polygon_tool(
+            &mut split,
+            &[
+                [12.0, 10.0],
+                [70.0, 8.0],
+                [88.0, 40.0],
+                [55.0, 52.0],
+                [15.0, 45.0],
+            ],
+        );
+        split.active_tool = ActiveTool::SolidSplit;
+        let split_before_digest = split.canonical_digest();
+        let split_before_revision = split.document_revision();
+        let split_before_undo = split.document.visible_undo_steps();
+        split.solid_tool_target = Some(SelectionId {
+            definition_id: INITIAL_BOX_DEFINITION,
+            instance_path: InstancePath::root(OccurrenceId(1)),
+            element: ElementId::Face {
+                axis: Axis::Z,
+                side: Side::Maximum,
+            },
+        });
+        let split_tool = SelectionId {
+            definition_id: DefinitionId(2),
+            instance_path: InstancePath::root(OccurrenceId(2)),
+            element: ElementId::Face {
+                axis: Axis::Z,
+                side: Side::Maximum,
+            },
+        };
+        assert!(split.prepare_solid_tool_preview(split_tool.clone(), false));
+        assert!(split.has_occurrence_operation_preview());
+        assert_eq!(split.canonical_digest(), split_before_digest);
+        assert_eq!(split.document_revision(), split_before_revision);
+        assert_eq!(split.document.visible_undo_steps(), split_before_undo);
+        assert_eq!(
+            split.occurrence_operation_preview_geometry(OccurrenceId(1)),
+            Some((Vec3::ZERO, Vec3::new(100.0, 60.0, 20.0)))
+        );
+        split.clear_ephemeral_edit_state();
+        assert!(!split.has_occurrence_operation_preview());
+        assert_eq!(split.canonical_digest(), split_before_digest);
+
+        split.active_tool = ActiveTool::SolidSplit;
+        split.solid_tool_target = Some(SelectionId {
+            definition_id: INITIAL_BOX_DEFINITION,
+            instance_path: InstancePath::root(OccurrenceId(1)),
+            element: ElementId::Face {
+                axis: Axis::Z,
+                side: Side::Maximum,
+            },
+        });
+        assert!(split.prepare_solid_tool_preview(split_tool, false));
+        assert!(split.confirm_occurrence_operation_preview());
+        assert_eq!(split.document.visible_undo_steps(), split_before_undo + 1);
+        let split_snapshot = split.document.current();
+        let split_definition = split_snapshot
+            .occurrence(OccurrenceId(1))
+            .unwrap()
+            .definition_id();
+        assert!(split_snapshot.occurrence(OccurrenceId(2)).is_some());
+        let split_request =
+            ExactFeatureChainRequest::from_snapshot(&split_snapshot, split_definition).unwrap();
+        assert_eq!(
+            split_request
+                .boolean
+                .as_ref()
+                .map(|boolean| boolean.operation),
+            Some(BooleanOperation::Split)
+        );
+        assert!(
+            split_request
+                .boolean
+                .as_ref()
+                .and_then(|boolean| boolean.profile.as_ref())
+                .is_some()
+        );
+        let split_digest = split_snapshot.canonical_digest();
+        let reopened =
+            ketchup_core::persistence::load(&ketchup_core::persistence::save(&split_snapshot))
+                .unwrap()
+                .snapshot();
+        assert_eq!(reopened.canonical_digest(), split_digest);
+        assert!(ExactFeatureChainRequest::from_snapshot(&reopened, split_definition).is_ok());
+        assert!(split.undo());
+        assert_eq!(split.canonical_digest(), split_before_digest);
+        assert!(split.redo());
+        assert_eq!(split.canonical_digest(), split_digest);
+
+        let mut boundary_touching = KetchupApp::new();
+        add_polygon_tool(
+            &mut boundary_touching,
+            &[[20.0, 10.0], [100.0, 8.0], [80.0, 50.0], [15.0, 45.0]],
+        );
+        boundary_touching.active_tool = ActiveTool::SolidSplit;
+        let boundary_digest = boundary_touching.canonical_digest();
+        boundary_touching.solid_tool_target = Some(SelectionId {
+            definition_id: INITIAL_BOX_DEFINITION,
+            instance_path: InstancePath::root(OccurrenceId(1)),
+            element: ElementId::Face {
+                axis: Axis::Z,
+                side: Side::Maximum,
+            },
+        });
+        assert!(!boundary_touching.prepare_solid_tool_preview(
+            SelectionId {
+                definition_id: DefinitionId(2),
+                instance_path: InstancePath::root(OccurrenceId(2)),
+                element: ElementId::Face {
+                    axis: Axis::Z,
+                    side: Side::Maximum,
+                },
+            },
+            false,
+        ));
+        assert_eq!(boundary_touching.canonical_digest(), boundary_digest);
+        assert!(!boundary_touching.has_occurrence_operation_preview());
+    }
+
+    #[test]
+    fn contained_circle_subtract_intersect_split_and_containing_union_round_trip_atomically() {
+        fn app_with_circle_tool(center: [f64; 2], radius: f64) -> KetchupApp {
+            let mut app = KetchupApp::new();
+            let left = [center[0] - radius, center[1]];
+            let right = [center[0] + radius, center[1]];
+            app.document
+                .apply_batch(&CommandBatch::new(vec![
+                    CanonicalCommand::CreateDefinition {
+                        id: DefinitionId(2),
+                        name: "Circle tool".to_owned(),
+                    },
+                    CanonicalCommand::CreateFeature {
+                        id: FeatureId(3),
+                        definition_id: DefinitionId(2),
+                        name: "Circle profile".to_owned(),
+                        kind: FeatureKind::SegmentProfile {
+                            segments: vec![
+                                ProfileSegment::CircularArc {
+                                    start_mm: left,
+                                    end_mm: right,
+                                    center_mm: center,
+                                    clockwise: false,
+                                },
+                                ProfileSegment::CircularArc {
+                                    start_mm: right,
+                                    end_mm: left,
+                                    center_mm: center,
+                                    clockwise: false,
+                                },
+                            ],
+                            closed: true,
+                        },
+                    },
+                    CanonicalCommand::CreateFeature {
+                        id: FeatureId(4),
+                        definition_id: DefinitionId(2),
+                        name: "Circle extrusion".to_owned(),
+                        kind: FeatureKind::Extrusion {
+                            profile: FeatureId(3),
+                            height: Dimension::new("20", 20.0).unwrap(),
+                        },
+                    },
+                    CanonicalCommand::CreateOccurrence {
+                        id: OccurrenceId(2),
+                        definition_id: DefinitionId(2),
+                        name: "Circle tool occurrence".to_owned(),
+                        transform: Transform::identity(),
+                        parent: None,
+                        tag: None,
+                        visible: true,
+                    },
+                ]))
+                .unwrap();
+            app.document.discard_history_before_current();
+            app
+        }
+
+        let target = || SelectionId {
+            definition_id: INITIAL_BOX_DEFINITION,
+            instance_path: InstancePath::root(OccurrenceId(1)),
+            element: ElementId::Face {
+                axis: Axis::Z,
+                side: Side::Maximum,
+            },
+        };
+        let tool = || SelectionId {
+            definition_id: DefinitionId(2),
+            instance_path: InstancePath::root(OccurrenceId(2)),
+            element: ElementId::Face {
+                axis: Axis::Z,
+                side: Side::Maximum,
+            },
+        };
+
+        let mut subtract = app_with_circle_tool([40.0, 30.0], 10.0);
+        subtract.active_tool = ActiveTool::SolidSubtract;
+        let subtract_before_digest = subtract.canonical_digest();
+        let subtract_before_revision = subtract.document_revision();
+        let subtract_before_undo = subtract.document.visible_undo_steps();
+        subtract.solid_tool_target = Some(target());
+        assert!(subtract.prepare_solid_tool_preview(tool(), false));
+        assert_eq!(subtract.canonical_digest(), subtract_before_digest);
+        assert_eq!(subtract.document_revision(), subtract_before_revision);
+        assert_eq!(subtract.document.visible_undo_steps(), subtract_before_undo);
+        assert_eq!(
+            subtract.occurrence_operation_preview_geometry(OccurrenceId(1)),
+            Some((Vec3::ZERO, Vec3::new(100.0, 60.0, 20.0)))
+        );
+        assert_eq!(
+            subtract.push_pull_preview_exact_evaluator(),
+            Some("ketchup.exact-circular-cut-evaluator.v1")
+        );
+        subtract.clear_ephemeral_edit_state();
+        assert!(!subtract.has_occurrence_operation_preview());
+        assert_eq!(subtract.canonical_digest(), subtract_before_digest);
+
+        subtract.active_tool = ActiveTool::SolidSubtract;
+        subtract.solid_tool_target = Some(target());
+        assert!(subtract.prepare_solid_tool_preview(tool(), false));
+        assert!(subtract.confirm_occurrence_operation_preview());
+        assert_eq!(
+            subtract.document.visible_undo_steps(),
+            subtract_before_undo + 1
+        );
+        let subtract_committed = subtract.document.current();
+        let subtract_definition = subtract_committed
+            .occurrence(OccurrenceId(1))
+            .unwrap()
+            .definition_id();
+        assert!(subtract_committed.occurrence(OccurrenceId(2)).is_none());
+        let subtract_request =
+            ExactFeatureChainRequest::from_snapshot(&subtract_committed, subtract_definition)
+                .unwrap();
+        let subtract_boolean = subtract_request.boolean.as_ref().unwrap();
+        assert_eq!(subtract_boolean.operation, BooleanOperation::Cut);
+        assert!(subtract_boolean.circle.is_some());
+        assert_eq!(
+            subtract_request.expected_bounds_mm(),
+            [[0.0, 0.0, 0.0], [100.0, 60.0, 20.0]]
+        );
+        assert_eq!(
+            subtract_request.evaluator(),
+            "ketchup.exact-circular-cut-evaluator.v1"
+        );
+        let subtract_digest = subtract_committed.canonical_digest();
+        let subtract_reopened =
+            ketchup_core::persistence::load(&ketchup_core::persistence::save(&subtract_committed))
+                .unwrap()
+                .snapshot();
+        assert_eq!(subtract_reopened.canonical_digest(), subtract_digest);
+        assert!(
+            ExactFeatureChainRequest::from_snapshot(&subtract_reopened, subtract_definition)
+                .is_ok()
+        );
+        assert!(subtract.undo());
+        assert_eq!(subtract.canonical_digest(), subtract_before_digest);
+        assert!(subtract.redo());
+        assert_eq!(subtract.canonical_digest(), subtract_digest);
+
+        for (center, radius) in [
+            ([10.0, 30.0], 10.0),
+            ([5.0, 30.0], 10.0),
+            ([120.0, 30.0], 5.0),
+        ] {
+            let mut rejected = app_with_circle_tool(center, radius);
+            rejected.active_tool = ActiveTool::SolidSubtract;
+            let digest = rejected.canonical_digest();
+            rejected.solid_tool_target = Some(target());
+            assert!(!rejected.prepare_solid_tool_preview(tool(), false));
+            assert_eq!(rejected.canonical_digest(), digest);
+            assert!(!rejected.has_occurrence_operation_preview());
+        }
+
+        let mut union = app_with_circle_tool([50.0, 30.0], 70.0);
+        union.active_tool = ActiveTool::SolidUnion;
+        let union_before_digest = union.canonical_digest();
+        let union_before_revision = union.document_revision();
+        let union_before_undo = union.document.visible_undo_steps();
+        union.solid_tool_target = Some(target());
+        assert!(union.prepare_solid_tool_preview(tool(), false));
+        assert_eq!(union.canonical_digest(), union_before_digest);
+        assert_eq!(union.document_revision(), union_before_revision);
+        assert_eq!(union.document.visible_undo_steps(), union_before_undo);
+        assert_eq!(
+            union.occurrence_operation_preview_geometry(OccurrenceId(1)),
+            Some((Vec3::new(-20.0, -40.0, 0.0), Vec3::new(140.0, 140.0, 20.0)))
+        );
+        union.clear_ephemeral_edit_state();
+        assert!(!union.has_occurrence_operation_preview());
+        assert_eq!(union.canonical_digest(), union_before_digest);
+
+        union.active_tool = ActiveTool::SolidUnion;
+        union.solid_tool_target = Some(target());
+        assert!(union.prepare_solid_tool_preview(tool(), false));
+        assert!(union.confirm_occurrence_operation_preview());
+        assert_eq!(union.document.visible_undo_steps(), union_before_undo + 1);
+        let union_committed = union.document.current();
+        let union_definition = union_committed
+            .occurrence(OccurrenceId(1))
+            .unwrap()
+            .definition_id();
+        assert!(union_committed.occurrence(OccurrenceId(2)).is_none());
+        let union_request =
+            ExactFeatureChainRequest::from_snapshot(&union_committed, union_definition).unwrap();
+        let union_boolean = union_request.boolean.as_ref().unwrap();
+        assert_eq!(union_boolean.operation, BooleanOperation::Union);
+        assert!(union_boolean.circle.is_some());
+        assert_eq!(
+            union_request.expected_bounds_mm(),
+            [[-20.0, -40.0, 0.0], [120.0, 100.0, 20.0]]
+        );
+        let union_digest = union_committed.canonical_digest();
+        let union_reopened =
+            ketchup_core::persistence::load(&ketchup_core::persistence::save(&union_committed))
+                .unwrap()
+                .snapshot();
+        assert_eq!(union_reopened.canonical_digest(), union_digest);
+        assert!(ExactFeatureChainRequest::from_snapshot(&union_reopened, union_definition).is_ok());
+        assert!(union.undo());
+        assert_eq!(union.canonical_digest(), union_before_digest);
+        assert!(union.redo());
+        assert_eq!(union.canonical_digest(), union_digest);
+
+        for (center, radius) in [
+            ([40.0, 30.0], 10.0),
+            ([50.0, 30.0], 55.0),
+            ([150.0, 30.0], 10.0),
+            ([50.0, 30.0], 58.309_518_948_453_004),
+        ] {
+            let mut rejected = app_with_circle_tool(center, radius);
+            rejected.active_tool = ActiveTool::SolidUnion;
+            let digest = rejected.canonical_digest();
+            rejected.solid_tool_target = Some(target());
+            assert!(!rejected.prepare_solid_tool_preview(tool(), false));
+            assert_eq!(rejected.canonical_digest(), digest);
+            assert!(!rejected.has_occurrence_operation_preview());
+        }
+
+        let mut app = app_with_circle_tool([40.0, 30.0], 10.0);
+        app.active_tool = ActiveTool::SolidIntersect;
+        let before_digest = app.canonical_digest();
+        let before_revision = app.document_revision();
+        let before_undo = app.document.visible_undo_steps();
+        app.solid_tool_target = Some(target());
+        assert!(app.prepare_solid_tool_preview(tool(), false));
+        assert_eq!(app.canonical_digest(), before_digest);
+        assert_eq!(app.document_revision(), before_revision);
+        assert_eq!(app.document.visible_undo_steps(), before_undo);
+        assert_eq!(
+            app.occurrence_operation_preview_geometry(OccurrenceId(1)),
+            Some((Vec3::new(30.0, 20.0, 0.0), Vec3::new(20.0, 20.0, 20.0)))
+        );
+        app.clear_ephemeral_edit_state();
+        assert!(!app.has_occurrence_operation_preview());
+        assert_eq!(app.canonical_digest(), before_digest);
+
+        app.active_tool = ActiveTool::SolidIntersect;
+        app.solid_tool_target = Some(target());
+        assert!(app.prepare_solid_tool_preview(tool(), false));
+        assert!(app.confirm_occurrence_operation_preview());
+        assert_eq!(app.document.visible_undo_steps(), before_undo + 1);
+        let committed = app.document.current();
+        let result_definition = committed
+            .occurrence(OccurrenceId(1))
+            .unwrap()
+            .definition_id();
+        assert!(committed.occurrence(OccurrenceId(2)).is_none());
+        let request =
+            ExactFeatureChainRequest::from_snapshot(&committed, result_definition).unwrap();
+        let boolean = request.boolean.as_ref().unwrap();
+        assert_eq!(boolean.operation, BooleanOperation::Intersect);
+        assert!(boolean.circle.is_some());
+        assert_eq!(
+            request.expected_bounds_mm(),
+            [[30.0, 20.0, 0.0], [50.0, 40.0, 20.0]]
+        );
+        let committed_digest = committed.canonical_digest();
+        let reopened =
+            ketchup_core::persistence::load(&ketchup_core::persistence::save(&committed))
+                .unwrap()
+                .snapshot();
+        assert_eq!(reopened.canonical_digest(), committed_digest);
+        assert!(ExactFeatureChainRequest::from_snapshot(&reopened, result_definition).is_ok());
+        assert!(app.undo());
+        assert_eq!(app.canonical_digest(), before_digest);
+        assert!(app.redo());
+        assert_eq!(app.canonical_digest(), committed_digest);
+
+        let mut split = app_with_circle_tool([40.0, 30.0], 10.0);
+        split.active_tool = ActiveTool::SolidSplit;
+        let split_before_digest = split.canonical_digest();
+        let split_before_revision = split.document_revision();
+        let split_before_undo = split.document.visible_undo_steps();
+        split.solid_tool_target = Some(target());
+        assert!(split.prepare_solid_tool_preview(tool(), false));
+        assert_eq!(split.canonical_digest(), split_before_digest);
+        assert_eq!(split.document_revision(), split_before_revision);
+        assert_eq!(split.document.visible_undo_steps(), split_before_undo);
+        assert_eq!(
+            split.occurrence_operation_preview_geometry(OccurrenceId(1)),
+            Some((Vec3::new(0.0, 0.0, 0.0), Vec3::new(100.0, 60.0, 20.0)))
+        );
+        split.clear_ephemeral_edit_state();
+        assert!(!split.has_occurrence_operation_preview());
+        assert_eq!(split.canonical_digest(), split_before_digest);
+
+        split.active_tool = ActiveTool::SolidSplit;
+        split.solid_tool_target = Some(target());
+        assert!(split.prepare_solid_tool_preview(tool(), false));
+        assert!(split.confirm_occurrence_operation_preview());
+        assert_eq!(split.document.visible_undo_steps(), split_before_undo + 1);
+        let split_committed = split.document.current();
+        let split_definition = split_committed
+            .occurrence(OccurrenceId(1))
+            .unwrap()
+            .definition_id();
+        assert!(split_committed.occurrence(OccurrenceId(2)).is_some());
+        let split_request =
+            ExactFeatureChainRequest::from_snapshot(&split_committed, split_definition).unwrap();
+        let split_boolean = split_request.boolean.as_ref().unwrap();
+        assert_eq!(split_boolean.operation, BooleanOperation::Split);
+        assert!(split_boolean.circle.is_some());
+        assert_eq!(
+            split_request.expected_bounds_mm(),
+            [[0.0, 0.0, 0.0], [100.0, 60.0, 20.0]]
+        );
+        let split_digest = split_committed.canonical_digest();
+        let split_reopened =
+            ketchup_core::persistence::load(&ketchup_core::persistence::save(&split_committed))
+                .unwrap()
+                .snapshot();
+        assert_eq!(split_reopened.canonical_digest(), split_digest);
+        assert!(ExactFeatureChainRequest::from_snapshot(&split_reopened, split_definition).is_ok());
+        assert!(split.undo());
+        assert_eq!(split.canonical_digest(), split_before_digest);
+        assert!(split.redo());
+        assert_eq!(split.canonical_digest(), split_digest);
+
+        for (center, radius) in [
+            ([10.0, 30.0], 10.0),
+            ([5.0, 30.0], 10.0),
+            ([120.0, 30.0], 5.0),
+        ] {
+            for active_tool in [ActiveTool::SolidIntersect, ActiveTool::SolidSplit] {
+                let mut rejected = app_with_circle_tool(center, radius);
+                rejected.active_tool = active_tool;
+                let digest = rejected.canonical_digest();
+                rejected.solid_tool_target = Some(target());
+                assert!(!rejected.prepare_solid_tool_preview(tool(), false));
+                assert_eq!(rejected.canonical_digest(), digest);
+                assert!(!rejected.has_occurrence_operation_preview());
+            }
+        }
     }
 
     #[test]

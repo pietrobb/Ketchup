@@ -11,9 +11,11 @@ use ketchup_exact::{
     SplineLoftSection, SplineLoftSpec, StabilityClass, capture_bounded_pocket_references,
     capture_bounded_through_cut_references, capture_box_shell_references,
     capture_circle_extrusion_references, capture_circular_through_cut_references,
+    capture_contained_polygon_intersection_references, capture_contained_polygon_union_references,
     capture_general_revolve_references, capture_guaranteed_references,
     capture_half_lap_notch_references, capture_mixed_profile_extrusion_references,
-    capture_planar_offset_reference, capture_rectangular_intersection_references,
+    capture_planar_offset_reference, capture_polygon_through_cut_references,
+    capture_profile_split_references, capture_rectangular_intersection_references,
     capture_rectangular_split_references, capture_rectangular_sweep_references,
     capture_rectangular_union_references, capture_revolve_references, capture_shell_references,
     capture_spline_loft_references, resolve_subshape_reference,
@@ -59,6 +61,9 @@ fn handle_request(backend: &ExactBackend, request: &str) -> Option<String> {
         (Some("CAPS"), Some("P6_LOFT_V1"), None) => Some("CAPS P6_LOFT_V1".to_owned()),
         (Some("CAPS"), Some("P3_CIRCLE_V1"), None) => Some("CAPS P3_CIRCLE_V1".to_owned()),
         (Some("CAPS"), Some("P3_ARC_V1"), None) => Some("CAPS P3_ARC_V1".to_owned()),
+        (Some("CAPS"), Some("P3_POLYGON_CUT_V1"), None) => {
+            Some("CAPS P3_POLYGON_CUT_V1".to_owned())
+        }
         (Some("CAPS"), Some("M5_NOTCH_V1"), None) => Some("CAPS M5_NOTCH_V1".to_owned()),
         (Some("CAPS"), Some("M6_REVOLVE_V1"), None) => Some("CAPS M6_REVOLVE_V1".to_owned()),
         (Some("CAPS"), Some("P4_REVOLVE_V1"), None) => Some("CAPS P4_REVOLVE_V1".to_owned()),
@@ -216,6 +221,173 @@ fn handle_request(backend: &ExactBackend, request: &str) -> Option<String> {
                 request_digest,
             ))
         }
+        (
+            operation @ (Some("EXTRUDE_POLYGON_UNION_P3_V1")
+            | Some("EXTRUDE_POLYGON_INTERSECT_P3_V1")
+            | Some("EXTRUDE_POLYGON_SPLIT_P3_V1")),
+            Some(segment_count),
+            Some(width_bits),
+        ) => {
+            let Ok(segment_count) = segment_count.parse::<usize>() else {
+                return Some("ERR invalid_parameter".to_owned());
+            };
+            let remaining = fields.collect::<Vec<_>>();
+            let segment_count_supported = (3..=64).contains(&segment_count)
+                || (matches!(
+                    operation,
+                    Some("EXTRUDE_POLYGON_UNION_P3_V1")
+                        | Some("EXTRUDE_POLYGON_INTERSECT_P3_V1")
+                        | Some("EXTRUDE_POLYGON_SPLIT_P3_V1")
+                ) && segment_count == 2);
+            if !segment_count_supported || remaining.len() != segment_count + 5 {
+                return Some("ERR invalid_request".to_owned());
+            }
+            let parse_bits = |value: &str| u64::from_str_radix(value, 16);
+            let Some(bits) = [width_bits, remaining[0], remaining[1]]
+                .into_iter()
+                .map(parse_bits)
+                .collect::<Result<Vec<_>, _>>()
+                .ok()
+                .and_then(|values| <[u64; 3]>::try_from(values).ok())
+            else {
+                return Some("ERR invalid_parameter".to_owned());
+            };
+            let document_id = remaining[2];
+            let producer_feature_id = remaining[3];
+            let request_digest = remaining[4];
+            if document_id.parse::<u64>().is_err()
+                || producer_feature_id.parse::<u64>().is_err()
+                || !is_canonical_digest(request_digest)
+            {
+                return Some("ERR invalid_request".to_owned());
+            }
+            let Some(segments) = remaining[5..]
+                .iter()
+                .map(|token| parse_profile_segment(token))
+                .collect::<Option<Vec<_>>>()
+            else {
+                return Some("ERR invalid_parameter".to_owned());
+            };
+            Some(if operation == Some("EXTRUDE_POLYGON_UNION_P3_V1") {
+                p3_polygon_union_response(
+                    backend,
+                    bits,
+                    &segments,
+                    document_id,
+                    producer_feature_id,
+                    request_digest,
+                )
+            } else if operation == Some("EXTRUDE_POLYGON_INTERSECT_P3_V1") {
+                p3_polygon_intersection_response(
+                    backend,
+                    bits,
+                    &segments,
+                    document_id,
+                    producer_feature_id,
+                    request_digest,
+                )
+            } else {
+                p3_polygon_split_response(
+                    backend,
+                    bits,
+                    &segments,
+                    document_id,
+                    producer_feature_id,
+                    request_digest,
+                )
+            })
+        }
+        (Some("EXTRUDE_POLYGON_CUT_P3_V1"), Some(segment_count), Some(width_bits)) => {
+            let Ok(segment_count) = segment_count.parse::<usize>() else {
+                return Some("ERR invalid_parameter".to_owned());
+            };
+            let remaining = fields.collect::<Vec<_>>();
+            if !(2..=64).contains(&segment_count) || remaining.len() != segment_count + 5 {
+                return Some("ERR invalid_request".to_owned());
+            }
+            let parse_bits = |value: &str| u64::from_str_radix(value, 16);
+            let Some(bits) = [width_bits, remaining[0], remaining[1]]
+                .into_iter()
+                .map(parse_bits)
+                .collect::<Result<Vec<_>, _>>()
+                .ok()
+                .and_then(|values| <[u64; 3]>::try_from(values).ok())
+            else {
+                return Some("ERR invalid_parameter".to_owned());
+            };
+            let document_id = remaining[2];
+            let producer_feature_id = remaining[3];
+            let request_digest = remaining[4];
+            if document_id.parse::<u64>().is_err()
+                || producer_feature_id.parse::<u64>().is_err()
+                || !is_canonical_digest(request_digest)
+            {
+                return Some("ERR invalid_request".to_owned());
+            }
+            let Some(segments) = remaining[5..]
+                .iter()
+                .map(|token| parse_profile_segment(token))
+                .collect::<Option<Vec<_>>>()
+            else {
+                return Some("ERR invalid_parameter".to_owned());
+            };
+            Some(p3_polygon_cut_response(
+                backend,
+                bits,
+                None,
+                &segments,
+                document_id,
+                producer_feature_id,
+                request_digest,
+            ))
+        }
+        (Some("EXTRUDE_POLYGON_POCKET_P3_V1"), Some(segment_count), Some(width_bits)) => {
+            let Ok(segment_count) = segment_count.parse::<usize>() else {
+                return Some("ERR invalid_parameter".to_owned());
+            };
+            let remaining = fields.collect::<Vec<_>>();
+            if !(2..=64).contains(&segment_count) || remaining.len() != segment_count + 6 {
+                return Some("ERR invalid_request".to_owned());
+            }
+            let parse_bits = |value: &str| u64::from_str_radix(value, 16);
+            let Some(bits) = [width_bits, remaining[0], remaining[1]]
+                .into_iter()
+                .map(parse_bits)
+                .collect::<Result<Vec<_>, _>>()
+                .ok()
+                .and_then(|values| <[u64; 3]>::try_from(values).ok())
+            else {
+                return Some("ERR invalid_parameter".to_owned());
+            };
+            let Ok(pocket_depth_bits) = parse_bits(remaining[2]) else {
+                return Some("ERR invalid_parameter".to_owned());
+            };
+            let document_id = remaining[3];
+            let producer_feature_id = remaining[4];
+            let request_digest = remaining[5];
+            if document_id.parse::<u64>().is_err()
+                || producer_feature_id.parse::<u64>().is_err()
+                || !is_canonical_digest(request_digest)
+            {
+                return Some("ERR invalid_request".to_owned());
+            }
+            let Some(segments) = remaining[6..]
+                .iter()
+                .map(|token| parse_profile_segment(token))
+                .collect::<Option<Vec<_>>>()
+            else {
+                return Some("ERR invalid_parameter".to_owned());
+            };
+            Some(p3_polygon_cut_response(
+                backend,
+                bits,
+                Some(pocket_depth_bits),
+                &segments,
+                document_id,
+                producer_feature_id,
+                request_digest,
+            ))
+        }
         (Some("EXTRUDE_CIRCLE_P3_V1"), Some(center_x_bits), Some(center_y_bits)) => {
             let remaining = fields.collect::<Vec<_>>();
             let [
@@ -252,7 +424,63 @@ fn handle_request(backend: &ExactBackend, request: &str) -> Option<String> {
                 request_digest,
             ))
         }
-        (Some("EXTRUDE_CIRCULAR_CUT_P3_V1"), Some(width_bits), Some(depth_bits)) => {
+        (Some("EXTRUDE_CIRCULAR_POCKET_P3_V1"), Some(width_bits), Some(depth_bits)) => {
+            let remaining = fields.collect::<Vec<_>>();
+            let [
+                height_bits,
+                center_x_bits,
+                center_y_bits,
+                radius_bits,
+                pocket_depth_bits,
+                document_id,
+                producer_feature_id,
+                request_digest,
+            ] = remaining.as_slice()
+            else {
+                return Some("ERR invalid_request".to_owned());
+            };
+            let parse_bits = |value: &str| u64::from_str_radix(value, 16);
+            let Some(bits) = [
+                width_bits,
+                depth_bits,
+                height_bits,
+                center_x_bits,
+                center_y_bits,
+                radius_bits,
+                pocket_depth_bits,
+            ]
+            .into_iter()
+            .map(parse_bits)
+            .collect::<Result<Vec<_>, _>>()
+            .ok()
+            .and_then(|values| <[u64; 7]>::try_from(values).ok()) else {
+                return Some("ERR invalid_parameter".to_owned());
+            };
+            if document_id.parse::<u64>().is_err()
+                || producer_feature_id.parse::<u64>().is_err()
+                || !is_canonical_digest(request_digest)
+            {
+                return Some("ERR invalid_request".to_owned());
+            }
+            Some(p3_circular_cut_response(
+                backend,
+                bits[..6]
+                    .try_into()
+                    .expect("bounded circular pocket request"),
+                Some(f64::from_bits(bits[6])),
+                document_id,
+                producer_feature_id,
+                request_digest,
+            ))
+        }
+        (
+            operation @ (Some("EXTRUDE_CIRCULAR_CUT_P3_V1")
+            | Some("EXTRUDE_CIRCULAR_UNION_P3_V1")
+            | Some("EXTRUDE_CIRCULAR_INTERSECT_P3_V1")
+            | Some("EXTRUDE_CIRCULAR_SPLIT_P3_V1")),
+            Some(width_bits),
+            Some(depth_bits),
+        ) => {
             let remaining = fields.collect::<Vec<_>>();
             let [
                 height_bits,
@@ -288,13 +516,42 @@ fn handle_request(backend: &ExactBackend, request: &str) -> Option<String> {
             {
                 return Some("ERR invalid_request".to_owned());
             }
-            Some(p3_circular_cut_response(
-                backend,
-                bits,
-                document_id,
-                producer_feature_id,
-                request_digest,
-            ))
+            Some(if operation == Some("EXTRUDE_CIRCULAR_UNION_P3_V1") {
+                p3_circular_boolean_response(
+                    backend,
+                    bits,
+                    document_id,
+                    producer_feature_id,
+                    request_digest,
+                    true,
+                )
+            } else if operation == Some("EXTRUDE_CIRCULAR_INTERSECT_P3_V1") {
+                p3_circular_boolean_response(
+                    backend,
+                    bits,
+                    document_id,
+                    producer_feature_id,
+                    request_digest,
+                    false,
+                )
+            } else if operation == Some("EXTRUDE_CIRCULAR_SPLIT_P3_V1") {
+                p3_circular_split_response(
+                    backend,
+                    bits,
+                    document_id,
+                    producer_feature_id,
+                    request_digest,
+                )
+            } else {
+                p3_circular_cut_response(
+                    backend,
+                    bits,
+                    None,
+                    document_id,
+                    producer_feature_id,
+                    request_digest,
+                )
+            })
         }
         (Some("OFFSET_RECTANGLE_P6_V1"), Some(min_x_bits), Some(min_y_bits)) => {
             let remaining = fields.collect::<Vec<_>>();
@@ -773,14 +1030,26 @@ fn p3_mixed_extrude_response(
                 Err(error) => return format!("ERR {}", error.code.as_str()),
             };
             let mut evidence = Vec::new();
-            for (role, source, expected_type) in [
-                ("extrusion.top", "profile.face", "planar_face"),
-                ("extrusion.bottom", "profile.face", "planar_face"),
+            let side = if segments
+                .iter()
+                .all(|segment| matches!(segment, PlanarProfileSegment::Line { .. }))
+            {
+                (
+                    "extrusion.side(profile_edge=line.0)",
+                    "profile.edge.line.0",
+                    "planar_face",
+                )
+            } else {
                 (
                     "extrusion.side(profile_edge=arc.0)",
                     "profile.edge.arc.0",
                     "face",
-                ),
+                )
+            };
+            for (role, source, expected_type) in [
+                ("extrusion.top", "profile.face", "planar_face"),
+                ("extrusion.bottom", "profile.face", "planar_face"),
+                side,
             ] {
                 let Some(reference) = references.iter().find(|reference| {
                     reference.semantic_role == role && reference.source_element_id == source
@@ -922,7 +1191,111 @@ fn p3_circle_extrude_response(
     }
 }
 
-fn p3_circular_cut_response(
+fn p3_circular_boolean_response(
+    backend: &ExactBackend,
+    bits: [u64; 6],
+    document_id: &str,
+    producer_feature_id: &str,
+    request_digest: &str,
+    union: bool,
+) -> String {
+    let started = Instant::now();
+    let base = RectangleExtrudeSpec {
+        width_mm: f64::from_bits(bits[0]),
+        depth_mm: f64::from_bits(bits[1]),
+        height_mm: f64::from_bits(bits[2]),
+    };
+    let tool = CylinderToolSpec {
+        center_mm: [f64::from_bits(bits[3]), f64::from_bits(bits[4])],
+        origin_z_mm: 0.0,
+        radius_mm: f64::from_bits(bits[5]),
+        height_mm: base.height_mm,
+    };
+    let result = backend.extrude_rectangle(base).and_then(|base_output| {
+        if union {
+            backend.fuse_cylinder(&base_output.body, tool)
+        } else {
+            backend.common_cylinder(&base_output.body, tool)
+        }
+    });
+    let elapsed = started.elapsed().as_nanos();
+    match result {
+        Ok(output) => {
+            let references = match capture_circle_extrusion_references(
+                &output,
+                document_id,
+                producer_feature_id,
+            ) {
+                Ok(references) => references,
+                Err(error) => return format!("ERR {}", error.code.as_str()),
+            };
+            let roles = [
+                ("extrusion.top", "profile.face"),
+                ("extrusion.bottom", "profile.face"),
+                ("extrusion.side(profile_edge=circle)", "profile.edge.circle"),
+            ];
+            let evidence = roles.map(|(role, source)| {
+                let candidates = references
+                    .iter()
+                    .filter(|reference| {
+                        reference.semantic_role == role && reference.source_element_id == source
+                    })
+                    .collect::<Vec<_>>();
+                let [reference] = candidates.as_slice() else {
+                    return Err(());
+                };
+                let face_candidates = output
+                    .body
+                    .topology
+                    .faces
+                    .iter()
+                    .filter(|face| {
+                        face.geometric_fingerprint == reference.corroborating_geometry_fingerprint
+                    })
+                    .collect::<Vec<_>>();
+                let [face] = face_candidates.as_slice() else {
+                    return Err(());
+                };
+                Ok((face.ordinal, *reference))
+            });
+            let [Ok(top), Ok(bottom), Ok(side)] = evidence else {
+                return "ERR incomplete_history".to_owned();
+            };
+            let topology = &output.body.topology;
+            format!(
+                "OK_M3_V1 {elapsed} {} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {} {} {} {} {} {request_digest} {} {} {} {} {} {} {} {} {} {} {} {}",
+                output.body.result_fingerprint,
+                topology.volume_mm3.to_bits(),
+                topology.bounds_mm.min.x.to_bits(),
+                topology.bounds_mm.min.y.to_bits(),
+                topology.bounds_mm.min.z.to_bits(),
+                topology.bounds_mm.max.x.to_bits(),
+                topology.bounds_mm.max.y.to_bits(),
+                topology.bounds_mm.max.z.to_bits(),
+                topology.vertex_count,
+                topology.edge_count,
+                topology.face_count,
+                topology.shell_count,
+                topology.solid_count,
+                output.input_digest,
+                output.backend_fingerprint,
+                output.tolerance_report.profile,
+                top.0,
+                top.1.corroborating_geometry_fingerprint,
+                top.1.lineage_digest,
+                bottom.0,
+                bottom.1.corroborating_geometry_fingerprint,
+                bottom.1.lineage_digest,
+                side.0,
+                side.1.corroborating_geometry_fingerprint,
+                side.1.lineage_digest,
+            )
+        }
+        Err(error) => format!("ERR {}", error.code.as_str()),
+    }
+}
+
+fn p3_circular_split_response(
     backend: &ExactBackend,
     bits: [u64; 6],
     document_id: &str,
@@ -935,16 +1308,126 @@ fn p3_circular_cut_response(
         depth_mm: f64::from_bits(bits[1]),
         height_mm: f64::from_bits(bits[2]),
     };
+    let tool = CylinderToolSpec {
+        center_mm: [f64::from_bits(bits[3]), f64::from_bits(bits[4])],
+        origin_z_mm: 0.0,
+        radius_mm: f64::from_bits(bits[5]),
+        height_mm: base.height_mm,
+    };
+    let result = backend
+        .extrude_rectangle(base)
+        .and_then(|base_output| backend.split_cylinder(&base_output.body, tool));
+    let elapsed = started.elapsed().as_nanos();
+    match result {
+        Ok(mut output) => {
+            let references = match capture_rectangular_split_references(
+                &mut output,
+                document_id,
+                producer_feature_id,
+            ) {
+                Ok(references) => references,
+                Err(error) => return format!("ERR {}", error.code.as_str()),
+            };
+            let roles = [
+                ("extrusion.top", "profile.face"),
+                ("extrusion.bottom", "profile.face"),
+                ("extrusion.side(profile_edge=east)", "profile.edge.east"),
+            ];
+            let evidence = roles.map(|(role, source)| {
+                let candidates = references
+                    .iter()
+                    .filter(|reference| {
+                        reference.semantic_role == role && reference.source_element_id == source
+                    })
+                    .collect::<Vec<_>>();
+                let [reference] = candidates.as_slice() else {
+                    return Err(());
+                };
+                let ReferenceResolution::Resolved {
+                    face_ordinal,
+                    migrated_backend: false,
+                } = resolve_subshape_reference(reference, &output)
+                else {
+                    return Err(());
+                };
+                Ok((face_ordinal, *reference))
+            });
+            let [Ok(top), Ok(bottom), Ok(east)] = evidence else {
+                return "ERR incomplete_history".to_owned();
+            };
+            let topology = &output.body.topology;
+            format!(
+                "OK_M3_V1 {elapsed} {} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {} {} {} {} {} {request_digest} {} {} {} {} {} {} {} {} {} {} {} {}",
+                output.body.result_fingerprint,
+                topology.volume_mm3.to_bits(),
+                topology.bounds_mm.min.x.to_bits(),
+                topology.bounds_mm.min.y.to_bits(),
+                topology.bounds_mm.min.z.to_bits(),
+                topology.bounds_mm.max.x.to_bits(),
+                topology.bounds_mm.max.y.to_bits(),
+                topology.bounds_mm.max.z.to_bits(),
+                topology.vertex_count,
+                topology.edge_count,
+                topology.face_count,
+                topology.shell_count,
+                topology.solid_count,
+                output.input_digest,
+                output.backend_fingerprint,
+                output.tolerance_report.profile,
+                top.0,
+                top.1.corroborating_geometry_fingerprint,
+                top.1.lineage_digest,
+                bottom.0,
+                bottom.1.corroborating_geometry_fingerprint,
+                bottom.1.lineage_digest,
+                east.0,
+                east.1.corroborating_geometry_fingerprint,
+                east.1.lineage_digest,
+            )
+        }
+        Err(error) => format!("ERR {}", error.code.as_str()),
+    }
+}
+
+fn p3_circular_cut_response(
+    backend: &ExactBackend,
+    bits: [u64; 6],
+    pocket_depth_mm: Option<f64>,
+    document_id: &str,
+    producer_feature_id: &str,
+    request_digest: &str,
+) -> String {
+    let started = Instant::now();
+    let base = RectangleExtrudeSpec {
+        width_mm: f64::from_bits(bits[0]),
+        depth_mm: f64::from_bits(bits[1]),
+        height_mm: f64::from_bits(bits[2]),
+    };
+    if pocket_depth_mm.is_some_and(|depth_mm| {
+        !depth_mm.is_finite() || depth_mm <= 0.0 || depth_mm >= base.height_mm
+    }) {
+        return "ERR invalid_parameter".to_owned();
+    }
+    let (origin_z_mm, height_mm, mode) = pocket_depth_mm.map_or(
+        (-1.0, base.height_mm + 2.0, CutMode::ThroughAll),
+        |depth_mm| {
+            (
+                base.height_mm - depth_mm,
+                depth_mm + 1.0,
+                CutMode::BlindPlanar,
+            )
+        },
+    );
     let result = backend.extrude_rectangle(base).and_then(|base_output| {
         backend.cut_cylinder(
             &base_output.body,
             CylinderToolSpec {
                 center_mm: [f64::from_bits(bits[3]), f64::from_bits(bits[4])],
-                origin_z_mm: -1.0,
+                origin_z_mm,
                 radius_mm: f64::from_bits(bits[5]),
-                height_mm: base.height_mm + 2.0,
+                height_mm,
             },
-            CutMode::ThroughAll,
+            mode,
         )
     });
     let elapsed = started.elapsed().as_nanos();
@@ -1261,6 +1744,405 @@ fn m3_extrude_response(
                 east.1.corroborating_geometry_fingerprint,
                 east.1.lineage_digest,
             )
+        }
+        Err(error) => format!("ERR {}", error.code.as_str()),
+    }
+}
+
+fn p3_polygon_union_response(
+    backend: &ExactBackend,
+    base_bits: [u64; 3],
+    segments: &[PlanarProfileSegment],
+    document_id: &str,
+    producer_feature_id: &str,
+    request_digest: &str,
+) -> String {
+    p3_polygon_boolean_response(
+        backend,
+        base_bits,
+        segments,
+        document_id,
+        producer_feature_id,
+        request_digest,
+        false,
+    )
+}
+
+fn p3_polygon_intersection_response(
+    backend: &ExactBackend,
+    base_bits: [u64; 3],
+    segments: &[PlanarProfileSegment],
+    document_id: &str,
+    producer_feature_id: &str,
+    request_digest: &str,
+) -> String {
+    p3_polygon_boolean_response(
+        backend,
+        base_bits,
+        segments,
+        document_id,
+        producer_feature_id,
+        request_digest,
+        true,
+    )
+}
+
+fn p3_polygon_split_response(
+    backend: &ExactBackend,
+    base_bits: [u64; 3],
+    segments: &[PlanarProfileSegment],
+    document_id: &str,
+    producer_feature_id: &str,
+    request_digest: &str,
+) -> String {
+    let started = Instant::now();
+    let base = RectangleExtrudeSpec {
+        width_mm: f64::from_bits(base_bits[0]),
+        depth_mm: f64::from_bits(base_bits[1]),
+        height_mm: f64::from_bits(base_bits[2]),
+    };
+    let result = backend.extrude_rectangle(base).and_then(|base_output| {
+        backend.split_mixed_profile(&base_output.body, segments, 0.0, base.height_mm)
+    });
+    let elapsed = started.elapsed().as_nanos();
+    match result {
+        Ok(mut output) => {
+            let split_references = match if segments
+                .iter()
+                .any(|segment| matches!(segment, PlanarProfileSegment::CircularArc { .. }))
+            {
+                capture_profile_split_references(
+                    &mut output,
+                    document_id,
+                    producer_feature_id,
+                    segments,
+                )
+            } else {
+                capture_rectangular_split_references(&mut output, document_id, producer_feature_id)
+            } {
+                Ok(references) => references,
+                Err(error) => return format!("ERR {}", error.code.as_str()),
+            };
+            let side =
+                if split_references.iter().any(|reference| {
+                    reference.semantic_role == "extrusion.side(profile_edge=arc.0)"
+                }) {
+                    ("extrusion.side(profile_edge=arc.0)", "profile.edge.arc.0")
+                } else if split_references.iter().any(|reference| {
+                    reference.semantic_role == "extrusion.side(profile_edge=line.0)"
+                }) {
+                    ("extrusion.side(profile_edge=line.0)", "profile.edge.line.0")
+                } else {
+                    ("extrusion.side(profile_edge=east)", "profile.edge.east")
+                };
+            let roles = [
+                ("extrusion.top", "profile.face"),
+                ("extrusion.bottom", "profile.face"),
+                side,
+            ];
+            let evidence = roles.map(|(role, source)| {
+                let candidates = split_references
+                    .iter()
+                    .filter(|reference| {
+                        reference.semantic_role == role && reference.source_element_id == source
+                    })
+                    .collect::<Vec<_>>();
+                let [reference] = candidates.as_slice() else {
+                    return Err(());
+                };
+                let ReferenceResolution::Resolved {
+                    face_ordinal,
+                    migrated_backend: false,
+                } = resolve_subshape_reference(reference, &output)
+                else {
+                    return Err(());
+                };
+                Ok((face_ordinal, *reference))
+            });
+            let [Ok(top), Ok(bottom), Ok(east)] = evidence else {
+                return "ERR incomplete_history".to_owned();
+            };
+            let topology = &output.body.topology;
+            format!(
+                "OK_M3_V1 {elapsed} {} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {} {} {} {} {} {request_digest} {} {} {} {} {} {} {} {} {} {} {} {}",
+                output.body.result_fingerprint,
+                topology.volume_mm3.to_bits(),
+                topology.bounds_mm.min.x.to_bits(),
+                topology.bounds_mm.min.y.to_bits(),
+                topology.bounds_mm.min.z.to_bits(),
+                topology.bounds_mm.max.x.to_bits(),
+                topology.bounds_mm.max.y.to_bits(),
+                topology.bounds_mm.max.z.to_bits(),
+                topology.vertex_count,
+                topology.edge_count,
+                topology.face_count,
+                topology.shell_count,
+                topology.solid_count,
+                output.input_digest,
+                output.backend_fingerprint,
+                output.tolerance_report.profile,
+                top.0,
+                top.1.corroborating_geometry_fingerprint,
+                top.1.lineage_digest,
+                bottom.0,
+                bottom.1.corroborating_geometry_fingerprint,
+                bottom.1.lineage_digest,
+                east.0,
+                east.1.corroborating_geometry_fingerprint,
+                east.1.lineage_digest,
+            )
+        }
+        Err(error) => format!("ERR {}", error.code.as_str()),
+    }
+}
+
+fn p3_polygon_boolean_response(
+    backend: &ExactBackend,
+    base_bits: [u64; 3],
+    segments: &[PlanarProfileSegment],
+    document_id: &str,
+    producer_feature_id: &str,
+    request_digest: &str,
+    intersection: bool,
+) -> String {
+    let started = Instant::now();
+    let base = RectangleExtrudeSpec {
+        width_mm: f64::from_bits(base_bits[0]),
+        depth_mm: f64::from_bits(base_bits[1]),
+        height_mm: f64::from_bits(base_bits[2]),
+    };
+    let result = backend.extrude_rectangle(base).and_then(|base_output| {
+        if intersection {
+            backend.common_mixed_profile(&base_output.body, segments, 0.0, base.height_mm)
+        } else {
+            backend.fuse_mixed_profile(&base_output.body, segments, 0.0, base.height_mm)
+        }
+    });
+    let elapsed = started.elapsed().as_nanos();
+    match result {
+        Ok(mut output) => {
+            let references = match if intersection {
+                capture_contained_polygon_intersection_references(
+                    &mut output,
+                    document_id,
+                    producer_feature_id,
+                    segments,
+                )
+            } else {
+                capture_contained_polygon_union_references(
+                    &mut output,
+                    document_id,
+                    producer_feature_id,
+                    segments,
+                )
+            } {
+                Ok(references) => references,
+                Err(error) => return format!("ERR {}", error.code.as_str()),
+            };
+            let side = if references
+                .iter()
+                .any(|reference| reference.semantic_role == "extrusion.side(profile_edge=arc.0)")
+            {
+                ("extrusion.side(profile_edge=arc.0)", "profile.edge.arc.0")
+            } else {
+                ("extrusion.side(profile_edge=line.0)", "profile.edge.line.0")
+            };
+            let roles = [
+                ("extrusion.top", "profile.face"),
+                ("extrusion.bottom", "profile.face"),
+                side,
+            ];
+            let evidence = roles.map(|(role, source)| {
+                let candidates = references
+                    .iter()
+                    .filter(|reference| {
+                        reference.semantic_role == role && reference.source_element_id == source
+                    })
+                    .collect::<Vec<_>>();
+                let [reference] = candidates.as_slice() else {
+                    return Err(());
+                };
+                let ReferenceResolution::Resolved {
+                    face_ordinal,
+                    migrated_backend: false,
+                } = resolve_subshape_reference(reference, &output)
+                else {
+                    return Err(());
+                };
+                Ok((face_ordinal, *reference))
+            });
+            let [Ok(top), Ok(bottom), Ok(side)] = evidence else {
+                return "ERR incomplete_history".to_owned();
+            };
+            let topology = &output.body.topology;
+            format!(
+                "OK_M3_V1 {elapsed} {} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {} {} {} {} {} {request_digest} {} {} {} {} {} {} {} {} {} {} {} {}",
+                output.body.result_fingerprint,
+                topology.volume_mm3.to_bits(),
+                topology.bounds_mm.min.x.to_bits(),
+                topology.bounds_mm.min.y.to_bits(),
+                topology.bounds_mm.min.z.to_bits(),
+                topology.bounds_mm.max.x.to_bits(),
+                topology.bounds_mm.max.y.to_bits(),
+                topology.bounds_mm.max.z.to_bits(),
+                topology.vertex_count,
+                topology.edge_count,
+                topology.face_count,
+                topology.shell_count,
+                topology.solid_count,
+                output.input_digest,
+                output.backend_fingerprint,
+                output.tolerance_report.profile,
+                top.0,
+                top.1.corroborating_geometry_fingerprint,
+                top.1.lineage_digest,
+                bottom.0,
+                bottom.1.corroborating_geometry_fingerprint,
+                bottom.1.lineage_digest,
+                side.0,
+                side.1.corroborating_geometry_fingerprint,
+                side.1.lineage_digest,
+            )
+        }
+        Err(error) => format!("ERR {}", error.code.as_str()),
+    }
+}
+
+fn p3_polygon_cut_response(
+    backend: &ExactBackend,
+    base_bits: [u64; 3],
+    pocket_depth_bits: Option<u64>,
+    segments: &[PlanarProfileSegment],
+    document_id: &str,
+    producer_feature_id: &str,
+    request_digest: &str,
+) -> String {
+    let started = Instant::now();
+    let base = RectangleExtrudeSpec {
+        width_mm: f64::from_bits(base_bits[0]),
+        depth_mm: f64::from_bits(base_bits[1]),
+        height_mm: f64::from_bits(base_bits[2]),
+    };
+    let pocket_depth_mm = pocket_depth_bits.map(f64::from_bits);
+    if pocket_depth_mm
+        .is_some_and(|depth| !depth.is_finite() || depth <= 0.0 || depth >= base.height_mm)
+    {
+        return "ERR invalid_parameter".to_owned();
+    }
+    let (origin_z_mm, cut_height_mm) = pocket_depth_mm
+        .map_or((-1.0, base.height_mm + 2.0), |depth| {
+            (base.height_mm - depth, depth)
+        });
+    let result = backend.extrude_rectangle(base).and_then(|base_output| {
+        backend.cut_mixed_profile(&base_output.body, segments, origin_z_mm, cut_height_mm)
+    });
+    let elapsed = started.elapsed().as_nanos();
+    match result {
+        Ok(mut output) => {
+            let references = match capture_polygon_through_cut_references(
+                &mut output,
+                document_id,
+                producer_feature_id,
+                pocket_depth_mm.map(|depth| base.height_mm - depth),
+                pocket_depth_mm.map(|_| segments),
+            ) {
+                Ok(references) => references,
+                Err(error) => return format!("ERR {}", error.code.as_str()),
+            };
+            let roles = [
+                ("extrusion.top", "profile.face"),
+                ("extrusion.bottom", "profile.face"),
+                ("extrusion.side(profile_edge=east)", "profile.edge.east"),
+                ("through_cut.wall.line.0", "cut_profile.edge.line.0"),
+            ];
+            let evidence = roles.map(|(role, source)| {
+                let candidates = references
+                    .iter()
+                    .filter(|reference| {
+                        reference.semantic_role == role && reference.source_element_id == source
+                    })
+                    .collect::<Vec<_>>();
+                let [reference] = candidates.as_slice() else {
+                    return Err(());
+                };
+                let ReferenceResolution::Resolved {
+                    face_ordinal,
+                    migrated_backend: false,
+                } = resolve_subshape_reference(reference, &output)
+                else {
+                    return Err(());
+                };
+                Ok((face_ordinal, *reference))
+            });
+            let [Ok(top), Ok(bottom), Ok(east), Ok(wall)] = evidence else {
+                return "ERR incomplete_history".to_owned();
+            };
+            let floor = if pocket_depth_bits.is_some() {
+                let candidates = references
+                    .iter()
+                    .filter(|reference| {
+                        reference.semantic_role == "pocket.floor"
+                            && reference.source_element_id == "pocket_profile.face"
+                    })
+                    .collect::<Vec<_>>();
+                let [reference] = candidates.as_slice() else {
+                    return "ERR incomplete_history".to_owned();
+                };
+                let ReferenceResolution::Resolved {
+                    face_ordinal,
+                    migrated_backend: false,
+                } = resolve_subshape_reference(reference, &output)
+                else {
+                    return "ERR incomplete_history".to_owned();
+                };
+                Some((face_ordinal, *reference))
+            } else {
+                None
+            };
+            let topology = &output.body.topology;
+            let mut response = format!(
+                "{} {elapsed} {} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {} {} {} {} {} {request_digest} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {}",
+                if floor.is_some() {
+                    "OK_P3_POLYGON_POCKET_V1"
+                } else {
+                    "OK_P3_POLYGON_CUT_V1"
+                },
+                output.body.result_fingerprint,
+                topology.volume_mm3.to_bits(),
+                topology.bounds_mm.min.x.to_bits(),
+                topology.bounds_mm.min.y.to_bits(),
+                topology.bounds_mm.min.z.to_bits(),
+                topology.bounds_mm.max.x.to_bits(),
+                topology.bounds_mm.max.y.to_bits(),
+                topology.bounds_mm.max.z.to_bits(),
+                topology.vertex_count,
+                topology.edge_count,
+                topology.face_count,
+                topology.shell_count,
+                topology.solid_count,
+                output.input_digest,
+                output.backend_fingerprint,
+                output.tolerance_report.profile,
+                top.0,
+                top.1.corroborating_geometry_fingerprint,
+                top.1.lineage_digest,
+                bottom.0,
+                bottom.1.corroborating_geometry_fingerprint,
+                bottom.1.lineage_digest,
+                east.0,
+                east.1.corroborating_geometry_fingerprint,
+                east.1.lineage_digest,
+                wall.0,
+                wall.1.corroborating_geometry_fingerprint,
+                wall.1.lineage_digest,
+            );
+            if let Some(floor) = floor {
+                response.push_str(&format!(
+                    " {} {} {}",
+                    floor.0, floor.1.corroborating_geometry_fingerprint, floor.1.lineage_digest,
+                ));
+            }
+            response
         }
         Err(error) => format!("ERR {}", error.code.as_str()),
     }
@@ -2594,6 +3476,70 @@ fn m21_box_step_export_response(
                         height_mm: base.height_mm + 2.0,
                     },
                     CutMode::ThroughAll,
+                );
+            }
+            if !boolean.mixed_segments.is_empty() {
+                let segments = boolean
+                    .mixed_segments
+                    .iter()
+                    .map(step_profile_segment)
+                    .collect::<Vec<_>>();
+                if specification.pocket_depth_bits.is_none() {
+                    if boolean.operation == "union" {
+                        return backend.fuse_mixed_profile(
+                            &base_output.body,
+                            &segments,
+                            0.0,
+                            base.height_mm,
+                        );
+                    }
+                    if boolean.operation == "intersect" {
+                        return backend.common_mixed_profile(
+                            &base_output.body,
+                            &segments,
+                            0.0,
+                            base.height_mm,
+                        );
+                    }
+                    if boolean.operation == "split" {
+                        return backend.split_mixed_profile(
+                            &base_output.body,
+                            &segments,
+                            0.0,
+                            base.height_mm,
+                        );
+                    }
+                }
+                if boolean.operation != "cut" {
+                    return Err(ketchup_exact::GeometryError {
+                        code: ketchup_exact::GeometryErrorCode::InvalidParameter,
+                        diagnostic: "unsupported mixed-profile STEP boolean".to_owned(),
+                        operation: "export_feature_step",
+                        input_digest: fields[0].to_owned(),
+                        backend_fingerprint: ketchup_exact::backend_fingerprint(),
+                    });
+                }
+                let (origin_z_mm, cut_height_mm) = specification
+                    .pocket_depth_bits
+                    .map(f64::from_bits)
+                    .map_or(Ok((-1.0, base.height_mm + 2.0)), |depth| {
+                        if depth.is_finite() && depth > 0.0 && depth < base.height_mm {
+                            Ok((base.height_mm - depth, depth))
+                        } else {
+                            Err(ketchup_exact::GeometryError {
+                                code: ketchup_exact::GeometryErrorCode::InvalidParameter,
+                                diagnostic: "invalid mixed-profile STEP pocket depth".to_owned(),
+                                operation: "export_feature_step",
+                                input_digest: fields[0].to_owned(),
+                                backend_fingerprint: ketchup_exact::backend_fingerprint(),
+                            })
+                        }
+                    })?;
+                return backend.cut_mixed_profile(
+                    &base_output.body,
+                    &segments,
+                    origin_z_mm,
+                    cut_height_mm,
                 );
             }
             let depth = specification.pocket_depth_bits.map(f64::from_bits);

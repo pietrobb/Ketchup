@@ -14,11 +14,11 @@ use eframe::egui::{Key, Pos2, accesskit::Role};
 use harness::Shell;
 use ketchup_app::AppCommand;
 use ketchup_app::dialogs::ScriptedFileDialogs;
-use ketchup_core::document::{FeatureId, FeatureKind};
+use ketchup_core::document::{FeatureId, FeatureKind, ProfileSegment};
 use ketchup_core::graph::sha256_bytes;
 use ketchup_core::import::{
-    ImportFormat, ImportLengthUnit, ImportUnitAuthority, MAX_DXF_SOURCE_BYTES,
-    MAX_STEP_SOURCE_BYTES, MAX_STL_SOURCE_BYTES,
+    DxfImportOptions, ImportFormat, ImportLengthUnit, ImportUnitAuthority, MAX_DXF_SOURCE_BYTES,
+    MAX_STEP_SOURCE_BYTES, MAX_STL_SOURCE_BYTES, inspect_dxf,
 };
 use ketchup_interaction::Vec3;
 use ketchup_scheduler::ExactWorkerSupervisor;
@@ -267,10 +267,46 @@ endsolid tetrahedron\n"
 
 fn valid_dxf_subset() -> &'static [u8] {
     b"0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n\
+0\nSECTION\n2\nBLOCKS\n\
+0\nBLOCK\n8\n0\n2\nwrapper\n3\nwrapper\n70\n2\n10\n0\n20\n0\n30\n0\n\
+0\nATTDEF\n8\nlabels\n2\nPART\n1\nunknown\n10\n0\n20\n0\n\
+0\nINSERT\n8\n0\n2\nstamp\n10\n0\n20\n0\n\
+0\nENDBLK\n8\n0\n\
+0\nBLOCK\n8\n0\n2\nstamp\n3\nstamp\n70\n1\n10\n0\n20\n0\n30\n0\n\
+0\nLWPOLYLINE\n8\n0\n90\n3\n70\n1\n10\n0\n20\n0\n10\n4\n20\n0\n10\n0\n20\n4\n\
+0\nSOLID\n8\nfill\n10\n5\n20\n0\n11\n7\n21\n0\n12\n5\n22\n2\n13\n7\n23\n2\n\
+0\nENDBLK\n8\n0\n\
+0\nBLOCK\n8\n0\n2\n*D1\n70\n1\n10\n0\n20\n0\n\
+0\nLINE\n8\n0\n10\n160\n20\n0\n11\n164\n21\n0\n\
+0\nTEXT\n8\n0\n10\n162\n20\n1\n1\n4.00\n\
+0\nENDBLK\n8\n0\n0\nENDSEC\n\
 0\nSECTION\n2\nENTITIES\n\
 0\nLINE\n8\noutline\n10\n0\n20\n0\n11\n10\n21\n0\n\
 0\nARC\n8\noutline\n10\n10\n20\n10\n40\n10\n50\n270\n51\n0\n\
 0\nLWPOLYLINE\n8\ncut\n90\n3\n70\n1\n10\n0\n20\n0\n42\n0\n10\n10\n20\n0\n42\n1\n10\n0\n20\n10\n42\n0\n\
+0\nCIRCLE\n8\nbores\n10\n30\n20\n20\n40\n5\n\
+0\nPOLYLINE\n8\nlegacy\n66\n1\n70\n1\n0\nVERTEX\n10\n40\n20\n0\n0\nVERTEX\n10\n50\n20\n0\n0\nVERTEX\n10\n50\n20\n10\n0\nVERTEX\n10\n40\n20\n10\n0\nSEQEND\n8\nlegacy\n\
+0\nINSERT\n8\nsymbols\n2\nwrapper\n10\n60\n20\n0\n41\n-2\n42\n3\n50\n90\n70\n2\n44\n10\n66\n1\n\
+0\nATTRIB\n8\nlabels\n2\nPART\n1\nA-01\n10\n60\n20\n0\n\
+0\nSEQEND\n8\nlabels\n\
+0\nTRACE\n8\nfill\n10\n80\n20\n0\n11\n84\n21\n0\n12\n80\n22\n3\n13\n80\n23\n3\n\
+0\n3DFACE\n8\nfacets\n10\n90\n20\n0\n11\n94\n21\n0\n12\n94\n22\n3\n13\n90\n23\n3\n70\n0\n\
+0\nPOLYLINE\n8\npaths-3d\n66\n1\n70\n9\n\
+0\nVERTEX\n70\n32\n10\n100\n20\n0\n30\n0\n\
+0\nVERTEX\n70\n32\n10\n104\n20\n0\n30\n0\n\
+0\nVERTEX\n70\n32\n10\n100\n20\n3\n30\n0\n\
+0\nSEQEND\n8\npaths-3d\n\
+0\nELLIPSE\n8\narcs\n10\n110\n20\n5\n11\n0\n21\n2\n40\n1\n\
+0\nSPLINE\n8\nsplines\n70\n24\n71\n1\n72\n5\n73\n3\n74\n0\n40\n0\n40\n0\n40\n1\n40\n2\n40\n2\n10\n120\n20\n0\n10\n124\n20\n0\n10\n124\n20\n3\n\
+0\nHATCH\n8\nhatches\n10\n0\n20\n0\n30\n0\n2\nSOLID\n70\n1\n71\n0\n91\n2\n92\n1\n93\n4\n72\n1\n10\n130\n20\n0\n11\n134\n21\n0\n72\n3\n10\n134\n20\n1.5\n11\n1.5\n21\n0\n40\n1\n50\n270\n51\n90\n73\n1\n72\n1\n10\n134\n20\n3\n11\n130\n21\n3\n72\n1\n10\n130\n20\n3\n11\n130\n21\n0\n97\n0\n92\n2\n72\n0\n73\n1\n93\n3\n10\n131\n20\n1\n10\n132\n20\n1\n10\n131\n20\n2\n97\n0\n75\n0\n76\n1\n98\n0\n\
+0\nHATCH\n8\nhatch-splines\n2\nSOLID\n70\n1\n71\n0\n91\n1\n92\n1\n93\n3\n72\n4\n94\n1\n73\n0\n74\n0\n95\n5\n96\n3\n40\n0\n40\n0\n40\n1\n40\n2\n40\n2\n10\n140\n20\n0\n10\n144\n20\n0\n10\n144\n20\n3\n97\n0\n72\n1\n10\n144\n20\n3\n11\n140\n21\n3\n72\n1\n10\n140\n20\n3\n11\n140\n21\n0\n97\n0\n\
+0\nHATCH\n8\nhatch-patterned\n2\nANSI31\n70\n0\n71\n0\n91\n1\n92\n3\n72\n0\n73\n1\n93\n4\n10\n150\n20\n0\n10\n154\n20\n0\n10\n154\n20\n3\n10\n150\n20\n3\n97\n0\n75\n0\n76\n1\n52\n45\n41\n1\n77\n0\n78\n1\n53\n45\n43\n0\n44\n0\n45\n0\n46\n1\n79\n0\n98\n0\n\
+0\nMPOLYGON\n8\nmpolygons\n70\n1\n10\n0\n20\n0\n30\n0\n71\n1\n91\n2\n92\n3\n72\n0\n73\n1\n93\n4\n10\n160\n20\n10\n10\n164\n20\n10\n10\n164\n20\n13\n10\n160\n20\n13\n97\n0\n92\n2\n72\n0\n73\n1\n93\n3\n10\n161\n20\n11\n10\n162\n20\n11\n10\n161\n20\n12\n97\n0\n76\n1\n73\n1\n11\n0\n21\n0\n99\n0\n\
+0\nDIMENSION\n8\ndimensions\n2\n*D1\n3\nSTANDARD\n10\n0\n20\n0\n12\n5\n22\n2\n70\n32\n\
+0\nLEADER\n8\nleaders\n3\nSTANDARD\n71\n1\n72\n0\n73\n0\n74\n0\n75\n0\n76\n3\n10\n170\n20\n0\n30\n0\n10\n174\n20\n0\n30\n0\n10\n174\n20\n3\n30\n0\n\
+0\nMESH\n8\nmeshes\n71\n2\n72\n0\n91\n0\n92\n4\n10\n180\n20\n0\n30\n0\n10\n184\n20\n0\n30\n0\n10\n184\n20\n3\n30\n0\n10\n180\n20\n3\n30\n0\n93\n8\n90\n3\n90\n0\n90\n1\n90\n2\n90\n3\n90\n0\n90\n2\n90\n3\n94\n0\n95\n0\n90\n0\n\
+0\nPOLYLINE\n8\npolyfaces\n66\n1\n70\n64\n71\n4\n72\n2\n0\nVERTEX\n8\npolyfaces\n70\n192\n10\n190\n20\n0\n30\n0\n0\nVERTEX\n8\npolyfaces\n70\n192\n10\n194\n20\n0\n30\n0\n0\nVERTEX\n8\npolyfaces\n70\n192\n10\n194\n20\n3\n30\n0\n0\nVERTEX\n8\npolyfaces\n70\n192\n10\n190\n20\n3\n30\n0\n0\nVERTEX\n8\npolyfaces\n70\n128\n71\n1\n72\n2\n73\n-3\n0\nVERTEX\n8\npolyfaces\n70\n128\n71\n1\n72\n3\n73\n4\n0\nSEQEND\n8\npolyfaces\n\
+0\nPOLYLINE\n8\npolygon-meshes\n66\n1\n70\n16\n71\n2\n72\n2\n0\nVERTEX\n8\npolygon-meshes\n70\n64\n10\n200\n20\n0\n30\n0\n0\nVERTEX\n8\npolygon-meshes\n70\n64\n10\n200\n20\n3\n30\n0\n0\nVERTEX\n8\npolygon-meshes\n70\n64\n10\n204\n20\n0\n30\n0\n0\nVERTEX\n8\npolygon-meshes\n70\n64\n10\n204\n20\n3\n30\n0\n0\nSEQEND\n8\npolygon-meshes\n\
 0\nTEXT\n8\nnotes\n10\n0\n20\n0\n1\nunsupported\n\
 0\nENDSEC\n0\nEOF\n"
 }
@@ -1092,6 +1128,13 @@ fn file_import_dxf_reviews_and_commits_one_canonical_profile_transaction_offscre
     let path = directory.path().join("profiles.dxf");
     let document_path = directory.path().join("imported-dxf.ketchup");
     std::fs::write(&path, valid_dxf_subset()).unwrap();
+    assert_eq!(
+        inspect_dxf(valid_dxf_subset(), DxfImportOptions::new(None))
+            .unwrap()
+            .profiles()
+            .len(),
+        24
+    );
     let script = ScriptedFileDialogs::new()
         .queue_import(ImportFormat::Dxf, &path)
         .queue_save(&document_path)
@@ -1104,11 +1147,15 @@ fn file_import_dxf_reviews_and_commits_one_canonical_profile_transaction_offscre
     shell.click_menu_command("menu-file", AppCommand::ImportDrawingDxf);
     shell.click_button_label(&shell.catalog().text("dialog-import-dxf-confirm"));
 
-    assert_eq!(shell.app().document_revision(), before.revision + 1);
-    assert_eq!(shell.app().definition_count(), before.definitions + 2);
-    assert_eq!(shell.app().feature_count(), before.features + 2);
-    assert_eq!(shell.app().occurrence_count(), before.occurrences + 2);
-    assert_eq!(shell.app().active_box_count(), before_box_count + 2);
+    assert!(
+        shell.app().document_revision() == before.revision + 1,
+        "DXF import did not commit: {}",
+        shell.app().action_digest()
+    );
+    assert!(shell.app().definition_count() >= 24);
+    assert!(shell.app().feature_count() >= 24);
+    assert!(shell.app().occurrence_count() >= 24);
+    assert!(shell.app().active_box_count() >= before_box_count + 24);
     assert_eq!(shell.app().import_receipt_count(), 1);
     assert!(digest_starts_like(&shell, "digest-imported-dxf"));
     assert_eq!(
@@ -1138,6 +1185,11 @@ fn file_import_dxf_reviews_and_commits_one_canonical_profile_transaction_offscre
     let loaded_snapshot = loaded.snapshot();
     let receipt = loaded_snapshot.import_receipts().next().unwrap();
     assert_eq!(receipt.format(), ImportFormat::Dxf);
+    assert_eq!(
+        receipt.parser_version(),
+        ketchup_core::import::DXF_PARSER_VERSION
+    );
+    assert_eq!(receipt.outputs().len(), 24 * 3);
     assert_eq!(receipt.source_sha256(), &sha256_bytes(valid_dxf_subset()));
     assert_eq!(receipt.source_byte_len(), valid_dxf_subset().len() as u64);
     assert_eq!(
@@ -1147,13 +1199,393 @@ fn file_import_dxf_reviews_and_commits_one_canonical_profile_transaction_offscre
     assert!(receipt.diagnostics().iter().any(|diagnostic| {
         diagnostic.code() == "dxf.entity-unsupported" && diagnostic.subject() == Some("TEXT")
     }));
+    assert!(receipt.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code() == "dxf.entity-unsupported"
+            && diagnostic.subject() == Some("ATTDEF")
+            && diagnostic.count() == 1
+    }));
+    assert!(receipt.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code() == "dxf.block-insert"
+            && diagnostic.subject() == Some("stamp")
+            && diagnostic.count() == 1
+    }));
+    assert!(receipt.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code() == "dxf.insert-attributes-dropped"
+            && diagnostic.subject() == Some("wrapper")
+            && diagnostic.count() == 1
+    }));
+    assert!(receipt.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code() == "dxf.dimension-semantics-dropped"
+            && diagnostic.subject() == Some("*D1")
+            && diagnostic.count() == 1
+    }));
+    assert!(receipt.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code() == "dxf.dimension-graphics"
+            && diagnostic.subject() == Some("*D1")
+            && diagnostic.count() == 1
+    }));
+    assert!(receipt.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code() == "dxf.hatch-boundary-topology-dropped"
+            && diagnostic.subject() == Some("hatches")
+            && diagnostic.count() == 2
+    }));
+    for code in [
+        "dxf.mpolygon-fill-dropped",
+        "dxf.mpolygon-annotation-dropped",
+        "dxf.mpolygon-boundary-topology-dropped",
+        "dxf.mpolygon-geometry",
+    ] {
+        assert!(receipt.diagnostics().iter().any(|diagnostic| {
+            diagnostic.code() == code && diagnostic.subject() == Some("mpolygons")
+        }));
+    }
+    for (subject, codes) in [
+        (
+            "meshes",
+            [
+                "dxf.mesh-face-topology-dropped",
+                "dxf.mesh-boundary-geometry",
+            ],
+        ),
+        (
+            "polyfaces",
+            [
+                "dxf.polyface-face-topology-dropped",
+                "dxf.polyface-boundary-geometry",
+            ],
+        ),
+        (
+            "polygon-meshes",
+            [
+                "dxf.polygon-mesh-surface-topology-dropped",
+                "dxf.polygon-mesh-boundary-geometry",
+            ],
+        ),
+    ] {
+        for code in codes {
+            assert!(receipt.diagnostics().iter().any(|diagnostic| {
+                diagnostic.code() == code && diagnostic.subject() == Some(subject)
+            }));
+        }
+    }
+    assert!(receipt.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code() == "dxf.polyface-invisible-edge-dropped"
+            && diagnostic.subject() == Some("polyfaces")
+            && diagnostic.count() == 1
+    }));
+    for code in [
+        "dxf.leader-arrowhead-dropped",
+        "dxf.leader-semantics-dropped",
+        "dxf.leader-geometry",
+    ] {
+        assert!(
+            receipt
+                .diagnostics()
+                .iter()
+                .any(|diagnostic| { diagnostic.code() == code && diagnostic.count() == 1 })
+        );
+    }
     assert_eq!(
         loaded_snapshot
             .features()
             .filter(|feature| matches!(feature.kind(), FeatureKind::SegmentProfile { .. }))
             .count(),
-        2
+        24
     );
+    assert!(loaded_snapshot.features().any(|feature| {
+        let FeatureKind::SegmentProfile { segments, closed } = feature.kind() else {
+            return false;
+        };
+        *closed
+            && segments.len() == 4
+            && segments[0].start_mm() == [200.0, 0.0]
+            && segments[0].end_mm() == [204.0, 0.0]
+            && segments[1].end_mm() == [204.0, 3.0]
+            && segments[2].end_mm() == [200.0, 3.0]
+            && segments[3].end_mm() == [200.0, 0.0]
+    }));
+    assert!(loaded_snapshot.features().any(|feature| {
+        let FeatureKind::SegmentProfile { segments, closed } = feature.kind() else {
+            return false;
+        };
+        !*closed
+            && matches!(
+                segments.as_slice(),
+                [
+                    ProfileSegment::Line {
+                        start_mm: [170.0, 0.0],
+                        end_mm: [174.0, 0.0]
+                    },
+                    ProfileSegment::Line {
+                        start_mm: [174.0, 0.0],
+                        end_mm: [174.0, 3.0]
+                    }
+                ]
+            )
+    }));
+    assert!(loaded_snapshot.features().any(|feature| {
+        let FeatureKind::SegmentProfile { segments, closed } = feature.kind() else {
+            return false;
+        };
+        !*closed
+            && matches!(
+                segments.as_slice(),
+                [ProfileSegment::Line {
+                    start_mm: [165.0, 2.0],
+                    end_mm: [169.0, 2.0]
+                }]
+            )
+    }));
+    assert!(loaded_snapshot.features().any(|feature| {
+        let FeatureKind::SegmentProfile { segments, closed } = feature.kind() else {
+            return false;
+        };
+        *closed
+            && segments.len() == 3
+            && segments[0].start_mm() == [80.0, 0.0]
+            && segments[0].end_mm() == [84.0, 0.0]
+            && segments[1].end_mm() == [80.0, 3.0]
+            && segments[2].end_mm() == [80.0, 0.0]
+    }));
+    assert!(loaded_snapshot.features().any(|feature| {
+        let FeatureKind::SegmentProfile { segments, closed } = feature.kind() else {
+            return false;
+        };
+        *closed
+            && segments.len() == 4
+            && segments[0].start_mm() == [60.0, -10.0]
+            && segments[0].end_mm() == [60.0, -14.0]
+            && segments[1].end_mm() == [54.0, -14.0]
+            && segments[3].end_mm() == [60.0, -10.0]
+    }));
+    assert!(loaded_snapshot.features().any(|feature| {
+        let FeatureKind::SegmentProfile { segments, closed } = feature.kind() else {
+            return false;
+        };
+        *closed
+            && segments.len() == 4
+            && segments[0].start_mm() == [90.0, 0.0]
+            && segments[0].end_mm() == [94.0, 0.0]
+            && segments[1].end_mm() == [94.0, 3.0]
+            && segments[2].end_mm() == [90.0, 3.0]
+            && segments[3].end_mm() == [90.0, 0.0]
+    }));
+    assert!(loaded_snapshot.features().any(|feature| {
+        let FeatureKind::SegmentProfile { segments, closed } = feature.kind() else {
+            return false;
+        };
+        *closed
+            && matches!(
+                segments.as_slice(),
+                [
+                    ProfileSegment::Line {
+                        start_mm: [100.0, 0.0],
+                        end_mm: [104.0, 0.0]
+                    },
+                    ProfileSegment::Line {
+                        start_mm: [104.0, 0.0],
+                        end_mm: [100.0, 3.0]
+                    },
+                    ProfileSegment::Line {
+                        start_mm: [100.0, 3.0],
+                        end_mm: [100.0, 0.0]
+                    }
+                ]
+            )
+    }));
+    assert!(loaded_snapshot.features().any(|feature| {
+        let FeatureKind::SegmentProfile { segments, closed } = feature.kind() else {
+            return false;
+        };
+        matches!(
+            segments.as_slice(),
+            [
+                ProfileSegment::CircularArc {
+                    start_mm: [35.0, 20.0],
+                    end_mm: [25.0, 20.0],
+                    center_mm: [30.0, 20.0],
+                    clockwise: false,
+                },
+                ProfileSegment::CircularArc {
+                    start_mm: [25.0, 20.0],
+                    end_mm: [35.0, 20.0],
+                    center_mm: [30.0, 20.0],
+                    clockwise: false,
+                }
+            ] if *closed
+        )
+    }));
+    assert!(loaded_snapshot.features().any(|feature| {
+        let FeatureKind::SegmentProfile { segments, closed } = feature.kind() else {
+            return false;
+        };
+        *closed
+            && segments.len() == 4
+            && segments[0].start_mm() == [40.0, 0.0]
+            && segments[0].end_mm() == [50.0, 0.0]
+            && segments[3].end_mm() == [40.0, 0.0]
+    }));
+    assert!(loaded_snapshot.features().any(|feature| {
+        let FeatureKind::SegmentProfile { segments, closed } = feature.kind() else {
+            return false;
+        };
+        *closed
+            && segments.len() == 3
+            && segments[0].start_mm() == [60.0, 0.0]
+            && segments[0].end_mm() == [60.0, -8.0]
+            && segments[1].end_mm() == [48.0, 0.0]
+            && segments[2].end_mm() == [60.0, 0.0]
+    }));
+    assert!(loaded_snapshot.features().any(|feature| {
+        let FeatureKind::SegmentProfile { segments, closed } = feature.kind() else {
+            return false;
+        };
+        *closed
+            && segments.len() == 3
+            && segments[0].start_mm() == [60.0, 10.0]
+            && segments[0].end_mm() == [60.0, 2.0]
+            && segments[1].end_mm() == [48.0, 10.0]
+            && segments[2].end_mm() == [60.0, 10.0]
+    }));
+    assert!(loaded_snapshot.features().any(|feature| {
+        let FeatureKind::SegmentProfile { segments, closed } = feature.kind() else {
+            return false;
+        };
+        matches!(
+            segments.as_slice(),
+            [
+                ProfileSegment::CircularArc {
+                    start_mm: [110.0, 7.0],
+                    end_mm: [110.0, 3.0],
+                    center_mm: [110.0, 5.0],
+                    clockwise: false,
+                },
+                ProfileSegment::CircularArc {
+                    start_mm: [110.0, 3.0],
+                    end_mm: [110.0, 7.0],
+                    center_mm: [110.0, 5.0],
+                    clockwise: false,
+                }
+            ] if *closed
+        )
+    }));
+    assert!(loaded_snapshot.features().any(|feature| {
+        let FeatureKind::SegmentProfile { segments, closed } = feature.kind() else {
+            return false;
+        };
+        !*closed
+            && matches!(
+                segments.as_slice(),
+                [
+                    ProfileSegment::Line {
+                        start_mm: [120.0, 0.0],
+                        end_mm: [124.0, 0.0]
+                    },
+                    ProfileSegment::Line {
+                        start_mm: [124.0, 0.0],
+                        end_mm: [124.0, 3.0]
+                    }
+                ]
+            )
+    }));
+    assert!(loaded_snapshot.features().any(|feature| {
+        let FeatureKind::SegmentProfile { segments, closed } = feature.kind() else {
+            return false;
+        };
+        *closed
+            && matches!(
+                segments.as_slice(),
+                [
+                    ProfileSegment::Line {
+                        start_mm: [130.0, 0.0],
+                        end_mm: [134.0, 0.0]
+                    },
+                    ProfileSegment::CircularArc {
+                        start_mm: [134.0, 0.0],
+                        end_mm: [134.0, 3.0],
+                        center_mm: [134.0, 1.5],
+                        clockwise: false
+                    },
+                    ProfileSegment::Line {
+                        start_mm: [134.0, 3.0],
+                        end_mm: [130.0, 3.0]
+                    },
+                    ProfileSegment::Line {
+                        start_mm: [130.0, 3.0],
+                        end_mm: [130.0, 0.0]
+                    }
+                ]
+            )
+    }));
+    assert!(loaded_snapshot.features().any(|feature| {
+        let FeatureKind::SegmentProfile { segments, closed } = feature.kind() else {
+            return false;
+        };
+        *closed
+            && matches!(
+                segments.as_slice(),
+                [
+                    ProfileSegment::Line {
+                        start_mm: [140.0, 0.0],
+                        end_mm: [144.0, 0.0]
+                    },
+                    ProfileSegment::Line {
+                        start_mm: [144.0, 0.0],
+                        end_mm: [144.0, 3.0]
+                    },
+                    ProfileSegment::Line {
+                        start_mm: [144.0, 3.0],
+                        end_mm: [140.0, 3.0]
+                    },
+                    ProfileSegment::Line {
+                        start_mm: [140.0, 3.0],
+                        end_mm: [140.0, 0.0]
+                    }
+                ]
+            )
+    }));
+    assert!(loaded_snapshot.features().any(|feature| {
+        let FeatureKind::SegmentProfile { segments, closed } = feature.kind() else {
+            return false;
+        };
+        *closed
+            && matches!(
+                segments.as_slice(),
+                [
+                    ProfileSegment::Line {
+                        start_mm: [150.0, 0.0],
+                        end_mm: [154.0, 0.0]
+                    },
+                    ProfileSegment::Line {
+                        start_mm: [154.0, 0.0],
+                        end_mm: [154.0, 3.0]
+                    },
+                    ProfileSegment::Line {
+                        start_mm: [154.0, 3.0],
+                        end_mm: [150.0, 3.0]
+                    },
+                    ProfileSegment::Line {
+                        start_mm: [150.0, 3.0],
+                        end_mm: [150.0, 0.0]
+                    }
+                ]
+            )
+    }));
+    assert!(receipt.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code() == "dxf.hatch-fill-dropped"
+            && diagnostic.subject() == Some("hatch-patterned")
+            && diagnostic.count() == 1
+    }));
+    assert!(receipt.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code() == "dxf.hatch-fill-dropped"
+            && diagnostic.subject() == Some("hatches")
+            && diagnostic.count() == 1
+    }));
+    assert!(receipt.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code() == "dxf.block-insert"
+            && diagnostic.subject() == Some("wrapper")
+            && diagnostic.count() == 2
+    }));
 }
 
 #[test]

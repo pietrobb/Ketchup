@@ -1,5 +1,11 @@
 [CmdletBinding()]
-param([string]$RunId = "strengthened-v2-r3-run-001")
+param(
+    [string]$RunId = "strengthened-v2-r3-run-001",
+    [string]$FreezeId = "strengthened-a0-v2-r3",
+    [string]$ValidatorPath,
+    [string]$PreregistrationPath,
+    [string]$LockPath
+)
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
@@ -11,9 +17,12 @@ $logDir = Join-Path $runDir "process-logs"
 $fixtureDir = Join-Path $runDir "fixtures"
 $metricsDir = Join-Path $runDir "inherited-suites"
 $inputDir = Join-Path $runDir "inputs"
-$validator = Join-Path $PSScriptRoot "validate-strengthened-a0-v2.ps1"
-$preregistrationPath = Join-Path $artifactRoot "strengthened-a0-v2-r3-preregistration.json"
-$lockPath = Join-Path $artifactRoot "strengthened-a0-v2-r3-lock.json"
+if ([string]::IsNullOrWhiteSpace($ValidatorPath)) { $ValidatorPath = Join-Path $PSScriptRoot "validate-strengthened-a0-v2.ps1" }
+if ([string]::IsNullOrWhiteSpace($PreregistrationPath)) { $PreregistrationPath = Join-Path $artifactRoot "strengthened-a0-v2-r3-preregistration.json" }
+if ([string]::IsNullOrWhiteSpace($LockPath)) { $LockPath = Join-Path $artifactRoot "strengthened-a0-v2-r3-lock.json" }
+$validator = [IO.Path]::GetFullPath($ValidatorPath)
+$preregistrationPath = [IO.Path]::GetFullPath($PreregistrationPath)
+$lockPath = [IO.Path]::GetFullPath($LockPath)
 $probeSource = Join-Path $repoRoot "crates\ketchup-exact\src\bin\ketchup-a0-diagnostic-probe.rs"
 $testSource = Join-Path $repoRoot "crates\ketchup-exact\tests\gate_a0_v2.rs"
 $runnerSource = $PSCommandPath
@@ -403,7 +412,7 @@ function Seal-Run {
         })
     $seal = [ordered]@{
         schema_version = 1
-        freeze_id = "strengthened-a0-v2-r3"
+        freeze_id = $FreezeId
         run_id = $RunId
         sealed_utc = [DateTime]::UtcNow.ToString("o")
         hash_algorithm = "SHA-256"
@@ -422,7 +431,9 @@ function Seal-Run {
     }
 }
 
-if ($RunId -notmatch '^strengthened-v2-r3-run-[0-9]{3}$') { throw "RunId must match strengthened-v2-r3-run-NNN." }
+if ($FreezeId -notmatch '^[a-z0-9][a-z0-9-]{0,79}$') { throw "FreezeId must be a lowercase path-safe identifier." }
+$runPattern = '^' + [regex]::Escape($FreezeId) + '-run-[0-9]{3}$'
+if ($RunId -notmatch $runPattern) { throw "RunId must match $FreezeId-run-NNN." }
 if (Test-Path $runDir) { throw "Strengthened A0 v2 evidence already exists: $RunId" }
 New-Item -ItemType Directory -Path $runDir | Out-Null
 
@@ -441,9 +452,9 @@ try {
         "preflight-validator" `
         "preflight" `
         $powerShell `
-        @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $validator, "-EmitJson") `
+        @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $validator, "-FreezeId", $FreezeId, "-EmitJson") `
         @{} `
-        ([ordered]@{ freeze_id = "strengthened-a0-v2-r3" }) `
+        ([ordered]@{ freeze_id = $FreezeId }) `
         $false `
         $null `
         180
@@ -535,6 +546,8 @@ try {
                 @("--exact", "gate_a0_v2", "--nocapture") `
                 @{
                     KETCHUP_A0_V2_RUN_ID = $RunId
+                    KETCHUP_A0_V2_FREEZE_ID = $FreezeId
+                    KETCHUP_A0_V2_VALIDATOR_PATH = $validator
                     KETCHUP_A0_V2_LOCK_SHA256 = [string]$preflight.lock_sha256
                     KETCHUP_A0_V2_METRICS_PATH = $metricsPath
                 } `
@@ -679,7 +692,7 @@ try {
     Write-Json (Join-Path $runDir "inherited-suites.json") $suites
     $matrixDocument = [ordered]@{
         schema_version = 1
-        freeze_id = "strengthened-a0-v2-r3"
+        freeze_id = $FreezeId
         run_id = $RunId
         required_combinations = 4
         observed_combinations = $matrix.Count
@@ -690,7 +703,7 @@ try {
     Write-Json (Join-Path $runDir "matrix.json") $matrixDocument
     $summary = [ordered]@{
         schema_version = 1
-        freeze_id = "strengthened-a0-v2-r3"
+        freeze_id = $FreezeId
         run_id = $RunId
         lock_sha256 = if ($null -ne $preflight) { [string]$preflight.lock_sha256 } else { "unavailable" }
         native_observation_reached = $script:nativeObservationReached

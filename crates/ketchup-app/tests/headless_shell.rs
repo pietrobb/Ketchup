@@ -22,12 +22,14 @@ use ketchup_core::document::{
 };
 use ketchup_core::exact_product::{
     EXACT_BOOLEAN_INTERSECT_EVALUATOR_V1, EXACT_BOOLEAN_SPLIT_EVALUATOR_V1,
-    EXACT_CIRCLE_EVALUATOR_V1, EXACT_CIRCULAR_CUT_EVALUATOR_V1, EXACT_LOFT_EVALUATOR_V1,
-    EXACT_PLANAR_OFFSET_EVALUATOR_V1, EXACT_SWEEP_EVALUATOR_V1,
+    EXACT_BOOLEAN_UNION_EVALUATOR_V1, EXACT_CIRCLE_EVALUATOR_V1, EXACT_CIRCULAR_CUT_EVALUATOR_V1,
+    EXACT_LOFT_EVALUATOR_V1, EXACT_PLANAR_OFFSET_EVALUATOR_V1, EXACT_SWEEP_EVALUATOR_V1,
+    ExactFaceRole, ExactFeatureChainRequest,
 };
 use ketchup_core::graph::{EvaluationStatus, EvaluatorNodeKind};
 use ketchup_core::persistence;
 use ketchup_interaction::{Axis, ElementId, LocaleCatalog, SnapKind, Vec3};
+use ketchup_scheduler::ExactWorkerSupervisor;
 
 const PARAMETRIC_PROFILE: FeatureId = FeatureId(10);
 const PARAMETRIC_RULE: NodeId = NodeId(302);
@@ -1507,6 +1509,83 @@ fn copying_an_occurrence_shares_one_definition() {
 }
 
 #[test]
+fn ctrl_copy_drag_snaps_source_endpoint_exactly_to_target_endpoint() {
+    let mut shell = Shell::new();
+    shell.click_at(shell.viewport_rect().center());
+    let target_origin = Vec3::new(137.3, -42.7, 0.0);
+    assert!(shell.app_mut().copy_selected(target_origin));
+    shell.click_menu_command("menu-view", AppCommand::ZoomFit);
+
+    shell.click_command(AppCommand::Move);
+    let (source_point, source_anchor, target_point, target_anchor) = [
+        Vec3::new(0.0, 0.0, 0.0),
+        Vec3::new(100.0, 0.0, 0.0),
+        Vec3::new(0.0, 60.0, 0.0),
+        Vec3::new(100.0, 60.0, 0.0),
+        Vec3::new(0.0, 0.0, 20.0),
+        Vec3::new(100.0, 0.0, 20.0),
+        Vec3::new(0.0, 60.0, 20.0),
+        Vec3::new(100.0, 60.0, 20.0),
+    ]
+    .into_iter()
+    .find_map(|source_point| {
+        let source_anchor = shell.app().viewport_position(source_point)?;
+        shell.move_pointer(source_anchor);
+        if shell.app().hovered_snap_position() != Some(source_point) {
+            return None;
+        }
+        let target_point = target_origin + source_point;
+        let target_anchor = shell.app().viewport_position(target_point)?;
+        shell.move_pointer(target_anchor);
+        (shell.app().hovered_snap_position() == Some(target_point)).then_some((
+            source_point,
+            source_anchor,
+            target_point,
+            target_anchor,
+        ))
+    })
+    .expect("one corresponding source/target endpoint pair must be visible");
+    shell.move_pointer(source_anchor);
+    assert_eq!(shell.app().hovered_snap_position(), Some(source_point));
+    shell.move_pointer(target_anchor);
+    assert_eq!(shell.app().hovered_snap_position(), Some(target_point));
+    shell.move_pointer(source_anchor);
+
+    let before_revision = shell.app().document_revision();
+    let before_digest = shell.app().canonical_digest();
+    let source_geometry = shell.app().occurrence_box_geometry(1).unwrap();
+    let target_geometry = shell.app().occurrence_box_geometry(2).unwrap();
+    shell.drag_with(source_anchor, target_anchor, ctrl());
+
+    let snapped_digest = shell.app().canonical_digest();
+    assert_eq!(shell.app().document_revision(), before_revision + 1);
+    assert_eq!(shell.app().active_box_count(), 3);
+    assert_eq!(shell.app().definition_count(), 1);
+    assert_eq!(
+        shell.app().occurrence_box_geometry(1),
+        Some(source_geometry)
+    );
+    assert_eq!(
+        shell.app().occurrence_box_geometry(2),
+        Some(target_geometry)
+    );
+    assert_eq!(
+        shell.app().occurrence_box_geometry(3),
+        Some(target_geometry)
+    );
+
+    shell.key(Key::Z, ctrl());
+    assert_eq!(shell.app().canonical_digest(), before_digest);
+    assert_eq!(shell.app().active_box_count(), 2);
+    shell.key(Key::Y, ctrl());
+    assert_eq!(shell.app().canonical_digest(), snapped_digest);
+    assert_eq!(
+        shell.app().occurrence_box_geometry(3),
+        Some(target_geometry)
+    );
+}
+
+#[test]
 fn exact_align_previews_then_commits_one_transform_batch_with_undo_redo() {
     let mut shell = Shell::new();
     shell.click_at(shell.viewport_rect().center());
@@ -1571,7 +1650,7 @@ fn exact_linear_pattern_previews_then_commits_one_shared_definition_batch() {
     assert!(
         shell
             .app_mut()
-            .preview_linear_pattern(OccurrenceId(1), Axis::X, 125.0, 4,)
+            .preview_linear_pattern(OccurrenceId(1), Axis::X, 200.0, 5,)
     );
     assert_eq!(shell.app().document_revision(), before_revision);
     assert_eq!(shell.app().canonical_digest(), before_digest);
@@ -1580,21 +1659,21 @@ fn exact_linear_pattern_previews_then_commits_one_shared_definition_batch() {
         shell
             .app()
             .occurrence_operation_preview_geometry(OccurrenceId(2)),
-        Some((Vec3::new(125.0, 0.0, 0.0), Vec3::new(100.0, 60.0, 20.0)))
+        Some((Vec3::new(200.0, 0.0, 0.0), Vec3::new(100.0, 60.0, 20.0)))
     );
     assert_eq!(
         shell
             .app()
-            .occurrence_operation_preview_geometry(OccurrenceId(4)),
-        Some((Vec3::new(375.0, 0.0, 0.0), Vec3::new(100.0, 60.0, 20.0)))
+            .occurrence_operation_preview_geometry(OccurrenceId(5)),
+        Some((Vec3::new(800.0, 0.0, 0.0), Vec3::new(100.0, 60.0, 20.0)))
     );
 
     assert!(shell.app_mut().confirm_occurrence_operation_preview());
     let patterned_digest = shell.app().canonical_digest();
     assert_eq!(shell.app().document_revision(), before_revision + 1);
-    assert_eq!(shell.app().active_box_count(), 4);
+    assert_eq!(shell.app().active_box_count(), 5);
     assert_eq!(shell.app().definition_count(), 1);
-    for occurrence_id in 1..=4 {
+    for occurrence_id in 1..=5 {
         assert_eq!(
             shell
                 .app()
@@ -1603,15 +1682,15 @@ fn exact_linear_pattern_previews_then_commits_one_shared_definition_batch() {
         );
     }
     assert_eq!(
-        shell.app().occurrence_box_geometry(4),
-        Some((Vec3::new(375.0, 0.0, 0.0), Vec3::new(100.0, 60.0, 20.0)))
+        shell.app().occurrence_box_geometry(5),
+        Some((Vec3::new(800.0, 0.0, 0.0), Vec3::new(100.0, 60.0, 20.0)))
     );
     assert!(shell.app_mut().undo());
     assert_eq!(shell.app().canonical_digest(), before_digest);
     assert_eq!(shell.app().active_box_count(), 1);
     assert!(shell.app_mut().redo());
     assert_eq!(shell.app().canonical_digest(), patterned_digest);
-    assert_eq!(shell.app().active_box_count(), 4);
+    assert_eq!(shell.app().active_box_count(), 5);
 }
 
 #[test]
@@ -2116,6 +2195,564 @@ fn solid_intersect_previews_exact_overlap_and_commits_in_one_undo_step() {
     shell.key(Key::Y, ctrl());
     assert_eq!(shell.app().canonical_digest(), intersect_digest);
     assert_eq!(shell.app().active_box_count(), 1);
+}
+
+#[test]
+fn d_profile_solid_intersect_preserves_review_lifecycle_exact_mesh_and_arc_lineage() {
+    let directory = tempfile::tempdir().unwrap();
+    let saved = directory.path().join("d-profile-intersect.ketchup");
+    let dialogs = ScriptedFileDialogs::new()
+        .queue_save(&saved)
+        .queue_open(&saved)
+        .always_discard();
+    let mut shell = Shell::with_dialogs(dialogs);
+
+    let start = Vec3::new(120.0, 20.0, 0.0);
+    let end = Vec3::new(140.0, 20.0, 0.0);
+    let bulge = Vec3::new(130.0, 30.0, 0.0);
+    shell.click_command(AppCommand::Arc);
+    shell.click_at(shell.app().viewport_position(start).unwrap());
+    shell.click_at(shell.app().viewport_position(end).unwrap());
+    shell.click_at(shell.app().viewport_position(bulge).unwrap());
+    shell.click_command(AppCommand::PushPull);
+    shell.type_text("20");
+    shell.press_key(Key::Enter);
+    assert!(shell.app_mut().move_selected(Vec3::new(-100.0, 0.0, 0.0)));
+    shell.settle();
+    assert_eq!(shell.app().active_box_count(), 2);
+
+    let before_revision = shell.app().document_revision();
+    let before_undo = shell.app().undo_step_count();
+    let before_digest = shell.app().canonical_digest();
+
+    let preview_intersection = |shell: &mut Shell| {
+        shell.click_menu_command("menu-model", AppCommand::SolidIntersect);
+        let target = shell
+            .app()
+            .viewport_position(Vec3::new(10.0, 10.0, 20.0))
+            .unwrap();
+        let tool = shell
+            .app()
+            .viewport_position(Vec3::new(30.0, 25.0, 20.0))
+            .unwrap();
+        shell.click_at(target);
+        shell.move_pointer(tool);
+        for _ in 0..4 {
+            if shell.app().hovered_selection().is_some_and(|selection| {
+                selection.instance_path == InstancePath::root(OccurrenceId(2))
+            }) {
+                break;
+            }
+            shell.press_key(Key::Tab);
+        }
+        assert_eq!(
+            shell
+                .app()
+                .hovered_selection()
+                .map(|selection| selection.instance_path.clone()),
+            Some(InstancePath::root(OccurrenceId(2)))
+        );
+        shell.click_at(tool);
+        assert!(
+            shell.app().has_occurrence_operation_preview(),
+            "D-profile Intersect preview failed: {}",
+            shell.app().action_digest()
+        );
+        assert_eq!(
+            shell.app().push_pull_preview_exact_evaluator(),
+            Some(EXACT_BOOLEAN_INTERSECT_EVALUATOR_V1)
+        );
+        let (origin, size) = shell
+            .app()
+            .occurrence_operation_preview_geometry(OccurrenceId(1))
+            .unwrap();
+        assert!(
+            origin.x > 0.0
+                && origin.y > 0.0
+                && origin.z.abs() < 2.0e-5
+                && size.x > 19.9
+                && size.y > 9.9
+                && (size.z - 20.0).abs() < 2.0e-5
+                && origin.x + size.x < 100.0
+                && origin.y + size.y < 60.0,
+            "D-profile preview must remain strictly contained: origin={origin:?}, size={size:?}"
+        );
+    };
+
+    preview_intersection(&mut shell);
+    assert_eq!(shell.app().document_revision(), before_revision);
+    assert_eq!(shell.app().canonical_digest(), before_digest);
+    assert_eq!(shell.app().undo_step_count(), before_undo);
+    shell.press_key(Key::Escape);
+    assert_eq!(shell.app().document_revision(), before_revision);
+    assert_eq!(shell.app().canonical_digest(), before_digest);
+    assert_eq!(shell.app().undo_step_count(), before_undo);
+
+    preview_intersection(&mut shell);
+    shell.press_key(Key::Enter);
+    let intersect_digest = shell.app().canonical_digest();
+    assert_eq!(shell.app().document_revision(), before_revision + 1);
+    assert_eq!(shell.app().undo_step_count(), before_undo + 1);
+    assert_eq!(shell.app().active_box_count(), 1);
+    let result_definition = shell.app().selected_reference().unwrap().definition_id;
+    let request = ExactFeatureChainRequest::from_snapshot(
+        &shell.app().document_snapshot(),
+        result_definition,
+    )
+    .unwrap();
+    assert_eq!(request.evaluator(), EXACT_BOOLEAN_INTERSECT_EVALUATOR_V1);
+    let tool_profile = request.boolean.as_ref().unwrap().profile_feature_id;
+    assert_ne!(tool_profile, request.profile_feature_id);
+    assert!(
+        request
+            .boolean
+            .as_ref()
+            .and_then(|boolean| boolean.profile.as_ref())
+            .is_some_and(|profile| profile.is_line_arc_d_profile())
+    );
+    let mut worker = ExactWorkerSupervisor::spawn(exact_worker_path()).unwrap();
+    let direct_package = worker.evaluate_rectangle(&request).unwrap();
+    assert!(direct_package.vertices.len() > 8);
+    assert_eq!(
+        direct_package
+            .reference(ExactFaceRole::ArcSide)
+            .unwrap()
+            .profile_feature_id,
+        tool_profile
+    );
+    shell
+        .app_mut()
+        .connect_exact_worker(exact_worker_path())
+        .unwrap();
+
+    let wait_for_intersect = |shell: &mut Shell| {
+        for _ in 0..100 {
+            shell.settle();
+            if shell.app().exact_render_body_count() == 1 {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(
+            shell.app().exact_render_body_count(),
+            1,
+            "exact Intersect result failed: {}",
+            shell.app().action_digest()
+        );
+    };
+    wait_for_intersect(&mut shell);
+    assert!(
+        shell.app().exact_render_triangle_count() > 12,
+        "the accepted Intersect mesh must preserve the curved arc side"
+    );
+    let arc_side = shell
+        .app()
+        .exact_reference_for_occurrence(
+            &InstancePath::root(OccurrenceId(1)),
+            ExactFaceRole::ArcSide,
+        )
+        .unwrap();
+    assert_eq!(arc_side.body.profile_feature_id, tool_profile);
+    assert_eq!(arc_side.body.role(), Some(ExactFaceRole::ArcSide));
+
+    shell.key(Key::Z, ctrl());
+    assert_eq!(shell.app().canonical_digest(), before_digest);
+    assert_eq!(shell.app().active_box_count(), 2);
+    shell.key(Key::Y, ctrl());
+    assert_eq!(shell.app().canonical_digest(), intersect_digest);
+    assert_eq!(shell.app().active_box_count(), 1);
+
+    shell.click_menu_command("menu-file", AppCommand::SaveAs);
+    shell.click_menu_command("menu-file", AppCommand::New);
+    shell.click_menu_command("menu-file", AppCommand::Open);
+    assert_eq!(shell.app().canonical_digest(), intersect_digest);
+    let reopened = ExactFeatureChainRequest::from_snapshot(
+        &shell.app().document_snapshot(),
+        result_definition,
+    )
+    .unwrap();
+    assert_eq!(reopened.evaluator(), EXACT_BOOLEAN_INTERSECT_EVALUATOR_V1);
+    assert!(
+        reopened
+            .boolean
+            .as_ref()
+            .and_then(|boolean| boolean.profile.as_ref())
+            .is_some_and(|profile| profile.is_line_arc_d_profile())
+    );
+    shell
+        .app_mut()
+        .connect_exact_worker(exact_worker_path())
+        .unwrap();
+    wait_for_intersect(&mut shell);
+    let reopened_arc_side = shell
+        .app()
+        .exact_reference_for_occurrence(
+            &InstancePath::root(OccurrenceId(1)),
+            ExactFaceRole::ArcSide,
+        )
+        .unwrap();
+    assert_eq!(reopened_arc_side.body.profile_feature_id, tool_profile);
+    assert_eq!(reopened_arc_side.body.role(), Some(ExactFaceRole::ArcSide));
+}
+
+#[test]
+fn d_profile_solid_union_preserves_review_lifecycle_exact_mesh_and_arc_lineage() {
+    let directory = tempfile::tempdir().unwrap();
+    let saved = directory.path().join("d-profile-union.ketchup");
+    let dialogs = ScriptedFileDialogs::new()
+        .queue_save(&saved)
+        .queue_open(&saved)
+        .always_discard();
+    let mut shell = Shell::with_dialogs(dialogs);
+
+    let start = Vec3::new(-10.0, -20.0, 0.0);
+    let end = Vec3::new(-10.0, 80.0, 0.0);
+    let bulge = Vec3::new(120.0, 30.0, 0.0);
+    shell.click_command(AppCommand::Arc);
+    shell.click_at(shell.app().viewport_position(start).unwrap());
+    shell.click_at(shell.app().viewport_position(end).unwrap());
+    shell.click_at(shell.app().viewport_position(bulge).unwrap());
+    shell.click_command(AppCommand::PushPull);
+    shell.type_text("20");
+    shell.press_key(Key::Enter);
+    assert_eq!(shell.app().active_box_count(), 2);
+
+    let before_revision = shell.app().document_revision();
+    let before_undo = shell.app().undo_step_count();
+    let before_digest = shell.app().canonical_digest();
+
+    let preview_union = |shell: &mut Shell| {
+        shell.click_menu_command("menu-model", AppCommand::SolidUnion);
+        let target = shell
+            .app()
+            .viewport_position(Vec3::new(10.0, 30.0, 20.0))
+            .unwrap();
+        shell.move_pointer(target);
+        for _ in 0..4 {
+            if shell.app().hovered_selection().is_some_and(|selection| {
+                selection.instance_path == InstancePath::root(OccurrenceId(1))
+            }) {
+                break;
+            }
+            shell.press_key(Key::Tab);
+        }
+        assert_eq!(
+            shell
+                .app()
+                .hovered_selection()
+                .map(|selection| selection.instance_path.clone()),
+            Some(InstancePath::root(OccurrenceId(1)))
+        );
+        shell.click_at(target);
+
+        let tool = shell
+            .app()
+            .viewport_position(Vec3::new(115.0, 30.0, 20.0))
+            .unwrap();
+        shell.move_pointer(tool);
+        for _ in 0..4 {
+            if shell.app().hovered_selection().is_some_and(|selection| {
+                selection.instance_path == InstancePath::root(OccurrenceId(2))
+            }) {
+                break;
+            }
+            shell.press_key(Key::Tab);
+        }
+        assert_eq!(
+            shell
+                .app()
+                .hovered_selection()
+                .map(|selection| selection.instance_path.clone()),
+            Some(InstancePath::root(OccurrenceId(2)))
+        );
+        shell.click_at(tool);
+        assert!(
+            shell.app().has_occurrence_operation_preview(),
+            "D-profile Union preview failed: {}",
+            shell.app().action_digest()
+        );
+        assert_eq!(
+            shell.app().push_pull_preview_exact_evaluator(),
+            Some(EXACT_BOOLEAN_UNION_EVALUATOR_V1)
+        );
+        let (origin, size) = shell
+            .app()
+            .occurrence_operation_preview_geometry(OccurrenceId(1))
+            .unwrap();
+        assert!(
+            origin.x < -9.9
+                && origin.y < -40.0
+                && origin.z.abs() < 2.0e-5
+                && size.x > 129.0
+                && size.y > 145.0
+                && (size.z - 20.0).abs() < 2.0e-5,
+            "D-profile preview must strictly contain the host: origin={origin:?}, size={size:?}"
+        );
+    };
+
+    preview_union(&mut shell);
+    assert_eq!(shell.app().document_revision(), before_revision);
+    assert_eq!(shell.app().canonical_digest(), before_digest);
+    assert_eq!(shell.app().undo_step_count(), before_undo);
+    shell.press_key(Key::Escape);
+    assert_eq!(shell.app().document_revision(), before_revision);
+    assert_eq!(shell.app().canonical_digest(), before_digest);
+    assert_eq!(shell.app().undo_step_count(), before_undo);
+
+    preview_union(&mut shell);
+    shell.press_key(Key::Enter);
+    let union_digest = shell.app().canonical_digest();
+    assert_eq!(shell.app().document_revision(), before_revision + 1);
+    assert_eq!(shell.app().undo_step_count(), before_undo + 1);
+    assert_eq!(shell.app().active_box_count(), 1);
+    let result_definition = shell.app().selected_reference().unwrap().definition_id;
+    let request = ExactFeatureChainRequest::from_snapshot(
+        &shell.app().document_snapshot(),
+        result_definition,
+    )
+    .unwrap();
+    assert_eq!(request.evaluator(), EXACT_BOOLEAN_UNION_EVALUATOR_V1);
+    let tool_profile = request.boolean.as_ref().unwrap().profile_feature_id;
+    assert!(
+        request
+            .boolean
+            .as_ref()
+            .and_then(|boolean| boolean.profile.as_ref())
+            .is_some_and(|profile| profile.is_line_arc_d_profile())
+    );
+    let mut worker = ExactWorkerSupervisor::spawn(exact_worker_path()).unwrap();
+    let direct_package = worker.evaluate_rectangle(&request).unwrap();
+    assert!(direct_package.vertices.len() > 8);
+    assert_eq!(
+        direct_package
+            .reference(ExactFaceRole::ArcSide)
+            .unwrap()
+            .profile_feature_id,
+        tool_profile
+    );
+    shell
+        .app_mut()
+        .connect_exact_worker(exact_worker_path())
+        .unwrap();
+
+    let wait_for_union = |shell: &mut Shell| {
+        for _ in 0..100 {
+            shell.settle();
+            if shell.app().exact_render_body_count() == 1 {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(
+            shell.app().exact_render_body_count(),
+            1,
+            "exact Union result failed: {}",
+            shell.app().action_digest()
+        );
+    };
+    wait_for_union(&mut shell);
+    assert!(shell.app().exact_render_triangle_count() > 12);
+    let arc_side = shell
+        .app()
+        .exact_reference_for_occurrence(
+            &InstancePath::root(OccurrenceId(1)),
+            ExactFaceRole::ArcSide,
+        )
+        .unwrap();
+    assert_eq!(arc_side.body.profile_feature_id, tool_profile);
+
+    shell.key(Key::Z, ctrl());
+    assert_eq!(shell.app().canonical_digest(), before_digest);
+    assert_eq!(shell.app().active_box_count(), 2);
+    shell.key(Key::Y, ctrl());
+    assert_eq!(shell.app().canonical_digest(), union_digest);
+    assert_eq!(shell.app().active_box_count(), 1);
+
+    shell.click_menu_command("menu-file", AppCommand::SaveAs);
+    shell.click_menu_command("menu-file", AppCommand::New);
+    shell.click_menu_command("menu-file", AppCommand::Open);
+    assert_eq!(shell.app().canonical_digest(), union_digest);
+    let reopened = ExactFeatureChainRequest::from_snapshot(
+        &shell.app().document_snapshot(),
+        result_definition,
+    )
+    .unwrap();
+    assert_eq!(reopened.evaluator(), EXACT_BOOLEAN_UNION_EVALUATOR_V1);
+    shell
+        .app_mut()
+        .connect_exact_worker(exact_worker_path())
+        .unwrap();
+    wait_for_union(&mut shell);
+    let reopened_arc_side = shell
+        .app()
+        .exact_reference_for_occurrence(
+            &InstancePath::root(OccurrenceId(1)),
+            ExactFaceRole::ArcSide,
+        )
+        .unwrap();
+    assert_eq!(reopened_arc_side.body.profile_feature_id, tool_profile);
+}
+
+#[test]
+fn d_profile_solid_split_preserves_review_lifecycle_partition_mesh_and_arc_lineage() {
+    let directory = tempfile::tempdir().unwrap();
+    let saved = directory.path().join("d-profile-split.ketchup");
+    let dialogs = ScriptedFileDialogs::new()
+        .queue_save(&saved)
+        .queue_open(&saved)
+        .always_discard();
+    let mut shell = Shell::with_dialogs(dialogs);
+
+    let start = Vec3::new(120.0, 20.0, 0.0);
+    let end = Vec3::new(140.0, 20.0, 0.0);
+    let bulge = Vec3::new(130.0, 30.0, 0.0);
+    shell.click_command(AppCommand::Arc);
+    shell.click_at(shell.app().viewport_position(start).unwrap());
+    shell.click_at(shell.app().viewport_position(end).unwrap());
+    shell.click_at(shell.app().viewport_position(bulge).unwrap());
+    shell.click_command(AppCommand::PushPull);
+    shell.type_text("20");
+    shell.press_key(Key::Enter);
+    assert!(shell.app_mut().move_selected(Vec3::new(-100.0, 0.0, 0.0)));
+    shell.settle();
+
+    let before_revision = shell.app().document_revision();
+    let before_undo = shell.app().undo_step_count();
+    let before_digest = shell.app().canonical_digest();
+    let preview_split = |shell: &mut Shell| {
+        shell.click_menu_command("menu-model", AppCommand::SolidSplit);
+        let target = shell
+            .app()
+            .viewport_position(Vec3::new(10.0, 10.0, 20.0))
+            .unwrap();
+        let tool = shell
+            .app()
+            .viewport_position(Vec3::new(30.0, 25.0, 20.0))
+            .unwrap();
+        shell.click_at(target);
+        shell.move_pointer(tool);
+        for _ in 0..4 {
+            if shell.app().hovered_selection().is_some_and(|selection| {
+                selection.instance_path == InstancePath::root(OccurrenceId(2))
+            }) {
+                break;
+            }
+            shell.press_key(Key::Tab);
+        }
+        shell.click_at(tool);
+        assert!(
+            shell.app().has_occurrence_operation_preview(),
+            "D-profile Split preview failed: {}",
+            shell.app().action_digest()
+        );
+        assert_eq!(
+            shell.app().push_pull_preview_exact_evaluator(),
+            Some(EXACT_BOOLEAN_SPLIT_EVALUATOR_V1)
+        );
+        let (origin, size) = shell
+            .app()
+            .occurrence_operation_preview_geometry(OccurrenceId(1))
+            .unwrap();
+        assert!(
+            origin.length() < 2.0e-5
+                && (size.x - 100.0).abs() < 2.0e-5
+                && (size.y - 60.0).abs() < 2.0e-5
+                && (size.z - 20.0).abs() < 2.0e-5
+        );
+    };
+
+    preview_split(&mut shell);
+    assert_eq!(shell.app().document_revision(), before_revision);
+    assert_eq!(shell.app().canonical_digest(), before_digest);
+    assert_eq!(shell.app().undo_step_count(), before_undo);
+    shell.press_key(Key::Escape);
+    assert_eq!(shell.app().canonical_digest(), before_digest);
+
+    preview_split(&mut shell);
+    shell.press_key(Key::Enter);
+    let split_digest = shell.app().canonical_digest();
+    assert_eq!(shell.app().document_revision(), before_revision + 1);
+    assert_eq!(shell.app().undo_step_count(), before_undo + 1);
+    assert_eq!(shell.app().active_box_count(), 2);
+    let result_definition = shell.app().selected_reference().unwrap().definition_id;
+    let request = ExactFeatureChainRequest::from_snapshot(
+        &shell.app().document_snapshot(),
+        result_definition,
+    )
+    .unwrap();
+    assert_eq!(request.evaluator(), EXACT_BOOLEAN_SPLIT_EVALUATOR_V1);
+    let tool_profile = request.boolean.as_ref().unwrap().profile_feature_id;
+    assert!(
+        request
+            .boolean
+            .as_ref()
+            .and_then(|boolean| boolean.profile.as_ref())
+            .is_some_and(|profile| profile.is_line_arc_d_profile())
+    );
+    let mut worker = ExactWorkerSupervisor::spawn(exact_worker_path()).unwrap();
+    let direct_package = worker.evaluate_rectangle(&request).unwrap();
+    assert!(direct_package.vertices.len() > 16);
+    assert_eq!(
+        direct_package
+            .reference(ExactFaceRole::ArcSide)
+            .unwrap()
+            .profile_feature_id,
+        tool_profile
+    );
+    shell
+        .app_mut()
+        .connect_exact_worker(exact_worker_path())
+        .unwrap();
+    let wait_for_arc_side = |shell: &mut Shell| {
+        for _ in 0..100 {
+            shell.settle();
+            if shell
+                .app()
+                .exact_reference_for_occurrence(
+                    &InstancePath::root(OccurrenceId(1)),
+                    ExactFaceRole::ArcSide,
+                )
+                .is_some()
+            {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        panic!(
+            "exact D-profile Split result failed: {}",
+            shell.app().action_digest()
+        );
+    };
+    wait_for_arc_side(&mut shell);
+    assert!(shell.app().exact_render_triangle_count() > 24);
+
+    shell.key(Key::Z, ctrl());
+    assert_eq!(shell.app().canonical_digest(), before_digest);
+    shell.key(Key::Y, ctrl());
+    assert_eq!(shell.app().canonical_digest(), split_digest);
+    shell.click_menu_command("menu-file", AppCommand::SaveAs);
+    shell.click_menu_command("menu-file", AppCommand::New);
+    shell.click_menu_command("menu-file", AppCommand::Open);
+    assert_eq!(shell.app().canonical_digest(), split_digest);
+    let reopened = ExactFeatureChainRequest::from_snapshot(
+        &shell.app().document_snapshot(),
+        result_definition,
+    )
+    .unwrap();
+    assert_eq!(reopened.evaluator(), EXACT_BOOLEAN_SPLIT_EVALUATOR_V1);
+    shell
+        .app_mut()
+        .connect_exact_worker(exact_worker_path())
+        .unwrap();
+    wait_for_arc_side(&mut shell);
+    let reopened_arc_side = shell
+        .app()
+        .exact_reference_for_occurrence(
+            &InstancePath::root(OccurrenceId(1)),
+            ExactFaceRole::ArcSide,
+        )
+        .unwrap();
+    assert_eq!(reopened_arc_side.body.profile_feature_id, tool_profile);
 }
 
 #[test]

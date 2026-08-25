@@ -966,6 +966,7 @@ std::unique_ptr<NativeOperationResult> extrude_mixed_profile_native(
     std::vector<TopoDS_Edge> profile_edges;
     profile_edges.reserve(segments.size() / 8);
     std::size_t first_arc_index = profile_edges.capacity();
+    std::size_t first_line_index = profile_edges.capacity();
     for (std::size_t offset = 0; offset < segments.size(); offset += 8) {
       const double kind = segments[offset];
       const gp_Pnt start(segments[offset + 1], segments[offset + 2], 0.0);
@@ -973,6 +974,9 @@ std::unique_ptr<NativeOperationResult> extrude_mixed_profile_native(
       TopoDS_Edge edge;
       if (kind == 0.0) {
         edge = BRepBuilderAPI_MakeEdge(start, end).Edge();
+        if (first_line_index == profile_edges.capacity()) {
+          first_line_index = profile_edges.size();
+        }
       } else if (kind == 1.0) {
         const double center_x = segments[offset + 5];
         const double center_y = segments[offset + 6];
@@ -1009,21 +1013,27 @@ std::unique_ptr<NativeOperationResult> extrude_mixed_profile_native(
       profile_edges.push_back(edge);
       wire_builder.Add(edge);
     }
-    if (!wire_builder.IsDone() || first_arc_index >= profile_edges.size()) {
-      return error_result(STATUS_INVALID_SHAPE, "OCCT mixed profile wire is incomplete");
+    if (!wire_builder.IsDone()
+        || (first_arc_index >= profile_edges.size() && first_line_index >= profile_edges.size())) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT segmented profile wire is incomplete");
     }
     BRepBuilderAPI_MakeFace face_builder(wire_builder.Wire(), true);
     if (!face_builder.IsDone()) {
       return error_result(STATUS_INVALID_SHAPE, "OCCT mixed profile face builder did not complete");
     }
     const TopoDS_Face profile = face_builder.Face();
-    TopoDS_Edge profile_arc;
-    const std::size_t arc_offset = first_arc_index * 8;
-    const gp_Pnt expected_arc_start(segments[arc_offset + 1], segments[arc_offset + 2], 0.0);
-    const gp_Pnt expected_arc_end(segments[arc_offset + 3], segments[arc_offset + 4], 0.0);
+    const bool reference_is_arc = first_arc_index < profile_edges.size();
+    const std::size_t reference_index = reference_is_arc ? first_arc_index : first_line_index;
+    TopoDS_Edge profile_reference;
+    const std::size_t reference_offset = reference_index * 8;
+    const gp_Pnt expected_reference_start(
+        segments[reference_offset + 1], segments[reference_offset + 2], 0.0);
+    const gp_Pnt expected_reference_end(
+        segments[reference_offset + 3], segments[reference_offset + 4], 0.0);
     for (TopExp_Explorer explorer(profile, TopAbs_EDGE); explorer.More(); explorer.Next()) {
       const TopoDS_Edge candidate = TopoDS::Edge(explorer.Current());
-      if (BRepAdaptor_Curve(candidate).GetType() != GeomAbs_Circle) {
+      const GeomAbs_CurveType expected_type = reference_is_arc ? GeomAbs_Circle : GeomAbs_Line;
+      if (BRepAdaptor_Curve(candidate).GetType() != expected_type) {
         continue;
       }
       TopoDS_Vertex first;
@@ -1035,19 +1045,19 @@ std::unique_ptr<NativeOperationResult> extrude_mixed_profile_native(
       const gp_Pnt first_point = BRep_Tool::Pnt(first);
       const gp_Pnt last_point = BRep_Tool::Pnt(last);
       const bool endpoints_match =
-          (first_point.Distance(expected_arc_start) <= 1.0e-9
-              && last_point.Distance(expected_arc_end) <= 1.0e-9)
-          || (first_point.Distance(expected_arc_end) <= 1.0e-9
-              && last_point.Distance(expected_arc_start) <= 1.0e-9);
+          (first_point.Distance(expected_reference_start) <= 1.0e-9
+              && last_point.Distance(expected_reference_end) <= 1.0e-9)
+          || (first_point.Distance(expected_reference_end) <= 1.0e-9
+              && last_point.Distance(expected_reference_start) <= 1.0e-9);
       if (endpoints_match) {
-        if (!profile_arc.IsNull()) {
-          return error_result(STATUS_INVALID_SHAPE, "OCCT mixed profile first arc is ambiguous");
+        if (!profile_reference.IsNull()) {
+          return error_result(STATUS_INVALID_SHAPE, "OCCT segmented profile reference edge is ambiguous");
         }
-        profile_arc = candidate;
+        profile_reference = candidate;
       }
     }
-    if (profile_arc.IsNull()) {
-      return error_result(STATUS_INVALID_SHAPE, "OCCT mixed profile lost its first analytic arc");
+    if (profile_reference.IsNull()) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT segmented profile lost its reference edge");
     }
     BRepPrimAPI_MakePrism operation(profile, gp_Vec(0.0, 0.0, height), true, false);
     if (!operation.IsDone()) {
@@ -1059,22 +1069,27 @@ std::unique_ptr<NativeOperationResult> extrude_mixed_profile_native(
         "extrusion.bottom", "first_shape", "profile.face", result, operation.FirstShape()));
     history.push_back(history_record(
         "extrusion.top", "last_shape", "profile.face", result, operation.LastShape()));
-    HistoryRecord arc_history{
-        "extrusion.side(profile_edge=arc.0)", "generated", "profile.edge.arc.0", 0, false};
-    const NCollection_List<TopoDS_Shape>& generated = operation.Generated(profile_arc);
+    const std::string side_role = reference_is_arc
+        ? "extrusion.side(profile_edge=arc.0)"
+        : "extrusion.side(profile_edge=line.0)";
+    const std::string side_source = reference_is_arc
+        ? "profile.edge.arc.0"
+        : "profile.edge.line.0";
+    HistoryRecord side_history{side_role, "generated", side_source, 0, false};
+    const NCollection_List<TopoDS_Shape>& generated = operation.Generated(profile_reference);
     for (NCollection_List<TopoDS_Shape>::Iterator iterator(generated); iterator.More(); iterator.Next()) {
       const HistoryRecord candidate = history_record(
-          "extrusion.side(profile_edge=arc.0)",
+          side_role,
           "generated",
-          "profile.edge.arc.0",
+          side_source,
           result,
           iterator.Value());
       if (candidate.output_present) {
-        arc_history = candidate;
+        side_history = candidate;
         break;
       }
     }
-    history.push_back(std::move(arc_history));
+    history.push_back(std::move(side_history));
     return success_result(result, std::move(history));
   });
 }
@@ -1797,6 +1812,438 @@ std::unique_ptr<NativeOperationResult> cut_box_native(
   });
 }
 
+std::unique_ptr<NativeOperationResult> cut_mixed_profile_native(
+    const NativeOperationResult& base, rust::Slice<const double> segments,
+    double origin_z, double height) noexcept {
+  return guarded([&] {
+    if (!base.valid() || segments.size() < 16 || segments.size() % 8 != 0) {
+      return error_result(STATUS_INVALID_PARAMETER, "Mixed cut payload is malformed");
+    }
+    BRepBuilderAPI_MakeWire wire_builder;
+    std::vector<TopoDS_Edge> profile_edges;
+    profile_edges.reserve(segments.size() / 8);
+    std::size_t first_line_index = profile_edges.capacity();
+    std::size_t line_count = 0;
+    std::size_t arc_count = 0;
+    for (std::size_t offset = 0; offset < segments.size(); offset += 8) {
+      const double kind = segments[offset];
+      const gp_Pnt start(segments[offset + 1], segments[offset + 2], origin_z);
+      const gp_Pnt end(segments[offset + 3], segments[offset + 4], origin_z);
+      TopoDS_Edge edge;
+      if (kind == 0.0) {
+        edge = BRepBuilderAPI_MakeEdge(start, end).Edge();
+        if (first_line_index == profile_edges.capacity()) {
+          first_line_index = profile_edges.size();
+        }
+        ++line_count;
+      } else if (kind == 1.0) {
+        const double center_x = segments[offset + 5];
+        const double center_y = segments[offset + 6];
+        const bool clockwise = segments[offset + 7] != 0.0;
+        const double start_angle = std::atan2(start.Y() - center_y, start.X() - center_x);
+        const double end_angle = std::atan2(end.Y() - center_y, end.X() - center_x);
+        double sweep = end_angle - start_angle;
+        const double tau = 2.0 * std::acos(-1.0);
+        if (clockwise) {
+          while (sweep >= 0.0) sweep -= tau;
+        } else {
+          while (sweep <= 0.0) sweep += tau;
+        }
+        const double radius = start.Distance(gp_Pnt(center_x, center_y, origin_z));
+        const double middle_angle = start_angle + sweep / 2.0;
+        const gp_Pnt middle(
+            center_x + radius * std::cos(middle_angle),
+            center_y + radius * std::sin(middle_angle),
+            origin_z);
+        GC_MakeArcOfCircle arc_builder(start, middle, end);
+        if (!arc_builder.IsDone()) {
+          return error_result(STATUS_INVALID_SHAPE, "OCCT mixed cut arc builder did not complete");
+        }
+        edge = BRepBuilderAPI_MakeEdge(arc_builder.Value()).Edge();
+        ++arc_count;
+      } else {
+        return error_result(STATUS_INVALID_PARAMETER, "Mixed cut segment kind is invalid");
+      }
+      if (edge.IsNull()) {
+        return error_result(STATUS_INVALID_SHAPE, "Mixed cut edge is null");
+      }
+      profile_edges.push_back(edge);
+      wire_builder.Add(edge);
+    }
+    const bool d_profile = profile_edges.size() == 2 && line_count == 1 && arc_count == 1;
+    const bool capsule_profile = profile_edges.size() == 4 && line_count == 2 && arc_count == 2;
+    const bool rounded_rectangle_profile =
+        profile_edges.size() == 8 && line_count == 4 && arc_count == 4;
+    if ((arc_count == 0 && line_count < 3)
+        || (arc_count > 0 && !d_profile && !capsule_profile && !rounded_rectangle_profile)) {
+      return error_result(STATUS_INVALID_PARAMETER, "Mixed cut profile shape is unsupported");
+    }
+    if (!wire_builder.IsDone()) {
+      return error_result(STATUS_INVALID_SHAPE, "Polygon cut wire did not complete");
+    }
+    BRepBuilderAPI_MakeFace face_builder(wire_builder.Wire(), true);
+    if (!face_builder.IsDone()) {
+      return error_result(STATUS_INVALID_SHAPE, "Mixed cut face did not complete");
+    }
+    const TopoDS_Face profile = face_builder.Face();
+    TopoDS_Edge profile_reference;
+    const std::size_t reference_offset = first_line_index * 8;
+    const gp_Pnt expected_reference_start(
+        segments[reference_offset + 1], segments[reference_offset + 2], origin_z);
+    const gp_Pnt expected_reference_end(
+        segments[reference_offset + 3], segments[reference_offset + 4], origin_z);
+    for (TopExp_Explorer explorer(profile, TopAbs_EDGE); explorer.More(); explorer.Next()) {
+      const TopoDS_Edge candidate = TopoDS::Edge(explorer.Current());
+      if (BRepAdaptor_Curve(candidate).GetType() != GeomAbs_Line) {
+        continue;
+      }
+      TopoDS_Vertex first;
+      TopoDS_Vertex last;
+      TopExp::Vertices(candidate, first, last);
+      if (first.IsNull() || last.IsNull()) {
+        continue;
+      }
+      const gp_Pnt first_point = BRep_Tool::Pnt(first);
+      const gp_Pnt last_point = BRep_Tool::Pnt(last);
+      const bool endpoints_match =
+          (first_point.Distance(expected_reference_start) <= 1.0e-9
+              && last_point.Distance(expected_reference_end) <= 1.0e-9)
+          || (first_point.Distance(expected_reference_end) <= 1.0e-9
+              && last_point.Distance(expected_reference_start) <= 1.0e-9);
+      if (endpoints_match) {
+        if (!profile_reference.IsNull()) {
+          return error_result(STATUS_INVALID_SHAPE, "OCCT mixed cut reference edge is ambiguous");
+        }
+        profile_reference = candidate;
+      }
+    }
+    if (profile_reference.IsNull()) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT mixed cut lost its reference edge");
+    }
+    BRepPrimAPI_MakePrism prism(profile, gp_Vec(0.0, 0.0, height), true, false);
+    if (!prism.IsDone()) {
+      return error_result(STATUS_INVALID_SHAPE, "Polygon cut prism did not complete");
+    }
+    const TopoDS_Shape tool = prism.Shape();
+    const NCollection_List<TopoDS_Shape>& generated_side = prism.Generated(profile_reference);
+    if (generated_side.IsEmpty()) {
+      return error_result(STATUS_INVALID_SHAPE, "Polygon cut reference wall is missing");
+    }
+    const TopoDS_Shape reference_side = generated_side.First();
+    BRepAlgoAPI_Cut operation(base.impl().shape, tool);
+    operation.Build();
+    if (!operation.IsDone() || operation.HasErrors() || operation.Shape().IsNull()) {
+      return error_result(STATUS_INVALID_SHAPE, "Polygon cut operation did not complete");
+    }
+    const TopoDS_Shape result = operation.Shape();
+    GProp_GProps before_properties;
+    GProp_GProps after_properties;
+    BRepGProp::VolumeProperties(base.impl().shape, before_properties);
+    BRepGProp::VolumeProperties(result, after_properties);
+    const double scale = std::max(1.0, std::abs(before_properties.Mass()));
+    if (std::abs(before_properties.Mass() - after_properties.Mass()) <=
+        scale * 16.0 * std::numeric_limits<double>::epsilon()) {
+      return error_result(STATUS_NO_GEOMETRIC_CHANGE, "Polygon cut produced no measurable geometric change");
+    }
+    std::vector<HistoryRecord> history;
+    append_propagated_history(history, operation, result, base.impl());
+    HistoryRecord wall{"through_cut.wall.line.0", "modified", "cut_profile.edge.line.0", 0, false};
+    const NCollection_List<TopoDS_Shape>& modified = operation.Modified(reference_side);
+    for (NCollection_List<TopoDS_Shape>::Iterator iterator(modified); iterator.More(); iterator.Next()) {
+      const HistoryRecord candidate = history_record(
+          "through_cut.wall.line.0", "modified", "cut_profile.edge.line.0", result, iterator.Value());
+      if (candidate.output_present) {
+        wall = candidate;
+        break;
+      }
+    }
+    history.push_back(std::move(wall));
+    return success_result(result, std::move(history));
+  });
+}
+
+std::unique_ptr<NativeOperationResult> fuse_mixed_profile_native(
+    const NativeOperationResult& base, rust::Slice<const double> segments,
+    double origin_z, double height) noexcept {
+  return guarded([&] {
+    if (!base.valid() || segments.size() < 16 || segments.size() % 8 != 0) {
+      return error_result(STATUS_INVALID_PARAMETER, "Polygon union payload is malformed");
+    }
+    BRepBuilderAPI_MakeWire wire_builder;
+    std::size_t line_count = 0;
+    std::size_t arc_count = 0;
+    for (std::size_t offset = 0; offset < segments.size(); offset += 8) {
+      const double kind = segments[offset];
+      const gp_Pnt start(segments[offset + 1], segments[offset + 2], origin_z);
+      const gp_Pnt end(segments[offset + 3], segments[offset + 4], origin_z);
+      TopoDS_Edge edge;
+      if (kind == 0.0) {
+        edge = BRepBuilderAPI_MakeEdge(start, end).Edge();
+        ++line_count;
+      } else if (kind == 1.0) {
+        const double center_x = segments[offset + 5];
+        const double center_y = segments[offset + 6];
+        const bool clockwise = segments[offset + 7] != 0.0;
+        const double start_angle = std::atan2(start.Y() - center_y, start.X() - center_x);
+        const double end_angle = std::atan2(end.Y() - center_y, end.X() - center_x);
+        double sweep = end_angle - start_angle;
+        const double tau = 2.0 * std::acos(-1.0);
+        if (clockwise) {
+          while (sweep >= 0.0) sweep -= tau;
+        } else {
+          while (sweep <= 0.0) sweep += tau;
+        }
+        const double radius = start.Distance(gp_Pnt(center_x, center_y, origin_z));
+        const double middle_angle = start_angle + sweep / 2.0;
+        GC_MakeArcOfCircle arc_builder(
+            start,
+            gp_Pnt(center_x + radius * std::cos(middle_angle),
+                   center_y + radius * std::sin(middle_angle), origin_z),
+            end);
+        if (!arc_builder.IsDone()) {
+          return error_result(STATUS_INVALID_SHAPE, "Polygon union arc builder did not complete");
+        }
+        edge = BRepBuilderAPI_MakeEdge(arc_builder.Value()).Edge();
+        ++arc_count;
+      } else {
+        return error_result(STATUS_INVALID_PARAMETER, "Polygon union segment kind is invalid");
+      }
+      if (edge.IsNull()) {
+        return error_result(STATUS_INVALID_SHAPE, "Polygon union edge is null");
+      }
+      wire_builder.Add(edge);
+    }
+    const std::size_t segment_count = segments.size() / 8;
+    const bool d_profile = segment_count == 2 && line_count == 1 && arc_count == 1;
+    const bool capsule_profile = segment_count == 4 && line_count == 2 && arc_count == 2;
+    const bool rounded_rectangle_profile =
+        segment_count == 8 && line_count == 4 && arc_count == 4;
+    if ((arc_count == 0 && line_count < 3)
+        || (arc_count > 0 && !d_profile && !capsule_profile && !rounded_rectangle_profile)) {
+      return error_result(STATUS_INVALID_PARAMETER, "Polygon union profile shape is unsupported");
+    }
+    if (!wire_builder.IsDone()) {
+      return error_result(STATUS_INVALID_SHAPE, "Polygon union wire did not complete");
+    }
+    BRepBuilderAPI_MakeFace face_builder(wire_builder.Wire(), true);
+    if (!face_builder.IsDone()) {
+      return error_result(STATUS_INVALID_SHAPE, "Polygon union face did not complete");
+    }
+    BRepPrimAPI_MakePrism prism(face_builder.Face(), gp_Vec(0.0, 0.0, height), true, false);
+    if (!prism.IsDone()) {
+      return error_result(STATUS_INVALID_SHAPE, "Polygon union prism did not complete");
+    }
+    BRepAlgoAPI_Fuse operation(base.impl().shape, prism.Shape());
+    operation.Build();
+    if (operation.IsDone() && !operation.HasErrors()) {
+      operation.SimplifyResult(true, true);
+    }
+    if (!operation.IsDone() || operation.HasErrors() || operation.Shape().IsNull()) {
+      return error_result(STATUS_INVALID_SHAPE, "Polygon union operation did not complete");
+    }
+    const TopoDS_Shape result = operation.Shape();
+    GProp_GProps before_properties;
+    GProp_GProps after_properties;
+    BRepGProp::VolumeProperties(base.impl().shape, before_properties);
+    BRepGProp::VolumeProperties(result, after_properties);
+    const double scale = std::max(1.0, std::abs(before_properties.Mass()));
+    if (after_properties.Mass() - before_properties.Mass() <=
+        scale * 16.0 * std::numeric_limits<double>::epsilon()) {
+      return error_result(STATUS_NO_GEOMETRIC_CHANGE, "Polygon union produced no measurable geometric change");
+    }
+    return success_result(result, {});
+  });
+}
+
+std::unique_ptr<NativeOperationResult> common_mixed_profile_native(
+    const NativeOperationResult& base, rust::Slice<const double> segments,
+    double origin_z, double height) noexcept {
+  return guarded([&] {
+    if (!base.valid() || segments.size() < 16 || segments.size() % 8 != 0) {
+      return error_result(STATUS_INVALID_PARAMETER, "Polygon intersection payload is malformed");
+    }
+    BRepBuilderAPI_MakeWire wire_builder;
+    std::size_t line_count = 0;
+    std::size_t arc_count = 0;
+    for (std::size_t offset = 0; offset < segments.size(); offset += 8) {
+      const double kind = segments[offset];
+      const gp_Pnt start(segments[offset + 1], segments[offset + 2], origin_z);
+      const gp_Pnt end(segments[offset + 3], segments[offset + 4], origin_z);
+      TopoDS_Edge edge;
+      if (kind == 0.0) {
+        edge = BRepBuilderAPI_MakeEdge(start, end).Edge();
+        ++line_count;
+      } else if (kind == 1.0) {
+        const double center_x = segments[offset + 5];
+        const double center_y = segments[offset + 6];
+        const bool clockwise = segments[offset + 7] != 0.0;
+        const double start_angle = std::atan2(start.Y() - center_y, start.X() - center_x);
+        const double end_angle = std::atan2(end.Y() - center_y, end.X() - center_x);
+        double sweep = end_angle - start_angle;
+        const double tau = 2.0 * std::acos(-1.0);
+        if (clockwise) {
+          while (sweep >= 0.0) sweep -= tau;
+        } else {
+          while (sweep <= 0.0) sweep += tau;
+        }
+        const double radius = start.Distance(gp_Pnt(center_x, center_y, origin_z));
+        const double middle_angle = start_angle + sweep / 2.0;
+        GC_MakeArcOfCircle arc_builder(
+            start,
+            gp_Pnt(center_x + radius * std::cos(middle_angle),
+                   center_y + radius * std::sin(middle_angle), origin_z),
+            end);
+        if (!arc_builder.IsDone()) {
+          return error_result(STATUS_INVALID_SHAPE, "Polygon intersection arc builder did not complete");
+        }
+        edge = BRepBuilderAPI_MakeEdge(arc_builder.Value()).Edge();
+        ++arc_count;
+      } else {
+        return error_result(STATUS_INVALID_PARAMETER, "Polygon intersection segment kind is invalid");
+      }
+      if (edge.IsNull()) {
+        return error_result(STATUS_INVALID_SHAPE, "Polygon intersection edge is null");
+      }
+      wire_builder.Add(edge);
+    }
+    const std::size_t segment_count = segments.size() / 8;
+    const bool d_profile = segment_count == 2 && line_count == 1 && arc_count == 1;
+    const bool capsule_profile = segment_count == 4 && line_count == 2 && arc_count == 2;
+    const bool rounded_rectangle_profile =
+        segment_count == 8 && line_count == 4 && arc_count == 4;
+    if ((arc_count == 0 && line_count < 3)
+        || (arc_count > 0 && !d_profile && !capsule_profile && !rounded_rectangle_profile)) {
+      return error_result(STATUS_INVALID_PARAMETER, "Polygon intersection profile shape is unsupported");
+    }
+    if (!wire_builder.IsDone()) {
+      return error_result(STATUS_INVALID_SHAPE, "Polygon intersection wire did not complete");
+    }
+    BRepBuilderAPI_MakeFace face_builder(wire_builder.Wire(), true);
+    if (!face_builder.IsDone()) {
+      return error_result(STATUS_INVALID_SHAPE, "Polygon intersection face did not complete");
+    }
+    BRepPrimAPI_MakePrism prism(face_builder.Face(), gp_Vec(0.0, 0.0, height), true, false);
+    if (!prism.IsDone()) {
+      return error_result(STATUS_INVALID_SHAPE, "Polygon intersection prism did not complete");
+    }
+    BRepAlgoAPI_Common operation(base.impl().shape, prism.Shape());
+    operation.Build();
+    if (!operation.IsDone() || operation.HasErrors() || operation.Shape().IsNull()) {
+      return error_result(STATUS_INVALID_SHAPE, "Polygon intersection operation did not complete");
+    }
+    const TopoDS_Shape result = operation.Shape();
+    GProp_GProps before_properties;
+    GProp_GProps after_properties;
+    BRepGProp::VolumeProperties(base.impl().shape, before_properties);
+    BRepGProp::VolumeProperties(result, after_properties);
+    const double scale = std::max(1.0, std::abs(before_properties.Mass()));
+    if (before_properties.Mass() - after_properties.Mass() <=
+        scale * 16.0 * std::numeric_limits<double>::epsilon()) {
+      return error_result(STATUS_NO_GEOMETRIC_CHANGE, "Polygon intersection produced no measurable geometric change");
+    }
+    return success_result(result, {});
+  });
+}
+
+std::unique_ptr<NativeOperationResult> split_mixed_profile_native(
+    const NativeOperationResult& base, rust::Slice<const double> segments,
+    double origin_z, double height) noexcept {
+  return guarded([&] {
+    if (!base.valid() || segments.size() < 16 || segments.size() % 8 != 0) {
+      return error_result(STATUS_INVALID_PARAMETER, "Polygon split payload is malformed");
+    }
+    BRepBuilderAPI_MakeWire wire_builder;
+    std::size_t line_count = 0;
+    std::size_t arc_count = 0;
+    for (std::size_t offset = 0; offset < segments.size(); offset += 8) {
+      const double kind = segments[offset];
+      const gp_Pnt start(segments[offset + 1], segments[offset + 2], origin_z);
+      const gp_Pnt end(segments[offset + 3], segments[offset + 4], origin_z);
+      TopoDS_Edge edge;
+      if (kind == 0.0) {
+        edge = BRepBuilderAPI_MakeEdge(start, end).Edge();
+        ++line_count;
+      } else if (kind == 1.0) {
+        const double center_x = segments[offset + 5];
+        const double center_y = segments[offset + 6];
+        const bool clockwise = segments[offset + 7] != 0.0;
+        const double start_angle = std::atan2(start.Y() - center_y, start.X() - center_x);
+        const double end_angle = std::atan2(end.Y() - center_y, end.X() - center_x);
+        double sweep = end_angle - start_angle;
+        const double tau = 2.0 * std::acos(-1.0);
+        if (clockwise) {
+          while (sweep >= 0.0) sweep -= tau;
+        } else {
+          while (sweep <= 0.0) sweep += tau;
+        }
+        const double radius = start.Distance(gp_Pnt(center_x, center_y, origin_z));
+        const double middle_angle = start_angle + sweep / 2.0;
+        GC_MakeArcOfCircle arc_builder(
+            start,
+            gp_Pnt(center_x + radius * std::cos(middle_angle),
+                   center_y + radius * std::sin(middle_angle), origin_z),
+            end);
+        if (!arc_builder.IsDone()) {
+          return error_result(STATUS_INVALID_SHAPE, "Polygon split arc builder did not complete");
+        }
+        edge = BRepBuilderAPI_MakeEdge(arc_builder.Value()).Edge();
+        ++arc_count;
+      } else {
+        return error_result(STATUS_INVALID_PARAMETER, "Polygon split segment kind is invalid");
+      }
+      if (edge.IsNull()) {
+        return error_result(STATUS_INVALID_SHAPE, "Polygon split edge is null");
+      }
+      wire_builder.Add(edge);
+    }
+    const std::size_t segment_count = segments.size() / 8;
+    const bool d_profile = segment_count == 2 && line_count == 1 && arc_count == 1;
+    const bool capsule_profile = segment_count == 4 && line_count == 2 && arc_count == 2;
+    const bool rounded_rectangle_profile =
+        segment_count == 8 && line_count == 4 && arc_count == 4;
+    if ((arc_count == 0 && line_count < 3)
+        || (arc_count > 0 && !d_profile && !capsule_profile && !rounded_rectangle_profile)) {
+      return error_result(STATUS_INVALID_PARAMETER, "Polygon split profile shape is unsupported");
+    }
+    if (!wire_builder.IsDone()) {
+      return error_result(STATUS_INVALID_SHAPE, "Polygon split wire did not complete");
+    }
+    BRepBuilderAPI_MakeFace face_builder(wire_builder.Wire(), true);
+    if (!face_builder.IsDone()) {
+      return error_result(STATUS_INVALID_SHAPE, "Polygon split face did not complete");
+    }
+    BRepPrimAPI_MakePrism prism(face_builder.Face(), gp_Vec(0.0, 0.0, height), true, false);
+    if (!prism.IsDone()) {
+      return error_result(STATUS_INVALID_SHAPE, "Polygon split prism did not complete");
+    }
+    BOPAlgo_Splitter operation;
+    operation.AddArgument(base.impl().shape);
+    operation.AddTool(prism.Shape());
+    operation.Perform();
+    if (operation.HasErrors()) {
+      return error_result(STATUS_INVALID_SHAPE, "Polygon split operation did not complete");
+    }
+    const TopoDS_Shape result = operation.Shape();
+    if (result.IsNull()) {
+      return error_result(STATUS_NULL_RESULT, "Polygon split returned a null shape");
+    }
+    if (count_subshapes(result, TopAbs_SOLID) < 2) {
+      return error_result(STATUS_NO_GEOMETRIC_CHANGE, "Polygon split did not produce multiple target fragments");
+    }
+    GProp_GProps before_properties;
+    GProp_GProps after_properties;
+    BRepGProp::VolumeProperties(base.impl().shape, before_properties);
+    BRepGProp::VolumeProperties(result, after_properties);
+    const double scale = std::max(1.0, std::abs(before_properties.Mass()));
+    if (std::abs(after_properties.Mass() - before_properties.Mass()) > scale * 1.0e-10) {
+      return error_result(STATUS_INVALID_SHAPE, "Polygon split did not preserve target volume");
+    }
+    std::vector<HistoryRecord> history;
+    append_propagated_history(history, operation, result, base.impl());
+    return success_result(result, std::move(history), true);
+  });
+}
+
 std::unique_ptr<NativeOperationResult> cut_cylinder_native(
     const NativeOperationResult& base,
     double center_x, double center_y, double origin_z,
@@ -1837,6 +2284,120 @@ std::unique_ptr<NativeOperationResult> cut_cylinder_native(
     append_cut_history(history, operation, result, base.impl().shape, "base.face.");
     append_cut_history(history, operation, result, tool, "tool.face.");
     return success_result(result, std::move(history));
+  });
+}
+
+std::unique_ptr<NativeOperationResult> fuse_cylinder_native(
+    const NativeOperationResult& base,
+    double center_x, double center_y, double origin_z,
+    double radius, double height) noexcept {
+  return guarded([&] {
+    if (!base.valid()) {
+      return error_result(STATUS_INVALID_PARAMETER, "Cylinder fuse base is not a valid exact body");
+    }
+    BRepPrimAPI_MakeCylinder tool_builder(
+        gp_Ax2(gp_Pnt(center_x, center_y, origin_z), gp_Dir(0.0, 0.0, 1.0)),
+        radius,
+        height);
+    tool_builder.Build();
+    if (!tool_builder.IsDone()) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT cylinder fuse tool builder did not complete");
+    }
+    BRepAlgoAPI_Fuse operation(base.impl().shape, tool_builder.Shape());
+    operation.Build();
+    if (operation.IsDone() && !operation.HasErrors()) {
+      operation.SimplifyResult(true, true);
+    }
+    if (!operation.IsDone() || operation.HasErrors()) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT cylinder fuse operation did not complete");
+    }
+    const TopoDS_Shape result = operation.Shape();
+    if (result.IsNull()) {
+      return error_result(STATUS_NULL_RESULT, "OCCT cylinder fuse returned a null shape");
+    }
+    GProp_GProps before_properties;
+    GProp_GProps after_properties;
+    BRepGProp::VolumeProperties(base.impl().shape, before_properties);
+    BRepGProp::VolumeProperties(result, after_properties);
+    const double scale = std::max(1.0, std::abs(before_properties.Mass()));
+    if (after_properties.Mass() - before_properties.Mass() <=
+        scale * 16.0 * std::numeric_limits<double>::epsilon()) {
+      return error_result(STATUS_NO_GEOMETRIC_CHANGE, "Cylinder fuse produced no measurable geometric change");
+    }
+    return success_result(result, {});
+  });
+}
+
+std::unique_ptr<NativeOperationResult> common_cylinder_native(
+    const NativeOperationResult& base,
+    double center_x, double center_y, double origin_z,
+    double radius, double height) noexcept {
+  return guarded([&] {
+    if (!base.valid()) {
+      return error_result(STATUS_INVALID_PARAMETER, "Cylinder common base is not a valid exact body");
+    }
+    BRepPrimAPI_MakeCylinder tool_builder(
+        gp_Ax2(gp_Pnt(center_x, center_y, origin_z), gp_Dir(0.0, 0.0, 1.0)),
+        radius,
+        height);
+    tool_builder.Build();
+    if (!tool_builder.IsDone()) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT cylinder common tool builder did not complete");
+    }
+    BRepAlgoAPI_Common operation(base.impl().shape, tool_builder.Shape());
+    operation.Build();
+    if (!operation.IsDone() || operation.HasErrors()) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT cylinder common operation did not complete");
+    }
+    const TopoDS_Shape result = operation.Shape();
+    if (result.IsNull()) {
+      return error_result(STATUS_NULL_RESULT, "OCCT cylinder common returned a null shape");
+    }
+    return success_result(result, {});
+  });
+}
+
+std::unique_ptr<NativeOperationResult> split_cylinder_native(
+    const NativeOperationResult& base,
+    double center_x, double center_y, double origin_z,
+    double radius, double height) noexcept {
+  return guarded([&] {
+    if (!base.valid()) {
+      return error_result(STATUS_INVALID_PARAMETER, "Cylinder split base is not a valid exact body");
+    }
+    BRepPrimAPI_MakeCylinder tool_builder(
+        gp_Ax2(gp_Pnt(center_x, center_y, origin_z), gp_Dir(0.0, 0.0, 1.0)),
+        radius,
+        height);
+    tool_builder.Build();
+    if (!tool_builder.IsDone()) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT cylinder split tool builder did not complete");
+    }
+    BOPAlgo_Splitter operation;
+    operation.AddArgument(base.impl().shape);
+    operation.AddTool(tool_builder.Shape());
+    operation.Perform();
+    if (operation.HasErrors()) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT cylinder split operation did not complete");
+    }
+    const TopoDS_Shape result = operation.Shape();
+    if (result.IsNull()) {
+      return error_result(STATUS_NULL_RESULT, "OCCT cylinder split returned a null shape");
+    }
+    if (count_subshapes(result, TopAbs_SOLID) < 2) {
+      return error_result(STATUS_NO_GEOMETRIC_CHANGE, "Cylinder split did not produce multiple target fragments");
+    }
+    GProp_GProps before_properties;
+    GProp_GProps after_properties;
+    BRepGProp::VolumeProperties(base.impl().shape, before_properties);
+    BRepGProp::VolumeProperties(result, after_properties);
+    const double scale = std::max(1.0, std::abs(before_properties.Mass()));
+    if (std::abs(after_properties.Mass() - before_properties.Mass()) > scale * 1.0e-10) {
+      return error_result(STATUS_INVALID_SHAPE, "Cylinder split did not preserve target volume");
+    }
+    std::vector<HistoryRecord> history;
+    append_propagated_history(history, operation, result, base.impl());
+    return success_result(result, std::move(history), true);
   });
 }
 

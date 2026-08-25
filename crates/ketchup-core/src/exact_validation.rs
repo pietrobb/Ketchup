@@ -132,7 +132,9 @@ impl ExactBodyParticipant {
                 ExactFaceRole::PocketNorth => (1, 1),
                 ExactFaceRole::CircleSide
                 | ExactFaceRole::ArcSide
+                | ExactFaceRole::LinearSide
                 | ExactFaceRole::CutCircle
+                | ExactFaceRole::CutLinear
                 | ExactFaceRole::RevolveBottom
                 | ExactFaceRole::RevolveBody
                 | ExactFaceRole::RevolveShoulder

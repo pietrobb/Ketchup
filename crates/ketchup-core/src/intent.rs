@@ -40,6 +40,7 @@ pub enum IntentCapability {
     RenameDefinition,
     SetOccurrenceVisibility,
     SetOccurrenceTranslation,
+    AtomicMultiCommandEdit,
     SetOccurrenceTag,
     SetTagVisibility,
     RepointOccurrence,
@@ -119,6 +120,7 @@ impl IntentGrant {
                 IntentCapability::RenameDefinition,
                 IntentCapability::SetOccurrenceVisibility,
                 IntentCapability::SetOccurrenceTranslation,
+                IntentCapability::AtomicMultiCommandEdit,
                 IntentCapability::SetOccurrenceTag,
                 IntentCapability::SetTagVisibility,
                 IntentCapability::RepointOccurrence,
@@ -290,6 +292,14 @@ pub enum WorkflowIntent {
         y_mm_text: String,
         z_mm_text: String,
     },
+    AtomicMultiCommandEdit {
+        target: OccurrenceId,
+        x_mm_text: String,
+        y_mm_text: String,
+        z_mm_text: String,
+        tag: TagId,
+        name: String,
+    },
     SetOccurrenceTag {
         target: OccurrenceId,
         tag: Option<TagId>,
@@ -416,6 +426,7 @@ impl WorkflowIntent {
             Self::RenameDefinition { .. } => IntentCapability::RenameDefinition,
             Self::SetOccurrenceVisibility { .. } => IntentCapability::SetOccurrenceVisibility,
             Self::SetOccurrenceTranslation { .. } => IntentCapability::SetOccurrenceTranslation,
+            Self::AtomicMultiCommandEdit { .. } => IntentCapability::AtomicMultiCommandEdit,
             Self::SetOccurrenceTag { .. } => IntentCapability::SetOccurrenceTag,
             Self::SetTagVisibility { .. } => IntentCapability::SetTagVisibility,
             Self::RepointOccurrence { .. } => IntentCapability::RepointOccurrence,
@@ -462,6 +473,9 @@ impl IntentRequest {
             | WorkflowIntent::ConvertEmptyGroupToComponent { .. } => {
                 ProposalBudget::M18C_CLONE_PROFILE_DEFINITION
             }
+            WorkflowIntent::AtomicMultiCommandEdit { .. } => {
+                ProposalBudget::T18_ATOMIC_MULTI_COMMAND_EDIT
+            }
             _ => ProposalBudget::M7A_SINGLE_CHANGE,
         };
         Self {
@@ -479,6 +493,66 @@ pub fn propose_intent(
     let required = request.intent.required_capability();
     if !request.grant.capabilities.contains(&required) {
         return Err(IntentError::CapabilityDenied(required));
+    }
+    if let WorkflowIntent::AtomicMultiCommandEdit {
+        target,
+        x_mm_text,
+        y_mm_text,
+        z_mm_text,
+        tag,
+        name,
+    } = &request.intent
+    {
+        let parse = |value: &str| {
+            value
+                .trim()
+                .parse::<f64>()
+                .map_err(|_| crate::document::CanonicalError::InvalidTransform)
+        };
+        let snapshot = store.current();
+        let mut matrix = *snapshot
+            .occurrence(*target)
+            .ok_or(crate::document::CanonicalError::OccurrenceNotFound(*target))?
+            .transform()
+            .matrix();
+        matrix[3] = parse(x_mm_text)?;
+        matrix[7] = parse(y_mm_text)?;
+        matrix[11] = parse(z_mm_text)?;
+        let batch = CommandBatch::new(vec![
+            CanonicalCommand::SetOccurrenceTransform {
+                id: *target,
+                transform: Transform::from_matrix(matrix)?,
+            },
+            CanonicalCommand::SetOccurrenceTag {
+                id: *target,
+                tag: Some(*tag),
+            },
+            CanonicalCommand::RenameEntity {
+                id: *target,
+                name: name.clone(),
+            },
+        ]);
+        return store
+            .prepare_proposal_with_context(
+                batch,
+                ProposalContext {
+                    principal: match request.grant.principal {
+                        RequestingPrincipal::LocalAssistant => ProposalPrincipal::LocalAssistant,
+                        RequestingPrincipal::Plugin(id) => ProposalPrincipal::Plugin(id),
+                    },
+                    goal: ProposalGoal::AtomicMultiCommandEdit(*target),
+                    assumptions: vec![
+                        ProposalAssumption::TargetExists(AuthoritativeDependency::Occurrence(
+                            *target,
+                        )),
+                        ProposalAssumption::TargetExists(AuthoritativeDependency::Tag(*tag)),
+                    ],
+                    risk: ProposalRisk::Standard,
+                    confirmation: ProposalConfirmation::ReviewRequired,
+                    requested_budget: request.requested_budget,
+                },
+            )
+            .map_err(IntentError::Proposal);
     }
     let requested_secondary_targets = match &request.intent {
         WorkflowIntent::SetOccurrenceTag { tag: Some(tag), .. } => {
@@ -1274,6 +1348,7 @@ pub fn propose_intent(
                 },
             )
         }
+        WorkflowIntent::AtomicMultiCommandEdit { .. } => unreachable!(),
         WorkflowIntent::SetOccurrenceTranslation {
             target,
             x_mm_text,

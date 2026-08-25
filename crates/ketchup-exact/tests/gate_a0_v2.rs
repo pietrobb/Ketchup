@@ -8,7 +8,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const STRENGTHENED_FREEZE_ID: &str = "strengthened-a0-v2-r3";
 const SEEDS: [u64; 20] = [
     1, 7, 19, 31, 43, 61, 73, 101, 151, 211, 307, 401, 503, 601, 701, 809, 907, 1009, 1201, 1601,
 ];
@@ -67,10 +66,21 @@ fn repository_root() -> PathBuf {
 }
 
 fn validate_active_freeze(repository: &Path) {
-    let script = repository.join("scripts/windows/validate-strengthened-a0-v2.ps1");
-    let output = Command::new("powershell.exe")
+    let script = std::env::var_os("KETCHUP_A0_V2_VALIDATOR_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| repository.join("scripts/windows/validate-strengthened-a0-v2.ps1"));
+    let configured_freeze_id = std::env::var("KETCHUP_A0_V2_FREEZE_ID").ok();
+    let freeze_id = configured_freeze_id
+        .as_deref()
+        .unwrap_or("strengthened-a0-v2-r3");
+    let mut command = Command::new("powershell.exe");
+    command
         .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
-        .arg(script)
+        .arg(script);
+    if configured_freeze_id.is_some() {
+        command.args(["-FreezeId", freeze_id]);
+    }
+    let output = command
         .arg("-EmitJson")
         .output()
         .expect("strengthened A0 validator must run before observations");
@@ -81,9 +91,10 @@ fn validate_active_freeze(repository: &Path) {
     );
     let run_id = std::env::var("KETCHUP_A0_V2_RUN_ID")
         .expect("formal strengthened A0 v2 requires a sealed run ID");
+    let run_prefix = format!("{freeze_id}-run-");
     let run_suffix = run_id
-        .strip_prefix("strengthened-v2-r3-run-")
-        .expect("run ID must use the strengthened-v2-r3-run-NNN namespace");
+        .strip_prefix(&run_prefix)
+        .expect("run ID must use the validated freeze namespace");
     assert!(
         run_suffix.len() == 3 && run_suffix.bytes().all(|byte| byte.is_ascii_digit()),
         "run ID must end in exactly three digits"
@@ -739,6 +750,8 @@ fn write_evidence(metrics: &Metrics, failures: &[String]) {
     );
     let lock_sha256 = std::env::var("KETCHUP_A0_V2_LOCK_SHA256")
         .expect("runner must provide the validated v2 lock hash");
+    let freeze_id = std::env::var("KETCHUP_A0_V2_FREEZE_ID")
+        .unwrap_or_else(|_| "strengthened-a0-v2-r3".to_owned());
     let decision = if failures.is_empty() { "GO" } else { "NO-GO" };
     let failure_json = failures
         .iter()
@@ -765,7 +778,7 @@ fn write_evidence(metrics: &Metrics, failures: &[String]) {
             "  \"failures\": [{}]\n",
             "}}\n"
         ),
-        STRENGTHENED_FREEZE_ID,
+        freeze_id,
         lock_sha256,
         env!("KETCHUP_OCCT_BUILD_FINGERPRINT"),
         decision,

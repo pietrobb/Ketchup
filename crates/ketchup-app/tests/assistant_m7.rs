@@ -10,7 +10,8 @@ use ketchup_core::assistant_sidecar::{
     AssistantTranslationIntent,
 };
 use ketchup_core::document::{
-    DefinitionId, FeatureId, NodeId, OccurrenceId, ProposalGoal, ProposalValue, Transform,
+    CanonicalCommand, DefinitionId, FeatureId, NodeId, OccurrenceId, ProposalGoal, ProposalValue,
+    TagId, Transform,
 };
 use ketchup_core::intent::WorkflowIntent;
 use ketchup_interaction::{LocaleCatalog, Vec3};
@@ -346,6 +347,92 @@ fn assistant_occurrence_visibility_applies_immediately_and_is_undoable() {
 }
 
 #[test]
+fn furniture_tag_visibility_uses_accessible_review_without_changing_geometry_ownership() {
+    let mut shell = Shell::new();
+    let tag = TagId(700);
+    let confirm = shell.catalog().text("assistant-confirm");
+
+    assert!(
+        shell
+            .app_mut()
+            .prepare_assistant_intent(WorkflowIntent::CreateTag {
+                target: tag,
+                name: "Furniture".to_owned(),
+                visible: true,
+            })
+    );
+    shell.settle();
+    shell.click_row(&confirm);
+    assert_eq!(
+        shell.app().document_snapshot().tag(tag).unwrap().name(),
+        "Furniture"
+    );
+
+    assert!(
+        shell
+            .app_mut()
+            .prepare_assistant_intent(WorkflowIntent::SetOccurrenceTag {
+                target: OccurrenceId(1),
+                tag: Some(tag),
+            })
+    );
+    shell.settle();
+    shell.click_row(&confirm);
+
+    let before = shell.app().document_snapshot();
+    let before_revision = shell.app().document_revision();
+    let before_digest = shell.app().canonical_digest();
+    let before_definition = before.occurrence(OccurrenceId(1)).unwrap().definition_id();
+    let before_entity_counts = (
+        before.definitions().count(),
+        before.occurrences().count(),
+        before.features().count(),
+        before.tags().count(),
+    );
+    assert!(shell.app().occurrence_box_geometry(1).is_some());
+
+    assert!(
+        shell
+            .app_mut()
+            .prepare_assistant_intent(WorkflowIntent::SetTagVisibility {
+                target: tag,
+                visible: false,
+            })
+    );
+    assert_eq!(shell.app().document_revision(), before_revision);
+    assert_eq!(shell.app().canonical_digest(), before_digest);
+    shell.settle();
+    assert!(shell.has_visible_label(&shell.catalog().text("assistant-review-title")));
+    shell.click_row(&confirm);
+
+    let hidden_digest = shell.app().canonical_digest();
+    let hidden = shell.app().document_snapshot();
+    assert_eq!(shell.app().document_revision(), before_revision + 1);
+    assert!(!hidden.tag(tag).unwrap().visible());
+    assert_eq!(
+        hidden.occurrence(OccurrenceId(1)).unwrap().definition_id(),
+        before_definition
+    );
+    assert_eq!(
+        (
+            hidden.definitions().count(),
+            hidden.occurrences().count(),
+            hidden.features().count(),
+            hidden.tags().count(),
+        ),
+        before_entity_counts
+    );
+    assert!(shell.app().occurrence_box_geometry(1).is_none());
+
+    shell.click_menu_command("menu-edit", AppCommand::Undo);
+    assert_eq!(shell.app().canonical_digest(), before_digest);
+    assert!(shell.app().occurrence_box_geometry(1).is_some());
+    shell.click_menu_command("menu-edit", AppCommand::Redo);
+    assert_eq!(shell.app().canonical_digest(), hidden_digest);
+    assert!(shell.app().occurrence_box_geometry(1).is_none());
+}
+
+#[test]
 fn public_apply_helpers_cannot_bypass_review_for_non_whitelisted_changes() {
     let mut shell = Shell::new();
     let revision = shell.app().document_revision();
@@ -521,6 +608,128 @@ fn assistant_occurrence_translation_review_is_exact_observational_and_undoable()
         shell.app().occurrence_box_geometry(1).unwrap(),
         geometry_before
     );
+}
+
+#[test]
+fn canonical_t18_move_tag_and_rename_is_one_accessible_atomic_undo_step() {
+    let mut shell = Shell::new();
+    let target = OccurrenceId(1);
+    let tag = TagId(718);
+    let confirm = shell.catalog().text("assistant-confirm");
+
+    assert!(
+        shell
+            .app_mut()
+            .prepare_assistant_intent(WorkflowIntent::CreateTag {
+                target: tag,
+                name: "T18 Furniture".to_owned(),
+                visible: true,
+            })
+    );
+    shell.settle();
+    shell.click_row(&confirm);
+
+    let baseline_revision = shell.app().document_revision();
+    let baseline_digest = shell.app().canonical_digest();
+    let baseline_undo_steps = shell.app().undo_step_count();
+    let (baseline_name, baseline_transform, baseline_tag) = {
+        let snapshot = shell.app().document_snapshot();
+        let occurrence = snapshot.occurrence(target).unwrap();
+        (
+            occurrence.name().to_owned(),
+            occurrence.transform(),
+            occurrence.tag(),
+        )
+    };
+    let expected_transform = Transform::from_translation(25.0, -10.0, 5.0).unwrap();
+
+    assert!(
+        !shell
+            .app_mut()
+            .prepare_assistant_intent(WorkflowIntent::AtomicMultiCommandEdit {
+                target,
+                x_mm_text: "100".to_owned(),
+                y_mm_text: "200".to_owned(),
+                z_mm_text: "300".to_owned(),
+                tag: TagId(999_718),
+                name: "Must not leak".to_owned(),
+            })
+    );
+    assert_eq!(shell.app().document_revision(), baseline_revision);
+    assert_eq!(shell.app().canonical_digest(), baseline_digest);
+    assert_eq!(shell.app().undo_step_count(), baseline_undo_steps);
+    let rejected = shell.app().document_snapshot();
+    let occurrence = rejected.occurrence(target).unwrap();
+    assert_eq!(occurrence.name(), baseline_name);
+    assert_eq!(occurrence.transform(), baseline_transform);
+    assert_eq!(occurrence.tag(), baseline_tag);
+
+    assert!(
+        shell
+            .app_mut()
+            .prepare_assistant_intent(WorkflowIntent::AtomicMultiCommandEdit {
+                target,
+                x_mm_text: "25".to_owned(),
+                y_mm_text: "-10".to_owned(),
+                z_mm_text: "5".to_owned(),
+                tag,
+                name: "Moved tagged box".to_owned(),
+            })
+    );
+    let proposal = shell.app().assistant_proposal().unwrap();
+    assert_eq!(
+        proposal.goal(),
+        ProposalGoal::AtomicMultiCommandEdit(target)
+    );
+    assert_eq!(proposal.batch().commands().len(), 3);
+    assert!(matches!(
+        &proposal.batch().commands()[0],
+        CanonicalCommand::SetOccurrenceTransform { id, transform }
+            if *id == target && *transform == expected_transform
+    ));
+    assert!(matches!(
+        &proposal.batch().commands()[1],
+        CanonicalCommand::SetOccurrenceTag { id, tag: Some(actual) }
+            if *id == target && *actual == tag
+    ));
+    assert!(matches!(
+        &proposal.batch().commands()[2],
+        CanonicalCommand::RenameEntity { id, name }
+            if *id == target && name == "Moved tagged box"
+    ));
+    assert_eq!(proposal.authoritative_writes().len(), 1);
+    assert_eq!(shell.app().document_revision(), baseline_revision);
+    assert_eq!(shell.app().canonical_digest(), baseline_digest);
+
+    shell.settle();
+    assert!(shell.has_visible_label(&shell.catalog().text("assistant-review-title")));
+    shell.click_row(&confirm);
+    assert_eq!(shell.app().document_revision(), baseline_revision + 1);
+    assert_eq!(shell.app().undo_step_count(), baseline_undo_steps + 1);
+    let committed_digest = shell.app().canonical_digest();
+    let committed = shell.app().document_snapshot();
+    let occurrence = committed.occurrence(target).unwrap();
+    assert_eq!(occurrence.name(), "Moved tagged box");
+    assert_eq!(occurrence.transform(), expected_transform);
+    assert_eq!(occurrence.tag(), Some(tag));
+
+    shell.click_menu_command("menu-edit", AppCommand::Undo);
+    assert_eq!(shell.app().canonical_digest(), baseline_digest);
+    assert_eq!(shell.app().undo_step_count(), baseline_undo_steps);
+    let undone = shell.app().document_snapshot();
+    let occurrence = undone.occurrence(target).unwrap();
+    assert_eq!(occurrence.name(), baseline_name);
+    assert_eq!(occurrence.transform(), baseline_transform);
+    assert_eq!(occurrence.tag(), baseline_tag);
+
+    shell.click_menu_command("menu-edit", AppCommand::Redo);
+    assert_eq!(shell.app().canonical_digest(), committed_digest);
+    assert_eq!(shell.app().undo_step_count(), baseline_undo_steps + 1);
+    let redone = shell.app().document_snapshot();
+    let occurrence = redone.occurrence(target).unwrap();
+    assert_eq!(occurrence.name(), "Moved tagged box");
+    assert_eq!(occurrence.transform(), expected_transform);
+    assert_eq!(occurrence.tag(), Some(tag));
 }
 
 #[test]

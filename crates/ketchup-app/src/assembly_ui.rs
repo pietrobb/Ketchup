@@ -4,7 +4,11 @@ use ketchup_core::assembly::{
     AssemblyRecomputePublishError, AssemblyRecomputeStatus, AssemblySolveResult,
     AssemblySolveStatus, AssemblySolverPolicy, recompute_rigid_assembly, solve_rigid_assembly,
 };
-use ketchup_core::exact_product::BodySubshapeRef;
+#[cfg(debug_assertions)]
+use ketchup_core::drawing::project_orthographic_drawing;
+use ketchup_core::drawing::{DrawingSheet, DrawingSource, prepare_create_drawing_sheet};
+use ketchup_core::exact_product::{BodySubshapeRef, ExactFaceRole};
+use ketchup_core::release_capstone::ReleaseCapstoneContract;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 enum MateKindChoice {
@@ -65,6 +69,8 @@ pub(super) struct AssemblyEditorState {
 
 enum AssemblyUiAction {
     Insert,
+    ComposeCapstone,
+    CreateCapstoneDrawing,
     Ground(OccurrenceId, bool),
     SelectEndpointA(OccurrenceId),
     SelectEndpointB(OccurrenceId),
@@ -312,6 +318,136 @@ impl KetchupApp {
             },
             false,
         )
+    }
+
+    fn plan_capstone_assembly(&self) -> Option<CommandBatch> {
+        let contract = ReleaseCapstoneContract::mechanical_plate_fixture();
+        let snapshot = self.document.current();
+        if snapshot.assembly_mates().next().is_some()
+            || snapshot.drawing_sheet(contract.drawing_sheet_id).is_some()
+        {
+            return None;
+        }
+        for occurrence_id in [
+            contract.plate_occurrence_id,
+            contract.first_shared_occurrence_id,
+            contract.second_shared_occurrence_id,
+        ] {
+            if snapshot.occurrence_effectively_visible(occurrence_id) != Some(true) {
+                return None;
+            }
+        }
+        let plate = self
+            .exact_results
+            .get_render(&snapshot, contract.plate_definition_id)?;
+        let fastener = self
+            .exact_results
+            .get_render(&snapshot, contract.shared_definition_id)?;
+        let plate_top = plate.reference(ExactFaceRole::Top)?.clone();
+        let fastener_bottom = fastener.reference(ExactFaceRole::Bottom)?.clone();
+        let fastener_axis = fastener.reference(ExactFaceRole::CircleSide)?.clone();
+        let batch = CommandBatch::new(vec![
+            CanonicalCommand::SetOccurrenceGrounded {
+                id: contract.plate_occurrence_id,
+                grounded: true,
+            },
+            CanonicalCommand::SetOccurrenceGrounded {
+                id: contract.second_shared_occurrence_id,
+                grounded: true,
+            },
+            CanonicalCommand::CreateAssemblyMate(AssemblyMate::new(
+                contract.planar_mate_id,
+                AssemblyMateEndpoint::resolved(contract.plate_occurrence_id, plate_top.clone()),
+                AssemblyMateEndpoint::resolved(
+                    contract.first_shared_occurrence_id,
+                    fastener_bottom,
+                ),
+                AssemblyMateKind::CoincidentPlanar {
+                    offset_mm: f64::from(contract.dimensions.plate_height_mm),
+                    reversed: false,
+                },
+            )),
+            CanonicalCommand::CreateAssemblyMate(AssemblyMate::new(
+                contract.axial_mate_id,
+                AssemblyMateEndpoint::resolved(contract.plate_occurrence_id, plate_top),
+                AssemblyMateEndpoint::resolved(contract.first_shared_occurrence_id, fastener_axis),
+                AssemblyMateKind::ConcentricAxial { reversed: false },
+            )),
+        ]);
+        let candidate = self.document.preview_batch(&batch).ok()?;
+        let solved = solve_rigid_assembly(&candidate, AssemblySolverPolicy::default()).ok()?;
+        (solved.status() == AssemblySolveStatus::FullyConstrained
+            && solved.remaining_dof() == 0
+            && solved.redundant_mate_ids().is_empty()
+            && solved.conflicting_mate_ids().is_empty())
+        .then_some(batch)
+    }
+
+    fn preview_capstone_assembly(&mut self) -> bool {
+        let Some(batch) = self.plan_capstone_assembly() else {
+            self.assembly_error(self.catalog.text("assembly-error-solve-refused"));
+            return false;
+        };
+        self.prepare_assembly_preview(batch, "assembly-action-capstone", false)
+    }
+
+    fn preview_capstone_drawing(&mut self) -> bool {
+        let contract = ReleaseCapstoneContract::mechanical_plate_fixture();
+        let snapshot = self.document.current();
+        if snapshot.drawing_sheet(contract.drawing_sheet_id).is_some() {
+            return false;
+        }
+        let Ok(solved) = solve_rigid_assembly(&snapshot, AssemblySolverPolicy::default()) else {
+            self.assembly_error(self.catalog.text("assembly-error-solve-refused"));
+            return false;
+        };
+        if solved.status() != AssemblySolveStatus::FullyConstrained
+            || solved.remaining_dof() != 0
+            || !solved.redundant_mate_ids().is_empty()
+            || !solved.conflicting_mate_ids().is_empty()
+        {
+            self.assembly_error(self.catalog.text("assembly-error-solve-refused"));
+            return false;
+        }
+        let Ok(sheet) = DrawingSheet::new(
+            contract.drawing_sheet_id,
+            self.catalog.text("assembly-capstone-drawing-name"),
+            DrawingSource::RigidAssembly {
+                occurrence_ids: vec![
+                    contract.plate_occurrence_id,
+                    contract.first_shared_occurrence_id,
+                    contract.second_shared_occurrence_id,
+                ],
+            },
+        ) else {
+            return false;
+        };
+        let Ok((proposal, drawing)) =
+            prepare_create_drawing_sheet(&self.document, &self.exact_results, sheet)
+        else {
+            self.assembly_error(self.catalog.text("assembly-error-solve-refused"));
+            return false;
+        };
+        if drawing.views.len() != 3
+            || drawing
+                .views
+                .iter()
+                .any(|view| view.visible_lines.is_empty())
+        {
+            self.assembly_error(self.catalog.text("assembly-error-solve-refused"));
+            return false;
+        }
+        let action = self.catalog.text("assembly-action-capstone-drawing");
+        self.assembly_editor.preview = Some(AssemblyProposalPreview {
+            proposal,
+            action: action.clone(),
+            clear_occurrence_name: false,
+        });
+        self.digest = self.catalog.format(
+            "assembly-preview-ready",
+            &BTreeMap::from([("action", action)]),
+        );
+        true
     }
 
     fn selected_assembly_reference(
@@ -661,6 +797,18 @@ impl KetchupApp {
             .button(self.catalog.text("assembly-preview-insert"))
             .clicked()
             .then_some(AssemblyUiAction::Insert);
+        if ui
+            .button(self.catalog.text("assembly-preview-capstone"))
+            .clicked()
+        {
+            action = Some(AssemblyUiAction::ComposeCapstone);
+        }
+        if ui
+            .button(self.catalog.text("assembly-preview-capstone-drawing"))
+            .clicked()
+        {
+            action = Some(AssemblyUiAction::CreateCapstoneDrawing);
+        }
 
         ui.label(self.catalog.text("assembly-occurrences"));
         for occurrence in snapshot.occurrences() {
@@ -869,6 +1017,12 @@ impl KetchupApp {
             Some(AssemblyUiAction::Insert) => {
                 self.preview_insert_occurrence();
             }
+            Some(AssemblyUiAction::ComposeCapstone) => {
+                self.preview_capstone_assembly();
+            }
+            Some(AssemblyUiAction::CreateCapstoneDrawing) => {
+                self.preview_capstone_drawing();
+            }
             Some(AssemblyUiAction::Ground(id, grounded)) => {
                 self.preview_ground_occurrence(id, grounded);
             }
@@ -936,5 +1090,239 @@ impl KetchupApp {
             .solve_result
             .as_ref()
             .map(AssemblySolveResult::status)
+    }
+
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn headless_capstone_assembly_summary(
+        &self,
+    ) -> Option<(AssemblySolveStatus, usize, usize, usize)> {
+        let solved =
+            solve_rigid_assembly(&self.document.current(), AssemblySolverPolicy::default()).ok()?;
+        Some((
+            solved.status(),
+            solved.remaining_dof(),
+            solved.redundant_mate_ids().len(),
+            solved.conflicting_mate_ids().len(),
+        ))
+    }
+
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn headless_capstone_drawing_fingerprint(&self) -> Option<(String, Vec<&'static str>)> {
+        let contract = ReleaseCapstoneContract::mechanical_plate_fixture();
+        let snapshot = self.document.current();
+        let sheet = snapshot.drawing_sheet(contract.drawing_sheet_id)?;
+        let drawing = project_orthographic_drawing(&snapshot, &self.exact_results, sheet).ok()?;
+        Some((
+            drawing.result_digest,
+            drawing
+                .views
+                .iter()
+                .map(|view| view.kind.stable_name())
+                .collect(),
+        ))
+    }
+
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn headless_capstone_assembly_refusal_paths(&self) -> Vec<&'static str> {
+        let contract = ReleaseCapstoneContract::mechanical_plate_fixture();
+        let snapshot = self.document.current();
+        let Some(planar) = snapshot.assembly_mate(contract.planar_mate_id).cloned() else {
+            return Vec::new();
+        };
+        let Some(axial) = snapshot.assembly_mate(contract.axial_mate_id).cloned() else {
+            return Vec::new();
+        };
+        let encoded = ketchup_core::persistence::save(&snapshot);
+        let clone_document = || {
+            let mut document = ketchup_core::persistence::load(&encoded)
+                .ok()?
+                .into_editable()
+                .ok()?;
+            document
+                .apply_batch(&CommandBatch::new(vec![
+                    CanonicalCommand::DeleteDrawingSheet {
+                        id: contract.drawing_sheet_id,
+                    },
+                ]))
+                .ok()?;
+            Some(document)
+        };
+        let mut paths = Vec::new();
+
+        if let Some(mut document) = clone_document()
+            && document
+                .apply_batch(&CommandBatch::new(vec![
+                    CanonicalCommand::DeleteAssemblyMate {
+                        id: contract.axial_mate_id,
+                    },
+                    CanonicalCommand::SetOccurrenceGrounded {
+                        id: contract.second_shared_occurrence_id,
+                        grounded: false,
+                    },
+                ]))
+                .is_ok()
+            && solve_rigid_assembly(&document.current(), AssemblySolverPolicy::default())
+                .is_ok_and(|solve| solve.status() == AssemblySolveStatus::UnderConstrained)
+        {
+            paths.push("under-constrained");
+        }
+
+        if let Some(mut document) = clone_document() {
+            let duplicate = AssemblyMate::new(
+                AssemblyMateId(90_001),
+                axial.endpoint_a().clone(),
+                axial.endpoint_b().clone(),
+                axial.kind(),
+            );
+            if document
+                .apply_batch(&CommandBatch::new(vec![
+                    CanonicalCommand::CreateAssemblyMate(duplicate),
+                ]))
+                .is_ok()
+                && solve_rigid_assembly(&document.current(), AssemblySolverPolicy::default())
+                    .is_ok_and(|solve| !solve.redundant_mate_ids().is_empty())
+            {
+                paths.push("redundant");
+            }
+        }
+
+        if let Some(mut document) = clone_document()
+            && let AssemblyMateKind::CoincidentPlanar { offset_mm, .. } = planar.kind()
+        {
+            let conflicting_a = AssemblyMate::new(
+                AssemblyMateId(90_002),
+                planar.endpoint_a().clone(),
+                planar.endpoint_b().clone(),
+                AssemblyMateKind::Distance {
+                    distance_mm: offset_mm,
+                },
+            );
+            let conflicting_b = AssemblyMate::new(
+                AssemblyMateId(90_003),
+                planar.endpoint_a().clone(),
+                planar.endpoint_b().clone(),
+                AssemblyMateKind::Distance {
+                    distance_mm: offset_mm + 5.0,
+                },
+            );
+            if document
+                .apply_batch(&CommandBatch::new(vec![
+                    CanonicalCommand::DeleteAssemblyMate {
+                        id: contract.planar_mate_id,
+                    },
+                    CanonicalCommand::DeleteAssemblyMate {
+                        id: contract.axial_mate_id,
+                    },
+                    CanonicalCommand::CreateAssemblyMate(conflicting_a),
+                    CanonicalCommand::CreateAssemblyMate(conflicting_b),
+                ]))
+                .is_ok()
+                && solve_rigid_assembly(&document.current(), AssemblySolverPolicy::default())
+                    .is_ok_and(|solve| {
+                        solve.status() == AssemblySolveStatus::OverConstrained
+                            && !solve.conflicting_mate_ids().is_empty()
+                            && solve.publication_batch(&document.current()).is_err()
+                    })
+            {
+                paths.push("conflicting-over-constrained");
+            }
+        }
+
+        if let Some(mut document) = clone_document()
+            && let Ok(proposal) = document.prepare_proposal(CommandBatch::new(vec![
+                CanonicalCommand::SetOccurrenceGrounded {
+                    id: contract.second_shared_occurrence_id,
+                    grounded: false,
+                },
+            ]))
+            && document
+                .apply_batch(&CommandBatch::new(vec![
+                    CanonicalCommand::SetOccurrenceGrounded {
+                        id: contract.second_shared_occurrence_id,
+                        grounded: false,
+                    },
+                ]))
+                .is_ok()
+        {
+            let before = (
+                document.current().revision_id(),
+                document.current().canonical_digest(),
+                document.visible_undo_steps(),
+                document.visible_redo_steps(),
+            );
+            if document.commit_verified_proposal(&proposal).is_err()
+                && before
+                    == (
+                        document.current().revision_id(),
+                        document.current().canonical_digest(),
+                        document.visible_undo_steps(),
+                        document.visible_redo_steps(),
+                    )
+            {
+                paths.push("stale-confirmation");
+            }
+        }
+
+        for (name, endpoint) in [
+            (
+                "ambiguous",
+                AssemblyMateEndpoint::ambiguous(
+                    planar.endpoint_a().occurrence_id(),
+                    planar.endpoint_a().reference().clone(),
+                    2,
+                ),
+            ),
+            (
+                "lost",
+                AssemblyMateEndpoint::lost(
+                    planar.endpoint_a().occurrence_id(),
+                    planar.endpoint_a().reference().clone(),
+                ),
+            ),
+        ] {
+            if let Some(mut document) = clone_document() {
+                let unresolved = AssemblyMate::new(
+                    planar.id(),
+                    endpoint,
+                    planar.endpoint_b().clone(),
+                    planar.kind(),
+                );
+                if let Ok(proposal) = document.prepare_proposal(CommandBatch::new(vec![
+                    CanonicalCommand::RebindAssemblyMate(unresolved),
+                ])) && document.commit_verified_proposal(&proposal).is_ok()
+                    && solve_rigid_assembly(&document.current(), AssemblySolverPolicy::default())
+                        .is_err()
+                {
+                    paths.push(name);
+                }
+            }
+        }
+
+        if let Some(document) = clone_document() {
+            let mut unsupported_reference = planar.endpoint_a().reference().clone();
+            unsupported_reference.expected_type = "unsupported".to_owned();
+            let unsupported = AssemblyMate::new(
+                planar.id(),
+                AssemblyMateEndpoint::resolved(
+                    planar.endpoint_a().occurrence_id(),
+                    unsupported_reference,
+                ),
+                planar.endpoint_b().clone(),
+                planar.kind(),
+            );
+            if document
+                .prepare_proposal(CommandBatch::new(vec![
+                    CanonicalCommand::RebindAssemblyMate(unsupported),
+                ]))
+                .is_err()
+            {
+                paths.push("unsupported");
+            }
+        }
+
+        paths
     }
 }

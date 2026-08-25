@@ -545,6 +545,7 @@ const P6_SWEEP_CAPABILITY: &str = "P6_SWEEP_V1";
 const P6_LOFT_CAPABILITY: &str = "P6_LOFT_V1";
 const P3_CIRCLE_CAPABILITY: &str = "P3_CIRCLE_V1";
 const P3_ARC_CAPABILITY: &str = "P3_ARC_V1";
+const P3_POLYGON_CUT_CAPABILITY: &str = "P3_POLYGON_CUT_V1";
 const M5_NOTCH_CAPABILITY: &str = "M5_NOTCH_V1";
 const M6_REVOLVE_CAPABILITY: &str = "M6_REVOLVE_V1";
 const M6_SHELL_CAPABILITY: &str = "M6_SHELL_V1";
@@ -654,6 +655,7 @@ pub struct StepBooleanSpec {
     pub width_bits: u64,
     pub depth_bits: u64,
     pub circle: Option<StepCircleSpec>,
+    pub mixed_segments: Vec<StepProfileSegment>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -722,6 +724,41 @@ impl From<&ExactFeatureChainRequest> for StepFeatureExportSpec {
                     center_y_bits: circle.center_y_bits,
                     radius_bits: circle.radius_bits,
                 }),
+                mixed_segments: boolean
+                    .profile
+                    .as_ref()
+                    .filter(|profile| {
+                        profile.is_line_arc_d_profile()
+                            || profile.is_line_arc_capsule_profile()
+                            || profile.is_line_arc_rounded_rectangle_profile()
+                    })
+                    .map(|profile| {
+                        profile
+                            .segments
+                            .iter()
+                            .map(|segment| match segment {
+                                ExactProfileSegment::Line {
+                                    start_bits,
+                                    end_bits,
+                                } => StepProfileSegment::Line {
+                                    start_bits: *start_bits,
+                                    end_bits: *end_bits,
+                                },
+                                ExactProfileSegment::CircularArc {
+                                    start_bits,
+                                    end_bits,
+                                    center_bits,
+                                    clockwise,
+                                } => StepProfileSegment::Arc {
+                                    start_bits: *start_bits,
+                                    end_bits: *end_bits,
+                                    center_bits: *center_bits,
+                                    clockwise: *clockwise,
+                                },
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default(),
             }),
             shell: request.shell.as_ref().map(|shell| StepShellSpec {
                 thickness_bits: shell.thickness_bits,
@@ -851,6 +888,21 @@ impl ExactWorkerClient {
         } else {
             self.terminate_worker();
             Err(WorkerError::MissingCapability(P3_ARC_CAPABILITY.to_owned()))
+        }
+    }
+
+    fn verify_p3_polygon_cut_capability(
+        &mut self,
+        cancelled: &AtomicBool,
+    ) -> Result<(), WorkerError> {
+        let response = self.request_with_cancellation("CAPS P3_POLYGON_CUT_V1", cancelled)?;
+        if response == "CAPS P3_POLYGON_CUT_V1" {
+            Ok(())
+        } else {
+            self.terminate_worker();
+            Err(WorkerError::MissingCapability(
+                P3_POLYGON_CUT_CAPABILITY.to_owned(),
+            ))
         }
     }
 
@@ -1147,11 +1199,81 @@ impl ExactWorkerClient {
                     6,
                 )
             }
-        } else if let Some(circle) = request.boolean.as_ref().and_then(|boolean| boolean.circle) {
+        } else if let Some(boolean) = request
+            .boolean
+            .as_ref()
+            .filter(|boolean| boolean.circle.is_some())
+        {
             self.verify_p3_circle_capability(cancelled)?;
-            (
-                self.request_with_cancellation(
-                    &format!(
+            let circle = boolean.circle.expect("filtered circular boolean");
+            let (line, operation) = if boolean.operation == BooleanOperation::Union {
+                (
+                    format!(
+                        "EXTRUDE_CIRCULAR_UNION_P3_V1 {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {} {} {}",
+                        request.width_bits,
+                        request.depth_bits,
+                        request.height_bits,
+                        circle.center_x_bits,
+                        circle.center_y_bits,
+                        circle.radius_bits,
+                        request.document_id.0,
+                        request.producer_feature_id().0,
+                        request.canonical_input_digest
+                    ),
+                    0,
+                )
+            } else if boolean.operation == BooleanOperation::Intersect {
+                (
+                    format!(
+                        "EXTRUDE_CIRCULAR_INTERSECT_P3_V1 {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {} {} {}",
+                        request.width_bits,
+                        request.depth_bits,
+                        request.height_bits,
+                        circle.center_x_bits,
+                        circle.center_y_bits,
+                        circle.radius_bits,
+                        request.document_id.0,
+                        request.producer_feature_id().0,
+                        request.canonical_input_digest
+                    ),
+                    0,
+                )
+            } else if boolean.operation == BooleanOperation::Split {
+                (
+                    format!(
+                        "EXTRUDE_CIRCULAR_SPLIT_P3_V1 {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {} {} {}",
+                        request.width_bits,
+                        request.depth_bits,
+                        request.height_bits,
+                        circle.center_x_bits,
+                        circle.center_y_bits,
+                        circle.radius_bits,
+                        request.document_id.0,
+                        request.producer_feature_id().0,
+                        request.canonical_input_digest
+                    ),
+                    0,
+                )
+            } else if let Some(pocket_depth_bits) = request.pocket_depth_bits {
+                (
+                    format!(
+                        "EXTRUDE_CIRCULAR_POCKET_P3_V1 {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {} {} {}",
+                        request.width_bits,
+                        request.depth_bits,
+                        request.height_bits,
+                        circle.center_x_bits,
+                        circle.center_y_bits,
+                        circle.radius_bits,
+                        pocket_depth_bits,
+                        request.document_id.0,
+                        request.producer_feature_id().0,
+                        request.canonical_input_digest
+                    ),
+                    4,
+                )
+            } else {
+                (
+                    format!(
                         "EXTRUDE_CIRCULAR_CUT_P3_V1 {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {} {} {}",
                         request.width_bits,
                         request.depth_bits,
@@ -1163,10 +1285,120 @@ impl ExactWorkerClient {
                         request.producer_feature_id().0,
                         request.canonical_input_digest
                     ),
-                    cancelled,
-                )?,
-                4,
-            )
+                    4,
+                )
+            };
+            (self.request_with_cancellation(&line, cancelled)?, operation)
+        } else if let Some(boolean) = request
+            .boolean
+            .as_ref()
+            .filter(|boolean| boolean.profile.is_some())
+        {
+            let profile = boolean.profile.as_ref().expect("filtered polygon profile");
+            self.verify_p3_polygon_cut_capability(cancelled)?;
+            let (mut line, operation) = if boolean.operation == BooleanOperation::Union {
+                (
+                    format!(
+                        "EXTRUDE_POLYGON_UNION_P3_V1 {} {:016x} {:016x} {:016x} {} {} {}",
+                        profile.segments.len(),
+                        request.width_bits,
+                        request.depth_bits,
+                        request.height_bits,
+                        request.document_id.0,
+                        request.producer_feature_id().0,
+                        request.canonical_input_digest
+                    ),
+                    0,
+                )
+            } else if boolean.operation == BooleanOperation::Intersect {
+                (
+                    format!(
+                        "EXTRUDE_POLYGON_INTERSECT_P3_V1 {} {:016x} {:016x} {:016x} {} {} {}",
+                        profile.segments.len(),
+                        request.width_bits,
+                        request.depth_bits,
+                        request.height_bits,
+                        request.document_id.0,
+                        request.producer_feature_id().0,
+                        request.canonical_input_digest
+                    ),
+                    0,
+                )
+            } else if boolean.operation == BooleanOperation::Split {
+                (
+                    format!(
+                        "EXTRUDE_POLYGON_SPLIT_P3_V1 {} {:016x} {:016x} {:016x} {} {} {}",
+                        profile.segments.len(),
+                        request.width_bits,
+                        request.depth_bits,
+                        request.height_bits,
+                        request.document_id.0,
+                        request.producer_feature_id().0,
+                        request.canonical_input_digest
+                    ),
+                    0,
+                )
+            } else if let Some(pocket_depth_bits) = request.pocket_depth_bits {
+                (
+                    format!(
+                        "EXTRUDE_POLYGON_POCKET_P3_V1 {} {:016x} {:016x} {:016x} {:016x} {} {} {}",
+                        profile.segments.len(),
+                        request.width_bits,
+                        request.depth_bits,
+                        request.height_bits,
+                        pocket_depth_bits,
+                        request.document_id.0,
+                        request.producer_feature_id().0,
+                        request.canonical_input_digest
+                    ),
+                    8,
+                )
+            } else {
+                (
+                    format!(
+                        "EXTRUDE_POLYGON_CUT_P3_V1 {} {:016x} {:016x} {:016x} {} {} {}",
+                        profile.segments.len(),
+                        request.width_bits,
+                        request.depth_bits,
+                        request.height_bits,
+                        request.document_id.0,
+                        request.producer_feature_id().0,
+                        request.canonical_input_digest
+                    ),
+                    7,
+                )
+            };
+            for segment in &profile.segments {
+                match segment {
+                    ExactProfileSegment::Line {
+                        start_bits,
+                        end_bits,
+                    } => write!(
+                        line,
+                        " L,{:016x},{:016x},{:016x},{:016x}",
+                        start_bits[0], start_bits[1], end_bits[0], end_bits[1]
+                    )
+                    .expect("writing to String cannot fail"),
+                    ExactProfileSegment::CircularArc {
+                        start_bits,
+                        end_bits,
+                        center_bits,
+                        clockwise,
+                    } => write!(
+                        line,
+                        " A,{:016x},{:016x},{:016x},{:016x},{:016x},{:016x},{}",
+                        start_bits[0],
+                        start_bits[1],
+                        end_bits[0],
+                        end_bits[1],
+                        center_bits[0],
+                        center_bits[1],
+                        u8::from(*clockwise)
+                    )
+                    .expect("writing to String cannot fail"),
+                }
+            }
+            (self.request_with_cancellation(&line, cancelled)?, operation)
         } else if let Some(mixed) = &request.mixed_profile {
             self.verify_p3_arc_capability(cancelled)?;
             let mut line = format!(
@@ -1371,6 +1603,8 @@ impl ExactWorkerClient {
             1 => parse_m3_cut_exact_result(&response),
             2 => parse_m3_pocket_exact_result(&response),
             4 => parse_p3_circular_cut_result(&response),
+            7 => parse_p3_polygon_cut_result(&response, false),
+            8 => parse_p3_polygon_cut_result(&response, true),
             _ => parse_m3_exact_result(&response),
         };
         match parsed {
@@ -3019,9 +3253,48 @@ fn validate_m3_worker_result(
     request: &ExactFeatureChainRequest,
     result: &WorkerExactResult,
 ) -> Result<(), ExactProductError> {
-    let side_role = if request.circle.is_some() {
+    let dimensions = request.dimensions_mm();
+    let side_role = if request.circle.is_some()
+        || request.boolean.as_ref().is_some_and(|boolean| {
+            matches!(
+                boolean.operation,
+                BooleanOperation::Union | BooleanOperation::Intersect
+            ) && boolean.circle.is_some()
+        }) {
         ExactFaceRole::CircleSide
-    } else if request.mixed_profile.is_some() {
+    } else if request.boolean.as_ref().is_some_and(|boolean| {
+        boolean.profile.as_ref().is_some_and(|profile| {
+            matches!(
+                boolean.operation,
+                BooleanOperation::Union | BooleanOperation::Intersect
+            ) && (profile.has_only_line_segments()
+                || boolean.operation == BooleanOperation::Intersect
+                    && profile
+                        .rounded_rectangle_side_overlap_area(dimensions[0], dimensions[1])
+                        .is_some())
+                || boolean.operation == BooleanOperation::Split
+                    && profile
+                        .rounded_rectangle_side_overlap_area(dimensions[0], dimensions[1])
+                        .is_some()
+        })
+    }) || request
+        .mixed_profile
+        .as_ref()
+        .is_some_and(|profile| profile.has_only_line_segments())
+    {
+        ExactFaceRole::LinearSide
+    } else if request.mixed_profile.is_some()
+        || request.boolean.as_ref().is_some_and(|boolean| {
+            matches!(
+                boolean.operation,
+                BooleanOperation::Union | BooleanOperation::Intersect | BooleanOperation::Split
+            ) && boolean.profile.as_ref().is_some_and(|profile| {
+                profile.is_line_arc_d_profile()
+                    || profile.is_line_arc_capsule_profile()
+                    || profile.is_line_arc_rounded_rectangle_profile()
+            })
+        })
+    {
         ExactFaceRole::ArcSide
     } else {
         ExactFaceRole::East
@@ -3039,11 +3312,31 @@ fn validate_m3_worker_result(
             (side_role, &result.east),
         ]
     };
-    if request
-        .boolean
-        .as_ref()
-        .is_some_and(|boolean| boolean.circle.is_some())
-    {
+    if request.boolean.as_ref().is_some_and(|boolean| {
+        boolean.operation == BooleanOperation::Cut && boolean.profile.is_some()
+    }) {
+        match (
+            request.pocket_depth_bits.is_some(),
+            &result.cut_west,
+            &result.cut_east,
+            &result.cut_south,
+            &result.cut_north,
+            &result.pocket_floor,
+        ) {
+            (false, Some(wall), None, None, None, None) => {
+                role_evidence.push((ExactFaceRole::CutLinear, wall));
+            }
+            (true, Some(wall), None, None, None, Some(floor)) => {
+                role_evidence.extend([
+                    (ExactFaceRole::CutLinear, wall),
+                    (ExactFaceRole::PocketFloor, floor),
+                ]);
+            }
+            _ => return Err(ExactProductError::InvalidWorkerEvidence),
+        }
+    } else if request.boolean.as_ref().is_some_and(|boolean| {
+        boolean.operation == BooleanOperation::Cut && boolean.circle.is_some()
+    }) {
         let (Some(circle), None, None, None, None) = (
             &result.cut_west,
             &result.cut_east,
@@ -3089,7 +3382,6 @@ fn validate_m3_worker_result(
         }
     }
 
-    let dimensions = request.dimensions_mm();
     let [expected_min, expected_max] = request.expected_bounds_mm();
     let expected_bounds = [
         expected_min[0],
@@ -3122,15 +3414,151 @@ fn validate_m3_worker_result(
         )
     } else if let Some(circle) = circular_profile {
         let radius = f64::from_bits(circle.radius_bits);
-        let cylinder_volume = std::f64::consts::PI * radius * radius * dimensions[2];
+        let cylinder_height = request
+            .pocket_depth_bits
+            .map_or(dimensions[2], f64::from_bits);
+        let cylinder_volume = std::f64::consts::PI * radius * radius * cylinder_height;
         (
-            if request.circle.is_some() {
+            if request.boolean.as_ref().is_some_and(|boolean| {
+                boolean.operation == BooleanOperation::Split && boolean.circle.is_some()
+            }) {
+                dimensions.into_iter().product::<f64>()
+            } else if request.circle.is_some()
+                || request.boolean.as_ref().is_some_and(|boolean| {
+                    matches!(
+                        boolean.operation,
+                        BooleanOperation::Union | BooleanOperation::Intersect
+                    ) && boolean.circle.is_some()
+                })
+            {
                 cylinder_volume
             } else {
                 dimensions.into_iter().product::<f64>() - cylinder_volume
             },
             result.topology_counts,
         )
+    } else if let Some(boolean) = request
+        .boolean
+        .as_ref()
+        .filter(|boolean| boolean.profile.is_some())
+    {
+        let profile = boolean.profile.as_ref().expect("filtered polygon profile");
+        let segment_count = profile.segments.len() as u32;
+        if boolean.operation == BooleanOperation::Split {
+            (
+                dimensions.into_iter().product::<f64>(),
+                if profile
+                    .rounded_rectangle_corner_overlap_area(dimensions[0], dimensions[1])
+                    .is_some()
+                {
+                    [16, 26, 13, 2, 2]
+                } else if profile
+                    .rounded_rectangle_arc_clipped_corner_overlap_area(dimensions[0], dimensions[1])
+                    .is_some()
+                {
+                    [14, 23, 12, 2, 2]
+                } else if profile
+                    .rounded_rectangle_two_axis_arc_clipped_corner_overlap_area(
+                        dimensions[0],
+                        dimensions[1],
+                    )
+                    .is_some()
+                {
+                    [12, 20, 11, 2, 2]
+                } else {
+                    result.topology_counts
+                },
+            )
+        } else if matches!(
+            boolean.operation,
+            BooleanOperation::Union | BooleanOperation::Intersect
+        ) {
+            if boolean.operation == BooleanOperation::Union
+                && let Some((overlap_area, topology)) = profile
+                    .rounded_rectangle_side_overlap_area(dimensions[0], dimensions[1])
+                    .map(|area| (area, [20, 30, 12, 1, 1]))
+                    .or_else(|| {
+                        profile
+                            .rounded_rectangle_corner_overlap_area(dimensions[0], dimensions[1])
+                            .map(|area| (area, [22, 33, 13, 1, 1]))
+                    })
+                    .or_else(|| {
+                        profile
+                            .rounded_rectangle_arc_clipped_corner_overlap_area(
+                                dimensions[0],
+                                dimensions[1],
+                            )
+                            .map(|area| (area, [24, 36, 14, 1, 1]))
+                    })
+                    .or_else(|| {
+                        profile
+                            .rounded_rectangle_two_axis_arc_clipped_corner_overlap_area(
+                                dimensions[0],
+                                dimensions[1],
+                            )
+                            .map(|area| (area, [26, 39, 15, 1, 1]))
+                    })
+            {
+                (
+                    dimensions.into_iter().product::<f64>()
+                        + (f64::from_bits(profile.area_bits) - overlap_area) * dimensions[2],
+                    topology,
+                )
+            } else if boolean.operation == BooleanOperation::Intersect
+                && let Some((overlap_area, topology)) = profile
+                    .rounded_rectangle_side_overlap_area(dimensions[0], dimensions[1])
+                    .map(|area| (area, [8, 12, 6, 1, 1]))
+                    .or_else(|| {
+                        profile
+                            .rounded_rectangle_corner_overlap_area(dimensions[0], dimensions[1])
+                            .map(|area| (area, [10, 15, 7, 1, 1]))
+                    })
+                    .or_else(|| {
+                        profile
+                            .rounded_rectangle_arc_clipped_corner_overlap_area(
+                                dimensions[0],
+                                dimensions[1],
+                            )
+                            .map(|area| (area, [8, 12, 6, 1, 1]))
+                    })
+                    .or_else(|| {
+                        profile
+                            .rounded_rectangle_two_axis_arc_clipped_corner_overlap_area(
+                                dimensions[0],
+                                dimensions[1],
+                            )
+                            .map(|area| (area, [6, 9, 5, 1, 1]))
+                    })
+            {
+                (overlap_area * dimensions[2], topology)
+            } else {
+                (
+                    f64::from_bits(profile.area_bits) * dimensions[2],
+                    [
+                        segment_count * 2,
+                        segment_count * 3,
+                        segment_count + 2,
+                        1,
+                        1,
+                    ],
+                )
+            }
+        } else {
+            let cut_height = request
+                .pocket_depth_bits
+                .map_or(dimensions[2], f64::from_bits);
+            (
+                dimensions.into_iter().product::<f64>()
+                    - f64::from_bits(profile.area_bits) * cut_height,
+                [
+                    (segment_count + 4) * 2,
+                    (segment_count + 4) * 3,
+                    segment_count + 6 + u32::from(request.pocket_depth_bits.is_some()),
+                    1,
+                    1,
+                ],
+            )
+        }
     } else if let Some(mixed) = &request.mixed_profile {
         let segment_count = mixed.segments.len() as u32;
         (
@@ -3180,7 +3608,28 @@ fn validate_m3_worker_result(
             None => (dimensions.into_iter().product::<f64>(), [8, 12, 6, 1, 1]),
         }
     };
-    let volume_tolerance = 1.0e-6_f64.max(expected_volume.abs() * 1.0e-10);
+    let volume_tolerance = if request.boolean.as_ref().is_some_and(|boolean| {
+        boolean.profile.as_ref().is_some_and(|profile| {
+            profile.is_line_arc_capsule_profile() || profile.is_line_arc_rounded_rectangle_profile()
+        })
+    }) {
+        2.0e-3
+    } else if request.boolean.as_ref().is_some_and(|boolean| {
+        boolean
+            .profile
+            .as_ref()
+            .is_some_and(|profile| profile.is_line_arc_d_profile())
+    }) {
+        1.0e-3
+    } else if request
+        .boolean
+        .as_ref()
+        .is_some_and(|boolean| boolean.profile.is_some())
+    {
+        1.0e-6_f64.max(expected_volume.abs() * 1.0e-9)
+    } else {
+        1.0e-6_f64.max(expected_volume.abs() * 1.0e-10)
+    };
     let producer_feature_id = request.producer_feature_id();
     let has_canonical_lineage = |role: ExactFaceRole, evidence: &WorkerFaceEvidence| {
         !evidence.geometric_fingerprint.is_empty()
@@ -3203,12 +3652,54 @@ fn validate_m3_worker_result(
                         .iter()
                         .all(|(_, prior)| prior.ordinal != evidence.ordinal)
             });
+    let circular_split = split
+        && request
+            .boolean
+            .as_ref()
+            .is_some_and(|boolean| boolean.circle.is_some());
+    let corner_overlap_split = split
+        && request.boolean.as_ref().is_some_and(|boolean| {
+            boolean.profile.as_ref().is_some_and(|profile| {
+                profile
+                    .rounded_rectangle_corner_overlap_area(dimensions[0], dimensions[1])
+                    .is_some()
+            })
+        });
+    let arc_clipped_corner_overlap_split = split
+        && request.boolean.as_ref().is_some_and(|boolean| {
+            boolean.profile.as_ref().is_some_and(|profile| {
+                profile
+                    .rounded_rectangle_arc_clipped_corner_overlap_area(dimensions[0], dimensions[1])
+                    .is_some()
+            })
+        });
+    let two_axis_arc_clipped_corner_overlap_split = split
+        && request.boolean.as_ref().is_some_and(|boolean| {
+            boolean.profile.as_ref().is_some_and(|profile| {
+                profile
+                    .rounded_rectangle_two_axis_arc_clipped_corner_overlap_area(
+                        dimensions[0],
+                        dimensions[1],
+                    )
+                    .is_some()
+            })
+        });
     let split_topology_valid = !split
-        || (result.topology_counts[0] >= 12
-            && result.topology_counts[1] >= 18
-            && result.topology_counts[2] >= 10
-            && result.topology_counts[3] >= 2
-            && result.topology_counts[3] == result.topology_counts[4]);
+        || if circular_split {
+            result.topology_counts == [10, 15, 9, 2, 2]
+        } else if corner_overlap_split {
+            result.topology_counts == [16, 26, 13, 2, 2]
+        } else if arc_clipped_corner_overlap_split {
+            result.topology_counts == [14, 23, 12, 2, 2]
+        } else if two_axis_arc_clipped_corner_overlap_split {
+            result.topology_counts == [12, 20, 11, 2, 2]
+        } else {
+            result.topology_counts[0] >= 12
+                && result.topology_counts[1] >= 18
+                && result.topology_counts[2] >= 10
+                && result.topology_counts[3] >= 2
+                && result.topology_counts[3] == result.topology_counts[4]
+        };
 
     if result.request_digest != request.canonical_input_digest
         || !is_sha256_digest(&result.request_digest)
@@ -3235,6 +3726,7 @@ fn validate_m3_worker_result(
                 || result.topology_counts[3] != 1
                 || result.topology_counts[4] != 1)
         || circular_profile.is_some()
+            && !split
             && (result.topology_counts[3] != 1
                 || result.topology_counts[4] != 1
                 || result.topology_counts[2] < role_evidence.len() as u32)
@@ -3281,13 +3773,25 @@ fn build_m3_render_package(
                 evidence(ExactFaceRole::BoxShellOuterEast, &result.east),
             ],
         )
-    } else if request
-        .boolean
-        .as_ref()
-        .is_some_and(|boolean| boolean.circle.is_some())
-    {
-        let Some(circle_wall) = &result.cut_west else {
-            return Err(ExactProductError::InvalidWorkerEvidence);
+    } else if request.boolean.as_ref().is_some_and(|boolean| {
+        matches!(
+            boolean.operation,
+            BooleanOperation::Union | BooleanOperation::Intersect
+        ) && boolean.profile.is_some()
+    }) {
+        let dimensions = request.dimensions_mm();
+        let side_role = if request.boolean.as_ref().is_some_and(|boolean| {
+            boolean.profile.as_ref().is_some_and(|profile| {
+                profile.has_only_line_segments()
+                    || boolean.operation == BooleanOperation::Intersect
+                        && profile
+                            .rounded_rectangle_side_overlap_area(dimensions[0], dimensions[1])
+                            .is_some()
+            })
+        }) {
+            ExactFaceRole::LinearSide
+        } else {
+            ExactFaceRole::ArcSide
         };
         build_box_render_package(
             request,
@@ -3299,10 +3803,145 @@ fn build_m3_render_package(
             [
                 evidence(ExactFaceRole::Top, &result.top),
                 evidence(ExactFaceRole::Bottom, &result.bottom),
-                evidence(ExactFaceRole::East, &result.east),
-                evidence(ExactFaceRole::CutCircle, circle_wall),
+                evidence(side_role, &result.east),
             ],
         )
+    } else if request.boolean.as_ref().is_some_and(|boolean| {
+        boolean.operation == BooleanOperation::Split && boolean.profile.is_some()
+    }) {
+        let dimensions = request.dimensions_mm();
+        let side_role = if request
+            .boolean
+            .as_ref()
+            .and_then(|boolean| boolean.profile.as_ref())
+            .is_some_and(|profile| {
+                profile
+                    .rounded_rectangle_side_overlap_area(dimensions[0], dimensions[1])
+                    .is_some()
+            }) {
+            ExactFaceRole::LinearSide
+        } else if request
+            .boolean
+            .as_ref()
+            .and_then(|boolean| boolean.profile.as_ref())
+            .is_some_and(|profile| {
+                profile.is_line_arc_d_profile()
+                    || profile.is_line_arc_capsule_profile()
+                    || profile.is_line_arc_rounded_rectangle_profile()
+            })
+        {
+            ExactFaceRole::ArcSide
+        } else {
+            ExactFaceRole::East
+        };
+        build_box_render_package(
+            request,
+            result.exact_input_digest.clone(),
+            result.result_fingerprint.clone(),
+            result.backend.clone(),
+            result.tolerance.clone(),
+            bounds,
+            [
+                evidence(ExactFaceRole::Top, &result.top),
+                evidence(ExactFaceRole::Bottom, &result.bottom),
+                evidence(side_role, &result.east),
+            ],
+        )
+    } else if request
+        .boolean
+        .as_ref()
+        .is_some_and(|boolean| boolean.profile.is_some())
+    {
+        let Some(wall) = &result.cut_west else {
+            return Err(ExactProductError::InvalidWorkerEvidence);
+        };
+        if let Some(floor) = &result.pocket_floor {
+            build_box_render_package(
+                request,
+                result.exact_input_digest.clone(),
+                result.result_fingerprint.clone(),
+                result.backend.clone(),
+                result.tolerance.clone(),
+                bounds,
+                [
+                    evidence(ExactFaceRole::Top, &result.top),
+                    evidence(ExactFaceRole::Bottom, &result.bottom),
+                    evidence(ExactFaceRole::East, &result.east),
+                    evidence(ExactFaceRole::CutLinear, wall),
+                    evidence(ExactFaceRole::PocketFloor, floor),
+                ],
+            )
+        } else {
+            build_box_render_package(
+                request,
+                result.exact_input_digest.clone(),
+                result.result_fingerprint.clone(),
+                result.backend.clone(),
+                result.tolerance.clone(),
+                bounds,
+                [
+                    evidence(ExactFaceRole::Top, &result.top),
+                    evidence(ExactFaceRole::Bottom, &result.bottom),
+                    evidence(ExactFaceRole::East, &result.east),
+                    evidence(ExactFaceRole::CutLinear, wall),
+                ],
+            )
+        }
+    } else if let Some(boolean) = request
+        .boolean
+        .as_ref()
+        .filter(|boolean| boolean.circle.is_some())
+    {
+        if boolean.operation == BooleanOperation::Split {
+            build_box_render_package(
+                request,
+                result.exact_input_digest.clone(),
+                result.result_fingerprint.clone(),
+                result.backend.clone(),
+                result.tolerance.clone(),
+                bounds,
+                [
+                    evidence(ExactFaceRole::Top, &result.top),
+                    evidence(ExactFaceRole::Bottom, &result.bottom),
+                    evidence(ExactFaceRole::East, &result.east),
+                ],
+            )
+        } else if matches!(
+            boolean.operation,
+            BooleanOperation::Union | BooleanOperation::Intersect
+        ) {
+            build_box_render_package(
+                request,
+                result.exact_input_digest.clone(),
+                result.result_fingerprint.clone(),
+                result.backend.clone(),
+                result.tolerance.clone(),
+                bounds,
+                [
+                    evidence(ExactFaceRole::Top, &result.top),
+                    evidence(ExactFaceRole::Bottom, &result.bottom),
+                    evidence(ExactFaceRole::CircleSide, &result.east),
+                ],
+            )
+        } else {
+            let Some(circle_wall) = &result.cut_west else {
+                return Err(ExactProductError::InvalidWorkerEvidence);
+            };
+            build_box_render_package(
+                request,
+                result.exact_input_digest.clone(),
+                result.result_fingerprint.clone(),
+                result.backend.clone(),
+                result.tolerance.clone(),
+                bounds,
+                [
+                    evidence(ExactFaceRole::Top, &result.top),
+                    evidence(ExactFaceRole::Bottom, &result.bottom),
+                    evidence(ExactFaceRole::East, &result.east),
+                    evidence(ExactFaceRole::CutCircle, circle_wall),
+                ],
+            )
+        }
     } else if request.circle.is_some() {
         build_box_render_package(
             request,
@@ -3317,7 +3956,12 @@ fn build_m3_render_package(
                 evidence(ExactFaceRole::CircleSide, &result.east),
             ],
         )
-    } else if request.mixed_profile.is_some() {
+    } else if let Some(profile) = &request.mixed_profile {
+        let side_role = if profile.has_only_line_segments() {
+            ExactFaceRole::LinearSide
+        } else {
+            ExactFaceRole::ArcSide
+        };
         build_box_render_package(
             request,
             result.exact_input_digest.clone(),
@@ -3328,7 +3972,7 @@ fn build_m3_render_package(
             [
                 evidence(ExactFaceRole::Top, &result.top),
                 evidence(ExactFaceRole::Bottom, &result.bottom),
-                evidence(ExactFaceRole::ArcSide, &result.east),
+                evidence(side_role, &result.east),
             ],
         )
     } else if request
@@ -4108,6 +4752,87 @@ fn parse_p3_circular_cut_result(response: &str) -> Result<WorkerExactResult, Wor
         cut_south: None,
         cut_north: None,
         pocket_floor: None,
+    })
+}
+
+fn parse_p3_polygon_cut_result(
+    response: &str,
+    pocket: bool,
+) -> Result<WorkerExactResult, WorkerError> {
+    let fields: Vec<_> = response.split_whitespace().collect();
+    if fields.first() == Some(&"ERR") {
+        return Err(parse_error_response(response, &fields));
+    }
+    let mut digest_indexes = vec![2, 16, 20, 21, 23, 24, 26, 27, 29, 30];
+    if pocket {
+        digest_indexes.extend([32, 33]);
+    }
+    if fields.len() != if pocket { 34 } else { 31 }
+        || fields[0]
+            != if pocket {
+                "OK_P3_POLYGON_POCKET_V1"
+            } else {
+                "OK_P3_POLYGON_CUT_V1"
+            }
+        || fields[17].is_empty()
+        || fields[18].is_empty()
+        || !is_sha256_digest(fields[15])
+        || digest_indexes
+            .into_iter()
+            .any(|index| !is_fnv1a64_digest(fields[index]))
+    {
+        return Err(WorkerError::Protocol(response.to_owned()));
+    }
+    let parse_u64 = |index: usize| {
+        fields[index]
+            .parse::<u64>()
+            .map_err(|_| WorkerError::Protocol(response.to_owned()))
+    };
+    let parse_f64 = |index: usize| {
+        u64::from_str_radix(fields[index], 16)
+            .map(f64::from_bits)
+            .map_err(|_| WorkerError::Protocol(response.to_owned()))
+    };
+    let parse_u32 = |index: usize| {
+        fields[index]
+            .parse::<u32>()
+            .map_err(|_| WorkerError::Protocol(response.to_owned()))
+    };
+    let evidence = |index: usize| {
+        Ok(WorkerFaceEvidence {
+            ordinal: parse_u32(index)?,
+            geometric_fingerprint: fields[index + 1].to_owned(),
+            lineage_digest: fields[index + 2].to_owned(),
+        })
+    };
+    Ok(WorkerExactResult {
+        backend_duration: Duration::from_nanos(parse_u64(1)?),
+        result_fingerprint: fields[2].to_owned(),
+        volume_mm3: parse_f64(3)?,
+        bounds_mm: [4, 5, 6, 7, 8, 9]
+            .map(parse_f64)
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()?
+            .try_into()
+            .map_err(|_| WorkerError::Protocol(response.to_owned()))?,
+        topology_counts: [10, 11, 12, 13, 14]
+            .map(parse_u32)
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()?
+            .try_into()
+            .map_err(|_| WorkerError::Protocol(response.to_owned()))?,
+        request_digest: fields[15].to_owned(),
+        exact_input_digest: fields[16].to_owned(),
+        backend: fields[17].to_owned(),
+        tolerance: fields[18].to_owned(),
+        top: evidence(19)?,
+        bottom: evidence(22)?,
+        east: evidence(25)?,
+        cut_west: Some(evidence(28)?),
+        cut_east: None,
+        cut_south: None,
+        cut_north: None,
+        pocket_floor: pocket.then(|| evidence(31)).transpose()?,
     })
 }
 

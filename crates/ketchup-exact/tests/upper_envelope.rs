@@ -1,12 +1,12 @@
 use ketchup_exact::{
     BottleEdgeFinish, BoxSpec, CircleExtrudeSpec, CutMode, CylinderToolSpec, ExactBackend,
     ExactOpOutput, GeometryErrorCode, PlanarProfileSegment, Point3, RectangleExtrudeSpec,
-    RectangleOffsetSpec, RectangleSweepSpec, Size3, SplineLoftSection, SplineLoftSpec,
-    capture_box_shell_references, capture_circle_extrusion_references,
+    RectangleOffsetSpec, RectangleSweepSpec, ReferenceResolution, Size3, SplineLoftSection,
+    SplineLoftSpec, capture_box_shell_references, capture_circle_extrusion_references,
     capture_circular_through_cut_references, capture_general_revolve_references,
     capture_mixed_profile_extrusion_references, capture_planar_offset_reference,
     capture_rectangular_split_references, capture_rectangular_sweep_references,
-    capture_spline_loft_references,
+    capture_spline_loft_references, resolve_subshape_reference,
 };
 
 const COORDINATE_LIMIT_MM: f64 = 1_000_000.0;
@@ -548,6 +548,134 @@ fn exact_mixed_line_arc_profile_uses_analytic_arc_and_rejects_open_wire() {
 }
 
 #[test]
+fn exact_line_arc_d_profile_cuts_and_intersects_a_rectangular_body_and_rejects_broader_curves() {
+    let backend = ExactBackend::new();
+    let base = backend
+        .extrude_rectangle(RectangleExtrudeSpec {
+            width_mm: 100.0,
+            depth_mm: 60.0,
+            height_mm: 18.0,
+        })
+        .unwrap();
+    let d_profile = [
+        PlanarProfileSegment::CircularArc {
+            start_mm: [20.0, 20.0],
+            end_mm: [40.0, 20.0],
+            center_mm: [30.0, 20.0],
+            clockwise: true,
+        },
+        PlanarProfileSegment::Line {
+            start_mm: [40.0, 20.0],
+            end_mm: [20.0, 20.0],
+        },
+    ];
+    let cut = backend
+        .cut_mixed_profile(&base.body, &d_profile, -1.0, 20.0)
+        .unwrap();
+    assert!(
+        (cut.body.topology.volume_mm3 - (108_000.0 - 900.0 * std::f64::consts::PI)).abs() < 1.0e-3
+    );
+    assert_eq!(cut.body.topology.solid_count, 1);
+    assert!(cut.topology_history.iter().any(|entry| {
+        entry.semantic_role.as_deref() == Some("through_cut.wall.line.0")
+            && entry.source_element_id == "cut_profile.edge.line.0"
+            && entry.output_face_ordinal.is_some()
+    }));
+
+    let pocket = backend
+        .cut_mixed_profile(&base.body, &d_profile, 10.0, 8.0)
+        .unwrap();
+    assert!(
+        (pocket.body.topology.volume_mm3 - (108_000.0 - 400.0 * std::f64::consts::PI)).abs()
+            < 1.0e-3
+    );
+    assert_eq!(pocket.body.topology.solid_count, 1);
+    assert_eq!(pocket.body.topology.face_count, 9);
+
+    let intersection = backend
+        .common_mixed_profile(&base.body, &d_profile, 0.0, 18.0)
+        .unwrap();
+    assert!((intersection.body.topology.volume_mm3 - 900.0 * std::f64::consts::PI).abs() < 1.0e-3);
+    assert_eq!(intersection.body.topology.solid_count, 1);
+    assert_eq!(intersection.body.topology.face_count, 4);
+
+    let split = backend
+        .split_mixed_profile(&base.body, &d_profile, 0.0, 18.0)
+        .unwrap();
+    assert_close(split.body.topology.volume_mm3, 108_000.0);
+    assert_eq!(split.body.topology.solid_count, 2);
+    assert_eq!(split.body.topology.shell_count, 2);
+    assert!(
+        split
+            .body
+            .topology
+            .faces
+            .iter()
+            .any(|face| face.surface_kind == "other")
+    );
+
+    let containing_d_profile = [
+        PlanarProfileSegment::CircularArc {
+            start_mm: [-20.0, -100.0],
+            end_mm: [-20.0, 160.0],
+            center_mm: [-20.0, 30.0],
+            clockwise: false,
+        },
+        PlanarProfileSegment::Line {
+            start_mm: [-20.0, 160.0],
+            end_mm: [-20.0, -100.0],
+        },
+    ];
+    let union = backend
+        .fuse_mixed_profile(&base.body, &containing_d_profile, 0.0, 18.0)
+        .unwrap();
+    assert!(
+        (union.body.topology.volume_mm3 - 0.5 * std::f64::consts::PI * 130.0 * 130.0 * 18.0).abs()
+            < 1.0e-3
+    );
+    assert_eq!(union.body.topology.solid_count, 1);
+    assert_eq!(union.body.topology.face_count, 4);
+
+    let broader = [
+        d_profile[0],
+        PlanarProfileSegment::CircularArc {
+            start_mm: [40.0, 20.0],
+            end_mm: [20.0, 20.0],
+            center_mm: [30.0, 20.0],
+            clockwise: true,
+        },
+    ];
+    assert_eq!(
+        backend
+            .cut_mixed_profile(&base.body, &broader, -1.0, 20.0)
+            .unwrap_err()
+            .code,
+        GeometryErrorCode::InvalidProfile
+    );
+    assert_eq!(
+        backend
+            .common_mixed_profile(&base.body, &broader, 0.0, 18.0)
+            .unwrap_err()
+            .code,
+        GeometryErrorCode::InvalidProfile
+    );
+    assert_eq!(
+        backend
+            .fuse_mixed_profile(&base.body, &broader, 0.0, 18.0)
+            .unwrap_err()
+            .code,
+        GeometryErrorCode::InvalidProfile
+    );
+    assert_eq!(
+        backend
+            .split_mixed_profile(&base.body, &broader, 0.0, 18.0)
+            .unwrap_err()
+            .code,
+        GeometryErrorCode::InvalidProfile
+    );
+}
+
+#[test]
 fn box_shell_fillet_and_chamfer_are_exact_deterministic_and_keep_stable_faces() {
     let backend = ExactBackend::new();
     let spec = RectangleExtrudeSpec {
@@ -731,4 +859,92 @@ fn exact_circular_through_cut_has_stable_wall_and_rejects_invalid_radius() {
         })
         .unwrap_err();
     assert_eq!(error.code, GeometryErrorCode::InvalidParameter);
+}
+
+#[test]
+fn exact_containing_cylinder_union_reduces_to_one_valid_cylinder() {
+    let backend = ExactBackend::new();
+    let base = backend
+        .extrude_rectangle(RectangleExtrudeSpec {
+            width_mm: 100.0,
+            depth_mm: 60.0,
+            height_mm: 20.0,
+        })
+        .unwrap();
+    let output = backend
+        .fuse_cylinder(
+            &base.body,
+            CylinderToolSpec {
+                center_mm: [50.0, 30.0],
+                origin_z_mm: 0.0,
+                radius_mm: 70.0,
+                height_mm: 20.0,
+            },
+        )
+        .unwrap();
+
+    assert_valid(&output);
+    assert_close(
+        output.body.topology.volume_mm3,
+        std::f64::consts::PI * 70.0 * 70.0 * 20.0,
+    );
+    assert_eq!(output.body.topology.solid_count, 1);
+    assert_eq!(output.body.topology.shell_count, 1);
+    assert_eq!(output.body.topology.face_count, 3);
+}
+
+#[test]
+fn exact_contained_cylinder_split_preserves_volume_and_creates_two_solids() {
+    let backend = ExactBackend::new();
+    let base = backend
+        .extrude_rectangle(RectangleExtrudeSpec {
+            width_mm: 100.0,
+            depth_mm: 60.0,
+            height_mm: 20.0,
+        })
+        .unwrap();
+    let mut split = backend
+        .split_cylinder(
+            &base.body,
+            CylinderToolSpec {
+                center_mm: [40.0, 30.0],
+                origin_z_mm: 0.0,
+                radius_mm: 8.0,
+                height_mm: 20.0,
+            },
+        )
+        .unwrap();
+
+    assert!(split.tolerance_report.shape_valid);
+    assert_close(split.body.topology.volume_mm3, 120_000.0);
+    assert_eq!(split.body.topology.solid_count, 2);
+    assert_eq!(split.body.topology.shell_count, 2);
+    assert_eq!(
+        (
+            split.body.topology.vertex_count,
+            split.body.topology.edge_count,
+            split.body.topology.face_count,
+            split.body.topology.shell_count,
+            split.body.topology.solid_count
+        ),
+        (10, 15, 9, 2, 2)
+    );
+    let references =
+        capture_rectangular_split_references(&mut split, "circle-split-doc", "circle-split")
+            .unwrap();
+    assert_eq!(references.len(), 3);
+    for reference in references {
+        let resolution = resolve_subshape_reference(&reference, &split);
+        assert!(
+            matches!(
+                resolution,
+                ReferenceResolution::Resolved {
+                    migrated_backend: false,
+                    ..
+                }
+            ),
+            "{} resolved as {resolution:?}",
+            reference.semantic_role
+        );
+    }
 }

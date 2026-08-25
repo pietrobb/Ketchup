@@ -1,3 +1,4 @@
+import hashlib
 import importlib.util
 import json
 from pathlib import Path
@@ -25,6 +26,28 @@ def hello(provider="anthropic-api", **extra):
     }
 
 
+def project_context(document_id=7, exchanges=()):
+    entries = []
+    for sequence, user, answer in exchanges:
+        identity = hashlib.sha256(f"{sequence}\n{user}\n{answer}".encode()).hexdigest()
+        entries.append(
+            {"sequence": sequence, "user": user, "assistant": answer, "sha256": identity}
+        )
+    encoded = json.dumps(entries, ensure_ascii=False, separators=(",", ":")).encode()
+    return {
+        "document_id": document_id,
+        "project_memory": {
+            "schema": assistant.PROJECT_MEMORY_SCHEMA,
+            "document_id": document_id,
+            "stored_count": len(entries),
+            "retrieved_count": len(entries),
+            "complete": True,
+            "byte_length": len(encoded),
+            "entries": entries,
+        },
+    }
+
+
 def test_public_sidecar_conversation_uses_bounded_context_and_no_tools():
     calls = []
 
@@ -34,8 +57,9 @@ def test_public_sidecar_conversation_uses_bounded_context_and_no_tools():
 
     sidecar = assistant.PublicAssistantSidecar(sender)
     ready = sidecar.handle(hello())
+    context = project_context()
     result = sidecar.handle(
-        {"type": "chat", "request_id": "r1", "message": "Raise it.", "context": {"selection": [7]}}
+        {"type": "chat", "request_id": "r1", "message": "Raise it.", "context": context}
     )
 
     assert ready["distribution"] == "public-api"
@@ -50,10 +74,62 @@ def test_public_sidecar_conversation_uses_bounded_context_and_no_tools():
         (
             "anthropic-api",
             "claude-sonnet-4-6",
-            '<document-context>{"selection": [7]}</document-context>\n\nRaise it.',
+            f'<document-context>{json.dumps(context, ensure_ascii=False, sort_keys=True)}</document-context>\n\nRaise it.',
             (),
         )
     ]
+
+
+def test_project_memory_is_bounded_scope_checked_and_tamper_evident():
+    context = project_context(7, ((4, "Remember shelf spacing", "The shelf spacing is 320 mm."),))
+    calls = []
+    sidecar = assistant.PublicAssistantSidecar(
+        lambda provider, model, message, history: calls.append(message)
+        or json.dumps({"message": "I remember 320 mm.", "model_intent": None})
+    )
+    sidecar.handle(hello())
+    result = sidecar.handle(
+        {"type": "chat", "request_id": "memory-1", "message": "What spacing?", "context": context}
+    )
+    assert result["message"] == "I remember 320 mm."
+    assert "Remember shelf spacing" in calls[0]
+
+    invalid_contexts = []
+    wrong_scope = project_context(7)
+    wrong_scope["project_memory"]["document_id"] = 8
+    invalid_contexts.append(wrong_scope)
+    wrong_hash = project_context(7, ((1, "Shelf", "320 mm"),))
+    wrong_hash["project_memory"]["entries"][0]["sha256"] = "0" * 64
+    invalid_contexts.append(wrong_hash)
+    oversized = project_context(7, ((1, "x" * 1025, "answer"),))
+    invalid_contexts.append(oversized)
+
+    for invalid in invalid_contexts:
+        rejected = assistant.PublicAssistantSidecar(
+            lambda *_: pytest.fail("invalid memory reached the provider")
+        )
+        rejected.handle(hello())
+        with pytest.raises(assistant.ProtocolError):
+            rejected.handle(
+                {"type": "chat", "request_id": "bad", "message": "hello", "context": invalid}
+            )
+
+
+def test_public_sidecar_has_no_shell_filesystem_browser_or_agent_authority():
+    source = MODULE_PATH.read_text(encoding="utf-8")
+    for forbidden in (
+        "import subprocess",
+        "import pathlib",
+        "import shutil",
+        "import glob",
+        "import socket",
+        "playwright",
+        "selenium",
+        "DocumentStore",
+        "claude_engine",
+        "peer_memory",
+    ):
+        assert forbidden not in source
 
 
 def test_public_sidecar_parses_bounded_model_intent_and_rejects_invalid_geometry():

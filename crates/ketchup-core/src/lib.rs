@@ -18,6 +18,7 @@ pub mod import;
 pub mod intent;
 pub mod persistence;
 pub mod prismatic;
+pub mod release_capstone;
 pub mod shared_change;
 pub mod sketch;
 pub mod space;

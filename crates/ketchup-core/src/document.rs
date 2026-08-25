@@ -6,7 +6,7 @@ use crate::bottle_m6::{ExactRevolveRequest, reference_matches_revolve_request};
 use crate::drawing::{DrawingError, DrawingSheet, DrawingSheetId, DrawingSource};
 use crate::exact_product::{
     BodySubshapeRef, ExactFaceRole, ExactFeatureChainRequest, ExactReferenceResolution,
-    ExactResultRegistry,
+    ExactResultRegistry, is_line_arc_capsule_profile, line_arc_capsule_profile_bounds,
 };
 pub use crate::graph::{
     CanonicalOverride, DerivedIdentity, DerivedOutput, EvaluationIdentity, EvaluationReport,
@@ -1601,6 +1601,10 @@ pub enum CanonicalCommand {
         id: OccurrenceId,
         transform: Transform,
     },
+    RenameEntity {
+        id: OccurrenceId,
+        name: String,
+    },
     ApplyAssemblySolve {
         source_revision: u64,
         source_digest: String,
@@ -1676,7 +1680,7 @@ pub struct CloneDefinitionPlan {
 }
 
 impl CloneDefinitionPlan {
-    pub(crate) fn new(
+    pub fn new(
         occurrence_id: OccurrenceId,
         source_definition_id: DefinitionId,
         new_definition_id: DefinitionId,
@@ -1821,6 +1825,12 @@ impl ProposalBudget {
         max_read_dependencies: 64,
         max_write_targets: 3,
     };
+
+    pub const T18_ATOMIC_MULTI_COMMAND_EDIT: Self = Self {
+        max_commands: 3,
+        max_read_dependencies: 64,
+        max_write_targets: 1,
+    };
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1956,6 +1966,7 @@ pub enum ProposalGoal {
     RenameDefinition(DefinitionId),
     SetOccurrenceVisibility(OccurrenceId),
     SetOccurrenceTranslation(OccurrenceId),
+    AtomicMultiCommandEdit(OccurrenceId),
     SetOccurrenceTag(OccurrenceId),
     SetTagVisibility(TagId),
     RepointOccurrence(OccurrenceId),
@@ -2400,6 +2411,16 @@ impl Snapshot {
             .exact_reference_evidence
             .get(lineage_digest)
             .map(Arc::as_ref)
+    }
+
+    #[must_use]
+    pub fn resolved_planar_face_workplane_frame(
+        &self,
+        reference: &BodySubshapeRef,
+    ) -> Option<WorkplaneFrame> {
+        self.exact_reference_by_lineage(&reference.lineage_digest)
+            .filter(|evidence| *evidence == reference)?;
+        supported_planar_face_frame(&self.product, reference)
     }
 
     pub fn persistent_dimensions(&self) -> impl Iterator<Item = &PersistentDimension> {
@@ -4447,6 +4468,20 @@ impl DocumentStore {
                         *id,
                         Arc::new(Occurrence {
                             transform: *transform,
+                            ..existing.as_ref().clone()
+                        }),
+                    );
+                }
+                CanonicalCommand::RenameEntity { id, name } => {
+                    ensure_name(name)?;
+                    let existing = product
+                        .occurrences
+                        .get(id)
+                        .ok_or(CanonicalError::OccurrenceNotFound(*id))?;
+                    product.occurrences.insert(
+                        *id,
+                        Arc::new(Occurrence {
+                            name: name.clone(),
                             ..existing.as_ref().clone()
                         }),
                     );
@@ -8894,26 +8929,35 @@ fn translated_solid_tool_profile(
         FeatureKind::SegmentProfile {
             segments,
             closed: true,
-        } if circle_segment_profile_bounds(segments).is_some() => Ok(FeatureKind::SegmentProfile {
-            segments: segments
-                .iter()
-                .map(|segment| match segment {
-                    ProfileSegment::CircularArc {
-                        start_mm,
-                        end_mm,
-                        center_mm,
-                        clockwise,
-                    } => ProfileSegment::CircularArc {
-                        start_mm: [start_mm[0] + delta_x, start_mm[1] + delta_y],
-                        end_mm: [end_mm[0] + delta_x, end_mm[1] + delta_y],
-                        center_mm: [center_mm[0] + delta_x, center_mm[1] + delta_y],
-                        clockwise: *clockwise,
-                    },
-                    ProfileSegment::Line { .. } => unreachable!("an exact circle has no lines"),
-                })
-                .collect(),
-            closed: true,
-        }),
+        } if circle_segment_profile_bounds(segments).is_some()
+            || line_arc_d_profile_bounds(segments).is_some()
+            || is_line_arc_capsule_profile(segments, true)
+            || line_segment_polygon_bounds(segments).is_some() =>
+        {
+            Ok(FeatureKind::SegmentProfile {
+                segments: segments
+                    .iter()
+                    .map(|segment| match segment {
+                        ProfileSegment::CircularArc {
+                            start_mm,
+                            end_mm,
+                            center_mm,
+                            clockwise,
+                        } => ProfileSegment::CircularArc {
+                            start_mm: [start_mm[0] + delta_x, start_mm[1] + delta_y],
+                            end_mm: [end_mm[0] + delta_x, end_mm[1] + delta_y],
+                            center_mm: [center_mm[0] + delta_x, center_mm[1] + delta_y],
+                            clockwise: *clockwise,
+                        },
+                        ProfileSegment::Line { start_mm, end_mm } => ProfileSegment::Line {
+                            start_mm: [start_mm[0] + delta_x, start_mm[1] + delta_y],
+                            end_mm: [end_mm[0] + delta_x, end_mm[1] + delta_y],
+                        },
+                    })
+                    .collect(),
+                closed: true,
+            })
+        }
         _ => Err(CanonicalError::InvalidSolidToolPlan),
     }
 }
@@ -8963,12 +9007,256 @@ fn circle_segment_profile_bounds(segments: &[ProfileSegment]) -> Option<[f64; 4]
     ])
 }
 
+fn line_arc_d_profile_bounds(segments: &[ProfileSegment]) -> Option<[f64; 4]> {
+    let (line_start, line_end, arc_start, arc_end, center) = match segments {
+        [
+            ProfileSegment::Line { start_mm, end_mm },
+            ProfileSegment::CircularArc {
+                start_mm: arc_start,
+                end_mm: arc_end,
+                center_mm,
+                ..
+            },
+        ] => (*start_mm, *end_mm, *arc_start, *arc_end, *center_mm),
+        [
+            ProfileSegment::CircularArc {
+                start_mm: arc_start,
+                end_mm: arc_end,
+                center_mm,
+                ..
+            },
+            ProfileSegment::Line { start_mm, end_mm },
+        ] => (*start_mm, *end_mm, *arc_start, *arc_end, *center_mm),
+        _ => return None,
+    };
+    if line_end != arc_start || arc_end != line_start {
+        return None;
+    }
+    let start_radius = (arc_start[0] - center[0]).hypot(arc_start[1] - center[1]);
+    let end_radius = (arc_end[0] - center[0]).hypot(arc_end[1] - center[1]);
+    if !start_radius.is_finite()
+        || start_radius <= PROFILE_EPSILON_MM
+        || (start_radius - end_radius).abs() > PROFILE_EPSILON_MM
+    {
+        return None;
+    }
+    Some([
+        center[0] - start_radius,
+        center[1] - start_radius,
+        center[0] + start_radius,
+        center[1] + start_radius,
+    ])
+}
+
+fn line_segment_polygon_bounds(segments: &[ProfileSegment]) -> Option<[f64; 4]> {
+    let points = segments
+        .iter()
+        .map(|segment| match segment {
+            ProfileSegment::Line { start_mm, .. } => Some(*start_mm),
+            ProfileSegment::CircularArc { .. } => None,
+        })
+        .collect::<Option<Vec<_>>>()?;
+    if segments.len() < 3
+        || segments
+            .windows(2)
+            .any(|pair| pair[0].end_mm() != pair[1].start_mm())
+        || segments.last()?.end_mm() != segments.first()?.start_mm()
+        || !is_valid_profile(&points)
+    {
+        return None;
+    }
+    let min_x = points.iter().map(|point| point[0]).reduce(f64::min)?;
+    let min_y = points.iter().map(|point| point[1]).reduce(f64::min)?;
+    let max_x = points.iter().map(|point| point[0]).reduce(f64::max)?;
+    let max_y = points.iter().map(|point| point[1]).reduce(f64::max)?;
+    Some([min_x, min_y, max_x, max_y])
+}
+
+fn line_arc_d_profile_contains_rectangle(
+    segments: &[ProfileSegment],
+    width: f64,
+    depth: f64,
+) -> bool {
+    if line_arc_d_profile_bounds(segments).is_none() {
+        return false;
+    }
+    let mut polygon = Vec::new();
+    for segment in segments {
+        match segment {
+            ProfileSegment::Line { start_mm, .. } => polygon.push(*start_mm),
+            ProfileSegment::CircularArc {
+                start_mm,
+                end_mm,
+                center_mm,
+                clockwise,
+            } => {
+                let start_angle = (start_mm[1] - center_mm[1]).atan2(start_mm[0] - center_mm[0]);
+                let end_angle = (end_mm[1] - center_mm[1]).atan2(end_mm[0] - center_mm[0]);
+                let mut sweep = end_angle - start_angle;
+                if *clockwise {
+                    while sweep >= 0.0 {
+                        sweep -= std::f64::consts::TAU;
+                    }
+                } else {
+                    while sweep <= 0.0 {
+                        sweep += std::f64::consts::TAU;
+                    }
+                }
+                if sweep.abs() >= std::f64::consts::TAU - 1.0e-12 {
+                    return false;
+                }
+                let radius = (start_mm[0] - center_mm[0]).hypot(start_mm[1] - center_mm[1]);
+                let steps = (sweep.abs() / std::f64::consts::TAU * 256.0)
+                    .ceil()
+                    .max(1.0) as usize;
+                for step in 0..steps {
+                    let angle = start_angle + sweep * step as f64 / steps as f64;
+                    polygon.push([
+                        center_mm[0] + radius * angle.cos(),
+                        center_mm[1] + radius * angle.sin(),
+                    ]);
+                }
+            }
+        }
+    }
+    [[0.0, 0.0], [width, 0.0], [width, depth], [0.0, depth]]
+        .into_iter()
+        .all(|point| point_strictly_in_polygon(point, &polygon))
+}
+
+fn line_segment_polygon_contains_rectangle(
+    segments: &[ProfileSegment],
+    width: f64,
+    depth: f64,
+) -> bool {
+    let Some(points) = segments
+        .iter()
+        .map(|segment| match segment {
+            ProfileSegment::Line { start_mm, .. } => Some(*start_mm),
+            ProfileSegment::CircularArc { .. } => None,
+        })
+        .collect::<Option<Vec<_>>>()
+        .filter(|points| points.len() >= 3)
+    else {
+        return false;
+    };
+    [[0.0, 0.0], [width, 0.0], [width, depth], [0.0, depth]]
+        .into_iter()
+        .all(|point| point_in_polygon_or_boundary(point, &points))
+}
+
+fn point_strictly_in_polygon(point: [f64; 2], polygon: &[[f64; 2]]) -> bool {
+    let near_boundary = polygon
+        .iter()
+        .zip(polygon.iter().cycle().skip(1))
+        .take(polygon.len())
+        .any(|(start, end)| {
+            let edge_x = end[0] - start[0];
+            let edge_y = end[1] - start[1];
+            let cross = edge_x * (point[1] - start[1]) - edge_y * (point[0] - start[0]);
+            cross.abs() <= 1.0e-6 * edge_x.hypot(edge_y)
+                && point[0] >= start[0].min(end[0]) - 1.0e-6
+                && point[0] <= start[0].max(end[0]) + 1.0e-6
+                && point[1] >= start[1].min(end[1]) - 1.0e-6
+                && point[1] <= start[1].max(end[1]) + 1.0e-6
+        });
+    !near_boundary && point_in_polygon_or_boundary(point, polygon)
+}
+
+fn point_in_polygon_or_boundary(point: [f64; 2], polygon: &[[f64; 2]]) -> bool {
+    let mut inside = false;
+    for (start, end) in polygon
+        .iter()
+        .zip(polygon.iter().cycle().skip(1))
+        .take(polygon.len())
+    {
+        let cross = (end[0] - start[0]) * (point[1] - start[1])
+            - (end[1] - start[1]) * (point[0] - start[0]);
+        if cross.abs() <= 1.0e-9
+            && point[0] >= start[0].min(end[0]) - 1.0e-9
+            && point[0] <= start[0].max(end[0]) + 1.0e-9
+            && point[1] >= start[1].min(end[1]) - 1.0e-9
+            && point[1] <= start[1].max(end[1]) + 1.0e-9
+        {
+            return true;
+        }
+        if (start[1] > point[1]) != (end[1] > point[1])
+            && point[0]
+                < (end[0] - start[0]) * (point[1] - start[1]) / (end[1] - start[1]) + start[0]
+        {
+            inside = !inside;
+        }
+    }
+    inside
+}
+
+fn line_segment_profile_bounds(segments: &[ProfileSegment]) -> Option<[f64; 4]> {
+    if segments.len() != 4 {
+        return None;
+    }
+    let mut points = Vec::with_capacity(4);
+    for segment in segments {
+        let ProfileSegment::Line { start_mm, end_mm } = segment else {
+            return None;
+        };
+        let delta = [end_mm[0] - start_mm[0], end_mm[1] - start_mm[1]];
+        if delta.iter().any(|value| !value.is_finite())
+            || (delta[0].abs() > 2.0e-6 && delta[1].abs() > 2.0e-6)
+        {
+            return None;
+        }
+        points.push(*start_mm);
+    }
+    let min_x = points.iter().map(|point| point[0]).reduce(f64::min)?;
+    let min_y = points.iter().map(|point| point[1]).reduce(f64::min)?;
+    let max_x = points.iter().map(|point| point[0]).reduce(f64::max)?;
+    let max_y = points.iter().map(|point| point[1]).reduce(f64::max)?;
+    let corners = [
+        [min_x, min_y],
+        [min_x, max_y],
+        [max_x, min_y],
+        [max_x, max_y],
+    ];
+    (min_x < max_x
+        && min_y < max_y
+        && corners.iter().all(|corner| {
+            points.iter().any(|point| {
+                (point[0] - corner[0]).abs() <= 2.0e-6 && (point[1] - corner[1]).abs() <= 2.0e-6
+            })
+        }))
+    .then_some([min_x, min_y, max_x, max_y])
+}
+
 fn solid_tool_profiles_supported(
     operation: BooleanOperation,
     target: &[[f64; 2]],
     tool: &FeatureKind,
 ) -> bool {
     if !is_axis_aligned_rectangle(target) || target[0] != [0.0, 0.0] {
+        return false;
+    }
+    let tool_is_line_arc_d = matches!(
+        tool,
+        FeatureKind::SegmentProfile { segments, closed: true }
+            if line_arc_d_profile_bounds(segments).is_some()
+    );
+    if tool_is_line_arc_d
+        && !matches!(
+            operation,
+            BooleanOperation::Cut
+                | BooleanOperation::Union
+                | BooleanOperation::Intersect
+                | BooleanOperation::Split
+        )
+    {
+        return false;
+    }
+    let tool_is_capsule = matches!(
+        tool,
+        FeatureKind::SegmentProfile { segments, closed: true }
+            if is_line_arc_capsule_profile(segments, true)
+    );
+    if tool_is_capsule && operation != BooleanOperation::Cut {
         return false;
     }
     let tool_bounds = match tool {
@@ -8981,7 +9269,35 @@ fn solid_tool_profiles_supported(
         FeatureKind::SegmentProfile {
             segments,
             closed: true,
-        } => match circle_segment_profile_bounds(segments) {
+        } => match circle_segment_profile_bounds(segments)
+            .or_else(|| line_segment_profile_bounds(segments))
+            .or_else(|| {
+                matches!(
+                    operation,
+                    BooleanOperation::Cut
+                        | BooleanOperation::Union
+                        | BooleanOperation::Intersect
+                        | BooleanOperation::Split
+                )
+                .then(|| line_arc_d_profile_bounds(segments))
+                .flatten()
+            })
+            .or_else(|| {
+                (operation == BooleanOperation::Cut)
+                    .then(|| line_arc_capsule_profile_bounds(segments, true))
+                    .flatten()
+            })
+            .or_else(|| {
+                matches!(
+                    operation,
+                    BooleanOperation::Cut
+                        | BooleanOperation::Union
+                        | BooleanOperation::Intersect
+                        | BooleanOperation::Split
+                )
+                .then(|| line_segment_polygon_bounds(segments))
+                .flatten()
+            }) {
             Some(bounds) => bounds,
             None => return false,
         },
@@ -8992,17 +9308,36 @@ fn solid_tool_profiles_supported(
     let [tool_min_x, tool_min_y, tool_max_x, tool_max_y] = tool_bounds;
     match operation {
         BooleanOperation::Cut => {
-            tool_min_x > 0.0
-                && tool_min_y > 0.0
-                && tool_max_x < base_width
-                && tool_max_y < base_depth
+            tool_min_x > 1.0e-6
+                && tool_min_y > 1.0e-6
+                && tool_max_x < base_width - 1.0e-6
+                && tool_max_y < base_depth - 1.0e-6
         }
         BooleanOperation::Intersect => {
+            if let FeatureKind::SegmentProfile { segments, .. } = tool
+                && (circle_segment_profile_bounds(segments).is_some()
+                    || (line_segment_profile_bounds(segments).is_none()
+                        && line_segment_polygon_bounds(segments).is_some()))
+            {
+                return tool_min_x > 1.0e-6
+                    && tool_min_y > 1.0e-6
+                    && tool_max_x < base_width - 1.0e-6
+                    && tool_max_y < base_depth - 1.0e-6;
+            }
             let overlap_x = base_width.min(tool_max_x) - 0.0_f64.max(tool_min_x);
             let overlap_y = base_depth.min(tool_max_y) - 0.0_f64.max(tool_min_y);
             overlap_x > 1.0e-6 && overlap_y > 1.0e-6
         }
         BooleanOperation::Split => {
+            if let FeatureKind::SegmentProfile { segments, .. } = tool {
+                return (circle_segment_profile_bounds(segments).is_some()
+                    || line_arc_d_profile_bounds(segments).is_some()
+                    || line_segment_polygon_bounds(segments).is_some())
+                    && tool_min_x > 1.0e-6
+                    && tool_min_y > 1.0e-6
+                    && tool_max_x < base_width - 1.0e-6
+                    && tool_max_y < base_depth - 1.0e-6;
+            }
             if !matches!(tool, FeatureKind::Profile { .. }) {
                 return false;
             }
@@ -9015,8 +9350,34 @@ fn solid_tool_profiles_supported(
             overlap_x > 1.0e-6 && overlap_y > 1.0e-6 && boundary_crosses_target
         }
         BooleanOperation::Union => {
-            if !matches!(tool, FeatureKind::Profile { .. }) {
-                return false;
+            if let FeatureKind::SegmentProfile { segments, .. } = tool {
+                if tool_is_line_arc_d {
+                    return line_arc_d_profile_contains_rectangle(segments, base_width, base_depth)
+                        && (tool_min_x < -1.0e-6
+                            || tool_min_y < -1.0e-6
+                            || tool_max_x > base_width + 1.0e-6
+                            || tool_max_y > base_depth + 1.0e-6);
+                }
+                if let Some([min_x, min_y, max_x, max_y]) = circle_segment_profile_bounds(segments)
+                {
+                    let center = [(min_x + max_x) * 0.5, (min_y + max_y) * 0.5];
+                    let radius = (max_x - min_x) * 0.5;
+                    return [
+                        [0.0, 0.0],
+                        [base_width, 0.0],
+                        [base_width, base_depth],
+                        [0.0, base_depth],
+                    ]
+                    .into_iter()
+                    .all(|corner| {
+                        (corner[0] - center[0]).hypot(corner[1] - center[1]) < radius - 1.0e-6
+                    });
+                }
+                return line_segment_polygon_contains_rectangle(segments, base_width, base_depth)
+                    && (tool_min_x < -1.0e-6
+                        || tool_min_y < -1.0e-6
+                        || tool_max_x > base_width + 1.0e-6
+                        || tool_max_y > base_depth + 1.0e-6);
             }
             let overlap_x = base_width.min(tool_max_x) - 0.0_f64.max(tool_min_x);
             let overlap_y = base_depth.min(tool_max_y) - 0.0_f64.max(tool_min_y);
@@ -11103,6 +11464,14 @@ fn proposal_value(
                     ProposalGoal::SetOccurrenceTranslation(_) => {
                         ProposalValue::Transform(occurrence.transform())
                     }
+                    ProposalGoal::AtomicMultiCommandEdit(_) => ProposalValue::OccurrenceState {
+                        definition: occurrence.definition_id(),
+                        name: occurrence.name().to_owned(),
+                        transform: occurrence.transform(),
+                        parent: occurrence.parent(),
+                        tag: occurrence.tag(),
+                        visible: occurrence.visible(),
+                    },
                     ProposalGoal::SetOccurrenceTag(_) => ProposalValue::Tag(occurrence.tag()),
                     ProposalGoal::RepointOccurrence(_) => {
                         ProposalValue::Definition(occurrence.definition_id())
@@ -11318,6 +11687,7 @@ fn authoritative_writes(
             CanonicalCommand::CreateOccurrence { id, .. }
             | CanonicalCommand::DeleteOccurrence { id }
             | CanonicalCommand::SetOccurrenceTransform { id, .. }
+            | CanonicalCommand::RenameEntity { id, .. }
             | CanonicalCommand::SetOccurrenceVisibility { id, .. }
             | CanonicalCommand::SetOccurrenceTag { id, .. }
             | CanonicalCommand::RepointOccurrence { id, .. }
@@ -11671,6 +12041,7 @@ fn authoritative_dependencies(
                 dependencies.insert(AuthoritativeDependency::OccurrenceCollections(*id));
             }
             CanonicalCommand::SetOccurrenceTransform { id, .. }
+            | CanonicalCommand::RenameEntity { id, .. }
             | CanonicalCommand::SetOccurrenceVisibility { id, .. } => {
                 dependencies.insert(AuthoritativeDependency::Occurrence(*id));
             }
@@ -13585,6 +13956,11 @@ impl StableDigest {
                 self.byte(18);
                 self.u64(id.0);
                 self.transform(*transform);
+            }
+            CanonicalCommand::RenameEntity { id, name } => {
+                self.byte(69);
+                self.u64(id.0);
+                self.bytes(name.as_bytes());
             }
             CanonicalCommand::GuardAssemblyRecompute {
                 source_revision,

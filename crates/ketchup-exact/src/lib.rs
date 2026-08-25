@@ -174,7 +174,55 @@ mod ffi {
             size_y: f64,
             size_z: f64,
         ) -> UniquePtr<NativeOperationResult>;
+        fn cut_mixed_profile_native(
+            base: &NativeOperationResult,
+            segments: &[f64],
+            origin_z: f64,
+            height: f64,
+        ) -> UniquePtr<NativeOperationResult>;
+        fn fuse_mixed_profile_native(
+            base: &NativeOperationResult,
+            segments: &[f64],
+            origin_z: f64,
+            height: f64,
+        ) -> UniquePtr<NativeOperationResult>;
+        fn common_mixed_profile_native(
+            base: &NativeOperationResult,
+            segments: &[f64],
+            origin_z: f64,
+            height: f64,
+        ) -> UniquePtr<NativeOperationResult>;
+        fn split_mixed_profile_native(
+            base: &NativeOperationResult,
+            segments: &[f64],
+            origin_z: f64,
+            height: f64,
+        ) -> UniquePtr<NativeOperationResult>;
         fn cut_cylinder_native(
+            base: &NativeOperationResult,
+            center_x: f64,
+            center_y: f64,
+            origin_z: f64,
+            radius: f64,
+            height: f64,
+        ) -> UniquePtr<NativeOperationResult>;
+        fn fuse_cylinder_native(
+            base: &NativeOperationResult,
+            center_x: f64,
+            center_y: f64,
+            origin_z: f64,
+            radius: f64,
+            height: f64,
+        ) -> UniquePtr<NativeOperationResult>;
+        fn common_cylinder_native(
+            base: &NativeOperationResult,
+            center_x: f64,
+            center_y: f64,
+            origin_z: f64,
+            radius: f64,
+            height: f64,
+        ) -> UniquePtr<NativeOperationResult>;
+        fn split_cylinder_native(
             base: &NativeOperationResult,
             center_x: f64,
             center_y: f64,
@@ -1379,6 +1427,333 @@ impl ExactBackend {
         collect_output(native, "cut_box", &input, HistoryConfidence::Partial)
     }
 
+    pub fn cut_mixed_profile(
+        &self,
+        base: &ExactBody,
+        segments: &[PlanarProfileSegment],
+        origin_z_mm: f64,
+        height_mm: f64,
+    ) -> Result<ExactOpOutput, GeometryError> {
+        let input = format!(
+            "cut_mixed_profile:{}:{segments:?}:{:016x}:{:016x}",
+            base.result_fingerprint,
+            origin_z_mm.to_bits(),
+            height_mm.to_bits()
+        );
+        validate_mixed_profile(segments, &input)?;
+        let line_count = segments
+            .iter()
+            .filter(|segment| matches!(segment, PlanarProfileSegment::Line { .. }))
+            .count();
+        let arc_count = segments
+            .iter()
+            .filter(|segment| matches!(segment, PlanarProfileSegment::CircularArc { .. }))
+            .count();
+        if arc_count > 0
+            && !(segments.len() == 2 && line_count == 1 && arc_count == 1)
+            && !is_capsule_mixed_profile(segments)
+            && !is_rounded_rectangle_mixed_profile(segments)
+        {
+            return Err(parameter_error(
+                GeometryErrorCode::InvalidProfile,
+                "cut_mixed_profile",
+                &input,
+                "Mixed cut accepts a line-arc D profile, a capsule, or a strict rounded rectangle"
+                    .to_owned(),
+            ));
+        }
+        validate_coordinate(origin_z_mm, "origin_z_mm", "cut_mixed_profile", &input)?;
+        validate_length(height_mm, "height_mm", "cut_mixed_profile", &input)?;
+        let flattened = segments
+            .iter()
+            .flat_map(|segment| match segment {
+                PlanarProfileSegment::Line { start_mm, end_mm } => [
+                    0.0,
+                    start_mm[0],
+                    start_mm[1],
+                    end_mm[0],
+                    end_mm[1],
+                    0.0,
+                    0.0,
+                    0.0,
+                ],
+                PlanarProfileSegment::CircularArc {
+                    start_mm,
+                    end_mm,
+                    center_mm,
+                    clockwise,
+                } => [
+                    1.0,
+                    start_mm[0],
+                    start_mm[1],
+                    end_mm[0],
+                    end_mm[1],
+                    center_mm[0],
+                    center_mm[1],
+                    f64::from(*clockwise),
+                ],
+            })
+            .collect::<Vec<_>>();
+        let native_base = base.native.as_ref().ok_or_else(|| GeometryError {
+            code: GeometryErrorCode::NullResult,
+            diagnostic: "Exact body lost its owned native shape".to_owned(),
+            operation: "cut_mixed_profile",
+            input_digest: stable_digest(&input),
+            backend_fingerprint: BACKEND_FINGERPRINT,
+        })?;
+        collect_output(
+            ffi::cut_mixed_profile_native(native_base, &flattened, origin_z_mm, height_mm),
+            "cut_mixed_profile",
+            &input,
+            HistoryConfidence::Partial,
+        )
+    }
+
+    pub fn fuse_mixed_profile(
+        &self,
+        base: &ExactBody,
+        segments: &[PlanarProfileSegment],
+        origin_z_mm: f64,
+        height_mm: f64,
+    ) -> Result<ExactOpOutput, GeometryError> {
+        let input = format!(
+            "fuse_mixed_profile:{}:{segments:?}:{:016x}:{:016x}",
+            base.result_fingerprint,
+            origin_z_mm.to_bits(),
+            height_mm.to_bits()
+        );
+        validate_mixed_profile(segments, &input)?;
+        let line_count = segments
+            .iter()
+            .filter(|segment| matches!(segment, PlanarProfileSegment::Line { .. }))
+            .count();
+        let arc_count = segments
+            .iter()
+            .filter(|segment| matches!(segment, PlanarProfileSegment::CircularArc { .. }))
+            .count();
+        if arc_count > 0
+            && !(segments.len() == 2 && line_count == 1 && arc_count == 1)
+            && !is_capsule_mixed_profile(segments)
+            && !is_rounded_rectangle_mixed_profile(segments)
+        {
+            return Err(parameter_error(
+                GeometryErrorCode::InvalidProfile,
+                "fuse_mixed_profile",
+                &input,
+                "Mixed union accepts a line-arc D profile, a capsule, or a strict rounded rectangle"
+                    .to_owned(),
+            ));
+        }
+        validate_coordinate(origin_z_mm, "origin_z_mm", "fuse_mixed_profile", &input)?;
+        validate_length(height_mm, "height_mm", "fuse_mixed_profile", &input)?;
+        let flattened = segments
+            .iter()
+            .flat_map(|segment| match segment {
+                PlanarProfileSegment::Line { start_mm, end_mm } => [
+                    0.0,
+                    start_mm[0],
+                    start_mm[1],
+                    end_mm[0],
+                    end_mm[1],
+                    0.0,
+                    0.0,
+                    0.0,
+                ],
+                PlanarProfileSegment::CircularArc {
+                    start_mm,
+                    end_mm,
+                    center_mm,
+                    clockwise,
+                } => [
+                    1.0,
+                    start_mm[0],
+                    start_mm[1],
+                    end_mm[0],
+                    end_mm[1],
+                    center_mm[0],
+                    center_mm[1],
+                    f64::from(*clockwise),
+                ],
+            })
+            .collect::<Vec<_>>();
+        let native_base = base.native.as_ref().ok_or_else(|| GeometryError {
+            code: GeometryErrorCode::NullResult,
+            diagnostic: "Exact body lost its owned native shape".to_owned(),
+            operation: "fuse_mixed_profile",
+            input_digest: stable_digest(&input),
+            backend_fingerprint: BACKEND_FINGERPRINT,
+        })?;
+        collect_output(
+            ffi::fuse_mixed_profile_native(native_base, &flattened, origin_z_mm, height_mm),
+            "fuse_mixed_profile",
+            &input,
+            HistoryConfidence::Partial,
+        )
+    }
+
+    pub fn common_mixed_profile(
+        &self,
+        base: &ExactBody,
+        segments: &[PlanarProfileSegment],
+        origin_z_mm: f64,
+        height_mm: f64,
+    ) -> Result<ExactOpOutput, GeometryError> {
+        let input = format!(
+            "common_mixed_profile:{}:{segments:?}:{:016x}:{:016x}",
+            base.result_fingerprint,
+            origin_z_mm.to_bits(),
+            height_mm.to_bits()
+        );
+        validate_mixed_profile(segments, &input)?;
+        let line_count = segments
+            .iter()
+            .filter(|segment| matches!(segment, PlanarProfileSegment::Line { .. }))
+            .count();
+        let arc_count = segments
+            .iter()
+            .filter(|segment| matches!(segment, PlanarProfileSegment::CircularArc { .. }))
+            .count();
+        if arc_count > 0
+            && !(segments.len() == 2 && line_count == 1 && arc_count == 1)
+            && !is_capsule_mixed_profile(segments)
+            && !is_rounded_rectangle_mixed_profile(segments)
+        {
+            return Err(parameter_error(
+                GeometryErrorCode::InvalidProfile,
+                "common_mixed_profile",
+                &input,
+                "Mixed intersection accepts a line-arc D profile, a capsule, or a strict rounded rectangle"
+                    .to_owned(),
+            ));
+        }
+        validate_coordinate(origin_z_mm, "origin_z_mm", "common_mixed_profile", &input)?;
+        validate_length(height_mm, "height_mm", "common_mixed_profile", &input)?;
+        let flattened = segments
+            .iter()
+            .flat_map(|segment| match segment {
+                PlanarProfileSegment::Line { start_mm, end_mm } => [
+                    0.0,
+                    start_mm[0],
+                    start_mm[1],
+                    end_mm[0],
+                    end_mm[1],
+                    0.0,
+                    0.0,
+                    0.0,
+                ],
+                PlanarProfileSegment::CircularArc {
+                    start_mm,
+                    end_mm,
+                    center_mm,
+                    clockwise,
+                } => [
+                    1.0,
+                    start_mm[0],
+                    start_mm[1],
+                    end_mm[0],
+                    end_mm[1],
+                    center_mm[0],
+                    center_mm[1],
+                    f64::from(*clockwise),
+                ],
+            })
+            .collect::<Vec<_>>();
+        let native_base = base.native.as_ref().ok_or_else(|| GeometryError {
+            code: GeometryErrorCode::NullResult,
+            diagnostic: "Exact body lost its owned native shape".to_owned(),
+            operation: "common_mixed_profile",
+            input_digest: stable_digest(&input),
+            backend_fingerprint: BACKEND_FINGERPRINT,
+        })?;
+        collect_output(
+            ffi::common_mixed_profile_native(native_base, &flattened, origin_z_mm, height_mm),
+            "common_mixed_profile",
+            &input,
+            HistoryConfidence::Partial,
+        )
+    }
+
+    pub fn split_mixed_profile(
+        &self,
+        base: &ExactBody,
+        segments: &[PlanarProfileSegment],
+        origin_z_mm: f64,
+        height_mm: f64,
+    ) -> Result<ExactOpOutput, GeometryError> {
+        let input = format!(
+            "split_mixed_profile:{}:{segments:?}:{:016x}:{:016x}",
+            base.result_fingerprint,
+            origin_z_mm.to_bits(),
+            height_mm.to_bits()
+        );
+        validate_mixed_profile(segments, &input)?;
+        let line_count = segments
+            .iter()
+            .filter(|segment| matches!(segment, PlanarProfileSegment::Line { .. }))
+            .count();
+        let arc_count = segments
+            .iter()
+            .filter(|segment| matches!(segment, PlanarProfileSegment::CircularArc { .. }))
+            .count();
+        if arc_count > 0
+            && !(segments.len() == 2 && line_count == 1 && arc_count == 1)
+            && !is_capsule_mixed_profile(segments)
+            && !is_rounded_rectangle_mixed_profile(segments)
+        {
+            return Err(parameter_error(
+                GeometryErrorCode::InvalidProfile,
+                "split_mixed_profile",
+                &input,
+                "Mixed split accepts a line-arc D profile, a two-line/two-arc capsule, or a strict rounded rectangle".to_owned(),
+            ));
+        }
+        validate_coordinate(origin_z_mm, "origin_z_mm", "split_mixed_profile", &input)?;
+        validate_length(height_mm, "height_mm", "split_mixed_profile", &input)?;
+        let flattened = segments
+            .iter()
+            .flat_map(|segment| match segment {
+                PlanarProfileSegment::Line { start_mm, end_mm } => [
+                    0.0,
+                    start_mm[0],
+                    start_mm[1],
+                    end_mm[0],
+                    end_mm[1],
+                    0.0,
+                    0.0,
+                    0.0,
+                ],
+                PlanarProfileSegment::CircularArc {
+                    start_mm,
+                    end_mm,
+                    center_mm,
+                    clockwise,
+                } => [
+                    1.0,
+                    start_mm[0],
+                    start_mm[1],
+                    end_mm[0],
+                    end_mm[1],
+                    center_mm[0],
+                    center_mm[1],
+                    f64::from(*clockwise),
+                ],
+            })
+            .collect::<Vec<_>>();
+        let native_base = base.native.as_ref().ok_or_else(|| GeometryError {
+            code: GeometryErrorCode::NullResult,
+            diagnostic: "Exact body lost its owned native shape".to_owned(),
+            operation: "split_mixed_profile",
+            input_digest: stable_digest(&input),
+            backend_fingerprint: BACKEND_FINGERPRINT,
+        })?;
+        collect_output(
+            ffi::split_mixed_profile_native(native_base, &flattened, origin_z_mm, height_mm),
+            "split_mixed_profile",
+            &input,
+            HistoryConfidence::Partial,
+        )
+    }
+
     pub fn cut_cylinder(
         &self,
         base: &ExactBody,
@@ -1419,6 +1794,134 @@ impl ExactBackend {
             tool.height_mm,
         );
         collect_output(native, "cut_cylinder", &input, HistoryConfidence::Partial)
+    }
+
+    pub fn fuse_cylinder(
+        &self,
+        base: &ExactBody,
+        tool: CylinderToolSpec,
+    ) -> Result<ExactOpOutput, GeometryError> {
+        let input = format!(
+            "fuse_cylinder:{}:{:016x}:{:016x}:{:016x}:{:016x}:{:016x}",
+            base.result_fingerprint,
+            tool.center_mm[0].to_bits(),
+            tool.center_mm[1].to_bits(),
+            tool.origin_z_mm.to_bits(),
+            tool.radius_mm.to_bits(),
+            tool.height_mm.to_bits()
+        );
+        validate_circle(tool.center_mm, tool.radius_mm, "fuse_cylinder", &input)?;
+        validate_coordinate(tool.origin_z_mm, "origin_z_mm", "fuse_cylinder", &input)?;
+        validate_length(tool.height_mm, "height_mm", "fuse_cylinder", &input)?;
+        validate_coordinate(
+            tool.origin_z_mm + tool.height_mm,
+            "max_z",
+            "fuse_cylinder",
+            &input,
+        )?;
+        let native_base = base.native.as_ref().ok_or_else(|| GeometryError {
+            code: GeometryErrorCode::NullResult,
+            diagnostic: "Exact body lost its owned native shape".to_owned(),
+            operation: "fuse_cylinder",
+            input_digest: stable_digest(&input),
+            backend_fingerprint: BACKEND_FINGERPRINT,
+        })?;
+        let native = ffi::fuse_cylinder_native(
+            native_base,
+            tool.center_mm[0],
+            tool.center_mm[1],
+            tool.origin_z_mm,
+            tool.radius_mm,
+            tool.height_mm,
+        );
+        collect_output(native, "fuse_cylinder", &input, HistoryConfidence::Partial)
+    }
+
+    pub fn common_cylinder(
+        &self,
+        base: &ExactBody,
+        tool: CylinderToolSpec,
+    ) -> Result<ExactOpOutput, GeometryError> {
+        let input = format!(
+            "common_cylinder:{}:{:016x}:{:016x}:{:016x}:{:016x}:{:016x}",
+            base.result_fingerprint,
+            tool.center_mm[0].to_bits(),
+            tool.center_mm[1].to_bits(),
+            tool.origin_z_mm.to_bits(),
+            tool.radius_mm.to_bits(),
+            tool.height_mm.to_bits()
+        );
+        validate_circle(tool.center_mm, tool.radius_mm, "common_cylinder", &input)?;
+        validate_coordinate(tool.origin_z_mm, "origin_z_mm", "common_cylinder", &input)?;
+        validate_length(tool.height_mm, "height_mm", "common_cylinder", &input)?;
+        validate_coordinate(
+            tool.origin_z_mm + tool.height_mm,
+            "max_z",
+            "common_cylinder",
+            &input,
+        )?;
+        let native_base = base.native.as_ref().ok_or_else(|| GeometryError {
+            code: GeometryErrorCode::NullResult,
+            diagnostic: "Exact body lost its owned native shape".to_owned(),
+            operation: "common_cylinder",
+            input_digest: stable_digest(&input),
+            backend_fingerprint: BACKEND_FINGERPRINT,
+        })?;
+        let native = ffi::common_cylinder_native(
+            native_base,
+            tool.center_mm[0],
+            tool.center_mm[1],
+            tool.origin_z_mm,
+            tool.radius_mm,
+            tool.height_mm,
+        );
+        collect_output(
+            native,
+            "common_cylinder",
+            &input,
+            HistoryConfidence::Partial,
+        )
+    }
+
+    pub fn split_cylinder(
+        &self,
+        base: &ExactBody,
+        tool: CylinderToolSpec,
+    ) -> Result<ExactOpOutput, GeometryError> {
+        let input = format!(
+            "split_cylinder:{}:{:016x}:{:016x}:{:016x}:{:016x}:{:016x}",
+            base.result_fingerprint,
+            tool.center_mm[0].to_bits(),
+            tool.center_mm[1].to_bits(),
+            tool.origin_z_mm.to_bits(),
+            tool.radius_mm.to_bits(),
+            tool.height_mm.to_bits()
+        );
+        validate_circle(tool.center_mm, tool.radius_mm, "split_cylinder", &input)?;
+        validate_coordinate(tool.origin_z_mm, "origin_z_mm", "split_cylinder", &input)?;
+        validate_length(tool.height_mm, "height_mm", "split_cylinder", &input)?;
+        validate_coordinate(
+            tool.origin_z_mm + tool.height_mm,
+            "max_z",
+            "split_cylinder",
+            &input,
+        )?;
+        let native_base = base.native.as_ref().ok_or_else(|| GeometryError {
+            code: GeometryErrorCode::NullResult,
+            diagnostic: "Exact body lost its owned native shape".to_owned(),
+            operation: "split_cylinder",
+            input_digest: stable_digest(&input),
+            backend_fingerprint: BACKEND_FINGERPRINT,
+        })?;
+        let native = ffi::split_cylinder_native(
+            native_base,
+            tool.center_mm[0],
+            tool.center_mm[1],
+            tool.origin_z_mm,
+            tool.radius_mm,
+            tool.height_mm,
+        );
+        collect_output(native, "split_cylinder", &input, HistoryConfidence::Partial)
     }
 
     pub fn common_box(
@@ -1774,7 +2277,7 @@ fn has_complete_partition_adjacency(topology: &TopologyEvidence) -> bool {
         edge.adjacent_face_ordinals
             .windows(2)
             .all(|pair| pair[0] <= pair[1])
-            && (2..=3).contains(&unique_faces.len())
+            && (1..=3).contains(&unique_faces.len())
             && unique_faces.iter().all(|face_ordinal| {
                 topology.faces.iter().any(|face| {
                     face.ordinal == *face_ordinal && face.edge_ordinals.contains(&edge.ordinal)
@@ -1975,7 +2478,7 @@ pub fn capture_circle_extrusion_references(
     ];
     let mut references = Vec::with_capacity(required.len());
     for (semantic_role, source_element_id, surface_kind, expected_type) in required {
-        let candidates = output
+        let mut candidates = output
             .topology_history
             .iter()
             .filter(|entry| {
@@ -1984,6 +2487,30 @@ pub fn capture_circle_extrusion_references(
             })
             .filter_map(|entry| entry.output_face_ordinal)
             .collect::<Vec<_>>();
+        if candidates.is_empty() {
+            let bounds = output.body.topology.bounds_mm;
+            candidates = output
+                .body
+                .topology
+                .faces
+                .iter()
+                .filter(|face| {
+                    face.surface_kind == surface_kind
+                        && match semantic_role {
+                            "extrusion.top" => {
+                                (face.bounds_mm.min.z - bounds.max.z).abs() <= 1.0e-6
+                                    && (face.bounds_mm.max.z - bounds.max.z).abs() <= 1.0e-6
+                            }
+                            "extrusion.bottom" => {
+                                (face.bounds_mm.min.z - bounds.min.z).abs() <= 1.0e-6
+                                    && (face.bounds_mm.max.z - bounds.min.z).abs() <= 1.0e-6
+                            }
+                            _ => true,
+                        }
+                })
+                .map(|face| face.ordinal)
+                .collect();
+        }
         let [ordinal] = candidates.as_slice() else {
             return Err(parameter_error(
                 GeometryErrorCode::InvalidShape,
@@ -2037,15 +2564,38 @@ pub fn capture_mixed_profile_extrusion_references(
             "Mixed profile extrusion lacks complete face/edge adjacency".to_owned(),
         ));
     }
-    let required = [
-        ("extrusion.top", "profile.face", "plane", "planar_face"),
-        ("extrusion.bottom", "profile.face", "plane", "planar_face"),
+    let side = if output.topology_history.iter().any(|entry| {
+        entry.semantic_role.as_deref() == Some("extrusion.side(profile_edge=arc.0)")
+            && entry.source_element_id == "profile.edge.arc.0"
+    }) {
         (
             "extrusion.side(profile_edge=arc.0)",
             "profile.edge.arc.0",
             "other",
             "face",
-        ),
+        )
+    } else if output.topology_history.iter().any(|entry| {
+        entry.semantic_role.as_deref() == Some("extrusion.side(profile_edge=line.0)")
+            && entry.source_element_id == "profile.edge.line.0"
+    }) {
+        (
+            "extrusion.side(profile_edge=line.0)",
+            "profile.edge.line.0",
+            "plane",
+            "planar_face",
+        )
+    } else {
+        return Err(parameter_error(
+            GeometryErrorCode::InvalidShape,
+            "capture_mixed_profile_extrusion_references",
+            &output.input_digest,
+            "Segmented profile has no stable side lineage".to_owned(),
+        ));
+    };
+    let required = [
+        ("extrusion.top", "profile.face", "plane", "planar_face"),
+        ("extrusion.bottom", "profile.face", "plane", "planar_face"),
+        side,
     ];
     let mut references = Vec::with_capacity(required.len());
     for (semantic_role, source_element_id, surface_kind, expected_type) in required {
@@ -2089,6 +2639,455 @@ pub fn capture_mixed_profile_extrusion_references(
                     ),
                 )
             })?;
+        references.push(SubshapeRef {
+            document_id: document_id.to_owned(),
+            producer_feature_id: producer_feature_id.to_owned(),
+            semantic_role: semantic_role.to_owned(),
+            source_element_id: source_element_id.to_owned(),
+            expected_type: expected_type.to_owned(),
+            stability_class: StabilityClass::Guaranteed,
+            backend_fingerprint: output.backend_fingerprint.to_owned(),
+            lineage_digest: stable_digest(&format!(
+                "{document_id}:{producer_feature_id}:{semantic_role}:{source_element_id}:{expected_type}"
+            )),
+            corroborating_geometry_fingerprint: face.geometric_fingerprint.clone(),
+        });
+    }
+    Ok(references)
+}
+
+pub fn capture_contained_polygon_union_references(
+    output: &mut ExactOpOutput,
+    document_id: &str,
+    producer_feature_id: &str,
+    profile: &[PlanarProfileSegment],
+) -> Result<Vec<SubshapeRef>, GeometryError> {
+    capture_contained_polygon_references(
+        output,
+        document_id,
+        producer_feature_id,
+        profile,
+        "capture_contained_polygon_union_references",
+        "union",
+        "contained_polygon_union_classification",
+    )
+}
+
+pub fn capture_contained_polygon_intersection_references(
+    output: &mut ExactOpOutput,
+    document_id: &str,
+    producer_feature_id: &str,
+    profile: &[PlanarProfileSegment],
+) -> Result<Vec<SubshapeRef>, GeometryError> {
+    capture_contained_polygon_references(
+        output,
+        document_id,
+        producer_feature_id,
+        profile,
+        "capture_contained_polygon_intersection_references",
+        "intersection",
+        "contained_polygon_intersection_classification",
+    )
+}
+
+fn capture_contained_polygon_references(
+    output: &mut ExactOpOutput,
+    document_id: &str,
+    producer_feature_id: &str,
+    profile: &[PlanarProfileSegment],
+    operation: &'static str,
+    operation_name: &str,
+    relation: &str,
+) -> Result<Vec<SubshapeRef>, GeometryError> {
+    if !has_closed_revolve_adjacency(&output.body.topology) {
+        return Err(parameter_error(
+            GeometryErrorCode::InvalidShape,
+            operation,
+            &output.input_digest,
+            format!("Polygon {operation_name} lacks complete face/edge adjacency"),
+        ));
+    }
+    let line_reference_bounds = profile
+        .iter()
+        .filter_map(|segment| match segment {
+            PlanarProfileSegment::Line { start_mm, end_mm } => Some((
+                start_mm[0].min(end_mm[0]),
+                start_mm[1].min(end_mm[1]),
+                start_mm[0].max(end_mm[0]),
+                start_mm[1].max(end_mm[1]),
+            )),
+            PlanarProfileSegment::CircularArc { .. } => None,
+        })
+        .collect::<Vec<_>>();
+    if line_reference_bounds.is_empty() {
+        return Err(parameter_error(
+            GeometryErrorCode::InvalidProfile,
+            operation,
+            &output.input_digest,
+            format!("Polygon {operation_name} lacks a reference line"),
+        ));
+    }
+    let bounds = output.body.topology.bounds_mm;
+    let arc_reference_points = profile
+        .iter()
+        .filter_map(|segment| match segment {
+            PlanarProfileSegment::CircularArc {
+                start_mm,
+                end_mm,
+                center_mm,
+                ..
+            } => Some([*start_mm, *end_mm, *center_mm]),
+            PlanarProfileSegment::Line { .. } => None,
+        })
+        .find(|points| {
+            output.body.topology.faces.iter().any(|face| {
+                face.surface_kind == "other"
+                    && (face.bounds_mm.min.z - bounds.min.z).abs() <= 1.0e-6
+                    && (face.bounds_mm.max.z - bounds.max.z).abs() <= 1.0e-6
+                    && points.iter().all(|point| {
+                        point[0] >= face.bounds_mm.min.x - 1.0e-6
+                            && point[0] <= face.bounds_mm.max.x + 1.0e-6
+                            && point[1] >= face.bounds_mm.min.y - 1.0e-6
+                            && point[1] <= face.bounds_mm.max.y + 1.0e-6
+                    })
+            })
+        });
+    let clipped_arc_face_ordinal = (operation_name == "intersection"
+        && arc_reference_points.is_none())
+    .then(|| {
+        let mut candidates = output.body.topology.faces.iter().filter(|face| {
+            face.surface_kind == "other"
+                && (face.bounds_mm.min.z - bounds.min.z).abs() <= 1.0e-6
+                && (face.bounds_mm.max.z - bounds.max.z).abs() <= 1.0e-6
+        });
+        let face = candidates.next()?;
+        if candidates.next().is_some() {
+            return None;
+        }
+        let matching_arcs = profile
+            .iter()
+            .filter_map(|segment| match segment {
+                PlanarProfileSegment::CircularArc {
+                    start_mm,
+                    center_mm,
+                    ..
+                } => Some((
+                    *center_mm,
+                    (start_mm[0] - center_mm[0]).hypot(start_mm[1] - center_mm[1]),
+                )),
+                PlanarProfileSegment::Line { .. } => None,
+            })
+            .filter(|(center, radius)| {
+                face.bounds_mm.min.x >= center[0] - radius - 1.0e-6
+                    && face.bounds_mm.max.x <= center[0] + radius + 1.0e-6
+                    && face.bounds_mm.min.y >= center[1] - radius - 1.0e-6
+                    && face.bounds_mm.max.y <= center[1] + radius + 1.0e-6
+            })
+            .count();
+        (matching_arcs == 1).then_some(face.ordinal)
+    })
+    .flatten();
+    let arc_side = arc_reference_points.is_some() || clipped_arc_face_ordinal.is_some();
+    let first_line_survives = output.body.topology.faces.iter().any(|face| {
+        let side_bounds = line_reference_bounds[0];
+        face.surface_kind == "plane"
+            && (face.bounds_mm.min.x - side_bounds.0).abs() <= 1.0e-6
+            && (face.bounds_mm.min.y - side_bounds.1).abs() <= 1.0e-6
+            && (face.bounds_mm.max.x - side_bounds.2).abs() <= 1.0e-6
+            && (face.bounds_mm.max.y - side_bounds.3).abs() <= 1.0e-6
+            && (face.bounds_mm.min.z - bounds.min.z).abs() <= 1.0e-6
+            && (face.bounds_mm.max.z - bounds.max.z).abs() <= 1.0e-6
+    });
+    let required = [
+        (
+            "extrusion.top",
+            "profile.face",
+            0_u8,
+            "plane",
+            "planar_face",
+        ),
+        (
+            "extrusion.bottom",
+            "profile.face",
+            1_u8,
+            "plane",
+            "planar_face",
+        ),
+        if arc_side {
+            (
+                "extrusion.side(profile_edge=arc.0)",
+                "profile.edge.arc.0",
+                2_u8,
+                "other",
+                "face",
+            )
+        } else {
+            (
+                "extrusion.side(profile_edge=line.0)",
+                "profile.edge.line.0",
+                2_u8,
+                "plane",
+                "planar_face",
+            )
+        },
+    ];
+    let mut references = Vec::with_capacity(required.len());
+    for (semantic_role, source_element_id, selector, surface_kind, expected_type) in required {
+        let candidates = output
+            .body
+            .topology
+            .faces
+            .iter()
+            .filter(|face| {
+                if face.surface_kind != surface_kind {
+                    return false;
+                }
+                match selector {
+                    0 => {
+                        (face.bounds_mm.min.z - bounds.max.z).abs() <= 1.0e-6
+                            && (face.bounds_mm.max.z - bounds.max.z).abs() <= 1.0e-6
+                    }
+                    1 => {
+                        (face.bounds_mm.min.z - bounds.min.z).abs() <= 1.0e-6
+                            && (face.bounds_mm.max.z - bounds.min.z).abs() <= 1.0e-6
+                    }
+                    _ if arc_side => {
+                        (face.bounds_mm.min.z - bounds.min.z).abs() <= 1.0e-6
+                            && (face.bounds_mm.max.z - bounds.max.z).abs() <= 1.0e-6
+                            && (clipped_arc_face_ordinal
+                                .is_some_and(|ordinal| face.ordinal == ordinal)
+                                || arc_reference_points.is_some_and(|points| {
+                                    points.into_iter().all(|point| {
+                                        point[0] >= face.bounds_mm.min.x - 1.0e-6
+                                            && point[0] <= face.bounds_mm.max.x + 1.0e-6
+                                            && point[1] >= face.bounds_mm.min.y - 1.0e-6
+                                            && point[1] <= face.bounds_mm.max.y + 1.0e-6
+                                    })
+                                }))
+                    }
+                    _ => {
+                        (if first_line_survives {
+                            &line_reference_bounds[..1]
+                        } else {
+                            line_reference_bounds.as_slice()
+                        })
+                        .iter()
+                        .any(|side_bounds| {
+                            (face.bounds_mm.min.x - side_bounds.0).abs() <= 1.0e-6
+                                && (face.bounds_mm.min.y - side_bounds.1).abs() <= 1.0e-6
+                                && (face.bounds_mm.max.x - side_bounds.2).abs() <= 1.0e-6
+                                && (face.bounds_mm.max.y - side_bounds.3).abs() <= 1.0e-6
+                        }) && (face.bounds_mm.min.z - bounds.min.z).abs() <= 1.0e-6
+                            && (face.bounds_mm.max.z - bounds.max.z).abs() <= 1.0e-6
+                    }
+                }
+            })
+            .collect::<Vec<_>>();
+        let [face] = candidates.as_slice() else {
+            return Err(parameter_error(
+                GeometryErrorCode::InvalidShape,
+                operation,
+                &output.input_digest,
+                format!(
+                    "Polygon {operation_name} role {semantic_role} has {} candidates",
+                    candidates.len()
+                ),
+            ));
+        };
+        output.topology_history.push(HistoryEvidence {
+            semantic_role: Some(semantic_role.to_owned()),
+            relation: relation.to_owned(),
+            source_element_id: source_element_id.to_owned(),
+            output_face_ordinal: Some(face.ordinal),
+            output_edge_ordinal: None,
+        });
+        references.push(SubshapeRef {
+            document_id: document_id.to_owned(),
+            producer_feature_id: producer_feature_id.to_owned(),
+            semantic_role: semantic_role.to_owned(),
+            source_element_id: source_element_id.to_owned(),
+            expected_type: expected_type.to_owned(),
+            stability_class: StabilityClass::Guaranteed,
+            backend_fingerprint: output.backend_fingerprint.to_owned(),
+            lineage_digest: stable_digest(&format!(
+                "{document_id}:{producer_feature_id}:{semantic_role}:{source_element_id}:{expected_type}"
+            )),
+            corroborating_geometry_fingerprint: face.geometric_fingerprint.clone(),
+        });
+    }
+    Ok(references)
+}
+
+pub fn capture_polygon_through_cut_references(
+    output: &mut ExactOpOutput,
+    document_id: &str,
+    producer_feature_id: &str,
+    pocket_floor_z: Option<f64>,
+    pocket_profile: Option<&[PlanarProfileSegment]>,
+) -> Result<Vec<SubshapeRef>, GeometryError> {
+    let operation = "capture_polygon_through_cut_references";
+    if !has_closed_revolve_adjacency(&output.body.topology) {
+        return Err(parameter_error(
+            GeometryErrorCode::InvalidShape,
+            operation,
+            &output.input_digest,
+            "Polygon cut lacks complete face/edge adjacency".to_owned(),
+        ));
+    }
+    let required = [
+        ("extrusion.top", "profile.face"),
+        ("extrusion.bottom", "profile.face"),
+        ("extrusion.side(profile_edge=east)", "profile.edge.east"),
+        ("through_cut.wall.line.0", "cut_profile.edge.line.0"),
+    ];
+    let mut references = required
+        .into_iter()
+        .map(|(semantic_role, source_element_id)| {
+            let mut candidates = output
+                .topology_history
+                .iter()
+                .filter(|entry| {
+                    entry.semantic_role.as_deref() == Some(semantic_role)
+                        && entry.source_element_id == source_element_id
+                })
+                .filter_map(|entry| entry.output_face_ordinal)
+                .collect::<Vec<_>>();
+            if candidates.len() != 1
+                && semantic_role == "through_cut.wall.line.0"
+                && let (
+                    Some(floor_z),
+                    Some(PlanarProfileSegment::Line { start_mm, end_mm }),
+                ) = (
+                    pocket_floor_z,
+                    pocket_profile.and_then(|profile| {
+                        profile
+                            .iter()
+                            .find(|segment| matches!(segment, PlanarProfileSegment::Line { .. }))
+                    }),
+                )
+            {
+                let min_x = start_mm[0].min(end_mm[0]);
+                let min_y = start_mm[1].min(end_mm[1]);
+                let max_x = start_mm[0].max(end_mm[0]);
+                let max_y = start_mm[1].max(end_mm[1]);
+                let top_z = output.body.topology.bounds_mm.max.z;
+                candidates = output
+                    .body
+                    .topology
+                    .faces
+                    .iter()
+                    .filter(|face| {
+                        face.surface_kind == "plane"
+                            && (face.bounds_mm.min.x - min_x).abs() <= 1.0e-6
+                            && (face.bounds_mm.min.y - min_y).abs() <= 1.0e-6
+                            && (face.bounds_mm.max.x - max_x).abs() <= 1.0e-6
+                            && (face.bounds_mm.max.y - max_y).abs() <= 1.0e-6
+                            && (face.bounds_mm.min.z - floor_z).abs() <= 1.0e-6
+                            && (face.bounds_mm.max.z - top_z).abs() <= 1.0e-6
+                    })
+                    .map(|face| face.ordinal)
+                    .collect();
+            }
+            let [ordinal] = candidates.as_slice() else {
+                return Err(parameter_error(
+                    GeometryErrorCode::InvalidShape,
+                    operation,
+                    &output.input_digest,
+                    format!("Polygon cut role {semantic_role} is ambiguous"),
+                ));
+            };
+            let face = output
+                .body
+                .topology
+                .faces
+                .iter()
+                .find(|face| face.ordinal == *ordinal && face.surface_kind == "plane")
+                .ok_or_else(|| {
+                    parameter_error(
+                        GeometryErrorCode::InvalidShape,
+                        operation,
+                        &output.input_digest,
+                        format!("Polygon cut role {semantic_role} is not planar"),
+                    )
+                })?;
+            let expected_type = "planar_face";
+            Ok(SubshapeRef {
+                document_id: document_id.to_owned(),
+                producer_feature_id: producer_feature_id.to_owned(),
+                semantic_role: semantic_role.to_owned(),
+                source_element_id: source_element_id.to_owned(),
+                expected_type: expected_type.to_owned(),
+                stability_class: StabilityClass::Guaranteed,
+                backend_fingerprint: output.backend_fingerprint.to_owned(),
+                lineage_digest: stable_digest(&format!(
+                    "{document_id}:{producer_feature_id}:{semantic_role}:{source_element_id}:{expected_type}"
+                )),
+                corroborating_geometry_fingerprint: face.geometric_fingerprint.clone(),
+            })
+        })
+        .collect::<Result<Vec<_>, GeometryError>>()?;
+    for reference in &references {
+        if !output.topology_history.iter().any(|entry| {
+            entry.semantic_role.as_deref() == Some(reference.semantic_role.as_str())
+                && entry.source_element_id == reference.source_element_id
+                && entry.output_face_ordinal.is_some()
+        }) {
+            let ordinal = output
+                .body
+                .topology
+                .faces
+                .iter()
+                .find(|face| {
+                    face.geometric_fingerprint == reference.corroborating_geometry_fingerprint
+                })
+                .map(|face| face.ordinal)
+                .ok_or_else(|| {
+                    parameter_error(
+                        GeometryErrorCode::InvalidShape,
+                        operation,
+                        &output.input_digest,
+                        "Polygon pocket classified face disappeared".to_owned(),
+                    )
+                })?;
+            output.topology_history.push(HistoryEvidence {
+                semantic_role: Some(reference.semantic_role.clone()),
+                relation: "polygon_pocket_classification".to_owned(),
+                source_element_id: reference.source_element_id.clone(),
+                output_face_ordinal: Some(ordinal),
+                output_edge_ordinal: None,
+            });
+        }
+    }
+    if let Some(floor_z) = pocket_floor_z {
+        let candidates = output
+            .body
+            .topology
+            .faces
+            .iter()
+            .filter(|face| {
+                face.surface_kind == "plane"
+                    && (face.bounds_mm.min.z - floor_z).abs() <= 1.0e-6
+                    && (face.bounds_mm.max.z - floor_z).abs() <= 1.0e-6
+            })
+            .collect::<Vec<_>>();
+        let [face] = candidates.as_slice() else {
+            return Err(parameter_error(
+                GeometryErrorCode::InvalidShape,
+                operation,
+                &output.input_digest,
+                format!("Polygon pocket floor has {} candidates", candidates.len()),
+            ));
+        };
+        let semantic_role = "pocket.floor";
+        let source_element_id = "pocket_profile.face";
+        output.topology_history.push(HistoryEvidence {
+            semantic_role: Some(semantic_role.to_owned()),
+            relation: "polygon_pocket_classification".to_owned(),
+            source_element_id: source_element_id.to_owned(),
+            output_face_ordinal: Some(face.ordinal),
+            output_edge_ordinal: None,
+        });
+        let expected_type = "planar_face";
         references.push(SubshapeRef {
             document_id: document_id.to_owned(),
             producer_feature_id: producer_feature_id.to_owned(),
@@ -3204,6 +4203,10 @@ pub fn capture_rectangular_split_references(
         };
         let face_ordinal = face.ordinal;
         let corroborating_geometry_fingerprint = face.geometric_fingerprint.clone();
+        output.topology_history.retain(|entry| {
+            entry.semantic_role.as_deref() != Some(semantic_role)
+                || entry.source_element_id != source_element_id
+        });
         output.topology_history.push(HistoryEvidence {
             semantic_role: Some(semantic_role.to_owned()),
             relation: "rectangular_split_classification".to_owned(),
@@ -3226,6 +4229,143 @@ pub fn capture_rectangular_split_references(
             corroborating_geometry_fingerprint,
         });
     }
+    Ok(references)
+}
+
+pub fn capture_profile_split_references(
+    output: &mut ExactOpOutput,
+    document_id: &str,
+    producer_feature_id: &str,
+    profile: &[PlanarProfileSegment],
+) -> Result<Vec<SubshapeRef>, GeometryError> {
+    let mut references =
+        capture_rectangular_split_references(output, document_id, producer_feature_id)?;
+    if !profile
+        .iter()
+        .any(|segment| matches!(segment, PlanarProfileSegment::CircularArc { .. }))
+    {
+        return Ok(references);
+    }
+    let bounds = output.body.topology.bounds_mm;
+    let arc_reference_points = profile
+        .iter()
+        .filter_map(|segment| match segment {
+            PlanarProfileSegment::CircularArc {
+                start_mm,
+                end_mm,
+                center_mm,
+                ..
+            } => Some([*start_mm, *end_mm, *center_mm]),
+            PlanarProfileSegment::Line { .. } => None,
+        })
+        .collect::<Vec<_>>();
+    let surviving_arc_reference_points = arc_reference_points.iter().find(|points| {
+        points.iter().all(|point| {
+            point[0] >= bounds.min.x - 1.0e-6
+                && point[0] <= bounds.max.x + 1.0e-6
+                && point[1] >= bounds.min.y - 1.0e-6
+                && point[1] <= bounds.max.y + 1.0e-6
+        })
+    });
+    let candidates = output
+        .body
+        .topology
+        .faces
+        .iter()
+        .filter(|face| {
+            face.surface_kind == "other"
+                && (face.bounds_mm.min.z - bounds.min.z).abs() <= 1.0e-6
+                && (face.bounds_mm.max.z - bounds.max.z).abs() <= 1.0e-6
+                && surviving_arc_reference_points.is_none_or(|points| {
+                    points.iter().all(|point| {
+                        point[0] >= face.bounds_mm.min.x - 1.0e-6
+                            && point[0] <= face.bounds_mm.max.x + 1.0e-6
+                            && point[1] >= face.bounds_mm.min.y - 1.0e-6
+                            && point[1] <= face.bounds_mm.max.y + 1.0e-6
+                    })
+                })
+        })
+        .collect::<Vec<_>>();
+    let (face, semantic_role, source_element_id, expected_type) =
+        if let [face] = candidates.as_slice() {
+            (
+                *face,
+                "extrusion.side(profile_edge=arc.0)",
+                "profile.edge.arc.0",
+                "face",
+            )
+        } else {
+            let line_bounds = profile
+                .iter()
+                .filter_map(|segment| match segment {
+                    PlanarProfileSegment::Line { start_mm, end_mm } => Some([
+                        start_mm[0].min(end_mm[0]),
+                        start_mm[1].min(end_mm[1]),
+                        start_mm[0].max(end_mm[0]),
+                        start_mm[1].max(end_mm[1]),
+                    ]),
+                    PlanarProfileSegment::CircularArc { .. } => None,
+                })
+                .collect::<Vec<_>>();
+            let line_candidates = output
+                .body
+                .topology
+                .faces
+                .iter()
+                .filter(|face| {
+                    face.surface_kind == "plane"
+                        && (face.bounds_mm.min.z - bounds.min.z).abs() <= 1.0e-6
+                        && (face.bounds_mm.max.z - bounds.max.z).abs() <= 1.0e-6
+                        && line_bounds.iter().any(|line| {
+                            (face.bounds_mm.min.x - line[0]).abs() <= 1.0e-6
+                                && (face.bounds_mm.min.y - line[1]).abs() <= 1.0e-6
+                                && (face.bounds_mm.max.x - line[2]).abs() <= 1.0e-6
+                                && (face.bounds_mm.max.y - line[3]).abs() <= 1.0e-6
+                        })
+                })
+                .collect::<Vec<_>>();
+            let [face] = line_candidates.as_slice() else {
+                return Err(parameter_error(
+                    GeometryErrorCode::InvalidShape,
+                    "capture_profile_split_references",
+                    &output.input_digest,
+                    format!(
+                        "Mixed-profile Split side has {} arc and {} line candidates",
+                        candidates.len(),
+                        line_candidates.len()
+                    ),
+                ));
+            };
+            (
+                *face,
+                "extrusion.side(profile_edge=line.0)",
+                "profile.edge.line.0",
+                "planar_face",
+            )
+        };
+    let face_ordinal = face.ordinal;
+    let corroborating_geometry_fingerprint = face.geometric_fingerprint.clone();
+    references.retain(|reference| reference.semantic_role != "extrusion.side(profile_edge=east)");
+    output.topology_history.push(HistoryEvidence {
+        semantic_role: Some(semantic_role.to_owned()),
+        relation: "profile_split_classification".to_owned(),
+        source_element_id: source_element_id.to_owned(),
+        output_face_ordinal: Some(face_ordinal),
+        output_edge_ordinal: None,
+    });
+    references.push(SubshapeRef {
+        document_id: document_id.to_owned(),
+        producer_feature_id: producer_feature_id.to_owned(),
+        semantic_role: semantic_role.to_owned(),
+        source_element_id: source_element_id.to_owned(),
+        expected_type: expected_type.to_owned(),
+        stability_class: StabilityClass::Guaranteed,
+        backend_fingerprint: output.backend_fingerprint.to_owned(),
+        lineage_digest: stable_digest(&format!(
+            "{document_id}:{producer_feature_id}:{semantic_role}:{source_element_id}:{expected_type}"
+        )),
+        corroborating_geometry_fingerprint,
+    });
     Ok(references)
 }
 
@@ -3884,16 +5024,17 @@ fn validate_mixed_profile(
             diagnostic,
         )
     };
+    let line_only = segments
+        .iter()
+        .all(|segment| matches!(segment, PlanarProfileSegment::Line { .. }));
     if !(2..=64).contains(&segments.len())
         || !segments
             .iter()
             .any(|segment| matches!(segment, PlanarProfileSegment::Line { .. }))
-        || !segments
-            .iter()
-            .any(|segment| matches!(segment, PlanarProfileSegment::CircularArc { .. }))
+        || (line_only && segments.len() < 3)
     {
         return Err(invalid(
-            "Mixed profile requires 2..=64 segments including a line and a circular arc".to_owned(),
+            "Segmented profile requires 2..=64 segments, including at least one line; line-only polygons require at least three lines".to_owned(),
         ));
     }
     let endpoints = |segment: &PlanarProfileSegment| match segment {
@@ -3934,7 +5075,232 @@ fn validate_mixed_profile(
             return Err(invalid(format!("Profile is open after segment {index}")));
         }
     }
+    if line_only && !is_simple_linear_planar_profile(segments) {
+        return Err(invalid(
+            "Line-only profile must be a simple non-degenerate polygon".to_owned(),
+        ));
+    }
     Ok(())
+}
+
+fn is_capsule_mixed_profile(segments: &[PlanarProfileSegment]) -> bool {
+    let vectors = |arc: bool| {
+        segments
+            .iter()
+            .filter_map(|segment| match segment {
+                PlanarProfileSegment::Line { start_mm, end_mm } if !arc => {
+                    Some((*start_mm, *end_mm, None))
+                }
+                PlanarProfileSegment::CircularArc {
+                    start_mm,
+                    end_mm,
+                    center_mm,
+                    ..
+                } if arc => Some((*start_mm, *end_mm, Some(*center_mm))),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    let lines = vectors(false);
+    let arcs = vectors(true);
+    if segments.len() != 4 || lines.len() != 2 || arcs.len() != 2 {
+        return false;
+    }
+    let vector = |(start, end, _): &([f64; 2], [f64; 2], Option<[f64; 2]>)| {
+        [end[0] - start[0], end[1] - start[1]]
+    };
+    let line = vector(&lines[0]);
+    let opposite_line = vector(&lines[1]);
+    let diameter = vector(&arcs[0]);
+    let opposite_diameter = vector(&arcs[1]);
+    let scale = line
+        .into_iter()
+        .chain(opposite_line)
+        .chain(diameter)
+        .chain(opposite_diameter)
+        .map(f64::abs)
+        .fold(1.0, f64::max);
+    let tolerance = scale * 1.0e-9;
+    let opposite = |left: [f64; 2], right: [f64; 2]| {
+        (left[0] + right[0]).abs() <= tolerance && (left[1] + right[1]).abs() <= tolerance
+    };
+    opposite(line, opposite_line)
+        && opposite(diameter, opposite_diameter)
+        && (line[0] * diameter[0] + line[1] * diameter[1]).abs() <= tolerance * scale
+        && arcs.iter().all(|(start, end, center)| {
+            let center = center.expect("filtered circular arc");
+            (center[0] * 2.0 - start[0] - end[0]).abs() <= tolerance
+                && (center[1] * 2.0 - start[1] - end[1]).abs() <= tolerance
+        })
+}
+
+fn is_rounded_rectangle_mixed_profile(segments: &[PlanarProfileSegment]) -> bool {
+    if segments.len() != 8
+        || segments.iter().enumerate().any(|(index, segment)| {
+            matches!(segment, PlanarProfileSegment::Line { .. }) != index.is_multiple_of(2)
+        })
+    {
+        return false;
+    }
+    let scale = segments
+        .iter()
+        .flat_map(|segment| match segment {
+            PlanarProfileSegment::Line { start_mm, end_mm } => {
+                [start_mm[0], start_mm[1], end_mm[0], end_mm[1], 0.0, 0.0]
+            }
+            PlanarProfileSegment::CircularArc {
+                start_mm,
+                end_mm,
+                center_mm,
+                ..
+            } => [
+                start_mm[0],
+                start_mm[1],
+                end_mm[0],
+                end_mm[1],
+                center_mm[0],
+                center_mm[1],
+            ],
+        })
+        .map(f64::abs)
+        .fold(1.0, f64::max);
+    let tolerance = scale * 1.0e-9;
+    let lines = segments
+        .iter()
+        .step_by(2)
+        .map(|segment| match segment {
+            PlanarProfileSegment::Line { start_mm, end_mm } => {
+                [end_mm[0] - start_mm[0], end_mm[1] - start_mm[1]]
+            }
+            PlanarProfileSegment::CircularArc { .. } => unreachable!(),
+        })
+        .collect::<Vec<_>>();
+    let opposite = |left: [f64; 2], right: [f64; 2]| {
+        (left[0] + right[0]).abs() <= tolerance && (left[1] + right[1]).abs() <= tolerance
+    };
+    if lines
+        .iter()
+        .any(|line| (line[0].abs() <= tolerance) == (line[1].abs() <= tolerance))
+        || !opposite(lines[0], lines[2])
+        || !opposite(lines[1], lines[3])
+        || (lines[0][0] * lines[1][0] + lines[0][1] * lines[1][1]).abs() > tolerance * scale
+    {
+        return false;
+    }
+    let mut radius = None::<f64>;
+    let mut clockwise = None::<bool>;
+    segments
+        .iter()
+        .enumerate()
+        .skip(1)
+        .step_by(2)
+        .all(|(index, segment)| {
+            let PlanarProfileSegment::CircularArc {
+                start_mm,
+                end_mm,
+                center_mm,
+                clockwise: arc_clockwise,
+            } = segment
+            else {
+                return false;
+            };
+            let start_radius = [start_mm[0] - center_mm[0], start_mm[1] - center_mm[1]];
+            let end_radius = [end_mm[0] - center_mm[0], end_mm[1] - center_mm[1]];
+            let arc_radius = start_radius[0].hypot(start_radius[1]);
+            let cross = start_radius[0] * end_radius[1] - start_radius[1] * end_radius[0];
+            let previous_line = lines[(index - 1) / 2];
+            let next_line = lines[index.div_ceil(2) % lines.len()];
+            let valid = arc_radius > tolerance
+                && (arc_radius - end_radius[0].hypot(end_radius[1])).abs() <= tolerance
+                && (start_radius[0] * end_radius[0] + start_radius[1] * end_radius[1]).abs()
+                    <= tolerance * scale
+                && (previous_line[0] * start_radius[0] + previous_line[1] * start_radius[1]).abs()
+                    <= tolerance * scale
+                && (next_line[0] * end_radius[0] + next_line[1] * end_radius[1]).abs()
+                    <= tolerance * scale
+                && if *arc_clockwise {
+                    cross < -tolerance
+                } else {
+                    cross > tolerance
+                }
+                && radius.is_none_or(|expected| (arc_radius - expected).abs() <= tolerance)
+                && clockwise.is_none_or(|expected| expected == *arc_clockwise);
+            radius.get_or_insert(arc_radius);
+            clockwise.get_or_insert(*arc_clockwise);
+            valid
+        })
+}
+
+fn is_simple_linear_planar_profile(segments: &[PlanarProfileSegment]) -> bool {
+    let points = segments
+        .iter()
+        .filter_map(|segment| match segment {
+            PlanarProfileSegment::Line { start_mm, .. } => Some(*start_mm),
+            PlanarProfileSegment::CircularArc { .. } => None,
+        })
+        .collect::<Vec<_>>();
+    if points.len() != segments.len()
+        || points.iter().enumerate().any(|(index, point)| {
+            points[index + 1..].iter().any(|candidate| {
+                (point[0] - candidate[0]).abs() <= 1.0e-9
+                    && (point[1] - candidate[1]).abs() <= 1.0e-9
+            })
+        })
+    {
+        return false;
+    }
+    let twice_area = points
+        .iter()
+        .zip(points.iter().cycle().skip(1))
+        .take(points.len())
+        .map(|(left, right)| left[0] * right[1] - right[0] * left[1])
+        .sum::<f64>();
+    if !twice_area.is_finite() || twice_area.abs() <= 1.0e-9 {
+        return false;
+    }
+    for left in 0..points.len() {
+        let left_next = (left + 1) % points.len();
+        for right in (left + 1)..points.len() {
+            let right_next = (right + 1) % points.len();
+            if left == right_next || left_next == right {
+                continue;
+            }
+            if planar_segments_intersect(
+                points[left],
+                points[left_next],
+                points[right],
+                points[right_next],
+            ) {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+fn planar_segments_intersect(a: [f64; 2], b: [f64; 2], c: [f64; 2], d: [f64; 2]) -> bool {
+    let cross = |start: [f64; 2], end: [f64; 2], point: [f64; 2]| {
+        (end[0] - start[0]) * (point[1] - start[1]) - (end[1] - start[1]) * (point[0] - start[0])
+    };
+    let on_segment = |start: [f64; 2], end: [f64; 2], point: [f64; 2]| {
+        point[0] >= start[0].min(end[0]) - 1.0e-9
+            && point[0] <= start[0].max(end[0]) + 1.0e-9
+            && point[1] >= start[1].min(end[1]) - 1.0e-9
+            && point[1] <= start[1].max(end[1]) + 1.0e-9
+    };
+    let ab_c = cross(a, b, c);
+    let ab_d = cross(a, b, d);
+    let cd_a = cross(c, d, a);
+    let cd_b = cross(c, d, b);
+    if ((ab_c > 1.0e-9 && ab_d < -1.0e-9) || (ab_c < -1.0e-9 && ab_d > 1.0e-9))
+        && ((cd_a > 1.0e-9 && cd_b < -1.0e-9) || (cd_a < -1.0e-9 && cd_b > 1.0e-9))
+    {
+        return true;
+    }
+    (ab_c.abs() <= 1.0e-9 && on_segment(a, b, c))
+        || (ab_d.abs() <= 1.0e-9 && on_segment(a, b, d))
+        || (cd_a.abs() <= 1.0e-9 && on_segment(c, d, a))
+        || (cd_b.abs() <= 1.0e-9 && on_segment(c, d, b))
 }
 
 fn validate_circle(

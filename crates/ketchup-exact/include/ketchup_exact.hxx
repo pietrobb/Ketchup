@@ -80,7 +80,31 @@ std::unique_ptr<NativeOperationResult> cut_box_native(
     const NativeOperationResult& base,
     double origin_x, double origin_y, double origin_z,
     double size_x, double size_y, double size_z) noexcept;
+std::unique_ptr<NativeOperationResult> cut_mixed_profile_native(
+    const NativeOperationResult& base, rust::Slice<const double> segments,
+    double origin_z, double height) noexcept;
+std::unique_ptr<NativeOperationResult> fuse_mixed_profile_native(
+    const NativeOperationResult& base, rust::Slice<const double> segments,
+    double origin_z, double height) noexcept;
+std::unique_ptr<NativeOperationResult> common_mixed_profile_native(
+    const NativeOperationResult& base, rust::Slice<const double> segments,
+    double origin_z, double height) noexcept;
+std::unique_ptr<NativeOperationResult> split_mixed_profile_native(
+    const NativeOperationResult& base, rust::Slice<const double> segments,
+    double origin_z, double height) noexcept;
 std::unique_ptr<NativeOperationResult> cut_cylinder_native(
+    const NativeOperationResult& base,
+    double center_x, double center_y, double origin_z,
+    double radius, double height) noexcept;
+std::unique_ptr<NativeOperationResult> fuse_cylinder_native(
+    const NativeOperationResult& base,
+    double center_x, double center_y, double origin_z,
+    double radius, double height) noexcept;
+std::unique_ptr<NativeOperationResult> common_cylinder_native(
+    const NativeOperationResult& base,
+    double center_x, double center_y, double origin_z,
+    double radius, double height) noexcept;
+std::unique_ptr<NativeOperationResult> split_cylinder_native(
     const NativeOperationResult& base,
     double center_x, double center_y, double origin_z,
     double radius, double height) noexcept;

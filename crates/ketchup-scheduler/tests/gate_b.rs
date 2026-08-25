@@ -407,10 +407,14 @@ fn write_metrics(
     transport_percent: &[f64],
     in_process_ms: &[f64],
 ) {
-    let artifact_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .join("artifacts/gate-b");
-    std::fs::create_dir_all(&artifact_dir).unwrap();
+    let metrics_path = std::env::var_os("KETCHUP_GATE_B_METRICS_PATH")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../..")
+                .join("artifacts/gate-b/metrics.json")
+        });
+    std::fs::create_dir_all(metrics_path.parent().unwrap()).unwrap();
     let mut json = String::new();
     writeln!(json, "{{").unwrap();
     writeln!(json, "  \"gate\": \"B\",").unwrap();
@@ -533,7 +537,7 @@ fn write_metrics(
     );
     write_samples(&mut json, "in_process_ms", in_process_ms, false);
     writeln!(json, "}}").unwrap();
-    std::fs::write(artifact_dir.join("metrics.json"), json).unwrap();
+    std::fs::write(metrics_path, json).unwrap();
 }
 
 fn write_samples(json: &mut String, name: &str, samples: &[f64], comma: bool) {

@@ -1,0 +1,151 @@
+{
+  "schema_version": 1,
+  "freeze_id": "r0-v1",
+  "authority": "serial-headless-egui-kittest-accesskit",
+  "tasks": [
+    {
+      "id": "T01",
+      "expected_intent": "CreateRectangularProfile",
+      "command_batch_shape": ["CreateSketch", "CreateRectangle", "SetDimension", "SetDimension"],
+      "tests": [{"target": "capstone", "test": "an_exact_rectangle_becomes_a_solid_through_exact_push_pull"}],
+      "oracles": {"state": ["unit=mm", "width=100", "depth=60", "closed_profile=true", "constraint_residual<=1e-9"], "diff": [], "loss": []}
+    },
+    {
+      "id": "T02",
+      "expected_intent": "ExtrudeProfile",
+      "command_batch_shape": ["CreateExtrusion"],
+      "tests": [{"target": "face_workflow_ui", "test": "localized_serial_rectangle_to_hover_bound_push_pull_uses_the_viewport_value_box"}],
+      "oracles": {"state": ["distance=20", "direction=+Z", "valid_exact_solid=true", "volume_mm3=120000"], "diff": [], "loss": []}
+    },
+    {
+      "id": "T03",
+      "expected_intent": "SetFeatureParameter",
+      "command_batch_shape": ["SetParameter"],
+      "tests": [{"target": "feature_history_ui", "test": "serial_history_panel_edits_cancels_suppresses_resumes_and_undoes_atomically"}],
+      "oracles": {"state": ["extrusion_distance=35", "profile_dimensions_unchanged=true", "volume_mm3=210000"], "diff": ["no_cumulative_drift=true"], "loss": []}
+    },
+    {
+      "id": "T04",
+      "expected_intent": "CreateThroughCut",
+      "command_batch_shape": ["CreateSketch", "CreateRectangle", "SetDimension", "SetDimension", "CreateCut"],
+      "tests": [{"target": "headless_shell", "test": "cut_through_commits_one_canonical_undo_step_from_the_headless_shell"}],
+      "oracles": {"state": ["opening_width=40", "opening_depth=20", "through_all=true", "valid_exact_solid=true", "volume_mm3=104000"], "diff": [], "loss": []}
+    },
+    {
+      "id": "T05",
+      "expected_intent": "SmartPushPullSourceParameter",
+      "command_batch_shape": ["SetParameter"],
+      "tests": [{"target": "face_workflow_ui", "test": "press_drag_release_preserves_live_preview_and_commits_one_reviewed_step"}],
+      "oracles": {"state": ["source_extrusion_selected_unambiguously=true", "extrusion_distance=30"], "diff": ["action_digest_declares_parameter_change=true"], "loss": []}
+    },
+    {
+      "id": "T06",
+      "expected_intent": "SmartPushPullNeedsChoice",
+      "command_batch_shape": [],
+      "tests": [{"target": "headless_shell", "test": "localized_smart_push_pull_chooser_cancels_without_mutation_through_accesskit"}],
+      "oracles": {"state": [], "diff": ["choice_required=true", "document_revision_unchanged=true", "no_silent_source_selection=true"], "loss": []}
+    },
+    {
+      "id": "T07",
+      "expected_intent": "MoveOccurrence",
+      "command_batch_shape": ["SetOccurrenceTransform"],
+      "tests": [{"target": "assistant_m7", "test": "assistant_occurrence_translation_review_is_exact_observational_and_undoable"}],
+      "oracles": {"state": ["translation_mm=[25,-10,5]", "definition_geometry_unchanged=true", "canonical_transform_exact=true"], "diff": [], "loss": []}
+    },
+    {
+      "id": "T08",
+      "expected_intent": "CopyOccurrenceWithSnap",
+      "command_batch_shape": ["CreateOccurrence", "SetOccurrenceTransform"],
+      "tests": [{"target": "headless_shell", "test": "ctrl_copy_drag_snaps_source_endpoint_exactly_to_target_endpoint"}],
+      "oracles": {"state": ["definition_is_shared=true", "snap_target_exact=true", "source_occurrence_unchanged=true"], "diff": [], "loss": []}
+    },
+    {
+      "id": "T09",
+      "expected_intent": "CreateSharedOccurrences",
+      "command_batch_shape": ["CreateDefinition", "CreateOccurrence", "CreateOccurrence", "CreateOccurrence"],
+      "tests": [{"target": "assembly_ui", "test": "rigid_assembly_authoring_is_previewed_atomic_undoable_and_losslessly_persistent"}],
+      "oracles": {"state": ["definition_count=1", "occurrence_count=3", "authoritative_geometry_instances=1"], "diff": [], "loss": []}
+    },
+    {
+      "id": "T10",
+      "expected_intent": "EditDefinitionParameter",
+      "command_batch_shape": ["SetParameter"],
+      "tests": [{"target": "feature_history_ui", "test": "shared_change_impact_panel_is_accessible_observational_and_commits_atomically"}],
+      "oracles": {"state": ["definition_width=480", "all_occurrences_updated=true", "occurrence_transforms_unchanged=true"], "diff": [], "loss": []}
+    },
+    {
+      "id": "T11",
+      "expected_intent": "MakeOccurrenceUnique",
+      "command_batch_shape": ["CloneDefinition", "RebindOccurrenceDefinition"],
+      "tests": [{"target": "feature_history_ui", "test": "make_unique_choice_previews_selected_fork_and_commits_one_undo_step"}],
+      "oracles": {"state": ["definition_count=2", "only_selected_occurrence_rebound=true", "geometry_initially_equivalent=true"], "diff": [], "loss": []}
+    },
+    {
+      "id": "T12",
+      "expected_intent": "CreateGroupAndEnterContext",
+      "command_batch_shape": ["CreateGroup", "ReparentEntity", "ReparentEntity"],
+      "tests": [{"target": "capstone_chain", "test": "the_manual_capstone_runs_end_to_end_through_the_designed_shell"}],
+      "oracles": {"state": ["group_members=2", "third_box_parent_unchanged=true"], "diff": ["edit_context_is_ephemeral=true"], "loss": []}
+    },
+    {
+      "id": "T13",
+      "expected_intent": "SetTagVisibility",
+      "command_batch_shape": ["SetTagVisibility"],
+      "tests": [{"target": "assistant_m7", "test": "furniture_tag_visibility_uses_accessible_review_without_changing_geometry_ownership"}],
+      "oracles": {"state": ["tag_visible=false", "geometry_ownership_unchanged=true", "entity_count_unchanged=true"], "diff": [], "loss": []}
+    },
+    {
+      "id": "T14",
+      "expected_intent": "CreateLinearPattern",
+      "command_batch_shape": ["CreateLinearPattern"],
+      "tests": [{"target": "headless_shell", "test": "exact_linear_pattern_previews_then_commits_one_shared_definition_batch"}],
+      "oracles": {"state": ["copy_count=5", "spacing_mm=200", "direction=+X", "definition_is_shared=true"], "diff": [], "loss": []}
+    },
+    {
+      "id": "T15",
+      "expected_intent": "SetParameterExpression",
+      "command_batch_shape": ["SetParameterExpression"],
+      "tests": [{"target": "headless_shell", "test": "parameter_expression_recomputes_dependents_atomically_and_round_trips_through_the_shell"}],
+      "oracles": {"state": ["expression=width/2", "dependency_edge_present=true", "evaluated_value_exact=true"], "diff": [], "loss": []}
+    },
+    {
+      "id": "T16",
+      "expected_intent": "SetFeatureParameter",
+      "command_batch_shape": ["SetParameter"],
+      "tests": [{"target": "headless_shell", "test": "parameter_expression_recomputes_dependents_atomically_and_round_trips_through_the_shell"}],
+      "oracles": {"state": ["width=720"], "diff": ["only_transitive_dependents_recomputed=true", "independent_node_recompute_count=0"], "loss": []}
+    },
+    {
+      "id": "T17",
+      "expected_intent": "SaveAndReopenDocument",
+      "command_batch_shape": [],
+      "tests": [{"target": "file_workflow", "test": "save_as_then_new_then_open_restores_the_same_canonical_document"}],
+      "oracles": {"state": ["canonical_digest_unchanged=true", "dimensions_unchanged=true", "references_resolve_or_report_explicitly=true", "cache_not_required=true"], "diff": [], "loss": []}
+    },
+    {
+      "id": "T18",
+      "expected_intent": "AtomicMultiCommandEdit",
+      "command_batch_shape": ["SetOccurrenceTransform", "AssignTag", "RenameEntity"],
+      "tests": [{"target": "assistant_m7", "test": "canonical_t18_move_tag_and_rename_is_one_accessible_atomic_undo_step"}],
+      "oracles": {"state": ["visible_undo_steps=1", "undo_restores_prior_digest=true", "redo_restores_committed_digest=true"], "diff": [], "loss": []}
+    },
+    {
+      "id": "T19",
+      "expected_intent": "ExportArtifacts",
+      "command_batch_shape": [],
+      "tests": [{"target": "file_workflow", "test": "file_menu_exports_current_visible_exact_model_without_mutating_canonical_state"}],
+      "oracles": {"state": ["source_revision_unchanged=true", "step_export_present=true", "stl_export_present=true", "exact_and_mesh_types_not_conflated=true"], "diff": [], "loss": ["mesh_loss_report_present=true"]}
+    },
+    {
+      "id": "T20",
+      "expected_intent": "RiskyParameterizedEdit",
+      "command_batch_shape": ["SetParameter", "SetParameterExpression"],
+      "tests": [
+        {"target": "assistant_m7", "test": "scripted_assistant_model_review_cancel_confirm_undo_and_redo_use_accesskit"},
+        {"target": "assistant_m7", "test": "assistant_dimension_review_preserves_source_and_normalized_value_in_both_locales"},
+        {"target": "assistant_m7", "test": "assistant_confirmation_fails_closed_after_an_unrelated_canonical_revision"}
+      ],
+      "oracles": {"state": ["post_commit_verification=true"], "diff": ["proposal_precedes_commit=true", "assumptions_visible=true", "diff_visible=true", "confirmation_required=true", "dependency_digest_revalidated=true"], "loss": []}
+    }
+  ]
+}

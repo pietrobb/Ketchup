@@ -953,12 +953,32 @@ pub fn solve_rigid_assembly(
     let final_residual = residuals(&state, &mates)?;
     let final_jacobian = numerical_jacobian(&state, &mates, &variables, &final_residual, policy)?;
     let rank = matrix_rank(&final_jacobian, 1.0e-8);
-    let remaining_dof = variables.len() * usize::from(RIGID_BODY_DEGREES_OF_FREEDOM) - rank;
+    let raw_remaining_dof = variables.len() * usize::from(RIGID_BODY_DEGREES_OF_FREEDOM) - rank;
     let maximum_residual = final_residual
         .iter()
         .fold(0.0_f64, |value, residual| value.max(residual.abs()));
     let conflicting_mate_ids = conflicting_mates(&state, &mates, policy)?;
     let redundant_mate_ids = redundant_mates(&state, &mates, &variables, policy)?;
+    let rotationally_symmetric_occurrences = variables
+        .iter()
+        .enumerate()
+        .filter_map(|(variable_index, occurrence_id)| {
+            let local_columns = (0..6)
+                .map(|axis| variable_index * 6 + axis)
+                .collect::<Vec<_>>();
+            let local_jacobian = select_columns(&final_jacobian, &local_columns);
+            let local_remaining =
+                usize::from(RIGID_BODY_DEGREES_OF_FREEDOM) - matrix_rank(&local_jacobian, 1.0e-8);
+            (local_remaining == 1
+                && occurrence_has_bounded_axial_symmetry(
+                    *occurrence_id,
+                    &mates,
+                    &redundant_mate_ids,
+                ))
+            .then_some(*occurrence_id)
+        })
+        .collect::<BTreeSet<_>>();
+    let remaining_dof = raw_remaining_dof.saturating_sub(rotationally_symmetric_occurrences.len());
     let status = if numerical_failure || !maximum_residual.is_finite() {
         AssemblySolveStatus::Failed
     } else if !conflicting_mate_ids.is_empty() {
@@ -983,8 +1003,11 @@ pub fn solve_rigid_assembly(
                 .map(|axis| variable_index * 6 + axis)
                 .collect::<Vec<_>>();
             let local_jacobian = select_columns(&final_jacobian, &local_columns);
-            (usize::from(RIGID_BODY_DEGREES_OF_FREEDOM) - matrix_rank(&local_jacobian, 1.0e-8))
-                as u8
+            let raw_remaining = (usize::from(RIGID_BODY_DEGREES_OF_FREEDOM)
+                - matrix_rank(&local_jacobian, 1.0e-8)) as u8;
+            raw_remaining.saturating_sub(u8::from(
+                rotationally_symmetric_occurrences.contains(&occurrence.id()),
+            ))
         };
         occurrences.push(AssemblySolvedOccurrence {
             occurrence_id: occurrence.id(),
@@ -1257,6 +1280,40 @@ fn select_columns(matrix: &[Vec<f64>], columns: &[usize]) -> Vec<Vec<f64>> {
         .iter()
         .map(|row| columns.iter().map(|column| row[*column]).collect())
         .collect()
+}
+
+fn occurrence_has_bounded_axial_symmetry(
+    occurrence_id: OccurrenceId,
+    mates: &[&AssemblyMate],
+    redundant_mate_ids: &[AssemblyMateId],
+) -> bool {
+    let mut has_planar_seat = false;
+    let mut has_cylindrical_axis = false;
+    for mate in mates {
+        if redundant_mate_ids.contains(&mate.id()) {
+            continue;
+        }
+        let reference = if mate.endpoint_a().occurrence_id() == occurrence_id {
+            Some(mate.endpoint_a().reference())
+        } else if mate.endpoint_b().occurrence_id() == occurrence_id {
+            Some(mate.endpoint_b().reference())
+        } else {
+            None
+        };
+        let Some(reference) = reference else {
+            continue;
+        };
+        match mate.kind() {
+            AssemblyMateKind::CoincidentPlanar { .. } => has_planar_seat = true,
+            AssemblyMateKind::ConcentricAxial { .. }
+                if reference.expected_type == "cylindrical_face" =>
+            {
+                has_cylindrical_axis = true;
+            }
+            _ => {}
+        }
+    }
+    has_planar_seat && has_cylindrical_axis
 }
 
 fn redundant_mates(
