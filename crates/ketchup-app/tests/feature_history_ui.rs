@@ -10,7 +10,7 @@ use ketchup_core::assembly::{
 };
 use ketchup_core::document::{
     BodyId, CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId,
-    FeatureKind, OccurrenceId, Transform,
+    FeatureKind, OccurrenceId, ProfileSegment, Transform,
 };
 use ketchup_core::drawing::{DrawingSheet, DrawingSheetId, DrawingSource};
 use ketchup_core::exact_product::{ExactFaceRole, ExactFeatureChainRequest};
@@ -23,6 +23,8 @@ use std::time::Duration;
 const DEFINITION: DefinitionId = DefinitionId(1);
 const BODY: BodyId = BodyId(1);
 const EXTRUSION: FeatureId = FeatureId(2);
+const FITTING_PROFILE: FeatureId = FeatureId(14);
+const FITTING_POCKET: FeatureId = FeatureId(15);
 const REPLACEMENT_SOURCE: DefinitionId = DefinitionId(1);
 const REPLACEMENT_TARGET: DefinitionId = DefinitionId(2);
 const REPLACEMENT_SOURCE_PROFILE: FeatureId = FeatureId(10);
@@ -234,6 +236,86 @@ fn write_component_replacement_fixture(path: &Path) {
     persistence::save_atomic(path, &document.current()).unwrap();
 }
 
+fn write_movable_fitting_pocket_fixture(path: &Path) {
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DEFINITION,
+                name: "Furniture panel".to_owned(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(12),
+                definition_id: DEFINITION,
+                name: "Panel outline".to_owned(),
+                kind: FeatureKind::Profile {
+                    points_mm: vec![[0.0, 0.0], [40.0, 0.0], [40.0, 30.0], [0.0, 30.0]],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(13),
+                definition_id: DEFINITION,
+                name: "10 mm panel".to_owned(),
+                kind: FeatureKind::Extrusion {
+                    profile: FeatureId(12),
+                    height: Dimension::from_decimal("10").unwrap(),
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: FITTING_PROFILE,
+                definition_id: DEFINITION,
+                name: "Rounded fitting slot".to_owned(),
+                kind: FeatureKind::SegmentProfile {
+                    segments: vec![
+                        ProfileSegment::Line {
+                            start_mm: [10.0, 10.0],
+                            end_mm: [20.0, 10.0],
+                        },
+                        ProfileSegment::CircularArc {
+                            start_mm: [20.0, 10.0],
+                            end_mm: [20.0, 16.0],
+                            center_mm: [20.0, 13.0],
+                            clockwise: false,
+                        },
+                        ProfileSegment::Line {
+                            start_mm: [20.0, 16.0],
+                            end_mm: [10.0, 16.0],
+                        },
+                        ProfileSegment::CircularArc {
+                            start_mm: [10.0, 16.0],
+                            end_mm: [10.0, 10.0],
+                            center_mm: [10.0, 13.0],
+                            clockwise: false,
+                        },
+                    ],
+                    closed: true,
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: FITTING_POCKET,
+                definition_id: DEFINITION,
+                name: "6 mm fitting pocket".to_owned(),
+                kind: FeatureKind::Pocket {
+                    target: FeatureId(13),
+                    profile: FITTING_PROFILE,
+                    depth: Dimension::from_decimal("6").unwrap(),
+                },
+            },
+            CanonicalCommand::CreateOccurrence {
+                id: OccurrenceId(1),
+                definition_id: DEFINITION,
+                name: "Furniture panel".to_owned(),
+                transform: Transform::identity(),
+                parent: None,
+                tag: None,
+                visible: true,
+            },
+        ]))
+        .unwrap();
+    document.discard_history_before_current();
+    persistence::save_atomic(path, &document.current()).unwrap();
+}
+
 fn open_history(shell: &mut Shell) {
     let title = shell.catalog().text("feature-history-title");
     shell.click_role_and_label(Role::Button, &title);
@@ -250,6 +332,29 @@ fn stamp(shell: &Shell) -> (u64, String, usize, usize) {
 
 fn replace_exact_value(shell: &mut Shell, value: &str) {
     let label = shell.catalog().text("feature-history-exact-value");
+    shell.focus_text_input(&label);
+    shell.key(Key::A, ctrl());
+    shell.type_text(value);
+}
+
+fn feature_label(shell: &Shell, feature_id: FeatureId) -> String {
+    let snapshot = shell.app().document_snapshot();
+    let feature = snapshot.feature(feature_id).unwrap();
+    shell.catalog().format(
+        "feature-history-select-feature",
+        &BTreeMap::from([
+            ("name", feature.name().to_owned()),
+            ("id", feature_id.0.to_string()),
+            (
+                "status",
+                shell.catalog().text("feature-history-state-active"),
+            ),
+        ]),
+    )
+}
+
+fn replace_move_value(shell: &mut Shell, value: &str) {
+    let label = shell.catalog().text("feature-history-move-profile-value");
     shell.focus_text_input(&label);
     shell.key(Key::A, ctrl());
     shell.type_text(value);
@@ -364,6 +469,239 @@ fn serial_history_panel_edits_cancels_suppresses_resumes_and_undoes_atomically()
     shell.click_button_label(&preview_edit);
     assert!(!shell.app().feature_history_preview_pending());
     assert_eq!(stamp(&shell), before_invalid);
+}
+
+#[test]
+fn fitting_pocket_moves_through_accesskit_preview_cancel_confirm_and_undo() {
+    let directory = tempfile::tempdir().unwrap();
+    let fixture = directory.path().join("movable-fitting-pocket.ketchup");
+    write_movable_fitting_pocket_fixture(&fixture);
+
+    let dialogs = ScriptedFileDialogs::new()
+        .queue_open(&fixture)
+        .always_discard();
+    let mut shell =
+        Shell::with_catalog_and_dialogs(ketchup_interaction::LocaleCatalog::english(), dialogs);
+    shell.click_menu_command("menu-file", AppCommand::Open);
+    open_history(&mut shell);
+    let profile_label = feature_label(&shell, FITTING_PROFILE);
+    shell.click_role_and_label(Role::Button, &profile_label);
+    assert_eq!(
+        shell.app().feature_history_selected_feature_id(),
+        Some(FITTING_PROFILE)
+    );
+    assert_eq!(
+        shell.app().assistant_context()["selected_profile_translation_target"],
+        serde_json::json!({
+            "definition_id": DEFINITION.0,
+            "body_id": BODY.0,
+            "profile_id": FITTING_PROFILE.0,
+            "name": "Rounded fitting slot",
+        })
+    );
+
+    let move_label = shell.catalog().text("feature-history-move-profile-value");
+    let preview_label = shell.catalog().text("feature-history-preview-move-profile");
+    assert!(shell.has_role_and_label(Role::TextInput, &move_label));
+    assert!(shell.has_role_and_label(Role::Button, &preview_label));
+    let before = stamp(&shell);
+
+    replace_move_value(&mut shell, "2, 3");
+    shell.click_role_and_label(Role::Button, &preview_label);
+    assert!(shell.app().feature_history_preview_pending());
+    assert_eq!(stamp(&shell), before);
+    shell.press_key(Key::Escape);
+    assert!(!shell.app().feature_history_preview_pending());
+    assert_eq!(stamp(&shell), before);
+
+    replace_move_value(&mut shell, "2, 3");
+    shell.click_role_and_label(Role::Button, &preview_label);
+    assert_eq!(stamp(&shell), before);
+    confirm(&mut shell);
+    assert_eq!(shell.app().document_revision(), before.0 + 1);
+    assert_eq!(shell.app().undo_step_count(), before.2 + 1);
+    let moved = shell.app().document_snapshot();
+    let FeatureKind::SegmentProfile { segments, closed } =
+        moved.feature(FITTING_PROFILE).unwrap().kind()
+    else {
+        panic!("expected moved rounded fitting slot")
+    };
+    assert!(*closed);
+    assert!(matches!(
+        &segments[0],
+        ProfileSegment::Line { start_mm, end_mm }
+            if *start_mm == [12.0, 13.0] && *end_mm == [22.0, 13.0]
+    ));
+    assert!(matches!(
+        moved.feature(FITTING_POCKET).unwrap().kind(),
+        FeatureKind::Pocket { profile, depth, .. }
+            if *profile == FITTING_PROFILE && depth.millimetres() == 6.0
+    ));
+    let moved_digest = shell.app().canonical_digest();
+
+    shell.click_menu_command("menu-edit", AppCommand::Undo);
+    assert_eq!(shell.app().canonical_digest(), before.1);
+    shell.click_menu_command("menu-edit", AppCommand::Redo);
+    assert_eq!(shell.app().canonical_digest(), moved_digest);
+
+    for catalog in [
+        ketchup_interaction::LocaleCatalog::english(),
+        ketchup_interaction::LocaleCatalog::slovak(),
+        ketchup_interaction::LocaleCatalog::pseudo(),
+    ] {
+        let dialogs = ScriptedFileDialogs::new()
+            .queue_open(&fixture)
+            .always_discard();
+        let mut localized = Shell::with_catalog_and_dialogs(catalog, dialogs);
+        localized.click_menu_command("menu-file", AppCommand::Open);
+        open_history(&mut localized);
+        let profile_label = feature_label(&localized, FITTING_PROFILE);
+        localized.click_role_and_label(Role::Button, &profile_label);
+        let move_label = localized
+            .catalog()
+            .text("feature-history-move-profile-value");
+        let preview_label = localized
+            .catalog()
+            .text("feature-history-preview-move-profile");
+        assert!(localized.has_role_and_label(Role::TextInput, &move_label));
+        assert!(localized.has_role_and_label(Role::Button, &preview_label));
+    }
+}
+
+#[test]
+fn move_tool_repositions_exact_pocket_floor_instead_of_the_panel_occurrence() {
+    let directory = tempfile::tempdir().unwrap();
+    let fixture = directory
+        .path()
+        .join("viewport-movable-fitting-pocket.ketchup");
+    write_movable_fitting_pocket_fixture(&fixture);
+    let dialogs = ScriptedFileDialogs::new()
+        .queue_open(&fixture)
+        .always_confirm_high_risk_as(351)
+        .always_discard();
+    let mut shell =
+        Shell::with_catalog_and_dialogs(ketchup_interaction::LocaleCatalog::english(), dialogs);
+    shell
+        .app_mut()
+        .connect_exact_worker(exact_worker_path())
+        .unwrap();
+    shell.click_menu_command("menu-file", AppCommand::Open);
+    wait_for_exact_body(&mut shell);
+    shell.click_menu_command("menu-view", AppCommand::ViewTop);
+    shell.click_menu_command("menu-view", AppCommand::ZoomFit);
+
+    let viewport = shell.viewport_rect();
+    let from = shell
+        .app()
+        .project_to_screen(ketchup_interaction::Vec3::new(15.0, 13.0, 4.0), viewport);
+    let to = shell
+        .app()
+        .project_to_screen(ketchup_interaction::Vec3::new(17.0, 16.0, 4.0), viewport);
+    assert!(viewport.contains(from));
+    assert!(viewport.contains(to));
+    let before = stamp(&shell);
+    let before_occurrence = shell
+        .app()
+        .document_snapshot()
+        .scene_query()
+        .into_iter()
+        .next()
+        .unwrap()
+        .transform;
+
+    shell.click_command(AppCommand::Move);
+    shell.move_pointer(from);
+    assert!(
+        shell.app().hovered_selection().is_some(),
+        "pocket floor was not hover-pickable: {}",
+        shell.app().action_digest()
+    );
+    shell.click_at(from);
+    let preview_to = shell
+        .app()
+        .project_to_screen(ketchup_interaction::Vec3::new(25.0, 13.0, 4.0), viewport);
+    shell.move_pointer(preview_to);
+    let preview_paths = shell.app().move_profile_preview_paths();
+    assert!(
+        !preview_paths.is_empty(),
+        "profile Move must expose a live outline"
+    );
+    assert!(
+        preview_paths.iter().flatten().any(|point| {
+            point.distance(ketchup_interaction::Vec3::new(20.0, 10.0, 4.0)) < 1.0e-6
+        })
+    );
+    assert_eq!(
+        stamp(&shell),
+        before,
+        "live outline must not mutate the document"
+    );
+    shell.press_key(Key::Escape);
+    assert!(shell.app().move_profile_preview_paths().is_empty());
+    assert_eq!(stamp(&shell), before, "Escape must cancel the live outline");
+
+    shell.move_pointer(from);
+    shell.click_at(from);
+    let value_label = shell.catalog().text("value-label-distance");
+    shell.focus_text_input(&value_label);
+    shell.key(Key::A, ctrl());
+    shell.type_text("2,3,0");
+    shell.press_key(Key::Enter);
+    assert_eq!(
+        shell.app().document_revision(),
+        before.0 + 1,
+        "{}; hovered={:?}",
+        shell.app().action_digest(),
+        shell.app().hovered_selection()
+    );
+    assert_eq!(shell.app().undo_step_count(), before.2 + 1);
+    let moved = shell.app().document_snapshot();
+    let FeatureKind::SegmentProfile { segments, .. } =
+        moved.feature(FITTING_PROFILE).unwrap().kind()
+    else {
+        panic!("expected moved rounded fitting slot")
+    };
+    assert!(matches!(
+        &segments[0],
+        ProfileSegment::Line { start_mm, end_mm }
+            if *start_mm == [12.0, 13.0] && *end_mm == [22.0, 13.0]
+    ));
+    assert_eq!(
+        moved.scene_query().into_iter().next().unwrap().transform,
+        before_occurrence,
+        "Move on a pocket floor must not move the furniture panel occurrence"
+    );
+    let moved_digest = shell.app().canonical_digest();
+
+    shell.click_menu_command("menu-edit", AppCommand::Undo);
+    assert_eq!(shell.app().canonical_digest(), before.1);
+    shell.click_menu_command("menu-edit", AppCommand::Redo);
+    assert_eq!(shell.app().canonical_digest(), moved_digest);
+
+    shell.click_menu_command("menu-file", AppCommand::Save);
+    let reopened = persistence::load_file(&fixture).unwrap();
+    assert!(reopened.is_editable());
+    let reopened_snapshot = reopened.snapshot();
+    assert_eq!(reopened_snapshot.document_id(), moved.document_id());
+    assert_eq!(
+        reopened_snapshot.feature(FITTING_PROFILE).unwrap().kind(),
+        moved.feature(FITTING_PROFILE).unwrap().kind()
+    );
+    assert_eq!(
+        reopened_snapshot.feature(FITTING_POCKET).unwrap().kind(),
+        moved.feature(FITTING_POCKET).unwrap().kind()
+    );
+    assert_eq!(reopened_snapshot.canonical_digest(), moved_digest);
+    assert_eq!(
+        reopened
+            .snapshot()
+            .scene_query()
+            .into_iter()
+            .next()
+            .unwrap()
+            .transform,
+        before_occurrence
+    );
 }
 
 #[test]

@@ -797,7 +797,8 @@ pub fn project_general_fabrication(
                     });
                 }
             }
-            GeneralBodySource::CanonicalMesh { .. } => {
+            GeneralBodySource::CanonicalMesh { .. }
+            | GeneralBodySource::CanonicalExtrusion { .. } => {
                 unresolved_sources.push(row.source.clone());
             }
         }
@@ -894,6 +895,41 @@ fn local_dimensions(
             };
             spec.vertices_mm.clone()
         }
+        GeneralBodySource::CanonicalExtrusion {
+            definition_id,
+            profile_id,
+            extrusion_id,
+            ..
+        } => {
+            let FeatureKind::Profile { points_mm } = snapshot
+                .feature(*profile_id)
+                .filter(|feature| feature.definition_id() == *definition_id)
+                .ok_or(GeneralFabricationError::UnsupportedOrUnavailableGeometry)?
+                .kind()
+            else {
+                return Err(GeneralFabricationError::UnsupportedOrUnavailableGeometry);
+            };
+            let FeatureKind::Extrusion { profile, height } = snapshot
+                .feature(*extrusion_id)
+                .filter(|feature| feature.definition_id() == *definition_id)
+                .ok_or(GeneralFabricationError::UnsupportedOrUnavailableGeometry)?
+                .kind()
+            else {
+                return Err(GeneralFabricationError::UnsupportedOrUnavailableGeometry);
+            };
+            if profile != profile_id {
+                return Err(GeneralFabricationError::UnsupportedOrUnavailableGeometry);
+            }
+            points_mm
+                .iter()
+                .flat_map(|point| {
+                    [
+                        [point[0], point[1], 0.0],
+                        [point[0], point[1], height.millimetres()],
+                    ]
+                })
+                .collect()
+        }
     };
     let first = vertices
         .first()
@@ -983,7 +1019,8 @@ fn general_piece_drawing(row: &GeneralBomRow) -> GeneralPieceDrawing {
 fn source_definition_id(source: &GeneralBodySource) -> DefinitionId {
     match source {
         GeneralBodySource::Exact(key) => key.definition_id,
-        GeneralBodySource::CanonicalMesh { definition_id, .. } => *definition_id,
+        GeneralBodySource::CanonicalMesh { definition_id, .. }
+        | GeneralBodySource::CanonicalExtrusion { definition_id, .. } => *definition_id,
     }
 }
 
@@ -1107,6 +1144,18 @@ fn push_general_source(bytes: &mut Vec<u8>, source: &GeneralBodySource) {
             bytes.push(1);
             bytes.extend_from_slice(&definition_id.0.to_le_bytes());
             bytes.extend_from_slice(&feature_id.0.to_le_bytes());
+            push_projection_bytes(bytes, geometry_digest.as_bytes());
+        }
+        GeneralBodySource::CanonicalExtrusion {
+            definition_id,
+            profile_id,
+            extrusion_id,
+            geometry_digest,
+        } => {
+            bytes.push(2);
+            bytes.extend_from_slice(&definition_id.0.to_le_bytes());
+            bytes.extend_from_slice(&profile_id.0.to_le_bytes());
+            bytes.extend_from_slice(&extrusion_id.0.to_le_bytes());
             push_projection_bytes(bytes, geometry_digest.as_bytes());
         }
     }

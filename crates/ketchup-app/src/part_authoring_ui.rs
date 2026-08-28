@@ -17,13 +17,34 @@ enum PartAuthoringStage {
     Fasteners,
 }
 
-#[derive(Clone, Debug)]
-struct PartAuthoringPreview {
+#[derive(Clone, Debug, PartialEq)]
+enum PartAuthoringSource {
+    Plate([f64; 3]),
+    PocketSupport([f64; 2]),
+    Pocket([f64; 2]),
+    Fasteners([f64; 3]),
+}
+
+impl PartAuthoringSource {
+    const fn stage(&self) -> PartAuthoringStage {
+        match self {
+            Self::Plate(_) => PartAuthoringStage::Plate,
+            Self::PocketSupport(_) => PartAuthoringStage::PocketSupport,
+            Self::Pocket(_) => PartAuthoringStage::Pocket,
+            Self::Fasteners(_) => PartAuthoringStage::Fasteners,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct PartAuthoringPreviewPlan {
+    source: PartAuthoringSource,
     proposal: Proposal,
-    stage: PartAuthoringStage,
-    document_id: DocumentId,
-    revision: u64,
-    canonical_digest: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct PartAuthoringPreview {
+    plan: PartAuthoringPreviewPlan,
 }
 
 #[derive(Debug)]
@@ -79,7 +100,7 @@ impl KetchupApp {
                         "part-authoring-preview-summary",
                         &BTreeMap::from([(
                             "count",
-                            preview.proposal.batch().commands().len().to_string(),
+                            preview.plan.proposal.batch().commands().len().to_string(),
                         )]),
                     ));
                     let confirm = ui
@@ -129,24 +150,59 @@ impl KetchupApp {
         }
     }
 
+    fn part_authoring_source(&self) -> Option<PartAuthoringSource> {
+        match self.part_authoring_stage()? {
+            PartAuthoringStage::Plate => Some(PartAuthoringSource::Plate(
+                parse_positive_dimensions::<3>(&self.part_authoring.plate_dimensions)?,
+            )),
+            PartAuthoringStage::PocketSupport => Some(PartAuthoringSource::PocketSupport(
+                parse_positive_dimensions::<2>(&self.part_authoring.pocket_dimensions)?,
+            )),
+            PartAuthoringStage::Pocket => Some(PartAuthoringSource::Pocket(
+                parse_positive_dimensions::<2>(&self.part_authoring.pocket_dimensions)?,
+            )),
+            PartAuthoringStage::Fasteners => {
+                Some(PartAuthoringSource::Fasteners(parse_positive_dimensions::<
+                    3,
+                >(
+                    &self.part_authoring.fastener_dimensions,
+                )?))
+            }
+        }
+    }
+
+    fn derive_part_authoring_batch(&self, source: &PartAuthoringSource) -> Option<CommandBatch> {
+        if self.part_authoring_stage()? != source.stage() {
+            return None;
+        }
+        match source {
+            PartAuthoringSource::Plate(dimensions) => self.plan_capstone_plate(*dimensions),
+            PartAuthoringSource::PocketSupport(dimensions) => {
+                self.plan_capstone_pocket_support(*dimensions)
+            }
+            PartAuthoringSource::Pocket(dimensions) => self.plan_capstone_pocket(*dimensions),
+            PartAuthoringSource::Fasteners(dimensions) => self.plan_capstone_fasteners(*dimensions),
+        }
+    }
+
+    fn derive_part_authoring_proposal(
+        &self,
+        source: &PartAuthoringSource,
+    ) -> Result<Proposal, String> {
+        let batch = self
+            .derive_part_authoring_batch(source)
+            .ok_or_else(|| self.catalog.text("part-authoring-invalid"))?;
+        self.document
+            .prepare_proposal_with_context(batch, ProposalContext::canonical_preview())
+            .map_err(|error| error.to_string())
+    }
+
     fn prepare_part_authoring_preview(&mut self) -> bool {
-        let Some(stage) = self.part_authoring_stage() else {
-            return false;
-        };
-        let batch = match stage {
-            PartAuthoringStage::Plate => self.plan_capstone_plate(),
-            PartAuthoringStage::PocketSupport => self.plan_capstone_pocket_support(),
-            PartAuthoringStage::Pocket => self.plan_capstone_pocket(),
-            PartAuthoringStage::Fasteners => self.plan_capstone_fasteners(),
-        };
-        let Some(batch) = batch else {
+        let Some(source) = self.part_authoring_source() else {
             self.digest = self.catalog.text("part-authoring-invalid");
             return false;
         };
-        let proposal = match self
-            .document
-            .prepare_proposal_with_context(batch, ProposalContext::canonical_preview())
-        {
+        let proposal = match self.derive_part_authoring_proposal(&source) {
             Ok(proposal) => proposal,
             Err(error) => {
                 self.digest = format!("{}: {error}", self.catalog.text("part-authoring-invalid"));
@@ -157,13 +213,8 @@ impl KetchupApp {
             self.digest = format!("{}: {error}", self.catalog.text("part-authoring-invalid"));
             return false;
         }
-        let snapshot = self.document.current();
         self.part_authoring.preview = Some(PartAuthoringPreview {
-            proposal,
-            stage,
-            document_id: snapshot.document_id(),
-            revision: snapshot.revision_id(),
-            canonical_digest: snapshot.canonical_digest(),
+            plan: PartAuthoringPreviewPlan { source, proposal },
         });
         self.digest = self.catalog.text("part-authoring-preview-ready");
         true
@@ -173,21 +224,21 @@ impl KetchupApp {
         let Some(preview) = self.part_authoring.preview.take() else {
             return false;
         };
-        let snapshot = self.document.current();
-        if snapshot.document_id() != preview.document_id
-            || snapshot.revision_id() != preview.revision
-            || snapshot.canonical_digest() != preview.canonical_digest
-        {
+        let rederived = self.derive_part_authoring_proposal(&preview.plan.source);
+        if rederived.as_ref() != Ok(&preview.plan.proposal) {
             self.digest = self.catalog.text("error-preview-stale");
             return false;
         }
-        match self.document.commit_verified_proposal(&preview.proposal) {
+        match self
+            .document
+            .commit_verified_proposal(&preview.plan.proposal)
+        {
             Ok(_) => {
                 self.clear_ephemeral_edit_state();
                 self.selection = SelectionState::default();
                 self.render_plan = None;
                 self.exact_source = None;
-                self.digest = self.catalog.text(match preview.stage {
+                self.digest = self.catalog.text(match preview.plan.source.stage() {
                     PartAuthoringStage::Plate => "part-authoring-plate-committed",
                     PartAuthoringStage::PocketSupport => "part-authoring-pocket-support-committed",
                     PartAuthoringStage::Pocket => "part-authoring-pocket-committed",
@@ -211,9 +262,8 @@ impl KetchupApp {
         self.part_authoring.preview.is_some()
     }
 
-    fn plan_capstone_plate(&self) -> Option<CommandBatch> {
-        let [length, width, height] =
-            parse_positive_dimensions::<3>(&self.part_authoring.plate_dimensions)?;
+    fn plan_capstone_plate(&self, dimensions: [f64; 3]) -> Option<CommandBatch> {
+        let [length, width, height] = dimensions;
         let snapshot = self.document.current();
         if snapshot.definitions().count() != 1
             || snapshot.definition(INITIAL_BOX_DEFINITION).is_none()
@@ -286,9 +336,8 @@ impl KetchupApp {
         ]))
     }
 
-    fn plan_capstone_pocket_support(&self) -> Option<CommandBatch> {
-        let [width, depth] =
-            parse_positive_dimensions::<2>(&self.part_authoring.pocket_dimensions)?;
+    fn plan_capstone_pocket_support(&self, dimensions: [f64; 2]) -> Option<CommandBatch> {
+        let [width, depth] = dimensions;
         let contract = ReleaseCapstoneContract::mechanical_plate_fixture();
         let ids = contract.plate_feature_ids;
         let snapshot = self.document.current();
@@ -348,8 +397,8 @@ impl KetchupApp {
         ]))
     }
 
-    fn plan_capstone_pocket(&self) -> Option<CommandBatch> {
-        let [_, depth] = parse_positive_dimensions::<2>(&self.part_authoring.pocket_dimensions)?;
+    fn plan_capstone_pocket(&self, dimensions: [f64; 2]) -> Option<CommandBatch> {
+        let [_, depth] = dimensions;
         let contract = ReleaseCapstoneContract::mechanical_plate_fixture();
         let ids = contract.plate_feature_ids;
         let snapshot = self.document.current();
@@ -387,9 +436,8 @@ impl KetchupApp {
         }]))
     }
 
-    fn plan_capstone_fasteners(&self) -> Option<CommandBatch> {
-        let [diameter, shared_height, target_height] =
-            parse_positive_dimensions::<3>(&self.part_authoring.fastener_dimensions)?;
+    fn plan_capstone_fasteners(&self, dimensions: [f64; 3]) -> Option<CommandBatch> {
+        let [diameter, shared_height, target_height] = dimensions;
         let contract = ReleaseCapstoneContract::mechanical_plate_fixture();
         let snapshot = self.document.current();
         if snapshot
@@ -452,14 +500,9 @@ impl KetchupApp {
     #[doc(hidden)]
     #[must_use]
     pub fn headless_part_authoring_step_ready(&self) -> bool {
-        match self.part_authoring_stage() {
-            Some(PartAuthoringStage::Plate) => self.plan_capstone_plate().is_some(),
-            Some(PartAuthoringStage::PocketSupport) => {
-                self.plan_capstone_pocket_support().is_some()
-            }
-            Some(PartAuthoringStage::Pocket) => self.plan_capstone_pocket().is_some(),
-            Some(PartAuthoringStage::Fasteners) => self.plan_capstone_fasteners().is_some(),
-            None => true,
+        match self.part_authoring_source() {
+            Some(source) => self.derive_part_authoring_batch(&source).is_some(),
+            None => self.part_authoring_stage().is_none(),
         }
     }
 
@@ -467,16 +510,10 @@ impl KetchupApp {
     #[doc(hidden)]
     #[must_use]
     pub fn headless_part_authoring_proposal_parity(&self) -> bool {
-        let Some(stage) = self.part_authoring_stage() else {
-            return true;
+        let Some(source) = self.part_authoring_source() else {
+            return self.part_authoring_stage().is_none();
         };
-        let batch = match stage {
-            PartAuthoringStage::Plate => self.plan_capstone_plate(),
-            PartAuthoringStage::PocketSupport => self.plan_capstone_pocket_support(),
-            PartAuthoringStage::Pocket => self.plan_capstone_pocket(),
-            PartAuthoringStage::Fasteners => self.plan_capstone_fasteners(),
-        };
-        let Some(batch) = batch else {
+        let Some(batch) = self.derive_part_authoring_batch(&source) else {
             return false;
         };
         let Ok(manual) = self
@@ -829,4 +866,91 @@ fn add_fastener(
         },
     ]);
     Some(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn document_state(app: &KetchupApp) -> (u64, String, usize, usize) {
+        (
+            app.document_revision(),
+            app.canonical_digest(),
+            app.undo_step_count(),
+            app.redo_step_count(),
+        )
+    }
+
+    fn plate_preview(app: &mut KetchupApp) -> PartAuthoringPreview {
+        assert!(app.prepare_part_authoring_preview());
+        app.part_authoring
+            .preview
+            .take()
+            .expect("plate preview is prepared")
+    }
+
+    #[test]
+    fn exact_part_authoring_plan_rejects_source_proposal_stage_tamper_stale_and_replay_atomically()
+    {
+        let mut valid = KetchupApp::new();
+        let initial = document_state(&valid);
+        let preview = plate_preview(&mut valid);
+        valid.part_authoring.preview = Some(preview.clone());
+        assert!(valid.confirm_part_authoring_preview());
+        assert_eq!(valid.document_revision(), initial.0 + 1);
+        assert_eq!(valid.undo_step_count(), initial.2 + 1);
+        let committed = document_state(&valid);
+
+        valid.part_authoring.preview = Some(preview);
+        assert!(!valid.confirm_part_authoring_preview());
+        assert_eq!(document_state(&valid), committed);
+
+        let mut source_tampered = KetchupApp::new();
+        let mut preview = plate_preview(&mut source_tampered);
+        preview.plan.source = PartAuthoringSource::Plate([121.0, 80.0, 8.0]);
+        let before_source_tamper = document_state(&source_tampered);
+        source_tampered.part_authoring.preview = Some(preview);
+        assert!(!source_tampered.confirm_part_authoring_preview());
+        assert_eq!(document_state(&source_tampered), before_source_tamper);
+
+        let mut proposal_tampered = KetchupApp::new();
+        let mut preview = plate_preview(&mut proposal_tampered);
+        preview.plan.proposal = proposal_tampered
+            .document
+            .prepare_proposal(CommandBatch::new(vec![
+                CanonicalCommand::RenameDefinition {
+                    id: INITIAL_BOX_DEFINITION,
+                    name: "Tampered".to_owned(),
+                },
+            ]))
+            .expect("independent proposal is valid");
+        let before_proposal_tamper = document_state(&proposal_tampered);
+        proposal_tampered.part_authoring.preview = Some(preview);
+        assert!(!proposal_tampered.confirm_part_authoring_preview());
+        assert_eq!(document_state(&proposal_tampered), before_proposal_tamper);
+
+        let mut stage_tampered = KetchupApp::new();
+        let mut preview = plate_preview(&mut stage_tampered);
+        preview.plan.source = PartAuthoringSource::Fasteners([12.0, 30.0, 24.0]);
+        let before_stage_tamper = document_state(&stage_tampered);
+        stage_tampered.part_authoring.preview = Some(preview);
+        assert!(!stage_tampered.confirm_part_authoring_preview());
+        assert_eq!(document_state(&stage_tampered), before_stage_tamper);
+
+        let mut stale = KetchupApp::new();
+        let preview = plate_preview(&mut stale);
+        stale
+            .document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::RenameDefinition {
+                    id: INITIAL_BOX_DEFINITION,
+                    name: "Intervening edit".to_owned(),
+                },
+            ]))
+            .expect("intervening edit is valid");
+        let after_drift = document_state(&stale);
+        stale.part_authoring.preview = Some(preview);
+        assert!(!stale.confirm_part_authoring_preview());
+        assert_eq!(document_state(&stale), after_drift);
+    }
 }

@@ -29,9 +29,31 @@ impl BodyBooleanChoice {
     }
 }
 
-struct BodyProposalPreview {
+#[derive(Clone, Debug, PartialEq)]
+enum BodyExecutionSource {
+    Activate {
+        definition_id: DefinitionId,
+        body_id: BodyId,
+    },
+    Visibility {
+        definition_id: DefinitionId,
+        body_id: BodyId,
+        visible: bool,
+    },
+    NewBody(Box<NewBodyFeaturePlan>),
+    Boolean(MultiBodyBooleanPlan),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct BodyPreviewPlan {
+    source: BodyExecutionSource,
     proposal: Proposal,
     action: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct BodyProposalPreview {
+    plan: BodyPreviewPlan,
 }
 
 #[derive(Default)]
@@ -62,6 +84,96 @@ impl KetchupApp {
             "body-error",
             &BTreeMap::from([("reason", reason.to_string())]),
         );
+    }
+
+    fn derive_body_preview_proposal(
+        &self,
+        source: &BodyExecutionSource,
+    ) -> Result<Proposal, String> {
+        match source {
+            BodyExecutionSource::Activate {
+                definition_id,
+                body_id,
+            } => self
+                .document
+                .plan_body_command(CanonicalCommand::SetActiveBody {
+                    definition_id: *definition_id,
+                    id: *body_id,
+                }),
+            BodyExecutionSource::Visibility {
+                definition_id,
+                body_id,
+                visible,
+            } => self
+                .document
+                .plan_body_command(CanonicalCommand::SetBodyVisibility {
+                    definition_id: *definition_id,
+                    id: *body_id,
+                    visible: *visible,
+                }),
+            BodyExecutionSource::NewBody(plan) => self
+                .document
+                .plan_new_body_feature(plan.as_ref().clone(), ProposalContext::canonical_preview()),
+            BodyExecutionSource::Boolean(plan) => self
+                .document
+                .plan_multibody_boolean(plan.clone(), ProposalContext::canonical_preview()),
+        }
+        .map_err(|error| error.to_string())
+    }
+
+    fn derive_body_preview_action(&self, source: &BodyExecutionSource) -> Option<String> {
+        let snapshot = self.document.current();
+        match source {
+            BodyExecutionSource::Activate {
+                definition_id,
+                body_id,
+            } => {
+                let name = snapshot
+                    .definition(*definition_id)?
+                    .body(*body_id)?
+                    .name()
+                    .to_owned();
+                Some(
+                    self.catalog
+                        .format("body-action-activate", &BTreeMap::from([("name", name)])),
+                )
+            }
+            BodyExecutionSource::Visibility {
+                definition_id,
+                body_id,
+                visible,
+            } => {
+                let name = snapshot
+                    .definition(*definition_id)?
+                    .body(*body_id)?
+                    .name()
+                    .to_owned();
+                Some(self.catalog.format(
+                    if *visible {
+                        "body-action-show"
+                    } else {
+                        "body-action-hide"
+                    },
+                    &BTreeMap::from([("name", name)]),
+                ))
+            }
+            BodyExecutionSource::NewBody(plan) => Some(self.catalog.format(
+                "body-action-create",
+                &BTreeMap::from([("name", plan.body_name.clone())]),
+            )),
+            BodyExecutionSource::Boolean(plan) => {
+                let operation_key = match plan.operation {
+                    BooleanOperation::Cut => "body-boolean-cut",
+                    BooleanOperation::Union => "body-boolean-union",
+                    BooleanOperation::Intersect => "body-boolean-intersect",
+                    BooleanOperation::Split => return None,
+                };
+                Some(self.catalog.format(
+                    "body-action-combine",
+                    &BTreeMap::from([("operation", self.catalog.text(operation_key))]),
+                ))
+            }
+        }
     }
 
     fn supported_body_features(
@@ -190,29 +302,33 @@ impl KetchupApp {
         }
     }
 
-    fn prepare_body_preview(&mut self, proposal: Proposal, action: String) -> bool {
+    fn prepare_body_preview(&mut self, source: BodyExecutionSource) -> bool {
+        let Some(action) = self.derive_body_preview_action(&source) else {
+            self.body_error(self.catalog.text("error-preview-stale"));
+            return false;
+        };
+        let proposal = match self.derive_body_preview_proposal(&source) {
+            Ok(proposal) => proposal,
+            Err(error) => {
+                self.body_error(error);
+                return false;
+            }
+        };
         if let Err(error) = self.document.preview_batch(proposal.batch()) {
             self.body_error(error);
             return false;
         }
         self.body_editor.preview = Some(BodyProposalPreview {
-            proposal,
-            action: action.clone(),
+            plan: BodyPreviewPlan {
+                source,
+                proposal,
+                action: action.clone(),
+            },
         });
         self.digest = self
             .catalog
             .format("body-preview-ready", &BTreeMap::from([("action", action)]));
         true
-    }
-
-    fn preview_body_command(&mut self, command: CanonicalCommand, action: String) -> bool {
-        match self.document.plan_body_command(command) {
-            Ok(proposal) => self.prepare_body_preview(proposal, action),
-            Err(error) => {
-                self.body_error(error);
-                false
-            }
-        }
     }
 
     fn preview_new_body_feature(&mut self) -> bool {
@@ -251,27 +367,14 @@ impl KetchupApp {
                 .unwrap_or(0)
                 + 1,
         );
-        let action = self.catalog.format(
-            "body-action-create",
-            &BTreeMap::from([("name", body_name.clone())]),
-        );
-        match self.document.plan_new_body_feature(
-            NewBodyFeaturePlan {
-                definition_id,
-                body_id,
-                body_name,
-                feature_id,
-                feature_name,
-                feature_kind: source.kind().clone(),
-            },
-            ProposalContext::canonical_preview(),
-        ) {
-            Ok(proposal) => self.prepare_body_preview(proposal, action),
-            Err(error) => {
-                self.body_error(error);
-                false
-            }
-        }
+        self.prepare_body_preview(BodyExecutionSource::NewBody(Box::new(NewBodyFeaturePlan {
+            definition_id,
+            body_id,
+            body_name,
+            feature_id,
+            feature_name,
+            feature_kind: source.kind().clone(),
+        })))
     }
 
     fn preview_multibody_boolean(&mut self) -> bool {
@@ -300,54 +403,52 @@ impl KetchupApp {
                 + 1,
         );
         let operation = self.body_editor.operation;
-        let action = self.catalog.format(
-            "body-action-combine",
-            &BTreeMap::from([("operation", self.catalog.text(operation.label_key()))]),
-        );
-        match self.document.plan_multibody_boolean(
-            MultiBodyBooleanPlan {
-                definition_id,
-                operation: operation.operation(),
-                target_body_id,
-                target_feature_id,
-                tool_body_id,
-                tool_feature_id,
-                result_feature_id,
-                result_feature_name: self.catalog.format(
-                    "body-default-result-name",
-                    &BTreeMap::from([
-                        ("operation", self.catalog.text(operation.label_key())),
-                        ("number", result_feature_id.0.to_string()),
-                    ]),
-                ),
-                tool_policy: if self.body_editor.consume_tool {
-                    ToolBodyPolicy::Consume
-                } else {
-                    ToolBodyPolicy::Preserve
-                },
+        self.prepare_body_preview(BodyExecutionSource::Boolean(MultiBodyBooleanPlan {
+            definition_id,
+            operation: operation.operation(),
+            target_body_id,
+            target_feature_id,
+            tool_body_id,
+            tool_feature_id,
+            result_feature_id,
+            result_feature_name: self.catalog.format(
+                "body-default-result-name",
+                &BTreeMap::from([
+                    ("operation", self.catalog.text(operation.label_key())),
+                    ("number", result_feature_id.0.to_string()),
+                ]),
+            ),
+            tool_policy: if self.body_editor.consume_tool {
+                ToolBodyPolicy::Consume
+            } else {
+                ToolBodyPolicy::Preserve
             },
-            ProposalContext::canonical_preview(),
-        ) {
-            Ok(proposal) => self.prepare_body_preview(proposal, action),
-            Err(error) => {
-                self.body_error(error);
-                false
-            }
-        }
+        }))
     }
 
     fn confirm_body_preview(&mut self) -> bool {
         let Some(preview) = self.body_editor.preview.take() else {
             return false;
         };
-        match self.document.commit_verified_proposal(&preview.proposal) {
+        let rederived = self.derive_body_preview_proposal(&preview.plan.source);
+        let action = self.derive_body_preview_action(&preview.plan.source);
+        if rederived.as_ref() != Ok(&preview.plan.proposal)
+            || action.as_ref() != Some(&preview.plan.action)
+        {
+            self.body_error(self.catalog.text("error-preview-stale"));
+            return false;
+        }
+        match self
+            .document
+            .commit_verified_proposal(&preview.plan.proposal)
+        {
             Ok(_) => {
                 self.body_editor.body_name.clear();
                 self.body_editor.feature_name.clear();
                 self.reconcile_selection();
                 self.digest = self.catalog.format(
                     "body-committed",
-                    &BTreeMap::from([("action", preview.action)]),
+                    &BTreeMap::from([("action", preview.plan.action)]),
                 );
                 true
             }
@@ -382,7 +483,7 @@ impl KetchupApp {
         if let Some(preview) = self.body_editor.preview.as_ref() {
             ui.label(self.catalog.format(
                 "body-preview-observational",
-                &BTreeMap::from([("action", preview.action.clone())]),
+                &BTreeMap::from([("action", preview.plan.action.clone())]),
             ));
             let confirm = ui
                 .button(self.catalog.text("body-confirm-preview"))
@@ -639,34 +740,17 @@ impl KetchupApp {
                     .format("body-selected", &BTreeMap::from([("id", id.0.to_string())]));
             }
             Some(BodyUiAction::Activate(id)) => {
-                let name = definition
-                    .body(id)
-                    .map_or_else(|| id.0.to_string(), |body| body.name().to_owned());
-                self.preview_body_command(
-                    CanonicalCommand::SetActiveBody { definition_id, id },
-                    self.catalog
-                        .format("body-action-activate", &BTreeMap::from([("name", name)])),
-                );
+                self.prepare_body_preview(BodyExecutionSource::Activate {
+                    definition_id,
+                    body_id: id,
+                });
             }
             Some(BodyUiAction::Visibility(id, visible)) => {
-                let name = definition
-                    .body(id)
-                    .map_or_else(|| id.0.to_string(), |body| body.name().to_owned());
-                self.preview_body_command(
-                    CanonicalCommand::SetBodyVisibility {
-                        definition_id,
-                        id,
-                        visible,
-                    },
-                    self.catalog.format(
-                        if visible {
-                            "body-action-show"
-                        } else {
-                            "body-action-hide"
-                        },
-                        &BTreeMap::from([("name", name)]),
-                    ),
-                );
+                self.prepare_body_preview(BodyExecutionSource::Visibility {
+                    definition_id,
+                    body_id: id,
+                    visible,
+                });
             }
             Some(BodyUiAction::Create) => {
                 self.preview_new_body_feature();
@@ -686,5 +770,98 @@ impl KetchupApp {
     #[must_use]
     pub fn selected_body_id(&self) -> Option<BodyId> {
         self.body_editor.selected_body
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn document_state(app: &KetchupApp) -> (u64, String, usize, usize) {
+        (
+            app.document_revision(),
+            app.canonical_digest(),
+            app.undo_step_count(),
+            app.redo_step_count(),
+        )
+    }
+
+    fn visibility_preview(app: &mut KetchupApp, visible: bool) -> BodyProposalPreview {
+        assert!(app.prepare_body_preview(BodyExecutionSource::Visibility {
+            definition_id: DefinitionId(1),
+            body_id: BodyId(1),
+            visible,
+        }));
+        app.body_editor
+            .preview
+            .take()
+            .expect("body visibility preview is prepared")
+    }
+
+    #[test]
+    fn exact_body_plan_rejects_source_proposal_action_tamper_stale_and_replay_atomically() {
+        let mut valid = KetchupApp::new();
+        let initial = document_state(&valid);
+        let preview = visibility_preview(&mut valid, false);
+        valid.body_editor.preview = Some(preview.clone());
+        assert!(valid.confirm_body_preview());
+        assert_eq!(valid.document_revision(), initial.0 + 1);
+        assert_eq!(valid.undo_step_count(), initial.2 + 1);
+        let committed = document_state(&valid);
+
+        valid.body_editor.preview = Some(preview);
+        assert!(!valid.confirm_body_preview());
+        assert_eq!(document_state(&valid), committed);
+
+        let mut source_tampered = KetchupApp::new();
+        let mut preview = visibility_preview(&mut source_tampered, false);
+        let BodyExecutionSource::Visibility { visible, .. } = &mut preview.plan.source else {
+            unreachable!();
+        };
+        *visible = true;
+        let before_source_tamper = document_state(&source_tampered);
+        source_tampered.body_editor.preview = Some(preview);
+        assert!(!source_tampered.confirm_body_preview());
+        assert_eq!(document_state(&source_tampered), before_source_tamper);
+
+        let mut proposal_tampered = KetchupApp::new();
+        let mut preview = visibility_preview(&mut proposal_tampered, false);
+        preview.plan.proposal = proposal_tampered
+            .document
+            .prepare_proposal(CommandBatch::new(vec![
+                CanonicalCommand::SetOccurrenceVisibility {
+                    id: OccurrenceId(1),
+                    visible: false,
+                },
+            ]))
+            .expect("independent proposal is valid");
+        let before_proposal_tamper = document_state(&proposal_tampered);
+        proposal_tampered.body_editor.preview = Some(preview);
+        assert!(!proposal_tampered.confirm_body_preview());
+        assert_eq!(document_state(&proposal_tampered), before_proposal_tamper);
+
+        let mut action_tampered = KetchupApp::new();
+        let mut preview = visibility_preview(&mut action_tampered, false);
+        preview.plan.action.push_str(" tampered");
+        let before_action_tamper = document_state(&action_tampered);
+        action_tampered.body_editor.preview = Some(preview);
+        assert!(!action_tampered.confirm_body_preview());
+        assert_eq!(document_state(&action_tampered), before_action_tamper);
+
+        let mut stale = KetchupApp::new();
+        let preview = visibility_preview(&mut stale, false);
+        stale
+            .document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::SetOccurrenceVisibility {
+                    id: OccurrenceId(1),
+                    visible: false,
+                },
+            ]))
+            .expect("intervening occurrence visibility edit is valid");
+        let after_drift = document_state(&stale);
+        stale.body_editor.preview = Some(preview);
+        assert!(!stale.confirm_body_preview());
+        assert_eq!(document_state(&stale), after_drift);
     }
 }

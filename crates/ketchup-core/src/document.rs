@@ -6,7 +6,9 @@ use crate::bottle_m6::{ExactRevolveRequest, reference_matches_revolve_request};
 use crate::drawing::{DrawingError, DrawingSheet, DrawingSheetId, DrawingSource};
 use crate::exact_product::{
     BodySubshapeRef, ExactFaceRole, ExactFeatureChainRequest, ExactReferenceResolution,
-    ExactResultRegistry, is_line_arc_capsule_profile, line_arc_capsule_profile_bounds,
+    ExactResultRegistry, is_line_arc_capsule_profile, line_arc_capsule_corner_overlap,
+    line_arc_capsule_profile_bounds, line_arc_capsule_side_overlap, line_arc_circle_side_overlap,
+    line_arc_d_arc_only_side_overlap, strict_convex_line_arc_profile_bounds,
 };
 pub use crate::graph::{
     CanonicalOverride, DerivedIdentity, DerivedOutput, EvaluationIdentity, EvaluationReport,
@@ -1493,6 +1495,10 @@ pub enum CanonicalCommand {
         id: TagId,
         visible: bool,
     },
+    SetTagName {
+        id: TagId,
+        name: String,
+    },
     CreateCollection {
         id: CollectionId,
         name: String,
@@ -1571,6 +1577,10 @@ pub enum CanonicalCommand {
         id: FeatureId,
         constraint_id: SketchConstraintId,
         dimension: Dimension,
+    },
+    TranslateProfile {
+        id: FeatureId,
+        delta_mm: [f64; 2],
     },
     SetBottleControlDimension {
         id: FeatureId,
@@ -3768,6 +3778,20 @@ impl DocumentStore {
                         }),
                     );
                 }
+                CanonicalCommand::SetTagName { id, name } => {
+                    ensure_name(name)?;
+                    let existing = product
+                        .tags
+                        .get(id)
+                        .ok_or(CanonicalError::TagNotFound(*id))?;
+                    product.tags.insert(
+                        *id,
+                        Arc::new(Tag {
+                            name: name.clone(),
+                            ..existing.as_ref().clone()
+                        }),
+                    );
+                }
                 CanonicalCommand::CreateCollection { id, name } => {
                     ensure_product_id(id.0)?;
                     ensure_name(name)?;
@@ -4304,6 +4328,91 @@ impl DocumentStore {
                             definition_id: feature.definition_id,
                             name: feature.name.clone(),
                             kind: FeatureKind::Sketch(updated),
+                        }),
+                    );
+                }
+                CanonicalCommand::TranslateProfile { id, delta_mm } => {
+                    if !delta_mm.iter().all(|value| value.is_finite())
+                        || (delta_mm[0] == 0.0 && delta_mm[1] == 0.0)
+                    {
+                        return Err(CanonicalError::InvalidProfile);
+                    }
+                    let feature = product
+                        .features
+                        .get(id)
+                        .ok_or(CanonicalError::FeatureNotFound(*id))?;
+                    let translate = |point: &mut [f64; 2]| {
+                        point[0] += delta_mm[0];
+                        point[1] += delta_mm[1];
+                    };
+                    let mut kind = feature.kind.clone();
+                    match &mut kind {
+                        FeatureKind::Profile { points_mm } => {
+                            points_mm.iter_mut().for_each(translate);
+                        }
+                        FeatureKind::SegmentProfile { segments, .. } => {
+                            for segment in segments {
+                                match segment {
+                                    ProfileSegment::Line { start_mm, end_mm } => {
+                                        translate(start_mm);
+                                        translate(end_mm);
+                                    }
+                                    ProfileSegment::CircularArc {
+                                        start_mm,
+                                        end_mm,
+                                        center_mm,
+                                        ..
+                                    } => {
+                                        translate(start_mm);
+                                        translate(end_mm);
+                                        translate(center_mm);
+                                    }
+                                }
+                            }
+                        }
+                        FeatureKind::SplineProfile { control_points_mm } => {
+                            control_points_mm.iter_mut().for_each(translate);
+                        }
+                        FeatureKind::Sketch(spec) => {
+                            for entity in &mut spec.entities {
+                                match entity {
+                                    SketchEntity::Line {
+                                        start_mm, end_mm, ..
+                                    } => {
+                                        translate(start_mm);
+                                        translate(end_mm);
+                                    }
+                                    SketchEntity::Arc {
+                                        start_mm,
+                                        end_mm,
+                                        center_mm,
+                                        ..
+                                    } => {
+                                        translate(start_mm);
+                                        translate(end_mm);
+                                        translate(center_mm);
+                                    }
+                                    SketchEntity::Circle { center_mm, .. } => translate(center_mm),
+                                }
+                            }
+                            for constraint in &mut spec.constraints {
+                                if let SketchConstraintKind::FixedPoint { position_mm, .. } =
+                                    &mut constraint.kind
+                                {
+                                    translate(position_mm);
+                                }
+                            }
+                        }
+                        _ => return Err(CanonicalError::FeatureIsNotProfile(*id)),
+                    }
+                    validate_feature_kind(&kind)?;
+                    product.features.insert(
+                        *id,
+                        Arc::new(Feature {
+                            id: *id,
+                            definition_id: feature.definition_id,
+                            name: feature.name.clone(),
+                            kind,
                         }),
                     );
                 }
@@ -8932,6 +9041,7 @@ fn translated_solid_tool_profile(
         } if circle_segment_profile_bounds(segments).is_some()
             || line_arc_d_profile_bounds(segments).is_some()
             || is_line_arc_capsule_profile(segments, true)
+            || strict_convex_line_arc_profile_bounds(segments, true).is_some()
             || line_segment_polygon_bounds(segments).is_some() =>
         {
             Ok(FeatureKind::SegmentProfile {
@@ -9256,7 +9366,12 @@ fn solid_tool_profiles_supported(
         FeatureKind::SegmentProfile { segments, closed: true }
             if is_line_arc_capsule_profile(segments, true)
     );
-    if tool_is_capsule && operation != BooleanOperation::Cut {
+    if tool_is_capsule
+        && !matches!(
+            operation,
+            BooleanOperation::Cut | BooleanOperation::Union | BooleanOperation::Intersect
+        )
+    {
         return false;
     }
     let tool_bounds = match tool {
@@ -9283,8 +9398,19 @@ fn solid_tool_profiles_supported(
                 .flatten()
             })
             .or_else(|| {
+                matches!(
+                    operation,
+                    BooleanOperation::Cut
+                        | BooleanOperation::Union
+                        | BooleanOperation::Intersect
+                        | BooleanOperation::Split
+                )
+                .then(|| line_arc_capsule_profile_bounds(segments, true))
+                .flatten()
+            })
+            .or_else(|| {
                 (operation == BooleanOperation::Cut)
-                    .then(|| line_arc_capsule_profile_bounds(segments, true))
+                    .then(|| strict_convex_line_arc_profile_bounds(segments, true))
                     .flatten()
             })
             .or_else(|| {
@@ -9312,8 +9438,59 @@ fn solid_tool_profiles_supported(
                 && tool_min_y > 1.0e-6
                 && tool_max_x < base_width - 1.0e-6
                 && tool_max_y < base_depth - 1.0e-6
+                || matches!(
+                    tool,
+                    FeatureKind::SegmentProfile { segments, closed: true }
+                        if line_arc_circle_side_overlap(
+                            segments,
+                            true,
+                            base_width,
+                            base_depth,
+                        )
+                        .is_some()
+                            || line_arc_d_arc_only_side_overlap(
+                            segments,
+                            true,
+                            base_width,
+                            base_depth,
+                        )
+                        .is_some()
+                            || line_arc_capsule_side_overlap(
+                            segments,
+                            true,
+                            base_width,
+                            base_depth,
+                        )
+                        .is_some()
+                            || line_arc_capsule_corner_overlap(
+                                segments,
+                                true,
+                                base_width,
+                                base_depth,
+                            )
+                            .is_some()
+                )
         }
         BooleanOperation::Intersect => {
+            if let FeatureKind::SegmentProfile { segments, .. } = tool
+                && tool_is_line_arc_d
+            {
+                let contained = tool_min_x > 1.0e-6
+                    && tool_min_y > 1.0e-6
+                    && tool_max_x < base_width - 1.0e-6
+                    && tool_max_y < base_depth - 1.0e-6;
+                return contained
+                    || line_arc_d_arc_only_side_overlap(segments, true, base_width, base_depth)
+                        .is_some();
+            }
+            if let FeatureKind::SegmentProfile { segments, .. } = tool
+                && tool_is_capsule
+            {
+                return line_arc_capsule_side_overlap(segments, true, base_width, base_depth)
+                    .is_some()
+                    || line_arc_capsule_corner_overlap(segments, true, base_width, base_depth)
+                        .is_some();
+            }
             if let FeatureKind::SegmentProfile { segments, .. } = tool
                 && (circle_segment_profile_bounds(segments).is_some()
                     || (line_segment_profile_bounds(segments).is_none()
@@ -9330,6 +9507,21 @@ fn solid_tool_profiles_supported(
         }
         BooleanOperation::Split => {
             if let FeatureKind::SegmentProfile { segments, .. } = tool {
+                if tool_is_line_arc_d {
+                    let contained = tool_min_x > 1.0e-6
+                        && tool_min_y > 1.0e-6
+                        && tool_max_x < base_width - 1.0e-6
+                        && tool_max_y < base_depth - 1.0e-6;
+                    return contained
+                        || line_arc_d_arc_only_side_overlap(
+                            segments, true, base_width, base_depth,
+                        )
+                        .is_some();
+                }
+                if tool_is_capsule {
+                    return line_arc_capsule_corner_overlap(segments, true, base_width, base_depth)
+                        .is_some();
+                }
                 return (circle_segment_profile_bounds(segments).is_some()
                     || line_arc_d_profile_bounds(segments).is_some()
                     || line_segment_polygon_bounds(segments).is_some())
@@ -9351,12 +9543,22 @@ fn solid_tool_profiles_supported(
         }
         BooleanOperation::Union => {
             if let FeatureKind::SegmentProfile { segments, .. } = tool {
+                if tool_is_capsule {
+                    return line_arc_capsule_side_overlap(segments, true, base_width, base_depth)
+                        .is_some()
+                        || line_arc_capsule_corner_overlap(segments, true, base_width, base_depth)
+                            .is_some();
+                }
                 if tool_is_line_arc_d {
-                    return line_arc_d_profile_contains_rectangle(segments, base_width, base_depth)
-                        && (tool_min_x < -1.0e-6
-                            || tool_min_y < -1.0e-6
-                            || tool_max_x > base_width + 1.0e-6
-                            || tool_max_y > base_depth + 1.0e-6);
+                    return line_arc_d_arc_only_side_overlap(
+                        segments, true, base_width, base_depth,
+                    )
+                    .is_some()
+                        || line_arc_d_profile_contains_rectangle(segments, base_width, base_depth)
+                            && (tool_min_x < -1.0e-6
+                                || tool_min_y < -1.0e-6
+                                || tool_max_x > base_width + 1.0e-6
+                                || tool_max_y > base_depth + 1.0e-6);
                 }
                 if let Some([min_x, min_y, max_x, max_y]) = circle_segment_profile_bounds(segments)
                 {
@@ -11599,7 +11801,8 @@ fn authoritative_writes(
             }
             CanonicalCommand::CreateTag { id, .. }
             | CanonicalCommand::DeleteTag { id }
-            | CanonicalCommand::SetTagVisibility { id, .. } => {
+            | CanonicalCommand::SetTagVisibility { id, .. }
+            | CanonicalCommand::SetTagName { id, .. } => {
                 writes.insert(AuthoritativeDependency::Tag(*id));
             }
             CanonicalCommand::CreateCollection { id, .. }
@@ -11653,6 +11856,7 @@ fn authoritative_writes(
             }
             CanonicalCommand::SetFeatureDimension { id, .. }
             | CanonicalCommand::SetSketchConstraintDimension { id, .. }
+            | CanonicalCommand::TranslateProfile { id, .. }
             | CanonicalCommand::SetBottleControlDimension { id, .. }
             | CanonicalCommand::SetBottleEdgeFinishKind { id, .. }
             | CanonicalCommand::SetProfilePoints { id, .. } => {
@@ -11893,6 +12097,7 @@ fn authoritative_dependencies(
             }
             CanonicalCommand::SetFeatureDimension { id, .. }
             | CanonicalCommand::SetSketchConstraintDimension { id, .. }
+            | CanonicalCommand::TranslateProfile { id, .. }
             | CanonicalCommand::SetBottleControlDimension { id, .. }
             | CanonicalCommand::SetBottleEdgeFinishKind { id, .. }
             | CanonicalCommand::SetProfilePoints { id, .. } => {
@@ -12279,7 +12484,8 @@ fn authoritative_dependencies(
             }
             CanonicalCommand::CreateTag { id, .. }
             | CanonicalCommand::DeleteTag { id }
-            | CanonicalCommand::SetTagVisibility { id, .. } => {
+            | CanonicalCommand::SetTagVisibility { id, .. }
+            | CanonicalCommand::SetTagName { id, .. } => {
                 dependencies.insert(AuthoritativeDependency::Tag(*id));
             }
             CanonicalCommand::CreateCollection { id, .. }
@@ -13898,6 +14104,12 @@ impl StableDigest {
                 self.bytes(dimension.source_token.as_bytes());
                 self.u64(dimension.millimetres.to_bits());
             }
+            CanonicalCommand::TranslateProfile { id, delta_mm } => {
+                self.byte(71);
+                self.u64(id.0);
+                self.u64(delta_mm[0].to_bits());
+                self.u64(delta_mm[1].to_bits());
+            }
             CanonicalCommand::SetBottleControlDimension {
                 id,
                 control,
@@ -14244,6 +14456,11 @@ impl StableDigest {
                 self.byte(40);
                 self.u64(id.0);
                 self.byte(u8::from(*visible));
+            }
+            CanonicalCommand::SetTagName { id, name } => {
+                self.byte(70);
+                self.u64(id.0);
+                self.bytes(name.as_bytes());
             }
             CanonicalCommand::CreateCollection { id, name } => {
                 self.byte(42);

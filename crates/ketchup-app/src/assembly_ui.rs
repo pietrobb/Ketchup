@@ -45,8 +45,61 @@ impl MateKindChoice {
     }
 }
 
-struct AssemblyProposalPreview {
+#[derive(Clone, Debug, PartialEq)]
+enum AssemblyPreviewSource {
+    InsertOccurrence {
+        id: OccurrenceId,
+        definition_id: DefinitionId,
+        name: String,
+        transform: Transform,
+    },
+    GroundOccurrence {
+        id: OccurrenceId,
+        grounded: bool,
+    },
+    CapstoneAssembly,
+    CapstoneDrawing,
+    Mate {
+        mate: AssemblyMate,
+        editing: bool,
+    },
+    RemoveMate(AssemblyMateId),
+    Solve,
+}
+
+impl AssemblyPreviewSource {
+    const fn action_key(&self) -> &'static str {
+        match self {
+            Self::InsertOccurrence { .. } => "assembly-action-insert",
+            Self::GroundOccurrence { grounded: true, .. } => "assembly-action-ground",
+            Self::GroundOccurrence {
+                grounded: false, ..
+            } => "assembly-action-unground",
+            Self::CapstoneAssembly => "assembly-action-capstone",
+            Self::CapstoneDrawing => "assembly-action-capstone-drawing",
+            Self::Mate { editing: true, .. } => "assembly-action-edit-mate",
+            Self::Mate { editing: false, .. } => "assembly-action-create-mate",
+            Self::RemoveMate(_) => "assembly-action-remove-mate",
+            Self::Solve => "assembly-action-solve",
+        }
+    }
+
+    const fn clear_occurrence_name(&self) -> bool {
+        matches!(self, Self::InsertOccurrence { .. })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct AssemblyPreviewPlan {
+    source: AssemblyPreviewSource,
     proposal: Proposal,
+    solve_required: bool,
+    solve_result: Option<AssemblySolveResult>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct AssemblyProposalPreview {
+    plan: AssemblyPreviewPlan,
     action: String,
     clear_occurrence_name: bool,
 }
@@ -203,60 +256,155 @@ impl KetchupApp {
         );
     }
 
-    fn prepare_assembly_preview(
-        &mut self,
-        batch: CommandBatch,
-        action_key: &'static str,
-        clear_occurrence_name: bool,
-    ) -> bool {
-        let proposal = match self
-            .document
-            .prepare_proposal_with_context(batch, ProposalContext::canonical_preview())
+    fn assembly_preview_solve_is_acceptable(result: Option<&AssemblySolveResult>) -> bool {
+        result.is_none_or(|result| {
+            matches!(
+                result.status(),
+                AssemblySolveStatus::UnderConstrained | AssemblySolveStatus::FullyConstrained
+            )
+        })
+    }
+
+    fn derive_assembly_preview_solve(
+        &self,
+        proposal: &Proposal,
+    ) -> Result<Option<AssemblySolveResult>, String> {
+        let current = self.document.current();
+        if proposal.document_id() != current.document_id()
+            || proposal.provenance_revision() != current.revision_id()
+            || proposal.provenance_digest() != current.canonical_digest()
         {
+            return Err(self.catalog.text("error-preview-stale"));
+        }
+        let candidate = self
+            .document
+            .preview_batch(proposal.batch())
+            .map_err(|error| error.to_string())?;
+        if candidate.assembly_mates().next().is_none() {
+            return Ok(None);
+        }
+        solve_rigid_assembly(&candidate, AssemblySolverPolicy::default())
+            .map(Some)
+            .map_err(|error| error.to_string())
+    }
+
+    fn derive_assembly_preview_proposal(
+        &self,
+        source: &AssemblyPreviewSource,
+    ) -> Result<Proposal, String> {
+        let snapshot = self.document.current();
+        let batch = match source {
+            AssemblyPreviewSource::InsertOccurrence {
+                id,
+                definition_id,
+                name,
+                transform,
+            } => {
+                if name.trim().is_empty() || snapshot.definition(*definition_id).is_none() {
+                    return Err(self.catalog.text("assembly-error-name"));
+                }
+                CommandBatch::new(vec![CanonicalCommand::CreateOccurrence {
+                    id: *id,
+                    definition_id: *definition_id,
+                    name: name.clone(),
+                    transform: *transform,
+                    parent: None,
+                    tag: None,
+                    visible: true,
+                }])
+            }
+            AssemblyPreviewSource::GroundOccurrence { id, grounded } => {
+                CommandBatch::new(vec![CanonicalCommand::SetOccurrenceGrounded {
+                    id: *id,
+                    grounded: *grounded,
+                }])
+            }
+            AssemblyPreviewSource::CapstoneAssembly => self
+                .plan_capstone_assembly()
+                .ok_or_else(|| self.catalog.text("assembly-error-solve-refused"))?,
+            AssemblyPreviewSource::CapstoneDrawing => return self.plan_capstone_drawing(),
+            AssemblyPreviewSource::Mate { mate, editing } => {
+                let existing = snapshot.assembly_mate(mate.id());
+                if *editing != existing.is_some() {
+                    return Err(self.catalog.text("error-preview-stale"));
+                }
+                let commands = if let Some(existing) = existing {
+                    if existing.endpoint_a() == mate.endpoint_a()
+                        && existing.endpoint_b() == mate.endpoint_b()
+                    {
+                        vec![CanonicalCommand::SetAssemblyMateKind {
+                            id: mate.id(),
+                            kind: mate.kind(),
+                        }]
+                    } else {
+                        vec![
+                            CanonicalCommand::DeleteAssemblyMate { id: mate.id() },
+                            CanonicalCommand::CreateAssemblyMate(mate.clone()),
+                        ]
+                    }
+                } else {
+                    vec![CanonicalCommand::CreateAssemblyMate(mate.clone())]
+                };
+                CommandBatch::new(commands)
+            }
+            AssemblyPreviewSource::RemoveMate(id) => {
+                CommandBatch::new(vec![CanonicalCommand::DeleteAssemblyMate { id: *id }])
+            }
+            AssemblyPreviewSource::Solve => return self.plan_assembly_solve(),
+        };
+        self.document
+            .prepare_proposal_with_context(batch, ProposalContext::canonical_preview())
+            .map_err(|error| error.to_string())
+    }
+
+    fn derive_assembly_preview_plan(
+        &self,
+        source: &AssemblyPreviewSource,
+    ) -> Result<AssemblyPreviewPlan, String> {
+        let proposal = self.derive_assembly_preview_proposal(source)?;
+        let solve_result = self.derive_assembly_preview_solve(&proposal)?;
+        if !Self::assembly_preview_solve_is_acceptable(solve_result.as_ref()) {
+            return Err(self.catalog.text("assembly-error-solve-refused"));
+        }
+        Ok(AssemblyPreviewPlan {
+            source: source.clone(),
+            proposal,
+            solve_required: solve_result.is_some(),
+            solve_result,
+        })
+    }
+
+    fn prepare_assembly_preview(&mut self, source: AssemblyPreviewSource) -> bool {
+        let proposal = match self.derive_assembly_preview_proposal(&source) {
             Ok(proposal) => proposal,
             Err(error) => {
                 self.assembly_error(error);
                 return false;
             }
         };
-        let preview_snapshot = match self.document.preview_batch(proposal.batch()) {
-            Ok(snapshot) => snapshot,
+        let solve_result = match self.derive_assembly_preview_solve(&proposal) {
+            Ok(result) => result,
             Err(error) => {
                 self.assembly_error(error);
                 return false;
             }
         };
-        let solve_result = if preview_snapshot.assembly_mates().next().is_some() {
-            match solve_rigid_assembly(&preview_snapshot, AssemblySolverPolicy::default()) {
-                Ok(result)
-                    if matches!(
-                        result.status(),
-                        AssemblySolveStatus::UnderConstrained
-                            | AssemblySolveStatus::FullyConstrained
-                    ) =>
-                {
-                    Some(result)
-                }
-                Ok(result) => {
-                    self.assembly_editor.solve_result = Some(result.clone());
-                    self.assembly_error(self.catalog.text("assembly-error-solve-refused"));
-                    return false;
-                }
-                Err(error) => {
-                    self.assembly_error(error);
-                    return false;
-                }
-            }
-        } else {
-            None
-        };
-        let action = self.catalog.text(action_key);
+        self.assembly_editor.solve_result = solve_result.clone();
+        if !Self::assembly_preview_solve_is_acceptable(solve_result.as_ref()) {
+            self.assembly_error(self.catalog.text("assembly-error-solve-refused"));
+            return false;
+        }
+        let action = self.catalog.text(source.action_key());
         self.assembly_editor.preview = Some(AssemblyProposalPreview {
-            proposal,
+            plan: AssemblyPreviewPlan {
+                source: source.clone(),
+                proposal,
+                solve_required: solve_result.is_some(),
+                solve_result,
+            },
             action: action.clone(),
-            clear_occurrence_name,
+            clear_occurrence_name: source.clear_occurrence_name(),
         });
-        self.assembly_editor.solve_result = solve_result;
         self.digest = self.catalog.format(
             "assembly-preview-ready",
             &BTreeMap::from([("action", action)]),
@@ -290,34 +438,16 @@ impl KetchupApp {
         let x = snapshot.occurrences().count() as f64 * 25.0;
         let transform = Transform::from_translation(x, 0.0, 0.0)
             .expect("bounded insertion translation is finite");
-        self.prepare_assembly_preview(
-            CommandBatch::new(vec![CanonicalCommand::CreateOccurrence {
-                id,
-                definition_id,
-                name,
-                transform,
-                parent: None,
-                tag: None,
-                visible: true,
-            }]),
-            "assembly-action-insert",
-            true,
-        )
+        self.prepare_assembly_preview(AssemblyPreviewSource::InsertOccurrence {
+            id,
+            definition_id,
+            name,
+            transform,
+        })
     }
 
     fn preview_ground_occurrence(&mut self, id: OccurrenceId, grounded: bool) -> bool {
-        self.prepare_assembly_preview(
-            CommandBatch::new(vec![CanonicalCommand::SetOccurrenceGrounded {
-                id,
-                grounded,
-            }]),
-            if grounded {
-                "assembly-action-ground"
-            } else {
-                "assembly-action-unground"
-            },
-            false,
-        )
+        self.prepare_assembly_preview(AssemblyPreviewSource::GroundOccurrence { id, grounded })
     }
 
     fn plan_capstone_assembly(&self) -> Option<CommandBatch> {
@@ -384,32 +514,25 @@ impl KetchupApp {
     }
 
     fn preview_capstone_assembly(&mut self) -> bool {
-        let Some(batch) = self.plan_capstone_assembly() else {
-            self.assembly_error(self.catalog.text("assembly-error-solve-refused"));
-            return false;
-        };
-        self.prepare_assembly_preview(batch, "assembly-action-capstone", false)
+        self.prepare_assembly_preview(AssemblyPreviewSource::CapstoneAssembly)
     }
 
-    fn preview_capstone_drawing(&mut self) -> bool {
+    fn plan_capstone_drawing(&self) -> Result<Proposal, String> {
         let contract = ReleaseCapstoneContract::mechanical_plate_fixture();
         let snapshot = self.document.current();
         if snapshot.drawing_sheet(contract.drawing_sheet_id).is_some() {
-            return false;
+            return Err(self.catalog.text("error-preview-stale"));
         }
-        let Ok(solved) = solve_rigid_assembly(&snapshot, AssemblySolverPolicy::default()) else {
-            self.assembly_error(self.catalog.text("assembly-error-solve-refused"));
-            return false;
-        };
+        let solved = solve_rigid_assembly(&snapshot, AssemblySolverPolicy::default())
+            .map_err(|error| error.to_string())?;
         if solved.status() != AssemblySolveStatus::FullyConstrained
             || solved.remaining_dof() != 0
             || !solved.redundant_mate_ids().is_empty()
             || !solved.conflicting_mate_ids().is_empty()
         {
-            self.assembly_error(self.catalog.text("assembly-error-solve-refused"));
-            return false;
+            return Err(self.catalog.text("assembly-error-solve-refused"));
         }
-        let Ok(sheet) = DrawingSheet::new(
+        let sheet = DrawingSheet::new(
             contract.drawing_sheet_id,
             self.catalog.text("assembly-capstone-drawing-name"),
             DrawingSource::RigidAssembly {
@@ -419,35 +542,24 @@ impl KetchupApp {
                     contract.second_shared_occurrence_id,
                 ],
             },
-        ) else {
-            return false;
-        };
-        let Ok((proposal, drawing)) =
+        )
+        .map_err(|error| error.to_string())?;
+        let (proposal, drawing) =
             prepare_create_drawing_sheet(&self.document, &self.exact_results, sheet)
-        else {
-            self.assembly_error(self.catalog.text("assembly-error-solve-refused"));
-            return false;
-        };
+                .map_err(|error| error.to_string())?;
         if drawing.views.len() != 3
             || drawing
                 .views
                 .iter()
                 .any(|view| view.visible_lines.is_empty())
         {
-            self.assembly_error(self.catalog.text("assembly-error-solve-refused"));
-            return false;
+            return Err(self.catalog.text("assembly-error-solve-refused"));
         }
-        let action = self.catalog.text("assembly-action-capstone-drawing");
-        self.assembly_editor.preview = Some(AssemblyProposalPreview {
-            proposal,
-            action: action.clone(),
-            clear_occurrence_name: false,
-        });
-        self.digest = self.catalog.format(
-            "assembly-preview-ready",
-            &BTreeMap::from([("action", action)]),
-        );
-        true
+        Ok(proposal)
+    }
+
+    fn preview_capstone_drawing(&mut self) -> bool {
+        self.prepare_assembly_preview(AssemblyPreviewSource::CapstoneDrawing)
     }
 
     fn selected_assembly_reference(
@@ -536,29 +648,10 @@ impl KetchupApp {
             AssemblyMateEndpoint::resolved(occurrence_b, reference_b),
             kind,
         );
-        let commands = if let Some(existing) = snapshot.assembly_mate(id) {
-            if existing.endpoint_a() == mate.endpoint_a()
-                && existing.endpoint_b() == mate.endpoint_b()
-            {
-                vec![CanonicalCommand::SetAssemblyMateKind { id, kind }]
-            } else {
-                vec![
-                    CanonicalCommand::DeleteAssemblyMate { id },
-                    CanonicalCommand::CreateAssemblyMate(mate),
-                ]
-            }
-        } else {
-            vec![CanonicalCommand::CreateAssemblyMate(mate)]
-        };
-        self.prepare_assembly_preview(
-            CommandBatch::new(commands),
-            if self.assembly_editor.selected_mate.is_some() {
-                "assembly-action-edit-mate"
-            } else {
-                "assembly-action-create-mate"
-            },
-            false,
-        )
+        self.prepare_assembly_preview(AssemblyPreviewSource::Mate {
+            mate,
+            editing: self.assembly_editor.selected_mate.is_some(),
+        })
     }
 
     fn edit_assembly_mate(&mut self, id: AssemblyMateId) {
@@ -601,11 +694,22 @@ impl KetchupApp {
     }
 
     fn preview_remove_assembly_mate(&mut self, id: AssemblyMateId) -> bool {
-        self.prepare_assembly_preview(
-            CommandBatch::new(vec![CanonicalCommand::DeleteAssemblyMate { id }]),
-            "assembly-action-remove-mate",
-            false,
+        self.prepare_assembly_preview(AssemblyPreviewSource::RemoveMate(id))
+    }
+
+    fn plan_assembly_solve(&self) -> Result<Proposal, String> {
+        let recomputed = recompute_rigid_assembly(
+            &self.document,
+            &self.exact_results,
+            AssemblySolverPolicy::default(),
         )
+        .map_err(|error| error.to_string())?;
+        if recomputed.status() != AssemblyRecomputeStatus::Solved {
+            return Err(self.catalog.text("assembly-error-solve-refused"));
+        }
+        recomputed
+            .prepare_publication(&self.document)
+            .map_err(|error| error.to_string())
     }
 
     fn preview_assembly_solve(&mut self) -> bool {
@@ -625,35 +729,35 @@ impl KetchupApp {
             self.assembly_error(self.catalog.text("assembly-error-solve-refused"));
             return false;
         }
-        let proposal = match recomputed.prepare_publication(&self.document) {
-            Ok(proposal) => proposal,
+        match recomputed.prepare_publication(&self.document) {
+            Ok(_) => self.prepare_assembly_preview(AssemblyPreviewSource::Solve),
             Err(AssemblyRecomputePublishError::NoCanonicalChanges) => {
                 self.digest = self.catalog.text("assembly-solve-current");
-                return true;
+                true
             }
             Err(error) => {
                 self.assembly_error(error);
-                return false;
+                false
             }
-        };
-        let action = self.catalog.text("assembly-action-solve");
-        self.assembly_editor.preview = Some(AssemblyProposalPreview {
-            proposal,
-            action: action.clone(),
-            clear_occurrence_name: false,
-        });
-        self.digest = self.catalog.format(
-            "assembly-preview-ready",
-            &BTreeMap::from([("action", action)]),
-        );
-        true
+        }
     }
 
     fn confirm_assembly_preview(&mut self) -> bool {
         let Some(preview) = self.assembly_editor.preview.take() else {
             return false;
         };
-        match self.document.commit_verified_proposal(&preview.proposal) {
+        let rederived = self.derive_assembly_preview_plan(&preview.plan.source);
+        if rederived.as_ref() != Ok(&preview.plan)
+            || preview.action != self.catalog.text(preview.plan.source.action_key())
+            || preview.clear_occurrence_name != preview.plan.source.clear_occurrence_name()
+        {
+            self.assembly_error(self.catalog.text("error-preview-stale"));
+            return false;
+        }
+        match self
+            .document
+            .commit_verified_proposal(&preview.plan.proposal)
+        {
             Ok(_) => {
                 if preview.clear_occurrence_name {
                     self.assembly_editor.occurrence_name.clear();
@@ -680,8 +784,13 @@ impl KetchupApp {
         self.digest = self.catalog.text("assembly-cancelled");
     }
 
-    fn show_assembly_solve_diagnostic(&self, ui: &mut egui::Ui, snapshot: &Snapshot) {
-        let Some(result) = self.assembly_editor.solve_result.as_ref() else {
+    fn show_assembly_solve_diagnostic(
+        &self,
+        ui: &mut egui::Ui,
+        snapshot: &Snapshot,
+        result: Option<&AssemblySolveResult>,
+    ) {
+        let Some(result) = result else {
             return;
         };
         let source_is_current = result.document_id() == snapshot.document_id()
@@ -726,7 +835,7 @@ impl KetchupApp {
                 "assembly-preview-observational",
                 &BTreeMap::from([("action", preview.action.clone())]),
             ));
-            self.show_assembly_solve_diagnostic(ui, &snapshot);
+            self.show_assembly_solve_diagnostic(ui, &snapshot, preview.plan.solve_result.as_ref());
             let confirm = ui
                 .button(self.catalog.text("assembly-confirm-preview"))
                 .clicked();
@@ -1010,7 +1119,11 @@ impl KetchupApp {
         {
             action = Some(AssemblyUiAction::Solve);
         }
-        self.show_assembly_solve_diagnostic(ui, &snapshot);
+        self.show_assembly_solve_diagnostic(
+            ui,
+            &snapshot,
+            self.assembly_editor.solve_result.as_ref(),
+        );
         ui.separator();
 
         match action {
@@ -1087,8 +1200,10 @@ impl KetchupApp {
     #[must_use]
     pub fn assembly_solve_status(&self) -> Option<AssemblySolveStatus> {
         self.assembly_editor
-            .solve_result
+            .preview
             .as_ref()
+            .and_then(|preview| preview.plan.solve_result.as_ref())
+            .or(self.assembly_editor.solve_result.as_ref())
             .map(AssemblySolveResult::status)
     }
 
@@ -1324,5 +1439,113 @@ impl KetchupApp {
         }
 
         paths
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ground_preview(app: &mut KetchupApp) -> AssemblyProposalPreview {
+        assert!(
+            app.prepare_assembly_preview(AssemblyPreviewSource::GroundOccurrence {
+                id: OccurrenceId(1),
+                grounded: true,
+            },)
+        );
+        app.assembly_editor
+            .preview
+            .take()
+            .expect("ground preview is prepared")
+    }
+
+    fn document_state(app: &KetchupApp) -> (u64, String, usize) {
+        (
+            app.document_revision(),
+            app.canonical_digest(),
+            app.undo_step_count(),
+        )
+    }
+
+    #[test]
+    fn exact_preview_plan_rejects_source_proposal_solve_metadata_tamper_stale_and_replay_atomically()
+     {
+        let mut valid = KetchupApp::new();
+        let initial = document_state(&valid);
+        let preview = ground_preview(&mut valid);
+        valid.assembly_editor.preview = Some(preview.clone());
+        assert!(valid.confirm_assembly_preview());
+        assert_eq!(valid.document_revision(), initial.0 + 1);
+        assert_eq!(valid.undo_step_count(), initial.2 + 1);
+        let committed = document_state(&valid);
+
+        valid.assembly_editor.preview = Some(preview);
+        assert!(!valid.confirm_assembly_preview());
+        assert_eq!(document_state(&valid), committed);
+        assert!(valid.undo());
+        assert_eq!(valid.canonical_digest(), initial.1);
+        assert!(valid.redo());
+        assert_eq!(document_state(&valid), committed);
+
+        let mut tampered = KetchupApp::new();
+        let mut tampered_preview = ground_preview(&mut tampered);
+        tampered_preview.plan.solve_required = true;
+        let before_tamper = document_state(&tampered);
+        tampered.assembly_editor.preview = Some(tampered_preview);
+        assert!(!tampered.confirm_assembly_preview());
+        assert_eq!(document_state(&tampered), before_tamper);
+
+        let mut proposal_tampered = KetchupApp::new();
+        let mut proposal_tampered_preview = ground_preview(&mut proposal_tampered);
+        proposal_tampered_preview.plan.proposal = proposal_tampered
+            .document
+            .prepare_proposal_with_context(
+                CommandBatch::new(vec![CanonicalCommand::SetOccurrenceVisibility {
+                    id: OccurrenceId(1),
+                    visible: false,
+                }]),
+                ProposalContext::canonical_preview(),
+            )
+            .expect("same-revision malicious proposal is independently valid");
+        let before_proposal_tamper = document_state(&proposal_tampered);
+        proposal_tampered.assembly_editor.preview = Some(proposal_tampered_preview);
+        assert!(!proposal_tampered.confirm_assembly_preview());
+        assert_eq!(document_state(&proposal_tampered), before_proposal_tamper);
+
+        let mut source_tampered = KetchupApp::new();
+        let mut source_tampered_preview = ground_preview(&mut source_tampered);
+        source_tampered_preview.plan.source = AssemblyPreviewSource::GroundOccurrence {
+            id: OccurrenceId(1),
+            grounded: false,
+        };
+        let before_source_tamper = document_state(&source_tampered);
+        source_tampered.assembly_editor.preview = Some(source_tampered_preview);
+        assert!(!source_tampered.confirm_assembly_preview());
+        assert_eq!(document_state(&source_tampered), before_source_tamper);
+
+        let mut metadata_tampered = KetchupApp::new();
+        let mut metadata_tampered_preview = ground_preview(&mut metadata_tampered);
+        metadata_tampered_preview.action =
+            metadata_tampered.catalog.text("assembly-action-unground");
+        let before_metadata_tamper = document_state(&metadata_tampered);
+        metadata_tampered.assembly_editor.preview = Some(metadata_tampered_preview);
+        assert!(!metadata_tampered.confirm_assembly_preview());
+        assert_eq!(document_state(&metadata_tampered), before_metadata_tamper);
+
+        let mut stale = KetchupApp::new();
+        let stale_preview = ground_preview(&mut stale);
+        stale
+            .document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::SetOccurrenceVisibility {
+                    id: OccurrenceId(1),
+                    visible: false,
+                },
+            ]))
+            .expect("intervening visibility edit is valid");
+        let after_drift = document_state(&stale);
+        stale.assembly_editor.preview = Some(stale_preview);
+        assert!(!stale.confirm_assembly_preview());
+        assert_eq!(document_state(&stale), after_drift);
     }
 }

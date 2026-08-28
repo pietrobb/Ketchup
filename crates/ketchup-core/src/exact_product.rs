@@ -45,11 +45,13 @@ pub enum ExactFaceRole {
     Top,
     Bottom,
     East,
+    West,
     CircleSide,
     ArcSide,
     LinearSide,
     CutCircle,
     CutLinear,
+    CutArc,
     CutWest,
     CutEast,
     CutSouth,
@@ -118,17 +120,54 @@ const CIRCULAR_CUT_FACE_ROLES: [ExactFaceRole; 4] = [
     ExactFaceRole::East,
     ExactFaceRole::CutCircle,
 ];
+const WEST_CIRCULAR_CUT_FACE_ROLES: [ExactFaceRole; 4] = [
+    ExactFaceRole::Top,
+    ExactFaceRole::Bottom,
+    ExactFaceRole::West,
+    ExactFaceRole::CutCircle,
+];
+const CIRCULAR_POCKET_FACE_ROLES: [ExactFaceRole; 4] = [
+    ExactFaceRole::Top,
+    ExactFaceRole::East,
+    ExactFaceRole::CutCircle,
+    ExactFaceRole::PocketFloor,
+];
+const WEST_CIRCULAR_POCKET_FACE_ROLES: [ExactFaceRole; 4] = [
+    ExactFaceRole::Top,
+    ExactFaceRole::West,
+    ExactFaceRole::CutCircle,
+    ExactFaceRole::PocketFloor,
+];
 const POLYGON_CUT_FACE_ROLES: [ExactFaceRole; 4] = [
     ExactFaceRole::Top,
     ExactFaceRole::Bottom,
     ExactFaceRole::East,
     ExactFaceRole::CutLinear,
 ];
+const WEST_POLYGON_CUT_FACE_ROLES: [ExactFaceRole; 4] = [
+    ExactFaceRole::Top,
+    ExactFaceRole::Bottom,
+    ExactFaceRole::West,
+    ExactFaceRole::CutLinear,
+];
+const ARC_POLYGON_CUT_FACE_ROLES: [ExactFaceRole; 4] = [
+    ExactFaceRole::Top,
+    ExactFaceRole::Bottom,
+    ExactFaceRole::East,
+    ExactFaceRole::CutArc,
+];
 const POLYGON_POCKET_FACE_ROLES: [ExactFaceRole; 5] = [
     ExactFaceRole::Top,
     ExactFaceRole::Bottom,
     ExactFaceRole::East,
     ExactFaceRole::CutLinear,
+    ExactFaceRole::PocketFloor,
+];
+const ARC_POLYGON_POCKET_FACE_ROLES: [ExactFaceRole; 5] = [
+    ExactFaceRole::Top,
+    ExactFaceRole::Bottom,
+    ExactFaceRole::East,
+    ExactFaceRole::CutArc,
     ExactFaceRole::PocketFloor,
 ];
 const THROUGH_CUT_FACE_ROLES: [ExactFaceRole; 7] = [
@@ -163,11 +202,13 @@ impl ExactFaceRole {
             Self::Top => "extrusion.top",
             Self::Bottom => "extrusion.bottom",
             Self::East => "extrusion.side(profile_edge=east)",
+            Self::West => "extrusion.side(profile_edge=west)",
             Self::CircleSide => "extrusion.side(profile_edge=circle)",
             Self::ArcSide => "extrusion.side(profile_edge=arc.0)",
             Self::LinearSide => "extrusion.side(profile_edge=line.0)",
             Self::CutCircle => "through_cut.wall.circle",
             Self::CutLinear => "through_cut.wall.line.0",
+            Self::CutArc => "through_cut.wall.arc.0",
             Self::CutWest => "through_cut.wall.west",
             Self::CutEast => "through_cut.wall.east",
             Self::CutSouth => "through_cut.wall.south",
@@ -216,11 +257,13 @@ impl ExactFaceRole {
         match self {
             Self::Top | Self::Bottom => "profile.face",
             Self::East => "profile.edge.east",
+            Self::West => "profile.edge.west",
             Self::CircleSide => "profile.edge.circle",
             Self::ArcSide => "profile.edge.arc.0",
             Self::LinearSide => "profile.edge.line.0",
             Self::CutCircle => "cut_profile.edge.circle",
             Self::CutLinear => "cut_profile.edge.line.0",
+            Self::CutArc => "cut_profile.edge.arc.0",
             Self::CutWest => "cut_profile.edge.west",
             Self::CutEast => "cut_profile.edge.east",
             Self::CutSouth => "cut_profile.edge.south",
@@ -266,6 +309,7 @@ impl ExactFaceRole {
             Self::Top
             | Self::Bottom
             | Self::East
+            | Self::West
             | Self::LinearSide
             | Self::CutLinear
             | Self::CutWest
@@ -288,6 +332,7 @@ impl ExactFaceRole {
             | Self::LoftEnd => "planar_face",
             Self::CircleSide | Self::CutCircle => "cylindrical_face",
             Self::ArcSide
+            | Self::CutArc
             | Self::RevolveBottom
             | Self::RevolveBody
             | Self::RevolveShoulder
@@ -374,11 +419,13 @@ impl BodySubshapeRef {
             ExactFaceRole::Top,
             ExactFaceRole::Bottom,
             ExactFaceRole::East,
+            ExactFaceRole::West,
             ExactFaceRole::CircleSide,
             ExactFaceRole::ArcSide,
             ExactFaceRole::LinearSide,
             ExactFaceRole::CutCircle,
             ExactFaceRole::CutLinear,
+            ExactFaceRole::CutArc,
             ExactFaceRole::CutWest,
             ExactFaceRole::CutEast,
             ExactFaceRole::CutSouth,
@@ -1886,7 +1933,56 @@ impl ExactRenderPackage {
         let is_circular_cut = request.boolean.as_ref().is_some_and(|boolean| {
             boolean.operation == BooleanOperation::Cut && boolean.circle.is_some()
         });
-        let expected_counts = if is_circular_cut {
+        let [width, depth, _] = request.dimensions_mm();
+        let circular_side_mesh = request
+            .boolean
+            .as_ref()
+            .filter(|boolean| {
+                matches!(
+                    boolean.operation,
+                    BooleanOperation::Cut
+                        | BooleanOperation::Union
+                        | BooleanOperation::Intersect
+                        | BooleanOperation::Split
+                ) && boolean.circle.is_some_and(|circle| {
+                    circle.side_overlap(width, depth).is_some()
+                        || circle.corner_overlap(width, depth).is_some()
+                        || matches!(
+                            boolean.operation,
+                            BooleanOperation::Cut
+                                | BooleanOperation::Union
+                                | BooleanOperation::Intersect
+                                | BooleanOperation::Split
+                        ) && circle.outside_side_overlap(width, depth).is_some()
+                        || matches!(
+                            boolean.operation,
+                            BooleanOperation::Cut
+                                | BooleanOperation::Union
+                                | BooleanOperation::Intersect
+                                | BooleanOperation::Split
+                        ) && circle.center_on_side_overlap(width, depth).is_some()
+                        || matches!(
+                            boolean.operation,
+                            BooleanOperation::Cut
+                                | BooleanOperation::Union
+                                | BooleanOperation::Intersect
+                                | BooleanOperation::Split
+                        ) && circle.center_on_corner_overlap(width, depth).is_some()
+                        || matches!(
+                            boolean.operation,
+                            BooleanOperation::Cut
+                                | BooleanOperation::Union
+                                | BooleanOperation::Intersect
+                                | BooleanOperation::Split
+                        ) && circle.outside_corner_overlap(width, depth).is_some()
+                })
+            })
+            .map(|_| render_mesh(request))
+            .transpose()?
+            .map(|(vertices, triangles)| (vertices.len(), triangles));
+        let expected_counts = if let Some((vertex_count, triangles)) = &circular_side_mesh {
+            (*vertex_count, triangles.len())
+        } else if is_circular_cut {
             (128, 256)
         } else if is_circle {
             (66, 128)
@@ -1905,7 +2001,13 @@ impl ExactRenderPackage {
                 .iter()
                 .filter(|triangle| triangle.face_role == Some(*role))
                 .count();
-            if is_circular_cut {
+            if let Some((_, expected_triangles)) = &circular_side_mesh {
+                actual
+                    == expected_triangles
+                        .iter()
+                        .filter(|triangle| triangle.face_role == Some(*role))
+                        .count()
+            } else if is_circular_cut {
                 match role {
                     ExactFaceRole::Top | ExactFaceRole::Bottom | ExactFaceRole::CutCircle => {
                         actual == 64
@@ -1987,6 +2089,358 @@ pub struct ExactCircleProfile {
     pub clockwise: bool,
 }
 
+impl ExactCircleProfile {
+    #[must_use]
+    pub fn side_overlap(self, width: f64, depth: f64) -> Option<(f64, [f64; 4])> {
+        let center_x = f64::from_bits(self.center_x_bits);
+        let center_y = f64::from_bits(self.center_y_bits);
+        let radius = f64::from_bits(self.radius_bits);
+        if [center_x, center_y, radius, width, depth]
+            .into_iter()
+            .any(|value| !value.is_finite())
+            || radius <= 0.0
+            || width <= 0.0
+            || depth <= 0.0
+            || center_x <= 1.0e-6
+            || center_x >= width - 1.0e-6
+            || center_y <= 1.0e-6
+            || center_y >= depth - 1.0e-6
+        {
+            return None;
+        }
+        let bounds = [
+            center_x - radius,
+            center_y - radius,
+            center_x + radius,
+            center_y + radius,
+        ];
+        let crossed = [
+            bounds[0] < -1.0e-6,
+            bounds[2] > width + 1.0e-6,
+            bounds[1] < -1.0e-6,
+            bounds[3] > depth + 1.0e-6,
+        ];
+        if crossed.into_iter().filter(|crossed| *crossed).count() != 1
+            || (crossed[0] || crossed[1]) && (bounds[1] <= 1.0e-6 || bounds[3] >= depth - 1.0e-6)
+            || (crossed[2] || crossed[3]) && (bounds[0] <= 1.0e-6 || bounds[2] >= width - 1.0e-6)
+        {
+            return None;
+        }
+        let distance = if crossed[0] {
+            center_x
+        } else if crossed[1] {
+            width - center_x
+        } else if crossed[2] {
+            center_y
+        } else {
+            depth - center_y
+        };
+        let chord_half = (radius * radius - distance * distance).sqrt();
+        let outside_area = radius * radius * (distance / radius).acos() - distance * chord_half;
+        let overlap_area = std::f64::consts::PI * radius * radius - outside_area;
+        let clipped_bounds = [
+            bounds[0].max(0.0),
+            bounds[1].max(0.0),
+            bounds[2].min(width),
+            bounds[3].min(depth),
+        ];
+        (overlap_area.is_finite() && overlap_area > 1.0e-9)
+            .then_some((overlap_area, clipped_bounds))
+    }
+
+    #[must_use]
+    pub fn center_on_side_overlap(self, width: f64, depth: f64) -> Option<(f64, [f64; 4])> {
+        let center_x = f64::from_bits(self.center_x_bits);
+        let center_y = f64::from_bits(self.center_y_bits);
+        let radius = f64::from_bits(self.radius_bits);
+        if [center_x, center_y, radius, width, depth]
+            .into_iter()
+            .any(|value| !value.is_finite())
+            || radius <= 0.0
+            || width <= 0.0
+            || depth <= 0.0
+        {
+            return None;
+        }
+        let centered_on = [
+            center_x.abs() <= 1.0e-6,
+            (center_x - width).abs() <= 1.0e-6,
+            center_y.abs() <= 1.0e-6,
+            (center_y - depth).abs() <= 1.0e-6,
+        ];
+        if centered_on.into_iter().filter(|centered| *centered).count() != 1
+            || (centered_on[0] || centered_on[1])
+                && (center_y - radius <= 1.0e-6 || center_y + radius >= depth - 1.0e-6)
+            || (centered_on[2] || centered_on[3])
+                && (center_x - radius <= 1.0e-6 || center_x + radius >= width - 1.0e-6)
+        {
+            return None;
+        }
+        let bounds = [
+            (center_x - radius).max(0.0),
+            (center_y - radius).max(0.0),
+            (center_x + radius).min(width),
+            (center_y + radius).min(depth),
+        ];
+        Some((0.5 * std::f64::consts::PI * radius * radius, bounds))
+    }
+
+    #[must_use]
+    pub fn center_on_corner_overlap(self, width: f64, depth: f64) -> Option<(f64, [f64; 4])> {
+        let center_x = f64::from_bits(self.center_x_bits);
+        let center_y = f64::from_bits(self.center_y_bits);
+        let radius = f64::from_bits(self.radius_bits);
+        if [center_x, center_y, radius, width, depth]
+            .into_iter()
+            .any(|value| !value.is_finite())
+            || radius <= 0.0
+            || width <= 0.0
+            || depth <= 0.0
+        {
+            return None;
+        }
+        let centered_on_x = [center_x.abs() <= 1.0e-6, (center_x - width).abs() <= 1.0e-6];
+        let centered_on_y = [center_y.abs() <= 1.0e-6, (center_y - depth).abs() <= 1.0e-6];
+        if centered_on_x
+            .into_iter()
+            .filter(|centered| *centered)
+            .count()
+            != 1
+            || centered_on_y
+                .into_iter()
+                .filter(|centered| *centered)
+                .count()
+                != 1
+            || radius >= width - 1.0e-6
+            || radius >= depth - 1.0e-6
+        {
+            return None;
+        }
+        let bounds = [
+            (center_x - radius).max(0.0),
+            (center_y - radius).max(0.0),
+            (center_x + radius).min(width),
+            (center_y + radius).min(depth),
+        ];
+        Some((0.25 * std::f64::consts::PI * radius * radius, bounds))
+    }
+
+    #[must_use]
+    pub fn outside_side_overlap(self, width: f64, depth: f64) -> Option<(f64, [f64; 4])> {
+        let center_x = f64::from_bits(self.center_x_bits);
+        let center_y = f64::from_bits(self.center_y_bits);
+        let radius = f64::from_bits(self.radius_bits);
+        if [center_x, center_y, radius, width, depth]
+            .into_iter()
+            .any(|value| !value.is_finite())
+            || radius <= 0.0
+            || width <= 0.0
+            || depth <= 0.0
+        {
+            return None;
+        }
+        let bounds = [
+            center_x - radius,
+            center_y - radius,
+            center_x + radius,
+            center_y + radius,
+        ];
+        let outside = [
+            center_x < -1.0e-6,
+            center_x > width + 1.0e-6,
+            center_y < -1.0e-6,
+            center_y > depth + 1.0e-6,
+        ];
+        if outside.into_iter().filter(|outside| *outside).count() != 1
+            || (outside[0] || outside[1]) && (bounds[1] <= 1.0e-6 || bounds[3] >= depth - 1.0e-6)
+            || (outside[2] || outside[3]) && (bounds[0] <= 1.0e-6 || bounds[2] >= width - 1.0e-6)
+        {
+            return None;
+        }
+        let distance = if outside[0] {
+            -center_x
+        } else if outside[1] {
+            center_x - width
+        } else if outside[2] {
+            -center_y
+        } else {
+            center_y - depth
+        };
+        if distance >= radius - 1.0e-6 {
+            return None;
+        }
+        let chord_half = (radius * radius - distance * distance).sqrt();
+        let overlap_area = radius * radius * (distance / radius).acos() - distance * chord_half;
+        let clipped_bounds = if outside[0] || outside[1] {
+            [
+                bounds[0].max(0.0),
+                center_y - chord_half,
+                bounds[2].min(width),
+                center_y + chord_half,
+            ]
+        } else {
+            [
+                center_x - chord_half,
+                bounds[1].max(0.0),
+                center_x + chord_half,
+                bounds[3].min(depth),
+            ]
+        };
+        (overlap_area.is_finite() && overlap_area > 1.0e-9)
+            .then_some((overlap_area, clipped_bounds))
+    }
+
+    #[must_use]
+    pub fn outside_corner_overlap(self, width: f64, depth: f64) -> Option<(f64, [f64; 4])> {
+        let center_x = f64::from_bits(self.center_x_bits);
+        let center_y = f64::from_bits(self.center_y_bits);
+        let radius = f64::from_bits(self.radius_bits);
+        if [center_x, center_y, radius, width, depth]
+            .into_iter()
+            .any(|value| !value.is_finite())
+            || radius <= 0.0
+            || width <= 0.0
+            || depth <= 0.0
+        {
+            return None;
+        }
+        let outside_x = [center_x < -1.0e-6, center_x > width + 1.0e-6];
+        let outside_y = [center_y < -1.0e-6, center_y > depth + 1.0e-6];
+        if outside_x.into_iter().filter(|outside| *outside).count() != 1
+            || outside_y.into_iter().filter(|outside| *outside).count() != 1
+        {
+            return None;
+        }
+        let distance_x = if outside_x[0] {
+            -center_x
+        } else {
+            center_x - width
+        };
+        let distance_y = if outside_y[0] {
+            -center_y
+        } else {
+            center_y - depth
+        };
+        let bounds = [
+            center_x - radius,
+            center_y - radius,
+            center_x + radius,
+            center_y + radius,
+        ];
+        if distance_x >= radius - 1.0e-6
+            || distance_y >= radius - 1.0e-6
+            || distance_x * distance_x + distance_y * distance_y >= radius * radius - 1.0e-9
+            || outside_x[0] && bounds[2] >= width - 1.0e-6
+            || outside_x[1] && bounds[0] <= 1.0e-6
+            || outside_y[0] && bounds[3] >= depth - 1.0e-6
+            || outside_y[1] && bounds[1] <= 1.0e-6
+        {
+            return None;
+        }
+        let limit = (radius * radius - distance_y * distance_y).sqrt();
+        let primitive = |value: f64| {
+            0.5 * (value * (radius * radius - value * value).sqrt()
+                + radius * radius * (value / radius).asin())
+        };
+        let overlap_area =
+            primitive(limit) - primitive(distance_x) - distance_y * (limit - distance_x);
+        let limit_y = (radius * radius - distance_x * distance_x).sqrt();
+        let clipped_bounds = [
+            if outside_x[0] { 0.0 } else { center_x - limit },
+            if outside_y[0] {
+                0.0
+            } else {
+                center_y - limit_y
+            },
+            if outside_x[0] {
+                center_x + limit
+            } else {
+                width
+            },
+            if outside_y[0] {
+                center_y + limit_y
+            } else {
+                depth
+            },
+        ];
+        (overlap_area.is_finite() && overlap_area > 1.0e-9)
+            .then_some((overlap_area, clipped_bounds))
+    }
+
+    #[must_use]
+    pub fn corner_overlap(self, width: f64, depth: f64) -> Option<(f64, [f64; 4])> {
+        let center_x = f64::from_bits(self.center_x_bits);
+        let center_y = f64::from_bits(self.center_y_bits);
+        let radius = f64::from_bits(self.radius_bits);
+        if [center_x, center_y, radius, width, depth]
+            .into_iter()
+            .any(|value| !value.is_finite())
+            || radius <= 0.0
+            || width <= 0.0
+            || depth <= 0.0
+            || center_x <= 1.0e-6
+            || center_x >= width - 1.0e-6
+            || center_y <= 1.0e-6
+            || center_y >= depth - 1.0e-6
+        {
+            return None;
+        }
+        let bounds = [
+            center_x - radius,
+            center_y - radius,
+            center_x + radius,
+            center_y + radius,
+        ];
+        let crossed = [
+            bounds[0] < -1.0e-6,
+            bounds[2] > width + 1.0e-6,
+            bounds[1] < -1.0e-6,
+            bounds[3] > depth + 1.0e-6,
+        ];
+        if crossed.into_iter().filter(|crossed| *crossed).count() != 2
+            || crossed[0] && crossed[1]
+            || crossed[2] && crossed[3]
+        {
+            return None;
+        }
+        let distance_x = if crossed[0] {
+            center_x
+        } else {
+            width - center_x
+        };
+        let distance_y = if crossed[2] {
+            center_y
+        } else {
+            depth - center_y
+        };
+        if distance_x * distance_x + distance_y * distance_y >= radius * radius - 1.0e-9 {
+            return None;
+        }
+        let cap = |distance: f64| {
+            radius * radius * (distance / radius).acos()
+                - distance * (radius * radius - distance * distance).sqrt()
+        };
+        let primitive = |value: f64| {
+            0.5 * (value * (radius * radius - value * value).sqrt()
+                + radius * radius * (value / radius).asin())
+        };
+        let limit = (radius * radius - distance_y * distance_y).sqrt();
+        let shared_outside =
+            primitive(limit) - distance_y * limit - primitive(distance_x) + distance_y * distance_x;
+        let overlap_area =
+            std::f64::consts::PI * radius * radius - cap(distance_x) - cap(distance_y)
+                + shared_outside;
+        let clipped_bounds = [
+            bounds[0].max(0.0),
+            bounds[1].max(0.0),
+            bounds[2].min(width),
+            bounds[3].min(depth),
+        ];
+        (overlap_area.is_finite() && overlap_area > 1.0e-9)
+            .then_some((overlap_area, clipped_bounds))
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ExactProfileSegment {
     Line {
@@ -2017,6 +2471,1008 @@ impl ExactMixedProfile {
     }
 
     #[must_use]
+    pub fn is_strict_convex_line_arc_profile(&self) -> bool {
+        if !self
+            .segments
+            .iter()
+            .any(|segment| matches!(segment, ExactProfileSegment::Line { .. }))
+            || !self
+                .segments
+                .iter()
+                .any(|segment| matches!(segment, ExactProfileSegment::CircularArc { .. }))
+        {
+            return false;
+        }
+        let scale = self
+            .bounds_bits
+            .map(f64::from_bits)
+            .into_iter()
+            .map(f64::abs)
+            .fold(1.0, f64::max);
+        let tolerance = scale * scale * 1.0e-9;
+        let mut boundary = Vec::new();
+        for segment in &self.segments {
+            match segment {
+                ExactProfileSegment::Line { start_bits, .. } => {
+                    boundary.push(start_bits.map(f64::from_bits));
+                }
+                ExactProfileSegment::CircularArc {
+                    start_bits,
+                    end_bits,
+                    center_bits,
+                    clockwise,
+                } => {
+                    let start = start_bits.map(f64::from_bits);
+                    let end = end_bits.map(f64::from_bits);
+                    let center = center_bits.map(f64::from_bits);
+                    let start_angle = (start[1] - center[1]).atan2(start[0] - center[0]);
+                    let end_angle = (end[1] - center[1]).atan2(end[0] - center[0]);
+                    let Some(sweep) = directed_arc_sweep(start_angle, end_angle, *clockwise) else {
+                        return false;
+                    };
+                    if sweep.abs() > std::f64::consts::PI + 1.0e-9 {
+                        return false;
+                    }
+                    let radius = (start[0] - center[0]).hypot(start[1] - center[1]);
+                    let steps = (sweep.abs() / (std::f64::consts::PI / 16.0))
+                        .ceil()
+                        .max(1.0) as usize;
+                    for step in 0..steps {
+                        let angle = start_angle + sweep * step as f64 / steps as f64;
+                        boundary.push([
+                            center[0] + radius * angle.cos(),
+                            center[1] + radius * angle.sin(),
+                        ]);
+                    }
+                }
+            }
+        }
+        if boundary.len() < 3 {
+            return false;
+        }
+        for left in 0..boundary.len() {
+            let left_next = (left + 1) % boundary.len();
+            for right in (left + 1)..boundary.len() {
+                let right_next = (right + 1) % boundary.len();
+                if left == right_next || left_next == right {
+                    continue;
+                }
+                if planar_line_segments_intersect(
+                    boundary[left],
+                    boundary[left_next],
+                    boundary[right],
+                    boundary[right_next],
+                ) {
+                    return false;
+                }
+            }
+        }
+        let mut orientation = 0_i8;
+        for index in 0..boundary.len() {
+            let previous = boundary[index];
+            let current = boundary[(index + 1) % boundary.len()];
+            let next = boundary[(index + 2) % boundary.len()];
+            let cross = (current[0] - previous[0]) * (next[1] - current[1])
+                - (current[1] - previous[1]) * (next[0] - current[0]);
+            if cross.abs() <= tolerance {
+                continue;
+            }
+            let turn = if cross > 0.0 { 1 } else { -1 };
+            if orientation != 0 && orientation != turn {
+                return false;
+            }
+            orientation = turn;
+        }
+        orientation != 0
+            && self.segments.iter().all(|segment| match segment {
+                ExactProfileSegment::Line { .. } => true,
+                ExactProfileSegment::CircularArc {
+                    start_bits,
+                    end_bits,
+                    center_bits,
+                    clockwise,
+                } => {
+                    let start = start_bits.map(f64::from_bits);
+                    let end = end_bits.map(f64::from_bits);
+                    let center = center_bits.map(f64::from_bits);
+                    let start_angle = (start[1] - center[1]).atan2(start[0] - center[0]);
+                    let end_angle = (end[1] - center[1]).atan2(end[0] - center[0]);
+                    directed_arc_sweep(start_angle, end_angle, *clockwise)
+                        .is_some_and(|sweep| sweep.signum() == f64::from(orientation))
+                }
+            })
+    }
+
+    #[must_use]
+    pub fn strict_convex_line_clipped_side_overlap(
+        &self,
+        width: f64,
+        depth: f64,
+    ) -> Option<(f64, [f64; 4])> {
+        if !self.is_strict_convex_line_arc_profile()
+            || self.segments.len() != 5
+            || self
+                .segments
+                .iter()
+                .filter(|segment| matches!(segment, ExactProfileSegment::CircularArc { .. }))
+                .count()
+                != 1
+            || !width.is_finite()
+            || !depth.is_finite()
+            || width <= 0.0
+            || depth <= 0.0
+        {
+            return None;
+        }
+        let [min_x, min_y, max_x, max_y] = self.bounds_bits.map(f64::from_bits);
+        let tolerance = 1.0e-6;
+        let candidates = [
+            (
+                min_x < -tolerance
+                    && max_x > tolerance
+                    && max_x < width - tolerance
+                    && min_y > tolerance
+                    && max_y < depth - tolerance,
+                0_usize,
+                min_x,
+                0.0,
+                true,
+                min_y,
+                max_y,
+                [0.0, min_y, max_x, max_y],
+            ),
+            (
+                min_x > tolerance
+                    && min_x < width - tolerance
+                    && max_x > width + tolerance
+                    && min_y > tolerance
+                    && max_y < depth - tolerance,
+                0,
+                max_x,
+                width,
+                false,
+                min_y,
+                max_y,
+                [min_x, min_y, width, max_y],
+            ),
+            (
+                min_y < -tolerance
+                    && max_y > tolerance
+                    && max_y < depth - tolerance
+                    && min_x > tolerance
+                    && max_x < width - tolerance,
+                1,
+                min_y,
+                0.0,
+                true,
+                min_x,
+                max_x,
+                [min_x, 0.0, max_x, max_y],
+            ),
+            (
+                min_y > tolerance
+                    && min_y < depth - tolerance
+                    && max_y > depth + tolerance
+                    && min_x > tolerance
+                    && max_x < width - tolerance,
+                1,
+                max_y,
+                depth,
+                false,
+                min_x,
+                max_x,
+                [min_x, min_y, max_x, depth],
+            ),
+        ];
+        let mut candidates = candidates.into_iter().filter(|candidate| candidate.0);
+        let (_, axis, outer, limit, keep_greater, orthogonal_min, orthogonal_max, bounds) =
+            candidates.next()?;
+        if candidates.next().is_some() {
+            return None;
+        }
+        let orthogonal_axis = 1 - axis;
+        let inside = |value: f64| {
+            if keep_greater {
+                value > limit + tolerance
+            } else {
+                value < limit - tolerance
+            }
+        };
+        let same = |left: f64, right: f64| (left - right).abs() <= tolerance;
+        let mut outer_lines = 0;
+        let mut connector_lines = 0;
+        for segment in &self.segments {
+            match segment {
+                ExactProfileSegment::Line {
+                    start_bits,
+                    end_bits,
+                } => {
+                    let start = start_bits.map(f64::from_bits);
+                    let end = end_bits.map(f64::from_bits);
+                    let outer_line = same(start[axis], outer)
+                        && same(end[axis], outer)
+                        && ((same(start[orthogonal_axis], orthogonal_min)
+                            && same(end[orthogonal_axis], orthogonal_max))
+                            || (same(start[orthogonal_axis], orthogonal_max)
+                                && same(end[orthogonal_axis], orthogonal_min)));
+                    if outer_line {
+                        outer_lines += 1;
+                        continue;
+                    }
+                    let connector = same(start[orthogonal_axis], end[orthogonal_axis])
+                        && (same(start[orthogonal_axis], orthogonal_min)
+                            || same(start[orthogonal_axis], orthogonal_max))
+                        && ((same(start[axis], outer) && inside(end[axis]))
+                            || (same(end[axis], outer) && inside(start[axis])));
+                    if connector {
+                        connector_lines += 1;
+                    } else if !inside(start[axis]) || !inside(end[axis]) {
+                        return None;
+                    }
+                }
+                ExactProfileSegment::CircularArc {
+                    start_bits,
+                    end_bits,
+                    center_bits,
+                    clockwise,
+                } => {
+                    let start = start_bits.map(f64::from_bits);
+                    let end = end_bits.map(f64::from_bits);
+                    let center = center_bits.map(f64::from_bits);
+                    let start_angle = (start[1] - center[1]).atan2(start[0] - center[0]);
+                    let end_angle = (end[1] - center[1]).atan2(end[0] - center[0]);
+                    let sweep = directed_arc_sweep(start_angle, end_angle, *clockwise)?;
+                    let radius = (start[0] - center[0]).hypot(start[1] - center[1]);
+                    let mut points = vec![start, end];
+                    for angle in [
+                        0.0,
+                        std::f64::consts::FRAC_PI_2,
+                        std::f64::consts::PI,
+                        3.0 * std::f64::consts::FRAC_PI_2,
+                    ] {
+                        if angle_on_directed_arc(start_angle, sweep, angle) {
+                            points.push([
+                                center[0] + radius * angle.cos(),
+                                center[1] + radius * angle.sin(),
+                            ]);
+                        }
+                    }
+                    if points.into_iter().any(|point| !inside(point[axis])) {
+                        return None;
+                    }
+                }
+            }
+        }
+        if outer_lines != 1 || connector_lines != 2 {
+            return None;
+        }
+        let outside_area = (limit - outer).abs() * (orthogonal_max - orthogonal_min);
+        let overlap_area = f64::from_bits(self.area_bits) - outside_area;
+        (overlap_area > tolerance).then_some((overlap_area, bounds))
+    }
+
+    #[must_use]
+    pub fn strict_convex_arc_only_clipped_side_overlap(
+        &self,
+        width: f64,
+        depth: f64,
+    ) -> Option<(f64, [f64; 4])> {
+        if !self.is_strict_convex_line_arc_profile()
+            || self.segments.len() != 5
+            || self
+                .segments
+                .iter()
+                .filter(|segment| matches!(segment, ExactProfileSegment::CircularArc { .. }))
+                .count()
+                != 1
+            || !width.is_finite()
+            || !depth.is_finite()
+            || width <= 0.0
+            || depth <= 0.0
+        {
+            return None;
+        }
+        let tolerance = 1.0e-6;
+        let point_inside = |point: [f64; 2]| {
+            point[0] > tolerance
+                && point[0] < width - tolerance
+                && point[1] > tolerance
+                && point[1] < depth - tolerance
+        };
+        if self.segments.iter().any(|segment| match segment {
+            ExactProfileSegment::Line {
+                start_bits,
+                end_bits,
+            }
+            | ExactProfileSegment::CircularArc {
+                start_bits,
+                end_bits,
+                ..
+            } => {
+                !point_inside(start_bits.map(f64::from_bits))
+                    || !point_inside(end_bits.map(f64::from_bits))
+            }
+        }) {
+            return None;
+        }
+
+        let [min_x, min_y, max_x, max_y] = self.bounds_bits.map(f64::from_bits);
+        let candidates = [
+            (
+                min_x < -tolerance
+                    && max_x < width - tolerance
+                    && min_y > tolerance
+                    && max_y < depth - tolerance,
+                0_usize,
+                0.0,
+                true,
+                std::f64::consts::PI,
+                [0.0, min_y, max_x, max_y],
+            ),
+            (
+                max_x > width + tolerance
+                    && min_x > tolerance
+                    && min_y > tolerance
+                    && max_y < depth - tolerance,
+                0,
+                width,
+                false,
+                0.0,
+                [min_x, min_y, width, max_y],
+            ),
+            (
+                min_y < -tolerance
+                    && max_y < depth - tolerance
+                    && min_x > tolerance
+                    && max_x < width - tolerance,
+                1,
+                0.0,
+                true,
+                3.0 * std::f64::consts::FRAC_PI_2,
+                [min_x, 0.0, max_x, max_y],
+            ),
+            (
+                max_y > depth + tolerance
+                    && min_y > tolerance
+                    && min_x > tolerance
+                    && max_x < width - tolerance,
+                1,
+                depth,
+                false,
+                std::f64::consts::FRAC_PI_2,
+                [min_x, min_y, max_x, depth],
+            ),
+        ];
+        let mut candidates = candidates.into_iter().filter(|candidate| candidate.0);
+        let (_, axis, limit, keep_greater, extreme_angle, bounds) = candidates.next()?;
+        if candidates.next().is_some() {
+            return None;
+        }
+
+        let ExactProfileSegment::CircularArc {
+            start_bits,
+            end_bits,
+            center_bits,
+            clockwise,
+        } = self
+            .segments
+            .iter()
+            .find(|segment| matches!(segment, ExactProfileSegment::CircularArc { .. }))?
+        else {
+            unreachable!("filtered circular arc")
+        };
+        let start = start_bits.map(f64::from_bits);
+        let end = end_bits.map(f64::from_bits);
+        let center = center_bits.map(f64::from_bits);
+        let radius = (start[0] - center[0]).hypot(start[1] - center[1]);
+        if !point_inside(center) || !radius.is_finite() || radius <= tolerance {
+            return None;
+        }
+        let end_radius = (end[0] - center[0]).hypot(end[1] - center[1]);
+        if (end_radius - radius).abs() > tolerance {
+            return None;
+        }
+        let distance = if keep_greater {
+            center[axis] - limit
+        } else {
+            limit - center[axis]
+        };
+        if distance <= tolerance || distance >= radius - tolerance {
+            return None;
+        }
+        let start_angle = (start[1] - center[1]).atan2(start[0] - center[0]);
+        let end_angle = (end[1] - center[1]).atan2(end[0] - center[0]);
+        let sweep = directed_arc_sweep(start_angle, end_angle, *clockwise)?;
+        let intersection_offset = (distance / radius).acos();
+        if !angle_on_directed_arc(start_angle, sweep, extreme_angle)
+            || !angle_on_directed_arc(start_angle, sweep, extreme_angle - intersection_offset)
+            || !angle_on_directed_arc(start_angle, sweep, extreme_angle + intersection_offset)
+        {
+            return None;
+        }
+        let outside_area = radius * radius * intersection_offset
+            - distance * (radius * radius - distance * distance).sqrt();
+        let overlap_area = f64::from_bits(self.area_bits) - outside_area;
+        (outside_area > tolerance && overlap_area > tolerance).then_some((overlap_area, bounds))
+    }
+
+    #[must_use]
+    pub fn strict_convex_line_arc_clipped_side_overlap(
+        &self,
+        width: f64,
+        depth: f64,
+    ) -> Option<(f64, [f64; 4])> {
+        if !self.is_strict_convex_line_arc_profile()
+            || self.segments.len() != 5
+            || self
+                .segments
+                .iter()
+                .filter(|segment| matches!(segment, ExactProfileSegment::CircularArc { .. }))
+                .count()
+                != 1
+            || !width.is_finite()
+            || !depth.is_finite()
+            || width <= 0.0
+            || depth <= 0.0
+        {
+            return None;
+        }
+        let tolerance = 1.0e-6;
+        let [min_x, min_y, max_x, max_y] = self.bounds_bits.map(f64::from_bits);
+        let candidates = [
+            (
+                min_x < -tolerance
+                    && max_x > tolerance
+                    && max_x < width - tolerance
+                    && min_y > tolerance
+                    && max_y < depth - tolerance,
+                0_usize,
+                0.0,
+                true,
+                [0.0, min_y, max_x, max_y],
+            ),
+            (
+                max_x > width + tolerance
+                    && min_x > tolerance
+                    && min_x < width - tolerance
+                    && min_y > tolerance
+                    && max_y < depth - tolerance,
+                0,
+                width,
+                false,
+                [min_x, min_y, width, max_y],
+            ),
+            (
+                min_y < -tolerance
+                    && max_y > tolerance
+                    && max_y < depth - tolerance
+                    && min_x > tolerance
+                    && max_x < width - tolerance,
+                1,
+                0.0,
+                true,
+                [min_x, 0.0, max_x, max_y],
+            ),
+            (
+                max_y > depth + tolerance
+                    && min_y > tolerance
+                    && min_y < depth - tolerance
+                    && min_x > tolerance
+                    && max_x < width - tolerance,
+                1,
+                depth,
+                false,
+                [min_x, min_y, max_x, depth],
+            ),
+        ];
+        let mut candidates = candidates.into_iter().filter(|candidate| candidate.0);
+        let (_, axis, limit, keep_greater, bounds) = candidates.next()?;
+        if candidates.next().is_some() {
+            return None;
+        }
+        let inside = |point: [f64; 2]| {
+            if keep_greater {
+                point[axis] > limit + tolerance
+            } else {
+                point[axis] < limit - tolerance
+            }
+        };
+        let same_point = |left: [f64; 2], right: [f64; 2]| {
+            left.into_iter()
+                .zip(right)
+                .all(|(left, right)| (left - right).abs() <= tolerance)
+        };
+
+        let ExactProfileSegment::CircularArc {
+            start_bits,
+            end_bits,
+            center_bits,
+            clockwise,
+        } = self
+            .segments
+            .iter()
+            .find(|segment| matches!(segment, ExactProfileSegment::CircularArc { .. }))?
+        else {
+            unreachable!("filtered circular arc")
+        };
+        let arc_start = start_bits.map(f64::from_bits);
+        let arc_end = end_bits.map(f64::from_bits);
+        let center = center_bits.map(f64::from_bits);
+        let start_inside = inside(arc_start);
+        let end_inside = inside(arc_end);
+        if start_inside == end_inside || !inside(center) {
+            return None;
+        }
+        let radius = (arc_start[0] - center[0]).hypot(arc_start[1] - center[1]);
+        let end_radius = (arc_end[0] - center[0]).hypot(arc_end[1] - center[1]);
+        if !radius.is_finite() || radius <= tolerance || (end_radius - radius).abs() > tolerance {
+            return None;
+        }
+        let start_angle = (arc_start[1] - center[1]).atan2(arc_start[0] - center[0]);
+        let end_angle = (arc_end[1] - center[1]).atan2(arc_end[0] - center[0]);
+        let sweep = directed_arc_sweep(start_angle, end_angle, *clockwise)?;
+        let normalized_limit = (limit - center[axis]) / radius;
+        if normalized_limit.abs() >= 1.0 - tolerance {
+            return None;
+        }
+        let principal = if axis == 0 {
+            normalized_limit.acos()
+        } else {
+            normalized_limit.asin()
+        };
+        let intersection_angles = if axis == 0 {
+            [principal, -principal]
+        } else {
+            [principal, std::f64::consts::PI - principal]
+        };
+        let mut arc_intersections = intersection_angles.into_iter().filter_map(|angle| {
+            if !angle_on_directed_arc(start_angle, sweep, angle) {
+                return None;
+            }
+            let mut point = [
+                center[0] + radius * angle.cos(),
+                center[1] + radius * angle.sin(),
+            ];
+            point[axis] = limit;
+            (!same_point(point, arc_start) && !same_point(point, arc_end)).then_some((angle, point))
+        });
+        let (intersection_angle, arc_intersection) = arc_intersections.next()?;
+        if arc_intersections.next().is_some() {
+            return None;
+        }
+
+        let mut crossing_lines = self.segments.iter().filter_map(|segment| {
+            let ExactProfileSegment::Line {
+                start_bits,
+                end_bits,
+            } = segment
+            else {
+                return None;
+            };
+            let start = start_bits.map(f64::from_bits);
+            let end = end_bits.map(f64::from_bits);
+            (inside(start) != inside(end)).then_some((start, end))
+        });
+        let (line_start, line_end) = crossing_lines.next()?;
+        if crossing_lines.next().is_some()
+            || self.segments.iter().any(|segment| {
+                let ExactProfileSegment::Line {
+                    start_bits,
+                    end_bits,
+                } = segment
+                else {
+                    return false;
+                };
+                !inside(start_bits.map(f64::from_bits)) && !inside(end_bits.map(f64::from_bits))
+            })
+        {
+            return None;
+        }
+        let outside_endpoint = if start_inside { arc_end } else { arc_start };
+        if (start_inside && !same_point(line_start, outside_endpoint))
+            || (!start_inside && !same_point(line_end, outside_endpoint))
+        {
+            return None;
+        }
+        let denominator = line_end[axis] - line_start[axis];
+        if denominator.abs() <= tolerance {
+            return None;
+        }
+        let t = (limit - line_start[axis]) / denominator;
+        if t <= tolerance || t >= 1.0 - tolerance {
+            return None;
+        }
+        let mut line_intersection = [
+            line_start[0] + t * (line_end[0] - line_start[0]),
+            line_start[1] + t * (line_end[1] - line_start[1]),
+        ];
+        line_intersection[axis] = limit;
+
+        let cross = |left: [f64; 2], right: [f64; 2]| left[0] * right[1] - left[1] * right[0];
+        let arc_integral = |from: f64, to: f64| {
+            let delta = directed_arc_sweep(from, to, *clockwise)?;
+            Some(
+                radius * center[0] * (to.sin() - from.sin())
+                    - radius * center[1] * (to.cos() - from.cos())
+                    + radius * radius * delta,
+            )
+        };
+        let outside_twice_area = if start_inside {
+            arc_integral(intersection_angle, end_angle)?
+                + cross(outside_endpoint, line_intersection)
+                + cross(line_intersection, arc_intersection)
+        } else {
+            cross(line_intersection, outside_endpoint)
+                + arc_integral(start_angle, intersection_angle)?
+                + cross(arc_intersection, line_intersection)
+        };
+        let outside_area = 0.5 * outside_twice_area.abs();
+        let overlap_area = f64::from_bits(self.area_bits) - outside_area;
+        (outside_area > tolerance && overlap_area > tolerance).then_some((overlap_area, bounds))
+    }
+
+    #[must_use]
+    pub fn strict_convex_line_arc_clipped_south_east_corner_overlap(
+        &self,
+        width: f64,
+        depth: f64,
+    ) -> Option<(f64, [f64; 4])> {
+        if !self.is_strict_convex_line_arc_profile()
+            || self.segments.len() != 5
+            || self
+                .segments
+                .iter()
+                .filter(|segment| matches!(segment, ExactProfileSegment::CircularArc { .. }))
+                .count()
+                != 1
+            || !width.is_finite()
+            || !depth.is_finite()
+            || width <= 0.0
+            || depth <= 0.0
+        {
+            return None;
+        }
+        let tolerance = 1.0e-6;
+        let [min_x, min_y, max_x, max_y] = self.bounds_bits.map(f64::from_bits);
+        if min_x <= tolerance
+            || min_x >= width - tolerance
+            || max_x <= width + tolerance
+            || min_y >= -tolerance
+            || max_y <= tolerance
+            || max_y >= depth - tolerance
+        {
+            return None;
+        }
+        let point_inside = |point: [f64; 2]| {
+            point[0] > tolerance
+                && point[0] < width - tolerance
+                && point[1] > tolerance
+                && point[1] < depth - tolerance
+        };
+        let cross = |left: [f64; 2], right: [f64; 2]| left[0] * right[1] - left[1] * right[0];
+        let ExactProfileSegment::Line {
+            start_bits: first_line_start,
+            end_bits: first_line_end,
+        } = self
+            .segments
+            .iter()
+            .find(|segment| matches!(segment, ExactProfileSegment::Line { .. }))?
+        else {
+            unreachable!("filtered first line")
+        };
+        if !point_inside(first_line_start.map(f64::from_bits))
+            || !point_inside(first_line_end.map(f64::from_bits))
+        {
+            return None;
+        }
+
+        let ExactProfileSegment::CircularArc {
+            start_bits,
+            end_bits,
+            center_bits,
+            clockwise,
+        } = self
+            .segments
+            .iter()
+            .find(|segment| matches!(segment, ExactProfileSegment::CircularArc { .. }))?
+        else {
+            unreachable!("filtered circular arc")
+        };
+        let arc_start = start_bits.map(f64::from_bits);
+        let arc_end = end_bits.map(f64::from_bits);
+        let center = center_bits.map(f64::from_bits);
+        let start_inside = point_inside(arc_start);
+        let end_inside = point_inside(arc_end);
+        if start_inside == end_inside || !point_inside(center) {
+            return None;
+        }
+        let outside_endpoint = if start_inside { arc_end } else { arc_start };
+        if outside_endpoint[0] <= tolerance
+            || outside_endpoint[0] >= width - tolerance
+            || outside_endpoint[1] >= -tolerance
+        {
+            return None;
+        }
+        let radius = (arc_start[0] - center[0]).hypot(arc_start[1] - center[1]);
+        let end_radius = (arc_end[0] - center[0]).hypot(arc_end[1] - center[1]);
+        if !radius.is_finite() || radius <= tolerance || (end_radius - radius).abs() > tolerance {
+            return None;
+        }
+        let start_angle = (arc_start[1] - center[1]).atan2(arc_start[0] - center[0]);
+        let end_angle = (arc_end[1] - center[1]).atan2(arc_end[0] - center[0]);
+        let sweep = directed_arc_sweep(start_angle, end_angle, *clockwise)?;
+        let normalized_x = (width - center[0]) / radius;
+        if normalized_x.abs() >= 1.0 - tolerance {
+            return None;
+        }
+        let principal = normalized_x.acos();
+        let mut east_contacts = [principal, -principal].into_iter().filter_map(|angle| {
+            if !angle_on_directed_arc(start_angle, sweep, angle) {
+                return None;
+            }
+            let point = [width, center[1] + radius * angle.sin()];
+            (point[1] > tolerance && point[1] < depth - tolerance).then_some((angle, point))
+        });
+        let (east_angle, east_contact) = east_contacts.next()?;
+        if east_contacts.next().is_some() {
+            return None;
+        }
+        let normalized_y = -center[1] / radius;
+        if normalized_y.abs() < 1.0 - tolerance {
+            let principal = normalized_y.asin();
+            if [principal, std::f64::consts::PI - principal]
+                .into_iter()
+                .filter(|angle| angle_on_directed_arc(start_angle, sweep, *angle))
+                .any(|angle| {
+                    let x = center[0] + radius * angle.cos();
+                    x > tolerance && x < width - tolerance
+                })
+            {
+                return None;
+            }
+        }
+        let (inside_arc_start, inside_arc_end) = if start_inside {
+            (start_angle, east_angle)
+        } else {
+            (east_angle, end_angle)
+        };
+        let inside_sweep = directed_arc_sweep(inside_arc_start, inside_arc_end, *clockwise)?;
+        for angle in [
+            0.0,
+            std::f64::consts::FRAC_PI_2,
+            std::f64::consts::PI,
+            3.0 * std::f64::consts::FRAC_PI_2,
+        ] {
+            if angle_on_directed_arc(inside_arc_start, inside_sweep, angle) {
+                let point = [
+                    center[0] + radius * angle.cos(),
+                    center[1] + radius * angle.sin(),
+                ];
+                if point[0] < -tolerance
+                    || point[0] > width + tolerance
+                    || point[1] < -tolerance
+                    || point[1] > depth + tolerance
+                {
+                    return None;
+                }
+            }
+        }
+
+        let mut line_twice_area = 0.0;
+        let mut inside_line_count = 0_u8;
+        let mut outside_line_count = 0_u8;
+        let mut overlap_min_x = arc_end[0].min(east_contact[0]);
+        let mut south_contact = None::<([f64; 2], bool)>;
+        for segment in &self.segments {
+            let ExactProfileSegment::Line {
+                start_bits,
+                end_bits,
+            } = segment
+            else {
+                continue;
+            };
+            let start = start_bits.map(f64::from_bits);
+            let end = end_bits.map(f64::from_bits);
+            if start[0] <= tolerance
+                || start[0] >= width - tolerance
+                || end[0] <= tolerance
+                || end[0] >= width - tolerance
+                || start[1] >= depth - tolerance
+                || end[1] >= depth - tolerance
+            {
+                return None;
+            }
+            let start_inside = point_inside(start);
+            let end_inside = point_inside(end);
+            match (start_inside, end_inside) {
+                (true, true) => {
+                    inside_line_count += 1;
+                    overlap_min_x = overlap_min_x.min(start[0]).min(end[0]);
+                    line_twice_area += cross(start, end);
+                }
+                (false, false) => {
+                    outside_line_count += 1;
+                    if start[1] >= -tolerance || end[1] >= -tolerance {
+                        return None;
+                    }
+                }
+                _ => {
+                    if south_contact.is_some() {
+                        return None;
+                    }
+                    let denominator = end[1] - start[1];
+                    if denominator.abs() <= tolerance {
+                        return None;
+                    }
+                    let t = -start[1] / denominator;
+                    if t <= tolerance || t >= 1.0 - tolerance {
+                        return None;
+                    }
+                    let contact = [start[0] + t * (end[0] - start[0]), 0.0];
+                    if contact[0] <= tolerance || contact[0] >= width - tolerance {
+                        return None;
+                    }
+                    let inside_to_outside = start_inside;
+                    overlap_min_x = overlap_min_x.min(contact[0]).min(if inside_to_outside {
+                        start[0]
+                    } else {
+                        end[0]
+                    });
+                    line_twice_area += if inside_to_outside {
+                        cross(start, contact)
+                    } else {
+                        cross(contact, end)
+                    };
+                    south_contact = Some((contact, inside_to_outside));
+                }
+            }
+        }
+        let (south_contact, line_inside_to_outside) = south_contact?;
+        if inside_line_count != 2
+            || outside_line_count != 1
+            || start_inside
+            || !line_inside_to_outside
+        {
+            return None;
+        }
+        let arc_integral = |from: f64, to: f64| {
+            let delta = directed_arc_sweep(from, to, *clockwise)?;
+            Some(
+                radius * center[0] * (to.sin() - from.sin())
+                    - radius * center[1] * (to.cos() - from.cos())
+                    + radius * radius * delta,
+            )
+        };
+        let arc_twice_area = arc_integral(inside_arc_start, inside_arc_end)?;
+        let corner = [width, 0.0];
+        let closure_twice_area = cross(south_contact, corner) + cross(corner, east_contact);
+        let overlap_area = 0.5 * (line_twice_area + arc_twice_area + closure_twice_area).abs();
+        (overlap_area > tolerance && overlap_area < width * depth - tolerance)
+            .then_some((overlap_area, [overlap_min_x, 0.0, width, max_y.min(depth)]))
+    }
+
+    fn mirrored_across_vertical_axis(&self, width: f64) -> Option<Self> {
+        if !width.is_finite() || width <= 0.0 {
+            return None;
+        }
+        let mirror = |point_bits: [u64; 2]| {
+            let [x, y] = point_bits.map(f64::from_bits);
+            [(width - x).to_bits(), y.to_bits()]
+        };
+        Some(Self {
+            segments: self
+                .segments
+                .iter()
+                .map(|segment| match segment {
+                    ExactProfileSegment::Line {
+                        start_bits,
+                        end_bits,
+                    } => ExactProfileSegment::Line {
+                        start_bits: mirror(*start_bits),
+                        end_bits: mirror(*end_bits),
+                    },
+                    ExactProfileSegment::CircularArc {
+                        start_bits,
+                        end_bits,
+                        center_bits,
+                        clockwise,
+                    } => ExactProfileSegment::CircularArc {
+                        start_bits: mirror(*start_bits),
+                        end_bits: mirror(*end_bits),
+                        center_bits: mirror(*center_bits),
+                        clockwise: !*clockwise,
+                    },
+                })
+                .collect(),
+            bounds_bits: {
+                let [min_x, min_y, max_x, max_y] = self.bounds_bits.map(f64::from_bits);
+                [width - max_x, min_y, width - min_x, max_y].map(f64::to_bits)
+            },
+            area_bits: self.area_bits,
+        })
+    }
+
+    fn mirrored_across_horizontal_axis(&self, depth: f64) -> Option<Self> {
+        if !depth.is_finite() || depth <= 0.0 {
+            return None;
+        }
+        let mirror = |point_bits: [u64; 2]| {
+            let [x, y] = point_bits.map(f64::from_bits);
+            [x.to_bits(), (depth - y).to_bits()]
+        };
+        Some(Self {
+            segments: self
+                .segments
+                .iter()
+                .map(|segment| match segment {
+                    ExactProfileSegment::Line {
+                        start_bits,
+                        end_bits,
+                    } => ExactProfileSegment::Line {
+                        start_bits: mirror(*start_bits),
+                        end_bits: mirror(*end_bits),
+                    },
+                    ExactProfileSegment::CircularArc {
+                        start_bits,
+                        end_bits,
+                        center_bits,
+                        clockwise,
+                    } => ExactProfileSegment::CircularArc {
+                        start_bits: mirror(*start_bits),
+                        end_bits: mirror(*end_bits),
+                        center_bits: mirror(*center_bits),
+                        clockwise: !*clockwise,
+                    },
+                })
+                .collect(),
+            bounds_bits: {
+                let [min_x, min_y, max_x, max_y] = self.bounds_bits.map(f64::from_bits);
+                [min_x, depth - max_y, max_x, depth - min_y].map(f64::to_bits)
+            },
+            area_bits: self.area_bits,
+        })
+    }
+
+    #[must_use]
+    pub fn strict_convex_line_arc_clipped_north_east_corner_overlap(
+        &self,
+        width: f64,
+        depth: f64,
+    ) -> Option<(f64, [f64; 4])> {
+        self.mirrored_across_horizontal_axis(depth)?
+            .strict_convex_line_arc_clipped_south_east_corner_overlap(width, depth)
+            .map(|(area, [min_x, min_y, max_x, max_y])| {
+                (area, [min_x, depth - max_y, max_x, depth - min_y])
+            })
+    }
+
+    #[must_use]
+    pub fn strict_convex_line_arc_clipped_north_west_corner_overlap(
+        &self,
+        width: f64,
+        depth: f64,
+    ) -> Option<(f64, [f64; 4])> {
+        self.mirrored_across_vertical_axis(width)?
+            .strict_convex_line_arc_clipped_north_east_corner_overlap(width, depth)
+            .map(|(area, [min_x, min_y, max_x, max_y])| {
+                (area, [width - max_x, min_y, width - min_x, max_y])
+            })
+    }
+
+    #[must_use]
+    pub fn strict_convex_line_arc_clipped_south_west_corner_overlap(
+        &self,
+        width: f64,
+        depth: f64,
+    ) -> Option<(f64, [f64; 4])> {
+        self.mirrored_across_vertical_axis(width)?
+            .strict_convex_line_arc_clipped_south_east_corner_overlap(width, depth)
+            .map(|(area, [min_x, min_y, max_x, max_y])| {
+                (area, [width - max_x, min_y, width - min_x, max_y])
+            })
+    }
+
+    #[must_use]
     pub fn is_line_arc_d_profile(&self) -> bool {
         self.segments.len() == 2
             && self
@@ -2031,6 +3487,138 @@ impl ExactMixedProfile {
                 .filter(|segment| matches!(segment, ExactProfileSegment::CircularArc { .. }))
                 .count()
                 == 1
+    }
+
+    #[must_use]
+    pub fn d_profile_arc_only_clipped_side_overlap(
+        &self,
+        width: f64,
+        depth: f64,
+    ) -> Option<(f64, [f64; 4])> {
+        if !self.is_line_arc_d_profile()
+            || !width.is_finite()
+            || width <= 0.0
+            || !depth.is_finite()
+            || depth <= 0.0
+        {
+            return None;
+        }
+        let tolerance = 1.0e-6;
+        let point_inside = |point: [f64; 2]| {
+            point[0] > tolerance
+                && point[0] < width - tolerance
+                && point[1] > tolerance
+                && point[1] < depth - tolerance
+        };
+        let line = self.segments.iter().find_map(|segment| match segment {
+            ExactProfileSegment::Line {
+                start_bits,
+                end_bits,
+            } => Some((start_bits.map(f64::from_bits), end_bits.map(f64::from_bits))),
+            ExactProfileSegment::CircularArc { .. } => None,
+        })?;
+        let ExactProfileSegment::CircularArc {
+            start_bits,
+            end_bits,
+            center_bits,
+            clockwise,
+        } = self
+            .segments
+            .iter()
+            .find(|segment| matches!(segment, ExactProfileSegment::CircularArc { .. }))?
+        else {
+            unreachable!("filtered circular arc")
+        };
+        let start = start_bits.map(f64::from_bits);
+        let end = end_bits.map(f64::from_bits);
+        let center = center_bits.map(f64::from_bits);
+        let same_point = |left: [f64; 2], right: [f64; 2]| {
+            (left[0] - right[0]).abs() <= tolerance && (left[1] - right[1]).abs() <= tolerance
+        };
+        if !((same_point(line.0, start) && same_point(line.1, end))
+            || (same_point(line.0, end) && same_point(line.1, start)))
+            || !point_inside(start)
+            || !point_inside(end)
+            || !point_inside(center)
+        {
+            return None;
+        }
+        let radius = (start[0] - center[0]).hypot(start[1] - center[1]);
+        let end_radius = (end[0] - center[0]).hypot(end[1] - center[1]);
+        if !radius.is_finite()
+            || radius <= tolerance
+            || (end_radius - radius).abs() > tolerance
+            || (center[0] * 2.0 - start[0] - end[0]).abs() > tolerance
+            || (center[1] * 2.0 - start[1] - end[1]).abs() > tolerance
+        {
+            return None;
+        }
+        let start_angle = (start[1] - center[1]).atan2(start[0] - center[0]);
+        let end_angle = (end[1] - center[1]).atan2(end[0] - center[0]);
+        let sweep = directed_arc_sweep(start_angle, end_angle, *clockwise)?;
+        if (sweep.abs() - std::f64::consts::PI).abs() > tolerance {
+            return None;
+        }
+
+        let [min_x, min_y, max_x, max_y] = self.bounds_bits.map(f64::from_bits);
+        let candidates = [
+            (
+                min_x < -tolerance && max_x < width - tolerance,
+                0_usize,
+                0.0,
+                true,
+                std::f64::consts::PI,
+                [0.0, min_y, max_x, max_y],
+            ),
+            (
+                max_x > width + tolerance && min_x > tolerance,
+                0,
+                width,
+                false,
+                0.0,
+                [min_x, min_y, width, max_y],
+            ),
+            (
+                min_y < -tolerance && max_y < depth - tolerance,
+                1,
+                0.0,
+                true,
+                3.0 * std::f64::consts::FRAC_PI_2,
+                [min_x, 0.0, max_x, max_y],
+            ),
+            (
+                max_y > depth + tolerance && min_y > tolerance,
+                1,
+                depth,
+                false,
+                std::f64::consts::FRAC_PI_2,
+                [min_x, min_y, max_x, depth],
+            ),
+        ];
+        let mut candidates = candidates.into_iter().filter(|candidate| candidate.0);
+        let (_, axis, limit, keep_greater, extreme_angle, bounds) = candidates.next()?;
+        if candidates.next().is_some() {
+            return None;
+        }
+        let distance = if keep_greater {
+            center[axis] - limit
+        } else {
+            limit - center[axis]
+        };
+        if distance <= tolerance || distance >= radius - tolerance {
+            return None;
+        }
+        let intersection_offset = (distance / radius).acos();
+        if !angle_on_directed_arc(start_angle, sweep, extreme_angle)
+            || !angle_on_directed_arc(start_angle, sweep, extreme_angle - intersection_offset)
+            || !angle_on_directed_arc(start_angle, sweep, extreme_angle + intersection_offset)
+        {
+            return None;
+        }
+        let outside_area = radius * radius * intersection_offset
+            - distance * (radius * radius - distance * distance).sqrt();
+        let overlap_area = f64::from_bits(self.area_bits) - outside_area;
+        (outside_area > tolerance && overlap_area > tolerance).then_some((overlap_area, bounds))
     }
 
     #[must_use]
@@ -2092,6 +3680,205 @@ impl ExactMixedProfile {
                 (center[0] * 2.0 - start[0] - end[0]).abs() <= tolerance
                     && (center[1] * 2.0 - start[1] - end[1]).abs() <= tolerance
             })
+    }
+
+    #[must_use]
+    pub fn capsule_side_overlap(&self, width: f64, depth: f64) -> Option<(f64, [f64; 4])> {
+        if !self.is_line_arc_capsule_profile()
+            || !width.is_finite()
+            || width <= 0.0
+            || !depth.is_finite()
+            || depth <= 0.0
+        {
+            return None;
+        }
+        let [min_x, min_y, max_x, max_y] = self.bounds_bits.map(f64::from_bits);
+        let scale = [width, depth, min_x, min_y, max_x, max_y]
+            .into_iter()
+            .map(f64::abs)
+            .fold(1.0, f64::max);
+        let tolerance = scale * 1.0e-9;
+        let mut arcs = self
+            .segments
+            .iter()
+            .filter_map(|segment| match segment {
+                ExactProfileSegment::CircularArc {
+                    start_bits,
+                    end_bits,
+                    center_bits,
+                    ..
+                } => {
+                    let start = start_bits.map(f64::from_bits);
+                    let end = end_bits.map(f64::from_bits);
+                    let center = center_bits.map(f64::from_bits);
+                    Some((
+                        center,
+                        (start[0] - center[0]).hypot(start[1] - center[1]),
+                        [end[0] - start[0], end[1] - start[1]],
+                    ))
+                }
+                ExactProfileSegment::Line { .. } => None,
+            })
+            .collect::<Vec<_>>();
+        let horizontal = arcs.iter().all(|(_, radius, diameter)| {
+            diameter[0].abs() <= tolerance && (diameter[1].abs() - 2.0 * radius).abs() <= tolerance
+        });
+        let vertical = arcs.iter().all(|(_, radius, diameter)| {
+            diameter[1].abs() <= tolerance && (diameter[0].abs() - 2.0 * radius).abs() <= tolerance
+        });
+        if horizontal == vertical {
+            return None;
+        }
+        let axis = usize::from(vertical);
+        let cross_axis = 1 - axis;
+        let extent = [width, depth];
+        let profile_min = [min_x, min_y];
+        let profile_max = [max_x, max_y];
+        arcs.sort_by(|left, right| left.0[axis].total_cmp(&right.0[axis]));
+        let [(low_center, low_radius, _), (high_center, high_radius, _)] = arcs.as_slice() else {
+            return None;
+        };
+        if (low_center[cross_axis] - high_center[cross_axis]).abs() > tolerance
+            || (low_radius - high_radius).abs() > tolerance
+            || *low_radius <= tolerance
+            || high_center[axis] - low_center[axis] <= tolerance
+            || profile_min[cross_axis] <= tolerance
+            || profile_max[cross_axis] >= extent[cross_axis] - tolerance
+        {
+            return None;
+        }
+        let diameter = 2.0 * low_radius;
+        let semicircle_area = 0.5 * std::f64::consts::PI * low_radius * low_radius;
+        if profile_min[axis] > tolerance
+            && low_center[axis] < extent[axis] - tolerance
+            && high_center[axis] > extent[axis] + tolerance
+        {
+            let mut bounds = [min_x, min_y, max_x, max_y];
+            bounds[axis + 2] = extent[axis];
+            Some((
+                semicircle_area + (extent[axis] - low_center[axis]) * diameter,
+                bounds,
+            ))
+        } else if profile_max[axis] < extent[axis] - tolerance
+            && low_center[axis] < -tolerance
+            && high_center[axis] > tolerance
+        {
+            let mut bounds = [min_x, min_y, max_x, max_y];
+            bounds[axis] = 0.0;
+            Some((semicircle_area + high_center[axis] * diameter, bounds))
+        } else {
+            None
+        }
+    }
+
+    #[must_use]
+    pub fn capsule_corner_overlap(&self, width: f64, depth: f64) -> Option<(f64, [f64; 4])> {
+        if !self.is_line_arc_capsule_profile()
+            || !width.is_finite()
+            || width <= 0.0
+            || !depth.is_finite()
+            || depth <= 0.0
+        {
+            return None;
+        }
+        let [min_x, min_y, max_x, max_y] = self.bounds_bits.map(f64::from_bits);
+        let scale = [width, depth, min_x, min_y, max_x, max_y]
+            .into_iter()
+            .map(f64::abs)
+            .fold(1.0, f64::max);
+        let tolerance = scale * 1.0e-9;
+        let mut arcs = self
+            .segments
+            .iter()
+            .filter_map(|segment| match segment {
+                ExactProfileSegment::CircularArc {
+                    start_bits,
+                    end_bits,
+                    center_bits,
+                    ..
+                } => {
+                    let start = start_bits.map(f64::from_bits);
+                    let end = end_bits.map(f64::from_bits);
+                    let center = center_bits.map(f64::from_bits);
+                    Some((
+                        center,
+                        (start[0] - center[0]).hypot(start[1] - center[1]),
+                        [end[0] - start[0], end[1] - start[1]],
+                    ))
+                }
+                ExactProfileSegment::Line { .. } => None,
+            })
+            .collect::<Vec<_>>();
+        let horizontal = arcs.iter().all(|(_, radius, diameter)| {
+            diameter[0].abs() <= tolerance && (diameter[1].abs() - 2.0 * radius).abs() <= tolerance
+        });
+        let vertical = arcs.iter().all(|(_, radius, diameter)| {
+            diameter[1].abs() <= tolerance && (diameter[0].abs() - 2.0 * radius).abs() <= tolerance
+        });
+        if horizontal == vertical {
+            return None;
+        }
+        let axis = usize::from(vertical);
+        let cross_axis = 1 - axis;
+        let extent = [width, depth];
+        let profile_min = [min_x, min_y];
+        let profile_max = [max_x, max_y];
+        arcs.sort_by(|left, right| left.0[axis].total_cmp(&right.0[axis]));
+        let [(low_center, low_radius, _), (high_center, high_radius, _)] = arcs.as_slice() else {
+            return None;
+        };
+        if (low_center[cross_axis] - high_center[cross_axis]).abs() > tolerance
+            || (low_radius - high_radius).abs() > tolerance
+            || *low_radius <= tolerance
+            || high_center[axis] - low_center[axis] <= tolerance
+        {
+            return None;
+        }
+        let radius = *low_radius;
+        let axis_length = if profile_min[axis] > tolerance
+            && low_center[axis] < extent[axis] - tolerance
+            && high_center[axis] > extent[axis] + tolerance
+        {
+            extent[axis] - low_center[axis]
+        } else if profile_max[axis] < extent[axis] - tolerance
+            && low_center[axis] < -tolerance
+            && high_center[axis] > tolerance
+        {
+            high_center[axis]
+        } else {
+            return None;
+        };
+        let cross_center = low_center[cross_axis];
+        let cross_distance = if profile_min[cross_axis] < -tolerance
+            && cross_center > tolerance
+            && profile_max[cross_axis] < extent[cross_axis] - tolerance
+        {
+            cross_center
+        } else if profile_max[cross_axis] > extent[cross_axis] + tolerance
+            && cross_center < extent[cross_axis] - tolerance
+            && profile_min[cross_axis] > tolerance
+        {
+            extent[cross_axis] - cross_center
+        } else {
+            return None;
+        };
+        if cross_distance >= radius - tolerance {
+            return None;
+        }
+        let chord_half = (radius * radius - cross_distance * cross_distance).sqrt();
+        let clipped_segment =
+            radius * radius * (cross_distance / radius).acos() - cross_distance * chord_half;
+        let retained_cap_area = 0.5 * (std::f64::consts::PI * radius * radius - clipped_segment);
+        let retained_height = radius + cross_distance;
+        Some((
+            axis_length * retained_height + retained_cap_area,
+            [
+                min_x.max(0.0),
+                min_y.max(0.0),
+                max_x.min(width),
+                max_y.min(depth),
+            ],
+        ))
     }
 
     #[must_use]
@@ -2231,6 +4018,91 @@ impl ExactMixedProfile {
             && max_y < depth - tolerance
         {
             Some(max_y * width)
+        } else {
+            None
+        }
+    }
+
+    #[must_use]
+    pub fn rounded_rectangle_chord_side_overlap(
+        &self,
+        width: f64,
+        depth: f64,
+    ) -> Option<(f64, [f64; 4])> {
+        if !self.is_line_arc_rounded_rectangle_profile()
+            || !width.is_finite()
+            || width <= 0.0
+            || !depth.is_finite()
+            || depth <= 0.0
+        {
+            return None;
+        }
+        let radius = self.segments.iter().find_map(|segment| match segment {
+            ExactProfileSegment::CircularArc {
+                start_bits,
+                center_bits,
+                ..
+            } => {
+                let start = start_bits.map(f64::from_bits);
+                let center = center_bits.map(f64::from_bits);
+                Some((start[0] - center[0]).hypot(start[1] - center[1]))
+            }
+            ExactProfileSegment::Line { .. } => None,
+        })?;
+        let [min_x, min_y, max_x, max_y] = self.bounds_bits.map(f64::from_bits);
+        let scale = [width, depth, min_x, min_y, max_x, max_y, radius]
+            .into_iter()
+            .map(f64::abs)
+            .fold(1.0, f64::max);
+        let tolerance = scale * 1.0e-9;
+        if !radius.is_finite()
+            || radius <= tolerance
+            || max_x - min_x <= 2.0 * radius + tolerance
+            || max_y - min_y <= 2.0 * radius + tolerance
+        {
+            return None;
+        }
+        let corner_deficit = 2.0 * radius * radius * (1.0 - std::f64::consts::PI / 4.0);
+        if min_y > tolerance
+            && max_y < depth - tolerance
+            && min_x > tolerance
+            && min_x + radius < width - tolerance
+            && max_x - radius > width + tolerance
+        {
+            Some((
+                (width - min_x) * (max_y - min_y) - corner_deficit,
+                [min_x, min_y, width, max_y],
+            ))
+        } else if min_y > tolerance
+            && max_y < depth - tolerance
+            && max_x < width - tolerance
+            && min_x + radius < -tolerance
+            && max_x - radius > tolerance
+        {
+            Some((
+                max_x * (max_y - min_y) - corner_deficit,
+                [0.0, min_y, max_x, max_y],
+            ))
+        } else if min_x > tolerance
+            && max_x < width - tolerance
+            && min_y > tolerance
+            && min_y + radius < depth - tolerance
+            && max_y - radius > depth + tolerance
+        {
+            Some((
+                (depth - min_y) * (max_x - min_x) - corner_deficit,
+                [min_x, min_y, max_x, depth],
+            ))
+        } else if min_x > tolerance
+            && max_x < width - tolerance
+            && max_y < depth - tolerance
+            && min_y + radius < -tolerance
+            && max_y - radius > tolerance
+        {
+            Some((
+                max_y * (max_x - min_x) - corner_deficit,
+                [min_x, 0.0, max_x, max_y],
+            ))
         } else {
             None
         }
@@ -3674,20 +5546,107 @@ impl ExactFeatureChainRequest {
                         };
                     let supported = match operation {
                         BooleanOperation::Cut => {
-                            min_x > 1.0e-6
+                            let contained = min_x > 1.0e-6
                                 && min_y > 1.0e-6
                                 && max_x < width_mm - 1.0e-6
-                                && max_y < depth_mm - 1.0e-6
-                                && tool_linear_profile.as_ref().is_none_or(|profile| {
-                                    profile.has_only_line_segments()
+                                && max_y < depth_mm - 1.0e-6;
+                            tool_linear_profile.as_ref().map_or(
+                                contained
+                                    || tool_circle.is_some_and(|circle| {
+                                        circle.side_overlap(width_mm, depth_mm).is_some()
+                                            || circle.corner_overlap(width_mm, depth_mm).is_some()
+                                            || circle
+                                                .outside_side_overlap(width_mm, depth_mm)
+                                                .is_some()
+                                            || circle
+                                                .center_on_side_overlap(width_mm, depth_mm)
+                                                .is_some()
+                                            || circle
+                                                .center_on_corner_overlap(width_mm, depth_mm)
+                                                .is_some()
+                                            || circle
+                                                .outside_corner_overlap(width_mm, depth_mm)
+                                                .is_some()
+                                    }),
+                                |profile| {
+                                (contained
+                                    && (profile.has_only_line_segments()
                                         || profile.is_line_arc_d_profile()
                                         || profile.is_line_arc_capsule_profile()
                                         || profile.is_line_arc_rounded_rectangle_profile()
-                                })
+                                        || profile.is_strict_convex_line_arc_profile()))
+                                    || profile
+                                        .d_profile_arc_only_clipped_side_overlap(width_mm, depth_mm)
+                                        .is_some()
+                                    || profile
+                                        .capsule_side_overlap(width_mm, depth_mm)
+                                        .is_some()
+                                    || profile
+                                        .capsule_corner_overlap(width_mm, depth_mm)
+                                        .is_some()
+                                    || profile
+                                        .rounded_rectangle_chord_side_overlap(width_mm, depth_mm)
+                                        .is_some()
+                                    || profile
+                                        .strict_convex_line_arc_clipped_side_overlap(
+                                            width_mm, depth_mm,
+                                        )
+                                        .is_some()
+                                    || profile
+                                        .strict_convex_line_clipped_side_overlap(width_mm, depth_mm)
+                                        .is_some()
+                                    || profile
+                                        .strict_convex_arc_only_clipped_side_overlap(
+                                            width_mm, depth_mm,
+                                        )
+                                        .is_some()
+                                    || profile
+                                        .strict_convex_line_arc_clipped_south_east_corner_overlap(
+                                            width_mm, depth_mm,
+                                        )
+                                        .is_some()
+                                    || profile
+                                        .strict_convex_line_arc_clipped_south_west_corner_overlap(
+                                            width_mm, depth_mm,
+                                        )
+                                        .is_some()
+                                    || profile
+                                        .strict_convex_line_arc_clipped_north_east_corner_overlap(
+                                            width_mm, depth_mm,
+                                        )
+                                        .is_some()
+                                    || profile
+                                        .strict_convex_line_arc_clipped_north_west_corner_overlap(
+                                            width_mm, depth_mm,
+                                        )
+                                        .is_some()
+                                    || profile
+                                        .rounded_rectangle_side_overlap_area(width_mm, depth_mm)
+                                        .is_some()
+                                    || profile
+                                        .rounded_rectangle_corner_overlap_area(width_mm, depth_mm)
+                                        .is_some()
+                                    || profile
+                                        .rounded_rectangle_arc_clipped_corner_overlap_area(
+                                            width_mm, depth_mm,
+                                        )
+                                        .is_some()
+                                    || profile
+                                        .rounded_rectangle_two_axis_arc_clipped_corner_overlap_area(
+                                            width_mm, depth_mm,
+                                        )
+                                        .is_some()
+                            })
                         }
                         BooleanOperation::Union if tool_circle.is_some() => tool_circle
                             .is_some_and(|circle| {
                                 circle_contains_rectangle(circle, width_mm, depth_mm)
+                                    || circle.side_overlap(width_mm, depth_mm).is_some()
+                                    || circle.corner_overlap(width_mm, depth_mm).is_some()
+                                    || circle.outside_side_overlap(width_mm, depth_mm).is_some()
+                                    || circle.center_on_side_overlap(width_mm, depth_mm).is_some()
+                                    || circle.center_on_corner_overlap(width_mm, depth_mm).is_some()
+                                    || circle.outside_corner_overlap(width_mm, depth_mm).is_some()
                             }),
                         BooleanOperation::Union => tool_linear_profile.as_ref().map_or_else(
                             || {
@@ -3702,8 +5661,58 @@ impl ExactFeatureChainRequest {
                                 (profile.has_only_line_segments()
                                     || profile.is_line_arc_d_profile()
                                     || profile.is_line_arc_capsule_profile()
-                                    || profile.is_line_arc_rounded_rectangle_profile())
+                                    || profile.is_line_arc_rounded_rectangle_profile()
+                                    || profile.is_strict_convex_line_arc_profile())
                                     && (polygon_contains_rectangle(profile, width_mm, depth_mm)
+                                        || profile
+                                            .d_profile_arc_only_clipped_side_overlap(
+                                                width_mm, depth_mm,
+                                            )
+                                            .is_some()
+                                        || profile
+                                            .capsule_side_overlap(width_mm, depth_mm)
+                                            .is_some()
+                                        || profile
+                                            .capsule_corner_overlap(width_mm, depth_mm)
+                                            .is_some()
+                                        || profile
+                                            .rounded_rectangle_chord_side_overlap(width_mm, depth_mm)
+                                            .is_some()
+                                        || profile
+                                            .strict_convex_line_clipped_side_overlap(
+                                                width_mm, depth_mm,
+                                            )
+                                            .is_some()
+                                        || profile
+                                            .strict_convex_arc_only_clipped_side_overlap(
+                                                width_mm, depth_mm,
+                                            )
+                                            .is_some()
+                                        || profile
+                                            .strict_convex_line_arc_clipped_side_overlap(
+                                                width_mm, depth_mm,
+                                            )
+                                            .is_some()
+                                        || profile
+                                            .strict_convex_line_arc_clipped_south_east_corner_overlap(
+                                                width_mm, depth_mm,
+                                            )
+                                            .is_some()
+                                        || profile
+                                            .strict_convex_line_arc_clipped_south_west_corner_overlap(
+                                                width_mm, depth_mm,
+                                            )
+                                            .is_some()
+                                        || profile
+                                            .strict_convex_line_arc_clipped_north_east_corner_overlap(
+                                                width_mm, depth_mm,
+                                            )
+                                            .is_some()
+                                        || profile
+                                            .strict_convex_line_arc_clipped_north_west_corner_overlap(
+                                                width_mm, depth_mm,
+                                            )
+                                            .is_some()
                                         || profile
                                             .rounded_rectangle_side_overlap_area(width_mm, depth_mm)
                                             .is_some()
@@ -3729,6 +5738,22 @@ impl ExactFeatureChainRequest {
                                 && min_y > 1.0e-6
                                 && max_x < width_mm - 1.0e-6
                                 && max_y < depth_mm - 1.0e-6
+                                || tool_circle.is_some_and(|circle| {
+                                    circle.side_overlap(width_mm, depth_mm).is_some()
+                                        || circle.corner_overlap(width_mm, depth_mm).is_some()
+                                        || circle
+                                            .outside_side_overlap(width_mm, depth_mm)
+                                            .is_some()
+                                        || circle
+                                            .center_on_side_overlap(width_mm, depth_mm)
+                                            .is_some()
+                                        || circle
+                                            .center_on_corner_overlap(width_mm, depth_mm)
+                                            .is_some()
+                                        || circle
+                                            .outside_corner_overlap(width_mm, depth_mm)
+                                            .is_some()
+                                })
                         }
                         BooleanOperation::Intersect => tool_linear_profile.as_ref().map_or_else(
                             || {
@@ -3743,8 +5768,58 @@ impl ExactFeatureChainRequest {
                                 (profile.has_only_line_segments()
                                     || profile.is_line_arc_d_profile()
                                     || profile.is_line_arc_capsule_profile()
-                                    || profile.is_line_arc_rounded_rectangle_profile())
+                                    || profile.is_line_arc_rounded_rectangle_profile()
+                                    || profile.is_strict_convex_line_arc_profile())
                                     && (polygon_within_rectangle(profile, width_mm, depth_mm)
+                                        || profile
+                                            .d_profile_arc_only_clipped_side_overlap(
+                                                width_mm, depth_mm,
+                                            )
+                                            .is_some()
+                                        || profile
+                                            .capsule_side_overlap(width_mm, depth_mm)
+                                            .is_some()
+                                        || profile
+                                            .capsule_corner_overlap(width_mm, depth_mm)
+                                            .is_some()
+                                        || profile
+                                            .rounded_rectangle_chord_side_overlap(width_mm, depth_mm)
+                                            .is_some()
+                                        || profile
+                                            .strict_convex_line_clipped_side_overlap(
+                                                width_mm, depth_mm,
+                                            )
+                                            .is_some()
+                                        || profile
+                                            .strict_convex_arc_only_clipped_side_overlap(
+                                                width_mm, depth_mm,
+                                            )
+                                            .is_some()
+                                        || profile
+                                            .strict_convex_line_arc_clipped_side_overlap(
+                                                width_mm, depth_mm,
+                                            )
+                                            .is_some()
+                                        || profile
+                                            .strict_convex_line_arc_clipped_south_east_corner_overlap(
+                                                width_mm, depth_mm,
+                                            )
+                                            .is_some()
+                                        || profile
+                                            .strict_convex_line_arc_clipped_south_west_corner_overlap(
+                                                width_mm, depth_mm,
+                                            )
+                                            .is_some()
+                                        || profile
+                                            .strict_convex_line_arc_clipped_north_east_corner_overlap(
+                                                width_mm, depth_mm,
+                                            )
+                                            .is_some()
+                                        || profile
+                                            .strict_convex_line_arc_clipped_north_west_corner_overlap(
+                                                width_mm, depth_mm,
+                                            )
+                                            .is_some()
                                         || profile
                                             .rounded_rectangle_side_overlap_area(width_mm, depth_mm)
                                             .is_some()
@@ -3770,6 +5845,14 @@ impl ExactFeatureChainRequest {
                                 && min_y > 1.0e-6
                                 && max_x < width_mm - 1.0e-6
                                 && max_y < depth_mm - 1.0e-6
+                                || tool_circle.is_some_and(|circle| {
+                                    circle.side_overlap(width_mm, depth_mm).is_some()
+                                        || circle.corner_overlap(width_mm, depth_mm).is_some()
+                                        || circle.outside_side_overlap(width_mm, depth_mm).is_some()
+                                        || circle.center_on_side_overlap(width_mm, depth_mm).is_some()
+                                        || circle.center_on_corner_overlap(width_mm, depth_mm).is_some()
+                                        || circle.outside_corner_overlap(width_mm, depth_mm).is_some()
+                                })
                         }
                         BooleanOperation::Split => tool_linear_profile.as_ref().map_or_else(
                             || {
@@ -3783,8 +5866,58 @@ impl ExactFeatureChainRequest {
                                 (profile.has_only_line_segments()
                                     || profile.is_line_arc_d_profile()
                                     || profile.is_line_arc_capsule_profile()
-                                    || profile.is_line_arc_rounded_rectangle_profile())
+                                    || profile.is_line_arc_rounded_rectangle_profile()
+                                    || profile.is_strict_convex_line_arc_profile())
                                     && (polygon_within_rectangle(profile, width_mm, depth_mm)
+                                        || profile
+                                            .d_profile_arc_only_clipped_side_overlap(
+                                                width_mm, depth_mm,
+                                            )
+                                            .is_some()
+                                        || profile
+                                            .capsule_side_overlap(width_mm, depth_mm)
+                                            .is_some()
+                                        || profile
+                                            .capsule_corner_overlap(width_mm, depth_mm)
+                                            .is_some()
+                                        || profile
+                                            .rounded_rectangle_chord_side_overlap(width_mm, depth_mm)
+                                            .is_some()
+                                        || profile
+                                            .strict_convex_line_clipped_side_overlap(
+                                                width_mm, depth_mm,
+                                            )
+                                            .is_some()
+                                        || profile
+                                            .strict_convex_arc_only_clipped_side_overlap(
+                                                width_mm, depth_mm,
+                                            )
+                                            .is_some()
+                                        || profile
+                                            .strict_convex_line_arc_clipped_side_overlap(
+                                                width_mm, depth_mm,
+                                            )
+                                            .is_some()
+                                        || profile
+                                            .strict_convex_line_arc_clipped_south_east_corner_overlap(
+                                                width_mm, depth_mm,
+                                            )
+                                            .is_some()
+                                        || profile
+                                            .strict_convex_line_arc_clipped_south_west_corner_overlap(
+                                                width_mm, depth_mm,
+                                            )
+                                            .is_some()
+                                        || profile
+                                            .strict_convex_line_arc_clipped_north_east_corner_overlap(
+                                                width_mm, depth_mm,
+                                            )
+                                            .is_some()
+                                        || profile
+                                            .strict_convex_line_arc_clipped_north_west_corner_overlap(
+                                                width_mm, depth_mm,
+                                            )
+                                            .is_some()
                                         || profile
                                             .rounded_rectangle_side_overlap_area(width_mm, depth_mm)
                                             .is_some()
@@ -4187,11 +6320,28 @@ impl ExactFeatureChainRequest {
                 return Err(ExactProductError::UnsupportedDefinition);
             }
             let pocket_region = selected_solved_region(pocket_sketch, pocket.region)?;
-            let SolvedSketchRegionProfile::Polyline(points) = &pocket_region.profile else {
-                return Err(ExactProductError::UnsupportedProfile);
+            let (min_x, min_y, max_x, max_y, pocket_circle) = match &pocket_region.profile {
+                SolvedSketchRegionProfile::Polyline(points) => {
+                    let [min_x, min_y, max_x, max_y] =
+                        rectangle_bounds(points).ok_or(ExactProductError::UnsupportedProfile)?;
+                    (min_x, min_y, max_x, max_y, None)
+                }
+                SolvedSketchRegionProfile::Circle {
+                    center_mm,
+                    radius_mm,
+                } => (
+                    center_mm[0] - radius_mm,
+                    center_mm[1] - radius_mm,
+                    center_mm[0] + radius_mm,
+                    center_mm[1] + radius_mm,
+                    Some(ExactCircleProfile {
+                        center_x_bits: center_mm[0].to_bits(),
+                        center_y_bits: center_mm[1].to_bits(),
+                        radius_bits: radius_mm.to_bits(),
+                        clockwise: false,
+                    }),
+                ),
             };
-            let [min_x, min_y, max_x, max_y] =
-                rectangle_bounds(points).ok_or(ExactProductError::UnsupportedProfile)?;
             if min_x <= 0.0 || min_y <= 0.0 || max_x >= width_mm || max_y >= depth_mm {
                 return Err(ExactProductError::UnsupportedThroughCut);
             }
@@ -4206,7 +6356,7 @@ impl ExactFeatureChainRequest {
                     min_y_bits: min_y.to_bits(),
                     width_bits: (max_x - min_x).to_bits(),
                     depth_bits: (max_y - min_y).to_bits(),
-                    circle: None,
+                    circle: pocket_circle,
                     profile: None,
                 }),
                 Some(pocket.extent.distance().millimetres().to_bits()),
@@ -4315,18 +6465,65 @@ impl ExactFeatureChainRequest {
             ];
         }
         if let Some(boolean) = &self.boolean {
+            if boolean.operation == BooleanOperation::Cut
+                && self.pocket_depth_bits.is_none()
+                && let Some(profile) = &boolean.profile
+                && profile
+                    .rounded_rectangle_side_overlap_area(width, depth)
+                    .is_some()
+            {
+                let [min_x, min_y, max_x, max_y] = profile.bounds_bits.map(f64::from_bits);
+                let [min_x, min_y, max_x, max_y] = if min_y < 0.0 && max_y > depth {
+                    if min_x > 0.0 {
+                        [0.0, 0.0, min_x, depth]
+                    } else {
+                        [max_x, 0.0, width, depth]
+                    }
+                } else if min_y > 0.0 {
+                    [0.0, 0.0, width, min_y]
+                } else {
+                    [0.0, max_y, width, depth]
+                };
+                return [[min_x, min_y, 0.0], [max_x, max_y, height]];
+            }
             if matches!(
                 boolean.operation,
                 BooleanOperation::Union | BooleanOperation::Intersect
             ) && let Some(circle) = boolean.circle
             {
+                if boolean.operation == BooleanOperation::Intersect
+                    && let Some((_, [min_x, min_y, max_x, max_y])) = circle
+                        .side_overlap(width, depth)
+                        .or_else(|| circle.corner_overlap(width, depth))
+                        .or_else(|| circle.outside_side_overlap(width, depth))
+                        .or_else(|| circle.center_on_side_overlap(width, depth))
+                        .or_else(|| circle.center_on_corner_overlap(width, depth))
+                        .or_else(|| circle.outside_corner_overlap(width, depth))
+                {
+                    return [[min_x, min_y, 0.0], [max_x, max_y, height]];
+                }
                 let center_x = f64::from_bits(circle.center_x_bits);
                 let center_y = f64::from_bits(circle.center_y_bits);
                 let radius = f64::from_bits(circle.radius_bits);
-                return [
-                    [center_x - radius, center_y - radius, 0.0],
-                    [center_x + radius, center_y + radius, height],
-                ];
+                return if boolean.operation == BooleanOperation::Union {
+                    [
+                        [
+                            (center_x - radius).min(0.0),
+                            (center_y - radius).min(0.0),
+                            0.0,
+                        ],
+                        [
+                            (center_x + radius).max(width),
+                            (center_y + radius).max(depth),
+                            height,
+                        ],
+                    ]
+                } else {
+                    [
+                        [center_x - radius, center_y - radius, 0.0],
+                        [center_x + radius, center_y + radius, height],
+                    ]
+                };
             }
             if matches!(
                 boolean.operation,
@@ -4334,6 +6531,63 @@ impl ExactFeatureChainRequest {
             ) && let Some(profile) = &boolean.profile
             {
                 let [min_x, min_y, max_x, max_y] = profile.bounds_bits.map(f64::from_bits);
+                if boolean.operation == BooleanOperation::Intersect
+                    && let Some((_, [min_x, min_y, max_x, max_y])) =
+                        profile.d_profile_arc_only_clipped_side_overlap(width, depth)
+                {
+                    return [[min_x, min_y, 0.0], [max_x, max_y, height]];
+                }
+                if boolean.operation == BooleanOperation::Intersect
+                    && let Some((_, [min_x, min_y, max_x, max_y])) =
+                        profile.capsule_side_overlap(width, depth)
+                {
+                    return [[min_x, min_y, 0.0], [max_x, max_y, height]];
+                }
+                if boolean.operation == BooleanOperation::Intersect
+                    && let Some((_, [min_x, min_y, max_x, max_y])) =
+                        profile.rounded_rectangle_chord_side_overlap(width, depth)
+                {
+                    return [[min_x, min_y, 0.0], [max_x, max_y, height]];
+                }
+                if boolean.operation == BooleanOperation::Intersect
+                    && let Some((_, [min_x, min_y, max_x, max_y])) =
+                        profile.strict_convex_line_clipped_side_overlap(width, depth)
+                {
+                    return [[min_x, min_y, 0.0], [max_x, max_y, height]];
+                }
+                if boolean.operation == BooleanOperation::Intersect
+                    && let Some((_, [min_x, min_y, max_x, max_y])) =
+                        profile.strict_convex_arc_only_clipped_side_overlap(width, depth)
+                {
+                    return [[min_x, min_y, 0.0], [max_x, max_y, height]];
+                }
+                if boolean.operation == BooleanOperation::Intersect
+                    && let Some((_, [min_x, min_y, max_x, max_y])) =
+                        profile.strict_convex_line_arc_clipped_side_overlap(width, depth)
+                {
+                    return [[min_x, min_y, 0.0], [max_x, max_y, height]];
+                }
+                if boolean.operation == BooleanOperation::Intersect
+                    && let Some((_, [min_x, min_y, max_x, max_y])) = profile
+                        .strict_convex_line_arc_clipped_south_east_corner_overlap(width, depth)
+                        .or_else(|| {
+                            profile.strict_convex_line_arc_clipped_south_west_corner_overlap(
+                                width, depth,
+                            )
+                        })
+                        .or_else(|| {
+                            profile.strict_convex_line_arc_clipped_north_east_corner_overlap(
+                                width, depth,
+                            )
+                        })
+                        .or_else(|| {
+                            profile.strict_convex_line_arc_clipped_north_west_corner_overlap(
+                                width, depth,
+                            )
+                        })
+                {
+                    return [[min_x, min_y, 0.0], [max_x, max_y, height]];
+                }
                 if boolean.operation == BooleanOperation::Intersect
                     && let Some([min_x, min_y, max_x, max_y]) =
                         profile.rounded_rectangle_arc_clipped_corner_overlap_bounds(width, depth)
@@ -4433,9 +6687,10 @@ impl ExactFeatureChainRequest {
     #[must_use]
     pub fn profile_feature_id_for_role(&self, role: ExactFaceRole) -> Option<FeatureId> {
         match role {
-            ExactFaceRole::Top | ExactFaceRole::Bottom | ExactFaceRole::East => {
-                Some(self.profile_feature_id)
-            }
+            ExactFaceRole::Top
+            | ExactFaceRole::Bottom
+            | ExactFaceRole::East
+            | ExactFaceRole::West => Some(self.profile_feature_id),
             ExactFaceRole::ArcSide => self
                 .boolean
                 .as_ref()
@@ -4459,7 +6714,9 @@ impl ExactFeatureChainRequest {
                 .filter(|boolean| {
                     matches!(
                         boolean.operation,
-                        BooleanOperation::Union | BooleanOperation::Intersect
+                        BooleanOperation::Union
+                            | BooleanOperation::Intersect
+                            | BooleanOperation::Split
                     ) && boolean.circle.is_some()
                 })
                 .map_or(Some(self.profile_feature_id), |boolean| {
@@ -4479,7 +6736,7 @@ impl ExactFeatureChainRequest {
                 .map_or(Some(self.profile_feature_id), |boolean| {
                     Some(boolean.profile_feature_id)
                 }),
-            ExactFaceRole::CutCircle | ExactFaceRole::CutLinear => {
+            ExactFaceRole::CutCircle | ExactFaceRole::CutLinear | ExactFaceRole::CutArc => {
                 self.boolean.as_ref().map(|cut| cut.profile_feature_id)
             }
             ExactFaceRole::CutWest
@@ -4532,7 +6789,35 @@ impl ExactFeatureChainRequest {
         if self.boolean.as_ref().is_some_and(|boolean| {
             boolean.operation == BooleanOperation::Cut && boolean.circle.is_some()
         }) {
-            &CIRCULAR_CUT_FACE_ROLES
+            let [width, depth, _] = self.dimensions_mm();
+            let side_overlap = self.boolean.as_ref().is_some_and(|boolean| {
+                boolean.circle.is_some_and(|circle| {
+                    circle.side_overlap(width, depth).is_some()
+                        || circle.corner_overlap(width, depth).is_some()
+                        || circle.outside_side_overlap(width, depth).is_some()
+                        || circle.center_on_side_overlap(width, depth).is_some()
+                        || circle.center_on_corner_overlap(width, depth).is_some()
+                        || circle.outside_corner_overlap(width, depth).is_some()
+                })
+            });
+            let east_overlap = side_overlap
+                && self.boolean.as_ref().is_some_and(|boolean| {
+                    boolean.circle.is_some_and(|circle| {
+                        f64::from_bits(circle.center_x_bits) + f64::from_bits(circle.radius_bits)
+                            > width + 1.0e-6
+                    })
+                });
+            if self.pocket_depth_bits.is_some() && side_overlap {
+                if east_overlap {
+                    &WEST_CIRCULAR_POCKET_FACE_ROLES
+                } else {
+                    &CIRCULAR_POCKET_FACE_ROLES
+                }
+            } else if east_overlap {
+                &WEST_CIRCULAR_CUT_FACE_ROLES
+            } else {
+                &CIRCULAR_CUT_FACE_ROLES
+            }
         } else if self.boolean.as_ref().is_some_and(|boolean| {
             matches!(
                 boolean.operation,
@@ -4543,7 +6828,21 @@ impl ExactFeatureChainRequest {
         } else if self.boolean.as_ref().is_some_and(|boolean| {
             boolean.operation == BooleanOperation::Split && boolean.circle.is_some()
         }) {
-            &EXTRUSION_FACE_ROLES
+            let [width, depth, _] = self.dimensions_mm();
+            if self.boolean.as_ref().is_some_and(|boolean| {
+                boolean.circle.is_some_and(|circle| {
+                    circle.side_overlap(width, depth).is_some()
+                        || circle.corner_overlap(width, depth).is_some()
+                        || circle.outside_side_overlap(width, depth).is_some()
+                        || circle.center_on_side_overlap(width, depth).is_some()
+                        || circle.center_on_corner_overlap(width, depth).is_some()
+                        || circle.outside_corner_overlap(width, depth).is_some()
+                })
+            }) {
+                &CIRCLE_EXTRUSION_FACE_ROLES
+            } else {
+                &EXTRUSION_FACE_ROLES
+            }
         } else if let Some(boolean) = self
             .boolean
             .as_ref()
@@ -4561,6 +6860,7 @@ impl ExactFeatureChainRequest {
                     profile.is_line_arc_d_profile()
                         || profile.is_line_arc_capsule_profile()
                         || profile.is_line_arc_rounded_rectangle_profile()
+                        || profile.is_strict_convex_line_arc_profile()
                 }) {
                     &ARC_EXTRUSION_FACE_ROLES
                 } else {
@@ -4573,6 +6873,13 @@ impl ExactFeatureChainRequest {
                 let dimensions = self.dimensions_mm();
                 if boolean.profile.as_ref().is_some_and(|profile| {
                     profile.has_only_line_segments()
+                        || boolean.operation == BooleanOperation::Union
+                            && profile
+                                .strict_convex_line_clipped_side_overlap(
+                                    dimensions[0],
+                                    dimensions[1],
+                                )
+                                .is_some()
                         || boolean.operation == BooleanOperation::Intersect
                             && profile
                                 .rounded_rectangle_side_overlap_area(dimensions[0], dimensions[1])
@@ -4582,8 +6889,32 @@ impl ExactFeatureChainRequest {
                 } else {
                     &ARC_EXTRUSION_FACE_ROLES
                 }
+            } else if boolean.operation == BooleanOperation::Cut
+                && boolean.profile.as_ref().is_some_and(|profile| {
+                    let dimensions = self.dimensions_mm();
+                    profile
+                        .rounded_rectangle_two_axis_arc_clipped_corner_overlap_area(
+                            dimensions[0],
+                            dimensions[1],
+                        )
+                        .is_some()
+                })
+            {
+                if self.pocket_depth_bits.is_some() {
+                    &ARC_POLYGON_POCKET_FACE_ROLES
+                } else {
+                    &ARC_POLYGON_CUT_FACE_ROLES
+                }
             } else if self.pocket_depth_bits.is_some() {
                 &POLYGON_POCKET_FACE_ROLES
+            } else if boolean.profile.as_ref().is_some_and(|profile| {
+                let dimensions = self.dimensions_mm();
+                profile
+                    .rounded_rectangle_side_overlap_area(dimensions[0], dimensions[1])
+                    .is_some()
+                    && f64::from_bits(profile.bounds_bits[0]) > 0.0
+            }) {
+                &WEST_POLYGON_CUT_FACE_ROLES
             } else {
                 &POLYGON_CUT_FACE_ROLES
             }
@@ -5274,6 +7605,30 @@ fn render_mesh(
                     .is_some()
             })
     });
+    let side_overlap_cut = request.boolean.as_ref().is_some_and(|boolean| {
+        boolean.operation == BooleanOperation::Cut
+            && request.pocket_depth_bits.is_none()
+            && boolean.profile.as_ref().is_some_and(|profile| {
+                profile
+                    .rounded_rectangle_side_overlap_area(width, depth)
+                    .is_some()
+            })
+    });
+    let corner_overlap_cut = request.boolean.as_ref().is_some_and(|boolean| {
+        boolean.operation == BooleanOperation::Cut
+            && boolean.profile.as_ref().is_some_and(|profile| {
+                profile.capsule_corner_overlap(width, depth).is_some()
+                    || profile
+                        .rounded_rectangle_corner_overlap_area(width, depth)
+                        .is_some()
+                    || profile
+                        .rounded_rectangle_arc_clipped_corner_overlap_area(width, depth)
+                        .is_some()
+                    || profile
+                        .rounded_rectangle_two_axis_arc_clipped_corner_overlap_area(width, depth)
+                        .is_some()
+            })
+    });
     let side_overlap_split = request.boolean.as_ref().is_some_and(|boolean| {
         boolean.operation == BooleanOperation::Split
             && boolean.profile.as_ref().is_some_and(|profile| {
@@ -5282,12 +7637,113 @@ fn render_mesh(
                     .is_some()
             })
     });
+    let side_clipped_cut = request.boolean.as_ref().is_some_and(|boolean| {
+        boolean.operation == BooleanOperation::Cut
+            && !side_overlap_cut
+            && boolean.profile.as_ref().is_some_and(|profile| {
+                profile
+                    .d_profile_arc_only_clipped_side_overlap(width, depth)
+                    .is_some()
+                    || profile.capsule_side_overlap(width, depth).is_some()
+                    || profile
+                        .rounded_rectangle_chord_side_overlap(width, depth)
+                        .is_some()
+                    || profile
+                        .strict_convex_line_arc_clipped_side_overlap(width, depth)
+                        .is_some()
+                    || profile
+                        .strict_convex_line_clipped_side_overlap(width, depth)
+                        .is_some()
+                    || profile
+                        .strict_convex_arc_only_clipped_side_overlap(width, depth)
+                        .is_some()
+                    || profile
+                        .strict_convex_line_arc_clipped_south_east_corner_overlap(width, depth)
+                        .is_some()
+                    || profile
+                        .strict_convex_line_arc_clipped_south_west_corner_overlap(width, depth)
+                        .is_some()
+                    || profile
+                        .strict_convex_line_arc_clipped_north_east_corner_overlap(width, depth)
+                        .is_some()
+                    || profile
+                        .strict_convex_line_arc_clipped_north_west_corner_overlap(width, depth)
+                        .is_some()
+                    || request.pocket_depth_bits.is_some()
+                        && profile
+                            .rounded_rectangle_side_overlap_area(width, depth)
+                            .is_some()
+            })
+    });
+    let side_clipped_union = request.boolean.as_ref().is_some_and(|boolean| {
+        boolean.operation == BooleanOperation::Union
+            && boolean.profile.as_ref().is_some_and(|profile| {
+                profile
+                    .d_profile_arc_only_clipped_side_overlap(width, depth)
+                    .is_some()
+                    || profile.capsule_side_overlap(width, depth).is_some()
+                    || profile.capsule_corner_overlap(width, depth).is_some()
+                    || profile
+                        .rounded_rectangle_chord_side_overlap(width, depth)
+                        .is_some()
+                    || profile
+                        .strict_convex_line_clipped_side_overlap(width, depth)
+                        .is_some()
+                    || profile
+                        .strict_convex_arc_only_clipped_side_overlap(width, depth)
+                        .is_some()
+                    || profile
+                        .strict_convex_line_arc_clipped_side_overlap(width, depth)
+                        .is_some()
+                    || profile
+                        .strict_convex_line_arc_clipped_south_east_corner_overlap(width, depth)
+                        .is_some()
+                    || profile
+                        .strict_convex_line_arc_clipped_south_west_corner_overlap(width, depth)
+                        .is_some()
+                    || profile
+                        .strict_convex_line_arc_clipped_north_east_corner_overlap(width, depth)
+                        .is_some()
+                    || profile
+                        .strict_convex_line_arc_clipped_north_west_corner_overlap(width, depth)
+                        .is_some()
+            })
+    });
     let curved_corner_overlap_split = request.boolean.as_ref().is_some_and(|boolean| {
         boolean.operation == BooleanOperation::Split
             && boolean.profile.as_ref().is_some_and(|profile| {
                 profile
-                    .rounded_rectangle_corner_overlap_area(width, depth)
+                    .d_profile_arc_only_clipped_side_overlap(width, depth)
                     .is_some()
+                    || profile.capsule_side_overlap(width, depth).is_some()
+                    || profile.capsule_corner_overlap(width, depth).is_some()
+                    || profile
+                        .rounded_rectangle_chord_side_overlap(width, depth)
+                        .is_some()
+                    || profile
+                        .strict_convex_line_clipped_side_overlap(width, depth)
+                        .is_some()
+                    || profile
+                        .strict_convex_arc_only_clipped_side_overlap(width, depth)
+                        .is_some()
+                    || profile
+                        .strict_convex_line_arc_clipped_side_overlap(width, depth)
+                        .is_some()
+                    || profile
+                        .strict_convex_line_arc_clipped_south_east_corner_overlap(width, depth)
+                        .is_some()
+                    || profile
+                        .strict_convex_line_arc_clipped_south_west_corner_overlap(width, depth)
+                        .is_some()
+                    || profile
+                        .strict_convex_line_arc_clipped_north_east_corner_overlap(width, depth)
+                        .is_some()
+                    || profile
+                        .strict_convex_line_arc_clipped_north_west_corner_overlap(width, depth)
+                        .is_some()
+                    || profile
+                        .rounded_rectangle_corner_overlap_area(width, depth)
+                        .is_some()
                     || profile
                         .rounded_rectangle_arc_clipped_corner_overlap_area(width, depth)
                         .is_some()
@@ -5300,8 +7756,37 @@ fn render_mesh(
         boolean.operation == BooleanOperation::Intersect
             && boolean.profile.as_ref().is_some_and(|profile| {
                 profile
-                    .rounded_rectangle_corner_overlap_area(width, depth)
+                    .d_profile_arc_only_clipped_side_overlap(width, depth)
                     .is_some()
+                    || profile.capsule_side_overlap(width, depth).is_some()
+                    || profile.capsule_corner_overlap(width, depth).is_some()
+                    || profile
+                        .rounded_rectangle_chord_side_overlap(width, depth)
+                        .is_some()
+                    || profile
+                        .strict_convex_line_clipped_side_overlap(width, depth)
+                        .is_some()
+                    || profile
+                        .strict_convex_arc_only_clipped_side_overlap(width, depth)
+                        .is_some()
+                    || profile
+                        .strict_convex_line_arc_clipped_side_overlap(width, depth)
+                        .is_some()
+                    || profile
+                        .strict_convex_line_arc_clipped_south_east_corner_overlap(width, depth)
+                        .is_some()
+                    || profile
+                        .strict_convex_line_arc_clipped_south_west_corner_overlap(width, depth)
+                        .is_some()
+                    || profile
+                        .strict_convex_line_arc_clipped_north_east_corner_overlap(width, depth)
+                        .is_some()
+                    || profile
+                        .strict_convex_line_arc_clipped_north_west_corner_overlap(width, depth)
+                        .is_some()
+                    || profile
+                        .rounded_rectangle_corner_overlap_area(width, depth)
+                        .is_some()
                     || profile
                         .rounded_rectangle_arc_clipped_corner_overlap_area(width, depth)
                         .is_some()
@@ -5438,6 +7923,25 @@ fn render_mesh(
             .as_ref()
             .and_then(|boolean| boolean.profile.as_ref())
     {
+        if profile
+            .d_profile_arc_only_clipped_side_overlap(width, depth)
+            .is_some()
+            || profile.capsule_side_overlap(width, depth).is_some()
+            || profile
+                .rounded_rectangle_chord_side_overlap(width, depth)
+                .is_some()
+            || profile
+                .strict_convex_line_clipped_side_overlap(width, depth)
+                .is_some()
+            || profile
+                .strict_convex_arc_only_clipped_side_overlap(width, depth)
+                .is_some()
+            || profile
+                .strict_convex_line_arc_clipped_side_overlap(width, depth)
+                .is_some()
+        {
+            return render_line_clipped_side_overlap_split_mesh(profile, width, depth, height);
+        }
         return render_corner_overlap_split_mesh(profile, width, depth, height);
     }
     if let Some(boolean) = request.boolean.as_ref()
@@ -5445,7 +7949,8 @@ fn render_mesh(
         && boolean.operation == BooleanOperation::Split
         && (profile.is_line_arc_d_profile()
             || profile.is_line_arc_capsule_profile()
-            || profile.is_line_arc_rounded_rectangle_profile())
+            || profile.is_line_arc_rounded_rectangle_profile()
+            || profile.is_strict_convex_line_arc_profile())
     {
         let (mut vertices, mut triangles) =
             render_polygon_cut_mesh(width, depth, height, profile, None)?;
@@ -5466,10 +7971,57 @@ fn render_mesh(
     {
         return render_clipped_mixed_profile_mesh(profile, width, depth, height);
     }
+    if corner_overlap_cut
+        && let Some(profile) = request
+            .boolean
+            .as_ref()
+            .and_then(|boolean| boolean.profile.as_ref())
+    {
+        return request.pocket_depth_bits.map_or_else(
+            || render_corner_overlap_cut_mesh(profile, width, depth, height),
+            |depth_bits| {
+                render_side_clipped_overlap_pocket_mesh(
+                    profile,
+                    width,
+                    depth,
+                    height,
+                    f64::from_bits(depth_bits),
+                )
+            },
+        );
+    }
+    if side_clipped_union
+        && let Some(profile) = request
+            .boolean
+            .as_ref()
+            .and_then(|boolean| boolean.profile.as_ref())
+    {
+        return render_side_clipped_overlap_union_mesh(profile, width, depth, height);
+    }
+    if side_clipped_cut
+        && let Some(profile) = request
+            .boolean
+            .as_ref()
+            .and_then(|boolean| boolean.profile.as_ref())
+    {
+        return request.pocket_depth_bits.map_or_else(
+            || render_line_clipped_side_overlap_cut_mesh(profile, width, depth, height),
+            |depth_bits| {
+                render_side_clipped_overlap_pocket_mesh(
+                    profile,
+                    width,
+                    depth,
+                    height,
+                    f64::from_bits(depth_bits),
+                )
+            },
+        );
+    }
     if let Some(boolean) = request.boolean.as_ref()
         && let Some(profile) = boolean.profile.as_ref()
         && boolean.operation != BooleanOperation::Split
         && !side_overlap_intersection
+        && !side_overlap_cut
     {
         return if matches!(
             boolean.operation,
@@ -5486,17 +8038,75 @@ fn render_mesh(
             )
         };
     }
-    if let Some(boolean) = request
-        .boolean
-        .as_ref()
-        .filter(|boolean| boolean.circle.is_some() && boolean.operation != BooleanOperation::Split)
-    {
+    if let Some(boolean) = request.boolean.as_ref().filter(|boolean| {
+        boolean.circle.is_some()
+            && (boolean.operation != BooleanOperation::Split
+                || boolean.circle.is_some_and(|circle| {
+                    circle.side_overlap(width, depth).is_some()
+                        || circle.corner_overlap(width, depth).is_some()
+                        || circle.outside_side_overlap(width, depth).is_some()
+                        || circle.center_on_side_overlap(width, depth).is_some()
+                        || circle.center_on_corner_overlap(width, depth).is_some()
+                        || circle.outside_corner_overlap(width, depth).is_some()
+                }))
+    }) {
         let circle = boolean.circle.expect("filtered circular boolean");
-        return if matches!(
+        return if boolean.operation == BooleanOperation::Split
+            && (circle.corner_overlap(width, depth).is_some()
+                || circle.center_on_corner_overlap(width, depth).is_some()
+                || circle.outside_corner_overlap(width, depth).is_some())
+        {
+            render_corner_overlapping_circular_split_mesh(width, depth, height, circle)
+        } else if boolean.operation == BooleanOperation::Split
+            && (circle.side_overlap(width, depth).is_some()
+                || circle.outside_side_overlap(width, depth).is_some()
+                || circle.center_on_side_overlap(width, depth).is_some())
+        {
+            render_side_overlapping_circular_split_mesh(width, depth, height, circle)
+        } else if boolean.operation == BooleanOperation::Union
+            && (circle.corner_overlap(width, depth).is_some()
+                || circle.center_on_corner_overlap(width, depth).is_some()
+                || circle.outside_corner_overlap(width, depth).is_some())
+        {
+            render_corner_overlapping_circular_union_mesh(width, depth, height, circle)
+        } else if boolean.operation == BooleanOperation::Union
+            && (circle.side_overlap(width, depth).is_some()
+                || circle.outside_side_overlap(width, depth).is_some()
+                || circle.center_on_side_overlap(width, depth).is_some())
+        {
+            render_side_overlapping_circular_union_mesh(width, depth, height, circle)
+        } else if boolean.operation == BooleanOperation::Intersect
+            && (circle.corner_overlap(width, depth).is_some()
+                || circle.center_on_corner_overlap(width, depth).is_some()
+                || circle.outside_corner_overlap(width, depth).is_some())
+        {
+            render_corner_overlapping_circular_intersection_mesh(width, depth, height, circle)
+        } else if boolean.operation == BooleanOperation::Intersect
+            && (circle.side_overlap(width, depth).is_some()
+                || circle.outside_side_overlap(width, depth).is_some()
+                || circle.center_on_side_overlap(width, depth).is_some())
+        {
+            render_side_overlapping_circular_intersection_mesh(width, depth, height, circle)
+        } else if matches!(
             boolean.operation,
             BooleanOperation::Union | BooleanOperation::Intersect
         ) {
             render_circle_mesh(circle, height)
+        } else if let Some(pocket_depth_bits) = request.pocket_depth_bits
+            && (circle.side_overlap(width, depth).is_some()
+                || circle.corner_overlap(width, depth).is_some()
+                || circle.outside_side_overlap(width, depth).is_some()
+                || circle.center_on_side_overlap(width, depth).is_some()
+                || circle.center_on_corner_overlap(width, depth).is_some()
+                || circle.outside_corner_overlap(width, depth).is_some())
+        {
+            render_overlapping_circular_pocket_mesh(
+                width,
+                depth,
+                height,
+                f64::from_bits(pocket_depth_bits),
+                circle,
+            )
         } else {
             render_circular_cut_mesh(width, depth, height, circle)
         };
@@ -5521,28 +8131,59 @@ fn render_mesh(
     let Some(cut) = request
         .boolean
         .as_ref()
-        .filter(|boolean| boolean.operation == BooleanOperation::Cut)
+        .filter(|boolean| boolean.operation == BooleanOperation::Cut && !side_overlap_cut)
     else {
         let vertices = outer
             .map(|position_mm| ExactVertex { position_mm })
             .to_vec();
-        let (bottom_role, top_role, east_role) = if request.shell.is_some() {
+        let (bottom_role, top_role, side_roles) = if request.shell.is_some() {
             (
                 ExactFaceRole::BoxShellOuterBottom,
                 ExactFaceRole::BoxShellRim,
-                ExactFaceRole::BoxShellOuterEast,
+                [Some(ExactFaceRole::BoxShellOuterEast), None, None, None],
             )
         } else if side_overlap_intersection {
             (
                 ExactFaceRole::Bottom,
                 ExactFaceRole::Top,
-                ExactFaceRole::LinearSide,
+                [Some(ExactFaceRole::LinearSide), None, None, None],
             )
+        } else if side_overlap_cut {
+            let side_roles = if max[0] < width {
+                [
+                    Some(ExactFaceRole::CutLinear),
+                    Some(ExactFaceRole::West),
+                    None,
+                    None,
+                ]
+            } else if min[0] > 0.0 {
+                [
+                    Some(ExactFaceRole::East),
+                    Some(ExactFaceRole::CutLinear),
+                    None,
+                    None,
+                ]
+            } else if max[1] < depth {
+                [
+                    Some(ExactFaceRole::East),
+                    None,
+                    Some(ExactFaceRole::CutLinear),
+                    None,
+                ]
+            } else {
+                [
+                    Some(ExactFaceRole::East),
+                    None,
+                    None,
+                    Some(ExactFaceRole::CutLinear),
+                ]
+            };
+            (ExactFaceRole::Bottom, ExactFaceRole::Top, side_roles)
         } else {
             (
                 ExactFaceRole::Bottom,
                 ExactFaceRole::Top,
-                ExactFaceRole::East,
+                [Some(ExactFaceRole::East), None, None, None],
             )
         };
         let triangles = [
@@ -5550,14 +8191,14 @@ fn render_mesh(
             ([0, 3, 2], Some(bottom_role)),
             ([4, 5, 6], Some(top_role)),
             ([4, 6, 7], Some(top_role)),
-            ([1, 2, 6], Some(east_role)),
-            ([1, 6, 5], Some(east_role)),
-            ([0, 4, 7], None),
-            ([0, 7, 3], None),
-            ([3, 7, 6], None),
-            ([3, 6, 2], None),
-            ([0, 1, 5], None),
-            ([0, 5, 4], None),
+            ([1, 2, 6], side_roles[0]),
+            ([1, 6, 5], side_roles[0]),
+            ([0, 4, 7], side_roles[1]),
+            ([0, 7, 3], side_roles[1]),
+            ([3, 7, 6], side_roles[2]),
+            ([3, 6, 2], side_roles[2]),
+            ([0, 1, 5], side_roles[3]),
+            ([0, 5, 4], side_roles[3]),
         ]
         .map(|(vertex_indices, face_role)| ExactTriangle {
             vertex_indices,
@@ -5664,7 +8305,8 @@ fn render_polygon_cut_mesh(
 ) -> Result<(Vec<ExactVertex>, Vec<ExactTriangle>), ExactProductError> {
     let is_arc_cut_profile = profile.is_line_arc_d_profile()
         || profile.is_line_arc_capsule_profile()
-        || profile.is_line_arc_rounded_rectangle_profile();
+        || profile.is_line_arc_rounded_rectangle_profile()
+        || profile.is_strict_convex_line_arc_profile();
     if [width, depth, height]
         .into_iter()
         .any(|value| !value.is_finite() || value <= 0.0)
@@ -6223,6 +8865,9 @@ fn render_clipped_mixed_profile_mesh(
     if boundary.len() < 3 {
         return Err(ExactProductError::InvalidWorkerEvidence);
     }
+    if polygon_signed_area(&boundary) < 0.0 {
+        boundary.reverse();
+    }
     let (arc_center, arc_radius) = profile
         .segments
         .iter()
@@ -6318,6 +8963,1626 @@ fn render_clipped_mixed_profile_mesh(
 
 type ClippedProfileBoundary = (Vec<[f64; 2]>, [f64; 2], f64);
 
+fn render_side_clipped_overlap_union_mesh(
+    profile: &ExactMixedProfile,
+    width: f64,
+    depth: f64,
+    height: f64,
+) -> Result<(Vec<ExactVertex>, Vec<ExactTriangle>), ExactProductError> {
+    if profile.capsule_corner_overlap(width, depth).is_some()
+        || profile
+            .strict_convex_line_arc_clipped_south_east_corner_overlap(width, depth)
+            .is_some()
+        || profile
+            .strict_convex_line_arc_clipped_south_west_corner_overlap(width, depth)
+            .is_some()
+        || profile
+            .strict_convex_line_arc_clipped_north_east_corner_overlap(width, depth)
+            .is_some()
+        || profile
+            .strict_convex_line_arc_clipped_north_west_corner_overlap(width, depth)
+            .is_some()
+    {
+        return render_corner_overlap_union_mesh(profile, width, depth, height);
+    }
+    if profile.capsule_side_overlap(width, depth).is_some() {
+        return render_capsule_side_overlap_union_mesh(profile, width, depth, height);
+    }
+    if profile
+        .rounded_rectangle_chord_side_overlap(width, depth)
+        .is_some()
+    {
+        return render_chord_side_overlap_union_mesh(profile, width, depth, height);
+    }
+    if profile
+        .strict_convex_arc_only_clipped_side_overlap(width, depth)
+        .is_some()
+        || profile
+            .d_profile_arc_only_clipped_side_overlap(width, depth)
+            .is_some()
+    {
+        return render_arc_only_clipped_side_overlap_union_mesh(profile, width, depth, height);
+    }
+    if profile
+        .strict_convex_line_arc_clipped_side_overlap(width, depth)
+        .is_some()
+    {
+        return render_line_arc_clipped_side_overlap_union_mesh(profile, width, depth, height);
+    }
+    if profile
+        .strict_convex_line_clipped_side_overlap(width, depth)
+        .is_none()
+    {
+        return Err(ExactProductError::InvalidWorkerEvidence);
+    }
+    let [min_x, min_y, max_x, max_y] = profile.bounds_bits.map(f64::from_bits);
+    let tolerance = 1.0e-6;
+    let mut boundary = if min_x < -tolerance
+        && max_x < width - tolerance
+        && min_y > tolerance
+        && max_y < depth - tolerance
+    {
+        vec![
+            [0.0, 0.0],
+            [width, 0.0],
+            [width, depth],
+            [0.0, depth],
+            [0.0, max_y],
+            [min_x, max_y],
+            [min_x, min_y],
+            [0.0, min_y],
+        ]
+    } else if max_x > width + tolerance
+        && min_x > tolerance
+        && min_y > tolerance
+        && max_y < depth - tolerance
+    {
+        vec![
+            [0.0, 0.0],
+            [width, 0.0],
+            [width, min_y],
+            [max_x, min_y],
+            [max_x, max_y],
+            [width, max_y],
+            [width, depth],
+            [0.0, depth],
+        ]
+    } else if min_y < -tolerance
+        && max_y < depth - tolerance
+        && min_x > tolerance
+        && max_x < width - tolerance
+    {
+        vec![
+            [0.0, 0.0],
+            [min_x, 0.0],
+            [min_x, min_y],
+            [max_x, min_y],
+            [max_x, 0.0],
+            [width, 0.0],
+            [width, depth],
+            [0.0, depth],
+        ]
+    } else if max_y > depth + tolerance
+        && min_y > tolerance
+        && min_x > tolerance
+        && max_x < width - tolerance
+    {
+        vec![
+            [0.0, 0.0],
+            [width, 0.0],
+            [width, depth],
+            [max_x, depth],
+            [max_x, max_y],
+            [min_x, max_y],
+            [min_x, depth],
+            [0.0, depth],
+        ]
+    } else {
+        return Err(ExactProductError::InvalidWorkerEvidence);
+    };
+    if polygon_signed_area(&boundary) < 0.0 {
+        boundary.reverse();
+    }
+    render_profile_boundary_prism(&boundary, height, None)
+}
+
+fn render_chord_side_overlap_union_mesh(
+    profile: &ExactMixedProfile,
+    width: f64,
+    depth: f64,
+    height: f64,
+) -> Result<(Vec<ExactVertex>, Vec<ExactTriangle>), ExactProductError> {
+    if profile
+        .rounded_rectangle_chord_side_overlap(width, depth)
+        .is_none()
+    {
+        return Err(ExactProductError::InvalidWorkerEvidence);
+    }
+    let tolerance = 1.0e-6;
+    let [min_x, min_y, max_x, max_y] = profile.bounds_bits.map(f64::from_bits);
+    let (axis, limit, ascending) = if min_x < -tolerance {
+        (0_usize, 0.0, false)
+    } else if max_x > width + tolerance {
+        (0, width, true)
+    } else if min_y < -tolerance {
+        (1, 0.0, true)
+    } else if max_y > depth + tolerance {
+        (1, depth, false)
+    } else {
+        return Err(ExactProductError::InvalidWorkerEvidence);
+    };
+    let outside = |point: [f64; 2]| {
+        if limit == 0.0 {
+            point[axis] < limit - tolerance
+        } else {
+            point[axis] > limit + tolerance
+        }
+    };
+    let same_point = |left: [f64; 2], right: [f64; 2]| {
+        left.into_iter()
+            .zip(right)
+            .all(|(left, right)| (left - right).abs() <= tolerance)
+    };
+
+    let (profile_vertices, _) = render_mixed_profile_mesh(profile, height)?;
+    let mut profile_boundary = profile_vertices
+        .chunks_exact(2)
+        .map(|pair| {
+            let [x, y, _] = pair[0].position_mm;
+            [x, y]
+        })
+        .collect::<Vec<_>>();
+    let mut contacts = Vec::with_capacity(2);
+    for index in 0..profile_boundary.len() {
+        let start = profile_boundary[index];
+        let end = profile_boundary[(index + 1) % profile_boundary.len()];
+        if outside(start) == outside(end) {
+            continue;
+        }
+        let denominator = end[axis] - start[axis];
+        if denominator.abs() <= tolerance {
+            return Err(ExactProductError::InvalidWorkerEvidence);
+        }
+        let parameter = (limit - start[axis]) / denominator;
+        if parameter <= tolerance || parameter >= 1.0 - tolerance {
+            return Err(ExactProductError::InvalidWorkerEvidence);
+        }
+        let mut contact = [
+            start[0] + parameter * (end[0] - start[0]),
+            start[1] + parameter * (end[1] - start[1]),
+        ];
+        contact[axis] = limit;
+        contacts.push(contact);
+    }
+    let [first_contact, second_contact] = contacts
+        .as_slice()
+        .try_into()
+        .map_err(|_| ExactProductError::InvalidWorkerEvidence)?;
+    let insert_contact = |boundary: &mut Vec<[f64; 2]>, contact: [f64; 2]| {
+        if boundary.iter().any(|point| same_point(*point, contact)) {
+            return Ok(());
+        }
+        let edge = (0..boundary.len())
+            .find(|index| {
+                let start = boundary[*index];
+                let end = boundary[(*index + 1) % boundary.len()];
+                outside(start) != outside(end) && (start[axis] - limit) * (end[axis] - limit) < 0.0
+            })
+            .ok_or(ExactProductError::InvalidWorkerEvidence)?;
+        boundary.insert(edge + 1, contact);
+        Ok(())
+    };
+    insert_contact(&mut profile_boundary, first_contact)?;
+    insert_contact(&mut profile_boundary, second_contact)?;
+    let first_index = profile_boundary
+        .iter()
+        .position(|point| same_point(*point, first_contact))
+        .ok_or(ExactProductError::InvalidWorkerEvidence)?;
+    let second_index = profile_boundary
+        .iter()
+        .position(|point| same_point(*point, second_contact))
+        .ok_or(ExactProductError::InvalidWorkerEvidence)?;
+    let cyclic_path = |start: usize, end: usize| {
+        let mut path = Vec::new();
+        let mut index = start;
+        loop {
+            path.push(profile_boundary[index]);
+            if index == end {
+                break;
+            }
+            index = (index + 1) % profile_boundary.len();
+        }
+        path
+    };
+    let first_path = cyclic_path(first_index, second_index);
+    let second_path = cyclic_path(second_index, first_index);
+    let outside_count = |path: &[[f64; 2]]| path.iter().filter(|point| outside(**point)).count();
+    let mut outside_path = match outside_count(&first_path).cmp(&outside_count(&second_path)) {
+        std::cmp::Ordering::Greater => first_path,
+        std::cmp::Ordering::Less => second_path,
+        std::cmp::Ordering::Equal => return Err(ExactProductError::InvalidWorkerEvidence),
+    };
+    let orthogonal_axis = 1 - axis;
+    if (outside_path[0][orthogonal_axis] < outside_path[outside_path.len() - 1][orthogonal_axis])
+        != ascending
+    {
+        outside_path.reverse();
+    }
+    let mut boundary = outside_path;
+    match (axis, limit == 0.0) {
+        (0, false) => boundary.extend([[width, depth], [0.0, depth], [0.0, 0.0], [width, 0.0]]),
+        (0, true) => boundary.extend([[0.0, 0.0], [width, 0.0], [width, depth], [0.0, depth]]),
+        (1, false) => boundary.extend([[0.0, depth], [0.0, 0.0], [width, 0.0], [width, depth]]),
+        (1, true) => boundary.extend([[width, 0.0], [width, depth], [0.0, depth], [0.0, 0.0]]),
+        _ => unreachable!("validated clipping axis"),
+    }
+    boundary.dedup_by(|left, right| same_point(*left, *right));
+    if polygon_signed_area(&boundary) < 0.0 {
+        boundary.reverse();
+    }
+    let arc = profile
+        .segments
+        .iter()
+        .find_map(|segment| match segment {
+            ExactProfileSegment::CircularArc {
+                start_bits,
+                end_bits,
+                center_bits,
+                ..
+            } => {
+                let start = start_bits.map(f64::from_bits);
+                let end = end_bits.map(f64::from_bits);
+                let center = center_bits.map(f64::from_bits);
+                (outside(start) && outside(end))
+                    .then_some((center, (start[0] - center[0]).hypot(start[1] - center[1])))
+            }
+            ExactProfileSegment::Line { .. } => None,
+        })
+        .ok_or(ExactProductError::InvalidWorkerEvidence)?;
+    render_profile_boundary_prism(&boundary, height, Some(arc))
+}
+
+fn render_capsule_side_overlap_union_mesh(
+    profile: &ExactMixedProfile,
+    width: f64,
+    depth: f64,
+    height: f64,
+) -> Result<(Vec<ExactVertex>, Vec<ExactTriangle>), ExactProductError> {
+    if profile.capsule_side_overlap(width, depth).is_none() {
+        return Err(ExactProductError::InvalidWorkerEvidence);
+    }
+    let tolerance = 1.0e-6;
+    let [min_x, min_y, max_x, max_y] = profile.bounds_bits.map(f64::from_bits);
+    let (axis, limit, ascending) = if min_x < -tolerance {
+        (0_usize, 0.0, false)
+    } else if max_x > width + tolerance {
+        (0, width, true)
+    } else if min_y < -tolerance {
+        (1, 0.0, true)
+    } else if max_y > depth + tolerance {
+        (1, depth, false)
+    } else {
+        return Err(ExactProductError::InvalidWorkerEvidence);
+    };
+    let outside = |point: [f64; 2]| {
+        if limit == 0.0 {
+            point[axis] < limit - tolerance
+        } else {
+            point[axis] > limit + tolerance
+        }
+    };
+    let same_point = |left: [f64; 2], right: [f64; 2]| {
+        left.into_iter()
+            .zip(right)
+            .all(|(left, right)| (left - right).abs() <= tolerance)
+    };
+    let mut outside_arcs = profile.segments.iter().filter_map(|segment| {
+        let ExactProfileSegment::CircularArc {
+            start_bits,
+            end_bits,
+            center_bits,
+            clockwise,
+        } = segment
+        else {
+            return None;
+        };
+        let start = start_bits.map(f64::from_bits);
+        let end = end_bits.map(f64::from_bits);
+        (outside(start) && outside(end)).then_some((
+            start,
+            end,
+            center_bits.map(f64::from_bits),
+            *clockwise,
+        ))
+    });
+    let (arc_start, arc_end, center, clockwise) = outside_arcs
+        .next()
+        .ok_or(ExactProductError::InvalidWorkerEvidence)?;
+    if outside_arcs.next().is_some() {
+        return Err(ExactProductError::InvalidWorkerEvidence);
+    }
+    let mut crossing_lines = profile.segments.iter().filter_map(|segment| {
+        let ExactProfileSegment::Line {
+            start_bits,
+            end_bits,
+        } = segment
+        else {
+            return None;
+        };
+        let start = start_bits.map(f64::from_bits);
+        let end = end_bits.map(f64::from_bits);
+        if outside(start) == outside(end) {
+            return None;
+        }
+        let denominator = end[axis] - start[axis];
+        if denominator.abs() <= tolerance {
+            return None;
+        }
+        let t = (limit - start[axis]) / denominator;
+        if t <= tolerance || t >= 1.0 - tolerance {
+            return None;
+        }
+        let mut contact = [
+            start[0] + t * (end[0] - start[0]),
+            start[1] + t * (end[1] - start[1]),
+        ];
+        contact[axis] = limit;
+        Some((if outside(start) { start } else { end }, contact))
+    });
+    let first_line = crossing_lines
+        .next()
+        .ok_or(ExactProductError::InvalidWorkerEvidence)?;
+    let second_line = crossing_lines
+        .next()
+        .ok_or(ExactProductError::InvalidWorkerEvidence)?;
+    if crossing_lines.next().is_some() {
+        return Err(ExactProductError::InvalidWorkerEvidence);
+    }
+    let lines = [first_line, second_line];
+    let contact_start = lines
+        .iter()
+        .find_map(|(endpoint, contact)| same_point(*endpoint, arc_start).then_some(*contact))
+        .ok_or(ExactProductError::InvalidWorkerEvidence)?;
+    let contact_end = lines
+        .iter()
+        .find_map(|(endpoint, contact)| same_point(*endpoint, arc_end).then_some(*contact))
+        .ok_or(ExactProductError::InvalidWorkerEvidence)?;
+    let radius = (arc_start[0] - center[0]).hypot(arc_start[1] - center[1]);
+    let start_angle = (arc_start[1] - center[1]).atan2(arc_start[0] - center[0]);
+    let end_angle = (arc_end[1] - center[1]).atan2(arc_end[0] - center[0]);
+    let sweep = directed_arc_sweep(start_angle, end_angle, clockwise)
+        .ok_or(ExactProductError::InvalidWorkerEvidence)?;
+    let steps = (sweep.abs() / std::f64::consts::TAU * 64.0).ceil().max(2.0) as usize;
+    let mut outside_path = Vec::with_capacity(steps + 3);
+    outside_path.push(contact_start);
+    outside_path.extend((0..=steps).map(|step| {
+        let angle = start_angle + sweep * step as f64 / steps as f64;
+        [
+            center[0] + radius * angle.cos(),
+            center[1] + radius * angle.sin(),
+        ]
+    }));
+    outside_path.push(contact_end);
+    outside_path.first_mut().expect("non-empty outside path")[axis] = limit;
+    outside_path.last_mut().expect("non-empty outside path")[axis] = limit;
+    let orthogonal_axis = 1 - axis;
+    if (outside_path[0][orthogonal_axis] < outside_path[outside_path.len() - 1][orthogonal_axis])
+        != ascending
+    {
+        outside_path.reverse();
+    }
+    let mut boundary = match (axis, limit == 0.0) {
+        (0, false) => vec![[0.0, 0.0], [width, 0.0]],
+        (1, false) => vec![[0.0, 0.0], [width, 0.0], [width, depth]],
+        (0, true) => vec![[0.0, 0.0], [width, 0.0], [width, depth], [0.0, depth]],
+        (1, true) => vec![[0.0, 0.0]],
+        _ => unreachable!("validated clipping axis"),
+    };
+    boundary.extend(outside_path);
+    match (axis, limit == 0.0) {
+        (0, false) => boundary.extend([[width, depth], [0.0, depth]]),
+        (1, false) => boundary.push([0.0, depth]),
+        (0, true) => {}
+        (1, true) => boundary.extend([[width, 0.0], [width, depth], [0.0, depth]]),
+        _ => unreachable!("validated clipping axis"),
+    }
+    if polygon_signed_area(&boundary) < 0.0 {
+        boundary.reverse();
+    }
+    render_profile_boundary_prism(&boundary, height, Some((center, radius)))
+}
+
+fn render_line_arc_clipped_side_overlap_union_mesh(
+    profile: &ExactMixedProfile,
+    width: f64,
+    depth: f64,
+    height: f64,
+) -> Result<(Vec<ExactVertex>, Vec<ExactTriangle>), ExactProductError> {
+    if profile
+        .strict_convex_line_arc_clipped_side_overlap(width, depth)
+        .is_none()
+    {
+        return Err(ExactProductError::InvalidWorkerEvidence);
+    }
+    let tolerance = 1.0e-6;
+    let [min_x, min_y, max_x, max_y] = profile.bounds_bits.map(f64::from_bits);
+    let (axis, limit, ascending) = if min_x < -tolerance {
+        (0_usize, 0.0, false)
+    } else if max_x > width + tolerance {
+        (0, width, true)
+    } else if min_y < -tolerance {
+        (1, 0.0, true)
+    } else if max_y > depth + tolerance {
+        (1, depth, false)
+    } else {
+        return Err(ExactProductError::InvalidWorkerEvidence);
+    };
+    let outside = |point: [f64; 2]| {
+        if limit == 0.0 {
+            point[axis] < limit - tolerance
+        } else {
+            point[axis] > limit + tolerance
+        }
+    };
+    let same_point = |left: [f64; 2], right: [f64; 2]| {
+        left.into_iter()
+            .zip(right)
+            .all(|(left, right)| (left - right).abs() <= tolerance)
+    };
+    let ExactProfileSegment::CircularArc {
+        start_bits,
+        end_bits,
+        center_bits,
+        clockwise,
+    } = profile
+        .segments
+        .iter()
+        .find(|segment| matches!(segment, ExactProfileSegment::CircularArc { .. }))
+        .ok_or(ExactProductError::InvalidWorkerEvidence)?
+    else {
+        unreachable!("validated line-arc profile")
+    };
+    let arc_start = start_bits.map(f64::from_bits);
+    let arc_end = end_bits.map(f64::from_bits);
+    let center = center_bits.map(f64::from_bits);
+    let start_outside = outside(arc_start);
+    if start_outside == outside(arc_end) {
+        return Err(ExactProductError::InvalidWorkerEvidence);
+    }
+    let radius = (arc_start[0] - center[0]).hypot(arc_start[1] - center[1]);
+    let start_angle = (arc_start[1] - center[1]).atan2(arc_start[0] - center[0]);
+    let end_angle = (arc_end[1] - center[1]).atan2(arc_end[0] - center[0]);
+    let sweep = directed_arc_sweep(start_angle, end_angle, *clockwise)
+        .ok_or(ExactProductError::InvalidWorkerEvidence)?;
+    let normalized_limit = (limit - center[axis]) / radius;
+    if !normalized_limit.is_finite() || normalized_limit.abs() >= 1.0 - tolerance {
+        return Err(ExactProductError::InvalidWorkerEvidence);
+    }
+    let principal = if axis == 0 {
+        normalized_limit.acos()
+    } else {
+        normalized_limit.asin()
+    };
+    let angles = if axis == 0 {
+        [principal, -principal]
+    } else {
+        [principal, std::f64::consts::PI - principal]
+    };
+    let mut contacts = angles.into_iter().filter_map(|angle| {
+        if !angle_on_directed_arc(start_angle, sweep, angle) {
+            return None;
+        }
+        let mut point = [
+            center[0] + radius * angle.cos(),
+            center[1] + radius * angle.sin(),
+        ];
+        point[axis] = limit;
+        (!same_point(point, arc_start) && !same_point(point, arc_end)).then_some((angle, point))
+    });
+    let (contact_angle, arc_contact) = contacts
+        .next()
+        .ok_or(ExactProductError::InvalidWorkerEvidence)?;
+    if contacts.next().is_some() {
+        return Err(ExactProductError::InvalidWorkerEvidence);
+    }
+    let mut crossing_lines = profile.segments.iter().filter_map(|segment| {
+        let ExactProfileSegment::Line {
+            start_bits,
+            end_bits,
+        } = segment
+        else {
+            return None;
+        };
+        let start = start_bits.map(f64::from_bits);
+        let end = end_bits.map(f64::from_bits);
+        (outside(start) != outside(end)).then_some((start, end))
+    });
+    let (line_start, line_end) = crossing_lines
+        .next()
+        .ok_or(ExactProductError::InvalidWorkerEvidence)?;
+    if crossing_lines.next().is_some() {
+        return Err(ExactProductError::InvalidWorkerEvidence);
+    }
+    let outside_endpoint = if start_outside { arc_start } else { arc_end };
+    if (start_outside && !same_point(line_end, outside_endpoint))
+        || (!start_outside && !same_point(line_start, outside_endpoint))
+    {
+        return Err(ExactProductError::InvalidWorkerEvidence);
+    }
+    let denominator = line_end[axis] - line_start[axis];
+    if denominator.abs() <= tolerance {
+        return Err(ExactProductError::InvalidWorkerEvidence);
+    }
+    let t = (limit - line_start[axis]) / denominator;
+    if t <= tolerance || t >= 1.0 - tolerance {
+        return Err(ExactProductError::InvalidWorkerEvidence);
+    }
+    let mut line_contact = [
+        line_start[0] + t * (line_end[0] - line_start[0]),
+        line_start[1] + t * (line_end[1] - line_start[1]),
+    ];
+    line_contact[axis] = limit;
+    let (from_angle, to_angle) = if start_outside {
+        (start_angle, contact_angle)
+    } else {
+        (contact_angle, end_angle)
+    };
+    let outside_sweep = directed_arc_sweep(from_angle, to_angle, *clockwise)
+        .ok_or(ExactProductError::InvalidWorkerEvidence)?;
+    let steps = (outside_sweep.abs() / std::f64::consts::TAU * 64.0)
+        .ceil()
+        .max(2.0) as usize;
+    let mut outside_path = (0..=steps)
+        .map(|step| {
+            let angle = from_angle + outside_sweep * step as f64 / steps as f64;
+            [
+                center[0] + radius * angle.cos(),
+                center[1] + radius * angle.sin(),
+            ]
+        })
+        .collect::<Vec<_>>();
+    if start_outside {
+        outside_path.insert(0, line_contact);
+        *outside_path.last_mut().expect("non-empty outside path") = arc_contact;
+    } else {
+        outside_path.push(line_contact);
+        outside_path[0] = arc_contact;
+    }
+    outside_path.first_mut().expect("non-empty outside path")[axis] = limit;
+    outside_path.last_mut().expect("non-empty outside path")[axis] = limit;
+    let orthogonal_axis = 1 - axis;
+    if (outside_path[0][orthogonal_axis] < outside_path[outside_path.len() - 1][orthogonal_axis])
+        != ascending
+    {
+        outside_path.reverse();
+    }
+    let mut boundary = match (axis, limit == 0.0) {
+        (0, false) => vec![[0.0, 0.0], [width, 0.0]],
+        (1, false) => vec![[0.0, 0.0], [width, 0.0], [width, depth]],
+        (0, true) => vec![[0.0, 0.0], [width, 0.0], [width, depth], [0.0, depth]],
+        (1, true) => vec![[0.0, 0.0]],
+        _ => unreachable!("validated clipping axis"),
+    };
+    boundary.extend(outside_path);
+    match (axis, limit == 0.0) {
+        (0, false) => boundary.extend([[width, depth], [0.0, depth]]),
+        (1, false) => boundary.push([0.0, depth]),
+        (0, true) => {}
+        (1, true) => boundary.extend([[width, 0.0], [width, depth], [0.0, depth]]),
+        _ => unreachable!("validated clipping axis"),
+    }
+    if polygon_signed_area(&boundary) < 0.0 {
+        boundary.reverse();
+    }
+    render_profile_boundary_prism(&boundary, height, Some((center, radius)))
+}
+
+fn render_arc_only_clipped_side_overlap_union_mesh(
+    profile: &ExactMixedProfile,
+    width: f64,
+    depth: f64,
+    height: f64,
+) -> Result<(Vec<ExactVertex>, Vec<ExactTriangle>), ExactProductError> {
+    if profile
+        .strict_convex_arc_only_clipped_side_overlap(width, depth)
+        .is_none()
+        && profile
+            .d_profile_arc_only_clipped_side_overlap(width, depth)
+            .is_none()
+    {
+        return Err(ExactProductError::InvalidWorkerEvidence);
+    }
+    let ExactProfileSegment::CircularArc {
+        start_bits,
+        end_bits,
+        center_bits,
+        clockwise,
+    } = profile
+        .segments
+        .iter()
+        .find(|segment| matches!(segment, ExactProfileSegment::CircularArc { .. }))
+        .ok_or(ExactProductError::InvalidWorkerEvidence)?
+    else {
+        unreachable!("validated arc-only profile")
+    };
+    let start = start_bits.map(f64::from_bits);
+    let end = end_bits.map(f64::from_bits);
+    let center = center_bits.map(f64::from_bits);
+    let radius = (start[0] - center[0]).hypot(start[1] - center[1]);
+    let start_angle = (start[1] - center[1]).atan2(start[0] - center[0]);
+    let end_angle = (end[1] - center[1]).atan2(end[0] - center[0]);
+    let sweep = directed_arc_sweep(start_angle, end_angle, *clockwise)
+        .ok_or(ExactProductError::InvalidWorkerEvidence)?;
+    let [min_x, min_y, max_x, max_y] = profile.bounds_bits.map(f64::from_bits);
+    let tolerance = 1.0e-6;
+    let (axis, limit, extreme_angle, ascending) = if min_x < -tolerance {
+        (0_usize, 0.0, std::f64::consts::PI, false)
+    } else if max_x > width + tolerance {
+        (0, width, 0.0, true)
+    } else if min_y < -tolerance {
+        (1, 0.0, 3.0 * std::f64::consts::FRAC_PI_2, true)
+    } else if max_y > depth + tolerance {
+        (1, depth, std::f64::consts::FRAC_PI_2, false)
+    } else {
+        return Err(ExactProductError::InvalidWorkerEvidence);
+    };
+    let distance = (center[axis] - limit).abs();
+    let intersection_offset = (distance / radius).acos();
+    let progress = |angle: f64| {
+        if sweep > 0.0 {
+            (angle - start_angle).rem_euclid(std::f64::consts::TAU)
+        } else {
+            (start_angle - angle).rem_euclid(std::f64::consts::TAU)
+        }
+    };
+    let mut contacts = [
+        extreme_angle - intersection_offset,
+        extreme_angle + intersection_offset,
+    ];
+    contacts.sort_by(|left, right| progress(*left).total_cmp(&progress(*right)));
+    let first_progress = progress(contacts[0]);
+    let second_progress = progress(contacts[1]);
+    if progress(extreme_angle) < first_progress - tolerance
+        || progress(extreme_angle) > second_progress + tolerance
+    {
+        return Err(ExactProductError::InvalidWorkerEvidence);
+    }
+    let arc_sweep = second_progress - first_progress;
+    let steps = (arc_sweep / std::f64::consts::TAU * 64.0).ceil().max(2.0) as usize;
+    let direction = sweep.signum();
+    let mut outside_arc = (0..=steps)
+        .map(|step| {
+            let angle = contacts[0] + direction * arc_sweep * step as f64 / steps as f64;
+            [
+                center[0] + radius * angle.cos(),
+                center[1] + radius * angle.sin(),
+            ]
+        })
+        .collect::<Vec<_>>();
+    outside_arc.first_mut().expect("non-empty arc")[axis] = limit;
+    outside_arc.last_mut().expect("non-empty arc")[axis] = limit;
+    let orthogonal_axis = 1 - axis;
+    if (outside_arc[0][orthogonal_axis] < outside_arc[outside_arc.len() - 1][orthogonal_axis])
+        != ascending
+    {
+        outside_arc.reverse();
+    }
+    let mut boundary = match (axis, limit == 0.0) {
+        (0, false) => vec![[0.0, 0.0], [width, 0.0]],
+        (1, false) => vec![[0.0, 0.0], [width, 0.0], [width, depth]],
+        (0, true) => vec![[0.0, 0.0], [width, 0.0], [width, depth], [0.0, depth]],
+        (1, true) => vec![[0.0, 0.0]],
+        _ => unreachable!("validated clipping axis"),
+    };
+    boundary.extend(outside_arc);
+    match (axis, limit == 0.0) {
+        (0, false) => boundary.extend([[width, depth], [0.0, depth]]),
+        (1, false) => boundary.push([0.0, depth]),
+        (0, true) => {}
+        (1, true) => boundary.extend([[width, 0.0], [width, depth], [0.0, depth]]),
+        _ => unreachable!("validated clipping axis"),
+    }
+    if polygon_signed_area(&boundary) < 0.0 {
+        boundary.reverse();
+    }
+    render_profile_boundary_prism(&boundary, height, Some((center, radius)))
+}
+
+fn mirror_mesh_across_vertical_axis(
+    mut vertices: Vec<ExactVertex>,
+    mut triangles: Vec<ExactTriangle>,
+    width: f64,
+) -> (Vec<ExactVertex>, Vec<ExactTriangle>) {
+    for vertex in &mut vertices {
+        vertex.position_mm[0] = width - vertex.position_mm[0];
+    }
+    for triangle in &mut triangles {
+        triangle.vertex_indices.swap(1, 2);
+    }
+    (vertices, triangles)
+}
+
+fn mirror_mesh_across_horizontal_axis(
+    mut vertices: Vec<ExactVertex>,
+    mut triangles: Vec<ExactTriangle>,
+    depth: f64,
+) -> (Vec<ExactVertex>, Vec<ExactTriangle>) {
+    for vertex in &mut vertices {
+        vertex.position_mm[1] = depth - vertex.position_mm[1];
+    }
+    for triangle in &mut triangles {
+        triangle.vertex_indices.swap(1, 2);
+    }
+    (vertices, triangles)
+}
+
+fn render_side_clipped_overlap_pocket_mesh(
+    profile: &ExactMixedProfile,
+    width: f64,
+    depth: f64,
+    height: f64,
+    pocket_depth: f64,
+) -> Result<(Vec<ExactVertex>, Vec<ExactTriangle>), ExactProductError> {
+    if profile
+        .strict_convex_line_arc_clipped_north_west_corner_overlap(width, depth)
+        .is_some()
+    {
+        let mirrored = profile
+            .mirrored_across_vertical_axis(width)
+            .ok_or(ExactProductError::InvalidWorkerEvidence)?;
+        let (vertices, triangles) =
+            render_side_clipped_overlap_pocket_mesh(&mirrored, width, depth, height, pocket_depth)?;
+        return Ok(mirror_mesh_across_vertical_axis(vertices, triangles, width));
+    }
+    if profile
+        .strict_convex_line_arc_clipped_north_east_corner_overlap(width, depth)
+        .is_some()
+    {
+        let mirrored = profile
+            .mirrored_across_horizontal_axis(depth)
+            .ok_or(ExactProductError::InvalidWorkerEvidence)?;
+        let (vertices, triangles) =
+            render_side_clipped_overlap_pocket_mesh(&mirrored, width, depth, height, pocket_depth)?;
+        return Ok(mirror_mesh_across_horizontal_axis(
+            vertices, triangles, depth,
+        ));
+    }
+    if profile
+        .strict_convex_line_arc_clipped_south_west_corner_overlap(width, depth)
+        .is_some()
+    {
+        let mirrored = profile
+            .mirrored_across_vertical_axis(width)
+            .ok_or(ExactProductError::InvalidWorkerEvidence)?;
+        let (vertices, triangles) =
+            render_side_clipped_overlap_pocket_mesh(&mirrored, width, depth, height, pocket_depth)?;
+        return Ok(mirror_mesh_across_vertical_axis(vertices, triangles, width));
+    }
+    if profile
+        .rounded_rectangle_side_overlap_area(width, depth)
+        .is_none()
+        && profile
+            .rounded_rectangle_corner_overlap_area(width, depth)
+            .is_none()
+        && profile
+            .rounded_rectangle_arc_clipped_corner_overlap_area(width, depth)
+            .is_none()
+        && profile
+            .rounded_rectangle_two_axis_arc_clipped_corner_overlap_area(width, depth)
+            .is_none()
+        && profile
+            .d_profile_arc_only_clipped_side_overlap(width, depth)
+            .is_none()
+        && profile.capsule_side_overlap(width, depth).is_none()
+        && profile.capsule_corner_overlap(width, depth).is_none()
+        && profile
+            .rounded_rectangle_chord_side_overlap(width, depth)
+            .is_none()
+        && profile
+            .strict_convex_line_clipped_side_overlap(width, depth)
+            .is_none()
+        && profile
+            .strict_convex_line_arc_clipped_side_overlap(width, depth)
+            .is_none()
+        && profile
+            .strict_convex_arc_only_clipped_side_overlap(width, depth)
+            .is_none()
+        && profile
+            .strict_convex_line_arc_clipped_south_east_corner_overlap(width, depth)
+            .is_none()
+        || !pocket_depth.is_finite()
+        || pocket_depth <= 0.0
+        || pocket_depth >= height
+    {
+        return Err(ExactProductError::InvalidWorkerEvidence);
+    }
+    let floor_z = height - pocket_depth;
+    let corner_overlap = profile
+        .strict_convex_line_arc_clipped_south_east_corner_overlap(width, depth)
+        .is_some();
+    let rounded_side_overlap = profile
+        .rounded_rectangle_side_overlap_area(width, depth)
+        .is_some();
+    let rounded_corner_overlap = profile.capsule_corner_overlap(width, depth).is_some()
+        || profile
+            .rounded_rectangle_corner_overlap_area(width, depth)
+            .is_some()
+        || profile
+            .rounded_rectangle_arc_clipped_corner_overlap_area(width, depth)
+            .is_some()
+        || profile
+            .rounded_rectangle_two_axis_arc_clipped_corner_overlap_area(width, depth)
+            .is_some();
+    let (mut vertices, mut triangles) = if rounded_side_overlap {
+        let [profile_min_x, profile_min_y, profile_max_x, profile_max_y] =
+            profile.bounds_bits.map(f64::from_bits);
+        let min_x = profile_min_x.max(0.0);
+        let min_y = profile_min_y.max(0.0);
+        let max_x = profile_max_x.min(width);
+        let max_y = profile_max_y.min(depth);
+        let tolerance = 1.0e-6;
+        let (remaining_boundary, interface_axis, interface_coordinate) = if min_x <= tolerance
+            && max_x < width - tolerance
+            && min_y <= tolerance
+            && max_y >= depth - tolerance
+        {
+            (
+                vec![[max_x, 0.0], [width, 0.0], [width, depth], [max_x, depth]],
+                0,
+                max_x,
+            )
+        } else if min_x > tolerance
+            && max_x >= width - tolerance
+            && min_y <= tolerance
+            && max_y >= depth - tolerance
+        {
+            (
+                vec![[0.0, 0.0], [min_x, 0.0], [min_x, depth], [0.0, depth]],
+                0,
+                min_x,
+            )
+        } else if min_x <= tolerance
+            && max_x >= width - tolerance
+            && min_y <= tolerance
+            && max_y < depth - tolerance
+        {
+            (
+                vec![[0.0, max_y], [width, max_y], [width, depth], [0.0, depth]],
+                1,
+                max_y,
+            )
+        } else if min_x <= tolerance
+            && max_x >= width - tolerance
+            && min_y > tolerance
+            && max_y >= depth - tolerance
+        {
+            (
+                vec![[0.0, 0.0], [width, 0.0], [width, min_y], [0.0, min_y]],
+                1,
+                min_y,
+            )
+        } else {
+            return Err(ExactProductError::InvalidWorkerEvidence);
+        };
+        let (remaining_vertices, mut remaining_triangles) =
+            render_profile_boundary_prism(&remaining_boundary, height, None)?;
+        for triangle in &mut remaining_triangles {
+            if triangle.face_role.is_none()
+                && triangle.vertex_indices.iter().all(|index| {
+                    (remaining_vertices[*index as usize].position_mm[interface_axis]
+                        - interface_coordinate)
+                        .abs()
+                        <= tolerance
+                })
+            {
+                triangle.face_role = Some(ExactFaceRole::CutLinear);
+            }
+        }
+        (remaining_vertices, remaining_triangles)
+    } else if rounded_corner_overlap {
+        render_corner_overlap_cut_mesh(profile, width, depth, height)?
+    } else {
+        render_line_clipped_side_overlap_cut_mesh(profile, width, depth, height)?
+    };
+    let mut floor_boundary = if rounded_corner_overlap {
+        clipped_mixed_profile_boundary(profile, width, depth)?.0
+    } else if corner_overlap {
+        let outer_boundary = vertices
+            .chunks_exact(2)
+            .map(|pair| [pair[0].position_mm[0], pair[0].position_mm[1]])
+            .collect::<Vec<_>>();
+        let tolerance = 1.0e-6;
+        let south_index = outer_boundary
+            .iter()
+            .position(|point| {
+                point[1].abs() <= tolerance && point[0] > tolerance && point[0] < width - tolerance
+            })
+            .ok_or(ExactProductError::InvalidWorkerEvidence)?;
+        let east_index = outer_boundary
+            .iter()
+            .position(|point| {
+                (point[0] - width).abs() <= tolerance
+                    && point[1] > tolerance
+                    && point[1] < depth - tolerance
+            })
+            .ok_or(ExactProductError::InvalidWorkerEvidence)?;
+        let mut boundary = vec![outer_boundary[south_index]];
+        let mut index = (south_index + 1) % outer_boundary.len();
+        while index != east_index {
+            boundary.push(outer_boundary[index]);
+            index = (index + 1) % outer_boundary.len();
+            if index == south_index {
+                return Err(ExactProductError::InvalidWorkerEvidence);
+            }
+        }
+        boundary.extend([outer_boundary[east_index], [width, 0.0]]);
+        boundary
+    } else if rounded_side_overlap {
+        let [profile_min_x, profile_min_y, profile_max_x, profile_max_y] =
+            profile.bounds_bits.map(f64::from_bits);
+        vec![
+            [profile_min_x.max(0.0), profile_min_y.max(0.0)],
+            [profile_max_x.min(width), profile_min_y.max(0.0)],
+            [profile_max_x.min(width), profile_max_y.min(depth)],
+            [profile_min_x.max(0.0), profile_max_y.min(depth)],
+        ]
+    } else {
+        clipped_mixed_profile_boundary(profile, width, depth)?.0
+    };
+    if polygon_signed_area(&floor_boundary) < 0.0 {
+        floor_boundary.reverse();
+    }
+    for vertex in &mut vertices {
+        if vertex.position_mm[2] == 0.0 {
+            vertex.position_mm[2] = floor_z;
+        }
+    }
+    triangles.retain(|triangle| triangle.face_role != Some(ExactFaceRole::Bottom));
+    for triangle in &mut triangles {
+        if triangle.face_role == Some(ExactFaceRole::ArcSide) {
+            triangle.face_role = Some(ExactFaceRole::CutLinear);
+        }
+    }
+
+    let tolerance = 1.0e-6;
+    let perimeter_position = |point: [f64; 2]| {
+        if point[1].abs() <= tolerance {
+            Some(point[0])
+        } else if (point[0] - width).abs() <= tolerance {
+            Some(width + point[1])
+        } else if (point[1] - depth).abs() <= tolerance {
+            Some(2.0 * width + depth - point[0])
+        } else if point[0].abs() <= tolerance {
+            Some(2.0 * (width + depth) - point[1])
+        } else {
+            None
+        }
+    };
+    let mut positioned_boundary = vec![
+        (0.0, [0.0, 0.0]),
+        (width, [width, 0.0]),
+        (width + depth, [width, depth]),
+        (2.0 * width + depth, [0.0, depth]),
+    ];
+    for point in floor_boundary.iter().copied() {
+        if let Some(position) = perimeter_position(point)
+            && !positioned_boundary
+                .iter()
+                .any(|(existing, _)| (existing - position).abs() <= tolerance)
+        {
+            positioned_boundary.push((position, point));
+        }
+    }
+    positioned_boundary.sort_by(|left, right| left.0.total_cmp(&right.0));
+    let lower_boundary = positioned_boundary
+        .into_iter()
+        .map(|(_, point)| point)
+        .collect::<Vec<_>>();
+    let (lower_vertices, mut lower_triangles) =
+        render_profile_boundary_prism(&lower_boundary, floor_z, None)?;
+    lower_triangles.retain(|triangle| triangle.face_role != Some(ExactFaceRole::Top));
+    for triangle in &mut lower_triangles {
+        if triangle
+            .vertex_indices
+            .iter()
+            .all(|index| (lower_vertices[*index as usize].position_mm[0] - width).abs() <= 1.0e-9)
+        {
+            triangle.face_role = Some(ExactFaceRole::East);
+        }
+        triangle.vertex_indices = triangle
+            .vertex_indices
+            .map(|index| index + vertices.len() as u32);
+    }
+    vertices.extend(lower_vertices);
+    triangles.extend(lower_triangles);
+
+    let floor_start = vertices.len() as u32;
+    vertices.extend(floor_boundary.iter().map(|point| ExactVertex {
+        position_mm: [point[0], point[1], floor_z],
+    }));
+    for [a, b, c] in triangulate_polygon(&floor_boundary)? {
+        triangles.push(ExactTriangle {
+            vertex_indices: [floor_start + a, floor_start + b, floor_start + c],
+            face_role: Some(ExactFaceRole::PocketFloor),
+        });
+    }
+
+    let weld_tolerance = width.min(depth) * 1.0e-9;
+    let mut welded_vertices: Vec<ExactVertex> = Vec::new();
+    let remap = vertices
+        .into_iter()
+        .map(|vertex| {
+            welded_vertices
+                .iter()
+                .position(|candidate| {
+                    candidate
+                        .position_mm
+                        .into_iter()
+                        .zip(vertex.position_mm)
+                        .all(|(left, right)| (left - right).abs() <= weld_tolerance)
+                })
+                .map_or_else(
+                    || {
+                        welded_vertices.push(vertex);
+                        (welded_vertices.len() - 1) as u32
+                    },
+                    |index| index as u32,
+                )
+        })
+        .collect::<Vec<_>>();
+    let welded_triangles = triangles
+        .into_iter()
+        .filter_map(|mut triangle| {
+            triangle.vertex_indices = triangle.vertex_indices.map(|index| remap[index as usize]);
+            let [a, b, c] = triangle.vertex_indices;
+            (a != b && b != c && c != a).then_some(triangle)
+        })
+        .collect();
+    Ok((welded_vertices, welded_triangles))
+}
+
+fn render_line_clipped_side_overlap_cut_mesh(
+    profile: &ExactMixedProfile,
+    width: f64,
+    depth: f64,
+    height: f64,
+) -> Result<(Vec<ExactVertex>, Vec<ExactTriangle>), ExactProductError> {
+    if profile
+        .strict_convex_line_arc_clipped_north_west_corner_overlap(width, depth)
+        .is_some()
+    {
+        let mirrored = profile
+            .mirrored_across_vertical_axis(width)
+            .ok_or(ExactProductError::InvalidWorkerEvidence)?;
+        let (vertices, triangles) =
+            render_line_clipped_side_overlap_cut_mesh(&mirrored, width, depth, height)?;
+        return Ok(mirror_mesh_across_vertical_axis(vertices, triangles, width));
+    }
+    if profile
+        .strict_convex_line_arc_clipped_north_east_corner_overlap(width, depth)
+        .is_some()
+    {
+        let mirrored = profile
+            .mirrored_across_horizontal_axis(depth)
+            .ok_or(ExactProductError::InvalidWorkerEvidence)?;
+        let (vertices, triangles) =
+            render_line_clipped_side_overlap_cut_mesh(&mirrored, width, depth, height)?;
+        return Ok(mirror_mesh_across_horizontal_axis(
+            vertices, triangles, depth,
+        ));
+    }
+    if profile
+        .strict_convex_line_arc_clipped_south_west_corner_overlap(width, depth)
+        .is_some()
+    {
+        let mirrored = profile
+            .mirrored_across_vertical_axis(width)
+            .ok_or(ExactProductError::InvalidWorkerEvidence)?;
+        let (vertices, triangles) =
+            render_line_clipped_side_overlap_cut_mesh(&mirrored, width, depth, height)?;
+        return Ok(mirror_mesh_across_vertical_axis(vertices, triangles, width));
+    }
+    if profile
+        .strict_convex_line_clipped_side_overlap(width, depth)
+        .is_none()
+        && profile
+            .strict_convex_arc_only_clipped_side_overlap(width, depth)
+            .is_none()
+        && profile
+            .d_profile_arc_only_clipped_side_overlap(width, depth)
+            .is_none()
+        && profile
+            .strict_convex_line_arc_clipped_side_overlap(width, depth)
+            .is_none()
+        && profile.capsule_side_overlap(width, depth).is_none()
+        && profile
+            .rounded_rectangle_chord_side_overlap(width, depth)
+            .is_none()
+        && profile
+            .strict_convex_line_arc_clipped_south_east_corner_overlap(width, depth)
+            .is_none()
+    {
+        return Err(ExactProductError::InvalidWorkerEvidence);
+    }
+    let (vertices, triangles) = if profile
+        .strict_convex_line_arc_clipped_south_east_corner_overlap(width, depth)
+        .is_some()
+    {
+        return render_south_east_corner_overlap_cut_mesh(profile, width, depth, height);
+    } else {
+        render_line_clipped_side_overlap_split_mesh(profile, width, depth, height)?
+    };
+    let seed = vertices
+        .iter()
+        .position(|vertex| vertex.position_mm == [0.0, 0.0, 0.0])
+        .ok_or(ExactProductError::InvalidWorkerEvidence)?;
+    let mut reachable_vertices = vec![false; vertices.len()];
+    let mut reachable_triangles = vec![false; triangles.len()];
+    reachable_vertices[seed] = true;
+    loop {
+        let mut changed = false;
+        for (index, triangle) in triangles.iter().enumerate() {
+            if !reachable_triangles[index]
+                && triangle
+                    .vertex_indices
+                    .iter()
+                    .any(|vertex| reachable_vertices[*vertex as usize])
+            {
+                reachable_triangles[index] = true;
+                changed = true;
+                for vertex in triangle.vertex_indices {
+                    reachable_vertices[vertex as usize] = true;
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    if reachable_triangles.iter().all(|reachable| *reachable)
+        || reachable_triangles.iter().all(|reachable| !*reachable)
+    {
+        return Err(ExactProductError::InvalidWorkerEvidence);
+    }
+    let mut remap = vec![u32::MAX; vertices.len()];
+    let mut cut_vertices = Vec::new();
+    for (index, vertex) in vertices.into_iter().enumerate() {
+        if reachable_vertices[index] {
+            remap[index] = cut_vertices.len() as u32;
+            cut_vertices.push(vertex);
+        }
+    }
+    let cut_triangles = triangles
+        .into_iter()
+        .zip(reachable_triangles)
+        .filter(|(_, reachable)| *reachable)
+        .map(|(mut triangle, _)| {
+            triangle.vertex_indices = triangle.vertex_indices.map(|vertex| remap[vertex as usize]);
+            if (profile.capsule_side_overlap(width, depth).is_some()
+                || profile
+                    .rounded_rectangle_chord_side_overlap(width, depth)
+                    .is_some())
+                && triangle.face_role == Some(ExactFaceRole::ArcSide)
+            {
+                triangle.face_role = Some(ExactFaceRole::CutLinear);
+            }
+            triangle
+        })
+        .collect();
+    Ok((cut_vertices, cut_triangles))
+}
+
+fn render_line_clipped_side_overlap_split_mesh(
+    profile: &ExactMixedProfile,
+    width: f64,
+    depth: f64,
+    height: f64,
+) -> Result<(Vec<ExactVertex>, Vec<ExactTriangle>), ExactProductError> {
+    if profile
+        .strict_convex_line_clipped_side_overlap(width, depth)
+        .is_none()
+        && profile
+            .strict_convex_arc_only_clipped_side_overlap(width, depth)
+            .is_none()
+        && profile
+            .d_profile_arc_only_clipped_side_overlap(width, depth)
+            .is_none()
+        && profile
+            .strict_convex_line_arc_clipped_side_overlap(width, depth)
+            .is_none()
+        && profile.capsule_side_overlap(width, depth).is_none()
+        && profile
+            .rounded_rectangle_chord_side_overlap(width, depth)
+            .is_none()
+    {
+        return Err(ExactProductError::InvalidWorkerEvidence);
+    }
+    let (mut vertices, mut triangles) =
+        render_clipped_mixed_profile_mesh(profile, width, depth, height)?;
+    let (mut inner_boundary, arc_center, arc_radius) =
+        clipped_mixed_profile_boundary(profile, width, depth)?;
+    if polygon_signed_area(&inner_boundary) < 0.0 {
+        inner_boundary.reverse();
+    }
+
+    let tolerance = 1.0e-6;
+    let mut clip_edges = inner_boundary
+        .iter()
+        .enumerate()
+        .filter_map(|(index, start)| {
+            let end = inner_boundary[(index + 1) % inner_boundary.len()];
+            let on_same_side = ((start[0].abs() <= tolerance && end[0].abs() <= tolerance)
+                || ((start[0] - width).abs() <= tolerance && (end[0] - width).abs() <= tolerance)
+                || (start[1].abs() <= tolerance && end[1].abs() <= tolerance)
+                || ((start[1] - depth).abs() <= tolerance && (end[1] - depth).abs() <= tolerance))
+                && (start[0] - end[0]).hypot(start[1] - end[1]) > tolerance;
+            on_same_side.then_some(index)
+        });
+    let clip_edge = clip_edges
+        .next()
+        .ok_or(ExactProductError::InvalidWorkerEvidence)?;
+    if clip_edges.next().is_some() {
+        return Err(ExactProductError::InvalidWorkerEvidence);
+    }
+    let clip_start = inner_boundary[clip_edge];
+    let clip_end = inner_boundary[(clip_edge + 1) % inner_boundary.len()];
+    let perimeter = 2.0 * (width + depth);
+    let perimeter_position = |point: [f64; 2]| {
+        if point[1].abs() <= tolerance {
+            Some(point[0])
+        } else if (point[0] - width).abs() <= tolerance {
+            Some(width + point[1])
+        } else if (point[1] - depth).abs() <= tolerance {
+            Some(width + depth + width - point[0])
+        } else if point[0].abs() <= tolerance {
+            Some(2.0 * width + depth + depth - point[1])
+        } else {
+            None
+        }
+    };
+    let path_start =
+        perimeter_position(clip_end).ok_or(ExactProductError::InvalidWorkerEvidence)?;
+    let mut path_end =
+        perimeter_position(clip_start).ok_or(ExactProductError::InvalidWorkerEvidence)?;
+    while path_end <= path_start + tolerance {
+        path_end += perimeter;
+    }
+    if path_end - path_start <= perimeter * 0.5 {
+        return Err(ExactProductError::InvalidWorkerEvidence);
+    }
+
+    let corners = [
+        (0.0, [0.0, 0.0]),
+        (width, [width, 0.0]),
+        (width + depth, [width, depth]),
+        (2.0 * width + depth, [0.0, depth]),
+    ];
+    let mut outer_boundary = vec![clip_end];
+    for cycle in 0..=1 {
+        for (position, corner) in corners {
+            let position = position + f64::from(cycle) * perimeter;
+            if position > path_start + tolerance && position < path_end - tolerance {
+                outer_boundary.push(corner);
+            }
+        }
+    }
+    outer_boundary.push(clip_start);
+    let interface_end = (clip_edge + 1) % inner_boundary.len();
+    let mut index = if clip_edge == 0 {
+        inner_boundary.len() - 1
+    } else {
+        clip_edge - 1
+    };
+    while index != interface_end {
+        outer_boundary.push(inner_boundary[index]);
+        index = if index == 0 {
+            inner_boundary.len() - 1
+        } else {
+            index - 1
+        };
+    }
+    if outer_boundary.len() < 4
+        || polygon_signed_area(&outer_boundary).abs() <= 1.0e-12
+        || !outer_boundary
+            .iter()
+            .all(|point| point.iter().all(|value| value.is_finite()))
+    {
+        return Err(ExactProductError::InvalidWorkerEvidence);
+    }
+    if polygon_signed_area(&outer_boundary) < 0.0 {
+        outer_boundary.reverse();
+    }
+    let (outer_vertices, mut outer_triangles) =
+        render_profile_boundary_prism(&outer_boundary, height, Some((arc_center, arc_radius)))?;
+    let offset = vertices.len() as u32;
+    for triangle in &mut outer_triangles {
+        triangle.vertex_indices = triangle.vertex_indices.map(|index| index + offset);
+    }
+    vertices.extend(outer_vertices);
+    triangles.extend(outer_triangles);
+    Ok((vertices, triangles))
+}
+
+fn render_south_east_corner_overlap_cut_mesh(
+    profile: &ExactMixedProfile,
+    width: f64,
+    depth: f64,
+    height: f64,
+) -> Result<(Vec<ExactVertex>, Vec<ExactTriangle>), ExactProductError> {
+    if profile
+        .strict_convex_line_arc_clipped_south_east_corner_overlap(width, depth)
+        .is_none()
+    {
+        return Err(ExactProductError::InvalidWorkerEvidence);
+    }
+    let tolerance = 1.0e-6;
+    let (arc_index, arc_start, arc_end, arc_center, clockwise) = profile
+        .segments
+        .iter()
+        .enumerate()
+        .find_map(|(index, segment)| {
+            let ExactProfileSegment::CircularArc {
+                start_bits,
+                end_bits,
+                center_bits,
+                clockwise,
+            } = segment
+            else {
+                return None;
+            };
+            Some((
+                index,
+                start_bits.map(f64::from_bits),
+                end_bits.map(f64::from_bits),
+                center_bits.map(f64::from_bits),
+                *clockwise,
+            ))
+        })
+        .ok_or(ExactProductError::InvalidWorkerEvidence)?;
+    let arc_radius = (arc_start[0] - arc_center[0]).hypot(arc_start[1] - arc_center[1]);
+    let start_angle = (arc_start[1] - arc_center[1]).atan2(arc_start[0] - arc_center[0]);
+    let end_angle = (arc_end[1] - arc_center[1]).atan2(arc_end[0] - arc_center[0]);
+    let sweep = directed_arc_sweep(start_angle, end_angle, clockwise)
+        .ok_or(ExactProductError::InvalidWorkerEvidence)?;
+    let principal = ((width - arc_center[0]) / arc_radius).acos();
+    let mut east_angles = [principal, -principal].into_iter().filter(|angle| {
+        angle_on_directed_arc(start_angle, sweep, *angle)
+            && arc_center[1] + arc_radius * angle.sin() > tolerance
+    });
+    let east_angle = east_angles
+        .next()
+        .ok_or(ExactProductError::InvalidWorkerEvidence)?;
+    if east_angles.next().is_some() {
+        return Err(ExactProductError::InvalidWorkerEvidence);
+    }
+    let east_contact = [width, arc_center[1] + arc_radius * east_angle.sin()];
+
+    let (crossing_index, crossing_start, crossing_end) = profile
+        .segments
+        .iter()
+        .enumerate()
+        .find_map(|(index, segment)| {
+            let ExactProfileSegment::Line {
+                start_bits,
+                end_bits,
+            } = segment
+            else {
+                return None;
+            };
+            let start = start_bits.map(f64::from_bits);
+            let end = end_bits.map(f64::from_bits);
+            (start[1] > tolerance && end[1] < -tolerance).then_some((index, start, end))
+        })
+        .ok_or(ExactProductError::InvalidWorkerEvidence)?;
+    let t = -crossing_start[1] / (crossing_end[1] - crossing_start[1]);
+    let south_contact = [
+        crossing_start[0] + t * (crossing_end[0] - crossing_start[0]),
+        0.0,
+    ];
+    let mut outer_boundary = vec![east_contact];
+    outer_boundary.extend([[width, depth], [0.0, depth], [0.0, 0.0], south_contact]);
+    outer_boundary.push(crossing_start);
+    let mut index = if crossing_index == 0 {
+        profile.segments.len() - 1
+    } else {
+        crossing_index - 1
+    };
+    while index != arc_index {
+        let ExactProfileSegment::Line { start_bits, .. } = &profile.segments[index] else {
+            return Err(ExactProductError::InvalidWorkerEvidence);
+        };
+        outer_boundary.push(start_bits.map(f64::from_bits));
+        index = if index == 0 {
+            profile.segments.len() - 1
+        } else {
+            index - 1
+        };
+    }
+    let reverse_sweep = directed_arc_sweep(end_angle, east_angle, !clockwise)
+        .ok_or(ExactProductError::InvalidWorkerEvidence)?;
+    let steps = (reverse_sweep.abs() / std::f64::consts::TAU * 64.0)
+        .ceil()
+        .max(1.0) as usize;
+    for step in 1..steps {
+        let angle = end_angle + reverse_sweep * step as f64 / steps as f64;
+        outer_boundary.push([
+            arc_center[0] + arc_radius * angle.cos(),
+            arc_center[1] + arc_radius * angle.sin(),
+        ]);
+    }
+    if outer_boundary.len() < 4
+        || polygon_signed_area(&outer_boundary).abs() <= 1.0e-12
+        || !outer_boundary
+            .iter()
+            .all(|point| point.iter().all(|value| value.is_finite()))
+    {
+        return Err(ExactProductError::InvalidWorkerEvidence);
+    }
+    if polygon_signed_area(&outer_boundary) < 0.0 {
+        outer_boundary.reverse();
+    }
+    render_profile_boundary_prism(&outer_boundary, height, Some((arc_center, arc_radius)))
+}
+
+fn render_corner_overlap_union_mesh(
+    profile: &ExactMixedProfile,
+    width: f64,
+    depth: f64,
+    height: f64,
+) -> Result<(Vec<ExactVertex>, Vec<ExactTriangle>), ExactProductError> {
+    let (inner_boundary, arc_center, arc_radius) =
+        clipped_mixed_profile_boundary(profile, width, depth)?;
+    let [min_x, min_y, max_x, max_y] = profile.bounds_bits.map(f64::from_bits);
+    let tolerance = 1.0e-6;
+    let corner_x = if min_x > tolerance && max_x > width + tolerance {
+        width
+    } else if min_x < -tolerance && max_x < width - tolerance {
+        0.0
+    } else {
+        return Err(ExactProductError::InvalidWorkerEvidence);
+    };
+    let corner_y = if min_y > tolerance && max_y > depth + tolerance {
+        depth
+    } else if min_y < -tolerance && max_y < depth - tolerance {
+        0.0
+    } else {
+        return Err(ExactProductError::InvalidWorkerEvidence);
+    };
+    let x_contact = inner_boundary
+        .iter()
+        .copied()
+        .find(|point| {
+            (point[0] - corner_x).abs() <= tolerance && (point[1] - corner_y).abs() > tolerance
+        })
+        .ok_or(ExactProductError::InvalidWorkerEvidence)?;
+    let y_contact = inner_boundary
+        .iter()
+        .copied()
+        .find(|point| {
+            (point[1] - corner_y).abs() <= tolerance && (point[0] - corner_x).abs() > tolerance
+        })
+        .ok_or(ExactProductError::InvalidWorkerEvidence)?;
+
+    let (profile_vertices, _) = render_mixed_profile_mesh(profile, height)?;
+    let mut profile_boundary = profile_vertices
+        .chunks_exact(2)
+        .map(|pair| {
+            let [x, y, _] = pair[0].position_mm;
+            [x, y]
+        })
+        .collect::<Vec<_>>();
+    let insert_contact =
+        |boundary: &mut Vec<[f64; 2]>, contact: [f64; 2]| -> Result<usize, ExactProductError> {
+            if let Some(index) = boundary.iter().position(|point| {
+                point
+                    .iter()
+                    .zip(contact)
+                    .all(|(actual, expected)| (*actual - expected).abs() <= tolerance)
+            }) {
+                return Ok(index);
+            }
+            let edge = (0..boundary.len()).find(|index| {
+                let start = boundary[*index];
+                let end = boundary[(*index + 1) % boundary.len()];
+                let delta = [end[0] - start[0], end[1] - start[1]];
+                let length_squared = delta[0] * delta[0] + delta[1] * delta[1];
+                if length_squared <= tolerance * tolerance {
+                    return false;
+                }
+                let parameter = ((contact[0] - start[0]) * delta[0]
+                    + (contact[1] - start[1]) * delta[1])
+                    / length_squared;
+                if parameter <= 0.0 || parameter >= 1.0 {
+                    return false;
+                }
+                let projected = [
+                    start[0] + parameter * delta[0],
+                    start[1] + parameter * delta[1],
+                ];
+                projected
+                    .iter()
+                    .zip(contact)
+                    .all(|(actual, expected)| (*actual - expected).abs() <= tolerance)
+            });
+            let edge = edge.ok_or(ExactProductError::InvalidWorkerEvidence)?;
+            let index = edge + 1;
+            boundary.insert(index, contact);
+            Ok(index)
+        };
+    insert_contact(&mut profile_boundary, x_contact)?;
+    insert_contact(&mut profile_boundary, y_contact)?;
+    let x_index = insert_contact(&mut profile_boundary, x_contact)?;
+    let y_index = insert_contact(&mut profile_boundary, y_contact)?;
+    let cyclic_path = |start: usize, end: usize| {
+        let mut path = Vec::new();
+        let mut index = start;
+        loop {
+            path.push(profile_boundary[index]);
+            if index == end {
+                break;
+            }
+            index = (index + 1) % profile_boundary.len();
+        }
+        path
+    };
+    let forward = cyclic_path(y_index, x_index);
+    let backward = {
+        let mut path = cyclic_path(x_index, y_index);
+        path.reverse();
+        path
+    };
+    let outside_count = |path: &[[f64; 2]]| {
+        path.iter()
+            .filter(|point| {
+                point[0] < -tolerance
+                    || point[0] > width + tolerance
+                    || point[1] < -tolerance
+                    || point[1] > depth + tolerance
+            })
+            .count()
+    };
+    let forward_outside = outside_count(&forward);
+    let backward_outside = outside_count(&backward);
+    let outside_path = if forward_outside > backward_outside {
+        forward
+    } else if backward_outside > forward_outside {
+        backward
+    } else {
+        return Err(ExactProductError::InvalidWorkerEvidence);
+    };
+    if outside_count(&outside_path) == 0 {
+        return Err(ExactProductError::InvalidWorkerEvidence);
+    }
+
+    let mut outer_boundary = vec![x_contact];
+    match (corner_x == width, corner_y == depth) {
+        (true, true) => outer_boundary.extend([[width, 0.0], [0.0, 0.0], [0.0, depth]]),
+        (false, true) => outer_boundary.extend([[0.0, 0.0], [width, 0.0], [width, depth]]),
+        (true, false) => outer_boundary.extend([[width, depth], [0.0, depth], [0.0, 0.0]]),
+        (false, false) => outer_boundary.extend([[0.0, depth], [width, depth], [width, 0.0]]),
+    }
+    outer_boundary.push(y_contact);
+    let outside_interior_len = outside_path.len().saturating_sub(2);
+    outer_boundary.extend(outside_path.into_iter().skip(1).take(outside_interior_len));
+    outer_boundary.dedup_by(|left, right| {
+        left.iter()
+            .zip(right.iter())
+            .all(|(left, right)| (*left - *right).abs() <= tolerance)
+    });
+    if outer_boundary.len() < 4
+        || polygon_signed_area(&outer_boundary).abs() <= 1.0e-12
+        || !outer_boundary
+            .iter()
+            .all(|point| point.iter().all(|value| value.is_finite()))
+    {
+        return Err(ExactProductError::InvalidWorkerEvidence);
+    }
+    if polygon_signed_area(&outer_boundary) < 0.0 {
+        outer_boundary.reverse();
+    }
+    render_profile_boundary_prism(&outer_boundary, height, Some((arc_center, arc_radius)))
+}
+
 fn render_corner_overlap_split_mesh(
     profile: &ExactMixedProfile,
     width: f64,
@@ -6411,7 +10676,7 @@ fn render_corner_overlap_split_mesh(
         outer_boundary.reverse();
     }
     let (outer_vertices, mut outer_triangles) =
-        render_profile_boundary_prism(&outer_boundary, height, arc_center, arc_radius)?;
+        render_profile_boundary_prism(&outer_boundary, height, Some((arc_center, arc_radius)))?;
     let offset = vertices.len() as u32;
     for triangle in &mut outer_triangles {
         triangle.vertex_indices = triangle.vertex_indices.map(|index| index + offset);
@@ -6419,6 +10684,102 @@ fn render_corner_overlap_split_mesh(
     vertices.extend(outer_vertices);
     triangles.extend(outer_triangles);
     Ok((vertices, triangles))
+}
+
+fn render_corner_overlap_cut_mesh(
+    profile: &ExactMixedProfile,
+    width: f64,
+    depth: f64,
+    height: f64,
+) -> Result<(Vec<ExactVertex>, Vec<ExactTriangle>), ExactProductError> {
+    if profile.capsule_corner_overlap(width, depth).is_none()
+        && profile
+            .rounded_rectangle_corner_overlap_area(width, depth)
+            .is_none()
+        && profile
+            .rounded_rectangle_arc_clipped_corner_overlap_area(width, depth)
+            .is_none()
+        && profile
+            .rounded_rectangle_two_axis_arc_clipped_corner_overlap_area(width, depth)
+            .is_none()
+    {
+        return Err(ExactProductError::InvalidWorkerEvidence);
+    }
+    let curved_cut_role = if profile
+        .rounded_rectangle_two_axis_arc_clipped_corner_overlap_area(width, depth)
+        .is_some()
+    {
+        ExactFaceRole::CutArc
+    } else {
+        ExactFaceRole::CutLinear
+    };
+    let [min_x, min_y, max_x, max_y] = profile.bounds_bits.map(f64::from_bits);
+    let tolerance = 1.0e-6;
+    let seed_position = if min_x > tolerance && min_y > tolerance {
+        [0.0, 0.0, 0.0]
+    } else if max_x < width - tolerance && min_y > tolerance {
+        [width, 0.0, 0.0]
+    } else if min_x > tolerance && max_y < depth - tolerance {
+        [0.0, depth, 0.0]
+    } else if max_x < width - tolerance && max_y < depth - tolerance {
+        [width, depth, 0.0]
+    } else {
+        return Err(ExactProductError::InvalidWorkerEvidence);
+    };
+    let (vertices, triangles) = render_corner_overlap_split_mesh(profile, width, depth, height)?;
+    let seed = vertices
+        .iter()
+        .position(|vertex| vertex.position_mm == seed_position)
+        .ok_or(ExactProductError::InvalidWorkerEvidence)?;
+    let mut reachable_vertices = vec![false; vertices.len()];
+    let mut reachable_triangles = vec![false; triangles.len()];
+    reachable_vertices[seed] = true;
+    loop {
+        let mut changed = false;
+        for (index, triangle) in triangles.iter().enumerate() {
+            if !reachable_triangles[index]
+                && triangle
+                    .vertex_indices
+                    .iter()
+                    .any(|vertex| reachable_vertices[*vertex as usize])
+            {
+                reachable_triangles[index] = true;
+                changed = true;
+                for vertex in triangle.vertex_indices {
+                    reachable_vertices[vertex as usize] = true;
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    if reachable_triangles.iter().all(|reachable| *reachable)
+        || reachable_triangles.iter().all(|reachable| !*reachable)
+    {
+        return Err(ExactProductError::InvalidWorkerEvidence);
+    }
+    let mut remap = vec![u32::MAX; vertices.len()];
+    let mut cut_vertices = Vec::new();
+    for (index, vertex) in vertices.into_iter().enumerate() {
+        if reachable_vertices[index] {
+            remap[index] = cut_vertices.len() as u32;
+            cut_vertices.push(vertex);
+        }
+    }
+    let cut_triangles = triangles
+        .into_iter()
+        .zip(reachable_triangles)
+        .filter(|(_, reachable)| *reachable)
+        .map(|(mut triangle, _)| {
+            triangle.vertex_indices = triangle.vertex_indices.map(|vertex| remap[vertex as usize]);
+            if triangle.face_role == Some(ExactFaceRole::ArcSide) {
+                triangle.face_role = Some(curved_cut_role);
+            }
+            triangle
+        })
+        .collect();
+    Ok((cut_vertices, cut_triangles))
 }
 
 fn clipped_mixed_profile_boundary(
@@ -6541,8 +10902,7 @@ fn clipped_mixed_profile_boundary(
 fn render_profile_boundary_prism(
     boundary: &[[f64; 2]],
     height: f64,
-    arc_center: [f64; 2],
-    arc_radius: f64,
+    arc: Option<([f64; 2], f64)>,
 ) -> Result<(Vec<ExactVertex>, Vec<ExactTriangle>), ExactProductError> {
     let cap_triangles = triangulate_polygon(boundary)?;
     let mut vertices = Vec::with_capacity(boundary.len() * 2);
@@ -6575,15 +10935,16 @@ fn render_profile_boundary_prism(
             },
         ]);
     }
-    let arc_tolerance = arc_radius.max(1.0) * 1.0e-6;
     for (index, start) in boundary.iter().enumerate() {
         let next = (index + 1) % boundary.len();
         let end = boundary[next];
-        let on_arc = |point: [f64; 2]| {
-            ((point[0] - arc_center[0]).hypot(point[1] - arc_center[1]) - arc_radius).abs()
-                <= arc_tolerance
-        };
-        let role = (on_arc(*start) && on_arc(end)).then_some(ExactFaceRole::ArcSide);
+        let role = arc.and_then(|(center, radius)| {
+            let tolerance = radius.max(1.0) * 1.0e-6;
+            let on_arc = |point: [f64; 2]| {
+                ((point[0] - center[0]).hypot(point[1] - center[1]) - radius).abs() <= tolerance
+            };
+            (on_arc(*start) && on_arc(end)).then_some(ExactFaceRole::ArcSide)
+        });
         let bottom = (index * 2) as u32;
         let top = bottom + 1;
         let next_bottom = (next * 2) as u32;
@@ -6843,6 +11204,778 @@ fn render_circle_mesh(
     Ok((vertices, triangles))
 }
 
+fn render_side_overlapping_circular_cut_mesh(
+    width: f64,
+    depth: f64,
+    height: f64,
+    circle: ExactCircleProfile,
+) -> Result<(Vec<ExactVertex>, Vec<ExactTriangle>), ExactProductError> {
+    let center_x = f64::from_bits(circle.center_x_bits);
+    let center_y = f64::from_bits(circle.center_y_bits);
+    let radius = f64::from_bits(circle.radius_bits);
+    circle
+        .side_overlap(width, depth)
+        .or_else(|| circle.outside_side_overlap(width, depth))
+        .or_else(|| circle.center_on_side_overlap(width, depth))
+        .ok_or(ExactProductError::InvalidWorkerEvidence)?;
+    let bounds = [
+        center_x - radius,
+        center_y - radius,
+        center_x + radius,
+        center_y + radius,
+    ];
+    let side = if bounds[0] < -1.0e-6 {
+        0
+    } else if bounds[2] > width + 1.0e-6 {
+        1
+    } else if bounds[1] < -1.0e-6 {
+        2
+    } else if bounds[3] > depth + 1.0e-6 {
+        3
+    } else {
+        return Err(ExactProductError::InvalidWorkerEvidence);
+    };
+    let (canonical_width, canonical_depth, canonical_center) = match side {
+        0 => (width, depth, [width - center_x, center_y]),
+        1 => (width, depth, [center_x, center_y]),
+        2 => (depth, width, [depth - center_y, center_x]),
+        3 => (depth, width, [center_y, center_x]),
+        _ => unreachable!(),
+    };
+    let distance = canonical_width - canonical_center[0];
+    let chord_half = (radius * radius - distance * distance).sqrt();
+    let theta = (distance / radius).acos();
+    let sweep = -(std::f64::consts::TAU - 2.0 * theta);
+    let steps = (sweep.abs() / std::f64::consts::TAU * 64.0).ceil().max(1.0) as usize;
+    let mut boundary = vec![
+        [0.0, 0.0],
+        [canonical_width, 0.0],
+        [canonical_width, canonical_center[1] - chord_half],
+    ];
+    for step in 1..=steps {
+        let angle = -theta + sweep * step as f64 / steps as f64;
+        boundary.push([
+            canonical_center[0] + radius * angle.cos(),
+            canonical_center[1] + radius * angle.sin(),
+        ]);
+    }
+    boundary.extend([[canonical_width, canonical_depth], [0.0, canonical_depth]]);
+    let to_world = |point: [f64; 2]| match side {
+        0 => [width - point[0], point[1]],
+        1 => point,
+        2 => [point[1], depth - point[0]],
+        3 => [point[1], point[0]],
+        _ => unreachable!(),
+    };
+    let mut boundary = boundary.into_iter().map(to_world).collect::<Vec<_>>();
+    if polygon_signed_area(&boundary) < 0.0 {
+        boundary.reverse();
+    }
+    let arc_center = to_world(canonical_center);
+    let (vertices, mut triangles) =
+        render_profile_boundary_prism(&boundary, height, Some((arc_center, radius)))?;
+    let host_role = if side == 1 {
+        ExactFaceRole::West
+    } else {
+        ExactFaceRole::East
+    };
+    let host_x = if side == 1 { 0.0 } else { width };
+    for triangle in &mut triangles {
+        if triangle.face_role == Some(ExactFaceRole::ArcSide) {
+            triangle.face_role = Some(ExactFaceRole::CutCircle);
+        } else if triangle.face_role.is_none()
+            && triangle
+                .vertex_indices
+                .iter()
+                .all(|index| (vertices[*index as usize].position_mm[0] - host_x).abs() <= 1.0e-9)
+        {
+            triangle.face_role = Some(host_role);
+        }
+    }
+    Ok((vertices, triangles))
+}
+
+fn render_corner_overlapping_circular_cut_mesh(
+    width: f64,
+    depth: f64,
+    height: f64,
+    circle: ExactCircleProfile,
+) -> Result<(Vec<ExactVertex>, Vec<ExactTriangle>), ExactProductError> {
+    let center_x = f64::from_bits(circle.center_x_bits);
+    let center_y = f64::from_bits(circle.center_y_bits);
+    let radius = f64::from_bits(circle.radius_bits);
+    circle
+        .corner_overlap(width, depth)
+        .or_else(|| circle.center_on_corner_overlap(width, depth))
+        .or_else(|| circle.outside_corner_overlap(width, depth))
+        .ok_or(ExactProductError::InvalidWorkerEvidence)?;
+    let bounds = [
+        center_x - radius,
+        center_y - radius,
+        center_x + radius,
+        center_y + radius,
+    ];
+    let west = bounds[0] < -1.0e-6;
+    let east = bounds[2] > width + 1.0e-6;
+    let south = bounds[1] < -1.0e-6;
+    let canonical_center = [
+        if west { width - center_x } else { center_x },
+        if south { depth - center_y } else { center_y },
+    ];
+    let distance_x = width - canonical_center[0];
+    let distance_y = depth - canonical_center[1];
+    let right_chord_half = (radius * radius - distance_x * distance_x).sqrt();
+    let top_chord_half = (radius * radius - distance_y * distance_y).sqrt();
+    let start_angle = (-right_chord_half).atan2(distance_x);
+    let end_angle = distance_y.atan2(-top_chord_half);
+    let sweep = if distance_x < 0.0 && distance_y < 0.0 {
+        end_angle - start_angle
+    } else {
+        end_angle - start_angle - std::f64::consts::TAU
+    };
+    if sweep >= 0.0 || sweep <= -std::f64::consts::PI {
+        return Err(ExactProductError::InvalidWorkerEvidence);
+    }
+    let steps = (sweep.abs() / std::f64::consts::TAU * 64.0).ceil().max(1.0) as usize;
+    let mut boundary = vec![
+        [0.0, 0.0],
+        [width, 0.0],
+        [width, canonical_center[1] - right_chord_half],
+    ];
+    for step in 1..=steps {
+        let angle = start_angle + sweep * step as f64 / steps as f64;
+        boundary.push([
+            canonical_center[0] + radius * angle.cos(),
+            canonical_center[1] + radius * angle.sin(),
+        ]);
+    }
+    boundary.push([0.0, depth]);
+    let to_world = |point: [f64; 2]| {
+        [
+            if west { width - point[0] } else { point[0] },
+            if south { depth - point[1] } else { point[1] },
+        ]
+    };
+    let mut boundary = boundary.into_iter().map(to_world).collect::<Vec<_>>();
+    if polygon_signed_area(&boundary) < 0.0 {
+        boundary.reverse();
+    }
+    let arc_center = to_world(canonical_center);
+    let (vertices, mut triangles) =
+        render_profile_boundary_prism(&boundary, height, Some((arc_center, radius)))?;
+    let host_role = if east {
+        ExactFaceRole::West
+    } else {
+        ExactFaceRole::East
+    };
+    let host_x = if east { 0.0 } else { width };
+    for triangle in &mut triangles {
+        if triangle.face_role == Some(ExactFaceRole::ArcSide) {
+            triangle.face_role = Some(ExactFaceRole::CutCircle);
+        } else if triangle.face_role.is_none()
+            && triangle
+                .vertex_indices
+                .iter()
+                .all(|index| (vertices[*index as usize].position_mm[0] - host_x).abs() <= 1.0e-9)
+        {
+            triangle.face_role = Some(host_role);
+        }
+    }
+    Ok((vertices, triangles))
+}
+
+fn render_side_overlapping_circular_union_mesh(
+    width: f64,
+    depth: f64,
+    height: f64,
+    circle: ExactCircleProfile,
+) -> Result<(Vec<ExactVertex>, Vec<ExactTriangle>), ExactProductError> {
+    let center_x = f64::from_bits(circle.center_x_bits);
+    let center_y = f64::from_bits(circle.center_y_bits);
+    let radius = f64::from_bits(circle.radius_bits);
+    circle
+        .side_overlap(width, depth)
+        .or_else(|| circle.outside_side_overlap(width, depth))
+        .or_else(|| circle.center_on_side_overlap(width, depth))
+        .ok_or(ExactProductError::InvalidWorkerEvidence)?;
+    let bounds = [
+        center_x - radius,
+        center_y - radius,
+        center_x + radius,
+        center_y + radius,
+    ];
+    let side = if bounds[0] < -1.0e-6 {
+        0
+    } else if bounds[2] > width + 1.0e-6 {
+        1
+    } else if bounds[1] < -1.0e-6 {
+        2
+    } else if bounds[3] > depth + 1.0e-6 {
+        3
+    } else {
+        return Err(ExactProductError::InvalidWorkerEvidence);
+    };
+    let (canonical_width, canonical_depth, canonical_center) = match side {
+        0 => (width, depth, [width - center_x, center_y]),
+        1 => (width, depth, [center_x, center_y]),
+        2 => (depth, width, [depth - center_y, center_x]),
+        3 => (depth, width, [center_y, center_x]),
+        _ => unreachable!(),
+    };
+    let distance = canonical_width - canonical_center[0];
+    let chord_half = (radius * radius - distance * distance).sqrt();
+    let theta = (distance / radius).acos();
+    let steps = (2.0 * theta / std::f64::consts::TAU * 64.0).ceil().max(1.0) as usize;
+    let mut boundary = vec![
+        [0.0, 0.0],
+        [canonical_width, 0.0],
+        [canonical_width, canonical_center[1] - chord_half],
+    ];
+    for step in 1..=steps {
+        let angle = -theta + 2.0 * theta * step as f64 / steps as f64;
+        boundary.push([
+            canonical_center[0] + radius * angle.cos(),
+            canonical_center[1] + radius * angle.sin(),
+        ]);
+    }
+    boundary.extend([[canonical_width, canonical_depth], [0.0, canonical_depth]]);
+    let to_world = |point: [f64; 2]| match side {
+        0 => [width - point[0], point[1]],
+        1 => point,
+        2 => [point[1], depth - point[0]],
+        3 => [point[1], point[0]],
+        _ => unreachable!(),
+    };
+    let mut boundary = boundary.into_iter().map(to_world).collect::<Vec<_>>();
+    if polygon_signed_area(&boundary) < 0.0 {
+        boundary.reverse();
+    }
+    let arc_center = to_world(canonical_center);
+    let (vertices, mut triangles) =
+        render_profile_boundary_prism(&boundary, height, Some((arc_center, radius)))?;
+    for triangle in &mut triangles {
+        if triangle.face_role == Some(ExactFaceRole::ArcSide) {
+            triangle.face_role = Some(ExactFaceRole::CircleSide);
+        }
+    }
+    Ok((vertices, triangles))
+}
+
+fn render_corner_overlapping_circular_union_mesh(
+    width: f64,
+    depth: f64,
+    height: f64,
+    circle: ExactCircleProfile,
+) -> Result<(Vec<ExactVertex>, Vec<ExactTriangle>), ExactProductError> {
+    let center_x = f64::from_bits(circle.center_x_bits);
+    let center_y = f64::from_bits(circle.center_y_bits);
+    let radius = f64::from_bits(circle.radius_bits);
+    circle
+        .corner_overlap(width, depth)
+        .or_else(|| circle.center_on_corner_overlap(width, depth))
+        .or_else(|| circle.outside_corner_overlap(width, depth))
+        .ok_or(ExactProductError::InvalidWorkerEvidence)?;
+    let bounds = [
+        center_x - radius,
+        center_y - radius,
+        center_x + radius,
+        center_y + radius,
+    ];
+    let west = bounds[0] < -1.0e-6;
+    let south = bounds[1] < -1.0e-6;
+    let canonical_center = [
+        if west { width - center_x } else { center_x },
+        if south { depth - center_y } else { center_y },
+    ];
+    let distance_x = width - canonical_center[0];
+    let distance_y = depth - canonical_center[1];
+    let right_chord_half = (radius * radius - distance_x * distance_x).sqrt();
+    let top_chord_half = (radius * radius - distance_y * distance_y).sqrt();
+    let right_angle = (-right_chord_half).atan2(distance_x);
+    let mut top_angle = distance_y.atan2(-top_chord_half);
+    if top_angle <= right_angle {
+        top_angle += std::f64::consts::TAU;
+    }
+    let sweep = top_angle - right_angle;
+    if sweep <= std::f64::consts::PI || sweep >= std::f64::consts::TAU {
+        return Err(ExactProductError::InvalidWorkerEvidence);
+    }
+    let steps = (sweep / std::f64::consts::TAU * 64.0).ceil().max(1.0) as usize;
+    let mut boundary = vec![
+        [0.0, 0.0],
+        [width, 0.0],
+        [width, canonical_center[1] - right_chord_half],
+    ];
+    for step in 1..=steps {
+        let angle = right_angle + sweep * step as f64 / steps as f64;
+        boundary.push([
+            canonical_center[0] + radius * angle.cos(),
+            canonical_center[1] + radius * angle.sin(),
+        ]);
+    }
+    boundary.push([0.0, depth]);
+    let to_world = |point: [f64; 2]| {
+        [
+            if west { width - point[0] } else { point[0] },
+            if south { depth - point[1] } else { point[1] },
+        ]
+    };
+    let mut boundary = boundary.into_iter().map(to_world).collect::<Vec<_>>();
+    if polygon_signed_area(&boundary) < 0.0 {
+        boundary.reverse();
+    }
+    let arc_center = to_world(canonical_center);
+    let (vertices, mut triangles) =
+        render_profile_boundary_prism(&boundary, height, Some((arc_center, radius)))?;
+    for triangle in &mut triangles {
+        if triangle.face_role == Some(ExactFaceRole::ArcSide) {
+            triangle.face_role = Some(ExactFaceRole::CircleSide);
+        }
+    }
+    Ok((vertices, triangles))
+}
+
+fn render_side_overlapping_circular_intersection_mesh(
+    width: f64,
+    depth: f64,
+    height: f64,
+    circle: ExactCircleProfile,
+) -> Result<(Vec<ExactVertex>, Vec<ExactTriangle>), ExactProductError> {
+    let center_x = f64::from_bits(circle.center_x_bits);
+    let center_y = f64::from_bits(circle.center_y_bits);
+    let radius = f64::from_bits(circle.radius_bits);
+    circle
+        .side_overlap(width, depth)
+        .or_else(|| circle.outside_side_overlap(width, depth))
+        .or_else(|| circle.center_on_side_overlap(width, depth))
+        .ok_or(ExactProductError::InvalidWorkerEvidence)?;
+    let bounds = [
+        center_x - radius,
+        center_y - radius,
+        center_x + radius,
+        center_y + radius,
+    ];
+    let side = if bounds[0] < -1.0e-6 {
+        0
+    } else if bounds[2] > width + 1.0e-6 {
+        1
+    } else if bounds[1] < -1.0e-6 {
+        2
+    } else if bounds[3] > depth + 1.0e-6 {
+        3
+    } else {
+        return Err(ExactProductError::InvalidWorkerEvidence);
+    };
+    let (canonical_width, canonical_center) = match side {
+        0 => (width, [width - center_x, center_y]),
+        1 => (width, [center_x, center_y]),
+        2 => (depth, [depth - center_y, center_x]),
+        3 => (depth, [center_y, center_x]),
+        _ => unreachable!(),
+    };
+    let distance = canonical_width - canonical_center[0];
+    let chord_half = (radius * radius - distance * distance).sqrt();
+    let theta = (distance / radius).acos();
+    let sweep = -(std::f64::consts::TAU - 2.0 * theta);
+    let steps = (sweep.abs() / std::f64::consts::TAU * 64.0).ceil().max(1.0) as usize;
+    let mut boundary = vec![[canonical_width, canonical_center[1] - chord_half]];
+    for step in 1..=steps {
+        let angle = -theta + sweep * step as f64 / steps as f64;
+        boundary.push([
+            canonical_center[0] + radius * angle.cos(),
+            canonical_center[1] + radius * angle.sin(),
+        ]);
+    }
+    let to_world = |point: [f64; 2]| match side {
+        0 => [width - point[0], point[1]],
+        1 => point,
+        2 => [point[1], depth - point[0]],
+        3 => [point[1], point[0]],
+        _ => unreachable!(),
+    };
+    let mut boundary = boundary.into_iter().map(to_world).collect::<Vec<_>>();
+    if polygon_signed_area(&boundary) < 0.0 {
+        boundary.reverse();
+    }
+    let arc_center = to_world(canonical_center);
+    let (vertices, mut triangles) =
+        render_profile_boundary_prism(&boundary, height, Some((arc_center, radius)))?;
+    let on_chord = |position: [f64; 3]| match side {
+        0 => position[0].abs() <= 1.0e-9,
+        1 => (position[0] - width).abs() <= 1.0e-9,
+        2 => position[1].abs() <= 1.0e-9,
+        3 => (position[1] - depth).abs() <= 1.0e-9,
+        _ => unreachable!(),
+    };
+    for triangle in &mut triangles {
+        if triangle.face_role == Some(ExactFaceRole::ArcSide) {
+            triangle.face_role = if triangle
+                .vertex_indices
+                .iter()
+                .all(|index| on_chord(vertices[*index as usize].position_mm))
+            {
+                None
+            } else {
+                Some(ExactFaceRole::CircleSide)
+            };
+        }
+    }
+    Ok((vertices, triangles))
+}
+
+fn render_corner_overlapping_circular_intersection_mesh(
+    width: f64,
+    depth: f64,
+    height: f64,
+    circle: ExactCircleProfile,
+) -> Result<(Vec<ExactVertex>, Vec<ExactTriangle>), ExactProductError> {
+    let center_x = f64::from_bits(circle.center_x_bits);
+    let center_y = f64::from_bits(circle.center_y_bits);
+    let radius = f64::from_bits(circle.radius_bits);
+    circle
+        .corner_overlap(width, depth)
+        .or_else(|| circle.center_on_corner_overlap(width, depth))
+        .or_else(|| circle.outside_corner_overlap(width, depth))
+        .ok_or(ExactProductError::InvalidWorkerEvidence)?;
+    let bounds = [
+        center_x - radius,
+        center_y - radius,
+        center_x + radius,
+        center_y + radius,
+    ];
+    let west = bounds[0] < -1.0e-6;
+    let south = bounds[1] < -1.0e-6;
+    let canonical_center = [
+        if west { width - center_x } else { center_x },
+        if south { depth - center_y } else { center_y },
+    ];
+    let distance_x = width - canonical_center[0];
+    let distance_y = depth - canonical_center[1];
+    let right_chord_half = (radius * radius - distance_x * distance_x).sqrt();
+    let top_chord_half = (radius * radius - distance_y * distance_y).sqrt();
+    let right_angle = (-right_chord_half).atan2(distance_x);
+    let top_angle = distance_y.atan2(-top_chord_half);
+    let sweep = if distance_x < 0.0 && distance_y < 0.0 {
+        right_angle - top_angle
+    } else {
+        right_angle + std::f64::consts::TAU - top_angle
+    };
+    if sweep <= 0.0 || sweep >= std::f64::consts::PI {
+        return Err(ExactProductError::InvalidWorkerEvidence);
+    }
+    let steps = (sweep / std::f64::consts::TAU * 64.0).ceil().max(1.0) as usize;
+    let mut boundary = vec![
+        [width, canonical_center[1] - right_chord_half],
+        [width, depth],
+        [canonical_center[0] - top_chord_half, depth],
+    ];
+    for step in 1..steps {
+        let angle = top_angle + sweep * step as f64 / steps as f64;
+        boundary.push([
+            canonical_center[0] + radius * angle.cos(),
+            canonical_center[1] + radius * angle.sin(),
+        ]);
+    }
+    let to_world = |point: [f64; 2]| {
+        [
+            if west { width - point[0] } else { point[0] },
+            if south { depth - point[1] } else { point[1] },
+        ]
+    };
+    let mut boundary = boundary.into_iter().map(to_world).collect::<Vec<_>>();
+    if polygon_signed_area(&boundary) < 0.0 {
+        boundary.reverse();
+    }
+    let arc_center = to_world(canonical_center);
+    let (vertices, mut triangles) =
+        render_profile_boundary_prism(&boundary, height, Some((arc_center, radius)))?;
+    for triangle in &mut triangles {
+        if triangle.face_role == Some(ExactFaceRole::ArcSide) {
+            triangle.face_role = Some(ExactFaceRole::CircleSide);
+        }
+    }
+    Ok((vertices, triangles))
+}
+
+fn render_side_overlapping_circular_split_mesh(
+    width: f64,
+    depth: f64,
+    height: f64,
+    circle: ExactCircleProfile,
+) -> Result<(Vec<ExactVertex>, Vec<ExactTriangle>), ExactProductError> {
+    let (mut vertices, mut triangles) =
+        render_side_overlapping_circular_cut_mesh(width, depth, height, circle)?;
+    for triangle in &mut triangles {
+        if triangle.face_role == Some(ExactFaceRole::CutCircle) {
+            triangle.face_role = Some(ExactFaceRole::CircleSide);
+        }
+    }
+    let (inner_vertices, mut inner_triangles) =
+        render_side_overlapping_circular_intersection_mesh(width, depth, height, circle)?;
+    let offset = vertices.len() as u32;
+    for triangle in &mut inner_triangles {
+        triangle.vertex_indices = triangle.vertex_indices.map(|index| index + offset);
+    }
+    vertices.extend(inner_vertices);
+    triangles.extend(inner_triangles);
+    Ok((vertices, triangles))
+}
+
+fn render_corner_overlapping_circular_split_mesh(
+    width: f64,
+    depth: f64,
+    height: f64,
+    circle: ExactCircleProfile,
+) -> Result<(Vec<ExactVertex>, Vec<ExactTriangle>), ExactProductError> {
+    let (mut vertices, mut triangles) =
+        render_corner_overlapping_circular_cut_mesh(width, depth, height, circle)?;
+    for triangle in &mut triangles {
+        if triangle.face_role == Some(ExactFaceRole::CutCircle) {
+            triangle.face_role = Some(ExactFaceRole::CircleSide);
+        }
+    }
+    let (inner_vertices, mut inner_triangles) =
+        render_corner_overlapping_circular_intersection_mesh(width, depth, height, circle)?;
+    let offset = vertices.len() as u32;
+    for triangle in &mut inner_triangles {
+        triangle.vertex_indices = triangle.vertex_indices.map(|index| index + offset);
+    }
+    vertices.extend(inner_vertices);
+    triangles.extend(inner_triangles);
+    Ok((vertices, triangles))
+}
+
+fn render_overlapping_circular_pocket_mesh(
+    width: f64,
+    depth: f64,
+    height: f64,
+    pocket_depth: f64,
+    circle: ExactCircleProfile,
+) -> Result<(Vec<ExactVertex>, Vec<ExactTriangle>), ExactProductError> {
+    if !pocket_depth.is_finite() || pocket_depth <= 0.0 || pocket_depth >= height {
+        return Err(ExactProductError::InvalidWorkerEvidence);
+    }
+    let center_x = f64::from_bits(circle.center_x_bits);
+    let center_y = f64::from_bits(circle.center_y_bits);
+    let radius = f64::from_bits(circle.radius_bits);
+    let side_overlap = circle
+        .side_overlap(width, depth)
+        .or_else(|| circle.outside_side_overlap(width, depth))
+        .or_else(|| circle.center_on_side_overlap(width, depth));
+    let corner_overlap = circle
+        .corner_overlap(width, depth)
+        .or_else(|| circle.center_on_corner_overlap(width, depth))
+        .or_else(|| circle.outside_corner_overlap(width, depth));
+    if side_overlap.is_none() && corner_overlap.is_none() {
+        return Err(ExactProductError::InvalidWorkerEvidence);
+    }
+    let bounds = [
+        center_x - radius,
+        center_y - radius,
+        center_x + radius,
+        center_y + radius,
+    ];
+    let east_overlap = bounds[2] > width + 1.0e-6;
+    let mut floor_boundary = if side_overlap.is_some() {
+        let side = if bounds[0] < -1.0e-6 {
+            0
+        } else if east_overlap {
+            1
+        } else if bounds[1] < -1.0e-6 {
+            2
+        } else if bounds[3] > depth + 1.0e-6 {
+            3
+        } else {
+            return Err(ExactProductError::InvalidWorkerEvidence);
+        };
+        let (canonical_width, canonical_center) = match side {
+            0 => (width, [width - center_x, center_y]),
+            1 => (width, [center_x, center_y]),
+            2 => (depth, [depth - center_y, center_x]),
+            3 => (depth, [center_y, center_x]),
+            _ => unreachable!(),
+        };
+        let distance = canonical_width - canonical_center[0];
+        let chord_half = (radius * radius - distance * distance).sqrt();
+        let theta = (distance / radius).acos();
+        let sweep = std::f64::consts::TAU - 2.0 * theta;
+        let steps = (sweep / std::f64::consts::TAU * 64.0).ceil().max(1.0) as usize;
+        let mut boundary = vec![
+            [canonical_width, canonical_center[1] - chord_half],
+            [canonical_width, canonical_center[1] + chord_half],
+        ];
+        for step in 1..steps {
+            let angle = theta + sweep * step as f64 / steps as f64;
+            boundary.push([
+                canonical_center[0] + radius * angle.cos(),
+                canonical_center[1] + radius * angle.sin(),
+            ]);
+        }
+        let to_world = |point: [f64; 2]| match side {
+            0 => [width - point[0], point[1]],
+            1 => point,
+            2 => [point[1], depth - point[0]],
+            3 => [point[1], point[0]],
+            _ => unreachable!(),
+        };
+        boundary.into_iter().map(to_world).collect::<Vec<_>>()
+    } else {
+        let west = bounds[0] < -1.0e-6;
+        let south = bounds[1] < -1.0e-6;
+        let canonical_center = [
+            if west { width - center_x } else { center_x },
+            if south { depth - center_y } else { center_y },
+        ];
+        let distance_x = width - canonical_center[0];
+        let distance_y = depth - canonical_center[1];
+        let right_chord_half = (radius * radius - distance_x * distance_x).sqrt();
+        let top_chord_half = (radius * radius - distance_y * distance_y).sqrt();
+        let start_angle = (-right_chord_half).atan2(distance_x);
+        let end_angle = distance_y.atan2(-top_chord_half);
+        let sweep = if distance_x < 0.0 && distance_y < 0.0 {
+            start_angle - end_angle
+        } else {
+            std::f64::consts::TAU - (end_angle - start_angle)
+        };
+        if sweep <= 0.0 || sweep >= std::f64::consts::PI {
+            return Err(ExactProductError::InvalidWorkerEvidence);
+        }
+        let steps = (sweep / std::f64::consts::TAU * 64.0).ceil().max(1.0) as usize;
+        let mut boundary = vec![
+            [width, canonical_center[1] - right_chord_half],
+            [width, depth],
+            [canonical_center[0] - top_chord_half, depth],
+        ];
+        for step in 1..steps {
+            let angle = end_angle + sweep * step as f64 / steps as f64;
+            boundary.push([
+                canonical_center[0] + radius * angle.cos(),
+                canonical_center[1] + radius * angle.sin(),
+            ]);
+        }
+        let to_world = |point: [f64; 2]| {
+            [
+                if west { width - point[0] } else { point[0] },
+                if south { depth - point[1] } else { point[1] },
+            ]
+        };
+        boundary.into_iter().map(to_world).collect::<Vec<_>>()
+    };
+    if polygon_signed_area(&floor_boundary) < 0.0 {
+        floor_boundary.reverse();
+    }
+
+    let floor_z = height - pocket_depth;
+    let (mut vertices, mut triangles) = render_circular_cut_mesh(width, depth, height, circle)?;
+    for vertex in &mut vertices {
+        if vertex.position_mm[2] == 0.0 {
+            vertex.position_mm[2] = floor_z;
+        }
+    }
+    triangles.retain(|triangle| triangle.face_role != Some(ExactFaceRole::Bottom));
+
+    let tolerance = 1.0e-6;
+    let perimeter_position = |point: [f64; 2]| {
+        if point[1].abs() <= tolerance {
+            Some(point[0])
+        } else if (point[0] - width).abs() <= tolerance {
+            Some(width + point[1])
+        } else if (point[1] - depth).abs() <= tolerance {
+            Some(2.0 * width + depth - point[0])
+        } else if point[0].abs() <= tolerance {
+            Some(2.0 * (width + depth) - point[1])
+        } else {
+            None
+        }
+    };
+    let mut positioned_boundary = vec![
+        (0.0, [0.0, 0.0]),
+        (width, [width, 0.0]),
+        (width + depth, [width, depth]),
+        (2.0 * width + depth, [0.0, depth]),
+    ];
+    for point in floor_boundary.iter().copied() {
+        if let Some(position) = perimeter_position(point)
+            && !positioned_boundary
+                .iter()
+                .any(|(existing, _)| (existing - position).abs() <= tolerance)
+        {
+            positioned_boundary.push((position, point));
+        }
+    }
+    positioned_boundary.sort_by(|left, right| left.0.total_cmp(&right.0));
+    let lower_boundary = positioned_boundary
+        .into_iter()
+        .map(|(_, point)| point)
+        .collect::<Vec<_>>();
+    let (lower_vertices, mut lower_triangles) =
+        render_profile_boundary_prism(&lower_boundary, floor_z, None)?;
+    lower_triangles.retain(|triangle| triangle.face_role != Some(ExactFaceRole::Top));
+    let (host_role, host_x) = if east_overlap {
+        (ExactFaceRole::West, 0.0)
+    } else {
+        (ExactFaceRole::East, width)
+    };
+    for triangle in &mut lower_triangles {
+        if triangle
+            .vertex_indices
+            .iter()
+            .all(|index| (lower_vertices[*index as usize].position_mm[0] - host_x).abs() <= 1.0e-9)
+        {
+            triangle.face_role = Some(host_role);
+        }
+        triangle.vertex_indices = triangle
+            .vertex_indices
+            .map(|index| index + vertices.len() as u32);
+    }
+    vertices.extend(lower_vertices);
+    triangles.extend(lower_triangles);
+
+    let floor_start = vertices.len() as u32;
+    vertices.extend(floor_boundary.iter().map(|point| ExactVertex {
+        position_mm: [point[0], point[1], floor_z],
+    }));
+    for [a, b, c] in triangulate_polygon(&floor_boundary)? {
+        triangles.push(ExactTriangle {
+            vertex_indices: [floor_start + a, floor_start + b, floor_start + c],
+            face_role: Some(ExactFaceRole::PocketFloor),
+        });
+    }
+
+    let weld_tolerance = width.min(depth) * 1.0e-9;
+    let mut welded_vertices: Vec<ExactVertex> = Vec::new();
+    let remap = vertices
+        .into_iter()
+        .map(|vertex| {
+            welded_vertices
+                .iter()
+                .position(|candidate| {
+                    candidate
+                        .position_mm
+                        .into_iter()
+                        .zip(vertex.position_mm)
+                        .all(|(left, right)| (left - right).abs() <= weld_tolerance)
+                })
+                .map_or_else(
+                    || {
+                        welded_vertices.push(vertex);
+                        (welded_vertices.len() - 1) as u32
+                    },
+                    |index| index as u32,
+                )
+        })
+        .collect::<Vec<_>>();
+    let welded_triangles = triangles
+        .into_iter()
+        .filter_map(|mut triangle| {
+            triangle.vertex_indices = triangle.vertex_indices.map(|index| remap[index as usize]);
+            let [a, b, c] = triangle.vertex_indices;
+            (a != b && b != c && c != a).then_some(triangle)
+        })
+        .collect();
+    Ok((welded_vertices, welded_triangles))
+}
+
 fn render_circular_cut_mesh(
     width: f64,
     depth: f64,
@@ -6860,7 +11993,22 @@ fn render_circular_cut_mesh(
         || depth <= 0.0
         || height <= 0.0
         || radius <= 0.0
-        || center_x - radius <= 0.0
+    {
+        return Err(ExactProductError::InvalidWorkerEvidence);
+    }
+    if circle.side_overlap(width, depth).is_some()
+        || circle.outside_side_overlap(width, depth).is_some()
+        || circle.center_on_side_overlap(width, depth).is_some()
+    {
+        return render_side_overlapping_circular_cut_mesh(width, depth, height, circle);
+    }
+    if circle.corner_overlap(width, depth).is_some()
+        || circle.center_on_corner_overlap(width, depth).is_some()
+        || circle.outside_corner_overlap(width, depth).is_some()
+    {
+        return render_corner_overlapping_circular_cut_mesh(width, depth, height, circle);
+    }
+    if center_x - radius <= 0.0
         || center_y - radius <= 0.0
         || center_x + radius >= width
         || center_y + radius >= depth
@@ -7013,6 +12161,47 @@ fn planar_line_segments_intersect(a: [f64; 2], b: [f64; 2], c: [f64; 2], d: [f64
 }
 
 #[must_use]
+pub fn strict_convex_line_arc_profile_bounds(
+    segments: &[ProfileSegment],
+    closed: bool,
+) -> Option<[f64; 4]> {
+    let profile = exact_mixed_profile(segments, closed)?;
+    profile
+        .is_strict_convex_line_arc_profile()
+        .then(|| profile.bounds_bits.map(f64::from_bits))
+}
+
+#[must_use]
+pub fn line_arc_circle_side_overlap(
+    segments: &[ProfileSegment],
+    closed: bool,
+    width: f64,
+    depth: f64,
+) -> Option<(f64, [f64; 4])> {
+    exact_circle_profile(segments, closed)?.side_overlap(width, depth)
+}
+
+#[must_use]
+pub fn line_arc_circle_corner_overlap(
+    segments: &[ProfileSegment],
+    closed: bool,
+    width: f64,
+    depth: f64,
+) -> Option<(f64, [f64; 4])> {
+    exact_circle_profile(segments, closed)?.corner_overlap(width, depth)
+}
+
+#[must_use]
+pub fn line_arc_d_arc_only_side_overlap(
+    segments: &[ProfileSegment],
+    closed: bool,
+    width: f64,
+    depth: f64,
+) -> Option<(f64, [f64; 4])> {
+    exact_mixed_profile(segments, closed)?.d_profile_arc_only_clipped_side_overlap(width, depth)
+}
+
+#[must_use]
 pub fn line_arc_capsule_profile_bounds(
     segments: &[ProfileSegment],
     closed: bool,
@@ -7021,6 +12210,26 @@ pub fn line_arc_capsule_profile_bounds(
     profile
         .is_line_arc_capsule_profile()
         .then(|| profile.bounds_bits.map(f64::from_bits))
+}
+
+#[must_use]
+pub fn line_arc_capsule_side_overlap(
+    segments: &[ProfileSegment],
+    closed: bool,
+    width: f64,
+    depth: f64,
+) -> Option<(f64, [f64; 4])> {
+    exact_mixed_profile(segments, closed)?.capsule_side_overlap(width, depth)
+}
+
+#[must_use]
+pub fn line_arc_capsule_corner_overlap(
+    segments: &[ProfileSegment],
+    closed: bool,
+    width: f64,
+    depth: f64,
+) -> Option<(f64, [f64; 4])> {
+    exact_mixed_profile(segments, closed)?.capsule_corner_overlap(width, depth)
 }
 
 #[must_use]

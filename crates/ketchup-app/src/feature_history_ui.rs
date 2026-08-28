@@ -1,8 +1,9 @@
 use super::*;
 use ketchup_core::feature_history::{
-    BodyHistoryMutation, BodyHistoryMutationRequest, ExactParameterEdit, ExactParameterEditTarget,
-    FeatureHistoryProjection, FeatureHistoryQuery, FeatureHistoryState, RollbackPreviewRequest,
-    prepare_body_history_mutation, prepare_body_parameter_edit, project_feature_history,
+    BodyHistoryMutation, BodyHistoryMutationRequest, BodyProfileTranslationRequest,
+    ExactParameterEdit, ExactParameterEditTarget, FeatureHistoryProjection, FeatureHistoryQuery,
+    FeatureHistoryState, RollbackPreviewRequest, prepare_body_history_mutation,
+    prepare_body_parameter_edit, prepare_body_profile_translation, project_feature_history,
 };
 use ketchup_core::shared_change::{
     ComponentReplacementImpactProjection, ComponentReplacementImpactRequest,
@@ -14,9 +15,10 @@ use ketchup_core::shared_change::{
 };
 use ketchup_core::sketch::SketchConstraintKind;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 enum FeatureHistoryPreviewKind {
     ExactEdit,
+    ProfileTranslation,
     Suppress { boundary: FeatureId },
     Resume,
     ReplaceComponent,
@@ -30,16 +32,80 @@ enum FeatureHistoryChangeScope {
     ReplaceComponent,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
+enum FeatureHistoryExecutionPlan {
+    Local(Proposal),
+    Shared(SharedChangeImpactProjection),
+    Fork(OccurrenceForkImpactProjection),
+    Replacement(ComponentReplacementImpactProjection),
+}
+
+impl FeatureHistoryExecutionPlan {
+    fn shared_impact(&self) -> Option<&SharedChangeImpactProjection> {
+        match self {
+            Self::Shared(impact) => Some(impact),
+            Self::Local(_) | Self::Fork(_) | Self::Replacement(_) => None,
+        }
+    }
+
+    fn fork_impact(&self) -> Option<&OccurrenceForkImpactProjection> {
+        match self {
+            Self::Fork(impact) => Some(impact),
+            Self::Local(_) | Self::Shared(_) | Self::Replacement(_) => None,
+        }
+    }
+
+    fn replacement_impact(&self) -> Option<&ComponentReplacementImpactProjection> {
+        match self {
+            Self::Replacement(impact) => Some(impact),
+            Self::Local(_) | Self::Shared(_) | Self::Fork(_) => None,
+        }
+    }
+
+    const fn is_propagated(&self) -> bool {
+        !matches!(self, Self::Local(_))
+    }
+
+    fn proposal(&self) -> Option<&Proposal> {
+        match self {
+            Self::Local(proposal) => Some(proposal),
+            Self::Shared(impact) => Some(&impact.proposal),
+            Self::Fork(impact) => Some(&impact.proposal),
+            Self::Replacement(impact) => impact.proposal.as_ref(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+enum FeatureHistoryPreviewSource {
+    ExactEdit {
+        source_revision: u64,
+        source_digest: String,
+        request: ketchup_core::feature_history::BodyParameterEditRequest,
+        fork: Option<(OccurrenceId, String)>,
+    },
+    ProfileTranslation {
+        source_revision: u64,
+        source_digest: String,
+        request: BodyProfileTranslationRequest,
+    },
+    Mutation {
+        source_revision: u64,
+        source_digest: String,
+        request: BodyHistoryMutationRequest,
+        fork: Option<(OccurrenceId, String)>,
+    },
+    Replacement(ComponentReplacementImpactRequest),
+}
+
+#[derive(Clone, Debug, PartialEq)]
 struct FeatureHistoryUiPreview {
-    proposal: Proposal,
+    source: FeatureHistoryPreviewSource,
+    execution: FeatureHistoryExecutionPlan,
     kind: FeatureHistoryPreviewKind,
     action: String,
     affected_feature_ids: Vec<FeatureId>,
     suppressed_feature_ids: Vec<FeatureId>,
-    shared_impact: Option<SharedChangeImpactProjection>,
-    fork_impact: Option<OccurrenceForkImpactProjection>,
-    replacement_impact: Option<ComponentReplacementImpactProjection>,
 }
 
 #[derive(Clone, Debug)]
@@ -57,6 +123,7 @@ pub(super) struct FeatureHistoryUiState {
     selected_parameter: Option<ExactParameterEditTarget>,
     parameter_source: Option<(u64, ExactParameterEditTarget)>,
     value_input: String,
+    move_input: String,
     change_scope: FeatureHistoryChangeScope,
     replacement_target: Option<DefinitionId>,
     preview: Option<FeatureHistoryUiPreview>,
@@ -69,6 +136,7 @@ enum FeatureHistoryUiAction {
     SelectParameter(ExactParameterEditTarget),
     SelectReplacementTarget(DefinitionId),
     PreviewEdit,
+    PreviewMove,
     PreviewSuppress,
     PreviewResume,
     PreviewReplacement,
@@ -309,6 +377,7 @@ impl KetchupApp {
                         })
                     }
                     FeatureHistoryPreviewKind::ExactEdit
+                    | FeatureHistoryPreviewKind::ProfileTranslation
                     | FeatureHistoryPreviewKind::Resume
                     | FeatureHistoryPreviewKind::ReplaceComponent => None,
                 },
@@ -321,6 +390,238 @@ impl KetchupApp {
                 None
             }
         }
+    }
+
+    fn derive_feature_history_preview(
+        &self,
+        source: &FeatureHistoryPreviewSource,
+    ) -> Result<FeatureHistoryUiPreview, String> {
+        let snapshot = self.document.current();
+        let (execution, kind, affected_feature_ids, suppressed_feature_ids, action) = match source {
+            FeatureHistoryPreviewSource::ExactEdit {
+                source_revision,
+                source_digest,
+                request,
+                fork,
+            } => {
+                if snapshot.revision_id() != *source_revision
+                    || snapshot.canonical_digest() != source_digest.as_str()
+                {
+                    return Err("feature history preview source is stale".to_owned());
+                }
+                let (execution, affected) = if let Some((occurrence_id, fork_name)) = fork {
+                    let impact = project_occurrence_fork_impact(
+                        &self.document,
+                        &self.exact_results,
+                        OccurrenceForkChangeRequest::exact_parameter_edit(
+                            &snapshot,
+                            *occurrence_id,
+                            fork_name.clone(),
+                            request.clone(),
+                        ),
+                        ProposalPrincipal::ManualClient,
+                    )
+                    .map_err(|error| error.to_string())?;
+                    let affected = impact.affected_fork_feature_ids.clone();
+                    (FeatureHistoryExecutionPlan::Fork(impact), affected)
+                } else {
+                    match project_shared_change_impact(
+                        &self.document,
+                        &self.exact_results,
+                        SharedDefinitionChangeRequest::exact_parameter_edit(
+                            &snapshot,
+                            request.clone(),
+                        ),
+                        ProposalPrincipal::ManualClient,
+                    ) {
+                        Ok(impact) => {
+                            let affected = impact.affected_feature_ids.clone();
+                            (FeatureHistoryExecutionPlan::Shared(impact), affected)
+                        }
+                        Err(SharedChangeImpactError::DefinitionNotReused(_)) => {
+                            let preview = prepare_body_parameter_edit(
+                                &self.document,
+                                request.clone(),
+                                ProposalPrincipal::ManualClient,
+                            )
+                            .map_err(|error| error.to_string())?;
+                            (
+                                FeatureHistoryExecutionPlan::Local(preview.proposal),
+                                preview.affected_feature_ids,
+                            )
+                        }
+                        Err(error) => return Err(error.to_string()),
+                    }
+                };
+                (
+                    execution,
+                    FeatureHistoryPreviewKind::ExactEdit,
+                    affected,
+                    Vec::new(),
+                    self.catalog.text("feature-history-action-edit"),
+                )
+            }
+            FeatureHistoryPreviewSource::ProfileTranslation {
+                source_revision,
+                source_digest,
+                request,
+            } => {
+                if snapshot.revision_id() != *source_revision
+                    || snapshot.canonical_digest() != source_digest.as_str()
+                {
+                    return Err("feature history preview source is stale".to_owned());
+                }
+                let preview = prepare_body_profile_translation(
+                    &self.document,
+                    request.clone(),
+                    ProposalPrincipal::ManualClient,
+                )
+                .map_err(|error| error.to_string())?;
+                (
+                    FeatureHistoryExecutionPlan::Local(preview.proposal),
+                    FeatureHistoryPreviewKind::ProfileTranslation,
+                    preview.affected_feature_ids,
+                    Vec::new(),
+                    self.catalog.text("feature-history-action-move-profile"),
+                )
+            }
+            FeatureHistoryPreviewSource::Mutation {
+                source_revision,
+                source_digest,
+                request,
+                fork,
+            } => {
+                if snapshot.revision_id() != *source_revision
+                    || snapshot.canonical_digest() != source_digest.as_str()
+                {
+                    return Err("feature history preview source is stale".to_owned());
+                }
+                let kind = match request.mutation {
+                    BodyHistoryMutation::SuppressFrom(boundary) => {
+                        FeatureHistoryPreviewKind::Suppress { boundary }
+                    }
+                    BodyHistoryMutation::Resume => FeatureHistoryPreviewKind::Resume,
+                };
+                let (execution, affected, suppressed) = if let Some((occurrence_id, fork_name)) =
+                    fork
+                {
+                    let impact = project_occurrence_fork_impact(
+                        &self.document,
+                        &self.exact_results,
+                        OccurrenceForkChangeRequest::body_history_mutation(
+                            &snapshot,
+                            *occurrence_id,
+                            fork_name.clone(),
+                            *request,
+                        ),
+                        ProposalPrincipal::ManualClient,
+                    )
+                    .map_err(|error| error.to_string())?;
+                    let affected = impact.affected_fork_feature_ids.clone();
+                    let suppressed = match kind {
+                        FeatureHistoryPreviewKind::Suppress { .. } => affected.clone(),
+                        FeatureHistoryPreviewKind::Resume => Vec::new(),
+                        FeatureHistoryPreviewKind::ExactEdit
+                        | FeatureHistoryPreviewKind::ProfileTranslation
+                        | FeatureHistoryPreviewKind::ReplaceComponent => unreachable!(),
+                    };
+                    (
+                        FeatureHistoryExecutionPlan::Fork(impact),
+                        affected,
+                        suppressed,
+                    )
+                } else {
+                    match project_shared_change_impact(
+                        &self.document,
+                        &self.exact_results,
+                        SharedDefinitionChangeRequest::body_history_mutation(&snapshot, *request),
+                        ProposalPrincipal::ManualClient,
+                    ) {
+                        Ok(impact) => {
+                            let affected = impact.affected_feature_ids.clone();
+                            let suppressed = match kind {
+                                FeatureHistoryPreviewKind::Suppress { boundary } => affected
+                                    .iter()
+                                    .copied()
+                                    .filter(|feature_id| *feature_id >= boundary)
+                                    .collect(),
+                                FeatureHistoryPreviewKind::Resume => Vec::new(),
+                                FeatureHistoryPreviewKind::ExactEdit
+                                | FeatureHistoryPreviewKind::ProfileTranslation
+                                | FeatureHistoryPreviewKind::ReplaceComponent => unreachable!(),
+                            };
+                            (
+                                FeatureHistoryExecutionPlan::Shared(impact),
+                                affected,
+                                suppressed,
+                            )
+                        }
+                        Err(SharedChangeImpactError::DefinitionNotReused(_)) => {
+                            let preview = prepare_body_history_mutation(
+                                &self.document,
+                                *request,
+                                ProposalPrincipal::ManualClient,
+                            )
+                            .map_err(|error| error.to_string())?;
+                            (
+                                FeatureHistoryExecutionPlan::Local(preview.proposal),
+                                preview.affected_feature_ids,
+                                preview.suppressed_feature_ids,
+                            )
+                        }
+                        Err(error) => return Err(error.to_string()),
+                    }
+                };
+                let action = self.catalog.text(match kind {
+                    FeatureHistoryPreviewKind::Suppress { .. } => "feature-history-action-suppress",
+                    FeatureHistoryPreviewKind::Resume => "feature-history-action-resume",
+                    FeatureHistoryPreviewKind::ExactEdit
+                    | FeatureHistoryPreviewKind::ProfileTranslation
+                    | FeatureHistoryPreviewKind::ReplaceComponent => unreachable!(),
+                });
+                (execution, kind, affected, suppressed, action)
+            }
+            FeatureHistoryPreviewSource::Replacement(request) => {
+                let impact = project_component_replacement_impact(
+                    &self.document,
+                    &self.exact_results,
+                    request.clone(),
+                )
+                .map_err(|error| error.to_string())?;
+                if impact.proposal.is_none() {
+                    return Err("component replacement has no reviewed proposal".to_owned());
+                }
+                let affected = impact
+                    .feature_correspondence
+                    .iter()
+                    .map(|mapping| mapping.source_feature_id)
+                    .collect();
+                (
+                    FeatureHistoryExecutionPlan::Replacement(impact),
+                    FeatureHistoryPreviewKind::ReplaceComponent,
+                    affected,
+                    Vec::new(),
+                    self.catalog
+                        .text("feature-history-action-replace-component"),
+                )
+            }
+        };
+        let preview = FeatureHistoryUiPreview {
+            source: source.clone(),
+            execution,
+            kind,
+            action,
+            affected_feature_ids,
+            suppressed_feature_ids,
+        };
+        let proposal = preview
+            .execution
+            .proposal()
+            .ok_or_else(|| "feature history preview has no reviewed proposal".to_owned())?;
+        self.document
+            .preview_batch(proposal.batch())
+            .map_err(|error| error.to_string())?;
+        Ok(preview)
     }
 
     fn prepare_feature_history_edit(&mut self) -> bool {
@@ -342,88 +643,132 @@ impl KetchupApp {
             edits: vec![ExactParameterEdit { target, dimension }],
         };
         let snapshot = self.document.current();
-        let (proposal, affected_feature_ids, shared_impact, fork_impact) =
-            match self.feature_history.change_scope {
-                FeatureHistoryChangeScope::Shared => match project_shared_change_impact(
-                    &self.document,
-                    &self.exact_results,
-                    SharedDefinitionChangeRequest::exact_parameter_edit(&snapshot, request.clone()),
-                    ProposalPrincipal::ManualClient,
-                ) {
-                    Ok(impact) => (
-                        impact.proposal.clone(),
-                        impact.affected_feature_ids.clone(),
-                        Some(impact),
-                        None,
-                    ),
-                    Err(SharedChangeImpactError::DefinitionNotReused(_)) => {
-                        let preview = match prepare_body_parameter_edit(
-                            &self.document,
-                            request,
-                            ProposalPrincipal::ManualClient,
-                        ) {
-                            Ok(preview) => preview,
-                            Err(error) => {
-                                self.feature_history_error(error);
-                                return false;
-                            }
-                        };
-                        (preview.proposal, preview.affected_feature_ids, None, None)
-                    }
-                    Err(error) => {
-                        self.feature_history_error(error);
-                        return false;
-                    }
-                },
-                FeatureHistoryChangeScope::MakeUnique => {
-                    let Some(occurrence_id) = self.selected_fork_occurrence(definition_id) else {
-                        self.feature_history_error(
-                            self.catalog.text("feature-history-error-select-occurrence"),
-                        );
-                        return false;
-                    };
-                    let fork_name = self.fork_definition_name(&snapshot, definition_id);
-                    let impact = match project_occurrence_fork_impact(
-                        &self.document,
-                        &self.exact_results,
-                        OccurrenceForkChangeRequest::exact_parameter_edit(
-                            &snapshot,
-                            occurrence_id,
-                            fork_name,
-                            request,
-                        ),
-                        ProposalPrincipal::ManualClient,
-                    ) {
-                        Ok(impact) => impact,
-                        Err(error) => {
-                            self.feature_history_error(error);
-                            return false;
-                        }
-                    };
-                    (
-                        impact.proposal.clone(),
-                        impact.affected_fork_feature_ids.clone(),
-                        None,
-                        Some(impact),
-                    )
-                }
-                FeatureHistoryChangeScope::ReplaceComponent => return false,
-            };
-        if let Err(error) = self.document.preview_batch(proposal.batch()) {
-            self.feature_history_error(error);
+        let fork = match self.feature_history.change_scope {
+            FeatureHistoryChangeScope::Shared => None,
+            FeatureHistoryChangeScope::MakeUnique => {
+                let Some(occurrence_id) = self.selected_fork_occurrence(definition_id) else {
+                    self.feature_history_error(
+                        self.catalog.text("feature-history-error-select-occurrence"),
+                    );
+                    return false;
+                };
+                Some((
+                    occurrence_id,
+                    self.fork_definition_name(&snapshot, definition_id),
+                ))
+            }
+            FeatureHistoryChangeScope::ReplaceComponent => return false,
+        };
+        let source = FeatureHistoryPreviewSource::ExactEdit {
+            source_revision: snapshot.revision_id(),
+            source_digest: snapshot.canonical_digest().to_owned(),
+            request,
+            fork,
+        };
+        let preview = match self.derive_feature_history_preview(&source) {
+            Ok(preview) => preview,
+            Err(error) => {
+                self.feature_history_error(error);
+                return false;
+            }
+        };
+        let action = preview.action.clone();
+        self.feature_history.preview = Some(preview);
+        self.digest = self.catalog.format(
+            "feature-history-preview-ready",
+            &BTreeMap::from([("action", action)]),
+        );
+        true
+    }
+
+    pub(crate) fn assistant_profile_translation_target(
+        &self,
+    ) -> Option<(DefinitionId, BodyId, FeatureId, String)> {
+        let definition_id = self.feature_history.definition?;
+        let body_id = self.feature_history.selected_body?;
+        let profile_id = self.feature_history.selected_feature?;
+        let feature = self.document.current().feature(profile_id)?.clone();
+        (feature.definition_id() == definition_id).then(|| {
+            (
+                definition_id,
+                body_id,
+                profile_id,
+                feature.name().to_owned(),
+            )
+        })
+    }
+
+    pub(crate) fn assistant_parameter_edit_target(
+        &self,
+    ) -> Option<(DefinitionId, BodyId, ExactParameterEditTarget, String, f64)> {
+        let definition_id = self.feature_history.definition?;
+        let body_id = self.feature_history.selected_body?;
+        let target = self.feature_history.selected_parameter?;
+        let feature_id = match target {
+            ExactParameterEditTarget::FeatureDimension(feature_id)
+            | ExactParameterEditTarget::SketchConstraintDimension {
+                sketch_id: feature_id,
+                ..
+            } => feature_id,
+        };
+        let choice = self
+            .feature_parameter_choices(&self.document.current(), feature_id)
+            .into_iter()
+            .find(|choice| choice.target == target)?;
+        Some((
+            definition_id,
+            body_id,
+            target,
+            choice.label,
+            choice.value_mm,
+        ))
+    }
+
+    fn prepare_feature_profile_translation(&mut self) -> bool {
+        let (Some(definition_id), Some(body_id), Some(profile_id)) = (
+            self.feature_history.definition,
+            self.feature_history.selected_body,
+            self.feature_history.selected_feature,
+        ) else {
+            self.feature_history_error(self.catalog.text("feature-history-error-no-parameter"));
             return false;
-        }
-        let action = self.catalog.text("feature-history-action-edit");
-        self.feature_history.preview = Some(FeatureHistoryUiPreview {
-            proposal,
-            kind: FeatureHistoryPreviewKind::ExactEdit,
-            action: action.clone(),
-            affected_feature_ids,
-            suppressed_feature_ids: Vec::new(),
-            shared_impact,
-            fork_impact,
-            replacement_impact: None,
-        });
+        };
+        let values = self
+            .feature_history
+            .move_input
+            .split([',', ';'])
+            .map(str::trim)
+            .map(str::parse::<f64>)
+            .collect::<Result<Vec<_>, _>>();
+        let Ok(values) = values else {
+            self.feature_history_error(self.catalog.text("feature-history-error-invalid-move"));
+            return false;
+        };
+        let [dx, dy] = values.as_slice() else {
+            self.feature_history_error(self.catalog.text("feature-history-error-invalid-move"));
+            return false;
+        };
+        let request = BodyProfileTranslationRequest {
+            definition_id,
+            body_id,
+            profile_id,
+            delta_mm: [*dx, *dy],
+        };
+        let snapshot = self.document.current();
+        let source = FeatureHistoryPreviewSource::ProfileTranslation {
+            source_revision: snapshot.revision_id(),
+            source_digest: snapshot.canonical_digest(),
+            request,
+        };
+        let preview = match self.derive_feature_history_preview(&source) {
+            Ok(preview) => preview,
+            Err(error) => {
+                self.feature_history_error(error);
+                return false;
+            }
+        };
+        let action = preview.action.clone();
+        self.feature_history.preview = Some(preview);
         self.digest = self.catalog.format(
             "feature-history-preview-ready",
             &BTreeMap::from([("action", action)]),
@@ -439,131 +784,43 @@ impl KetchupApp {
             self.feature_history_error(self.catalog.text("feature-history-error-no-body"));
             return false;
         };
-        let kind = match mutation {
-            BodyHistoryMutation::SuppressFrom(boundary) => {
-                FeatureHistoryPreviewKind::Suppress { boundary }
-            }
-            BodyHistoryMutation::Resume => FeatureHistoryPreviewKind::Resume,
-        };
         let request = BodyHistoryMutationRequest {
             definition_id,
             body_id,
             mutation,
         };
         let snapshot = self.document.current();
-        let (proposal, affected_feature_ids, suppressed_feature_ids, shared_impact, fork_impact) =
-            match self.feature_history.change_scope {
-                FeatureHistoryChangeScope::Shared => match project_shared_change_impact(
-                    &self.document,
-                    &self.exact_results,
-                    SharedDefinitionChangeRequest::body_history_mutation(&snapshot, request),
-                    ProposalPrincipal::ManualClient,
-                ) {
-                    Ok(impact) => (
-                        impact.proposal.clone(),
-                        impact.affected_feature_ids.clone(),
-                        match kind {
-                            FeatureHistoryPreviewKind::Suppress { boundary } => impact
-                                .affected_feature_ids
-                                .iter()
-                                .copied()
-                                .filter(|feature_id| *feature_id >= boundary)
-                                .collect(),
-                            FeatureHistoryPreviewKind::Resume
-                            | FeatureHistoryPreviewKind::ExactEdit
-                            | FeatureHistoryPreviewKind::ReplaceComponent => Vec::new(),
-                        },
-                        Some(impact),
-                        None,
-                    ),
-                    Err(SharedChangeImpactError::DefinitionNotReused(_)) => {
-                        let preview = match prepare_body_history_mutation(
-                            &self.document,
-                            request,
-                            ProposalPrincipal::ManualClient,
-                        ) {
-                            Ok(preview) => preview,
-                            Err(error) => {
-                                self.feature_history_error(error);
-                                return false;
-                            }
-                        };
-                        (
-                            preview.proposal,
-                            preview.affected_feature_ids,
-                            preview.suppressed_feature_ids,
-                            None,
-                            None,
-                        )
-                    }
-                    Err(error) => {
-                        self.feature_history_error(error);
-                        return false;
-                    }
-                },
-                FeatureHistoryChangeScope::MakeUnique => {
-                    let Some(occurrence_id) = self.selected_fork_occurrence(definition_id) else {
-                        self.feature_history_error(
-                            self.catalog.text("feature-history-error-select-occurrence"),
-                        );
-                        return false;
-                    };
-                    let fork_name = self.fork_definition_name(&snapshot, definition_id);
-                    let impact = match project_occurrence_fork_impact(
-                        &self.document,
-                        &self.exact_results,
-                        OccurrenceForkChangeRequest::body_history_mutation(
-                            &snapshot,
-                            occurrence_id,
-                            fork_name,
-                            request,
-                        ),
-                        ProposalPrincipal::ManualClient,
-                    ) {
-                        Ok(impact) => impact,
-                        Err(error) => {
-                            self.feature_history_error(error);
-                            return false;
-                        }
-                    };
-                    let affected = impact.affected_fork_feature_ids.clone();
-                    let suppressed = match kind {
-                        FeatureHistoryPreviewKind::Suppress { .. } => affected.clone(),
-                        FeatureHistoryPreviewKind::Resume
-                        | FeatureHistoryPreviewKind::ExactEdit
-                        | FeatureHistoryPreviewKind::ReplaceComponent => Vec::new(),
-                    };
-                    (
-                        impact.proposal.clone(),
-                        affected,
-                        suppressed,
-                        None,
-                        Some(impact),
-                    )
-                }
-                FeatureHistoryChangeScope::ReplaceComponent => return false,
-            };
-        if let Err(error) = self.document.preview_batch(proposal.batch()) {
-            self.feature_history_error(error);
-            return false;
-        }
-        let action = self.catalog.text(match kind {
-            FeatureHistoryPreviewKind::Suppress { .. } => "feature-history-action-suppress",
-            FeatureHistoryPreviewKind::Resume => "feature-history-action-resume",
-            FeatureHistoryPreviewKind::ExactEdit | FeatureHistoryPreviewKind::ReplaceComponent => {
-                unreachable!()
+        let fork = match self.feature_history.change_scope {
+            FeatureHistoryChangeScope::Shared => None,
+            FeatureHistoryChangeScope::MakeUnique => {
+                let Some(occurrence_id) = self.selected_fork_occurrence(definition_id) else {
+                    self.feature_history_error(
+                        self.catalog.text("feature-history-error-select-occurrence"),
+                    );
+                    return false;
+                };
+                Some((
+                    occurrence_id,
+                    self.fork_definition_name(&snapshot, definition_id),
+                ))
             }
-        });
-        self.feature_history.preview = Some(FeatureHistoryUiPreview {
-            proposal,
-            kind,
-            action: action.clone(),
-            affected_feature_ids,
-            suppressed_feature_ids,
-            shared_impact,
-            fork_impact,
-            replacement_impact: None,
-        });
+            FeatureHistoryChangeScope::ReplaceComponent => return false,
+        };
+        let source = FeatureHistoryPreviewSource::Mutation {
+            source_revision: snapshot.revision_id(),
+            source_digest: snapshot.canonical_digest().to_owned(),
+            request,
+            fork,
+        };
+        let preview = match self.derive_feature_history_preview(&source) {
+            Ok(preview) => preview,
+            Err(error) => {
+                self.feature_history_error(error);
+                return false;
+            }
+        };
+        let action = preview.action.clone();
+        self.feature_history.preview = Some(preview);
         self.digest = self.catalog.format(
             "feature-history-preview-ready",
             &BTreeMap::from([("action", action)]),
@@ -656,43 +913,21 @@ impl KetchupApp {
                 }
             };
         }
-        let impact = match project_component_replacement_impact(
-            &self.document,
-            &self.exact_results,
-            ComponentReplacementImpactRequest::new(
+        let source =
+            FeatureHistoryPreviewSource::Replacement(ComponentReplacementImpactRequest::new(
                 &snapshot,
                 selected_occurrence_id,
                 target_definition_id,
-            ),
-        ) {
-            Ok(impact) => impact,
+            ));
+        let preview = match self.derive_feature_history_preview(&source) {
+            Ok(preview) => preview,
             Err(error) => {
                 self.feature_history_error(error);
                 return false;
             }
         };
-        let Some(proposal) = impact.proposal.clone() else {
-            self.feature_history_error("component replacement has no reviewed proposal");
-            return false;
-        };
-        let affected_feature_ids = impact
-            .feature_correspondence
-            .iter()
-            .map(|mapping| mapping.source_feature_id)
-            .collect();
-        let action = self
-            .catalog
-            .text("feature-history-action-replace-component");
-        self.feature_history.preview = Some(FeatureHistoryUiPreview {
-            proposal,
-            kind: FeatureHistoryPreviewKind::ReplaceComponent,
-            action: action.clone(),
-            affected_feature_ids,
-            suppressed_feature_ids: Vec::new(),
-            shared_impact: None,
-            fork_impact: None,
-            replacement_impact: Some(impact),
-        });
+        let action = preview.action.clone();
+        self.feature_history.preview = Some(preview);
         self.digest = self.catalog.format(
             "feature-history-preview-ready",
             &BTreeMap::from([("action", action)]),
@@ -704,70 +939,78 @@ impl KetchupApp {
         let Some(preview) = self.feature_history.preview.take() else {
             return false;
         };
-        let propagated = preview.shared_impact.is_some()
-            || preview.fork_impact.is_some()
-            || preview.replacement_impact.is_some();
-        let result = if let Some(impact) = preview.replacement_impact.as_ref() {
-            commit_component_replacement(&mut self.document, &mut self.exact_results, impact)
+        let rederived = self.derive_feature_history_preview(&preview.source);
+        if rederived.as_ref() != Ok(&preview) {
+            self.feature_history_error(
+                rederived
+                    .err()
+                    .unwrap_or_else(|| "feature history preview plan changed".to_owned()),
+            );
+            return false;
+        }
+        let propagated = preview.execution.is_propagated();
+        let result = match &preview.execution {
+            FeatureHistoryExecutionPlan::Local(proposal) => self
+                .document
+                .commit_verified_proposal(proposal)
                 .map(|_| ())
-                .map_err(|error| error.to_string())
-        } else if propagated {
-            let executable = match self.exact_worker_executable() {
-                Ok(executable) => executable,
-                Err(error) => {
-                    self.feature_history_error(error);
-                    return false;
-                }
-            };
-            let mut worker = match ExactWorkerSupervisor::spawn(executable) {
-                Ok(worker) => worker,
-                Err(error) => {
-                    self.feature_history_error(error);
-                    return false;
-                }
-            };
-            if let Some(task) = self.exact_task.take() {
-                task.cancelled.store(true, Ordering::Release);
+                .map_err(|error| error.to_string()),
+            FeatureHistoryExecutionPlan::Replacement(impact) => {
+                commit_component_replacement(&mut self.document, &mut self.exact_results, impact)
+                    .map(|_| ())
+                    .map_err(|error| error.to_string())
             }
-            if let Some(impact) = preview.fork_impact.as_ref() {
-                commit_occurrence_fork_change(
-                    &mut self.document,
-                    &mut self.exact_results,
-                    impact,
-                    |request| {
-                        worker
-                            .evaluate_rectangle(request)
-                            .map(ExactBodyPackage::from)
-                            .map(Arc::new)
-                            .map_err(|error| error.to_string())
-                    },
-                )
-                .map(|_| ())
-                .map_err(|error| error.to_string())
-            } else {
-                commit_shared_definition_change(
-                    &mut self.document,
-                    &mut self.exact_results,
-                    preview
-                        .shared_impact
-                        .as_ref()
-                        .expect("propagated shared preview has an impact"),
-                    |request| {
-                        worker
-                            .evaluate_rectangle(request)
-                            .map(ExactBodyPackage::from)
-                            .map(Arc::new)
-                            .map_err(|error| error.to_string())
-                    },
-                )
-                .map(|_| ())
-                .map_err(|error| error.to_string())
+            FeatureHistoryExecutionPlan::Shared(_) | FeatureHistoryExecutionPlan::Fork(_) => {
+                let executable = match self.exact_worker_executable() {
+                    Ok(executable) => executable,
+                    Err(error) => {
+                        self.feature_history_error(error);
+                        return false;
+                    }
+                };
+                let mut worker = match ExactWorkerSupervisor::spawn(executable) {
+                    Ok(worker) => worker,
+                    Err(error) => {
+                        self.feature_history_error(error);
+                        return false;
+                    }
+                };
+                if let Some(task) = self.exact_task.take() {
+                    task.cancelled.store(true, Ordering::Release);
+                }
+                match &preview.execution {
+                    FeatureHistoryExecutionPlan::Shared(impact) => commit_shared_definition_change(
+                        &mut self.document,
+                        &mut self.exact_results,
+                        impact,
+                        |request| {
+                            worker
+                                .evaluate_rectangle(request)
+                                .map(ExactBodyPackage::from)
+                                .map(Arc::new)
+                                .map_err(|error| error.to_string())
+                        },
+                    )
+                    .map(|_| ())
+                    .map_err(|error| error.to_string()),
+                    FeatureHistoryExecutionPlan::Fork(impact) => commit_occurrence_fork_change(
+                        &mut self.document,
+                        &mut self.exact_results,
+                        impact,
+                        |request| {
+                            worker
+                                .evaluate_rectangle(request)
+                                .map(ExactBodyPackage::from)
+                                .map(Arc::new)
+                                .map_err(|error| error.to_string())
+                        },
+                    )
+                    .map(|_| ())
+                    .map_err(|error| error.to_string()),
+                    FeatureHistoryExecutionPlan::Local(_)
+                    | FeatureHistoryExecutionPlan::Replacement(_) => unreachable!(),
+                }
             }
-        } else {
-            self.document
-                .commit_verified_proposal(&preview.proposal)
-                .map(|_| ())
-                .map_err(|error| error.to_string())
         };
         match result {
             Ok(()) => {
@@ -1512,13 +1755,13 @@ impl KetchupApp {
                     ("suppressed", ids(&preview.suppressed_feature_ids)),
                 ]),
             ));
-            if let Some(impact) = preview.shared_impact.as_ref() {
+            if let Some(impact) = preview.execution.shared_impact() {
                 self.show_shared_change_impact(ui, impact);
             }
-            if let Some(impact) = preview.fork_impact.as_ref() {
+            if let Some(impact) = preview.execution.fork_impact() {
                 self.show_occurrence_fork_impact(ui, impact);
             }
-            if let Some(impact) = preview.replacement_impact.as_ref() {
+            if let Some(impact) = preview.execution.replacement_impact() {
                 self.show_component_replacement_impact(ui, impact);
             }
             if ui
@@ -1571,6 +1814,51 @@ impl KetchupApp {
                 action = Some(FeatureHistoryUiAction::PreviewReplacement);
             }
         } else if let Some(feature_id) = self.feature_history.selected_feature {
+            let is_profile = snapshot.feature(feature_id).is_some_and(|feature| {
+                matches!(
+                    feature.kind(),
+                    FeatureKind::Sketch(_)
+                        | FeatureKind::Profile { .. }
+                        | FeatureKind::SegmentProfile { .. }
+                        | FeatureKind::SplineProfile { .. }
+                )
+            });
+            let is_cut_profile = is_profile
+                && snapshot.features().any(|feature| match feature.kind() {
+                    FeatureKind::SketchPocket(spec) => spec.sketch == feature_id,
+                    FeatureKind::ThroughCut { profile, .. }
+                    | FeatureKind::Pocket { profile, .. } => *profile == feature_id,
+                    FeatureKind::Boolean {
+                        operation: BooleanOperation::Cut,
+                        tool,
+                        ..
+                    } => snapshot.feature(*tool).is_some_and(|tool| {
+                        matches!(
+                            tool.kind(),
+                            FeatureKind::Extrusion { profile, .. } if *profile == feature_id
+                        )
+                    }),
+                    _ => false,
+                });
+            if is_cut_profile {
+                if self.feature_history.move_input.is_empty() {
+                    self.feature_history.move_input = "0, 0".to_owned();
+                }
+                let move_label = self.catalog.text("feature-history-move-profile-value");
+                let response = ui.add(
+                    egui::TextEdit::singleline(&mut self.feature_history.move_input)
+                        .hint_text(&move_label),
+                );
+                response.widget_info(|| {
+                    egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, &move_label)
+                });
+                if ui
+                    .button(self.catalog.text("feature-history-preview-move-profile"))
+                    .clicked()
+                {
+                    action = Some(FeatureHistoryUiAction::PreviewMove);
+                }
+            }
             let choices = self.feature_parameter_choices(&snapshot, feature_id);
             if self
                 .feature_history
@@ -1686,6 +1974,9 @@ impl KetchupApp {
             Some(FeatureHistoryUiAction::PreviewEdit) => {
                 self.prepare_feature_history_edit();
             }
+            Some(FeatureHistoryUiAction::PreviewMove) => {
+                self.prepare_feature_profile_translation();
+            }
             Some(FeatureHistoryUiAction::PreviewSuppress) => {
                 if let Some(feature_id) = self.feature_history.selected_feature {
                     self.prepare_feature_history_mutation(BodyHistoryMutation::SuppressFrom(
@@ -1784,7 +2075,7 @@ impl KetchupApp {
         self.feature_history
             .preview
             .as_ref()
-            .and_then(|preview| preview.fork_impact.as_ref())
+            .and_then(|preview| preview.execution.fork_impact())
             .map(|impact| {
                 [
                     impact.unchanged_sibling_occurrences.len(),
@@ -1802,7 +2093,7 @@ impl KetchupApp {
         self.feature_history
             .preview
             .as_ref()
-            .and_then(|preview| preview.fork_impact.as_ref())
+            .and_then(|preview| preview.execution.fork_impact())
             .map(|impact| {
                 [
                     impact.selected_occurrence_id.0,
@@ -1817,7 +2108,7 @@ impl KetchupApp {
         self.feature_history
             .preview
             .as_ref()
-            .and_then(|preview| preview.replacement_impact.as_ref())
+            .and_then(|preview| preview.execution.replacement_impact())
             .map(|impact| {
                 [
                     impact.selected_occurrence_id.0,
@@ -1832,7 +2123,7 @@ impl KetchupApp {
         self.feature_history
             .preview
             .as_ref()
-            .and_then(|preview| preview.replacement_impact.as_ref())
+            .and_then(|preview| preview.execution.replacement_impact())
             .map(|impact| {
                 [
                     impact.body_correspondence.len(),
@@ -1853,7 +2144,7 @@ impl KetchupApp {
         self.feature_history
             .preview
             .as_ref()
-            .and_then(|preview| preview.shared_impact.as_ref())
+            .and_then(|preview| preview.execution.shared_impact())
             .map(|impact| {
                 [
                     impact.occurrences.len(),
@@ -1864,5 +2155,133 @@ impl KetchupApp {
                     impact.exports.len(),
                 ]
             })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn local_mutation_preview(app: &KetchupApp, boundary: FeatureId) -> FeatureHistoryUiPreview {
+        let snapshot = app.document.current();
+        app.derive_feature_history_preview(&FeatureHistoryPreviewSource::Mutation {
+            source_revision: snapshot.revision_id(),
+            source_digest: snapshot.canonical_digest().to_owned(),
+            request: BodyHistoryMutationRequest {
+                definition_id: DefinitionId(1),
+                body_id: ketchup_core::document::BodyId(1),
+                mutation: BodyHistoryMutation::SuppressFrom(boundary),
+            },
+            fork: None,
+        })
+        .expect("initial feature suppression is previewable")
+    }
+
+    #[test]
+    fn exact_preview_source_rejects_plan_metadata_tamper_stale_and_replay_atomically() {
+        let mut valid = KetchupApp::new();
+        let initial_revision = valid.document_revision();
+        let initial_digest = valid.canonical_digest();
+        let initial_undo = valid.undo_step_count();
+        let preview = local_mutation_preview(&valid, FeatureId(2));
+        valid.feature_history.preview = Some(preview.clone());
+
+        assert!(valid.confirm_feature_history_preview());
+        assert_eq!(valid.document_revision(), initial_revision + 1);
+        assert_eq!(valid.undo_step_count(), initial_undo + 1);
+        let committed_digest = valid.canonical_digest();
+        assert_ne!(committed_digest, initial_digest);
+
+        valid.feature_history.preview = Some(preview);
+        assert!(!valid.confirm_feature_history_preview());
+        assert_eq!(valid.canonical_digest(), committed_digest);
+        assert_eq!(valid.undo_step_count(), initial_undo + 1);
+        assert!(valid.undo());
+        assert_eq!(valid.canonical_digest(), initial_digest);
+        assert!(valid.redo());
+        assert_eq!(valid.canonical_digest(), committed_digest);
+
+        let mut tampered = KetchupApp::new();
+        let before_tamper = (
+            tampered.document_revision(),
+            tampered.canonical_digest(),
+            tampered.undo_step_count(),
+        );
+        let mut tampered_preview = local_mutation_preview(&tampered, FeatureId(2));
+        tampered_preview.kind = FeatureHistoryPreviewKind::Resume;
+        tampered.feature_history.preview = Some(tampered_preview);
+        assert!(!tampered.confirm_feature_history_preview());
+        assert_eq!(
+            (
+                tampered.document_revision(),
+                tampered.canonical_digest(),
+                tampered.undo_step_count(),
+            ),
+            before_tamper
+        );
+
+        let base = local_mutation_preview(&tampered, FeatureId(2));
+        let mut source_tampered = base.clone();
+        let FeatureHistoryPreviewSource::Mutation { request, .. } = &mut source_tampered.source
+        else {
+            unreachable!()
+        };
+        request.mutation = BodyHistoryMutation::SuppressFrom(FeatureId(1));
+
+        let mut execution_tampered = base.clone();
+        execution_tampered.execution = local_mutation_preview(&tampered, FeatureId(1)).execution;
+
+        let mut action_tampered = base.clone();
+        action_tampered.action.push_str(" changed");
+
+        let mut metadata_tampered = base;
+        metadata_tampered
+            .affected_feature_ids
+            .push(FeatureId(u64::MAX));
+
+        for preview in [
+            source_tampered,
+            execution_tampered,
+            action_tampered,
+            metadata_tampered,
+        ] {
+            tampered.feature_history.preview = Some(preview);
+            assert!(!tampered.confirm_feature_history_preview());
+            assert_eq!(
+                (
+                    tampered.document_revision(),
+                    tampered.canonical_digest(),
+                    tampered.undo_step_count(),
+                ),
+                before_tamper
+            );
+        }
+
+        let mut stale = KetchupApp::new();
+        let stale_preview = local_mutation_preview(&stale, FeatureId(2));
+        stale
+            .document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::SetOccurrenceVisibility {
+                    id: OccurrenceId(1),
+                    visible: false,
+                },
+            ]))
+            .expect("drift mutation is valid");
+        let after_drift = (
+            stale.document_revision(),
+            stale.canonical_digest(),
+            stale.undo_step_count(),
+        );
+        stale.feature_history.preview = Some(stale_preview);
+        assert!(!stale.confirm_feature_history_preview());
+        assert_eq!(
+            (
+                stale.document_revision(),
+                stale.canonical_digest(),
+                stale.undo_step_count(),
+            ),
+            after_drift
+        );
     }
 }

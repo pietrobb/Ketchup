@@ -11,14 +11,17 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use eframe::egui::{Key, Pos2, Rect, Vec2, accesskit::Role};
-use harness::{Shell, ctrl};
+use harness::{Shell, ctrl, shift};
 use ketchup_app::dialogs::ScriptedFileDialogs;
-use ketchup_app::{AlignMode, AppCommand, GeneralFinishKind};
+use ketchup_app::{
+    AlignMode, AppCommand, AssistantWorkspaceMode, DistributionMode, GeneralFinishKind,
+    RectangularPatternSpec,
+};
 use ketchup_core::document::{
     BottleEdgeFinishKind, CanonicalCommand, CommandBatch, DefinitionId, DerivedIdentity, Dimension,
     DocumentStore, EvaluationIdentity, FeatureId, FeatureKind, FeatureParameterBinding,
     FeatureParameterSlot, FeatureParameterTarget, InstancePath, NodeId, OccurrenceId, PortSpec,
-    RuleOutput, SlotPath, SlotSegment, Transform,
+    RuleOutput, SlotPath, SlotSegment, TagId, Transform,
 };
 use ketchup_core::exact_product::{
     EXACT_BOOLEAN_INTERSECT_EVALUATOR_V1, EXACT_BOOLEAN_SPLIT_EVALUATOR_V1,
@@ -27,6 +30,7 @@ use ketchup_core::exact_product::{
     ExactFaceRole, ExactFeatureChainRequest,
 };
 use ketchup_core::graph::{EvaluationStatus, EvaluatorNodeKind};
+use ketchup_core::intent::WorkflowIntent;
 use ketchup_core::persistence;
 use ketchup_interaction::{Axis, ElementId, LocaleCatalog, SnapKind, Vec3};
 use ketchup_scheduler::ExactWorkerSupervisor;
@@ -189,6 +193,8423 @@ fn the_designed_shell_lays_itself_out_without_a_window() {
         "the tool rail must offer Move under an accessible name, not a glyph"
     );
     assert_eq!(shell.app().active_box_count(), 1);
+}
+
+#[test]
+fn window_menu_toggles_outliner_and_tags_without_mutating_the_document() {
+    for catalog in [
+        LocaleCatalog::english(),
+        LocaleCatalog::slovak(),
+        LocaleCatalog::pseudo(),
+    ] {
+        let mut shell = Shell::with_catalog(catalog);
+        shell
+            .app_mut()
+            .set_assistant_workspace_mode(ketchup_app::AssistantWorkspaceMode::Tab);
+        shell.settle();
+        let outliner = shell.catalog().text("dock-outliner");
+        let tags = shell.catalog().text("dock-tags");
+        assert!(shell.app().outliner_visible());
+        assert!(shell.app().tags_visible());
+        assert!(shell.has_visible_label(&outliner));
+        assert!(shell.has_visible_label(&tags));
+        let revision = shell.app().document_revision();
+        let digest = shell.app().canonical_digest();
+        let undo_steps = shell.app().undo_step_count();
+
+        shell.open_menu("menu-window");
+        shell.click_role_and_label(Role::CheckBox, &outliner);
+        shell.press_key(Key::Escape);
+        assert!(!shell.app().outliner_visible());
+        assert!(!shell.has_visible_label(&outliner));
+        assert_eq!(shell.app().document_revision(), revision);
+        assert_eq!(shell.app().canonical_digest(), digest);
+        assert_eq!(shell.app().undo_step_count(), undo_steps);
+
+        shell.open_menu("menu-window");
+        shell.click_role_and_label(Role::CheckBox, &tags);
+        shell.press_key(Key::Escape);
+        assert!(!shell.app().tags_visible());
+        assert!(!shell.has_visible_label(&tags));
+        assert_eq!(shell.app().document_revision(), revision);
+        assert_eq!(shell.app().canonical_digest(), digest);
+        assert_eq!(shell.app().undo_step_count(), undo_steps);
+
+        shell.click_menu_command("menu-file", AppCommand::New);
+        assert!(!shell.app().outliner_visible());
+        assert!(!shell.app().tags_visible());
+
+        shell.open_menu("menu-window");
+        shell.click_role_and_label(Role::CheckBox, &outliner);
+        shell.press_key(Key::Escape);
+        shell.open_menu("menu-window");
+        shell.click_role_and_label(Role::CheckBox, &tags);
+        shell.press_key(Key::Escape);
+        assert!(shell.app().outliner_visible());
+        assert!(shell.app().tags_visible());
+        assert!(shell.has_visible_label(&outliner));
+        assert!(shell.has_visible_label(&tags));
+    }
+}
+
+#[test]
+fn home_view_is_localized_accessible_framed_and_document_preserving() {
+    for catalog in [
+        LocaleCatalog::english(),
+        LocaleCatalog::slovak(),
+        LocaleCatalog::pseudo(),
+    ] {
+        let mut shell = Shell::with_catalog(catalog);
+        assert_eq!(
+            shell.app().command_label(AppCommand::HomeView),
+            shell.catalog().text("view-home")
+        );
+
+        shell.click_at(shell.viewport_rect().center());
+        assert!(shell.app_mut().copy_selected(Vec3::new(1_000.0, 25.0, 0.0)));
+        shell.settle();
+        shell.click_menu_command("menu-view", AppCommand::ZoomFit);
+        let revision = shell.app().document_revision();
+        let digest = shell.app().canonical_digest();
+        let undo_steps = shell.app().undo_step_count();
+        let projection = shell.app().projection_mode();
+
+        shell.secondary_click_at(shell.top_face_centre(1));
+        assert!(shell.offers(AppCommand::HomeView));
+        shell.click_command(AppCommand::HomeView);
+        assert_eq!(shell.app().camera_orientation(), (-2.25, 0.52));
+        let home_zoom = shell.app().camera_zoom();
+        let rect = shell.viewport_rect();
+        for occurrence in [1, 2] {
+            let (origin, size) = shell.app().occurrence_box_geometry(occurrence).unwrap();
+            let center = shell.app().project_to_screen(
+                origin + Vec3::new(size.x * 0.5, size.y * 0.5, size.z * 0.5),
+                rect,
+            );
+            assert!(rect.contains(center));
+        }
+
+        shell.click_menu_command("menu-view", AppCommand::ViewTop);
+        shell.click_menu_command("menu-view", AppCommand::ZoomIn);
+        shell.click_menu_command("menu-view", AppCommand::HomeView);
+        assert_eq!(shell.app().camera_orientation(), (-2.25, 0.52));
+        assert!((shell.app().camera_zoom() - home_zoom).abs() < 1.0e-5);
+
+        shell.click_menu_command("menu-view", AppCommand::ViewFront);
+        shell.click_menu_command("menu-view", AppCommand::ZoomIn);
+        shell.press_key(Key::Home);
+        assert_eq!(shell.app().camera_orientation(), (-2.25, 0.52));
+        assert!((shell.app().camera_zoom() - home_zoom).abs() < 1.0e-5);
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().format(
+                "digest-home-view",
+                &BTreeMap::from([("count", "2".to_owned())]),
+            )
+        );
+        assert_eq!(shell.app().projection_mode(), projection);
+        assert_eq!(shell.app().document_revision(), revision);
+        assert_eq!(shell.app().canonical_digest(), digest);
+        assert_eq!(shell.app().undo_step_count(), undo_steps);
+    }
+}
+
+#[test]
+fn previous_view_is_localized_swappable_gesture_aware_and_document_preserving() {
+    for catalog in [
+        LocaleCatalog::english(),
+        LocaleCatalog::slovak(),
+        LocaleCatalog::pseudo(),
+    ] {
+        let mut shell = Shell::with_catalog(catalog);
+        assert_eq!(
+            shell.app().command_label(AppCommand::PreviousView),
+            shell.catalog().text("view-previous")
+        );
+        assert!(!shell.app().command_is_enabled(AppCommand::PreviousView));
+
+        shell.click_at(shell.viewport_rect().center());
+        assert!(shell.app_mut().copy_selected(Vec3::new(1_000.0, 25.0, 0.0)));
+        shell.settle();
+        shell.click_at(shell.top_face_centre(1));
+        shell.click_menu_command("menu-view", AppCommand::ViewFront);
+        shell.click_menu_command("menu-view", AppCommand::ViewProjection);
+        shell.click_menu_command("menu-view", AppCommand::ZoomSelection);
+
+        let rect = shell.viewport_rect();
+        let (origin, size) = shell.app().occurrence_box_geometry(1).unwrap();
+        let probe = origin + Vec3::new(size.x * 0.5, size.y * 0.5, size.z * 0.5);
+        let remembered_orientation = shell.app().camera_orientation();
+        let remembered_projection = shell.app().projection_mode();
+        let remembered_zoom = shell.app().camera_zoom();
+        let remembered_probe = shell.app().project_to_screen(probe, rect);
+        let revision = shell.app().document_revision();
+        let digest = shell.app().canonical_digest();
+        let undo_steps = shell.app().undo_step_count();
+
+        shell.click_menu_command("menu-view", AppCommand::HomeView);
+        let home_orientation = shell.app().camera_orientation();
+        let home_projection = shell.app().projection_mode();
+        let home_zoom = shell.app().camera_zoom();
+        let home_probe = shell.app().project_to_screen(probe, rect);
+
+        shell.secondary_click_at(shell.top_face_centre(1));
+        assert!(shell.offers(AppCommand::PreviousView));
+        shell.click_command(AppCommand::PreviousView);
+        assert_eq!(shell.app().camera_orientation(), remembered_orientation);
+        assert_eq!(shell.app().projection_mode(), remembered_projection);
+        assert!((shell.app().camera_zoom() - remembered_zoom).abs() < 1.0e-5);
+        assert!(
+            shell
+                .app()
+                .project_to_screen(probe, rect)
+                .distance(remembered_probe)
+                < 0.01
+        );
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().text("digest-previous-view")
+        );
+
+        shell.click_menu_command("menu-view", AppCommand::PreviousView);
+        assert_eq!(shell.app().camera_orientation(), home_orientation);
+        assert_eq!(shell.app().projection_mode(), home_projection);
+        assert!((shell.app().camera_zoom() - home_zoom).abs() < 1.0e-5);
+        assert!(
+            shell
+                .app()
+                .project_to_screen(probe, rect)
+                .distance(home_probe)
+                < 0.01
+        );
+
+        shell.click_command(AppCommand::Orbit);
+        shell.drag(rect.center(), rect.center() + Vec2::new(80.0, 40.0));
+        assert_ne!(shell.app().camera_orientation(), home_orientation);
+        shell.click_menu_command("menu-view", AppCommand::PreviousView);
+        assert_eq!(shell.app().camera_orientation(), home_orientation);
+
+        shell.scroll_at(rect.center(), 120.0);
+        assert_ne!(shell.app().camera_zoom(), home_zoom);
+        shell.app_mut().previous_view();
+        assert!((shell.app().camera_zoom() - home_zoom).abs() < 1.0e-5);
+        assert_eq!(shell.app().document_revision(), revision);
+        assert_eq!(shell.app().canonical_digest(), digest);
+        assert_eq!(shell.app().undo_step_count(), undo_steps);
+    }
+}
+
+#[test]
+fn grid_axes_toggle_is_localized_reversible_and_document_preserving() {
+    for catalog in [
+        LocaleCatalog::english(),
+        LocaleCatalog::slovak(),
+        LocaleCatalog::pseudo(),
+    ] {
+        let mut shell = Shell::with_catalog(catalog);
+        assert_eq!(
+            shell.app().command_label(AppCommand::ViewGridAxes),
+            shell.catalog().text("view-grid-axes")
+        );
+        assert!(shell.app().grid_axes_visible());
+        assert!(!shell.app().command_is_enabled(AppCommand::PreviousView));
+
+        let revision = shell.app().document_revision();
+        let digest = shell.app().canonical_digest();
+        let undo_steps = shell.app().undo_step_count();
+
+        shell.secondary_click_at(shell.top_face_centre(1));
+        assert!(shell.offers(AppCommand::ViewGridAxes));
+        shell.click_command(AppCommand::ViewGridAxes);
+        assert!(!shell.app().grid_axes_visible());
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().text("digest-grid-axes-hidden")
+        );
+        assert!(shell.app().command_is_enabled(AppCommand::PreviousView));
+
+        shell.click_menu_command("menu-view", AppCommand::PreviousView);
+        assert!(shell.app().grid_axes_visible());
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().text("digest-previous-view")
+        );
+
+        shell.click_menu_command("menu-view", AppCommand::ViewGridAxes);
+        assert!(!shell.app().grid_axes_visible());
+        shell.click_menu_command("menu-view", AppCommand::ViewGridAxes);
+        assert!(shell.app().grid_axes_visible());
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().text("digest-grid-axes-shown")
+        );
+        assert_eq!(shell.app().document_revision(), revision);
+        assert_eq!(shell.app().canonical_digest(), digest);
+        assert_eq!(shell.app().undo_step_count(), undo_steps);
+    }
+}
+
+#[test]
+fn xray_toggle_is_localized_pickable_reversible_and_document_preserving() {
+    for catalog in [
+        LocaleCatalog::english(),
+        LocaleCatalog::slovak(),
+        LocaleCatalog::pseudo(),
+    ] {
+        let mut shell = Shell::with_catalog(catalog);
+        assert_eq!(
+            shell.app().command_label(AppCommand::ViewXray),
+            shell.catalog().text("view-xray")
+        );
+        assert!(!shell.app().xray_visible());
+        assert!(!shell.app().command_is_enabled(AppCommand::PreviousView));
+
+        let pick_point = shell.top_face_centre(1);
+        shell.click_at(pick_point);
+        assert_eq!(shell.app().selected_occurrence_count(), 1);
+        let revision = shell.app().document_revision();
+        let digest = shell.app().canonical_digest();
+        let undo_steps = shell.app().undo_step_count();
+
+        shell.secondary_click_at(pick_point);
+        assert!(shell.offers(AppCommand::ViewXray));
+        shell.click_command(AppCommand::ViewXray);
+        assert!(shell.app().xray_visible());
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().text("digest-xray-shown")
+        );
+        assert!(shell.app().command_is_enabled(AppCommand::PreviousView));
+
+        shell.click_menu_command("menu-edit", AppCommand::Deselect);
+        shell.click_at(pick_point);
+        assert_eq!(shell.app().selected_occurrence_count(), 1);
+
+        shell.click_menu_command("menu-view", AppCommand::PreviousView);
+        assert!(!shell.app().xray_visible());
+        shell.click_menu_command("menu-view", AppCommand::ViewXray);
+        assert!(shell.app().xray_visible());
+        shell.click_menu_command("menu-view", AppCommand::ViewXray);
+        assert!(!shell.app().xray_visible());
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().text("digest-xray-hidden")
+        );
+        assert_eq!(shell.app().document_revision(), revision);
+        assert_eq!(shell.app().canonical_digest(), digest);
+        assert_eq!(shell.app().undo_step_count(), undo_steps);
+    }
+}
+
+#[test]
+fn white_background_toggle_is_localized_pickable_reversible_and_document_preserving() {
+    for catalog in [
+        LocaleCatalog::english(),
+        LocaleCatalog::slovak(),
+        LocaleCatalog::pseudo(),
+    ] {
+        let mut shell = Shell::with_catalog(catalog);
+        assert_eq!(
+            shell.app().command_label(AppCommand::ViewWhiteBackground),
+            shell.catalog().text("view-white-background")
+        );
+        assert!(!shell.app().white_background_visible());
+        assert!(!shell.app().command_is_enabled(AppCommand::PreviousView));
+
+        let pick_point = shell.top_face_centre(1);
+        shell.click_at(pick_point);
+        assert_eq!(shell.app().selected_occurrence_count(), 1);
+        let revision = shell.app().document_revision();
+        let digest = shell.app().canonical_digest();
+        let undo_steps = shell.app().undo_step_count();
+
+        shell.secondary_click_at(pick_point);
+        assert!(shell.offers(AppCommand::ViewWhiteBackground));
+        shell.click_command(AppCommand::ViewWhiteBackground);
+        assert!(shell.app().white_background_visible());
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().text("digest-white-background-shown")
+        );
+        assert!(shell.app().command_is_enabled(AppCommand::PreviousView));
+
+        shell.click_menu_command("menu-edit", AppCommand::Deselect);
+        shell.click_at(pick_point);
+        assert_eq!(shell.app().selected_occurrence_count(), 1);
+
+        shell.click_menu_command("menu-view", AppCommand::PreviousView);
+        assert!(!shell.app().white_background_visible());
+        shell.click_menu_command("menu-view", AppCommand::ViewWhiteBackground);
+        assert!(shell.app().white_background_visible());
+        shell.click_menu_command("menu-view", AppCommand::ViewWhiteBackground);
+        assert!(!shell.app().white_background_visible());
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().text("digest-white-background-hidden")
+        );
+        assert_eq!(shell.app().document_revision(), revision);
+        assert_eq!(shell.app().canonical_digest(), digest);
+        assert_eq!(shell.app().undo_step_count(), undo_steps);
+    }
+}
+
+#[test]
+fn shadows_toggle_is_localized_pickable_reversible_and_document_preserving() {
+    for catalog in [
+        LocaleCatalog::english(),
+        LocaleCatalog::slovak(),
+        LocaleCatalog::pseudo(),
+    ] {
+        let mut shell = Shell::with_catalog(catalog);
+        assert_eq!(
+            shell.app().command_label(AppCommand::ViewShadows),
+            shell.catalog().text("view-shadows")
+        );
+        assert!(!shell.app().shadows_visible());
+        assert!(!shell.app().command_is_enabled(AppCommand::PreviousView));
+
+        let pick_point = shell.top_face_centre(1);
+        shell.click_at(pick_point);
+        assert_eq!(shell.app().selected_occurrence_count(), 1);
+        let revision = shell.app().document_revision();
+        let digest = shell.app().canonical_digest();
+        let undo_steps = shell.app().undo_step_count();
+
+        shell.secondary_click_at(pick_point);
+        assert!(shell.offers(AppCommand::ViewShadows));
+        shell.click_command(AppCommand::ViewShadows);
+        assert!(shell.app().shadows_visible());
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().text("digest-shadows-shown")
+        );
+        assert!(shell.app().command_is_enabled(AppCommand::PreviousView));
+
+        shell.click_menu_command("menu-edit", AppCommand::Deselect);
+        shell.click_at(pick_point);
+        assert_eq!(shell.app().selected_occurrence_count(), 1);
+
+        shell.click_menu_command("menu-view", AppCommand::PreviousView);
+        assert!(!shell.app().shadows_visible());
+        shell.click_menu_command("menu-view", AppCommand::ViewShadows);
+        assert!(shell.app().shadows_visible());
+        shell.click_menu_command("menu-view", AppCommand::ViewShadows);
+        assert!(!shell.app().shadows_visible());
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().text("digest-shadows-hidden")
+        );
+        assert_eq!(shell.app().document_revision(), revision);
+        assert_eq!(shell.app().canonical_digest(), digest);
+        assert_eq!(shell.app().undo_step_count(), undo_steps);
+    }
+}
+
+#[test]
+fn fog_toggle_is_localized_pickable_reversible_and_document_preserving() {
+    for catalog in [
+        LocaleCatalog::english(),
+        LocaleCatalog::slovak(),
+        LocaleCatalog::pseudo(),
+    ] {
+        let mut shell = Shell::with_catalog(catalog);
+        assert_eq!(
+            shell.app().command_label(AppCommand::ViewFog),
+            shell.catalog().text("view-fog")
+        );
+        assert!(!shell.app().fog_visible());
+        assert!(!shell.app().command_is_enabled(AppCommand::PreviousView));
+
+        let pick_point = shell.top_face_centre(1);
+        shell.click_at(pick_point);
+        assert_eq!(shell.app().selected_occurrence_count(), 1);
+        let revision = shell.app().document_revision();
+        let digest = shell.app().canonical_digest();
+        let undo_steps = shell.app().undo_step_count();
+
+        shell.secondary_click_at(pick_point);
+        assert!(shell.offers(AppCommand::ViewFog));
+        shell.click_command(AppCommand::ViewFog);
+        assert!(shell.app().fog_visible());
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().text("digest-fog-shown")
+        );
+        assert!(shell.app().command_is_enabled(AppCommand::PreviousView));
+
+        shell.click_menu_command("menu-edit", AppCommand::Deselect);
+        shell.click_at(pick_point);
+        assert_eq!(shell.app().selected_occurrence_count(), 1);
+
+        shell.click_menu_command("menu-view", AppCommand::PreviousView);
+        assert!(!shell.app().fog_visible());
+        shell.click_menu_command("menu-view", AppCommand::ViewFog);
+        assert!(shell.app().fog_visible());
+        shell.click_menu_command("menu-view", AppCommand::ViewFog);
+        assert!(!shell.app().fog_visible());
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().text("digest-fog-hidden")
+        );
+        assert_eq!(shell.app().document_revision(), revision);
+        assert_eq!(shell.app().canonical_digest(), digest);
+        assert_eq!(shell.app().undo_step_count(), undo_steps);
+    }
+}
+
+#[test]
+fn shaded_command_is_localized_pickable_reversible_and_document_preserving() {
+    for catalog in [
+        LocaleCatalog::english(),
+        LocaleCatalog::slovak(),
+        LocaleCatalog::pseudo(),
+    ] {
+        let mut shell = Shell::with_catalog(catalog);
+        assert_eq!(
+            shell.app().command_label(AppCommand::ViewShaded),
+            shell.catalog().text("view-shaded")
+        );
+        assert!(!shell.app().command_is_enabled(AppCommand::ViewShaded));
+
+        let pick_point = shell.top_face_centre(1);
+        shell.click_at(pick_point);
+        assert_eq!(shell.app().selected_occurrence_count(), 1);
+        let revision = shell.app().document_revision();
+        let digest = shell.app().canonical_digest();
+        let undo_steps = shell.app().undo_step_count();
+
+        shell.click_menu_command("menu-view", AppCommand::ViewXray);
+        shell.click_menu_command("menu-view", AppCommand::ViewEdges);
+        shell.click_menu_command("menu-view", AppCommand::ViewWireframe);
+        shell.click_menu_command("menu-view", AppCommand::ViewMonochrome);
+        shell.click_menu_command("menu-view", AppCommand::ViewHiddenLine);
+        assert!(shell.app().xray_visible());
+        assert!(!shell.app().edges_visible());
+        assert!(shell.app().wireframe_visible());
+        assert!(shell.app().monochrome_visible());
+        assert!(shell.app().hidden_line_visible());
+
+        shell.secondary_click_at(pick_point);
+        assert!(shell.offers(AppCommand::ViewShaded));
+        shell.click_command(AppCommand::ViewShaded);
+        assert!(!shell.app().wireframe_visible());
+        assert!(!shell.app().monochrome_visible());
+        assert!(!shell.app().hidden_line_visible());
+        assert!(shell.app().xray_visible());
+        assert!(!shell.app().edges_visible());
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().text("digest-shaded-restored")
+        );
+        assert!(shell.app().command_is_enabled(AppCommand::PreviousView));
+
+        shell.click_menu_command("menu-edit", AppCommand::Deselect);
+        shell.click_at(pick_point);
+        assert_eq!(shell.app().selected_occurrence_count(), 1);
+
+        shell.click_menu_command("menu-view", AppCommand::PreviousView);
+        assert!(shell.app().wireframe_visible());
+        assert!(shell.app().monochrome_visible());
+        assert!(shell.app().hidden_line_visible());
+        assert!(shell.app().xray_visible());
+        assert!(!shell.app().edges_visible());
+        shell.click_menu_command("menu-view", AppCommand::ViewShaded);
+        assert!(!shell.app().wireframe_visible());
+        assert!(!shell.app().monochrome_visible());
+        assert!(!shell.app().hidden_line_visible());
+        assert_eq!(shell.app().document_revision(), revision);
+        assert_eq!(shell.app().canonical_digest(), digest);
+        assert_eq!(shell.app().undo_step_count(), undo_steps);
+    }
+}
+
+#[test]
+fn wireframe_toggle_is_localized_pickable_reversible_and_document_preserving() {
+    for catalog in [
+        LocaleCatalog::english(),
+        LocaleCatalog::slovak(),
+        LocaleCatalog::pseudo(),
+    ] {
+        let mut shell = Shell::with_catalog(catalog);
+        assert_eq!(
+            shell.app().command_label(AppCommand::ViewWireframe),
+            shell.catalog().text("view-wireframe")
+        );
+        assert!(!shell.app().wireframe_visible());
+        assert!(!shell.app().command_is_enabled(AppCommand::PreviousView));
+
+        let pick_point = shell.top_face_centre(1);
+        shell.click_at(pick_point);
+        assert_eq!(shell.app().selected_occurrence_count(), 1);
+        let revision = shell.app().document_revision();
+        let digest = shell.app().canonical_digest();
+        let undo_steps = shell.app().undo_step_count();
+
+        shell.secondary_click_at(pick_point);
+        assert!(shell.offers(AppCommand::ViewWireframe));
+        shell.click_command(AppCommand::ViewWireframe);
+        assert!(shell.app().wireframe_visible());
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().text("digest-wireframe-shown")
+        );
+        assert!(shell.app().command_is_enabled(AppCommand::PreviousView));
+
+        shell.click_menu_command("menu-edit", AppCommand::Deselect);
+        shell.click_at(pick_point);
+        assert_eq!(shell.app().selected_occurrence_count(), 1);
+
+        shell.click_menu_command("menu-view", AppCommand::PreviousView);
+        assert!(!shell.app().wireframe_visible());
+        shell.click_menu_command("menu-view", AppCommand::ViewWireframe);
+        assert!(shell.app().wireframe_visible());
+        shell.click_menu_command("menu-view", AppCommand::ViewWireframe);
+        assert!(!shell.app().wireframe_visible());
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().text("digest-wireframe-hidden")
+        );
+        assert_eq!(shell.app().document_revision(), revision);
+        assert_eq!(shell.app().canonical_digest(), digest);
+        assert_eq!(shell.app().undo_step_count(), undo_steps);
+    }
+}
+
+#[test]
+fn monochrome_toggle_is_localized_pickable_reversible_and_document_preserving() {
+    for catalog in [
+        LocaleCatalog::english(),
+        LocaleCatalog::slovak(),
+        LocaleCatalog::pseudo(),
+    ] {
+        let mut shell = Shell::with_catalog(catalog);
+        assert_eq!(
+            shell.app().command_label(AppCommand::ViewMonochrome),
+            shell.catalog().text("view-monochrome")
+        );
+        assert!(!shell.app().monochrome_visible());
+        assert!(!shell.app().command_is_enabled(AppCommand::PreviousView));
+
+        let pick_point = shell.top_face_centre(1);
+        shell.click_at(pick_point);
+        assert_eq!(shell.app().selected_occurrence_count(), 1);
+        let revision = shell.app().document_revision();
+        let digest = shell.app().canonical_digest();
+        let undo_steps = shell.app().undo_step_count();
+
+        shell.secondary_click_at(pick_point);
+        assert!(shell.offers(AppCommand::ViewMonochrome));
+        shell.click_command(AppCommand::ViewMonochrome);
+        assert!(shell.app().monochrome_visible());
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().text("digest-monochrome-shown")
+        );
+        assert!(shell.app().command_is_enabled(AppCommand::PreviousView));
+
+        shell.click_menu_command("menu-edit", AppCommand::Deselect);
+        shell.click_at(pick_point);
+        assert_eq!(shell.app().selected_occurrence_count(), 1);
+
+        shell.click_menu_command("menu-view", AppCommand::PreviousView);
+        assert!(!shell.app().monochrome_visible());
+        shell.click_menu_command("menu-view", AppCommand::ViewMonochrome);
+        assert!(shell.app().monochrome_visible());
+        shell.click_menu_command("menu-view", AppCommand::ViewMonochrome);
+        assert!(!shell.app().monochrome_visible());
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().text("digest-monochrome-hidden")
+        );
+        assert_eq!(shell.app().document_revision(), revision);
+        assert_eq!(shell.app().canonical_digest(), digest);
+        assert_eq!(shell.app().undo_step_count(), undo_steps);
+    }
+}
+
+#[test]
+fn hidden_line_toggle_is_localized_pickable_reversible_and_document_preserving() {
+    for catalog in [
+        LocaleCatalog::english(),
+        LocaleCatalog::slovak(),
+        LocaleCatalog::pseudo(),
+    ] {
+        let mut shell = Shell::with_catalog(catalog);
+        assert_eq!(
+            shell.app().command_label(AppCommand::ViewHiddenLine),
+            shell.catalog().text("view-hidden-line")
+        );
+        assert!(!shell.app().hidden_line_visible());
+        assert!(!shell.app().command_is_enabled(AppCommand::PreviousView));
+
+        let pick_point = shell.top_face_centre(1);
+        shell.click_at(pick_point);
+        assert_eq!(shell.app().selected_occurrence_count(), 1);
+        let revision = shell.app().document_revision();
+        let digest = shell.app().canonical_digest();
+        let undo_steps = shell.app().undo_step_count();
+
+        shell.secondary_click_at(pick_point);
+        assert!(shell.offers(AppCommand::ViewHiddenLine));
+        shell.click_command(AppCommand::ViewHiddenLine);
+        assert!(shell.app().hidden_line_visible());
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().text("digest-hidden-line-shown")
+        );
+        assert!(shell.app().command_is_enabled(AppCommand::PreviousView));
+
+        shell.click_menu_command("menu-edit", AppCommand::Deselect);
+        shell.click_at(pick_point);
+        assert_eq!(shell.app().selected_occurrence_count(), 1);
+
+        shell.click_menu_command("menu-view", AppCommand::PreviousView);
+        assert!(!shell.app().hidden_line_visible());
+        shell.click_menu_command("menu-view", AppCommand::ViewHiddenLine);
+        assert!(shell.app().hidden_line_visible());
+        shell.click_menu_command("menu-view", AppCommand::ViewHiddenLine);
+        assert!(!shell.app().hidden_line_visible());
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().text("digest-hidden-line-hidden")
+        );
+        assert_eq!(shell.app().document_revision(), revision);
+        assert_eq!(shell.app().canonical_digest(), digest);
+        assert_eq!(shell.app().undo_step_count(), undo_steps);
+    }
+}
+
+#[test]
+fn edges_toggle_is_localized_pickable_reversible_and_document_preserving() {
+    for catalog in [
+        LocaleCatalog::english(),
+        LocaleCatalog::slovak(),
+        LocaleCatalog::pseudo(),
+    ] {
+        let mut shell = Shell::with_catalog(catalog);
+        assert_eq!(
+            shell.app().command_label(AppCommand::ViewEdges),
+            shell.catalog().text("view-edges")
+        );
+        assert!(shell.app().edges_visible());
+        assert!(!shell.app().command_is_enabled(AppCommand::PreviousView));
+
+        let pick_point = shell.top_face_centre(1);
+        shell.click_at(pick_point);
+        assert_eq!(shell.app().selected_occurrence_count(), 1);
+        let revision = shell.app().document_revision();
+        let digest = shell.app().canonical_digest();
+        let undo_steps = shell.app().undo_step_count();
+
+        shell.secondary_click_at(pick_point);
+        assert!(shell.offers(AppCommand::ViewEdges));
+        shell.click_command(AppCommand::ViewEdges);
+        assert!(!shell.app().edges_visible());
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().text("digest-edges-hidden")
+        );
+        assert!(shell.app().command_is_enabled(AppCommand::PreviousView));
+
+        shell.click_menu_command("menu-edit", AppCommand::Deselect);
+        shell.click_at(pick_point);
+        assert_eq!(shell.app().selected_occurrence_count(), 1);
+
+        shell.click_menu_command("menu-view", AppCommand::PreviousView);
+        assert!(shell.app().edges_visible());
+        shell.click_menu_command("menu-view", AppCommand::ViewEdges);
+        assert!(!shell.app().edges_visible());
+        shell.click_menu_command("menu-view", AppCommand::ViewEdges);
+        assert!(shell.app().edges_visible());
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().text("digest-edges-shown")
+        );
+        assert_eq!(shell.app().document_revision(), revision);
+        assert_eq!(shell.app().canonical_digest(), digest);
+        assert_eq!(shell.app().undo_step_count(), undo_steps);
+    }
+}
+
+#[test]
+fn profiles_toggle_is_localized_pickable_reversible_and_document_preserving() {
+    for catalog in [
+        LocaleCatalog::english(),
+        LocaleCatalog::slovak(),
+        LocaleCatalog::pseudo(),
+    ] {
+        let mut shell = Shell::with_catalog(catalog);
+        assert_eq!(
+            shell.app().command_label(AppCommand::ViewProfiles),
+            shell.catalog().text("view-profiles")
+        );
+        assert!(!shell.app().profiles_visible());
+        assert!(!shell.app().command_is_enabled(AppCommand::PreviousView));
+
+        let pick_point = shell.top_face_centre(1);
+        shell.click_at(pick_point);
+        assert_eq!(shell.app().selected_occurrence_count(), 1);
+        let revision = shell.app().document_revision();
+        let digest = shell.app().canonical_digest();
+        let undo_steps = shell.app().undo_step_count();
+
+        shell.secondary_click_at(pick_point);
+        assert!(shell.offers(AppCommand::ViewProfiles));
+        shell.click_command(AppCommand::ViewProfiles);
+        assert!(shell.app().profiles_visible());
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().text("digest-profiles-shown")
+        );
+        assert!(shell.app().command_is_enabled(AppCommand::PreviousView));
+
+        shell.click_menu_command("menu-edit", AppCommand::Deselect);
+        shell.click_at(pick_point);
+        assert_eq!(shell.app().selected_occurrence_count(), 1);
+
+        shell.click_menu_command("menu-view", AppCommand::PreviousView);
+        assert!(!shell.app().profiles_visible());
+        shell.click_menu_command("menu-view", AppCommand::ViewProfiles);
+        assert!(shell.app().profiles_visible());
+        shell.click_menu_command("menu-view", AppCommand::ViewProfiles);
+        assert!(!shell.app().profiles_visible());
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().text("digest-profiles-hidden")
+        );
+        assert_eq!(shell.app().document_revision(), revision);
+        assert_eq!(shell.app().canonical_digest(), digest);
+        assert_eq!(shell.app().undo_step_count(), undo_steps);
+    }
+}
+
+#[test]
+fn halos_toggle_is_localized_pickable_reversible_and_document_preserving() {
+    for catalog in [
+        LocaleCatalog::english(),
+        LocaleCatalog::slovak(),
+        LocaleCatalog::pseudo(),
+    ] {
+        let mut shell = Shell::with_catalog(catalog);
+        assert_eq!(
+            shell.app().command_label(AppCommand::ViewHalos),
+            shell.catalog().text("view-halos")
+        );
+        assert!(!shell.app().halos_visible());
+        assert!(!shell.app().command_is_enabled(AppCommand::PreviousView));
+
+        let pick_point = shell.top_face_centre(1);
+        shell.click_at(pick_point);
+        assert_eq!(shell.app().selected_occurrence_count(), 1);
+        let revision = shell.app().document_revision();
+        let digest = shell.app().canonical_digest();
+        let undo_steps = shell.app().undo_step_count();
+
+        shell.secondary_click_at(pick_point);
+        assert!(shell.offers(AppCommand::ViewHalos));
+        shell.click_command(AppCommand::ViewHalos);
+        assert!(shell.app().halos_visible());
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().text("digest-halos-shown")
+        );
+        assert!(shell.app().command_is_enabled(AppCommand::PreviousView));
+
+        shell.click_menu_command("menu-edit", AppCommand::Deselect);
+        shell.click_at(pick_point);
+        assert_eq!(shell.app().selected_occurrence_count(), 1);
+
+        shell.click_menu_command("menu-view", AppCommand::PreviousView);
+        assert!(!shell.app().halos_visible());
+        shell.click_menu_command("menu-view", AppCommand::ViewHalos);
+        assert!(shell.app().halos_visible());
+        shell.click_menu_command("menu-view", AppCommand::ViewHalos);
+        assert!(!shell.app().halos_visible());
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().text("digest-halos-hidden")
+        );
+        assert_eq!(shell.app().document_revision(), revision);
+        assert_eq!(shell.app().canonical_digest(), digest);
+        assert_eq!(shell.app().undo_step_count(), undo_steps);
+    }
+}
+
+#[test]
+fn depth_cue_toggle_is_localized_pickable_reversible_and_document_preserving() {
+    for catalog in [
+        LocaleCatalog::english(),
+        LocaleCatalog::slovak(),
+        LocaleCatalog::pseudo(),
+    ] {
+        let mut shell = Shell::with_catalog(catalog);
+        assert_eq!(
+            shell.app().command_label(AppCommand::ViewDepthCue),
+            shell.catalog().text("view-depth-cue")
+        );
+        assert!(!shell.app().depth_cue_visible());
+        assert!(!shell.app().command_is_enabled(AppCommand::PreviousView));
+
+        let pick_point = shell.top_face_centre(1);
+        shell.click_at(pick_point);
+        assert_eq!(shell.app().selected_occurrence_count(), 1);
+        let revision = shell.app().document_revision();
+        let digest = shell.app().canonical_digest();
+        let undo_steps = shell.app().undo_step_count();
+
+        shell.secondary_click_at(pick_point);
+        assert!(shell.offers(AppCommand::ViewDepthCue));
+        shell.click_command(AppCommand::ViewDepthCue);
+        assert!(shell.app().depth_cue_visible());
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().text("digest-depth-cue-shown")
+        );
+        assert!(shell.app().command_is_enabled(AppCommand::PreviousView));
+
+        shell.click_menu_command("menu-edit", AppCommand::Deselect);
+        shell.click_at(pick_point);
+        assert_eq!(shell.app().selected_occurrence_count(), 1);
+
+        shell.click_menu_command("menu-view", AppCommand::PreviousView);
+        assert!(!shell.app().depth_cue_visible());
+        shell.click_menu_command("menu-view", AppCommand::ViewDepthCue);
+        assert!(shell.app().depth_cue_visible());
+        shell.click_menu_command("menu-view", AppCommand::ViewDepthCue);
+        assert!(!shell.app().depth_cue_visible());
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().text("digest-depth-cue-hidden")
+        );
+        assert_eq!(shell.app().document_revision(), revision);
+        assert_eq!(shell.app().canonical_digest(), digest);
+        assert_eq!(shell.app().undo_step_count(), undo_steps);
+    }
+}
+
+#[test]
+fn fade_distant_edges_toggle_is_localized_pickable_reversible_and_document_preserving() {
+    for catalog in [
+        LocaleCatalog::english(),
+        LocaleCatalog::slovak(),
+        LocaleCatalog::pseudo(),
+    ] {
+        let mut shell = Shell::with_catalog(catalog);
+        assert_eq!(
+            shell.app().command_label(AppCommand::ViewFadeDistantEdges),
+            shell.catalog().text("view-fade-distant-edges")
+        );
+        assert!(!shell.app().fade_distant_edges_visible());
+        assert!(!shell.app().command_is_enabled(AppCommand::PreviousView));
+
+        let pick_point = shell.top_face_centre(1);
+        shell.click_at(pick_point);
+        assert_eq!(shell.app().selected_occurrence_count(), 1);
+        let revision = shell.app().document_revision();
+        let digest = shell.app().canonical_digest();
+        let undo_steps = shell.app().undo_step_count();
+
+        shell.secondary_click_at(pick_point);
+        assert!(shell.offers(AppCommand::ViewFadeDistantEdges));
+        shell.click_command(AppCommand::ViewFadeDistantEdges);
+        assert!(shell.app().fade_distant_edges_visible());
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().text("digest-fade-distant-edges-shown")
+        );
+        assert!(shell.app().command_is_enabled(AppCommand::PreviousView));
+
+        shell.click_menu_command("menu-edit", AppCommand::Deselect);
+        shell.click_at(pick_point);
+        assert_eq!(shell.app().selected_occurrence_count(), 1);
+
+        shell.click_menu_command("menu-view", AppCommand::PreviousView);
+        assert!(!shell.app().fade_distant_edges_visible());
+        shell.click_menu_command("menu-view", AppCommand::ViewFadeDistantEdges);
+        assert!(shell.app().fade_distant_edges_visible());
+        shell.click_menu_command("menu-view", AppCommand::ViewFadeDistantEdges);
+        assert!(!shell.app().fade_distant_edges_visible());
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().text("digest-fade-distant-edges-hidden")
+        );
+        assert_eq!(shell.app().document_revision(), revision);
+        assert_eq!(shell.app().canonical_digest(), digest);
+        assert_eq!(shell.app().undo_step_count(), undo_steps);
+    }
+}
+
+#[test]
+fn high_contrast_edges_toggle_is_localized_pickable_reversible_and_document_preserving() {
+    for catalog in [
+        LocaleCatalog::english(),
+        LocaleCatalog::slovak(),
+        LocaleCatalog::pseudo(),
+    ] {
+        let mut shell = Shell::with_catalog(catalog);
+        assert_eq!(
+            shell.app().command_label(AppCommand::ViewHighContrastEdges),
+            shell.catalog().text("view-high-contrast-edges")
+        );
+        assert!(!shell.app().high_contrast_edges_visible());
+        assert!(!shell.app().command_is_enabled(AppCommand::PreviousView));
+
+        let pick_point = shell.top_face_centre(1);
+        shell.click_at(pick_point);
+        assert_eq!(shell.app().selected_occurrence_count(), 1);
+        let revision = shell.app().document_revision();
+        let digest = shell.app().canonical_digest();
+        let undo_steps = shell.app().undo_step_count();
+
+        shell.secondary_click_at(pick_point);
+        assert!(shell.offers(AppCommand::ViewHighContrastEdges));
+        shell.click_command(AppCommand::ViewHighContrastEdges);
+        assert!(shell.app().high_contrast_edges_visible());
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().text("digest-high-contrast-edges-shown")
+        );
+        assert!(shell.app().command_is_enabled(AppCommand::PreviousView));
+
+        shell.click_menu_command("menu-edit", AppCommand::Deselect);
+        shell.click_at(pick_point);
+        assert_eq!(shell.app().selected_occurrence_count(), 1);
+
+        shell.click_menu_command("menu-view", AppCommand::PreviousView);
+        assert!(!shell.app().high_contrast_edges_visible());
+        shell.click_menu_command("menu-view", AppCommand::ViewHighContrastEdges);
+        assert!(shell.app().high_contrast_edges_visible());
+        shell.click_menu_command("menu-view", AppCommand::ViewHighContrastEdges);
+        assert!(!shell.app().high_contrast_edges_visible());
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().text("digest-high-contrast-edges-hidden")
+        );
+        assert_eq!(shell.app().document_revision(), revision);
+        assert_eq!(shell.app().canonical_digest(), digest);
+        assert_eq!(shell.app().undo_step_count(), undo_steps);
+    }
+}
+
+#[test]
+fn selection_halo_toggle_is_localized_pickable_reversible_and_document_preserving() {
+    for catalog in [
+        LocaleCatalog::english(),
+        LocaleCatalog::slovak(),
+        LocaleCatalog::pseudo(),
+    ] {
+        let mut shell = Shell::with_catalog(catalog);
+        assert_eq!(
+            shell.app().command_label(AppCommand::ViewSelectionHalo),
+            shell.catalog().text("view-selection-halo")
+        );
+        assert!(!shell.app().selection_halo_visible());
+        assert!(!shell.app().command_is_enabled(AppCommand::PreviousView));
+
+        let pick_point = shell.top_face_centre(1);
+        shell.click_at(pick_point);
+        assert_eq!(shell.app().selected_occurrence_count(), 1);
+        let revision = shell.app().document_revision();
+        let digest = shell.app().canonical_digest();
+        let undo_steps = shell.app().undo_step_count();
+
+        shell.secondary_click_at(pick_point);
+        assert!(shell.offers(AppCommand::ViewSelectionHalo));
+        shell.click_command(AppCommand::ViewSelectionHalo);
+        assert!(shell.app().selection_halo_visible());
+        assert_eq!(shell.app().selected_occurrence_count(), 1);
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().text("digest-selection-halo-shown")
+        );
+        assert!(shell.app().command_is_enabled(AppCommand::PreviousView));
+
+        shell.click_menu_command("menu-view", AppCommand::PreviousView);
+        assert!(!shell.app().selection_halo_visible());
+        shell.click_menu_command("menu-view", AppCommand::ViewSelectionHalo);
+        assert!(shell.app().selection_halo_visible());
+        shell.click_menu_command("menu-view", AppCommand::ViewSelectionHalo);
+        assert!(!shell.app().selection_halo_visible());
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().text("digest-selection-halo-hidden")
+        );
+        assert_eq!(shell.app().selected_occurrence_count(), 1);
+        assert_eq!(shell.app().document_revision(), revision);
+        assert_eq!(shell.app().canonical_digest(), digest);
+        assert_eq!(shell.app().undo_step_count(), undo_steps);
+    }
+}
+
+#[test]
+fn endpoints_toggle_is_localized_pickable_reversible_and_document_preserving() {
+    for catalog in [
+        LocaleCatalog::english(),
+        LocaleCatalog::slovak(),
+        LocaleCatalog::pseudo(),
+    ] {
+        let mut shell = Shell::with_catalog(catalog);
+        assert_eq!(
+            shell.app().command_label(AppCommand::ViewEndpoints),
+            shell.catalog().text("view-endpoints")
+        );
+        assert!(!shell.app().endpoints_visible());
+        assert!(!shell.app().command_is_enabled(AppCommand::PreviousView));
+
+        let pick_point = shell.top_face_centre(1);
+        shell.click_at(pick_point);
+        assert_eq!(shell.app().selected_occurrence_count(), 1);
+        let revision = shell.app().document_revision();
+        let digest = shell.app().canonical_digest();
+        let undo_steps = shell.app().undo_step_count();
+
+        shell.secondary_click_at(pick_point);
+        assert!(shell.offers(AppCommand::ViewEndpoints));
+        shell.click_command(AppCommand::ViewEndpoints);
+        assert!(shell.app().endpoints_visible());
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().text("digest-endpoints-shown")
+        );
+        assert!(shell.app().command_is_enabled(AppCommand::PreviousView));
+
+        shell.click_menu_command("menu-edit", AppCommand::Deselect);
+        shell.click_at(pick_point);
+        assert_eq!(shell.app().selected_occurrence_count(), 1);
+
+        shell.click_menu_command("menu-view", AppCommand::PreviousView);
+        assert!(!shell.app().endpoints_visible());
+        shell.click_menu_command("menu-view", AppCommand::ViewEndpoints);
+        assert!(shell.app().endpoints_visible());
+        shell.click_menu_command("menu-view", AppCommand::ViewEndpoints);
+        assert!(!shell.app().endpoints_visible());
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().text("digest-endpoints-hidden")
+        );
+        assert_eq!(shell.app().document_revision(), revision);
+        assert_eq!(shell.app().canonical_digest(), digest);
+        assert_eq!(shell.app().undo_step_count(), undo_steps);
+    }
+}
+
+#[test]
+fn midpoints_toggle_is_localized_pickable_reversible_and_document_preserving() {
+    for catalog in [
+        LocaleCatalog::english(),
+        LocaleCatalog::slovak(),
+        LocaleCatalog::pseudo(),
+    ] {
+        let mut shell = Shell::with_catalog(catalog);
+        assert_eq!(
+            shell.app().command_label(AppCommand::ViewMidpoints),
+            shell.catalog().text("view-midpoints")
+        );
+        assert!(!shell.app().midpoints_visible());
+        assert!(!shell.app().command_is_enabled(AppCommand::PreviousView));
+
+        let pick_point = shell.top_face_centre(1);
+        shell.click_at(pick_point);
+        assert_eq!(shell.app().selected_occurrence_count(), 1);
+        let revision = shell.app().document_revision();
+        let digest = shell.app().canonical_digest();
+        let undo_steps = shell.app().undo_step_count();
+
+        shell.secondary_click_at(pick_point);
+        assert!(shell.offers(AppCommand::ViewMidpoints));
+        shell.click_command(AppCommand::ViewMidpoints);
+        assert!(shell.app().midpoints_visible());
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().text("digest-midpoints-shown")
+        );
+        assert!(shell.app().command_is_enabled(AppCommand::PreviousView));
+
+        shell.click_menu_command("menu-edit", AppCommand::Deselect);
+        shell.click_at(pick_point);
+        assert_eq!(shell.app().selected_occurrence_count(), 1);
+
+        shell.click_menu_command("menu-view", AppCommand::PreviousView);
+        assert!(!shell.app().midpoints_visible());
+        shell.click_menu_command("menu-view", AppCommand::ViewMidpoints);
+        assert!(shell.app().midpoints_visible());
+        shell.click_menu_command("menu-view", AppCommand::ViewMidpoints);
+        assert!(!shell.app().midpoints_visible());
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().text("digest-midpoints-hidden")
+        );
+        assert_eq!(shell.app().document_revision(), revision);
+        assert_eq!(shell.app().canonical_digest(), digest);
+        assert_eq!(shell.app().undo_step_count(), undo_steps);
+    }
+}
+
+#[test]
+fn extensions_toggle_is_localized_pickable_reversible_and_document_preserving() {
+    for catalog in [
+        LocaleCatalog::english(),
+        LocaleCatalog::slovak(),
+        LocaleCatalog::pseudo(),
+    ] {
+        let mut shell = Shell::with_catalog(catalog);
+        assert_eq!(
+            shell.app().command_label(AppCommand::ViewExtensions),
+            shell.catalog().text("view-extensions")
+        );
+        assert!(!shell.app().extensions_visible());
+        assert!(!shell.app().command_is_enabled(AppCommand::PreviousView));
+
+        let pick_point = shell.top_face_centre(1);
+        shell.click_at(pick_point);
+        assert_eq!(shell.app().selected_occurrence_count(), 1);
+        let revision = shell.app().document_revision();
+        let digest = shell.app().canonical_digest();
+        let undo_steps = shell.app().undo_step_count();
+
+        shell.secondary_click_at(pick_point);
+        assert!(shell.offers(AppCommand::ViewExtensions));
+        shell.click_command(AppCommand::ViewExtensions);
+        assert!(shell.app().extensions_visible());
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().text("digest-extensions-shown")
+        );
+        assert!(shell.app().command_is_enabled(AppCommand::PreviousView));
+
+        shell.click_menu_command("menu-edit", AppCommand::Deselect);
+        shell.click_at(pick_point);
+        assert_eq!(shell.app().selected_occurrence_count(), 1);
+
+        shell.click_menu_command("menu-view", AppCommand::PreviousView);
+        assert!(!shell.app().extensions_visible());
+        shell.click_menu_command("menu-view", AppCommand::ViewExtensions);
+        assert!(shell.app().extensions_visible());
+        shell.click_menu_command("menu-view", AppCommand::ViewExtensions);
+        assert!(!shell.app().extensions_visible());
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().text("digest-extensions-hidden")
+        );
+        assert_eq!(shell.app().document_revision(), revision);
+        assert_eq!(shell.app().canonical_digest(), digest);
+        assert_eq!(shell.app().undo_step_count(), undo_steps);
+    }
+}
+
+#[test]
+fn jitter_toggle_is_localized_pickable_reversible_and_document_preserving() {
+    for catalog in [
+        LocaleCatalog::english(),
+        LocaleCatalog::slovak(),
+        LocaleCatalog::pseudo(),
+    ] {
+        let mut shell = Shell::with_catalog(catalog);
+        assert_eq!(
+            shell.app().command_label(AppCommand::ViewJitter),
+            shell.catalog().text("view-jitter")
+        );
+        assert!(!shell.app().jitter_visible());
+        assert!(!shell.app().command_is_enabled(AppCommand::PreviousView));
+
+        let pick_point = shell.top_face_centre(1);
+        shell.click_at(pick_point);
+        assert_eq!(shell.app().selected_occurrence_count(), 1);
+        let revision = shell.app().document_revision();
+        let digest = shell.app().canonical_digest();
+        let undo_steps = shell.app().undo_step_count();
+
+        shell.secondary_click_at(pick_point);
+        assert!(shell.offers(AppCommand::ViewJitter));
+        shell.click_command(AppCommand::ViewJitter);
+        assert!(shell.app().jitter_visible());
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().text("digest-jitter-shown")
+        );
+        assert!(shell.app().command_is_enabled(AppCommand::PreviousView));
+
+        shell.click_menu_command("menu-edit", AppCommand::Deselect);
+        shell.click_at(pick_point);
+        assert_eq!(shell.app().selected_occurrence_count(), 1);
+
+        shell.click_menu_command("menu-view", AppCommand::PreviousView);
+        assert!(!shell.app().jitter_visible());
+        shell.click_menu_command("menu-view", AppCommand::ViewJitter);
+        assert!(shell.app().jitter_visible());
+        shell.click_menu_command("menu-view", AppCommand::ViewJitter);
+        assert!(!shell.app().jitter_visible());
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().text("digest-jitter-hidden")
+        );
+        assert_eq!(shell.app().document_revision(), revision);
+        assert_eq!(shell.app().canonical_digest(), digest);
+        assert_eq!(shell.app().undo_step_count(), undo_steps);
+    }
+}
+
+#[test]
+fn dashes_toggle_is_localized_pickable_reversible_and_document_preserving() {
+    for catalog in [
+        LocaleCatalog::english(),
+        LocaleCatalog::slovak(),
+        LocaleCatalog::pseudo(),
+    ] {
+        let mut shell = Shell::with_catalog(catalog);
+        assert_eq!(
+            shell.app().command_label(AppCommand::ViewDashes),
+            shell.catalog().text("view-dashes")
+        );
+        assert!(!shell.app().dashes_visible());
+        assert!(!shell.app().command_is_enabled(AppCommand::PreviousView));
+
+        let pick_point = shell.top_face_centre(1);
+        shell.click_at(pick_point);
+        assert_eq!(shell.app().selected_occurrence_count(), 1);
+        let revision = shell.app().document_revision();
+        let digest = shell.app().canonical_digest();
+        let undo_steps = shell.app().undo_step_count();
+
+        shell.secondary_click_at(pick_point);
+        assert!(shell.offers(AppCommand::ViewDashes));
+        shell.click_command(AppCommand::ViewDashes);
+        assert!(shell.app().dashes_visible());
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().text("digest-dashes-shown")
+        );
+        assert!(shell.app().command_is_enabled(AppCommand::PreviousView));
+
+        shell.click_menu_command("menu-edit", AppCommand::Deselect);
+        shell.click_at(pick_point);
+        assert_eq!(shell.app().selected_occurrence_count(), 1);
+
+        shell.click_menu_command("menu-view", AppCommand::PreviousView);
+        assert!(!shell.app().dashes_visible());
+        shell.click_menu_command("menu-view", AppCommand::ViewDashes);
+        assert!(shell.app().dashes_visible());
+        shell.click_menu_command("menu-view", AppCommand::ViewDashes);
+        assert!(!shell.app().dashes_visible());
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().text("digest-dashes-hidden")
+        );
+        assert_eq!(shell.app().document_revision(), revision);
+        assert_eq!(shell.app().canonical_digest(), digest);
+        assert_eq!(shell.app().undo_step_count(), undo_steps);
+    }
+}
+
+#[test]
+fn color_by_axis_toggle_is_localized_pickable_reversible_and_document_preserving() {
+    for catalog in [
+        LocaleCatalog::english(),
+        LocaleCatalog::slovak(),
+        LocaleCatalog::pseudo(),
+    ] {
+        let mut shell = Shell::with_catalog(catalog);
+        assert_eq!(
+            shell.app().command_label(AppCommand::ViewColorByAxis),
+            shell.catalog().text("view-color-by-axis")
+        );
+        assert!(!shell.app().color_by_axis_visible());
+        assert!(!shell.app().command_is_enabled(AppCommand::PreviousView));
+
+        let pick_point = shell.top_face_centre(1);
+        shell.click_at(pick_point);
+        assert_eq!(shell.app().selected_occurrence_count(), 1);
+        let revision = shell.app().document_revision();
+        let digest = shell.app().canonical_digest();
+        let undo_steps = shell.app().undo_step_count();
+
+        shell.secondary_click_at(pick_point);
+        assert!(shell.offers(AppCommand::ViewColorByAxis));
+        shell.click_command(AppCommand::ViewColorByAxis);
+        assert!(shell.app().color_by_axis_visible());
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().text("digest-color-by-axis-shown")
+        );
+        assert!(shell.app().command_is_enabled(AppCommand::PreviousView));
+
+        shell.click_menu_command("menu-edit", AppCommand::Deselect);
+        shell.click_at(pick_point);
+        assert_eq!(shell.app().selected_occurrence_count(), 1);
+
+        shell.click_menu_command("menu-view", AppCommand::PreviousView);
+        assert!(!shell.app().color_by_axis_visible());
+        shell.click_menu_command("menu-view", AppCommand::ViewColorByAxis);
+        assert!(shell.app().color_by_axis_visible());
+        shell.click_menu_command("menu-view", AppCommand::ViewColorByAxis);
+        assert!(!shell.app().color_by_axis_visible());
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().text("digest-color-by-axis-hidden")
+        );
+        assert_eq!(shell.app().document_revision(), revision);
+        assert_eq!(shell.app().canonical_digest(), digest);
+        assert_eq!(shell.app().undo_step_count(), undo_steps);
+    }
+}
+
+#[test]
+fn hidden_objects_toggle_is_localized_non_interactive_reversible_and_document_preserving() {
+    for catalog in [
+        LocaleCatalog::english(),
+        LocaleCatalog::slovak(),
+        LocaleCatalog::pseudo(),
+    ] {
+        let mut shell = Shell::with_catalog(catalog);
+        assert_eq!(
+            shell.app().command_label(AppCommand::ViewHiddenObjects),
+            shell.catalog().text("view-hidden-objects")
+        );
+        assert!(!shell.app().hidden_objects_visible());
+        assert_eq!(shell.app().hidden_ghost_count(), 0);
+        assert!(
+            !shell
+                .app()
+                .command_is_enabled(AppCommand::ViewHiddenObjects)
+        );
+
+        let hidden_point = shell.top_face_centre(1);
+        shell.click_at(hidden_point);
+        shell.click_menu_command("menu-edit", AppCommand::Copy);
+        shell.click_menu_command("menu-edit", AppCommand::Paste);
+        shell.click_menu_command("menu-model", AppCommand::SelectAllInstances);
+        shell.click_menu_command("menu-view", AppCommand::Hide);
+        assert_eq!(shell.app().hidden_occurrence_count(), 2);
+        shell.click_menu_command("menu-edit", AppCommand::Deselect);
+        assert_eq!(shell.app().selected_occurrence_count(), 0);
+        assert!(
+            shell
+                .app()
+                .command_is_enabled(AppCommand::ViewHiddenObjects)
+        );
+
+        let revision = shell.app().document_revision();
+        let digest = shell.app().canonical_digest();
+        let undo_steps = shell.app().undo_step_count();
+
+        shell.secondary_click_at(hidden_point);
+        assert!(shell.offers(AppCommand::ViewHiddenObjects));
+        shell.click_command(AppCommand::ViewHiddenObjects);
+        assert!(shell.app().hidden_objects_visible());
+        assert_eq!(shell.app().hidden_ghost_count(), 2);
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().text("digest-hidden-objects-shown")
+        );
+        assert!(shell.app().command_is_enabled(AppCommand::PreviousView));
+
+        shell.click_at(hidden_point);
+        assert_eq!(shell.app().selected_occurrence_count(), 0);
+
+        shell.click_menu_command("menu-view", AppCommand::PreviousView);
+        assert!(!shell.app().hidden_objects_visible());
+        assert_eq!(shell.app().hidden_ghost_count(), 0);
+
+        shell.click_menu_command("menu-view", AppCommand::ViewHiddenObjects);
+        assert!(shell.app().hidden_objects_visible());
+        shell.click_menu_command("menu-view", AppCommand::ViewHiddenObjects);
+        assert!(!shell.app().hidden_objects_visible());
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().text("digest-hidden-objects-hidden")
+        );
+        assert_eq!(shell.app().document_revision(), revision);
+        assert_eq!(shell.app().canonical_digest(), digest);
+        assert_eq!(shell.app().undo_step_count(), undo_steps);
+    }
+}
+
+#[test]
+fn center_selection_is_localized_accessible_centered_and_document_preserving() {
+    for catalog in [
+        LocaleCatalog::english(),
+        LocaleCatalog::slovak(),
+        LocaleCatalog::pseudo(),
+    ] {
+        let mut shell = Shell::with_catalog(catalog);
+        assert_eq!(
+            shell.app().command_label(AppCommand::CenterSelection),
+            shell.catalog().text("view-center-selection")
+        );
+        assert!(!shell.app().command_is_enabled(AppCommand::CenterSelection));
+
+        shell.click_at(shell.viewport_rect().center());
+        assert!(shell.app_mut().copy_selected(Vec3::new(1_000.0, 25.0, 0.0)));
+        shell.settle();
+        shell.click_menu_command("menu-view", AppCommand::ViewFront);
+        shell.click_menu_command("menu-view", AppCommand::ZoomFit);
+        shell.click_at(shell.top_face_centre(1));
+        assert!(shell.app().command_is_enabled(AppCommand::CenterSelection));
+
+        shell.open_menu("menu-view");
+        assert!(shell.offers(AppCommand::CenterSelection));
+        shell.press_key(Key::Escape);
+
+        let rect = shell.viewport_rect();
+        let (origin, size) = shell.app().occurrence_box_geometry(1).unwrap();
+        let selected_center = origin + Vec3::new(size.x * 0.5, size.y * 0.5, size.z * 0.5);
+        assert!(
+            shell
+                .app()
+                .project_to_screen(selected_center, rect)
+                .distance(rect.center())
+                > 1.0
+        );
+        let zoom = shell.app().camera_zoom();
+        let orientation = shell.app().camera_orientation();
+        let projection = shell.app().projection_mode();
+        let revision = shell.app().document_revision();
+        let digest = shell.app().canonical_digest();
+        let undo_steps = shell.app().undo_step_count();
+
+        shell.secondary_click_at(shell.top_face_centre(1));
+        assert!(shell.offers(AppCommand::CenterSelection));
+        shell.click_command(AppCommand::CenterSelection);
+        assert!(
+            shell
+                .app()
+                .project_to_screen(selected_center, rect)
+                .distance(rect.center())
+                < 0.01
+        );
+        assert!((shell.app().camera_zoom() - zoom).abs() < 1.0e-5);
+        assert_eq!(shell.app().camera_orientation(), orientation);
+        assert_eq!(shell.app().projection_mode(), projection);
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().format(
+                "digest-center-selection",
+                &BTreeMap::from([("count", "1".to_owned())]),
+            )
+        );
+        assert_eq!(shell.app().document_revision(), revision);
+        assert_eq!(shell.app().canonical_digest(), digest);
+        assert_eq!(shell.app().undo_step_count(), undo_steps);
+    }
+}
+
+#[test]
+fn zoom_window_is_localized_bounded_reversible_and_document_preserving() {
+    for catalog in [
+        LocaleCatalog::english(),
+        LocaleCatalog::slovak(),
+        LocaleCatalog::pseudo(),
+    ] {
+        let mut shell = Shell::with_catalog(catalog);
+        assert_eq!(
+            shell.app().command_label(AppCommand::ZoomWindow),
+            shell.catalog().text("view-zoom-window")
+        );
+        assert!(!shell.app().command_is_enabled(AppCommand::PreviousView));
+
+        shell.open_menu("menu-view");
+        assert!(shell.offers(AppCommand::ZoomWindow));
+        shell.press_key(Key::Escape);
+
+        let rect = shell.viewport_rect();
+        let zoom = shell.app().camera_zoom();
+        let orientation = shell.app().camera_orientation();
+        let projection = shell.app().projection_mode();
+        let revision = shell.app().document_revision();
+        let digest = shell.app().canonical_digest();
+        let undo_steps = shell.app().undo_step_count();
+
+        shell.click_menu_command("menu-view", AppCommand::ZoomWindow);
+        shell.drag(rect.center(), rect.center() + Vec2::new(3.0, 3.0));
+        assert!((shell.app().camera_zoom() - zoom).abs() < 1.0e-5);
+        assert!(!shell.app().command_is_enabled(AppCommand::PreviousView));
+        shell.press_key(Key::Escape);
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().text("digest-cancelled")
+        );
+
+        let (origin, size) = shell.app().occurrence_box_geometry(1).unwrap();
+        let probe = origin + Vec3::new(size.x * 0.5, size.y * 0.5, size.z * 0.5);
+        let probe_before = shell.app().project_to_screen(probe, rect);
+        shell.secondary_click_at(shell.top_face_centre(1));
+        assert!(shell.offers(AppCommand::ZoomWindow));
+        shell.click_command(AppCommand::ZoomWindow);
+        shell.drag(
+            probe_before - Vec2::new(80.0, 60.0),
+            probe_before + Vec2::new(80.0, 60.0),
+        );
+
+        assert!(shell.app().camera_zoom() > zoom);
+        assert_eq!(shell.app().camera_orientation(), orientation);
+        assert_eq!(shell.app().projection_mode(), projection);
+        assert!(
+            shell
+                .app()
+                .project_to_screen(probe, rect)
+                .distance(rect.center())
+                < 0.01
+        );
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().text("digest-zoom-window")
+        );
+        assert!(shell.app().command_is_enabled(AppCommand::PreviousView));
+        shell.click_menu_command("menu-view", AppCommand::PreviousView);
+        assert!((shell.app().camera_zoom() - zoom).abs() < 1.0e-5);
+        assert!(
+            shell
+                .app()
+                .project_to_screen(probe, rect)
+                .distance(probe_before)
+                < 0.01
+        );
+        assert_eq!(shell.app().document_revision(), revision);
+        assert_eq!(shell.app().canonical_digest(), digest);
+        assert_eq!(shell.app().undo_step_count(), undo_steps);
+    }
+}
+
+#[test]
+fn standard_orthographic_views_are_localized_accessible_and_document_preserving() {
+    for catalog in [
+        LocaleCatalog::english(),
+        LocaleCatalog::slovak(),
+        LocaleCatalog::pseudo(),
+    ] {
+        let mut shell = Shell::with_catalog(catalog);
+        let revision = shell.app().document_revision();
+        let digest = shell.app().canonical_digest();
+        let undo_steps = shell.app().undo_step_count();
+
+        for (command, key) in [
+            (AppCommand::ViewTop, "view-top"),
+            (AppCommand::ViewBottom, "view-bottom"),
+            (AppCommand::ViewFront, "view-front"),
+            (AppCommand::ViewBack, "view-back"),
+            (AppCommand::ViewRight, "view-right"),
+            (AppCommand::ViewLeft, "view-left"),
+        ] {
+            assert_eq!(
+                shell.app().command_label(command),
+                shell.catalog().text(key)
+            );
+            assert!(shell.offers(command));
+            shell.click_command(command);
+            assert_eq!(
+                shell.app().action_digest(),
+                shell.catalog().format(
+                    "digest-view-changed",
+                    &BTreeMap::from([("view", shell.catalog().text(key))]),
+                )
+            );
+            shell.click_menu_command("menu-view", command);
+            assert_eq!(
+                shell.app().action_digest(),
+                shell.catalog().format(
+                    "digest-view-changed",
+                    &BTreeMap::from([("view", shell.catalog().text(key))]),
+                )
+            );
+            assert_eq!(shell.app().document_revision(), revision);
+            assert_eq!(shell.app().canonical_digest(), digest);
+            assert_eq!(shell.app().undo_step_count(), undo_steps);
+        }
+    }
+}
+
+#[test]
+fn zoom_selection_is_localized_selection_bound_and_document_preserving() {
+    for catalog in [
+        LocaleCatalog::english(),
+        LocaleCatalog::slovak(),
+        LocaleCatalog::pseudo(),
+    ] {
+        let mut shell = Shell::with_catalog(catalog);
+        assert_eq!(
+            shell.app().command_label(AppCommand::ZoomSelection),
+            shell.catalog().text("view-zoom-selection")
+        );
+        assert!(!shell.app().command_is_enabled(AppCommand::ZoomSelection));
+
+        shell.click_at(shell.viewport_rect().center());
+        assert!(shell.app_mut().copy_selected(Vec3::new(1_000.0, 25.0, 0.0)));
+        shell.settle();
+        shell.click_menu_command("menu-view", AppCommand::ZoomFit);
+        let all_zoom = shell.app().camera_zoom();
+        shell.click_at(shell.top_face_centre(1));
+        assert_eq!(shell.app().selected_occurrence_count(), 1);
+        assert!(shell.app().command_is_enabled(AppCommand::ZoomSelection));
+
+        let revision = shell.app().document_revision();
+        let digest = shell.app().canonical_digest();
+        let undo_steps = shell.app().undo_step_count();
+        shell.click_menu_command("menu-view", AppCommand::ZoomSelection);
+
+        assert!(shell.app().camera_zoom() > all_zoom * 2.0);
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().format(
+                "digest-zoom-selection",
+                &BTreeMap::from([("count", "1".to_owned())]),
+            )
+        );
+        let rect = shell.viewport_rect();
+        let (origin, size) = shell.app().occurrence_box_geometry(1).unwrap();
+        let selected_center = shell.app().project_to_screen(
+            origin + Vec3::new(size.x * 0.5, size.y * 0.5, size.z * 0.5),
+            rect,
+        );
+        assert!(selected_center.distance(rect.center()) < rect.width() * 0.1);
+        let (origin, size) = shell.app().occurrence_box_geometry(2).unwrap();
+        let unselected_center = shell.app().project_to_screen(
+            origin + Vec3::new(size.x * 0.5, size.y * 0.5, size.z * 0.5),
+            rect,
+        );
+        assert!(!rect.expand(5.0).contains(unselected_center));
+        assert_eq!(shell.app().document_revision(), revision);
+        assert_eq!(shell.app().canonical_digest(), digest);
+        assert_eq!(shell.app().undo_step_count(), undo_steps);
+
+        shell.click_menu_command("menu-edit", AppCommand::Deselect);
+        assert!(!shell.app().command_is_enabled(AppCommand::ZoomSelection));
+    }
+}
+
+#[test]
+fn zoom_steps_are_localized_keyboard_accessible_bounded_and_document_preserving() {
+    for catalog in [
+        LocaleCatalog::english(),
+        LocaleCatalog::slovak(),
+        LocaleCatalog::pseudo(),
+    ] {
+        let mut shell = Shell::with_catalog(catalog);
+        assert_eq!(
+            shell.app().command_label(AppCommand::ZoomIn),
+            shell.catalog().text("view-zoom-in")
+        );
+        assert_eq!(
+            shell.app().command_label(AppCommand::ZoomOut),
+            shell.catalog().text("view-zoom-out")
+        );
+        shell.open_menu("menu-view");
+        assert!(shell.offers(AppCommand::ZoomIn));
+        assert!(shell.offers(AppCommand::ZoomOut));
+        shell.press_key(Key::Escape);
+
+        let projection = shell.app().projection_mode();
+        let revision = shell.app().document_revision();
+        let digest = shell.app().canonical_digest();
+        let undo_steps = shell.app().undo_step_count();
+        let initial_zoom = shell.app().camera_zoom();
+
+        shell.click_menu_command("menu-view", AppCommand::ZoomIn);
+        assert!((shell.app().camera_zoom() - initial_zoom * 1.25).abs() < 1.0e-5);
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().text("digest-zoom-in")
+        );
+        shell.click_menu_command("menu-view", AppCommand::ZoomOut);
+        assert!((shell.app().camera_zoom() - initial_zoom).abs() < 1.0e-5);
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().text("digest-zoom-out")
+        );
+
+        shell.key(Key::Plus, ctrl());
+        assert!((shell.app().camera_zoom() - initial_zoom * 1.25).abs() < 1.0e-5);
+        shell.key(Key::Minus, ctrl());
+        assert!((shell.app().camera_zoom() - initial_zoom).abs() < 1.0e-5);
+
+        assert_eq!(shell.app().projection_mode(), projection);
+        assert_eq!(shell.app().document_revision(), revision);
+        assert_eq!(shell.app().canonical_digest(), digest);
+        assert_eq!(shell.app().undo_step_count(), undo_steps);
+    }
+}
+
+#[test]
+fn help_about_is_localized_informative_and_presentation_only() {
+    for catalog in [
+        LocaleCatalog::english(),
+        LocaleCatalog::slovak(),
+        LocaleCatalog::pseudo(),
+    ] {
+        let mut shell = Shell::with_catalog(catalog);
+        let revision = shell.app().document_revision();
+        let digest = shell.app().canonical_digest();
+        let undo_steps = shell.app().undo_step_count();
+        let version = shell.catalog().format(
+            "about-version",
+            &BTreeMap::from([("version", env!("CARGO_PKG_VERSION").to_owned())]),
+        );
+        let license = shell.catalog().format(
+            "about-license",
+            &BTreeMap::from([("license", env!("CARGO_PKG_LICENSE").to_owned())]),
+        );
+        let close = shell.catalog().text("about-close");
+
+        assert_eq!(
+            shell.app().command_label(AppCommand::About),
+            shell.catalog().text("help-about")
+        );
+        shell.click_menu_command("menu-help", AppCommand::About);
+        assert!(shell.app().about_visible());
+        assert!(shell.has_visible_label(&version));
+        assert!(shell.has_visible_label(&license));
+        assert_eq!(shell.app().document_revision(), revision);
+        assert_eq!(shell.app().canonical_digest(), digest);
+        assert_eq!(shell.app().undo_step_count(), undo_steps);
+
+        shell.click_role_and_label(Role::Button, &close);
+        assert!(!shell.app().about_visible());
+        shell.click_menu_command("menu-help", AppCommand::About);
+        assert!(shell.app().about_visible());
+        shell.key(Key::N, ctrl());
+        assert!(shell.app().about_visible());
+        assert!(shell.has_visible_label(&version));
+        assert!(shell.has_visible_label(&license));
+    }
+}
+
+#[test]
+fn rename_occurrence_is_localized_selection_bound_and_one_undo_step() {
+    for catalog in [
+        LocaleCatalog::english(),
+        LocaleCatalog::slovak(),
+        LocaleCatalog::pseudo(),
+    ] {
+        let mut shell = Shell::with_catalog(catalog);
+        let occurrence_id = OccurrenceId(1);
+        let original_name = shell
+            .app()
+            .occurrence_name(occurrence_id)
+            .expect("the initial occurrence exists");
+        assert_eq!(
+            shell.app().command_label(AppCommand::RenameOccurrence),
+            shell.catalog().text("model-rename-occurrence")
+        );
+
+        shell.click_menu_command("menu-model", AppCommand::RenameOccurrence);
+        assert!(!shell.app().rename_occurrence_visible());
+
+        shell.click_at(shell.top_face_centre(1));
+        shell.click_menu_command("menu-edit", AppCommand::Copy);
+        assert!(shell.app().command_is_enabled(AppCommand::Paste));
+        let revision = shell.app().document_revision();
+        let digest = shell.app().canonical_digest();
+        let undo_steps = shell.app().undo_step_count();
+        let input_label = shell.catalog().text("dialog-rename-occurrence-name");
+        shell.click_menu_command("menu-model", AppCommand::RenameOccurrence);
+        assert!(shell.app().rename_occurrence_visible());
+        assert_eq!(
+            shell.app().rename_occurrence_input(),
+            Some(original_name.as_str())
+        );
+        shell.click_role_and_label(
+            Role::Button,
+            &shell.catalog().text("dialog-rename-occurrence-confirm"),
+        );
+        assert!(shell.app().rename_occurrence_visible());
+        assert_eq!(shell.app().document_revision(), revision);
+        assert_eq!(shell.app().canonical_digest(), digest);
+        assert_eq!(shell.app().undo_step_count(), undo_steps);
+        shell.click_role_and_label(
+            Role::Button,
+            &shell.catalog().text("dialog-rename-occurrence-cancel"),
+        );
+        assert!(!shell.app().rename_occurrence_visible());
+        assert_eq!(shell.app().document_revision(), revision);
+
+        shell.click_menu_command("menu-model", AppCommand::RenameOccurrence);
+        shell.focus_text_input(&input_label);
+        shell.key(Key::A, ctrl());
+        shell.type_text("Selection drift");
+        shell.click_menu_command("menu-edit", AppCommand::Deselect);
+        let drift_action_digest = shell.app().action_digest().to_owned();
+        assert!(!shell.app_mut().confirm_occurrence_rename());
+        assert!(shell.app().rename_occurrence_visible());
+        assert_eq!(shell.app().selected_occurrence_count(), 0);
+        assert_eq!(shell.app().document_revision(), revision);
+        assert_eq!(shell.app().canonical_digest(), digest);
+        assert_eq!(shell.app().undo_step_count(), undo_steps);
+        assert_eq!(shell.app().action_digest(), drift_action_digest);
+        shell.click_role_and_label(
+            Role::Button,
+            &shell.catalog().text("dialog-rename-occurrence-cancel"),
+        );
+
+        shell.click_at(shell.top_face_centre(1));
+
+        shell.click_menu_command("menu-model", AppCommand::RenameOccurrence);
+        shell.focus_text_input(&input_label);
+        shell.key(Key::A, ctrl());
+        shell.press_key(Key::Backspace);
+        shell.click_role_and_label(
+            Role::Button,
+            &shell.catalog().text("dialog-rename-occurrence-confirm"),
+        );
+        assert!(shell.app().rename_occurrence_visible());
+        assert_eq!(shell.app().document_revision(), revision);
+        assert_eq!(shell.app().canonical_digest(), digest);
+        assert_eq!(shell.app().undo_step_count(), undo_steps);
+
+        let renamed = "Housing instance";
+        shell.focus_text_input(&input_label);
+        shell.type_text(renamed);
+        shell.click_role_and_label(
+            Role::Button,
+            &shell.catalog().text("dialog-rename-occurrence-confirm"),
+        );
+        assert!(!shell.app().rename_occurrence_visible());
+        assert_eq!(
+            shell.app().occurrence_name(occurrence_id),
+            Some(renamed.to_owned())
+        );
+        assert_eq!(shell.app().undo_step_count(), undo_steps + 1);
+        assert!(shell.app().command_is_enabled(AppCommand::Paste));
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().format(
+                "digest-renamed-occurrence",
+                &BTreeMap::from([("name", renamed.to_owned())])
+            )
+        );
+
+        shell.click_menu_command("menu-edit", AppCommand::Undo);
+        assert_eq!(
+            shell.app().occurrence_name(occurrence_id),
+            Some(original_name.clone())
+        );
+
+        shell.click_menu_command("menu-model", AppCommand::RenameOccurrence);
+        shell.focus_text_input(&input_label);
+        shell.key(Key::A, ctrl());
+        shell.type_text("Stale rename");
+        assert!(shell.app_mut().create_box());
+        let stale_revision = shell.app().document_revision();
+        let stale_digest = shell.app().canonical_digest();
+        let stale_undo_steps = shell.app().undo_step_count();
+        let stale_action_digest = shell.app().action_digest().to_owned();
+        assert!(!shell.app_mut().confirm_occurrence_rename());
+        assert!(shell.app().rename_occurrence_visible());
+        assert_eq!(shell.app().document_revision(), stale_revision);
+        assert_eq!(shell.app().canonical_digest(), stale_digest);
+        assert_eq!(shell.app().undo_step_count(), stale_undo_steps);
+        assert_eq!(shell.app().action_digest(), stale_action_digest);
+        assert_eq!(
+            shell.app().occurrence_name(occurrence_id),
+            Some(original_name.clone())
+        );
+        shell.click_role_and_label(
+            Role::Button,
+            &shell.catalog().text("dialog-rename-occurrence-cancel"),
+        );
+
+        shell.click_at(shell.top_face_centre(1));
+        shell.click_menu_command("menu-model", AppCommand::RenameOccurrence);
+        shell.focus_text_input(&input_label);
+        shell.key(Key::A, ctrl());
+        shell.type_text("Missing occurrence");
+        shell.click_menu_command("menu-edit", AppCommand::Delete);
+        let missing_revision = shell.app().document_revision();
+        let missing_digest = shell.app().canonical_digest();
+        let missing_undo_steps = shell.app().undo_step_count();
+        let missing_action_digest = shell.app().action_digest().to_owned();
+        assert!(!shell.app_mut().confirm_occurrence_rename());
+        assert!(shell.app().rename_occurrence_visible());
+        assert_eq!(shell.app().occurrence_name(occurrence_id), None);
+        assert_eq!(shell.app().document_revision(), missing_revision);
+        assert_eq!(shell.app().canonical_digest(), missing_digest);
+        assert_eq!(shell.app().undo_step_count(), missing_undo_steps);
+        assert_eq!(shell.app().action_digest(), missing_action_digest);
+    }
+}
+
+#[test]
+fn replace_component_is_localized_state_preserving_and_one_undo_step() {
+    for catalog in [
+        LocaleCatalog::english(),
+        LocaleCatalog::slovak(),
+        LocaleCatalog::pseudo(),
+    ] {
+        let mut shell = Shell::with_catalog(catalog);
+        assert_eq!(
+            shell.app().command_label(AppCommand::ReplaceComponent),
+            shell.catalog().text("model-replace-component")
+        );
+        assert!(!shell.app().command_is_enabled(AppCommand::ReplaceComponent));
+        shell.click_menu_command("menu-model", AppCommand::ReplaceComponent);
+        assert!(!shell.app().component_replacement_visible());
+
+        shell.click_at(shell.top_face_centre(1));
+        shell.click_menu_command("menu-edit", AppCommand::Copy);
+        assert!(shell.app().command_is_enabled(AppCommand::Paste));
+        assert!(shell.app_mut().create_box());
+        let occurrence_id = OccurrenceId(2);
+        let original_definition = DefinitionId(2);
+        let replacement_definition = DefinitionId(1);
+        let original_name = shell.app().occurrence_name(occurrence_id).unwrap();
+        let original_geometry = shell
+            .app()
+            .occurrence_box_geometry(occurrence_id.0)
+            .unwrap();
+        assert_eq!(
+            shell.app().occurrence_definition_id(occurrence_id),
+            Some(original_definition)
+        );
+        assert!(shell.app().command_is_enabled(AppCommand::ReplaceComponent));
+        assert!(shell.app_mut().set_selected_occurrence_grounded(true));
+        let revision = shell.app().document_revision();
+        let digest = shell.app().canonical_digest();
+        let undo_steps = shell.app().undo_step_count();
+
+        shell.click_menu_command("menu-model", AppCommand::ReplaceComponent);
+        assert_eq!(
+            shell.app().component_replacement_input(),
+            Some((occurrence_id, replacement_definition))
+        );
+        shell.click_role_and_label(
+            Role::Button,
+            &shell.catalog().text("dialog-replace-component-cancel"),
+        );
+        assert!(!shell.app().component_replacement_visible());
+        assert_eq!(shell.app().document_revision(), revision);
+        assert_eq!(shell.app().canonical_digest(), digest);
+        assert_eq!(shell.app().undo_step_count(), undo_steps);
+        assert!(shell.app().command_is_enabled(AppCommand::Paste));
+
+        shell.click_menu_command("menu-model", AppCommand::ReplaceComponent);
+        shell.click_role_and_label(
+            Role::Button,
+            &shell.catalog().text("dialog-replace-component-confirm"),
+        );
+        assert!(!shell.app().component_replacement_visible());
+        assert_eq!(shell.app().document_revision(), revision + 1);
+        assert_eq!(shell.app().occurrence_count(), 2);
+        assert_eq!(shell.app().definition_count(), 2);
+        assert_eq!(shell.app().undo_step_count(), undo_steps + 1);
+        assert_eq!(shell.app().grounded_occurrence_count(), 1);
+        assert_eq!(shell.app().selected_occurrence_count(), 1);
+        assert!(shell.app().occurrence_is_selected(occurrence_id));
+        assert!(shell.app().command_is_enabled(AppCommand::Paste));
+        assert_eq!(
+            shell.app().occurrence_name(occurrence_id),
+            Some(original_name)
+        );
+        assert_eq!(
+            shell.app().occurrence_box_geometry(occurrence_id.0),
+            Some(original_geometry)
+        );
+        assert_eq!(
+            shell.app().occurrence_definition_id(occurrence_id),
+            Some(replacement_definition)
+        );
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().format(
+                "digest-replaced-component",
+                &BTreeMap::from([(
+                    "name",
+                    shell.app().definition_name(replacement_definition).unwrap(),
+                )]),
+            )
+        );
+        let replaced_digest = shell.app().canonical_digest();
+        shell.click_menu_command("menu-edit", AppCommand::Undo);
+        assert_eq!(shell.app().canonical_digest(), digest);
+        assert_eq!(
+            shell.app().occurrence_definition_id(occurrence_id),
+            Some(original_definition)
+        );
+        shell.click_menu_command("menu-edit", AppCommand::Redo);
+        assert_eq!(shell.app().canonical_digest(), replaced_digest);
+        assert!(shell.app().command_is_enabled(AppCommand::Paste));
+
+        shell.click_menu_command("menu-model", AppCommand::ReplaceComponent);
+        shell.click_menu_command("menu-edit", AppCommand::Deselect);
+        let drift_revision = shell.app().document_revision();
+        let drift_digest = shell.app().canonical_digest();
+        let drift_undo_steps = shell.app().undo_step_count();
+        let drift_action_digest = shell.app().action_digest().to_owned();
+        assert!(!shell.app_mut().confirm_component_replacement());
+        assert!(shell.app().component_replacement_visible());
+        assert_eq!(shell.app().document_revision(), drift_revision);
+        assert_eq!(shell.app().canonical_digest(), drift_digest);
+        assert_eq!(shell.app().undo_step_count(), drift_undo_steps);
+        assert_eq!(shell.app().action_digest(), drift_action_digest);
+        assert!(shell.app().command_is_enabled(AppCommand::Paste));
+        assert_eq!(
+            shell.app().occurrence_definition_id(occurrence_id),
+            Some(replacement_definition)
+        );
+        shell.click_role_and_label(
+            Role::Button,
+            &shell.catalog().text("dialog-replace-component-cancel"),
+        );
+
+        shell.click_at(shell.top_face_centre(1));
+        shell.click_menu_command("menu-model", AppCommand::ReplaceComponent);
+        let (missing_occurrence, _) = shell.app().component_replacement_input().unwrap();
+        shell.click_menu_command("menu-edit", AppCommand::Delete);
+        let missing_revision = shell.app().document_revision();
+        let missing_digest = shell.app().canonical_digest();
+        let missing_undo_steps = shell.app().undo_step_count();
+        let missing_action_digest = shell.app().action_digest().to_owned();
+        assert!(!shell.app_mut().confirm_component_replacement());
+        assert!(shell.app().component_replacement_visible());
+        assert_eq!(
+            shell.app().occurrence_definition_id(missing_occurrence),
+            None
+        );
+        assert_eq!(shell.app().document_revision(), missing_revision);
+        assert_eq!(shell.app().canonical_digest(), missing_digest);
+        assert_eq!(shell.app().undo_step_count(), missing_undo_steps);
+        assert_eq!(shell.app().action_digest(), missing_action_digest);
+    }
+}
+
+#[test]
+fn replace_component_rejects_stale_confirmation_without_mutation() {
+    for catalog in [
+        LocaleCatalog::english(),
+        LocaleCatalog::slovak(),
+        LocaleCatalog::pseudo(),
+    ] {
+        let mut shell = Shell::with_catalog(catalog);
+        shell.click_at(shell.top_face_centre(1));
+        shell.click_menu_command("menu-edit", AppCommand::Copy);
+        assert!(shell.app_mut().create_box());
+        shell.click_menu_command("menu-model", AppCommand::ReplaceComponent);
+        assert!(shell.app().component_replacement_visible());
+        assert!(shell.app_mut().rotate_selected(30.0));
+        let revision = shell.app().document_revision();
+        let digest = shell.app().canonical_digest();
+        let undo_steps = shell.app().undo_step_count();
+        shell.click_role_and_label(
+            Role::Button,
+            &shell.catalog().text("dialog-replace-component-confirm"),
+        );
+        assert!(shell.app().component_replacement_visible());
+        assert_eq!(shell.app().document_revision(), revision);
+        assert_eq!(shell.app().canonical_digest(), digest);
+        assert_eq!(shell.app().undo_step_count(), undo_steps);
+        assert_eq!(
+            shell.app().occurrence_definition_id(OccurrenceId(2)),
+            Some(DefinitionId(2))
+        );
+        assert!(shell.app().command_is_enabled(AppCommand::Paste));
+    }
+}
+
+#[test]
+fn deselect_is_localized_exact_shortcut_parity_and_document_preserving() {
+    for catalog in [
+        LocaleCatalog::english(),
+        LocaleCatalog::slovak(),
+        LocaleCatalog::pseudo(),
+    ] {
+        let mut shell = Shell::with_catalog(catalog);
+        assert_eq!(
+            shell.app().command_label(AppCommand::Deselect),
+            shell.catalog().text("action-deselect")
+        );
+        assert!(!shell.app().command_is_enabled(AppCommand::Deselect));
+
+        shell.click_at(shell.top_face_centre(1));
+        assert!(shell.app().command_is_enabled(AppCommand::Deselect));
+        shell.click_menu_command("menu-edit", AppCommand::Copy);
+        assert!(shell.app().command_is_enabled(AppCommand::Paste));
+        let revision = shell.app().document_revision();
+        let digest = shell.app().canonical_digest();
+        let undo_steps = shell.app().undo_step_count();
+
+        shell.press_key(Key::Escape);
+
+        assert_eq!(shell.app().selected_occurrence_count(), 0);
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().text("digest-selection-cleared")
+        );
+        assert_eq!(shell.app().document_revision(), revision);
+        assert_eq!(shell.app().canonical_digest(), digest);
+        assert_eq!(shell.app().undo_step_count(), undo_steps);
+        assert!(shell.app().command_is_enabled(AppCommand::Paste));
+        assert!(!shell.app().command_is_enabled(AppCommand::Deselect));
+        let action_digest = shell.app().action_digest().to_owned();
+
+        shell.click_at(shell.top_face_centre(1));
+        shell.click_menu_command("menu-edit", AppCommand::Deselect);
+        assert_eq!(shell.app().selected_occurrence_count(), 0);
+        assert_eq!(shell.app().action_digest(), action_digest);
+        assert_eq!(shell.app().document_revision(), revision);
+        assert_eq!(shell.app().canonical_digest(), digest);
+        assert_eq!(shell.app().undo_step_count(), undo_steps);
+        assert!(shell.app().command_is_enabled(AppCommand::Paste));
+
+        let action_digest = shell.app().action_digest().to_owned();
+        shell.click_menu_command("menu-edit", AppCommand::Deselect);
+        assert_eq!(shell.app().action_digest(), action_digest);
+
+        assert!(shell.app_mut().create_box());
+        shell.click_menu_command("menu-edit", AppCommand::Deselect);
+        shell.click_menu_command("menu-edit", AppCommand::SelectAll);
+        shell.click_menu_command("menu-model", AppCommand::Group);
+        assert_eq!(shell.app().group_count(), 1);
+        assert_eq!(shell.app().selected_occurrence_count(), 2);
+        assert!(shell.app().command_is_enabled(AppCommand::Deselect));
+        let group_revision = shell.app().document_revision();
+        let group_digest = shell.app().canonical_digest();
+        let group_undo_steps = shell.app().undo_step_count();
+
+        shell.click_menu_command("menu-edit", AppCommand::Deselect);
+
+        assert_eq!(shell.app().selected_occurrence_count(), 0);
+        assert_eq!(shell.app().group_count(), 1);
+        assert_eq!(shell.app().document_revision(), group_revision);
+        assert_eq!(shell.app().canonical_digest(), group_digest);
+        assert_eq!(shell.app().undo_step_count(), group_undo_steps);
+        assert!(shell.app().command_is_enabled(AppCommand::Paste));
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().text("digest-selection-cleared")
+        );
+        assert!(!shell.app().command_is_enabled(AppCommand::Deselect));
+    }
+}
+
+#[test]
+fn select_all_is_localized_exact_shortcut_parity_and_document_preserving() {
+    for catalog in [
+        LocaleCatalog::english(),
+        LocaleCatalog::slovak(),
+        LocaleCatalog::pseudo(),
+    ] {
+        let mut shell = Shell::with_catalog(catalog);
+        assert_eq!(
+            shell.app().command_label(AppCommand::SelectAll),
+            shell.catalog().text("action-select-all")
+        );
+        shell.click_at(shell.top_face_centre(1));
+        shell.click_menu_command("menu-edit", AppCommand::Copy);
+        assert!(shell.app().command_is_enabled(AppCommand::Paste));
+        assert!(shell.app_mut().create_bottle());
+        shell.click_menu_command("menu-edit", AppCommand::Deselect);
+        assert_eq!(shell.app().occurrence_count(), 2);
+        assert_eq!(shell.app().selected_occurrence_count(), 0);
+        assert!(shell.app().command_is_enabled(AppCommand::SelectAll));
+        let revision = shell.app().document_revision();
+        let digest = shell.app().canonical_digest();
+        let undo_steps = shell.app().undo_step_count();
+
+        shell.key(Key::A, ctrl());
+
+        assert_eq!(shell.app().selected_occurrence_count(), 2);
+        assert!(shell.app().occurrence_is_selected(OccurrenceId(1)));
+        assert!(shell.app().occurrence_is_selected(OccurrenceId(2)));
+        assert_eq!(shell.app().document_revision(), revision);
+        assert_eq!(shell.app().canonical_digest(), digest);
+        assert_eq!(shell.app().undo_step_count(), undo_steps);
+        assert!(shell.app().command_is_enabled(AppCommand::Paste));
+        let expected_action_digest = shell.catalog().format(
+            "digest-selected-all",
+            &BTreeMap::from([("count", "2".to_owned())]),
+        );
+        assert_eq!(shell.app().action_digest(), expected_action_digest);
+        assert!(!shell.app().command_is_enabled(AppCommand::SelectAll));
+        shell.key(Key::A, ctrl());
+        assert_eq!(shell.app().action_digest(), expected_action_digest);
+        assert_eq!(shell.app().document_revision(), revision);
+        assert_eq!(shell.app().canonical_digest(), digest);
+        assert_eq!(shell.app().undo_step_count(), undo_steps);
+
+        shell.click_menu_command("menu-edit", AppCommand::Deselect);
+        shell.click_menu_command("menu-edit", AppCommand::SelectAll);
+        assert_eq!(shell.app().selected_occurrence_count(), 2);
+        assert_eq!(shell.app().action_digest(), expected_action_digest);
+        assert_eq!(shell.app().document_revision(), revision);
+        assert_eq!(shell.app().canonical_digest(), digest);
+        assert_eq!(shell.app().undo_step_count(), undo_steps);
+        assert!(shell.app().command_is_enabled(AppCommand::Paste));
+
+        shell.click_menu_command("menu-edit", AppCommand::Deselect);
+        shell.click_menu_command("menu-edit", AppCommand::Paste);
+        assert_eq!(shell.app().occurrence_count(), 3);
+    }
+}
+
+#[test]
+fn invert_selection_is_localized_scope_exact_and_document_preserving() {
+    for catalog in [
+        LocaleCatalog::english(),
+        LocaleCatalog::slovak(),
+        LocaleCatalog::pseudo(),
+    ] {
+        let mut shell = Shell::with_catalog(catalog.clone());
+        assert_eq!(
+            shell.app().command_label(AppCommand::InvertSelection),
+            shell.catalog().text("action-invert-selection")
+        );
+        assert!(shell.app().command_is_enabled(AppCommand::InvertSelection));
+        shell.click_at(shell.viewport_rect().center());
+        assert!(shell.app_mut().copy_selected(Vec3::new(150.0, 25.0, 0.0)));
+        shell.settle();
+        shell.click_menu_command("menu-view", AppCommand::ZoomFit);
+        shell.click_menu_command("menu-edit", AppCommand::Deselect);
+        assert_eq!(shell.app().selected_occurrence_count(), 0);
+        let revision = shell.app().document_revision();
+        let digest = shell.app().canonical_digest();
+        let undo_steps = shell.app().undo_step_count();
+
+        shell.secondary_click_at(shell.top_face_centre(1));
+        assert!(shell.offers(AppCommand::InvertSelection));
+        shell.click_command(AppCommand::InvertSelection);
+
+        assert_eq!(shell.app().selected_occurrence_count(), 1);
+        assert!(!shell.app().occurrence_is_selected(OccurrenceId(1)));
+        assert!(shell.app().occurrence_is_selected(OccurrenceId(2)));
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().format(
+                "digest-inverted-selection",
+                &BTreeMap::from([("count", "1".to_owned())]),
+            )
+        );
+
+        shell.key(Key::I, ctrl());
+        assert_eq!(shell.app().selected_occurrence_count(), 1);
+        assert!(shell.app().occurrence_is_selected(OccurrenceId(1)));
+        assert!(!shell.app().occurrence_is_selected(OccurrenceId(2)));
+        shell.click_menu_command("menu-edit", AppCommand::Deselect);
+        shell.click_menu_command("menu-edit", AppCommand::InvertSelection);
+        assert_eq!(shell.app().selected_occurrence_count(), 2);
+        shell.key(Key::I, ctrl());
+        assert_eq!(shell.app().selected_occurrence_count(), 0);
+        assert_eq!(shell.app().document_revision(), revision);
+        assert_eq!(shell.app().canonical_digest(), digest);
+        assert_eq!(shell.app().undo_step_count(), undo_steps);
+
+        let mut context_shell = Shell::with_catalog(catalog);
+        context_shell.click_at(context_shell.viewport_rect().center());
+        assert!(
+            context_shell
+                .app_mut()
+                .copy_selected(Vec3::new(150.0, 25.0, 0.0))
+        );
+        context_shell.settle();
+        context_shell.click_menu_command("menu-view", AppCommand::ZoomFit);
+        context_shell.double_click_at(context_shell.top_face_centre(2));
+        assert_eq!(context_shell.app().edit_context_depth(), 1);
+        let context_revision = context_shell.app().document_revision();
+        let context_digest = context_shell.app().canonical_digest();
+        let context_undo_steps = context_shell.app().undo_step_count();
+        context_shell.click_menu_command("menu-edit", AppCommand::InvertSelection);
+        assert_eq!(context_shell.app().selected_occurrence_count(), 1);
+        assert_eq!(context_shell.app().edit_context_depth(), 1);
+        context_shell.key(Key::I, ctrl());
+        assert_eq!(context_shell.app().selected_occurrence_count(), 0);
+        assert_eq!(context_shell.app().edit_context_depth(), 1);
+        assert_eq!(context_shell.app().document_revision(), context_revision);
+        assert_eq!(context_shell.app().canonical_digest(), context_digest);
+        assert_eq!(context_shell.app().undo_step_count(), context_undo_steps);
+    }
+}
+
+#[test]
+fn cut_is_localized_atomic_pasteable_and_context_bound() {
+    for catalog in [
+        LocaleCatalog::english(),
+        LocaleCatalog::slovak(),
+        LocaleCatalog::pseudo(),
+    ] {
+        let mut shell = Shell::with_catalog(catalog.clone());
+        assert_eq!(
+            shell.app().command_label(AppCommand::Cut),
+            shell.catalog().text("action-cut")
+        );
+        assert!(!shell.app().command_is_enabled(AppCommand::Cut));
+        shell.click_at(shell.top_face_centre(1));
+        shell.click_menu_command("menu-edit", AppCommand::Copy);
+        assert!(shell.app_mut().create_box());
+        shell.settle();
+        shell.click_menu_command("menu-edit", AppCommand::SelectAll);
+        assert_eq!(shell.app().selected_occurrence_count(), 2);
+        assert!(shell.app().command_is_enabled(AppCommand::Cut));
+        let before_cut = shell.app().canonical_digest();
+        let revision = shell.app().document_revision();
+        let undo_steps = shell.app().undo_step_count();
+
+        shell.click_menu_command("menu-edit", AppCommand::Cut);
+
+        assert_eq!(shell.app().occurrence_count(), 0);
+        assert_eq!(shell.app().selected_occurrence_count(), 0);
+        assert_eq!(shell.app().document_revision(), revision + 1);
+        assert_eq!(shell.app().undo_step_count(), undo_steps + 1);
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().format(
+                "digest-cut-to-clipboard",
+                &BTreeMap::from([("count", "2".to_owned())])
+            )
+        );
+        assert!(!shell.app().command_is_enabled(AppCommand::Cut));
+        assert!(shell.app().command_is_enabled(AppCommand::Paste));
+        let cut_digest = shell.app().canonical_digest();
+        let cut_action_digest = shell.app().action_digest().to_owned();
+        shell.click_menu_command("menu-edit", AppCommand::Cut);
+        assert_eq!(shell.app().canonical_digest(), cut_digest);
+        assert_eq!(shell.app().action_digest(), cut_action_digest);
+        assert_eq!(shell.app().undo_step_count(), undo_steps + 1);
+
+        shell.click_menu_command("menu-edit", AppCommand::Undo);
+        assert_eq!(shell.app().occurrence_count(), 2);
+        assert_eq!(shell.app().canonical_digest(), before_cut);
+        shell.click_menu_command("menu-edit", AppCommand::Redo);
+        assert_eq!(shell.app().occurrence_count(), 0);
+        assert_eq!(shell.app().canonical_digest(), cut_digest);
+
+        let paste_revision = shell.app().document_revision();
+        shell.click_menu_command("menu-edit", AppCommand::Paste);
+        assert_eq!(shell.app().occurrence_count(), 2);
+        assert_eq!(shell.app().selected_occurrence_count(), 2);
+        assert_eq!(shell.app().document_revision(), paste_revision + 1);
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().format(
+                "digest-pasted-from-clipboard",
+                &BTreeMap::from([("count", "2".to_owned())])
+            )
+        );
+        shell.click_menu_command("menu-edit", AppCommand::Undo);
+        assert_eq!(shell.app().canonical_digest(), cut_digest);
+        shell.click_menu_command("menu-edit", AppCommand::Redo);
+        assert_eq!(shell.app().occurrence_count(), 2);
+
+        let mut group_shell = Shell::with_catalog(catalog.clone());
+        assert!(group_shell.app_mut().create_box());
+        group_shell.settle();
+        group_shell.click_menu_command("menu-edit", AppCommand::SelectAll);
+        group_shell.click_menu_command("menu-model", AppCommand::Group);
+        assert!(!group_shell.app().command_is_enabled(AppCommand::Cut));
+        let group_revision = group_shell.app().document_revision();
+        let group_digest = group_shell.app().canonical_digest();
+        group_shell.click_menu_command("menu-edit", AppCommand::Cut);
+        assert_eq!(group_shell.app().document_revision(), group_revision);
+        assert_eq!(group_shell.app().canonical_digest(), group_digest);
+
+        let mut context_shell = Shell::with_catalog(catalog);
+        context_shell.click_at(context_shell.viewport_rect().center());
+        assert!(
+            context_shell
+                .app_mut()
+                .copy_selected(Vec3::new(150.0, 25.0, 0.0))
+        );
+        context_shell.settle();
+        context_shell.click_menu_command("menu-view", AppCommand::ZoomFit);
+        context_shell.double_click_at(context_shell.top_face_centre(2));
+        assert_eq!(context_shell.app().edit_context_depth(), 1);
+        context_shell.click_at(context_shell.top_face_centre(2));
+        assert!(!context_shell.app().command_is_enabled(AppCommand::Cut));
+        let context_revision = context_shell.app().document_revision();
+        let context_digest = context_shell.app().canonical_digest();
+        context_shell.click_menu_command("menu-edit", AppCommand::Cut);
+        assert_eq!(context_shell.app().document_revision(), context_revision);
+        assert_eq!(context_shell.app().canonical_digest(), context_digest);
+    }
+}
+
+#[test]
+fn duplicate_is_localized_atomic_clipboard_preserving_and_context_bound() {
+    for catalog in [
+        LocaleCatalog::english(),
+        LocaleCatalog::slovak(),
+        LocaleCatalog::pseudo(),
+    ] {
+        let mut shell = Shell::with_catalog(catalog.clone());
+        assert_eq!(
+            shell.app().command_label(AppCommand::Duplicate),
+            shell.catalog().text("action-duplicate")
+        );
+        assert!(!shell.app().command_is_enabled(AppCommand::Duplicate));
+
+        shell.click_at(shell.top_face_centre(1));
+        shell.click_menu_command("menu-edit", AppCommand::Copy);
+        assert!(shell.app_mut().create_box());
+        shell.settle();
+        shell.click_menu_command("menu-edit", AppCommand::SelectAll);
+        assert_eq!(shell.app().selected_occurrence_count(), 2);
+        assert!(shell.app().command_is_enabled(AppCommand::Duplicate));
+        let before_duplicate = shell.app().canonical_digest();
+        let revision = shell.app().document_revision();
+        let undo_steps = shell.app().undo_step_count();
+
+        shell.key(Key::D, ctrl());
+
+        assert_eq!(shell.app().occurrence_count(), 4);
+        assert_eq!(shell.app().selected_occurrence_count(), 2);
+        assert_eq!(shell.app().document_revision(), revision + 1);
+        assert_eq!(shell.app().undo_step_count(), undo_steps + 1);
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().format(
+                "digest-duplicated-selection",
+                &BTreeMap::from([("count", "2".to_owned())])
+            )
+        );
+        let duplicated = shell.app().canonical_digest();
+        shell.click_menu_command("menu-edit", AppCommand::Undo);
+        assert_eq!(shell.app().canonical_digest(), before_duplicate);
+        assert_eq!(shell.app().occurrence_count(), 2);
+        shell.click_menu_command("menu-edit", AppCommand::SelectAll);
+
+        shell.click_menu_command("menu-edit", AppCommand::Duplicate);
+        assert_eq!(shell.app().canonical_digest(), duplicated);
+        assert_eq!(shell.app().occurrence_count(), 4);
+        shell.click_menu_command("menu-edit", AppCommand::Undo);
+        assert_eq!(shell.app().canonical_digest(), before_duplicate);
+        shell.click_menu_command("menu-edit", AppCommand::Redo);
+        assert_eq!(shell.app().canonical_digest(), duplicated);
+        assert_eq!(shell.app().occurrence_count(), 4);
+
+        let paste_revision = shell.app().document_revision();
+        shell.click_menu_command("menu-edit", AppCommand::Paste);
+        assert_eq!(shell.app().occurrence_count(), 5);
+        assert_eq!(shell.app().selected_occurrence_count(), 1);
+        assert_eq!(shell.app().document_revision(), paste_revision + 1);
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().format(
+                "digest-pasted-from-clipboard",
+                &BTreeMap::from([("count", "1".to_owned())])
+            )
+        );
+
+        let mut group_shell = Shell::with_catalog(catalog.clone());
+        assert!(group_shell.app_mut().create_box());
+        group_shell.settle();
+        group_shell.click_menu_command("menu-edit", AppCommand::SelectAll);
+        group_shell.click_menu_command("menu-model", AppCommand::Group);
+        assert!(!group_shell.app().command_is_enabled(AppCommand::Duplicate));
+        let group_revision = group_shell.app().document_revision();
+        let group_digest = group_shell.app().canonical_digest();
+        let group_undo_steps = group_shell.app().undo_step_count();
+        group_shell.click_menu_command("menu-edit", AppCommand::Duplicate);
+        assert_eq!(group_shell.app().document_revision(), group_revision);
+        assert_eq!(group_shell.app().canonical_digest(), group_digest);
+        assert_eq!(group_shell.app().undo_step_count(), group_undo_steps);
+
+        let mut context_shell = Shell::with_catalog(catalog);
+        context_shell.click_at(context_shell.viewport_rect().center());
+        assert!(
+            context_shell
+                .app_mut()
+                .copy_selected(Vec3::new(150.0, 25.0, 0.0))
+        );
+        context_shell.settle();
+        context_shell.click_menu_command("menu-view", AppCommand::ZoomFit);
+        context_shell.double_click_at(context_shell.top_face_centre(2));
+        assert_eq!(context_shell.app().edit_context_depth(), 1);
+        context_shell.click_at(context_shell.top_face_centre(2));
+        assert!(
+            !context_shell
+                .app()
+                .command_is_enabled(AppCommand::Duplicate)
+        );
+        let context_revision = context_shell.app().document_revision();
+        let context_digest = context_shell.app().canonical_digest();
+        let context_undo_steps = context_shell.app().undo_step_count();
+        context_shell.key(Key::D, ctrl());
+        assert_eq!(context_shell.app().document_revision(), context_revision);
+        assert_eq!(context_shell.app().canonical_digest(), context_digest);
+        assert_eq!(context_shell.app().undo_step_count(), context_undo_steps);
+    }
+}
+
+#[test]
+fn copy_paste_is_localized_atomic_stale_safe_and_context_bound() {
+    for catalog in [
+        LocaleCatalog::english(),
+        LocaleCatalog::slovak(),
+        LocaleCatalog::pseudo(),
+    ] {
+        let mut shell = Shell::with_catalog(catalog.clone());
+        assert_eq!(
+            shell.app().command_label(AppCommand::Copy),
+            shell.catalog().text("action-copy")
+        );
+        assert_eq!(
+            shell.app().command_label(AppCommand::Paste),
+            shell.catalog().text("action-paste")
+        );
+        assert!(!shell.app().command_is_enabled(AppCommand::Copy));
+        assert!(!shell.app().command_is_enabled(AppCommand::Paste));
+
+        shell.click_at(shell.top_face_centre(1));
+        assert!(shell.app().command_is_enabled(AppCommand::Copy));
+        let copy_revision = shell.app().document_revision();
+        let copy_digest = shell.app().canonical_digest();
+        let copy_undo_steps = shell.app().undo_step_count();
+        shell.click_menu_command("menu-edit", AppCommand::Copy);
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().format(
+                "digest-copied-to-clipboard",
+                &BTreeMap::from([("count", "1".to_owned())])
+            )
+        );
+        assert_eq!(shell.app().document_revision(), copy_revision);
+        assert_eq!(shell.app().canonical_digest(), copy_digest);
+        assert_eq!(shell.app().undo_step_count(), copy_undo_steps);
+        assert!(shell.app().command_is_enabled(AppCommand::Paste));
+        shell.click_menu_command("menu-edit", AppCommand::Paste);
+        assert_eq!(shell.app().occurrence_count(), 2);
+        assert!(shell.app_mut().create_box());
+        shell.settle();
+
+        shell.click_menu_command("menu-edit", AppCommand::SelectAll);
+        assert_eq!(shell.app().selected_occurrence_count(), 3);
+        shell.click_menu_command("menu-edit", AppCommand::Copy);
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().format(
+                "digest-copied-to-clipboard",
+                &BTreeMap::from([("count", "3".to_owned())])
+            )
+        );
+        let before_paste = shell.app().canonical_digest();
+        let paste_revision = shell.app().document_revision();
+        let paste_undo_steps = shell.app().undo_step_count();
+
+        shell.click_menu_command("menu-edit", AppCommand::Paste);
+
+        assert_eq!(shell.app().occurrence_count(), 6);
+        assert_eq!(shell.app().document_revision(), paste_revision + 1);
+        assert_eq!(shell.app().undo_step_count(), paste_undo_steps + 1);
+        assert_eq!(shell.app().selected_occurrence_count(), 3);
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().format(
+                "digest-pasted-from-clipboard",
+                &BTreeMap::from([("count", "3".to_owned())])
+            )
+        );
+        let pasted = shell.app().canonical_digest();
+        shell.click_menu_command("menu-edit", AppCommand::Undo);
+        assert_eq!(shell.app().occurrence_count(), 3);
+        assert_eq!(shell.app().canonical_digest(), before_paste);
+        shell.click_menu_command("menu-edit", AppCommand::Redo);
+        assert_eq!(shell.app().occurrence_count(), 6);
+        assert_eq!(shell.app().canonical_digest(), pasted);
+
+        shell.click_at(shell.top_face_centre(1));
+        shell.click_menu_command("menu-edit", AppCommand::Delete);
+        assert_eq!(shell.app().occurrence_count(), 5);
+        assert!(!shell.app().command_is_enabled(AppCommand::Paste));
+        let stale_revision = shell.app().document_revision();
+        let stale_digest = shell.app().canonical_digest();
+        let stale_undo_steps = shell.app().undo_step_count();
+        let stale_action_digest = shell.app().action_digest().to_owned();
+        shell.click_menu_command("menu-edit", AppCommand::Paste);
+        assert_eq!(shell.app().occurrence_count(), 5);
+        assert_eq!(shell.app().document_revision(), stale_revision);
+        assert_eq!(shell.app().canonical_digest(), stale_digest);
+        assert_eq!(shell.app().undo_step_count(), stale_undo_steps);
+        assert_eq!(shell.app().action_digest(), stale_action_digest);
+
+        let mut group_shell = Shell::with_catalog(catalog.clone());
+        group_shell.click_at(group_shell.top_face_centre(1));
+        group_shell.click_menu_command("menu-edit", AppCommand::Copy);
+        group_shell.click_menu_command("menu-edit", AppCommand::Paste);
+        group_shell.click_menu_command("menu-edit", AppCommand::SelectAll);
+        group_shell.click_menu_command("menu-model", AppCommand::Group);
+        assert_eq!(group_shell.app().group_count(), 1);
+        assert!(!group_shell.app().command_is_enabled(AppCommand::Copy));
+        let group_digest = group_shell.app().action_digest().to_owned();
+        group_shell.click_menu_command("menu-edit", AppCommand::Copy);
+        assert_eq!(group_shell.app().action_digest(), group_digest);
+
+        let mut context_shell = Shell::with_catalog(catalog);
+        context_shell.click_at(context_shell.viewport_rect().center());
+        assert!(
+            context_shell
+                .app_mut()
+                .copy_selected(Vec3::new(150.0, 25.0, 0.0))
+        );
+        context_shell.settle();
+        context_shell.click_menu_command("menu-view", AppCommand::ZoomFit);
+        context_shell.click_at(context_shell.top_face_centre(1));
+        context_shell.click_menu_command("menu-edit", AppCommand::Copy);
+        assert!(context_shell.app().command_is_enabled(AppCommand::Paste));
+        context_shell.double_click_at(context_shell.top_face_centre(2));
+        assert_eq!(context_shell.app().edit_context_depth(), 1);
+        assert!(!context_shell.app().command_is_enabled(AppCommand::Copy));
+        assert!(!context_shell.app().command_is_enabled(AppCommand::Paste));
+        let revision = context_shell.app().document_revision();
+        let digest = context_shell.app().canonical_digest();
+        let undo_steps = context_shell.app().undo_step_count();
+        let action_digest = context_shell.app().action_digest().to_owned();
+        context_shell.click_menu_command("menu-edit", AppCommand::Paste);
+        assert_eq!(context_shell.app().document_revision(), revision);
+        assert_eq!(context_shell.app().canonical_digest(), digest);
+        assert_eq!(context_shell.app().undo_step_count(), undo_steps);
+        assert_eq!(context_shell.app().action_digest(), action_digest);
+    }
+}
+
+#[test]
+fn delete_is_localized_atomic_group_aware_and_context_bound() {
+    for catalog in [
+        LocaleCatalog::english(),
+        LocaleCatalog::slovak(),
+        LocaleCatalog::pseudo(),
+    ] {
+        let mut shell = Shell::with_catalog(catalog.clone());
+        assert_eq!(
+            shell.app().command_label(AppCommand::Delete),
+            shell.catalog().text("action-delete")
+        );
+        assert!(!shell.app().command_is_enabled(AppCommand::Delete));
+
+        shell.click_at(shell.top_face_centre(1));
+        shell.click_menu_command("menu-edit", AppCommand::Copy);
+        shell.click_menu_command("menu-edit", AppCommand::Paste);
+        shell.click_menu_command("menu-edit", AppCommand::SelectAll);
+        assert!(shell.app().command_is_enabled(AppCommand::Delete));
+        let before_delete = shell.app().canonical_digest();
+        let revision = shell.app().document_revision();
+        let undo_steps = shell.app().undo_step_count();
+
+        shell.press_key(Key::Delete);
+
+        assert_eq!(shell.app().occurrence_count(), 0);
+        assert_eq!(shell.app().document_revision(), revision + 1);
+        assert_eq!(shell.app().undo_step_count(), undo_steps + 1);
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().format(
+                "digest-deleted",
+                &BTreeMap::from([("count", "2".to_owned())]),
+            )
+        );
+        assert!(!shell.app().command_is_enabled(AppCommand::Delete));
+        let deleted = shell.app().canonical_digest();
+        shell.click_menu_command("menu-edit", AppCommand::Undo);
+        assert_eq!(shell.app().occurrence_count(), 2);
+        assert_eq!(shell.app().canonical_digest(), before_delete);
+        shell.click_menu_command("menu-edit", AppCommand::Redo);
+        assert_eq!(shell.app().occurrence_count(), 0);
+        assert_eq!(shell.app().canonical_digest(), deleted);
+
+        let mut group_shell = Shell::with_catalog(catalog.clone());
+        group_shell.click_at(group_shell.top_face_centre(1));
+        group_shell.click_menu_command("menu-edit", AppCommand::Copy);
+        group_shell.click_menu_command("menu-edit", AppCommand::Paste);
+        group_shell.click_menu_command("menu-edit", AppCommand::SelectAll);
+        group_shell.click_menu_command("menu-model", AppCommand::Group);
+        assert_eq!(group_shell.app().group_count(), 1);
+        assert!(group_shell.app().command_is_enabled(AppCommand::Delete));
+        let grouped = group_shell.app().canonical_digest();
+        let grouped_revision = group_shell.app().document_revision();
+        let grouped_undo_steps = group_shell.app().undo_step_count();
+
+        group_shell.click_menu_command("menu-edit", AppCommand::Delete);
+
+        assert_eq!(group_shell.app().occurrence_count(), 0);
+        assert_eq!(group_shell.app().group_count(), 0);
+        assert_eq!(group_shell.app().document_revision(), grouped_revision + 1);
+        assert_eq!(group_shell.app().undo_step_count(), grouped_undo_steps + 1);
+        assert_eq!(
+            group_shell.app().action_digest(),
+            group_shell.catalog().format(
+                "digest-deleted",
+                &BTreeMap::from([("count", "2".to_owned())]),
+            )
+        );
+        let group_deleted = group_shell.app().canonical_digest();
+        group_shell.click_menu_command("menu-edit", AppCommand::Undo);
+        assert_eq!(group_shell.app().occurrence_count(), 2);
+        assert_eq!(group_shell.app().group_count(), 1);
+        assert_eq!(group_shell.app().canonical_digest(), grouped);
+        group_shell.click_menu_command("menu-edit", AppCommand::Redo);
+        assert_eq!(group_shell.app().occurrence_count(), 0);
+        assert_eq!(group_shell.app().group_count(), 0);
+        assert_eq!(group_shell.app().canonical_digest(), group_deleted);
+
+        let mut context_shell = Shell::with_catalog(catalog);
+        context_shell.click_at(context_shell.viewport_rect().center());
+        assert!(
+            context_shell
+                .app_mut()
+                .copy_selected(Vec3::new(150.0, 25.0, 0.0))
+        );
+        context_shell.settle();
+        context_shell.click_menu_command("menu-view", AppCommand::ZoomFit);
+        context_shell.double_click_at(context_shell.top_face_centre(2));
+        assert_eq!(context_shell.app().edit_context_depth(), 1);
+        context_shell.click_at(context_shell.viewport_rect().center());
+        assert!(!context_shell.app().command_is_enabled(AppCommand::Delete));
+        let context_revision = context_shell.app().document_revision();
+        let context_digest = context_shell.app().canonical_digest();
+        let context_undo_steps = context_shell.app().undo_step_count();
+        let context_action_digest = context_shell.app().action_digest().to_owned();
+        context_shell.click_menu_command("menu-edit", AppCommand::Delete);
+        assert_eq!(context_shell.app().document_revision(), context_revision);
+        assert_eq!(context_shell.app().canonical_digest(), context_digest);
+        assert_eq!(context_shell.app().undo_step_count(), context_undo_steps);
+        assert_eq!(context_shell.app().action_digest(), context_action_digest);
+    }
+}
+
+#[test]
+fn group_ungroup_is_localized_atomic_and_context_bound() {
+    for (locale_index, catalog) in [
+        LocaleCatalog::english(),
+        LocaleCatalog::slovak(),
+        LocaleCatalog::pseudo(),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut shell = Shell::with_catalog(catalog.clone());
+        assert_eq!(
+            shell.app().command_label(AppCommand::Group),
+            shell.catalog().text("model-group")
+        );
+        assert_eq!(
+            shell.app().command_label(AppCommand::Ungroup),
+            shell.catalog().text("model-ungroup")
+        );
+        assert!(!shell.app().command_is_enabled(AppCommand::Group));
+        assert!(!shell.app().command_is_enabled(AppCommand::Ungroup));
+
+        shell.click_at(shell.top_face_centre(1));
+        shell.click_menu_command("menu-edit", AppCommand::Copy);
+        shell.click_menu_command("menu-edit", AppCommand::Paste);
+        shell.click_menu_command("menu-edit", AppCommand::SelectAll);
+        assert!(shell.app().command_is_enabled(AppCommand::Group));
+        let ungrouped = shell.app().canonical_digest();
+        let group_revision = shell.app().document_revision();
+        let group_undo_steps = shell.app().undo_step_count();
+
+        if locale_index == 0 {
+            shell.key(Key::G, ctrl());
+        } else {
+            shell.click_menu_command("menu-model", AppCommand::Group);
+        }
+
+        assert_eq!(shell.app().group_count(), 1);
+        assert_eq!(shell.app().document_revision(), group_revision + 1);
+        assert_eq!(shell.app().undo_step_count(), group_undo_steps + 1);
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().format(
+                "digest-grouped",
+                &BTreeMap::from([("count", "2".to_owned())])
+            )
+        );
+        assert!(!shell.app().command_is_enabled(AppCommand::Group));
+        assert!(shell.app().command_is_enabled(AppCommand::Ungroup));
+        assert!(shell.app().command_is_enabled(AppCommand::Paste));
+        let grouped = shell.app().canonical_digest();
+        let ungroup_revision = shell.app().document_revision();
+        let ungroup_undo_steps = shell.app().undo_step_count();
+
+        if locale_index == 0 {
+            shell.click_menu_command("menu-model", AppCommand::Ungroup);
+        } else {
+            shell.key(Key::G, harness::ctrl_shift());
+        }
+
+        assert_eq!(shell.app().group_count(), 0);
+        assert_eq!(shell.app().selected_occurrence_count(), 2);
+        assert_eq!(shell.app().document_revision(), ungroup_revision + 1);
+        assert_eq!(shell.app().undo_step_count(), ungroup_undo_steps + 1);
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().format(
+                "digest-ungrouped",
+                &BTreeMap::from([("count", "2".to_owned())])
+            )
+        );
+        assert!(shell.app().command_is_enabled(AppCommand::Group));
+        assert!(!shell.app().command_is_enabled(AppCommand::Ungroup));
+        assert!(shell.app().command_is_enabled(AppCommand::Paste));
+        let regrouped = shell.app().canonical_digest();
+        shell.click_menu_command("menu-edit", AppCommand::Undo);
+        assert_eq!(shell.app().group_count(), 1);
+        assert_eq!(shell.app().canonical_digest(), grouped);
+        shell.click_menu_command("menu-edit", AppCommand::Undo);
+        assert_eq!(shell.app().group_count(), 0);
+        assert_eq!(shell.app().canonical_digest(), ungrouped);
+        shell.click_menu_command("menu-edit", AppCommand::Redo);
+        shell.click_menu_command("menu-edit", AppCommand::Redo);
+        assert_eq!(shell.app().group_count(), 0);
+        assert_eq!(shell.app().canonical_digest(), regrouped);
+
+        let mut context_shell = Shell::with_catalog(catalog);
+        context_shell.click_at(context_shell.viewport_rect().center());
+        assert!(
+            context_shell
+                .app_mut()
+                .copy_selected(Vec3::new(150.0, 25.0, 0.0))
+        );
+        context_shell.settle();
+        context_shell.click_menu_command("menu-view", AppCommand::ZoomFit);
+        context_shell.double_click_at(context_shell.top_face_centre(2));
+        assert_eq!(context_shell.app().edit_context_depth(), 1);
+        context_shell.click_menu_command("menu-edit", AppCommand::SelectAll);
+        assert!(!context_shell.app().command_is_enabled(AppCommand::Group));
+        assert!(!context_shell.app().command_is_enabled(AppCommand::Ungroup));
+        let context_revision = context_shell.app().document_revision();
+        let context_digest = context_shell.app().canonical_digest();
+        let context_undo_steps = context_shell.app().undo_step_count();
+        let context_action_digest = context_shell.app().action_digest().to_owned();
+        context_shell.click_menu_command("menu-model", AppCommand::Group);
+        context_shell.click_menu_command("menu-model", AppCommand::Ungroup);
+        assert_eq!(context_shell.app().document_revision(), context_revision);
+        assert_eq!(context_shell.app().canonical_digest(), context_digest);
+        assert_eq!(context_shell.app().undo_step_count(), context_undo_steps);
+        assert_eq!(context_shell.app().action_digest(), context_action_digest);
+    }
+}
+
+#[test]
+fn make_component_is_localized_atomic_and_context_bound() {
+    for catalog in [
+        LocaleCatalog::english(),
+        LocaleCatalog::slovak(),
+        LocaleCatalog::pseudo(),
+    ] {
+        let mut shell = Shell::with_catalog(catalog.clone());
+        assert_eq!(
+            shell.app().command_label(AppCommand::MakeComponent),
+            shell.catalog().text("model-make-component")
+        );
+        assert!(!shell.app().command_is_enabled(AppCommand::MakeComponent));
+
+        shell.click_at(shell.top_face_centre(1));
+        shell.click_menu_command("menu-edit", AppCommand::Copy);
+        shell.click_menu_command("menu-edit", AppCommand::Paste);
+        shell.click_menu_command("menu-edit", AppCommand::SelectAll);
+        shell.click_menu_command("menu-model", AppCommand::Group);
+        assert!(shell.app().command_is_enabled(AppCommand::MakeComponent));
+        assert!(shell.app().command_is_enabled(AppCommand::Paste));
+        let grouped = shell.app().canonical_digest();
+        let revision = shell.app().document_revision();
+        let undo_steps = shell.app().undo_step_count();
+        let component_name = shell.catalog().format(
+            "model-component-name",
+            &BTreeMap::from([("number", "1".to_owned())]),
+        );
+
+        shell.click_menu_command("menu-model", AppCommand::MakeComponent);
+
+        assert_eq!(shell.app().group_count(), 0);
+        assert_eq!(shell.app().occurrence_count(), 1);
+        assert_eq!(shell.app().definition_count(), 2);
+        assert_eq!(shell.app().selected_occurrence_count(), 1);
+        assert!(shell.app().occurrence_is_selected(OccurrenceId(3)));
+        assert!(!shell.app().command_is_enabled(AppCommand::Paste));
+        assert_eq!(shell.app().document_revision(), revision + 1);
+        assert_eq!(shell.app().undo_step_count(), undo_steps + 1);
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().format(
+                "digest-made-component",
+                &BTreeMap::from([("name", component_name), ("count", "2".to_owned()),])
+            )
+        );
+        assert!(!shell.app().command_is_enabled(AppCommand::MakeComponent));
+        let converted = shell.app().canonical_digest();
+
+        shell.click_menu_command("menu-edit", AppCommand::Undo);
+        assert_eq!(shell.app().group_count(), 1);
+        assert_eq!(shell.app().occurrence_count(), 2);
+        assert_eq!(shell.app().canonical_digest(), grouped);
+        assert!(shell.app().command_is_enabled(AppCommand::Paste));
+        shell.click_menu_command("menu-edit", AppCommand::Redo);
+        assert_eq!(shell.app().group_count(), 0);
+        assert_eq!(shell.app().occurrence_count(), 1);
+        assert_eq!(shell.app().canonical_digest(), converted);
+        assert!(!shell.app().command_is_enabled(AppCommand::Paste));
+
+        let mut context_shell = Shell::with_catalog(catalog);
+        context_shell.click_at(context_shell.viewport_rect().center());
+        assert!(
+            context_shell
+                .app_mut()
+                .copy_selected(Vec3::new(150.0, 25.0, 0.0))
+        );
+        context_shell.settle();
+        context_shell.click_menu_command("menu-view", AppCommand::ZoomFit);
+        context_shell.double_click_at(context_shell.top_face_centre(2));
+        assert_eq!(context_shell.app().edit_context_depth(), 1);
+        context_shell.click_menu_command("menu-edit", AppCommand::SelectAll);
+        assert!(
+            !context_shell
+                .app()
+                .command_is_enabled(AppCommand::MakeComponent)
+        );
+        let context_revision = context_shell.app().document_revision();
+        let context_digest = context_shell.app().canonical_digest();
+        let context_undo_steps = context_shell.app().undo_step_count();
+        let context_action_digest = context_shell.app().action_digest().to_owned();
+        context_shell.click_menu_command("menu-model", AppCommand::MakeComponent);
+        assert_eq!(context_shell.app().document_revision(), context_revision);
+        assert_eq!(context_shell.app().canonical_digest(), context_digest);
+        assert_eq!(context_shell.app().undo_step_count(), context_undo_steps);
+        assert_eq!(context_shell.app().action_digest(), context_action_digest);
+    }
+}
+
+#[test]
+fn select_all_instances_is_localized_context_bound_and_document_preserving() {
+    for catalog in [
+        LocaleCatalog::english(),
+        LocaleCatalog::slovak(),
+        LocaleCatalog::pseudo(),
+    ] {
+        let mut shell = Shell::with_catalog(catalog);
+        assert_eq!(
+            shell.app().command_label(AppCommand::SelectAllInstances),
+            shell.catalog().text("model-select-all-instances")
+        );
+
+        shell.click_at(shell.top_face_centre(1));
+        assert!(
+            !shell
+                .app()
+                .command_is_enabled(AppCommand::SelectAllInstances)
+        );
+        let single_revision = shell.app().document_revision();
+        let single_digest = shell.app().canonical_digest();
+        let single_undo_steps = shell.app().undo_step_count();
+        shell.click_menu_command("menu-model", AppCommand::SelectAllInstances);
+        assert_eq!(shell.app().selected_occurrence_count(), 1);
+        assert_eq!(shell.app().document_revision(), single_revision);
+        assert_eq!(shell.app().canonical_digest(), single_digest);
+        assert_eq!(shell.app().undo_step_count(), single_undo_steps);
+
+        shell.click_menu_command("menu-edit", AppCommand::Copy);
+        shell.click_menu_command("menu-edit", AppCommand::Paste);
+        assert!(shell.app_mut().create_box());
+        assert_eq!(shell.app().occurrence_count(), 3);
+        assert_ne!(
+            shell.app().occurrence_definition_id(OccurrenceId(2)),
+            shell.app().occurrence_definition_id(OccurrenceId(3))
+        );
+        shell
+            .app_mut()
+            .set_assistant_workspace_mode(ketchup_app::AssistantWorkspaceMode::Tab);
+        shell.settle();
+        let definition_name = shell.catalog().format(
+            "model-default-box",
+            &BTreeMap::from([("number", "1".to_owned())]),
+        );
+        let component_heading = shell.catalog().format(
+            "outliner-component",
+            &BTreeMap::from([
+                ("name", definition_name),
+                ("count", "2".to_owned()),
+                ("dimensions", "100 × 60 × 20".to_owned()),
+            ]),
+        );
+        shell.click_row(&component_heading);
+        let peer_name = shell.app().occurrence_name(OccurrenceId(2)).unwrap();
+        let peer_row = shell.catalog().format(
+            "outliner-instance",
+            &BTreeMap::from([("visibility", "◉".to_owned()), ("name", peer_name)]),
+        );
+        shell.click_row(&peer_row);
+        shell
+            .app_mut()
+            .set_assistant_workspace_mode(ketchup_app::AssistantWorkspaceMode::Dock);
+        shell.settle();
+        assert!(
+            shell
+                .app()
+                .command_is_enabled(AppCommand::SelectAllInstances)
+        );
+        let revision = shell.app().document_revision();
+        let digest = shell.app().canonical_digest();
+        let undo_steps = shell.app().undo_step_count();
+
+        shell.click_menu_command("menu-model", AppCommand::SelectAllInstances);
+
+        assert_eq!(shell.app().selected_occurrence_count(), 2);
+        assert!(shell.app().occurrence_is_selected(OccurrenceId(1)));
+        assert!(shell.app().occurrence_is_selected(OccurrenceId(2)));
+        assert!(!shell.app().occurrence_is_selected(OccurrenceId(3)));
+        assert!(shell.app().command_is_enabled(AppCommand::Paste));
+        assert_eq!(shell.app().document_revision(), revision);
+        assert_eq!(shell.app().canonical_digest(), digest);
+        assert_eq!(shell.app().undo_step_count(), undo_steps);
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().format(
+                "digest-selected-definition",
+                &BTreeMap::from([
+                    (
+                        "name",
+                        shell.app().definition_name(DefinitionId(1)).unwrap(),
+                    ),
+                    ("count", "2".to_owned()),
+                ])
+            )
+        );
+        assert!(
+            !shell
+                .app()
+                .command_is_enabled(AppCommand::SelectAllInstances)
+        );
+        let action_digest = shell.app().action_digest().to_owned();
+        shell.click_menu_command("menu-model", AppCommand::SelectAllInstances);
+        assert_eq!(shell.app().selected_occurrence_count(), 2);
+        assert_eq!(shell.app().document_revision(), revision);
+        assert_eq!(shell.app().canonical_digest(), digest);
+        assert_eq!(shell.app().undo_step_count(), undo_steps);
+        assert_eq!(shell.app().action_digest(), action_digest);
+    }
+}
+
+#[test]
+fn assign_tag_is_localized_atomic_context_bound_and_undoable() {
+    for catalog in [
+        LocaleCatalog::english(),
+        LocaleCatalog::slovak(),
+        LocaleCatalog::pseudo(),
+    ] {
+        let mut shell = Shell::with_catalog(catalog);
+        let tag = TagId(700);
+        let temporary_tag = TagId(701);
+        for (target, name) in [(tag, "Hardware"), (temporary_tag, "Temporary")] {
+            assert!(
+                shell
+                    .app_mut()
+                    .prepare_assistant_intent(WorkflowIntent::CreateTag {
+                        target,
+                        name: name.to_owned(),
+                        visible: true,
+                    })
+            );
+            assert!(shell.app_mut().confirm_assistant_proposal());
+        }
+        shell.settle();
+        assert_eq!(
+            shell.app().command_label(AppCommand::AssignTag),
+            shell.catalog().text("model-assign-tag")
+        );
+        assert!(!shell.app().command_is_enabled(AppCommand::AssignTag));
+
+        shell.click_at(shell.top_face_centre(1));
+        assert!(shell.app().command_is_enabled(AppCommand::AssignTag));
+        let cancel_revision = shell.app().document_revision();
+        let cancel_digest = shell.app().canonical_digest();
+        let cancel_undo_steps = shell.app().undo_step_count();
+        shell.click_menu_command("menu-model", AppCommand::AssignTag);
+        assert!(shell.app().tag_assignment_visible());
+        assert_eq!(shell.app().tag_assignment_input(), Some(None));
+        shell.click_role_and_label(
+            Role::Button,
+            &shell.catalog().text("dialog-assign-tag-cancel"),
+        );
+        assert!(!shell.app().tag_assignment_visible());
+        assert_eq!(shell.app().document_revision(), cancel_revision);
+        assert_eq!(shell.app().canonical_digest(), cancel_digest);
+        assert_eq!(shell.app().undo_step_count(), cancel_undo_steps);
+
+        shell.click_menu_command("menu-edit", AppCommand::Copy);
+        shell.click_menu_command("menu-edit", AppCommand::Paste);
+        shell.click_menu_command("menu-model", AppCommand::SelectAllInstances);
+        assert_eq!(shell.app().selected_occurrence_count(), 2);
+        let before = shell.app().document_snapshot();
+        let preserved = [OccurrenceId(1), OccurrenceId(2)].map(|id| {
+            let occurrence = before.occurrence(id).unwrap();
+            (
+                occurrence.definition_id(),
+                occurrence.transform(),
+                occurrence.parent(),
+                occurrence.visible(),
+            )
+        });
+        let revision = shell.app().document_revision();
+        let undo_steps = shell.app().undo_step_count();
+
+        shell.secondary_click_at(shell.top_face_centre(1));
+        shell.click_command(AppCommand::AssignTag);
+        assert!(shell.app().tag_assignment_visible());
+        shell.click_row("Hardware");
+        shell.click_role_and_label(
+            Role::Button,
+            &shell.catalog().text("dialog-assign-tag-confirm"),
+        );
+
+        assert!(!shell.app().tag_assignment_visible());
+        assert_eq!(shell.app().document_revision(), revision + 1);
+        assert_eq!(shell.app().undo_step_count(), undo_steps + 1);
+        assert_eq!(shell.app().occurrence_tag(OccurrenceId(1)), Some(tag));
+        assert_eq!(shell.app().occurrence_tag(OccurrenceId(2)), Some(tag));
+        let after = shell.app().document_snapshot();
+        for (index, id) in [OccurrenceId(1), OccurrenceId(2)].into_iter().enumerate() {
+            let occurrence = after.occurrence(id).unwrap();
+            assert_eq!(
+                (
+                    occurrence.definition_id(),
+                    occurrence.transform(),
+                    occurrence.parent(),
+                    occurrence.visible(),
+                ),
+                preserved[index]
+            );
+        }
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().format(
+                "digest-assigned-tag",
+                &BTreeMap::from([("count", "2".to_owned()), ("tag", "Hardware".to_owned()),])
+            )
+        );
+
+        let tagged_revision = shell.app().document_revision();
+        let tagged_digest = shell.app().canonical_digest();
+        let tagged_undo_steps = shell.app().undo_step_count();
+        let tagged_action_digest = shell.app().action_digest().to_owned();
+        shell.click_menu_command("menu-model", AppCommand::AssignTag);
+        shell.click_role_and_label(
+            Role::Button,
+            &shell.catalog().text("dialog-assign-tag-confirm"),
+        );
+        assert!(shell.app().tag_assignment_visible());
+        assert_eq!(shell.app().document_revision(), tagged_revision);
+        assert_eq!(shell.app().canonical_digest(), tagged_digest);
+        assert_eq!(shell.app().undo_step_count(), tagged_undo_steps);
+        assert_eq!(shell.app().action_digest(), tagged_action_digest);
+        assert_eq!(shell.app().selected_occurrence_count(), 2);
+        shell.click_row(&shell.catalog().text("dialog-assign-tag-untagged"));
+        shell.click_role_and_label(
+            Role::Button,
+            &shell.catalog().text("dialog-assign-tag-confirm"),
+        );
+        assert_eq!(shell.app().occurrence_tag(OccurrenceId(1)), None);
+        assert_eq!(shell.app().occurrence_tag(OccurrenceId(2)), None);
+        shell.click_menu_command("menu-edit", AppCommand::Undo);
+        assert_eq!(shell.app().occurrence_tag(OccurrenceId(1)), Some(tag));
+        assert_eq!(shell.app().occurrence_tag(OccurrenceId(2)), Some(tag));
+
+        shell.click_menu_command("menu-model", AppCommand::AssignTag);
+        shell.click_row(&shell.catalog().text("dialog-assign-tag-untagged"));
+        shell.click_menu_command("menu-edit", AppCommand::Deselect);
+        let drift_revision = shell.app().document_revision();
+        let drift_digest = shell.app().canonical_digest();
+        let drift_undo_steps = shell.app().undo_step_count();
+        let drift_action_digest = shell.app().action_digest().to_owned();
+        assert!(!shell.app_mut().confirm_tag_assignment());
+        assert_eq!(shell.app().document_revision(), drift_revision);
+        assert_eq!(shell.app().canonical_digest(), drift_digest);
+        assert_eq!(shell.app().undo_step_count(), drift_undo_steps);
+        assert_eq!(shell.app().action_digest(), drift_action_digest);
+        assert_eq!(shell.app().selected_occurrence_count(), 0);
+        assert_eq!(shell.app().occurrence_tag(OccurrenceId(1)), Some(tag));
+        assert_eq!(shell.app().occurrence_tag(OccurrenceId(2)), Some(tag));
+        shell.settle();
+        assert!(!shell.app().tag_assignment_visible());
+        shell.click_menu_command("menu-edit", AppCommand::SelectAll);
+        assert_eq!(shell.app().selected_occurrence_count(), 2);
+
+        shell.click_menu_command("menu-model", AppCommand::AssignTag);
+        shell.click_row("Temporary");
+        assert!(
+            shell
+                .app_mut()
+                .prepare_assistant_intent(WorkflowIntent::DeleteTag {
+                    target: temporary_tag,
+                })
+        );
+        assert!(shell.app_mut().confirm_assistant_proposal());
+        let missing_revision = shell.app().document_revision();
+        let missing_digest = shell.app().canonical_digest();
+        let missing_undo_steps = shell.app().undo_step_count();
+        let missing_action_digest = shell.app().action_digest().to_owned();
+        assert!(!shell.app_mut().confirm_tag_assignment());
+        assert_eq!(shell.app().document_revision(), missing_revision);
+        assert_eq!(shell.app().canonical_digest(), missing_digest);
+        assert_eq!(shell.app().undo_step_count(), missing_undo_steps);
+        assert_eq!(shell.app().action_digest(), missing_action_digest);
+        assert_eq!(shell.app().selected_occurrence_count(), 2);
+        assert_eq!(shell.app().occurrence_tag(OccurrenceId(1)), Some(tag));
+        assert_eq!(shell.app().occurrence_tag(OccurrenceId(2)), Some(tag));
+        shell.settle();
+        assert!(!shell.app().tag_assignment_visible());
+
+        shell.click_menu_command("menu-model", AppCommand::AssignTag);
+        let stale_revision = shell.app().document_revision();
+        assert!(
+            shell
+                .app_mut()
+                .prepare_assistant_intent(WorkflowIntent::RenameDefinition {
+                    target: DefinitionId(1),
+                    name: "Intervening definition".to_owned(),
+                })
+        );
+        assert!(shell.app_mut().confirm_assistant_proposal());
+        let intervening_revision = shell.app().document_revision();
+        assert!(intervening_revision > stale_revision);
+        shell.settle();
+        assert!(!shell.app().tag_assignment_visible());
+        assert_eq!(shell.app().document_revision(), intervening_revision);
+        assert_eq!(shell.app().occurrence_tag(OccurrenceId(1)), Some(tag));
+        assert_eq!(shell.app().occurrence_tag(OccurrenceId(2)), Some(tag));
+    }
+}
+
+#[test]
+fn tags_panel_create_is_localized_canonical_stale_safe_and_undoable() {
+    for catalog in [
+        LocaleCatalog::english(),
+        LocaleCatalog::slovak(),
+        LocaleCatalog::pseudo(),
+    ] {
+        let mut shell = Shell::with_catalog(catalog);
+        shell
+            .app_mut()
+            .set_assistant_workspace_mode(AssistantWorkspaceMode::Tab);
+        shell.settle();
+        let create_label = shell.catalog().text("tags-create");
+        let confirm_label = shell.catalog().text("dialog-create-tag-confirm");
+        let cancel_label = shell.catalog().text("dialog-create-tag-cancel");
+        let name_label = shell.catalog().text("dialog-create-tag-name");
+        assert!(shell.has_role_and_label(Role::Button, &create_label));
+
+        let initial = shell.app().document_snapshot();
+        let occurrence = initial.occurrence(OccurrenceId(1)).unwrap();
+        let preserved = (
+            occurrence.name().to_owned(),
+            occurrence.definition_id(),
+            occurrence.transform(),
+            occurrence.parent(),
+            occurrence.tag(),
+            occurrence.visible(),
+        );
+        let initial_revision = shell.app().document_revision();
+        let initial_digest = shell.app().canonical_digest();
+        let initial_undo_steps = shell.app().undo_step_count();
+
+        shell.click_role_and_label(Role::Button, &create_label);
+        assert!(shell.app().tag_creation_visible());
+        shell.click_role_and_label(Role::Button, &cancel_label);
+        assert!(!shell.app().tag_creation_visible());
+        assert_eq!(shell.app().document_revision(), initial_revision);
+        assert_eq!(shell.app().canonical_digest(), initial_digest);
+        assert_eq!(shell.app().undo_step_count(), initial_undo_steps);
+
+        shell.click_role_and_label(Role::Button, &create_label);
+        assert!(!shell.app_mut().confirm_tag_creation());
+        assert_eq!(shell.app().document_revision(), initial_revision);
+        shell.focus_text_input(&name_label);
+        shell.type_text("Hardware");
+        assert_eq!(shell.app().tag_creation_input(), Some("Hardware"));
+        shell.click_role_and_label(Role::Button, &confirm_label);
+
+        assert!(!shell.app().tag_creation_visible());
+        assert_eq!(shell.app().document_revision(), initial_revision + 1);
+        assert_eq!(shell.app().undo_step_count(), initial_undo_steps + 1);
+        let created = shell
+            .app()
+            .document_snapshot()
+            .tags()
+            .find(|tag| tag.name() == "Hardware")
+            .map(|tag| (tag.id(), tag.visible()));
+        assert_eq!(created, Some((TagId(1), true)));
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().format(
+                "digest-created-tag",
+                &BTreeMap::from([("name", "Hardware".to_owned())]),
+            )
+        );
+        let after = shell.app().document_snapshot();
+        let occurrence = after.occurrence(OccurrenceId(1)).unwrap();
+        assert_eq!(
+            (
+                occurrence.name().to_owned(),
+                occurrence.definition_id(),
+                occurrence.transform(),
+                occurrence.parent(),
+                occurrence.tag(),
+                occurrence.visible(),
+            ),
+            preserved
+        );
+
+        let created_revision = shell.app().document_revision();
+        let created_digest = shell.app().canonical_digest();
+        let created_undo_steps = shell.app().undo_step_count();
+        let created_action_digest = shell.app().action_digest().to_owned();
+        let created_selection = shell.app().selected_occurrence_count();
+        shell.click_role_and_label(Role::Button, &create_label);
+        shell.focus_text_input(&name_label);
+        shell.type_text("Hardware");
+        assert!(!shell.app_mut().confirm_tag_creation());
+        assert_eq!(shell.app().document_revision(), created_revision);
+        assert_eq!(shell.app().canonical_digest(), created_digest);
+        assert_eq!(shell.app().undo_step_count(), created_undo_steps);
+        assert_eq!(shell.app().action_digest(), created_action_digest);
+        assert_eq!(shell.app().selected_occurrence_count(), created_selection);
+        shell.click_role_and_label(Role::Button, &cancel_label);
+
+        shell.click_role_and_label(Role::Button, &create_label);
+        shell.focus_text_input(&name_label);
+        shell.type_text("Namespace drift");
+        assert!(
+            shell
+                .app_mut()
+                .prepare_assistant_intent(WorkflowIntent::CreateTag {
+                    target: TagId(850),
+                    name: "Intervening tag".to_owned(),
+                    visible: false,
+                })
+        );
+        assert!(shell.app_mut().confirm_assistant_proposal());
+        shell.settle();
+        assert!(!shell.app().tag_creation_visible());
+        assert!(
+            shell
+                .app()
+                .document_snapshot()
+                .tags()
+                .all(|tag| tag.name() != "Namespace drift")
+        );
+        shell.click_menu_command("menu-edit", AppCommand::Undo);
+        assert_eq!(shell.app().tag_visibility(TagId(850)), None);
+
+        shell.click_role_and_label(Role::Button, &create_label);
+        shell.focus_text_input(&name_label);
+        shell.type_text("Stale tag");
+        assert!(
+            shell
+                .app_mut()
+                .prepare_assistant_intent(WorkflowIntent::RenameDefinition {
+                    target: DefinitionId(1),
+                    name: "Intervening definition".to_owned(),
+                })
+        );
+        assert!(shell.app_mut().confirm_assistant_proposal());
+        shell.settle();
+        assert!(!shell.app().tag_creation_visible());
+        assert!(
+            shell
+                .app()
+                .document_snapshot()
+                .tags()
+                .all(|tag| tag.name() != "Stale tag")
+        );
+
+        shell.click_menu_command("menu-edit", AppCommand::Undo);
+        shell.click_menu_command("menu-edit", AppCommand::Undo);
+        assert_eq!(shell.app().document_revision(), initial_revision);
+        assert!(shell.app().document_snapshot().tags().next().is_none());
+        let restored = shell.app().document_snapshot();
+        let occurrence = restored.occurrence(OccurrenceId(1)).unwrap();
+        assert_eq!(
+            (
+                occurrence.name().to_owned(),
+                occurrence.definition_id(),
+                occurrence.transform(),
+                occurrence.parent(),
+                occurrence.tag(),
+                occurrence.visible(),
+            ),
+            preserved
+        );
+    }
+}
+
+#[test]
+fn tags_panel_create_from_selection_is_localized_atomic_stale_safe_and_undoable() {
+    for catalog in [
+        LocaleCatalog::english(),
+        LocaleCatalog::slovak(),
+        LocaleCatalog::pseudo(),
+    ] {
+        let mut shell = Shell::with_catalog(catalog);
+        let create_label = shell.catalog().text("tags-create-from-selection");
+        let confirm_label = shell
+            .catalog()
+            .text("dialog-create-tag-from-selection-confirm");
+        let cancel_label = shell.catalog().text("dialog-create-tag-cancel");
+        let name_label = shell.catalog().text("dialog-create-tag-name");
+        let other_tag = TagId(1401);
+        assert!(
+            shell
+                .app_mut()
+                .prepare_assistant_intent(WorkflowIntent::CreateTag {
+                    target: other_tag,
+                    name: "Other".to_owned(),
+                    visible: true,
+                })
+        );
+        assert!(shell.app_mut().confirm_assistant_proposal());
+        shell.click_at(shell.top_face_centre(1));
+        shell.click_menu_command("menu-edit", AppCommand::Copy);
+        shell.click_menu_command("menu-edit", AppCommand::Paste);
+        assert!(shell.app_mut().create_box());
+        assert!(
+            shell
+                .app_mut()
+                .prepare_assistant_intent(WorkflowIntent::SetOccurrenceTag {
+                    target: OccurrenceId(1),
+                    tag: Some(other_tag),
+                })
+        );
+        assert!(shell.app_mut().confirm_assistant_proposal());
+        shell
+            .app_mut()
+            .set_assistant_workspace_mode(AssistantWorkspaceMode::Tab);
+        shell.settle();
+        assert!(shell.has_role_and_label(Role::Button, &create_label));
+        shell.click_menu_command("menu-edit", AppCommand::Deselect);
+        shell.click_role_and_label(Role::Button, &create_label);
+        assert!(!shell.app().tag_creation_visible());
+        shell.click_menu_command("menu-edit", AppCommand::SelectAll);
+        assert_eq!(shell.app().selected_occurrence_count(), 3);
+
+        let before = shell.app().document_snapshot();
+        let preserved = [OccurrenceId(1), OccurrenceId(2), OccurrenceId(3)].map(|id| {
+            let occurrence = before.occurrence(id).unwrap();
+            (
+                occurrence.name().to_owned(),
+                occurrence.definition_id(),
+                occurrence.transform(),
+                occurrence.parent(),
+                occurrence.tag(),
+                occurrence.visible(),
+            )
+        });
+        let revision = shell.app().document_revision();
+        let undo_steps = shell.app().undo_step_count();
+        shell.click_role_and_label(Role::Button, &create_label);
+        assert!(shell.app().tag_creation_visible());
+        shell.focus_text_input(&name_label);
+        shell.type_text("Hardware");
+        shell.click_role_and_label(Role::Button, &confirm_label);
+
+        let created_tag = TagId(1402);
+        assert!(!shell.app().tag_creation_visible());
+        assert_eq!(shell.app().document_revision(), revision + 1);
+        assert_eq!(shell.app().undo_step_count(), undo_steps + 1);
+        assert_eq!(shell.app().selected_occurrence_count(), 3);
+        assert_eq!(shell.app().tag_visibility(created_tag), Some(true));
+        let assigned = shell.app().document_snapshot();
+        for (index, id) in [OccurrenceId(1), OccurrenceId(2), OccurrenceId(3)]
+            .into_iter()
+            .enumerate()
+        {
+            let occurrence = assigned.occurrence(id).unwrap();
+            assert_eq!(occurrence.tag(), Some(created_tag));
+            assert_eq!(
+                (
+                    occurrence.name().to_owned(),
+                    occurrence.definition_id(),
+                    occurrence.transform(),
+                    occurrence.parent(),
+                    occurrence.visible(),
+                ),
+                (
+                    preserved[index].0.clone(),
+                    preserved[index].1,
+                    preserved[index].2,
+                    preserved[index].3,
+                    preserved[index].5,
+                )
+            );
+        }
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().format(
+                "digest-created-tag-from-selection",
+                &BTreeMap::from([("name", "Hardware".to_owned()), ("count", "3".to_owned()),]),
+            )
+        );
+
+        shell.click_menu_command("menu-edit", AppCommand::Undo);
+        assert_eq!(shell.app().tag_visibility(created_tag), None);
+        let restored = shell.app().document_snapshot();
+        for (index, id) in [OccurrenceId(1), OccurrenceId(2), OccurrenceId(3)]
+            .into_iter()
+            .enumerate()
+        {
+            assert_eq!(restored.occurrence(id).unwrap().tag(), preserved[index].4);
+        }
+
+        shell.click_role_and_label(Role::Button, &create_label);
+        shell.focus_text_input(&name_label);
+        shell.type_text("Other");
+        let unchanged_revision = shell.app().document_revision();
+        let unchanged_digest = shell.app().canonical_digest();
+        let unchanged_undo_steps = shell.app().undo_step_count();
+        assert!(!shell.app_mut().confirm_tag_creation());
+        assert_eq!(shell.app().document_revision(), unchanged_revision);
+        assert_eq!(shell.app().canonical_digest(), unchanged_digest);
+        assert_eq!(shell.app().undo_step_count(), unchanged_undo_steps);
+        shell.click_role_and_label(Role::Button, &cancel_label);
+
+        shell.click_role_and_label(Role::Button, &create_label);
+        shell.focus_text_input(&name_label);
+        shell.type_text("Selection drift");
+        shell.click_menu_command("menu-edit", AppCommand::Deselect);
+        let drift_revision = shell.app().document_revision();
+        let drift_digest = shell.app().canonical_digest();
+        let drift_undo_steps = shell.app().undo_step_count();
+        let drift_action_digest = shell.app().action_digest().to_owned();
+        assert!(!shell.app_mut().confirm_tag_creation());
+        assert_eq!(shell.app().document_revision(), drift_revision);
+        assert_eq!(shell.app().canonical_digest(), drift_digest);
+        assert_eq!(shell.app().undo_step_count(), drift_undo_steps);
+        assert_eq!(shell.app().action_digest(), drift_action_digest);
+        assert_eq!(shell.app().selected_occurrence_count(), 0);
+        shell.settle();
+        assert!(!shell.app().tag_creation_visible());
+        assert!(
+            shell
+                .app()
+                .document_snapshot()
+                .tags()
+                .all(|tag| tag.name() != "Selection drift")
+        );
+        shell.click_menu_command("menu-edit", AppCommand::SelectAll);
+
+        shell.click_role_and_label(Role::Button, &create_label);
+        shell.focus_text_input(&name_label);
+        shell.type_text("Stale tag");
+        assert!(
+            shell
+                .app_mut()
+                .prepare_assistant_intent(WorkflowIntent::RenameDefinition {
+                    target: DefinitionId(1),
+                    name: "Intervening definition".to_owned(),
+                })
+        );
+        assert!(shell.app_mut().confirm_assistant_proposal());
+        shell.settle();
+        assert!(!shell.app().tag_creation_visible());
+        assert!(
+            shell
+                .app()
+                .document_snapshot()
+                .tags()
+                .all(|tag| tag.name() != "Stale tag")
+        );
+    }
+}
+
+#[test]
+fn tags_panel_delete_unused_is_localized_context_bound_and_undoable() {
+    for catalog in [
+        LocaleCatalog::english(),
+        LocaleCatalog::slovak(),
+        LocaleCatalog::pseudo(),
+    ] {
+        let mut shell = Shell::with_catalog(catalog);
+        let unused_tag = TagId(801);
+        let used_tag = TagId(802);
+        for (target, name) in [(unused_tag, "Unused"), (used_tag, "Used")] {
+            assert!(
+                shell
+                    .app_mut()
+                    .prepare_assistant_intent(WorkflowIntent::CreateTag {
+                        target,
+                        name: name.to_owned(),
+                        visible: true,
+                    })
+            );
+            assert!(shell.app_mut().confirm_assistant_proposal());
+        }
+        shell.settle();
+        shell.click_at(shell.top_face_centre(1));
+        shell.click_menu_command("menu-model", AppCommand::AssignTag);
+        shell.click_row("Used");
+        shell.click_role_and_label(
+            Role::Button,
+            &shell.catalog().text("dialog-assign-tag-confirm"),
+        );
+        shell
+            .app_mut()
+            .set_assistant_workspace_mode(AssistantWorkspaceMode::Tab);
+        shell.settle();
+
+        let unused_delete = shell.catalog().format(
+            "tags-delete",
+            &BTreeMap::from([("name", "Unused".to_owned())]),
+        );
+        let used_delete = shell.catalog().format(
+            "tags-delete",
+            &BTreeMap::from([("name", "Used".to_owned())]),
+        );
+        assert!(shell.has_role_and_label(Role::Button, &unused_delete));
+        assert!(shell.has_role_and_label(Role::Button, &used_delete));
+
+        let baseline = shell.app().document_snapshot();
+        let occurrence = baseline.occurrence(OccurrenceId(1)).unwrap();
+        let preserved_occurrence = (
+            occurrence.name().to_owned(),
+            occurrence.definition_id(),
+            occurrence.transform(),
+            occurrence.parent(),
+            occurrence.tag(),
+            occurrence.visible(),
+        );
+        let baseline_revision = shell.app().document_revision();
+        let baseline_digest = shell.app().canonical_digest();
+        let baseline_undo_steps = shell.app().undo_step_count();
+
+        shell.click_role_and_label(Role::Button, &unused_delete);
+        assert!(shell.app().tag_deletion_visible());
+        shell.click_role_and_label(
+            Role::Button,
+            &shell.catalog().text("dialog-delete-tag-cancel"),
+        );
+        assert!(!shell.app().tag_deletion_visible());
+        assert_eq!(shell.app().document_revision(), baseline_revision);
+        assert_eq!(shell.app().canonical_digest(), baseline_digest);
+        assert_eq!(shell.app().undo_step_count(), baseline_undo_steps);
+
+        shell.click_role_and_label(Role::Button, &unused_delete);
+        assert!(
+            shell
+                .app_mut()
+                .prepare_assistant_intent(WorkflowIntent::RenameDefinition {
+                    target: DefinitionId(1),
+                    name: "Intervening definition".to_owned(),
+                })
+        );
+        assert!(shell.app_mut().confirm_assistant_proposal());
+        shell.settle();
+        assert!(!shell.app().tag_deletion_visible());
+        assert!(shell.app().document_snapshot().tag(unused_tag).is_some());
+        shell.click_menu_command("menu-edit", AppCommand::Undo);
+
+        let revision = shell.app().document_revision();
+        let undo_steps = shell.app().undo_step_count();
+        shell.click_role_and_label(Role::Button, &unused_delete);
+        shell.click_role_and_label(
+            Role::Button,
+            &shell.catalog().text("dialog-delete-tag-confirm"),
+        );
+
+        assert!(!shell.app().tag_deletion_visible());
+        assert!(shell.app().document_revision() > revision);
+        assert_eq!(shell.app().undo_step_count(), undo_steps + 1);
+        let deleted = shell.app().document_snapshot();
+        assert!(deleted.tag(unused_tag).is_none());
+        assert_eq!(deleted.tag(used_tag).unwrap().name(), "Used");
+        assert!(deleted.tag(used_tag).unwrap().visible());
+        let occurrence = deleted.occurrence(OccurrenceId(1)).unwrap();
+        assert_eq!(
+            (
+                occurrence.name().to_owned(),
+                occurrence.definition_id(),
+                occurrence.transform(),
+                occurrence.parent(),
+                occurrence.tag(),
+                occurrence.visible(),
+            ),
+            preserved_occurrence
+        );
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().format(
+                "digest-deleted-tag",
+                &BTreeMap::from([("name", "Unused".to_owned())]),
+            )
+        );
+
+        shell.click_menu_command("menu-edit", AppCommand::Undo);
+        let restored = shell.app().document_snapshot();
+        assert_eq!(restored.tag(unused_tag).unwrap().name(), "Unused");
+        assert!(restored.tag(unused_tag).unwrap().visible());
+        assert_eq!(restored.tag(used_tag).unwrap().name(), "Used");
+        let occurrence = restored.occurrence(OccurrenceId(1)).unwrap();
+        assert_eq!(
+            (
+                occurrence.name().to_owned(),
+                occurrence.definition_id(),
+                occurrence.transform(),
+                occurrence.parent(),
+                occurrence.tag(),
+                occurrence.visible(),
+            ),
+            preserved_occurrence
+        );
+    }
+}
+
+#[test]
+fn tags_panel_delete_used_exact_plan_is_localized_atomic_stale_safe_and_undoable() {
+    for catalog in [
+        LocaleCatalog::english(),
+        LocaleCatalog::slovak(),
+        LocaleCatalog::pseudo(),
+    ] {
+        let mut shell = Shell::with_catalog(catalog);
+        let tag = TagId(825);
+        assert!(
+            shell
+                .app_mut()
+                .prepare_assistant_intent(WorkflowIntent::CreateTag {
+                    target: tag,
+                    name: "Hardware".to_owned(),
+                    visible: true,
+                })
+        );
+        assert!(shell.app_mut().confirm_assistant_proposal());
+        assert!(shell.app_mut().create_box());
+        for target in [OccurrenceId(1), OccurrenceId(2)] {
+            assert!(
+                shell
+                    .app_mut()
+                    .prepare_assistant_intent(WorkflowIntent::SetOccurrenceTag {
+                        target,
+                        tag: Some(tag),
+                    })
+            );
+            assert!(shell.app_mut().confirm_assistant_proposal());
+        }
+        shell
+            .app_mut()
+            .set_assistant_workspace_mode(AssistantWorkspaceMode::Tab);
+        shell.settle();
+        shell.click_menu_command("menu-edit", AppCommand::SelectAll);
+
+        let delete_label = shell.catalog().format(
+            "tags-delete",
+            &BTreeMap::from([("name", "Hardware".to_owned())]),
+        );
+        let baseline = shell.app().document_snapshot();
+        let preserved = [OccurrenceId(1), OccurrenceId(2)].map(|id| {
+            let occurrence = baseline.occurrence(id).unwrap();
+            (
+                occurrence.name().to_owned(),
+                occurrence.definition_id(),
+                occurrence.transform(),
+                occurrence.parent(),
+                occurrence.visible(),
+            )
+        });
+        let baseline_revision = shell.app().document_revision();
+        let baseline_digest = shell.app().canonical_digest();
+        let baseline_undo_steps = shell.app().undo_step_count();
+
+        shell.click_role_and_label(Role::Button, &delete_label);
+        assert!(shell.app().tag_deletion_visible());
+        assert!(shell.has_visible_label(&shell.catalog().format(
+            "dialog-delete-used-tag-message",
+            &BTreeMap::from([("name", "Hardware".to_owned()), ("count", "2".to_owned()),]),
+        )));
+        shell.click_role_and_label(
+            Role::Button,
+            &shell.catalog().text("dialog-delete-tag-cancel"),
+        );
+        assert!(!shell.app().tag_deletion_visible());
+        assert_eq!(shell.app().document_revision(), baseline_revision);
+        assert_eq!(shell.app().canonical_digest(), baseline_digest);
+        assert_eq!(shell.app().undo_step_count(), baseline_undo_steps);
+
+        shell.click_role_and_label(Role::Button, &delete_label);
+        shell.click_role_and_label(
+            Role::Button,
+            &shell.catalog().text("dialog-delete-tag-confirm"),
+        );
+
+        assert!(!shell.app().tag_deletion_visible());
+        assert_eq!(shell.app().document_revision(), baseline_revision + 1);
+        assert_eq!(shell.app().undo_step_count(), baseline_undo_steps + 1);
+        assert_eq!(shell.app().selected_occurrence_count(), 2);
+        let deleted = shell.app().document_snapshot();
+        assert!(deleted.tag(tag).is_none());
+        for (index, id) in [OccurrenceId(1), OccurrenceId(2)].into_iter().enumerate() {
+            let occurrence = deleted.occurrence(id).unwrap();
+            assert_eq!(occurrence.tag(), None);
+            assert_eq!(
+                (
+                    occurrence.name().to_owned(),
+                    occurrence.definition_id(),
+                    occurrence.transform(),
+                    occurrence.parent(),
+                    occurrence.visible(),
+                ),
+                preserved[index]
+            );
+        }
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().format(
+                "digest-deleted-used-tag",
+                &BTreeMap::from([("name", "Hardware".to_owned()), ("count", "2".to_owned()),]),
+            )
+        );
+
+        shell.click_menu_command("menu-edit", AppCommand::Undo);
+        let restored = shell.app().document_snapshot();
+        assert_eq!(restored.tag(tag).unwrap().name(), "Hardware");
+        for id in [OccurrenceId(1), OccurrenceId(2)] {
+            assert_eq!(restored.occurrence(id).unwrap().tag(), Some(tag));
+        }
+        assert_eq!(shell.app().selected_occurrence_count(), 2);
+
+        shell.click_menu_command("menu-edit", AppCommand::Redo);
+        let redone = shell.app().document_snapshot();
+        assert!(redone.tag(tag).is_none());
+        for id in [OccurrenceId(1), OccurrenceId(2)] {
+            assert_eq!(redone.occurrence(id).unwrap().tag(), None);
+        }
+        shell.click_menu_command("menu-edit", AppCommand::Undo);
+        assert!(shell.app().document_snapshot().tag(tag).is_some());
+
+        shell.click_role_and_label(Role::Button, &delete_label);
+        assert!(
+            shell
+                .app_mut()
+                .prepare_assistant_intent(WorkflowIntent::RenameDefinition {
+                    target: DefinitionId(1),
+                    name: "Intervening definition".to_owned(),
+                })
+        );
+        assert!(shell.app_mut().confirm_assistant_proposal());
+        shell.settle();
+        assert!(!shell.app().tag_deletion_visible());
+        let stale = shell.app().document_snapshot();
+        assert!(stale.tag(tag).is_some());
+        for id in [OccurrenceId(1), OccurrenceId(2)] {
+            assert_eq!(stale.occurrence(id).unwrap().tag(), Some(tag));
+        }
+    }
+}
+
+#[test]
+fn tags_panel_delete_local_only_is_localized_present_disabled_and_fail_closed() {
+    for catalog in [
+        LocaleCatalog::english(),
+        LocaleCatalog::slovak(),
+        LocaleCatalog::pseudo(),
+    ] {
+        let mut shell = Shell::with_catalog(catalog);
+        let local_tag = TagId(826);
+        let missing_tag = TagId(827);
+        for (target, name) in [(local_tag, "Local"), (missing_tag, "Missing")] {
+            assert!(
+                shell
+                    .app_mut()
+                    .prepare_assistant_intent(WorkflowIntent::CreateTag {
+                        target,
+                        name: name.to_owned(),
+                        visible: true,
+                    })
+            );
+            assert!(shell.app_mut().confirm_assistant_proposal());
+        }
+        assert!(shell.app_mut().create_box());
+        assert!(
+            shell
+                .app_mut()
+                .prepare_assistant_intent(WorkflowIntent::SetOccurrenceTag {
+                    target: OccurrenceId(1),
+                    tag: Some(local_tag),
+                })
+        );
+        assert!(shell.app_mut().confirm_assistant_proposal());
+        shell.click_menu_command("menu-edit", AppCommand::SelectAll);
+        assert!(shell.app_mut().group_selected());
+        assert!(shell.app_mut().make_component());
+        shell
+            .app_mut()
+            .set_assistant_workspace_mode(AssistantWorkspaceMode::Tab);
+        shell.settle();
+
+        let local_delete = shell.catalog().format(
+            "tags-delete",
+            &BTreeMap::from([("name", "Local".to_owned())]),
+        );
+        assert!(shell.has_role_and_label(Role::Button, &local_delete));
+        let revision = shell.app().document_revision();
+        let digest = shell.app().canonical_digest();
+        let undo_steps = shell.app().undo_step_count();
+        let action_digest = shell.app().action_digest().to_owned();
+        let selected_occurrences = shell.app().selected_occurrence_count();
+        shell.click_role_and_label(Role::Button, &local_delete);
+        assert!(!shell.app().tag_deletion_visible());
+        assert_eq!(shell.app().document_revision(), revision);
+        assert_eq!(shell.app().canonical_digest(), digest);
+        assert_eq!(shell.app().undo_step_count(), undo_steps);
+        assert_eq!(shell.app().action_digest(), action_digest);
+        assert_eq!(
+            shell.app().selected_occurrence_count(),
+            selected_occurrences
+        );
+
+        let missing_delete = shell.catalog().format(
+            "tags-delete",
+            &BTreeMap::from([("name", "Missing".to_owned())]),
+        );
+        shell.click_role_and_label(Role::Button, &missing_delete);
+        assert!(shell.app().tag_deletion_visible());
+        assert!(
+            shell
+                .app_mut()
+                .prepare_assistant_intent(WorkflowIntent::DeleteTag {
+                    target: missing_tag,
+                })
+        );
+        assert!(shell.app_mut().confirm_assistant_proposal());
+        let revision = shell.app().document_revision();
+        let digest = shell.app().canonical_digest();
+        let undo_steps = shell.app().undo_step_count();
+        let action_digest = shell.app().action_digest().to_owned();
+        let selected_occurrences = shell.app().selected_occurrence_count();
+        assert!(!shell.app_mut().confirm_tag_deletion());
+        assert_eq!(shell.app().document_revision(), revision);
+        assert_eq!(shell.app().canonical_digest(), digest);
+        assert_eq!(shell.app().undo_step_count(), undo_steps);
+        assert_eq!(shell.app().action_digest(), action_digest);
+        assert_eq!(
+            shell.app().selected_occurrence_count(),
+            selected_occurrences
+        );
+        shell.settle();
+        assert!(!shell.app().tag_deletion_visible());
+    }
+}
+
+#[test]
+fn tags_panel_clear_assignments_is_localized_atomic_stale_safe_and_undoable() {
+    for catalog in [
+        LocaleCatalog::english(),
+        LocaleCatalog::slovak(),
+        LocaleCatalog::pseudo(),
+    ] {
+        let mut shell = Shell::with_catalog(catalog);
+        let used_tag = TagId(850);
+        let unused_tag = TagId(851);
+        for (target, name) in [(used_tag, "Hardware"), (unused_tag, "Unused")] {
+            assert!(
+                shell
+                    .app_mut()
+                    .prepare_assistant_intent(WorkflowIntent::CreateTag {
+                        target,
+                        name: name.to_owned(),
+                        visible: true,
+                    })
+            );
+            assert!(shell.app_mut().confirm_assistant_proposal());
+        }
+        shell.settle();
+        shell.click_at(shell.top_face_centre(1));
+        shell.click_menu_command("menu-edit", AppCommand::Copy);
+        shell.click_menu_command("menu-edit", AppCommand::Paste);
+        for target in [OccurrenceId(1), OccurrenceId(2)] {
+            assert!(
+                shell
+                    .app_mut()
+                    .prepare_assistant_intent(WorkflowIntent::SetOccurrenceTag {
+                        target,
+                        tag: Some(used_tag),
+                    })
+            );
+            assert!(shell.app_mut().confirm_assistant_proposal());
+        }
+        assert!(shell.app_mut().prepare_assistant_intent(
+            WorkflowIntent::SetOccurrenceVisibility {
+                target: OccurrenceId(2),
+                visible: false,
+            }
+        ));
+        assert!(shell.app_mut().confirm_assistant_proposal());
+        shell
+            .app_mut()
+            .set_assistant_workspace_mode(AssistantWorkspaceMode::Tab);
+        shell.settle();
+
+        let clear_used = shell.catalog().format(
+            "tags-clear",
+            &BTreeMap::from([("name", "Hardware".to_owned())]),
+        );
+        let clear_unused = shell.catalog().format(
+            "tags-clear",
+            &BTreeMap::from([("name", "Unused".to_owned())]),
+        );
+        assert!(shell.has_role_and_label(Role::Button, &clear_used));
+        assert!(shell.has_role_and_label(Role::Button, &clear_unused));
+
+        let unused_revision = shell.app().document_revision();
+        let unused_digest = shell.app().canonical_digest();
+        let unused_undo_steps = shell.app().undo_step_count();
+        let unused_action_digest = shell.app().action_digest().to_owned();
+        shell.click_role_and_label(Role::Button, &clear_unused);
+        assert!(!shell.app().tag_clear_visible());
+        assert_eq!(shell.app().document_revision(), unused_revision);
+        assert_eq!(shell.app().canonical_digest(), unused_digest);
+        assert_eq!(shell.app().undo_step_count(), unused_undo_steps);
+        assert_eq!(shell.app().action_digest(), unused_action_digest);
+
+        shell.click_role_and_label(Role::Button, &clear_used);
+        assert!(shell.app().tag_clear_visible());
+        let cancel_revision = shell.app().document_revision();
+        let cancel_digest = shell.app().canonical_digest();
+        let cancel_undo_steps = shell.app().undo_step_count();
+        let cancel_action_digest = shell.app().action_digest().to_owned();
+        shell.click_role_and_label(
+            Role::Button,
+            &shell.catalog().text("dialog-clear-tag-cancel"),
+        );
+        assert!(!shell.app().tag_clear_visible());
+        assert_eq!(shell.app().document_revision(), cancel_revision);
+        assert_eq!(shell.app().canonical_digest(), cancel_digest);
+        assert_eq!(shell.app().undo_step_count(), cancel_undo_steps);
+        assert_eq!(shell.app().action_digest(), cancel_action_digest);
+
+        shell.click_role_and_label(Role::Button, &clear_used);
+        assert!(
+            shell
+                .app_mut()
+                .prepare_assistant_intent(WorkflowIntent::CreateTag {
+                    target: TagId(854),
+                    name: "Namespace drift".to_owned(),
+                    visible: false,
+                })
+        );
+        assert!(shell.app_mut().confirm_assistant_proposal());
+        let namespace_revision = shell.app().document_revision();
+        let namespace_digest = shell.app().canonical_digest();
+        let namespace_undo_steps = shell.app().undo_step_count();
+        let namespace_action_digest = shell.app().action_digest().to_owned();
+        assert!(!shell.app_mut().confirm_tag_clear());
+        assert_eq!(shell.app().document_revision(), namespace_revision);
+        assert_eq!(shell.app().canonical_digest(), namespace_digest);
+        assert_eq!(shell.app().undo_step_count(), namespace_undo_steps);
+        assert_eq!(shell.app().action_digest(), namespace_action_digest);
+        shell.settle();
+        assert!(!shell.app().tag_clear_visible());
+        shell.click_menu_command("menu-edit", AppCommand::Undo);
+        shell.settle();
+
+        shell.click_role_and_label(Role::Button, &clear_used);
+        assert!(
+            shell
+                .app_mut()
+                .prepare_assistant_intent(WorkflowIntent::RenameDefinition {
+                    target: DefinitionId(1),
+                    name: "Intervening definition".to_owned(),
+                })
+        );
+        assert!(shell.app_mut().confirm_assistant_proposal());
+        let stale_revision = shell.app().document_revision();
+        let stale_digest = shell.app().canonical_digest();
+        let stale_undo_steps = shell.app().undo_step_count();
+        let stale_action_digest = shell.app().action_digest().to_owned();
+        assert!(!shell.app_mut().confirm_tag_clear());
+        assert_eq!(shell.app().document_revision(), stale_revision);
+        assert_eq!(shell.app().canonical_digest(), stale_digest);
+        assert_eq!(shell.app().undo_step_count(), stale_undo_steps);
+        assert_eq!(shell.app().action_digest(), stale_action_digest);
+        shell.settle();
+        assert!(!shell.app().tag_clear_visible());
+        shell.click_menu_command("menu-edit", AppCommand::Undo);
+
+        let before = shell.app().document_snapshot();
+        let preserved = [OccurrenceId(1), OccurrenceId(2)].map(|id| {
+            let occurrence = before.occurrence(id).unwrap();
+            (
+                occurrence.name().to_owned(),
+                occurrence.definition_id(),
+                occurrence.transform(),
+                occurrence.parent(),
+                occurrence.visible(),
+            )
+        });
+        let revision = shell.app().document_revision();
+        let undo_steps = shell.app().undo_step_count();
+        shell.click_role_and_label(Role::Button, &clear_used);
+        shell.click_role_and_label(
+            Role::Button,
+            &shell.catalog().text("dialog-clear-tag-confirm"),
+        );
+
+        assert!(!shell.app().tag_clear_visible());
+        assert!(shell.app().document_revision() > revision);
+        assert_eq!(shell.app().undo_step_count(), undo_steps + 1);
+        let cleared = shell.app().document_snapshot();
+        let tag = cleared.tag(used_tag).unwrap();
+        assert_eq!(tag.name(), "Hardware");
+        assert!(tag.visible());
+        assert!(cleared.tag(unused_tag).is_some());
+        for (index, id) in [OccurrenceId(1), OccurrenceId(2)].into_iter().enumerate() {
+            let occurrence = cleared.occurrence(id).unwrap();
+            assert_eq!(occurrence.tag(), None);
+            assert_eq!(
+                (
+                    occurrence.name().to_owned(),
+                    occurrence.definition_id(),
+                    occurrence.transform(),
+                    occurrence.parent(),
+                    occurrence.visible(),
+                ),
+                preserved[index]
+            );
+        }
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().format(
+                "digest-cleared-tag",
+                &BTreeMap::from([("name", "Hardware".to_owned()), ("count", "2".to_owned()),])
+            )
+        );
+        shell.settle();
+        assert!(shell.has_role_and_label(Role::Button, &clear_used));
+
+        shell.click_menu_command("menu-edit", AppCommand::Undo);
+        assert_eq!(shell.app().occurrence_tag(OccurrenceId(1)), Some(used_tag));
+        assert_eq!(shell.app().occurrence_tag(OccurrenceId(2)), Some(used_tag));
+        assert_eq!(
+            shell
+                .app()
+                .document_snapshot()
+                .tag(used_tag)
+                .unwrap()
+                .name(),
+            "Hardware"
+        );
+        shell.click_menu_command("menu-edit", AppCommand::Redo);
+        assert_eq!(shell.app().occurrence_tag(OccurrenceId(1)), None);
+        assert_eq!(shell.app().occurrence_tag(OccurrenceId(2)), None);
+        shell.click_menu_command("menu-edit", AppCommand::Undo);
+        assert_eq!(shell.app().occurrence_tag(OccurrenceId(1)), Some(used_tag));
+        assert_eq!(shell.app().occurrence_tag(OccurrenceId(2)), Some(used_tag));
+
+        let missing_tag = TagId(852);
+        assert!(
+            shell
+                .app_mut()
+                .prepare_assistant_intent(WorkflowIntent::CreateTag {
+                    target: missing_tag,
+                    name: "Missing".to_owned(),
+                    visible: true,
+                })
+        );
+        assert!(shell.app_mut().confirm_assistant_proposal());
+        assert!(
+            shell
+                .app_mut()
+                .prepare_assistant_intent(WorkflowIntent::SetOccurrenceTag {
+                    target: OccurrenceId(1),
+                    tag: Some(missing_tag),
+                })
+        );
+        assert!(shell.app_mut().confirm_assistant_proposal());
+        shell.settle();
+        let clear_missing = shell.catalog().format(
+            "tags-clear",
+            &BTreeMap::from([("name", "Missing".to_owned())]),
+        );
+        shell.click_role_and_label(Role::Button, &clear_missing);
+        assert!(shell.app().tag_clear_visible());
+        assert!(
+            shell
+                .app_mut()
+                .prepare_assistant_intent(WorkflowIntent::SetOccurrenceTag {
+                    target: OccurrenceId(1),
+                    tag: None,
+                })
+        );
+        assert!(shell.app_mut().confirm_assistant_proposal());
+        assert!(
+            shell
+                .app_mut()
+                .prepare_assistant_intent(WorkflowIntent::DeleteTag {
+                    target: missing_tag,
+                })
+        );
+        assert!(shell.app_mut().confirm_assistant_proposal());
+        let missing_revision = shell.app().document_revision();
+        let missing_digest = shell.app().canonical_digest();
+        let missing_undo_steps = shell.app().undo_step_count();
+        let missing_action_digest = shell.app().action_digest().to_owned();
+        assert!(!shell.app_mut().confirm_tag_clear());
+        assert_eq!(shell.app().document_revision(), missing_revision);
+        assert_eq!(shell.app().canonical_digest(), missing_digest);
+        assert_eq!(shell.app().undo_step_count(), missing_undo_steps);
+        assert_eq!(shell.app().action_digest(), missing_action_digest);
+        shell.settle();
+        assert!(!shell.app().tag_clear_visible());
+    }
+}
+
+#[test]
+fn tags_panel_rename_is_localized_canonical_stale_safe_and_undoable() {
+    for catalog in [
+        LocaleCatalog::english(),
+        LocaleCatalog::slovak(),
+        LocaleCatalog::pseudo(),
+    ] {
+        let mut shell = Shell::with_catalog(catalog);
+        let tag = TagId(901);
+        let other_tag = TagId(902);
+        for (target, name) in [(tag, "Hardware"), (other_tag, "Other")] {
+            assert!(
+                shell
+                    .app_mut()
+                    .prepare_assistant_intent(WorkflowIntent::CreateTag {
+                        target,
+                        name: name.to_owned(),
+                        visible: true,
+                    })
+            );
+            assert!(shell.app_mut().confirm_assistant_proposal());
+        }
+        shell.settle();
+        shell.click_at(shell.top_face_centre(1));
+        shell.click_menu_command("menu-model", AppCommand::AssignTag);
+        shell.click_row("Hardware");
+        shell.click_role_and_label(
+            Role::Button,
+            &shell.catalog().text("dialog-assign-tag-confirm"),
+        );
+        shell
+            .app_mut()
+            .set_assistant_workspace_mode(AssistantWorkspaceMode::Tab);
+        shell.settle();
+
+        let rename_label = shell.catalog().format(
+            "tags-rename",
+            &BTreeMap::from([("name", "Hardware".to_owned())]),
+        );
+        let name_label = shell.catalog().text("dialog-rename-tag-name");
+        let confirm_label = shell.catalog().text("dialog-rename-tag-confirm");
+        let cancel_label = shell.catalog().text("dialog-rename-tag-cancel");
+        assert!(shell.has_role_and_label(Role::Button, &rename_label));
+
+        let baseline = shell.app().document_snapshot();
+        let occurrence = baseline.occurrence(OccurrenceId(1)).unwrap();
+        let preserved_occurrence = (
+            occurrence.name().to_owned(),
+            occurrence.definition_id(),
+            occurrence.transform(),
+            occurrence.parent(),
+            occurrence.tag(),
+            occurrence.visible(),
+        );
+        let baseline_revision = shell.app().document_revision();
+        let baseline_digest = shell.app().canonical_digest();
+        let baseline_undo_steps = shell.app().undo_step_count();
+        let baseline_selection = shell.app().selected_occurrence_count();
+
+        shell.click_role_and_label(Role::Button, &rename_label);
+        assert!(shell.app().tag_rename_visible());
+        assert_eq!(shell.app().tag_rename_input(), Some("Hardware"));
+        shell.click_role_and_label(Role::Button, &cancel_label);
+        assert!(!shell.app().tag_rename_visible());
+        assert_eq!(shell.app().document_revision(), baseline_revision);
+        assert_eq!(shell.app().canonical_digest(), baseline_digest);
+        assert_eq!(shell.app().undo_step_count(), baseline_undo_steps);
+        let invalid_action_digest = shell.app().action_digest().to_owned();
+
+        shell.click_role_and_label(Role::Button, &rename_label);
+        assert!(!shell.app_mut().confirm_tag_rename());
+        shell.focus_text_input(&name_label);
+        shell.key(Key::A, ctrl());
+        shell.type_text("Other");
+        assert!(!shell.app_mut().confirm_tag_rename());
+        assert_eq!(shell.app().document_revision(), baseline_revision);
+        assert_eq!(shell.app().canonical_digest(), baseline_digest);
+        assert_eq!(shell.app().undo_step_count(), baseline_undo_steps);
+        assert_eq!(shell.app().action_digest(), invalid_action_digest);
+        assert_eq!(shell.app().selected_occurrence_count(), baseline_selection);
+        shell.focus_text_input(&name_label);
+        shell.key(Key::A, ctrl());
+        shell.type_text("  Mechanical  ");
+        shell.click_role_and_label(Role::Button, &confirm_label);
+
+        assert!(!shell.app().tag_rename_visible());
+        assert_eq!(shell.app().document_revision(), baseline_revision + 1);
+        assert_eq!(shell.app().undo_step_count(), baseline_undo_steps + 1);
+        let renamed = shell.app().document_snapshot();
+        let renamed_tag = renamed.tag(tag).unwrap();
+        assert_eq!(renamed_tag.name(), "Mechanical");
+        assert!(renamed_tag.visible());
+        assert_eq!(renamed.tag(other_tag).unwrap().name(), "Other");
+        let occurrence = renamed.occurrence(OccurrenceId(1)).unwrap();
+        assert_eq!(
+            (
+                occurrence.name().to_owned(),
+                occurrence.definition_id(),
+                occurrence.transform(),
+                occurrence.parent(),
+                occurrence.tag(),
+                occurrence.visible(),
+            ),
+            preserved_occurrence
+        );
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().format(
+                "digest-renamed-tag",
+                &BTreeMap::from([
+                    ("old_name", "Hardware".to_owned()),
+                    ("name", "Mechanical".to_owned()),
+                ]),
+            )
+        );
+
+        shell.click_menu_command("menu-edit", AppCommand::Undo);
+        let restored = shell.app().document_snapshot();
+        assert_eq!(restored.tag(tag).unwrap().name(), "Hardware");
+        assert!(restored.tag(tag).unwrap().visible());
+        assert_eq!(
+            restored.occurrence(OccurrenceId(1)).unwrap().tag(),
+            Some(tag)
+        );
+        shell.click_menu_command("menu-edit", AppCommand::Redo);
+        let redone = shell.app().document_snapshot();
+        assert_eq!(redone.tag(tag).unwrap().name(), "Mechanical");
+        assert!(redone.tag(tag).unwrap().visible());
+        assert_eq!(redone.occurrence(OccurrenceId(1)).unwrap().tag(), Some(tag));
+        shell.click_menu_command("menu-edit", AppCommand::Undo);
+        assert_eq!(
+            shell.app().document_snapshot().tag(tag).unwrap().name(),
+            "Hardware"
+        );
+
+        let other_rename_label = shell.catalog().format(
+            "tags-rename",
+            &BTreeMap::from([("name", "Other".to_owned())]),
+        );
+        shell.click_role_and_label(Role::Button, &other_rename_label);
+        assert!(shell.app().tag_rename_visible());
+        assert!(
+            shell
+                .app_mut()
+                .prepare_assistant_intent(WorkflowIntent::DeleteTag { target: other_tag })
+        );
+        assert!(shell.app_mut().confirm_assistant_proposal());
+        let missing_revision = shell.app().document_revision();
+        let missing_digest = shell.app().canonical_digest();
+        let missing_undo_steps = shell.app().undo_step_count();
+        let missing_action_digest = shell.app().action_digest().to_owned();
+        let missing_selection = shell.app().selected_occurrence_count();
+        assert!(!shell.app_mut().confirm_tag_rename());
+        assert_eq!(shell.app().document_revision(), missing_revision);
+        assert_eq!(shell.app().canonical_digest(), missing_digest);
+        assert_eq!(shell.app().undo_step_count(), missing_undo_steps);
+        assert_eq!(shell.app().action_digest(), missing_action_digest);
+        assert_eq!(shell.app().selected_occurrence_count(), missing_selection);
+        assert!(shell.app().document_snapshot().tag(other_tag).is_none());
+        shell.settle();
+        assert!(!shell.app().tag_rename_visible());
+        shell.click_menu_command("menu-edit", AppCommand::Undo);
+        assert_eq!(
+            shell
+                .app()
+                .document_snapshot()
+                .tag(other_tag)
+                .unwrap()
+                .name(),
+            "Other"
+        );
+
+        shell.click_role_and_label(Role::Button, &rename_label);
+        shell.focus_text_input(&name_label);
+        shell.key(Key::A, ctrl());
+        shell.type_text("Stale name");
+        assert!(
+            shell
+                .app_mut()
+                .prepare_assistant_intent(WorkflowIntent::RenameDefinition {
+                    target: DefinitionId(1),
+                    name: "Intervening definition".to_owned(),
+                })
+        );
+        assert!(shell.app_mut().confirm_assistant_proposal());
+        shell.settle();
+        assert!(!shell.app().tag_rename_visible());
+        assert_eq!(
+            shell.app().document_snapshot().tag(tag).unwrap().name(),
+            "Hardware"
+        );
+    }
+}
+
+#[test]
+fn tags_panel_visibility_toggle_is_localized_canonical_and_undoable() {
+    for catalog in [
+        LocaleCatalog::english(),
+        LocaleCatalog::slovak(),
+        LocaleCatalog::pseudo(),
+    ] {
+        let mut shell = Shell::with_catalog(catalog);
+        let tag = TagId(701);
+        assert!(
+            shell
+                .app_mut()
+                .prepare_assistant_intent(WorkflowIntent::CreateTag {
+                    target: tag,
+                    name: "Hardware".to_owned(),
+                    visible: true,
+                })
+        );
+        assert!(shell.app_mut().confirm_assistant_proposal());
+        shell.settle();
+
+        shell.click_at(shell.top_face_centre(1));
+        shell.click_menu_command("menu-model", AppCommand::AssignTag);
+        shell.click_row("Hardware");
+        shell.click_role_and_label(
+            Role::Button,
+            &shell.catalog().text("dialog-assign-tag-confirm"),
+        );
+        shell
+            .app_mut()
+            .set_assistant_workspace_mode(AssistantWorkspaceMode::Tab);
+        shell.settle();
+        let row = shell.catalog().format(
+            "tags-row",
+            &BTreeMap::from([("name", "Hardware".to_owned()), ("count", "1".to_owned())]),
+        );
+        assert!(shell.has_role_and_label(Role::CheckBox, &row));
+        assert_eq!(shell.app().tag_visibility(tag), Some(true));
+
+        let before = shell.app().document_snapshot();
+        let occurrence = before.occurrence(OccurrenceId(1)).unwrap();
+        let preserved = (
+            occurrence.definition_id(),
+            occurrence.transform(),
+            occurrence.parent(),
+            occurrence.tag(),
+            occurrence.visible(),
+        );
+        let revision = shell.app().document_revision();
+        let undo_steps = shell.app().undo_step_count();
+
+        shell.click_role_and_label(Role::CheckBox, &row);
+
+        assert_eq!(shell.app().tag_visibility(tag), Some(false));
+        assert_eq!(shell.app().document_revision(), revision + 1);
+        assert_eq!(shell.app().undo_step_count(), undo_steps + 1);
+        let hidden = shell.app().document_snapshot();
+        let hidden_occurrence = hidden.occurrence(OccurrenceId(1)).unwrap();
+        assert_eq!(
+            (
+                hidden_occurrence.definition_id(),
+                hidden_occurrence.transform(),
+                hidden_occurrence.parent(),
+                hidden_occurrence.tag(),
+                hidden_occurrence.visible(),
+            ),
+            preserved
+        );
+        assert_eq!(hidden.tag(tag).unwrap().name(), "Hardware");
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().format(
+                "digest-tag-visibility",
+                &BTreeMap::from([
+                    ("name", "Hardware".to_owned()),
+                    ("visibility", shell.catalog().text("visibility-hidden"),),
+                ])
+            )
+        );
+
+        shell.click_menu_command("menu-edit", AppCommand::Undo);
+        assert_eq!(shell.app().tag_visibility(tag), Some(true));
+        assert_eq!(
+            shell
+                .app()
+                .document_snapshot()
+                .occurrence(OccurrenceId(1))
+                .unwrap()
+                .tag(),
+            Some(tag)
+        );
+
+        let unchanged_revision = shell.app().document_revision();
+        let unchanged_digest = shell.app().canonical_digest();
+        let unchanged_undo_steps = shell.app().undo_step_count();
+        assert!(!shell.app_mut().set_tag_visibility(tag, true));
+        assert!(!shell.app_mut().set_tag_visibility(TagId(999), false));
+        assert_eq!(shell.app().document_revision(), unchanged_revision);
+        assert_eq!(shell.app().canonical_digest(), unchanged_digest);
+        assert_eq!(shell.app().undo_step_count(), unchanged_undo_steps);
+    }
+}
+
+#[test]
+fn tags_panel_bulk_visibility_is_localized_atomic_and_undoable() {
+    for catalog in [
+        LocaleCatalog::english(),
+        LocaleCatalog::slovak(),
+        LocaleCatalog::pseudo(),
+    ] {
+        let mut shell = Shell::with_catalog(catalog);
+        shell
+            .app_mut()
+            .set_assistant_workspace_mode(AssistantWorkspaceMode::Tab);
+        shell.settle();
+        let show_all_label = shell.catalog().text("tags-show-all");
+        let hide_all_label = shell.catalog().text("tags-hide-all");
+        assert!(shell.has_role_and_label(Role::Button, &show_all_label));
+        assert!(shell.has_role_and_label(Role::Button, &hide_all_label));
+        shell
+            .app_mut()
+            .set_assistant_workspace_mode(AssistantWorkspaceMode::Dock);
+        shell.settle();
+        let empty_revision = shell.app().document_revision();
+        let empty_digest = shell.app().canonical_digest();
+        let empty_undo_steps = shell.app().undo_step_count();
+        let empty_action_digest = shell.app().action_digest().to_owned();
+        assert!(!shell.app_mut().set_all_tag_visibility(true));
+        assert!(!shell.app_mut().set_all_tag_visibility(false));
+        assert_eq!(shell.app().document_revision(), empty_revision);
+        assert_eq!(shell.app().canonical_digest(), empty_digest);
+        assert_eq!(shell.app().undo_step_count(), empty_undo_steps);
+        assert_eq!(shell.app().action_digest(), empty_action_digest);
+
+        let visible_tag = TagId(801);
+        let hidden_tag = TagId(802);
+        for (target, name, visible) in [
+            (visible_tag, "Hardware", true),
+            (hidden_tag, "Hidden", false),
+        ] {
+            assert!(
+                shell
+                    .app_mut()
+                    .prepare_assistant_intent(WorkflowIntent::CreateTag {
+                        target,
+                        name: name.to_owned(),
+                        visible,
+                    })
+            );
+            assert!(shell.app_mut().confirm_assistant_proposal());
+        }
+        assert!(shell.app_mut().create_box());
+        for (target, tag) in [
+            (OccurrenceId(1), visible_tag),
+            (OccurrenceId(2), hidden_tag),
+        ] {
+            assert!(
+                shell
+                    .app_mut()
+                    .prepare_assistant_intent(WorkflowIntent::SetOccurrenceTag {
+                        target,
+                        tag: Some(tag),
+                    })
+            );
+            assert!(shell.app_mut().confirm_assistant_proposal());
+        }
+        shell.click_at(shell.top_face_centre(1));
+        assert!(shell.app().occurrence_is_selected(OccurrenceId(1)));
+        shell
+            .app_mut()
+            .set_assistant_workspace_mode(AssistantWorkspaceMode::Tab);
+        shell.settle();
+
+        assert!(shell.has_role_and_label(Role::Button, &show_all_label));
+        assert!(shell.has_role_and_label(Role::Button, &hide_all_label));
+        let before = shell.app().document_snapshot();
+        let preserved = [OccurrenceId(1), OccurrenceId(2)].map(|id| {
+            let occurrence = before.occurrence(id).unwrap();
+            (
+                occurrence.name().to_owned(),
+                occurrence.definition_id(),
+                occurrence.transform(),
+                occurrence.parent(),
+                occurrence.tag(),
+                occurrence.visible(),
+            )
+        });
+        let revision = shell.app().document_revision();
+        let undo_steps = shell.app().undo_step_count();
+
+        shell.click_role_and_label(Role::Button, &show_all_label);
+
+        assert_eq!(shell.app().tag_visibility(visible_tag), Some(true));
+        assert_eq!(shell.app().tag_visibility(hidden_tag), Some(true));
+        assert_eq!(shell.app().document_revision(), revision + 1);
+        assert_eq!(shell.app().undo_step_count(), undo_steps + 1);
+        assert_eq!(shell.app().selected_occurrence_count(), 1);
+        assert!(shell.app().occurrence_is_selected(OccurrenceId(1)));
+        let shown = shell.app().document_snapshot();
+        assert_eq!(shown.tag(visible_tag).unwrap().name(), "Hardware");
+        assert_eq!(shown.tag(hidden_tag).unwrap().name(), "Hidden");
+        for (index, id) in [OccurrenceId(1), OccurrenceId(2)].into_iter().enumerate() {
+            let occurrence = shown.occurrence(id).unwrap();
+            assert_eq!(
+                (
+                    occurrence.name().to_owned(),
+                    occurrence.definition_id(),
+                    occurrence.transform(),
+                    occurrence.parent(),
+                    occurrence.tag(),
+                    occurrence.visible(),
+                ),
+                preserved[index]
+            );
+        }
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().format(
+                "digest-all-tags-visibility",
+                &BTreeMap::from([
+                    ("count", "1".to_owned()),
+                    ("visibility", shell.catalog().text("visibility-shown")),
+                ])
+            )
+        );
+        let shown_revision = shell.app().document_revision();
+        let shown_digest = shell.app().canonical_digest();
+        let shown_undo_steps = shell.app().undo_step_count();
+        let shown_action_digest = shell.app().action_digest().to_owned();
+        assert!(!shell.app_mut().set_all_tag_visibility(true));
+        assert_eq!(shell.app().document_revision(), shown_revision);
+        assert_eq!(shell.app().canonical_digest(), shown_digest);
+        assert_eq!(shell.app().undo_step_count(), shown_undo_steps);
+        assert_eq!(shell.app().action_digest(), shown_action_digest);
+        shell.settle();
+        assert!(shell.has_role_and_label(Role::Button, &show_all_label));
+        assert!(shell.has_role_and_label(Role::Button, &hide_all_label));
+
+        shell.click_menu_command("menu-edit", AppCommand::Undo);
+        assert_eq!(shell.app().tag_visibility(visible_tag), Some(true));
+        assert_eq!(shell.app().tag_visibility(hidden_tag), Some(false));
+        shell.click_role_and_label(Role::Button, &hide_all_label);
+
+        assert_eq!(shell.app().tag_visibility(visible_tag), Some(false));
+        assert_eq!(shell.app().tag_visibility(hidden_tag), Some(false));
+        assert_eq!(shell.app().selected_occurrence_count(), 1);
+        assert!(shell.app().occurrence_is_selected(OccurrenceId(1)));
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().format(
+                "digest-all-tags-visibility",
+                &BTreeMap::from([
+                    ("count", "1".to_owned()),
+                    ("visibility", shell.catalog().text("visibility-hidden")),
+                ])
+            )
+        );
+        let hidden_revision = shell.app().document_revision();
+        let hidden_digest = shell.app().canonical_digest();
+        let hidden_undo_steps = shell.app().undo_step_count();
+        let hidden_action_digest = shell.app().action_digest().to_owned();
+        assert!(!shell.app_mut().set_all_tag_visibility(false));
+        assert_eq!(shell.app().document_revision(), hidden_revision);
+        assert_eq!(shell.app().canonical_digest(), hidden_digest);
+        assert_eq!(shell.app().undo_step_count(), hidden_undo_steps);
+        assert_eq!(shell.app().action_digest(), hidden_action_digest);
+        shell.settle();
+        assert!(shell.has_role_and_label(Role::Button, &show_all_label));
+        assert!(shell.has_role_and_label(Role::Button, &hide_all_label));
+
+        shell.click_menu_command("menu-edit", AppCommand::Undo);
+        assert_eq!(shell.app().tag_visibility(visible_tag), Some(true));
+        assert_eq!(shell.app().tag_visibility(hidden_tag), Some(false));
+        let restored = shell.app().document_snapshot();
+        for (index, id) in [OccurrenceId(1), OccurrenceId(2)].into_iter().enumerate() {
+            let occurrence = restored.occurrence(id).unwrap();
+            assert_eq!(
+                (
+                    occurrence.name().to_owned(),
+                    occurrence.definition_id(),
+                    occurrence.transform(),
+                    occurrence.parent(),
+                    occurrence.tag(),
+                    occurrence.visible(),
+                ),
+                preserved[index]
+            );
+        }
+    }
+}
+
+#[test]
+fn tags_panel_invert_visibility_is_localized_atomic_and_undoable() {
+    for catalog in [
+        LocaleCatalog::english(),
+        LocaleCatalog::slovak(),
+        LocaleCatalog::pseudo(),
+    ] {
+        let mut shell = Shell::with_catalog(catalog);
+        let empty_revision = shell.app().document_revision();
+        let empty_digest = shell.app().canonical_digest();
+        let empty_undo_steps = shell.app().undo_step_count();
+        let empty_action_digest = shell.app().action_digest().to_owned();
+        assert!(!shell.app_mut().invert_tag_visibility());
+        assert_eq!(shell.app().document_revision(), empty_revision);
+        assert_eq!(shell.app().canonical_digest(), empty_digest);
+        assert_eq!(shell.app().undo_step_count(), empty_undo_steps);
+        assert_eq!(shell.app().action_digest(), empty_action_digest);
+        shell
+            .app_mut()
+            .set_assistant_workspace_mode(AssistantWorkspaceMode::Tab);
+        shell.settle();
+        let empty_invert_label = shell.catalog().text("tags-invert-visibility");
+        assert!(shell.has_role_and_label(Role::Button, &empty_invert_label));
+        shell
+            .app_mut()
+            .set_assistant_workspace_mode(AssistantWorkspaceMode::Dock);
+        shell.settle();
+
+        let visible_tag = TagId(851);
+        let hidden_tag = TagId(852);
+        for (target, name, visible) in [
+            (visible_tag, "Hardware", true),
+            (hidden_tag, "Hidden", false),
+        ] {
+            assert!(
+                shell
+                    .app_mut()
+                    .prepare_assistant_intent(WorkflowIntent::CreateTag {
+                        target,
+                        name: name.to_owned(),
+                        visible,
+                    })
+            );
+            assert!(shell.app_mut().confirm_assistant_proposal());
+        }
+        assert!(shell.app_mut().create_box());
+        for (target, tag) in [
+            (OccurrenceId(1), visible_tag),
+            (OccurrenceId(2), hidden_tag),
+        ] {
+            assert!(
+                shell
+                    .app_mut()
+                    .prepare_assistant_intent(WorkflowIntent::SetOccurrenceTag {
+                        target,
+                        tag: Some(tag),
+                    })
+            );
+            assert!(shell.app_mut().confirm_assistant_proposal());
+        }
+        shell.click_at(shell.top_face_centre(1));
+        shell
+            .app_mut()
+            .set_assistant_workspace_mode(AssistantWorkspaceMode::Tab);
+        shell.settle();
+
+        let invert_label = shell.catalog().text("tags-invert-visibility");
+        assert!(shell.has_role_and_label(Role::Button, &invert_label));
+        let before = shell.app().document_snapshot();
+        let preserved = [OccurrenceId(1), OccurrenceId(2)].map(|id| {
+            let occurrence = before.occurrence(id).unwrap();
+            (
+                occurrence.name().to_owned(),
+                occurrence.definition_id(),
+                occurrence.transform(),
+                occurrence.parent(),
+                occurrence.tag(),
+                occurrence.visible(),
+            )
+        });
+        let revision = shell.app().document_revision();
+        let undo_steps = shell.app().undo_step_count();
+
+        shell.click_role_and_label(Role::Button, &invert_label);
+
+        assert_eq!(shell.app().tag_visibility(visible_tag), Some(false));
+        assert_eq!(shell.app().tag_visibility(hidden_tag), Some(true));
+        assert_eq!(shell.app().document_revision(), revision + 1);
+        assert_eq!(shell.app().undo_step_count(), undo_steps + 1);
+        assert_eq!(shell.app().selected_occurrence_count(), 1);
+        assert!(shell.app().occurrence_is_selected(OccurrenceId(1)));
+        let inverted = shell.app().document_snapshot();
+        assert_eq!(inverted.tag(visible_tag).unwrap().name(), "Hardware");
+        assert_eq!(inverted.tag(hidden_tag).unwrap().name(), "Hidden");
+        for (index, id) in [OccurrenceId(1), OccurrenceId(2)].into_iter().enumerate() {
+            let occurrence = inverted.occurrence(id).unwrap();
+            assert_eq!(
+                (
+                    occurrence.name().to_owned(),
+                    occurrence.definition_id(),
+                    occurrence.transform(),
+                    occurrence.parent(),
+                    occurrence.tag(),
+                    occurrence.visible(),
+                ),
+                preserved[index]
+            );
+        }
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().format(
+                "digest-inverted-tags-visibility",
+                &BTreeMap::from([("count", "2".to_owned())])
+            )
+        );
+
+        shell.click_menu_command("menu-edit", AppCommand::Undo);
+        assert_eq!(shell.app().tag_visibility(visible_tag), Some(true));
+        assert_eq!(shell.app().tag_visibility(hidden_tag), Some(false));
+        assert_eq!(shell.app().selected_occurrence_count(), 1);
+        assert!(shell.app().occurrence_is_selected(OccurrenceId(1)));
+        let restored = shell.app().document_snapshot();
+        for (index, id) in [OccurrenceId(1), OccurrenceId(2)].into_iter().enumerate() {
+            let occurrence = restored.occurrence(id).unwrap();
+            assert_eq!(
+                (
+                    occurrence.name().to_owned(),
+                    occurrence.definition_id(),
+                    occurrence.transform(),
+                    occurrence.parent(),
+                    occurrence.tag(),
+                    occurrence.visible(),
+                ),
+                preserved[index]
+            );
+        }
+    }
+}
+
+#[test]
+fn tags_panel_isolate_is_localized_atomic_and_undoable() {
+    for catalog in [
+        LocaleCatalog::english(),
+        LocaleCatalog::slovak(),
+        LocaleCatalog::pseudo(),
+    ] {
+        let mut shell = Shell::with_catalog(catalog);
+        let target_tag = TagId(901);
+        let visible_tag = TagId(902);
+        let hidden_tag = TagId(903);
+        for (target, name, visible) in [
+            (target_tag, "Hardware", false),
+            (visible_tag, "Visible", true),
+            (hidden_tag, "Hidden", false),
+        ] {
+            assert!(
+                shell
+                    .app_mut()
+                    .prepare_assistant_intent(WorkflowIntent::CreateTag {
+                        target,
+                        name: name.to_owned(),
+                        visible,
+                    })
+            );
+            assert!(shell.app_mut().confirm_assistant_proposal());
+        }
+        assert!(shell.app_mut().create_box());
+        assert!(shell.app_mut().create_box());
+        for (target, tag) in [
+            (OccurrenceId(1), target_tag),
+            (OccurrenceId(2), visible_tag),
+            (OccurrenceId(3), hidden_tag),
+        ] {
+            assert!(
+                shell
+                    .app_mut()
+                    .prepare_assistant_intent(WorkflowIntent::SetOccurrenceTag {
+                        target,
+                        tag: Some(tag),
+                    })
+            );
+            assert!(shell.app_mut().confirm_assistant_proposal());
+        }
+        shell.click_at(shell.top_face_centre(2));
+        assert!(shell.app().occurrence_is_selected(OccurrenceId(2)));
+        shell
+            .app_mut()
+            .set_assistant_workspace_mode(AssistantWorkspaceMode::Tab);
+        shell.settle();
+
+        let isolate_label = shell.catalog().format(
+            "tags-isolate",
+            &BTreeMap::from([("name", "Hardware".to_owned())]),
+        );
+        assert!(shell.has_role_and_label(Role::Button, &isolate_label));
+        let before = shell.app().document_snapshot();
+        let preserved = [OccurrenceId(1), OccurrenceId(2), OccurrenceId(3)].map(|id| {
+            let occurrence = before.occurrence(id).unwrap();
+            (
+                occurrence.name().to_owned(),
+                occurrence.definition_id(),
+                occurrence.transform(),
+                occurrence.parent(),
+                occurrence.tag(),
+                occurrence.visible(),
+            )
+        });
+        let revision = shell.app().document_revision();
+        let undo_steps = shell.app().undo_step_count();
+
+        shell.click_role_and_label(Role::Button, &isolate_label);
+
+        assert_eq!(shell.app().tag_visibility(target_tag), Some(true));
+        assert_eq!(shell.app().tag_visibility(visible_tag), Some(false));
+        assert_eq!(shell.app().tag_visibility(hidden_tag), Some(false));
+        assert_eq!(shell.app().document_revision(), revision + 1);
+        assert_eq!(shell.app().undo_step_count(), undo_steps + 1);
+        assert_eq!(shell.app().selected_occurrence_count(), 1);
+        assert!(shell.app().occurrence_is_selected(OccurrenceId(2)));
+        let isolated = shell.app().document_snapshot();
+        for (index, id) in [OccurrenceId(1), OccurrenceId(2), OccurrenceId(3)]
+            .into_iter()
+            .enumerate()
+        {
+            let occurrence = isolated.occurrence(id).unwrap();
+            assert_eq!(
+                (
+                    occurrence.name().to_owned(),
+                    occurrence.definition_id(),
+                    occurrence.transform(),
+                    occurrence.parent(),
+                    occurrence.tag(),
+                    occurrence.visible(),
+                ),
+                preserved[index]
+            );
+        }
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().format(
+                "digest-isolated-tag",
+                &BTreeMap::from([("count", "2".to_owned()), ("name", "Hardware".to_owned()),])
+            )
+        );
+
+        let isolated_revision = shell.app().document_revision();
+        let isolated_digest = shell.app().canonical_digest();
+        let isolated_undo_steps = shell.app().undo_step_count();
+        let isolated_action_digest = shell.app().action_digest().to_owned();
+        assert!(!shell.app_mut().isolate_tag(target_tag));
+        assert!(!shell.app_mut().isolate_tag(TagId(9999)));
+        shell.settle();
+        assert!(shell.has_role_and_label(Role::Button, &isolate_label));
+        assert_eq!(shell.app().document_revision(), isolated_revision);
+        assert_eq!(shell.app().canonical_digest(), isolated_digest);
+        assert_eq!(shell.app().undo_step_count(), isolated_undo_steps);
+        assert_eq!(shell.app().action_digest(), isolated_action_digest);
+
+        shell.click_menu_command("menu-edit", AppCommand::Undo);
+        assert_eq!(shell.app().tag_visibility(target_tag), Some(false));
+        assert_eq!(shell.app().tag_visibility(visible_tag), Some(true));
+        assert_eq!(shell.app().tag_visibility(hidden_tag), Some(false));
+        assert_eq!(shell.app().selected_occurrence_count(), 1);
+        assert!(shell.app().occurrence_is_selected(OccurrenceId(2)));
+        let restored = shell.app().document_snapshot();
+        for (index, id) in [OccurrenceId(1), OccurrenceId(2), OccurrenceId(3)]
+            .into_iter()
+            .enumerate()
+        {
+            let occurrence = restored.occurrence(id).unwrap();
+            assert_eq!(
+                (
+                    occurrence.name().to_owned(),
+                    occurrence.definition_id(),
+                    occurrence.transform(),
+                    occurrence.parent(),
+                    occurrence.tag(),
+                    occurrence.visible(),
+                ),
+                preserved[index]
+            );
+        }
+    }
+}
+
+#[test]
+fn tags_panel_isolate_selection_is_localized_atomic_and_undoable() {
+    for catalog in [
+        LocaleCatalog::english(),
+        LocaleCatalog::slovak(),
+        LocaleCatalog::pseudo(),
+    ] {
+        let mut shell = Shell::with_catalog(catalog);
+        let selected_a = TagId(951);
+        let selected_b = TagId(952);
+        let other = TagId(953);
+        for (target, name) in [
+            (selected_a, "Hardware"),
+            (selected_b, "Fasteners"),
+            (other, "Other"),
+        ] {
+            assert!(
+                shell
+                    .app_mut()
+                    .prepare_assistant_intent(WorkflowIntent::CreateTag {
+                        target,
+                        name: name.to_owned(),
+                        visible: true,
+                    })
+            );
+            assert!(shell.app_mut().confirm_assistant_proposal());
+        }
+        assert!(shell.app_mut().create_box());
+        assert!(shell.app_mut().create_box());
+        for (target, tag) in [
+            (OccurrenceId(1), selected_a),
+            (OccurrenceId(2), selected_b),
+            (OccurrenceId(3), other),
+        ] {
+            assert!(
+                shell
+                    .app_mut()
+                    .prepare_assistant_intent(WorkflowIntent::SetOccurrenceTag {
+                        target,
+                        tag: Some(tag),
+                    })
+            );
+            assert!(shell.app_mut().confirm_assistant_proposal());
+        }
+        shell.click_at(shell.top_face_centre(1));
+        shell.click_at_with(shell.top_face_centre(2), shift());
+        assert_eq!(shell.app().selected_occurrence_count(), 2);
+        assert!(shell.app_mut().set_tag_visibility(selected_b, false));
+        shell
+            .app_mut()
+            .set_assistant_workspace_mode(AssistantWorkspaceMode::Tab);
+        shell.settle();
+
+        let isolate_label = shell.catalog().text("tags-isolate-selection");
+        assert!(shell.has_role_and_label(Role::Button, &isolate_label));
+        let before = shell.app().document_snapshot();
+        let preserved = [OccurrenceId(1), OccurrenceId(2), OccurrenceId(3)].map(|id| {
+            let occurrence = before.occurrence(id).unwrap();
+            (
+                occurrence.name().to_owned(),
+                occurrence.definition_id(),
+                occurrence.transform(),
+                occurrence.parent(),
+                occurrence.tag(),
+                occurrence.visible(),
+            )
+        });
+        let revision = shell.app().document_revision();
+        let undo_steps = shell.app().undo_step_count();
+
+        shell.click_role_and_label(Role::Button, &isolate_label);
+
+        assert_eq!(shell.app().tag_visibility(selected_a), Some(true));
+        assert_eq!(shell.app().tag_visibility(selected_b), Some(true));
+        assert_eq!(shell.app().tag_visibility(other), Some(false));
+        assert_eq!(shell.app().document_revision(), revision + 1);
+        assert_eq!(shell.app().undo_step_count(), undo_steps + 1);
+        assert_eq!(shell.app().selected_occurrence_count(), 2);
+        assert!(shell.app().occurrence_is_selected(OccurrenceId(1)));
+        assert!(shell.app().occurrence_is_selected(OccurrenceId(2)));
+        let isolated = shell.app().document_snapshot();
+        for (index, id) in [OccurrenceId(1), OccurrenceId(2), OccurrenceId(3)]
+            .into_iter()
+            .enumerate()
+        {
+            let occurrence = isolated.occurrence(id).unwrap();
+            assert_eq!(
+                (
+                    occurrence.name().to_owned(),
+                    occurrence.definition_id(),
+                    occurrence.transform(),
+                    occurrence.parent(),
+                    occurrence.tag(),
+                    occurrence.visible(),
+                ),
+                preserved[index]
+            );
+        }
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().format(
+                "digest-isolated-selected-tags",
+                &BTreeMap::from([("count", "2".to_owned()), ("tags", "2".to_owned()),])
+            )
+        );
+
+        let isolated_revision = shell.app().document_revision();
+        let isolated_digest = shell.app().canonical_digest();
+        let isolated_undo_steps = shell.app().undo_step_count();
+        let isolated_action_digest = shell.app().action_digest().to_owned();
+        assert!(!shell.app_mut().isolate_selected_tags());
+        shell.settle();
+        assert!(shell.has_role_and_label(Role::Button, &isolate_label));
+        assert_eq!(shell.app().document_revision(), isolated_revision);
+        assert_eq!(shell.app().canonical_digest(), isolated_digest);
+        assert_eq!(shell.app().undo_step_count(), isolated_undo_steps);
+        assert_eq!(shell.app().action_digest(), isolated_action_digest);
+
+        shell.click_menu_command("menu-edit", AppCommand::Undo);
+        assert_eq!(shell.app().tag_visibility(selected_a), Some(true));
+        assert_eq!(shell.app().tag_visibility(selected_b), Some(false));
+        assert_eq!(shell.app().tag_visibility(other), Some(true));
+        assert_eq!(shell.app().selected_occurrence_count(), 2);
+        let restored = shell.app().document_snapshot();
+        for (index, id) in [OccurrenceId(1), OccurrenceId(2), OccurrenceId(3)]
+            .into_iter()
+            .enumerate()
+        {
+            let occurrence = restored.occurrence(id).unwrap();
+            assert_eq!(
+                (
+                    occurrence.name().to_owned(),
+                    occurrence.definition_id(),
+                    occurrence.transform(),
+                    occurrence.parent(),
+                    occurrence.tag(),
+                    occurrence.visible(),
+                ),
+                preserved[index]
+            );
+        }
+
+        shell.click_menu_command("menu-edit", AppCommand::Deselect);
+        let empty_revision = shell.app().document_revision();
+        let empty_digest = shell.app().canonical_digest();
+        let empty_undo_steps = shell.app().undo_step_count();
+        let empty_action_digest = shell.app().action_digest().to_owned();
+        assert!(!shell.app_mut().isolate_selected_tags());
+        shell.settle();
+        assert!(shell.has_role_and_label(Role::Button, &isolate_label));
+        assert_eq!(shell.app().document_revision(), empty_revision);
+        assert_eq!(shell.app().canonical_digest(), empty_digest);
+        assert_eq!(shell.app().undo_step_count(), empty_undo_steps);
+        assert_eq!(shell.app().action_digest(), empty_action_digest);
+
+        assert!(shell.app_mut().create_box());
+        let untagged_revision = shell.app().document_revision();
+        let untagged_digest = shell.app().canonical_digest();
+        let untagged_undo_steps = shell.app().undo_step_count();
+        let untagged_action_digest = shell.app().action_digest().to_owned();
+        assert!(!shell.app_mut().isolate_selected_tags());
+        shell.settle();
+        assert!(shell.has_role_and_label(Role::Button, &isolate_label));
+        assert_eq!(shell.app().document_revision(), untagged_revision);
+        assert_eq!(shell.app().canonical_digest(), untagged_digest);
+        assert_eq!(shell.app().undo_step_count(), untagged_undo_steps);
+        assert_eq!(shell.app().action_digest(), untagged_action_digest);
+    }
+}
+
+#[test]
+fn tags_panel_hide_selection_is_localized_atomic_and_undoable() {
+    for catalog in [
+        LocaleCatalog::english(),
+        LocaleCatalog::slovak(),
+        LocaleCatalog::pseudo(),
+    ] {
+        let mut shell = Shell::with_catalog(catalog);
+        let selected_a = TagId(961);
+        let selected_b = TagId(962);
+        let other = TagId(963);
+        for (target, name) in [
+            (selected_a, "Hardware"),
+            (selected_b, "Fasteners"),
+            (other, "Other"),
+        ] {
+            assert!(
+                shell
+                    .app_mut()
+                    .prepare_assistant_intent(WorkflowIntent::CreateTag {
+                        target,
+                        name: name.to_owned(),
+                        visible: true,
+                    })
+            );
+            assert!(shell.app_mut().confirm_assistant_proposal());
+        }
+        assert!(shell.app_mut().create_box());
+        assert!(shell.app_mut().create_box());
+        for (target, tag) in [
+            (OccurrenceId(1), selected_a),
+            (OccurrenceId(2), selected_b),
+            (OccurrenceId(3), other),
+        ] {
+            assert!(
+                shell
+                    .app_mut()
+                    .prepare_assistant_intent(WorkflowIntent::SetOccurrenceTag {
+                        target,
+                        tag: Some(tag),
+                    })
+            );
+            assert!(shell.app_mut().confirm_assistant_proposal());
+        }
+        shell.click_at(shell.top_face_centre(1));
+        shell.click_at_with(shell.top_face_centre(2), shift());
+        assert_eq!(shell.app().selected_occurrence_count(), 2);
+        shell
+            .app_mut()
+            .set_assistant_workspace_mode(AssistantWorkspaceMode::Tab);
+        shell.settle();
+
+        let hide_label = shell.catalog().text("tags-hide-selection");
+        assert!(shell.has_role_and_label(Role::Button, &hide_label));
+        let before = shell.app().document_snapshot();
+        let preserved = [OccurrenceId(1), OccurrenceId(2), OccurrenceId(3)].map(|id| {
+            let occurrence = before.occurrence(id).unwrap();
+            (
+                occurrence.name().to_owned(),
+                occurrence.definition_id(),
+                occurrence.transform(),
+                occurrence.parent(),
+                occurrence.tag(),
+                occurrence.visible(),
+            )
+        });
+        let revision = shell.app().document_revision();
+        let undo_steps = shell.app().undo_step_count();
+
+        shell.click_role_and_label(Role::Button, &hide_label);
+
+        assert_eq!(shell.app().tag_visibility(selected_a), Some(false));
+        assert_eq!(shell.app().tag_visibility(selected_b), Some(false));
+        assert_eq!(shell.app().tag_visibility(other), Some(true));
+        assert_eq!(shell.app().document_revision(), revision + 1);
+        assert_eq!(shell.app().undo_step_count(), undo_steps + 1);
+        assert_eq!(shell.app().selected_occurrence_count(), 2);
+        assert!(shell.app().occurrence_is_selected(OccurrenceId(1)));
+        assert!(shell.app().occurrence_is_selected(OccurrenceId(2)));
+        let hidden = shell.app().document_snapshot();
+        for (index, id) in [OccurrenceId(1), OccurrenceId(2), OccurrenceId(3)]
+            .into_iter()
+            .enumerate()
+        {
+            let occurrence = hidden.occurrence(id).unwrap();
+            assert_eq!(
+                (
+                    occurrence.name().to_owned(),
+                    occurrence.definition_id(),
+                    occurrence.transform(),
+                    occurrence.parent(),
+                    occurrence.tag(),
+                    occurrence.visible(),
+                ),
+                preserved[index]
+            );
+        }
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().format(
+                "digest-hidden-selected-tags",
+                &BTreeMap::from([("count", "2".to_owned()), ("tags", "2".to_owned()),])
+            )
+        );
+
+        let hidden_revision = shell.app().document_revision();
+        let hidden_digest = shell.app().canonical_digest();
+        let hidden_undo_steps = shell.app().undo_step_count();
+        let hidden_action_digest = shell.app().action_digest().to_owned();
+        assert!(!shell.app_mut().hide_selected_tags());
+        shell.settle();
+        assert!(shell.has_role_and_label(Role::Button, &hide_label));
+        assert_eq!(shell.app().document_revision(), hidden_revision);
+        assert_eq!(shell.app().canonical_digest(), hidden_digest);
+        assert_eq!(shell.app().undo_step_count(), hidden_undo_steps);
+        assert_eq!(shell.app().action_digest(), hidden_action_digest);
+
+        shell.click_menu_command("menu-edit", AppCommand::Undo);
+        assert_eq!(shell.app().tag_visibility(selected_a), Some(true));
+        assert_eq!(shell.app().tag_visibility(selected_b), Some(true));
+        assert_eq!(shell.app().tag_visibility(other), Some(true));
+        assert_eq!(shell.app().selected_occurrence_count(), 2);
+
+        shell.click_menu_command("menu-edit", AppCommand::Deselect);
+        shell.settle();
+        assert!(shell.has_role_and_label(Role::Button, &hide_label));
+        let empty_revision = shell.app().document_revision();
+        let empty_digest = shell.app().canonical_digest();
+        let empty_undo_steps = shell.app().undo_step_count();
+        let empty_action_digest = shell.app().action_digest().to_owned();
+        assert!(!shell.app_mut().hide_selected_tags());
+        assert_eq!(shell.app().document_revision(), empty_revision);
+        assert_eq!(shell.app().canonical_digest(), empty_digest);
+        assert_eq!(shell.app().undo_step_count(), empty_undo_steps);
+        assert_eq!(shell.app().action_digest(), empty_action_digest);
+
+        assert!(shell.app_mut().create_box());
+        let untagged_revision = shell.app().document_revision();
+        let untagged_digest = shell.app().canonical_digest();
+        let untagged_undo_steps = shell.app().undo_step_count();
+        let untagged_action_digest = shell.app().action_digest().to_owned();
+        assert!(!shell.app_mut().hide_selected_tags());
+        shell.settle();
+        assert!(shell.has_role_and_label(Role::Button, &hide_label));
+        assert_eq!(shell.app().document_revision(), untagged_revision);
+        assert_eq!(shell.app().canonical_digest(), untagged_digest);
+        assert_eq!(shell.app().undo_step_count(), untagged_undo_steps);
+        assert_eq!(shell.app().action_digest(), untagged_action_digest);
+    }
+}
+
+#[test]
+fn tags_panel_show_selection_is_localized_atomic_and_undoable() {
+    for catalog in [
+        LocaleCatalog::english(),
+        LocaleCatalog::slovak(),
+        LocaleCatalog::pseudo(),
+    ] {
+        let mut shell = Shell::with_catalog(catalog);
+        let selected_a = TagId(964);
+        let selected_b = TagId(965);
+        let other = TagId(966);
+        for (target, name) in [
+            (selected_a, "Hardware"),
+            (selected_b, "Fasteners"),
+            (other, "Other"),
+        ] {
+            assert!(
+                shell
+                    .app_mut()
+                    .prepare_assistant_intent(WorkflowIntent::CreateTag {
+                        target,
+                        name: name.to_owned(),
+                        visible: true,
+                    })
+            );
+            assert!(shell.app_mut().confirm_assistant_proposal());
+        }
+        assert!(shell.app_mut().create_box());
+        assert!(shell.app_mut().create_box());
+        for (target, tag) in [
+            (OccurrenceId(1), selected_a),
+            (OccurrenceId(2), selected_b),
+            (OccurrenceId(3), other),
+        ] {
+            assert!(
+                shell
+                    .app_mut()
+                    .prepare_assistant_intent(WorkflowIntent::SetOccurrenceTag {
+                        target,
+                        tag: Some(tag),
+                    })
+            );
+            assert!(shell.app_mut().confirm_assistant_proposal());
+        }
+        shell.click_at(shell.top_face_centre(1));
+        shell.click_at_with(shell.top_face_centre(2), shift());
+        assert_eq!(shell.app().selected_occurrence_count(), 2);
+        shell
+            .app_mut()
+            .set_assistant_workspace_mode(AssistantWorkspaceMode::Tab);
+        shell.settle();
+
+        let hide_label = shell.catalog().text("tags-hide-selection");
+        shell.click_role_and_label(Role::Button, &hide_label);
+        assert_eq!(shell.app().tag_visibility(selected_a), Some(false));
+        assert_eq!(shell.app().tag_visibility(selected_b), Some(false));
+        assert_eq!(shell.app().tag_visibility(other), Some(true));
+
+        let show_label = shell.catalog().text("tags-show-selection");
+        assert!(shell.has_role_and_label(Role::Button, &show_label));
+        let before = shell.app().document_snapshot();
+        let preserved = [OccurrenceId(1), OccurrenceId(2), OccurrenceId(3)].map(|id| {
+            let occurrence = before.occurrence(id).unwrap();
+            (
+                occurrence.name().to_owned(),
+                occurrence.definition_id(),
+                occurrence.transform(),
+                occurrence.parent(),
+                occurrence.tag(),
+                occurrence.visible(),
+            )
+        });
+        let revision = shell.app().document_revision();
+        let undo_steps = shell.app().undo_step_count();
+
+        shell.click_role_and_label(Role::Button, &show_label);
+
+        assert_eq!(shell.app().tag_visibility(selected_a), Some(true));
+        assert_eq!(shell.app().tag_visibility(selected_b), Some(true));
+        assert_eq!(shell.app().tag_visibility(other), Some(true));
+        assert_eq!(shell.app().document_revision(), revision + 1);
+        assert_eq!(shell.app().undo_step_count(), undo_steps + 1);
+        assert_eq!(shell.app().selected_occurrence_count(), 2);
+        assert!(shell.app().occurrence_is_selected(OccurrenceId(1)));
+        assert!(shell.app().occurrence_is_selected(OccurrenceId(2)));
+        let shown = shell.app().document_snapshot();
+        for (index, id) in [OccurrenceId(1), OccurrenceId(2), OccurrenceId(3)]
+            .into_iter()
+            .enumerate()
+        {
+            let occurrence = shown.occurrence(id).unwrap();
+            assert_eq!(
+                (
+                    occurrence.name().to_owned(),
+                    occurrence.definition_id(),
+                    occurrence.transform(),
+                    occurrence.parent(),
+                    occurrence.tag(),
+                    occurrence.visible(),
+                ),
+                preserved[index]
+            );
+        }
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().format(
+                "digest-shown-selected-tags",
+                &BTreeMap::from([("count", "2".to_owned()), ("tags", "2".to_owned()),])
+            )
+        );
+
+        let shown_revision = shell.app().document_revision();
+        let shown_digest = shell.app().canonical_digest();
+        let shown_undo_steps = shell.app().undo_step_count();
+        let shown_action_digest = shell.app().action_digest().to_owned();
+        assert!(!shell.app_mut().show_selected_tags());
+        shell.settle();
+        assert!(shell.has_role_and_label(Role::Button, &show_label));
+        assert_eq!(shell.app().document_revision(), shown_revision);
+        assert_eq!(shell.app().canonical_digest(), shown_digest);
+        assert_eq!(shell.app().undo_step_count(), shown_undo_steps);
+        assert_eq!(shell.app().action_digest(), shown_action_digest);
+
+        shell.click_menu_command("menu-edit", AppCommand::Undo);
+        assert_eq!(shell.app().tag_visibility(selected_a), Some(false));
+        assert_eq!(shell.app().tag_visibility(selected_b), Some(false));
+        assert_eq!(shell.app().tag_visibility(other), Some(true));
+        assert_eq!(shell.app().selected_occurrence_count(), 2);
+
+        shell.click_menu_command("menu-edit", AppCommand::Deselect);
+        shell.settle();
+        assert!(shell.has_role_and_label(Role::Button, &show_label));
+        let empty_revision = shell.app().document_revision();
+        let empty_digest = shell.app().canonical_digest();
+        let empty_undo_steps = shell.app().undo_step_count();
+        let empty_action_digest = shell.app().action_digest().to_owned();
+        assert!(!shell.app_mut().show_selected_tags());
+        assert_eq!(shell.app().document_revision(), empty_revision);
+        assert_eq!(shell.app().canonical_digest(), empty_digest);
+        assert_eq!(shell.app().undo_step_count(), empty_undo_steps);
+        assert_eq!(shell.app().action_digest(), empty_action_digest);
+
+        assert!(shell.app_mut().create_box());
+        let untagged_revision = shell.app().document_revision();
+        let untagged_digest = shell.app().canonical_digest();
+        let untagged_undo_steps = shell.app().undo_step_count();
+        let untagged_action_digest = shell.app().action_digest().to_owned();
+        assert!(!shell.app_mut().show_selected_tags());
+        shell.settle();
+        assert!(shell.has_role_and_label(Role::Button, &show_label));
+        assert_eq!(shell.app().document_revision(), untagged_revision);
+        assert_eq!(shell.app().canonical_digest(), untagged_digest);
+        assert_eq!(shell.app().undo_step_count(), untagged_undo_steps);
+        assert_eq!(shell.app().action_digest(), untagged_action_digest);
+    }
+}
+
+#[test]
+fn tags_panel_invert_selection_is_localized_atomic_and_undoable() {
+    for catalog in [
+        LocaleCatalog::english(),
+        LocaleCatalog::slovak(),
+        LocaleCatalog::pseudo(),
+    ] {
+        let mut shell = Shell::with_catalog(catalog);
+        let selected_a = TagId(967);
+        let selected_b = TagId(968);
+        let other = TagId(969);
+        for (target, name) in [
+            (selected_a, "Hardware"),
+            (selected_b, "Fasteners"),
+            (other, "Other"),
+        ] {
+            assert!(
+                shell
+                    .app_mut()
+                    .prepare_assistant_intent(WorkflowIntent::CreateTag {
+                        target,
+                        name: name.to_owned(),
+                        visible: true,
+                    })
+            );
+            assert!(shell.app_mut().confirm_assistant_proposal());
+        }
+        assert!(shell.app_mut().create_box());
+        assert!(shell.app_mut().create_box());
+        for (target, tag) in [
+            (OccurrenceId(1), selected_a),
+            (OccurrenceId(2), selected_b),
+            (OccurrenceId(3), other),
+        ] {
+            assert!(
+                shell
+                    .app_mut()
+                    .prepare_assistant_intent(WorkflowIntent::SetOccurrenceTag {
+                        target,
+                        tag: Some(tag),
+                    })
+            );
+            assert!(shell.app_mut().confirm_assistant_proposal());
+        }
+        shell.click_at(shell.top_face_centre(1));
+        shell.click_at_with(shell.top_face_centre(2), shift());
+        assert_eq!(shell.app().selected_occurrence_count(), 2);
+        assert!(shell.app_mut().set_tag_visibility(selected_b, false));
+        shell
+            .app_mut()
+            .set_assistant_workspace_mode(AssistantWorkspaceMode::Tab);
+        shell.settle();
+
+        let invert_label = shell.catalog().text("tags-invert-selection");
+        assert!(shell.has_role_and_label(Role::Button, &invert_label));
+        let before = shell.app().document_snapshot();
+        let preserved = [OccurrenceId(1), OccurrenceId(2), OccurrenceId(3)].map(|id| {
+            let occurrence = before.occurrence(id).unwrap();
+            (
+                occurrence.name().to_owned(),
+                occurrence.definition_id(),
+                occurrence.transform(),
+                occurrence.parent(),
+                occurrence.tag(),
+                occurrence.visible(),
+            )
+        });
+        let revision = shell.app().document_revision();
+        let undo_steps = shell.app().undo_step_count();
+
+        shell.click_role_and_label(Role::Button, &invert_label);
+
+        assert_eq!(shell.app().tag_visibility(selected_a), Some(false));
+        assert_eq!(shell.app().tag_visibility(selected_b), Some(true));
+        assert_eq!(shell.app().tag_visibility(other), Some(true));
+        assert_eq!(shell.app().document_revision(), revision + 1);
+        assert_eq!(shell.app().undo_step_count(), undo_steps + 1);
+        assert_eq!(shell.app().selected_occurrence_count(), 2);
+        assert!(shell.app().occurrence_is_selected(OccurrenceId(1)));
+        assert!(shell.app().occurrence_is_selected(OccurrenceId(2)));
+        let inverted = shell.app().document_snapshot();
+        for (index, id) in [OccurrenceId(1), OccurrenceId(2), OccurrenceId(3)]
+            .into_iter()
+            .enumerate()
+        {
+            let occurrence = inverted.occurrence(id).unwrap();
+            assert_eq!(
+                (
+                    occurrence.name().to_owned(),
+                    occurrence.definition_id(),
+                    occurrence.transform(),
+                    occurrence.parent(),
+                    occurrence.tag(),
+                    occurrence.visible(),
+                ),
+                preserved[index]
+            );
+        }
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().format(
+                "digest-inverted-selected-tags",
+                &BTreeMap::from([("count", "2".to_owned())])
+            )
+        );
+
+        shell.click_menu_command("menu-edit", AppCommand::Undo);
+        assert_eq!(shell.app().tag_visibility(selected_a), Some(true));
+        assert_eq!(shell.app().tag_visibility(selected_b), Some(false));
+        assert_eq!(shell.app().tag_visibility(other), Some(true));
+        assert_eq!(shell.app().selected_occurrence_count(), 2);
+
+        shell.click_menu_command("menu-edit", AppCommand::Deselect);
+        shell.settle();
+        assert!(shell.has_role_and_label(Role::Button, &invert_label));
+        let empty_revision = shell.app().document_revision();
+        let empty_digest = shell.app().canonical_digest();
+        let empty_undo_steps = shell.app().undo_step_count();
+        let empty_action_digest = shell.app().action_digest().to_owned();
+        assert!(!shell.app_mut().invert_selected_tags());
+        assert_eq!(shell.app().document_revision(), empty_revision);
+        assert_eq!(shell.app().canonical_digest(), empty_digest);
+        assert_eq!(shell.app().undo_step_count(), empty_undo_steps);
+        assert_eq!(shell.app().action_digest(), empty_action_digest);
+
+        assert!(shell.app_mut().create_box());
+        let untagged_revision = shell.app().document_revision();
+        let untagged_digest = shell.app().canonical_digest();
+        let untagged_undo_steps = shell.app().undo_step_count();
+        let untagged_action_digest = shell.app().action_digest().to_owned();
+        assert!(!shell.app_mut().invert_selected_tags());
+        shell.settle();
+        assert!(shell.has_role_and_label(Role::Button, &invert_label));
+        assert_eq!(shell.app().document_revision(), untagged_revision);
+        assert_eq!(shell.app().canonical_digest(), untagged_digest);
+        assert_eq!(shell.app().undo_step_count(), untagged_undo_steps);
+        assert_eq!(shell.app().action_digest(), untagged_action_digest);
+    }
+}
+
+#[test]
+fn tags_panel_select_matching_is_localized_ephemeral_and_fail_closed() {
+    for catalog in [
+        LocaleCatalog::english(),
+        LocaleCatalog::slovak(),
+        LocaleCatalog::pseudo(),
+    ] {
+        let mut shell = Shell::with_catalog(catalog);
+        let hardware = TagId(971);
+        let fasteners = TagId(972);
+        for (target, name) in [(hardware, "Hardware"), (fasteners, "Fasteners")] {
+            assert!(
+                shell
+                    .app_mut()
+                    .prepare_assistant_intent(WorkflowIntent::CreateTag {
+                        target,
+                        name: name.to_owned(),
+                        visible: true,
+                    })
+            );
+            assert!(shell.app_mut().confirm_assistant_proposal());
+        }
+        for _ in 0..5 {
+            assert!(shell.app_mut().create_box());
+        }
+        assert_eq!(shell.app().occurrence_count(), 6);
+        for (target, tag) in [
+            (OccurrenceId(1), hardware),
+            (OccurrenceId(2), hardware),
+            (OccurrenceId(3), fasteners),
+            (OccurrenceId(4), fasteners),
+            (OccurrenceId(5), fasteners),
+        ] {
+            assert!(
+                shell
+                    .app_mut()
+                    .prepare_assistant_intent(WorkflowIntent::SetOccurrenceTag {
+                        target,
+                        tag: Some(tag),
+                    })
+            );
+            assert!(shell.app_mut().confirm_assistant_proposal());
+        }
+        assert!(shell.app_mut().prepare_assistant_intent(
+            WorkflowIntent::SetOccurrenceVisibility {
+                target: OccurrenceId(4),
+                visible: false,
+            }
+        ));
+        assert!(shell.app_mut().confirm_assistant_proposal());
+        assert!(shell.app_mut().select_tag_occurrences(hardware));
+        assert_eq!(shell.app().selected_occurrence_count(), 2);
+        assert!(
+            shell
+                .app_mut()
+                .prepare_assistant_intent(WorkflowIntent::SetOccurrenceTag {
+                    target: OccurrenceId(2),
+                    tag: Some(fasteners),
+                })
+        );
+        assert!(shell.app_mut().confirm_assistant_proposal());
+        assert_eq!(shell.app().selected_occurrence_count(), 2);
+        shell
+            .app_mut()
+            .set_assistant_workspace_mode(AssistantWorkspaceMode::Tab);
+        shell.settle();
+
+        let select_label = shell.catalog().text("tags-select-matching");
+        assert!(shell.has_role_and_label(Role::Button, &select_label));
+        let revision = shell.app().document_revision();
+        let digest = shell.app().canonical_digest();
+        let undo_steps = shell.app().undo_step_count();
+
+        shell.click_role_and_label(Role::Button, &select_label);
+
+        assert_eq!(shell.app().selected_occurrence_count(), 4);
+        for id in [
+            OccurrenceId(1),
+            OccurrenceId(2),
+            OccurrenceId(3),
+            OccurrenceId(5),
+        ] {
+            assert!(shell.app().occurrence_is_selected(id));
+        }
+        assert!(!shell.app().occurrence_is_selected(OccurrenceId(4)));
+        assert!(!shell.app().occurrence_is_selected(OccurrenceId(6)));
+        assert_eq!(shell.app().document_revision(), revision);
+        assert_eq!(shell.app().canonical_digest(), digest);
+        assert_eq!(shell.app().undo_step_count(), undo_steps);
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().format(
+                "digest-selected-matching-tags",
+                &BTreeMap::from([("count", "4".to_owned()), ("tags", "2".to_owned()),])
+            )
+        );
+
+        let selected_action_digest = shell.app().action_digest().to_owned();
+        assert!(!shell.app_mut().select_matching_tags());
+        assert_eq!(shell.app().selected_occurrence_count(), 4);
+        assert_eq!(shell.app().action_digest(), selected_action_digest);
+        assert_eq!(shell.app().document_revision(), revision);
+        assert_eq!(shell.app().canonical_digest(), digest);
+        assert_eq!(shell.app().undo_step_count(), undo_steps);
+        shell.settle();
+        assert!(shell.has_role_and_label(Role::Button, &select_label));
+
+        assert!(shell.app_mut().set_all_tag_visibility(false));
+        let hidden_revision = shell.app().document_revision();
+        let hidden_digest = shell.app().canonical_digest();
+        let hidden_undo_steps = shell.app().undo_step_count();
+        let hidden_action_digest = shell.app().action_digest().to_owned();
+        assert!(!shell.app_mut().select_matching_tags());
+        assert_eq!(shell.app().selected_occurrence_count(), 4);
+        assert_eq!(shell.app().document_revision(), hidden_revision);
+        assert_eq!(shell.app().canonical_digest(), hidden_digest);
+        assert_eq!(shell.app().undo_step_count(), hidden_undo_steps);
+        assert_eq!(shell.app().action_digest(), hidden_action_digest);
+        shell.settle();
+        assert!(shell.has_role_and_label(Role::Button, &select_label));
+        shell.click_menu_command("menu-edit", AppCommand::Undo);
+        assert_eq!(shell.app().tag_visibility(hardware), Some(true));
+        assert_eq!(shell.app().tag_visibility(fasteners), Some(true));
+
+        shell.click_menu_command("menu-edit", AppCommand::Deselect);
+        let empty_action_digest = shell.app().action_digest().to_owned();
+        assert!(!shell.app_mut().select_matching_tags());
+        assert_eq!(shell.app().selected_occurrence_count(), 0);
+        assert_eq!(shell.app().action_digest(), empty_action_digest);
+        assert_eq!(shell.app().document_revision(), revision);
+        assert_eq!(shell.app().canonical_digest(), digest);
+        assert_eq!(shell.app().undo_step_count(), undo_steps);
+        shell.settle();
+        assert!(shell.has_role_and_label(Role::Button, &select_label));
+
+        assert!(shell.app_mut().select_untagged_occurrences());
+        assert!(shell.app().occurrence_is_selected(OccurrenceId(6)));
+        let untagged_action_digest = shell.app().action_digest().to_owned();
+        assert!(!shell.app_mut().select_matching_tags());
+        assert_eq!(shell.app().selected_occurrence_count(), 1);
+        assert!(shell.app().occurrence_is_selected(OccurrenceId(6)));
+        assert_eq!(shell.app().action_digest(), untagged_action_digest);
+        assert_eq!(shell.app().document_revision(), revision);
+        assert_eq!(shell.app().canonical_digest(), digest);
+        assert_eq!(shell.app().undo_step_count(), undo_steps);
+        shell.settle();
+        assert!(shell.has_role_and_label(Role::Button, &select_label));
+    }
+}
+
+#[test]
+fn tags_panel_select_all_tagged_is_localized_ephemeral_and_fail_closed() {
+    for catalog in [
+        LocaleCatalog::english(),
+        LocaleCatalog::slovak(),
+        LocaleCatalog::pseudo(),
+    ] {
+        let mut shell = Shell::with_catalog(catalog);
+        let hardware = TagId(981);
+        let fasteners = TagId(982);
+        let hidden = TagId(983);
+        for (target, name, visible) in [
+            (hardware, "Hardware", true),
+            (fasteners, "Fasteners", true),
+            (hidden, "Hidden", false),
+        ] {
+            assert!(
+                shell
+                    .app_mut()
+                    .prepare_assistant_intent(WorkflowIntent::CreateTag {
+                        target,
+                        name: name.to_owned(),
+                        visible,
+                    })
+            );
+            assert!(shell.app_mut().confirm_assistant_proposal());
+        }
+        for _ in 0..5 {
+            assert!(shell.app_mut().create_box());
+        }
+        assert_eq!(shell.app().occurrence_count(), 6);
+        for (target, tag) in [
+            (OccurrenceId(1), hardware),
+            (OccurrenceId(2), hardware),
+            (OccurrenceId(3), fasteners),
+            (OccurrenceId(4), fasteners),
+            (OccurrenceId(5), hidden),
+        ] {
+            assert!(
+                shell
+                    .app_mut()
+                    .prepare_assistant_intent(WorkflowIntent::SetOccurrenceTag {
+                        target,
+                        tag: Some(tag),
+                    })
+            );
+            assert!(shell.app_mut().confirm_assistant_proposal());
+        }
+        assert!(shell.app_mut().prepare_assistant_intent(
+            WorkflowIntent::SetOccurrenceVisibility {
+                target: OccurrenceId(4),
+                visible: false,
+            }
+        ));
+        assert!(shell.app_mut().confirm_assistant_proposal());
+        shell
+            .app_mut()
+            .set_assistant_workspace_mode(AssistantWorkspaceMode::Tab);
+        shell.settle();
+
+        let select_label = shell.catalog().text("tags-select-all-tagged");
+        assert!(shell.has_role_and_label(Role::Button, &select_label));
+        shell.click_menu_command("menu-edit", AppCommand::SelectAll);
+        let revision = shell.app().document_revision();
+        let digest = shell.app().canonical_digest();
+        let undo_steps = shell.app().undo_step_count();
+
+        shell.click_role_and_label(Role::Button, &select_label);
+
+        assert_eq!(shell.app().selected_occurrence_count(), 3);
+        for id in [OccurrenceId(1), OccurrenceId(2), OccurrenceId(3)] {
+            assert!(shell.app().occurrence_is_selected(id));
+        }
+        for id in [OccurrenceId(4), OccurrenceId(5), OccurrenceId(6)] {
+            assert!(!shell.app().occurrence_is_selected(id));
+        }
+        assert_eq!(shell.app().document_revision(), revision);
+        assert_eq!(shell.app().canonical_digest(), digest);
+        assert_eq!(shell.app().undo_step_count(), undo_steps);
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().format(
+                "digest-selected-all-tagged",
+                &BTreeMap::from([("count", "3".to_owned())])
+            )
+        );
+
+        let selected_action_digest = shell.app().action_digest().to_owned();
+        assert!(!shell.app_mut().select_all_tagged_occurrences());
+        assert_eq!(shell.app().selected_occurrence_count(), 3);
+        assert_eq!(shell.app().document_revision(), revision);
+        assert_eq!(shell.app().canonical_digest(), digest);
+        assert_eq!(shell.app().undo_step_count(), undo_steps);
+        assert_eq!(shell.app().action_digest(), selected_action_digest);
+        shell.settle();
+        assert!(shell.has_role_and_label(Role::Button, &select_label));
+
+        assert!(shell.app_mut().set_tag_visibility(hardware, false));
+        assert!(shell.app_mut().set_tag_visibility(fasteners, false));
+        let empty_revision = shell.app().document_revision();
+        let empty_digest = shell.app().canonical_digest();
+        let empty_undo_steps = shell.app().undo_step_count();
+        let empty_action_digest = shell.app().action_digest().to_owned();
+        assert!(!shell.app_mut().select_all_tagged_occurrences());
+        assert_eq!(shell.app().selected_occurrence_count(), 3);
+        assert_eq!(shell.app().document_revision(), empty_revision);
+        assert_eq!(shell.app().canonical_digest(), empty_digest);
+        assert_eq!(shell.app().undo_step_count(), empty_undo_steps);
+        assert_eq!(shell.app().action_digest(), empty_action_digest);
+        shell.settle();
+        assert!(shell.has_role_and_label(Role::Button, &select_label));
+    }
+}
+
+#[test]
+fn tags_panel_select_tagged_is_localized_ephemeral_and_fail_closed() {
+    for catalog in [
+        LocaleCatalog::english(),
+        LocaleCatalog::slovak(),
+        LocaleCatalog::pseudo(),
+    ] {
+        let mut shell = Shell::with_catalog(catalog);
+        let tag = TagId(1001);
+        let empty_tag = TagId(1002);
+        for (target, name) in [(tag, "Hardware"), (empty_tag, "Empty")] {
+            assert!(
+                shell
+                    .app_mut()
+                    .prepare_assistant_intent(WorkflowIntent::CreateTag {
+                        target,
+                        name: name.to_owned(),
+                        visible: true,
+                    })
+            );
+            assert!(shell.app_mut().confirm_assistant_proposal());
+        }
+        shell.settle();
+        shell.click_at(shell.top_face_centre(1));
+        shell.click_menu_command("menu-edit", AppCommand::Copy);
+        shell.click_menu_command("menu-edit", AppCommand::Paste);
+        assert!(shell.app_mut().create_box());
+        assert_eq!(shell.app().occurrence_count(), 3);
+        for target in [OccurrenceId(1), OccurrenceId(2)] {
+            assert!(
+                shell
+                    .app_mut()
+                    .prepare_assistant_intent(WorkflowIntent::SetOccurrenceTag {
+                        target,
+                        tag: Some(tag),
+                    })
+            );
+            assert!(shell.app_mut().confirm_assistant_proposal());
+        }
+        shell
+            .app_mut()
+            .set_assistant_workspace_mode(AssistantWorkspaceMode::Tab);
+        shell.settle();
+
+        let select_label = shell.catalog().format(
+            "tags-select",
+            &BTreeMap::from([("name", "Hardware".to_owned())]),
+        );
+        assert!(shell.has_role_and_label(Role::Button, &select_label));
+        shell.click_at(shell.top_face_centre(3));
+        assert!(shell.app().occurrence_is_selected(OccurrenceId(3)));
+        let revision = shell.app().document_revision();
+        let digest = shell.app().canonical_digest();
+        let undo_steps = shell.app().undo_step_count();
+
+        shell.click_role_and_label(Role::Button, &select_label);
+
+        assert_eq!(shell.app().selected_occurrence_count(), 2);
+        assert!(shell.app().occurrence_is_selected(OccurrenceId(1)));
+        assert!(shell.app().occurrence_is_selected(OccurrenceId(2)));
+        assert!(!shell.app().occurrence_is_selected(OccurrenceId(3)));
+        assert_eq!(shell.app().document_revision(), revision);
+        assert_eq!(shell.app().canonical_digest(), digest);
+        assert_eq!(shell.app().undo_step_count(), undo_steps);
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().format(
+                "digest-selected-tag",
+                &BTreeMap::from([("name", "Hardware".to_owned()), ("count", "2".to_owned()),])
+            )
+        );
+
+        let selection_digest = shell.app().action_digest().to_owned();
+        shell.click_role_and_label(Role::Button, &select_label);
+        assert!(!shell.app_mut().select_tag_occurrences(tag));
+        assert_eq!(shell.app().selected_occurrence_count(), 2);
+        assert_eq!(shell.app().action_digest(), selection_digest);
+        assert_eq!(shell.app().document_revision(), revision);
+        assert_eq!(shell.app().canonical_digest(), digest);
+        assert_eq!(shell.app().undo_step_count(), undo_steps);
+
+        assert!(!shell.app_mut().select_tag_occurrences(empty_tag));
+        assert!(!shell.app_mut().select_tag_occurrences(TagId(9999)));
+        assert_eq!(shell.app().selected_occurrence_count(), 2);
+        assert_eq!(shell.app().action_digest(), selection_digest);
+        assert_eq!(shell.app().document_revision(), revision);
+        assert_eq!(shell.app().canonical_digest(), digest);
+        assert_eq!(shell.app().undo_step_count(), undo_steps);
+
+        assert!(shell.app_mut().set_tag_visibility(tag, false));
+        let hidden_revision = shell.app().document_revision();
+        let hidden_digest = shell.app().canonical_digest();
+        let hidden_undo_steps = shell.app().undo_step_count();
+        let hidden_action_digest = shell.app().action_digest().to_owned();
+        assert!(!shell.app_mut().select_tag_occurrences(tag));
+        assert_eq!(shell.app().selected_occurrence_count(), 2);
+        assert!(shell.app().occurrence_is_selected(OccurrenceId(1)));
+        assert!(shell.app().occurrence_is_selected(OccurrenceId(2)));
+        assert_eq!(shell.app().document_revision(), hidden_revision);
+        assert_eq!(shell.app().canonical_digest(), hidden_digest);
+        assert_eq!(shell.app().undo_step_count(), hidden_undo_steps);
+        assert_eq!(shell.app().action_digest(), hidden_action_digest);
+    }
+}
+
+#[test]
+fn tags_panel_select_untagged_is_localized_ephemeral_and_fail_closed() {
+    for catalog in [
+        LocaleCatalog::english(),
+        LocaleCatalog::slovak(),
+        LocaleCatalog::pseudo(),
+    ] {
+        let mut shell = Shell::with_catalog(catalog);
+        let tag = TagId(1101);
+        assert!(
+            shell
+                .app_mut()
+                .prepare_assistant_intent(WorkflowIntent::CreateTag {
+                    target: tag,
+                    name: "Hardware".to_owned(),
+                    visible: true,
+                })
+        );
+        assert!(shell.app_mut().confirm_assistant_proposal());
+        shell.click_at(shell.top_face_centre(1));
+        shell.click_menu_command("menu-edit", AppCommand::Copy);
+        shell.click_menu_command("menu-edit", AppCommand::Paste);
+        assert!(shell.app_mut().create_box());
+        assert_eq!(shell.app().occurrence_count(), 3);
+        assert!(
+            shell
+                .app_mut()
+                .prepare_assistant_intent(WorkflowIntent::SetOccurrenceTag {
+                    target: OccurrenceId(1),
+                    tag: Some(tag),
+                })
+        );
+        assert!(shell.app_mut().confirm_assistant_proposal());
+        assert!(shell.app_mut().prepare_assistant_intent(
+            WorkflowIntent::SetOccurrenceVisibility {
+                target: OccurrenceId(3),
+                visible: false,
+            }
+        ));
+        assert!(shell.app_mut().confirm_assistant_proposal());
+        shell
+            .app_mut()
+            .set_assistant_workspace_mode(AssistantWorkspaceMode::Tab);
+        shell.settle();
+
+        let select_label = shell.catalog().text("tags-select-untagged");
+        assert!(shell.has_role_and_label(Role::Button, &select_label));
+        shell.click_menu_command("menu-edit", AppCommand::SelectAll);
+        assert_eq!(shell.app().selected_occurrence_count(), 2);
+        assert!(shell.app().occurrence_is_selected(OccurrenceId(1)));
+        assert!(shell.app().occurrence_is_selected(OccurrenceId(2)));
+        let revision = shell.app().document_revision();
+        let digest = shell.app().canonical_digest();
+        let undo_steps = shell.app().undo_step_count();
+
+        shell.click_role_and_label(Role::Button, &select_label);
+
+        assert_eq!(shell.app().selected_occurrence_count(), 1);
+        assert!(!shell.app().occurrence_is_selected(OccurrenceId(1)));
+        assert!(shell.app().occurrence_is_selected(OccurrenceId(2)));
+        assert!(!shell.app().occurrence_is_selected(OccurrenceId(3)));
+        assert_eq!(shell.app().document_revision(), revision);
+        assert_eq!(shell.app().canonical_digest(), digest);
+        assert_eq!(shell.app().undo_step_count(), undo_steps);
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().format(
+                "digest-selected-untagged",
+                &BTreeMap::from([("count", "1".to_owned())])
+            )
+        );
+
+        let selected_action_digest = shell.app().action_digest().to_owned();
+        assert!(!shell.app_mut().select_untagged_occurrences());
+        assert_eq!(shell.app().selected_occurrence_count(), 1);
+        assert!(shell.app().occurrence_is_selected(OccurrenceId(2)));
+        assert_eq!(shell.app().document_revision(), revision);
+        assert_eq!(shell.app().canonical_digest(), digest);
+        assert_eq!(shell.app().undo_step_count(), undo_steps);
+        assert_eq!(shell.app().action_digest(), selected_action_digest);
+        shell.settle();
+        assert!(shell.has_role_and_label(Role::Button, &select_label));
+
+        assert!(
+            shell
+                .app_mut()
+                .prepare_assistant_intent(WorkflowIntent::SetOccurrenceTag {
+                    target: OccurrenceId(2),
+                    tag: Some(tag),
+                })
+        );
+        assert!(shell.app_mut().confirm_assistant_proposal());
+        let tagged_revision = shell.app().document_revision();
+        let tagged_digest = shell.app().canonical_digest();
+        let tagged_undo_steps = shell.app().undo_step_count();
+        let tagged_action_digest = shell.app().action_digest().to_owned();
+        shell.settle();
+        assert!(shell.has_role_and_label(Role::Button, &select_label));
+
+        shell.click_role_and_label(Role::Button, &select_label);
+
+        assert_eq!(shell.app().selected_occurrence_count(), 1);
+        assert!(shell.app().occurrence_is_selected(OccurrenceId(2)));
+        assert_eq!(shell.app().document_revision(), tagged_revision);
+        assert_eq!(shell.app().canonical_digest(), tagged_digest);
+        assert_eq!(shell.app().undo_step_count(), tagged_undo_steps);
+        assert_eq!(shell.app().action_digest(), tagged_action_digest);
+    }
+}
+
+#[test]
+fn tags_panel_assign_selection_is_localized_canonical_context_bound_and_undoable() {
+    for catalog in [
+        LocaleCatalog::english(),
+        LocaleCatalog::slovak(),
+        LocaleCatalog::pseudo(),
+    ] {
+        let mut shell = Shell::with_catalog(catalog);
+        let tag = TagId(1201);
+        assert!(
+            shell
+                .app_mut()
+                .prepare_assistant_intent(WorkflowIntent::CreateTag {
+                    target: tag,
+                    name: "Hardware".to_owned(),
+                    visible: true,
+                })
+        );
+        assert!(shell.app_mut().confirm_assistant_proposal());
+        shell.click_at(shell.top_face_centre(1));
+        shell.click_menu_command("menu-edit", AppCommand::Copy);
+        shell.click_menu_command("menu-edit", AppCommand::Paste);
+        assert!(shell.app_mut().create_box());
+        assert_eq!(shell.app().occurrence_count(), 3);
+        assert!(
+            shell
+                .app_mut()
+                .prepare_assistant_intent(WorkflowIntent::SetOccurrenceTag {
+                    target: OccurrenceId(1),
+                    tag: Some(tag),
+                })
+        );
+        assert!(shell.app_mut().confirm_assistant_proposal());
+        shell
+            .app_mut()
+            .set_assistant_workspace_mode(AssistantWorkspaceMode::Tab);
+        shell.settle();
+        shell.click_menu_command("menu-edit", AppCommand::SelectAll);
+        assert_eq!(shell.app().selected_occurrence_count(), 3);
+
+        let assign_label = shell.catalog().format(
+            "tags-assign-selection",
+            &BTreeMap::from([("name", "Hardware".to_owned())]),
+        );
+        assert!(shell.has_role_and_label(Role::Button, &assign_label));
+        let before = shell.app().document_snapshot();
+        let preserved = [OccurrenceId(1), OccurrenceId(2), OccurrenceId(3)].map(|id| {
+            let occurrence = before.occurrence(id).unwrap();
+            (
+                occurrence.definition_id(),
+                occurrence.transform(),
+                occurrence.parent(),
+                occurrence.visible(),
+            )
+        });
+        let revision = shell.app().document_revision();
+        let undo_steps = shell.app().undo_step_count();
+
+        shell.click_role_and_label(Role::Button, &assign_label);
+
+        assert_eq!(shell.app().document_revision(), revision + 1);
+        assert_eq!(shell.app().undo_step_count(), undo_steps + 1);
+        assert_eq!(shell.app().selected_occurrence_count(), 3);
+        let assigned = shell.app().document_snapshot();
+        for (index, id) in [OccurrenceId(1), OccurrenceId(2), OccurrenceId(3)]
+            .into_iter()
+            .enumerate()
+        {
+            let occurrence = assigned.occurrence(id).unwrap();
+            assert_eq!(occurrence.tag(), Some(tag));
+            assert_eq!(
+                (
+                    occurrence.definition_id(),
+                    occurrence.transform(),
+                    occurrence.parent(),
+                    occurrence.visible(),
+                ),
+                preserved[index]
+            );
+        }
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().format(
+                "digest-assigned-tag",
+                &BTreeMap::from([("count", "2".to_owned()), ("tag", "Hardware".to_owned()),])
+            )
+        );
+        assert!(shell.has_role_and_label(Role::Button, &assign_label));
+
+        shell.click_menu_command("menu-edit", AppCommand::Undo);
+        assert_eq!(shell.app().occurrence_tag(OccurrenceId(1)), Some(tag));
+        assert_eq!(shell.app().occurrence_tag(OccurrenceId(2)), None);
+        assert_eq!(shell.app().occurrence_tag(OccurrenceId(3)), None);
+        shell.click_role_and_label(Role::Button, &assign_label);
+        let unchanged_revision = shell.app().document_revision();
+        let unchanged_digest = shell.app().canonical_digest();
+        let unchanged_undo_steps = shell.app().undo_step_count();
+        let unchanged_action_digest = shell.app().action_digest().to_owned();
+        assert!(!shell.app_mut().assign_selection_to_tag(tag));
+        assert!(!shell.app_mut().assign_selection_to_tag(TagId(9999)));
+        assert_eq!(shell.app().document_revision(), unchanged_revision);
+        assert_eq!(shell.app().canonical_digest(), unchanged_digest);
+        assert_eq!(shell.app().undo_step_count(), unchanged_undo_steps);
+        assert_eq!(shell.app().action_digest(), unchanged_action_digest);
+
+        shell.click_menu_command("menu-edit", AppCommand::Deselect);
+        assert_eq!(shell.app().selected_occurrence_count(), 0);
+        assert!(shell.has_role_and_label(Role::Button, &assign_label));
+        let empty_action_digest = shell.app().action_digest().to_owned();
+        assert!(!shell.app_mut().assign_selection_to_tag(tag));
+        assert_eq!(shell.app().document_revision(), unchanged_revision);
+        assert_eq!(shell.app().canonical_digest(), unchanged_digest);
+        assert_eq!(shell.app().undo_step_count(), unchanged_undo_steps);
+        assert_eq!(shell.app().action_digest(), empty_action_digest);
+    }
+}
+
+#[test]
+fn tags_panel_remove_selection_is_localized_canonical_context_bound_and_undoable() {
+    for catalog in [
+        LocaleCatalog::english(),
+        LocaleCatalog::slovak(),
+        LocaleCatalog::pseudo(),
+    ] {
+        let mut shell = Shell::with_catalog(catalog);
+        let tag = TagId(1301);
+        let other_tag = TagId(1302);
+        for (target, name) in [(tag, "Hardware"), (other_tag, "Other")] {
+            assert!(
+                shell
+                    .app_mut()
+                    .prepare_assistant_intent(WorkflowIntent::CreateTag {
+                        target,
+                        name: name.to_owned(),
+                        visible: true,
+                    })
+            );
+            assert!(shell.app_mut().confirm_assistant_proposal());
+        }
+        shell.click_at(shell.top_face_centre(1));
+        shell.click_menu_command("menu-edit", AppCommand::Copy);
+        shell.click_menu_command("menu-edit", AppCommand::Paste);
+        assert!(shell.app_mut().create_box());
+        for (target, assigned_tag) in [
+            (OccurrenceId(1), tag),
+            (OccurrenceId(2), tag),
+            (OccurrenceId(3), other_tag),
+        ] {
+            assert!(
+                shell
+                    .app_mut()
+                    .prepare_assistant_intent(WorkflowIntent::SetOccurrenceTag {
+                        target,
+                        tag: Some(assigned_tag),
+                    })
+            );
+            assert!(shell.app_mut().confirm_assistant_proposal());
+        }
+        shell
+            .app_mut()
+            .set_assistant_workspace_mode(AssistantWorkspaceMode::Tab);
+        shell.settle();
+        shell.click_menu_command("menu-edit", AppCommand::SelectAll);
+        assert_eq!(shell.app().selected_occurrence_count(), 3);
+
+        let remove_label = shell.catalog().format(
+            "tags-remove-selection",
+            &BTreeMap::from([("name", "Hardware".to_owned())]),
+        );
+        let remove_other_label = shell.catalog().format(
+            "tags-remove-selection",
+            &BTreeMap::from([("name", "Other".to_owned())]),
+        );
+        assert!(shell.has_role_and_label(Role::Button, &remove_label));
+        assert!(shell.has_role_and_label(Role::Button, &remove_other_label));
+        let before = shell.app().document_snapshot();
+        let preserved = [OccurrenceId(1), OccurrenceId(2), OccurrenceId(3)].map(|id| {
+            let occurrence = before.occurrence(id).unwrap();
+            (
+                occurrence.definition_id(),
+                occurrence.transform(),
+                occurrence.parent(),
+                occurrence.visible(),
+            )
+        });
+        let revision = shell.app().document_revision();
+        let undo_steps = shell.app().undo_step_count();
+
+        shell.click_role_and_label(Role::Button, &remove_label);
+
+        assert_eq!(shell.app().document_revision(), revision + 1);
+        assert_eq!(shell.app().undo_step_count(), undo_steps + 1);
+        assert_eq!(shell.app().selected_occurrence_count(), 3);
+        let removed = shell.app().document_snapshot();
+        assert_eq!(removed.occurrence(OccurrenceId(1)).unwrap().tag(), None);
+        assert_eq!(removed.occurrence(OccurrenceId(2)).unwrap().tag(), None);
+        assert_eq!(
+            removed.occurrence(OccurrenceId(3)).unwrap().tag(),
+            Some(other_tag)
+        );
+        for (index, id) in [OccurrenceId(1), OccurrenceId(2), OccurrenceId(3)]
+            .into_iter()
+            .enumerate()
+        {
+            let occurrence = removed.occurrence(id).unwrap();
+            assert_eq!(
+                (
+                    occurrence.definition_id(),
+                    occurrence.transform(),
+                    occurrence.parent(),
+                    occurrence.visible(),
+                ),
+                preserved[index]
+            );
+        }
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().format(
+                "digest-removed-selected-tag",
+                &BTreeMap::from([("count", "2".to_owned()), ("tag", "Hardware".to_owned()),])
+            )
+        );
+        assert!(shell.has_role_and_label(Role::Button, &remove_label));
+
+        shell.click_menu_command("menu-edit", AppCommand::Undo);
+        assert_eq!(shell.app().occurrence_tag(OccurrenceId(1)), Some(tag));
+        assert_eq!(shell.app().occurrence_tag(OccurrenceId(2)), Some(tag));
+        assert_eq!(shell.app().occurrence_tag(OccurrenceId(3)), Some(other_tag));
+        shell.click_role_and_label(Role::Button, &remove_label);
+        assert!(shell.has_role_and_label(Role::Button, &remove_label));
+        let unchanged_revision = shell.app().document_revision();
+        let unchanged_digest = shell.app().canonical_digest();
+        let unchanged_undo_steps = shell.app().undo_step_count();
+        let unchanged_action_digest = shell.app().action_digest().to_owned();
+        assert!(!shell.app_mut().remove_selection_from_tag(tag));
+        assert!(!shell.app_mut().remove_selection_from_tag(TagId(9999)));
+        assert_eq!(shell.app().document_revision(), unchanged_revision);
+        assert_eq!(shell.app().canonical_digest(), unchanged_digest);
+        assert_eq!(shell.app().undo_step_count(), unchanged_undo_steps);
+        assert_eq!(shell.app().action_digest(), unchanged_action_digest);
+
+        shell.click_menu_command("menu-edit", AppCommand::Deselect);
+        assert_eq!(shell.app().selected_occurrence_count(), 0);
+        assert!(shell.has_role_and_label(Role::Button, &remove_label));
+        assert!(shell.has_role_and_label(Role::Button, &remove_other_label));
+        let empty_action_digest = shell.app().action_digest().to_owned();
+        assert!(!shell.app_mut().remove_selection_from_tag(other_tag));
+        assert_eq!(shell.app().document_revision(), unchanged_revision);
+        assert_eq!(shell.app().canonical_digest(), unchanged_digest);
+        assert_eq!(shell.app().undo_step_count(), unchanged_undo_steps);
+        assert_eq!(shell.app().action_digest(), empty_action_digest);
+    }
+}
+
+#[test]
+fn hide_unhide_selection_is_localized_exact_state_bound_and_undoable() {
+    for catalog in [
+        LocaleCatalog::english(),
+        LocaleCatalog::slovak(),
+        LocaleCatalog::pseudo(),
+    ] {
+        let mut shell = Shell::with_catalog(catalog.clone());
+        assert_eq!(
+            shell.app().command_label(AppCommand::Hide),
+            shell.catalog().text("model-hide")
+        );
+        assert_eq!(
+            shell.app().command_label(AppCommand::Unhide),
+            shell.catalog().text("model-unhide")
+        );
+        assert!(!shell.app().command_is_enabled(AppCommand::Hide));
+        assert!(!shell.app().command_is_enabled(AppCommand::Unhide));
+
+        shell.click_at(shell.top_face_centre(1));
+        shell.click_menu_command("menu-edit", AppCommand::Copy);
+        shell.click_menu_command("menu-edit", AppCommand::Paste);
+        shell.click_menu_command("menu-model", AppCommand::SelectAllInstances);
+        assert_eq!(shell.app().selected_occurrence_count(), 2);
+        assert!(shell.app().command_is_enabled(AppCommand::Hide));
+        assert!(!shell.app().command_is_enabled(AppCommand::Unhide));
+        let visible_digest = shell.app().canonical_digest();
+        let undo_steps = shell.app().undo_step_count();
+
+        shell.click_menu_command("menu-view", AppCommand::Hide);
+        let hidden_digest = shell.app().canonical_digest();
+        assert_ne!(hidden_digest, visible_digest);
+        assert_eq!(shell.app().undo_step_count(), undo_steps + 1);
+        for id in [OccurrenceId(1), OccurrenceId(2)] {
+            assert!(
+                !shell
+                    .app()
+                    .document_snapshot()
+                    .occurrence(id)
+                    .unwrap()
+                    .visible()
+            );
+        }
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().format(
+                "digest-hidden",
+                &BTreeMap::from([("count", "2".to_owned())])
+            )
+        );
+        assert!(!shell.app().command_is_enabled(AppCommand::Hide));
+        assert!(shell.app().command_is_enabled(AppCommand::Unhide));
+
+        shell.click_menu_command("menu-edit", AppCommand::Undo);
+        assert_eq!(shell.app().canonical_digest(), visible_digest);
+        for id in [OccurrenceId(1), OccurrenceId(2)] {
+            assert!(
+                shell
+                    .app()
+                    .document_snapshot()
+                    .occurrence(id)
+                    .unwrap()
+                    .visible()
+            );
+        }
+        shell.click_menu_command("menu-edit", AppCommand::Redo);
+        assert_eq!(shell.app().canonical_digest(), hidden_digest);
+        shell.click_menu_command("menu-view", AppCommand::Unhide);
+        assert_eq!(shell.app().undo_step_count(), undo_steps + 2);
+        for id in [OccurrenceId(1), OccurrenceId(2)] {
+            assert!(
+                shell
+                    .app()
+                    .document_snapshot()
+                    .occurrence(id)
+                    .unwrap()
+                    .visible()
+            );
+        }
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().format(
+                "digest-unhidden",
+                &BTreeMap::from([("count", "2".to_owned())])
+            )
+        );
+
+        assert_eq!(shell.app().selected_occurrence_count(), 2);
+        assert!(shell.app_mut().prepare_assistant_intent(
+            WorkflowIntent::SetOccurrenceVisibility {
+                target: OccurrenceId(1),
+                visible: false,
+            }
+        ));
+        assert!(shell.app_mut().confirm_assistant_proposal());
+        assert!(
+            !shell
+                .app()
+                .document_snapshot()
+                .occurrence(OccurrenceId(1))
+                .unwrap()
+                .visible()
+        );
+        assert!(
+            shell
+                .app()
+                .document_snapshot()
+                .occurrence(OccurrenceId(2))
+                .unwrap()
+                .visible()
+        );
+        assert_eq!(shell.app().selected_occurrence_count(), 2);
+        assert!(shell.app().command_is_enabled(AppCommand::Hide));
+        assert!(shell.app().command_is_enabled(AppCommand::Unhide));
+        let mixed_digest = shell.app().canonical_digest();
+        let mixed_undo_steps = shell.app().undo_step_count();
+
+        shell.click_menu_command("menu-view", AppCommand::Hide);
+        assert_eq!(shell.app().undo_step_count(), mixed_undo_steps + 1);
+        for id in [OccurrenceId(1), OccurrenceId(2)] {
+            assert!(
+                !shell
+                    .app()
+                    .document_snapshot()
+                    .occurrence(id)
+                    .unwrap()
+                    .visible()
+            );
+        }
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().format(
+                "digest-hidden",
+                &BTreeMap::from([("count", "1".to_owned())])
+            )
+        );
+        shell.click_menu_command("menu-edit", AppCommand::Undo);
+        assert_eq!(shell.app().canonical_digest(), mixed_digest);
+        assert!(
+            !shell
+                .app()
+                .document_snapshot()
+                .occurrence(OccurrenceId(1))
+                .unwrap()
+                .visible()
+        );
+        assert!(
+            shell
+                .app()
+                .document_snapshot()
+                .occurrence(OccurrenceId(2))
+                .unwrap()
+                .visible()
+        );
+        shell.click_menu_command("menu-view", AppCommand::Unhide);
+        for id in [OccurrenceId(1), OccurrenceId(2)] {
+            assert!(
+                shell
+                    .app()
+                    .document_snapshot()
+                    .occurrence(id)
+                    .unwrap()
+                    .visible()
+            );
+        }
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().format(
+                "digest-unhidden",
+                &BTreeMap::from([("count", "1".to_owned())])
+            )
+        );
+
+        let mut context_shell = Shell::with_catalog(catalog);
+        context_shell.click_at(context_shell.viewport_rect().center());
+        assert!(
+            context_shell
+                .app_mut()
+                .copy_selected(Vec3::new(150.0, 25.0, 0.0))
+        );
+        context_shell.settle();
+        context_shell.click_menu_command("menu-view", AppCommand::ZoomFit);
+        context_shell.double_click_at(context_shell.top_face_centre(2));
+        assert_eq!(context_shell.app().edit_context_depth(), 1);
+        assert!(!context_shell.app().command_is_enabled(AppCommand::Hide));
+        assert!(!context_shell.app().command_is_enabled(AppCommand::Unhide));
+        let context_revision = context_shell.app().document_revision();
+        let context_digest = context_shell.app().canonical_digest();
+        let context_undo_steps = context_shell.app().undo_step_count();
+        let context_action_digest = context_shell.app().action_digest().to_owned();
+        assert!(!context_shell.app_mut().set_selection_visibility(false));
+        assert!(!context_shell.app_mut().set_selection_visibility(true));
+        assert_eq!(context_shell.app().document_revision(), context_revision);
+        assert_eq!(context_shell.app().canonical_digest(), context_digest);
+        assert_eq!(context_shell.app().undo_step_count(), context_undo_steps);
+        assert_eq!(context_shell.app().action_digest(), context_action_digest);
+    }
+}
+
+#[test]
+fn hide_others_is_localized_root_scope_exact_and_undoable() {
+    for catalog in [
+        LocaleCatalog::english(),
+        LocaleCatalog::slovak(),
+        LocaleCatalog::pseudo(),
+    ] {
+        let mut shell = Shell::with_catalog(catalog);
+        assert_eq!(
+            shell.app().command_label(AppCommand::HideOthers),
+            shell.catalog().text("model-hide-others")
+        );
+        assert!(!shell.app().command_is_enabled(AppCommand::HideOthers));
+
+        shell.click_at(shell.top_face_centre(1));
+        shell.click_menu_command("menu-edit", AppCommand::Copy);
+        shell.click_menu_command("menu-edit", AppCommand::Paste);
+        shell.click_menu_command("menu-view", AppCommand::ZoomFit);
+        shell.click_menu_command("menu-edit", AppCommand::Deselect);
+        shell.click_at(shell.top_face_centre(1));
+        assert_eq!(shell.app().selected_occurrence_count(), 1);
+        assert!(shell.app().occurrence_is_selected(OccurrenceId(1)));
+        assert!(shell.app().command_is_enabled(AppCommand::HideOthers));
+        let visible_revision = shell.app().document_revision();
+        let visible_digest = shell.app().canonical_digest();
+        let visible_undo_steps = shell.app().undo_step_count();
+
+        shell.secondary_click_at(shell.top_face_centre(1));
+        assert!(shell.offers(AppCommand::HideOthers));
+        shell.click_command(AppCommand::HideOthers);
+
+        assert_eq!(shell.app().hidden_occurrence_count(), 1);
+        assert_eq!(shell.app().document_revision(), visible_revision + 1);
+        assert_eq!(shell.app().undo_step_count(), visible_undo_steps + 1);
+        assert_eq!(shell.app().selected_occurrence_count(), 1);
+        assert!(shell.app().occurrence_is_selected(OccurrenceId(1)));
+        assert!(
+            shell
+                .app()
+                .document_snapshot()
+                .occurrence(OccurrenceId(1))
+                .unwrap()
+                .visible()
+        );
+        assert!(
+            !shell
+                .app()
+                .document_snapshot()
+                .occurrence(OccurrenceId(2))
+                .unwrap()
+                .visible()
+        );
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().format(
+                "digest-hidden-others",
+                &BTreeMap::from([("count", "1".to_owned())])
+            )
+        );
+        let isolated_digest = shell.app().canonical_digest();
+        assert!(!shell.app().command_is_enabled(AppCommand::HideOthers));
+
+        shell.click_menu_command("menu-edit", AppCommand::Undo);
+        assert_eq!(shell.app().hidden_occurrence_count(), 0);
+        assert_eq!(shell.app().canonical_digest(), visible_digest);
+        shell.click_menu_command("menu-edit", AppCommand::Redo);
+        assert_eq!(shell.app().hidden_occurrence_count(), 1);
+        assert_eq!(shell.app().canonical_digest(), isolated_digest);
+
+        shell.click_menu_command("menu-edit", AppCommand::Undo);
+        shell.click_menu_command("menu-model", AppCommand::HideOthers);
+        assert_eq!(shell.app().hidden_occurrence_count(), 1);
+        assert_eq!(shell.app().canonical_digest(), isolated_digest);
+        assert_eq!(shell.app().selected_occurrence_count(), 1);
+
+        shell.click_menu_command("menu-edit", AppCommand::Undo);
+        shell.double_click_at(shell.top_face_centre(1));
+        assert_eq!(shell.app().edit_context_depth(), 1);
+        assert!(!shell.app().command_is_enabled(AppCommand::HideOthers));
+        let context_revision = shell.app().document_revision();
+        let context_digest = shell.app().canonical_digest();
+        let context_undo_steps = shell.app().undo_step_count();
+        let context_action_digest = shell.app().action_digest().to_owned();
+        assert!(!shell.app_mut().hide_others());
+        assert_eq!(shell.app().hidden_occurrence_count(), 0);
+        assert_eq!(shell.app().document_revision(), context_revision);
+        assert_eq!(shell.app().canonical_digest(), context_digest);
+        assert_eq!(shell.app().undo_step_count(), context_undo_steps);
+        assert_eq!(shell.app().action_digest(), context_action_digest);
+    }
+}
+
+#[test]
+fn unhide_all_is_localized_root_scope_exact_and_undoable() {
+    for catalog in [
+        LocaleCatalog::english(),
+        LocaleCatalog::slovak(),
+        LocaleCatalog::pseudo(),
+    ] {
+        let mut shell = Shell::with_catalog(catalog);
+        assert_eq!(
+            shell.app().command_label(AppCommand::UnhideAll),
+            shell.catalog().text("model-unhide-all")
+        );
+        assert!(!shell.app().command_is_enabled(AppCommand::UnhideAll));
+
+        shell.click_at(shell.top_face_centre(1));
+        shell.click_menu_command("menu-edit", AppCommand::Copy);
+        shell.click_menu_command("menu-edit", AppCommand::Paste);
+        assert_eq!(shell.app().selected_occurrence_count(), 1);
+        shell.click_menu_command("menu-view", AppCommand::Hide);
+        shell.click_menu_command("menu-edit", AppCommand::Deselect);
+        assert_eq!(shell.app().hidden_occurrence_count(), 1);
+        assert!(shell.app().command_is_enabled(AppCommand::UnhideAll));
+        let hidden_revision = shell.app().document_revision();
+        let hidden_digest = shell.app().canonical_digest();
+        let hidden_undo_steps = shell.app().undo_step_count();
+
+        shell.secondary_click_at(shell.top_face_centre(1));
+        assert!(shell.offers(AppCommand::UnhideAll));
+        shell.click_command(AppCommand::UnhideAll);
+
+        assert_eq!(shell.app().hidden_occurrence_count(), 0);
+        assert_eq!(shell.app().document_revision(), hidden_revision + 1);
+        assert_eq!(shell.app().undo_step_count(), hidden_undo_steps + 1);
+        assert_eq!(shell.app().selected_occurrence_count(), 1);
+        assert!(shell.app().occurrence_is_selected(OccurrenceId(1)));
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().format(
+                "digest-unhidden-all",
+                &BTreeMap::from([("count", "1".to_owned())])
+            )
+        );
+        let visible_digest = shell.app().canonical_digest();
+
+        shell.click_menu_command("menu-edit", AppCommand::Undo);
+        assert_eq!(shell.app().hidden_occurrence_count(), 1);
+        assert_eq!(shell.app().canonical_digest(), hidden_digest);
+        shell.click_menu_command("menu-edit", AppCommand::Redo);
+        assert_eq!(shell.app().hidden_occurrence_count(), 0);
+        assert_eq!(shell.app().canonical_digest(), visible_digest);
+
+        shell.click_menu_command("menu-edit", AppCommand::Undo);
+        shell.click_menu_command("menu-model", AppCommand::UnhideAll);
+        assert_eq!(shell.app().hidden_occurrence_count(), 0);
+        assert_eq!(shell.app().canonical_digest(), visible_digest);
+        assert_eq!(shell.app().selected_occurrence_count(), 1);
+
+        shell.click_menu_command("menu-edit", AppCommand::Undo);
+        shell.double_click_at(shell.top_face_centre(1));
+        assert_eq!(shell.app().edit_context_depth(), 1);
+        assert!(!shell.app().command_is_enabled(AppCommand::UnhideAll));
+        let context_revision = shell.app().document_revision();
+        let context_digest = shell.app().canonical_digest();
+        let context_undo_steps = shell.app().undo_step_count();
+        let context_action_digest = shell.app().action_digest().to_owned();
+        shell.click_menu_command("menu-model", AppCommand::UnhideAll);
+        assert_eq!(shell.app().hidden_occurrence_count(), 1);
+        assert_eq!(shell.app().document_revision(), context_revision);
+        assert_eq!(shell.app().canonical_digest(), context_digest);
+        assert_eq!(shell.app().undo_step_count(), context_undo_steps);
+        assert_eq!(shell.app().action_digest(), context_action_digest);
+    }
+}
+
+#[test]
+fn ground_occurrence_is_localized_state_bound_and_undoable() {
+    for catalog in [
+        LocaleCatalog::english(),
+        LocaleCatalog::slovak(),
+        LocaleCatalog::pseudo(),
+    ] {
+        let mut shell = Shell::with_catalog(catalog.clone());
+        assert_eq!(
+            shell.app().command_label(AppCommand::GroundOccurrence),
+            shell.catalog().text("model-ground-occurrence")
+        );
+        assert_eq!(
+            shell.app().command_label(AppCommand::UngroundOccurrence),
+            shell.catalog().text("model-unground-occurrence")
+        );
+        assert!(!shell.app().command_is_enabled(AppCommand::GroundOccurrence));
+        assert!(
+            !shell
+                .app()
+                .command_is_enabled(AppCommand::UngroundOccurrence)
+        );
+
+        let initial_revision = shell.app().document_revision();
+        let initial_digest = shell.app().canonical_digest();
+        let initial_undo_steps = shell.app().undo_step_count();
+        shell.click_menu_command("menu-model", AppCommand::GroundOccurrence);
+        assert_eq!(shell.app().document_revision(), initial_revision);
+        assert_eq!(shell.app().canonical_digest(), initial_digest);
+        assert_eq!(shell.app().undo_step_count(), initial_undo_steps);
+
+        shell.click_at(shell.top_face_centre(1));
+        let selected_reference = shell
+            .app()
+            .selected_reference()
+            .expect("the exact root occurrence is primary");
+        assert_eq!(shell.app().selected_occurrence_count(), 1);
+        assert!(selected_reference.instance_path.is_root());
+        assert!(shell.app().command_is_enabled(AppCommand::GroundOccurrence));
+        assert!(
+            !shell
+                .app()
+                .command_is_enabled(AppCommand::UngroundOccurrence)
+        );
+        shell.click_menu_command("menu-model", AppCommand::GroundOccurrence);
+        let grounded_digest = shell.app().canonical_digest();
+        assert_eq!(shell.app().grounded_occurrence_count(), 1);
+        assert_eq!(shell.app().selected_occurrence_count(), 1);
+        assert_eq!(
+            shell.app().selected_reference(),
+            Some(selected_reference.clone())
+        );
+        assert_eq!(shell.app().undo_step_count(), initial_undo_steps + 1);
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().text("digest-grounded-occurrence")
+        );
+        assert!(!shell.app().command_is_enabled(AppCommand::GroundOccurrence));
+        assert!(
+            shell
+                .app()
+                .command_is_enabled(AppCommand::UngroundOccurrence)
+        );
+
+        shell.click_menu_command("menu-model", AppCommand::UngroundOccurrence);
+        let ungrounded_digest = shell.app().canonical_digest();
+        assert_eq!(shell.app().grounded_occurrence_count(), 0);
+        assert_eq!(shell.app().selected_occurrence_count(), 1);
+        assert_eq!(shell.app().selected_reference(), Some(selected_reference));
+        assert_eq!(shell.app().undo_step_count(), initial_undo_steps + 2);
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().text("digest-ungrounded-occurrence")
+        );
+        assert!(shell.app().command_is_enabled(AppCommand::GroundOccurrence));
+        assert!(
+            !shell
+                .app()
+                .command_is_enabled(AppCommand::UngroundOccurrence)
+        );
+
+        shell.click_menu_command("menu-edit", AppCommand::Undo);
+        assert_eq!(shell.app().grounded_occurrence_count(), 1);
+        assert_eq!(shell.app().canonical_digest(), grounded_digest);
+        shell.click_menu_command("menu-edit", AppCommand::Undo);
+        assert_eq!(shell.app().grounded_occurrence_count(), 0);
+        assert_eq!(shell.app().canonical_digest(), initial_digest);
+        shell.click_menu_command("menu-edit", AppCommand::Redo);
+        assert_eq!(shell.app().grounded_occurrence_count(), 1);
+        assert_eq!(shell.app().canonical_digest(), grounded_digest);
+        shell.click_menu_command("menu-edit", AppCommand::Redo);
+        assert_eq!(shell.app().grounded_occurrence_count(), 0);
+        assert_eq!(shell.app().canonical_digest(), ungrounded_digest);
+
+        let mut multi_shell = Shell::with_catalog(catalog.clone());
+        multi_shell.click_at(multi_shell.viewport_rect().center());
+        assert!(
+            multi_shell
+                .app_mut()
+                .copy_selected(Vec3::new(150.0, 25.0, 0.0))
+        );
+        multi_shell.settle();
+        multi_shell.click_menu_command("menu-view", AppCommand::ZoomFit);
+        multi_shell.click_at_with(multi_shell.top_face_centre(1), shift());
+        assert_eq!(multi_shell.app().selected_occurrence_count(), 2);
+        assert!(
+            !multi_shell
+                .app()
+                .command_is_enabled(AppCommand::GroundOccurrence)
+        );
+        assert!(
+            !multi_shell
+                .app()
+                .command_is_enabled(AppCommand::UngroundOccurrence)
+        );
+        let multi_revision = multi_shell.app().document_revision();
+        let multi_digest = multi_shell.app().canonical_digest();
+        let multi_undo_steps = multi_shell.app().undo_step_count();
+        multi_shell.click_menu_command("menu-model", AppCommand::GroundOccurrence);
+        multi_shell.click_menu_command("menu-model", AppCommand::UngroundOccurrence);
+        assert_eq!(multi_shell.app().grounded_occurrence_count(), 0);
+        assert_eq!(multi_shell.app().document_revision(), multi_revision);
+        assert_eq!(multi_shell.app().canonical_digest(), multi_digest);
+        assert_eq!(multi_shell.app().undo_step_count(), multi_undo_steps);
+
+        let mut context_shell = Shell::with_catalog(catalog);
+        context_shell.click_at(context_shell.viewport_rect().center());
+        assert!(
+            context_shell
+                .app_mut()
+                .copy_selected(Vec3::new(150.0, 25.0, 0.0))
+        );
+        context_shell.settle();
+        context_shell.click_menu_command("menu-view", AppCommand::ZoomFit);
+        context_shell.double_click_at(context_shell.top_face_centre(2));
+        assert_eq!(context_shell.app().edit_context_depth(), 1);
+        assert!(
+            !context_shell
+                .app()
+                .command_is_enabled(AppCommand::GroundOccurrence)
+        );
+        assert!(
+            !context_shell
+                .app()
+                .command_is_enabled(AppCommand::UngroundOccurrence)
+        );
+        let context_revision = context_shell.app().document_revision();
+        let context_digest = context_shell.app().canonical_digest();
+        let context_undo_steps = context_shell.app().undo_step_count();
+        context_shell.click_menu_command("menu-model", AppCommand::GroundOccurrence);
+        context_shell.click_menu_command("menu-model", AppCommand::UngroundOccurrence);
+        assert_eq!(context_shell.app().document_revision(), context_revision);
+        assert_eq!(context_shell.app().canonical_digest(), context_digest);
+        assert_eq!(context_shell.app().undo_step_count(), context_undo_steps);
+    }
+}
+
+#[test]
+fn occurrence_align_is_localized_previewed_and_one_undo_step() {
+    for catalog in [
+        LocaleCatalog::english(),
+        LocaleCatalog::slovak(),
+        LocaleCatalog::pseudo(),
+    ] {
+        let mut shell = Shell::with_catalog(catalog);
+        assert_eq!(
+            shell.app().command_label(AppCommand::AlignOccurrences),
+            shell.catalog().text("model-align-occurrences")
+        );
+        assert!(!shell.app().command_is_enabled(AppCommand::AlignOccurrences));
+
+        shell.click_at(shell.top_face_centre(1));
+        assert!(
+            shell
+                .app_mut()
+                .copy_selected(Vec3::new(300.0, 300.0, 100.0))
+        );
+        shell
+            .app_mut()
+            .set_assistant_workspace_mode(ketchup_app::AssistantWorkspaceMode::Tab);
+        shell.settle();
+        let definition_name = shell.catalog().format(
+            "model-default-box",
+            &BTreeMap::from([("number", "1".to_owned())]),
+        );
+        let component_heading = shell.catalog().format(
+            "outliner-component",
+            &BTreeMap::from([
+                ("name", definition_name),
+                ("count", "2".to_owned()),
+                ("dimensions", "100 × 60 × 20".to_owned()),
+            ]),
+        );
+        shell.click_row(&component_heading);
+        let reference_name = shell
+            .app()
+            .occurrence_name(OccurrenceId(1))
+            .expect("the reference occurrence exists");
+        let reference_row = shell.catalog().format(
+            "outliner-instance",
+            &BTreeMap::from([("visibility", "◉".to_owned()), ("name", reference_name)]),
+        );
+        shell.click_row(&reference_row);
+        shell
+            .app_mut()
+            .set_assistant_workspace_mode(ketchup_app::AssistantWorkspaceMode::Dock);
+        shell.settle();
+        shell.click_menu_command("menu-view", AppCommand::ZoomFit);
+        shell.click_at_with(shell.top_face_centre(2), shift());
+        assert!(shell.app().command_is_enabled(AppCommand::AlignOccurrences));
+        let revision = shell.app().document_revision();
+        let digest = shell.app().canonical_digest();
+        let undo_steps = shell.app().undo_step_count();
+        shell.click_menu_command("menu-model", AppCommand::AlignOccurrences);
+        assert_eq!(
+            shell.app().occurrence_align_inputs(),
+            Some((OccurrenceId(2), OccurrenceId(1), Axis::X, AlignMode::Center))
+        );
+        shell.click_role_and_label(
+            Role::Button,
+            &shell.catalog().text("dialog-align-occurrences-cancel"),
+        );
+        assert!(!shell.app().occurrence_align_visible());
+        assert_eq!(shell.app().document_revision(), revision);
+        assert_eq!(shell.app().canonical_digest(), digest);
+        assert_eq!(shell.app().undo_step_count(), undo_steps);
+
+        shell.click_menu_command("menu-model", AppCommand::AlignOccurrences);
+        shell.click_role_and_label(
+            Role::Button,
+            &shell.catalog().text("dialog-align-occurrences-axis-y"),
+        );
+        shell.click_role_and_label(
+            Role::Button,
+            &shell.catalog().text("dialog-align-occurrences-minimum"),
+        );
+        shell.click_role_and_label(
+            Role::Button,
+            &shell.catalog().text("dialog-align-occurrences-preview"),
+        );
+        assert!(shell.app().has_occurrence_operation_preview());
+        assert_eq!(shell.app().document_revision(), revision);
+        assert_eq!(shell.app().canonical_digest(), digest);
+        assert_eq!(
+            shell
+                .app()
+                .occurrence_operation_preview_geometry(OccurrenceId(2)),
+            Some((Vec3::new(300.0, 0.0, 100.0), Vec3::new(100.0, 60.0, 20.0)))
+        );
+
+        shell.click_role_and_label(
+            Role::Button,
+            &shell.catalog().text("dialog-align-occurrences-axis-z"),
+        );
+        assert!(!shell.app().has_occurrence_operation_preview());
+        assert_eq!(shell.app().canonical_digest(), digest);
+        shell.click_role_and_label(
+            Role::Button,
+            &shell.catalog().text("dialog-align-occurrences-preview"),
+        );
+        assert_eq!(
+            shell
+                .app()
+                .occurrence_operation_preview_geometry(OccurrenceId(2)),
+            Some((Vec3::new(300.0, 300.0, 0.0), Vec3::new(100.0, 60.0, 20.0)))
+        );
+        shell.click_role_and_label(
+            Role::Button,
+            &shell.catalog().text("dialog-align-occurrences-confirm"),
+        );
+        assert!(!shell.app().occurrence_align_visible());
+        assert_eq!(shell.app().document_revision(), revision + 1);
+        assert_eq!(shell.app().definition_count(), 1);
+        assert_eq!(shell.app().undo_step_count(), undo_steps + 1);
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().text("digest-align-committed")
+        );
+        assert_eq!(
+            shell.app().occurrence_definition_id(OccurrenceId(1)),
+            Some(DefinitionId(1))
+        );
+        assert_eq!(
+            shell.app().occurrence_definition_id(OccurrenceId(2)),
+            Some(DefinitionId(1))
+        );
+        let aligned_digest = shell.app().canonical_digest();
+        shell.click_menu_command("menu-edit", AppCommand::Undo);
+        assert_eq!(shell.app().canonical_digest(), digest);
+        shell.click_menu_command("menu-edit", AppCommand::Redo);
+        assert_eq!(shell.app().canonical_digest(), aligned_digest);
+
+        assert!(shell.app().command_is_enabled(AppCommand::AlignOccurrences));
+        shell.click_menu_command("menu-model", AppCommand::AlignOccurrences);
+        shell.click_menu_command("menu-edit", AppCommand::Deselect);
+        let drift_revision = shell.app().document_revision();
+        let drift_digest = shell.app().canonical_digest();
+        let drift_undo_steps = shell.app().undo_step_count();
+        let drift_action_digest = shell.app().action_digest().to_owned();
+        assert!(!shell.app_mut().preview_pending_occurrence_align());
+        assert!(!shell.app_mut().confirm_occurrence_align());
+        assert!(shell.app().occurrence_align_visible());
+        assert!(!shell.app().occurrence_align_preview_is_current());
+        assert_eq!(shell.app().document_revision(), drift_revision);
+        assert_eq!(shell.app().canonical_digest(), drift_digest);
+        assert_eq!(shell.app().undo_step_count(), drift_undo_steps);
+        assert_eq!(shell.app().action_digest(), drift_action_digest);
+        shell.click_role_and_label(
+            Role::Button,
+            &shell.catalog().text("dialog-align-occurrences-cancel"),
+        );
+
+        shell.click_at(shell.top_face_centre(1));
+        shell.click_at_with(shell.top_face_centre(2), shift());
+        assert!(shell.app().command_is_enabled(AppCommand::AlignOccurrences));
+        shell.click_menu_command("menu-model", AppCommand::AlignOccurrences);
+        assert!(shell.app_mut().preview_pending_occurrence_align());
+        assert!(shell.app().occurrence_align_preview_is_current());
+        assert!(
+            shell
+                .app_mut()
+                .preview_linear_pattern(OccurrenceId(1), Axis::X, 100.0, 2,)
+        );
+        let foreign_revision = shell.app().document_revision();
+        let foreign_digest = shell.app().canonical_digest();
+        let foreign_undo_steps = shell.app().undo_step_count();
+        assert!(!shell.app().occurrence_align_preview_is_current());
+        assert!(!shell.app_mut().confirm_occurrence_align());
+        assert!(shell.app().occurrence_align_visible());
+        assert_eq!(shell.app().document_revision(), foreign_revision);
+        assert_eq!(shell.app().canonical_digest(), foreign_digest);
+        assert_eq!(shell.app().undo_step_count(), foreign_undo_steps);
+        shell.click_role_and_label(
+            Role::Button,
+            &shell.catalog().text("dialog-align-occurrences-cancel"),
+        );
+
+        shell.click_at(shell.top_face_centre(1));
+        shell.click_at_with(shell.top_face_centre(2), shift());
+        assert!(shell.app().command_is_enabled(AppCommand::AlignOccurrences));
+        shell.click_menu_command("menu-model", AppCommand::AlignOccurrences);
+        assert!(shell.app_mut().rotate_selected(15.0));
+        let stale_revision = shell.app().document_revision();
+        let stale_digest = shell.app().canonical_digest();
+        let stale_undo_steps = shell.app().undo_step_count();
+        let stale_action_digest = shell.app().action_digest().to_owned();
+        assert!(!shell.app_mut().preview_pending_occurrence_align());
+        assert!(!shell.app_mut().confirm_occurrence_align());
+        assert!(shell.app().occurrence_align_visible());
+        assert_eq!(shell.app().document_revision(), stale_revision);
+        assert_eq!(shell.app().canonical_digest(), stale_digest);
+        assert_eq!(shell.app().undo_step_count(), stale_undo_steps);
+        assert_eq!(shell.app().action_digest(), stale_action_digest);
+        shell.click_role_and_label(
+            Role::Button,
+            &shell.catalog().text("dialog-align-occurrences-cancel"),
+        );
+
+        shell.click_at(shell.top_face_centre(1));
+        shell.click_at_with(shell.top_face_centre(2), shift());
+        assert!(shell.app().command_is_enabled(AppCommand::AlignOccurrences));
+        shell.click_menu_command("menu-model", AppCommand::AlignOccurrences);
+        let (moving_id, reference_id, _, _) = shell.app().occurrence_align_inputs().unwrap();
+        shell.click_menu_command("menu-edit", AppCommand::Delete);
+        let missing_revision = shell.app().document_revision();
+        let missing_digest = shell.app().canonical_digest();
+        let missing_undo_steps = shell.app().undo_step_count();
+        let missing_action_digest = shell.app().action_digest().to_owned();
+        assert!(!shell.app_mut().preview_pending_occurrence_align());
+        assert!(!shell.app_mut().confirm_occurrence_align());
+        assert!(shell.app().occurrence_align_visible());
+        assert_eq!(shell.app().occurrence_definition_id(moving_id), None);
+        assert_eq!(shell.app().occurrence_definition_id(reference_id), None);
+        assert_eq!(shell.app().document_revision(), missing_revision);
+        assert_eq!(shell.app().canonical_digest(), missing_digest);
+        assert_eq!(shell.app().undo_step_count(), missing_undo_steps);
+        assert_eq!(shell.app().action_digest(), missing_action_digest);
+    }
+}
+
+#[test]
+fn distribute_occurrences_is_localized_previewed_even_and_one_undo_step() {
+    for catalog in [
+        LocaleCatalog::english(),
+        LocaleCatalog::slovak(),
+        LocaleCatalog::pseudo(),
+    ] {
+        let mut shell = Shell::with_catalog(catalog);
+        assert_eq!(
+            shell.app().command_label(AppCommand::DistributeOccurrences),
+            shell.catalog().text("model-distribute-occurrences")
+        );
+        assert!(
+            !shell
+                .app()
+                .command_is_enabled(AppCommand::DistributeOccurrences)
+        );
+        shell.click_menu_command("menu-model", AppCommand::DistributeOccurrences);
+        assert!(!shell.app().occurrence_distribution_visible());
+
+        shell.click_at(shell.top_face_centre(1));
+        assert!(shell.app_mut().copy_selected(Vec3::new(100.0, 0.0, 0.0)));
+        assert!(shell.app_mut().copy_selected(Vec3::new(400.0, 0.0, 0.0)));
+        assert!(shell.app_mut().copy_selected(Vec3::new(400.0, 0.0, 0.0)));
+        shell.click_menu_command("menu-edit", AppCommand::SelectAll);
+        assert!(
+            shell
+                .app()
+                .command_is_enabled(AppCommand::DistributeOccurrences)
+        );
+        let revision = shell.app().document_revision();
+        let digest = shell.app().canonical_digest();
+        let undo_steps = shell.app().undo_step_count();
+
+        shell.click_menu_command("menu-model", AppCommand::DistributeOccurrences);
+        assert_eq!(shell.app().occurrence_distribution_axis(), Some(Axis::X));
+        shell.click_role_and_label(
+            Role::Button,
+            &shell.catalog().text("dialog-distribute-occurrences-cancel"),
+        );
+        assert!(!shell.app().occurrence_distribution_visible());
+        assert_eq!(shell.app().document_revision(), revision);
+        assert_eq!(shell.app().canonical_digest(), digest);
+        assert_eq!(shell.app().undo_step_count(), undo_steps);
+
+        shell.click_menu_command("menu-model", AppCommand::DistributeOccurrences);
+        shell.click_role_and_label(
+            Role::Button,
+            &shell.catalog().text("dialog-distribute-occurrences-axis-y"),
+        );
+        shell.click_role_and_label(
+            Role::Button,
+            &shell
+                .catalog()
+                .text("dialog-distribute-occurrences-preview"),
+        );
+        assert!(!shell.app().has_occurrence_operation_preview());
+        assert_eq!(shell.app().canonical_digest(), digest);
+
+        shell.click_role_and_label(
+            Role::Button,
+            &shell.catalog().text("dialog-distribute-occurrences-axis-x"),
+        );
+        shell.click_role_and_label(
+            Role::Button,
+            &shell
+                .catalog()
+                .text("dialog-distribute-occurrences-preview"),
+        );
+        assert!(shell.app().has_occurrence_operation_preview());
+        assert_eq!(shell.app().document_revision(), revision);
+        assert_eq!(shell.app().canonical_digest(), digest);
+        assert_eq!(
+            shell
+                .app()
+                .occurrence_operation_preview_geometry(OccurrenceId(2)),
+            Some((Vec3::new(300.0, 0.0, 0.0), Vec3::new(100.0, 60.0, 20.0)))
+        );
+        assert_eq!(
+            shell
+                .app()
+                .occurrence_operation_preview_geometry(OccurrenceId(3)),
+            Some((Vec3::new(600.0, 0.0, 0.0), Vec3::new(100.0, 60.0, 20.0)))
+        );
+
+        assert!(shell.app_mut().create_box());
+        let stale_revision = shell.app().document_revision();
+        let stale_digest = shell.app().canonical_digest();
+        assert!(!shell.app_mut().confirm_occurrence_operation_preview());
+        assert_eq!(shell.app().document_revision(), stale_revision);
+        assert_eq!(shell.app().canonical_digest(), stale_digest);
+        shell.click_role_and_label(
+            Role::Button,
+            &shell.catalog().text("dialog-distribute-occurrences-cancel"),
+        );
+        shell.click_menu_command("menu-edit", AppCommand::Undo);
+        assert_eq!(shell.app().document_revision(), revision);
+        assert_eq!(shell.app().canonical_digest(), digest);
+
+        shell.click_menu_command("menu-edit", AppCommand::SelectAll);
+        shell.click_menu_command("menu-model", AppCommand::DistributeOccurrences);
+        shell.click_role_and_label(
+            Role::Button,
+            &shell
+                .catalog()
+                .text("dialog-distribute-occurrences-preview"),
+        );
+        shell.click_role_and_label(
+            Role::Button,
+            &shell
+                .catalog()
+                .text("dialog-distribute-occurrences-confirm"),
+        );
+        assert!(!shell.app().occurrence_distribution_visible());
+        assert_eq!(shell.app().document_revision(), revision + 2);
+        assert_eq!(shell.app().occurrence_count(), 4);
+        assert_eq!(shell.app().definition_count(), 1);
+        assert_eq!(shell.app().undo_step_count(), undo_steps + 1);
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().text("digest-distribute-committed")
+        );
+        let origins = (1..=4)
+            .map(|id| shell.app().occurrence_box_geometry(id).unwrap().0.x)
+            .collect::<Vec<_>>();
+        assert_eq!(origins, vec![0.0, 300.0, 600.0, 900.0]);
+        let distributed_digest = shell.app().canonical_digest();
+        shell.click_menu_command("menu-edit", AppCommand::Undo);
+        assert_eq!(shell.app().canonical_digest(), digest);
+        shell.click_menu_command("menu-edit", AppCommand::Redo);
+        assert_eq!(shell.app().canonical_digest(), distributed_digest);
+
+        shell.click_at(shell.top_face_centre(2));
+        assert!(shell.app_mut().move_selected(Vec3::new(100.0, 0.0, 0.0)));
+        shell.click_menu_command("menu-edit", AppCommand::SelectAll);
+        assert!(
+            shell
+                .app()
+                .command_is_enabled(AppCommand::DistributeOccurrences)
+        );
+        shell.click_menu_command("menu-model", AppCommand::DistributeOccurrences);
+        shell.click_menu_command("menu-edit", AppCommand::Deselect);
+        let drift_revision = shell.app().document_revision();
+        let drift_digest = shell.app().canonical_digest();
+        let drift_undo_steps = shell.app().undo_step_count();
+        let drift_action_digest = shell.app().action_digest().to_owned();
+        assert!(!shell.app_mut().preview_pending_occurrence_distribution());
+        assert!(!shell.app_mut().confirm_occurrence_distribution());
+        assert!(shell.app().occurrence_distribution_visible());
+        assert!(!shell.app().occurrence_distribution_preview_is_current());
+        assert_eq!(shell.app().document_revision(), drift_revision);
+        assert_eq!(shell.app().canonical_digest(), drift_digest);
+        assert_eq!(shell.app().undo_step_count(), drift_undo_steps);
+        assert_eq!(shell.app().action_digest(), drift_action_digest);
+        shell.click_role_and_label(
+            Role::Button,
+            &shell.catalog().text("dialog-distribute-occurrences-cancel"),
+        );
+
+        shell.click_menu_command("menu-edit", AppCommand::SelectAll);
+        shell.click_menu_command("menu-model", AppCommand::DistributeOccurrences);
+        assert!(shell.app_mut().preview_pending_occurrence_distribution());
+        assert!(shell.app().occurrence_distribution_preview_is_current());
+        assert!(
+            shell
+                .app_mut()
+                .preview_linear_pattern(OccurrenceId(1), Axis::X, 100.0, 2,)
+        );
+        let foreign_revision = shell.app().document_revision();
+        let foreign_digest = shell.app().canonical_digest();
+        let foreign_undo_steps = shell.app().undo_step_count();
+        let foreign_action_digest = shell.app().action_digest().to_owned();
+        assert!(!shell.app().occurrence_distribution_preview_is_current());
+        assert!(!shell.app_mut().confirm_occurrence_distribution());
+        assert!(shell.app().occurrence_distribution_visible());
+        assert_eq!(shell.app().document_revision(), foreign_revision);
+        assert_eq!(shell.app().canonical_digest(), foreign_digest);
+        assert_eq!(shell.app().undo_step_count(), foreign_undo_steps);
+        assert_eq!(shell.app().action_digest(), foreign_action_digest);
+        shell.click_role_and_label(
+            Role::Button,
+            &shell.catalog().text("dialog-distribute-occurrences-cancel"),
+        );
+
+        shell.click_menu_command("menu-edit", AppCommand::SelectAll);
+        shell.click_menu_command("menu-model", AppCommand::DistributeOccurrences);
+        assert!(shell.app_mut().rotate_selected(15.0));
+        let stale_revision = shell.app().document_revision();
+        let stale_digest = shell.app().canonical_digest();
+        let stale_undo_steps = shell.app().undo_step_count();
+        let stale_action_digest = shell.app().action_digest().to_owned();
+        assert!(!shell.app_mut().preview_pending_occurrence_distribution());
+        assert!(!shell.app_mut().confirm_occurrence_distribution());
+        assert!(shell.app().occurrence_distribution_visible());
+        assert_eq!(shell.app().document_revision(), stale_revision);
+        assert_eq!(shell.app().canonical_digest(), stale_digest);
+        assert_eq!(shell.app().undo_step_count(), stale_undo_steps);
+        assert_eq!(shell.app().action_digest(), stale_action_digest);
+        shell.click_role_and_label(
+            Role::Button,
+            &shell.catalog().text("dialog-distribute-occurrences-cancel"),
+        );
+
+        shell.click_menu_command("menu-edit", AppCommand::SelectAll);
+        shell.click_menu_command("menu-model", AppCommand::DistributeOccurrences);
+        assert!(shell.app_mut().delete_selected());
+        let missing_revision = shell.app().document_revision();
+        let missing_digest = shell.app().canonical_digest();
+        let missing_undo_steps = shell.app().undo_step_count();
+        let missing_action_digest = shell.app().action_digest().to_owned();
+        assert!(!shell.app_mut().preview_pending_occurrence_distribution());
+        assert!(!shell.app_mut().confirm_occurrence_distribution());
+        assert!(shell.app().occurrence_distribution_visible());
+        assert_eq!(shell.app().occurrence_count(), 0);
+        assert_eq!(shell.app().document_revision(), missing_revision);
+        assert_eq!(shell.app().canonical_digest(), missing_digest);
+        assert_eq!(shell.app().undo_step_count(), missing_undo_steps);
+        assert_eq!(shell.app().action_digest(), missing_action_digest);
+    }
+}
+
+#[test]
+fn distribute_equal_gaps_is_localized_previewed_and_one_undo_step() {
+    for catalog in [
+        LocaleCatalog::english(),
+        LocaleCatalog::slovak(),
+        LocaleCatalog::pseudo(),
+    ] {
+        let mut shell = Shell::with_catalog(catalog);
+        shell.click_at(shell.top_face_centre(1));
+        assert!(shell.app_mut().copy_selected(Vec3::new(200.0, 0.0, 0.0)));
+        assert!(shell.app_mut().rotate_selected(90.0));
+        shell.click_at(shell.top_face_centre(1));
+        assert!(shell.app_mut().copy_selected(Vec3::new(500.0, 0.0, 0.0)));
+        assert!(shell.app_mut().copy_selected(Vec3::new(300.0, 0.0, 0.0)));
+        shell.click_menu_command("menu-edit", AppCommand::SelectAll);
+        let revision = shell.app().document_revision();
+        let digest = shell.app().canonical_digest();
+        let undo_steps = shell.app().undo_step_count();
+        let first = shell.app().occurrence_box_geometry(1).unwrap();
+        let last = shell.app().occurrence_box_geometry(4).unwrap();
+
+        shell.click_menu_command("menu-model", AppCommand::DistributeOccurrences);
+        assert_eq!(
+            shell.app().occurrence_distribution_mode(),
+            Some(DistributionMode::Centers)
+        );
+        shell.click_role_and_label(
+            Role::Button,
+            &shell
+                .catalog()
+                .text("dialog-distribute-occurrences-equal-gaps"),
+        );
+        assert_eq!(
+            shell.app().occurrence_distribution_mode(),
+            Some(DistributionMode::EqualGaps)
+        );
+        shell.click_role_and_label(
+            Role::Button,
+            &shell
+                .catalog()
+                .text("dialog-distribute-occurrences-preview"),
+        );
+        assert!(shell.app().has_occurrence_operation_preview());
+        assert_eq!(shell.app().document_revision(), revision);
+        assert_eq!(shell.app().canonical_digest(), digest);
+        let second = shell
+            .app()
+            .occurrence_operation_preview_geometry(OccurrenceId(2))
+            .unwrap();
+        let third = shell
+            .app()
+            .occurrence_operation_preview_geometry(OccurrenceId(3))
+            .unwrap();
+        let gaps = [
+            second.0.x - (first.0.x + first.1.x),
+            third.0.x - (second.0.x + second.1.x),
+            last.0.x - (third.0.x + third.1.x),
+        ];
+        assert!(gaps.iter().all(|gap| (*gap - gaps[0]).abs() < 1.0e-9));
+
+        shell.click_role_and_label(
+            Role::Button,
+            &shell
+                .catalog()
+                .text("dialog-distribute-occurrences-centers"),
+        );
+        assert!(!shell.app().has_occurrence_operation_preview());
+        assert_eq!(shell.app().canonical_digest(), digest);
+        shell.click_role_and_label(
+            Role::Button,
+            &shell
+                .catalog()
+                .text("dialog-distribute-occurrences-equal-gaps"),
+        );
+        assert_eq!(
+            shell.app().occurrence_distribution_mode(),
+            Some(DistributionMode::EqualGaps)
+        );
+        shell.click_role_and_label(
+            Role::Button,
+            &shell
+                .catalog()
+                .text("dialog-distribute-occurrences-preview"),
+        );
+        assert!(shell.app().has_occurrence_operation_preview());
+        assert!(shell.app().occurrence_distribution_preview_is_current());
+        shell.settle();
+        shell.click_role_and_label(
+            Role::Button,
+            &shell
+                .catalog()
+                .text("dialog-distribute-occurrences-confirm"),
+        );
+        assert!(!shell.app().occurrence_distribution_visible());
+        assert_eq!(shell.app().document_revision(), revision + 1);
+        assert_eq!(shell.app().definition_count(), 1);
+        assert_eq!(shell.app().undo_step_count(), undo_steps + 1);
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().text("digest-distribute-committed")
+        );
+        assert_eq!(
+            shell.app().occurrence_definition_id(OccurrenceId(2)),
+            Some(DefinitionId(1))
+        );
+        let distributed_digest = shell.app().canonical_digest();
+        shell.click_menu_command("menu-edit", AppCommand::Undo);
+        assert_eq!(shell.app().canonical_digest(), digest);
+        shell.click_menu_command("menu-edit", AppCommand::Redo);
+        assert_eq!(shell.app().canonical_digest(), distributed_digest);
+    }
+}
+
+#[test]
+fn distribute_equal_gaps_rejects_an_overlapping_span_without_mutation() {
+    let mut shell = Shell::new();
+    shell.click_at(shell.top_face_centre(1));
+    assert!(shell.app_mut().copy_selected(Vec3::new(10.0, 0.0, 0.0)));
+    assert!(shell.app_mut().copy_selected(Vec3::new(10.0, 0.0, 0.0)));
+    shell.click_menu_command("menu-edit", AppCommand::SelectAll);
+    let revision = shell.app().document_revision();
+    let digest = shell.app().canonical_digest();
+    let undo_steps = shell.app().undo_step_count();
+    assert!(!shell.app_mut().preview_distribute_occurrences(
+        &BTreeSet::from([OccurrenceId(1), OccurrenceId(2), OccurrenceId(3)]),
+        Axis::X,
+        DistributionMode::EqualGaps,
+    ));
+    assert!(!shell.app().has_occurrence_operation_preview());
+    assert_eq!(shell.app().document_revision(), revision);
+    assert_eq!(shell.app().canonical_digest(), digest);
+    assert_eq!(shell.app().undo_step_count(), undo_steps);
+
+    let mut stale_shell = Shell::new();
+    stale_shell.click_at(stale_shell.top_face_centre(1));
+    assert!(
+        stale_shell
+            .app_mut()
+            .copy_selected(Vec3::new(150.0, 0.0, 0.0))
+    );
+    assert!(
+        stale_shell
+            .app_mut()
+            .copy_selected(Vec3::new(250.0, 0.0, 0.0))
+    );
+    stale_shell.click_menu_command("menu-edit", AppCommand::SelectAll);
+    assert!(stale_shell.app_mut().preview_distribute_occurrences(
+        &BTreeSet::from([OccurrenceId(1), OccurrenceId(2), OccurrenceId(3)]),
+        Axis::X,
+        DistributionMode::EqualGaps,
+    ));
+    assert!(stale_shell.app_mut().create_box());
+    let stale_revision = stale_shell.app().document_revision();
+    let stale_digest = stale_shell.app().canonical_digest();
+    assert!(!stale_shell.app_mut().confirm_occurrence_operation_preview());
+    assert_eq!(stale_shell.app().document_revision(), stale_revision);
+    assert_eq!(stale_shell.app().canonical_digest(), stale_digest);
+}
+
+#[test]
+fn linear_pattern_is_localized_previewed_shared_and_one_undo_step() {
+    for catalog in [
+        LocaleCatalog::english(),
+        LocaleCatalog::slovak(),
+        LocaleCatalog::pseudo(),
+    ] {
+        let mut shell = Shell::with_catalog(catalog);
+        assert_eq!(
+            shell.app().command_label(AppCommand::LinearPattern),
+            shell.catalog().text("model-linear-pattern")
+        );
+        assert!(!shell.app().command_is_enabled(AppCommand::LinearPattern));
+        shell.click_menu_command("menu-model", AppCommand::LinearPattern);
+        assert!(!shell.app().linear_pattern_visible());
+
+        shell.click_at(shell.top_face_centre(1));
+        assert!(shell.app().command_is_enabled(AppCommand::LinearPattern));
+        let revision = shell.app().document_revision();
+        let digest = shell.app().canonical_digest();
+        let undo_steps = shell.app().undo_step_count();
+        shell.click_menu_command("menu-model", AppCommand::LinearPattern);
+        assert_eq!(
+            shell.app().linear_pattern_inputs(),
+            Some((Axis::X, "100", "2"))
+        );
+        shell.click_role_and_label(
+            Role::Button,
+            &shell.catalog().text("dialog-linear-pattern-cancel"),
+        );
+        assert!(!shell.app().linear_pattern_visible());
+        assert_eq!(shell.app().document_revision(), revision);
+        assert_eq!(shell.app().canonical_digest(), digest);
+        assert_eq!(shell.app().undo_step_count(), undo_steps);
+
+        shell.click_menu_command("menu-model", AppCommand::LinearPattern);
+        let spacing_label = shell.catalog().text("dialog-linear-pattern-spacing");
+        shell.focus_text_input(&spacing_label);
+        shell.key(Key::A, ctrl());
+        shell.press_key(Key::Backspace);
+        shell.click_role_and_label(
+            Role::Button,
+            &shell.catalog().text("dialog-linear-pattern-preview"),
+        );
+        assert!(!shell.app().has_occurrence_operation_preview());
+        assert_eq!(shell.app().canonical_digest(), digest);
+
+        shell.focus_text_input(&spacing_label);
+        shell.type_text("125");
+        let count_label = shell.catalog().text("dialog-linear-pattern-count");
+        shell.focus_text_input(&count_label);
+        shell.key(Key::A, ctrl());
+        shell.type_text("4");
+        shell.click_role_and_label(
+            Role::Button,
+            &shell.catalog().text("dialog-linear-pattern-preview"),
+        );
+        assert!(shell.app().linear_pattern_visible());
+        assert!(shell.app().has_occurrence_operation_preview());
+        assert_eq!(shell.app().document_revision(), revision);
+        assert_eq!(shell.app().canonical_digest(), digest);
+        assert_eq!(
+            shell
+                .app()
+                .occurrence_operation_preview_geometry(OccurrenceId(4)),
+            Some((Vec3::new(375.0, 0.0, 0.0), Vec3::new(100.0, 60.0, 20.0)))
+        );
+
+        shell.click_role_and_label(
+            Role::Button,
+            &shell.catalog().text("dialog-linear-pattern-confirm"),
+        );
+        assert!(!shell.app().linear_pattern_visible());
+        assert_eq!(shell.app().document_revision(), revision + 1);
+        assert_eq!(shell.app().occurrence_count(), 4);
+        assert_eq!(shell.app().definition_count(), 1);
+        assert_eq!(shell.app().undo_step_count(), undo_steps + 1);
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().text("digest-linear-pattern-committed")
+        );
+        for occurrence_id in 1..=4 {
+            assert_eq!(
+                shell
+                    .app()
+                    .occurrence_definition_id(OccurrenceId(occurrence_id)),
+                Some(DefinitionId(1))
+            );
+        }
+        let definition_name = shell.app().definition_name(DefinitionId(1)).unwrap();
+        for occurrence_id in 2..=4 {
+            assert_eq!(
+                shell.app().occurrence_name(OccurrenceId(occurrence_id)),
+                Some(shell.catalog().format(
+                    "model-copy-occurrence",
+                    &BTreeMap::from([
+                        ("name", definition_name.clone()),
+                        ("number", occurrence_id.to_string()),
+                    ]),
+                ))
+            );
+            assert_eq!(
+                shell.app().occurrence_box_geometry(occurrence_id),
+                Some((
+                    Vec3::new(125.0 * (occurrence_id - 1) as f64, 0.0, 0.0),
+                    Vec3::new(100.0, 60.0, 20.0),
+                ))
+            );
+        }
+        let patterned_digest = shell.app().canonical_digest();
+        shell.click_menu_command("menu-edit", AppCommand::Undo);
+        assert_eq!(shell.app().canonical_digest(), digest);
+        assert_eq!(shell.app().occurrence_count(), 1);
+        shell.click_menu_command("menu-edit", AppCommand::Redo);
+        assert_eq!(shell.app().canonical_digest(), patterned_digest);
+        assert_eq!(shell.app().occurrence_count(), 4);
+
+        shell.click_at(shell.top_face_centre(1));
+        assert!(shell.app().command_is_enabled(AppCommand::LinearPattern));
+        shell.click_menu_command("menu-model", AppCommand::LinearPattern);
+        shell.click_menu_command("menu-edit", AppCommand::Deselect);
+        let drift_revision = shell.app().document_revision();
+        let drift_digest = shell.app().canonical_digest();
+        let drift_undo_steps = shell.app().undo_step_count();
+        let drift_action_digest = shell.app().action_digest().to_owned();
+        assert!(!shell.app_mut().preview_pending_linear_pattern());
+        assert!(!shell.app_mut().confirm_linear_pattern());
+        assert!(shell.app().linear_pattern_visible());
+        assert!(!shell.app().linear_pattern_preview_is_current());
+        assert_eq!(shell.app().document_revision(), drift_revision);
+        assert_eq!(shell.app().canonical_digest(), drift_digest);
+        assert_eq!(shell.app().undo_step_count(), drift_undo_steps);
+        assert_eq!(shell.app().action_digest(), drift_action_digest);
+        shell.click_role_and_label(
+            Role::Button,
+            &shell.catalog().text("dialog-linear-pattern-cancel"),
+        );
+
+        shell.click_at(shell.top_face_centre(1));
+        shell.click_menu_command("menu-model", AppCommand::LinearPattern);
+        assert!(shell.app_mut().preview_pending_linear_pattern());
+        assert!(shell.app().linear_pattern_preview_is_current());
+        assert!(shell.app_mut().preview_rectangular_pattern(
+            OccurrenceId(1),
+            RectangularPatternSpec {
+                primary_axis: Axis::X,
+                primary_spacing_mm: 200.0,
+                primary_count: 2,
+                secondary_axis: Axis::Y,
+                secondary_spacing_mm: 200.0,
+                secondary_count: 2,
+            },
+        ));
+        let foreign_revision = shell.app().document_revision();
+        let foreign_digest = shell.app().canonical_digest();
+        let foreign_undo_steps = shell.app().undo_step_count();
+        let foreign_action_digest = shell.app().action_digest().to_owned();
+        assert!(!shell.app().linear_pattern_preview_is_current());
+        assert!(!shell.app_mut().confirm_linear_pattern());
+        assert!(shell.app().linear_pattern_visible());
+        assert_eq!(shell.app().document_revision(), foreign_revision);
+        assert_eq!(shell.app().canonical_digest(), foreign_digest);
+        assert_eq!(shell.app().undo_step_count(), foreign_undo_steps);
+        assert_eq!(shell.app().action_digest(), foreign_action_digest);
+        shell.click_role_and_label(
+            Role::Button,
+            &shell.catalog().text("dialog-linear-pattern-cancel"),
+        );
+
+        shell.click_at(shell.top_face_centre(1));
+        shell.click_menu_command("menu-model", AppCommand::LinearPattern);
+        assert!(shell.app_mut().rotate_selected(15.0));
+        let stale_revision = shell.app().document_revision();
+        let stale_digest = shell.app().canonical_digest();
+        let stale_undo_steps = shell.app().undo_step_count();
+        let stale_action_digest = shell.app().action_digest().to_owned();
+        assert!(!shell.app_mut().preview_pending_linear_pattern());
+        assert!(!shell.app_mut().confirm_linear_pattern());
+        assert!(shell.app().linear_pattern_visible());
+        assert_eq!(shell.app().document_revision(), stale_revision);
+        assert_eq!(shell.app().canonical_digest(), stale_digest);
+        assert_eq!(shell.app().undo_step_count(), stale_undo_steps);
+        assert_eq!(shell.app().action_digest(), stale_action_digest);
+        shell.click_role_and_label(
+            Role::Button,
+            &shell.catalog().text("dialog-linear-pattern-cancel"),
+        );
+
+        shell.click_menu_command("menu-model", AppCommand::LinearPattern);
+        assert!(shell.app_mut().delete_selected());
+        let missing_revision = shell.app().document_revision();
+        let missing_digest = shell.app().canonical_digest();
+        let missing_undo_steps = shell.app().undo_step_count();
+        let missing_action_digest = shell.app().action_digest().to_owned();
+        assert!(!shell.app_mut().preview_pending_linear_pattern());
+        assert!(!shell.app_mut().confirm_linear_pattern());
+        assert!(shell.app().linear_pattern_visible());
+        assert_eq!(shell.app().occurrence_definition_id(OccurrenceId(1)), None);
+        assert_eq!(shell.app().document_revision(), missing_revision);
+        assert_eq!(shell.app().canonical_digest(), missing_digest);
+        assert_eq!(shell.app().undo_step_count(), missing_undo_steps);
+        assert_eq!(shell.app().action_digest(), missing_action_digest);
+    }
+}
+
+#[test]
+fn rectangular_pattern_is_localized_previewed_shared_and_one_undo_step() {
+    for catalog in [
+        LocaleCatalog::english(),
+        LocaleCatalog::slovak(),
+        LocaleCatalog::pseudo(),
+    ] {
+        let mut shell = Shell::with_catalog(catalog);
+        assert_eq!(
+            shell.app().command_label(AppCommand::RectangularPattern),
+            shell.catalog().text("model-rectangular-pattern")
+        );
+        assert!(
+            !shell
+                .app()
+                .command_is_enabled(AppCommand::RectangularPattern)
+        );
+        shell.click_menu_command("menu-model", AppCommand::RectangularPattern);
+        assert!(!shell.app().rectangular_pattern_visible());
+
+        shell.click_at(shell.top_face_centre(1));
+        assert!(
+            shell
+                .app()
+                .command_is_enabled(AppCommand::RectangularPattern)
+        );
+        let revision = shell.app().document_revision();
+        let digest = shell.app().canonical_digest();
+        let undo_steps = shell.app().undo_step_count();
+        shell.click_menu_command("menu-model", AppCommand::RectangularPattern);
+        assert_eq!(
+            shell.app().rectangular_pattern_inputs(),
+            Some((Axis::X, "100", "2", Axis::Y, "100", "2"))
+        );
+        shell.click_role_and_label(
+            Role::Button,
+            &shell.catalog().text("dialog-rectangular-pattern-cancel"),
+        );
+        assert!(!shell.app().rectangular_pattern_visible());
+        assert_eq!(shell.app().document_revision(), revision);
+        assert_eq!(shell.app().canonical_digest(), digest);
+        assert_eq!(shell.app().undo_step_count(), undo_steps);
+
+        shell.click_menu_command("menu-model", AppCommand::RectangularPattern);
+        for (key, value) in [
+            ("dialog-rectangular-pattern-primary-spacing", "125"),
+            ("dialog-rectangular-pattern-primary-count", "3"),
+            ("dialog-rectangular-pattern-secondary-spacing", "75"),
+        ] {
+            let label = shell.catalog().text(key);
+            shell.focus_text_input(&label);
+            shell.key(Key::A, ctrl());
+            shell.type_text(value);
+        }
+        shell.click_role_and_label(
+            Role::Button,
+            &shell.catalog().text("dialog-rectangular-pattern-preview"),
+        );
+        assert!(shell.app().has_occurrence_operation_preview());
+        assert_eq!(shell.app().document_revision(), revision);
+        assert_eq!(shell.app().canonical_digest(), digest);
+        assert_eq!(
+            shell
+                .app()
+                .occurrence_operation_preview_geometry(OccurrenceId(2)),
+            Some((Vec3::new(0.0, 75.0, 0.0), Vec3::new(100.0, 60.0, 20.0)))
+        );
+        assert_eq!(
+            shell
+                .app()
+                .occurrence_operation_preview_geometry(OccurrenceId(6)),
+            Some((Vec3::new(250.0, 75.0, 0.0), Vec3::new(100.0, 60.0, 20.0)))
+        );
+
+        let primary_spacing = shell
+            .catalog()
+            .text("dialog-rectangular-pattern-primary-spacing");
+        shell.focus_text_input(&primary_spacing);
+        shell.key(Key::A, ctrl());
+        shell.type_text("150");
+        assert!(!shell.app().has_occurrence_operation_preview());
+        assert_eq!(shell.app().canonical_digest(), digest);
+        shell.click_role_and_label(
+            Role::Button,
+            &shell.catalog().text("dialog-rectangular-pattern-preview"),
+        );
+        assert!(shell.app().has_occurrence_operation_preview());
+        assert_eq!(
+            shell
+                .app()
+                .occurrence_operation_preview_geometry(OccurrenceId(6)),
+            Some((Vec3::new(300.0, 75.0, 0.0), Vec3::new(100.0, 60.0, 20.0)))
+        );
+        shell.click_role_and_label(
+            Role::Button,
+            &shell.catalog().text("dialog-rectangular-pattern-confirm"),
+        );
+        assert!(!shell.app().rectangular_pattern_visible());
+        assert_eq!(shell.app().document_revision(), revision + 1);
+        assert_eq!(shell.app().occurrence_count(), 6);
+        assert_eq!(shell.app().definition_count(), 1);
+        assert_eq!(shell.app().undo_step_count(), undo_steps + 1);
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().text("digest-rectangular-pattern-committed")
+        );
+        for occurrence_id in 1..=6 {
+            assert_eq!(
+                shell
+                    .app()
+                    .occurrence_definition_id(OccurrenceId(occurrence_id)),
+                Some(DefinitionId(1))
+            );
+        }
+        let patterned_digest = shell.app().canonical_digest();
+        shell.click_menu_command("menu-edit", AppCommand::Undo);
+        assert_eq!(shell.app().canonical_digest(), digest);
+        assert_eq!(shell.app().occurrence_count(), 1);
+        shell.click_menu_command("menu-edit", AppCommand::Redo);
+        assert_eq!(shell.app().canonical_digest(), patterned_digest);
+        assert_eq!(shell.app().occurrence_count(), 6);
+
+        shell.click_at(shell.top_face_centre(1));
+        assert!(
+            shell
+                .app()
+                .command_is_enabled(AppCommand::RectangularPattern)
+        );
+        shell.click_menu_command("menu-model", AppCommand::RectangularPattern);
+        shell.click_menu_command("menu-edit", AppCommand::Deselect);
+        let drift_revision = shell.app().document_revision();
+        let drift_digest = shell.app().canonical_digest();
+        let drift_undo_steps = shell.app().undo_step_count();
+        let drift_action_digest = shell.app().action_digest().to_owned();
+        assert!(!shell.app_mut().preview_pending_rectangular_pattern());
+        assert!(!shell.app_mut().confirm_rectangular_pattern());
+        assert!(shell.app().rectangular_pattern_visible());
+        assert!(!shell.app().rectangular_pattern_preview_is_current());
+        assert_eq!(shell.app().document_revision(), drift_revision);
+        assert_eq!(shell.app().canonical_digest(), drift_digest);
+        assert_eq!(shell.app().undo_step_count(), drift_undo_steps);
+        assert_eq!(shell.app().action_digest(), drift_action_digest);
+        shell.click_role_and_label(
+            Role::Button,
+            &shell.catalog().text("dialog-rectangular-pattern-cancel"),
+        );
+
+        shell.click_at(shell.top_face_centre(1));
+        shell.click_menu_command("menu-model", AppCommand::RectangularPattern);
+        assert!(shell.app_mut().preview_pending_rectangular_pattern());
+        assert!(shell.app().rectangular_pattern_preview_is_current());
+        assert!(
+            shell
+                .app_mut()
+                .preview_linear_pattern(OccurrenceId(1), Axis::X, 100.0, 2,)
+        );
+        let foreign_revision = shell.app().document_revision();
+        let foreign_digest = shell.app().canonical_digest();
+        let foreign_undo_steps = shell.app().undo_step_count();
+        let foreign_action_digest = shell.app().action_digest().to_owned();
+        assert!(!shell.app().rectangular_pattern_preview_is_current());
+        assert!(!shell.app_mut().confirm_rectangular_pattern());
+        assert!(shell.app().rectangular_pattern_visible());
+        assert_eq!(shell.app().document_revision(), foreign_revision);
+        assert_eq!(shell.app().canonical_digest(), foreign_digest);
+        assert_eq!(shell.app().undo_step_count(), foreign_undo_steps);
+        assert_eq!(shell.app().action_digest(), foreign_action_digest);
+        shell.click_role_and_label(
+            Role::Button,
+            &shell.catalog().text("dialog-rectangular-pattern-cancel"),
+        );
+
+        shell.click_at(shell.top_face_centre(1));
+        shell.click_menu_command("menu-model", AppCommand::RectangularPattern);
+        assert!(shell.app_mut().rotate_selected(15.0));
+        let stale_revision = shell.app().document_revision();
+        let stale_digest = shell.app().canonical_digest();
+        let stale_undo_steps = shell.app().undo_step_count();
+        let stale_action_digest = shell.app().action_digest().to_owned();
+        assert!(!shell.app_mut().preview_pending_rectangular_pattern());
+        assert!(!shell.app_mut().confirm_rectangular_pattern());
+        assert!(shell.app().rectangular_pattern_visible());
+        assert_eq!(shell.app().document_revision(), stale_revision);
+        assert_eq!(shell.app().canonical_digest(), stale_digest);
+        assert_eq!(shell.app().undo_step_count(), stale_undo_steps);
+        assert_eq!(shell.app().action_digest(), stale_action_digest);
+        shell.click_role_and_label(
+            Role::Button,
+            &shell.catalog().text("dialog-rectangular-pattern-cancel"),
+        );
+
+        shell.click_menu_command("menu-model", AppCommand::RectangularPattern);
+        assert!(shell.app_mut().delete_selected());
+        let missing_revision = shell.app().document_revision();
+        let missing_digest = shell.app().canonical_digest();
+        let missing_undo_steps = shell.app().undo_step_count();
+        let missing_action_digest = shell.app().action_digest().to_owned();
+        assert!(!shell.app_mut().preview_pending_rectangular_pattern());
+        assert!(!shell.app_mut().confirm_rectangular_pattern());
+        assert!(shell.app().rectangular_pattern_visible());
+        assert_eq!(shell.app().occurrence_definition_id(OccurrenceId(1)), None);
+        assert_eq!(shell.app().document_revision(), missing_revision);
+        assert_eq!(shell.app().canonical_digest(), missing_digest);
+        assert_eq!(shell.app().undo_step_count(), missing_undo_steps);
+        assert_eq!(shell.app().action_digest(), missing_action_digest);
+    }
+}
+
+#[test]
+fn rectangular_pattern_rejects_invalid_and_stale_inputs_without_mutation() {
+    let mut shell = Shell::new();
+    shell.click_at(shell.top_face_centre(1));
+    let revision = shell.app().document_revision();
+    let digest = shell.app().canonical_digest();
+    let undo_steps = shell.app().undo_step_count();
+    assert!(!shell.app_mut().preview_rectangular_pattern(
+        OccurrenceId(1),
+        RectangularPatternSpec {
+            primary_axis: Axis::X,
+            primary_spacing_mm: 100.0,
+            primary_count: 2,
+            secondary_axis: Axis::X,
+            secondary_spacing_mm: 100.0,
+            secondary_count: 2,
+        },
+    ));
+    assert!(!shell.app_mut().preview_rectangular_pattern(
+        OccurrenceId(1),
+        RectangularPatternSpec {
+            primary_axis: Axis::X,
+            primary_spacing_mm: 100.0,
+            primary_count: 101,
+            secondary_axis: Axis::Y,
+            secondary_spacing_mm: 100.0,
+            secondary_count: 100,
+        },
+    ));
+    assert!(!shell.app().has_occurrence_operation_preview());
+    assert_eq!(shell.app().document_revision(), revision);
+    assert_eq!(shell.app().canonical_digest(), digest);
+    assert_eq!(shell.app().undo_step_count(), undo_steps);
+
+    assert!(shell.app_mut().preview_rectangular_pattern(
+        OccurrenceId(1),
+        RectangularPatternSpec {
+            primary_axis: Axis::X,
+            primary_spacing_mm: 100.0,
+            primary_count: 2,
+            secondary_axis: Axis::Y,
+            secondary_spacing_mm: 100.0,
+            secondary_count: 2,
+        },
+    ));
+    assert!(shell.app_mut().create_box());
+    let stale_revision = shell.app().document_revision();
+    let stale_digest = shell.app().canonical_digest();
+    let stale_undo_steps = shell.app().undo_step_count();
+    assert!(!shell.app_mut().confirm_occurrence_operation_preview());
+    assert_eq!(shell.app().document_revision(), stale_revision);
+    assert_eq!(shell.app().canonical_digest(), stale_digest);
+    assert_eq!(shell.app().undo_step_count(), stale_undo_steps);
+}
+
+#[test]
+fn circular_pattern_is_localized_previewed_shared_and_one_undo_step() {
+    for catalog in [
+        LocaleCatalog::english(),
+        LocaleCatalog::slovak(),
+        LocaleCatalog::pseudo(),
+    ] {
+        let mut shell = Shell::with_catalog(catalog);
+        assert_eq!(
+            shell.app().command_label(AppCommand::CircularPattern),
+            shell.catalog().text("model-circular-pattern")
+        );
+        assert!(!shell.app().command_is_enabled(AppCommand::CircularPattern));
+        shell.click_menu_command("menu-model", AppCommand::CircularPattern);
+        assert!(!shell.app().circular_pattern_visible());
+
+        shell.click_at(shell.top_face_centre(1));
+        assert!(shell.app().command_is_enabled(AppCommand::CircularPattern));
+        let revision = shell.app().document_revision();
+        let digest = shell.app().canonical_digest();
+        let undo_steps = shell.app().undo_step_count();
+        shell.click_menu_command("menu-model", AppCommand::CircularPattern);
+        assert_eq!(
+            shell.app().circular_pattern_inputs(),
+            Some((Axis::Z, "0", "0", "0", "90", "4"))
+        );
+        shell.click_role_and_label(
+            Role::Button,
+            &shell.catalog().text("dialog-circular-pattern-cancel"),
+        );
+        assert!(!shell.app().circular_pattern_visible());
+        assert_eq!(shell.app().document_revision(), revision);
+        assert_eq!(shell.app().canonical_digest(), digest);
+        assert_eq!(shell.app().undo_step_count(), undo_steps);
+
+        shell.click_menu_command("menu-model", AppCommand::CircularPattern);
+        let angle_label = shell.catalog().text("dialog-circular-pattern-angle");
+        shell.focus_text_input(&angle_label);
+        shell.key(Key::A, ctrl());
+        shell.press_key(Key::Backspace);
+        shell.click_role_and_label(
+            Role::Button,
+            &shell.catalog().text("dialog-circular-pattern-preview"),
+        );
+        assert!(!shell.app().has_occurrence_operation_preview());
+        assert_eq!(shell.app().canonical_digest(), digest);
+
+        shell.focus_text_input(&angle_label);
+        shell.type_text("90");
+        shell.click_role_and_label(
+            Role::Button,
+            &shell.catalog().text("dialog-circular-pattern-preview"),
+        );
+        assert!(shell.app().circular_pattern_visible());
+        assert!(shell.app().has_occurrence_operation_preview());
+        assert_eq!(shell.app().document_revision(), revision);
+        assert_eq!(shell.app().canonical_digest(), digest);
+        let (origin, size) = shell
+            .app()
+            .occurrence_operation_preview_geometry(OccurrenceId(2))
+            .expect("the first rotated occurrence is previewed");
+        assert!((origin.x + 60.0).abs() < 1.0e-9);
+        assert!(origin.y.abs() < 1.0e-9);
+        assert!(origin.z.abs() < 1.0e-9);
+        assert!((size.x - 60.0).abs() < 1.0e-9);
+        assert!((size.y - 100.0).abs() < 1.0e-9);
+        assert!((size.z - 20.0).abs() < 1.0e-9);
+
+        shell.click_role_and_label(
+            Role::Button,
+            &shell.catalog().text("dialog-circular-pattern-axis-x"),
+        );
+        assert!(!shell.app().has_occurrence_operation_preview());
+        shell.click_role_and_label(
+            Role::Button,
+            &shell.catalog().text("dialog-circular-pattern-preview"),
+        );
+        let (origin, size) = shell
+            .app()
+            .occurrence_operation_preview_geometry(OccurrenceId(2))
+            .expect("the X-axis occurrence is previewed");
+        assert!(origin.x.abs() < 1.0e-9);
+        assert!((origin.y + 20.0).abs() < 1.0e-9);
+        assert!(origin.z.abs() < 1.0e-9);
+        assert!((size.x - 100.0).abs() < 1.0e-9);
+        assert!((size.y - 20.0).abs() < 1.0e-9);
+        assert!((size.z - 60.0).abs() < 1.0e-9);
+
+        shell.click_role_and_label(
+            Role::Button,
+            &shell.catalog().text("dialog-circular-pattern-axis-z"),
+        );
+        let centre_x_label = shell.catalog().text("dialog-circular-pattern-centre-x");
+        shell.focus_text_input(&centre_x_label);
+        shell.key(Key::A, ctrl());
+        shell.type_text("100");
+        assert!(!shell.app().has_occurrence_operation_preview());
+        shell.click_role_and_label(
+            Role::Button,
+            &shell.catalog().text("dialog-circular-pattern-preview"),
+        );
+        let (origin, size) = shell
+            .app()
+            .occurrence_operation_preview_geometry(OccurrenceId(2))
+            .expect("the offset-center occurrence is previewed");
+        assert!((origin.x - 40.0).abs() < 1.0e-9);
+        assert!((origin.y + 100.0).abs() < 1.0e-9);
+        assert!(origin.z.abs() < 1.0e-9);
+        assert!((size.x - 60.0).abs() < 1.0e-9);
+        assert!((size.y - 100.0).abs() < 1.0e-9);
+        assert!((size.z - 20.0).abs() < 1.0e-9);
+
+        shell.click_role_and_label(
+            Role::Button,
+            &shell.catalog().text("dialog-circular-pattern-confirm"),
+        );
+        assert!(!shell.app().circular_pattern_visible());
+        assert_eq!(shell.app().document_revision(), revision + 1);
+        assert_eq!(shell.app().occurrence_count(), 4);
+        assert_eq!(shell.app().definition_count(), 1);
+        assert_eq!(shell.app().undo_step_count(), undo_steps + 1);
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().text("digest-circular-pattern-committed")
+        );
+        for occurrence_id in 1..=4 {
+            assert_eq!(
+                shell
+                    .app()
+                    .occurrence_definition_id(OccurrenceId(occurrence_id)),
+                Some(DefinitionId(1))
+            );
+        }
+        let patterned_digest = shell.app().canonical_digest();
+        shell.click_menu_command("menu-edit", AppCommand::Undo);
+        assert_eq!(shell.app().canonical_digest(), digest);
+        assert_eq!(shell.app().occurrence_count(), 1);
+        shell.click_menu_command("menu-edit", AppCommand::Redo);
+        assert_eq!(shell.app().canonical_digest(), patterned_digest);
+        assert_eq!(shell.app().occurrence_count(), 4);
+
+        shell.click_at(shell.top_face_centre(1));
+        assert!(shell.app().command_is_enabled(AppCommand::CircularPattern));
+        shell.click_menu_command("menu-model", AppCommand::CircularPattern);
+        shell.click_menu_command("menu-edit", AppCommand::Deselect);
+        let drift_revision = shell.app().document_revision();
+        let drift_digest = shell.app().canonical_digest();
+        let drift_undo_steps = shell.app().undo_step_count();
+        let drift_action_digest = shell.app().action_digest().to_owned();
+        assert!(!shell.app_mut().preview_pending_circular_pattern());
+        assert!(!shell.app_mut().confirm_circular_pattern());
+        assert!(shell.app().circular_pattern_visible());
+        assert!(!shell.app().circular_pattern_preview_is_current());
+        assert_eq!(shell.app().document_revision(), drift_revision);
+        assert_eq!(shell.app().canonical_digest(), drift_digest);
+        assert_eq!(shell.app().undo_step_count(), drift_undo_steps);
+        assert_eq!(shell.app().action_digest(), drift_action_digest);
+        shell.click_role_and_label(
+            Role::Button,
+            &shell.catalog().text("dialog-circular-pattern-cancel"),
+        );
+
+        shell.click_at(shell.top_face_centre(1));
+        shell.click_menu_command("menu-model", AppCommand::CircularPattern);
+        assert!(shell.app_mut().preview_pending_circular_pattern());
+        assert!(shell.app().circular_pattern_preview_is_current());
+        assert!(
+            shell
+                .app_mut()
+                .preview_linear_pattern(OccurrenceId(1), Axis::X, 100.0, 2,)
+        );
+        let foreign_revision = shell.app().document_revision();
+        let foreign_digest = shell.app().canonical_digest();
+        let foreign_undo_steps = shell.app().undo_step_count();
+        let foreign_action_digest = shell.app().action_digest().to_owned();
+        assert!(!shell.app().circular_pattern_preview_is_current());
+        assert!(!shell.app_mut().confirm_circular_pattern());
+        assert!(shell.app().circular_pattern_visible());
+        assert_eq!(shell.app().document_revision(), foreign_revision);
+        assert_eq!(shell.app().canonical_digest(), foreign_digest);
+        assert_eq!(shell.app().undo_step_count(), foreign_undo_steps);
+        assert_eq!(shell.app().action_digest(), foreign_action_digest);
+        shell.click_role_and_label(
+            Role::Button,
+            &shell.catalog().text("dialog-circular-pattern-cancel"),
+        );
+
+        shell.click_at(shell.top_face_centre(1));
+        shell.click_menu_command("menu-model", AppCommand::CircularPattern);
+        assert!(shell.app_mut().rotate_selected(15.0));
+        let stale_revision = shell.app().document_revision();
+        let stale_digest = shell.app().canonical_digest();
+        let stale_undo_steps = shell.app().undo_step_count();
+        let stale_action_digest = shell.app().action_digest().to_owned();
+        assert!(!shell.app_mut().preview_pending_circular_pattern());
+        assert!(!shell.app_mut().confirm_circular_pattern());
+        assert!(shell.app().circular_pattern_visible());
+        assert_eq!(shell.app().document_revision(), stale_revision);
+        assert_eq!(shell.app().canonical_digest(), stale_digest);
+        assert_eq!(shell.app().undo_step_count(), stale_undo_steps);
+        assert_eq!(shell.app().action_digest(), stale_action_digest);
+        shell.click_role_and_label(
+            Role::Button,
+            &shell.catalog().text("dialog-circular-pattern-cancel"),
+        );
+
+        shell.click_menu_command("menu-model", AppCommand::CircularPattern);
+        assert!(shell.app_mut().delete_selected());
+        let missing_revision = shell.app().document_revision();
+        let missing_digest = shell.app().canonical_digest();
+        let missing_undo_steps = shell.app().undo_step_count();
+        let missing_action_digest = shell.app().action_digest().to_owned();
+        assert!(!shell.app_mut().preview_pending_circular_pattern());
+        assert!(!shell.app_mut().confirm_circular_pattern());
+        assert!(shell.app().circular_pattern_visible());
+        assert_eq!(shell.app().occurrence_definition_id(OccurrenceId(1)), None);
+        assert_eq!(shell.app().document_revision(), missing_revision);
+        assert_eq!(shell.app().canonical_digest(), missing_digest);
+        assert_eq!(shell.app().undo_step_count(), missing_undo_steps);
+        assert_eq!(shell.app().action_digest(), missing_action_digest);
+    }
+
+    let mut shell = Shell::new();
+    shell.click_at(shell.top_face_centre(1));
+    let digest = shell.app().canonical_digest();
+    assert!(shell.app_mut().preview_circular_pattern(
+        OccurrenceId(1),
+        Axis::Z,
+        Vec3::new(0.0, 0.0, 0.0),
+        45.0,
+        3,
+    ));
+    assert!(shell.app_mut().copy_selected(Vec3::new(200.0, 0.0, 0.0)));
+    let changed_digest = shell.app().canonical_digest();
+    assert_ne!(changed_digest, digest);
+    assert!(!shell.app_mut().confirm_occurrence_operation_preview());
+    assert_eq!(shell.app().canonical_digest(), changed_digest);
+    assert_eq!(shell.app().occurrence_count(), 2);
+}
+
+#[test]
+fn rename_definition_is_localized_validated_shared_and_one_undo_step() {
+    for catalog in [
+        LocaleCatalog::english(),
+        LocaleCatalog::slovak(),
+        LocaleCatalog::pseudo(),
+    ] {
+        let mut shell = Shell::with_catalog(catalog);
+        let definition_id = DefinitionId(1);
+        let original_name = shell
+            .app()
+            .definition_name(definition_id)
+            .expect("the initial definition exists");
+        shell.click_at(shell.top_face_centre(1));
+        shell.click_menu_command("menu-edit", AppCommand::Copy);
+        shell.click_menu_command("menu-edit", AppCommand::Paste);
+        assert_eq!(shell.app().occurrence_count(), 2);
+        assert_eq!(
+            shell.app().occurrence_definition_id(OccurrenceId(1)),
+            shell.app().occurrence_definition_id(OccurrenceId(2))
+        );
+        let revision = shell.app().document_revision();
+        let digest = shell.app().canonical_digest();
+        let undo_steps = shell.app().undo_step_count();
+
+        assert_eq!(
+            shell.app().command_label(AppCommand::RenameDefinition),
+            shell.catalog().text("model-rename-definition")
+        );
+        shell.click_menu_command("menu-model", AppCommand::RenameDefinition);
+        assert!(shell.app().rename_definition_visible());
+        assert_eq!(
+            shell.app().rename_definition_input(),
+            Some(original_name.as_str())
+        );
+        shell.click_role_and_label(
+            Role::Button,
+            &shell.catalog().text("dialog-rename-definition-cancel"),
+        );
+        assert!(!shell.app().rename_definition_visible());
+        assert_eq!(shell.app().document_revision(), revision);
+        assert_eq!(shell.app().canonical_digest(), digest);
+        assert_eq!(shell.app().undo_step_count(), undo_steps);
+
+        shell.click_menu_command("menu-model", AppCommand::RenameDefinition);
+        shell.focus_text_input(&shell.catalog().text("dialog-rename-definition-name"));
+        shell.key(Key::A, ctrl());
+        shell.type_text("Selection drift");
+        shell.click_menu_command("menu-edit", AppCommand::Deselect);
+        let drift_action_digest = shell.app().action_digest().to_owned();
+        assert!(!shell.app_mut().confirm_definition_rename());
+        assert!(shell.app().rename_definition_visible());
+        assert_eq!(shell.app().selected_occurrence_count(), 0);
+        assert_eq!(shell.app().document_revision(), revision);
+        assert_eq!(shell.app().canonical_digest(), digest);
+        assert_eq!(shell.app().undo_step_count(), undo_steps);
+        assert_eq!(shell.app().action_digest(), drift_action_digest);
+        shell.click_role_and_label(
+            Role::Button,
+            &shell.catalog().text("dialog-rename-definition-cancel"),
+        );
+        shell.click_at(shell.top_face_centre(1));
+
+        shell.click_menu_command("menu-model", AppCommand::RenameDefinition);
+        let input_label = shell.catalog().text("dialog-rename-definition-name");
+        shell.focus_text_input(&input_label);
+        shell.key(Key::A, ctrl());
+        shell.press_key(Key::Backspace);
+        shell.click_role_and_label(
+            Role::Button,
+            &shell.catalog().text("dialog-rename-definition-confirm"),
+        );
+        assert!(shell.app().rename_definition_visible());
+        assert_eq!(shell.app().document_revision(), revision);
+        assert_eq!(shell.app().canonical_digest(), digest);
+        assert_eq!(shell.app().undo_step_count(), undo_steps);
+
+        let renamed = "Shared housing";
+        shell.focus_text_input(&input_label);
+        shell.type_text(renamed);
+        shell.click_role_and_label(
+            Role::Button,
+            &shell.catalog().text("dialog-rename-definition-confirm"),
+        );
+        assert!(!shell.app().rename_definition_visible());
+        assert_eq!(
+            shell.app().definition_name(definition_id),
+            Some(renamed.to_owned())
+        );
+        assert_eq!(shell.app().occurrence_count(), 2);
+        assert_eq!(shell.app().undo_step_count(), undo_steps + 1);
+        assert!(shell.app().command_is_enabled(AppCommand::Paste));
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().format(
+                "digest-renamed-definition",
+                &BTreeMap::from([("name", renamed.to_owned())])
+            )
+        );
+
+        shell.click_menu_command("menu-edit", AppCommand::Undo);
+        assert_eq!(
+            shell.app().definition_name(definition_id),
+            Some(original_name.clone())
+        );
+        assert_eq!(shell.app().occurrence_count(), 2);
+
+        shell.click_menu_command("menu-model", AppCommand::RenameDefinition);
+        shell.focus_text_input(&input_label);
+        shell.key(Key::A, ctrl());
+        shell.type_text("Stale definition");
+        assert!(shell.app_mut().create_box());
+        let stale_revision = shell.app().document_revision();
+        let stale_digest = shell.app().canonical_digest();
+        let stale_undo_steps = shell.app().undo_step_count();
+        let stale_action_digest = shell.app().action_digest().to_owned();
+        assert!(!shell.app_mut().confirm_definition_rename());
+        assert!(shell.app().rename_definition_visible());
+        assert_eq!(shell.app().document_revision(), stale_revision);
+        assert_eq!(shell.app().canonical_digest(), stale_digest);
+        assert_eq!(shell.app().undo_step_count(), stale_undo_steps);
+        assert_eq!(shell.app().action_digest(), stale_action_digest);
+        assert_eq!(
+            shell.app().definition_name(definition_id),
+            Some(original_name.clone())
+        );
+        shell.click_role_and_label(
+            Role::Button,
+            &shell.catalog().text("dialog-rename-definition-cancel"),
+        );
+        shell.click_menu_command("menu-edit", AppCommand::Undo);
+
+        shell.click_at(shell.top_face_centre(1));
+        shell.click_menu_command("menu-model", AppCommand::SelectAllInstances);
+        shell.click_menu_command("menu-model", AppCommand::RenameDefinition);
+        shell.focus_text_input(&input_label);
+        shell.key(Key::A, ctrl());
+        shell.type_text("Missing definition");
+        assert!(shell.app_mut().delete_selected());
+        assert!(shell.app_mut().purge_unused_definitions());
+        let missing_revision = shell.app().document_revision();
+        let missing_digest = shell.app().canonical_digest();
+        let missing_undo_steps = shell.app().undo_step_count();
+        let missing_action_digest = shell.app().action_digest().to_owned();
+        assert!(!shell.app_mut().confirm_definition_rename());
+        assert!(shell.app().rename_definition_visible());
+        assert_eq!(shell.app().definition_name(definition_id), None);
+        assert_eq!(shell.app().document_revision(), missing_revision);
+        assert_eq!(shell.app().canonical_digest(), missing_digest);
+        assert_eq!(shell.app().undo_step_count(), missing_undo_steps);
+        assert_eq!(shell.app().action_digest(), missing_action_digest);
+    }
+}
+
+#[test]
+fn purge_unused_definitions_is_localized_safe_and_one_undo_step() {
+    for catalog in [
+        LocaleCatalog::english(),
+        LocaleCatalog::slovak(),
+        LocaleCatalog::pseudo(),
+    ] {
+        let mut shell = Shell::with_catalog(catalog);
+        assert_eq!(shell.app().definition_count(), 1);
+        assert_eq!(shell.app().occurrence_count(), 1);
+        assert_eq!(shell.app().purgeable_definition_count(), 0);
+        assert_eq!(
+            shell.app().command_label(AppCommand::PurgeUnused),
+            shell.catalog().text("model-purge-unused")
+        );
+
+        assert!(shell.app_mut().create_box());
+        assert_eq!(shell.app().definition_count(), 2);
+        assert_eq!(shell.app().occurrence_count(), 2);
+        shell.click_menu_command("menu-edit", AppCommand::SelectAll);
+        shell.click_menu_command("menu-edit", AppCommand::Delete);
+        assert_eq!(shell.app().definition_count(), 2);
+        assert_eq!(shell.app().occurrence_count(), 0);
+        assert_eq!(shell.app().purgeable_definition_count(), 2);
+        let after_delete_steps = shell.app().undo_step_count();
+
+        shell.click_menu_command("menu-model", AppCommand::PurgeUnused);
+        assert_eq!(shell.app().definition_count(), 0);
+        assert_eq!(shell.app().occurrence_count(), 0);
+        assert_eq!(shell.app().purgeable_definition_count(), 0);
+        assert_eq!(shell.app().undo_step_count(), after_delete_steps + 1);
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().format(
+                "digest-purged-unused",
+                &BTreeMap::from([("count", "2".to_owned())])
+            )
+        );
+
+        shell.click_menu_command("menu-edit", AppCommand::Undo);
+        assert_eq!(shell.app().definition_count(), 2);
+        assert_eq!(shell.app().occurrence_count(), 0);
+        assert_eq!(shell.app().purgeable_definition_count(), 2);
+        shell.click_menu_command("menu-edit", AppCommand::Redo);
+        assert_eq!(shell.app().definition_count(), 0);
+        assert_eq!(shell.app().occurrence_count(), 0);
+        shell.click_menu_command("menu-edit", AppCommand::Undo);
+        shell.click_menu_command("menu-edit", AppCommand::Undo);
+        assert_eq!(shell.app().definition_count(), 2);
+        assert_eq!(shell.app().occurrence_count(), 2);
+        assert_eq!(shell.app().purgeable_definition_count(), 0);
+
+        let revision = shell.app().document_revision();
+        let digest = shell.app().canonical_digest();
+        let undo_steps = shell.app().undo_step_count();
+        shell.click_menu_command("menu-model", AppCommand::PurgeUnused);
+        assert_eq!(shell.app().document_revision(), revision);
+        assert_eq!(shell.app().canonical_digest(), digest);
+        assert_eq!(shell.app().undo_step_count(), undo_steps);
+    }
 }
 
 #[test]
@@ -1589,10 +10010,23 @@ fn ctrl_copy_drag_snaps_source_endpoint_exactly_to_target_endpoint() {
 fn exact_align_previews_then_commits_one_transform_batch_with_undo_redo() {
     let mut shell = Shell::new();
     shell.click_at(shell.viewport_rect().center());
-    assert!(shell.app_mut().copy_selected(Vec3::new(150.0, 25.0, 0.0)));
+    assert!(shell.app_mut().copy_selected(Vec3::new(150.0, 25.0, 30.0)));
     shell.settle();
     let before_revision = shell.app().document_revision();
     let before_digest = shell.app().canonical_digest();
+
+    for axis in [Axis::X, Axis::Y, Axis::Z] {
+        for mode in [AlignMode::Minimum, AlignMode::Center, AlignMode::Maximum] {
+            assert!(shell.app_mut().preview_align_occurrences(
+                OccurrenceId(2),
+                OccurrenceId(1),
+                axis,
+                mode,
+            ));
+            assert_eq!(shell.app().document_revision(), before_revision);
+            assert_eq!(shell.app().canonical_digest(), before_digest);
+        }
+    }
 
     assert!(shell.app_mut().preview_align_occurrences(
         OccurrenceId(2),
@@ -1606,7 +10040,7 @@ fn exact_align_previews_then_commits_one_transform_batch_with_undo_redo() {
         shell
             .app()
             .occurrence_operation_preview_geometry(OccurrenceId(2)),
-        Some((Vec3::new(0.0, 25.0, 0.0), Vec3::new(100.0, 60.0, 20.0)))
+        Some((Vec3::new(0.0, 25.0, 30.0), Vec3::new(100.0, 60.0, 20.0)))
     );
 
     assert!(shell.app_mut().confirm_occurrence_operation_preview());
@@ -1614,7 +10048,7 @@ fn exact_align_previews_then_commits_one_transform_batch_with_undo_redo() {
     assert_eq!(shell.app().document_revision(), before_revision + 1);
     assert_eq!(
         shell.app().occurrence_box_geometry(2),
-        Some((Vec3::new(0.0, 25.0, 0.0), Vec3::new(100.0, 60.0, 20.0)))
+        Some((Vec3::new(0.0, 25.0, 30.0), Vec3::new(100.0, 60.0, 20.0)))
     );
     assert_eq!(shell.app().definition_count(), 1);
     assert!(shell.app_mut().undo());
@@ -2893,29 +11327,156 @@ fn the_model_menu_offers_make_unique() {
 }
 
 #[test]
-fn make_unique_clones_the_definition_in_one_undo_step() {
-    let mut shell = Shell::new();
-    shell.click_at(shell.viewport_rect().center());
-    assert!(shell.app_mut().copy_selected(Vec3::new(150.0, 25.0, 0.0)));
-    shell.settle();
-    assert_eq!(shell.app().definition_count(), 1);
+fn make_unique_is_localized_exact_selection_bound_and_one_undo_step() {
+    for (locale_index, catalog) in [
+        LocaleCatalog::english(),
+        LocaleCatalog::slovak(),
+        LocaleCatalog::pseudo(),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut shell = Shell::with_catalog(catalog.clone());
+        assert_eq!(
+            shell.app().command_label(AppCommand::MakeUnique),
+            shell.catalog().text("model-make-unique")
+        );
+        assert!(!shell.app().command_is_enabled(AppCommand::MakeUnique));
 
-    let before = shell.app().document_revision();
-    shell.click_menu_command("menu-model", AppCommand::MakeUnique);
+        shell.click_at(shell.top_face_centre(1));
+        assert!(!shell.app().command_is_enabled(AppCommand::MakeUnique));
+        let single_revision = shell.app().document_revision();
+        let single_digest = shell.app().canonical_digest();
+        let single_undo_steps = shell.app().undo_step_count();
+        shell.click_menu_command("menu-model", AppCommand::MakeUnique);
+        assert_eq!(shell.app().document_revision(), single_revision);
+        assert_eq!(shell.app().canonical_digest(), single_digest);
+        assert_eq!(shell.app().undo_step_count(), single_undo_steps);
+        shell.press_key(Key::Escape);
+        shell.click_at(shell.top_face_centre(1));
 
-    assert_eq!(
-        shell.app().definition_count(),
-        2,
-        "Make Unique must clone the definition"
-    );
-    assert_eq!(
-        shell.app().active_box_count(),
-        2,
-        "and keep both occurrences"
-    );
-    assert_eq!(
-        shell.app().document_revision(),
-        before + 1,
-        "Make Unique must be one undo step"
-    );
+        shell.click_menu_command("menu-edit", AppCommand::Copy);
+        assert!(shell.app().command_is_enabled(AppCommand::Paste));
+        assert!(shell.app_mut().copy_selected(Vec3::new(150.0, 25.0, 0.0)));
+        shell.settle();
+        shell.click_menu_command("menu-view", AppCommand::ZoomFit);
+        assert_eq!(shell.app().definition_count(), 1);
+        assert!(shell.app().command_is_enabled(AppCommand::MakeUnique));
+
+        shell.click_at_with(shell.top_face_centre(1), shift());
+        assert_eq!(shell.app().selected_occurrence_count(), 2);
+        assert!(!shell.app().command_is_enabled(AppCommand::MakeUnique));
+        let multiple_revision = shell.app().document_revision();
+        let multiple_digest = shell.app().canonical_digest();
+        let multiple_undo_steps = shell.app().undo_step_count();
+        shell.click_menu_command("menu-model", AppCommand::MakeUnique);
+        assert_eq!(shell.app().definition_count(), 1);
+        assert_eq!(shell.app().document_revision(), multiple_revision);
+        assert_eq!(shell.app().canonical_digest(), multiple_digest);
+        assert_eq!(shell.app().undo_step_count(), multiple_undo_steps);
+
+        shell.click_at(shell.top_face_centre(2));
+        assert_eq!(shell.app().selected_occurrence_count(), 1);
+        assert!(shell.app().occurrence_is_selected(OccurrenceId(2)));
+        assert!(shell.app().command_is_enabled(AppCommand::MakeUnique));
+        let source_definition_id = shell
+            .app()
+            .occurrence_definition_id(OccurrenceId(1))
+            .expect("the source occurrence exists");
+        assert_eq!(
+            shell.app().occurrence_definition_id(OccurrenceId(2)),
+            Some(source_definition_id)
+        );
+        let before_revision = shell.app().document_revision();
+        let before_digest = shell.app().canonical_digest();
+        let before_undo_steps = shell.app().undo_step_count();
+        assert!(shell.app().command_is_enabled(AppCommand::Paste));
+
+        if locale_index == 0 {
+            shell.click_menu_command("menu-model", AppCommand::MakeUnique);
+        } else {
+            shell
+                .app_mut()
+                .set_assistant_workspace_mode(AssistantWorkspaceMode::Tab);
+            shell.settle();
+            let make_unique = shell.catalog().text("model-make-unique");
+            shell.click_role_and_label(Role::Button, &make_unique);
+        }
+
+        let unique_digest = shell.app().canonical_digest();
+        let unique_definition_id = shell
+            .app()
+            .occurrence_definition_id(OccurrenceId(2))
+            .expect("the unique occurrence exists");
+        assert_ne!(unique_definition_id, source_definition_id);
+        assert_eq!(
+            shell.app().occurrence_definition_id(OccurrenceId(1)),
+            Some(source_definition_id)
+        );
+        assert_eq!(shell.app().definition_count(), 2);
+        assert_eq!(shell.app().active_box_count(), 2);
+        assert_eq!(shell.app().selected_occurrence_count(), 1);
+        assert!(shell.app().occurrence_is_selected(OccurrenceId(2)));
+        assert!(shell.app().command_is_enabled(AppCommand::Paste));
+        assert_eq!(shell.app().document_revision(), before_revision + 1);
+        assert_eq!(shell.app().undo_step_count(), before_undo_steps + 1);
+        assert_eq!(
+            shell.app().action_digest(),
+            shell.catalog().text("digest-made-unique")
+        );
+        assert!(!shell.app().command_is_enabled(AppCommand::MakeUnique));
+
+        shell.click_menu_command("menu-edit", AppCommand::Undo);
+        assert_eq!(shell.app().canonical_digest(), before_digest);
+        assert_eq!(shell.app().definition_count(), 1);
+        assert_eq!(
+            shell.app().occurrence_definition_id(OccurrenceId(2)),
+            Some(source_definition_id)
+        );
+        assert_eq!(shell.app().undo_step_count(), before_undo_steps);
+        assert!(shell.app().command_is_enabled(AppCommand::Paste));
+
+        shell.click_menu_command("menu-edit", AppCommand::Redo);
+        assert_eq!(shell.app().canonical_digest(), unique_digest);
+        assert_eq!(shell.app().definition_count(), 2);
+        assert_eq!(
+            shell.app().occurrence_definition_id(OccurrenceId(2)),
+            Some(unique_definition_id)
+        );
+        assert_eq!(shell.app().selected_occurrence_count(), 1);
+        assert!(shell.app().occurrence_is_selected(OccurrenceId(2)));
+        assert!(shell.app().command_is_enabled(AppCommand::Paste));
+
+        let mut context_shell = Shell::with_catalog(catalog);
+        context_shell.click_at(context_shell.viewport_rect().center());
+        context_shell.click_menu_command("menu-edit", AppCommand::Copy);
+        assert!(context_shell.app().command_is_enabled(AppCommand::Paste));
+        assert!(
+            context_shell
+                .app_mut()
+                .copy_selected(Vec3::new(150.0, 25.0, 0.0))
+        );
+        context_shell.settle();
+        context_shell.click_menu_command("menu-view", AppCommand::ZoomFit);
+        let selected = context_shell.top_face_centre(2);
+        context_shell.double_click_at(selected);
+        assert_eq!(context_shell.app().edit_context_depth(), 1);
+        assert!(
+            !context_shell
+                .app()
+                .command_is_enabled(AppCommand::MakeUnique)
+        );
+        let context_revision = context_shell.app().document_revision();
+        let context_digest = context_shell.app().canonical_digest();
+        let context_undo_steps = context_shell.app().undo_step_count();
+        let context_action_digest = context_shell.app().action_digest().to_owned();
+        context_shell.click_menu_command("menu-model", AppCommand::MakeUnique);
+        assert_eq!(context_shell.app().document_revision(), context_revision);
+        assert_eq!(context_shell.app().canonical_digest(), context_digest);
+        assert_eq!(context_shell.app().undo_step_count(), context_undo_steps);
+        assert_eq!(context_shell.app().action_digest(), context_action_digest);
+        context_shell.press_key(Key::Escape);
+        assert_eq!(context_shell.app().edit_context_depth(), 0);
+        assert!(context_shell.app().command_is_enabled(AppCommand::Paste));
+    }
 }

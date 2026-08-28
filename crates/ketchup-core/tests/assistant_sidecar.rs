@@ -1,6 +1,8 @@
 use ketchup_core::assistant_sidecar::{
-    ASSISTANT_PROTOCOL_VERSION, AssistantDistribution, AssistantHandshake, AssistantHandshakeError,
-    AssistantLinearArrayIntent, AssistantModelIntent, distribution_is_enabled,
+    ASSISTANT_PROTOCOL_VERSION, AssistantBottleFinishKind, AssistantBottleIntent,
+    AssistantDistribution, AssistantHandshake, AssistantHandshakeError, AssistantLinearArrayIntent,
+    AssistantModelIntent, AssistantParameterEditIntent, AssistantProfileTranslationIntent,
+    distribution_is_enabled,
 };
 
 const PUBLIC_HANDSHAKE: &str = r#"{
@@ -71,11 +73,14 @@ fn assistant_array_budget_matches_the_canonical_proposal_command_limit() {
         replace_scene: false,
         boxes: Vec::new(),
         translations: Vec::new(),
+        profile_translations: Vec::new(),
+        parameter_edits: Vec::new(),
         linear_arrays: vec![AssistantLinearArrayIntent {
             occurrence_ids: (1..=100).collect(),
             instances: 6,
             step_mm: [0.0, 0.0, 280.0],
         }],
+        bottles: Vec::new(),
     };
     assert!(valid.validate().is_ok());
 
@@ -91,6 +96,171 @@ fn assistant_array_budget_matches_the_canonical_proposal_command_limit() {
         too_large.validate(),
         Err("assistant proposal creates too many array occurrences".to_owned())
     );
+}
+
+#[test]
+fn assistant_profile_translation_is_single_bounded_and_unmixed() {
+    let valid = AssistantModelIntent {
+        replace_scene: false,
+        boxes: Vec::new(),
+        translations: Vec::new(),
+        profile_translations: vec![AssistantProfileTranslationIntent {
+            definition_id: 1,
+            body_id: 2,
+            profile_id: 14,
+            delta_mm: [2.0, 3.0],
+        }],
+        parameter_edits: Vec::new(),
+        linear_arrays: Vec::new(),
+        bottles: Vec::new(),
+    };
+    assert!(valid.validate().is_ok());
+    assert_eq!(
+        serde_json::to_value(&valid).unwrap()["profile_translations"][0]["delta_mm"],
+        serde_json::json!([2.0, 3.0])
+    );
+
+    let zero = AssistantModelIntent {
+        profile_translations: vec![AssistantProfileTranslationIntent {
+            delta_mm: [0.0, 0.0],
+            ..valid.profile_translations[0].clone()
+        }],
+        ..valid.clone()
+    };
+    assert_eq!(
+        zero.validate(),
+        Err("assistant profile translation is invalid".to_owned())
+    );
+
+    let mixed = AssistantModelIntent {
+        translations: vec![
+            ketchup_core::assistant_sidecar::AssistantTranslationIntent {
+                occurrence_id: 1,
+                delta_mm: [1.0, 0.0, 0.0],
+            },
+        ],
+        ..valid
+    };
+    assert_eq!(
+        mixed.validate(),
+        Err("assistant profile translation cannot mix geometry mutations".to_owned())
+    );
+}
+
+#[test]
+fn assistant_parameter_edit_is_single_bounded_and_unmixed() {
+    let valid = AssistantModelIntent {
+        replace_scene: false,
+        boxes: Vec::new(),
+        translations: Vec::new(),
+        profile_translations: Vec::new(),
+        parameter_edits: vec![AssistantParameterEditIntent {
+            definition_id: 1,
+            body_id: 2,
+            feature_id: 14,
+            constraint_id: Some(3),
+            value_mm: 8.5,
+        }],
+        linear_arrays: Vec::new(),
+        bottles: Vec::new(),
+    };
+    assert!(valid.validate().is_ok());
+    assert_eq!(
+        serde_json::to_value(&valid).unwrap()["parameter_edits"][0]["value_mm"],
+        8.5
+    );
+
+    let invalid = AssistantModelIntent {
+        parameter_edits: vec![AssistantParameterEditIntent {
+            value_mm: 0.0,
+            ..valid.parameter_edits[0].clone()
+        }],
+        ..valid.clone()
+    };
+    assert_eq!(
+        invalid.validate(),
+        Err("assistant parameter edit is invalid".to_owned())
+    );
+
+    let mixed = AssistantModelIntent {
+        translations: vec![
+            ketchup_core::assistant_sidecar::AssistantTranslationIntent {
+                occurrence_id: 1,
+                delta_mm: [1.0, 0.0, 0.0],
+            },
+        ],
+        ..valid
+    };
+    assert_eq!(
+        mixed.validate(),
+        Err("assistant parameter edit cannot mix geometry mutations".to_owned())
+    );
+}
+
+#[test]
+fn assistant_bottle_intent_round_trips_and_reuses_exact_geometry_limits() {
+    let intent: AssistantModelIntent = serde_json::from_str(
+        r#"{
+            "replace_scene": false,
+            "boxes": [],
+            "bottles": [{
+                "name": "AI ketchup bottle",
+                "body_radius_mm": 30.0,
+                "body_height_mm": 110.0,
+                "shoulder_rise_mm": 20.0,
+                "neck_radius_mm": 12.0,
+                "neck_height_mm": 25.0,
+                "wall_thickness_mm": 2.0,
+                "finish_kind": "fillet",
+                "finish_amount_mm": 2.0,
+                "origin_mm": [90.0, 0.0, 0.0]
+            }]
+        }"#,
+    )
+    .unwrap();
+
+    assert!(intent.validate().is_ok());
+    assert_eq!(
+        intent.bottles[0].finish_kind,
+        AssistantBottleFinishKind::Fillet
+    );
+    let encoded = serde_json::to_value(&intent).unwrap();
+    assert_eq!(encoded["bottles"][0]["neck_height_mm"], 25.0);
+    assert_eq!(encoded["bottles"][0]["finish_kind"], "fillet");
+
+    let invalid = AssistantModelIntent {
+        bottles: vec![AssistantBottleIntent {
+            wall_thickness_mm: 6.0,
+            ..intent.bottles[0].clone()
+        }],
+        ..intent
+    };
+    assert_eq!(
+        invalid.validate(),
+        Err("assistant bottle wall thickness is unsupported".to_owned())
+    );
+}
+
+#[test]
+fn assistant_bottle_intent_rejects_unknown_fields() {
+    let unknown = r#"{
+        "replace_scene": false,
+        "boxes": [],
+        "bottles": [{
+            "name": "Bottle",
+            "body_radius_mm": 30.0,
+            "body_height_mm": 110.0,
+            "shoulder_rise_mm": 20.0,
+            "neck_radius_mm": 12.0,
+            "neck_height_mm": 25.0,
+            "wall_thickness_mm": 2.0,
+            "finish_kind": "fillet",
+            "finish_amount_mm": 2.0,
+            "origin_mm": [0.0, 0.0, 0.0],
+            "shell_command": "arbitrary"
+        }]
+    }"#;
+    assert!(serde_json::from_str::<AssistantModelIntent>(unknown).is_err());
 }
 
 #[cfg(not(feature = "private-oauth"))]

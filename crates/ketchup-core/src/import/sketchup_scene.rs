@@ -26,7 +26,7 @@ const MAX_TRIANGLES_PER_DEFINITION: usize = 200_000;
 const MAX_TEXT_BYTES: usize = 1_024;
 const MAX_ABS_MM: f64 = 1_000_000.0;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ParsedSketchupScene {
     definitions: Vec<ParsedDefinition>,
     instances: Vec<ParsedInstance>,
@@ -56,7 +56,7 @@ impl ParsedSketchupScene {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 struct ParsedDefinition {
     source_id: String,
     name: String,
@@ -64,7 +64,7 @@ struct ParsedDefinition {
     triangles: Vec<[u32; 3]>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 struct ParsedInstance {
     definition: String,
     name: String,

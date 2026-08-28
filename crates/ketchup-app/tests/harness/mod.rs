@@ -35,6 +35,7 @@ const SCREEN: Vec2 = Vec2::new(1600.0, 1000.0);
 pub struct ScriptedAssistantTransport {
     responses: Mutex<VecDeque<(String, AssistantChatResult)>>,
     request_ids: Mutex<Vec<String>>,
+    contexts: Mutex<Vec<serde_json::Value>>,
     cancellation_requests: BTreeSet<String>,
     started_cancellation_requests: AtomicUsize,
     completed_cancellations: AtomicUsize,
@@ -45,6 +46,7 @@ impl ScriptedAssistantTransport {
         Self {
             responses: Mutex::new(responses.into_iter().collect()),
             request_ids: Mutex::new(Vec::new()),
+            contexts: Mutex::new(Vec::new()),
             cancellation_requests: BTreeSet::new(),
             started_cancellation_requests: AtomicUsize::new(0),
             completed_cancellations: AtomicUsize::new(0),
@@ -64,6 +66,10 @@ impl ScriptedAssistantTransport {
         self.request_ids.lock().unwrap().clone()
     }
 
+    pub fn contexts(&self) -> Vec<serde_json::Value> {
+        self.contexts.lock().unwrap().clone()
+    }
+
     pub fn started_cancellation_requests(&self) -> usize {
         self.started_cancellation_requests.load(Ordering::Acquire)
     }
@@ -79,10 +85,11 @@ impl AssistantTransport for ScriptedAssistantTransport {
         _handshake: AssistantHandshake,
         request_id: &str,
         message: &str,
-        _context: &serde_json::Value,
+        context: &serde_json::Value,
         cancellation: AssistantCancellation,
     ) -> Result<AssistantChatResult, String> {
         self.request_ids.lock().unwrap().push(request_id.to_owned());
+        self.contexts.lock().unwrap().push(context.clone());
         if self.cancellation_requests.contains(message) {
             self.started_cancellation_requests
                 .fetch_add(1, Ordering::AcqRel);
@@ -446,6 +453,22 @@ impl Shell {
         self.advance(CLICK_STEP);
         self.button(position, modifiers, false);
         self.harness.input_mut().modifiers = Modifiers::NONE;
+        self.harness.run();
+    }
+
+    /// Press and release the secondary button at `position` to open a viewport menu.
+    pub fn secondary_click_at(&mut self, position: Pos2) {
+        self.gap();
+        self.move_pointer(position);
+        for pressed in [true, false] {
+            self.event(egui::Event::PointerButton {
+                pos: position,
+                button: egui::PointerButton::Secondary,
+                pressed,
+                modifiers: Modifiers::NONE,
+            });
+            self.advance(CLICK_STEP);
+        }
         self.harness.run();
     }
 

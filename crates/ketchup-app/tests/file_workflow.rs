@@ -473,6 +473,8 @@ fn confirmed_legacy_migration_writes_and_activates_only_a_new_copy() {
     let directory = tempfile::tempdir().unwrap();
     let source = directory.path().join("legacy.ketchup");
     let destination = directory.path().join("migrated.ketchup");
+    let occupied_destination = directory.path().join("occupied.ketchup");
+    let replay_destination = directory.path().join("replayed.ketchup");
     let source_bytes = lossy_legacy_document();
     std::fs::write(&source, &source_bytes).unwrap();
     let script = ScriptedFileDialogs::new()
@@ -483,7 +485,11 @@ fn confirmed_legacy_migration_writes_and_activates_only_a_new_copy() {
     let active_digest = shell.app().canonical_digest();
 
     shell.click_menu_command("menu-file", AppCommand::Open);
-    assert!(shell.app().has_review_candidate());
+    assert!(
+        shell.app().has_review_candidate(),
+        "{}",
+        shell.app().action_digest()
+    );
     assert_eq!(shell.app().canonical_digest(), active_digest);
     assert!(
         !shell
@@ -501,12 +507,43 @@ fn confirmed_legacy_migration_writes_and_activates_only_a_new_copy() {
     assert_eq!(shell.app().canonical_digest(), active_digest);
     assert_eq!(std::fs::read(&source).unwrap(), source_bytes);
 
+    std::fs::write(&source, b"tampered after review").unwrap();
+    assert!(
+        !shell
+            .app_mut()
+            .confirm_review_candidate_migration_to(&destination)
+    );
+    assert!(!destination.exists());
+    assert!(shell.app().has_review_candidate());
+    assert_eq!(shell.app().canonical_digest(), active_digest);
+    std::fs::write(&source, &source_bytes).unwrap();
+
+    let occupied_bytes = b"preserve existing migration destination";
+    std::fs::write(&occupied_destination, occupied_bytes).unwrap();
+    assert!(
+        !shell
+            .app_mut()
+            .confirm_review_candidate_migration_to(&occupied_destination)
+    );
+    assert_eq!(
+        std::fs::read(&occupied_destination).unwrap(),
+        occupied_bytes
+    );
+    assert!(shell.app().has_review_candidate());
+    assert_eq!(shell.app().canonical_digest(), active_digest);
+
     assert!(
         shell
             .app_mut()
             .confirm_review_candidate_migration_to(&destination)
     );
     assert!(!shell.app().has_review_candidate());
+    assert!(
+        !shell
+            .app_mut()
+            .confirm_review_candidate_migration_to(&replay_destination)
+    );
+    assert!(!replay_destination.exists());
     assert_eq!(shell.app().document_path(), Some(destination.as_path()));
     assert_eq!(shell.app().document_revision(), 8);
     assert!(!shell.app().is_dirty());
@@ -523,6 +560,32 @@ fn confirmed_legacy_migration_writes_and_activates_only_a_new_copy() {
             .disposition(),
         ketchup_core::persistence::LoadDisposition::EditableLossless
     );
+}
+
+#[test]
+fn legacy_migration_review_rejects_a_stale_active_document_without_writing() {
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("legacy-stale.ketchup");
+    let destination = directory.path().join("stale-migration.ketchup");
+    std::fs::write(&source, lossy_legacy_document()).unwrap();
+    let script = ScriptedFileDialogs::new()
+        .queue_open(&source)
+        .always_discard();
+    let mut shell = Shell::with_dialogs(script);
+
+    shell.click_menu_command("menu-file", AppCommand::Open);
+    assert!(shell.app().has_review_candidate());
+    assert!(shell.app_mut().create_box());
+    let stale_state = canonical_state(&shell);
+
+    assert!(
+        !shell
+            .app_mut()
+            .confirm_review_candidate_migration_to(&destination)
+    );
+    assert!(!destination.exists());
+    assert!(shell.app().has_review_candidate());
+    assert_eq!(canonical_state(&shell), stale_state);
 }
 
 #[test]
@@ -2650,17 +2713,14 @@ fn file_import_stl_cancel_and_every_refusal_leave_canonical_state_unchanged() {
     assert_state_and_history_unchanged(&mut shell, &before, &before_history);
 
     shell.click_menu_command("menu-file", AppCommand::ImportMeshStl);
-    shell.click_button_label(&shell.catalog().text("dialog-import-stl-confirm"));
     assert!(digest_starts_like(&shell, "error-import-stl"));
     assert_state_and_history_unchanged(&mut shell, &before, &before_history);
 
     shell.click_menu_command("menu-file", AppCommand::ImportMeshStl);
-    shell.click_button_label(&shell.catalog().text("dialog-import-stl-confirm"));
     assert!(digest_starts_like(&shell, "error-import-stl"));
     assert_state_and_history_unchanged(&mut shell, &before, &before_history);
 
     shell.click_menu_command("menu-file", AppCommand::ImportMeshStl);
-    shell.click_button_label(&shell.catalog().text("dialog-import-stl-confirm"));
     assert!(digest_starts_like(&shell, "error-import-stl"));
     assert_state_and_history_unchanged(&mut shell, &before, &before_history);
 

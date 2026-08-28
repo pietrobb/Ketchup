@@ -33,6 +33,11 @@ pub const GENERAL_BODY_VALIDATOR_INPUT_V1: &str = "ketchup.general-body-validati
 pub const GENERAL_BODY_VALIDATION_POLICY_V1: &str = "ketchup.policy.general-body-validation.v1";
 pub const GENERAL_BODY_AABB_METHOD_V1: &str =
     "ketchup.method.general-body-aabb-envelope.cpu-f64.v1";
+pub const GRAVITY_SUPPORT_VALIDATOR_CONTRACT_V1: &str = "ketchup.validator.gravity-support.v1";
+pub const GRAVITY_SUPPORT_VALIDATOR_IMPLEMENTATION_V1: &str =
+    "ketchup.builtin.gravity-support.aabb-cpu-f64.v1";
+pub const GRAVITY_SUPPORT_VALIDATOR_INPUT_V1: &str = "ketchup.gravity-support-input.v1";
+pub const GRAVITY_SUPPORT_VALIDATION_POLICY_V1: &str = "ketchup.policy.gravity-support.v1";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ExactValidationError {
@@ -104,6 +109,7 @@ impl ExactBodyParticipant {
             ExactFaceRole::Top,
             ExactFaceRole::Bottom,
             ExactFaceRole::East,
+            ExactFaceRole::West,
             ExactFaceRole::CutWest,
             ExactFaceRole::CutEast,
             ExactFaceRole::CutSouth,
@@ -121,6 +127,7 @@ impl ExactBodyParticipant {
                 ExactFaceRole::Top => (2, 1),
                 ExactFaceRole::Bottom => (2, -1),
                 ExactFaceRole::East => (0, 1),
+                ExactFaceRole::West => (0, -1),
                 ExactFaceRole::CutWest => (0, -1),
                 ExactFaceRole::CutEast => (0, 1),
                 ExactFaceRole::CutSouth => (1, -1),
@@ -135,6 +142,7 @@ impl ExactBodyParticipant {
                 | ExactFaceRole::LinearSide
                 | ExactFaceRole::CutCircle
                 | ExactFaceRole::CutLinear
+                | ExactFaceRole::CutArc
                 | ExactFaceRole::RevolveBottom
                 | ExactFaceRole::RevolveBody
                 | ExactFaceRole::RevolveShoulder
@@ -791,6 +799,12 @@ pub enum GeneralBodySource {
         feature_id: FeatureId,
         geometry_digest: String,
     },
+    CanonicalExtrusion {
+        definition_id: DefinitionId,
+        profile_id: FeatureId,
+        extrusion_id: FeatureId,
+        geometry_digest: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -849,25 +863,72 @@ impl GeneralBodyParticipant {
                 let definition = snapshot
                     .definition(occurrence.definition_id)
                     .ok_or(GeneralBodyValidationError::UnavailableOrAmbiguousGeometry)?;
-                let [feature_id] = definition.feature_ids() else {
-                    return Err(GeneralBodyValidationError::UnavailableOrAmbiguousGeometry);
-                };
-                let FeatureKind::MeshBody(spec) = snapshot
-                    .feature(*feature_id)
-                    .ok_or(GeneralBodyValidationError::UnavailableOrAmbiguousGeometry)?
-                    .kind()
-                else {
-                    return Err(GeneralBodyValidationError::UnavailableOrAmbiguousGeometry);
-                };
-                (
-                    GeneralBodySource::CanonicalMesh {
-                        definition_id: occurrence.definition_id,
-                        feature_id: *feature_id,
-                        geometry_digest: mesh_geometry_digest(spec),
-                    },
-                    spec.vertices_mm.clone(),
-                    false,
-                )
+                match definition.feature_ids() {
+                    [feature_id] => {
+                        let FeatureKind::MeshBody(spec) = snapshot
+                            .feature(*feature_id)
+                            .ok_or(GeneralBodyValidationError::UnavailableOrAmbiguousGeometry)?
+                            .kind()
+                        else {
+                            return Err(GeneralBodyValidationError::UnavailableOrAmbiguousGeometry);
+                        };
+                        (
+                            GeneralBodySource::CanonicalMesh {
+                                definition_id: occurrence.definition_id,
+                                feature_id: *feature_id,
+                                geometry_digest: mesh_geometry_digest(spec),
+                            },
+                            spec.vertices_mm.clone(),
+                            false,
+                        )
+                    }
+                    [profile_id, extrusion_id] => {
+                        let FeatureKind::Profile { points_mm } = snapshot
+                            .feature(*profile_id)
+                            .ok_or(GeneralBodyValidationError::UnavailableOrAmbiguousGeometry)?
+                            .kind()
+                        else {
+                            return Err(GeneralBodyValidationError::UnavailableOrAmbiguousGeometry);
+                        };
+                        let FeatureKind::Extrusion { profile, height } = snapshot
+                            .feature(*extrusion_id)
+                            .ok_or(GeneralBodyValidationError::UnavailableOrAmbiguousGeometry)?
+                            .kind()
+                        else {
+                            return Err(GeneralBodyValidationError::UnavailableOrAmbiguousGeometry);
+                        };
+                        if profile != profile_id || height.millimetres() <= 0.0 {
+                            return Err(GeneralBodyValidationError::UnavailableOrAmbiguousGeometry);
+                        }
+                        let vertices = points_mm
+                            .iter()
+                            .flat_map(|point| {
+                                [
+                                    [point[0], point[1], 0.0],
+                                    [point[0], point[1], height.millimetres()],
+                                ]
+                            })
+                            .collect::<Vec<_>>();
+                        let exact_box = is_axis_aligned_rectangle_profile(points_mm)
+                            && is_translation_only(transform);
+                        (
+                            GeneralBodySource::CanonicalExtrusion {
+                                definition_id: occurrence.definition_id,
+                                profile_id: *profile_id,
+                                extrusion_id: *extrusion_id,
+                                geometry_digest: canonical_extrusion_geometry_digest(
+                                    points_mm,
+                                    height.millimetres(),
+                                ),
+                            },
+                            vertices,
+                            exact_box,
+                        )
+                    }
+                    _ => {
+                        return Err(GeneralBodyValidationError::UnavailableOrAmbiguousGeometry);
+                    }
+                }
             };
         let bounds = transformed_body_bounds(transform, &vertices)?;
         let evidence_class = if exact_box {
@@ -933,6 +994,75 @@ impl GeneralClearanceCase {
     }
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct GravitySupportParticipant {
+    pub body: GeneralBodyParticipant,
+    pub explicitly_grounded: bool,
+}
+
+impl GravitySupportParticipant {
+    #[must_use]
+    pub const fn new(body: GeneralBodyParticipant, explicitly_grounded: bool) -> Self {
+        Self {
+            body,
+            explicitly_grounded,
+        }
+    }
+}
+
+#[must_use]
+pub fn gravity_support_validator_descriptor() -> ValidatorDescriptor {
+    ValidatorDescriptor {
+        contract_id: GRAVITY_SUPPORT_VALIDATOR_CONTRACT_V1.to_owned(),
+        contract_version: 1,
+        implementation_id: GRAVITY_SUPPORT_VALIDATOR_IMPLEMENTATION_V1.to_owned(),
+        implementation_version: "1.0.0".to_owned(),
+        input_schema: GRAVITY_SUPPORT_VALIDATOR_INPUT_V1.to_owned(),
+        validation_class: ValidationClass::StructuralBestEffort,
+        read_scopes: vec![ReadScope::CanonicalGraph, ReadScope::DerivedGeometry],
+        deterministic: true,
+        limits: ResourceLimits {
+            maximum_input_bytes: 16 * 1024 * 1024,
+            maximum_work_units: 1_000_000,
+        },
+    }
+}
+
+#[must_use]
+pub fn gravity_support_validation_policy() -> ValidationPolicyRef {
+    ValidationPolicyRef {
+        policy_id: GRAVITY_SUPPORT_VALIDATION_POLICY_V1.to_owned(),
+        policy_version: 1,
+        contract_id: GRAVITY_SUPPORT_VALIDATOR_CONTRACT_V1.to_owned(),
+        contract_version: 1,
+        requirement: PolicyRequirement::Optional,
+        severity: PolicySeverity::Warning,
+        blocks_release: false,
+        governing_standard: None,
+    }
+}
+
+pub struct BuiltinGravitySupportValidator {
+    descriptor: ValidatorDescriptor,
+    tolerance: TolerancePolicy,
+}
+
+impl BuiltinGravitySupportValidator {
+    #[must_use]
+    pub fn new(tolerance: TolerancePolicy) -> Self {
+        Self {
+            descriptor: gravity_support_validator_descriptor(),
+            tolerance,
+        }
+    }
+}
+
+impl Default for BuiltinGravitySupportValidator {
+    fn default() -> Self {
+        Self::new(TolerancePolicy::default())
+    }
+}
+
 #[must_use]
 pub fn general_body_validator_descriptor() -> ValidatorDescriptor {
     ValidatorDescriptor {
@@ -983,6 +1113,76 @@ impl BuiltinGeneralBodyValidator {
 impl Default for BuiltinGeneralBodyValidator {
     fn default() -> Self {
         Self::new(TolerancePolicy::default())
+    }
+}
+
+impl HostNeutralValidator<[GravitySupportParticipant]> for BuiltinGravitySupportValidator {
+    fn descriptor(&self) -> &ValidatorDescriptor {
+        &self.descriptor
+    }
+
+    fn invoke(
+        &self,
+        execution: ValidationExecution<'_, [GravitySupportParticipant]>,
+    ) -> ValidationReport {
+        let evidence_class = gravity_input_evidence(execution.input, self.tolerance);
+        let participant_count = u64::try_from(execution.input.len()).unwrap_or(u64::MAX);
+        let work_units = participant_count.saturating_mul(participant_count);
+        if work_units > self.descriptor.limits.maximum_work_units {
+            return ValidationReport::not_evaluated(
+                execution.invocation,
+                evidence_class,
+                "gravity-support input exceeds its declared work envelope",
+            );
+        }
+        let input_bytes = gravity_support_input_bytes(execution.input);
+        if u64::try_from(input_bytes.len()).unwrap_or(u64::MAX)
+            > self.descriptor.limits.maximum_input_bytes
+        {
+            return ValidationReport::not_evaluated(
+                execution.invocation,
+                evidence_class,
+                "gravity-support input exceeds its declared byte envelope",
+            );
+        }
+        let descriptor_matches = execution.invocation.protocol
+            == crate::validation::VALIDATOR_PROTOCOL_V1
+            && execution.invocation.contract_id == self.descriptor.contract_id
+            && execution.invocation.contract_version == self.descriptor.contract_version
+            && execution.invocation.implementation_id == self.descriptor.implementation_id
+            && execution.invocation.implementation_version
+                == self.descriptor.implementation_version
+            && execution.invocation.input_schema == self.descriptor.input_schema
+            && execution.invocation.validation_class == self.descriptor.validation_class
+            && execution.invocation.read_scopes == self.descriptor.read_scopes
+            && execution.invocation.deterministic == self.descriptor.deterministic
+            && execution.invocation.resource_limits == self.descriptor.limits
+            && execution.invocation.diagnostic_schema == DIAGNOSTIC_SCHEMA_V1;
+        let policy_matches = execution.invocation.policy_id == execution.policy.policy_id
+            && execution.invocation.policy_version == execution.policy.policy_version
+            && execution.invocation.policy_severity == execution.policy.severity
+            && execution.invocation.governing_standard == execution.policy.governing_standard
+            && execution.invocation.contract_id == execution.policy.contract_id
+            && execution.invocation.contract_version == execution.policy.contract_version;
+        let reason = if !execution.invocation.is_current(execution.snapshot) {
+            Some("snapshot binding is stale or mismatched")
+        } else if !descriptor_matches {
+            Some("validator descriptor envelope is incompatible")
+        } else if !policy_matches {
+            Some("validation policy envelope is incompatible")
+        } else if !execution.invocation.accepted_derived_results.is_empty()
+            || !execution.invocation.accepted_exact_results.is_empty()
+        {
+            Some("legacy narrow result identities are incompatible with gravity-support input")
+        } else if execution.invocation.input_digest != sha256_hex(&input_bytes) {
+            Some("validator input digest does not match the supplied input")
+        } else {
+            None
+        };
+        if let Some(reason) = reason {
+            return ValidationReport::not_evaluated(execution.invocation, evidence_class, reason);
+        }
+        evaluate_gravity_support(execution.invocation, execution.input, self.tolerance)
     }
 }
 
@@ -1056,6 +1256,177 @@ impl HostNeutralValidator<[GeneralClearanceCase]> for BuiltinGeneralBodyValidato
 }
 
 #[must_use]
+pub fn gravity_support_input_bytes(participants: &[GravitySupportParticipant]) -> Vec<u8> {
+    let mut output = Vec::new();
+    push_bytes(&mut output, GRAVITY_SUPPORT_VALIDATOR_INPUT_V1.as_bytes());
+    output.extend_from_slice(&(participants.len() as u64).to_le_bytes());
+    for participant in participants {
+        push_general_participant(&mut output, &participant.body);
+        output.push(u8::from(participant.explicitly_grounded));
+    }
+    output
+}
+
+#[derive(Clone, Debug)]
+enum GravitySupportSource {
+    Floor,
+    ExplicitGrounding,
+    Contact(usize),
+}
+
+fn evaluate_gravity_support(
+    invocation: ValidationInvocation,
+    participants: &[GravitySupportParticipant],
+    tolerance: TolerancePolicy,
+) -> ValidationReport {
+    let epsilon = tolerance.epsilon_mm();
+    let mut support = participants
+        .iter()
+        .map(|participant| {
+            if participant.explicitly_grounded {
+                Some(GravitySupportSource::ExplicitGrounding)
+            } else if participant.body.bounds.min()[2].abs() <= epsilon {
+                Some(GravitySupportSource::Floor)
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+    loop {
+        let mut changed = false;
+        for candidate_index in 0..participants.len() {
+            if support[candidate_index].is_some() {
+                continue;
+            }
+            let candidate = &participants[candidate_index].body;
+            if let Some(supporter_index) = (0..participants.len()).find(|&supporter_index| {
+                supporter_index != candidate_index
+                    && support[supporter_index].is_some()
+                    && body_rests_on(candidate, &participants[supporter_index].body, epsilon)
+            }) {
+                support[candidate_index] = Some(GravitySupportSource::Contact(supporter_index));
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    let mut evidence_counts = EvidenceCounts::default();
+    let mut diagnostics = Vec::with_capacity(participants.len());
+    let mut failed = false;
+    for (participant, source) in participants.iter().zip(support) {
+        let evidence_class = match &source {
+            Some(GravitySupportSource::Contact(supporter_index)) => EvidenceClass::weakest(
+                [
+                    &participant.body.evidence_class,
+                    &participants[*supporter_index].body.evidence_class,
+                ],
+                general_tolerant_evidence(tolerance),
+            ),
+            _ => participant.body.evidence_class.clone(),
+        };
+        evidence_counts.record(&evidence_class);
+        let (code, severity, evidence) = match source {
+            Some(GravitySupportSource::Floor) => (
+                "gravity.supported-floor",
+                DiagnosticSeverity::Information,
+                format!(
+                    "body={}; gravity_axis=-Z; floor_z_mm=0",
+                    instance_path_label(&participant.body.instance_path)
+                ),
+            ),
+            Some(GravitySupportSource::ExplicitGrounding) => (
+                "gravity.supported-explicit",
+                DiagnosticSeverity::Information,
+                format!(
+                    "body={}; gravity_axis=-Z; canonical_grounding=true",
+                    instance_path_label(&participant.body.instance_path)
+                ),
+            ),
+            Some(GravitySupportSource::Contact(supporter_index)) => (
+                "gravity.supported-contact",
+                DiagnosticSeverity::Information,
+                format!(
+                    "body={}; gravity_axis=-Z; supported_by={}",
+                    instance_path_label(&participant.body.instance_path),
+                    instance_path_label(&participants[supporter_index].body.instance_path)
+                ),
+            ),
+            None => {
+                failed = true;
+                (
+                    "gravity.unsupported",
+                    DiagnosticSeverity::Warning,
+                    format!(
+                        "body={}; gravity_axis=-Z; no_ground_or_supported_lower_contact=true",
+                        instance_path_label(&participant.body.instance_path)
+                    ),
+                )
+            }
+        };
+        diagnostics.push(ValidationDiagnostic {
+            schema: DIAGNOSTIC_SCHEMA_V1,
+            code: code.to_owned(),
+            severity,
+            evidence_class,
+            location: DiagnosticLocation {
+                entity: None,
+                exact_body: None,
+                joint: None,
+            },
+            policy_id: invocation.policy_id.clone(),
+            policy_version: invocation.policy_version,
+            evidence,
+        });
+    }
+    ValidationReport {
+        invocation,
+        state: if failed {
+            ValidationState::Failed
+        } else {
+            ValidationState::Passed
+        },
+        evidence_counts,
+        diagnostics,
+        assumptions: vec![
+            "gravity acts along world -Z".to_owned(),
+            "the world floor is the plane z=0 mm".to_owned(),
+            "bodies are rigid and AABB face overlap represents load-bearing contact".to_owned(),
+        ],
+        unresolved_conditions: vec![],
+    }
+}
+
+fn body_rests_on(
+    candidate: &GeneralBodyParticipant,
+    supporter: &GeneralBodyParticipant,
+    epsilon: f64,
+) -> bool {
+    let candidate_bounds = candidate.bounds;
+    let supporter_bounds = supporter.bounds;
+    (candidate_bounds.min()[2] - supporter_bounds.max()[2]).abs() <= epsilon
+        && (0..2).all(|axis| {
+            candidate_bounds.max()[axis].min(supporter_bounds.max()[axis])
+                - candidate_bounds.min()[axis].max(supporter_bounds.min()[axis])
+                > epsilon
+        })
+}
+
+fn gravity_input_evidence(
+    participants: &[GravitySupportParticipant],
+    tolerance: TolerancePolicy,
+) -> EvidenceClass {
+    EvidenceClass::weakest(
+        participants
+            .iter()
+            .map(|participant| &participant.body.evidence_class),
+        general_tolerant_evidence(tolerance),
+    )
+}
+
+#[must_use]
 pub fn general_body_input_bytes(cases: &[GeneralClearanceCase]) -> Vec<u8> {
     let mut output = Vec::new();
     push_bytes(&mut output, GENERAL_BODY_VALIDATOR_INPUT_V1.as_bytes());
@@ -1080,10 +1451,13 @@ fn evaluate_general_clearance(
         let evidence_class = general_case_evidence(case, tolerance);
         evidence_counts.record(&evidence_class);
         let (relation, gap_mm) = clearance(case.left.bounds, case.right.bounds);
-        let passes =
-            relation == ExactClearanceRelation::Separated && gap_mm >= case.required_minimum_mm();
-        failed |= !passes;
         let collision_only = case.required_minimum_mm() == 0.0;
+        let passes = if collision_only {
+            relation != ExactClearanceRelation::Intersecting
+        } else {
+            relation == ExactClearanceRelation::Separated && gap_mm >= case.required_minimum_mm()
+        };
+        failed |= !passes;
         diagnostics.push(ValidationDiagnostic {
             schema: DIAGNOSTIC_SCHEMA_V1,
             code: match (collision_only, passes) {
@@ -1196,6 +1570,29 @@ fn is_translation_only(transform: Transform) -> bool {
             .all(|index| matrix[index] == 0.0)
 }
 
+fn is_axis_aligned_rectangle_profile(points_mm: &[[f64; 2]]) -> bool {
+    points_mm.len() == 4
+        && points_mm[0][1] == points_mm[1][1]
+        && points_mm[1][0] == points_mm[2][0]
+        && points_mm[2][1] == points_mm[3][1]
+        && points_mm[3][0] == points_mm[0][0]
+        && points_mm[1][0] > points_mm[0][0]
+        && points_mm[3][1] > points_mm[0][1]
+}
+
+fn canonical_extrusion_geometry_digest(points_mm: &[[f64; 2]], height_mm: f64) -> String {
+    let mut bytes = Vec::new();
+    push_bytes(&mut bytes, b"ketchup.canonical-profile-extrusion.v1");
+    bytes.extend_from_slice(&(points_mm.len() as u64).to_le_bytes());
+    for point in points_mm {
+        for coordinate in point {
+            bytes.extend_from_slice(&coordinate.to_bits().to_le_bytes());
+        }
+    }
+    bytes.extend_from_slice(&height_mm.to_bits().to_le_bytes());
+    sha256_hex(&bytes)
+}
+
 fn mesh_geometry_digest(spec: &crate::document::MeshBodySpec) -> String {
     let mut bytes = Vec::new();
     push_bytes(&mut bytes, spec.schema.as_bytes());
@@ -1242,6 +1639,18 @@ fn push_general_participant(output: &mut Vec<u8>, participant: &GeneralBodyParti
             output.extend_from_slice(&feature_id.0.to_le_bytes());
             push_bytes(output, geometry_digest.as_bytes());
         }
+        GeneralBodySource::CanonicalExtrusion {
+            definition_id,
+            profile_id,
+            extrusion_id,
+            geometry_digest,
+        } => {
+            output.push(2);
+            output.extend_from_slice(&definition_id.0.to_le_bytes());
+            output.extend_from_slice(&profile_id.0.to_le_bytes());
+            output.extend_from_slice(&extrusion_id.0.to_le_bytes());
+            push_bytes(output, geometry_digest.as_bytes());
+        }
     }
     push_aabb(output, participant.bounds);
     match &participant.evidence_class {
@@ -1275,6 +1684,63 @@ fn instance_path_label(path: &InstancePath) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn gravity_participant(
+        occurrence_id: u64,
+        minimum: [f64; 3],
+        maximum: [f64; 3],
+        explicitly_grounded: bool,
+    ) -> GravitySupportParticipant {
+        GravitySupportParticipant::new(
+            GeneralBodyParticipant {
+                instance_path: InstancePath::root(crate::document::OccurrenceId(occurrence_id)),
+                source: GeneralBodySource::CanonicalMesh {
+                    definition_id: DefinitionId(occurrence_id),
+                    feature_id: FeatureId(occurrence_id),
+                    geometry_digest: format!("geometry-{occurrence_id}"),
+                },
+                bounds: Aabb::bounded_volume(minimum, maximum).unwrap(),
+                evidence_class: EvidenceClass::Exact,
+            },
+            explicitly_grounded,
+        )
+    }
+
+    #[test]
+    fn gravity_support_propagates_from_floor_and_explicit_grounding() {
+        let snapshot = crate::document::DocumentStore::new().current();
+        let participants = vec![
+            gravity_participant(1, [0.0, 0.0, 0.0], [100.0, 100.0, 10.0], false),
+            gravity_participant(2, [10.0, 10.0, 10.0], [90.0, 90.0, 20.0], false),
+            gravity_participant(3, [20.0, 20.0, 20.0], [80.0, 80.0, 30.0], false),
+            gravity_participant(4, [200.0, 0.0, 50.0], [220.0, 20.0, 70.0], false),
+            gravity_participant(5, [300.0, 0.0, 100.0], [320.0, 20.0, 120.0], true),
+        ];
+        let validator = BuiltinGravitySupportValidator::default();
+        let policy = gravity_support_validation_policy();
+        let input = gravity_support_input_bytes(&participants);
+        let invocation = ValidationInvocation::bind(
+            &snapshot,
+            validator.descriptor(),
+            &policy,
+            Vec::new(),
+            &input,
+        );
+
+        let report = validator.invoke(ValidationExecution {
+            snapshot: &snapshot,
+            invocation,
+            policy: &policy,
+            input: &participants,
+        });
+
+        assert_eq!(report.state, ValidationState::Failed);
+        assert_eq!(report.diagnostics[0].code, "gravity.supported-floor");
+        assert_eq!(report.diagnostics[1].code, "gravity.supported-contact");
+        assert_eq!(report.diagnostics[2].code, "gravity.supported-contact");
+        assert_eq!(report.diagnostics[3].code, "gravity.unsupported");
+        assert_eq!(report.diagnostics[4].code, "gravity.supported-explicit");
+    }
 
     #[test]
     fn clearance_classifies_gap_touch_and_intersection() {

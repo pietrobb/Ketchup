@@ -1836,7 +1836,12 @@ fn load_document(
         let mut product = if schema == PRODUCT_SCHEMA {
             read_product(&mut reader, ProductSchemaCapabilities::PRODUCT_V2)?
         } else {
-            ProductModel::default()
+            let mut product = ProductModel::default();
+            let source_digest = crate::graph::sha256_bytes(bytes);
+            product.document_id = crate::document::DocumentId(
+                u64::from_le_bytes(source_digest[..8].try_into().expect("SHA-256 prefix")).max(1),
+            );
+            product
         };
         product.evaluator_nodes = nodes;
         if !reader.is_finished() {

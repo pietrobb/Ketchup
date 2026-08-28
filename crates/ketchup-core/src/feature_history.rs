@@ -1,11 +1,12 @@
 use crate::document::{
-    AuthoritativeDependency, BodyId, CanonicalCommand, CommandBatch, DefinitionId, Dimension,
-    DocumentStore, FeatureDependencyGraph, FeatureId, FeatureKind, Proposal, ProposalAssumption,
-    ProposalConfirmation, ProposalContext, ProposalGoal, ProposalPrepareError, ProposalPrincipal,
-    ProposalRisk, Snapshot,
+    AuthoritativeDependency, BodyId, BooleanOperation, CanonicalCommand, CommandBatch,
+    DefinitionId, Dimension, DocumentStore, FeatureDependencyGraph, FeatureId, FeatureKind,
+    Proposal, ProposalAssumption, ProposalConfirmation, ProposalContext, ProposalGoal,
+    ProposalPrepareError, ProposalPrincipal, ProposalRisk, Snapshot,
 };
 use crate::exact_product::{
-    BodySubshapeRef, ExactReferenceQuarantineReason, ExactReferenceResolution, ExactResultRegistry,
+    BodySubshapeRef, ExactFeatureChainRequest, ExactReferenceQuarantineReason,
+    ExactReferenceResolution, ExactResultRegistry,
 };
 use crate::sketch::{SketchConstraintId, SketchConstraintKind, WorkplaneSupport};
 use std::collections::{BTreeMap, BTreeSet};
@@ -123,6 +124,14 @@ pub struct BodyParameterEditRequest {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub struct BodyProfileTranslationRequest {
+    pub definition_id: DefinitionId,
+    pub body_id: BodyId,
+    pub profile_id: FeatureId,
+    pub delta_mm: [f64; 2],
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct BodyParameterEditPreview {
     pub source_revision: u64,
     pub source_digest: String,
@@ -143,6 +152,7 @@ pub enum BodyParameterEditError {
     FeatureOutsideBody(FeatureId, BodyId),
     CrossBodyAffected(FeatureId, BodyId),
     UnsupportedTarget(ExactParameterEditTarget),
+    InvalidCutPosition,
     History(FeatureHistoryError),
     Proposal(ProposalPrepareError),
 }
@@ -177,6 +187,9 @@ impl fmt::Display for BodyParameterEditError {
             Self::UnsupportedTarget(target) => {
                 write!(formatter, "unsupported exact parameter target: {target:?}")
             }
+            Self::InvalidCutPosition => formatter.write_str(
+                "moving the cut profile would leave the supported host or invalidate exact geometry",
+            ),
             Self::History(error) => error.fmt(formatter),
             Self::Proposal(error) => error.fmt(formatter),
         }
@@ -316,6 +329,153 @@ pub fn prepare_body_parameter_edit(
     let proposal = document
         .prepare_proposal_with_context(CommandBatch::new(commands), context)
         .map_err(BodyParameterEditError::Proposal)?;
+    Ok(BodyParameterEditPreview {
+        source_revision: snapshot.revision_id(),
+        source_digest: snapshot.canonical_digest(),
+        body_id: request.body_id,
+        affected_feature_ids: affected.into_iter().collect(),
+        unchanged_body_ids: definition
+            .bodies()
+            .filter_map(|body| (body.id() != request.body_id).then_some(body.id()))
+            .collect(),
+        proposal,
+    })
+}
+
+pub fn prepare_body_profile_translation(
+    document: &DocumentStore,
+    request: BodyProfileTranslationRequest,
+    principal: ProposalPrincipal,
+) -> Result<BodyParameterEditPreview, BodyParameterEditError> {
+    if !request.delta_mm.iter().all(|value| value.is_finite())
+        || (request.delta_mm[0] == 0.0 && request.delta_mm[1] == 0.0)
+    {
+        return Err(BodyParameterEditError::Empty);
+    }
+    let snapshot = document.current();
+    let definition = snapshot.definition(request.definition_id).ok_or(
+        BodyParameterEditError::DefinitionNotFound(request.definition_id),
+    )?;
+    if definition.body(request.body_id).is_none() {
+        return Err(BodyParameterEditError::BodyNotFound(
+            request.definition_id,
+            request.body_id,
+        ));
+    }
+    let feature = snapshot
+        .feature(request.profile_id)
+        .ok_or(BodyParameterEditError::FeatureNotFound(request.profile_id))?;
+    if feature.definition_id() != request.definition_id {
+        return Err(BodyParameterEditError::FeatureOutsideDefinition(
+            request.profile_id,
+            request.definition_id,
+        ));
+    }
+    if !matches!(
+        feature.kind(),
+        FeatureKind::Sketch(_)
+            | FeatureKind::Profile { .. }
+            | FeatureKind::SegmentProfile { .. }
+            | FeatureKind::SplineProfile { .. }
+    ) {
+        return Err(BodyParameterEditError::UnsupportedTarget(
+            ExactParameterEditTarget::FeatureDimension(request.profile_id),
+        ));
+    }
+    let graph = snapshot.feature_dependency_graph().map_err(|error| {
+        BodyParameterEditError::Proposal(ProposalPrepareError::Canonical(error))
+    })?;
+    let body_history = collect_body_history(
+        &snapshot,
+        request.definition_id,
+        request.body_id,
+        &graph,
+        graph.topological_order(),
+    )
+    .map_err(BodyParameterEditError::History)?;
+    if !body_history.contains(&request.profile_id) {
+        return Err(BodyParameterEditError::FeatureOutsideBody(
+            request.profile_id,
+            request.body_id,
+        ));
+    }
+    let affected = graph.dependent_closure(BTreeSet::from([request.profile_id]));
+    let is_cut_profile = affected.iter().any(|feature_id| {
+        snapshot
+            .feature(*feature_id)
+            .is_some_and(|feature| match feature.kind() {
+                FeatureKind::SketchPocket(spec) => spec.sketch == request.profile_id,
+                FeatureKind::ThroughCut { profile, .. } | FeatureKind::Pocket { profile, .. } => {
+                    *profile == request.profile_id
+                }
+                FeatureKind::Boolean {
+                    operation: BooleanOperation::Cut,
+                    tool,
+                    ..
+                } => snapshot.feature(*tool).is_some_and(|tool| {
+                    matches!(
+                        tool.kind(),
+                        FeatureKind::Extrusion { profile, .. } if *profile == request.profile_id
+                    )
+                }),
+                _ => false,
+            })
+    });
+    if !is_cut_profile {
+        return Err(BodyParameterEditError::UnsupportedTarget(
+            ExactParameterEditTarget::FeatureDimension(request.profile_id),
+        ));
+    }
+    for feature_id in &affected {
+        let feature = snapshot
+            .feature(*feature_id)
+            .ok_or(BodyParameterEditError::FeatureNotFound(*feature_id))?;
+        if feature.definition_id() != request.definition_id {
+            return Err(BodyParameterEditError::FeatureOutsideDefinition(
+                *feature_id,
+                request.definition_id,
+            ));
+        }
+        let ownership = definition
+            .feature_body_ownership(*feature_id)
+            .ok_or(BodyParameterEditError::FeatureNotFound(*feature_id))?;
+        if let Some(output_body_id) = ownership.output_body_id()
+            && output_body_id != request.body_id
+        {
+            return Err(BodyParameterEditError::CrossBodyAffected(
+                *feature_id,
+                output_body_id,
+            ));
+        }
+    }
+
+    let proposal = document
+        .prepare_proposal_with_context(
+            CommandBatch::new(vec![CanonicalCommand::TranslateProfile {
+                id: request.profile_id,
+                delta_mm: request.delta_mm,
+            }]),
+            ProposalContext {
+                principal,
+                goal: ProposalGoal::CanonicalPreview,
+                assumptions: vec![ProposalAssumption::TargetExists(
+                    AuthoritativeDependency::Feature(request.profile_id),
+                )],
+                risk: ProposalRisk::Standard,
+                confirmation: ProposalConfirmation::ReviewRequired,
+                requested_budget: crate::document::ProposalBudget::HOST_MAX,
+            },
+        )
+        .map_err(BodyParameterEditError::Proposal)?;
+    let candidate = document.preview_batch(proposal.batch()).map_err(|error| {
+        BodyParameterEditError::Proposal(ProposalPrepareError::Canonical(error))
+    })?;
+    ExactFeatureChainRequest::from_snapshot_for_body(
+        &candidate,
+        request.definition_id,
+        request.body_id,
+    )
+    .map_err(|_| BodyParameterEditError::InvalidCutPosition)?;
     Ok(BodyParameterEditPreview {
         source_revision: snapshot.revision_id(),
         source_digest: snapshot.canonical_digest(),

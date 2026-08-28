@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+use ketchup_core::exact_product::ExactCircleProfile;
 use ketchup_core::graph::sha256_hex;
 use ketchup_core::import::{
     MAX_STEP_MESH_TRIANGLES, MAX_STEP_SOURCE_BYTES, StepImportMesh, StepMeshTriangle,
@@ -10,7 +11,8 @@ use ketchup_exact::{
     RectangleExtrudeSpec, RectangleOffsetSpec, RectangleSweepSpec, ReferenceResolution, Size3,
     SplineLoftSection, SplineLoftSpec, StabilityClass, capture_bounded_pocket_references,
     capture_bounded_through_cut_references, capture_box_shell_references,
-    capture_circle_extrusion_references, capture_circular_through_cut_references,
+    capture_circle_extrusion_references, capture_circular_pocket_references,
+    capture_circular_split_references, capture_circular_through_cut_references,
     capture_contained_polygon_intersection_references, capture_contained_polygon_union_references,
     capture_general_revolve_references, capture_guaranteed_references,
     capture_half_lap_notch_references, capture_mixed_profile_extrusion_references,
@@ -1320,19 +1322,55 @@ fn p3_circular_split_response(
     let elapsed = started.elapsed().as_nanos();
     match result {
         Ok(mut output) => {
-            let references = match capture_rectangular_split_references(
-                &mut output,
-                document_id,
-                producer_feature_id,
-            ) {
+            let side_overlap = ExactCircleProfile {
+                center_x_bits: bits[3],
+                center_y_bits: bits[4],
+                radius_bits: bits[5],
+                clockwise: false,
+            };
+            let side_overlap = side_overlap
+                .side_overlap(f64::from_bits(bits[0]), f64::from_bits(bits[1]))
+                .or_else(|| {
+                    side_overlap.corner_overlap(f64::from_bits(bits[0]), f64::from_bits(bits[1]))
+                })
+                .or_else(|| {
+                    side_overlap
+                        .outside_side_overlap(f64::from_bits(bits[0]), f64::from_bits(bits[1]))
+                })
+                .or_else(|| {
+                    side_overlap
+                        .center_on_side_overlap(f64::from_bits(bits[0]), f64::from_bits(bits[1]))
+                })
+                .or_else(|| {
+                    side_overlap
+                        .center_on_corner_overlap(f64::from_bits(bits[0]), f64::from_bits(bits[1]))
+                })
+                .or_else(|| {
+                    side_overlap
+                        .outside_corner_overlap(f64::from_bits(bits[0]), f64::from_bits(bits[1]))
+                })
+                .is_some();
+            let references = match if side_overlap {
+                capture_circular_split_references(&mut output, document_id, producer_feature_id)
+            } else {
+                capture_rectangular_split_references(&mut output, document_id, producer_feature_id)
+            } {
                 Ok(references) => references,
                 Err(error) => return format!("ERR {}", error.code.as_str()),
             };
-            let roles = [
-                ("extrusion.top", "profile.face"),
-                ("extrusion.bottom", "profile.face"),
-                ("extrusion.side(profile_edge=east)", "profile.edge.east"),
-            ];
+            let roles = if side_overlap {
+                [
+                    ("extrusion.top", "profile.face"),
+                    ("extrusion.bottom", "profile.face"),
+                    ("extrusion.side(profile_edge=circle)", "profile.edge.circle"),
+                ]
+            } else {
+                [
+                    ("extrusion.top", "profile.face"),
+                    ("extrusion.bottom", "profile.face"),
+                    ("extrusion.side(profile_edge=east)", "profile.edge.east"),
+                ]
+            };
             let evidence = roles.map(|(role, source)| {
                 let candidates = references
                     .iter()
@@ -1403,6 +1441,28 @@ fn p3_circular_cut_response(
         depth_mm: f64::from_bits(bits[1]),
         height_mm: f64::from_bits(bits[2]),
     };
+    let circle = ExactCircleProfile {
+        center_x_bits: bits[3],
+        center_y_bits: bits[4],
+        radius_bits: bits[5],
+        clockwise: true,
+    };
+    let circular_boundary_overlap = circle.side_overlap(base.width_mm, base.depth_mm).is_some()
+        || circle
+            .corner_overlap(base.width_mm, base.depth_mm)
+            .is_some()
+        || circle
+            .outside_side_overlap(base.width_mm, base.depth_mm)
+            .is_some()
+        || circle
+            .center_on_side_overlap(base.width_mm, base.depth_mm)
+            .is_some()
+        || circle
+            .center_on_corner_overlap(base.width_mm, base.depth_mm)
+            .is_some()
+        || circle
+            .outside_corner_overlap(base.width_mm, base.depth_mm)
+            .is_some();
     if pocket_depth_mm.is_some_and(|depth_mm| {
         !depth_mm.is_finite() || depth_mm <= 0.0 || depth_mm >= base.height_mm
     }) {
@@ -1433,20 +1493,49 @@ fn p3_circular_cut_response(
     let elapsed = started.elapsed().as_nanos();
     match result {
         Ok(mut output) => {
-            let references = match capture_circular_through_cut_references(
-                &mut output,
-                document_id,
-                producer_feature_id,
-                base,
-            ) {
+            let captured =
+                if let Some(depth_mm) = pocket_depth_mm.filter(|_| circular_boundary_overlap) {
+                    capture_circular_pocket_references(
+                        &mut output,
+                        document_id,
+                        producer_feature_id,
+                        base,
+                        base.height_mm - depth_mm,
+                    )
+                } else {
+                    capture_circular_through_cut_references(
+                        &mut output,
+                        document_id,
+                        producer_feature_id,
+                        base,
+                    )
+                };
+            let references = match captured {
                 Ok(references) => references,
                 Err(error) => return format!("ERR {}", error.code.as_str()),
             };
+            let Some(host_side_role) = references
+                .iter()
+                .map(|reference| reference.semantic_role.as_str())
+                .find(|role| {
+                    matches!(
+                        *role,
+                        "extrusion.side(profile_edge=east)" | "extrusion.side(profile_edge=west)"
+                    )
+                })
+            else {
+                return "ERR incomplete_history".to_owned();
+            };
             let mut evidence = Vec::new();
+            let bottom_or_floor_role = if pocket_depth_mm.is_some() && circular_boundary_overlap {
+                "pocket.floor"
+            } else {
+                "extrusion.bottom"
+            };
             for role in [
                 "extrusion.top",
-                "extrusion.bottom",
-                "extrusion.side(profile_edge=east)",
+                bottom_or_floor_role,
+                host_side_role,
                 "through_cut.wall.circle",
             ] {
                 let Some(reference) = references
@@ -2044,16 +2133,56 @@ fn p3_polygon_cut_response(
                 document_id,
                 producer_feature_id,
                 pocket_depth_mm.map(|depth| base.height_mm - depth),
-                pocket_depth_mm.map(|_| segments),
+                Some(segments),
             ) {
                 Ok(references) => references,
                 Err(error) => return format!("ERR {}", error.code.as_str()),
             };
+            let retained_side_roles = references
+                .iter()
+                .filter_map(|reference| {
+                    match (
+                        reference.semantic_role.as_str(),
+                        reference.source_element_id.as_str(),
+                    ) {
+                        ("extrusion.side(profile_edge=east)", "profile.edge.east") => {
+                            Some(("extrusion.side(profile_edge=east)", "profile.edge.east"))
+                        }
+                        ("extrusion.side(profile_edge=west)", "profile.edge.west") => {
+                            Some(("extrusion.side(profile_edge=west)", "profile.edge.west"))
+                        }
+                        _ => None,
+                    }
+                })
+                .collect::<Vec<_>>();
+            let [retained_side_role] = retained_side_roles.as_slice() else {
+                return "ERR incomplete_history".to_owned();
+            };
+            let cut_wall_roles = references
+                .iter()
+                .filter_map(|reference| {
+                    match (
+                        reference.semantic_role.as_str(),
+                        reference.source_element_id.as_str(),
+                    ) {
+                        ("through_cut.wall.line.0", "cut_profile.edge.line.0") => {
+                            Some(("through_cut.wall.line.0", "cut_profile.edge.line.0"))
+                        }
+                        ("through_cut.wall.arc.0", "cut_profile.edge.arc.0") => {
+                            Some(("through_cut.wall.arc.0", "cut_profile.edge.arc.0"))
+                        }
+                        _ => None,
+                    }
+                })
+                .collect::<Vec<_>>();
+            let [cut_wall_role] = cut_wall_roles.as_slice() else {
+                return "ERR incomplete_history".to_owned();
+            };
             let roles = [
                 ("extrusion.top", "profile.face"),
                 ("extrusion.bottom", "profile.face"),
-                ("extrusion.side(profile_edge=east)", "profile.edge.east"),
-                ("through_cut.wall.line.0", "cut_profile.edge.line.0"),
+                *retained_side_role,
+                *cut_wall_role,
             ];
             let evidence = roles.map(|(role, source)| {
                 let candidates = references
@@ -3464,19 +3593,64 @@ fn m21_box_step_export_response(
                 return Ok(base_output);
             };
             if let Some(circle) = boolean.circle {
-                return backend.cut_cylinder(
-                    &base_output.body,
-                    CylinderToolSpec {
-                        center_mm: [
-                            f64::from_bits(circle.center_x_bits),
-                            f64::from_bits(circle.center_y_bits),
-                        ],
-                        origin_z_mm: -1.0,
-                        radius_mm: f64::from_bits(circle.radius_bits),
-                        height_mm: base.height_mm + 2.0,
-                    },
-                    CutMode::ThroughAll,
-                );
+                let center_mm = [
+                    f64::from_bits(circle.center_x_bits),
+                    f64::from_bits(circle.center_y_bits),
+                ];
+                let radius_mm = f64::from_bits(circle.radius_bits);
+                if let Some(depth_bits) = specification.pocket_depth_bits {
+                    let depth_mm = f64::from_bits(depth_bits);
+                    if boolean.operation != "cut"
+                        || !depth_mm.is_finite()
+                        || depth_mm <= 0.0
+                        || depth_mm >= base.height_mm
+                    {
+                        return Err(ketchup_exact::GeometryError {
+                            code: ketchup_exact::GeometryErrorCode::InvalidParameter,
+                            diagnostic: "invalid circular STEP pocket depth".to_owned(),
+                            operation: "export_feature_step",
+                            input_digest: fields[0].to_owned(),
+                            backend_fingerprint: ketchup_exact::backend_fingerprint(),
+                        });
+                    }
+                    return backend.cut_cylinder(
+                        &base_output.body,
+                        CylinderToolSpec {
+                            center_mm,
+                            origin_z_mm: base.height_mm - depth_mm,
+                            radius_mm,
+                            height_mm: depth_mm + 1.0,
+                        },
+                        CutMode::BlindPlanar,
+                    );
+                }
+                let tool = CylinderToolSpec {
+                    center_mm,
+                    origin_z_mm: 0.0,
+                    radius_mm,
+                    height_mm: base.height_mm,
+                };
+                return match boolean.operation.as_str() {
+                    "union" => backend.fuse_cylinder(&base_output.body, tool),
+                    "intersect" => backend.common_cylinder(&base_output.body, tool),
+                    "split" => backend.split_cylinder(&base_output.body, tool),
+                    "cut" => backend.cut_cylinder(
+                        &base_output.body,
+                        CylinderToolSpec {
+                            origin_z_mm: -1.0,
+                            height_mm: base.height_mm + 2.0,
+                            ..tool
+                        },
+                        CutMode::ThroughAll,
+                    ),
+                    _ => Err(ketchup_exact::GeometryError {
+                        code: ketchup_exact::GeometryErrorCode::InvalidParameter,
+                        diagnostic: "unsupported circular STEP boolean".to_owned(),
+                        operation: "export_feature_step",
+                        input_digest: fields[0].to_owned(),
+                        backend_fingerprint: ketchup_exact::backend_fingerprint(),
+                    }),
+                };
             }
             if !boolean.mixed_segments.is_empty() {
                 let segments = boolean

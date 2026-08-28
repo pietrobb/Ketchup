@@ -8,8 +8,9 @@ use ketchup_core::exact_product::{
     build_box_render_package, canonical_reference_lineage_digest,
 };
 use ketchup_core::exact_validation::{
-    BuiltinGeneralBodyValidator, GeneralBodyParticipant, GeneralBodyValidationError,
-    GeneralClearanceCase, general_body_input_bytes, general_body_validation_policy,
+    BuiltinGeneralBodyValidator, GeneralBodyParticipant, GeneralBodySource,
+    GeneralBodyValidationError, GeneralClearanceCase, general_body_input_bytes,
+    general_body_validation_policy,
 };
 use ketchup_core::fabrication::{
     GeneralFabricationError, GeneralManufacturingKind, ProjectionStatus,
@@ -142,14 +143,26 @@ fn general_collision_and_clearance_bind_current_exact_and_mesh_occurrences() {
         }
     );
 
+    let canonical_extrusion = GeneralBodyParticipant::accept(
+        &snapshot,
+        &ExactResultRegistry::default(),
+        InstancePath::root(EXACT_LEFT),
+        tolerance,
+    )
+    .unwrap();
+    assert!(matches!(
+        canonical_extrusion.source(),
+        GeneralBodySource::CanonicalExtrusion {
+            definition_id: EXACT_DEFINITION,
+            profile_id: EXACT_PROFILE,
+            extrusion_id: EXACT_BODY,
+            ..
+        }
+    ));
+    assert_eq!(canonical_extrusion.evidence_class(), &EvidenceClass::Exact);
     assert_eq!(
-        GeneralBodyParticipant::accept(
-            &snapshot,
-            &ExactResultRegistry::default(),
-            InstancePath::root(EXACT_LEFT),
-            tolerance,
-        ),
-        Err(GeneralBodyValidationError::UnavailableOrAmbiguousGeometry)
+        canonical_extrusion.bounds(),
+        Aabb::bounded_volume([0.0, 0.0, 0.0], [10.0, 10.0, 10.0]).unwrap()
     );
 
     document

@@ -1,19 +1,26 @@
 mod harness;
 
-use eframe::egui;
+use eframe::egui::{self, accesskit::Role};
 use harness::{ScriptedAssistantTransport, Shell};
 use ketchup_app::dialogs::ScriptedFileDialogs;
 use ketchup_app::{AppCommand, AssistantMessageRole, AssistantProvider, AssistantWorkspaceMode};
 use ketchup_core::assistant_sidecar::{
-    ASSISTANT_PROTOCOL_VERSION, AssistantBoxIntent, AssistantChatResult, AssistantDistribution,
-    AssistantLinearArrayIntent, AssistantModelIntent, AssistantSubtractionIntent,
-    AssistantTranslationIntent,
+    ASSISTANT_PROTOCOL_VERSION, AssistantBottleFinishKind, AssistantBottleIntent,
+    AssistantBoxIntent, AssistantChatResult, AssistantDistribution, AssistantLinearArrayIntent,
+    AssistantModelIntent, AssistantParameterEditIntent, AssistantProfileTranslationIntent,
+    AssistantSubtractionIntent, AssistantTranslationIntent,
 };
 use ketchup_core::document::{
-    CanonicalCommand, DefinitionId, FeatureId, NodeId, OccurrenceId, ProposalGoal, ProposalValue,
-    TagId, Transform,
+    BodyId, CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId,
+    FeatureKind, NodeId, OccurrenceId, ProposalGoal, ProposalValue, TagId, Transform,
 };
 use ketchup_core::intent::WorkflowIntent;
+use ketchup_core::persistence;
+use ketchup_core::sketch::{
+    FeatureDirection, FeatureExtent, PadSpec, PrincipalPlane, SketchConstraint, SketchConstraintId,
+    SketchConstraintKind, SketchEntity, SketchEntityId, SketchPointKind, SketchPointRef,
+    SketchSpec, WorkplaneSpec,
+};
 use ketchup_interaction::{LocaleCatalog, Vec3};
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -22,6 +29,153 @@ use std::time::{Duration, Instant};
 fn apply_reviewed_model_intent(shell: &mut Shell, intent: AssistantModelIntent) -> bool {
     shell.app_mut().prepare_assistant_model_intent(intent)
         && shell.app_mut().confirm_assistant_proposal()
+}
+
+fn apply_reviewed_evaluator_inputs(shell: &mut Shell, inputs: &[(&str, f64)]) {
+    for (index, (name, value)) in inputs.iter().enumerate() {
+        assert!(
+            shell
+                .app_mut()
+                .prepare_assistant_intent(WorkflowIntent::CreateEvaluatorInput {
+                    target: NodeId(900 + index as u64),
+                    name: (*name).to_owned(),
+                    value_text: value.to_string(),
+                },)
+        );
+        assert!(shell.app_mut().confirm_assistant_proposal());
+    }
+}
+
+fn write_assistant_movable_pocket_fixture(path: &std::path::Path) {
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DefinitionId(1),
+                name: "Furniture panel".to_owned(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(12),
+                definition_id: DefinitionId(1),
+                name: "Panel outline".to_owned(),
+                kind: FeatureKind::Profile {
+                    points_mm: vec![[0.0, 0.0], [40.0, 0.0], [40.0, 30.0], [0.0, 30.0]],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(13),
+                definition_id: DefinitionId(1),
+                name: "10 mm panel".to_owned(),
+                kind: FeatureKind::Extrusion {
+                    profile: FeatureId(12),
+                    height: Dimension::from_decimal("10").unwrap(),
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(14),
+                definition_id: DefinitionId(1),
+                name: "Fitting pocket profile".to_owned(),
+                kind: FeatureKind::Profile {
+                    points_mm: vec![[10.0, 10.0], [20.0, 10.0], [20.0, 16.0], [10.0, 16.0]],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(15),
+                definition_id: DefinitionId(1),
+                name: "6 mm fitting pocket".to_owned(),
+                kind: FeatureKind::Pocket {
+                    target: FeatureId(13),
+                    profile: FeatureId(14),
+                    depth: Dimension::from_decimal("6").unwrap(),
+                },
+            },
+            CanonicalCommand::CreateOccurrence {
+                id: OccurrenceId(1),
+                definition_id: DefinitionId(1),
+                name: "Furniture panel".to_owned(),
+                transform: Transform::identity(),
+                parent: None,
+                tag: None,
+                visible: true,
+            },
+        ]))
+        .unwrap();
+    document.discard_history_before_current();
+    persistence::save_atomic(path, &document.current()).unwrap();
+}
+
+fn write_assistant_parameter_fixture(path: &std::path::Path) {
+    let sketch = SketchSpec {
+        workplane: FeatureId(11),
+        entities: vec![SketchEntity::Circle {
+            id: SketchEntityId(1),
+            center_mm: [4.0, 5.0],
+            radius_mm: 3.0,
+        }],
+        constraints: vec![
+            SketchConstraint {
+                id: SketchConstraintId(1),
+                kind: SketchConstraintKind::Radius {
+                    entity: SketchEntityId(1),
+                    value: Dimension::from_decimal("3").unwrap(),
+                },
+            },
+            SketchConstraint {
+                id: SketchConstraintId(2),
+                kind: SketchConstraintKind::FixedPoint {
+                    point: SketchPointRef {
+                        entity: SketchEntityId(1),
+                        point: SketchPointKind::Center,
+                    },
+                    position_mm: [4.0, 5.0],
+                },
+            },
+        ],
+    };
+    let region = sketch.solved_regions().unwrap()[0].id;
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DefinitionId(1),
+                name: "Editable circle".to_owned(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(11),
+                definition_id: DefinitionId(1),
+                name: "XY".to_owned(),
+                kind: FeatureKind::Workplane(WorkplaneSpec::principal(PrincipalPlane::Xy)),
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(12),
+                definition_id: DefinitionId(1),
+                name: "Circle".to_owned(),
+                kind: FeatureKind::Sketch(sketch),
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(13),
+                definition_id: DefinitionId(1),
+                name: "Pad".to_owned(),
+                kind: FeatureKind::Pad(PadSpec {
+                    sketch: FeatureId(12),
+                    region,
+                    direction: FeatureDirection::AlongNormal,
+                    extent: FeatureExtent::Blind(Dimension::from_decimal("5").unwrap()),
+                }),
+            },
+            CanonicalCommand::CreateOccurrence {
+                id: OccurrenceId(1),
+                definition_id: DefinitionId(1),
+                name: "Editable circle".to_owned(),
+                transform: Transform::identity(),
+                parent: None,
+                tag: None,
+                visible: true,
+            },
+        ]))
+        .unwrap();
+    document.discard_history_before_current();
+    persistence::save_atomic(path, &document.current()).unwrap();
 }
 
 fn wait_for_assistant_proposal(shell: &mut Shell) {
@@ -201,7 +355,10 @@ fn scripted_assistant_model_review_cancel_confirm_undo_and_redo_use_accesskit() 
                 subtract_boxes: Vec::new(),
             }],
             translations: Vec::new(),
+            profile_translations: Vec::new(),
+            parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
+            bottles: Vec::new(),
         }),
     };
     let transport = Arc::new(ScriptedAssistantTransport::new([
@@ -259,6 +416,297 @@ fn scripted_assistant_model_review_cancel_confirm_undo_and_redo_use_accesskit() 
 }
 
 #[test]
+fn verbal_bottle_request_reviews_confirms_and_undoes_through_accesskit() {
+    let request = "Create an editable ketchup bottle with a 30 mm body radius";
+    let transport = Arc::new(ScriptedAssistantTransport::new([(
+        request.to_owned(),
+        AssistantChatResult {
+            message: "Review the editable bottle.".to_owned(),
+            model_intent: Some(AssistantModelIntent {
+                replace_scene: false,
+                boxes: Vec::new(),
+                translations: Vec::new(),
+                profile_translations: Vec::new(),
+                parameter_edits: Vec::new(),
+                linear_arrays: Vec::new(),
+                bottles: vec![AssistantBottleIntent {
+                    name: "Verbally created bottle".to_owned(),
+                    body_radius_mm: 30.0,
+                    body_height_mm: 110.0,
+                    shoulder_rise_mm: 20.0,
+                    neck_radius_mm: 12.0,
+                    neck_height_mm: 25.0,
+                    wall_thickness_mm: 2.0,
+                    finish_kind: AssistantBottleFinishKind::Fillet,
+                    finish_amount_mm: 2.0,
+                    origin_mm: [90.0, 0.0, 0.0],
+                }],
+            }),
+        },
+    )]));
+    let mut shell = Shell::with_assistant_transport(transport.clone());
+    let initial_revision = shell.app().document_revision();
+    let initial_digest = shell.app().canonical_digest();
+    let initial_features = shell.app().feature_count();
+    let initial_occurrences = shell.app().occurrence_count();
+
+    shell.focus_text_input(&shell.catalog().text("assistant-input-hint"));
+    shell.type_text(request);
+    shell.press_key(egui::Key::Enter);
+    wait_for_assistant_proposal(&mut shell);
+    assert_eq!(shell.app().document_revision(), initial_revision);
+    assert_eq!(shell.app().canonical_digest(), initial_digest);
+
+    shell.click_row(&shell.catalog().text("assistant-confirm"));
+    assert_eq!(shell.app().document_revision(), initial_revision + 1);
+    assert_eq!(shell.app().feature_count(), initial_features + 5);
+    assert_eq!(shell.app().occurrence_count(), initial_occurrences + 1);
+    assert!(
+        shell
+            .app()
+            .document_snapshot()
+            .occurrences()
+            .any(|occurrence| occurrence.name() == "Verbally created bottle occurrence")
+    );
+
+    shell.click_row(&shell.catalog().text("assistant-undo-change"));
+    assert_eq!(shell.app().document_revision(), initial_revision);
+    assert_eq!(shell.app().canonical_digest(), initial_digest);
+    assert_eq!(transport.remaining_responses(), 0);
+}
+
+#[test]
+fn assistant_profile_translation_reviews_confirms_undoes_and_fails_closed() {
+    let directory = tempfile::tempdir().unwrap();
+    let fixture = directory
+        .path()
+        .join("assistant-profile-translation.ketchup");
+    write_assistant_movable_pocket_fixture(&fixture);
+    let dialogs = ScriptedFileDialogs::new()
+        .queue_open(&fixture)
+        .always_discard();
+    let mut shell = Shell::with_dialogs(dialogs);
+    shell.click_menu_command("menu-file", AppCommand::Open);
+
+    let profile_points = |shell: &Shell| match shell
+        .app()
+        .document_snapshot()
+        .feature(FeatureId(14))
+        .unwrap()
+        .kind()
+    {
+        FeatureKind::Profile { points_mm } => points_mm.clone(),
+        other => panic!("expected movable profile, got {other:?}"),
+    };
+    let before_revision = shell.app().document_revision();
+    let before_digest = shell.app().canonical_digest();
+    let before_points = profile_points(&shell);
+    let occurrence_transform = shell
+        .app()
+        .document_snapshot()
+        .occurrence(OccurrenceId(1))
+        .unwrap()
+        .transform();
+
+    assert!(apply_reviewed_model_intent(
+        &mut shell,
+        AssistantModelIntent {
+            replace_scene: false,
+            boxes: Vec::new(),
+            translations: Vec::new(),
+            profile_translations: vec![AssistantProfileTranslationIntent {
+                definition_id: 1,
+                body_id: BodyId(1).0,
+                profile_id: 14,
+                delta_mm: [2.0, 3.0],
+            }],
+            parameter_edits: Vec::new(),
+            linear_arrays: Vec::new(),
+            bottles: Vec::new(),
+        },
+    ));
+    assert_eq!(shell.app().document_revision(), before_revision + 1);
+    assert_eq!(
+        profile_points(&shell),
+        before_points
+            .iter()
+            .map(|point| [point[0] + 2.0, point[1] + 3.0])
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        shell
+            .app()
+            .document_snapshot()
+            .occurrence(OccurrenceId(1))
+            .unwrap()
+            .transform(),
+        occurrence_transform
+    );
+
+    shell.click_menu_command("menu-edit", AppCommand::Undo);
+    assert_eq!(shell.app().canonical_digest(), before_digest);
+    assert_eq!(profile_points(&shell), before_points);
+
+    assert!(
+        !shell
+            .app_mut()
+            .prepare_assistant_model_intent(AssistantModelIntent {
+                replace_scene: false,
+                boxes: Vec::new(),
+                translations: Vec::new(),
+                profile_translations: vec![AssistantProfileTranslationIntent {
+                    definition_id: 1,
+                    body_id: 1,
+                    profile_id: 14,
+                    delta_mm: [100.0, 0.0],
+                }],
+                parameter_edits: Vec::new(),
+                linear_arrays: Vec::new(),
+                bottles: Vec::new(),
+            })
+    );
+    assert_eq!(shell.app().canonical_digest(), before_digest);
+    assert!(shell.app().assistant_proposal().is_none());
+}
+
+#[test]
+fn assistant_parameter_edit_uses_the_selected_exact_target_for_feature_and_constraint() {
+    let directory = tempfile::tempdir().unwrap();
+    let fixture = directory.path().join("assistant-parameter-edit.ketchup");
+    write_assistant_parameter_fixture(&fixture);
+    let dialogs = ScriptedFileDialogs::new()
+        .queue_open(&fixture)
+        .always_discard();
+    let mut shell = Shell::with_dialogs(dialogs);
+    shell.click_menu_command("menu-file", AppCommand::Open);
+    let history = shell.catalog().text("feature-history-title");
+    shell.click_role_and_label(Role::Button, &history);
+
+    let before_digest = shell.app().canonical_digest();
+    let context = shell.app().assistant_context();
+    assert_eq!(
+        context["selected_parameter_edit_target"],
+        serde_json::json!({
+            "definition_id": 1,
+            "body_id": 1,
+            "feature_id": 13,
+            "constraint_id": null,
+            "name": shell.catalog().text("feature-history-parameter-extent"),
+            "current_value_mm": 5.0,
+        })
+    );
+    assert!(apply_reviewed_model_intent(
+        &mut shell,
+        AssistantModelIntent {
+            replace_scene: false,
+            boxes: Vec::new(),
+            translations: Vec::new(),
+            profile_translations: Vec::new(),
+            parameter_edits: vec![AssistantParameterEditIntent {
+                definition_id: 1,
+                body_id: 1,
+                feature_id: 13,
+                constraint_id: None,
+                value_mm: 7.5,
+            }],
+            linear_arrays: Vec::new(),
+            bottles: Vec::new(),
+        }
+    ));
+    assert!(matches!(
+        shell
+            .app()
+            .document_snapshot()
+            .feature(FeatureId(13))
+            .unwrap()
+            .kind(),
+        FeatureKind::Pad(spec) if spec.extent.distance().millimetres() == 7.5
+    ));
+    shell.click_menu_command("menu-edit", AppCommand::Undo);
+    assert_eq!(shell.app().canonical_digest(), before_digest);
+
+    let feature = shell
+        .app()
+        .document_snapshot()
+        .feature(FeatureId(12))
+        .unwrap()
+        .clone();
+    let sketch_label = shell.catalog().format(
+        "feature-history-select-feature",
+        &BTreeMap::from([
+            ("name", feature.name().to_owned()),
+            ("id", "12".to_owned()),
+            (
+                "status",
+                shell.catalog().text("feature-history-state-active"),
+            ),
+        ]),
+    );
+    shell.click_role_and_label(Role::Button, &sketch_label);
+    let context = shell.app().assistant_context();
+    assert_eq!(context["selected_parameter_edit_target"]["feature_id"], 12);
+    assert_eq!(
+        context["selected_parameter_edit_target"]["constraint_id"],
+        1
+    );
+    assert_eq!(
+        context["selected_parameter_edit_target"]["current_value_mm"],
+        3.0
+    );
+
+    assert!(apply_reviewed_model_intent(
+        &mut shell,
+        AssistantModelIntent {
+            replace_scene: false,
+            boxes: Vec::new(),
+            translations: Vec::new(),
+            profile_translations: Vec::new(),
+            parameter_edits: vec![AssistantParameterEditIntent {
+                definition_id: 1,
+                body_id: 1,
+                feature_id: 12,
+                constraint_id: Some(1),
+                value_mm: 4.5,
+            }],
+            linear_arrays: Vec::new(),
+            bottles: Vec::new(),
+        }
+    ));
+    let snapshot = shell.app().document_snapshot();
+    let FeatureKind::Sketch(sketch) = snapshot.feature(FeatureId(12)).unwrap().kind() else {
+        panic!("expected editable sketch")
+    };
+    assert!(matches!(
+        &sketch.constraints[0].kind,
+        SketchConstraintKind::Radius { value, .. } if value.millimetres() == 4.5
+    ));
+    shell.click_menu_command("menu-edit", AppCommand::Undo);
+    assert_eq!(shell.app().canonical_digest(), before_digest);
+
+    assert!(
+        !shell
+            .app_mut()
+            .prepare_assistant_model_intent(AssistantModelIntent {
+                replace_scene: false,
+                boxes: Vec::new(),
+                translations: Vec::new(),
+                profile_translations: Vec::new(),
+                parameter_edits: vec![AssistantParameterEditIntent {
+                    definition_id: 1,
+                    body_id: 1,
+                    feature_id: 12,
+                    constraint_id: Some(2),
+                    value_mm: 4.5,
+                }],
+                linear_arrays: Vec::new(),
+                bottles: Vec::new(),
+            })
+    );
+    assert_eq!(shell.app().canonical_digest(), before_digest);
+    assert!(shell.app().assistant_proposal().is_none());
+}
+
+#[test]
 fn assistant_selection_context_tracks_the_live_model_selection() {
     let mut shell = Shell::new();
     let none = shell.catalog().text("assistant-selection-none");
@@ -284,6 +732,1038 @@ fn assistant_selection_context_tracks_the_live_model_selection() {
         serde_json::json!([])
     );
     assert!(shell.has_visible_label(&none));
+}
+
+#[test]
+fn assistant_context_runs_current_collision_validation_without_mutating_or_adding_undo() {
+    let mut shell = Shell::new();
+    let subtraction = AssistantSubtractionIntent {
+        size_mm: [10.0, 10.0, 10.0],
+        origin_mm: [10.0, 10.0, 10.0],
+    };
+    assert!(apply_reviewed_model_intent(
+        &mut shell,
+        AssistantModelIntent {
+            replace_scene: true,
+            boxes: vec![
+                AssistantBoxIntent {
+                    name: "Left cabinet".to_owned(),
+                    size_mm: [100.0, 100.0, 100.0],
+                    origin_mm: [0.0, 0.0, 0.0],
+                    subtract_boxes: vec![subtraction.clone()],
+                },
+                AssistantBoxIntent {
+                    name: "Right cabinet".to_owned(),
+                    size_mm: [100.0, 100.0, 100.0],
+                    origin_mm: [50.0, 0.0, 0.0],
+                    subtract_boxes: vec![subtraction],
+                },
+            ],
+            translations: Vec::new(),
+            profile_translations: Vec::new(),
+            parameter_edits: Vec::new(),
+            linear_arrays: Vec::new(),
+            bottles: Vec::new(),
+        },
+    ));
+    let revision = shell.app().document_revision();
+    let digest = shell.app().canonical_digest();
+    let undo_steps = shell.app().undo_step_count();
+    let context = shell.app().assistant_context();
+    let validation = &context["validation"];
+    assert_eq!(validation["state"], "failed");
+    assert_eq!(validation["complete"], false);
+    assert_eq!(validation["collision"]["state"], "failed");
+    assert_eq!(validation["collision"]["complete"], true);
+    assert_eq!(validation["checked_occurrence_count"], 2);
+    assert_eq!(validation["checked_pair_count"], 1);
+    assert_eq!(validation["issue_count"], 1);
+    assert_eq!(validation["issues"][0]["code"], "collision.detected");
+    assert_eq!(validation["issues"][0]["left_name"], "Left cabinet");
+    assert_eq!(validation["issues"][0]["right_name"], "Right cabinet");
+    assert_eq!(shell.app().document_revision(), revision);
+    assert_eq!(shell.app().canonical_digest(), digest);
+    assert_eq!(shell.app().undo_step_count(), undo_steps);
+
+    let right_id = validation["issues"][0]["right_occurrence_id"]
+        .as_u64()
+        .unwrap();
+    assert!(apply_reviewed_model_intent(
+        &mut shell,
+        AssistantModelIntent {
+            replace_scene: false,
+            boxes: Vec::new(),
+            translations: vec![AssistantTranslationIntent {
+                occurrence_id: right_id,
+                delta_mm: [50.0, 0.0, 0.0],
+            }],
+            profile_translations: Vec::new(),
+            parameter_edits: Vec::new(),
+            linear_arrays: Vec::new(),
+            bottles: Vec::new(),
+        },
+    ));
+    let clean_revision = shell.app().document_revision();
+    let clean_undo_steps = shell.app().undo_step_count();
+    let clean = shell.app().assistant_context();
+    assert_eq!(clean["validation"]["state"], "not_evaluated");
+    assert_eq!(clean["validation"]["complete"], false);
+    assert_eq!(clean["validation"]["collision"]["state"], "passed");
+    assert_eq!(clean["validation"]["collision"]["complete"], true);
+    assert_eq!(clean["validation"]["issue_count"], 0);
+    assert_eq!(shell.app().document_revision(), clean_revision);
+    assert_eq!(shell.app().undo_step_count(), clean_undo_steps);
+
+    shell.click_menu_command("menu-edit", AppCommand::Undo);
+    assert_eq!(
+        shell.app().assistant_context()["validation"]["state"],
+        "failed"
+    );
+}
+
+#[test]
+fn assistant_context_finds_transitively_supported_and_floating_parts_without_mutation() {
+    let mut shell = Shell::new();
+    assert!(apply_reviewed_model_intent(
+        &mut shell,
+        AssistantModelIntent {
+            replace_scene: true,
+            boxes: vec![
+                AssistantBoxIntent {
+                    name: "Floor base".to_owned(),
+                    size_mm: [100.0, 100.0, 10.0],
+                    origin_mm: [0.0, 0.0, 0.0],
+                    subtract_boxes: Vec::new(),
+                },
+                AssistantBoxIntent {
+                    name: "Supported shelf".to_owned(),
+                    size_mm: [80.0, 80.0, 10.0],
+                    origin_mm: [10.0, 10.0, 10.0],
+                    subtract_boxes: Vec::new(),
+                },
+                AssistantBoxIntent {
+                    name: "Supported load".to_owned(),
+                    size_mm: [60.0, 60.0, 10.0],
+                    origin_mm: [20.0, 20.0, 20.0],
+                    subtract_boxes: Vec::new(),
+                },
+                AssistantBoxIntent {
+                    name: "Floating load".to_owned(),
+                    size_mm: [20.0, 20.0, 20.0],
+                    origin_mm: [200.0, 0.0, 50.0],
+                    subtract_boxes: Vec::new(),
+                },
+            ],
+            translations: Vec::new(),
+            profile_translations: Vec::new(),
+            parameter_edits: Vec::new(),
+            linear_arrays: Vec::new(),
+            bottles: Vec::new(),
+        },
+    ));
+    shell.settle();
+    let revision = shell.app().document_revision();
+    let digest = shell.app().canonical_digest();
+    let undo_steps = shell.app().undo_step_count();
+
+    let context = shell.app().assistant_context();
+    let gravity = &context["validation"]["gravity_support"];
+    assert_eq!(gravity["state"], "failed", "{context:#}");
+    assert_eq!(gravity["complete"], true);
+    assert_eq!(gravity["checked_occurrence_count"], 4);
+    assert_eq!(gravity["unsupported_count"], 1);
+    assert_eq!(gravity["issues"][0]["code"], "gravity.unsupported");
+    assert_eq!(gravity["issues"][0]["name"], "Floating load");
+    assert_eq!(shell.app().document_revision(), revision);
+    assert_eq!(shell.app().canonical_digest(), digest);
+    assert_eq!(shell.app().undo_step_count(), undo_steps);
+
+    let floating_id = gravity["issues"][0]["occurrence_id"].as_u64().unwrap();
+    assert!(apply_reviewed_model_intent(
+        &mut shell,
+        AssistantModelIntent {
+            replace_scene: false,
+            boxes: Vec::new(),
+            translations: vec![AssistantTranslationIntent {
+                occurrence_id: floating_id,
+                delta_mm: [0.0, 0.0, -50.0],
+            }],
+            profile_translations: Vec::new(),
+            parameter_edits: Vec::new(),
+            linear_arrays: Vec::new(),
+            bottles: Vec::new(),
+        },
+    ));
+    shell.settle();
+    let supported = shell.app().assistant_context();
+    assert_eq!(
+        supported["validation"]["gravity_support"]["state"],
+        "passed"
+    );
+    assert_eq!(
+        supported["validation"]["gravity_support"]["unsupported_count"],
+        0
+    );
+}
+
+#[test]
+fn assistant_chat_selects_validation_scope_and_rejects_unknown_names_without_mutation() {
+    let queries = [
+        "Skontroluj všetky validátory",
+        "Iba kolízie a podopretie",
+        "Všetky okrem podopretia",
+        "Iba kolízie a vibrácie",
+    ];
+    let transport = Arc::new(ScriptedAssistantTransport::new(queries.map(|query| {
+        (
+            query.to_owned(),
+            AssistantChatResult {
+                message: "Validation scope received".to_owned(),
+                model_intent: None,
+            },
+        )
+    })));
+    let mut shell = Shell::with_assistant_transport(transport.clone());
+    let input_label = shell.catalog().text("assistant-input-hint");
+    let revision = shell.app().document_revision();
+    let digest = shell.app().canonical_digest();
+    let undo_steps = shell.app().undo_step_count();
+
+    for (index, query) in queries.iter().enumerate() {
+        shell.focus_text_input(&input_label);
+        shell.type_text(query);
+        shell.press_key(egui::Key::Enter);
+        for _ in 0..100 {
+            shell.step();
+            if transport.contexts().len() > index
+                && shell.app().assistant_messages().len() == (index + 1) * 2
+            {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    let contexts = transport.contexts();
+    assert_eq!(contexts.len(), 4);
+    let all = &contexts[0]["validation"];
+    assert_eq!(all["selection_mode"], "all");
+    assert_eq!(
+        all["executed"],
+        serde_json::json!([
+            "collision",
+            "gravity_support",
+            "shelf_deflection",
+            "tipping",
+            "anchoring",
+            "hardware_manufacturing",
+            "room_placement",
+            "passage_clearance",
+            "static_load"
+        ])
+    );
+    assert_eq!(all["skipped"], serde_json::json!([]));
+
+    let only = &contexts[1]["validation"];
+    assert_eq!(only["selection_mode"], "only");
+    assert_eq!(
+        only["requested"],
+        serde_json::json!(["collision", "gravity_support"])
+    );
+    assert_eq!(only["executed"], only["requested"]);
+
+    let except = &contexts[2]["validation"];
+    assert_eq!(except["selection_mode"], "all_except");
+    assert_eq!(
+        except["executed"],
+        serde_json::json!([
+            "collision",
+            "shelf_deflection",
+            "tipping",
+            "anchoring",
+            "hardware_manufacturing",
+            "room_placement",
+            "passage_clearance",
+            "static_load"
+        ])
+    );
+    assert_eq!(except["skipped"], serde_json::json!(["gravity_support"]));
+    assert_eq!(except["gravity_support"]["state"], "skipped");
+
+    let unknown = &contexts[3]["validation"];
+    assert_eq!(unknown["requested"], serde_json::json!(["collision"]));
+    assert_eq!(unknown["executed"], serde_json::json!([]));
+    assert_eq!(
+        unknown["skipped"],
+        serde_json::json!([
+            "collision",
+            "gravity_support",
+            "shelf_deflection",
+            "tipping",
+            "anchoring",
+            "hardware_manufacturing",
+            "room_placement",
+            "passage_clearance",
+            "static_load"
+        ])
+    );
+    assert_eq!(unknown["not_evaluated"][0]["validator"], "vibrácie");
+    assert_eq!(unknown["not_evaluated"][0]["reason"], "unknown_validator");
+    assert_eq!(unknown["collision"]["state"], "skipped");
+    assert_eq!(unknown["gravity_support"]["state"], "skipped");
+    assert_eq!(
+        unknown["selection_error"],
+        "unknown_or_empty_validator_selection"
+    );
+    assert_eq!(shell.app().document_revision(), revision);
+    assert_eq!(shell.app().canonical_digest(), digest);
+    assert_eq!(shell.app().undo_step_count(), undo_steps);
+}
+
+#[test]
+fn assistant_chat_reports_shelf_deflection_tipping_and_anchoring_with_explicit_limits() {
+    let query = "Iba priehyb, prevrátenie a kotvenie";
+    let transport = Arc::new(ScriptedAssistantTransport::new([(
+        query.to_owned(),
+        AssistantChatResult {
+            message: "Furniture validation received".to_owned(),
+            model_intent: None,
+        },
+    )]));
+    let mut shell = Shell::with_assistant_transport(transport.clone());
+    assert!(apply_reviewed_model_intent(
+        &mut shell,
+        AssistantModelIntent {
+            replace_scene: true,
+            boxes: vec![
+                AssistantBoxIntent {
+                    name: "Weak shelf".to_owned(),
+                    size_mm: [1_000.0, 300.0, 12.0],
+                    origin_mm: [0.0, 0.0, 0.0],
+                    subtract_boxes: Vec::new(),
+                },
+                AssistantBoxIntent {
+                    name: "Tall cabinet".to_owned(),
+                    size_mm: [300.0, 400.0, 1_800.0],
+                    origin_mm: [1_500.0, 0.0, 0.0],
+                    subtract_boxes: Vec::new(),
+                },
+                AssistantBoxIntent {
+                    name: "Low cabinet".to_owned(),
+                    size_mm: [800.0, 500.0, 600.0],
+                    origin_mm: [2_500.0, 0.0, 0.0],
+                    subtract_boxes: Vec::new(),
+                },
+            ],
+            translations: Vec::new(),
+            profile_translations: Vec::new(),
+            parameter_edits: Vec::new(),
+            linear_arrays: Vec::new(),
+            bottles: Vec::new(),
+        },
+    ));
+    shell.settle();
+    let revision = shell.app().document_revision();
+    let digest = shell.app().canonical_digest();
+    let undo_steps = shell.app().undo_step_count();
+
+    shell.focus_text_input(&shell.catalog().text("assistant-input-hint"));
+    shell.type_text(query);
+    shell.press_key(egui::Key::Enter);
+    for _ in 0..100 {
+        shell.step();
+        if transport.contexts().len() == 1 && shell.app().assistant_messages().len() == 2 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+
+    let contexts = transport.contexts();
+    assert_eq!(contexts.len(), 1);
+    let validation = &contexts[0]["validation"];
+    assert_eq!(
+        validation["requested"],
+        serde_json::json!(["shelf_deflection", "tipping", "anchoring"])
+    );
+    assert_eq!(validation["executed"], validation["requested"]);
+    assert_eq!(
+        validation["skipped"],
+        serde_json::json!([
+            "collision",
+            "gravity_support",
+            "hardware_manufacturing",
+            "room_placement",
+            "passage_clearance",
+            "static_load"
+        ])
+    );
+    assert_eq!(validation["state"], "failed");
+    assert_eq!(validation["complete"], true);
+    assert_eq!(validation["issue_count"], 3);
+
+    let shelf = &validation["shelf_deflection"];
+    assert_eq!(shelf["state"], "failed");
+    assert_eq!(shelf["complete"], true);
+    assert_eq!(shelf["applicable_count"], 1);
+    assert_eq!(shelf["issue_count"], 1);
+    assert_eq!(
+        shelf["issues"][0]["code"],
+        "furniture.shelf_deflection_exceeded"
+    );
+    assert_eq!(shelf["issues"][0]["name"], "Weak shelf");
+    assert_eq!(shelf["inputs"]["design_load_n"], 500.0);
+    assert_eq!(shelf["inputs"]["elastic_modulus_n_mm2"], 2_500.0);
+    assert!(
+        shelf["issues"][0]["predicted_deflection_mm"]
+            .as_f64()
+            .unwrap()
+            > shelf["issues"][0]["allowable_deflection_mm"]
+                .as_f64()
+                .unwrap()
+    );
+
+    let tipping = &validation["tipping"];
+    assert_eq!(tipping["state"], "failed");
+    assert_eq!(tipping["applicable_count"], 2);
+    assert_eq!(tipping["issue_count"], 1);
+    assert_eq!(
+        tipping["issues"][0]["code"],
+        "furniture.tip_angle_below_limit"
+    );
+    assert_eq!(tipping["issues"][0]["name"], "Tall cabinet");
+    assert_eq!(tipping["limit"]["minimum_tip_angle_degrees"], 15.0);
+
+    let anchoring = &validation["anchoring"];
+    assert_eq!(anchoring["state"], "failed");
+    assert_eq!(anchoring["applicable_count"], 2);
+    assert_eq!(anchoring["required_count"], 1);
+    assert_eq!(anchoring["issues"][0]["code"], "furniture.anchor_required");
+    assert_eq!(anchoring["issues"][0]["name"], "Tall cabinet");
+    assert_eq!(
+        anchoring["issues"][0]["anchor_declaration"],
+        "not_available_in_current_document_schema"
+    );
+    assert_eq!(shell.app().document_revision(), revision);
+    assert_eq!(shell.app().canonical_digest(), digest);
+    assert_eq!(shell.app().undo_step_count(), undo_steps);
+}
+
+#[test]
+fn assistant_chat_reports_hardware_and_manufacturing_rules_with_named_elements_and_limits() {
+    let query = "Iba pánty, výsuvy, diery a hrany";
+    let transport = Arc::new(ScriptedAssistantTransport::new([(
+        query.to_owned(),
+        AssistantChatResult {
+            message: "Manufacturing validation received".to_owned(),
+            model_intent: None,
+        },
+    )]));
+    let mut shell = Shell::with_assistant_transport(transport.clone());
+    assert!(apply_reviewed_model_intent(
+        &mut shell,
+        AssistantModelIntent {
+            replace_scene: true,
+            boxes: vec![
+                AssistantBoxIntent {
+                    name: "Door panel".to_owned(),
+                    size_mm: [600.0, 500.0, 18.0],
+                    origin_mm: [0.0, 0.0, 0.0],
+                    subtract_boxes: Vec::new(),
+                },
+                AssistantBoxIntent {
+                    name: "Hinge cup upper".to_owned(),
+                    size_mm: [30.0, 30.0, 10.0],
+                    origin_mm: [1.0, 50.0, 4.0],
+                    subtract_boxes: Vec::new(),
+                },
+                AssistantBoxIntent {
+                    name: "Drill hole mounting".to_owned(),
+                    size_mm: [10.0, 10.0, 18.0],
+                    origin_mm: [28.0, 50.0, 0.0],
+                    subtract_boxes: Vec::new(),
+                },
+                AssistantBoxIntent {
+                    name: "Left drawer slide".to_owned(),
+                    size_mm: [500.0, 12.0, 45.0],
+                    origin_mm: [0.0, 600.0, 100.0],
+                    subtract_boxes: Vec::new(),
+                },
+                AssistantBoxIntent {
+                    name: "Right drawer slide".to_owned(),
+                    size_mm: [480.0, 12.0, 45.0],
+                    origin_mm: [0.0, 700.0, 105.0],
+                    subtract_boxes: Vec::new(),
+                },
+                AssistantBoxIntent {
+                    name: "Thin back panel".to_owned(),
+                    size_mm: [600.0, 500.0, 4.0],
+                    origin_mm: [1_000.0, 0.0, 0.0],
+                    subtract_boxes: Vec::new(),
+                },
+            ],
+            translations: Vec::new(),
+            profile_translations: Vec::new(),
+            parameter_edits: Vec::new(),
+            linear_arrays: Vec::new(),
+            bottles: Vec::new(),
+        },
+    ));
+    shell.settle();
+    let revision = shell.app().document_revision();
+    let digest = shell.app().canonical_digest();
+    let undo_steps = shell.app().undo_step_count();
+
+    shell.focus_text_input(&shell.catalog().text("assistant-input-hint"));
+    shell.type_text(query);
+    shell.press_key(egui::Key::Enter);
+    for _ in 0..100 {
+        shell.step();
+        if transport.contexts().len() == 1 && shell.app().assistant_messages().len() == 2 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+
+    let contexts = transport.contexts();
+    assert_eq!(contexts.len(), 1);
+    let validation = &contexts[0]["validation"];
+    assert_eq!(
+        validation["requested"],
+        serde_json::json!(["hardware_manufacturing"])
+    );
+    assert_eq!(validation["executed"], validation["requested"]);
+    assert_eq!(validation["state"], "failed");
+    assert_eq!(validation["complete"], true);
+    let manufacturing = &validation["hardware_manufacturing"];
+    assert_eq!(manufacturing["state"], "failed");
+    assert_eq!(manufacturing["complete"], true);
+    assert_eq!(manufacturing["issue_count"], 5);
+    assert_eq!(manufacturing["not_evaluated"], serde_json::json!([]));
+    assert_eq!(
+        manufacturing["limits"]["minimum_hole_edge_material_mm"],
+        5.0
+    );
+    assert_eq!(
+        manufacturing["limits"]["minimum_hole_spacing_material_mm"],
+        3.0
+    );
+    assert_eq!(
+        manufacturing["limits"]["minimum_hinge_cup_diameter_mm"],
+        35.0
+    );
+    assert_eq!(manufacturing["limits"]["minimum_hinge_cup_depth_mm"], 12.0);
+    assert_eq!(manufacturing["limits"]["minimum_panel_thickness_mm"], 6.0);
+    let issues = manufacturing["issues"].as_array().unwrap();
+    let issue = |code: &str| {
+        issues
+            .iter()
+            .find(|issue| issue["code"] == code)
+            .unwrap_or_else(|| panic!("missing {code} in {issues:#?}"))
+    };
+    assert_eq!(
+        issue("manufacturing.panel_below_minimum_thickness")["name"],
+        "Thin back panel"
+    );
+    assert_eq!(
+        issue("manufacturing.hole_too_close_to_edge")["name"],
+        "Hinge cup upper"
+    );
+    assert_eq!(
+        issue("manufacturing.hole_too_close_to_edge")["host_name"],
+        "Door panel"
+    );
+    assert_eq!(
+        issue("manufacturing.hinge_cup_envelope_below_minimum")["name"],
+        "Hinge cup upper"
+    );
+    assert_eq!(
+        issue("manufacturing.hole_spacing_below_minimum")["left_name"],
+        "Hinge cup upper"
+    );
+    assert_eq!(
+        issue("manufacturing.drawer_slide_pair_misaligned")["left_name"],
+        "Left drawer slide"
+    );
+    assert_eq!(
+        issue("manufacturing.drawer_slide_pair_misaligned")["right_name"],
+        "Right drawer slide"
+    );
+    assert_eq!(shell.app().document_revision(), revision);
+    assert_eq!(shell.app().canonical_digest(), digest);
+    assert_eq!(shell.app().undo_step_count(), undo_steps);
+}
+
+#[test]
+fn assistant_chat_reports_room_placement_and_blocked_passages_from_named_envelopes() {
+    let query = "Iba umiestnenie v miestnosti a priechodnosť";
+    let transport = Arc::new(ScriptedAssistantTransport::new([(
+        query.to_owned(),
+        AssistantChatResult {
+            message: "Room validation received".to_owned(),
+            model_intent: None,
+        },
+    )]));
+    let mut shell = Shell::with_assistant_transport(transport.clone());
+    assert!(apply_reviewed_model_intent(
+        &mut shell,
+        AssistantModelIntent {
+            replace_scene: true,
+            boxes: vec![
+                AssistantBoxIntent {
+                    name: "Room envelope living room".to_owned(),
+                    size_mm: [4_000.0, 3_000.0, 2_500.0],
+                    origin_mm: [0.0, 0.0, 0.0],
+                    subtract_boxes: Vec::new(),
+                },
+                AssistantBoxIntent {
+                    name: "Inside cabinet".to_owned(),
+                    size_mm: [600.0, 400.0, 1_800.0],
+                    origin_mm: [200.0, 200.0, 0.0],
+                    subtract_boxes: Vec::new(),
+                },
+                AssistantBoxIntent {
+                    name: "Outside table".to_owned(),
+                    size_mm: [300.0, 600.0, 800.0],
+                    origin_mm: [3_900.0, 100.0, 0.0],
+                    subtract_boxes: Vec::new(),
+                },
+                AssistantBoxIntent {
+                    name: "Passage to door".to_owned(),
+                    size_mm: [800.0, 2_500.0, 1_900.0],
+                    origin_mm: [1_000.0, 250.0, 0.0],
+                    subtract_boxes: Vec::new(),
+                },
+                AssistantBoxIntent {
+                    name: "Sofa obstacle".to_owned(),
+                    size_mm: [500.0, 800.0, 900.0],
+                    origin_mm: [1_200.0, 1_000.0, 0.0],
+                    subtract_boxes: Vec::new(),
+                },
+            ],
+            translations: Vec::new(),
+            profile_translations: Vec::new(),
+            parameter_edits: Vec::new(),
+            linear_arrays: Vec::new(),
+            bottles: Vec::new(),
+        },
+    ));
+    shell.settle();
+    let revision = shell.app().document_revision();
+    let digest = shell.app().canonical_digest();
+    let undo_steps = shell.app().undo_step_count();
+
+    shell.focus_text_input(&shell.catalog().text("assistant-input-hint"));
+    shell.type_text(query);
+    shell.press_key(egui::Key::Enter);
+    for _ in 0..100 {
+        shell.step();
+        if transport.contexts().len() == 1 && shell.app().assistant_messages().len() == 2 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+
+    let contexts = transport.contexts();
+    assert_eq!(contexts.len(), 1);
+    let validation = &contexts[0]["validation"];
+    assert_eq!(
+        validation["requested"],
+        serde_json::json!(["room_placement", "passage_clearance"])
+    );
+    assert_eq!(validation["executed"], validation["requested"]);
+    assert_eq!(validation["state"], "failed");
+    assert_eq!(validation["complete"], true);
+    assert_eq!(validation["issue_count"], 3);
+
+    let placement = &validation["room_placement"];
+    assert_eq!(placement["state"], "failed");
+    assert_eq!(placement["complete"], true);
+    assert_eq!(placement["applicable_count"], 3);
+    assert_eq!(placement["issue_count"], 1);
+    assert_eq!(
+        placement["issues"][0]["code"],
+        "room.furniture_outside_boundary"
+    );
+    assert_eq!(placement["issues"][0]["name"], "Outside table");
+    assert_eq!(
+        placement["issues"][0]["room_name"],
+        "Room envelope living room"
+    );
+    assert_eq!(placement["issues"][0]["outside_by_mm"]["right"], 200.0);
+
+    let passage = &validation["passage_clearance"];
+    assert_eq!(passage["state"], "failed");
+    assert_eq!(passage["complete"], true);
+    assert_eq!(passage["applicable_count"], 1);
+    assert_eq!(passage["issue_count"], 2);
+    assert_eq!(passage["limits"]["minimum_width_mm"], 900.0);
+    assert_eq!(passage["limits"]["minimum_headroom_mm"], 2_000.0);
+    let issues = passage["issues"].as_array().unwrap();
+    assert!(issues.iter().any(|issue| {
+        issue["code"] == "room.passage_envelope_below_minimum" && issue["name"] == "Passage to door"
+    }));
+    assert!(issues.iter().any(|issue| {
+        issue["code"] == "room.passage_blocked" && issue["obstacle_name"] == "Sofa obstacle"
+    }));
+    assert_eq!(shell.app().document_revision(), revision);
+    assert_eq!(shell.app().canonical_digest(), digest);
+    assert_eq!(shell.app().undo_step_count(), undo_steps);
+}
+
+#[test]
+fn assistant_chat_does_not_claim_room_validation_without_named_envelopes() {
+    let query = "Iba umiestnenie v miestnosti a priechodnosť";
+    let transport = Arc::new(ScriptedAssistantTransport::new([(
+        query.to_owned(),
+        AssistantChatResult {
+            message: "Room inputs unavailable".to_owned(),
+            model_intent: None,
+        },
+    )]));
+    let mut shell = Shell::with_assistant_transport(transport.clone());
+    let revision = shell.app().document_revision();
+    let digest = shell.app().canonical_digest();
+    let undo_steps = shell.app().undo_step_count();
+
+    shell.focus_text_input(&shell.catalog().text("assistant-input-hint"));
+    shell.type_text(query);
+    shell.press_key(egui::Key::Enter);
+    for _ in 0..100 {
+        shell.step();
+        if transport.contexts().len() == 1 && shell.app().assistant_messages().len() == 2 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+
+    let contexts = transport.contexts();
+    assert_eq!(contexts.len(), 1);
+    let validation = &contexts[0]["validation"];
+    assert_eq!(validation["state"], "not_evaluated");
+    assert_eq!(validation["complete"], false);
+    assert_eq!(
+        validation["room_placement"]["not_evaluated"][0]["reason"],
+        "named_room_envelope_not_found"
+    );
+    assert_eq!(
+        validation["passage_clearance"]["not_evaluated"][0]["reason"],
+        "named_passage_envelope_not_found"
+    );
+    assert_eq!(shell.app().document_revision(), revision);
+    assert_eq!(shell.app().canonical_digest(), digest);
+    assert_eq!(shell.app().undo_step_count(), undo_steps);
+}
+
+#[test]
+fn assistant_chat_calculates_static_load_from_explicit_canonical_physics_inputs() {
+    let query = "Iba statika a sily";
+    let transport = Arc::new(ScriptedAssistantTransport::new([(
+        query.to_owned(),
+        AssistantChatResult {
+            message: "Static load validation received".to_owned(),
+            model_intent: None,
+        },
+    )]));
+    let mut shell = Shell::with_assistant_transport(transport.clone());
+    assert!(apply_reviewed_model_intent(
+        &mut shell,
+        AssistantModelIntent {
+            replace_scene: true,
+            boxes: vec![
+                AssistantBoxIntent {
+                    name: "Loaded machine".to_owned(),
+                    size_mm: [500.0, 500.0, 500.0],
+                    origin_mm: [0.0, 0.0, 500.0],
+                    subtract_boxes: Vec::new(),
+                },
+                AssistantBoxIntent {
+                    name: "Steel support".to_owned(),
+                    size_mm: [500.0, 500.0, 500.0],
+                    origin_mm: [0.0, 0.0, 0.0],
+                    subtract_boxes: Vec::new(),
+                },
+            ],
+            translations: Vec::new(),
+            profile_translations: Vec::new(),
+            parameter_edits: Vec::new(),
+            linear_arrays: Vec::new(),
+            bottles: Vec::new(),
+        },
+    ));
+    let scene = shell.app().document_snapshot().scene_query();
+    let loaded_id = scene
+        .iter()
+        .find(|occurrence| occurrence.occurrence_name == "Loaded machine")
+        .unwrap()
+        .occurrence_id
+        .0;
+    let support_id = scene
+        .iter()
+        .find(|occurrence| occurrence.occurrence_name == "Steel support")
+        .unwrap()
+        .occurrence_id
+        .0;
+    let mass_name = format!("physics.mass_kg.occurrence.{loaded_id}");
+    let load_name = format!("physics.applied_load_n.occurrence.{loaded_id}");
+    let link_name = format!("physics.support_link.load.{loaded_id}.support.{support_id}");
+    let capacity_name = format!("physics.support_capacity_n.occurrence.{support_id}");
+    apply_reviewed_evaluator_inputs(
+        &mut shell,
+        &[
+            ("physics.gravity_x_m_s2", 0.0),
+            ("physics.gravity_y_m_s2", 0.0),
+            ("physics.gravity_z_m_s2", -9.81),
+            (&mass_name, 100.0),
+            (&load_name, 200.0),
+            (&link_name, 1.0),
+            (&capacity_name, 1_000.0),
+        ],
+    );
+    shell.settle();
+    let revision = shell.app().document_revision();
+    let digest = shell.app().canonical_digest();
+    let undo_steps = shell.app().undo_step_count();
+
+    shell.focus_text_input(&shell.catalog().text("assistant-input-hint"));
+    shell.type_text(query);
+    shell.press_key(egui::Key::Enter);
+    for _ in 0..100 {
+        shell.step();
+        if transport.contexts().len() == 1 && shell.app().assistant_messages().len() == 2 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+
+    let contexts = transport.contexts();
+    assert_eq!(contexts.len(), 1);
+    let validation = &contexts[0]["validation"];
+    assert_eq!(validation["requested"], serde_json::json!(["static_load"]));
+    assert_eq!(validation["executed"], validation["requested"]);
+    assert_eq!(validation["state"], "failed");
+    assert_eq!(validation["complete"], true);
+    assert_eq!(validation["issue_count"], 1);
+    let report = &validation["static_load"];
+    assert_eq!(report["state"], "failed");
+    assert_eq!(report["complete"], true);
+    assert_eq!(report["applicable_count"], 1);
+    assert_eq!(report["issue_count"], 1);
+    let evaluation = &report["evaluations"][0];
+    assert_eq!(evaluation["occurrence_id"], loaded_id);
+    assert_eq!(evaluation["name"], "Loaded machine");
+    assert_eq!(evaluation["mass"]["value_kg"], 100.0);
+    assert_eq!(evaluation["applied_load"]["value_n"], 200.0);
+    assert_eq!(
+        evaluation["gravity"]["vector_m_s2"],
+        serde_json::json!([0.0, 0.0, -9.81])
+    );
+    assert_eq!(
+        evaluation["gravity"]["direction"],
+        serde_json::json!([0.0, 0.0, -1.0])
+    );
+    assert_eq!(evaluation["weight_force_n"], 981.0);
+    assert_eq!(evaluation["resultant_force_n"], 1_181.0);
+    assert_eq!(evaluation["total_support_capacity_n"], 1_000.0);
+    assert_eq!(evaluation["capacity_margin_n"], -181.0);
+    assert_eq!(evaluation["supports"][0]["occurrence_id"], support_id);
+    assert_eq!(evaluation["supports"][0]["name"], "Steel support");
+    assert_eq!(
+        report["issues"][0]["code"],
+        "physics.support_capacity_exceeded"
+    );
+    assert_eq!(report["issues"][0]["capacity_shortfall_n"], 181.0);
+    assert_eq!(shell.app().document_revision(), revision);
+    assert_eq!(shell.app().canonical_digest(), digest);
+    assert_eq!(shell.app().undo_step_count(), undo_steps);
+}
+
+#[test]
+fn assistant_chat_does_not_estimate_static_load_without_explicit_physics_inputs() {
+    let query = "Iba statika a sily";
+    let transport = Arc::new(ScriptedAssistantTransport::new([(
+        query.to_owned(),
+        AssistantChatResult {
+            message: "Physics inputs unavailable".to_owned(),
+            model_intent: None,
+        },
+    )]));
+    let mut shell = Shell::with_assistant_transport(transport.clone());
+    let revision = shell.app().document_revision();
+    let digest = shell.app().canonical_digest();
+    let undo_steps = shell.app().undo_step_count();
+
+    shell.focus_text_input(&shell.catalog().text("assistant-input-hint"));
+    shell.type_text(query);
+    shell.press_key(egui::Key::Enter);
+    for _ in 0..100 {
+        shell.step();
+        if transport.contexts().len() == 1 && shell.app().assistant_messages().len() == 2 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+
+    let contexts = transport.contexts();
+    assert_eq!(contexts.len(), 1);
+    let validation = &contexts[0]["validation"];
+    assert_eq!(validation["requested"], serde_json::json!(["static_load"]));
+    assert_eq!(validation["state"], "not_evaluated");
+    assert_eq!(validation["complete"], false);
+    assert_eq!(validation["issue_count"], 0);
+    assert_eq!(validation["static_load"]["state"], "not_evaluated");
+    assert_eq!(
+        validation["static_load"]["not_evaluated"][0]["reason"],
+        "missing_or_ambiguous_gravity_vector"
+    );
+    assert_eq!(shell.app().document_revision(), revision);
+    assert_eq!(shell.app().canonical_digest(), digest);
+    assert_eq!(shell.app().undo_step_count(), undo_steps);
+}
+
+#[test]
+fn assistant_repairs_a_collision_through_preview_confirmation_revalidation_and_one_undo() {
+    let mut shell = Shell::new();
+    assert!(apply_reviewed_model_intent(
+        &mut shell,
+        AssistantModelIntent {
+            replace_scene: true,
+            boxes: vec![
+                AssistantBoxIntent {
+                    name: "Left cabinet".to_owned(),
+                    size_mm: [100.0, 100.0, 100.0],
+                    origin_mm: [0.0, 0.0, 0.0],
+                    subtract_boxes: Vec::new(),
+                },
+                AssistantBoxIntent {
+                    name: "Right cabinet".to_owned(),
+                    size_mm: [100.0, 100.0, 100.0],
+                    origin_mm: [50.0, 0.0, 0.0],
+                    subtract_boxes: Vec::new(),
+                },
+            ],
+            translations: Vec::new(),
+            profile_translations: Vec::new(),
+            parameter_edits: Vec::new(),
+            linear_arrays: Vec::new(),
+            bottles: Vec::new(),
+        },
+    ));
+    shell.settle();
+    let revision = shell.app().document_revision();
+    let digest = shell.app().canonical_digest();
+    let undo_steps = shell.app().undo_step_count();
+    assert_eq!(
+        shell.app().assistant_context()["validation"]["collision"]["issue_count"],
+        1
+    );
+
+    shell.focus_text_input(&shell.catalog().text("assistant-input-hint"));
+    shell.type_text("Oprav iba kolízie");
+    shell.press_key(egui::Key::Enter);
+    shell.settle();
+
+    assert!(shell.app().assistant_proposal().is_some());
+    assert_eq!(shell.app().document_revision(), revision);
+    assert_eq!(shell.app().canonical_digest(), digest);
+    assert_eq!(shell.app().undo_step_count(), undo_steps);
+    assert!(shell.has_visible_label(&shell.catalog().text("assistant-repair-preview-title")));
+
+    shell.click_row(&shell.catalog().text("assistant-confirm"));
+    assert_eq!(shell.app().document_revision(), revision + 1);
+    assert_eq!(shell.app().undo_step_count(), undo_steps + 1);
+    let verification = shell
+        .app()
+        .assistant_verification()
+        .expect("repair confirmation returns validation evidence");
+    assert_eq!(verification.repair_validator.as_deref(), Some("collision"));
+    let before = verification.validation_before.as_ref().unwrap();
+    let after = verification.validation_after.as_ref().unwrap();
+    assert_eq!(before["requested"], serde_json::json!(["collision"]));
+    assert_eq!(before["collision"]["issue_count"], 1);
+    assert_eq!(before["gravity_support"]["state"], "skipped");
+    assert_eq!(after["requested"], before["requested"]);
+    assert_eq!(after["collision"]["issue_count"], 0);
+    assert_eq!(after["gravity_support"]["state"], "skipped");
+    assert_eq!(after["state"], "passed");
+    assert!(shell.app().assistant_change_can_undo());
+
+    shell.click_row(&shell.catalog().text("assistant-undo-change"));
+    shell.settle();
+    assert_eq!(shell.app().canonical_digest(), digest);
+    assert_eq!(
+        shell.app().assistant_context()["validation"]["collision"]["issue_count"],
+        1
+    );
+    assert!(!shell.app().assistant_change_can_undo());
+}
+
+#[test]
+fn assistant_repairs_an_unsupported_part_and_reruns_only_gravity_support() {
+    let mut shell = Shell::new();
+    assert!(apply_reviewed_model_intent(
+        &mut shell,
+        AssistantModelIntent {
+            replace_scene: true,
+            boxes: vec![AssistantBoxIntent {
+                name: "Floating shelf".to_owned(),
+                size_mm: [100.0, 30.0, 18.0],
+                origin_mm: [0.0, 0.0, 50.0],
+                subtract_boxes: Vec::new(),
+            }],
+            translations: Vec::new(),
+            profile_translations: Vec::new(),
+            parameter_edits: Vec::new(),
+            linear_arrays: Vec::new(),
+            bottles: Vec::new(),
+        },
+    ));
+    shell.settle();
+    let revision = shell.app().document_revision();
+    let digest = shell.app().canonical_digest();
+    let undo_steps = shell.app().undo_step_count();
+    assert_eq!(
+        shell.app().assistant_context()["validation"]["gravity_support"]["unsupported_count"],
+        1
+    );
+
+    shell.focus_text_input(&shell.catalog().text("assistant-input-hint"));
+    shell.type_text("Oprav iba podopretie");
+    shell.press_key(egui::Key::Enter);
+    shell.settle();
+
+    assert!(shell.app().assistant_proposal().is_some());
+    assert_eq!(shell.app().document_revision(), revision);
+    assert_eq!(shell.app().canonical_digest(), digest);
+    assert_eq!(shell.app().undo_step_count(), undo_steps);
+
+    shell.click_row(&shell.catalog().text("assistant-confirm"));
+    let verification = shell
+        .app()
+        .assistant_verification()
+        .expect("support repair returns validation evidence");
+    assert_eq!(
+        verification.repair_validator.as_deref(),
+        Some("gravity_support")
+    );
+    let before = verification.validation_before.as_ref().unwrap();
+    let after = verification.validation_after.as_ref().unwrap();
+    assert_eq!(before["requested"], serde_json::json!(["gravity_support"]));
+    assert_eq!(before["collision"]["state"], "skipped");
+    assert_eq!(before["gravity_support"]["unsupported_count"], 1);
+    assert_eq!(after["requested"], before["requested"]);
+    assert_eq!(after["collision"]["state"], "skipped");
+    assert_eq!(after["gravity_support"]["unsupported_count"], 0);
+    assert_eq!(after["state"], "passed");
+    assert_eq!(shell.app().document_revision(), revision + 1);
+    assert_eq!(shell.app().undo_step_count(), undo_steps + 1);
+
+    shell.click_row(&shell.catalog().text("assistant-undo-change"));
+    shell.settle();
+    assert_eq!(shell.app().canonical_digest(), digest);
+    assert_eq!(
+        shell.app().assistant_context()["validation"]["gravity_support"]["unsupported_count"],
+        1
+    );
 }
 
 #[test]
@@ -463,7 +1943,10 @@ fn public_apply_helpers_cannot_bypass_review_for_non_whitelisted_changes() {
                     subtract_boxes: Vec::new(),
                 }],
                 translations: Vec::new(),
+                profile_translations: Vec::new(),
+                parameter_edits: Vec::new(),
                 linear_arrays: Vec::new(),
+                bottles: Vec::new(),
             })
     );
     assert!(shell.app().assistant_proposal().is_some());
@@ -886,7 +2369,10 @@ fn assistant_creates_a_rectangular_prism_as_one_reviewed_batch_and_one_undo_step
                     subtract_boxes: Vec::new(),
                 }],
                 translations: Vec::new(),
+                profile_translations: Vec::new(),
+                parameter_edits: Vec::new(),
                 linear_arrays: Vec::new(),
+                bottles: Vec::new(),
             })
     );
     assert_eq!(shell.app().document_revision(), initial_revision);
@@ -937,7 +2423,10 @@ fn assistant_model_intent_applies_real_3d_boxes_immediately_as_one_undoable_batc
                 },
             ],
             translations: Vec::new(),
+            profile_translations: Vec::new(),
+            parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
+            bottles: Vec::new(),
         }
     ));
     assert_eq!(shell.app().document_revision(), initial_revision + 1);
@@ -956,6 +2445,87 @@ fn assistant_model_intent_applies_real_3d_boxes_immediately_as_one_undoable_batc
             Vec3::new(5_000.0, 300.0, 500.0)
         ))
     );
+    assert!(shell.app_mut().undo());
+    assert_eq!(shell.app().document_revision(), initial_revision);
+    assert_eq!(shell.app().canonical_digest(), initial_digest);
+}
+
+#[test]
+fn assistant_bottle_intent_creates_editable_feature_chain_as_one_undo_step() {
+    let mut shell = Shell::new();
+    let initial_revision = shell.app().document_revision();
+    let initial_digest = shell.app().canonical_digest();
+    let initial_features = shell.app().feature_count();
+    let initial_occurrences = shell.app().occurrence_count();
+
+    assert!(apply_reviewed_model_intent(
+        &mut shell,
+        AssistantModelIntent {
+            replace_scene: false,
+            boxes: Vec::new(),
+            translations: Vec::new(),
+            profile_translations: Vec::new(),
+            parameter_edits: Vec::new(),
+            linear_arrays: Vec::new(),
+            bottles: vec![AssistantBottleIntent {
+                name: "AI ketchup bottle".to_owned(),
+                body_radius_mm: 30.0,
+                body_height_mm: 110.0,
+                shoulder_rise_mm: 20.0,
+                neck_radius_mm: 12.0,
+                neck_height_mm: 25.0,
+                wall_thickness_mm: 2.0,
+                finish_kind: AssistantBottleFinishKind::Chamfer,
+                finish_amount_mm: 2.0,
+                origin_mm: [90.0, 0.0, 0.0],
+            }],
+        }
+    ));
+
+    assert_eq!(shell.app().document_revision(), initial_revision + 1);
+    assert_eq!(shell.app().feature_count(), initial_features + 5);
+    assert_eq!(shell.app().occurrence_count(), initial_occurrences + 1);
+    let snapshot = shell.app().document_snapshot();
+    let occurrence = snapshot
+        .occurrences()
+        .find(|occurrence| occurrence.name() == "AI ketchup bottle occurrence")
+        .unwrap();
+    let transform = occurrence.transform();
+    let matrix = transform.matrix();
+    assert_eq!([matrix[3], matrix[7], matrix[11]], [90.0, 0.0, 0.0]);
+    let kinds = snapshot
+        .features()
+        .filter(|feature| feature.definition_id() == occurrence.definition_id())
+        .map(|feature| feature.kind())
+        .collect::<Vec<_>>();
+    assert!(
+        kinds
+            .iter()
+            .any(|kind| matches!(kind, FeatureKind::Profile { .. }))
+    );
+    assert!(
+        kinds
+            .iter()
+            .any(|kind| matches!(kind, FeatureKind::BottleProfileControl { .. }))
+    );
+    assert!(
+        kinds
+            .iter()
+            .any(|kind| matches!(kind, FeatureKind::Revolve { .. }))
+    );
+    assert!(
+        kinds
+            .iter()
+            .any(|kind| matches!(kind, FeatureKind::Shell { .. }))
+    );
+    assert!(kinds.iter().any(|kind| matches!(
+        kind,
+        FeatureKind::BottleEdgeFinish {
+            kind: ketchup_core::document::BottleEdgeFinishKind::Chamfer,
+            ..
+        }
+    )));
+
     assert!(shell.app_mut().undo());
     assert_eq!(shell.app().document_revision(), initial_revision);
     assert_eq!(shell.app().canonical_digest(), initial_digest);
@@ -985,7 +2555,10 @@ fn assistant_subtractions_create_one_real_grooved_body_as_one_undo_step() {
                 subtract_boxes,
             }],
             translations: Vec::new(),
+            profile_translations: Vec::new(),
+            parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
+            bottles: Vec::new(),
         }
     ));
 
@@ -1053,7 +2626,10 @@ fn assistant_moves_existing_grooved_body_without_rebuilding_its_geometry() {
                 subtract_boxes,
             }],
             translations: Vec::new(),
+            profile_translations: Vec::new(),
+            parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
+            bottles: Vec::new(),
         }
     ));
     let occurrence_id = shell
@@ -1072,11 +2648,14 @@ fn assistant_moves_existing_grooved_body_without_rebuilding_its_geometry() {
         AssistantModelIntent {
             replace_scene: false,
             boxes: Vec::new(),
+            profile_translations: Vec::new(),
+            parameter_edits: Vec::new(),
             translations: vec![AssistantTranslationIntent {
                 occurrence_id: occurrence_id.0,
                 delta_mm: [100.0, 0.0, 0.0],
             }],
             linear_arrays: Vec::new(),
+            bottles: Vec::new(),
         }
     ));
 
@@ -1134,7 +2713,10 @@ fn assistant_context_keeps_all_17_plain_and_7_grooved_parts_copyable_with_bounds
             replace_scene: true,
             boxes,
             translations: Vec::new(),
+            profile_translations: Vec::new(),
+            parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
+            bottles: Vec::new(),
         }
     ));
 
@@ -1178,7 +2760,10 @@ fn assistant_stacks_24_existing_parts_into_20_layers_as_shared_occurrences_in_on
             replace_scene: true,
             boxes,
             translations: Vec::new(),
+            profile_translations: Vec::new(),
+            parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
+            bottles: Vec::new(),
         }
     ));
     let before = shell.app().document_snapshot();
@@ -1198,11 +2783,14 @@ fn assistant_stacks_24_existing_parts_into_20_layers_as_shared_occurrences_in_on
             replace_scene: false,
             boxes: Vec::new(),
             translations: Vec::new(),
+            profile_translations: Vec::new(),
+            parameter_edits: Vec::new(),
             linear_arrays: vec![AssistantLinearArrayIntent {
                 occurrence_ids: source_ids,
                 instances: 20,
                 step_mm: [0.0, 0.0, 280.0],
             }],
+            bottles: Vec::new(),
         }
     ));
 

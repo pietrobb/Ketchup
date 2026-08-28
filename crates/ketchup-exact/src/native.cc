@@ -1823,6 +1823,7 @@ std::unique_ptr<NativeOperationResult> cut_mixed_profile_native(
     std::vector<TopoDS_Edge> profile_edges;
     profile_edges.reserve(segments.size() / 8);
     std::size_t first_line_index = profile_edges.capacity();
+    std::size_t first_arc_index = profile_edges.capacity();
     std::size_t line_count = 0;
     std::size_t arc_count = 0;
     for (std::size_t offset = 0; offset < segments.size(); offset += 8) {
@@ -1860,6 +1861,9 @@ std::unique_ptr<NativeOperationResult> cut_mixed_profile_native(
           return error_result(STATUS_INVALID_SHAPE, "OCCT mixed cut arc builder did not complete");
         }
         edge = BRepBuilderAPI_MakeEdge(arc_builder.Value()).Edge();
+        if (first_arc_index == profile_edges.capacity()) {
+          first_arc_index = profile_edges.size();
+        }
         ++arc_count;
       } else {
         return error_result(STATUS_INVALID_PARAMETER, "Mixed cut segment kind is invalid");
@@ -1870,12 +1874,7 @@ std::unique_ptr<NativeOperationResult> cut_mixed_profile_native(
       profile_edges.push_back(edge);
       wire_builder.Add(edge);
     }
-    const bool d_profile = profile_edges.size() == 2 && line_count == 1 && arc_count == 1;
-    const bool capsule_profile = profile_edges.size() == 4 && line_count == 2 && arc_count == 2;
-    const bool rounded_rectangle_profile =
-        profile_edges.size() == 8 && line_count == 4 && arc_count == 4;
-    if ((arc_count == 0 && line_count < 3)
-        || (arc_count > 0 && !d_profile && !capsule_profile && !rounded_rectangle_profile)) {
+    if (arc_count == 0 && line_count < 3) {
       return error_result(STATUS_INVALID_PARAMETER, "Mixed cut profile shape is unsupported");
     }
     if (!wire_builder.IsDone()) {
@@ -1920,6 +1919,42 @@ std::unique_ptr<NativeOperationResult> cut_mixed_profile_native(
     if (profile_reference.IsNull()) {
       return error_result(STATUS_INVALID_SHAPE, "OCCT mixed cut lost its reference edge");
     }
+    TopoDS_Edge profile_arc_reference;
+    if (first_arc_index != profile_edges.capacity()) {
+      const std::size_t arc_offset = first_arc_index * 8;
+      const gp_Pnt expected_arc_start(
+          segments[arc_offset + 1], segments[arc_offset + 2], origin_z);
+      const gp_Pnt expected_arc_end(
+          segments[arc_offset + 3], segments[arc_offset + 4], origin_z);
+      for (TopExp_Explorer explorer(profile, TopAbs_EDGE); explorer.More(); explorer.Next()) {
+        const TopoDS_Edge candidate = TopoDS::Edge(explorer.Current());
+        if (BRepAdaptor_Curve(candidate).GetType() != GeomAbs_Circle) {
+          continue;
+        }
+        TopoDS_Vertex first;
+        TopoDS_Vertex last;
+        TopExp::Vertices(candidate, first, last);
+        if (first.IsNull() || last.IsNull()) {
+          continue;
+        }
+        const gp_Pnt first_point = BRep_Tool::Pnt(first);
+        const gp_Pnt last_point = BRep_Tool::Pnt(last);
+        const bool endpoints_match =
+            (first_point.Distance(expected_arc_start) <= 1.0e-9
+                && last_point.Distance(expected_arc_end) <= 1.0e-9)
+            || (first_point.Distance(expected_arc_end) <= 1.0e-9
+                && last_point.Distance(expected_arc_start) <= 1.0e-9);
+        if (endpoints_match) {
+          if (!profile_arc_reference.IsNull()) {
+            return error_result(STATUS_INVALID_SHAPE, "OCCT mixed cut arc reference edge is ambiguous");
+          }
+          profile_arc_reference = candidate;
+        }
+      }
+      if (profile_arc_reference.IsNull()) {
+        return error_result(STATUS_INVALID_SHAPE, "OCCT mixed cut lost its arc reference edge");
+      }
+    }
     BRepPrimAPI_MakePrism prism(profile, gp_Vec(0.0, 0.0, height), true, false);
     if (!prism.IsDone()) {
       return error_result(STATUS_INVALID_SHAPE, "Polygon cut prism did not complete");
@@ -1958,6 +1993,30 @@ std::unique_ptr<NativeOperationResult> cut_mixed_profile_native(
       }
     }
     history.push_back(std::move(wall));
+    if (!profile_arc_reference.IsNull()) {
+      const NCollection_List<TopoDS_Shape>& generated_arc_side = prism.Generated(profile_arc_reference);
+      if (!generated_arc_side.IsEmpty()) {
+        const TopoDS_Shape arc_side = generated_arc_side.First();
+        const HistoryRecord retained = history_record(
+            "through_cut.wall.arc.0", "retained", "cut_profile.edge.arc.0",
+            result, arc_side);
+        if (retained.output_present) {
+          history.push_back(retained);
+        } else {
+          const NCollection_List<TopoDS_Shape>& modified_arc_side = operation.Modified(arc_side);
+          for (NCollection_List<TopoDS_Shape>::Iterator iterator(modified_arc_side);
+               iterator.More(); iterator.Next()) {
+            const HistoryRecord candidate = history_record(
+                "through_cut.wall.arc.0", "modified", "cut_profile.edge.arc.0",
+                result, iterator.Value());
+            if (candidate.output_present) {
+              history.push_back(candidate);
+              break;
+            }
+          }
+        }
+      }
+    }
     return success_result(result, std::move(history));
   });
 }
@@ -2013,13 +2072,7 @@ std::unique_ptr<NativeOperationResult> fuse_mixed_profile_native(
       }
       wire_builder.Add(edge);
     }
-    const std::size_t segment_count = segments.size() / 8;
-    const bool d_profile = segment_count == 2 && line_count == 1 && arc_count == 1;
-    const bool capsule_profile = segment_count == 4 && line_count == 2 && arc_count == 2;
-    const bool rounded_rectangle_profile =
-        segment_count == 8 && line_count == 4 && arc_count == 4;
-    if ((arc_count == 0 && line_count < 3)
-        || (arc_count > 0 && !d_profile && !capsule_profile && !rounded_rectangle_profile)) {
+    if (arc_count == 0 && line_count < 3) {
       return error_result(STATUS_INVALID_PARAMETER, "Polygon union profile shape is unsupported");
     }
     if (!wire_builder.IsDone()) {
@@ -2106,13 +2159,7 @@ std::unique_ptr<NativeOperationResult> common_mixed_profile_native(
       }
       wire_builder.Add(edge);
     }
-    const std::size_t segment_count = segments.size() / 8;
-    const bool d_profile = segment_count == 2 && line_count == 1 && arc_count == 1;
-    const bool capsule_profile = segment_count == 4 && line_count == 2 && arc_count == 2;
-    const bool rounded_rectangle_profile =
-        segment_count == 8 && line_count == 4 && arc_count == 4;
-    if ((arc_count == 0 && line_count < 3)
-        || (arc_count > 0 && !d_profile && !capsule_profile && !rounded_rectangle_profile)) {
+    if (arc_count == 0 && line_count < 3) {
       return error_result(STATUS_INVALID_PARAMETER, "Polygon intersection profile shape is unsupported");
     }
     if (!wire_builder.IsDone()) {
@@ -2196,13 +2243,7 @@ std::unique_ptr<NativeOperationResult> split_mixed_profile_native(
       }
       wire_builder.Add(edge);
     }
-    const std::size_t segment_count = segments.size() / 8;
-    const bool d_profile = segment_count == 2 && line_count == 1 && arc_count == 1;
-    const bool capsule_profile = segment_count == 4 && line_count == 2 && arc_count == 2;
-    const bool rounded_rectangle_profile =
-        segment_count == 8 && line_count == 4 && arc_count == 4;
-    if ((arc_count == 0 && line_count < 3)
-        || (arc_count > 0 && !d_profile && !capsule_profile && !rounded_rectangle_profile)) {
+    if (arc_count == 0 && line_count < 3) {
       return error_result(STATUS_INVALID_PARAMETER, "Polygon split profile shape is unsupported");
     }
     if (!wire_builder.IsDone()) {
@@ -2252,8 +2293,30 @@ std::unique_ptr<NativeOperationResult> cut_cylinder_native(
     if (!base.valid()) {
       return error_result(STATUS_INVALID_PARAMETER, "Cylinder cut base is not a valid exact body");
     }
+    Bnd_Box base_bounds;
+    BRepBndLib::AddOptimal(base.impl().shape, base_bounds, false, false);
+    double min_x = 0.0;
+    double min_y = 0.0;
+    double min_z = 0.0;
+    double max_x = 0.0;
+    double max_y = 0.0;
+    double max_z = 0.0;
+    base_bounds.Get(min_x, min_y, min_z, max_x, max_y, max_z);
+    gp_Dir seam_direction(1.0, 0.0, 0.0);
+    if (center_x - radius < min_x) {
+      seam_direction = gp_Dir(-1.0, 0.0, 0.0);
+    } else if (center_x + radius > max_x) {
+      seam_direction = gp_Dir(1.0, 0.0, 0.0);
+    } else if (center_y - radius < min_y) {
+      seam_direction = gp_Dir(0.0, -1.0, 0.0);
+    } else if (center_y + radius > max_y) {
+      seam_direction = gp_Dir(0.0, 1.0, 0.0);
+    }
     BRepPrimAPI_MakeCylinder tool_builder(
-        gp_Ax2(gp_Pnt(center_x, center_y, origin_z), gp_Dir(0.0, 0.0, 1.0)),
+        gp_Ax2(
+            gp_Pnt(center_x, center_y, origin_z),
+            gp_Dir(0.0, 0.0, 1.0),
+            seam_direction),
         radius,
         height);
     tool_builder.Build();

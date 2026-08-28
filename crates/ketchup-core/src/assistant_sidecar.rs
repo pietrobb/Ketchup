@@ -1,3 +1,6 @@
+use crate::bottle_m6::{
+    controlled_bottle_profile, finish_amount_is_conservative, inner_shell_profile,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::fmt;
@@ -7,10 +10,12 @@ const MAX_ASSISTANT_MODEL_BYTES: usize = 128;
 const MAX_ASSISTANT_BOXES: usize = 64;
 const MAX_ASSISTANT_SUBTRACTIONS: usize = 64;
 const MAX_ASSISTANT_TRANSLATIONS: usize = 100;
+const MAX_ASSISTANT_PROFILE_TRANSLATIONS: usize = 1;
 const MAX_ASSISTANT_ARRAYS: usize = 16;
 const MAX_ASSISTANT_ARRAY_SOURCES: usize = 100;
 const MAX_ASSISTANT_ARRAY_INSTANCES: u32 = 1_000;
 const MAX_ASSISTANT_ARRAY_OUTPUTS: usize = 512;
+const MAX_ASSISTANT_BOTTLES: usize = 8;
 const MAX_ASSISTANT_NAME_BYTES: usize = 128;
 const MAX_ASSISTANT_ABS_MM: f64 = 1_000_000.0;
 
@@ -56,10 +61,115 @@ pub struct AssistantTranslationIntent {
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
+pub struct AssistantProfileTranslationIntent {
+    pub definition_id: u64,
+    pub body_id: u64,
+    pub profile_id: u64,
+    pub delta_mm: [f64; 2],
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AssistantParameterEditIntent {
+    pub definition_id: u64,
+    pub body_id: u64,
+    pub feature_id: u64,
+    pub constraint_id: Option<u64>,
+    pub value_mm: f64,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct AssistantLinearArrayIntent {
     pub occurrence_ids: Vec<u64>,
     pub instances: u32,
     pub step_mm: [f64; 3],
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AssistantBottleFinishKind {
+    Fillet,
+    Chamfer,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AssistantBottleIntent {
+    pub name: String,
+    pub body_radius_mm: f64,
+    pub body_height_mm: f64,
+    pub shoulder_rise_mm: f64,
+    pub neck_radius_mm: f64,
+    pub neck_height_mm: f64,
+    pub wall_thickness_mm: f64,
+    pub finish_kind: AssistantBottleFinishKind,
+    pub finish_amount_mm: f64,
+    pub origin_mm: [f64; 3],
+}
+
+impl AssistantBottleIntent {
+    fn validate(&self) -> Result<(), String> {
+        if self.name.trim().is_empty()
+            || self.name.len() > MAX_ASSISTANT_NAME_BYTES
+            || self.name.chars().any(char::is_control)
+        {
+            return Err("assistant bottle name is invalid".to_owned());
+        }
+        if self
+            .origin_mm
+            .iter()
+            .any(|value| !value.is_finite() || value.abs() > MAX_ASSISTANT_ABS_MM)
+        {
+            return Err("assistant bottle origin is outside the envelope".to_owned());
+        }
+        let dimensions = [
+            self.body_radius_mm,
+            self.body_height_mm,
+            self.shoulder_rise_mm,
+            self.neck_radius_mm,
+            self.neck_height_mm,
+            self.wall_thickness_mm,
+            self.finish_amount_mm,
+        ];
+        if dimensions
+            .iter()
+            .any(|value| !value.is_finite() || *value <= 0.0 || *value > MAX_ASSISTANT_ABS_MM)
+            || self.neck_radius_mm >= self.body_radius_mm
+        {
+            return Err("assistant bottle dimensions are outside the envelope".to_owned());
+        }
+        let source_profile = vec![
+            [0.0, 0.0],
+            [self.body_radius_mm, 0.0],
+            [self.body_radius_mm, self.body_height_mm],
+            [
+                self.neck_radius_mm,
+                self.body_height_mm + self.shoulder_rise_mm,
+            ],
+            [
+                self.neck_radius_mm,
+                self.body_height_mm + self.shoulder_rise_mm + self.neck_height_mm,
+            ],
+            [
+                0.0,
+                self.body_height_mm + self.shoulder_rise_mm + self.neck_height_mm,
+            ],
+        ];
+        let profile = controlled_bottle_profile(
+            &source_profile,
+            self.body_radius_mm,
+            self.body_height_mm,
+            self.shoulder_rise_mm,
+        )
+        .map_err(|_| "assistant bottle profile is unsupported".to_owned())?;
+        inner_shell_profile(&profile, self.wall_thickness_mm)
+            .map_err(|_| "assistant bottle wall thickness is unsupported".to_owned())?;
+        if !finish_amount_is_conservative(&profile, self.finish_amount_mm) {
+            return Err("assistant bottle edge finish is unsupported".to_owned());
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -71,7 +181,13 @@ pub struct AssistantModelIntent {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub translations: Vec<AssistantTranslationIntent>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub profile_translations: Vec<AssistantProfileTranslationIntent>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parameter_edits: Vec<AssistantParameterEditIntent>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub linear_arrays: Vec<AssistantLinearArrayIntent>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bottles: Vec<AssistantBottleIntent>,
 }
 
 fn boxes_overlap(left: &AssistantSubtractionIntent, right: &AssistantSubtractionIntent) -> bool {
@@ -83,9 +199,15 @@ fn boxes_overlap(left: &AssistantSubtractionIntent, right: &AssistantSubtraction
 
 impl AssistantModelIntent {
     pub fn validate(&self) -> Result<(), String> {
-        if self.boxes.is_empty() && self.translations.is_empty() && self.linear_arrays.is_empty() {
+        if self.boxes.is_empty()
+            && self.translations.is_empty()
+            && self.profile_translations.is_empty()
+            && self.parameter_edits.is_empty()
+            && self.linear_arrays.is_empty()
+            && self.bottles.is_empty()
+        {
             return Err(
-                "assistant proposal must contain geometry, translations, or linear arrays"
+                "assistant proposal must contain geometry, translations, profile translations, parameter edits, linear arrays, or bottles"
                     .to_owned(),
             );
         }
@@ -95,13 +217,46 @@ impl AssistantModelIntent {
         if self.translations.len() > MAX_ASSISTANT_TRANSLATIONS {
             return Err("assistant proposal contains more than 100 translations".to_owned());
         }
+        if self.profile_translations.len() > MAX_ASSISTANT_PROFILE_TRANSLATIONS {
+            return Err("assistant proposal contains more than one profile translation".to_owned());
+        }
+        if self.parameter_edits.len() > 1 {
+            return Err("assistant proposal contains more than one parameter edit".to_owned());
+        }
         if self.linear_arrays.len() > MAX_ASSISTANT_ARRAYS {
             return Err("assistant proposal contains too many linear arrays".to_owned());
         }
-        if self.replace_scene && (!self.translations.is_empty() || !self.linear_arrays.is_empty()) {
-            return Err(
-                "assistant edits of existing occurrences cannot replace the scene".to_owned(),
-            );
+        if self.bottles.len() > MAX_ASSISTANT_BOTTLES {
+            return Err("assistant proposal contains too many bottles".to_owned());
+        }
+        for bottle in &self.bottles {
+            bottle.validate()?;
+        }
+        if self.replace_scene
+            && (!self.translations.is_empty()
+                || !self.profile_translations.is_empty()
+                || !self.parameter_edits.is_empty()
+                || !self.linear_arrays.is_empty())
+        {
+            return Err("assistant edits of existing geometry cannot replace the scene".to_owned());
+        }
+        if !self.profile_translations.is_empty()
+            && (!self.boxes.is_empty()
+                || !self.translations.is_empty()
+                || !self.parameter_edits.is_empty()
+                || !self.linear_arrays.is_empty()
+                || !self.bottles.is_empty())
+        {
+            return Err("assistant profile translation cannot mix geometry mutations".to_owned());
+        }
+        if !self.parameter_edits.is_empty()
+            && (!self.boxes.is_empty()
+                || !self.translations.is_empty()
+                || !self.profile_translations.is_empty()
+                || !self.linear_arrays.is_empty()
+                || !self.bottles.is_empty())
+        {
+            return Err("assistant parameter edit cannot mix geometry mutations".to_owned());
         }
         let mut translated_occurrences = BTreeSet::new();
         for translation in &self.translations {
@@ -113,6 +268,31 @@ impl AssistantModelIntent {
                     .any(|value| !value.is_finite() || value.abs() > MAX_ASSISTANT_ABS_MM)
             {
                 return Err("assistant translation is invalid".to_owned());
+            }
+        }
+        for translation in &self.profile_translations {
+            if translation.definition_id == 0
+                || translation.body_id == 0
+                || translation.profile_id == 0
+                || translation
+                    .delta_mm
+                    .iter()
+                    .any(|value| !value.is_finite() || value.abs() > MAX_ASSISTANT_ABS_MM)
+                || translation.delta_mm.iter().all(|value| *value == 0.0)
+            {
+                return Err("assistant profile translation is invalid".to_owned());
+            }
+        }
+        for edit in &self.parameter_edits {
+            if edit.definition_id == 0
+                || edit.body_id == 0
+                || edit.feature_id == 0
+                || edit.constraint_id == Some(0)
+                || !edit.value_mm.is_finite()
+                || edit.value_mm <= 0.0
+                || edit.value_mm > MAX_ASSISTANT_ABS_MM
+            {
+                return Err("assistant parameter edit is invalid".to_owned());
             }
         }
         let mut array_outputs = 0usize;
