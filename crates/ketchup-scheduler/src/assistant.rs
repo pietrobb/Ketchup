@@ -1,6 +1,6 @@
 use ketchup_core::assistant_sidecar::{
-    AssistantCapability, AssistantChatResult, AssistantDistribution, AssistantHandshake,
-    AssistantModelIntent,
+    AssistantApiDiagnostics, AssistantCapability, AssistantChatResult, AssistantDistribution,
+    AssistantHandshake, AssistantModelIntent,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -32,6 +32,12 @@ impl AssistantCancellation {
     }
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct AssistantProcessChatResult {
+    pub result: AssistantChatResult,
+    pub diagnostics: Option<AssistantApiDiagnostics>,
+}
+
 #[derive(Debug)]
 pub struct AssistantProcessClient {
     child: Child,
@@ -55,7 +61,8 @@ enum SidecarResponse {
     ChatResult {
         request_id: String,
         message: String,
-        model_intent: Option<AssistantModelIntent>,
+        model_intent: Box<Option<AssistantModelIntent>>,
+        diagnostics: Option<Box<AssistantApiDiagnostics>>,
     },
     Error {
         error: String,
@@ -175,6 +182,16 @@ impl AssistantProcessClient {
         message: &str,
         context: &Value,
     ) -> Result<AssistantChatResult, AssistantProcessError> {
+        self.chat_exchange(request_id, message, context)
+            .map(|exchange| exchange.result)
+    }
+
+    pub fn chat_exchange(
+        &mut self,
+        request_id: &str,
+        message: &str,
+        context: &Value,
+    ) -> Result<AssistantProcessChatResult, AssistantProcessError> {
         if self.closed {
             return Err(AssistantProcessError::Closed);
         }
@@ -194,13 +211,22 @@ impl AssistantProcessClient {
                 request_id: returned_id,
                 message,
                 model_intent,
+                diagnostics,
             } if returned_id == request_id => {
                 let result = AssistantChatResult {
                     message,
-                    model_intent,
+                    model_intent: *model_intent,
                 };
                 result.validate().map_err(AssistantProcessError::Protocol)?;
-                Ok(result)
+                if let Some(diagnostics) = diagnostics.as_ref() {
+                    diagnostics
+                        .validate()
+                        .map_err(AssistantProcessError::Protocol)?;
+                }
+                Ok(AssistantProcessChatResult {
+                    result,
+                    diagnostics: diagnostics.map(|diagnostics| *diagnostics),
+                })
             }
             SidecarResponse::Error { error } => Err(AssistantProcessError::Remote(error)),
             _ => self.fail_protocol("assistant returned a mismatched chat response"),

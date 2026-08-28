@@ -5,10 +5,12 @@ use harness::{ScriptedAssistantTransport, Shell};
 use ketchup_app::dialogs::ScriptedFileDialogs;
 use ketchup_app::{AppCommand, AssistantMessageRole, AssistantProvider, AssistantWorkspaceMode};
 use ketchup_core::assistant_sidecar::{
-    ASSISTANT_PROTOCOL_VERSION, AssistantBottleFinishKind, AssistantBottleIntent,
-    AssistantBoxIntent, AssistantChatResult, AssistantDistribution, AssistantLinearArrayIntent,
-    AssistantModelIntent, AssistantParameterEditIntent, AssistantProfileTranslationIntent,
-    AssistantSubtractionIntent, AssistantTranslationIntent,
+    ASSISTANT_PROTOCOL_VERSION, AssistantApiDiagnostics, AssistantBeamNotchIntent,
+    AssistantBottleFinishKind, AssistantBottleIntent, AssistantBoxIntent, AssistantChatResult,
+    AssistantDistribution, AssistantGableRoofIntent, AssistantLinearArrayIntent,
+    AssistantModelIntent, AssistantOrientedBeamIntent, AssistantParameterEditIntent,
+    AssistantProfileTranslationIntent, AssistantStaircaseIntent, AssistantSubtractionIntent,
+    AssistantTranslationIntent,
 };
 use ketchup_core::document::{
     BodyId, CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId,
@@ -233,6 +235,92 @@ fn assistant_enter_sends_and_shift_enter_keeps_composing() {
 }
 
 #[test]
+fn assistant_diagnostics_show_exact_api_usage_and_search_project_memory() {
+    let request = "Remember that rafter spacing is 600 mm";
+    let answer = "The rafter spacing is 600 mm.";
+    let transport = Arc::new(ScriptedAssistantTransport::new([(
+        request.to_owned(),
+        AssistantChatResult {
+            message: answer.to_owned(),
+            model_intent: None,
+        },
+    )]));
+    transport.queue_diagnostics(AssistantApiDiagnostics {
+        provider: "codex-oauth".to_owned(),
+        model: "gpt-5.6-sol".to_owned(),
+        duration_ms: 1_250,
+        input_tokens: 1_234,
+        output_tokens: 56,
+        cache_read_tokens: 700,
+        cache_write_tokens: 0,
+        stop_reason: "completed".to_owned(),
+        system_prompt: "Exact Kečup system prompt".to_owned(),
+        request_payload: serde_json::json!({
+            "model": "gpt-5.6-sol",
+            "instructions": "Exact Kečup system prompt",
+            "input": [{"role": "user", "content": request}],
+        }),
+        response_text: serde_json::json!({
+            "message": answer,
+            "model_intent": null,
+        })
+        .to_string(),
+    });
+    let mut shell = Shell::with_assistant_transport(transport);
+    let diagnostics_title = shell.catalog().text("assistant-diagnostics-title");
+    shell.click_button_label(&diagnostics_title);
+    let capture = shell.catalog().text("assistant-diagnostics-capture");
+    shell.click_role_and_label(Role::CheckBox, &capture);
+    assert!(
+        shell
+            .app()
+            .assistant_handshake()
+            .capabilities
+            .contains(&ketchup_core::assistant_sidecar::AssistantCapability::DebugObservability)
+    );
+
+    let input_label = shell.catalog().text("assistant-input-hint");
+    shell.focus_text_input(&input_label);
+    shell.type_text(request);
+    shell.press_key(egui::Key::Enter);
+    for _ in 0..100 {
+        shell.step();
+        if shell.app().assistant_messages().len() == 2 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(shell.app().assistant_messages()[1].text, answer);
+    shell.step();
+    let token_summary = shell.catalog().format(
+        "assistant-diagnostics-token-summary",
+        &BTreeMap::from([
+            ("input", "1234".to_owned()),
+            ("output", "56".to_owned()),
+            ("cache", "700".to_owned()),
+            ("total", "1290".to_owned()),
+            ("duration", "1.25".to_owned()),
+        ]),
+    );
+    assert!(shell.has_visible_label(&token_summary));
+    let exact_payload = serde_json::to_string_pretty(&serde_json::json!({
+        "model": "gpt-5.6-sol",
+        "instructions": "Exact Kečup system prompt",
+        "input": [{"role": "user", "content": request}],
+    }))
+    .unwrap();
+    assert!(shell.has_visible_label(&exact_payload));
+
+    let memory_tab = shell.catalog().text("assistant-diagnostics-memory");
+    shell.click_button_label(&memory_tab);
+    let memory_search = shell.catalog().text("assistant-memory-search");
+    shell.focus_text_input(&memory_search);
+    shell.type_text("rafter");
+    shell.step();
+    assert!(shell.has_visible_label(answer));
+}
+
+#[test]
 fn scripted_assistant_in_flight_requests_cancel_and_transport_survives_new_document() {
     let transport = Arc::new(
         ScriptedAssistantTransport::new([(
@@ -359,6 +447,9 @@ fn scripted_assistant_model_review_cancel_confirm_undo_and_redo_use_accesskit() 
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
             bottles: Vec::new(),
+            gable_roofs: Vec::new(),
+            staircases: Vec::new(),
+            oriented_beams: Vec::new(),
         }),
     };
     let transport = Arc::new(ScriptedAssistantTransport::new([
@@ -441,6 +532,9 @@ fn verbal_bottle_request_reviews_confirms_and_undoes_through_accesskit() {
                     finish_amount_mm: 2.0,
                     origin_mm: [90.0, 0.0, 0.0],
                 }],
+                gable_roofs: Vec::new(),
+                staircases: Vec::new(),
+                oriented_beams: Vec::new(),
             }),
         },
     )]));
@@ -523,6 +617,9 @@ fn assistant_profile_translation_reviews_confirms_undoes_and_fails_closed() {
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
             bottles: Vec::new(),
+            gable_roofs: Vec::new(),
+            staircases: Vec::new(),
+            oriented_beams: Vec::new(),
         },
     ));
     assert_eq!(shell.app().document_revision(), before_revision + 1);
@@ -563,6 +660,9 @@ fn assistant_profile_translation_reviews_confirms_undoes_and_fails_closed() {
                 parameter_edits: Vec::new(),
                 linear_arrays: Vec::new(),
                 bottles: Vec::new(),
+                gable_roofs: Vec::new(),
+                staircases: Vec::new(),
+                oriented_beams: Vec::new(),
             })
     );
     assert_eq!(shell.app().canonical_digest(), before_digest);
@@ -611,6 +711,9 @@ fn assistant_parameter_edit_uses_the_selected_exact_target_for_feature_and_const
             }],
             linear_arrays: Vec::new(),
             bottles: Vec::new(),
+            gable_roofs: Vec::new(),
+            staircases: Vec::new(),
+            oriented_beams: Vec::new(),
         }
     ));
     assert!(matches!(
@@ -670,6 +773,9 @@ fn assistant_parameter_edit_uses_the_selected_exact_target_for_feature_and_const
             }],
             linear_arrays: Vec::new(),
             bottles: Vec::new(),
+            gable_roofs: Vec::new(),
+            staircases: Vec::new(),
+            oriented_beams: Vec::new(),
         }
     ));
     let snapshot = shell.app().document_snapshot();
@@ -700,6 +806,9 @@ fn assistant_parameter_edit_uses_the_selected_exact_target_for_feature_and_const
                 }],
                 linear_arrays: Vec::new(),
                 bottles: Vec::new(),
+                gable_roofs: Vec::new(),
+                staircases: Vec::new(),
+                oriented_beams: Vec::new(),
             })
     );
     assert_eq!(shell.app().canonical_digest(), before_digest);
@@ -764,6 +873,9 @@ fn assistant_context_runs_current_collision_validation_without_mutating_or_addin
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
             bottles: Vec::new(),
+            gable_roofs: Vec::new(),
+            staircases: Vec::new(),
+            oriented_beams: Vec::new(),
         },
     ));
     let revision = shell.app().document_revision();
@@ -801,6 +913,9 @@ fn assistant_context_runs_current_collision_validation_without_mutating_or_addin
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
             bottles: Vec::new(),
+            gable_roofs: Vec::new(),
+            staircases: Vec::new(),
+            oriented_beams: Vec::new(),
         },
     ));
     let clean_revision = shell.app().document_revision();
@@ -859,6 +974,9 @@ fn assistant_context_finds_transitively_supported_and_floating_parts_without_mut
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
             bottles: Vec::new(),
+            gable_roofs: Vec::new(),
+            staircases: Vec::new(),
+            oriented_beams: Vec::new(),
         },
     ));
     shell.settle();
@@ -892,6 +1010,9 @@ fn assistant_context_finds_transitively_supported_and_floating_parts_without_mut
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
             bottles: Vec::new(),
+            gable_roofs: Vec::new(),
+            staircases: Vec::new(),
+            oriented_beams: Vec::new(),
         },
     ));
     shell.settle();
@@ -1060,6 +1181,9 @@ fn assistant_chat_reports_shelf_deflection_tipping_and_anchoring_with_explicit_l
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
             bottles: Vec::new(),
+            gable_roofs: Vec::new(),
+            staircases: Vec::new(),
+            oriented_beams: Vec::new(),
         },
     ));
     shell.settle();
@@ -1206,6 +1330,9 @@ fn assistant_chat_reports_hardware_and_manufacturing_rules_with_named_elements_a
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
             bottles: Vec::new(),
+            gable_roofs: Vec::new(),
+            staircases: Vec::new(),
+            oriented_beams: Vec::new(),
         },
     ));
     shell.settle();
@@ -1345,6 +1472,9 @@ fn assistant_chat_reports_room_placement_and_blocked_passages_from_named_envelop
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
             bottles: Vec::new(),
+            gable_roofs: Vec::new(),
+            staircases: Vec::new(),
+            oriented_beams: Vec::new(),
         },
     ));
     shell.settle();
@@ -1488,6 +1618,9 @@ fn assistant_chat_calculates_static_load_from_explicit_canonical_physics_inputs(
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
             bottles: Vec::new(),
+            gable_roofs: Vec::new(),
+            staircases: Vec::new(),
+            oriented_beams: Vec::new(),
         },
     ));
     let scene = shell.app().document_snapshot().scene_query();
@@ -1646,6 +1779,9 @@ fn assistant_repairs_a_collision_through_preview_confirmation_revalidation_and_o
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
             bottles: Vec::new(),
+            gable_roofs: Vec::new(),
+            staircases: Vec::new(),
+            oriented_beams: Vec::new(),
         },
     ));
     shell.settle();
@@ -1715,6 +1851,9 @@ fn assistant_repairs_an_unsupported_part_and_reruns_only_gravity_support() {
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
             bottles: Vec::new(),
+            gable_roofs: Vec::new(),
+            staircases: Vec::new(),
+            oriented_beams: Vec::new(),
         },
     ));
     shell.settle();
@@ -1764,6 +1903,89 @@ fn assistant_repairs_an_unsupported_part_and_reruns_only_gravity_support() {
         shell.app().assistant_context()["validation"]["gravity_support"]["unsupported_count"],
         1
     );
+}
+
+#[test]
+fn assistant_repairs_all_safe_collision_and_support_findings_in_one_confirmed_batch() {
+    let mut shell = Shell::new();
+    assert!(apply_reviewed_model_intent(
+        &mut shell,
+        AssistantModelIntent {
+            replace_scene: true,
+            boxes: vec![
+                AssistantBoxIntent {
+                    name: "Left cabinet".to_owned(),
+                    size_mm: [100.0, 100.0, 100.0],
+                    origin_mm: [0.0, 0.0, 0.0],
+                    subtract_boxes: Vec::new(),
+                },
+                AssistantBoxIntent {
+                    name: "Right cabinet".to_owned(),
+                    size_mm: [100.0, 100.0, 100.0],
+                    origin_mm: [50.0, 0.0, 0.0],
+                    subtract_boxes: Vec::new(),
+                },
+                AssistantBoxIntent {
+                    name: "Floating shelf".to_owned(),
+                    size_mm: [100.0, 30.0, 18.0],
+                    origin_mm: [300.0, 0.0, 50.0],
+                    subtract_boxes: Vec::new(),
+                },
+            ],
+            translations: Vec::new(),
+            profile_translations: Vec::new(),
+            parameter_edits: Vec::new(),
+            linear_arrays: Vec::new(),
+            bottles: Vec::new(),
+            gable_roofs: Vec::new(),
+            staircases: Vec::new(),
+            oriented_beams: Vec::new(),
+        },
+    ));
+    shell.settle();
+    let revision = shell.app().document_revision();
+    let digest = shell.app().canonical_digest();
+    let undo_steps = shell.app().undo_step_count();
+    let validation = &shell.app().assistant_context()["validation"];
+    assert_eq!(validation["collision"]["issue_count"], 1);
+    assert_eq!(validation["gravity_support"]["unsupported_count"], 1);
+
+    shell.focus_text_input(&shell.catalog().text("assistant-input-hint"));
+    shell.type_text("Oprav iba kolízie a podopretie");
+    shell.press_key(egui::Key::Enter);
+    shell.settle();
+
+    assert!(shell.app().assistant_proposal().is_some());
+    assert_eq!(shell.app().document_revision(), revision);
+    assert_eq!(shell.app().canonical_digest(), digest);
+    assert_eq!(shell.app().undo_step_count(), undo_steps);
+
+    shell.click_row(&shell.catalog().text("assistant-confirm"));
+    let verification = shell
+        .app()
+        .assistant_verification()
+        .expect("batch repair returns validation evidence");
+    assert_eq!(
+        verification.repair_validator.as_deref(),
+        Some("collision + gravity_support")
+    );
+    assert_eq!(verification.verified_write_count, 2);
+    let before = verification.validation_before.as_ref().unwrap();
+    let after = verification.validation_after.as_ref().unwrap();
+    assert_eq!(before["collision"]["issue_count"], 1);
+    assert_eq!(before["gravity_support"]["unsupported_count"], 1);
+    assert_eq!(after["collision"]["issue_count"], 0);
+    assert_eq!(after["gravity_support"]["unsupported_count"], 0);
+    assert_eq!(after["state"], "passed");
+    assert_eq!(shell.app().document_revision(), revision + 1);
+    assert_eq!(shell.app().undo_step_count(), undo_steps + 1);
+
+    shell.click_row(&shell.catalog().text("assistant-undo-change"));
+    shell.settle();
+    assert_eq!(shell.app().canonical_digest(), digest);
+    let validation = &shell.app().assistant_context()["validation"];
+    assert_eq!(validation["collision"]["issue_count"], 1);
+    assert_eq!(validation["gravity_support"]["unsupported_count"], 1);
 }
 
 #[test]
@@ -1947,6 +2169,9 @@ fn public_apply_helpers_cannot_bypass_review_for_non_whitelisted_changes() {
                 parameter_edits: Vec::new(),
                 linear_arrays: Vec::new(),
                 bottles: Vec::new(),
+                gable_roofs: Vec::new(),
+                staircases: Vec::new(),
+                oriented_beams: Vec::new(),
             })
     );
     assert!(shell.app().assistant_proposal().is_some());
@@ -1975,9 +2200,16 @@ fn assistant_dimension_review_preserves_source_and_normalized_value_in_both_loca
             "assistant-value-dimension",
             &BTreeMap::from([("source", "20.0".to_owned()), ("value", "20".to_owned())]),
         );
+        let target = shell.catalog().format(
+            "assistant-target-identified",
+            &BTreeMap::from([
+                ("kind", shell.catalog().text("assistant-entity-feature")),
+                ("id", "2".to_owned()),
+            ]),
+        );
         let diff = shell.catalog().format(
-            "assistant-diff-row",
-            &BTreeMap::from([("before", before), ("after", after)]),
+            "assistant-diff-changed",
+            &BTreeMap::from([("target", target), ("before", before), ("after", after)]),
         );
         assert!(shell.has_visible_label(&diff));
         let cancel = shell.catalog().text("assistant-cancel");
@@ -2002,9 +2234,17 @@ fn assistant_dimension_review_preserves_source_and_normalized_value_in_both_loca
                 ("dependencies", String::new()),
             ]),
         );
-        let diff = shell.catalog().format(
-            "assistant-diff-row",
+        let target = shell.catalog().format(
+            "assistant-target-identified",
             &BTreeMap::from([
+                ("kind", shell.catalog().text("assistant-entity-evaluator")),
+                ("id", "99".to_owned()),
+            ]),
+        );
+        let diff = shell.catalog().format(
+            "assistant-diff-created",
+            &BTreeMap::from([
+                ("target", target),
                 ("before", shell.catalog().text("assistant-value-missing")),
                 ("after", after),
             ]),
@@ -2074,10 +2314,9 @@ fn assistant_occurrence_translation_review_is_exact_observational_and_undoable()
         )]),
     );
     let diff = shell.catalog().format(
-        "assistant-diff-row",
-        &BTreeMap::from([("before", before), ("after", after)]),
+        "assistant-diff-changed",
+        &BTreeMap::from([("target", target), ("before", before), ("after", after)]),
     );
-    assert!(shell.has_visible_label(&target));
     assert!(shell.has_visible_label(&diff));
     let confirm = shell.catalog().text("assistant-confirm");
     shell.click_row(&confirm);
@@ -2373,6 +2612,9 @@ fn assistant_creates_a_rectangular_prism_as_one_reviewed_batch_and_one_undo_step
                 parameter_edits: Vec::new(),
                 linear_arrays: Vec::new(),
                 bottles: Vec::new(),
+                gable_roofs: Vec::new(),
+                staircases: Vec::new(),
+                oriented_beams: Vec::new(),
             })
     );
     assert_eq!(shell.app().document_revision(), initial_revision);
@@ -2396,6 +2638,79 @@ fn assistant_creates_a_rectangular_prism_as_one_reviewed_batch_and_one_undo_step
     assert_eq!(shell.app().canonical_digest(), completed_digest);
     assert_eq!(shell.app().definition_count(), initial_definitions + 1);
     assert_eq!(shell.app().active_box_count(), initial_occurrences + 1);
+}
+
+#[test]
+fn assistant_replacement_review_hides_internal_digests_and_describes_removals() {
+    let mut shell = Shell::new();
+    assert!(
+        shell
+            .app_mut()
+            .prepare_assistant_model_intent(AssistantModelIntent {
+                replace_scene: true,
+                boxes: vec![AssistantBoxIntent {
+                    name: "Replacement".to_owned(),
+                    size_mm: [10.0, 20.0, 30.0],
+                    origin_mm: [0.0, 0.0, 0.0],
+                    subtract_boxes: Vec::new(),
+                }],
+                translations: Vec::new(),
+                profile_translations: Vec::new(),
+                parameter_edits: Vec::new(),
+                linear_arrays: Vec::new(),
+                bottles: Vec::new(),
+                gable_roofs: Vec::new(),
+                staircases: Vec::new(),
+                oriented_beams: Vec::new(),
+            })
+    );
+    let removed = shell
+        .app()
+        .assistant_proposal()
+        .unwrap()
+        .authoritative_diff()
+        .iter()
+        .find(|entry| {
+            entry.target
+                == ketchup_core::document::AuthoritativeDependency::Definition(DefinitionId(1))
+        })
+        .unwrap();
+    let ProposalValue::Digest(digest) = &removed.before else {
+        panic!("replacement review must bind the removed definition digest");
+    };
+    assert_eq!(removed.after, ProposalValue::Missing);
+    let target = shell.catalog().format(
+        "assistant-target-identified",
+        &BTreeMap::from([
+            ("kind", shell.catalog().text("assistant-entity-definition")),
+            ("id", "1".to_owned()),
+        ]),
+    );
+    let friendly = shell.catalog().format(
+        "assistant-diff-removed",
+        &BTreeMap::from([
+            ("target", target),
+            ("before", String::new()),
+            ("after", String::new()),
+        ]),
+    );
+    let internal = shell.catalog().format(
+        "assistant-diff-row",
+        &BTreeMap::from([
+            (
+                "before",
+                shell.catalog().format(
+                    "assistant-value-digest",
+                    &BTreeMap::from([("digest", digest.clone())]),
+                ),
+            ),
+            ("after", shell.catalog().text("assistant-value-missing")),
+        ]),
+    );
+
+    shell.settle();
+    assert!(shell.has_visible_label(&friendly));
+    assert!(!shell.has_visible_label(&internal));
 }
 
 #[test]
@@ -2427,6 +2742,9 @@ fn assistant_model_intent_applies_real_3d_boxes_immediately_as_one_undoable_batc
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
             bottles: Vec::new(),
+            gable_roofs: Vec::new(),
+            staircases: Vec::new(),
+            oriented_beams: Vec::new(),
         }
     ));
     assert_eq!(shell.app().document_revision(), initial_revision + 1);
@@ -2479,6 +2797,9 @@ fn assistant_bottle_intent_creates_editable_feature_chain_as_one_undo_step() {
                 finish_amount_mm: 2.0,
                 origin_mm: [90.0, 0.0, 0.0],
             }],
+            gable_roofs: Vec::new(),
+            staircases: Vec::new(),
+            oriented_beams: Vec::new(),
         }
     ));
 
@@ -2532,6 +2853,167 @@ fn assistant_bottle_intent_creates_editable_feature_chain_as_one_undo_step() {
 }
 
 #[test]
+fn assistant_builds_gable_roof_floor_opening_and_staircase_as_one_undo_step() {
+    let mut shell = Shell::new();
+    let initial_revision = shell.app().document_revision();
+    let initial_digest = shell.app().canonical_digest();
+
+    assert!(apply_reviewed_model_intent(
+        &mut shell,
+        AssistantModelIntent {
+            replace_scene: true,
+            boxes: vec![AssistantBoxIntent {
+                name: "Attic floor with stair opening".to_owned(),
+                size_mm: [5_500.0, 3_800.0, 200.0],
+                origin_mm: [0.0, 0.0, 3_200.0],
+                subtract_boxes: vec![AssistantSubtractionIntent {
+                    size_mm: [900.0, 1_400.0, 200.0],
+                    origin_mm: [3_900.0, 1_900.0, 0.0],
+                }],
+            }],
+            translations: Vec::new(),
+            profile_translations: Vec::new(),
+            parameter_edits: Vec::new(),
+            linear_arrays: Vec::new(),
+            bottles: Vec::new(),
+            gable_roofs: vec![AssistantGableRoofIntent {
+                name: "True gable roof".to_owned(),
+                length_mm: 5_900.0,
+                span_mm: 4_200.0,
+                rise_mm: 1_400.0,
+                thickness_mm: 180.0,
+                origin_mm: [-200.0, -200.0, 3_400.0],
+            }],
+            staircases: vec![AssistantStaircaseIntent {
+                name: "Attic staircase".to_owned(),
+                run_mm: 3_000.0,
+                width_mm: 800.0,
+                rise_mm: 3_000.0,
+                step_count: 15,
+                origin_mm: [1_800.0, 2_200.0, 200.0],
+            }],
+            oriented_beams: Vec::new(),
+        }
+    ));
+
+    assert_eq!(shell.app().document_revision(), initial_revision + 1);
+    assert_eq!(shell.app().occurrence_count(), 3);
+    assert_eq!(shell.app().active_box_count(), 3);
+    let snapshot = shell.app().document_snapshot();
+    let roof = snapshot
+        .features()
+        .find(|feature| feature.name() == "True gable roof solid")
+        .expect("gable roof mesh must exist");
+    let FeatureKind::MeshBody(roof) = roof.kind() else {
+        panic!("gable roof must be one canonical mesh body");
+    };
+    assert_eq!(roof.vertices_mm.len(), 12);
+    assert_eq!(roof.triangles.len(), 20);
+    let floor = snapshot
+        .features()
+        .find(|feature| feature.name() == "Attic floor with stair opening solid")
+        .expect("floor opening mesh must exist");
+    let FeatureKind::MeshBody(floor) = floor.kind() else {
+        panic!("floor opening must be one canonical mesh body");
+    };
+    assert!(floor.vertices_mm.contains(&[3_900.0, 1_900.0, 0.0]));
+    assert!(floor.vertices_mm.contains(&[4_800.0, 3_300.0, 200.0]));
+    let stairs = snapshot
+        .features()
+        .find(|feature| feature.name() == "Attic staircase solid")
+        .expect("staircase mesh must exist");
+    let FeatureKind::MeshBody(stairs) = stairs.kind() else {
+        panic!("staircase must be one canonical mesh body");
+    };
+    assert!(stairs.vertices_mm.contains(&[200.0, 0.0, 200.0]));
+    assert!(stairs.vertices_mm.contains(&[3_000.0, 800.0, 3_000.0]));
+
+    assert!(shell.app_mut().undo());
+    assert_eq!(shell.app().document_revision(), initial_revision);
+    assert_eq!(shell.app().canonical_digest(), initial_digest);
+}
+
+#[test]
+fn assistant_builds_sloped_rafters_with_real_notches_and_central_purlin() {
+    let mut shell = Shell::new();
+    let initial_revision = shell.app().document_revision();
+    let initial_digest = shell.app().canonical_digest();
+    let rafter = |name: &str, x: f64, start_y: f64, end_y: f64| AssistantOrientedBeamIntent {
+        name: name.to_owned(),
+        start_mm: [x, start_y, 3_044.067_796_610_17],
+        end_mm: [x, end_y, 4_800.0],
+        up_hint: [0.0, 0.0, 1.0],
+        width_mm: 100.0,
+        depth_mm: 180.0,
+        bottom_notches: vec![AssistantBeamNotchIntent {
+            from_start_mm: 600.0,
+            length_mm: 160.0,
+            depth_mm: 50.0,
+        }],
+    };
+
+    assert!(apply_reviewed_model_intent(
+        &mut shell,
+        AssistantModelIntent {
+            replace_scene: true,
+            boxes: Vec::new(),
+            translations: Vec::new(),
+            profile_translations: Vec::new(),
+            parameter_edits: Vec::new(),
+            linear_arrays: Vec::new(),
+            bottles: Vec::new(),
+            gable_roofs: Vec::new(),
+            staircases: Vec::new(),
+            oriented_beams: vec![
+                rafter("Left rafter 1", 0.0, -483.050_847_457_627_1, 1_900.0),
+                rafter("Right rafter 1", 0.0, 4_283.050_847_457_627, 1_900.0),
+                rafter("Left rafter 2", 600.0, -483.050_847_457_627_1, 1_900.0),
+                rafter("Right rafter 2", 600.0, 4_283.050_847_457_627, 1_900.0),
+                AssistantOrientedBeamIntent {
+                    name: "Central purlin".to_owned(),
+                    start_mm: [-200.0, 1_900.0, 4_600.0],
+                    end_mm: [5_700.0, 1_900.0, 4_600.0],
+                    up_hint: [0.0, 0.0, 1.0],
+                    width_mm: 160.0,
+                    depth_mm: 240.0,
+                    bottom_notches: Vec::new(),
+                },
+            ],
+        }
+    ));
+
+    assert_eq!(shell.app().document_revision(), initial_revision + 1);
+    assert_eq!(shell.app().occurrence_count(), 5);
+    let snapshot = shell.app().document_snapshot();
+    let rafter_feature = snapshot
+        .features()
+        .find(|feature| feature.name() == "Left rafter 1 solid")
+        .expect("rafter mesh must exist");
+    let FeatureKind::MeshBody(rafter_mesh) = rafter_feature.kind() else {
+        panic!("rafter must be one canonical mesh body");
+    };
+    assert!(rafter_mesh.vertices_mm.contains(&[600.0, -50.0, -90.0]));
+    assert!(rafter_mesh.vertices_mm.contains(&[600.0, -50.0, -40.0]));
+    assert!(rafter_mesh.vertices_mm.contains(&[760.0, 50.0, -40.0]));
+    let left = snapshot
+        .occurrences()
+        .find(|occurrence| occurrence.name() == "Left rafter 1")
+        .expect("left rafter occurrence must exist");
+    let right = snapshot
+        .occurrences()
+        .find(|occurrence| occurrence.name() == "Right rafter 1")
+        .expect("right rafter occurrence must exist");
+    assert!(left.transform().matrix()[8] > 0.5);
+    assert!(right.transform().matrix()[8] > 0.5);
+    assert!(left.transform().matrix()[4] > 0.5);
+    assert!(right.transform().matrix()[4] < -0.5);
+
+    assert!(shell.app_mut().undo());
+    assert_eq!(shell.app().document_revision(), initial_revision);
+    assert_eq!(shell.app().canonical_digest(), initial_digest);
+}
+
+#[test]
 fn assistant_subtractions_create_one_real_grooved_body_as_one_undo_step() {
     let mut shell = Shell::new();
     let initial_revision = shell.app().document_revision();
@@ -2559,6 +3041,9 @@ fn assistant_subtractions_create_one_real_grooved_body_as_one_undo_step() {
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
             bottles: Vec::new(),
+            gable_roofs: Vec::new(),
+            staircases: Vec::new(),
+            oriented_beams: Vec::new(),
         }
     ));
 
@@ -2630,6 +3115,9 @@ fn assistant_moves_existing_grooved_body_without_rebuilding_its_geometry() {
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
             bottles: Vec::new(),
+            gable_roofs: Vec::new(),
+            staircases: Vec::new(),
+            oriented_beams: Vec::new(),
         }
     ));
     let occurrence_id = shell
@@ -2656,6 +3144,9 @@ fn assistant_moves_existing_grooved_body_without_rebuilding_its_geometry() {
             }],
             linear_arrays: Vec::new(),
             bottles: Vec::new(),
+            gable_roofs: Vec::new(),
+            staircases: Vec::new(),
+            oriented_beams: Vec::new(),
         }
     ));
 
@@ -2717,6 +3208,9 @@ fn assistant_context_keeps_all_17_plain_and_7_grooved_parts_copyable_with_bounds
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
             bottles: Vec::new(),
+            gable_roofs: Vec::new(),
+            staircases: Vec::new(),
+            oriented_beams: Vec::new(),
         }
     ));
 
@@ -2764,6 +3258,9 @@ fn assistant_stacks_24_existing_parts_into_20_layers_as_shared_occurrences_in_on
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
             bottles: Vec::new(),
+            gable_roofs: Vec::new(),
+            staircases: Vec::new(),
+            oriented_beams: Vec::new(),
         }
     ));
     let before = shell.app().document_snapshot();
@@ -2791,6 +3288,9 @@ fn assistant_stacks_24_existing_parts_into_20_layers_as_shared_occurrences_in_on
                 step_mm: [0.0, 0.0, 280.0],
             }],
             bottles: Vec::new(),
+            gable_roofs: Vec::new(),
+            staircases: Vec::new(),
+            oriented_beams: Vec::new(),
         }
     ));
 
@@ -2889,12 +3389,21 @@ fn assistant_workspace_exposes_provider_filtered_models_and_new_chat() {
         shell.app().assistant_workspace_mode(),
         AssistantWorkspaceMode::Dock
     );
+    #[cfg(not(feature = "private-oauth"))]
     assert!(
         shell
             .app()
             .assistant_models()
             .iter()
             .all(|model| model.starts_with("claude-"))
+    );
+    #[cfg(feature = "private-oauth")]
+    assert!(
+        shell
+            .app()
+            .assistant_models()
+            .iter()
+            .all(|model| model.starts_with("gpt-"))
     );
     shell
         .app_mut()
@@ -2924,17 +3433,34 @@ fn assistant_workspace_exposes_provider_filtered_models_and_new_chat() {
 fn assistant_provider_selection_builds_an_exact_model_bound_handshake() {
     let mut shell = Shell::new();
 
-    assert_eq!(
-        shell.app().assistant_provider(),
-        AssistantProvider::AnthropicApi
-    );
-    assert_eq!(shell.app().assistant_model(), "claude-sonnet-5");
-    let anthropic = shell.app().assistant_handshake();
-    assert_eq!(anthropic.protocol_version, ASSISTANT_PROTOCOL_VERSION);
-    assert_eq!(anthropic.distribution, AssistantDistribution::PublicApi);
-    assert_eq!(anthropic.provider, "anthropic-api");
-    assert_eq!(anthropic.model, "claude-sonnet-5");
-    anthropic.validate().unwrap();
+    #[cfg(not(feature = "private-oauth"))]
+    {
+        assert_eq!(
+            shell.app().assistant_provider(),
+            AssistantProvider::AnthropicApi
+        );
+        assert_eq!(shell.app().assistant_model(), "claude-sonnet-5");
+        let anthropic = shell.app().assistant_handshake();
+        assert_eq!(anthropic.protocol_version, ASSISTANT_PROTOCOL_VERSION);
+        assert_eq!(anthropic.distribution, AssistantDistribution::PublicApi);
+        assert_eq!(anthropic.provider, "anthropic-api");
+        assert_eq!(anthropic.model, "claude-sonnet-5");
+        anthropic.validate().unwrap();
+    }
+    #[cfg(feature = "private-oauth")]
+    {
+        assert_eq!(
+            shell.app().assistant_provider(),
+            AssistantProvider::CodexOauth
+        );
+        assert_eq!(shell.app().assistant_model(), "gpt-5.6-sol");
+        let codex = shell.app().assistant_handshake();
+        assert_eq!(codex.protocol_version, ASSISTANT_PROTOCOL_VERSION);
+        assert_eq!(codex.distribution, AssistantDistribution::PrivateOauth);
+        assert_eq!(codex.provider, "codex-oauth");
+        assert_eq!(codex.model, "gpt-5.6-sol");
+        codex.validate().unwrap();
+    }
 
     shell
         .app_mut()
@@ -2959,6 +3485,12 @@ fn assistant_provider_selection_builds_an_exact_model_bound_handshake() {
 #[test]
 fn private_build_exposes_only_model_compatible_oauth_selections() {
     let mut shell = Shell::new();
+    assert_eq!(shell.app().assistant_model(), "gpt-5.6-sol");
+    let initial = shell.app().assistant_handshake();
+    assert_eq!(initial.distribution, AssistantDistribution::PrivateOauth);
+    assert_eq!(initial.provider, "codex-oauth");
+    assert_eq!(initial.model, "gpt-5.6-sol");
+    initial.validate().unwrap();
 
     shell
         .app_mut()
@@ -2972,11 +3504,11 @@ fn private_build_exposes_only_model_compatible_oauth_selections() {
     shell
         .app_mut()
         .select_assistant_provider(AssistantProvider::CodexOauth);
-    assert_eq!(shell.app().assistant_model(), "gpt-5.5");
+    assert_eq!(shell.app().assistant_model(), "gpt-5.6-sol");
     let codex = shell.app().assistant_handshake();
     assert_eq!(codex.distribution, AssistantDistribution::PrivateOauth);
     assert_eq!(codex.provider, "codex-oauth");
-    assert_eq!(codex.model, "gpt-5.5");
+    assert_eq!(codex.model, "gpt-5.6-sol");
     codex.validate().unwrap();
 }
 

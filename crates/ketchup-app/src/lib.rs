@@ -5,9 +5,10 @@
 
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, Stroke, Vec2};
 use ketchup_core::assistant_sidecar::{
-    ASSISTANT_PROTOCOL_VERSION, AssistantBottleFinishKind, AssistantBoxIntent, AssistantCapability,
-    AssistantChatResult, AssistantDistribution, AssistantHandshake, AssistantModelIntent,
-    AssistantTranslationIntent,
+    ASSISTANT_PROTOCOL_VERSION, AssistantApiDiagnostics, AssistantBottleFinishKind,
+    AssistantBoxIntent, AssistantCapability, AssistantChatResult, AssistantDistribution,
+    AssistantGableRoofIntent, AssistantHandshake, AssistantModelIntent,
+    AssistantOrientedBeamIntent, AssistantStaircaseIntent,
 };
 use ketchup_core::beam_m4ae::{
     BeamChangeSummary, BeamSlice, BeamValidationVerdict, BeamWorkspace, GroovePosition, GroupedBom,
@@ -17,16 +18,16 @@ use ketchup_core::bottle_m6::{BottleAuthorityReport, ExactRevolvePackage, ExactR
 use ketchup_core::document::{
     AuthenticatedApprover, AuthoritativeDependency, BOTTLE_SHELL_OPENING_FACE_ROLE,
     BOTTLE_SHOULDER_EDGE_ROLE, BodyId, BooleanOperation, BottleControlDimension,
-    BottleEdgeFinishKind, CanonicalCommand, CloneDefinitionPlan, CollectionId, CommandBatch,
-    DefinitionId, Dimension, DimensionDisplayUnit, DimensionPresentation, DocumentId,
-    DocumentStore, EvaluationIdentity, FeatureId, FeatureKind, FeatureParameterSlot,
-    FeatureParameterTarget, GroupId, HighRiskClass, HighRiskScope, InstancePath, LoftSection,
-    MAX_HUMAN_CONFIRMATION_LIFETIME_MS, MESH_BODY_SCHEMA_V1, MeshAuthority, MeshBodySpec, NodeId,
-    OccurrenceId, PersistentDimensionId, ProfileSegment, Proposal, ProposalCommitError,
-    ProposalContext, ProposalGoal, ProposalPrincipal, ProposalValue, SceneOccurrence,
-    SceneQueryContext, SideEffectAuthorizationReceipt, SlotPath, Snapshot, SolidToolPlan,
-    StableEdgeRole, StableFaceRole, TagId, TipReplacementParent, TipReplacementProposal, Transform,
-    TrustedConfirmationSurface,
+    BottleEdgeFinishKind, CanonicalCommand, ClassificationCategoryId, ClassificationDimensionId,
+    CloneDefinitionPlan, CollectionId, CommandBatch, DefinitionId, Dimension, DimensionDisplayUnit,
+    DimensionPresentation, DocumentId, DocumentStore, EvaluationIdentity, FeatureId, FeatureKind,
+    FeatureParameterSlot, FeatureParameterTarget, GroupId, HighRiskClass, HighRiskScope,
+    InstancePath, LoftSection, MAX_HUMAN_CONFIRMATION_LIFETIME_MS, MESH_BODY_SCHEMA_V1,
+    MeshAuthority, MeshBodySpec, NodeId, OccurrenceId, PersistentDimensionId, ProfileSegment,
+    Proposal, ProposalCommitError, ProposalContext, ProposalGoal, ProposalPrincipal, ProposalValue,
+    SceneOccurrence, SceneQueryContext, SideEffectAuthorizationReceipt, SlotPath, Snapshot,
+    SolidToolPlan, StableEdgeRole, StableFaceRole, TagId, TipReplacementParent,
+    TipReplacementProposal, Transform, TrustedConfirmationSurface,
 };
 #[cfg(test)]
 use ketchup_core::document::{
@@ -152,6 +153,10 @@ const ASSISTANT_CHAT_PATH: &str = "conversation-v1.json";
 const ASSISTANT_MEMORY_PATH: &str = "project-memory-v1.json";
 const ASSISTANT_MEMORY_SCHEMA: &str = "ketchup.project-memory.v1";
 const ASSISTANT_TIMEOUT: Duration = Duration::from_secs(300);
+const MAX_ASSISTANT_PROVIDER_CONTEXT_BYTES: usize = 24 * 1024;
+const MAX_ASSISTANT_PROVIDER_STATE_VIEW_BYTES: usize = 1024;
+const MAX_ASSISTANT_PROVIDER_CONVERSATION_MESSAGES: usize = 6;
+const MAX_ASSISTANT_PROVIDER_CONVERSATION_TEXT_BYTES: usize = 2 * 1024;
 const MAX_ASSISTANT_STATE_VIEW_BYTES: usize = 12 * 1024;
 const MAX_ASSISTANT_MEMORY_ENTRIES: usize = 128;
 const MAX_ASSISTANT_MEMORY_TEXT_BYTES: usize = 1024;
@@ -2700,6 +2705,162 @@ fn definition_mesh_body(snapshot: &Snapshot, definition_id: DefinitionId) -> Opt
         })
 }
 
+fn assistant_gable_roof_mesh(item: &AssistantGableRoofIntent) -> MeshBodySpec {
+    let half_span = item.span_mm * 0.5;
+    let section = [
+        [0.0, 0.0],
+        [half_span, item.rise_mm],
+        [item.span_mm, 0.0],
+        [item.span_mm, item.thickness_mm],
+        [half_span, item.rise_mm + item.thickness_mm],
+        [0.0, item.thickness_mm],
+    ];
+    let mut vertices_mm = Vec::with_capacity(12);
+    for x in [0.0, item.length_mm] {
+        vertices_mm.extend(section.map(|[y, z]| [x, y, z]));
+    }
+    let mut triangles = vec![
+        [0, 4, 1],
+        [0, 5, 4],
+        [1, 3, 2],
+        [1, 4, 3],
+        [6, 7, 10],
+        [6, 10, 11],
+        [7, 8, 9],
+        [7, 9, 10],
+    ];
+    for index in 0..section.len() as u32 {
+        let next = (index + 1) % section.len() as u32;
+        triangles.extend([
+            [index, next, next + section.len() as u32],
+            [
+                index,
+                next + section.len() as u32,
+                index + section.len() as u32,
+            ],
+        ]);
+    }
+    MeshBodySpec {
+        schema: MESH_BODY_SCHEMA_V1.to_owned(),
+        vertices_mm,
+        triangles,
+        authority: MeshAuthority::Authored {
+            provenance: "ketchup-assistant-gable-roof-v1".to_owned(),
+        },
+    }
+}
+
+fn assistant_staircase_mesh(item: &AssistantStaircaseIntent) -> Option<MeshBodySpec> {
+    let tread_mm = item.run_mm / f64::from(item.step_count);
+    let riser_mm = item.rise_mm / f64::from(item.step_count);
+    let subtract_boxes = (0..item.step_count.saturating_sub(1))
+        .map(|step| {
+            let retained_height = f64::from(step + 1) * riser_mm;
+            ketchup_core::assistant_sidecar::AssistantSubtractionIntent {
+                size_mm: [tread_mm, item.width_mm, item.rise_mm - retained_height],
+                origin_mm: [f64::from(step) * tread_mm, 0.0, retained_height],
+            }
+        })
+        .collect();
+    assistant_subtracted_box_mesh(&AssistantBoxIntent {
+        name: item.name.clone(),
+        size_mm: [item.run_mm, item.width_mm, item.rise_mm],
+        origin_mm: [0.0, 0.0, 0.0],
+        subtract_boxes,
+    })
+    .map(|mut mesh| {
+        mesh.authority = MeshAuthority::Authored {
+            provenance: "ketchup-assistant-staircase-v1".to_owned(),
+        };
+        mesh
+    })
+}
+
+fn assistant_oriented_beam_mesh(item: &AssistantOrientedBeamIntent) -> Option<MeshBodySpec> {
+    let length_mm = item
+        .start_mm
+        .iter()
+        .zip(item.end_mm.iter())
+        .map(|(start, end)| (end - start).powi(2))
+        .sum::<f64>()
+        .sqrt();
+    let subtract_boxes = item
+        .bottom_notches
+        .iter()
+        .map(
+            |notch| ketchup_core::assistant_sidecar::AssistantSubtractionIntent {
+                size_mm: [notch.length_mm, item.width_mm, notch.depth_mm],
+                origin_mm: [notch.from_start_mm, 0.0, 0.0],
+            },
+        )
+        .collect();
+    let mut mesh = assistant_subtracted_box_mesh(&AssistantBoxIntent {
+        name: item.name.clone(),
+        size_mm: [length_mm, item.width_mm, item.depth_mm],
+        origin_mm: [0.0, 0.0, 0.0],
+        subtract_boxes,
+    })?;
+    for vertex in &mut mesh.vertices_mm {
+        vertex[1] -= item.width_mm * 0.5;
+        vertex[2] -= item.depth_mm * 0.5;
+    }
+    mesh.authority = MeshAuthority::Authored {
+        provenance: "ketchup-assistant-oriented-beam-v1".to_owned(),
+    };
+    Some(mesh)
+}
+
+fn assistant_oriented_beam_transform(item: &AssistantOrientedBeamIntent) -> Option<Transform> {
+    let axis = [
+        item.end_mm[0] - item.start_mm[0],
+        item.end_mm[1] - item.start_mm[1],
+        item.end_mm[2] - item.start_mm[2],
+    ];
+    let axis_length = axis.iter().map(|value| value * value).sum::<f64>().sqrt();
+    let x = axis.map(|value| value / axis_length);
+    let up_dot_x = item
+        .up_hint
+        .iter()
+        .zip(x.iter())
+        .map(|(up, axis)| up * axis)
+        .sum::<f64>();
+    let projected_up = [
+        item.up_hint[0] - x[0] * up_dot_x,
+        item.up_hint[1] - x[1] * up_dot_x,
+        item.up_hint[2] - x[2] * up_dot_x,
+    ];
+    let up_length = projected_up
+        .iter()
+        .map(|value| value * value)
+        .sum::<f64>()
+        .sqrt();
+    let z = projected_up.map(|value| value / up_length);
+    let y = [
+        z[1] * x[2] - z[2] * x[1],
+        z[2] * x[0] - z[0] * x[2],
+        z[0] * x[1] - z[1] * x[0],
+    ];
+    Transform::from_matrix([
+        x[0],
+        y[0],
+        z[0],
+        item.start_mm[0],
+        x[1],
+        y[1],
+        z[1],
+        item.start_mm[1],
+        x[2],
+        y[2],
+        z[2],
+        item.start_mm[2],
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+    ])
+    .ok()
+}
+
 fn assistant_subtracted_box_mesh(item: &AssistantBoxIntent) -> Option<MeshBodySpec> {
     let [width, depth, height] = item.size_mm;
     let mut xs = vec![0.0, width];
@@ -3943,6 +4104,20 @@ struct OutlinerDefinition {
     occurrences: Vec<OutlinerOccurrence>,
 }
 
+#[derive(Clone)]
+struct ClassificationCategoryRow {
+    id: ClassificationCategoryId,
+    name: String,
+    occurrence_count: usize,
+}
+
+#[derive(Clone)]
+struct ClassificationDimensionRow {
+    id: ClassificationDimensionId,
+    name: String,
+    categories: Vec<ClassificationCategoryRow>,
+}
+
 type ExactSource = (DocumentId, u64, String);
 type ExactEvaluationResult = Result<Vec<Arc<ExactBodyPackage>>, String>;
 
@@ -3977,6 +4152,17 @@ pub enum AssistantProvider {
 }
 
 impl AssistantProvider {
+    const fn initial() -> Self {
+        #[cfg(feature = "private-oauth")]
+        {
+            Self::CodexOauth
+        }
+        #[cfg(not(feature = "private-oauth"))]
+        {
+            Self::AnthropicApi
+        }
+    }
+
     const fn distribution(self) -> AssistantDistribution {
         match self {
             Self::AnthropicApi | Self::OpenAiApi => AssistantDistribution::PublicApi,
@@ -4014,7 +4200,7 @@ impl AssistantProvider {
             #[cfg(feature = "private-oauth")]
             Self::ClaudeCodeOauth => "claude-sonnet-5",
             #[cfg(feature = "private-oauth")]
-            Self::CodexOauth => "gpt-5.5",
+            Self::CodexOauth => "gpt-5.6-sol",
         }
     }
 }
@@ -4117,6 +4303,33 @@ impl AssistantProjectMemory {
             self.entries
                 .drain(..self.entries.len() - MAX_ASSISTANT_MEMORY_ENTRIES);
         }
+    }
+
+    fn search(&self, query: &str) -> Vec<&AssistantMemoryEntry> {
+        let query_tokens = assistant_memory_tokens(query);
+        let mut ranked = self
+            .entries
+            .iter()
+            .map(|entry| {
+                let entry_tokens =
+                    assistant_memory_tokens(&format!("{} {}", entry.user, entry.assistant));
+                let score = query_tokens.intersection(&entry_tokens).count();
+                (score, entry)
+            })
+            .collect::<Vec<_>>();
+        ranked.sort_by(|left, right| {
+            right
+                .0
+                .cmp(&left.0)
+                .then_with(|| right.1.sequence.cmp(&left.1.sequence))
+        });
+        if query_tokens.is_empty() {
+            return ranked.into_iter().map(|(_, entry)| entry).collect();
+        }
+        ranked
+            .into_iter()
+            .filter_map(|(score, entry)| (score > 0).then_some(entry))
+            .collect()
     }
 
     fn retrieval_context(&self, query: &str) -> serde_json::Value {
@@ -4222,6 +4435,298 @@ fn bounded_assistant_state_view(content: &str) -> serde_json::Value {
     })
 }
 
+fn assistant_context_byte_length(context: &serde_json::Value) -> usize {
+    serde_json::to_vec(context).map_or(usize::MAX, |bytes| bytes.len())
+}
+
+fn bounded_assistant_provider_text(text: &str) -> String {
+    if text.len() <= MAX_ASSISTANT_PROVIDER_CONVERSATION_TEXT_BYTES {
+        return text.to_owned();
+    }
+    let mut end = MAX_ASSISTANT_PROVIDER_CONVERSATION_TEXT_BYTES;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text[..end].trim_end().to_owned()
+}
+
+fn truncate_assistant_validation_arrays(value: &mut serde_json::Value, limit: usize) {
+    let serde_json::Value::Object(object) = value else {
+        return;
+    };
+    let mut truncated = false;
+    let mut issues_truncated = false;
+    for key in [
+        "issues",
+        "evaluations",
+        "not_evaluated",
+        "unavailable_occurrences",
+    ] {
+        let Some(array) = object
+            .get_mut(key)
+            .and_then(serde_json::Value::as_array_mut)
+        else {
+            continue;
+        };
+        if array.len() > limit {
+            array.truncate(limit);
+            truncated = true;
+            issues_truncated |= key == "issues";
+        }
+    }
+    if truncated && object.contains_key("complete") {
+        object.insert("complete".to_owned(), serde_json::Value::Bool(false));
+    }
+    if issues_truncated && object.contains_key("issues_complete") {
+        object.insert("issues_complete".to_owned(), serde_json::Value::Bool(false));
+    }
+    for child in object.values_mut() {
+        truncate_assistant_validation_arrays(child, limit);
+    }
+}
+
+fn summarized_assistant_validation_context(validation: &serde_json::Value) -> serde_json::Value {
+    let mut summary = serde_json::Map::new();
+    for key in [
+        "schema",
+        "document_id",
+        "revision",
+        "canonical_digest",
+        "selection_mode",
+        "requested",
+        "executed",
+        "skipped",
+        "selection_error",
+        "state",
+        "visible_occurrence_count",
+        "checked_occurrence_count",
+        "checked_pair_count",
+        "issue_count",
+    ] {
+        if let Some(value) = validation.get(key) {
+            summary.insert(key.to_owned(), value.clone());
+        }
+    }
+    summary.insert("complete".to_owned(), serde_json::Value::Bool(false));
+    summary.insert("issues_complete".to_owned(), serde_json::Value::Bool(false));
+    summary.insert("issues".to_owned(), serde_json::Value::Array(Vec::new()));
+    summary.insert(
+        "details_truncated".to_owned(),
+        serde_json::Value::Bool(true),
+    );
+    serde_json::Value::Object(summary)
+}
+
+fn bounded_assistant_provider_context(mut context: serde_json::Value) -> serde_json::Value {
+    if assistant_context_byte_length(&context) <= MAX_ASSISTANT_PROVIDER_CONTEXT_BYTES {
+        return context;
+    }
+    let object = context
+        .as_object_mut()
+        .expect("assistant context is always an object");
+    object.insert(
+        "context_complete".to_owned(),
+        serde_json::Value::Bool(false),
+    );
+
+    if let Some(boxes) = object
+        .get_mut("boxes")
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        boxes.clear();
+        object.insert("boxes_complete".to_owned(), serde_json::Value::Bool(false));
+    }
+    if let Some(state_view) = object
+        .get_mut("state_view")
+        .and_then(serde_json::Value::as_object_mut)
+        && let Some(content) = state_view
+            .get("content")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
+    {
+        let bounded = if content.len() <= MAX_ASSISTANT_PROVIDER_STATE_VIEW_BYTES {
+            content
+        } else {
+            let mut end = MAX_ASSISTANT_PROVIDER_STATE_VIEW_BYTES;
+            while !content.is_char_boundary(end) {
+                end -= 1;
+            }
+            content[..end].to_owned()
+        };
+        state_view.insert("content".to_owned(), serde_json::Value::String(bounded));
+        state_view.insert("complete".to_owned(), serde_json::Value::Bool(false));
+    }
+    if let Some(conversation) = object
+        .get_mut("conversation")
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        let original_len = conversation.len();
+        if conversation.len() > MAX_ASSISTANT_PROVIDER_CONVERSATION_MESSAGES {
+            conversation.drain(..conversation.len() - MAX_ASSISTANT_PROVIDER_CONVERSATION_MESSAGES);
+        }
+        let mut text_truncated = false;
+        for message in conversation.iter_mut() {
+            let Some(message) = message.as_object_mut() else {
+                continue;
+            };
+            let Some(text) = message
+                .get("text")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+            else {
+                continue;
+            };
+            let bounded = bounded_assistant_provider_text(&text);
+            text_truncated |= bounded.len() != text.len();
+            message.insert("text".to_owned(), serde_json::Value::String(bounded));
+        }
+        if original_len != conversation.len() || text_truncated {
+            object.insert(
+                "conversation_complete".to_owned(),
+                serde_json::Value::Bool(false),
+            );
+        }
+    }
+    if assistant_context_byte_length(&context) <= MAX_ASSISTANT_PROVIDER_CONTEXT_BYTES {
+        return context;
+    }
+
+    if let Some(validation) = context.get_mut("validation") {
+        truncate_assistant_validation_arrays(validation, 8);
+    }
+    if assistant_context_byte_length(&context) <= MAX_ASSISTANT_PROVIDER_CONTEXT_BYTES {
+        return context;
+    }
+
+    let selected = context["selected_occurrence_ids"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(serde_json::Value::as_u64)
+        .collect::<BTreeSet<_>>();
+    loop {
+        if assistant_context_byte_length(&context) <= MAX_ASSISTANT_PROVIDER_CONTEXT_BYTES {
+            return context;
+        }
+        let Some(occurrences) = context
+            .get_mut("occurrences")
+            .and_then(serde_json::Value::as_array_mut)
+        else {
+            break;
+        };
+        let removable = occurrences.iter().rposition(|occurrence| {
+            occurrence["occurrence_id"]
+                .as_u64()
+                .is_some_and(|id| !selected.contains(&id))
+        });
+        let Some(index) = removable else {
+            break;
+        };
+        occurrences.remove(index);
+        context["occurrences_complete"] = serde_json::Value::Bool(false);
+    }
+    if assistant_context_byte_length(&context) <= MAX_ASSISTANT_PROVIDER_CONTEXT_BYTES {
+        return context;
+    }
+
+    if let Some(validation) = context.get_mut("validation") {
+        truncate_assistant_validation_arrays(validation, 2);
+    }
+    if let Some(state_view) = context
+        .get_mut("state_view")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        state_view.insert(
+            "content".to_owned(),
+            serde_json::Value::String(String::new()),
+        );
+        state_view.insert("complete".to_owned(), serde_json::Value::Bool(false));
+    }
+    if assistant_context_byte_length(&context) <= MAX_ASSISTANT_PROVIDER_CONTEXT_BYTES {
+        return context;
+    }
+
+    if let Some(validation) = context.get_mut("validation") {
+        truncate_assistant_validation_arrays(validation, 0);
+        *validation = summarized_assistant_validation_context(validation);
+    }
+    if assistant_context_byte_length(&context) <= MAX_ASSISTANT_PROVIDER_CONTEXT_BYTES {
+        return context;
+    }
+
+    if let Some(conversation) = context
+        .get_mut("conversation")
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        if conversation.len() > 2 {
+            conversation.drain(..conversation.len() - 2);
+        }
+        context["conversation_complete"] = serde_json::Value::Bool(false);
+    }
+    if assistant_context_byte_length(&context) <= MAX_ASSISTANT_PROVIDER_CONTEXT_BYTES {
+        return context;
+    }
+
+    if let Some(occurrences) = context
+        .get_mut("occurrences")
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        occurrences.clear();
+        context["occurrences_complete"] = serde_json::Value::Bool(false);
+    }
+    if assistant_context_byte_length(&context) <= MAX_ASSISTANT_PROVIDER_CONTEXT_BYTES {
+        return context;
+    }
+
+    if let Some(conversation) = context
+        .get_mut("conversation")
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        conversation.clear();
+    }
+    if let Some(memory) = context
+        .get_mut("project_memory")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        memory.insert("retrieved_count".to_owned(), serde_json::json!(0));
+        memory.insert("byte_length".to_owned(), serde_json::json!(2));
+        memory.insert("entries".to_owned(), serde_json::json!([]));
+        let complete = memory
+            .get("stored_count")
+            .and_then(serde_json::Value::as_u64)
+            == Some(0);
+        memory.insert("complete".to_owned(), serde_json::Value::Bool(complete));
+    }
+    if assistant_context_byte_length(&context) > MAX_ASSISTANT_PROVIDER_CONTEXT_BYTES {
+        context["selected_profile_translation_target"] = serde_json::Value::Null;
+        context["selected_parameter_edit_target"] = serde_json::Value::Null;
+    }
+    debug_assert!(
+        assistant_context_byte_length(&context) <= MAX_ASSISTANT_PROVIDER_CONTEXT_BYTES,
+        "minimal assistant provider context exceeds its byte envelope"
+    );
+    context
+}
+
+#[derive(Clone, Debug)]
+pub struct AssistantTransportResponse {
+    pub result: AssistantChatResult,
+    pub diagnostics: Option<AssistantApiDiagnostics>,
+}
+
+#[derive(Clone, Debug)]
+struct AssistantApiLogEntry {
+    request_id: String,
+    diagnostics: AssistantApiDiagnostics,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum AssistantInspectorTab {
+    #[default]
+    ApiLogs,
+    Memory,
+}
+
 pub trait AssistantTransport: Send + Sync {
     fn chat(
         &self,
@@ -4231,6 +4736,21 @@ pub trait AssistantTransport: Send + Sync {
         context: &serde_json::Value,
         cancellation: AssistantCancellation,
     ) -> Result<AssistantChatResult, String>;
+
+    fn chat_with_diagnostics(
+        &self,
+        handshake: AssistantHandshake,
+        request_id: &str,
+        message: &str,
+        context: &serde_json::Value,
+        cancellation: AssistantCancellation,
+    ) -> Result<AssistantTransportResponse, String> {
+        self.chat(handshake, request_id, message, context, cancellation)
+            .map(|result| AssistantTransportResponse {
+                result,
+                diagnostics: None,
+            })
+    }
 }
 
 struct ProcessAssistantTransport;
@@ -4244,6 +4764,18 @@ impl AssistantTransport for ProcessAssistantTransport {
         context: &serde_json::Value,
         cancellation: AssistantCancellation,
     ) -> Result<AssistantChatResult, String> {
+        self.chat_with_diagnostics(handshake, request_id, message, context, cancellation)
+            .map(|response| response.result)
+    }
+
+    fn chat_with_diagnostics(
+        &self,
+        handshake: AssistantHandshake,
+        request_id: &str,
+        message: &str,
+        context: &serde_json::Value,
+        cancellation: AssistantCancellation,
+    ) -> Result<AssistantTransportResponse, String> {
         let (program, arguments) = assistant_sidecar_command(handshake.distribution)?;
         let mut client = AssistantProcessClient::spawn_with_cancellation(
             program,
@@ -4254,7 +4786,11 @@ impl AssistantTransport for ProcessAssistantTransport {
         )
         .map_err(|error| error.to_string())?;
         let answer = client
-            .chat(request_id, message, context)
+            .chat_exchange(request_id, message, context)
+            .map(|exchange| AssistantTransportResponse {
+                result: exchange.result,
+                diagnostics: exchange.diagnostics,
+            })
             .map_err(|error| error.to_string());
         let _ = client.shutdown();
         answer
@@ -4262,12 +4798,23 @@ impl AssistantTransport for ProcessAssistantTransport {
 }
 
 struct AssistantChatTask {
-    receiver: Receiver<Result<AssistantChatResult, String>>,
+    receiver: Receiver<Result<AssistantTransportResponse, String>>,
+    request_id: String,
+    started_at: Instant,
     cancellation: AssistantCancellation,
     document_id: DocumentId,
     revision_id: u64,
     canonical_digest: String,
     source: String,
+}
+
+fn format_assistant_elapsed(elapsed: Duration) -> String {
+    let seconds = elapsed.as_secs();
+    format!("{}:{:02}", seconds / 60, seconds % 60)
+}
+
+fn assistant_clock_frame(elapsed: Duration) -> &'static str {
+    ["◴", "◷", "◶", "◵"][(elapsed.as_millis() / 250) as usize % 4]
 }
 
 struct AssistantPendingExecution {
@@ -4338,11 +4885,16 @@ enum AssistantPreviewSource {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-struct AssistantRepairPreview {
+struct AssistantRepairStep {
     validator: &'static str,
     issue_code: &'static str,
     occurrence_ids: Vec<u64>,
     delta_mm: [f64; 3],
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct AssistantRepairPreview {
+    steps: Vec<AssistantRepairStep>,
     validation_before: serde_json::Value,
     validation_after: serde_json::Value,
 }
@@ -5218,9 +5770,18 @@ pub struct KetchupApp {
     assistant_workspace_mode: AssistantWorkspaceMode,
     outliner_visible: bool,
     tags_visible: bool,
+    dimensions_visible: bool,
+    classification_dimension_name_input: String,
+    classification_category_name_input: String,
+    classification_selected_dimension: Option<ClassificationDimensionId>,
     assistant_input: String,
     assistant_messages: Vec<AssistantChatMessage>,
     assistant_memory: AssistantProjectMemory,
+    assistant_diagnostics_enabled: bool,
+    assistant_api_logs: Vec<AssistantApiLogEntry>,
+    assistant_selected_api_log: Option<usize>,
+    assistant_inspector_tab: AssistantInspectorTab,
+    assistant_memory_search: String,
     assistant_transport: Arc<dyn AssistantTransport>,
     assistant_chat_task: Option<AssistantChatTask>,
     assistant_pending_execution: Option<AssistantPendingExecution>,
@@ -5439,14 +6000,23 @@ impl KetchupApp {
             interaction_projection_cache: RefCell::new(None),
             active_tool: ActiveTool::Select,
             digest,
-            assistant_provider: AssistantProvider::AnthropicApi,
-            assistant_model: AssistantProvider::AnthropicApi.default_model().to_owned(),
+            assistant_provider: AssistantProvider::initial(),
+            assistant_model: AssistantProvider::initial().default_model().to_owned(),
             assistant_workspace_mode: AssistantWorkspaceMode::Dock,
             outliner_visible: true,
             tags_visible: true,
+            dimensions_visible: true,
+            classification_dimension_name_input: String::new(),
+            classification_category_name_input: String::new(),
+            classification_selected_dimension: None,
             assistant_input: String::new(),
             assistant_messages: Vec::new(),
             assistant_memory,
+            assistant_diagnostics_enabled: false,
+            assistant_api_logs: Vec::new(),
+            assistant_selected_api_log: None,
+            assistant_inspector_tab: AssistantInspectorTab::default(),
+            assistant_memory_search: String::new(),
             assistant_transport: Arc::new(ProcessAssistantTransport),
             assistant_chat_task: None,
             assistant_pending_execution: None,
@@ -5684,9 +6254,12 @@ impl KetchupApp {
         let dialogs = std::mem::replace(&mut self.dialogs, Box::new(NativeFileDialogs::default()));
         let assistant_transport = Arc::clone(&self.assistant_transport);
         let assistant_request_sequence = self.assistant_request_sequence;
+        let assistant_diagnostics_enabled = self.assistant_diagnostics_enabled;
+        let assistant_inspector_tab = self.assistant_inspector_tab;
         let catalog = self.catalog.clone();
         let outliner_visible = self.outliner_visible;
         let tags_visible = self.tags_visible;
+        let dimensions_visible = self.dimensions_visible;
         let about_open = self.about_open;
         // The graphics device outlives the document: losing its target format
         // here would silently drop the whole instanced scene until restart.
@@ -5696,8 +6269,11 @@ impl KetchupApp {
             .with_assistant_transport(assistant_transport);
         self.wgpu_target_format = wgpu_target_format;
         self.assistant_request_sequence = assistant_request_sequence;
+        self.assistant_diagnostics_enabled = assistant_diagnostics_enabled;
+        self.assistant_inspector_tab = assistant_inspector_tab;
         self.outliner_visible = outliner_visible;
         self.tags_visible = tags_visible;
+        self.dimensions_visible = dimensions_visible;
         self.about_open = about_open;
         self.digest = self.catalog.text("digest-new-document");
     }
@@ -7688,8 +8264,16 @@ impl KetchupApp {
                             selection,
                         );
                         debug_assert_eq!(revalidated, repair.validation_after);
+                        let validators = repair
+                            .steps
+                            .iter()
+                            .map(|step| step.validator)
+                            .collect::<BTreeSet<_>>()
+                            .into_iter()
+                            .collect::<Vec<_>>()
+                            .join(" + ");
                         (
-                            Some(repair.validator.to_owned()),
+                            Some(validators),
                             Some(repair.validation_before),
                             Some(revalidated),
                         )
@@ -7753,6 +8337,8 @@ impl KetchupApp {
             AuthoritativeDependency::PersistentDimension(id) => {
                 Some(("assistant-entity-persistent-dimension", id.0))
             }
+            AuthoritativeDependency::ClassificationDimension(_)
+            | AuthoritativeDependency::OccurrenceClassification(_, _) => None,
             AuthoritativeDependency::Tag(id) => Some(("assistant-entity-tag", id.0)),
             AuthoritativeDependency::Collection(id) => Some(("assistant-entity-collection", id.0)),
             AuthoritativeDependency::Import(_) => None,
@@ -7891,6 +8477,33 @@ impl KetchupApp {
             .map(ToString::to_string)
             .collect::<Vec<_>>()
             .join(", ")
+    }
+
+    fn assistant_proposal_diff_label(
+        &self,
+        target: &AuthoritativeDependency,
+        before: &ProposalValue,
+        after: &ProposalValue,
+    ) -> String {
+        let target = self.assistant_proposal_target_label(target);
+        let key = match (before, after) {
+            (ProposalValue::Missing, ProposalValue::Digest(_))
+            | (ProposalValue::Missing, ProposalValue::Missing) => "assistant-diff-created-opaque",
+            (ProposalValue::Missing, _) => "assistant-diff-created",
+            (_, ProposalValue::Missing) => "assistant-diff-removed",
+            (ProposalValue::Digest(_), _) | (_, ProposalValue::Digest(_)) => {
+                "assistant-diff-updated-opaque"
+            }
+            _ => "assistant-diff-changed",
+        };
+        self.catalog.format(
+            key,
+            &BTreeMap::from([
+                ("target", target),
+                ("before", self.assistant_proposal_value_label(before)),
+                ("after", self.assistant_proposal_value_label(after)),
+            ]),
+        )
     }
 
     fn assistant_proposal_value_label(&self, value: &ProposalValue) -> String {
@@ -8555,17 +9168,21 @@ impl KetchupApp {
 
     #[must_use]
     pub fn assistant_handshake(&self) -> AssistantHandshake {
+        let mut capabilities = BTreeSet::from([
+            AssistantCapability::Chat,
+            AssistantCapability::LocalMemory,
+            AssistantCapability::QueryDocument,
+            AssistantCapability::ProposeWorkflowIntent,
+        ]);
+        if self.assistant_diagnostics_enabled {
+            capabilities.insert(AssistantCapability::DebugObservability);
+        }
         AssistantHandshake {
             protocol_version: ASSISTANT_PROTOCOL_VERSION,
             distribution: self.assistant_provider.distribution(),
             provider: self.assistant_provider.protocol_name().to_owned(),
             model: self.assistant_model.clone(),
-            capabilities: BTreeSet::from([
-                AssistantCapability::Chat,
-                AssistantCapability::LocalMemory,
-                AssistantCapability::QueryDocument,
-                AssistantCapability::ProposeWorkflowIntent,
-            ]),
+            capabilities,
         }
     }
 
@@ -9275,7 +9892,8 @@ impl KetchupApp {
             return;
         }
         self.assistant_input.clear();
-        let document_context = self.assistant_context_for(&message);
+        let document_context =
+            bounded_assistant_provider_context(self.assistant_context_for(&message));
         let request_document_id = self.document.current().document_id();
         let request_revision_id = self.document.current().revision_id();
         let request_canonical_digest = self.document.current().canonical_digest();
@@ -9287,6 +9905,7 @@ impl KetchupApp {
         });
         self.assistant_request_sequence = self.assistant_request_sequence.saturating_add(1);
         let request_id = format!("chat-{}", self.assistant_request_sequence);
+        let task_request_id = request_id.clone();
         let transport = Arc::clone(&self.assistant_transport);
         let repaint = context.clone();
         let cancellation = AssistantCancellation::default();
@@ -9294,16 +9913,19 @@ impl KetchupApp {
         let (sender, receiver) = mpsc::channel();
         std::thread::spawn(move || {
             let result = transport
-                .chat(
+                .chat_with_diagnostics(
                     handshake,
                     &request_id,
                     &message,
                     &document_context,
                     worker_cancellation,
                 )
-                .and_then(|result| {
-                    result.validate()?;
-                    Ok(result)
+                .and_then(|response| {
+                    response.result.validate()?;
+                    if let Some(diagnostics) = response.diagnostics.as_ref() {
+                        diagnostics.validate()?;
+                    }
+                    Ok(response)
                 });
             if sender.send(result).is_ok() {
                 repaint.request_repaint();
@@ -9311,6 +9933,8 @@ impl KetchupApp {
         });
         self.assistant_chat_task = Some(AssistantChatTask {
             receiver,
+            request_id: task_request_id,
+            started_at: Instant::now(),
             cancellation,
             document_id: request_document_id,
             revision_id: request_revision_id,
@@ -9552,6 +10176,95 @@ impl KetchupApp {
             next_feature = finish.0.checked_add(1);
             next_occurrence = occurrence.0.checked_add(1);
         }
+        for roof in &intent.gable_roofs {
+            let definition = next_definition.map(DefinitionId)?;
+            let feature = next_feature.map(FeatureId)?;
+            let occurrence = next_occurrence.map(OccurrenceId)?;
+            let [x, y, z] = roof.origin_mm;
+            commands.extend([
+                CanonicalCommand::CreateDefinition {
+                    id: definition,
+                    name: roof.name.clone(),
+                },
+                CanonicalCommand::CreateFeature {
+                    id: feature,
+                    definition_id: definition,
+                    name: format!("{} solid", roof.name),
+                    kind: FeatureKind::MeshBody(assistant_gable_roof_mesh(roof)),
+                },
+                CanonicalCommand::CreateOccurrence {
+                    id: occurrence,
+                    definition_id: definition,
+                    name: roof.name.clone(),
+                    transform: Transform::from_translation(x, y, z).ok()?,
+                    parent: None,
+                    tag: None,
+                    visible: true,
+                },
+            ]);
+            next_definition = definition.0.checked_add(1);
+            next_feature = feature.0.checked_add(1);
+            next_occurrence = occurrence.0.checked_add(1);
+        }
+        for stairs in &intent.staircases {
+            let definition = next_definition.map(DefinitionId)?;
+            let feature = next_feature.map(FeatureId)?;
+            let occurrence = next_occurrence.map(OccurrenceId)?;
+            let [x, y, z] = stairs.origin_mm;
+            commands.extend([
+                CanonicalCommand::CreateDefinition {
+                    id: definition,
+                    name: stairs.name.clone(),
+                },
+                CanonicalCommand::CreateFeature {
+                    id: feature,
+                    definition_id: definition,
+                    name: format!("{} solid", stairs.name),
+                    kind: FeatureKind::MeshBody(assistant_staircase_mesh(stairs)?),
+                },
+                CanonicalCommand::CreateOccurrence {
+                    id: occurrence,
+                    definition_id: definition,
+                    name: stairs.name.clone(),
+                    transform: Transform::from_translation(x, y, z).ok()?,
+                    parent: None,
+                    tag: None,
+                    visible: true,
+                },
+            ]);
+            next_definition = definition.0.checked_add(1);
+            next_feature = feature.0.checked_add(1);
+            next_occurrence = occurrence.0.checked_add(1);
+        }
+        for beam in &intent.oriented_beams {
+            let definition = next_definition.map(DefinitionId)?;
+            let feature = next_feature.map(FeatureId)?;
+            let occurrence = next_occurrence.map(OccurrenceId)?;
+            commands.extend([
+                CanonicalCommand::CreateDefinition {
+                    id: definition,
+                    name: beam.name.clone(),
+                },
+                CanonicalCommand::CreateFeature {
+                    id: feature,
+                    definition_id: definition,
+                    name: format!("{} solid", beam.name),
+                    kind: FeatureKind::MeshBody(assistant_oriented_beam_mesh(beam)?),
+                },
+                CanonicalCommand::CreateOccurrence {
+                    id: occurrence,
+                    definition_id: definition,
+                    name: beam.name.clone(),
+                    transform: assistant_oriented_beam_transform(beam)?,
+                    parent: None,
+                    tag: None,
+                    visible: true,
+                },
+            ]);
+            next_definition = definition.0.checked_add(1);
+            next_feature = feature.0.checked_add(1);
+            next_occurrence = occurrence.0.checked_add(1);
+        }
         for item in &intent.boxes {
             let feature_count = if item.subtract_boxes.is_empty() { 2 } else { 1 };
             let definition = next_definition.map(DefinitionId)?;
@@ -9618,10 +10331,11 @@ impl KetchupApp {
 
     fn assistant_collision_repair_delta(
         &self,
+        snapshot: &Snapshot,
         left_id: OccurrenceId,
         right_id: OccurrenceId,
     ) -> Option<[f64; 3]> {
-        let boxes = self.active_boxes();
+        let boxes = self.active_boxes_for_snapshot(snapshot);
         let left = boxes
             .iter()
             .find(|item| item.instance_path == InstancePath::root(left_id))?;
@@ -9691,6 +10405,63 @@ impl KetchupApp {
         }
     }
 
+    fn assistant_validation_repair_steps(
+        &self,
+        snapshot: &Snapshot,
+        validation: &serde_json::Value,
+    ) -> Vec<AssistantRepairStep> {
+        let mut steps = Vec::new();
+        for issue in validation["collision"]["issues"]
+            .as_array()
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+        {
+            let (Some(left_id), Some(right_id)) = (
+                issue["left_occurrence_id"].as_u64(),
+                issue["right_occurrence_id"].as_u64(),
+            ) else {
+                continue;
+            };
+            let (left_id, right_id) = (OccurrenceId(left_id), OccurrenceId(right_id));
+            if let Some(delta_mm) =
+                self.assistant_collision_repair_delta(snapshot, left_id, right_id)
+            {
+                steps.push(AssistantRepairStep {
+                    validator: "collision",
+                    issue_code: "collision.detected",
+                    occurrence_ids: vec![left_id.0, right_id.0],
+                    delta_mm,
+                });
+            }
+        }
+        let boxes = self.active_boxes_for_snapshot(snapshot);
+        for issue in validation["gravity_support"]["issues"]
+            .as_array()
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+        {
+            let Some(occurrence_id) = issue["occurrence_id"].as_u64().map(OccurrenceId) else {
+                continue;
+            };
+            let Some(item) = boxes
+                .iter()
+                .find(|item| item.instance_path == InstancePath::root(occurrence_id))
+            else {
+                continue;
+            };
+            let delta_z = -item.origin_mm.z;
+            if delta_z.abs() > f64::EPSILON {
+                steps.push(AssistantRepairStep {
+                    validator: "gravity_support",
+                    issue_code: "gravity.unsupported",
+                    occurrence_ids: vec![occurrence_id.0],
+                    delta_mm: [0.0, 0.0, delta_z],
+                });
+            }
+        }
+        steps
+    }
+
     fn derive_assistant_validation_repair_plan(
         &self,
         selection: &AssistantValidationSelection,
@@ -9705,74 +10476,96 @@ impl KetchupApp {
             return None;
         }
 
-        let (validator, issue_code, occurrence_ids, delta_mm) = if let Some(issue) =
-            validation_before["collision"]["issues"]
-                .as_array()
-                .and_then(|issues| issues.first())
-        {
-            let left_id = OccurrenceId(issue["left_occurrence_id"].as_u64()?);
-            let right_id = OccurrenceId(issue["right_occurrence_id"].as_u64()?);
-            (
-                "collision",
-                "collision.detected",
-                vec![left_id.0, right_id.0],
-                self.assistant_collision_repair_delta(left_id, right_id)?,
-            )
-        } else {
-            let issue = validation_before["gravity_support"]["issues"]
-                .as_array()
-                .and_then(|issues| issues.first())?;
-            let occurrence_id = OccurrenceId(issue["occurrence_id"].as_u64()?);
-            let item = self
-                .active_boxes()
-                .into_iter()
-                .find(|item| item.instance_path == InstancePath::root(occurrence_id))?;
-            let delta_z = -item.origin_mm.z;
-            if delta_z.abs() <= f64::EPSILON {
-                return None;
+        let mut candidate = snapshot;
+        let mut validation_after = validation_before.clone();
+        let mut issue_total = Self::assistant_validation_issue_total(&validation_after)?;
+        let mut target_transforms = BTreeMap::new();
+        let mut accepted_steps = Vec::new();
+        let mut final_proposal = None;
+        for _ in 0..MAX_ASSISTANT_VALIDATION_ISSUES {
+            let mut accepted = None;
+            for step in self.assistant_validation_repair_steps(&candidate, &validation_after) {
+                let Some(moved_occurrence) = step.occurrence_ids.last().copied().map(OccurrenceId)
+                else {
+                    continue;
+                };
+                let Some(occurrence) = candidate.occurrence(moved_occurrence) else {
+                    continue;
+                };
+                let [x, y, z] = step.delta_mm;
+                let Ok(transform) =
+                    translated_transform(occurrence.transform(), Vec3::new(x, y, z))
+                else {
+                    continue;
+                };
+                let mut trial_transforms = target_transforms.clone();
+                trial_transforms.insert(moved_occurrence, transform);
+                let commands = trial_transforms
+                    .iter()
+                    .map(|(id, transform)| CanonicalCommand::SetOccurrenceTransform {
+                        id: *id,
+                        transform: *transform,
+                    })
+                    .collect();
+                let Ok(proposal) = self.document.prepare_proposal_with_context(
+                    CommandBatch::new(commands),
+                    ProposalContext::local_assistant_model(),
+                ) else {
+                    continue;
+                };
+                let Ok(trial_candidate) = self.document.preview_batch(proposal.batch()) else {
+                    continue;
+                };
+                let trial_results =
+                    ExactResultRegistry::carried_forward(&trial_candidate, &self.exact_results);
+                let trial_validation =
+                    self.assistant_validation_context(&trial_candidate, &trial_results, selection);
+                let Some(trial_total) = Self::assistant_validation_issue_total(&trial_validation)
+                else {
+                    continue;
+                };
+                if trial_validation["complete"].as_bool() != Some(true)
+                    || trial_validation["requested"] != validation_before["requested"]
+                    || Self::assistant_repair_issue_remains(
+                        &trial_validation,
+                        step.validator,
+                        &step.occurrence_ids,
+                    )
+                    || trial_total >= issue_total
+                {
+                    continue;
+                }
+                accepted = Some((
+                    step,
+                    trial_transforms,
+                    proposal,
+                    trial_candidate,
+                    trial_validation,
+                    trial_total,
+                ));
+                break;
             }
-            (
-                "gravity_support",
-                "gravity.unsupported",
-                vec![occurrence_id.0],
-                [0.0, 0.0, delta_z],
-            )
-        };
-        let moved_occurrence = *occurrence_ids.last()?;
-        let intent = AssistantModelIntent {
-            replace_scene: false,
-            boxes: Vec::new(),
-            translations: vec![AssistantTranslationIntent {
-                occurrence_id: moved_occurrence,
-                delta_mm,
-            }],
-            profile_translations: Vec::new(),
-            parameter_edits: Vec::new(),
-            linear_arrays: Vec::new(),
-            bottles: Vec::new(),
-        };
-        let proposal = self.derive_assistant_model_proposal(&intent)?;
-        let candidate = self.document.preview_batch(proposal.batch()).ok()?;
-        let candidate_results =
-            ExactResultRegistry::carried_forward(&candidate, &self.exact_results);
-        let validation_after =
-            self.assistant_validation_context(&candidate, &candidate_results, selection);
-        if validation_after["complete"].as_bool() != Some(true)
-            || validation_after["requested"] != validation_before["requested"]
-            || Self::assistant_repair_issue_remains(&validation_after, validator, &occurrence_ids)
-            || Self::assistant_validation_issue_total(&validation_after)?
-                >= Self::assistant_validation_issue_total(&validation_before)?
-        {
-            return None;
+            let Some((step, transforms, proposal, next_candidate, next_validation, next_total)) =
+                accepted
+            else {
+                break;
+            };
+            accepted_steps.push(step);
+            target_transforms = transforms;
+            final_proposal = Some(proposal);
+            candidate = next_candidate;
+            validation_after = next_validation;
+            issue_total = next_total;
+            if issue_total == 0 {
+                break;
+            }
         }
+
         Some(AssistantPreviewPlan {
             source: AssistantPreviewSource::ValidationRepair(selection.clone()),
-            proposal,
+            proposal: final_proposal?,
             repair: Some(AssistantRepairPreview {
-                validator,
-                issue_code,
-                occurrence_ids,
-                delta_mm,
+                steps: accepted_steps,
                 validation_before,
                 validation_after,
             }),
@@ -9905,12 +10698,28 @@ impl KetchupApp {
             return;
         };
         let source = task.source.clone();
+        let request_id = task.request_id.clone();
         let request_document_id = task.document_id;
         let request_revision_id = task.revision_id;
         let request_canonical_digest = task.canonical_digest.clone();
         match task.receiver.try_recv() {
-            Ok(result) => {
+            Ok(response) => {
                 self.assistant_chat_task = None;
+                let result = response.map(|response| {
+                    if let Some(diagnostics) = response.diagnostics {
+                        self.assistant_api_logs.push(AssistantApiLogEntry {
+                            request_id,
+                            diagnostics,
+                        });
+                        if self.assistant_api_logs.len() > 100 {
+                            self.assistant_api_logs
+                                .drain(..self.assistant_api_logs.len() - 100);
+                        }
+                        self.assistant_selected_api_log =
+                            self.assistant_api_logs.len().checked_sub(1);
+                    }
+                    response.result
+                });
                 match result {
                     Ok(result) if result.model_intent.is_some() => {
                         self.assistant_pending_execution = Some(AssistantPendingExecution {
@@ -14181,6 +14990,210 @@ impl KetchupApp {
         self.digest = self.catalog.format(
             "digest-removed-selected-tag",
             &BTreeMap::from([("count", count.to_string()), ("tag", name)]),
+        );
+        true
+    }
+
+    fn classification_rows(&self) -> Vec<ClassificationDimensionRow> {
+        let snapshot = self.document.current();
+        snapshot
+            .classification_dimensions()
+            .map(|dimension| {
+                let categories = dimension
+                    .categories()
+                    .map(|category| {
+                        let count = snapshot
+                            .occurrences()
+                            .filter(|occurrence| {
+                                snapshot.occurrence_classification(occurrence.id(), dimension.id())
+                                    == Some(category.id())
+                            })
+                            .count();
+                        ClassificationCategoryRow {
+                            id: category.id(),
+                            name: category.name().to_owned(),
+                            occurrence_count: count,
+                        }
+                    })
+                    .collect();
+                ClassificationDimensionRow {
+                    id: dimension.id(),
+                    name: dimension.name().to_owned(),
+                    categories,
+                }
+            })
+            .collect()
+    }
+
+    pub fn create_classification_dimension(
+        &mut self,
+        name: &str,
+        first_category_name: &str,
+    ) -> bool {
+        let name = name.trim();
+        let first_category_name = first_category_name.trim();
+        let snapshot = self.document.current();
+        if name.is_empty()
+            || first_category_name.is_empty()
+            || snapshot
+                .classification_dimensions()
+                .any(|dimension| dimension.name() == name)
+        {
+            return false;
+        }
+        let Some(dimension_id) = snapshot
+            .classification_dimensions()
+            .map(|dimension| dimension.id().0)
+            .max()
+            .unwrap_or(0)
+            .checked_add(1)
+            .map(ClassificationDimensionId)
+        else {
+            return false;
+        };
+        let Some(category_id) = snapshot
+            .classification_dimensions()
+            .flat_map(|dimension| dimension.categories())
+            .map(|category| category.id().0)
+            .max()
+            .unwrap_or(0)
+            .checked_add(1)
+            .map(ClassificationCategoryId)
+        else {
+            return false;
+        };
+        if self
+            .document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::UpsertClassificationDimension {
+                    id: dimension_id,
+                    name: name.to_owned(),
+                    categories: vec![(category_id, first_category_name.to_owned())],
+                },
+            ]))
+            .is_err()
+        {
+            return false;
+        }
+        self.classification_selected_dimension = Some(dimension_id);
+        self.classification_dimension_name_input.clear();
+        self.classification_category_name_input.clear();
+        self.digest = self.catalog.format(
+            "digest-created-dimension",
+            &BTreeMap::from([
+                ("dimension", name.to_owned()),
+                ("category", first_category_name.to_owned()),
+            ]),
+        );
+        true
+    }
+
+    pub fn add_classification_category(
+        &mut self,
+        dimension_id: ClassificationDimensionId,
+        name: &str,
+    ) -> bool {
+        let name = name.trim();
+        let snapshot = self.document.current();
+        let Some(dimension) = snapshot.classification_dimension(dimension_id) else {
+            return false;
+        };
+        if name.is_empty()
+            || dimension
+                .categories()
+                .any(|category| category.name() == name)
+        {
+            return false;
+        }
+        let Some(category_id) = snapshot
+            .classification_dimensions()
+            .flat_map(|dimension| dimension.categories())
+            .map(|category| category.id().0)
+            .max()
+            .unwrap_or(0)
+            .checked_add(1)
+            .map(ClassificationCategoryId)
+        else {
+            return false;
+        };
+        let dimension_name = dimension.name().to_owned();
+        let mut categories = dimension
+            .categories()
+            .map(|category| (category.id(), category.name().to_owned()))
+            .collect::<Vec<_>>();
+        categories.push((category_id, name.to_owned()));
+        if self
+            .document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::UpsertClassificationDimension {
+                    id: dimension_id,
+                    name: dimension_name.clone(),
+                    categories,
+                },
+            ]))
+            .is_err()
+        {
+            return false;
+        }
+        self.classification_category_name_input.clear();
+        self.digest = self.catalog.format(
+            "digest-added-dimension-category",
+            &BTreeMap::from([("dimension", dimension_name), ("category", name.to_owned())]),
+        );
+        true
+    }
+
+    pub fn assign_selection_to_classification(
+        &mut self,
+        dimension_id: ClassificationDimensionId,
+        category_id: Option<ClassificationCategoryId>,
+    ) -> bool {
+        let snapshot = self.document.current();
+        let Some(dimension) = snapshot.classification_dimension(dimension_id) else {
+            return false;
+        };
+        let category_name = match category_id {
+            Some(category_id) => {
+                let Some(category) = dimension.category(category_id) else {
+                    return false;
+                };
+                category.name().to_owned()
+            }
+            None => self.catalog.text("dimensions-unassigned"),
+        };
+        let dimension_name = dimension.name().to_owned();
+        let commands = self
+            .selected_occurrence_ids()
+            .into_iter()
+            .filter(|occurrence_id| {
+                snapshot.occurrence_classification(*occurrence_id, dimension_id) != category_id
+            })
+            .map(
+                |occurrence_id| CanonicalCommand::SetOccurrenceClassification {
+                    occurrence_id,
+                    dimension_id,
+                    category_id,
+                },
+            )
+            .collect::<Vec<_>>();
+        if commands.is_empty() {
+            return false;
+        }
+        let count = commands.len();
+        if self
+            .document
+            .apply_batch(&CommandBatch::new(commands))
+            .is_err()
+        {
+            return false;
+        }
+        self.digest = self.catalog.format(
+            "digest-assigned-dimension-category",
+            &BTreeMap::from([
+                ("dimension", dimension_name),
+                ("category", category_name),
+                ("count", count.to_string()),
+            ]),
         );
         true
     }
@@ -24725,7 +25738,18 @@ impl KetchupApp {
             (palette.viewport_inner, palette.viewport_outer)
         };
         theme::paint_vignette(&painter, response.rect, viewport_inner, viewport_outer);
-        self.update_viewport_inference(response.hover_pos(), response.rect);
+        let camera_dragging = response.dragged_by(egui::PointerButton::Secondary)
+            || response.dragged_by(egui::PointerButton::Middle)
+            || (response.dragged_by(egui::PointerButton::Primary)
+                && matches!(self.active_tool, ActiveTool::Orbit | ActiveTool::Pan));
+        if camera_dragging {
+            self.hover_pick = None;
+            self.hovered = None;
+            self.hover_snap = None;
+            self.snap_tracker.clear();
+        } else {
+            self.update_viewport_inference(response.hover_pos(), response.rect);
+        }
 
         let primary_press = ui.input(|input| {
             input
@@ -25015,10 +26039,6 @@ impl KetchupApp {
         }
 
         let pointer_delta = ui.input(|input| input.pointer.delta());
-        let camera_dragging = response.dragged_by(egui::PointerButton::Secondary)
-            || response.dragged_by(egui::PointerButton::Middle)
-            || (response.dragged_by(egui::PointerButton::Primary)
-                && matches!(self.active_tool, ActiveTool::Orbit | ActiveTool::Pan));
         let camera_before =
             (camera_dragging && !self.camera_drag_active && pointer_delta != Vec2::ZERO)
                 .then(|| self.camera_view_state());
@@ -25303,13 +26323,14 @@ impl KetchupApp {
             let item = self.render_box(item);
             let proxy_preview = self.proxy_preview_is_active(&item);
             let out_of_context = !active_context_paths.contains(&item.instance_path);
-            let needs_cpu_overlay = self.selection.contains(&item.instance_path)
-                || self
-                    .hovered
-                    .as_ref()
-                    .is_some_and(|hovered| hovered.instance_path == item.instance_path)
-                || proxy_preview
-                || out_of_context;
+            let needs_cpu_overlay = !camera_dragging
+                && (self.selection.contains(&item.instance_path)
+                    || self
+                        .hovered
+                        .as_ref()
+                        .is_some_and(|hovered| hovered.instance_path == item.instance_path)
+                    || proxy_preview
+                    || out_of_context);
             let needs_cpu_fill = !use_wgpu_scene || proxy_preview;
             if use_wgpu_scene && !needs_cpu_overlay {
                 continue;
@@ -25401,12 +26422,13 @@ impl KetchupApp {
             })
         {
             let out_of_context = !active_context_paths.contains(&occurrence.instance_path);
-            let needs_cpu_overlay = self.selection.contains(&occurrence.instance_path)
-                || self
-                    .hovered
-                    .as_ref()
-                    .is_some_and(|hovered| hovered.instance_path == occurrence.instance_path)
-                || out_of_context;
+            let needs_cpu_overlay = !camera_dragging
+                && (self.selection.contains(&occurrence.instance_path)
+                    || self
+                        .hovered
+                        .as_ref()
+                        .is_some_and(|hovered| hovered.instance_path == occurrence.instance_path)
+                    || out_of_context);
             let needs_cpu_fill = !use_wgpu_scene;
             if use_wgpu_scene && !needs_cpu_overlay {
                 continue;
@@ -25551,12 +26573,13 @@ impl KetchupApp {
             })
         {
             let out_of_context = !active_context_paths.contains(&occurrence.instance_path);
-            let needs_cpu_overlay = self.selection.contains(&occurrence.instance_path)
-                || self
-                    .hovered
-                    .as_ref()
-                    .is_some_and(|hovered| hovered.instance_path == occurrence.instance_path)
-                || out_of_context;
+            let needs_cpu_overlay = !camera_dragging
+                && (self.selection.contains(&occurrence.instance_path)
+                    || self
+                        .hovered
+                        .as_ref()
+                        .is_some_and(|hovered| hovered.instance_path == occurrence.instance_path)
+                    || out_of_context);
             let needs_cpu_fill = !use_wgpu_scene;
             if use_wgpu_scene && !needs_cpu_overlay {
                 continue;
@@ -27152,6 +28175,16 @@ impl KetchupApp {
                 {
                     self.assistant_workspace_mode = AssistantWorkspaceMode::Tab;
                 }
+                if ui
+                    .checkbox(
+                        &mut self.dimensions_visible,
+                        self.catalog.text("dock-dimensions"),
+                    )
+                    .changed()
+                    && self.dimensions_visible
+                {
+                    self.assistant_workspace_mode = AssistantWorkspaceMode::Tab;
+                }
             });
             ui.menu_button(self.catalog.text("menu-help"), |ui| {
                 self.menu_command(ui, AppCommand::Shortcuts);
@@ -28401,6 +29434,176 @@ impl KetchupApp {
         self.prepare_assistant_intent(intent)
     }
 
+    fn show_assistant_inspector(&mut self, ui: &mut egui::Ui) {
+        let palette = self.palette();
+        ui.checkbox(
+            &mut self.assistant_diagnostics_enabled,
+            self.catalog.text("assistant-diagnostics-capture"),
+        )
+        .on_hover_text(self.catalog.text("assistant-diagnostics-capture-help"));
+        ui.horizontal_wrapped(|ui| {
+            ui.selectable_value(
+                &mut self.assistant_inspector_tab,
+                AssistantInspectorTab::ApiLogs,
+                self.catalog.text("assistant-diagnostics-api-logs"),
+            );
+            ui.selectable_value(
+                &mut self.assistant_inspector_tab,
+                AssistantInspectorTab::Memory,
+                self.catalog.text("assistant-diagnostics-memory"),
+            );
+        });
+        ui.separator();
+        match self.assistant_inspector_tab {
+            AssistantInspectorTab::ApiLogs => {
+                ui.small(self.catalog.format(
+                    "assistant-diagnostics-log-count",
+                    &BTreeMap::from([("count", self.assistant_api_logs.len().to_string())]),
+                ));
+                if self.assistant_api_logs.is_empty() {
+                    ui.weak(self.catalog.text(if self.assistant_diagnostics_enabled {
+                        "assistant-diagnostics-no-logs"
+                    } else {
+                        "assistant-diagnostics-disabled"
+                    }));
+                    return;
+                }
+                egui::ScrollArea::horizontal()
+                    .id_salt("assistant-api-log-list")
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            for index in (0..self.assistant_api_logs.len()).rev() {
+                                let entry = &self.assistant_api_logs[index];
+                                let selected = self.assistant_selected_api_log == Some(index);
+                                if ui
+                                    .selectable_label(
+                                        selected,
+                                        format!(
+                                            "{} · {}",
+                                            entry.request_id, entry.diagnostics.model
+                                        ),
+                                    )
+                                    .clicked()
+                                {
+                                    self.assistant_selected_api_log = Some(index);
+                                }
+                            }
+                        });
+                    });
+                let Some(entry) = self
+                    .assistant_selected_api_log
+                    .and_then(|index| self.assistant_api_logs.get(index))
+                    .cloned()
+                else {
+                    return;
+                };
+                let diagnostics = entry.diagnostics;
+                ui.label(
+                    egui::RichText::new(self.catalog.format(
+                        "assistant-diagnostics-token-summary",
+                        &BTreeMap::from([
+                            ("input", diagnostics.input_tokens.to_string()),
+                            ("output", diagnostics.output_tokens.to_string()),
+                            ("cache", diagnostics.cache_read_tokens.to_string()),
+                            ("total", diagnostics.total_tokens().to_string()),
+                            (
+                                "duration",
+                                format!("{:.2}", diagnostics.duration_ms as f64 / 1000.0),
+                            ),
+                        ]),
+                    ))
+                    .strong()
+                    .color(palette.accent),
+                );
+                ui.small(self.catalog.format(
+                    "assistant-diagnostics-call-meta",
+                    &BTreeMap::from([
+                        ("provider", diagnostics.provider.clone()),
+                        ("model", diagnostics.model.clone()),
+                        ("stop", diagnostics.stop_reason.clone()),
+                    ]),
+                ));
+                let payload = serde_json::to_string_pretty(&diagnostics.request_payload)
+                    .unwrap_or_else(|_| diagnostics.request_payload.to_string());
+                for (key, text) in [
+                    ("assistant-diagnostics-request", payload),
+                    (
+                        "assistant-diagnostics-system-prompt",
+                        diagnostics.system_prompt.clone(),
+                    ),
+                    (
+                        "assistant-diagnostics-response",
+                        diagnostics.response_text.clone(),
+                    ),
+                ] {
+                    egui::CollapsingHeader::new(self.catalog.text(key))
+                        .default_open(key == "assistant-diagnostics-request")
+                        .show(ui, |ui| {
+                            egui::ScrollArea::vertical()
+                                .id_salt(key)
+                                .max_height(260.0)
+                                .auto_shrink([false, false])
+                                .show(ui, |ui| {
+                                    ui.set_min_width(ui.available_width());
+                                    ui.add(
+                                        egui::Label::new(egui::RichText::new(text).monospace())
+                                            .wrap()
+                                            .selectable(true),
+                                    );
+                                });
+                        });
+                }
+            }
+            AssistantInspectorTab::Memory => {
+                ui.small(self.catalog.format(
+                    "assistant-memory-stored",
+                    &BTreeMap::from([("count", self.assistant_memory.entries.len().to_string())]),
+                ));
+                let search_label = self.catalog.text("assistant-memory-search");
+                let search = ui.add(
+                    egui::TextEdit::singleline(&mut self.assistant_memory_search)
+                        .hint_text(&search_label)
+                        .desired_width(f32::INFINITY),
+                );
+                search.widget_info(|| {
+                    egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, &search_label)
+                });
+                let matches = self.assistant_memory.search(&self.assistant_memory_search);
+                if matches.is_empty() {
+                    ui.weak(self.catalog.text("assistant-memory-no-results"));
+                    return;
+                }
+                egui::ScrollArea::vertical()
+                    .id_salt("assistant-memory-results")
+                    .max_height(360.0)
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        ui.set_min_width(ui.available_width());
+                        for entry in matches {
+                            egui::Frame::new()
+                                .fill(palette.panel2)
+                                .stroke(Stroke::new(1.0_f32, palette.line))
+                                .corner_radius(egui::CornerRadius::same(5))
+                                .inner_margin(egui::Margin::same(7))
+                                .show(ui, |ui| {
+                                    ui.set_width(ui.available_width());
+                                    ui.strong(format!("#{}", entry.sequence));
+                                    ui.label(
+                                        egui::RichText::new(&entry.user)
+                                            .color(palette.accent)
+                                            .strong(),
+                                    );
+                                    ui.add(
+                                        egui::Label::new(&entry.assistant).wrap().selectable(true),
+                                    );
+                                });
+                            ui.add_space(6.0);
+                        }
+                    });
+            }
+        }
+    }
+
     fn show_assistant(&mut self, ui: &mut egui::Ui) {
         let palette = self.palette();
         ui.horizontal(|ui| {
@@ -28588,8 +29791,18 @@ impl KetchupApp {
                         }
                         if self.assistant_pending_execution.is_some() {
                             ui.weak(self.catalog.text("assistant-progress-executing"));
-                        } else if self.assistant_chat_task.is_some() {
-                            ui.weak(self.catalog.text("assistant-progress-requesting"));
+                        } else if let Some(task) = self.assistant_chat_task.as_ref() {
+                            let elapsed = task.started_at.elapsed();
+                            let clock = assistant_clock_frame(elapsed);
+                            ui.horizontal(|ui| {
+                                ui.weak(clock);
+                                ui.weak(self.catalog.text("assistant-progress-requesting"));
+                                ui.weak(self.catalog.format(
+                                    "assistant-progress-elapsed",
+                                    &BTreeMap::from([("time", format_assistant_elapsed(elapsed))]),
+                                ));
+                            });
+                            ui.ctx().request_repaint_after(Duration::from_millis(100));
                         }
                     });
             });
@@ -28627,40 +29840,35 @@ impl KetchupApp {
                             Self::assistant_validation_issue_total(&repair.validation_after)
                                 .unwrap_or_default();
                         ui.strong(self.catalog.text("assistant-repair-preview-title"));
-                        ui.monospace(self.catalog.format(
-                            "assistant-repair-preview-impact",
-                            &BTreeMap::from([
-                                ("validator", repair.validator.to_owned()),
-                                ("issue", repair.issue_code.to_owned()),
-                                ("occurrences", format!("{:?}", repair.occurrence_ids)),
-                                ("delta", format!("{:?}", repair.delta_mm)),
-                                ("before", before.to_string()),
-                                ("after", after.to_string()),
-                                (
-                                    "requested",
-                                    repair.validation_before["requested"].to_string(),
-                                ),
-                            ]),
-                        ));
+                        for step in &repair.steps {
+                            ui.monospace(self.catalog.format(
+                                "assistant-repair-preview-impact",
+                                &BTreeMap::from([
+                                    ("validator", step.validator.to_owned()),
+                                    ("issue", step.issue_code.to_owned()),
+                                    ("occurrences", format!("{:?}", step.occurrence_ids)),
+                                    ("delta", format!("{:?}", step.delta_mm)),
+                                    ("before", before.to_string()),
+                                    ("after", after.to_string()),
+                                    (
+                                        "requested",
+                                        repair.validation_before["requested"].to_string(),
+                                    ),
+                                ]),
+                            ));
+                        }
                     }
                     egui::ScrollArea::vertical()
                         .id_salt("assistant-proposal-diff")
                         .max_height(140.0)
+                        .auto_shrink([false, false])
                         .show(ui, |ui| {
+                            ui.set_min_width(ui.available_width());
                             for entry in proposal.authoritative_diff() {
-                                ui.monospace(self.assistant_proposal_target_label(&entry.target));
-                                ui.monospace(self.catalog.format(
-                                    "assistant-diff-row",
-                                    &BTreeMap::from([
-                                        (
-                                            "before",
-                                            self.assistant_proposal_value_label(&entry.before),
-                                        ),
-                                        (
-                                            "after",
-                                            self.assistant_proposal_value_label(&entry.after),
-                                        ),
-                                    ]),
+                                ui.label(self.assistant_proposal_diff_label(
+                                    &entry.target,
+                                    &entry.before,
+                                    &entry.after,
                                 ));
                             }
                         });
@@ -28808,6 +30016,10 @@ impl KetchupApp {
         if send_clicked || send_shortcut {
             self.send_assistant_message(ui.ctx());
         }
+
+        egui::CollapsingHeader::new(self.catalog.text("assistant-diagnostics-title"))
+            .default_open(false)
+            .show(ui, |ui| self.show_assistant_inspector(ui));
 
         egui::CollapsingHeader::new(self.catalog.text("assistant-advanced-tools"))
             .default_open(false)
@@ -29680,10 +30892,152 @@ impl KetchupApp {
         ui.separator();
     }
 
+    fn show_classification_dimensions(&mut self, ui: &mut egui::Ui) {
+        if !self.dimensions_visible {
+            return;
+        }
+        ui.separator();
+        section_header(ui, self.palette(), &self.catalog.text("dock-dimensions"));
+        ui.small(self.catalog.text("dimensions-help"));
+
+        let dimension_label = self.catalog.text("dimensions-name");
+        ui.label(&dimension_label);
+        ui.add(
+            egui::TextEdit::singleline(&mut self.classification_dimension_name_input)
+                .hint_text(self.catalog.text("dimensions-name-hint")),
+        )
+        .widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, &dimension_label)
+        });
+        let first_category_label = self.catalog.text("dimensions-first-category");
+        ui.label(&first_category_label);
+        ui.add(
+            egui::TextEdit::singleline(&mut self.classification_category_name_input)
+                .hint_text(self.catalog.text("dimensions-category-hint")),
+        )
+        .widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, &first_category_label)
+        });
+        let create_clicked = ui
+            .add_enabled(
+                !self.classification_dimension_name_input.trim().is_empty()
+                    && !self.classification_category_name_input.trim().is_empty(),
+                egui::Button::new(self.catalog.text("dimensions-create")),
+            )
+            .clicked();
+        if create_clicked {
+            let name = self.classification_dimension_name_input.clone();
+            let category = self.classification_category_name_input.clone();
+            self.create_classification_dimension(&name, &category);
+        }
+
+        let rows = self.classification_rows();
+        if rows.is_empty() {
+            ui.weak(self.catalog.text("dimensions-empty"));
+            return;
+        }
+        if !rows
+            .iter()
+            .any(|row| Some(row.id) == self.classification_selected_dimension)
+        {
+            self.classification_selected_dimension = Some(rows[0].id);
+        }
+        let mut selected = self
+            .classification_selected_dimension
+            .expect("a classification dimension is available");
+        let selected_name = rows
+            .iter()
+            .find(|row| row.id == selected)
+            .map(|row| row.name.as_str())
+            .expect("the selected classification dimension is available");
+        let selector_label = self.catalog.text("dimensions-active");
+        ui.label(&selector_label);
+        egui::ComboBox::from_id_salt("classification-dimension")
+            .width(ui.available_width())
+            .selected_text(selected_name)
+            .show_ui(ui, |ui| {
+                for row in &rows {
+                    ui.selectable_value(&mut selected, row.id, &row.name);
+                }
+            })
+            .response
+            .widget_info(|| {
+                egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, &selector_label)
+            });
+        self.classification_selected_dimension = Some(selected);
+
+        let category_label = self.catalog.text("dimensions-new-category");
+        ui.label(&category_label);
+        let mut add_category_clicked = false;
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut self.classification_category_name_input)
+                    .hint_text(self.catalog.text("dimensions-category-hint")),
+            )
+            .widget_info(|| {
+                egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, &category_label)
+            });
+            add_category_clicked = ui
+                .add_enabled(
+                    !self.classification_category_name_input.trim().is_empty(),
+                    egui::Button::new(self.catalog.text("dimensions-add-category")),
+                )
+                .clicked();
+        });
+        if add_category_clicked {
+            let category = self.classification_category_name_input.clone();
+            self.add_classification_category(selected, &category);
+        }
+
+        let selected_occurrences = self.selected_occurrence_ids();
+        let snapshot = self.document.current();
+        let clear_enabled = selected_occurrences.iter().any(|occurrence_id| {
+            snapshot
+                .occurrence_classification(*occurrence_id, selected)
+                .is_some()
+        });
+        let mut assignment = None;
+        if let Some(row) = rows.iter().find(|row| row.id == selected) {
+            for category in &row.categories {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(self.catalog.format(
+                        "dimensions-category-row",
+                        &BTreeMap::from([
+                            ("category", category.name.clone()),
+                            ("count", category.occurrence_count.to_string()),
+                        ]),
+                    ));
+                    if ui
+                        .add_enabled(
+                            !selected_occurrences.is_empty(),
+                            egui::Button::new(self.catalog.text("dimensions-assign-selection")),
+                        )
+                        .clicked()
+                    {
+                        assignment = Some(Some(category.id));
+                    }
+                });
+            }
+        }
+        if ui
+            .add_enabled(
+                clear_enabled,
+                egui::Button::new(self.catalog.text("dimensions-clear-selection")),
+            )
+            .clicked()
+        {
+            assignment = Some(None);
+        }
+        if let Some(category_id) = assignment {
+            self.assign_selection_to_classification(selected, category_id);
+        }
+    }
+
     fn show_outliner_without_assistant(&mut self, ui: &mut egui::Ui) {
         self.show_bottle_workflow(ui);
         self.show_beam_m4ae(ui);
         self.show_pocket_properties(ui);
+        self.show_classification_dimensions(ui);
         if self.outliner_visible {
             let groups = self.outliner_groups();
             let entries = self.outliner_query();
@@ -33694,6 +35048,9 @@ mod tests {
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
             bottles: Vec::new(),
+            gable_roofs: Vec::new(),
+            staircases: Vec::new(),
+            oriented_beams: Vec::new(),
         };
         assert!(model_tampered.prepare_assistant_model_intent(model_intent));
         let mut model_plan = model_tampered.assistant_proposal.take().unwrap();
@@ -33802,6 +35159,63 @@ mod tests {
     }
 
     #[test]
+    fn provider_context_remains_bounded_for_extreme_selection_and_history() {
+        let long_text = "x".repeat(4 * 1024);
+        let occurrences = (1..=100)
+            .map(|id| serde_json::json!({ "occurrence_id": id, "name": long_text }))
+            .collect::<Vec<_>>();
+        let conversation = (0..20)
+            .map(|_| serde_json::json!({ "role": "assistant", "text": long_text }))
+            .collect::<Vec<_>>();
+        let issues = (0..100)
+            .map(|id| serde_json::json!({ "code": "test", "evidence": long_text, "id": id }))
+            .collect::<Vec<_>>();
+        let context = serde_json::json!({
+            "document_id": 1,
+            "revision": 1,
+            "canonical_digest": "digest",
+            "state_view": {
+                "format": AGENT_STATE_VIEW_V1,
+                "complete": false,
+                "byte_length": long_text.len(),
+                "sha256": "digest",
+                "content": long_text,
+            },
+            "project_memory": {
+                "schema": ASSISTANT_MEMORY_SCHEMA,
+                "document_id": 1,
+                "stored_count": 0,
+                "retrieved_count": 0,
+                "complete": true,
+                "byte_length": 2,
+                "entries": [],
+            },
+            "validation": {
+                "schema": "ketchup.assistant-validation-context.v1",
+                "complete": true,
+                "issues_complete": true,
+                "issue_count": issues.len(),
+                "issues": issues,
+            },
+            "selected_occurrence_ids": (1..=100).collect::<Vec<_>>(),
+            "selected_profile_translation_target": null,
+            "selected_parameter_edit_target": null,
+            "occurrence_count": 100,
+            "occurrences_complete": true,
+            "occurrences": occurrences,
+            "boxes": [{ "name": long_text }],
+            "conversation": conversation,
+        });
+
+        let bounded = bounded_assistant_provider_context(context);
+        assert!(assistant_context_byte_length(&bounded) <= MAX_ASSISTANT_PROVIDER_CONTEXT_BYTES);
+        assert_eq!(bounded["context_complete"], false);
+        assert_eq!(bounded["occurrences_complete"], false);
+        assert_eq!(bounded["validation"]["complete"], false);
+        assert_eq!(bounded["validation"]["details_truncated"], true);
+    }
+
+    #[test]
     fn only_successful_assistant_completion_enters_project_memory() {
         let mut app = KetchupApp::new();
         app.assistant_messages.push(AssistantChatMessage {
@@ -33811,13 +35225,18 @@ mod tests {
         });
         let (sender, receiver) = mpsc::channel();
         sender
-            .send(Ok(AssistantChatResult {
-                message: "The shelf spacing is 320 mm.".to_owned(),
-                model_intent: None,
+            .send(Ok(AssistantTransportResponse {
+                result: AssistantChatResult {
+                    message: "The shelf spacing is 320 mm.".to_owned(),
+                    model_intent: None,
+                },
+                diagnostics: None,
             }))
             .unwrap();
         app.assistant_chat_task = Some(AssistantChatTask {
             receiver,
+            request_id: "test".to_owned(),
+            started_at: Instant::now(),
             cancellation: AssistantCancellation::default(),
             document_id: app.document.current().document_id(),
             revision_id: app.document.current().revision_id(),
@@ -33840,6 +35259,8 @@ mod tests {
         sender.send(Err("provider unavailable".to_owned())).unwrap();
         failed.assistant_chat_task = Some(AssistantChatTask {
             receiver,
+            request_id: "test".to_owned(),
+            started_at: Instant::now(),
             cancellation: AssistantCancellation::default(),
             document_id: failed.document.current().document_id(),
             revision_id: failed.document.current().revision_id(),
@@ -33954,6 +35375,8 @@ mod tests {
         let (_sender, receiver) = mpsc::channel();
         app.assistant_chat_task = Some(AssistantChatTask {
             receiver,
+            request_id: "test".to_owned(),
+            started_at: Instant::now(),
             cancellation: cancellation.clone(),
             document_id: app.document.current().document_id(),
             revision_id: app.document.current().revision_id(),
@@ -33974,6 +35397,8 @@ mod tests {
         let (_new_sender, new_receiver) = mpsc::channel();
         app.assistant_chat_task = Some(AssistantChatTask {
             receiver: new_receiver,
+            request_id: "test".to_owned(),
+            started_at: Instant::now(),
             cancellation: new_cancellation.clone(),
             document_id: app.document.current().document_id(),
             revision_id: app.document.current().revision_id(),
@@ -33993,6 +35418,8 @@ mod tests {
         let (_open_sender, open_receiver) = mpsc::channel();
         app.assistant_chat_task = Some(AssistantChatTask {
             receiver: open_receiver,
+            request_id: "test".to_owned(),
+            started_at: Instant::now(),
             cancellation: open_cancellation.clone(),
             document_id: app.document.current().document_id(),
             revision_id: app.document.current().revision_id(),
@@ -34010,10 +35437,20 @@ mod tests {
     fn assistant_progress_phases_are_accessible_with_deterministic_channels() {
         let mut app = KetchupApp::new();
         let requesting = app.catalog.text("assistant-progress-requesting");
+        let elapsed = app.catalog.format(
+            "assistant-progress-elapsed",
+            &BTreeMap::from([("time", "0:07".to_owned())]),
+        );
         let executing = app.catalog.text("assistant-progress-executing");
+        assert_ne!(
+            assistant_clock_frame(Duration::ZERO),
+            assistant_clock_frame(Duration::from_millis(250))
+        );
         let (_sender, receiver) = mpsc::channel();
         app.assistant_chat_task = Some(AssistantChatTask {
             receiver,
+            request_id: "test".to_owned(),
+            started_at: Instant::now() - Duration::from_secs(7),
             cancellation: AssistantCancellation::default(),
             document_id: app.document.current().document_id(),
             revision_id: app.document.current().revision_id(),
@@ -34024,7 +35461,7 @@ mod tests {
             .with_size(Vec2::new(1600.0, 1000.0))
             .build_state(|context, app: &mut KetchupApp| app.ui(context), app);
 
-        harness.run();
+        harness.step();
 
         assert!(
             harness
@@ -34036,7 +35473,16 @@ mod tests {
                 .next()
                 .is_some()
         );
-
+        assert!(
+            harness
+                .query_all_by(|node| {
+                    !node.is_hidden()
+                        && (node.label().as_deref() == Some(&elapsed)
+                            || node.value().as_deref() == Some(&elapsed))
+                })
+                .next()
+                .is_some()
+        );
         let state = harness.state_mut();
         state.assistant_chat_task = None;
         state.assistant_pending_execution = Some(AssistantPendingExecution {
@@ -34055,6 +35501,9 @@ mod tests {
                     parameter_edits: Vec::new(),
                     linear_arrays: Vec::new(),
                     bottles: Vec::new(),
+                    gable_roofs: Vec::new(),
+                    staircases: Vec::new(),
+                    oriented_beams: Vec::new(),
                 }),
             },
             document_id: state.document.current().document_id(),
@@ -34105,6 +35554,9 @@ mod tests {
                     parameter_edits: Vec::new(),
                     linear_arrays: Vec::new(),
                     bottles: Vec::new(),
+                    gable_roofs: Vec::new(),
+                    staircases: Vec::new(),
+                    oriented_beams: Vec::new(),
                 }),
             },
             document_id: app.document.current().document_id(),
@@ -34128,6 +35580,8 @@ mod tests {
         let (sender, receiver) = mpsc::channel();
         app.assistant_chat_task = Some(AssistantChatTask {
             receiver,
+            request_id: "test".to_owned(),
+            started_at: Instant::now(),
             cancellation: AssistantCancellation::default(),
             document_id: app.document.current().document_id(),
             revision_id: revision,
@@ -34135,22 +35589,28 @@ mod tests {
             source: "test".to_owned(),
         });
         sender
-            .send(Ok(AssistantChatResult {
-                message: "Moved it.".to_owned(),
-                model_intent: Some(AssistantModelIntent {
-                    replace_scene: false,
-                    boxes: Vec::new(),
-                    translations: vec![
-                        ketchup_core::assistant_sidecar::AssistantTranslationIntent {
-                            occurrence_id: 1,
-                            delta_mm: [25.0, 0.0, 0.0],
-                        },
-                    ],
-                    profile_translations: Vec::new(),
-                    parameter_edits: Vec::new(),
-                    linear_arrays: Vec::new(),
-                    bottles: Vec::new(),
-                }),
+            .send(Ok(AssistantTransportResponse {
+                result: AssistantChatResult {
+                    message: "Moved it.".to_owned(),
+                    model_intent: Some(AssistantModelIntent {
+                        replace_scene: false,
+                        boxes: Vec::new(),
+                        translations: vec![
+                            ketchup_core::assistant_sidecar::AssistantTranslationIntent {
+                                occurrence_id: 1,
+                                delta_mm: [25.0, 0.0, 0.0],
+                            },
+                        ],
+                        profile_translations: Vec::new(),
+                        parameter_edits: Vec::new(),
+                        linear_arrays: Vec::new(),
+                        bottles: Vec::new(),
+                        gable_roofs: Vec::new(),
+                        staircases: Vec::new(),
+                        oriented_beams: Vec::new(),
+                    }),
+                },
+                diagnostics: None,
             }))
             .unwrap();
         let context = egui::Context::default();
@@ -34209,6 +35669,9 @@ mod tests {
                 parameter_edits: Vec::new(),
                 linear_arrays: Vec::new(),
                 bottles: Vec::new(),
+                gable_roofs: Vec::new(),
+                staircases: Vec::new(),
+                oriented_beams: Vec::new(),
             }
         ));
 
@@ -34250,6 +35713,8 @@ mod tests {
         let cancellation = AssistantCancellation::default();
         app.assistant_chat_task = Some(AssistantChatTask {
             receiver,
+            request_id: "test".to_owned(),
+            started_at: Instant::now(),
             cancellation,
             document_id: request_document_id,
             revision_id: request_revision_id,
@@ -34269,22 +35734,28 @@ mod tests {
         let changed_digest = app.document.current().canonical_digest();
         let undo_steps = app.document.visible_undo_steps();
         sender
-            .send(Ok(AssistantChatResult {
-                message: "Moved it.".to_owned(),
-                model_intent: Some(AssistantModelIntent {
-                    replace_scene: false,
-                    boxes: Vec::new(),
-                    translations: vec![
-                        ketchup_core::assistant_sidecar::AssistantTranslationIntent {
-                            occurrence_id: 1,
-                            delta_mm: [100.0, 0.0, 0.0],
-                        },
-                    ],
-                    profile_translations: Vec::new(),
-                    parameter_edits: Vec::new(),
-                    linear_arrays: Vec::new(),
-                    bottles: Vec::new(),
-                }),
+            .send(Ok(AssistantTransportResponse {
+                result: AssistantChatResult {
+                    message: "Moved it.".to_owned(),
+                    model_intent: Some(AssistantModelIntent {
+                        replace_scene: false,
+                        boxes: Vec::new(),
+                        translations: vec![
+                            ketchup_core::assistant_sidecar::AssistantTranslationIntent {
+                                occurrence_id: 1,
+                                delta_mm: [100.0, 0.0, 0.0],
+                            },
+                        ],
+                        profile_translations: Vec::new(),
+                        parameter_edits: Vec::new(),
+                        linear_arrays: Vec::new(),
+                        bottles: Vec::new(),
+                        gable_roofs: Vec::new(),
+                        staircases: Vec::new(),
+                        oriented_beams: Vec::new(),
+                    }),
+                },
+                diagnostics: None,
             }))
             .unwrap();
 
@@ -35548,6 +37019,9 @@ endsolid tetrahedron\n";
                 parameter_edits: Vec::new(),
                 linear_arrays: Vec::new(),
                 bottles: Vec::new(),
+                gable_roofs: Vec::new(),
+                staircases: Vec::new(),
+                oriented_beams: Vec::new(),
             }
         ));
         let snapshot = app.document.current();
@@ -42440,6 +43914,9 @@ endsolid tetrahedron\n";
                 parameter_edits: Vec::new(),
                 linear_arrays: Vec::new(),
                 bottles: Vec::new(),
+                gable_roofs: Vec::new(),
+                staircases: Vec::new(),
+                oriented_beams: Vec::new(),
             }
         ));
         app.projection_mode = ProjectionMode::Parallel;
@@ -42529,6 +44006,71 @@ endsolid tetrahedron\n";
                 side: Side::Maximum,
             }
         );
+    }
+
+    #[test]
+    fn dimensions_panel_creates_categories_and_assigns_independent_values_in_one_undo_step() {
+        let mut app = KetchupApp::new();
+        app.selection
+            .select_path(InstancePath::root(OccurrenceId(1)), false);
+        assert!(app.create_classification_dimension("Building side", "Exterior"));
+        assert!(app.add_classification_category(ClassificationDimensionId(1), "Interior"));
+        assert!(app.create_classification_dimension("Building system", "Structure"));
+        assert!(app.assign_selection_to_classification(
+            ClassificationDimensionId(1),
+            Some(ClassificationCategoryId(2))
+        ));
+        let undo_before = app.document.visible_undo_steps();
+        assert!(app.assign_selection_to_classification(
+            ClassificationDimensionId(2),
+            Some(ClassificationCategoryId(3))
+        ));
+        assert_eq!(app.document.visible_undo_steps(), undo_before + 1);
+        assert_eq!(
+            app.document
+                .current()
+                .occurrence_classification(OccurrenceId(1), ClassificationDimensionId(1)),
+            Some(ClassificationCategoryId(2))
+        );
+        assert_eq!(
+            app.document
+                .current()
+                .occurrence_classification(OccurrenceId(1), ClassificationDimensionId(2)),
+            Some(ClassificationCategoryId(3))
+        );
+        app.document.undo().unwrap();
+        assert_eq!(
+            app.document
+                .current()
+                .occurrence_classification(OccurrenceId(1), ClassificationDimensionId(1)),
+            Some(ClassificationCategoryId(2))
+        );
+        assert_eq!(
+            app.document
+                .current()
+                .occurrence_classification(OccurrenceId(1), ClassificationDimensionId(2)),
+            None
+        );
+
+        app.assistant_workspace_mode = AssistantWorkspaceMode::Tab;
+        app.classification_selected_dimension = Some(ClassificationDimensionId(1));
+        let mut harness = Harness::builder()
+            .with_size(Vec2::new(1600.0, 1000.0))
+            .build_state(|context, app: &mut KetchupApp| app.ui(context), app);
+        harness.run();
+        for expected in ["DIMENSIONS", "Interior (1 occurrences)"] {
+            assert!(
+                harness
+                    .query_all_by(|node| {
+                        !node.is_hidden()
+                            && (node.label().as_deref() == Some(expected)
+                                || node.value().as_deref() == Some(expected))
+                    })
+                    .next()
+                    .is_some(),
+                "missing dimensions panel text: {expected}"
+            );
+        }
     }
 
     #[test]

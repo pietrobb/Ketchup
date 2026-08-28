@@ -11,15 +11,16 @@ use crate::assembly::{
 };
 use crate::document::{
     BOTTLE_SHELL_OPENING_FACE_ROLE, BOTTLE_SHOULDER_EDGE_ROLE, Body, BodyId, BooleanOperation,
-    BottleEdgeFinishKind, CanonicalCommand, CanonicalError, Collection, CollectionId, CommandBatch,
-    Definition, DefinitionId, Dimension, DimensionDisplayUnit, DimensionPresentation,
-    DocumentStore, EvaluationIdentity, EvaluatorNode, ExactReferenceConversionConsequence,
-    ExactToMeshConversion, Feature, FeatureBodyOwnership, FeatureId, FeatureKind,
-    FeatureParameterBinding, FeatureParameterFreshnessAudit, FeatureParameterProvenance,
-    FeatureParameterSlot, FeatureParameterTarget, Group, GroupId, ImportedExactBodySpec,
-    InstancePath, InstancePathStep, LocalGroup, LocalGroupId, LocalGroupKey, LocalOccurrence,
-    LocalOccurrenceId, LocalOccurrenceKey, LoftSection, MeshAuthority, MeshBodySpec, NodeId,
-    Occurrence, OccurrenceId, PersistentDimension, PersistentDimensionId,
+    BottleEdgeFinishKind, CanonicalCommand, CanonicalError, ClassificationCategory,
+    ClassificationCategoryId, ClassificationDimension, ClassificationDimensionId, Collection,
+    CollectionId, CommandBatch, Definition, DefinitionId, Dimension, DimensionDisplayUnit,
+    DimensionPresentation, DocumentStore, EvaluationIdentity, EvaluatorNode,
+    ExactReferenceConversionConsequence, ExactToMeshConversion, Feature, FeatureBodyOwnership,
+    FeatureId, FeatureKind, FeatureParameterBinding, FeatureParameterFreshnessAudit,
+    FeatureParameterProvenance, FeatureParameterSlot, FeatureParameterTarget, Group, GroupId,
+    ImportedExactBodySpec, InstancePath, InstancePathStep, LocalGroup, LocalGroupId, LocalGroupKey,
+    LocalOccurrence, LocalOccurrenceId, LocalOccurrenceKey, LoftSection, MeshAuthority,
+    MeshBodySpec, NodeId, Occurrence, OccurrenceId, PersistentDimension, PersistentDimensionId,
     PersistentDimensionTarget, ProductModel, ProfileSegment, Snapshot, StableEdgeRole,
     StableFaceRole, Tag, TagId, Transform, UnitSystem,
 };
@@ -69,7 +70,8 @@ const ORTHOGRAPHIC_DRAWING_SCHEMA: u16 = 33;
 const BODY_CONTRACT_SCHEMA: u16 = 34;
 const BODY_CONSUMPTION_SCHEMA: u16 = 35;
 const BODY_FEATURE_SUPPRESSION_SCHEMA: u16 = 36;
-pub const CURRENT_SCHEMA: u16 = BODY_FEATURE_SUPPRESSION_SCHEMA;
+const CLASSIFICATION_DIMENSION_SCHEMA: u16 = 37;
+pub const CURRENT_SCHEMA: u16 = CLASSIFICATION_DIMENSION_SCHEMA;
 const COLLECTION_SCHEMA: u16 = 15;
 const TAG_SCHEMA: u16 = 14;
 const PERSISTENT_DIMENSION_SCHEMA: u16 = 13;
@@ -121,6 +123,7 @@ struct ProductSchemaCapabilities {
     body_contract: bool,
     body_consumption: bool,
     body_feature_suppression: bool,
+    classification_dimensions: bool,
 }
 
 impl ProductSchemaCapabilities {
@@ -157,6 +160,7 @@ impl ProductSchemaCapabilities {
         body_contract: false,
         body_consumption: false,
         body_feature_suppression: false,
+        classification_dimensions: false,
     };
 
     const fn current(schema: u16) -> Self {
@@ -193,6 +197,7 @@ impl ProductSchemaCapabilities {
             body_contract: schema >= BODY_CONTRACT_SCHEMA,
             body_consumption: schema >= BODY_CONSUMPTION_SCHEMA,
             body_feature_suppression: schema >= BODY_FEATURE_SUPPRESSION_SCHEMA,
+            classification_dimensions: schema >= CLASSIFICATION_DIMENSION_SCHEMA,
         }
     }
 }
@@ -699,6 +704,25 @@ pub fn save(snapshot: &Snapshot) -> Vec<u8> {
         push_u64(&mut payload, definition_id.0);
         push_u64(&mut payload, body_id.0);
         write_ids(&mut payload, suppressed.iter().map(|id| id.0));
+    }
+    push_u32(&mut payload, product.classification_dimensions.len() as u32);
+    for dimension in product.classification_dimensions.values() {
+        push_u64(&mut payload, dimension.id().0);
+        push_string(&mut payload, dimension.name());
+        push_u32(&mut payload, dimension.categories().count() as u32);
+        for category in dimension.categories() {
+            push_u64(&mut payload, category.id().0);
+            push_string(&mut payload, category.name());
+        }
+    }
+    push_u32(
+        &mut payload,
+        product.classification_assignments.len() as u32,
+    );
+    for ((occurrence_id, dimension_id), category_id) in &product.classification_assignments {
+        push_u64(&mut payload, occurrence_id.0);
+        push_u64(&mut payload, dimension_id.0);
+        push_u64(&mut payload, category_id.0);
     }
 
     let mut manifest = Vec::new();
@@ -1779,6 +1803,8 @@ fn load_document(
             | ASSEMBLY_CONTRACT_SCHEMA
             | ORTHOGRAPHIC_DRAWING_SCHEMA
             | BODY_CONTRACT_SCHEMA
+            | BODY_CONSUMPTION_SCHEMA
+            | BODY_FEATURE_SUPPRESSION_SCHEMA
             | CURRENT_SCHEMA
     ) {
         return Err(PersistenceError::UnsupportedSchema(schema));
@@ -3384,6 +3410,68 @@ fn read_product(
                 {
                     return Err(PersistenceError::InvalidCanonicalData(
                         CanonicalError::InvalidFeatureSuppression(definition_id, body_id),
+                    ));
+                }
+            }
+        }
+        if capabilities.classification_dimensions {
+            for _ in 0..reader.count()? {
+                let id = ClassificationDimensionId(reader.u64()?);
+                let name = reader.string()?;
+                let mut categories = BTreeMap::new();
+                for _ in 0..reader.count()? {
+                    let category_id = ClassificationCategoryId(reader.u64()?);
+                    let category = ClassificationCategory {
+                        id: category_id,
+                        name: reader.string()?,
+                    };
+                    if categories.insert(category_id, category).is_some() {
+                        return Err(PersistenceError::InvalidCanonicalData(
+                            CanonicalError::InvalidClassificationDimension(id),
+                        ));
+                    }
+                }
+                let dimension = ClassificationDimension {
+                    id,
+                    name,
+                    categories,
+                };
+                if product
+                    .classification_dimensions
+                    .insert(id, Arc::new(dimension))
+                    .is_some()
+                {
+                    return Err(PersistenceError::InvalidCanonicalData(
+                        CanonicalError::InvalidClassificationDimension(id),
+                    ));
+                }
+            }
+            for _ in 0..reader.count()? {
+                let occurrence_id = OccurrenceId(reader.u64()?);
+                let dimension_id = ClassificationDimensionId(reader.u64()?);
+                let category_id = ClassificationCategoryId(reader.u64()?);
+                let dimension = product.classification_dimensions.get(&dimension_id).ok_or(
+                    PersistenceError::InvalidCanonicalData(
+                        CanonicalError::ClassificationDimensionNotFound(dimension_id),
+                    ),
+                )?;
+                if !product.occurrences.contains_key(&occurrence_id) {
+                    return Err(PersistenceError::InvalidCanonicalData(
+                        CanonicalError::OccurrenceNotFound(occurrence_id),
+                    ));
+                }
+                if !dimension.categories.contains_key(&category_id) {
+                    return Err(PersistenceError::InvalidCanonicalData(
+                        CanonicalError::ClassificationCategoryNotFound(dimension_id, category_id),
+                    ));
+                }
+                if product
+                    .classification_assignments
+                    .insert((occurrence_id, dimension_id), category_id)
+                    .is_some()
+                {
+                    return Err(PersistenceError::InvalidCanonicalData(
+                        CanonicalError::InvalidClassificationDimension(dimension_id),
                     ));
                 }
             }

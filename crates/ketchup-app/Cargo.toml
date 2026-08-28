@@ -8,7 +8,7 @@ license.workspace = true
 repository.workspace = true
 
 [features]
-default = []
+default = ["private-oauth"]
 private-oauth = ["ketchup-core/private-oauth", "ketchup-scheduler/private-oauth"]
 
 [dependencies]

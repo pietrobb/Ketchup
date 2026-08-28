@@ -18,8 +18,10 @@
 use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use ketchup_app::dialogs::ScriptedFileDialogs;
-use ketchup_app::{AppCommand, AssistantTransport, KetchupApp};
-use ketchup_core::assistant_sidecar::{AssistantChatResult, AssistantHandshake};
+use ketchup_app::{AppCommand, AssistantTransport, AssistantTransportResponse, KetchupApp};
+use ketchup_core::assistant_sidecar::{
+    AssistantApiDiagnostics, AssistantChatResult, AssistantHandshake,
+};
 use ketchup_interaction::{LocaleCatalog, Vec3};
 use ketchup_scheduler::assistant::AssistantCancellation;
 
@@ -34,6 +36,7 @@ const SCREEN: Vec2 = Vec2::new(1600.0, 1000.0);
 
 pub struct ScriptedAssistantTransport {
     responses: Mutex<VecDeque<(String, AssistantChatResult)>>,
+    diagnostics: Mutex<VecDeque<AssistantApiDiagnostics>>,
     request_ids: Mutex<Vec<String>>,
     contexts: Mutex<Vec<serde_json::Value>>,
     cancellation_requests: BTreeSet<String>,
@@ -45,6 +48,7 @@ impl ScriptedAssistantTransport {
     pub fn new(responses: impl IntoIterator<Item = (String, AssistantChatResult)>) -> Self {
         Self {
             responses: Mutex::new(responses.into_iter().collect()),
+            diagnostics: Mutex::new(VecDeque::new()),
             request_ids: Mutex::new(Vec::new()),
             contexts: Mutex::new(Vec::new()),
             cancellation_requests: BTreeSet::new(),
@@ -56,6 +60,10 @@ impl ScriptedAssistantTransport {
     pub fn with_cancellation_request(mut self, message: impl Into<String>) -> Self {
         self.cancellation_requests.insert(message.into());
         self
+    }
+
+    pub fn queue_diagnostics(&self, diagnostics: AssistantApiDiagnostics) {
+        self.diagnostics.lock().unwrap().push_back(diagnostics);
     }
 
     pub fn remaining_responses(&self) -> usize {
@@ -114,6 +122,21 @@ impl AssistantTransport for ScriptedAssistantTransport {
             .remove(index)
             .expect("the matching scripted response exists");
         Ok(result)
+    }
+
+    fn chat_with_diagnostics(
+        &self,
+        handshake: AssistantHandshake,
+        request_id: &str,
+        message: &str,
+        context: &serde_json::Value,
+        cancellation: AssistantCancellation,
+    ) -> Result<AssistantTransportResponse, String> {
+        let result = self.chat(handshake, request_id, message, context, cancellation)?;
+        Ok(AssistantTransportResponse {
+            result,
+            diagnostics: self.diagnostics.lock().unwrap().pop_front(),
+        })
     }
 }
 

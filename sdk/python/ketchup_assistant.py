@@ -5,6 +5,7 @@ import json
 import math
 import os
 import sys
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -24,7 +25,13 @@ MAX_ARRAY_OCCURRENCES = 8
 MAX_INSPECT_RESULT_BYTES = 64 * 1024
 MAX_INSPECT_ROUNDS = 2
 ALLOWED_CAPABILITIES = frozenset(
-    {"chat", "local_memory", "query_document", "propose_workflow_intent"}
+    {
+        "chat",
+        "debug_observability",
+        "local_memory",
+        "query_document",
+        "propose_workflow_intent",
+    }
 )
 PUBLIC_PROVIDERS = frozenset({"anthropic-api", "openai-api"})
 SYSTEM_PROMPT = (
@@ -55,7 +62,7 @@ SYSTEM_PROMPT = (
     "unsupported or unavailable occurrences or say that the relevant check is incomplete or skipped. Return ONLY "
     "one JSON object with exactly two fields: message (a concise user-facing string) and "
     "model_intent (null for discussion, otherwise an object with replace_scene boolean, boxes, "
-    "translations, profile_translations, parameter_edits, linear_arrays, and bottles). For a whole-part move, use translations with occurrence_id and delta_mm "
+    "translations, profile_translations, parameter_edits, linear_arrays, bottles, gable_roofs, staircases, and oriented_beams). For a whole-part move, use translations with occurrence_id and delta_mm "
     "[x, y, z]; do not rebuild geometry. To move the currently selected cut profile, use exactly one profile_translations entry copied from selected_profile_translation_target with definition_id, body_id, profile_id, and delta_mm [x, y] in its workplane; never mix it with another mutation. To change the currently selected feature or sketch-constraint dimension, use exactly one parameter_edits entry copied from selected_parameter_edit_target with definition_id, body_id, feature_id, constraint_id, and the requested value_mm; never mix it with another mutation. For stacking, repetition, or a linear array of existing "
     "parts, use linear_arrays with occurrence_ids, instances (total count including the originals), "
     "and step_mm [x, y, z]; never rebuild the repeated bodies. Interpret N-times stacking as N total "
@@ -72,9 +79,12 @@ SYSTEM_PROMPT = (
     "body_height_mm, shoulder_rise_mm, neck_radius_mm, neck_height_mm, wall_thickness_mm, "
     "finish_kind (fillet or chamfer), finish_amount_mm, and origin_mm [x, y, z]. Each bottle "
     "becomes one editable profile→Revolve→Shell→Fillet/Chamfer feature chain. "
+    "For a true gable roof, use gable_roofs with exactly name, length_mm along the ridge, span_mm across the gables, rise_mm from eave to ridge, thickness_mm, and origin_mm [x, y, z] at the lower outside corner; never approximate a pitched roof with stepped boxes. "
+    "For one solid straight staircase, use staircases with exactly name, run_mm, width_mm, rise_mm, step_count, and origin_mm [x, y, z]. Choose 150-450 mm going, 100-250 mm riser, and at least 500 mm width. "
+    "For rafters, purlins, braces, and any rotated rectangular timber, use oriented_beams with exactly name, start_mm and end_mm at the centres of the end faces, up_hint (normally [0,0,1]), width_mm, depth_mm, and optional bottom_notches. Each full-width bottom notch has exactly from_start_mm along the beam axis, length_mm, and depth_mm. Use real oriented beams and notches; never claim they are unsupported or replace a sloped beam with stepped boxes. Extend rafter endpoints by the requested overhang distance along their slope, not horizontally and not at gables. "
     "Each box has exactly name, size_mm [width, depth, height], origin_mm [x, y, z], and optional "
-    "subtract_boxes. Each subtraction has exactly size_mm and origin_mm LOCAL to its parent box. "
-    "Use subtract_boxes for grooves, notches, recesses, slots, and removed material; never imitate "
+    "subtract_boxes. Each subtraction has exactly size_mm and origin_mm LOCAL to its parent box. A stair or attic opening through a slab uses one strictly interior subtraction with the full slab height and local z=0. "
+    "Use subtract_boxes for grooves, notches, recesses, slots, openings, and removed material; never imitate "
     "a cut by adding thin boxes. When the user asks to create or change geometry, produce "
     "model_intent instead of merely describing it. Use at most 64 bodies and 64 non-overlapping "
     "subtractions per body. Kečup validates geometry and applies it immediately as one "
@@ -157,6 +167,20 @@ class Handshake:
     provider: str
     model: str
     capabilities: frozenset[str]
+
+
+@dataclass(frozen=True)
+class ProviderExchange:
+    text: str
+    model: str
+    system_prompt: str
+    request_payload: dict
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+    stop_reason: str = ""
+    duration_ms: int = 0
 
 
 def _validate_project_memory(context: dict) -> None:
@@ -324,9 +348,10 @@ class PublicAssistantSidecar:
         if len(context_text) > MAX_MESSAGE_CHARS:
             raise ProtocolError("context is too large")
         bounded_message = f"<document-context>{context_text}</document-context>\n\n{message}"
-        answer = self._sender(
+        exchange = self._sender(
             handshake.provider, handshake.model, bounded_message, tuple(self._history)
         )
+        answer = exchange.text if isinstance(exchange, ProviderExchange) else exchange
         if not isinstance(answer, str) or not answer:
             raise ProtocolError("provider returned no text")
         parsed = _parse_assistant_result(answer)
@@ -337,7 +362,27 @@ class PublicAssistantSidecar:
             )
         )
         self._history = self._history[-20:]
-        return {"type": "chat-result", "request_id": request_id, **parsed}
+        diagnostics = None
+        if "debug_observability" in handshake.capabilities and isinstance(
+            exchange, ProviderExchange
+        ):
+            diagnostics = {
+                "provider": handshake.provider,
+                "model": exchange.model,
+                "duration_ms": exchange.duration_ms,
+                "input_tokens": exchange.input_tokens,
+                "output_tokens": exchange.output_tokens,
+                "cache_read_tokens": exchange.cache_read_tokens,
+                "cache_write_tokens": exchange.cache_write_tokens,
+                "stop_reason": exchange.stop_reason,
+                "system_prompt": exchange.system_prompt,
+                "request_payload": exchange.request_payload,
+                "response_text": answer,
+            }
+        result = {"type": "chat-result", "request_id": request_id, **parsed}
+        if diagnostics is not None:
+            result["diagnostics"] = diagnostics
+        return result
 
     def _require_handshake(self) -> Handshake:
         if self._handshake is None:
@@ -432,7 +477,7 @@ def _parse_assistant_result(answer: str) -> dict:
     if intent is None:
         return {"message": message, "model_intent": None}
     if not isinstance(intent, dict) or not {"replace_scene", "boxes"} <= set(intent) <= {
-        "replace_scene", "boxes", "translations", "profile_translations", "parameter_edits", "linear_arrays", "bottles"
+        "replace_scene", "boxes", "translations", "profile_translations", "parameter_edits", "linear_arrays", "bottles", "gable_roofs", "staircases", "oriented_beams"
     }:
         raise ProtocolError("provider model intent contains missing or unknown fields")
     boxes = intent["boxes"]
@@ -441,6 +486,9 @@ def _parse_assistant_result(answer: str) -> dict:
     parameter_edits = intent.setdefault("parameter_edits", [])
     linear_arrays = intent.setdefault("linear_arrays", [])
     bottles = intent.setdefault("bottles", [])
+    gable_roofs = intent.setdefault("gable_roofs", [])
+    staircases = intent.setdefault("staircases", [])
+    oriented_beams = intent.setdefault("oriented_beams", [])
     if not isinstance(intent["replace_scene"], bool) or not isinstance(boxes, list):
         raise ProtocolError("provider model intent has invalid field types")
     if not isinstance(translations, list) or len(translations) > 100:
@@ -453,13 +501,19 @@ def _parse_assistant_result(answer: str) -> dict:
         raise ProtocolError("provider model intent has too many linear arrays")
     if not isinstance(bottles, list) or len(bottles) > 8:
         raise ProtocolError("provider model intent has too many bottles")
-    if not boxes and not translations and not profile_translations and not parameter_edits and not linear_arrays and not bottles:
+    if not isinstance(gable_roofs, list) or len(gable_roofs) > 16:
+        raise ProtocolError("provider model intent has too many gable roofs")
+    if not isinstance(staircases, list) or len(staircases) > 16:
+        raise ProtocolError("provider model intent has too many staircases")
+    if not isinstance(oriented_beams, list) or len(oriented_beams) > 64:
+        raise ProtocolError("provider model intent has too many oriented beams")
+    if not boxes and not translations and not profile_translations and not parameter_edits and not linear_arrays and not bottles and not gable_roofs and not staircases and not oriented_beams:
         raise ProtocolError("provider model intent is empty")
     if len(boxes) > 64 or (intent["replace_scene"] and (translations or profile_translations or parameter_edits or linear_arrays)):
         raise ProtocolError("provider model intent has invalid geometry scope")
-    if profile_translations and (boxes or translations or parameter_edits or linear_arrays or bottles):
+    if profile_translations and (boxes or translations or parameter_edits or linear_arrays or bottles or gable_roofs or staircases or oriented_beams):
         raise ProtocolError("provider profile translation cannot mix geometry mutations")
-    if parameter_edits and (boxes or translations or profile_translations or linear_arrays or bottles):
+    if parameter_edits and (boxes or translations or profile_translations or linear_arrays or bottles or gable_roofs or staircases or oriented_beams):
         raise ProtocolError("provider parameter edit cannot mix geometry mutations")
     for translation in translations:
         if (
@@ -547,6 +601,67 @@ def _parse_assistant_result(answer: str) -> dict:
             raise ProtocolError("provider linear array creates too many occurrences")
     for bottle in bottles:
         _validate_bottle(bottle)
+    for roof in gable_roofs:
+        fields = {"name", "length_mm", "span_mm", "rise_mm", "thickness_mm", "origin_mm"}
+        if not isinstance(roof, dict) or set(roof) != fields:
+            raise ProtocolError("provider gable roof contains missing or unknown fields")
+        if not isinstance(roof["name"], str) or not roof["name"].strip() or len(roof["name"].encode("utf-8")) > 128:
+            raise ProtocolError("provider gable roof name is invalid")
+        dimensions = [roof[field] for field in ("length_mm", "span_mm", "rise_mm", "thickness_mm")]
+        if any(not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value) or not 0 < value <= 1_000_000 for value in dimensions) or roof["thickness_mm"] >= roof["rise_mm"]:
+            raise ProtocolError("provider gable roof dimensions are invalid")
+        _validate_vector(roof["origin_mm"], "provider gable roof origin_mm", positive=False)
+    for stairs in staircases:
+        fields = {"name", "run_mm", "width_mm", "rise_mm", "step_count", "origin_mm"}
+        if not isinstance(stairs, dict) or set(stairs) != fields:
+            raise ProtocolError("provider staircase contains missing or unknown fields")
+        if not isinstance(stairs["name"], str) or not stairs["name"].strip() or len(stairs["name"].encode("utf-8")) > 128:
+            raise ProtocolError("provider staircase name is invalid")
+        dimensions = [stairs[field] for field in ("run_mm", "width_mm", "rise_mm")]
+        if any(not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value) or not 0 < value <= 1_000_000 for value in dimensions) or not isinstance(stairs["step_count"], int) or isinstance(stairs["step_count"], bool) or not 2 <= stairs["step_count"] <= 64:
+            raise ProtocolError("provider staircase dimensions are invalid")
+        tread_mm = stairs["run_mm"] / stairs["step_count"]
+        riser_mm = stairs["rise_mm"] / stairs["step_count"]
+        if not 150 <= tread_mm <= 450 or not 100 <= riser_mm <= 250 or stairs["width_mm"] < 500:
+            raise ProtocolError("provider staircase proportions are invalid")
+        _validate_vector(stairs["origin_mm"], "provider staircase origin_mm", positive=False)
+    for beam in oriented_beams:
+        fields = {"name", "start_mm", "end_mm", "up_hint", "width_mm", "depth_mm", "bottom_notches"}
+        if not isinstance(beam, dict) or not {"name", "start_mm", "end_mm", "up_hint", "width_mm", "depth_mm"} <= set(beam) <= fields:
+            raise ProtocolError("provider oriented beam contains missing or unknown fields")
+        if not isinstance(beam["name"], str) or not beam["name"].strip() or len(beam["name"].encode("utf-8")) > 128:
+            raise ProtocolError("provider oriented beam name is invalid")
+        _validate_vector(beam["start_mm"], "provider oriented beam start_mm", positive=False)
+        _validate_vector(beam["end_mm"], "provider oriented beam end_mm", positive=False)
+        _validate_vector(beam["up_hint"], "provider oriented beam up_hint", positive=False)
+        dimensions = [beam["width_mm"], beam["depth_mm"]]
+        if any(not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value) or not 0 < value <= 1_000_000 for value in dimensions):
+            raise ProtocolError("provider oriented beam dimensions are invalid")
+        axis = [beam["end_mm"][index] - beam["start_mm"][index] for index in range(3)]
+        axis_length = math.sqrt(sum(value * value for value in axis))
+        up_length = math.sqrt(sum(value * value for value in beam["up_hint"]))
+        cross = [
+            axis[1] * beam["up_hint"][2] - axis[2] * beam["up_hint"][1],
+            axis[2] * beam["up_hint"][0] - axis[0] * beam["up_hint"][2],
+            axis[0] * beam["up_hint"][1] - axis[1] * beam["up_hint"][0],
+        ]
+        cross_length = math.sqrt(sum(value * value for value in cross))
+        if axis_length <= 0 or axis_length > 1_000_000 or up_length <= 0 or cross_length <= axis_length * up_length * 1.0e-6:
+            raise ProtocolError("provider oriented beam axis or up_hint is invalid")
+        notches = beam.setdefault("bottom_notches", [])
+        if not isinstance(notches, list) or len(notches) > 64:
+            raise ProtocolError("provider oriented beam has too many notches")
+        intervals = []
+        for notch in notches:
+            if not isinstance(notch, dict) or set(notch) != {"from_start_mm", "length_mm", "depth_mm"}:
+                raise ProtocolError("provider oriented beam notch contains missing or unknown fields")
+            values = [notch["from_start_mm"], notch["length_mm"], notch["depth_mm"]]
+            if any(not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value) for value in values) or notch["from_start_mm"] < 0 or notch["length_mm"] <= 0 or notch["from_start_mm"] + notch["length_mm"] > axis_length or not 0 < notch["depth_mm"] < beam["depth_mm"]:
+                raise ProtocolError("provider oriented beam notch is invalid")
+            interval = (notch["from_start_mm"], notch["from_start_mm"] + notch["length_mm"])
+            if any(interval[0] < other[1] and other[0] < interval[1] for other in intervals):
+                raise ProtocolError("provider oriented beam notches overlap")
+            intervals.append(interval)
     for item in boxes:
         if not isinstance(item, dict) or not {"name", "size_mm", "origin_mm"} <= set(item) <= {
             "name",
@@ -634,6 +749,9 @@ def _validate_planned_placement_answer(answer: str, placements: list[dict]) -> N
         or intent["parameter_edits"]
         or intent["linear_arrays"]
         or intent["bottles"]
+        or intent["gable_roofs"]
+        or intent["staircases"]
+        or intent["oriented_beams"]
         or not translations
         or len({translation["occurrence_id"] for translation in translations})
         != len(translations)
@@ -665,6 +783,9 @@ def _validate_planned_linear_array_answer(answer: str, arrays: list[dict]) -> No
         or intent["profile_translations"]
         or intent["parameter_edits"]
         or intent["bottles"]
+        or intent["gable_roofs"]
+        or intent["staircases"]
+        or intent["oriented_beams"]
         or not linear_arrays
     ):
         raise ProtocolError("planned linear array may only produce exact array proposals")
@@ -1133,9 +1254,9 @@ def _openai_tool_calls(data: dict) -> list[dict]:
     ]
 
 
-def send_public_request(
+def send_public_exchange(
     provider: str, model: str, message: str, history: tuple[dict, ...]
-) -> str:
+) -> ProviderExchange:
     if provider == "anthropic-api":
         api_key = os.environ.get("ANTHROPIC_API_KEY")
         if not api_key:
@@ -1178,8 +1299,18 @@ def send_public_request(
         planned_placements = []
         planned_arrays = []
         rounds = 0
+        total_input_tokens = 0
+        total_output_tokens = 0
+        total_cache_read_tokens = 0
+        total_cache_write_tokens = 0
+        started = time.monotonic()
         while True:
             data = _post_json(url, payload, headers)
+            usage = data.get("usage", {})
+            total_input_tokens += int(usage.get("input_tokens", 0) or 0)
+            total_output_tokens += int(usage.get("output_tokens", 0) or 0)
+            total_cache_read_tokens += int(usage.get("cache_read_input_tokens", 0) or 0)
+            total_cache_write_tokens += int(usage.get("cache_creation_input_tokens", 0) or 0)
             calls = _anthropic_tool_calls(data)
             if not calls:
                 answer = _anthropic_output_text(data)
@@ -1187,7 +1318,18 @@ def send_public_request(
                 _validate_planned_linear_array_answer(answer, planned_arrays)
                 _validate_selected_profile_translation_answer(answer, message)
                 _validate_selected_parameter_edit_answer(answer, message)
-                return answer
+                return ProviderExchange(
+                    text=answer,
+                    model=data.get("model") or model,
+                    system_prompt=SYSTEM_PROMPT,
+                    request_payload=payload,
+                    input_tokens=total_input_tokens,
+                    output_tokens=total_output_tokens,
+                    cache_read_tokens=total_cache_read_tokens,
+                    cache_write_tokens=total_cache_write_tokens,
+                    stop_reason=str(data.get("stop_reason") or ""),
+                    duration_ms=int((time.monotonic() - started) * 1000),
+                )
             if len(calls) != 1:
                 raise ProtocolError("provider requested more than one document inspection")
             if rounds >= MAX_INSPECT_ROUNDS:
@@ -1280,8 +1422,17 @@ def send_public_request(
         planned_placements = []
         planned_arrays = []
         rounds = 0
+        total_input_tokens = 0
+        total_output_tokens = 0
+        total_cache_read_tokens = 0
+        started = time.monotonic()
         while True:
             data = _post_json(url, payload, headers)
+            usage = data.get("usage", {})
+            total_input_tokens += int(usage.get("input_tokens", 0) or 0)
+            total_output_tokens += int(usage.get("output_tokens", 0) or 0)
+            input_details = usage.get("input_tokens_details", {})
+            total_cache_read_tokens += int(input_details.get("cached_tokens", 0) or 0)
             calls = _openai_tool_calls(data)
             if not calls:
                 answer = _openai_output_text(data)
@@ -1289,7 +1440,17 @@ def send_public_request(
                 _validate_planned_linear_array_answer(answer, planned_arrays)
                 _validate_selected_profile_translation_answer(answer, message)
                 _validate_selected_parameter_edit_answer(answer, message)
-                return answer
+                return ProviderExchange(
+                    text=answer,
+                    model=data.get("model") or model,
+                    system_prompt=SYSTEM_PROMPT,
+                    request_payload=payload,
+                    input_tokens=total_input_tokens,
+                    output_tokens=total_output_tokens,
+                    cache_read_tokens=total_cache_read_tokens,
+                    stop_reason=str(data.get("status") or ""),
+                    duration_ms=int((time.monotonic() - started) * 1000),
+                )
             if len(calls) != 1:
                 raise ProtocolError("provider requested more than one document inspection")
             if rounds >= MAX_INSPECT_ROUNDS:
@@ -1334,6 +1495,12 @@ def send_public_request(
     raise ProtocolError("unsupported public provider")
 
 
+def send_public_request(
+    provider: str, model: str, message: str, history: tuple[dict, ...]
+) -> str:
+    return send_public_exchange(provider, model, message, history).text
+
+
 def _post_json(url: str, payload: dict, headers: dict[str, str]) -> dict:
     request = urllib.request.Request(
         url,
@@ -1360,7 +1527,7 @@ def _openai_output_text(data: dict) -> str:
 
 
 def run() -> int:
-    sidecar = PublicAssistantSidecar(send_public_request)
+    sidecar = PublicAssistantSidecar(send_public_exchange)
     while True:
         line = sys.stdin.buffer.readline(MAX_LINE_BYTES + 1)
         if not line:

@@ -156,7 +156,7 @@ fn schema_30_sketchup_document_remains_losslessly_loadable() {
                     .sum::<usize>()
         })
         .sum::<usize>();
-    encoded.truncate(encoded.len() - 16 - body_contract_bytes);
+    encoded.truncate(encoded.len() - 24 - body_contract_bytes);
     encoded[10..12].copy_from_slice(&30_u16.to_le_bytes());
     let payload_length = (encoded.len() - payload_offset) as u64;
     encoded[16..24].copy_from_slice(&payload_length.to_le_bytes());

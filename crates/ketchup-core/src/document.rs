@@ -59,6 +59,8 @@ typed_id!(OccurrenceId);
 typed_id!(GroupId);
 typed_id!(FeatureId);
 typed_id!(TagId);
+typed_id!(ClassificationDimensionId);
+typed_id!(ClassificationCategoryId);
 typed_id!(CollectionId);
 typed_id!(NodeId);
 typed_id!(LocalOccurrenceId);
@@ -921,6 +923,52 @@ impl Tag {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ClassificationCategory {
+    pub(crate) id: ClassificationCategoryId,
+    pub(crate) name: String,
+}
+
+impl ClassificationCategory {
+    #[must_use]
+    pub const fn id(&self) -> ClassificationCategoryId {
+        self.id
+    }
+
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ClassificationDimension {
+    pub(crate) id: ClassificationDimensionId,
+    pub(crate) name: String,
+    pub(crate) categories: BTreeMap<ClassificationCategoryId, ClassificationCategory>,
+}
+
+impl ClassificationDimension {
+    #[must_use]
+    pub const fn id(&self) -> ClassificationDimensionId {
+        self.id
+    }
+
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn categories(&self) -> impl Iterator<Item = &ClassificationCategory> {
+        self.categories.values()
+    }
+
+    #[must_use]
+    pub fn category(&self, id: ClassificationCategoryId) -> Option<&ClassificationCategory> {
+        self.categories.get(&id)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Collection {
     pub(crate) id: CollectionId,
     pub(crate) name: String,
@@ -1115,6 +1163,10 @@ pub(crate) struct ProductModel {
     pub(crate) exact_reference_evidence: BTreeMap<String, Arc<BodySubshapeRef>>,
     pub(crate) persistent_dimensions: BTreeMap<PersistentDimensionId, Arc<PersistentDimension>>,
     pub(crate) tags: BTreeMap<TagId, Arc<Tag>>,
+    pub(crate) classification_dimensions:
+        BTreeMap<ClassificationDimensionId, Arc<ClassificationDimension>>,
+    pub(crate) classification_assignments:
+        BTreeMap<(OccurrenceId, ClassificationDimensionId), ClassificationCategoryId>,
     pub(crate) collections: BTreeMap<CollectionId, Arc<Collection>>,
     pub(crate) import_receipts: BTreeMap<ImportId, Arc<ImportReceipt>>,
     pub(crate) definitions: BTreeMap<DefinitionId, Arc<Definition>>,
@@ -1161,6 +1213,8 @@ impl Default for ProductModel {
             exact_reference_evidence: BTreeMap::new(),
             persistent_dimensions: BTreeMap::new(),
             tags: BTreeMap::new(),
+            classification_dimensions: BTreeMap::new(),
+            classification_assignments: BTreeMap::new(),
             collections: BTreeMap::new(),
             import_receipts: BTreeMap::new(),
             definitions: BTreeMap::new(),
@@ -1499,6 +1553,16 @@ pub enum CanonicalCommand {
         id: TagId,
         name: String,
     },
+    UpsertClassificationDimension {
+        id: ClassificationDimensionId,
+        name: String,
+        categories: Vec<(ClassificationCategoryId, String)>,
+    },
+    SetOccurrenceClassification {
+        occurrence_id: OccurrenceId,
+        dimension_id: ClassificationDimensionId,
+        category_id: Option<ClassificationCategoryId>,
+    },
     CreateCollection {
         id: CollectionId,
         name: String,
@@ -1784,6 +1848,8 @@ pub enum AuthoritativeDependency {
     ClearanceVolume(ClearanceVolumeId),
     PersistentDimension(PersistentDimensionId),
     Tag(TagId),
+    ClassificationDimension(ClassificationDimensionId),
+    OccurrenceClassification(OccurrenceId, ClassificationDimensionId),
     Collection(CollectionId),
     Import(ImportId),
     Definition(DefinitionId),
@@ -2522,6 +2588,49 @@ impl Snapshot {
             .values()
             .filter(move |occurrence| occurrence.tag == Some(id))
             .map(Arc::as_ref)
+    }
+
+    #[must_use]
+    pub fn classification_dimension(
+        &self,
+        id: ClassificationDimensionId,
+    ) -> Option<&ClassificationDimension> {
+        self.product
+            .classification_dimensions
+            .get(&id)
+            .map(Arc::as_ref)
+    }
+
+    pub fn classification_dimensions(&self) -> impl Iterator<Item = &ClassificationDimension> {
+        self.product
+            .classification_dimensions
+            .values()
+            .map(Arc::as_ref)
+    }
+
+    #[must_use]
+    pub fn occurrence_classification(
+        &self,
+        occurrence_id: OccurrenceId,
+        dimension_id: ClassificationDimensionId,
+    ) -> Option<ClassificationCategoryId> {
+        self.product
+            .classification_assignments
+            .get(&(occurrence_id, dimension_id))
+            .copied()
+    }
+
+    pub fn occurrence_classifications(
+        &self,
+        occurrence_id: OccurrenceId,
+    ) -> impl Iterator<Item = (ClassificationDimensionId, ClassificationCategoryId)> + '_ {
+        self.product
+            .classification_assignments
+            .range(
+                (occurrence_id, ClassificationDimensionId(0))
+                    ..=(occurrence_id, ClassificationDimensionId(u64::MAX)),
+            )
+            .map(|((_, dimension_id), category_id)| (*dimension_id, *category_id))
     }
 
     #[must_use]
@@ -3792,6 +3901,77 @@ impl DocumentStore {
                         }),
                     );
                 }
+                CanonicalCommand::UpsertClassificationDimension {
+                    id,
+                    name,
+                    categories,
+                } => {
+                    ensure_product_id(id.0)?;
+                    ensure_name(name)?;
+                    if categories.is_empty()
+                        || categories.windows(2).any(|pair| pair[0].0 >= pair[1].0)
+                    {
+                        return Err(CanonicalError::InvalidClassificationDimension(*id));
+                    }
+                    let mut canonical_categories = BTreeMap::new();
+                    let mut names = BTreeSet::new();
+                    for (category_id, category_name) in categories {
+                        ensure_product_id(category_id.0)?;
+                        ensure_name(category_name)?;
+                        if !names.insert(category_name.clone()) {
+                            return Err(CanonicalError::InvalidClassificationDimension(*id));
+                        }
+                        canonical_categories.insert(
+                            *category_id,
+                            ClassificationCategory {
+                                id: *category_id,
+                                name: category_name.clone(),
+                            },
+                        );
+                    }
+                    if product.classification_assignments.iter().any(
+                        |((_, dimension_id), category_id)| {
+                            dimension_id == id && !canonical_categories.contains_key(category_id)
+                        },
+                    ) {
+                        return Err(CanonicalError::ClassificationCategoryInUse(*id));
+                    }
+                    product.classification_dimensions.insert(
+                        *id,
+                        Arc::new(ClassificationDimension {
+                            id: *id,
+                            name: name.clone(),
+                            categories: canonical_categories,
+                        }),
+                    );
+                }
+                CanonicalCommand::SetOccurrenceClassification {
+                    occurrence_id,
+                    dimension_id,
+                    category_id,
+                } => {
+                    if !product.occurrences.contains_key(occurrence_id) {
+                        return Err(CanonicalError::OccurrenceNotFound(*occurrence_id));
+                    }
+                    let dimension = product.classification_dimensions.get(dimension_id).ok_or(
+                        CanonicalError::ClassificationDimensionNotFound(*dimension_id),
+                    )?;
+                    if let Some(category_id) = category_id {
+                        if !dimension.categories.contains_key(category_id) {
+                            return Err(CanonicalError::ClassificationCategoryNotFound(
+                                *dimension_id,
+                                *category_id,
+                            ));
+                        }
+                        product
+                            .classification_assignments
+                            .insert((*occurrence_id, *dimension_id), *category_id);
+                    } else {
+                        product
+                            .classification_assignments
+                            .remove(&(*occurrence_id, *dimension_id));
+                    }
+                }
                 CanonicalCommand::CreateCollection { id, name } => {
                     ensure_product_id(id.0)?;
                     ensure_name(name)?;
@@ -4566,6 +4746,9 @@ impl DocumentStore {
                         .remove(id)
                         .ok_or(CanonicalError::OccurrenceNotFound(*id))?;
                     product.grounded_occurrences.remove(id);
+                    product
+                        .classification_assignments
+                        .retain(|(occurrence_id, _), _| occurrence_id != id);
                 }
                 CanonicalCommand::SetOccurrenceTransform { id, transform } => {
                     validate_transform(*transform)?;
@@ -6728,6 +6911,10 @@ pub enum CanonicalError {
     TagAlreadyExists(TagId),
     TagNotFound(TagId),
     TagInUse(TagId),
+    InvalidClassificationDimension(ClassificationDimensionId),
+    ClassificationDimensionNotFound(ClassificationDimensionId),
+    ClassificationCategoryNotFound(ClassificationDimensionId, ClassificationCategoryId),
+    ClassificationCategoryInUse(ClassificationDimensionId),
     CollectionAlreadyExists(CollectionId),
     CollectionNotFound(CollectionId),
     CollectionMembershipNotCanonical(CollectionId),
@@ -6953,6 +7140,22 @@ impl fmt::Display for CanonicalError {
             Self::TagAlreadyExists(id) => write!(formatter, "tag {} already exists", id.0),
             Self::TagNotFound(id) => write!(formatter, "tag {} does not exist", id.0),
             Self::TagInUse(id) => write!(formatter, "tag {} is still assigned", id.0),
+            Self::InvalidClassificationDimension(id) => {
+                write!(formatter, "classification dimension {} is invalid", id.0)
+            }
+            Self::ClassificationDimensionNotFound(id) => {
+                write!(formatter, "classification dimension {} does not exist", id.0)
+            }
+            Self::ClassificationCategoryNotFound(dimension_id, category_id) => write!(
+                formatter,
+                "classification category {} does not exist in dimension {}",
+                category_id.0, dimension_id.0
+            ),
+            Self::ClassificationCategoryInUse(id) => write!(
+                formatter,
+                "classification dimension {} would remove an assigned category",
+                id.0
+            ),
             Self::CollectionAlreadyExists(id) => {
                 write!(formatter, "collection {} already exists", id.0)
             }
@@ -11805,6 +12008,19 @@ fn authoritative_writes(
             | CanonicalCommand::SetTagName { id, .. } => {
                 writes.insert(AuthoritativeDependency::Tag(*id));
             }
+            CanonicalCommand::UpsertClassificationDimension { id, .. } => {
+                writes.insert(AuthoritativeDependency::ClassificationDimension(*id));
+            }
+            CanonicalCommand::SetOccurrenceClassification {
+                occurrence_id,
+                dimension_id,
+                ..
+            } => {
+                writes.insert(AuthoritativeDependency::OccurrenceClassification(
+                    *occurrence_id,
+                    *dimension_id,
+                ));
+            }
             CanonicalCommand::CreateCollection { id, .. }
             | CanonicalCommand::DeleteCollection { id }
             | CanonicalCommand::SetCollectionOccurrences { id, .. } => {
@@ -12488,6 +12704,36 @@ fn authoritative_dependencies(
             | CanonicalCommand::SetTagName { id, .. } => {
                 dependencies.insert(AuthoritativeDependency::Tag(*id));
             }
+            CanonicalCommand::UpsertClassificationDimension { id, .. } => {
+                dependencies.insert(AuthoritativeDependency::ClassificationDimension(*id));
+                dependencies.extend(
+                    snapshot
+                        .product
+                        .classification_assignments
+                        .keys()
+                        .filter(|(_, dimension_id)| dimension_id == id)
+                        .map(|(occurrence_id, dimension_id)| {
+                            AuthoritativeDependency::OccurrenceClassification(
+                                *occurrence_id,
+                                *dimension_id,
+                            )
+                        }),
+                );
+            }
+            CanonicalCommand::SetOccurrenceClassification {
+                occurrence_id,
+                dimension_id,
+                ..
+            } => {
+                dependencies.insert(AuthoritativeDependency::Occurrence(*occurrence_id));
+                dependencies.insert(AuthoritativeDependency::ClassificationDimension(
+                    *dimension_id,
+                ));
+                dependencies.insert(AuthoritativeDependency::OccurrenceClassification(
+                    *occurrence_id,
+                    *dimension_id,
+                ));
+            }
             CanonicalCommand::CreateCollection { id, .. }
             | CanonicalCommand::DeleteCollection { id } => {
                 dependencies.insert(AuthoritativeDependency::Collection(*id));
@@ -12685,6 +12931,23 @@ fn digest_snapshot(snapshot: &Snapshot) -> String {
     digest.u64(snapshot.product.tags.len() as u64);
     for tag in snapshot.product.tags.values() {
         digest.tag(tag);
+    }
+    digest.u64(snapshot.product.classification_dimensions.len() as u64);
+    for dimension in snapshot.product.classification_dimensions.values() {
+        digest.u64(dimension.id.0);
+        digest.bytes(dimension.name.as_bytes());
+        digest.u64(dimension.categories.len() as u64);
+        for category in dimension.categories.values() {
+            digest.u64(category.id.0);
+            digest.bytes(category.name.as_bytes());
+        }
+    }
+    digest.u64(snapshot.product.classification_assignments.len() as u64);
+    for ((occurrence_id, dimension_id), category_id) in &snapshot.product.classification_assignments
+    {
+        digest.u64(occurrence_id.0);
+        digest.u64(dimension_id.0);
+        digest.u64(category_id.0);
     }
     digest.u64(snapshot.product.collections.len() as u64);
     for collection in snapshot.product.collections.values() {
@@ -13652,6 +13915,32 @@ impl StableDigest {
                     self.byte(0);
                 }
             }
+            AuthoritativeDependency::ClassificationDimension(id) => {
+                self.byte(27);
+                self.u64(id.0);
+                if let Some(dimension) = product.classification_dimensions.get(&id) {
+                    self.byte(1);
+                    self.bytes(dimension.name.as_bytes());
+                    self.u64(dimension.categories.len() as u64);
+                    for category in dimension.categories.values() {
+                        self.u64(category.id.0);
+                        self.bytes(category.name.as_bytes());
+                    }
+                } else {
+                    self.byte(0);
+                }
+            }
+            AuthoritativeDependency::OccurrenceClassification(occurrence_id, dimension_id) => {
+                self.byte(28);
+                self.u64(occurrence_id.0);
+                self.u64(dimension_id.0);
+                self.optional_id(
+                    product
+                        .classification_assignments
+                        .get(&(occurrence_id, dimension_id))
+                        .map(|id| id.0),
+                );
+            }
             AuthoritativeDependency::Collection(id) => {
                 self.byte(17);
                 self.u64(id.0);
@@ -14461,6 +14750,30 @@ impl StableDigest {
                 self.byte(70);
                 self.u64(id.0);
                 self.bytes(name.as_bytes());
+            }
+            CanonicalCommand::UpsertClassificationDimension {
+                id,
+                name,
+                categories,
+            } => {
+                self.byte(72);
+                self.u64(id.0);
+                self.bytes(name.as_bytes());
+                self.u64(categories.len() as u64);
+                for (category_id, category_name) in categories {
+                    self.u64(category_id.0);
+                    self.bytes(category_name.as_bytes());
+                }
+            }
+            CanonicalCommand::SetOccurrenceClassification {
+                occurrence_id,
+                dimension_id,
+                category_id,
+            } => {
+                self.byte(73);
+                self.u64(occurrence_id.0);
+                self.u64(dimension_id.0);
+                self.optional_id(category_id.map(|id| id.0));
             }
             CanonicalCommand::CreateCollection { id, name } => {
                 self.byte(42);

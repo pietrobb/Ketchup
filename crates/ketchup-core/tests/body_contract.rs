@@ -459,7 +459,7 @@ fn malformed_persisted_ownership_and_duplicate_ids_fail_closed() {
 
     let mut missing_body = persistence::save(&document.current());
     rewrite_payload(&mut missing_body, |payload| {
-        let output_body = payload.len() - 12;
+        let output_body = payload.len() - 20;
         payload[output_body..output_body + 8].copy_from_slice(&BodyId(99).0.to_le_bytes());
     });
     assert!(matches!(
@@ -472,7 +472,7 @@ fn malformed_persisted_ownership_and_duplicate_ids_fail_closed() {
 
     let mut duplicate_ownership = persistence::save(&document.current());
     rewrite_payload(&mut duplicate_ownership, |payload| {
-        let second_feature_id = payload.len() - 25;
+        let second_feature_id = payload.len() - 33;
         payload[second_feature_id..second_feature_id + 8].copy_from_slice(&PROFILE.0.to_le_bytes());
     });
     assert!(matches!(

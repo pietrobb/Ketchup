@@ -1,6 +1,8 @@
 use ketchup_core::document::{
-    CanonicalCommand, CanonicalOverride, CommandBatch, Dimension, DocumentStore, NodeId,
-    OverrideParameterSpec, PortSpec, RuleOutput, SlotPath, SlotResolution, SlotSegment,
+    CanonicalCommand, CanonicalError, CanonicalOverride, ClassificationCategoryId,
+    ClassificationDimensionId, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId,
+    FeatureKind, NodeId, OccurrenceId, OverrideParameterSpec, PortSpec, RuleOutput, SlotPath,
+    SlotResolution, SlotSegment, Transform,
 };
 use ketchup_core::persistence::{self, LoadDisposition, PersistenceError};
 
@@ -45,6 +47,199 @@ fn graph_document() -> DocumentStore {
         ]))
         .unwrap();
     store
+}
+
+#[test]
+fn classification_dimensions_and_independent_assignments_round_trip_losslessly() {
+    let mut store = DocumentStore::new();
+    store
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DefinitionId(1),
+                name: "Wall panel".to_owned(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(1),
+                definition_id: DefinitionId(1),
+                name: "Profile".to_owned(),
+                kind: FeatureKind::Profile {
+                    points_mm: vec![[0.0, 0.0], [100.0, 0.0], [100.0, 60.0], [0.0, 60.0]],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(2),
+                definition_id: DefinitionId(1),
+                name: "Panel".to_owned(),
+                kind: FeatureKind::Extrusion {
+                    profile: FeatureId(1),
+                    height: Dimension::new("20", 20.0).unwrap(),
+                },
+            },
+            CanonicalCommand::CreateOccurrence {
+                id: OccurrenceId(1),
+                definition_id: DefinitionId(1),
+                name: "Wall panel occurrence".to_owned(),
+                transform: Transform::identity(),
+                parent: None,
+                tag: None,
+                visible: true,
+            },
+            CanonicalCommand::UpsertClassificationDimension {
+                id: ClassificationDimensionId(1),
+                name: "Building side".to_owned(),
+                categories: vec![
+                    (ClassificationCategoryId(1), "Exterior".to_owned()),
+                    (ClassificationCategoryId(2), "Interior".to_owned()),
+                ],
+            },
+            CanonicalCommand::UpsertClassificationDimension {
+                id: ClassificationDimensionId(2),
+                name: "Building system".to_owned(),
+                categories: vec![
+                    (ClassificationCategoryId(3), "Structure".to_owned()),
+                    (ClassificationCategoryId(4), "Electrical".to_owned()),
+                ],
+            },
+            CanonicalCommand::SetOccurrenceClassification {
+                occurrence_id: OccurrenceId(1),
+                dimension_id: ClassificationDimensionId(1),
+                category_id: Some(ClassificationCategoryId(1)),
+            },
+            CanonicalCommand::SetOccurrenceClassification {
+                occurrence_id: OccurrenceId(1),
+                dimension_id: ClassificationDimensionId(2),
+                category_id: Some(ClassificationCategoryId(3)),
+            },
+        ]))
+        .unwrap();
+
+    let expected_digest = store.current().canonical_digest();
+    let bytes = persistence::save(&store.current());
+    let loaded = persistence::load(&bytes).unwrap();
+    assert_eq!(loaded.disposition(), LoadDisposition::EditableLossless);
+    assert_eq!(loaded.snapshot().canonical_digest(), expected_digest);
+    assert_eq!(
+        loaded
+            .snapshot()
+            .occurrence_classification(OccurrenceId(1), ClassificationDimensionId(1)),
+        Some(ClassificationCategoryId(1))
+    );
+    assert_eq!(
+        loaded
+            .snapshot()
+            .occurrence_classification(OccurrenceId(1), ClassificationDimensionId(2)),
+        Some(ClassificationCategoryId(3))
+    );
+    assert_eq!(persistence::save(&loaded.snapshot()), bytes);
+}
+
+#[test]
+fn classification_replacement_is_dimension_local_atomic_and_undoable() {
+    let mut store = DocumentStore::new();
+    store
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DefinitionId(1),
+                name: "Wall".to_owned(),
+            },
+            CanonicalCommand::CreateOccurrence {
+                id: OccurrenceId(1),
+                definition_id: DefinitionId(1),
+                name: "Wall occurrence".to_owned(),
+                transform: Transform::identity(),
+                parent: None,
+                tag: None,
+                visible: true,
+            },
+            CanonicalCommand::UpsertClassificationDimension {
+                id: ClassificationDimensionId(1),
+                name: "Building side".to_owned(),
+                categories: vec![
+                    (ClassificationCategoryId(1), "Exterior".to_owned()),
+                    (ClassificationCategoryId(2), "Interior".to_owned()),
+                ],
+            },
+            CanonicalCommand::UpsertClassificationDimension {
+                id: ClassificationDimensionId(2),
+                name: "Building system".to_owned(),
+                categories: vec![
+                    (ClassificationCategoryId(3), "Structure".to_owned()),
+                    (ClassificationCategoryId(4), "Electrical".to_owned()),
+                ],
+            },
+            CanonicalCommand::SetOccurrenceClassification {
+                occurrence_id: OccurrenceId(1),
+                dimension_id: ClassificationDimensionId(1),
+                category_id: Some(ClassificationCategoryId(1)),
+            },
+            CanonicalCommand::SetOccurrenceClassification {
+                occurrence_id: OccurrenceId(1),
+                dimension_id: ClassificationDimensionId(2),
+                category_id: Some(ClassificationCategoryId(3)),
+            },
+        ]))
+        .unwrap();
+    store.discard_history_before_current();
+    let before = store.current().canonical_digest();
+
+    store
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetOccurrenceClassification {
+                occurrence_id: OccurrenceId(1),
+                dimension_id: ClassificationDimensionId(1),
+                category_id: Some(ClassificationCategoryId(2)),
+            },
+        ]))
+        .unwrap();
+    assert_eq!(store.visible_undo_steps(), 1);
+    assert_eq!(
+        store
+            .current()
+            .occurrence_classification(OccurrenceId(1), ClassificationDimensionId(1)),
+        Some(ClassificationCategoryId(2))
+    );
+    assert_eq!(
+        store
+            .current()
+            .occurrence_classification(OccurrenceId(1), ClassificationDimensionId(2)),
+        Some(ClassificationCategoryId(3))
+    );
+    assert_eq!(store.undo().unwrap().canonical_digest(), before);
+
+    let stamp = store.current().canonical_digest();
+    let missing_dimension = match store.apply_batch(&CommandBatch::new(vec![
+        CanonicalCommand::SetOccurrenceClassification {
+            occurrence_id: OccurrenceId(1),
+            dimension_id: ClassificationDimensionId(99),
+            category_id: Some(ClassificationCategoryId(1)),
+        },
+    ])) {
+        Ok(_) => panic!("missing classification dimension was accepted"),
+        Err(error) => error,
+    };
+    assert_eq!(
+        missing_dimension,
+        CanonicalError::ClassificationDimensionNotFound(ClassificationDimensionId(99))
+    );
+    assert_eq!(store.current().canonical_digest(), stamp);
+    let missing_category = match store.apply_batch(&CommandBatch::new(vec![
+        CanonicalCommand::SetOccurrenceClassification {
+            occurrence_id: OccurrenceId(1),
+            dimension_id: ClassificationDimensionId(1),
+            category_id: Some(ClassificationCategoryId(99)),
+        },
+    ])) {
+        Ok(_) => panic!("missing classification category was accepted"),
+        Err(error) => error,
+    };
+    assert_eq!(
+        missing_category,
+        CanonicalError::ClassificationCategoryNotFound(
+            ClassificationDimensionId(1),
+            ClassificationCategoryId(99)
+        )
+    );
+    assert_eq!(store.current().canonical_digest(), stamp);
 }
 
 #[test]

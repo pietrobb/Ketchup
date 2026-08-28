@@ -16,6 +16,10 @@ const MAX_ASSISTANT_ARRAY_SOURCES: usize = 100;
 const MAX_ASSISTANT_ARRAY_INSTANCES: u32 = 1_000;
 const MAX_ASSISTANT_ARRAY_OUTPUTS: usize = 512;
 const MAX_ASSISTANT_BOTTLES: usize = 8;
+const MAX_ASSISTANT_GABLE_ROOFS: usize = 16;
+const MAX_ASSISTANT_STAIRCASES: usize = 16;
+const MAX_ASSISTANT_ORIENTED_BEAMS: usize = 64;
+const MAX_ASSISTANT_BEAM_NOTCHES: usize = 64;
 const MAX_ASSISTANT_NAME_BYTES: usize = 128;
 const MAX_ASSISTANT_ABS_MM: f64 = 1_000_000.0;
 
@@ -30,6 +34,7 @@ pub enum AssistantDistribution {
 #[serde(rename_all = "snake_case")]
 pub enum AssistantCapability {
     Chat,
+    DebugObservability,
     LocalMemory,
     QueryDocument,
     ProposeWorkflowIntent,
@@ -174,6 +179,49 @@ impl AssistantBottleIntent {
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
+pub struct AssistantGableRoofIntent {
+    pub name: String,
+    pub length_mm: f64,
+    pub span_mm: f64,
+    pub rise_mm: f64,
+    pub thickness_mm: f64,
+    pub origin_mm: [f64; 3],
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AssistantStaircaseIntent {
+    pub name: String,
+    pub run_mm: f64,
+    pub width_mm: f64,
+    pub rise_mm: f64,
+    pub step_count: u32,
+    pub origin_mm: [f64; 3],
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AssistantBeamNotchIntent {
+    pub from_start_mm: f64,
+    pub length_mm: f64,
+    pub depth_mm: f64,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AssistantOrientedBeamIntent {
+    pub name: String,
+    pub start_mm: [f64; 3],
+    pub end_mm: [f64; 3],
+    pub up_hint: [f64; 3],
+    pub width_mm: f64,
+    pub depth_mm: f64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bottom_notches: Vec<AssistantBeamNotchIntent>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct AssistantModelIntent {
     pub replace_scene: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -188,6 +236,12 @@ pub struct AssistantModelIntent {
     pub linear_arrays: Vec<AssistantLinearArrayIntent>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub bottles: Vec<AssistantBottleIntent>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub gable_roofs: Vec<AssistantGableRoofIntent>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub staircases: Vec<AssistantStaircaseIntent>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub oriented_beams: Vec<AssistantOrientedBeamIntent>,
 }
 
 fn boxes_overlap(left: &AssistantSubtractionIntent, right: &AssistantSubtractionIntent) -> bool {
@@ -195,6 +249,82 @@ fn boxes_overlap(left: &AssistantSubtractionIntent, right: &AssistantSubtraction
         left.origin_mm[axis] < right.origin_mm[axis] + right.size_mm[axis]
             && right.origin_mm[axis] < left.origin_mm[axis] + left.size_mm[axis]
     })
+}
+
+impl AssistantOrientedBeamIntent {
+    fn validate(&self) -> Result<(), String> {
+        if self.name.trim().is_empty()
+            || self.name.len() > MAX_ASSISTANT_NAME_BYTES
+            || self.name.chars().any(char::is_control)
+        {
+            return Err("assistant oriented beam name is invalid".to_owned());
+        }
+        if self
+            .start_mm
+            .iter()
+            .chain(self.end_mm.iter())
+            .chain(self.up_hint.iter())
+            .any(|value| !value.is_finite() || value.abs() > MAX_ASSISTANT_ABS_MM)
+            || !self.width_mm.is_finite()
+            || self.width_mm <= 0.0
+            || self.width_mm > MAX_ASSISTANT_ABS_MM
+            || !self.depth_mm.is_finite()
+            || self.depth_mm <= 0.0
+            || self.depth_mm > MAX_ASSISTANT_ABS_MM
+        {
+            return Err("assistant oriented beam dimensions are outside the envelope".to_owned());
+        }
+        let axis = [
+            self.end_mm[0] - self.start_mm[0],
+            self.end_mm[1] - self.start_mm[1],
+            self.end_mm[2] - self.start_mm[2],
+        ];
+        let axis_length = axis.iter().map(|value| value * value).sum::<f64>().sqrt();
+        let up_length = self
+            .up_hint
+            .iter()
+            .map(|value| value * value)
+            .sum::<f64>()
+            .sqrt();
+        let cross = [
+            axis[1] * self.up_hint[2] - axis[2] * self.up_hint[1],
+            axis[2] * self.up_hint[0] - axis[0] * self.up_hint[2],
+            axis[0] * self.up_hint[1] - axis[1] * self.up_hint[0],
+        ];
+        let cross_length = cross.iter().map(|value| value * value).sum::<f64>().sqrt();
+        if axis_length <= f64::EPSILON
+            || axis_length > MAX_ASSISTANT_ABS_MM
+            || up_length <= f64::EPSILON
+            || cross_length <= axis_length * up_length * 1.0e-6
+        {
+            return Err("assistant oriented beam axis or up hint is invalid".to_owned());
+        }
+        if self.bottom_notches.len() > MAX_ASSISTANT_BEAM_NOTCHES {
+            return Err("assistant oriented beam contains too many notches".to_owned());
+        }
+        for notch in &self.bottom_notches {
+            if !notch.from_start_mm.is_finite()
+                || notch.from_start_mm < 0.0
+                || !notch.length_mm.is_finite()
+                || notch.length_mm <= 0.0
+                || notch.from_start_mm + notch.length_mm > axis_length
+                || !notch.depth_mm.is_finite()
+                || notch.depth_mm <= 0.0
+                || notch.depth_mm >= self.depth_mm
+            {
+                return Err("assistant oriented beam notch is invalid".to_owned());
+            }
+        }
+        if self.bottom_notches.iter().enumerate().any(|(index, left)| {
+            self.bottom_notches[index + 1..].iter().any(|right| {
+                left.from_start_mm < right.from_start_mm + right.length_mm
+                    && right.from_start_mm < left.from_start_mm + left.length_mm
+            })
+        }) {
+            return Err("assistant oriented beam notches overlap".to_owned());
+        }
+        Ok(())
+    }
 }
 
 impl AssistantModelIntent {
@@ -205,9 +335,12 @@ impl AssistantModelIntent {
             && self.parameter_edits.is_empty()
             && self.linear_arrays.is_empty()
             && self.bottles.is_empty()
+            && self.gable_roofs.is_empty()
+            && self.staircases.is_empty()
+            && self.oriented_beams.is_empty()
         {
             return Err(
-                "assistant proposal must contain geometry, translations, profile translations, parameter edits, linear arrays, or bottles"
+                "assistant proposal must contain geometry, translations, profile translations, parameter edits, linear arrays, bottles, roofs, staircases, or oriented beams"
                     .to_owned(),
             );
         }
@@ -229,8 +362,64 @@ impl AssistantModelIntent {
         if self.bottles.len() > MAX_ASSISTANT_BOTTLES {
             return Err("assistant proposal contains too many bottles".to_owned());
         }
+        if self.gable_roofs.len() > MAX_ASSISTANT_GABLE_ROOFS {
+            return Err("assistant proposal contains too many gable roofs".to_owned());
+        }
+        if self.staircases.len() > MAX_ASSISTANT_STAIRCASES {
+            return Err("assistant proposal contains too many staircases".to_owned());
+        }
+        if self.oriented_beams.len() > MAX_ASSISTANT_ORIENTED_BEAMS {
+            return Err("assistant proposal contains too many oriented beams".to_owned());
+        }
+        for beam in &self.oriented_beams {
+            beam.validate()?;
+        }
         for bottle in &self.bottles {
             bottle.validate()?;
+        }
+        for roof in &self.gable_roofs {
+            if roof.name.trim().is_empty()
+                || roof.name.len() > MAX_ASSISTANT_NAME_BYTES
+                || roof.name.chars().any(char::is_control)
+                || [
+                    roof.length_mm,
+                    roof.span_mm,
+                    roof.rise_mm,
+                    roof.thickness_mm,
+                ]
+                .iter()
+                .any(|value| !value.is_finite() || *value <= 0.0 || *value > MAX_ASSISTANT_ABS_MM)
+                || roof.thickness_mm >= roof.rise_mm
+                || roof
+                    .origin_mm
+                    .iter()
+                    .any(|value| !value.is_finite() || value.abs() > MAX_ASSISTANT_ABS_MM)
+            {
+                return Err("assistant gable roof is invalid".to_owned());
+            }
+        }
+        for stairs in &self.staircases {
+            let tread_mm = stairs.run_mm / f64::from(stairs.step_count.max(1));
+            let riser_mm = stairs.rise_mm / f64::from(stairs.step_count.max(1));
+            if stairs.name.trim().is_empty()
+                || stairs.name.len() > MAX_ASSISTANT_NAME_BYTES
+                || stairs.name.chars().any(char::is_control)
+                || [stairs.run_mm, stairs.width_mm, stairs.rise_mm]
+                    .iter()
+                    .any(|value| {
+                        !value.is_finite() || *value <= 0.0 || *value > MAX_ASSISTANT_ABS_MM
+                    })
+                || !(2..=64).contains(&stairs.step_count)
+                || !(150.0..=450.0).contains(&tread_mm)
+                || !(100.0..=250.0).contains(&riser_mm)
+                || stairs.width_mm < 500.0
+                || stairs
+                    .origin_mm
+                    .iter()
+                    .any(|value| !value.is_finite() || value.abs() > MAX_ASSISTANT_ABS_MM)
+            {
+                return Err("assistant staircase is invalid".to_owned());
+            }
         }
         if self.replace_scene
             && (!self.translations.is_empty()
@@ -245,7 +434,10 @@ impl AssistantModelIntent {
                 || !self.translations.is_empty()
                 || !self.parameter_edits.is_empty()
                 || !self.linear_arrays.is_empty()
-                || !self.bottles.is_empty())
+                || !self.bottles.is_empty()
+                || !self.gable_roofs.is_empty()
+                || !self.staircases.is_empty()
+                || !self.oriented_beams.is_empty())
         {
             return Err("assistant profile translation cannot mix geometry mutations".to_owned());
         }
@@ -254,7 +446,10 @@ impl AssistantModelIntent {
                 || !self.translations.is_empty()
                 || !self.profile_translations.is_empty()
                 || !self.linear_arrays.is_empty()
-                || !self.bottles.is_empty())
+                || !self.bottles.is_empty()
+                || !self.gable_roofs.is_empty()
+                || !self.staircases.is_empty()
+                || !self.oriented_beams.is_empty())
         {
             return Err("assistant parameter edit cannot mix geometry mutations".to_owned());
         }
@@ -360,6 +555,12 @@ impl AssistantModelIntent {
             for subtraction in &item.subtract_boxes {
                 let [cut_width, cut_depth, cut_height] = subtraction.size_mm;
                 let [cut_x, cut_y, cut_z] = subtraction.origin_mm;
+                let retained_through_opening = cut_z == 0.0
+                    && cut_height == height
+                    && cut_x > 0.0
+                    && cut_y > 0.0
+                    && cut_x + cut_width < width
+                    && cut_y + cut_depth < depth;
                 if subtraction
                     .size_mm
                     .iter()
@@ -371,7 +572,7 @@ impl AssistantModelIntent {
                     || cut_x + cut_width > width
                     || cut_y + cut_depth > depth
                     || cut_z + cut_height > height
-                    || cut_height >= height
+                    || (cut_height >= height && !retained_through_opening)
                 {
                     return Err("assistant subtraction is outside its body".to_owned());
                 }
@@ -385,6 +586,44 @@ impl AssistantModelIntent {
             }
         }
         Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AssistantApiDiagnostics {
+    pub provider: String,
+    pub model: String,
+    pub duration_ms: u64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cache_write_tokens: u64,
+    pub stop_reason: String,
+    pub system_prompt: String,
+    pub request_payload: serde_json::Value,
+    pub response_text: String,
+}
+
+impl AssistantApiDiagnostics {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.provider.is_empty()
+            || self.provider.len() > MAX_ASSISTANT_MODEL_BYTES
+            || self.model.is_empty()
+            || self.model.len() > MAX_ASSISTANT_MODEL_BYTES
+            || self.system_prompt.len() > 64 * 1024
+            || self.response_text.len() > 64 * 1024
+            || serde_json::to_vec(&self.request_payload)
+                .map_or(true, |bytes| bytes.len() > 128 * 1024)
+        {
+            return Err("assistant API diagnostics exceed their bounded envelope".to_owned());
+        }
+        Ok(())
+    }
+
+    #[must_use]
+    pub const fn total_tokens(&self) -> u64 {
+        self.input_tokens.saturating_add(self.output_tokens)
     }
 }
 
@@ -508,6 +747,7 @@ impl AssistantHandshake {
 
         let allowed = BTreeSet::from([
             AssistantCapability::Chat,
+            AssistantCapability::DebugObservability,
             AssistantCapability::LocalMemory,
             AssistantCapability::QueryDocument,
             AssistantCapability::ProposeWorkflowIntent,

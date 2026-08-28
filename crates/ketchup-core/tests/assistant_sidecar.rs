@@ -1,8 +1,8 @@
 use ketchup_core::assistant_sidecar::{
-    ASSISTANT_PROTOCOL_VERSION, AssistantBottleFinishKind, AssistantBottleIntent,
-    AssistantDistribution, AssistantHandshake, AssistantHandshakeError, AssistantLinearArrayIntent,
-    AssistantModelIntent, AssistantParameterEditIntent, AssistantProfileTranslationIntent,
-    distribution_is_enabled,
+    ASSISTANT_PROTOCOL_VERSION, AssistantBeamNotchIntent, AssistantBottleFinishKind,
+    AssistantBottleIntent, AssistantDistribution, AssistantHandshake, AssistantHandshakeError,
+    AssistantLinearArrayIntent, AssistantModelIntent, AssistantOrientedBeamIntent,
+    AssistantParameterEditIntent, AssistantProfileTranslationIntent, distribution_is_enabled,
 };
 
 const PUBLIC_HANDSHAKE: &str = r#"{
@@ -81,6 +81,9 @@ fn assistant_array_budget_matches_the_canonical_proposal_command_limit() {
             step_mm: [0.0, 0.0, 280.0],
         }],
         bottles: Vec::new(),
+        gable_roofs: Vec::new(),
+        staircases: Vec::new(),
+        oriented_beams: Vec::new(),
     };
     assert!(valid.validate().is_ok());
 
@@ -113,6 +116,9 @@ fn assistant_profile_translation_is_single_bounded_and_unmixed() {
         parameter_edits: Vec::new(),
         linear_arrays: Vec::new(),
         bottles: Vec::new(),
+        gable_roofs: Vec::new(),
+        staircases: Vec::new(),
+        oriented_beams: Vec::new(),
     };
     assert!(valid.validate().is_ok());
     assert_eq!(
@@ -163,6 +169,9 @@ fn assistant_parameter_edit_is_single_bounded_and_unmixed() {
         }],
         linear_arrays: Vec::new(),
         bottles: Vec::new(),
+        gable_roofs: Vec::new(),
+        staircases: Vec::new(),
+        oriented_beams: Vec::new(),
     };
     assert!(valid.validate().is_ok());
     assert_eq!(
@@ -194,6 +203,67 @@ fn assistant_parameter_edit_is_single_bounded_and_unmixed() {
     assert_eq!(
         mixed.validate(),
         Err("assistant parameter edit cannot mix geometry mutations".to_owned())
+    );
+}
+
+#[test]
+fn assistant_oriented_beam_intent_is_bounded_and_rejects_invalid_notches() {
+    let intent: AssistantModelIntent = serde_json::from_str(
+        r#"{
+            "replace_scene": false,
+            "boxes": [],
+            "oriented_beams": [{
+                "name": "Rafter",
+                "start_mm": [0.0, -483.05, 3044.07],
+                "end_mm": [0.0, 1900.0, 4800.0],
+                "up_hint": [0.0, 0.0, 1.0],
+                "width_mm": 100.0,
+                "depth_mm": 180.0,
+                "bottom_notches": [{
+                    "from_start_mm": 600.0,
+                    "length_mm": 160.0,
+                    "depth_mm": 50.0
+                }]
+            }]
+        }"#,
+    )
+    .unwrap();
+    assert!(intent.validate().is_ok());
+    assert_eq!(intent.oriented_beams[0].width_mm, 100.0);
+
+    let parallel_up = AssistantModelIntent {
+        oriented_beams: vec![AssistantOrientedBeamIntent {
+            up_hint: [0.0, 2_383.05, 1_755.93],
+            ..intent.oriented_beams[0].clone()
+        }],
+        ..intent.clone()
+    };
+    assert_eq!(
+        parallel_up.validate(),
+        Err("assistant oriented beam axis or up hint is invalid".to_owned())
+    );
+
+    let overlapping = AssistantModelIntent {
+        oriented_beams: vec![AssistantOrientedBeamIntent {
+            bottom_notches: vec![
+                AssistantBeamNotchIntent {
+                    from_start_mm: 600.0,
+                    length_mm: 160.0,
+                    depth_mm: 50.0,
+                },
+                AssistantBeamNotchIntent {
+                    from_start_mm: 700.0,
+                    length_mm: 100.0,
+                    depth_mm: 40.0,
+                },
+            ],
+            ..intent.oriented_beams[0].clone()
+        }],
+        ..intent
+    };
+    assert_eq!(
+        overlapping.validate(),
+        Err("assistant oriented beam notches overlap".to_owned())
     );
 }
 

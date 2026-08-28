@@ -432,6 +432,82 @@ def test_public_sidecar_parses_bounded_model_intent_and_rejects_invalid_geometry
             assistant._parse_assistant_result(invalid)
 
 
+def test_public_sidecar_exposes_true_gable_roof_staircase_and_full_slab_opening():
+    roof = {
+        "name": "True gable roof",
+        "length_mm": 5900,
+        "span_mm": 4200,
+        "rise_mm": 1400,
+        "thickness_mm": 180,
+        "origin_mm": [-200, -200, 3400],
+    }
+    stairs = {
+        "name": "Attic staircase",
+        "run_mm": 3000,
+        "width_mm": 800,
+        "rise_mm": 3000,
+        "step_count": 15,
+        "origin_mm": [1800, 2200, 200],
+    }
+    rafter = {
+        "name": "Left rafter",
+        "start_mm": [0, -483.05, 3044.07],
+        "end_mm": [0, 1900, 4800],
+        "up_hint": [0, 0, 1],
+        "width_mm": 100,
+        "depth_mm": 180,
+        "bottom_notches": [{"from_start_mm": 600, "length_mm": 160, "depth_mm": 50}],
+    }
+    answer = json.dumps(
+        {
+            "message": "Prepared a true gable roof, attic opening, and staircase.",
+            "model_intent": {
+                "replace_scene": True,
+                "boxes": [
+                    {
+                        "name": "Attic floor with opening",
+                        "size_mm": [5500, 3800, 200],
+                        "origin_mm": [0, 0, 3200],
+                        "subtract_boxes": [
+                            {"size_mm": [900, 1400, 200], "origin_mm": [3900, 1900, 0]}
+                        ],
+                    }
+                ],
+                "gable_roofs": [roof],
+                "staircases": [stairs],
+                "oriented_beams": [rafter],
+            },
+        }
+    )
+    result = assistant._parse_assistant_result(answer)["model_intent"]
+    assert result["gable_roofs"] == [roof]
+    assert result["staircases"] == [stairs]
+    assert result["oriented_beams"] == [rafter]
+    assert result["boxes"][0]["subtract_boxes"][0]["size_mm"][2] == 200
+    assert "never approximate a pitched roof with stepped boxes" in assistant.SYSTEM_PROMPT
+    assert "never claim they are unsupported" in assistant.SYSTEM_PROMPT
+
+    for invalid_stairs in (
+        {**stairs, "step_count": 1},
+        {**stairs, "run_mm": 1000},
+        {**stairs, "width_mm": 400},
+    ):
+        invalid = json.loads(answer)
+        invalid["model_intent"]["staircases"] = [invalid_stairs]
+        with pytest.raises(assistant.ProtocolError):
+            assistant._parse_assistant_result(json.dumps(invalid))
+
+    for invalid_rafter in (
+        {**rafter, "end_mm": rafter["start_mm"]},
+        {**rafter, "up_hint": [0, 2383.05, 1755.93]},
+        {**rafter, "bottom_notches": [{"from_start_mm": 600, "length_mm": 160, "depth_mm": 180}]},
+    ):
+        invalid = json.loads(answer)
+        invalid["model_intent"]["oriented_beams"] = [invalid_rafter]
+        with pytest.raises(assistant.ProtocolError):
+            assistant._parse_assistant_result(json.dumps(invalid))
+
+
 def test_public_sidecar_parses_only_bounded_editable_bottle_workflows():
     bottle = {
         "name": "AI ketchup bottle",

@@ -55,6 +55,10 @@ elif mode == "chat":
     print(json.dumps({"type":"chat-result","request_id":request["request_id"],"message":"bounded answer","model_intent":None}), flush=True)
     shutdown = json.loads(sys.stdin.readline())
     print(json.dumps({"type":"bye"}), flush=True)
+elif mode == "diagnostics":
+    print(json.dumps({"type":"chat-result","request_id":request["request_id"],"message":"observed answer","model_intent":None,"diagnostics":{"provider":"anthropic-api","model":"claude-sonnet-4-6","duration_ms":1250,"input_tokens":1234,"output_tokens":56,"cache_read_tokens":700,"cache_write_tokens":0,"stop_reason":"end_turn","system_prompt":"exact system","request_payload":{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"hello"}]},"response_text":"observed answer"}}), flush=True)
+    shutdown = json.loads(sys.stdin.readline())
+    print(json.dumps({"type":"bye"}), flush=True)
 elif mode == "chat-timeout":
     time.sleep(30)
 "#,
@@ -93,6 +97,39 @@ fn assistant_process_completes_bounded_handshake_chat_and_shutdown() {
     assert_eq!(result.message, "bounded answer");
     assert!(result.model_intent.is_none());
     assert_eq!(client.shutdown(), Ok(()));
+    assert_eq!(client.shutdown(), Ok(()));
+}
+
+#[test]
+fn assistant_process_returns_bounded_exact_api_diagnostics_when_requested() {
+    let temp = TempDir::new().unwrap();
+    let script = write_mock(&temp, "diagnostics");
+    let mut handshake = public_handshake();
+    handshake
+        .capabilities
+        .insert(AssistantCapability::DebugObservability);
+    let mut client = AssistantProcessClient::spawn(
+        python(),
+        &arguments(&script, "diagnostics"),
+        handshake,
+        Duration::from_secs(10),
+    )
+    .unwrap();
+
+    let exchange = client
+        .chat_exchange("request-observed", "hello", &json!({}))
+        .unwrap();
+    assert_eq!(exchange.result.message, "observed answer");
+    let diagnostics = exchange.diagnostics.unwrap();
+    assert_eq!(diagnostics.input_tokens, 1_234);
+    assert_eq!(diagnostics.output_tokens, 56);
+    assert_eq!(diagnostics.cache_read_tokens, 700);
+    assert_eq!(diagnostics.total_tokens(), 1_290);
+    assert_eq!(diagnostics.system_prompt, "exact system");
+    assert_eq!(
+        diagnostics.request_payload["messages"][0]["content"],
+        "hello"
+    );
     assert_eq!(client.shutdown(), Ok(()));
 }
 

@@ -3,9 +3,9 @@
 use crate::beam_m5::{BeamExactPiecePackage, BeamExactResultKey};
 use crate::document::{
     BodyId, BooleanOperation, BottleEdgeFinishKind, CanonicalCommand, CommandBatch, DefinitionId,
-    DocumentId, ExactReferenceConversionConsequence, ExactToMeshConversion, FeatureId, FeatureKind,
-    InstancePath, MESH_BODY_SCHEMA_V1, MeshAuthority, MeshBodySpec, ProfileSegment, Snapshot,
-    Transform,
+    DocumentId, ExactReferenceConversionConsequence, ExactToMeshConversion, FeatureDependencyGraph,
+    FeatureId, FeatureKind, InstancePath, MESH_BODY_SCHEMA_V1, MeshAuthority, MeshBodySpec,
+    ProfileSegment, Snapshot, Transform,
 };
 use crate::graph::DerivedIdentity;
 use crate::sketch::{
@@ -1409,12 +1409,20 @@ pub fn exact_body_terminal_features(
     snapshot: &Snapshot,
     definition_id: DefinitionId,
 ) -> Result<BTreeMap<BodyId, FeatureId>, ExactProductError> {
-    let definition = snapshot
-        .definition(definition_id)
-        .ok_or(ExactProductError::DefinitionNotFound(definition_id))?;
     let graph = snapshot
         .feature_dependency_graph()
         .map_err(|_| ExactProductError::UnsupportedDefinition)?;
+    exact_body_terminal_features_with_graph(snapshot, definition_id, &graph)
+}
+
+fn exact_body_terminal_features_with_graph(
+    snapshot: &Snapshot,
+    definition_id: DefinitionId,
+    graph: &FeatureDependencyGraph,
+) -> Result<BTreeMap<BodyId, FeatureId>, ExactProductError> {
+    let definition = snapshot
+        .definition(definition_id)
+        .ok_or(ExactProductError::DefinitionNotFound(definition_id))?;
     let mut terminals = BTreeMap::new();
     for body in definition.bodies() {
         if body.consumed_by().is_some() {
@@ -1573,8 +1581,17 @@ impl ExactResultRegistry {
     ) -> Result<BTreeMap<ExactBodyResultKey, &'a Arc<ExactBodyPackage>>, ExactProductError> {
         let mut values = BTreeMap::new();
         let mut occupied = BTreeSet::new();
-        for package in self.packages.values() {
-            if !package.is_current(snapshot) {
+        let document_id = snapshot.document_id();
+        let source_revision = snapshot.revision_id();
+        let source_digest = snapshot.canonical_digest();
+        let graph = snapshot
+            .feature_dependency_graph()
+            .map_err(|_| ExactProductError::UnsupportedDefinition)?;
+        for (result_key, package) in &self.packages {
+            if result_key.document_id != document_id
+                || result_key.source_revision != source_revision
+                || result_key.source_digest != source_digest
+            {
                 continue;
             }
             let definition_id = package.definition_id();
@@ -1586,7 +1603,8 @@ impl ExactResultRegistry {
                 .feature_body_ownership(producer_feature_id)
                 .and_then(|ownership| ownership.output_body_id())
                 .ok_or(ExactProductError::InvalidWorkerEvidence)?;
-            if exact_body_terminal_features(snapshot, definition_id)?.get(&body_id)
+            if exact_body_terminal_features_with_graph(snapshot, definition_id, &graph)?
+                .get(&body_id)
                 != Some(&producer_feature_id)
             {
                 continue;

@@ -61,7 +61,7 @@ fn body_contract_tail_len(snapshot: &Snapshot) -> usize {
 }
 
 fn strip_schema_34_tail(bytes: &mut Vec<u8>, snapshot: &Snapshot) {
-    bytes.truncate(bytes.len() - body_contract_tail_len(snapshot) - 8);
+    bytes.truncate(bytes.len() - body_contract_tail_len(snapshot) - 16);
 }
 
 fn seed_product_document() -> DocumentStore {
