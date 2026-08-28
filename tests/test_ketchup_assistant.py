@@ -599,6 +599,16 @@ def test_public_sidecar_parses_only_bounded_smooth_teapot_workflows():
         assistant._parse_assistant_result(json.dumps(invalid))
 
 
+def test_public_sidecar_parses_bounded_ketchup_squeeze_bottle():
+    bottle = {"name": "Kečup squeeze bottle", "body_radius_mm": 38, "body_height_mm": 145, "shoulder_rise_mm": 28, "neck_radius_mm": 15, "neck_height_mm": 18, "wall_thickness_mm": 2, "finish_kind": "fillet", "finish_amount_mm": 2, "origin_mm": [0, 0, 0], "ketchup_bottle": {"body_depth_ratio": 0.68, "cap_radius_mm": 17, "cap_height_mm": 16, "label_width_mm": 58, "label_height_mm": 72, "label_relief_mm": 2.5, "grip_rib_count": 20}}
+    answer = json.dumps({"message": "Prepared squeeze bottle.", "model_intent": {"replace_scene": False, "boxes": [], "bottles": [bottle]}})
+    assert assistant._parse_assistant_result(answer)["model_intent"]["bottles"] == [bottle]
+    invalid = json.loads(answer)
+    invalid["model_intent"]["bottles"][0]["ketchup_bottle"]["label_relief_mm"] = 4
+    with pytest.raises(assistant.ProtocolError):
+        assistant._parse_assistant_result(json.dumps(invalid))
+
+
 def test_public_sidecar_parses_only_one_unmixed_profile_translation():
     translation = {
         "definition_id": 1,

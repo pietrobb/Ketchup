@@ -7,10 +7,10 @@ use ketchup_app::{AppCommand, AssistantMessageRole, AssistantProvider, Assistant
 use ketchup_core::assistant_sidecar::{
     ASSISTANT_PROTOCOL_VERSION, AssistantApiDiagnostics, AssistantBeamNotchIntent,
     AssistantBottleFinishKind, AssistantBottleIntent, AssistantBoxIntent, AssistantChatResult,
-    AssistantDistribution, AssistantGableRoofIntent, AssistantLinearArrayIntent,
-    AssistantModelIntent, AssistantOrientedBeamIntent, AssistantParameterEditIntent,
-    AssistantProfileTranslationIntent, AssistantStaircaseIntent, AssistantSubtractionIntent,
-    AssistantTeapotIntent, AssistantTranslationIntent,
+    AssistantDistribution, AssistantGableRoofIntent, AssistantKetchupBottleIntent,
+    AssistantLinearArrayIntent, AssistantModelIntent, AssistantOrientedBeamIntent,
+    AssistantParameterEditIntent, AssistantProfileTranslationIntent, AssistantStaircaseIntent,
+    AssistantSubtractionIntent, AssistantTeapotIntent, AssistantTranslationIntent,
 };
 use ketchup_core::document::{
     BodyId, CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId,
@@ -532,6 +532,7 @@ fn verbal_bottle_request_reviews_confirms_and_undoes_through_accesskit() {
                     finish_amount_mm: 2.0,
                     origin_mm: [90.0, 0.0, 0.0],
                     teapot: None,
+                    ketchup_bottle: None,
                 }],
                 gable_roofs: Vec::new(),
                 staircases: Vec::new(),
@@ -2804,6 +2805,7 @@ fn assistant_teapot_intent_creates_smooth_hollow_saved_model_as_one_undo_step() 
                     lid_height_mm: 18.0,
                     lid_knob_radius_mm: 10.0,
                 }),
+                ketchup_bottle: None,
             }],
             gable_roofs: Vec::new(),
             staircases: Vec::new(),
@@ -2864,6 +2866,90 @@ fn assistant_teapot_intent_creates_smooth_hollow_saved_model_as_one_undo_step() 
 }
 
 #[test]
+fn assistant_ketchup_bottle_creates_saved_rounded_squeeze_model_as_one_undo_step() {
+    let mut shell = Shell::new();
+    let initial_revision = shell.app().document_revision();
+    let initial_digest = shell.app().canonical_digest();
+    assert!(apply_reviewed_model_intent(
+        &mut shell,
+        AssistantModelIntent {
+            replace_scene: false,
+            boxes: Vec::new(),
+            translations: Vec::new(),
+            profile_translations: Vec::new(),
+            parameter_edits: Vec::new(),
+            linear_arrays: Vec::new(),
+            bottles: vec![AssistantBottleIntent {
+                name: "Kečup squeeze bottle".to_owned(),
+                body_radius_mm: 38.0,
+                body_height_mm: 145.0,
+                shoulder_rise_mm: 28.0,
+                neck_radius_mm: 15.0,
+                neck_height_mm: 18.0,
+                wall_thickness_mm: 2.0,
+                finish_kind: AssistantBottleFinishKind::Fillet,
+                finish_amount_mm: 2.0,
+                origin_mm: [0.0, 0.0, 0.0],
+                teapot: None,
+                ketchup_bottle: Some(AssistantKetchupBottleIntent {
+                    body_depth_ratio: 0.68,
+                    cap_radius_mm: 17.0,
+                    cap_height_mm: 16.0,
+                    label_width_mm: 58.0,
+                    label_height_mm: 72.0,
+                    label_relief_mm: 2.5,
+                    grip_rib_count: 20,
+                }),
+            }],
+            gable_roofs: Vec::new(),
+            staircases: Vec::new(),
+            oriented_beams: Vec::new(),
+        }
+    ));
+    let snapshot = shell.app().document_snapshot();
+    let feature = snapshot
+        .features()
+        .find(|feature| feature.name() == "Kečup squeeze bottle squeeze bottle")
+        .expect("ketchup bottle mesh must exist");
+    let FeatureKind::MeshBody(mesh) = feature.kind() else {
+        panic!("ketchup bottle must be one canonical mesh body");
+    };
+    assert!(mesh.vertices_mm.len() > 700);
+    assert!(mesh.triangles.len() > 1_500);
+    let x_extent = mesh
+        .vertices_mm
+        .iter()
+        .map(|point| point[0].abs())
+        .fold(0.0, f64::max);
+    let y_extent = mesh
+        .vertices_mm
+        .iter()
+        .map(|point| point[1].abs())
+        .fold(0.0, f64::max);
+    assert!(x_extent > y_extent * 1.25);
+    assert!(mesh.vertices_mm.iter().any(|point| point[2] > 205.0));
+    assert!(matches!(
+        &mesh.authority,
+        ketchup_core::document::MeshAuthority::Authored { provenance }
+            if provenance == "ketchup-assistant-squeeze-bottle-v1"
+    ));
+    let fixture_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../examples/assistant-ketchup-squeeze-bottle.ketchup");
+    if !fixture_path.exists() {
+        persistence::save_atomic(&fixture_path, &snapshot).unwrap();
+    }
+    let fixture = persistence::load_file(&fixture_path).unwrap().snapshot();
+    assert!(
+        fixture
+            .features()
+            .any(|feature| feature.name() == "Kečup squeeze bottle squeeze bottle")
+    );
+    assert!(shell.app_mut().undo());
+    assert_eq!(shell.app().document_revision(), initial_revision);
+    assert_eq!(shell.app().canonical_digest(), initial_digest);
+}
+
+#[test]
 fn assistant_bottle_intent_creates_editable_feature_chain_as_one_undo_step() {
     let mut shell = Shell::new();
     let initial_revision = shell.app().document_revision();
@@ -2892,6 +2978,7 @@ fn assistant_bottle_intent_creates_editable_feature_chain_as_one_undo_step() {
                 finish_amount_mm: 2.0,
                 origin_mm: [90.0, 0.0, 0.0],
                 teapot: None,
+                ketchup_bottle: None,
             }],
             gable_roofs: Vec::new(),
             staircases: Vec::new(),

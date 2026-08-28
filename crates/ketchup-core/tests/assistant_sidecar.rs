@@ -1,9 +1,9 @@
 use ketchup_core::assistant_sidecar::{
     ASSISTANT_PROTOCOL_VERSION, AssistantBeamNotchIntent, AssistantBottleFinishKind,
     AssistantBottleIntent, AssistantDistribution, AssistantHandshake, AssistantHandshakeError,
-    AssistantLinearArrayIntent, AssistantModelIntent, AssistantOrientedBeamIntent,
-    AssistantParameterEditIntent, AssistantProfileTranslationIntent, AssistantTeapotIntent,
-    distribution_is_enabled,
+    AssistantKetchupBottleIntent, AssistantLinearArrayIntent, AssistantModelIntent,
+    AssistantOrientedBeamIntent, AssistantParameterEditIntent, AssistantProfileTranslationIntent,
+    AssistantTeapotIntent, distribution_is_enabled,
 };
 
 const PUBLIC_HANDSHAKE: &str = r#"{
@@ -361,6 +361,62 @@ fn assistant_teapot_intent_round_trips_and_rejects_impossible_attachments() {
     assert_eq!(
         invalid.validate(),
         Err("assistant teapot dimensions are outside the envelope".to_owned())
+    );
+}
+
+#[test]
+fn assistant_ketchup_bottle_intent_round_trips_and_rejects_invalid_relief() {
+    let intent: AssistantModelIntent = serde_json::from_str(
+        r#"{
+            "replace_scene": false,
+            "boxes": [],
+            "bottles": [{
+                "name": "Kečup squeeze bottle",
+                "body_radius_mm": 38.0,
+                "body_height_mm": 145.0,
+                "shoulder_rise_mm": 28.0,
+                "neck_radius_mm": 15.0,
+                "neck_height_mm": 18.0,
+                "wall_thickness_mm": 2.0,
+                "finish_kind": "fillet",
+                "finish_amount_mm": 2.0,
+                "origin_mm": [0.0, 0.0, 0.0],
+                "ketchup_bottle": {
+                    "body_depth_ratio": 0.68,
+                    "cap_radius_mm": 17.0,
+                    "cap_height_mm": 16.0,
+                    "label_width_mm": 58.0,
+                    "label_height_mm": 72.0,
+                    "label_relief_mm": 2.5,
+                    "grip_rib_count": 20
+                }
+            }]
+        }"#,
+    )
+    .unwrap();
+    assert!(intent.validate().is_ok());
+    assert_eq!(
+        intent.bottles[0]
+            .ketchup_bottle
+            .as_ref()
+            .unwrap()
+            .grip_rib_count,
+        20
+    );
+
+    let invalid = AssistantModelIntent {
+        bottles: vec![AssistantBottleIntent {
+            ketchup_bottle: Some(AssistantKetchupBottleIntent {
+                label_relief_mm: 4.0,
+                ..intent.bottles[0].ketchup_bottle.clone().unwrap()
+            }),
+            ..intent.bottles[0].clone()
+        }],
+        ..intent
+    };
+    assert_eq!(
+        invalid.validate(),
+        Err("assistant ketchup bottle dimensions are outside the envelope".to_owned())
     );
 }
 

@@ -3012,6 +3012,112 @@ fn assistant_teapot_mesh(item: &AssistantBottleIntent) -> Option<MeshBodySpec> {
     })
 }
 
+fn assistant_ketchup_bottle_mesh(item: &AssistantBottleIntent) -> Option<MeshBodySpec> {
+    let style = item.ketchup_bottle.as_ref()?;
+    let radius = item.body_radius_mm;
+    let wall = item.wall_thickness_mm;
+    let body_height = item.body_height_mm;
+    let shoulder_top = body_height + item.shoulder_rise_mm;
+    let top = shoulder_top + item.neck_height_mm;
+    let profile = [
+        [0.0, 0.0],
+        [radius * 0.72, 0.0],
+        [radius * 0.95, body_height * 0.06],
+        [radius, body_height * 0.18],
+        [radius, body_height * 0.68],
+        [radius * 0.95, body_height * 0.82],
+        [radius * 0.72, body_height],
+        [item.neck_radius_mm, shoulder_top],
+        [item.neck_radius_mm, top],
+        [item.neck_radius_mm - wall, top],
+        [item.neck_radius_mm - wall, shoulder_top],
+        [radius * 0.72 - wall, body_height],
+        [radius * 0.95 - wall, body_height * 0.82],
+        [radius - wall, body_height * 0.68],
+        [radius - wall, body_height * 0.18],
+        [radius * 0.95 - wall, body_height * 0.06],
+        [radius * 0.72 - wall, wall],
+        [0.0, wall],
+    ];
+    let mut vertices_mm = Vec::new();
+    let mut triangles = Vec::new();
+    assistant_append_revolved_profile(&mut vertices_mm, &mut triangles, &profile, 40);
+    for vertex in &mut vertices_mm {
+        vertex[1] *= style.body_depth_ratio;
+    }
+
+    const CAP_SEGMENTS: usize = 40;
+    let cap_base = top + wall * 0.25;
+    let bottom_center = vertices_mm.len() as u32;
+    vertices_mm.push([0.0, 0.0, cap_base]);
+    let top_center = vertices_mm.len() as u32;
+    vertices_mm.push([0.0, 0.0, cap_base + style.cap_height_mm]);
+    let mut bottom_ring = Vec::with_capacity(CAP_SEGMENTS);
+    let mut top_ring = Vec::with_capacity(CAP_SEGMENTS);
+    for segment in 0..CAP_SEGMENTS {
+        let angle = std::f64::consts::TAU * segment as f64 / CAP_SEGMENTS as f64;
+        let rib = 1.0 + 0.035 * (1.0 + (f64::from(style.grip_rib_count) * angle).cos());
+        let x = style.cap_radius_mm * rib * angle.cos();
+        let y = style.cap_radius_mm * rib * angle.sin();
+        bottom_ring.push(vertices_mm.len() as u32);
+        vertices_mm.push([x, y, cap_base]);
+        top_ring.push(vertices_mm.len() as u32);
+        vertices_mm.push([x, y, cap_base + style.cap_height_mm]);
+    }
+    for segment in 0..CAP_SEGMENTS {
+        let next = (segment + 1) % CAP_SEGMENTS;
+        triangles.extend([
+            [bottom_center, bottom_ring[segment], bottom_ring[next]],
+            [bottom_ring[segment], top_ring[segment], top_ring[next]],
+            [bottom_ring[segment], top_ring[next], bottom_ring[next]],
+            [top_center, top_ring[next], top_ring[segment]],
+        ]);
+    }
+
+    const LABEL_SEGMENTS: usize = 32;
+    let label_center_z = body_height * 0.48;
+    let label_back_y = -radius * style.body_depth_ratio * 0.99;
+    let label_front_y = label_back_y - style.label_relief_mm;
+    let back_center = vertices_mm.len() as u32;
+    vertices_mm.push([0.0, label_back_y, label_center_z]);
+    let front_center = vertices_mm.len() as u32;
+    vertices_mm.push([0.0, label_front_y, label_center_z]);
+    let mut back_ring = Vec::with_capacity(LABEL_SEGMENTS);
+    let mut front_ring = Vec::with_capacity(LABEL_SEGMENTS);
+    for segment in 0..LABEL_SEGMENTS {
+        let angle = std::f64::consts::TAU * segment as f64 / LABEL_SEGMENTS as f64;
+        let point = [
+            style.label_width_mm * 0.5 * angle.cos(),
+            label_back_y,
+            label_center_z + style.label_height_mm * 0.5 * angle.sin(),
+        ];
+        back_ring.push(vertices_mm.len() as u32);
+        vertices_mm.push(point);
+        front_ring.push(vertices_mm.len() as u32);
+        vertices_mm.push([point[0], label_front_y, point[2]]);
+    }
+    for segment in 0..LABEL_SEGMENTS {
+        let next = (segment + 1) % LABEL_SEGMENTS;
+        triangles.extend([
+            [back_center, back_ring[next], back_ring[segment]],
+            [front_center, front_ring[segment], front_ring[next]],
+            [back_ring[segment], back_ring[next], front_ring[next]],
+            [back_ring[segment], front_ring[next], front_ring[segment]],
+        ]);
+    }
+    for triangle in &mut triangles {
+        triangle.swap(1, 2);
+    }
+    Some(MeshBodySpec {
+        schema: MESH_BODY_SCHEMA_V1.to_owned(),
+        vertices_mm,
+        triangles,
+        authority: MeshAuthority::Authored {
+            provenance: "ketchup-assistant-squeeze-bottle-v1".to_owned(),
+        },
+    })
+}
+
 fn assistant_gable_roof_mesh(item: &AssistantGableRoofIntent) -> MeshBodySpec {
     let half_span = item.span_mm * 0.5;
     let section = [
@@ -10393,6 +10499,37 @@ impl KetchupApp {
                         definition_id: definition,
                         name: format!("{} smooth hollow vessel", bottle.name),
                         kind: FeatureKind::MeshBody(assistant_teapot_mesh(bottle)?),
+                    },
+                    CanonicalCommand::CreateOccurrence {
+                        id: occurrence,
+                        definition_id: definition,
+                        name: format!("{} occurrence", bottle.name),
+                        transform: Transform::from_translation(x, y, z).ok()?,
+                        parent: None,
+                        tag: None,
+                        visible: true,
+                    },
+                ]);
+                next_definition = definition.0.checked_add(1);
+                next_feature = feature.0.checked_add(1);
+                next_occurrence = occurrence.0.checked_add(1);
+                continue;
+            }
+            if bottle.ketchup_bottle.is_some() {
+                let definition = next_definition.map(DefinitionId)?;
+                let feature = next_feature.map(FeatureId)?;
+                let occurrence = next_occurrence.map(OccurrenceId)?;
+                let [x, y, z] = bottle.origin_mm;
+                commands.extend([
+                    CanonicalCommand::CreateDefinition {
+                        id: definition,
+                        name: bottle.name.clone(),
+                    },
+                    CanonicalCommand::CreateFeature {
+                        id: feature,
+                        definition_id: definition,
+                        name: format!("{} squeeze bottle", bottle.name),
+                        kind: FeatureKind::MeshBody(assistant_ketchup_bottle_mesh(bottle)?),
                     },
                     CanonicalCommand::CreateOccurrence {
                         id: occurrence,

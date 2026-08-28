@@ -82,7 +82,7 @@ SYSTEM_PROMPT = (
     "tea pot, use the same bottles entry and add teapot with exactly handle_clearance_mm, "
     "handle_tube_radius_mm, spout_length_mm, spout_radius_mm, lid_height_mm, and "
     "lid_knob_radius_mm. This creates a rounded hollow body with an open mouth, curved tubular "
-    "handle, hollow rising spout, lid, and knob; never approximate a tea pot or cup with boxes. "
+    "handle, hollow rising spout, lid, and knob; never approximate a tea pot or cup with boxes. For a rounded squeeze ketchup bottle, add ketchup_bottle with exactly body_depth_ratio, cap_radius_mm, cap_height_mm, label_width_mm, label_height_mm, label_relief_mm, and grip_rib_count. This creates an oval squeezable body, smooth shoulders, ribbed cap, and raised oval label; never approximate it with stacked cylinders or boxes. "
     "For a true gable roof, use gable_roofs with exactly name, length_mm along the ridge, span_mm across the gables, rise_mm from eave to ridge, thickness_mm, and origin_mm [x, y, z] at the lower outside corner; never approximate a pitched roof with stepped boxes. "
     "For one solid straight staircase, use staircases with exactly name, run_mm, width_mm, rise_mm, step_count, and origin_mm [x, y, z]. Choose 150-450 mm going, 100-250 mm riser, and at least 500 mm width. "
     "For rafters, purlins, braces, and any rotated rectangular timber, use oriented_beams with exactly name, start_mm and end_mm at the centres of the end faces, up_hint (normally [0,0,1]), width_mm, depth_mm, and optional bottom_notches. Each full-width bottom notch has exactly from_start_mm along the beam axis, length_mm, and depth_mm. Use real oriented beams and notches; never claim they are unsupported or replace a sloped beam with stepped boxes. Extend rafter endpoints by the requested overhang distance along their slope, not horizontally and not at gables. "
@@ -427,7 +427,7 @@ def _validate_bottle(bottle: object) -> None:
     }
     if (
         not isinstance(bottle, dict)
-        or not fields <= set(bottle) <= fields | {"teapot"}
+        or not fields <= set(bottle) <= fields | {"teapot", "ketchup_bottle"}
     ):
         raise ProtocolError("provider bottle contains missing or unknown fields")
     name = bottle["name"]
@@ -469,34 +469,32 @@ def _validate_bottle(bottle: object) -> None:
     ):
         raise ProtocolError("provider bottle geometry is unsupported")
     teapot = bottle.get("teapot")
-    if teapot is None:
+    ketchup = bottle.get("ketchup_bottle")
+    if teapot is not None and ketchup is not None:
+        raise ProtocolError("provider bottle cannot combine vessel styles")
+    if teapot is not None:
+        teapot_fields = {
+            "handle_clearance_mm", "handle_tube_radius_mm", "spout_length_mm",
+            "spout_radius_mm", "lid_height_mm", "lid_knob_radius_mm",
+        }
+        if not isinstance(teapot, dict) or set(teapot) != teapot_fields:
+            raise ProtocolError("provider teapot contains missing or unknown fields")
+        if any(not isinstance(teapot[field], (int, float)) or isinstance(teapot[field], bool) or not 0 < teapot[field] <= 2_000 for field in teapot_fields):
+            raise ProtocolError("provider teapot dimensions are outside the envelope")
+        if (teapot["handle_clearance_mm"] < teapot["handle_tube_radius_mm"] * 2 or teapot["handle_tube_radius_mm"] >= body_radius * 0.35 or not body_radius * 0.75 <= teapot["spout_length_mm"] <= body_radius * 4 or not thickness < teapot["spout_radius_mm"] < body_radius * 0.5 or teapot["lid_height_mm"] >= bottle["body_height_mm"] * 0.5 or teapot["lid_knob_radius_mm"] >= neck_radius * 0.75):
+            raise ProtocolError("provider teapot geometry is unsupported")
+    if ketchup is None:
         return
-    teapot_fields = {
-        "handle_clearance_mm",
-        "handle_tube_radius_mm",
-        "spout_length_mm",
-        "spout_radius_mm",
-        "lid_height_mm",
-        "lid_knob_radius_mm",
-    }
-    if not isinstance(teapot, dict) or set(teapot) != teapot_fields:
-        raise ProtocolError("provider teapot contains missing or unknown fields")
-    if any(
-        not isinstance(teapot[field], (int, float))
-        or isinstance(teapot[field], bool)
-        or not 0 < teapot[field] <= 2_000
-        for field in teapot_fields
-    ):
-        raise ProtocolError("provider teapot dimensions are outside the envelope")
-    if (
-        teapot["handle_clearance_mm"] < teapot["handle_tube_radius_mm"] * 2
-        or teapot["handle_tube_radius_mm"] >= body_radius * 0.35
-        or not body_radius * 0.75 <= teapot["spout_length_mm"] <= body_radius * 4
-        or not thickness < teapot["spout_radius_mm"] < body_radius * 0.5
-        or teapot["lid_height_mm"] >= bottle["body_height_mm"] * 0.5
-        or teapot["lid_knob_radius_mm"] >= neck_radius * 0.75
-    ):
-        raise ProtocolError("provider teapot geometry is unsupported")
+    ketchup_fields = {"body_depth_ratio", "cap_radius_mm", "cap_height_mm", "label_width_mm", "label_height_mm", "label_relief_mm", "grip_rib_count"}
+    if not isinstance(ketchup, dict) or set(ketchup) != ketchup_fields:
+        raise ProtocolError("provider ketchup bottle contains missing or unknown fields")
+    if not isinstance(ketchup["grip_rib_count"], int) or isinstance(ketchup["grip_rib_count"], bool) or not 8 <= ketchup["grip_rib_count"] <= 48:
+        raise ProtocolError("provider ketchup bottle rib count is invalid")
+    numeric = [ketchup[field] for field in ketchup_fields - {"grip_rib_count"}]
+    if any(not isinstance(value, (int, float)) or isinstance(value, bool) or not 0 < value <= 2_000 for value in numeric):
+        raise ProtocolError("provider ketchup bottle dimensions are outside the envelope")
+    if (not 0.5 <= ketchup["body_depth_ratio"] <= 1.0 or not neck_radius * 0.9 <= ketchup["cap_radius_mm"] < body_radius * 0.55 or ketchup["cap_height_mm"] >= bottle["body_height_mm"] * 0.35 or ketchup["label_width_mm"] >= body_radius * 1.8 or ketchup["label_height_mm"] >= bottle["body_height_mm"] * 0.7 or ketchup["label_relief_mm"] >= body_radius * 0.1):
+        raise ProtocolError("provider ketchup bottle geometry is unsupported")
 
 
 def _parse_assistant_result(answer: str) -> dict:

@@ -112,6 +112,18 @@ pub struct AssistantTeapotIntent {
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
+pub struct AssistantKetchupBottleIntent {
+    pub body_depth_ratio: f64,
+    pub cap_radius_mm: f64,
+    pub cap_height_mm: f64,
+    pub label_width_mm: f64,
+    pub label_height_mm: f64,
+    pub label_relief_mm: f64,
+    pub grip_rib_count: u32,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct AssistantBottleIntent {
     pub name: String,
     pub body_radius_mm: f64,
@@ -125,6 +137,8 @@ pub struct AssistantBottleIntent {
     pub origin_mm: [f64; 3],
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub teapot: Option<AssistantTeapotIntent>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ketchup_bottle: Option<AssistantKetchupBottleIntent>,
 }
 
 impl AssistantBottleIntent {
@@ -208,6 +222,37 @@ impl AssistantBottleIntent {
                 || teapot.lid_knob_radius_mm >= self.neck_radius_mm * 0.75
             {
                 return Err("assistant teapot dimensions are outside the envelope".to_owned());
+            }
+        }
+        if self.teapot.is_some() && self.ketchup_bottle.is_some() {
+            return Err("assistant bottle cannot combine vessel styles".to_owned());
+        }
+        if let Some(ketchup) = &self.ketchup_bottle {
+            let dimensions = [
+                ketchup.cap_radius_mm,
+                ketchup.cap_height_mm,
+                ketchup.label_width_mm,
+                ketchup.label_height_mm,
+                ketchup.label_relief_mm,
+            ];
+            if !ketchup.body_depth_ratio.is_finite()
+                || !(0.5..=1.0).contains(&ketchup.body_depth_ratio)
+                || dimensions.iter().any(|value| {
+                    !value.is_finite()
+                        || *value <= 0.0
+                        || *value > MAX_ASSISTANT_TEAPOT_DIMENSION_MM
+                })
+                || ketchup.cap_radius_mm < self.neck_radius_mm * 0.9
+                || ketchup.cap_radius_mm >= self.body_radius_mm * 0.55
+                || ketchup.cap_height_mm >= self.body_height_mm * 0.35
+                || ketchup.label_width_mm >= self.body_radius_mm * 1.8
+                || ketchup.label_height_mm >= self.body_height_mm * 0.7
+                || ketchup.label_relief_mm >= self.body_radius_mm * 0.1
+                || !(8..=48).contains(&ketchup.grip_rib_count)
+            {
+                return Err(
+                    "assistant ketchup bottle dimensions are outside the envelope".to_owned(),
+                );
             }
         }
         Ok(())
