@@ -509,7 +509,7 @@ fn scripted_assistant_model_review_cancel_confirm_undo_and_redo_use_accesskit() 
 }
 
 #[test]
-fn verbal_bottle_request_reviews_confirms_and_undoes_through_accesskit() {
+fn verbal_bottle_goal_with_dimension_constraint_completes_verified_one_undo_cycle() {
     let request = "Create an editable ketchup bottle with a 30 mm body radius";
     let transport = Arc::new(ScriptedAssistantTransport::new([(
         request.to_owned(),
@@ -546,6 +546,7 @@ fn verbal_bottle_request_reviews_confirms_and_undoes_through_accesskit() {
     let mut shell = Shell::with_assistant_transport(transport.clone());
     let initial_revision = shell.app().document_revision();
     let initial_digest = shell.app().canonical_digest();
+    let initial_undo_steps = shell.app().undo_step_count();
     let initial_features = shell.app().feature_count();
     let initial_occurrences = shell.app().occurrence_count();
 
@@ -555,22 +556,53 @@ fn verbal_bottle_request_reviews_confirms_and_undoes_through_accesskit() {
     wait_for_assistant_proposal(&mut shell);
     assert_eq!(shell.app().document_revision(), initial_revision);
     assert_eq!(shell.app().canonical_digest(), initial_digest);
+    assert_eq!(shell.app().undo_step_count(), initial_undo_steps);
 
     shell.click_row(&shell.catalog().text("assistant-confirm"));
     assert_eq!(shell.app().document_revision(), initial_revision + 1);
+    assert_eq!(shell.app().undo_step_count(), initial_undo_steps + 1);
     assert_eq!(shell.app().feature_count(), initial_features + 5);
     assert_eq!(shell.app().occurrence_count(), initial_occurrences + 1);
-    assert!(
-        shell
-            .app()
-            .document_snapshot()
-            .occurrences()
-            .any(|occurrence| occurrence.name() == "Verbally created bottle occurrence")
+    let snapshot = shell.app().document_snapshot();
+    let occurrence = snapshot
+        .occurrences()
+        .find(|occurrence| occurrence.name() == "Verbally created bottle occurrence")
+        .expect("confirmed proposal creates the requested bottle");
+    assert!(snapshot.features().any(|feature| {
+        feature.definition_id() == occurrence.definition_id()
+            && matches!(
+                feature.kind(),
+                FeatureKind::BottleProfileControl { body_radius, .. }
+                    if body_radius.millimetres() == 30.0
+            )
+    }));
+    let verification = shell
+        .app()
+        .assistant_verification()
+        .expect("confirmed proposal returns host verification")
+        .clone();
+    assert_eq!(verification.revision_id, initial_revision + 1);
+    assert_eq!(
+        verification.canonical_digest,
+        shell.app().canonical_digest()
     );
+    assert!(verification.verified_write_count > 0);
+    assert!(!verification.command_digest.is_empty());
+    assert!(!verification.result_digest.is_empty());
+    shell.settle();
+    assert!(shell.has_visible_label(&shell.catalog().text("assistant-result-title")));
+    assert!(shell.has_visible_label(&shell.catalog().format(
+        "assistant-verification",
+        &BTreeMap::from([
+            ("revision", verification.revision_id.to_string()),
+            ("writes", verification.verified_write_count.to_string()),
+        ]),
+    )));
 
     shell.click_row(&shell.catalog().text("assistant-undo-change"));
     assert_eq!(shell.app().document_revision(), initial_revision);
     assert_eq!(shell.app().canonical_digest(), initial_digest);
+    assert_eq!(shell.app().undo_step_count(), initial_undo_steps);
     assert_eq!(transport.remaining_responses(), 0);
 }
 
