@@ -10,7 +10,7 @@ use ketchup_core::assistant_sidecar::{
     AssistantDistribution, AssistantGableRoofIntent, AssistantLinearArrayIntent,
     AssistantModelIntent, AssistantOrientedBeamIntent, AssistantParameterEditIntent,
     AssistantProfileTranslationIntent, AssistantStaircaseIntent, AssistantSubtractionIntent,
-    AssistantTranslationIntent,
+    AssistantTeapotIntent, AssistantTranslationIntent,
 };
 use ketchup_core::document::{
     BodyId, CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId,
@@ -531,6 +531,7 @@ fn verbal_bottle_request_reviews_confirms_and_undoes_through_accesskit() {
                     finish_kind: AssistantBottleFinishKind::Fillet,
                     finish_amount_mm: 2.0,
                     origin_mm: [90.0, 0.0, 0.0],
+                    teapot: None,
                 }],
                 gable_roofs: Vec::new(),
                 staircases: Vec::new(),
@@ -2769,6 +2770,100 @@ fn assistant_model_intent_applies_real_3d_boxes_immediately_as_one_undoable_batc
 }
 
 #[test]
+fn assistant_teapot_intent_creates_smooth_hollow_saved_model_as_one_undo_step() {
+    let mut shell = Shell::new();
+    let initial_revision = shell.app().document_revision();
+    let initial_digest = shell.app().canonical_digest();
+    let initial_features = shell.app().feature_count();
+
+    assert!(apply_reviewed_model_intent(
+        &mut shell,
+        AssistantModelIntent {
+            replace_scene: false,
+            boxes: Vec::new(),
+            translations: Vec::new(),
+            profile_translations: Vec::new(),
+            parameter_edits: Vec::new(),
+            linear_arrays: Vec::new(),
+            bottles: vec![AssistantBottleIntent {
+                name: "Rounded tea pot".to_owned(),
+                body_radius_mm: 70.0,
+                body_height_mm: 105.0,
+                shoulder_rise_mm: 22.0,
+                neck_radius_mm: 42.0,
+                neck_height_mm: 14.0,
+                wall_thickness_mm: 3.0,
+                finish_kind: AssistantBottleFinishKind::Fillet,
+                finish_amount_mm: 4.0,
+                origin_mm: [0.0, 0.0, 0.0],
+                teapot: Some(AssistantTeapotIntent {
+                    handle_clearance_mm: 52.0,
+                    handle_tube_radius_mm: 9.0,
+                    spout_length_mm: 105.0,
+                    spout_radius_mm: 14.0,
+                    lid_height_mm: 18.0,
+                    lid_knob_radius_mm: 10.0,
+                }),
+            }],
+            gable_roofs: Vec::new(),
+            staircases: Vec::new(),
+            oriented_beams: Vec::new(),
+        }
+    ));
+
+    assert_eq!(shell.app().document_revision(), initial_revision + 1);
+    assert!(shell.app().feature_count() > initial_features);
+    assert!(shell.app().occurrence_count() >= 1);
+    let snapshot = shell.app().document_snapshot();
+    let feature = snapshot
+        .features()
+        .find(|feature| feature.name() == "Rounded tea pot smooth hollow vessel")
+        .expect("teapot mesh must exist");
+    let FeatureKind::MeshBody(mesh) = feature.kind() else {
+        panic!("teapot must be one canonical mesh body");
+    };
+    assert!(mesh.vertices_mm.len() > 1_200);
+    assert!(mesh.triangles.len() > 2_000);
+    assert!(mesh.vertices_mm.contains(&[42.0, 0.0, 141.0]));
+    assert!(mesh.vertices_mm.contains(&[39.0, 0.0, 141.0]));
+    assert!(mesh.vertices_mm.iter().any(|vertex| vertex[0] > 170.0));
+    assert!(mesh.vertices_mm.iter().any(|vertex| vertex[0] < -110.0));
+    assert!(matches!(
+        &mesh.authority,
+        ketchup_core::document::MeshAuthority::Authored { provenance }
+            if provenance == "ketchup-assistant-rounded-teapot-v1"
+    ));
+
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("assistant-rounded-teapot.ketchup");
+    persistence::save_atomic(&path, &snapshot).unwrap();
+    let reopened = persistence::load_file(&path).unwrap().snapshot();
+    assert_eq!(reopened.canonical_digest(), snapshot.canonical_digest());
+    assert!(
+        reopened
+            .features()
+            .any(|feature| feature.name() == "Rounded tea pot smooth hollow vessel")
+    );
+    let fixture_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../examples/assistant-rounded-teapot.ketchup");
+    let fixture = persistence::load_file(&fixture_path).unwrap().snapshot();
+    let fixture_feature = fixture
+        .features()
+        .find(|feature| feature.name() == "Rounded tea pot smooth hollow vessel")
+        .expect("saved teapot fixture must remain openable");
+    let FeatureKind::MeshBody(fixture_mesh) = fixture_feature.kind() else {
+        panic!("saved teapot fixture must retain its canonical mesh body");
+    };
+    assert_eq!(fixture_mesh.vertices_mm.len(), mesh.vertices_mm.len());
+    assert_eq!(fixture_mesh.triangles.len(), mesh.triangles.len());
+    assert_eq!(fixture_mesh.authority, mesh.authority);
+
+    assert!(shell.app_mut().undo());
+    assert_eq!(shell.app().document_revision(), initial_revision);
+    assert_eq!(shell.app().canonical_digest(), initial_digest);
+}
+
+#[test]
 fn assistant_bottle_intent_creates_editable_feature_chain_as_one_undo_step() {
     let mut shell = Shell::new();
     let initial_revision = shell.app().document_revision();
@@ -2796,6 +2891,7 @@ fn assistant_bottle_intent_creates_editable_feature_chain_as_one_undo_step() {
                 finish_kind: AssistantBottleFinishKind::Chamfer,
                 finish_amount_mm: 2.0,
                 origin_mm: [90.0, 0.0, 0.0],
+                teapot: None,
             }],
             gable_roofs: Vec::new(),
             staircases: Vec::new(),

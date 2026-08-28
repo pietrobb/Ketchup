@@ -2,7 +2,8 @@ use ketchup_core::assistant_sidecar::{
     ASSISTANT_PROTOCOL_VERSION, AssistantBeamNotchIntent, AssistantBottleFinishKind,
     AssistantBottleIntent, AssistantDistribution, AssistantHandshake, AssistantHandshakeError,
     AssistantLinearArrayIntent, AssistantModelIntent, AssistantOrientedBeamIntent,
-    AssistantParameterEditIntent, AssistantProfileTranslationIntent, distribution_is_enabled,
+    AssistantParameterEditIntent, AssistantProfileTranslationIntent, AssistantTeapotIntent,
+    distribution_is_enabled,
 };
 
 const PUBLIC_HANDSHAKE: &str = r#"{
@@ -308,6 +309,58 @@ fn assistant_bottle_intent_round_trips_and_reuses_exact_geometry_limits() {
     assert_eq!(
         invalid.validate(),
         Err("assistant bottle wall thickness is unsupported".to_owned())
+    );
+}
+
+#[test]
+fn assistant_teapot_intent_round_trips_and_rejects_impossible_attachments() {
+    let intent: AssistantModelIntent = serde_json::from_str(
+        r#"{
+            "replace_scene": false,
+            "boxes": [],
+            "bottles": [{
+                "name": "Rounded tea pot",
+                "body_radius_mm": 70.0,
+                "body_height_mm": 105.0,
+                "shoulder_rise_mm": 22.0,
+                "neck_radius_mm": 42.0,
+                "neck_height_mm": 14.0,
+                "wall_thickness_mm": 3.0,
+                "finish_kind": "fillet",
+                "finish_amount_mm": 4.0,
+                "origin_mm": [0.0, 0.0, 0.0],
+                "teapot": {
+                    "handle_clearance_mm": 52.0,
+                    "handle_tube_radius_mm": 9.0,
+                    "spout_length_mm": 105.0,
+                    "spout_radius_mm": 14.0,
+                    "lid_height_mm": 18.0,
+                    "lid_knob_radius_mm": 10.0
+                }
+            }]
+        }"#,
+    )
+    .unwrap();
+
+    assert!(intent.validate().is_ok());
+    assert_eq!(
+        serde_json::to_value(&intent).unwrap()["bottles"][0]["teapot"]["spout_length_mm"],
+        105.0
+    );
+
+    let invalid = AssistantModelIntent {
+        bottles: vec![AssistantBottleIntent {
+            teapot: Some(AssistantTeapotIntent {
+                spout_radius_mm: 2.0,
+                ..intent.bottles[0].teapot.clone().unwrap()
+            }),
+            ..intent.bottles[0].clone()
+        }],
+        ..intent
+    };
+    assert_eq!(
+        invalid.validate(),
+        Err("assistant teapot dimensions are outside the envelope".to_owned())
     );
 }
 

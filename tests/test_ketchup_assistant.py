@@ -559,6 +559,46 @@ def test_public_sidecar_parses_only_bounded_editable_bottle_workflows():
             )
 
 
+def test_public_sidecar_parses_only_bounded_smooth_teapot_workflows():
+    teapot = {
+        "name": "Rounded tea pot",
+        "body_radius_mm": 70,
+        "body_height_mm": 105,
+        "shoulder_rise_mm": 22,
+        "neck_radius_mm": 42,
+        "neck_height_mm": 14,
+        "wall_thickness_mm": 3,
+        "finish_kind": "fillet",
+        "finish_amount_mm": 4,
+        "origin_mm": [0, 0, 0],
+        "teapot": {
+            "handle_clearance_mm": 52,
+            "handle_tube_radius_mm": 9,
+            "spout_length_mm": 105,
+            "spout_radius_mm": 14,
+            "lid_height_mm": 18,
+            "lid_knob_radius_mm": 10,
+        },
+    }
+    answer = json.dumps(
+        {
+            "message": "Prepared a smooth hollow tea pot.",
+            "model_intent": {
+                "replace_scene": False,
+                "boxes": [],
+                "bottles": [teapot],
+            },
+        }
+    )
+    assert assistant._parse_assistant_result(answer)["model_intent"]["bottles"] == [teapot]
+    assert "never approximate a tea pot or cup with boxes" in assistant.SYSTEM_PROMPT
+
+    invalid = json.loads(answer)
+    invalid["model_intent"]["bottles"][0]["teapot"]["spout_radius_mm"] = 2
+    with pytest.raises(assistant.ProtocolError):
+        assistant._parse_assistant_result(json.dumps(invalid))
+
+
 def test_public_sidecar_parses_only_one_unmixed_profile_translation():
     translation = {
         "definition_id": 1,

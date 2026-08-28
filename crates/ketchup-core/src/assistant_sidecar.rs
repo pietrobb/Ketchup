@@ -16,6 +16,7 @@ const MAX_ASSISTANT_ARRAY_SOURCES: usize = 100;
 const MAX_ASSISTANT_ARRAY_INSTANCES: u32 = 1_000;
 const MAX_ASSISTANT_ARRAY_OUTPUTS: usize = 512;
 const MAX_ASSISTANT_BOTTLES: usize = 8;
+const MAX_ASSISTANT_TEAPOT_DIMENSION_MM: f64 = 2_000.0;
 const MAX_ASSISTANT_GABLE_ROOFS: usize = 16;
 const MAX_ASSISTANT_STAIRCASES: usize = 16;
 const MAX_ASSISTANT_ORIENTED_BEAMS: usize = 64;
@@ -100,6 +101,17 @@ pub enum AssistantBottleFinishKind {
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
+pub struct AssistantTeapotIntent {
+    pub handle_clearance_mm: f64,
+    pub handle_tube_radius_mm: f64,
+    pub spout_length_mm: f64,
+    pub spout_radius_mm: f64,
+    pub lid_height_mm: f64,
+    pub lid_knob_radius_mm: f64,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct AssistantBottleIntent {
     pub name: String,
     pub body_radius_mm: f64,
@@ -111,6 +123,8 @@ pub struct AssistantBottleIntent {
     pub finish_kind: AssistantBottleFinishKind,
     pub finish_amount_mm: f64,
     pub origin_mm: [f64; 3],
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub teapot: Option<AssistantTeapotIntent>,
 }
 
 impl AssistantBottleIntent {
@@ -172,6 +186,29 @@ impl AssistantBottleIntent {
             .map_err(|_| "assistant bottle wall thickness is unsupported".to_owned())?;
         if !finish_amount_is_conservative(&profile, self.finish_amount_mm) {
             return Err("assistant bottle edge finish is unsupported".to_owned());
+        }
+        if let Some(teapot) = &self.teapot {
+            let dimensions = [
+                teapot.handle_clearance_mm,
+                teapot.handle_tube_radius_mm,
+                teapot.spout_length_mm,
+                teapot.spout_radius_mm,
+                teapot.lid_height_mm,
+                teapot.lid_knob_radius_mm,
+            ];
+            if dimensions.iter().any(|value| {
+                !value.is_finite() || *value <= 0.0 || *value > MAX_ASSISTANT_TEAPOT_DIMENSION_MM
+            }) || teapot.handle_clearance_mm < teapot.handle_tube_radius_mm * 2.0
+                || teapot.handle_tube_radius_mm >= self.body_radius_mm * 0.35
+                || teapot.spout_length_mm < self.body_radius_mm * 0.75
+                || teapot.spout_length_mm > self.body_radius_mm * 4.0
+                || teapot.spout_radius_mm <= self.wall_thickness_mm
+                || teapot.spout_radius_mm >= self.body_radius_mm * 0.5
+                || teapot.lid_height_mm >= self.body_height_mm * 0.5
+                || teapot.lid_knob_radius_mm >= self.neck_radius_mm * 0.75
+            {
+                return Err("assistant teapot dimensions are outside the envelope".to_owned());
+            }
         }
         Ok(())
     }

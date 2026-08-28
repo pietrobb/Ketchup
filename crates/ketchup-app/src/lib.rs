@@ -6,8 +6,8 @@
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, Stroke, Vec2};
 use ketchup_core::assistant_sidecar::{
     ASSISTANT_PROTOCOL_VERSION, AssistantApiDiagnostics, AssistantBottleFinishKind,
-    AssistantBoxIntent, AssistantCapability, AssistantChatResult, AssistantDistribution,
-    AssistantGableRoofIntent, AssistantHandshake, AssistantModelIntent,
+    AssistantBottleIntent, AssistantBoxIntent, AssistantCapability, AssistantChatResult,
+    AssistantDistribution, AssistantGableRoofIntent, AssistantHandshake, AssistantModelIntent,
     AssistantOrientedBeamIntent, AssistantStaircaseIntent,
 };
 use ketchup_core::beam_m4ae::{
@@ -2703,6 +2703,313 @@ fn definition_mesh_body(snapshot: &Snapshot, definition_id: DefinitionId) -> Opt
             FeatureKind::MeshBody(mesh) => Some(mesh),
             _ => None,
         })
+}
+
+fn assistant_append_revolved_profile(
+    vertices: &mut Vec<[f64; 3]>,
+    triangles: &mut Vec<[u32; 3]>,
+    profile: &[[f64; 2]],
+    segments: usize,
+) {
+    let rings = profile
+        .iter()
+        .map(|[radius, z]| {
+            if radius.abs() <= f64::EPSILON {
+                let id = vertices.len() as u32;
+                vertices.push([0.0, 0.0, *z]);
+                vec![id]
+            } else {
+                (0..segments)
+                    .map(|segment| {
+                        let angle = std::f64::consts::TAU * segment as f64 / segments as f64;
+                        let id = vertices.len() as u32;
+                        vertices.push([radius * angle.cos(), radius * angle.sin(), *z]);
+                        id
+                    })
+                    .collect()
+            }
+        })
+        .collect::<Vec<Vec<u32>>>();
+    for index in 0..rings.len() {
+        let next_index = (index + 1) % rings.len();
+        let (ring, next_ring) = (&rings[index], &rings[next_index]);
+        match (ring.len(), next_ring.len()) {
+            (1, 1) => {}
+            (1, _) => {
+                for segment in 0..segments {
+                    let next = (segment + 1) % segments;
+                    triangles.push([ring[0], next_ring[segment], next_ring[next]]);
+                }
+            }
+            (_, 1) => {
+                for segment in 0..segments {
+                    let next = (segment + 1) % segments;
+                    triangles.push([ring[segment], next_ring[0], ring[next]]);
+                }
+            }
+            _ => {
+                for segment in 0..segments {
+                    let next = (segment + 1) % segments;
+                    triangles.extend([
+                        [ring[segment], next_ring[segment], next_ring[next]],
+                        [ring[segment], next_ring[next], ring[next]],
+                    ]);
+                }
+            }
+        }
+    }
+}
+
+fn assistant_append_pipe(
+    vertices: &mut Vec<[f64; 3]>,
+    triangles: &mut Vec<[u32; 3]>,
+    centers: &[[f64; 3]],
+    outer_radii: &[f64],
+    inner_radii: Option<&[f64]>,
+) {
+    const SEGMENTS: usize = 16;
+    let ring_points = |center: [f64; 3], tangent: [f64; 3], radius: f64| {
+        let length = (tangent[0] * tangent[0] + tangent[2] * tangent[2]).sqrt();
+        let normal = [-tangent[2] / length, 0.0, tangent[0] / length];
+        (0..SEGMENTS)
+            .map(|segment| {
+                let angle = std::f64::consts::TAU * segment as f64 / SEGMENTS as f64;
+                [
+                    center[0] + normal[0] * radius * angle.sin(),
+                    center[1] + radius * angle.cos(),
+                    center[2] + normal[2] * radius * angle.sin(),
+                ]
+            })
+            .collect::<Vec<_>>()
+    };
+    let tangents = (0..centers.len())
+        .map(|index| {
+            let start = centers[index.saturating_sub(1)];
+            let end = centers[(index + 1).min(centers.len() - 1)];
+            [end[0] - start[0], 0.0, end[2] - start[2]]
+        })
+        .collect::<Vec<_>>();
+    let mut append_rings = |radii: &[f64]| {
+        centers
+            .iter()
+            .zip(tangents.iter())
+            .zip(radii.iter())
+            .map(|((center, tangent), radius)| {
+                ring_points(*center, *tangent, *radius)
+                    .into_iter()
+                    .map(|point| {
+                        let id = vertices.len() as u32;
+                        vertices.push(point);
+                        id
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>()
+    };
+    let outer = append_rings(outer_radii);
+    let inner = inner_radii.map(&mut append_rings);
+    for ring_index in 0..outer.len() - 1 {
+        for segment in 0..SEGMENTS {
+            let next = (segment + 1) % SEGMENTS;
+            triangles.extend([
+                [
+                    outer[ring_index][segment],
+                    outer[ring_index + 1][segment],
+                    outer[ring_index + 1][next],
+                ],
+                [
+                    outer[ring_index][segment],
+                    outer[ring_index + 1][next],
+                    outer[ring_index][next],
+                ],
+            ]);
+        }
+    }
+    if let Some(inner) = inner {
+        for ring_index in 0..inner.len() - 1 {
+            for segment in 0..SEGMENTS {
+                let next = (segment + 1) % SEGMENTS;
+                triangles.extend([
+                    [
+                        inner[ring_index][segment],
+                        inner[ring_index + 1][next],
+                        inner[ring_index + 1][segment],
+                    ],
+                    [
+                        inner[ring_index][segment],
+                        inner[ring_index][next],
+                        inner[ring_index + 1][next],
+                    ],
+                ]);
+            }
+        }
+        for segment in 0..SEGMENTS {
+            let next = (segment + 1) % SEGMENTS;
+            triangles.extend([
+                [outer[0][segment], outer[0][next], inner[0][next]],
+                [outer[0][segment], inner[0][next], inner[0][segment]],
+            ]);
+            let end = outer.len() - 1;
+            triangles.extend([
+                [outer[end][segment], inner[end][segment], outer[end][next]],
+                [outer[end][next], inner[end][segment], inner[end][next]],
+            ]);
+        }
+    } else {
+        for ring_index in [0, outer.len() - 1] {
+            let center = vertices.len() as u32;
+            vertices.push(centers[ring_index]);
+            for segment in 0..SEGMENTS {
+                let next = (segment + 1) % SEGMENTS;
+                triangles.push(if ring_index == 0 {
+                    [center, outer[ring_index][segment], outer[ring_index][next]]
+                } else {
+                    [center, outer[ring_index][next], outer[ring_index][segment]]
+                });
+            }
+        }
+    }
+}
+
+fn assistant_teapot_mesh(item: &AssistantBottleIntent) -> Option<MeshBodySpec> {
+    let teapot = item.teapot.as_ref()?;
+    let radius = item.body_radius_mm;
+    let wall = item.wall_thickness_mm;
+    let body_height = item.body_height_mm;
+    let shoulder_top = body_height + item.shoulder_rise_mm;
+    let top = shoulder_top + item.neck_height_mm;
+    let outer_profile = [
+        [0.0, 0.0],
+        [radius * 0.62, 0.0],
+        [radius * 0.90, body_height * 0.08],
+        [radius, body_height * 0.38],
+        [radius * 0.96, body_height * 0.65],
+        [radius * 0.82, body_height],
+        [item.neck_radius_mm, shoulder_top],
+        [item.neck_radius_mm, top],
+        [item.neck_radius_mm - wall, top],
+        [item.neck_radius_mm - wall, shoulder_top],
+        [radius * 0.82 - wall, body_height],
+        [radius * 0.96 - wall, body_height * 0.65],
+        [radius - wall, body_height * 0.38],
+        [radius * 0.90 - wall, body_height * 0.08],
+        [radius * 0.62 - wall, wall],
+        [0.0, wall],
+    ];
+    let mut vertices_mm = Vec::new();
+    let mut triangles = Vec::new();
+    assistant_append_revolved_profile(&mut vertices_mm, &mut triangles, &outer_profile, 32);
+
+    let handle_centers = (0..=16)
+        .map(|index| {
+            let t = index as f64 / 16.0;
+            let one_minus_t = 1.0 - t;
+            let start = [-radius * 0.80, 0.0, body_height * 0.78];
+            let control = [
+                -radius - teapot.handle_clearance_mm * 2.0,
+                0.0,
+                body_height * 0.50,
+            ];
+            let end = [-radius * 0.80, 0.0, body_height * 0.22];
+            [
+                one_minus_t * one_minus_t * start[0]
+                    + 2.0 * one_minus_t * t * control[0]
+                    + t * t * end[0],
+                0.0,
+                one_minus_t * one_minus_t * start[2]
+                    + 2.0 * one_minus_t * t * control[2]
+                    + t * t * end[2],
+            ]
+        })
+        .collect::<Vec<_>>();
+    let handle_radii = vec![teapot.handle_tube_radius_mm; handle_centers.len()];
+    assistant_append_pipe(
+        &mut vertices_mm,
+        &mut triangles,
+        &handle_centers,
+        &handle_radii,
+        None,
+    );
+
+    let spout_start = [radius * 0.78, 0.0, body_height * 0.52];
+    let spout_control_1 = [
+        radius + teapot.spout_length_mm * 0.15,
+        0.0,
+        body_height * 0.58,
+    ];
+    let spout_control_2 = [
+        radius + teapot.spout_length_mm * 0.65,
+        0.0,
+        body_height * 0.90,
+    ];
+    let spout_end = [radius + teapot.spout_length_mm, 0.0, top * 0.92];
+    let spout_centers = (0..=12)
+        .map(|index| {
+            let t = index as f64 / 12.0;
+            let one_minus_t = 1.0 - t;
+            [0, 1, 2].map(|axis| {
+                one_minus_t.powi(3) * spout_start[axis]
+                    + 3.0 * one_minus_t.powi(2) * t * spout_control_1[axis]
+                    + 3.0 * one_minus_t * t * t * spout_control_2[axis]
+                    + t.powi(3) * spout_end[axis]
+            })
+        })
+        .collect::<Vec<_>>();
+    let spout_outer = (0..spout_centers.len())
+        .map(|index| {
+            let t = index as f64 / (spout_centers.len() - 1) as f64;
+            teapot.spout_radius_mm * (1.35 - 0.35 * t)
+        })
+        .collect::<Vec<_>>();
+    let spout_inner = spout_outer
+        .iter()
+        .map(|radius| radius - wall.min(*radius * 0.45))
+        .collect::<Vec<_>>();
+    assistant_append_pipe(
+        &mut vertices_mm,
+        &mut triangles,
+        &spout_centers,
+        &spout_outer,
+        Some(&spout_inner),
+    );
+
+    let lid_base = top + wall * 0.25;
+    let lid_profile = [
+        [0.0, lid_base],
+        [item.neck_radius_mm * 1.08, lid_base],
+        [
+            item.neck_radius_mm * 1.12,
+            lid_base + teapot.lid_height_mm * 0.20,
+        ],
+        [
+            item.neck_radius_mm * 0.72,
+            lid_base + teapot.lid_height_mm * 0.75,
+        ],
+        [0.0, lid_base + teapot.lid_height_mm],
+    ];
+    assistant_append_revolved_profile(&mut vertices_mm, &mut triangles, &lid_profile, 32);
+    let knob_base = lid_base + teapot.lid_height_mm;
+    let knob = teapot.lid_knob_radius_mm;
+    let knob_profile = [
+        [0.0, knob_base],
+        [knob * 0.75, knob_base + knob * 0.20],
+        [knob, knob_base + knob],
+        [knob * 0.75, knob_base + knob * 1.80],
+        [0.0, knob_base + knob * 2.0],
+    ];
+    assistant_append_revolved_profile(&mut vertices_mm, &mut triangles, &knob_profile, 24);
+    for triangle in &mut triangles {
+        triangle.swap(1, 2);
+    }
+
+    Some(MeshBodySpec {
+        schema: MESH_BODY_SCHEMA_V1.to_owned(),
+        vertices_mm,
+        triangles,
+        authority: MeshAuthority::Authored {
+            provenance: "ketchup-assistant-rounded-teapot-v1".to_owned(),
+        },
+    })
 }
 
 fn assistant_gable_roof_mesh(item: &AssistantGableRoofIntent) -> MeshBodySpec {
@@ -10071,6 +10378,37 @@ impl KetchupApp {
             }
         }
         for bottle in &intent.bottles {
+            if bottle.teapot.is_some() {
+                let definition = next_definition.map(DefinitionId)?;
+                let feature = next_feature.map(FeatureId)?;
+                let occurrence = next_occurrence.map(OccurrenceId)?;
+                let [x, y, z] = bottle.origin_mm;
+                commands.extend([
+                    CanonicalCommand::CreateDefinition {
+                        id: definition,
+                        name: bottle.name.clone(),
+                    },
+                    CanonicalCommand::CreateFeature {
+                        id: feature,
+                        definition_id: definition,
+                        name: format!("{} smooth hollow vessel", bottle.name),
+                        kind: FeatureKind::MeshBody(assistant_teapot_mesh(bottle)?),
+                    },
+                    CanonicalCommand::CreateOccurrence {
+                        id: occurrence,
+                        definition_id: definition,
+                        name: format!("{} occurrence", bottle.name),
+                        transform: Transform::from_translation(x, y, z).ok()?,
+                        parent: None,
+                        tag: None,
+                        visible: true,
+                    },
+                ]);
+                next_definition = definition.0.checked_add(1);
+                next_feature = feature.0.checked_add(1);
+                next_occurrence = occurrence.0.checked_add(1);
+                continue;
+            }
             let definition = next_definition.map(DefinitionId)?;
             let profile = next_feature.map(FeatureId)?;
             let control = profile.0.checked_add(1).map(FeatureId)?;

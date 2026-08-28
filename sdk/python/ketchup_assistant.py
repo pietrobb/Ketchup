@@ -75,10 +75,14 @@ SYSTEM_PROMPT = (
     "every visible, copyable selected/requested occurrence even when it has no legacy boxes entry. "
     "Geometry details are not required to copy an occurrence. Derive a touching, non-overlapping "
     "step from occurrence bounds in document context when possible. "
-    "For an editable rotational bottle, use bottles with exactly name, body_radius_mm, "
-    "body_height_mm, shoulder_rise_mm, neck_radius_mm, neck_height_mm, wall_thickness_mm, "
-    "finish_kind (fillet or chamfer), finish_amount_mm, and origin_mm [x, y, z]. Each bottle "
-    "becomes one editable profile→Revolve→Shell→Fillet/Chamfer feature chain. "
+    "For an editable rotational bottle, use bottles with name, body_radius_mm, body_height_mm, "
+    "shoulder_rise_mm, neck_radius_mm, neck_height_mm, wall_thickness_mm, finish_kind (fillet or "
+    "chamfer), finish_amount_mm, origin_mm [x, y, z], and no teapot field. Each ordinary bottle "
+    "becomes one editable profile→Revolve→Shell→Fillet/Chamfer feature chain. For a smooth hollow "
+    "tea pot, use the same bottles entry and add teapot with exactly handle_clearance_mm, "
+    "handle_tube_radius_mm, spout_length_mm, spout_radius_mm, lid_height_mm, and "
+    "lid_knob_radius_mm. This creates a rounded hollow body with an open mouth, curved tubular "
+    "handle, hollow rising spout, lid, and knob; never approximate a tea pot or cup with boxes. "
     "For a true gable roof, use gable_roofs with exactly name, length_mm along the ridge, span_mm across the gables, rise_mm from eave to ridge, thickness_mm, and origin_mm [x, y, z] at the lower outside corner; never approximate a pitched roof with stepped boxes. "
     "For one solid straight staircase, use staircases with exactly name, run_mm, width_mm, rise_mm, step_count, and origin_mm [x, y, z]. Choose 150-450 mm going, 100-250 mm riser, and at least 500 mm width. "
     "For rafters, purlins, braces, and any rotated rectangular timber, use oriented_beams with exactly name, start_mm and end_mm at the centres of the end faces, up_hint (normally [0,0,1]), width_mm, depth_mm, and optional bottom_notches. Each full-width bottom notch has exactly from_start_mm along the beam axis, length_mm, and depth_mm. Use real oriented beams and notches; never claim they are unsupported or replace a sloped beam with stepped boxes. Extend rafter endpoints by the requested overhang distance along their slope, not horizontally and not at gables. "
@@ -421,7 +425,10 @@ def _validate_bottle(bottle: object) -> None:
         "finish_amount_mm",
         "origin_mm",
     }
-    if not isinstance(bottle, dict) or set(bottle) != fields:
+    if (
+        not isinstance(bottle, dict)
+        or not fields <= set(bottle) <= fields | {"teapot"}
+    ):
         raise ProtocolError("provider bottle contains missing or unknown fields")
     name = bottle["name"]
     if (
@@ -461,6 +468,35 @@ def _validate_bottle(bottle: object) -> None:
         or bottle["finish_kind"] not in {"fillet", "chamfer"}
     ):
         raise ProtocolError("provider bottle geometry is unsupported")
+    teapot = bottle.get("teapot")
+    if teapot is None:
+        return
+    teapot_fields = {
+        "handle_clearance_mm",
+        "handle_tube_radius_mm",
+        "spout_length_mm",
+        "spout_radius_mm",
+        "lid_height_mm",
+        "lid_knob_radius_mm",
+    }
+    if not isinstance(teapot, dict) or set(teapot) != teapot_fields:
+        raise ProtocolError("provider teapot contains missing or unknown fields")
+    if any(
+        not isinstance(teapot[field], (int, float))
+        or isinstance(teapot[field], bool)
+        or not 0 < teapot[field] <= 2_000
+        for field in teapot_fields
+    ):
+        raise ProtocolError("provider teapot dimensions are outside the envelope")
+    if (
+        teapot["handle_clearance_mm"] < teapot["handle_tube_radius_mm"] * 2
+        or teapot["handle_tube_radius_mm"] >= body_radius * 0.35
+        or not body_radius * 0.75 <= teapot["spout_length_mm"] <= body_radius * 4
+        or not thickness < teapot["spout_radius_mm"] < body_radius * 0.5
+        or teapot["lid_height_mm"] >= bottle["body_height_mm"] * 0.5
+        or teapot["lid_knob_radius_mm"] >= neck_radius * 0.75
+    ):
+        raise ProtocolError("provider teapot geometry is unsupported")
 
 
 def _parse_assistant_result(answer: str) -> dict:
