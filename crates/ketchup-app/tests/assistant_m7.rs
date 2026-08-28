@@ -5,12 +5,13 @@ use harness::{ScriptedAssistantTransport, Shell};
 use ketchup_app::dialogs::ScriptedFileDialogs;
 use ketchup_app::{AppCommand, AssistantMessageRole, AssistantProvider, AssistantWorkspaceMode};
 use ketchup_core::assistant_sidecar::{
-    ASSISTANT_PROTOCOL_VERSION, AssistantApiDiagnostics, AssistantBeamNotchIntent,
-    AssistantBottleFinishKind, AssistantBottleIntent, AssistantBoxIntent, AssistantChatResult,
-    AssistantDistribution, AssistantGableRoofIntent, AssistantKetchupBottleIntent,
-    AssistantLinearArrayIntent, AssistantModelIntent, AssistantOrientedBeamIntent,
-    AssistantParameterEditIntent, AssistantProfileTranslationIntent, AssistantStaircaseIntent,
-    AssistantSubtractionIntent, AssistantTeapotIntent, AssistantTranslationIntent,
+    ASSISTANT_PROTOCOL_VERSION, AssistantApiDiagnostics, AssistantBalloonTextIntent,
+    AssistantBeamNotchIntent, AssistantBottleFinishKind, AssistantBottleIntent, AssistantBoxIntent,
+    AssistantChatResult, AssistantDistribution, AssistantGableRoofIntent,
+    AssistantKetchupBottleIntent, AssistantLinearArrayIntent, AssistantModelIntent,
+    AssistantOrientedBeamIntent, AssistantParameterEditIntent, AssistantProfileTranslationIntent,
+    AssistantStaircaseIntent, AssistantSubtractionIntent, AssistantTeapotIntent,
+    AssistantTranslationIntent,
 };
 use ketchup_core::document::{
     BodyId, CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId,
@@ -450,6 +451,7 @@ fn scripted_assistant_model_review_cancel_confirm_undo_and_redo_use_accesskit() 
             gable_roofs: Vec::new(),
             staircases: Vec::new(),
             oriented_beams: Vec::new(),
+            balloon_texts: Vec::new(),
         }),
     };
     let transport = Arc::new(ScriptedAssistantTransport::new([
@@ -537,6 +539,7 @@ fn verbal_bottle_request_reviews_confirms_and_undoes_through_accesskit() {
                 gable_roofs: Vec::new(),
                 staircases: Vec::new(),
                 oriented_beams: Vec::new(),
+                balloon_texts: Vec::new(),
             }),
         },
     )]));
@@ -622,6 +625,7 @@ fn assistant_profile_translation_reviews_confirms_undoes_and_fails_closed() {
             gable_roofs: Vec::new(),
             staircases: Vec::new(),
             oriented_beams: Vec::new(),
+            balloon_texts: Vec::new(),
         },
     ));
     assert_eq!(shell.app().document_revision(), before_revision + 1);
@@ -665,6 +669,7 @@ fn assistant_profile_translation_reviews_confirms_undoes_and_fails_closed() {
                 gable_roofs: Vec::new(),
                 staircases: Vec::new(),
                 oriented_beams: Vec::new(),
+                balloon_texts: Vec::new(),
             })
     );
     assert_eq!(shell.app().canonical_digest(), before_digest);
@@ -716,6 +721,7 @@ fn assistant_parameter_edit_uses_the_selected_exact_target_for_feature_and_const
             gable_roofs: Vec::new(),
             staircases: Vec::new(),
             oriented_beams: Vec::new(),
+            balloon_texts: Vec::new(),
         }
     ));
     assert!(matches!(
@@ -778,6 +784,7 @@ fn assistant_parameter_edit_uses_the_selected_exact_target_for_feature_and_const
             gable_roofs: Vec::new(),
             staircases: Vec::new(),
             oriented_beams: Vec::new(),
+            balloon_texts: Vec::new(),
         }
     ));
     let snapshot = shell.app().document_snapshot();
@@ -811,6 +818,7 @@ fn assistant_parameter_edit_uses_the_selected_exact_target_for_feature_and_const
                 gable_roofs: Vec::new(),
                 staircases: Vec::new(),
                 oriented_beams: Vec::new(),
+                balloon_texts: Vec::new(),
             })
     );
     assert_eq!(shell.app().canonical_digest(), before_digest);
@@ -878,6 +886,7 @@ fn assistant_context_runs_current_collision_validation_without_mutating_or_addin
             gable_roofs: Vec::new(),
             staircases: Vec::new(),
             oriented_beams: Vec::new(),
+            balloon_texts: Vec::new(),
         },
     ));
     let revision = shell.app().document_revision();
@@ -918,6 +927,7 @@ fn assistant_context_runs_current_collision_validation_without_mutating_or_addin
             gable_roofs: Vec::new(),
             staircases: Vec::new(),
             oriented_beams: Vec::new(),
+            balloon_texts: Vec::new(),
         },
     ));
     let clean_revision = shell.app().document_revision();
@@ -979,6 +989,7 @@ fn assistant_context_finds_transitively_supported_and_floating_parts_without_mut
             gable_roofs: Vec::new(),
             staircases: Vec::new(),
             oriented_beams: Vec::new(),
+            balloon_texts: Vec::new(),
         },
     ));
     shell.settle();
@@ -1015,6 +1026,7 @@ fn assistant_context_finds_transitively_supported_and_floating_parts_without_mut
             gable_roofs: Vec::new(),
             staircases: Vec::new(),
             oriented_beams: Vec::new(),
+            balloon_texts: Vec::new(),
         },
     ));
     shell.settle();
@@ -1186,6 +1198,7 @@ fn assistant_chat_reports_shelf_deflection_tipping_and_anchoring_with_explicit_l
             gable_roofs: Vec::new(),
             staircases: Vec::new(),
             oriented_beams: Vec::new(),
+            balloon_texts: Vec::new(),
         },
     ));
     shell.settle();
@@ -1335,6 +1348,7 @@ fn assistant_chat_reports_hardware_and_manufacturing_rules_with_named_elements_a
             gable_roofs: Vec::new(),
             staircases: Vec::new(),
             oriented_beams: Vec::new(),
+            balloon_texts: Vec::new(),
         },
     ));
     shell.settle();
@@ -1477,6 +1491,7 @@ fn assistant_chat_reports_room_placement_and_blocked_passages_from_named_envelop
             gable_roofs: Vec::new(),
             staircases: Vec::new(),
             oriented_beams: Vec::new(),
+            balloon_texts: Vec::new(),
         },
     ));
     shell.settle();
@@ -1623,6 +1638,7 @@ fn assistant_chat_calculates_static_load_from_explicit_canonical_physics_inputs(
             gable_roofs: Vec::new(),
             staircases: Vec::new(),
             oriented_beams: Vec::new(),
+            balloon_texts: Vec::new(),
         },
     ));
     let scene = shell.app().document_snapshot().scene_query();
@@ -1784,6 +1800,7 @@ fn assistant_repairs_a_collision_through_preview_confirmation_revalidation_and_o
             gable_roofs: Vec::new(),
             staircases: Vec::new(),
             oriented_beams: Vec::new(),
+            balloon_texts: Vec::new(),
         },
     ));
     shell.settle();
@@ -1856,6 +1873,7 @@ fn assistant_repairs_an_unsupported_part_and_reruns_only_gravity_support() {
             gable_roofs: Vec::new(),
             staircases: Vec::new(),
             oriented_beams: Vec::new(),
+            balloon_texts: Vec::new(),
         },
     ));
     shell.settle();
@@ -1942,6 +1960,7 @@ fn assistant_repairs_all_safe_collision_and_support_findings_in_one_confirmed_ba
             gable_roofs: Vec::new(),
             staircases: Vec::new(),
             oriented_beams: Vec::new(),
+            balloon_texts: Vec::new(),
         },
     ));
     shell.settle();
@@ -2174,6 +2193,7 @@ fn public_apply_helpers_cannot_bypass_review_for_non_whitelisted_changes() {
                 gable_roofs: Vec::new(),
                 staircases: Vec::new(),
                 oriented_beams: Vec::new(),
+                balloon_texts: Vec::new(),
             })
     );
     assert!(shell.app().assistant_proposal().is_some());
@@ -2617,6 +2637,7 @@ fn assistant_creates_a_rectangular_prism_as_one_reviewed_batch_and_one_undo_step
                 gable_roofs: Vec::new(),
                 staircases: Vec::new(),
                 oriented_beams: Vec::new(),
+                balloon_texts: Vec::new(),
             })
     );
     assert_eq!(shell.app().document_revision(), initial_revision);
@@ -2664,6 +2685,7 @@ fn assistant_replacement_review_hides_internal_digests_and_describes_removals() 
                 gable_roofs: Vec::new(),
                 staircases: Vec::new(),
                 oriented_beams: Vec::new(),
+                balloon_texts: Vec::new(),
             })
     );
     let removed = shell
@@ -2747,6 +2769,7 @@ fn assistant_model_intent_applies_real_3d_boxes_immediately_as_one_undoable_batc
             gable_roofs: Vec::new(),
             staircases: Vec::new(),
             oriented_beams: Vec::new(),
+            balloon_texts: Vec::new(),
         }
     ));
     assert_eq!(shell.app().document_revision(), initial_revision + 1);
@@ -2810,6 +2833,7 @@ fn assistant_teapot_intent_creates_smooth_hollow_saved_model_as_one_undo_step() 
             gable_roofs: Vec::new(),
             staircases: Vec::new(),
             oriented_beams: Vec::new(),
+            balloon_texts: Vec::new(),
         }
     ));
 
@@ -2866,6 +2890,92 @@ fn assistant_teapot_intent_creates_smooth_hollow_saved_model_as_one_undo_step() 
 }
 
 #[test]
+fn assistant_balloon_text_creates_inflated_letters_with_holes_depth_save_and_undo() {
+    let mut shell = Shell::new();
+    let initial_revision = shell.app().document_revision();
+    let initial_digest = shell.app().canonical_digest();
+    assert!(apply_reviewed_model_intent(
+        &mut shell,
+        AssistantModelIntent {
+            replace_scene: false,
+            boxes: Vec::new(),
+            translations: Vec::new(),
+            profile_translations: Vec::new(),
+            parameter_edits: Vec::new(),
+            linear_arrays: Vec::new(),
+            bottles: Vec::new(),
+            balloon_texts: vec![AssistantBalloonTextIntent {
+                name: "Balloon OA".to_owned(),
+                text: "O A".to_owned(),
+                height_mm: 120.0,
+                depth_mm: 42.0,
+                stroke_width_mm: 20.0,
+                letter_spacing_mm: 12.0,
+                origin_mm: [25.0, 10.0, 5.0],
+            }],
+            gable_roofs: Vec::new(),
+            staircases: Vec::new(),
+            oriented_beams: Vec::new(),
+        }
+    ));
+    assert_eq!(shell.app().document_revision(), initial_revision + 1);
+    let snapshot = shell.app().document_snapshot();
+    let feature = snapshot
+        .features()
+        .find(|feature| feature.name() == "Balloon OA inflated text")
+        .expect("balloon text mesh must exist");
+    let FeatureKind::MeshBody(mesh) = feature.kind() else {
+        panic!("balloon text must be one canonical mesh body");
+    };
+    assert!(mesh.vertices_mm.len() > 650);
+    assert!(mesh.triangles.len() > 1_200);
+    assert!(mesh.vertices_mm.iter().any(|point| point[1] == -21.0));
+    assert!(mesh.vertices_mm.iter().any(|point| point[1] == 21.0));
+    assert!(
+        !mesh
+            .vertices_mm
+            .iter()
+            .any(|point| (point[0] - 48.0).abs() < 5.0 && (point[2] - 60.0).abs() < 5.0),
+        "the centre of O must remain a through opening"
+    );
+    assert!(matches!(
+        &mesh.authority,
+        ketchup_core::document::MeshAuthority::Authored { provenance }
+            if provenance == "ketchup-assistant-balloon-text-v1"
+    ));
+    let occurrence = snapshot
+        .occurrences()
+        .find(|occurrence| occurrence.name() == "Balloon OA occurrence")
+        .expect("balloon text occurrence must exist");
+    let transform = occurrence.transform();
+    let matrix = transform.matrix();
+    assert_eq!([matrix[3], matrix[7], matrix[11]], [25.0, 10.0, 5.0]);
+
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("assistant-balloon-letters.ketchup");
+    persistence::save_atomic(&path, &snapshot).unwrap();
+    let reopened = persistence::load_file(&path).unwrap().snapshot();
+    assert_eq!(reopened.canonical_digest(), snapshot.canonical_digest());
+    let fixture_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../examples/assistant-balloon-letters.ketchup");
+    let fixture = persistence::load_file(&fixture_path).unwrap().snapshot();
+    let fixture_feature = fixture
+        .features()
+        .find(|feature| feature.name() == "Balloon OA inflated text")
+        .expect("saved balloon text fixture must remain openable");
+    let FeatureKind::MeshBody(fixture_mesh) = fixture_feature.kind() else {
+        panic!("saved balloon text fixture must retain its canonical mesh body");
+    };
+    assert_eq!(fixture_mesh.vertices_mm.len(), mesh.vertices_mm.len());
+    assert_eq!(fixture_mesh.triangles.len(), mesh.triangles.len());
+    assert_eq!(fixture_mesh.authority, mesh.authority);
+
+    assert!(shell.app_mut().undo());
+    assert_eq!(shell.app().document_revision(), initial_revision);
+    assert_eq!(shell.app().canonical_digest(), initial_digest);
+}
+
+#[test]
 fn assistant_ketchup_bottle_creates_saved_rounded_squeeze_model_as_one_undo_step() {
     let mut shell = Shell::new();
     let initial_revision = shell.app().document_revision();
@@ -2904,6 +3014,7 @@ fn assistant_ketchup_bottle_creates_saved_rounded_squeeze_model_as_one_undo_step
             gable_roofs: Vec::new(),
             staircases: Vec::new(),
             oriented_beams: Vec::new(),
+            balloon_texts: Vec::new(),
         }
     ));
     let snapshot = shell.app().document_snapshot();
@@ -2983,6 +3094,7 @@ fn assistant_bottle_intent_creates_editable_feature_chain_as_one_undo_step() {
             gable_roofs: Vec::new(),
             staircases: Vec::new(),
             oriented_beams: Vec::new(),
+            balloon_texts: Vec::new(),
         }
     ));
 
@@ -3076,6 +3188,7 @@ fn assistant_builds_gable_roof_floor_opening_and_staircase_as_one_undo_step() {
                 origin_mm: [1_800.0, 2_200.0, 200.0],
             }],
             oriented_beams: Vec::new(),
+            balloon_texts: Vec::new(),
         }
     ));
 
@@ -3162,6 +3275,7 @@ fn assistant_builds_sloped_rafters_with_real_notches_and_central_purlin() {
                     bottom_notches: Vec::new(),
                 },
             ],
+            balloon_texts: Vec::new(),
         }
     ));
 
@@ -3227,6 +3341,7 @@ fn assistant_subtractions_create_one_real_grooved_body_as_one_undo_step() {
             gable_roofs: Vec::new(),
             staircases: Vec::new(),
             oriented_beams: Vec::new(),
+            balloon_texts: Vec::new(),
         }
     ));
 
@@ -3301,6 +3416,7 @@ fn assistant_moves_existing_grooved_body_without_rebuilding_its_geometry() {
             gable_roofs: Vec::new(),
             staircases: Vec::new(),
             oriented_beams: Vec::new(),
+            balloon_texts: Vec::new(),
         }
     ));
     let occurrence_id = shell
@@ -3330,6 +3446,7 @@ fn assistant_moves_existing_grooved_body_without_rebuilding_its_geometry() {
             gable_roofs: Vec::new(),
             staircases: Vec::new(),
             oriented_beams: Vec::new(),
+            balloon_texts: Vec::new(),
         }
     ));
 
@@ -3394,6 +3511,7 @@ fn assistant_context_keeps_all_17_plain_and_7_grooved_parts_copyable_with_bounds
             gable_roofs: Vec::new(),
             staircases: Vec::new(),
             oriented_beams: Vec::new(),
+            balloon_texts: Vec::new(),
         }
     ));
 
@@ -3444,6 +3562,7 @@ fn assistant_stacks_24_existing_parts_into_20_layers_as_shared_occurrences_in_on
             gable_roofs: Vec::new(),
             staircases: Vec::new(),
             oriented_beams: Vec::new(),
+            balloon_texts: Vec::new(),
         }
     ));
     let before = shell.app().document_snapshot();
@@ -3474,6 +3593,7 @@ fn assistant_stacks_24_existing_parts_into_20_layers_as_shared_occurrences_in_on
             gable_roofs: Vec::new(),
             staircases: Vec::new(),
             oriented_beams: Vec::new(),
+            balloon_texts: Vec::new(),
         }
     ));
 

@@ -17,6 +17,8 @@ const MAX_ASSISTANT_ARRAY_INSTANCES: u32 = 1_000;
 const MAX_ASSISTANT_ARRAY_OUTPUTS: usize = 512;
 const MAX_ASSISTANT_BOTTLES: usize = 8;
 const MAX_ASSISTANT_TEAPOT_DIMENSION_MM: f64 = 2_000.0;
+const MAX_ASSISTANT_BALLOON_TEXTS: usize = 8;
+const MAX_ASSISTANT_BALLOON_TEXT_CHARS: usize = 32;
 const MAX_ASSISTANT_GABLE_ROOFS: usize = 16;
 const MAX_ASSISTANT_STAIRCASES: usize = 16;
 const MAX_ASSISTANT_ORIENTED_BEAMS: usize = 64;
@@ -139,6 +141,18 @@ pub struct AssistantBottleIntent {
     pub teapot: Option<AssistantTeapotIntent>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ketchup_bottle: Option<AssistantKetchupBottleIntent>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AssistantBalloonTextIntent {
+    pub name: String,
+    pub text: String,
+    pub height_mm: f64,
+    pub depth_mm: f64,
+    pub stroke_width_mm: f64,
+    pub letter_spacing_mm: f64,
+    pub origin_mm: [f64; 3],
 }
 
 impl AssistantBottleIntent {
@@ -319,6 +333,8 @@ pub struct AssistantModelIntent {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub bottles: Vec<AssistantBottleIntent>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub balloon_texts: Vec<AssistantBalloonTextIntent>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub gable_roofs: Vec<AssistantGableRoofIntent>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub staircases: Vec<AssistantStaircaseIntent>,
@@ -417,12 +433,13 @@ impl AssistantModelIntent {
             && self.parameter_edits.is_empty()
             && self.linear_arrays.is_empty()
             && self.bottles.is_empty()
+            && self.balloon_texts.is_empty()
             && self.gable_roofs.is_empty()
             && self.staircases.is_empty()
             && self.oriented_beams.is_empty()
         {
             return Err(
-                "assistant proposal must contain geometry, translations, profile translations, parameter edits, linear arrays, bottles, roofs, staircases, or oriented beams"
+                "assistant proposal must contain geometry, translations, profile translations, parameter edits, linear arrays, bottles, balloon text, roofs, staircases, or oriented beams"
                     .to_owned(),
             );
         }
@@ -444,6 +461,9 @@ impl AssistantModelIntent {
         if self.bottles.len() > MAX_ASSISTANT_BOTTLES {
             return Err("assistant proposal contains too many bottles".to_owned());
         }
+        if self.balloon_texts.len() > MAX_ASSISTANT_BALLOON_TEXTS {
+            return Err("assistant proposal contains too many balloon texts".to_owned());
+        }
         if self.gable_roofs.len() > MAX_ASSISTANT_GABLE_ROOFS {
             return Err("assistant proposal contains too many gable roofs".to_owned());
         }
@@ -458,6 +478,33 @@ impl AssistantModelIntent {
         }
         for bottle in &self.bottles {
             bottle.validate()?;
+        }
+        for text in &self.balloon_texts {
+            let characters = text.text.chars().collect::<Vec<_>>();
+            if text.name.trim().is_empty()
+                || text.name.len() > MAX_ASSISTANT_NAME_BYTES
+                || text.name.chars().any(char::is_control)
+                || characters.is_empty()
+                || characters.len() > MAX_ASSISTANT_BALLOON_TEXT_CHARS
+                || characters.iter().all(|character| *character == ' ')
+                || characters
+                    .iter()
+                    .any(|character| !matches!(character, 'A'..='Z' | '0'..='9' | ' '))
+                || !text.height_mm.is_finite()
+                || !(10.0..=MAX_ASSISTANT_TEAPOT_DIMENSION_MM).contains(&text.height_mm)
+                || !text.depth_mm.is_finite()
+                || !(text.height_mm * 0.1..=text.height_mm * 0.8).contains(&text.depth_mm)
+                || !text.stroke_width_mm.is_finite()
+                || !(text.height_mm * 0.08..=text.height_mm * 0.24).contains(&text.stroke_width_mm)
+                || !text.letter_spacing_mm.is_finite()
+                || !(0.0..=text.height_mm).contains(&text.letter_spacing_mm)
+                || text
+                    .origin_mm
+                    .iter()
+                    .any(|value| !value.is_finite() || value.abs() > MAX_ASSISTANT_ABS_MM)
+            {
+                return Err("assistant balloon text is invalid".to_owned());
+            }
         }
         for roof in &self.gable_roofs {
             if roof.name.trim().is_empty()
@@ -517,6 +564,7 @@ impl AssistantModelIntent {
                 || !self.parameter_edits.is_empty()
                 || !self.linear_arrays.is_empty()
                 || !self.bottles.is_empty()
+                || !self.balloon_texts.is_empty()
                 || !self.gable_roofs.is_empty()
                 || !self.staircases.is_empty()
                 || !self.oriented_beams.is_empty())
@@ -529,6 +577,7 @@ impl AssistantModelIntent {
                 || !self.profile_translations.is_empty()
                 || !self.linear_arrays.is_empty()
                 || !self.bottles.is_empty()
+                || !self.balloon_texts.is_empty()
                 || !self.gable_roofs.is_empty()
                 || !self.staircases.is_empty()
                 || !self.oriented_beams.is_empty())

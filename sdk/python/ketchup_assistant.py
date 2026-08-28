@@ -62,7 +62,7 @@ SYSTEM_PROMPT = (
     "unsupported or unavailable occurrences or say that the relevant check is incomplete or skipped. Return ONLY "
     "one JSON object with exactly two fields: message (a concise user-facing string) and "
     "model_intent (null for discussion, otherwise an object with replace_scene boolean, boxes, "
-    "translations, profile_translations, parameter_edits, linear_arrays, bottles, gable_roofs, staircases, and oriented_beams). For a whole-part move, use translations with occurrence_id and delta_mm "
+    "translations, profile_translations, parameter_edits, linear_arrays, bottles, balloon_texts, gable_roofs, staircases, and oriented_beams). For a whole-part move, use translations with occurrence_id and delta_mm "
     "[x, y, z]; do not rebuild geometry. To move the currently selected cut profile, use exactly one profile_translations entry copied from selected_profile_translation_target with definition_id, body_id, profile_id, and delta_mm [x, y] in its workplane; never mix it with another mutation. To change the currently selected feature or sketch-constraint dimension, use exactly one parameter_edits entry copied from selected_parameter_edit_target with definition_id, body_id, feature_id, constraint_id, and the requested value_mm; never mix it with another mutation. For stacking, repetition, or a linear array of existing "
     "parts, use linear_arrays with occurrence_ids, instances (total count including the originals), "
     "and step_mm [x, y, z]; never rebuild the repeated bodies. Interpret N-times stacking as N total "
@@ -82,7 +82,7 @@ SYSTEM_PROMPT = (
     "tea pot, use the same bottles entry and add teapot with exactly handle_clearance_mm, "
     "handle_tube_radius_mm, spout_length_mm, spout_radius_mm, lid_height_mm, and "
     "lid_knob_radius_mm. This creates a rounded hollow body with an open mouth, curved tubular "
-    "handle, hollow rising spout, lid, and knob; never approximate a tea pot or cup with boxes. For a rounded squeeze ketchup bottle, add ketchup_bottle with exactly body_depth_ratio, cap_radius_mm, cap_height_mm, label_width_mm, label_height_mm, label_relief_mm, and grip_rib_count. This creates an oval squeezable body, smooth shoulders, ribbed cap, and raised oval label; never approximate it with stacked cylinders or boxes. "
+    "handle, hollow rising spout, lid, and knob; never approximate a tea pot or cup with boxes. For a rounded squeeze ketchup bottle, add ketchup_bottle with exactly body_depth_ratio, cap_radius_mm, cap_height_mm, label_width_mm, label_height_mm, label_relief_mm, and grip_rib_count. This creates an oval squeezable body, smooth shoulders, ribbed cap, and raised oval label; never approximate it with stacked cylinders or boxes. For inflated balloon-style 3D lettering, use balloon_texts with exactly name, text (uppercase A-Z, digits, and spaces), height_mm, depth_mm, stroke_width_mm, letter_spacing_mm, and origin_mm [x, y, z]. This creates rounded inflated stroke solids, preserves through openings in letters such as O, A, B, D, P, and R, and supports adjustable depth; never approximate balloon letters with boxes. "
     "For a true gable roof, use gable_roofs with exactly name, length_mm along the ridge, span_mm across the gables, rise_mm from eave to ridge, thickness_mm, and origin_mm [x, y, z] at the lower outside corner; never approximate a pitched roof with stepped boxes. "
     "For one solid straight staircase, use staircases with exactly name, run_mm, width_mm, rise_mm, step_count, and origin_mm [x, y, z]. Choose 150-450 mm going, 100-250 mm riser, and at least 500 mm width. "
     "For rafters, purlins, braces, and any rotated rectangular timber, use oriented_beams with exactly name, start_mm and end_mm at the centres of the end faces, up_hint (normally [0,0,1]), width_mm, depth_mm, and optional bottom_notches. Each full-width bottom notch has exactly from_start_mm along the beam axis, length_mm, and depth_mm. Use real oriented beams and notches; never claim they are unsupported or replace a sloped beam with stepped boxes. Extend rafter endpoints by the requested overhang distance along their slope, not horizontally and not at gables. "
@@ -497,6 +497,45 @@ def _validate_bottle(bottle: object) -> None:
         raise ProtocolError("provider ketchup bottle geometry is unsupported")
 
 
+def _validate_balloon_text(item: object) -> None:
+    fields = {
+        "name", "text", "height_mm", "depth_mm", "stroke_width_mm",
+        "letter_spacing_mm", "origin_mm",
+    }
+    if not isinstance(item, dict) or set(item) != fields:
+        raise ProtocolError("provider balloon text contains missing or unknown fields")
+    name = item["name"]
+    text = item["text"]
+    if (
+        not isinstance(name, str)
+        or not name.strip()
+        or len(name.encode("utf-8")) > 128
+        or any(ord(character) < 32 or ord(character) == 127 for character in name)
+        or not isinstance(text, str)
+        or not 1 <= len(text) <= 32
+        or not text.strip()
+        or any(character not in "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 " for character in text)
+    ):
+        raise ProtocolError("provider balloon text name or content is invalid")
+    dimensions = [item[field] for field in ("height_mm", "depth_mm", "stroke_width_mm", "letter_spacing_mm")]
+    if any(
+        not isinstance(value, (int, float))
+        or isinstance(value, bool)
+        or not math.isfinite(value)
+        for value in dimensions
+    ):
+        raise ProtocolError("provider balloon text dimensions are invalid")
+    height = item["height_mm"]
+    if (
+        not 10 <= height <= 2_000
+        or not height * 0.1 <= item["depth_mm"] <= height * 0.8
+        or not height * 0.08 <= item["stroke_width_mm"] <= height * 0.24
+        or not 0 <= item["letter_spacing_mm"] <= height
+    ):
+        raise ProtocolError("provider balloon text geometry is unsupported")
+    _validate_vector(item["origin_mm"], "provider balloon text origin_mm", positive=False)
+
+
 def _parse_assistant_result(answer: str) -> dict:
     try:
         result = json.loads(answer)
@@ -511,7 +550,7 @@ def _parse_assistant_result(answer: str) -> dict:
     if intent is None:
         return {"message": message, "model_intent": None}
     if not isinstance(intent, dict) or not {"replace_scene", "boxes"} <= set(intent) <= {
-        "replace_scene", "boxes", "translations", "profile_translations", "parameter_edits", "linear_arrays", "bottles", "gable_roofs", "staircases", "oriented_beams"
+        "replace_scene", "boxes", "translations", "profile_translations", "parameter_edits", "linear_arrays", "bottles", "balloon_texts", "gable_roofs", "staircases", "oriented_beams"
     }:
         raise ProtocolError("provider model intent contains missing or unknown fields")
     boxes = intent["boxes"]
@@ -520,6 +559,7 @@ def _parse_assistant_result(answer: str) -> dict:
     parameter_edits = intent.setdefault("parameter_edits", [])
     linear_arrays = intent.setdefault("linear_arrays", [])
     bottles = intent.setdefault("bottles", [])
+    balloon_texts = intent.setdefault("balloon_texts", [])
     gable_roofs = intent.setdefault("gable_roofs", [])
     staircases = intent.setdefault("staircases", [])
     oriented_beams = intent.setdefault("oriented_beams", [])
@@ -535,19 +575,21 @@ def _parse_assistant_result(answer: str) -> dict:
         raise ProtocolError("provider model intent has too many linear arrays")
     if not isinstance(bottles, list) or len(bottles) > 8:
         raise ProtocolError("provider model intent has too many bottles")
+    if not isinstance(balloon_texts, list) or len(balloon_texts) > 8:
+        raise ProtocolError("provider model intent has too many balloon texts")
     if not isinstance(gable_roofs, list) or len(gable_roofs) > 16:
         raise ProtocolError("provider model intent has too many gable roofs")
     if not isinstance(staircases, list) or len(staircases) > 16:
         raise ProtocolError("provider model intent has too many staircases")
     if not isinstance(oriented_beams, list) or len(oriented_beams) > 64:
         raise ProtocolError("provider model intent has too many oriented beams")
-    if not boxes and not translations and not profile_translations and not parameter_edits and not linear_arrays and not bottles and not gable_roofs and not staircases and not oriented_beams:
+    if not boxes and not translations and not profile_translations and not parameter_edits and not linear_arrays and not bottles and not balloon_texts and not gable_roofs and not staircases and not oriented_beams:
         raise ProtocolError("provider model intent is empty")
     if len(boxes) > 64 or (intent["replace_scene"] and (translations or profile_translations or parameter_edits or linear_arrays)):
         raise ProtocolError("provider model intent has invalid geometry scope")
-    if profile_translations and (boxes or translations or parameter_edits or linear_arrays or bottles or gable_roofs or staircases or oriented_beams):
+    if profile_translations and (boxes or translations or parameter_edits or linear_arrays or bottles or balloon_texts or gable_roofs or staircases or oriented_beams):
         raise ProtocolError("provider profile translation cannot mix geometry mutations")
-    if parameter_edits and (boxes or translations or profile_translations or linear_arrays or bottles or gable_roofs or staircases or oriented_beams):
+    if parameter_edits and (boxes or translations or profile_translations or linear_arrays or bottles or balloon_texts or gable_roofs or staircases or oriented_beams):
         raise ProtocolError("provider parameter edit cannot mix geometry mutations")
     for translation in translations:
         if (
@@ -635,6 +677,8 @@ def _parse_assistant_result(answer: str) -> dict:
             raise ProtocolError("provider linear array creates too many occurrences")
     for bottle in bottles:
         _validate_bottle(bottle)
+    for text in balloon_texts:
+        _validate_balloon_text(text)
     for roof in gable_roofs:
         fields = {"name", "length_mm", "span_mm", "rise_mm", "thickness_mm", "origin_mm"}
         if not isinstance(roof, dict) or set(roof) != fields:

@@ -1,9 +1,9 @@
 use ketchup_core::assistant_sidecar::{
-    ASSISTANT_PROTOCOL_VERSION, AssistantBeamNotchIntent, AssistantBottleFinishKind,
-    AssistantBottleIntent, AssistantDistribution, AssistantHandshake, AssistantHandshakeError,
-    AssistantKetchupBottleIntent, AssistantLinearArrayIntent, AssistantModelIntent,
-    AssistantOrientedBeamIntent, AssistantParameterEditIntent, AssistantProfileTranslationIntent,
-    AssistantTeapotIntent, distribution_is_enabled,
+    ASSISTANT_PROTOCOL_VERSION, AssistantBalloonTextIntent, AssistantBeamNotchIntent,
+    AssistantBottleFinishKind, AssistantBottleIntent, AssistantDistribution, AssistantHandshake,
+    AssistantHandshakeError, AssistantKetchupBottleIntent, AssistantLinearArrayIntent,
+    AssistantModelIntent, AssistantOrientedBeamIntent, AssistantParameterEditIntent,
+    AssistantProfileTranslationIntent, AssistantTeapotIntent, distribution_is_enabled,
 };
 
 const PUBLIC_HANDSHAKE: &str = r#"{
@@ -85,6 +85,7 @@ fn assistant_array_budget_matches_the_canonical_proposal_command_limit() {
         gable_roofs: Vec::new(),
         staircases: Vec::new(),
         oriented_beams: Vec::new(),
+        balloon_texts: Vec::new(),
     };
     assert!(valid.validate().is_ok());
 
@@ -120,6 +121,7 @@ fn assistant_profile_translation_is_single_bounded_and_unmixed() {
         gable_roofs: Vec::new(),
         staircases: Vec::new(),
         oriented_beams: Vec::new(),
+        balloon_texts: Vec::new(),
     };
     assert!(valid.validate().is_ok());
     assert_eq!(
@@ -173,6 +175,7 @@ fn assistant_parameter_edit_is_single_bounded_and_unmixed() {
         gable_roofs: Vec::new(),
         staircases: Vec::new(),
         oriented_beams: Vec::new(),
+        balloon_texts: Vec::new(),
     };
     assert!(valid.validate().is_ok());
     assert_eq!(
@@ -417,6 +420,51 @@ fn assistant_ketchup_bottle_intent_round_trips_and_rejects_invalid_relief() {
     assert_eq!(
         invalid.validate(),
         Err("assistant ketchup bottle dimensions are outside the envelope".to_owned())
+    );
+}
+
+#[test]
+fn assistant_balloon_text_round_trips_and_rejects_unsupported_or_flat_letters() {
+    let intent: AssistantModelIntent = serde_json::from_str(
+        r#"{
+            "replace_scene": false,
+            "boxes": [],
+            "balloon_texts": [{
+                "name": "Balloon KECUP",
+                "text": "KECUP 3D",
+                "height_mm": 120.0,
+                "depth_mm": 42.0,
+                "stroke_width_mm": 20.0,
+                "letter_spacing_mm": 12.0,
+                "origin_mm": [0.0, 0.0, 0.0]
+            }]
+        }"#,
+    )
+    .unwrap();
+    assert!(intent.validate().is_ok());
+    assert_eq!(intent.balloon_texts[0].text, "KECUP 3D");
+
+    let lowercase = AssistantModelIntent {
+        balloon_texts: vec![AssistantBalloonTextIntent {
+            text: "Kečup".to_owned(),
+            ..intent.balloon_texts[0].clone()
+        }],
+        ..intent.clone()
+    };
+    assert_eq!(
+        lowercase.validate(),
+        Err("assistant balloon text is invalid".to_owned())
+    );
+    let flat = AssistantModelIntent {
+        balloon_texts: vec![AssistantBalloonTextIntent {
+            depth_mm: 5.0,
+            ..intent.balloon_texts[0].clone()
+        }],
+        ..intent
+    };
+    assert_eq!(
+        flat.validate(),
+        Err("assistant balloon text is invalid".to_owned())
     );
 }
 

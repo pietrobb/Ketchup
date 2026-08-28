@@ -609,6 +609,25 @@ def test_public_sidecar_parses_bounded_ketchup_squeeze_bottle():
         assistant._parse_assistant_result(json.dumps(invalid))
 
 
+def test_public_sidecar_parses_bounded_balloon_text_with_holes_and_depth():
+    text = {
+        "name": "Balloon OA",
+        "text": "O A",
+        "height_mm": 120,
+        "depth_mm": 42,
+        "stroke_width_mm": 20,
+        "letter_spacing_mm": 12,
+        "origin_mm": [25, 10, 5],
+    }
+    answer = json.dumps({"message": "Prepared balloon letters.", "model_intent": {"replace_scene": False, "boxes": [], "balloon_texts": [text]}})
+    assert assistant._parse_assistant_result(answer)["model_intent"]["balloon_texts"] == [text]
+    assert "preserves through openings" in assistant.SYSTEM_PROMPT
+    invalid = json.loads(answer)
+    invalid["model_intent"]["balloon_texts"][0]["stroke_width_mm"] = 40
+    with pytest.raises(assistant.ProtocolError):
+        assistant._parse_assistant_result(json.dumps(invalid))
+
+
 def test_public_sidecar_parses_only_one_unmixed_profile_translation():
     translation = {
         "definition_id": 1,

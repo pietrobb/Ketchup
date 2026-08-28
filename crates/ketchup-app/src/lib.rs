@@ -5,10 +5,10 @@
 
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, Stroke, Vec2};
 use ketchup_core::assistant_sidecar::{
-    ASSISTANT_PROTOCOL_VERSION, AssistantApiDiagnostics, AssistantBottleFinishKind,
-    AssistantBottleIntent, AssistantBoxIntent, AssistantCapability, AssistantChatResult,
-    AssistantDistribution, AssistantGableRoofIntent, AssistantHandshake, AssistantModelIntent,
-    AssistantOrientedBeamIntent, AssistantStaircaseIntent,
+    ASSISTANT_PROTOCOL_VERSION, AssistantApiDiagnostics, AssistantBalloonTextIntent,
+    AssistantBottleFinishKind, AssistantBottleIntent, AssistantBoxIntent, AssistantCapability,
+    AssistantChatResult, AssistantDistribution, AssistantGableRoofIntent, AssistantHandshake,
+    AssistantModelIntent, AssistantOrientedBeamIntent, AssistantStaircaseIntent,
 };
 use ketchup_core::beam_m4ae::{
     BeamChangeSummary, BeamSlice, BeamValidationVerdict, BeamWorkspace, GroovePosition, GroupedBom,
@@ -3114,6 +3114,167 @@ fn assistant_ketchup_bottle_mesh(item: &AssistantBottleIntent) -> Option<MeshBod
         triangles,
         authority: MeshAuthority::Authored {
             provenance: "ketchup-assistant-squeeze-bottle-v1".to_owned(),
+        },
+    })
+}
+
+fn assistant_balloon_glyph_mask(character: char) -> u16 {
+    let bits = |segments: &[u8]| {
+        segments
+            .iter()
+            .fold(0u16, |mask, segment| mask | (1u16 << segment))
+    };
+    match character {
+        'A' => bits(&[0, 1, 2, 3, 4, 5]),
+        'B' | '8' => bits(&[0, 1, 2, 3, 4, 5, 6]),
+        'C' => bits(&[0, 1, 4, 6]),
+        'D' | 'O' | '0' => bits(&[0, 1, 2, 4, 5, 6]),
+        'E' | '6' => bits(&[0, 1, 3, 4, 6]),
+        'F' => bits(&[0, 1, 3, 4]),
+        'G' => bits(&[0, 1, 3, 4, 5, 6]),
+        'H' => bits(&[1, 2, 3, 4, 5]),
+        'I' => bits(&[0, 6, 11, 12]),
+        'J' => bits(&[2, 4, 5, 6]),
+        'K' => bits(&[1, 4, 8, 10]),
+        'L' => bits(&[1, 4, 6]),
+        'M' => bits(&[1, 2, 4, 5, 7, 8]),
+        'N' => bits(&[1, 2, 4, 5, 7, 10]),
+        'P' => bits(&[0, 1, 2, 3, 4]),
+        'Q' => bits(&[0, 1, 2, 4, 5, 6, 10]),
+        'R' => bits(&[0, 1, 2, 3, 4, 10]),
+        'S' | '5' => bits(&[0, 1, 3, 5, 6]),
+        'T' => bits(&[0, 11, 12]),
+        'U' => bits(&[1, 2, 4, 5, 6]),
+        'V' => bits(&[1, 2, 9, 10]),
+        'W' => bits(&[1, 2, 4, 5, 9, 10]),
+        'X' => bits(&[7, 8, 9, 10]),
+        'Y' => bits(&[7, 8, 12]),
+        'Z' | '2' => bits(&[0, 8, 9, 6]),
+        '1' => bits(&[2, 5]),
+        '3' => bits(&[0, 2, 3, 5, 6]),
+        '4' => bits(&[1, 2, 3, 5]),
+        '7' => bits(&[0, 2, 5]),
+        '9' => bits(&[0, 1, 2, 3, 5, 6]),
+        _ => 0,
+    }
+}
+
+fn assistant_append_balloon_stroke(
+    vertices: &mut Vec<[f64; 3]>,
+    triangles: &mut Vec<[u32; 3]>,
+    start: [f64; 2],
+    end: [f64; 2],
+    radius: f64,
+    depth: f64,
+) {
+    const ARC_STEPS: usize = 8;
+    let delta = [end[0] - start[0], end[1] - start[1]];
+    let length = (delta[0] * delta[0] + delta[1] * delta[1]).sqrt();
+    let direction = [delta[0] / length, delta[1] / length];
+    let perpendicular = [-direction[1], direction[0]];
+    let mut outline = Vec::with_capacity((ARC_STEPS + 1) * 2);
+    for step in 0..=ARC_STEPS {
+        let angle = std::f64::consts::PI * step as f64 / ARC_STEPS as f64;
+        outline.push([
+            end[0] + radius * (perpendicular[0] * angle.cos() + direction[0] * angle.sin()),
+            end[1] + radius * (perpendicular[1] * angle.cos() + direction[1] * angle.sin()),
+        ]);
+    }
+    for step in 0..=ARC_STEPS {
+        let angle = std::f64::consts::PI * step as f64 / ARC_STEPS as f64;
+        outline.push([
+            start[0] - radius * (perpendicular[0] * angle.cos() + direction[0] * angle.sin()),
+            start[1] - radius * (perpendicular[1] * angle.cos() + direction[1] * angle.sin()),
+        ]);
+    }
+    let center = [(start[0] + end[0]) * 0.5, (start[1] + end[1]) * 0.5];
+    let ring_specs = [(-depth * 0.34, 0.72), (0.0, 1.0), (depth * 0.34, 0.72)];
+    let rings = ring_specs
+        .into_iter()
+        .map(|(y, scale)| {
+            outline
+                .iter()
+                .map(|point| {
+                    let id = vertices.len() as u32;
+                    vertices.push([
+                        center[0] + (point[0] - center[0]) * scale,
+                        y,
+                        center[1] + (point[1] - center[1]) * scale,
+                    ]);
+                    id
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    let front = vertices.len() as u32;
+    vertices.push([center[0], -depth * 0.5, center[1]]);
+    let back = vertices.len() as u32;
+    vertices.push([center[0], depth * 0.5, center[1]]);
+    for index in 0..outline.len() {
+        let next = (index + 1) % outline.len();
+        triangles.push([front, rings[0][next], rings[0][index]]);
+        for ring in 0..rings.len() - 1 {
+            triangles.extend([
+                [rings[ring][index], rings[ring][next], rings[ring + 1][next]],
+                [
+                    rings[ring][index],
+                    rings[ring + 1][next],
+                    rings[ring + 1][index],
+                ],
+            ]);
+        }
+        let last = rings.len() - 1;
+        triangles.push([back, rings[last][index], rings[last][next]]);
+    }
+}
+
+fn assistant_balloon_text_mesh(item: &AssistantBalloonTextIntent) -> Option<MeshBodySpec> {
+    let segments = [
+        [0.15, 1.0, 0.65, 1.0],
+        [0.12, 0.92, 0.12, 0.55],
+        [0.68, 0.92, 0.68, 0.55],
+        [0.15, 0.50, 0.65, 0.50],
+        [0.12, 0.45, 0.12, 0.08],
+        [0.68, 0.45, 0.68, 0.08],
+        [0.15, 0.0, 0.65, 0.0],
+        [0.15, 0.95, 0.38, 0.55],
+        [0.65, 0.95, 0.42, 0.55],
+        [0.38, 0.45, 0.15, 0.05],
+        [0.42, 0.45, 0.65, 0.05],
+        [0.40, 0.95, 0.40, 0.55],
+        [0.40, 0.45, 0.40, 0.05],
+    ];
+    let mut vertices_mm = Vec::new();
+    let mut triangles = Vec::new();
+    let mut cursor = 0.0;
+    let advance = item.height_mm * 0.82 + item.letter_spacing_mm;
+    for character in item.text.chars() {
+        if character == ' ' {
+            cursor += item.height_mm * 0.55 + item.letter_spacing_mm;
+            continue;
+        }
+        let mask = assistant_balloon_glyph_mask(character);
+        for (index, [start_x, start_z, end_x, end_z]) in segments.iter().copied().enumerate() {
+            if mask & (1u16 << index) == 0 {
+                continue;
+            }
+            assistant_append_balloon_stroke(
+                &mut vertices_mm,
+                &mut triangles,
+                [cursor + start_x * item.height_mm, start_z * item.height_mm],
+                [cursor + end_x * item.height_mm, end_z * item.height_mm],
+                item.stroke_width_mm * 0.5,
+                item.depth_mm,
+            );
+        }
+        cursor += advance;
+    }
+    (!vertices_mm.is_empty()).then_some(MeshBodySpec {
+        schema: MESH_BODY_SCHEMA_V1.to_owned(),
+        vertices_mm,
+        triangles,
+        authority: MeshAuthority::Authored {
+            provenance: "ketchup-assistant-balloon-text-v1".to_owned(),
         },
     })
 }
@@ -10649,6 +10810,36 @@ impl KetchupApp {
             ]);
             next_definition = definition.0.checked_add(1);
             next_feature = finish.0.checked_add(1);
+            next_occurrence = occurrence.0.checked_add(1);
+        }
+        for text in &intent.balloon_texts {
+            let definition = next_definition.map(DefinitionId)?;
+            let feature = next_feature.map(FeatureId)?;
+            let occurrence = next_occurrence.map(OccurrenceId)?;
+            let [x, y, z] = text.origin_mm;
+            commands.extend([
+                CanonicalCommand::CreateDefinition {
+                    id: definition,
+                    name: text.name.clone(),
+                },
+                CanonicalCommand::CreateFeature {
+                    id: feature,
+                    definition_id: definition,
+                    name: format!("{} inflated text", text.name),
+                    kind: FeatureKind::MeshBody(assistant_balloon_text_mesh(text)?),
+                },
+                CanonicalCommand::CreateOccurrence {
+                    id: occurrence,
+                    definition_id: definition,
+                    name: format!("{} occurrence", text.name),
+                    transform: Transform::from_translation(x, y, z).ok()?,
+                    parent: None,
+                    tag: None,
+                    visible: true,
+                },
+            ]);
+            next_definition = definition.0.checked_add(1);
+            next_feature = feature.0.checked_add(1);
             next_occurrence = occurrence.0.checked_add(1);
         }
         for roof in &intent.gable_roofs {
@@ -35526,6 +35717,7 @@ mod tests {
             gable_roofs: Vec::new(),
             staircases: Vec::new(),
             oriented_beams: Vec::new(),
+            balloon_texts: Vec::new(),
         };
         assert!(model_tampered.prepare_assistant_model_intent(model_intent));
         let mut model_plan = model_tampered.assistant_proposal.take().unwrap();
@@ -35979,6 +36171,7 @@ mod tests {
                     gable_roofs: Vec::new(),
                     staircases: Vec::new(),
                     oriented_beams: Vec::new(),
+                    balloon_texts: Vec::new(),
                 }),
             },
             document_id: state.document.current().document_id(),
@@ -36032,6 +36225,7 @@ mod tests {
                     gable_roofs: Vec::new(),
                     staircases: Vec::new(),
                     oriented_beams: Vec::new(),
+                    balloon_texts: Vec::new(),
                 }),
             },
             document_id: app.document.current().document_id(),
@@ -36083,6 +36277,7 @@ mod tests {
                         gable_roofs: Vec::new(),
                         staircases: Vec::new(),
                         oriented_beams: Vec::new(),
+                        balloon_texts: Vec::new(),
                     }),
                 },
                 diagnostics: None,
@@ -36147,6 +36342,7 @@ mod tests {
                 gable_roofs: Vec::new(),
                 staircases: Vec::new(),
                 oriented_beams: Vec::new(),
+                balloon_texts: Vec::new(),
             }
         ));
 
@@ -36228,6 +36424,7 @@ mod tests {
                         gable_roofs: Vec::new(),
                         staircases: Vec::new(),
                         oriented_beams: Vec::new(),
+                        balloon_texts: Vec::new(),
                     }),
                 },
                 diagnostics: None,
@@ -37497,6 +37694,7 @@ endsolid tetrahedron\n";
                 gable_roofs: Vec::new(),
                 staircases: Vec::new(),
                 oriented_beams: Vec::new(),
+                balloon_texts: Vec::new(),
             }
         ));
         let snapshot = app.document.current();
@@ -44392,6 +44590,7 @@ endsolid tetrahedron\n";
                 gable_roofs: Vec::new(),
                 staircases: Vec::new(),
                 oriented_beams: Vec::new(),
+                balloon_texts: Vec::new(),
             }
         ));
         app.projection_mode = ProjectionMode::Parallel;
