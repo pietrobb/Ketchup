@@ -340,8 +340,60 @@ pub struct SketchSolution {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub enum SolvedSketchRegionEdge {
+    Line {
+        start_mm: [f64; 2],
+        end_mm: [f64; 2],
+    },
+    Arc {
+        start_mm: [f64; 2],
+        end_mm: [f64; 2],
+        center_mm: [f64; 2],
+        clockwise: bool,
+    },
+}
+
+impl SolvedSketchRegionEdge {
+    #[must_use]
+    pub const fn start_mm(&self) -> [f64; 2] {
+        match self {
+            Self::Line { start_mm, .. } | Self::Arc { start_mm, .. } => *start_mm,
+        }
+    }
+
+    #[must_use]
+    pub const fn end_mm(&self) -> [f64; 2] {
+        match self {
+            Self::Line { end_mm, .. } | Self::Arc { end_mm, .. } => *end_mm,
+        }
+    }
+
+    #[must_use]
+    fn reversed(&self) -> Self {
+        match self {
+            Self::Line { start_mm, end_mm } => Self::Line {
+                start_mm: *end_mm,
+                end_mm: *start_mm,
+            },
+            Self::Arc {
+                start_mm,
+                end_mm,
+                center_mm,
+                clockwise,
+            } => Self::Arc {
+                start_mm: *end_mm,
+                end_mm: *start_mm,
+                center_mm: *center_mm,
+                clockwise: !clockwise,
+            },
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub enum SolvedSketchRegionProfile {
     Polyline(Vec<[f64; 2]>),
+    Boundary(Vec<SolvedSketchRegionEdge>),
     Circle { center_mm: [f64; 2], radius_mm: f64 },
 }
 
@@ -352,33 +404,131 @@ pub struct SolvedSketchRegion {
     pub profile: SolvedSketchRegionProfile,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum FeatureDirection {
     AlongNormal,
     OppositeNormal,
+    Vector([f64; 3]),
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub enum FeatureExtent {
-    Blind(Dimension),
-}
-
-impl FeatureExtent {
-    pub fn validate(&self) -> Result<(), SketchError> {
-        let Self::Blind(distance) = self;
-        Dimension::new(distance.source_token(), distance.millimetres())
-            .map_err(|_| SketchError::InvalidDimension)?;
-        if distance.millimetres() <= EPSILON_MM || distance.millimetres() > MAX_ABS_MM {
-            return Err(SketchError::InvalidDimension);
+impl FeatureDirection {
+    pub fn validate(self) -> Result<(), SketchError> {
+        if let Self::Vector(vector) = self {
+            let length = vector[0].hypot(vector[1]).hypot(vector[2]);
+            if vector.iter().any(|component| !component.is_finite())
+                || length <= EPSILON_MM
+                || length > MAX_ABS_MM
+            {
+                return Err(SketchError::InvalidFeatureDirection);
+            }
         }
         Ok(())
     }
 
     #[must_use]
-    pub const fn distance(&self) -> &Dimension {
-        let Self::Blind(distance) = self;
-        distance
+    pub fn vector(self, normal: [f64; 3]) -> Option<[f64; 3]> {
+        let vector = match self {
+            Self::AlongNormal => normal,
+            Self::OppositeNormal => normal.map(|component| -component),
+            Self::Vector(vector) => vector,
+        };
+        let length = vector[0].hypot(vector[1]).hypot(vector[2]);
+        (vector.iter().all(|component| component.is_finite()) && length > EPSILON_MM).then(|| {
+            vector.map(|component| {
+                let normalized = component / length;
+                if normalized == 0.0 { 0.0 } else { normalized }
+            })
+        })
     }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum FeatureExtentEnd {
+    Blind(Dimension),
+    ThroughAll,
+    UpToFace(Box<BodySubshapeRef>),
+}
+
+impl FeatureExtentEnd {
+    fn validate(&self) -> Result<(), SketchError> {
+        match self {
+            Self::Blind(distance) => validate_extent_distance(distance),
+            Self::ThroughAll => Ok(()),
+            Self::UpToFace(reference) => validate_extent_reference(reference),
+        }
+    }
+
+    fn references(&self) -> Option<&BodySubshapeRef> {
+        match self {
+            Self::UpToFace(reference) => Some(reference),
+            Self::Blind(_) | Self::ThroughAll => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum FeatureExtent {
+    Blind(Dimension),
+    ThroughAll,
+    UpToFace(Box<BodySubshapeRef>),
+    Symmetric(Dimension),
+    Bidirectional {
+        along: FeatureExtentEnd,
+        opposite: FeatureExtentEnd,
+    },
+}
+
+impl FeatureExtent {
+    pub fn validate(&self) -> Result<(), SketchError> {
+        match self {
+            Self::Blind(distance) | Self::Symmetric(distance) => validate_extent_distance(distance),
+            Self::ThroughAll => Ok(()),
+            Self::UpToFace(reference) => validate_extent_reference(reference),
+            Self::Bidirectional { along, opposite } => {
+                along.validate()?;
+                opposite.validate()
+            }
+        }
+    }
+
+    #[must_use]
+    pub const fn blind_distance(&self) -> Option<&Dimension> {
+        match self {
+            Self::Blind(distance) => Some(distance),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub fn references(&self) -> Vec<&BodySubshapeRef> {
+        match self {
+            Self::UpToFace(reference) => vec![reference],
+            Self::Bidirectional { along, opposite } => [along.references(), opposite.references()]
+                .into_iter()
+                .flatten()
+                .collect(),
+            Self::Blind(_) | Self::ThroughAll | Self::Symmetric(_) => Vec::new(),
+        }
+    }
+}
+
+fn validate_extent_distance(distance: &Dimension) -> Result<(), SketchError> {
+    Dimension::new(distance.source_token(), distance.millimetres())
+        .map_err(|_| SketchError::InvalidDimension)?;
+    if distance.millimetres() <= EPSILON_MM || distance.millimetres() > MAX_ABS_MM {
+        return Err(SketchError::InvalidDimension);
+    }
+    Ok(())
+}
+
+fn validate_extent_reference(reference: &BodySubshapeRef) -> Result<(), SketchError> {
+    if reference.expected_type != "planar_face"
+        || reference.expected_cardinality != 1
+        || !reference.has_valid_lineage()
+    {
+        return Err(SketchError::InvalidFeatureExtentReference);
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -514,11 +664,8 @@ impl SketchSpec {
 
     pub fn solved_regions(&self) -> Result<Vec<SolvedSketchRegion>, SketchError> {
         let solution = self.solve_geometry()?;
-        if solution.report.status != SketchSolveStatus::FullyConstrained {
-            return Err(SketchError::SketchNotFullyConstrained);
-        }
         let mut regions = Vec::new();
-        let mut lines = BTreeMap::new();
+        let mut boundaries = BTreeMap::new();
         for entity in solution.entities {
             match entity {
                 SketchEntity::Circle {
@@ -538,48 +685,84 @@ impl SketchSpec {
                     start_mm,
                     end_mm,
                 } => {
-                    lines.insert(id, (start_mm, end_mm));
+                    boundaries.insert(id, SolvedSketchRegionEdge::Line { start_mm, end_mm });
                 }
-                SketchEntity::Arc { .. } => return Err(SketchError::UnsupportedRegionGeometry),
+                SketchEntity::Arc {
+                    id,
+                    start_mm,
+                    end_mm,
+                    center_mm,
+                    clockwise,
+                } => {
+                    boundaries.insert(
+                        id,
+                        SolvedSketchRegionEdge::Arc {
+                            start_mm,
+                            end_mm,
+                            center_mm,
+                            clockwise,
+                        },
+                    );
+                }
             }
         }
 
-        while let Some((&first_id, &(first_start, first_end))) = lines.first_key_value() {
-            lines.remove(&first_id);
+        while let Some((&first_id, first_edge)) = boundaries.first_key_value() {
+            let first_edge = first_edge.clone();
+            boundaries.remove(&first_id);
+            let first_start = first_edge.start_mm();
+            let mut current = first_edge.end_mm();
             let mut entity_ids = vec![first_id];
-            let mut points = vec![first_start, first_end];
-            let mut current = first_end;
+            let mut edges = vec![first_edge];
             while distance2(current, first_start) > EPSILON_MM {
-                let Some((next_id, start, end, reversed)) =
-                    lines.iter().find_map(|(id, (start, end))| {
-                        if distance2(*start, current) <= EPSILON_MM {
-                            Some((*id, *start, *end, false))
-                        } else if distance2(*end, current) <= EPSILON_MM {
-                            Some((*id, *start, *end, true))
+                let candidates = boundaries
+                    .iter()
+                    .filter_map(|(id, edge)| {
+                        if distance2(edge.start_mm(), current) <= EPSILON_MM {
+                            Some((*id, false))
+                        } else if distance2(edge.end_mm(), current) <= EPSILON_MM {
+                            Some((*id, true))
                         } else {
                             None
                         }
                     })
-                else {
-                    return Err(SketchError::OpenRegion);
+                    .collect::<Vec<_>>();
+                let [(next_id, reversed)] = candidates.as_slice() else {
+                    return Err(if candidates.is_empty() {
+                        SketchError::OpenRegion
+                    } else {
+                        SketchError::InvalidRegionIdentity
+                    });
                 };
-                lines.remove(&next_id);
-                entity_ids.push(next_id);
-                current = if reversed { start } else { end };
-                points.push(current);
+                let edge = boundaries
+                    .remove(next_id)
+                    .ok_or(SketchError::InvalidRegionIdentity)?;
+                let edge = if *reversed { edge.reversed() } else { edge };
+                current = edge.end_mm();
+                entity_ids.push(*next_id);
+                edges.push(edge);
                 if entity_ids.len() > MAX_SKETCH_ENTITIES {
                     return Err(SketchError::ResourceLimit);
                 }
             }
-            if entity_ids.len() < 3 || points.len() < 4 {
+            if edges.len() < 2 || region_signed_area(&edges).abs() <= EPSILON_MM * EPSILON_MM {
                 return Err(SketchError::OpenRegion);
             }
-            points.pop();
             entity_ids.sort_unstable();
+            let profile = if edges
+                .iter()
+                .all(|edge| matches!(edge, SolvedSketchRegionEdge::Line { .. }))
+            {
+                SolvedSketchRegionProfile::Polyline(
+                    edges.iter().map(SolvedSketchRegionEdge::start_mm).collect(),
+                )
+            } else {
+                SolvedSketchRegionProfile::Boundary(edges)
+            };
             regions.push(SolvedSketchRegion {
                 id: stable_region_id(&entity_ids),
                 entity_ids,
-                profile: SolvedSketchRegionProfile::Polyline(points),
+                profile,
             });
         }
         regions.sort_by_key(|region| region.id);
@@ -588,6 +771,38 @@ impl SketchSpec {
         }
         Ok(regions)
     }
+}
+
+fn region_signed_area(edges: &[SolvedSketchRegionEdge]) -> f64 {
+    edges
+        .iter()
+        .map(|edge| match edge {
+            SolvedSketchRegionEdge::Line { start_mm, end_mm } => {
+                0.5 * (start_mm[0] * end_mm[1] - end_mm[0] * start_mm[1])
+            }
+            SolvedSketchRegionEdge::Arc {
+                start_mm,
+                end_mm,
+                center_mm,
+                clockwise,
+            } => {
+                let radius = distance2(*start_mm, *center_mm);
+                let start_angle = (start_mm[1] - center_mm[1]).atan2(start_mm[0] - center_mm[0]);
+                let end_angle = (end_mm[1] - center_mm[1]).atan2(end_mm[0] - center_mm[0]);
+                let mut sweep = end_angle - start_angle;
+                if *clockwise {
+                    if sweep >= 0.0 {
+                        sweep -= std::f64::consts::TAU;
+                    }
+                } else if sweep <= 0.0 {
+                    sweep += std::f64::consts::TAU;
+                }
+                0.5 * (radius * center_mm[0] * (end_angle.sin() - start_angle.sin())
+                    - radius * center_mm[1] * (end_angle.cos() - start_angle.cos())
+                    + radius * radius * sweep)
+            }
+        })
+        .sum()
 }
 
 fn stable_region_id(entity_ids: &[SketchEntityId]) -> SketchRegionId {
@@ -615,6 +830,8 @@ pub enum SketchError {
     InvalidEntity(SketchEntityId),
     InvalidConstraintReference(SketchConstraintId),
     InvalidDimension,
+    InvalidFeatureDirection,
+    InvalidFeatureExtentReference,
     OverConstrained(SketchConstraintId),
     SketchNotFullyConstrained,
     OpenRegion,
@@ -661,6 +878,11 @@ impl fmt::Display for SketchError {
                 id.0
             ),
             Self::InvalidDimension => formatter.write_str("sketch dimension is invalid"),
+            Self::InvalidFeatureDirection => {
+                formatter.write_str("feature direction must be finite and non-zero")
+            }
+            Self::InvalidFeatureExtentReference => formatter
+                .write_str("up-to-face extent requires one valid stable planar-face reference"),
             Self::OverConstrained(id) => write!(
                 formatter,
                 "sketch constraint {} is conflicting, redundant, or exceeds available degrees of freedom",

@@ -3,17 +3,20 @@ use ketchup_core::document::{
     FeatureEvaluationState, FeatureId, FeatureKind, ProposalCommitError, ProposalContext,
     StableFaceRole,
 };
+use ketchup_core::exact_brep_graph::ExactBRepGraph;
 use ketchup_core::exact_product::{
-    ExactBodyPackage, ExactFaceRole, ExactFeatureChainRequest, ExactResultRegistry,
-    build_box_render_package, canonical_reference_lineage_digest,
+    ExactBodyPackage, ExactFaceRole, ExactFeatureChainRequest, ExactProductError,
+    ExactProfileSegment, ExactResultRegistry, build_box_render_package,
+    canonical_reference_lineage_digest,
 };
 use ketchup_core::persistence;
 use ketchup_core::sketch::{
-    FeatureDirection, FeatureExtent, PadPocketOperation, PadSpec, PocketSpec, PrincipalPlane,
-    SketchConstraint, SketchConstraintId, SketchConstraintKind, SketchEntity, SketchEntityId,
-    SketchPointKind, SketchPointRef, SketchSpec, WorkplaneFrame, WorkplaneSpec, WorkplaneSupport,
-    WorkplaneSupportHealth,
+    FeatureDirection, FeatureExtent, FeatureExtentEnd, PadPocketOperation, PadSpec, PocketSpec,
+    PrincipalPlane, SketchConstraint, SketchConstraintId, SketchConstraintKind, SketchEntity,
+    SketchEntityId, SketchPointKind, SketchPointRef, SketchSpec, WorkplaneFrame, WorkplaneSpec,
+    WorkplaneSupport, WorkplaneSupportHealth,
 };
+use ketchup_core::state_view::encode_semantic_state;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
@@ -53,6 +56,27 @@ fn circle_sketch(workplane: FeatureId, center_mm: [f64; 2], radius_mm: f64) -> S
                 },
             },
         ],
+    }
+}
+
+fn line_arc_sketch(workplane: FeatureId) -> SketchSpec {
+    SketchSpec {
+        workplane,
+        entities: vec![
+            SketchEntity::Line {
+                id: SketchEntityId(1),
+                start_mm: [10.0, 10.0],
+                end_mm: [30.0, 10.0],
+            },
+            SketchEntity::Arc {
+                id: SketchEntityId(2),
+                start_mm: [10.0, 10.0],
+                end_mm: [30.0, 10.0],
+                center_mm: [20.0, 10.0],
+                clockwise: true,
+            },
+        ],
+        constraints: Vec::new(),
     }
 }
 
@@ -139,6 +163,217 @@ fn pad_operation(document: &DocumentStore) -> PadPocketOperation {
         direction: FeatureDirection::AlongNormal,
         extent: FeatureExtent::Blind(Dimension::from_decimal("25").unwrap()),
     })
+}
+
+#[test]
+fn canonical_line_arc_region_flows_losslessly_into_exact_pad_request() {
+    let sketch = line_arc_sketch(WORKPLANE);
+    let region = sketch.solved_regions().unwrap()[0].id;
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DEFINITION,
+                name: "Line-arc part".into(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: WORKPLANE,
+                definition_id: DEFINITION,
+                name: "XY".into(),
+                kind: FeatureKind::Workplane(WorkplaneSpec::principal(PrincipalPlane::Xy)),
+            },
+            CanonicalCommand::CreateFeature {
+                id: SKETCH,
+                definition_id: DEFINITION,
+                name: "Line-arc sketch".into(),
+                kind: FeatureKind::Sketch(sketch),
+            },
+            CanonicalCommand::CreateFeature {
+                id: PAD,
+                definition_id: DEFINITION,
+                name: "Line-arc Pad".into(),
+                kind: FeatureKind::Pad(PadSpec {
+                    sketch: SKETCH,
+                    region,
+                    direction: FeatureDirection::AlongNormal,
+                    extent: FeatureExtent::Blind(Dimension::from_decimal("12").unwrap()),
+                }),
+            },
+        ]))
+        .unwrap();
+
+    let snapshot = document.current();
+    let request = ExactFeatureChainRequest::from_snapshot(&snapshot, DEFINITION).unwrap();
+    let mixed = request.mixed_profile.as_ref().expect("line-arc profile");
+    assert_eq!(mixed.segments.len(), 2);
+    assert!(matches!(
+        mixed.segments[0],
+        ExactProfileSegment::Line { .. }
+    ));
+    assert!(matches!(
+        mixed.segments[1],
+        ExactProfileSegment::CircularArc { .. }
+    ));
+    assert_eq!(
+        mixed.bounds_bits.map(f64::from_bits),
+        [10.0, 10.0, 30.0, 20.0]
+    );
+    assert!(request.canonical_input_digest.len() >= 64);
+
+    let bytes = persistence::save(&snapshot);
+    let reopened = persistence::load(&bytes).unwrap();
+    assert_eq!(
+        ExactFeatureChainRequest::from_snapshot(&reopened.snapshot(), DEFINITION).unwrap(),
+        request
+    );
+
+    let before_revision_count = document.revision_count();
+    let before_undo = document.visible_undo_steps();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::TranslateProfile {
+                id: SKETCH,
+                delta_mm: [2.0, 0.0],
+            },
+        ]))
+        .unwrap();
+    assert_eq!(document.revision_count(), before_revision_count + 1);
+    assert_eq!(document.visible_undo_steps(), before_undo + 1);
+    let changed = document.current();
+    let changed_request = ExactFeatureChainRequest::from_snapshot(&changed, DEFINITION).unwrap();
+    assert_ne!(
+        changed_request.canonical_input_digest,
+        request.canonical_input_digest
+    );
+    let changed_bytes = persistence::save(&changed);
+    let changed_reopened = persistence::load(&changed_bytes).unwrap();
+    assert_eq!(
+        ExactFeatureChainRequest::from_snapshot(&changed_reopened.snapshot(), DEFINITION).unwrap(),
+        changed_request
+    );
+    assert_eq!(
+        ExactFeatureChainRequest::from_snapshot(&document.undo().unwrap(), DEFINITION).unwrap(),
+        request
+    );
+    assert_eq!(
+        ExactFeatureChainRequest::from_snapshot(&document.redo().unwrap(), DEFINITION).unwrap(),
+        changed_request
+    );
+
+    const FACE_PLANE: FeatureId = FeatureId(13);
+    const POCKET_SKETCH: FeatureId = FeatureId(14);
+    const POCKET: FeatureId = FeatureId(15);
+    let evidence = [
+        ExactFaceRole::Top,
+        ExactFaceRole::Bottom,
+        ExactFaceRole::ArcSide,
+    ]
+    .map(|role| {
+        (
+            role,
+            canonical_reference_lineage_digest(
+                changed_request.document_id,
+                changed_request.producer_feature_id(),
+                role.semantic_role(),
+                role.source_element_id(),
+                role.expected_type(),
+            ),
+            format!("geometry.{role:?}"),
+        )
+    });
+    let package = build_box_render_package(
+        &changed_request,
+        "exact-input".into(),
+        "mixed-result".into(),
+        "test-backend".into(),
+        "test-tolerance".into(),
+        changed_request.expected_bounds_mm(),
+        evidence,
+    )
+    .unwrap();
+    let top = package.reference(ExactFaceRole::Top).unwrap().clone();
+    for reference in package.references {
+        document
+            .register_exact_reference_evidence(reference)
+            .unwrap();
+    }
+    assert_eq!(
+        document
+            .current()
+            .exact_reference_by_lineage(&top.lineage_digest),
+        Some(&top)
+    );
+    let top_frame = document
+        .current()
+        .resolved_planar_face_workplane_frame(&top)
+        .expect("mixed Pad top frame");
+    let pocket_sketch = rectangle_sketch(FACE_PLANE, [12.0, 12.0], [18.0, 15.0]);
+    let pocket_region = pocket_sketch.solved_regions().unwrap()[0].id;
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateFeature {
+                id: FACE_PLANE,
+                definition_id: DEFINITION,
+                name: "Mixed Pad top".into(),
+                kind: FeatureKind::Workplane(WorkplaneSpec {
+                    support: WorkplaneSupport::PlanarFace {
+                        reference: Box::new(top.clone()),
+                        health: WorkplaneSupportHealth::Resolved,
+                    },
+                    frame: top_frame,
+                }),
+            },
+            CanonicalCommand::CreateFeature {
+                id: POCKET_SKETCH,
+                definition_id: DEFINITION,
+                name: "Pocket sketch".into(),
+                kind: FeatureKind::Sketch(pocket_sketch),
+            },
+        ]))
+        .unwrap();
+    let before_pocket = document.current();
+    let before_pocket_undo = document.visible_undo_steps();
+    document
+        .apply_batch(&CommandBatch::new(vec![CanonicalCommand::CreateFeature {
+            id: POCKET,
+            definition_id: DEFINITION,
+            name: "Unsupported mixed-base Pocket".into(),
+            kind: FeatureKind::SketchPocket(PocketSpec {
+                target: PAD,
+                sketch: POCKET_SKETCH,
+                region: pocket_region,
+                support: Box::new(top),
+                direction: FeatureDirection::OppositeNormal,
+                extent: FeatureExtent::Blind(Dimension::from_decimal("4").unwrap()),
+            }),
+        }]))
+        .unwrap();
+    assert_eq!(document.visible_undo_steps(), before_pocket_undo + 1);
+    assert_eq!(
+        ExactFeatureChainRequest::from_snapshot(&document.current(), DEFINITION),
+        Err(ExactProductError::UnsupportedThroughCut)
+    );
+    let unsupported_bytes = persistence::save(&document.current());
+    let unsupported_reopened = persistence::load(&unsupported_bytes).unwrap();
+    assert_eq!(
+        ExactFeatureChainRequest::from_snapshot(&unsupported_reopened.snapshot(), DEFINITION),
+        Err(ExactProductError::UnsupportedThroughCut)
+    );
+    let undone_request =
+        ExactFeatureChainRequest::from_snapshot(&document.undo().unwrap(), DEFINITION).unwrap();
+    assert_eq!(
+        undone_request.canonical_input_digest,
+        changed_request.canonical_input_digest
+    );
+    assert_eq!(undone_request.mixed_profile, changed_request.mixed_profile);
+    assert_eq!(
+        document.current().canonical_digest(),
+        before_pocket.canonical_digest()
+    );
+    assert_eq!(
+        ExactFeatureChainRequest::from_snapshot(&document.redo().unwrap(), DEFINITION),
+        Err(ExactProductError::UnsupportedThroughCut)
+    );
 }
 
 #[test]
@@ -341,7 +576,7 @@ fn face_supported_pocket_keeps_exact_target_support_and_is_lossless() {
         y_axis: [0.0, 1.0, 0.0],
         normal: [0.0, 0.0, 1.0],
     };
-    let sketch = rectangle_sketch(FACE_PLANE, [30.0, 20.0], [50.0, 35.0]);
+    let sketch = line_arc_sketch(FACE_PLANE);
     document
         .apply_batch(&CommandBatch::new(vec![
             CanonicalCommand::CreateFeature {
@@ -427,10 +662,20 @@ fn face_supported_pocket_keeps_exact_target_support_and_is_lossless() {
     };
     assert_eq!(spec.target, BASE_PAD);
     assert_eq!(spec.support.as_ref(), &top);
-    assert_eq!(spec.extent.distance().millimetres(), 6.0);
+    assert_eq!(spec.extent.blind_distance().unwrap().millimetres(), 6.0);
     let pocket_request = ExactFeatureChainRequest::from_snapshot(&committed, DEFINITION).unwrap();
     assert_eq!(pocket_request.producer_feature_id(), POCKET);
     assert_eq!(pocket_request.pocket_depth_bits, Some(6.0_f64.to_bits()));
+    let pocket_profile = pocket_request
+        .boolean
+        .as_ref()
+        .and_then(|boolean| boolean.profile.as_ref())
+        .expect("canonical line-arc pocket profile");
+    assert_eq!(pocket_profile.segments.len(), 2);
+    assert!(matches!(
+        pocket_profile.segments[1],
+        ExactProfileSegment::CircularArc { .. }
+    ));
     assert_ne!(
         pocket_request.canonical_input_digest,
         request.canonical_input_digest
@@ -754,4 +999,229 @@ fn feature_dependency_cycle_is_rejected_atomically() {
     assert_eq!(document.revision_count(), revisions);
     assert_eq!(document.visible_undo_steps(), undo);
     assert_eq!(document.visible_redo_steps(), redo);
+}
+
+#[test]
+fn universal_extent_contract_round_trips_changes_digest_and_fails_closed_before_graph_resolution() {
+    let mut document = pad_document();
+    let proposal = document
+        .plan_pad_pocket(
+            PAD,
+            DEFINITION,
+            "Pad",
+            pad_operation(&document),
+            ProposalContext::canonical_preview(),
+        )
+        .unwrap();
+    document.commit_verified_proposal(&proposal).unwrap();
+    let blind = document.current();
+    let blind_digest = blind.canonical_digest();
+    let request = ExactFeatureChainRequest::from_snapshot(&blind, DEFINITION).unwrap();
+    let evidence = [
+        ExactFaceRole::Top,
+        ExactFaceRole::Bottom,
+        ExactFaceRole::CircleSide,
+    ]
+    .map(|role| {
+        (
+            role,
+            canonical_reference_lineage_digest(
+                request.document_id,
+                request.producer_feature_id(),
+                role.semantic_role(),
+                role.source_element_id(),
+                role.expected_type(),
+            ),
+            format!("extent-contract.{role:?}"),
+        )
+    });
+    let package = build_box_render_package(
+        &request,
+        "extent-contract-input".into(),
+        "extent-contract-result".into(),
+        "test-backend".into(),
+        "test-tolerance".into(),
+        request.expected_bounds_mm(),
+        evidence,
+    )
+    .unwrap();
+    let top = package.reference(ExactFaceRole::Top).unwrap().clone();
+    let region = match blind.feature(SKETCH).unwrap().kind() {
+        FeatureKind::Sketch(sketch) => sketch.solved_regions().unwrap()[0].id,
+        _ => unreachable!(),
+    };
+    let baseline_bytes = persistence::save(&blind);
+    let extents = [
+        FeatureExtent::Blind(Dimension::from_decimal("8").unwrap()),
+        FeatureExtent::ThroughAll,
+        FeatureExtent::UpToFace(Box::new(top.clone())),
+        FeatureExtent::Symmetric(Dimension::from_decimal("16").unwrap()),
+        FeatureExtent::Bidirectional {
+            along: FeatureExtentEnd::Blind(Dimension::from_decimal("8").unwrap()),
+            opposite: FeatureExtentEnd::UpToFace(Box::new(top.clone())),
+        },
+    ];
+    let mut extent_digests = BTreeSet::new();
+    for extent in extents {
+        let expected = FeatureKind::Pad(PadSpec {
+            sketch: SKETCH,
+            region,
+            direction: FeatureDirection::Vector([1.0, 2.0, 3.0]),
+            extent,
+        });
+        let mut candidate = persistence::load(&baseline_bytes)
+            .unwrap()
+            .into_editable()
+            .unwrap_or_else(|_| panic!("current extent schema must remain editable"));
+        candidate
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::DeleteFeature { id: PAD },
+                CanonicalCommand::CreateFeature {
+                    id: PAD,
+                    definition_id: DEFINITION,
+                    name: "Extent candidate".into(),
+                    kind: expected.clone(),
+                },
+            ]))
+            .unwrap();
+        let candidate_snapshot = candidate.current();
+        extent_digests.insert(candidate_snapshot.canonical_digest());
+        let candidate_bytes = persistence::save(&candidate_snapshot);
+        let candidate_reopened = persistence::load(&candidate_bytes).unwrap();
+        assert_eq!(
+            candidate_reopened.snapshot().feature(PAD).unwrap().kind(),
+            &expected
+        );
+        assert_eq!(
+            persistence::save(&candidate_reopened.snapshot()),
+            candidate_bytes
+        );
+    }
+    assert_eq!(extent_digests.len(), 5);
+
+    let generalized_pad = FeatureId(13);
+    let generalized_spec = PadSpec {
+        sketch: SKETCH,
+        region,
+        direction: FeatureDirection::Vector([1.0, 2.0, 3.0]),
+        extent: FeatureExtent::Bidirectional {
+            along: FeatureExtentEnd::Blind(Dimension::from_decimal("8").unwrap()),
+            opposite: FeatureExtentEnd::UpToFace(Box::new(top)),
+        },
+    };
+    let manual = document
+        .plan_pad_pocket(
+            generalized_pad,
+            DEFINITION,
+            "Generalized Pad",
+            PadPocketOperation::Pad(generalized_spec.clone()),
+            ProposalContext::canonical_preview(),
+        )
+        .unwrap();
+    let assistant = document
+        .plan_pad_pocket(
+            generalized_pad,
+            DEFINITION,
+            "Generalized Pad",
+            PadPocketOperation::Pad(generalized_spec.clone()),
+            ProposalContext::local_assistant_model(),
+        )
+        .unwrap();
+    assert_eq!(manual.provenance_revision(), blind.revision_id());
+    assert_eq!(manual.provenance_digest(), blind_digest);
+    assert_eq!(manual.batch().commands().len(), 1);
+    assert_eq!(manual.cost().commands, 1);
+    assert_eq!(manual.batch(), assistant.batch());
+    assert_eq!(manual.command_digest(), assistant.command_digest());
+    assert_eq!(
+        manual.intended_result_digest(),
+        assistant.intended_result_digest()
+    );
+    assert_ne!(manual.principal(), assistant.principal());
+    let undo_before = document.visible_undo_steps();
+    let revisions_before = document.revision_count();
+    let preview = document.preview_batch(manual.batch()).unwrap();
+    let preview_digest = preview.canonical_digest();
+    assert_eq!(
+        preview_digest,
+        document
+            .preview_batch(assistant.batch())
+            .unwrap()
+            .canonical_digest()
+    );
+    assert_eq!(document.current().canonical_digest(), blind_digest);
+    assert_eq!(document.visible_undo_steps(), undo_before);
+    assert_eq!(document.revision_count(), revisions_before);
+    let committed = document.commit_verified_proposal(&manual).unwrap();
+    assert_eq!(committed.revision().batch_digest(), manual.command_digest());
+    assert_eq!(document.visible_undo_steps(), undo_before + 1);
+    assert_eq!(document.revision_count(), revisions_before + 1);
+    let changed = document.current();
+    let changed_digest = changed.canonical_digest();
+    assert_eq!(changed_digest, preview_digest);
+    assert_ne!(changed_digest, blind_digest);
+    assert_eq!(
+        changed.feature(generalized_pad).unwrap().kind(),
+        &FeatureKind::Pad(generalized_spec.clone())
+    );
+    assert_eq!(
+        FeatureDirection::Vector([1.0, 2.0, 3.0])
+            .vector([0.0, 0.0, 1.0])
+            .unwrap(),
+        [
+            1.0_f64 / 14.0_f64.sqrt(),
+            2.0 / 14.0_f64.sqrt(),
+            3.0 / 14.0_f64.sqrt()
+        ]
+    );
+    assert!(ExactBRepGraph::from_snapshot(&changed, DEFINITION, generalized_pad).is_err());
+
+    let bytes = persistence::save(&changed);
+    let reopened = persistence::load(&bytes).unwrap();
+    assert_eq!(reopened.snapshot().canonical_digest(), changed_digest);
+    assert_eq!(persistence::save(&reopened.snapshot()), bytes);
+    assert_eq!(
+        reopened.snapshot().feature(generalized_pad).unwrap().kind(),
+        &FeatureKind::Pad(generalized_spec)
+    );
+    let state = encode_semantic_state(&reopened.snapshot()).complete_v1();
+    assert!(state.contains("feature.13.extent.mode=bidirectional"));
+    assert!(state.contains("feature.13.extent.along.mode=blind"));
+    assert!(state.contains("feature.13.extent.opposite.mode=up_to_face"));
+
+    assert_eq!(document.undo().unwrap().canonical_digest(), blind_digest);
+    assert_eq!(document.redo().unwrap().canonical_digest(), changed_digest);
+    let before_invalid = document.current().canonical_digest();
+    let revisions_before_invalid = document.revision_count();
+    assert!(
+        document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::DeleteFeature { id: PAD },
+                CanonicalCommand::CreateFeature {
+                    id: PAD,
+                    definition_id: DEFINITION,
+                    name: "Invalid Pad".into(),
+                    kind: FeatureKind::Pad(PadSpec {
+                        sketch: SKETCH,
+                        region,
+                        direction: FeatureDirection::Vector([0.0, 0.0, 0.0]),
+                        extent: FeatureExtent::ThroughAll,
+                    }),
+                },
+            ]))
+            .is_err()
+    );
+    assert_eq!(document.current().canonical_digest(), before_invalid);
+    assert_eq!(document.revision_count(), revisions_before_invalid);
+    assert!(
+        FeatureDirection::Vector([f64::NAN, 0.0, 1.0])
+            .validate()
+            .is_err()
+    );
+    assert!(
+        FeatureDirection::Vector([f64::INFINITY, 0.0, 1.0])
+            .validate()
+            .is_err()
+    );
+    assert!(Dimension::new("1000001", 1_000_001.0).is_err());
 }

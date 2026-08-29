@@ -76,6 +76,12 @@ std::unique_ptr<NativeOperationResult> shell_revolve_profile_native(
 std::unique_ptr<NativeOperationResult> finish_shell_revolve_profile_native(
     rust::Slice<const double> points, double thickness, double amount,
     bool fillet) noexcept;
+std::unique_ptr<NativeOperationResult> shell_body_native(
+    const NativeOperationResult& body, rust::Slice<const std::uint32_t> face_ordinals,
+    double thickness) noexcept;
+std::unique_ptr<NativeOperationResult> finish_body_native(
+    const NativeOperationResult& body, rust::Slice<const std::uint32_t> edge_ordinals,
+    double amount, bool fillet) noexcept;
 std::unique_ptr<NativeOperationResult> cut_box_native(
     const NativeOperationResult& base,
     double origin_x, double origin_y, double origin_z,
@@ -127,6 +133,9 @@ std::unique_ptr<NativeOperationResult> transform_body_native(
     const NativeOperationResult& body, rust::Slice<const double> matrix) noexcept;
 std::unique_ptr<NativeOperationResult> combine_bodies_native(
     const NativeOperationResult& base, const NativeOperationResult& added) noexcept;
+std::unique_ptr<NativeOperationResult> boolean_bodies_native(
+    const NativeOperationResult& target, const NativeOperationResult& tool,
+    std::uint8_t operation) noexcept;
 rust::String export_step_native(
     const NativeOperationResult& body, rust::Str path) noexcept;
 

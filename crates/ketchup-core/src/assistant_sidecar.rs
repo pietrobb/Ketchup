@@ -10,11 +10,15 @@ const MAX_ASSISTANT_MODEL_BYTES: usize = 128;
 const MAX_ASSISTANT_BOXES: usize = 64;
 const MAX_ASSISTANT_SUBTRACTIONS: usize = 64;
 const MAX_ASSISTANT_TRANSLATIONS: usize = 100;
+const MAX_ASSISTANT_ROTATIONS: usize = 100;
 const MAX_ASSISTANT_PROFILE_TRANSLATIONS: usize = 1;
 const MAX_ASSISTANT_ARRAYS: usize = 16;
 const MAX_ASSISTANT_ARRAY_SOURCES: usize = 100;
 const MAX_ASSISTANT_ARRAY_INSTANCES: u32 = 1_000;
 const MAX_ASSISTANT_ARRAY_OUTPUTS: usize = 512;
+const MAX_ASSISTANT_CAD_EDIT_OPERATIONS: usize = 64;
+const MAX_ASSISTANT_CAD_SELECTOR_TARGETS: usize = 100;
+const MAX_ASSISTANT_CAD_GENERATED_OCCURRENCES: usize = 512;
 const MAX_ASSISTANT_BOTTLES: usize = 8;
 const MAX_ASSISTANT_TEAPOT_DIMENSION_MM: f64 = 2_000.0;
 const MAX_ASSISTANT_BALLOON_TEXTS: usize = 8;
@@ -24,6 +28,11 @@ const MAX_ASSISTANT_STAIRCASES: usize = 16;
 const MAX_ASSISTANT_ORIENTED_BEAMS: usize = 64;
 const MAX_ASSISTANT_BEAM_NOTCHES: usize = 64;
 const MAX_ASSISTANT_NAME_BYTES: usize = 128;
+const MAX_ASSISTANT_REJECTION_CODE_BYTES: usize = 128;
+const MAX_ASSISTANT_REJECTION_OPERATION_BYTES: usize = 128;
+const MAX_ASSISTANT_REJECTION_TARGET_BYTES: usize = 256;
+const MAX_ASSISTANT_REJECTION_TEXT_BYTES: usize = 2_048;
+const MAX_ASSISTANT_REJECTION_BYTES: usize = 8 * 1_024;
 const MAX_ASSISTANT_ABS_MM: f64 = 1_000_000.0;
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
@@ -69,6 +78,18 @@ pub struct AssistantTranslationIntent {
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
+pub struct AssistantRotationIntent {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub occurrence_id: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_id: Option<u64>,
+    pub pivot_mm: [f64; 3],
+    pub axis: [f64; 3],
+    pub angle_degrees: f64,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct AssistantProfileTranslationIntent {
     pub definition_id: u64,
     pub body_id: u64,
@@ -92,6 +113,474 @@ pub struct AssistantLinearArrayIntent {
     pub occurrence_ids: Vec<u64>,
     pub instances: u32,
     pub step_mm: [f64; 3],
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AssistantCadEditProgram {
+    pub operations: Vec<AssistantCadEditOperation>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum AssistantCadEntitySelector {
+    CurrentSelection {},
+    Occurrences { occurrence_ids: Vec<u64> },
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AssistantCadDeletePolicy {
+    RejectIfReferenced,
+    RemoveReferences,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AssistantCadRotation {
+    pub pivot_mm: [f64; 3],
+    pub axis: [f64; 3],
+    pub angle_degrees: f64,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AssistantPrincipalPlane {
+    Xy,
+    Yz,
+    Xz,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum AssistantWorkplaneSpec {
+    Principal {
+        plane: AssistantPrincipalPlane,
+    },
+    Offset {
+        base_feature_id: u64,
+        distance_mm: f64,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AssistantSketchPointKind {
+    Start,
+    End,
+    Center,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AssistantSketchPointRef {
+    pub entity_id: u64,
+    pub point: AssistantSketchPointKind,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum AssistantSketchEntity {
+    Line {
+        id: u64,
+        start_mm: [f64; 2],
+        end_mm: [f64; 2],
+    },
+    Arc {
+        id: u64,
+        start_mm: [f64; 2],
+        end_mm: [f64; 2],
+        center_mm: [f64; 2],
+        clockwise: bool,
+    },
+    Circle {
+        id: u64,
+        center_mm: [f64; 2],
+        radius_mm: f64,
+    },
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum AssistantSketchConstraint {
+    Horizontal {
+        id: u64,
+        entity_id: u64,
+    },
+    Vertical {
+        id: u64,
+        entity_id: u64,
+    },
+    Coincident {
+        id: u64,
+        a: AssistantSketchPointRef,
+        b: AssistantSketchPointRef,
+    },
+    Distance {
+        id: u64,
+        a: AssistantSketchPointRef,
+        b: AssistantSketchPointRef,
+        value_mm: f64,
+    },
+    Radius {
+        id: u64,
+        entity_id: u64,
+        value_mm: f64,
+    },
+    FixedPoint {
+        id: u64,
+        point: AssistantSketchPointRef,
+        position_mm: [f64; 2],
+    },
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
+pub enum AssistantCadEditOperation {
+    CreateSketch {
+        definition_id: u64,
+        name: String,
+        workplane: AssistantWorkplaneSpec,
+        entities: Vec<AssistantSketchEntity>,
+        constraints: Vec<AssistantSketchConstraint>,
+    },
+    SetDimension {
+        feature_id: u64,
+        constraint_id: Option<u64>,
+        value_mm: f64,
+    },
+    Delete {
+        selector: AssistantCadEntitySelector,
+        dependency_policy: AssistantCadDeletePolicy,
+    },
+    Transform {
+        selector: AssistantCadEntitySelector,
+        translation_mm: [f64; 3],
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rotation: Option<AssistantCadRotation>,
+    },
+    Copy {
+        selector: AssistantCadEntitySelector,
+        translation_mm: [f64; 3],
+    },
+    LinearPattern {
+        selector: AssistantCadEntitySelector,
+        instances: u32,
+        step_mm: [f64; 3],
+    },
+    Mirror {
+        selector: AssistantCadEntitySelector,
+        plane_origin_mm: [f64; 3],
+        plane_normal: [f64; 3],
+    },
+}
+
+fn assistant_cad_vector_is_bounded(vector: [f64; 3]) -> bool {
+    vector
+        .iter()
+        .all(|value| value.is_finite() && value.abs() <= MAX_ASSISTANT_ABS_MM)
+}
+
+fn assistant_cad_vector_is_nonzero(vector: [f64; 3]) -> bool {
+    vector.iter().any(|value| value.abs() > f64::EPSILON)
+}
+
+impl AssistantCadEntitySelector {
+    fn bounded_target_count(&self) -> Result<usize, String> {
+        match self {
+            Self::CurrentSelection {} => Ok(MAX_ASSISTANT_CAD_SELECTOR_TARGETS),
+            Self::Occurrences { occurrence_ids } => {
+                let unique = occurrence_ids.iter().copied().collect::<BTreeSet<_>>();
+                if occurrence_ids.is_empty()
+                    || occurrence_ids.len() > MAX_ASSISTANT_CAD_SELECTOR_TARGETS
+                    || unique.len() != occurrence_ids.len()
+                    || occurrence_ids.contains(&0)
+                {
+                    return Err("assistant CAD selector is invalid".to_owned());
+                }
+                Ok(occurrence_ids.len())
+            }
+        }
+    }
+
+    pub fn validate_resolved_target_count(&self, target_count: usize) -> Result<(), String> {
+        self.bounded_target_count()?;
+        if target_count == 0 || target_count > MAX_ASSISTANT_CAD_SELECTOR_TARGETS {
+            return Err("assistant CAD resolved selector target count is invalid".to_owned());
+        }
+        Ok(())
+    }
+}
+
+impl AssistantCadRotation {
+    fn validate(&self) -> Result<(), String> {
+        let axis_length_squared = self.axis.iter().map(|value| value * value).sum::<f64>();
+        let normalized_angle = self.angle_degrees.rem_euclid(360.0);
+        let shortest_angle = normalized_angle.min(360.0 - normalized_angle);
+        if !assistant_cad_vector_is_bounded(self.pivot_mm)
+            || !assistant_cad_vector_is_bounded(self.axis)
+            || !axis_length_squared.is_finite()
+            || axis_length_squared <= f64::EPSILON
+            || !self.angle_degrees.is_finite()
+            || self.angle_degrees.abs() > MAX_ASSISTANT_ABS_MM
+            || shortest_angle < 0.01
+        {
+            return Err("assistant CAD rotation is invalid".to_owned());
+        }
+        Ok(())
+    }
+}
+
+impl AssistantWorkplaneSpec {
+    fn validate(&self) -> Result<(), String> {
+        match self {
+            Self::Principal { .. } => Ok(()),
+            Self::Offset {
+                base_feature_id,
+                distance_mm,
+            } if *base_feature_id != 0
+                && distance_mm.is_finite()
+                && distance_mm.abs() <= MAX_ASSISTANT_ABS_MM =>
+            {
+                Ok(())
+            }
+            Self::Offset { .. } => Err("assistant workplane is invalid".to_owned()),
+        }
+    }
+}
+
+impl AssistantSketchEntity {
+    fn id(&self) -> u64 {
+        match self {
+            Self::Line { id, .. } | Self::Arc { id, .. } | Self::Circle { id, .. } => *id,
+        }
+    }
+
+    fn validate(&self) -> Result<(), String> {
+        let point = |point: &[f64; 2]| {
+            point
+                .iter()
+                .all(|value| value.is_finite() && value.abs() <= MAX_ASSISTANT_ABS_MM)
+        };
+        let valid = match self {
+            Self::Line {
+                start_mm, end_mm, ..
+            } => point(start_mm) && point(end_mm),
+            Self::Arc {
+                start_mm,
+                end_mm,
+                center_mm,
+                ..
+            } => point(start_mm) && point(end_mm) && point(center_mm),
+            Self::Circle {
+                center_mm,
+                radius_mm,
+                ..
+            } => {
+                point(center_mm)
+                    && radius_mm.is_finite()
+                    && *radius_mm > 0.0
+                    && *radius_mm <= MAX_ASSISTANT_ABS_MM
+            }
+        };
+        if self.id() == 0 || !valid {
+            return Err("assistant sketch entity is invalid".to_owned());
+        }
+        Ok(())
+    }
+}
+
+impl AssistantSketchConstraint {
+    fn id(&self) -> u64 {
+        match self {
+            Self::Horizontal { id, .. }
+            | Self::Vertical { id, .. }
+            | Self::Coincident { id, .. }
+            | Self::Distance { id, .. }
+            | Self::Radius { id, .. }
+            | Self::FixedPoint { id, .. } => *id,
+        }
+    }
+
+    fn validate(&self) -> Result<(), String> {
+        let valid_point_ref = |point: &AssistantSketchPointRef| point.entity_id != 0;
+        let valid_point = |point: &[f64; 2]| {
+            point
+                .iter()
+                .all(|value| value.is_finite() && value.abs() <= MAX_ASSISTANT_ABS_MM)
+        };
+        let valid = match self {
+            Self::Horizontal { entity_id, .. } | Self::Vertical { entity_id, .. } => {
+                *entity_id != 0
+            }
+            Self::Coincident { a, b, .. } => valid_point_ref(a) && valid_point_ref(b),
+            Self::Distance { a, b, value_mm, .. } => {
+                valid_point_ref(a)
+                    && valid_point_ref(b)
+                    && value_mm.is_finite()
+                    && *value_mm > 0.0
+                    && *value_mm <= MAX_ASSISTANT_ABS_MM
+            }
+            Self::Radius {
+                entity_id,
+                value_mm,
+                ..
+            } => {
+                *entity_id != 0
+                    && value_mm.is_finite()
+                    && *value_mm > 0.0
+                    && *value_mm <= MAX_ASSISTANT_ABS_MM
+            }
+            Self::FixedPoint {
+                point, position_mm, ..
+            } => valid_point_ref(point) && valid_point(position_mm),
+        };
+        if self.id() == 0 || !valid {
+            return Err("assistant sketch constraint is invalid".to_owned());
+        }
+        Ok(())
+    }
+}
+
+impl AssistantCadEditProgram {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.operations.is_empty() || self.operations.len() > MAX_ASSISTANT_CAD_EDIT_OPERATIONS {
+            return Err("assistant CAD edit program operation count is invalid".to_owned());
+        }
+        let mut generated_occurrences = 0usize;
+        for operation in &self.operations {
+            let bounded_targets = match operation {
+                AssistantCadEditOperation::CreateSketch { .. }
+                | AssistantCadEditOperation::SetDimension { .. } => 0,
+                AssistantCadEditOperation::Delete { selector, .. }
+                | AssistantCadEditOperation::Transform { selector, .. }
+                | AssistantCadEditOperation::Copy { selector, .. }
+                | AssistantCadEditOperation::LinearPattern { selector, .. }
+                | AssistantCadEditOperation::Mirror { selector, .. } => {
+                    selector.bounded_target_count()?
+                }
+            };
+            let generated_per_target = match operation {
+                AssistantCadEditOperation::CreateSketch {
+                    definition_id,
+                    name,
+                    workplane,
+                    entities,
+                    constraints,
+                } => {
+                    if *definition_id == 0
+                        || name.trim().is_empty()
+                        || name.len() > MAX_ASSISTANT_NAME_BYTES
+                        || name.chars().any(char::is_control)
+                        || entities.is_empty()
+                        || entities.len() > crate::sketch::MAX_SKETCH_ENTITIES
+                        || constraints.len() > crate::sketch::MAX_SKETCH_CONSTRAINTS
+                    {
+                        return Err("assistant sketch creation is invalid".to_owned());
+                    }
+                    workplane.validate()?;
+                    let mut entity_ids = BTreeSet::new();
+                    for entity in entities {
+                        entity.validate()?;
+                        if !entity_ids.insert(entity.id()) {
+                            return Err("assistant sketch entity IDs are invalid".to_owned());
+                        }
+                    }
+                    let mut constraint_ids = BTreeSet::new();
+                    for constraint in constraints {
+                        constraint.validate()?;
+                        if !constraint_ids.insert(constraint.id()) {
+                            return Err("assistant sketch constraint IDs are invalid".to_owned());
+                        }
+                    }
+                    0
+                }
+                AssistantCadEditOperation::SetDimension {
+                    feature_id,
+                    constraint_id,
+                    value_mm,
+                } => {
+                    if *feature_id == 0
+                        || constraint_id == &Some(0)
+                        || !value_mm.is_finite()
+                        || *value_mm <= 0.0
+                        || *value_mm > MAX_ASSISTANT_ABS_MM
+                    {
+                        return Err("assistant CAD dimension edit is invalid".to_owned());
+                    }
+                    0
+                }
+                AssistantCadEditOperation::Delete { .. } => 0,
+                AssistantCadEditOperation::Transform {
+                    translation_mm,
+                    rotation,
+                    ..
+                } => {
+                    if !assistant_cad_vector_is_bounded(*translation_mm)
+                        || (!assistant_cad_vector_is_nonzero(*translation_mm) && rotation.is_none())
+                    {
+                        return Err("assistant CAD transform is invalid".to_owned());
+                    }
+                    if let Some(rotation) = rotation {
+                        rotation.validate()?;
+                    }
+                    0
+                }
+                AssistantCadEditOperation::Copy { translation_mm, .. } => {
+                    if !assistant_cad_vector_is_bounded(*translation_mm)
+                        || !assistant_cad_vector_is_nonzero(*translation_mm)
+                    {
+                        return Err("assistant CAD copy is invalid".to_owned());
+                    }
+                    1
+                }
+                AssistantCadEditOperation::LinearPattern {
+                    instances, step_mm, ..
+                } => {
+                    if !(2..=MAX_ASSISTANT_ARRAY_INSTANCES).contains(instances)
+                        || !assistant_cad_vector_is_bounded(*step_mm)
+                        || !assistant_cad_vector_is_nonzero(*step_mm)
+                        || step_mm.iter().any(|value| {
+                            (*value * f64::from(instances.saturating_sub(1))).abs()
+                                > MAX_ASSISTANT_ABS_MM
+                        })
+                    {
+                        return Err("assistant CAD linear pattern is invalid".to_owned());
+                    }
+                    instances.saturating_sub(1) as usize
+                }
+                AssistantCadEditOperation::Mirror {
+                    plane_origin_mm,
+                    plane_normal,
+                    ..
+                } => {
+                    let normal_length_squared =
+                        plane_normal.iter().map(|value| value * value).sum::<f64>();
+                    if !assistant_cad_vector_is_bounded(*plane_origin_mm)
+                        || !assistant_cad_vector_is_bounded(*plane_normal)
+                        || !normal_length_squared.is_finite()
+                        || normal_length_squared <= f64::EPSILON
+                    {
+                        return Err("assistant CAD mirror is invalid".to_owned());
+                    }
+                    1
+                }
+            };
+            generated_occurrences = generated_occurrences
+                .checked_add(
+                    bounded_targets
+                        .checked_mul(generated_per_target)
+                        .ok_or_else(|| {
+                            "assistant CAD generated occurrence count is invalid".to_owned()
+                        })?,
+                )
+                .ok_or_else(|| "assistant CAD generated occurrence count is invalid".to_owned())?;
+            if generated_occurrences > MAX_ASSISTANT_CAD_GENERATED_OCCURRENCES {
+                return Err("assistant CAD edit program creates too many occurrences".to_owned());
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
@@ -326,6 +815,8 @@ pub struct AssistantModelIntent {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub translations: Vec<AssistantTranslationIntent>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rotations: Vec<AssistantRotationIntent>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub profile_translations: Vec<AssistantProfileTranslationIntent>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub parameter_edits: Vec<AssistantParameterEditIntent>,
@@ -430,6 +921,7 @@ impl AssistantModelIntent {
     pub fn validate(&self) -> Result<(), String> {
         if self.boxes.is_empty()
             && self.translations.is_empty()
+            && self.rotations.is_empty()
             && self.profile_translations.is_empty()
             && self.parameter_edits.is_empty()
             && self.linear_arrays.is_empty()
@@ -440,7 +932,7 @@ impl AssistantModelIntent {
             && self.oriented_beams.is_empty()
         {
             return Err(
-                "assistant proposal must contain geometry, translations, profile translations, parameter edits, linear arrays, bottles, balloon text, roofs, staircases, or oriented beams"
+                "assistant proposal must contain geometry, translations, rotations, profile translations, parameter edits, linear arrays, bottles, balloon text, roofs, staircases, or oriented beams"
                     .to_owned(),
             );
         }
@@ -449,6 +941,9 @@ impl AssistantModelIntent {
         }
         if self.translations.len() > MAX_ASSISTANT_TRANSLATIONS {
             return Err("assistant proposal contains more than 100 translations".to_owned());
+        }
+        if self.rotations.len() > MAX_ASSISTANT_ROTATIONS {
+            return Err("assistant proposal contains more than 100 rotations".to_owned());
         }
         if self.profile_translations.len() > MAX_ASSISTANT_PROFILE_TRANSLATIONS {
             return Err("assistant proposal contains more than one profile translation".to_owned());
@@ -553,6 +1048,7 @@ impl AssistantModelIntent {
         }
         if self.replace_scene
             && (!self.translations.is_empty()
+                || !self.rotations.is_empty()
                 || !self.profile_translations.is_empty()
                 || !self.parameter_edits.is_empty()
                 || !self.linear_arrays.is_empty())
@@ -562,6 +1058,7 @@ impl AssistantModelIntent {
         if !self.profile_translations.is_empty()
             && (!self.boxes.is_empty()
                 || !self.translations.is_empty()
+                || !self.rotations.is_empty()
                 || !self.parameter_edits.is_empty()
                 || !self.linear_arrays.is_empty()
                 || !self.bottles.is_empty()
@@ -575,6 +1072,7 @@ impl AssistantModelIntent {
         if !self.parameter_edits.is_empty()
             && (!self.boxes.is_empty()
                 || !self.translations.is_empty()
+                || !self.rotations.is_empty()
                 || !self.profile_translations.is_empty()
                 || !self.linear_arrays.is_empty()
                 || !self.bottles.is_empty()
@@ -596,6 +1094,39 @@ impl AssistantModelIntent {
             {
                 return Err("assistant translation is invalid".to_owned());
             }
+        }
+        let mut rotated_occurrences = BTreeSet::new();
+        let mut rotated_groups = BTreeSet::new();
+        for rotation in &self.rotations {
+            let target_is_valid = match (rotation.occurrence_id, rotation.group_id) {
+                (Some(id), None) => {
+                    id != 0
+                        && !translated_occurrences.contains(&id)
+                        && rotated_occurrences.insert(id)
+                }
+                (None, Some(id)) => id != 0 && rotated_groups.insert(id),
+                _ => false,
+            };
+            let axis_length_squared = rotation.axis.iter().map(|value| value * value).sum::<f64>();
+            let normalized_angle = rotation.angle_degrees.rem_euclid(360.0);
+            let shortest_angle = normalized_angle.min(360.0 - normalized_angle);
+            if !target_is_valid
+                || rotation
+                    .pivot_mm
+                    .iter()
+                    .chain(rotation.axis.iter())
+                    .any(|value| !value.is_finite() || value.abs() > MAX_ASSISTANT_ABS_MM)
+                || !axis_length_squared.is_finite()
+                || axis_length_squared <= f64::EPSILON
+                || !rotation.angle_degrees.is_finite()
+                || rotation.angle_degrees.abs() > MAX_ASSISTANT_ABS_MM
+                || shortest_angle < 0.01
+            {
+                return Err("assistant rotation is invalid".to_owned());
+            }
+        }
+        if !rotated_occurrences.is_empty() && !rotated_groups.is_empty() {
+            return Err("assistant rotation cannot mix occurrence and group targets".to_owned());
         }
         for translation in &self.profile_translations {
             if translation.definition_id == 0
@@ -716,6 +1247,62 @@ impl AssistantModelIntent {
             }) {
                 return Err("assistant subtractions overlap".to_owned());
             }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AssistantRejectionPhase {
+    IntentValidation,
+    ProposalPlanning,
+    CanonicalValidation,
+    ExactValidation,
+    DomainValidation,
+    CommitValidation,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AssistantRejectionDiagnostic {
+    pub phase: AssistantRejectionPhase,
+    pub code: String,
+    pub operation: String,
+    pub target: String,
+    pub failed_invariant: String,
+    pub repair_hint: String,
+    pub retryable: bool,
+}
+
+impl AssistantRejectionDiagnostic {
+    pub fn validate(&self) -> Result<(), String> {
+        let machine_identifier_is_valid = |value: &str, max_bytes: usize| {
+            !value.is_empty()
+                && value.len() <= max_bytes
+                && value.bytes().all(|byte| {
+                    byte.is_ascii_lowercase()
+                        || byte.is_ascii_digit()
+                        || matches!(byte, b'.' | b'_' | b'-')
+                })
+        };
+        let bounded_text_is_valid = |value: &str, max_bytes: usize| {
+            !value.trim().is_empty()
+                && value.len() <= max_bytes
+                && !value.chars().any(char::is_control)
+        };
+        if !machine_identifier_is_valid(&self.code, MAX_ASSISTANT_REJECTION_CODE_BYTES)
+            || !machine_identifier_is_valid(
+                &self.operation,
+                MAX_ASSISTANT_REJECTION_OPERATION_BYTES,
+            )
+            || !bounded_text_is_valid(&self.target, MAX_ASSISTANT_REJECTION_TARGET_BYTES)
+            || !bounded_text_is_valid(&self.failed_invariant, MAX_ASSISTANT_REJECTION_TEXT_BYTES)
+            || !bounded_text_is_valid(&self.repair_hint, MAX_ASSISTANT_REJECTION_TEXT_BYTES)
+            || serde_json::to_vec(self)
+                .map_or(true, |bytes| bytes.len() > MAX_ASSISTANT_REJECTION_BYTES)
+        {
+            return Err("assistant rejection diagnostic is invalid or too large".to_owned());
         }
         Ok(())
     }

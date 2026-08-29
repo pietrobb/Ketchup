@@ -12,6 +12,68 @@ pub const COMPLETE_STATE_VIEW_V1: &str = "ketchup.state-view.complete.v1";
 pub const AGENT_STATE_VIEW_V1: &str = "ketchup.state-view.agent.v1";
 pub const SEMANTIC_ENCODER_V1: &str = "ketchup.semantic-state.v1";
 
+fn write_feature_extent(
+    output: &mut String,
+    feature_id: u64,
+    extent: &crate::sketch::FeatureExtent,
+) {
+    use crate::sketch::{FeatureExtent, FeatureExtentEnd};
+
+    fn write_end(output: &mut String, prefix: &str, end: &FeatureExtentEnd) {
+        match end {
+            FeatureExtentEnd::Blind(distance) => {
+                writeln!(output, "{prefix}.mode=blind").unwrap();
+                writeln!(output, "{prefix}.source={:?}", distance.source_token()).unwrap();
+                writeln!(
+                    output,
+                    "{prefix}.f64_bits={:016x}",
+                    distance.millimetres().to_bits()
+                )
+                .unwrap();
+            }
+            FeatureExtentEnd::ThroughAll => writeln!(output, "{prefix}.mode=through_all").unwrap(),
+            FeatureExtentEnd::UpToFace(reference) => {
+                writeln!(output, "{prefix}.mode=up_to_face").unwrap();
+                writeln!(output, "{prefix}.reference={reference:?}").unwrap();
+            }
+        }
+    }
+
+    let prefix = format!("feature.{feature_id}.extent");
+    match extent {
+        FeatureExtent::Blind(distance) => {
+            writeln!(output, "{prefix}.mode=blind").unwrap();
+            writeln!(output, "{prefix}.source={:?}", distance.source_token()).unwrap();
+            writeln!(
+                output,
+                "{prefix}.f64_bits={:016x}",
+                distance.millimetres().to_bits()
+            )
+            .unwrap();
+        }
+        FeatureExtent::ThroughAll => writeln!(output, "{prefix}.mode=through_all").unwrap(),
+        FeatureExtent::UpToFace(reference) => {
+            writeln!(output, "{prefix}.mode=up_to_face").unwrap();
+            writeln!(output, "{prefix}.reference={reference:?}").unwrap();
+        }
+        FeatureExtent::Symmetric(distance) => {
+            writeln!(output, "{prefix}.mode=symmetric").unwrap();
+            writeln!(output, "{prefix}.source={:?}", distance.source_token()).unwrap();
+            writeln!(
+                output,
+                "{prefix}.f64_bits={:016x}",
+                distance.millimetres().to_bits()
+            )
+            .unwrap();
+        }
+        FeatureExtent::Bidirectional { along, opposite } => {
+            writeln!(output, "{prefix}.mode=bidirectional").unwrap();
+            write_end(output, &format!("{prefix}.along"), along);
+            write_end(output, &format!("{prefix}.opposite"), opposite);
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SemanticState {
     complete: String,
@@ -1048,21 +1110,8 @@ pub fn encode_semantic_state_with_results(
                     spec.direction
                 )
                 .unwrap();
-                writeln!(
-                    complete,
-                    "feature.{}.extent.source={:?}",
-                    feature.id().0,
-                    spec.extent.distance().source_token()
-                )
-                .unwrap();
-                writeln!(
-                    complete,
-                    "feature.{}.extent.f64_bits={:016x}",
-                    feature.id().0,
-                    spec.extent.distance().millimetres().to_bits()
-                )
-                .unwrap();
-                writeln!(agent, "feature.{}=name:{:?},kind:pad,definition:{},sketch:{},region:{},direction:{:?},extent_mm:{:?}", feature.id().0, feature.name(), feature.definition_id().0, spec.sketch.0, spec.region.0, spec.direction, spec.extent.distance().millimetres()).unwrap();
+                write_feature_extent(&mut complete, feature.id().0, &spec.extent);
+                writeln!(agent, "feature.{}=name:{:?},kind:pad,definition:{},sketch:{},region:{},direction:{:?},extent:{:?}", feature.id().0, feature.name(), feature.definition_id().0, spec.sketch.0, spec.region.0, spec.direction, spec.extent).unwrap();
             }
             crate::document::FeatureKind::SketchPocket(spec) => {
                 writeln!(complete, "feature.{}.kind=sketch_pocket", feature.id().0).unwrap();
@@ -1094,20 +1143,7 @@ pub fn encode_semantic_state_with_results(
                     spec.direction
                 )
                 .unwrap();
-                writeln!(
-                    complete,
-                    "feature.{}.extent.source={:?}",
-                    feature.id().0,
-                    spec.extent.distance().source_token()
-                )
-                .unwrap();
-                writeln!(
-                    complete,
-                    "feature.{}.extent.f64_bits={:016x}",
-                    feature.id().0,
-                    spec.extent.distance().millimetres().to_bits()
-                )
-                .unwrap();
+                write_feature_extent(&mut complete, feature.id().0, &spec.extent);
                 writeln!(
                     complete,
                     "feature.{}.support={:?}",
@@ -1115,7 +1151,7 @@ pub fn encode_semantic_state_with_results(
                     spec.support
                 )
                 .unwrap();
-                writeln!(agent, "feature.{}=name:{:?},kind:sketch_pocket,definition:{},target:{},sketch:{},region:{},direction:{:?},extent_mm:{:?},support_lineage:{:?}", feature.id().0, feature.name(), feature.definition_id().0, spec.target.0, spec.sketch.0, spec.region.0, spec.direction, spec.extent.distance().millimetres(), spec.support.lineage_digest).unwrap();
+                writeln!(agent, "feature.{}=name:{:?},kind:sketch_pocket,definition:{},target:{},sketch:{},region:{},direction:{:?},extent:{:?},support_lineage:{:?}", feature.id().0, feature.name(), feature.definition_id().0, spec.target.0, spec.sketch.0, spec.region.0, spec.direction, spec.extent, spec.support.lineage_digest).unwrap();
             }
             crate::document::FeatureKind::BottleProfileControl {
                 profile,
@@ -1284,6 +1320,83 @@ pub fn encode_semantic_state_with_results(
                         .iter()
                         .map(crate::document::StableEdgeRole::as_str)
                         .collect::<Vec<_>>(),
+                    amount.millimetres()
+                )
+                .unwrap();
+            }
+            crate::document::FeatureKind::TopologyShell {
+                target,
+                removed_faces,
+                thickness,
+            } => {
+                writeln!(complete, "feature.{}.kind=topology_shell", feature.id().0).unwrap();
+                writeln!(complete, "feature.{}.target={}", feature.id().0, target.0).unwrap();
+                for (index, reference) in removed_faces.iter().enumerate() {
+                    writeln!(
+                        complete,
+                        "feature.{}.removed_face.{index}.lineage={:?}",
+                        feature.id().0,
+                        reference.lineage_digest
+                    )
+                    .unwrap();
+                }
+                writeln!(
+                    complete,
+                    "feature.{}.thickness.f64_bits={:016x}",
+                    feature.id().0,
+                    thickness.millimetres().to_bits()
+                )
+                .unwrap();
+                writeln!(
+                    agent,
+                    "feature.{}=name:{:?},kind:topology_shell,definition:{},target:{},removed_faces:{},thickness_mm:{:?}",
+                    feature.id().0,
+                    feature.name(),
+                    feature.definition_id().0,
+                    target.0,
+                    removed_faces.len(),
+                    thickness.millimetres()
+                )
+                .unwrap();
+            }
+            crate::document::FeatureKind::TopologyEdgeFinish {
+                target,
+                edges,
+                kind,
+                amount,
+            } => {
+                writeln!(
+                    complete,
+                    "feature.{}.kind=topology_edge_finish",
+                    feature.id().0
+                )
+                .unwrap();
+                writeln!(complete, "feature.{}.target={}", feature.id().0, target.0).unwrap();
+                for (index, reference) in edges.iter().enumerate() {
+                    writeln!(
+                        complete,
+                        "feature.{}.edge.{index}.lineage={:?}",
+                        feature.id().0,
+                        reference.lineage_digest
+                    )
+                    .unwrap();
+                }
+                writeln!(complete, "feature.{}.finish_kind={kind:?}", feature.id().0).unwrap();
+                writeln!(
+                    complete,
+                    "feature.{}.amount.f64_bits={:016x}",
+                    feature.id().0,
+                    amount.millimetres().to_bits()
+                )
+                .unwrap();
+                writeln!(
+                    agent,
+                    "feature.{}=name:{:?},kind:topology_edge_finish,definition:{},target:{},edges:{},finish_kind:{kind:?},amount_mm:{:?}",
+                    feature.id().0,
+                    feature.name(),
+                    feature.definition_id().0,
+                    target.0,
+                    edges.len(),
                     amount.millimetres()
                 )
                 .unwrap();

@@ -22,6 +22,7 @@
 #include <BRepFilletAPI_MakeChamfer.hxx>
 #include <BRepFilletAPI_MakeFillet.hxx>
 #include <BRepOffsetAPI_MakeOffset.hxx>
+#include <BRepOffsetAPI_MakeThickSolid.hxx>
 #include <BRepOffsetAPI_ThruSections.hxx>
 #include <BRepPrimAPI_MakeBox.hxx>
 #include <BRepPrimAPI_MakeCylinder.hxx>
@@ -114,24 +115,27 @@ std::uint32_t count_subshapes(const TopoDS_Shape& shape, TopAbs_ShapeEnum kind) 
 }
 
 TopoDS_Face face_at_ordinal(const TopoDS_Shape& shape, std::uint32_t target) {
-  std::uint32_t ordinal = 0;
-  for (TopExp_Explorer explorer(shape, TopAbs_FACE); explorer.More(); explorer.Next(), ++ordinal) {
-    if (ordinal == target) {
-      return TopoDS::Face(explorer.Current());
-    }
-  }
-  return TopoDS_Face();
+  TopTools_IndexedMapOfShape faces;
+  TopExp::MapShapes(shape, TopAbs_FACE, faces);
+  const Standard_Integer index = static_cast<Standard_Integer>(target) + 1;
+  return index <= faces.Extent() ? TopoDS::Face(faces(index)) : TopoDS_Face();
+}
+
+TopoDS_Edge edge_at_ordinal(const TopoDS_Shape& shape, std::uint32_t target) {
+  TopTools_IndexedMapOfShape edges;
+  TopExp::MapShapes(shape, TopAbs_EDGE, edges);
+  const Standard_Integer index = static_cast<Standard_Integer>(target) + 1;
+  return index <= edges.Extent() ? TopoDS::Edge(edges(index)) : TopoDS_Edge();
 }
 
 std::pair<std::uint32_t, bool> face_ordinal(
     const TopoDS_Shape& result, const TopoDS_Shape& candidate) {
-  std::uint32_t ordinal = 0;
-  for (TopExp_Explorer explorer(result, TopAbs_FACE); explorer.More(); explorer.Next(), ++ordinal) {
-    if (explorer.Current().IsSame(candidate)) {
-      return {ordinal, true};
-    }
-  }
-  return {0, false};
+  TopTools_IndexedMapOfShape faces;
+  TopExp::MapShapes(result, TopAbs_FACE, faces);
+  const Standard_Integer index = faces.FindIndex(candidate);
+  return index > 0
+             ? std::pair<std::uint32_t, bool>{static_cast<std::uint32_t>(index - 1), true}
+             : std::pair<std::uint32_t, bool>{0, false};
 }
 
 HistoryRecord history_record(
@@ -151,12 +155,13 @@ EdgeHistoryRecord edge_history_record(
     std::string source,
     const TopoDS_Shape& result,
     const TopoDS_Shape& output) {
-  std::uint32_t ordinal = 0;
-  for (TopExp_Explorer explorer(result, TopAbs_EDGE); explorer.More(); explorer.Next(), ++ordinal) {
-    if (explorer.Current().IsSame(output)) {
-      return EdgeHistoryRecord{
-          std::move(role), std::move(relation), std::move(source), ordinal, true};
-    }
+  TopTools_IndexedMapOfShape edges;
+  TopExp::MapShapes(result, TopAbs_EDGE, edges);
+  const Standard_Integer index = edges.FindIndex(output);
+  if (index > 0) {
+    return EdgeHistoryRecord{
+        std::move(role), std::move(relation), std::move(source),
+        static_cast<std::uint32_t>(index - 1), true};
   }
   return EdgeHistoryRecord{
       std::move(role), std::move(relation), std::move(source), 0, false};
@@ -421,6 +426,60 @@ void append_propagated_history(
           source_history.source_element_id,
           result,
           source_face));
+    }
+  }
+}
+
+template <typename Operation>
+void append_propagated_edge_history(
+    std::vector<EdgeHistoryRecord>& history,
+    Operation& operation,
+    const TopoDS_Shape& result,
+    const NativeOperationResult::Impl& source) {
+  for (const EdgeHistoryRecord& source_history : source.edge_history) {
+    if (!source_history.output_present) {
+      continue;
+    }
+    const TopoDS_Edge source_edge =
+        edge_at_ordinal(source.shape, source_history.output_ordinal);
+    if (source_edge.IsNull()) {
+      continue;
+    }
+    if (operation.IsDeleted(source_edge)) {
+      history.push_back(EdgeHistoryRecord{
+          source_history.semantic_role,
+          "deleted",
+          source_history.source_element_id,
+          0,
+          false});
+    }
+    const NCollection_List<TopoDS_Shape>& modified = operation.Modified(source_edge);
+    for (NCollection_List<TopoDS_Shape>::Iterator iterator(modified);
+         iterator.More(); iterator.Next()) {
+      history.push_back(edge_history_record(
+          source_history.semantic_role,
+          "modified",
+          source_history.source_element_id,
+          result,
+          iterator.Value()));
+    }
+    const NCollection_List<TopoDS_Shape>& generated = operation.Generated(source_edge);
+    for (NCollection_List<TopoDS_Shape>::Iterator iterator(generated);
+         iterator.More(); iterator.Next()) {
+      history.push_back(edge_history_record(
+          source_history.semantic_role,
+          "generated",
+          source_history.source_element_id,
+          result,
+          iterator.Value()));
+    }
+    if (!operation.IsDeleted(source_edge) && modified.IsEmpty() && generated.IsEmpty()) {
+      history.push_back(edge_history_record(
+          source_history.semantic_role,
+          "unchanged",
+          source_history.source_element_id,
+          result,
+          source_edge));
     }
   }
 }
@@ -1770,6 +1829,154 @@ std::unique_ptr<NativeOperationResult> finish_shell_revolve_profile_native(
   });
 }
 
+std::unique_ptr<NativeOperationResult> shell_body_native(
+    const NativeOperationResult& body,
+    rust::Slice<const std::uint32_t> face_ordinals,
+    double thickness) noexcept {
+  return guarded([&] {
+    if (!body.valid() || face_ordinals.empty() || face_ordinals.size() > 64
+        || !std::isfinite(thickness) || thickness <= 0.0) {
+      return error_result(STATUS_INVALID_PARAMETER, "Body shell payload is outside the bounded envelope");
+    }
+    NCollection_List<TopoDS_Shape> closing_faces;
+    std::uint32_t previous = 0;
+    bool first = true;
+    for (const std::uint32_t ordinal : face_ordinals) {
+      if ((!first && ordinal <= previous)
+          || ordinal >= body.impl().summary.face_count) {
+        return error_result(STATUS_INVALID_PARAMETER, "Body shell face ordinals are invalid or non-canonical");
+      }
+      const TopoDS_Face face = face_at_ordinal(body.impl().shape, ordinal);
+      if (face.IsNull()) {
+        return error_result(STATUS_INVALID_SHAPE, "Body shell selected face is absent");
+      }
+      closing_faces.Append(face);
+      previous = ordinal;
+      first = false;
+    }
+
+    BRepOffsetAPI_MakeThickSolid operation;
+    operation.MakeThickSolidByJoin(
+        body.impl().shape,
+        closing_faces,
+        -thickness,
+        1.0e-6,
+        BRepOffset_Skin,
+        false,
+        false,
+        GeomAbs_Intersection,
+        true);
+    if (!operation.IsDone() || operation.Shape().IsNull()) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT body shell did not complete");
+    }
+    const TopoDS_Shape result = operation.Shape();
+    std::vector<HistoryRecord> history;
+    append_propagated_history(history, operation, result, body.impl());
+    for (const std::uint32_t ordinal : face_ordinals) {
+      const TopoDS_Face source = face_at_ordinal(body.impl().shape, ordinal);
+      const std::string source_id = "generated-result/face/" + std::to_string(ordinal);
+      const NCollection_List<TopoDS_Shape>& modified = operation.Modified(source);
+      const NCollection_List<TopoDS_Shape>& generated = operation.Generated(source);
+      for (NCollection_List<TopoDS_Shape>::Iterator iterator(modified);
+           iterator.More(); iterator.Next()) {
+        history.push_back(history_record(
+            "", "shell_selected_modified", source_id, result, iterator.Value()));
+      }
+      for (NCollection_List<TopoDS_Shape>::Iterator iterator(generated);
+           iterator.More(); iterator.Next()) {
+        history.push_back(history_record(
+            "", "shell_selected_generated", source_id, result, iterator.Value()));
+      }
+      if (operation.IsDeleted(source) || (modified.IsEmpty() && generated.IsEmpty())) {
+        history.push_back(HistoryRecord{
+            "", "shell_selected_removed", source_id, 0, false});
+      }
+    }
+    return success_result(result, std::move(history));
+  });
+}
+
+std::unique_ptr<NativeOperationResult> finish_body_native(
+    const NativeOperationResult& body,
+    rust::Slice<const std::uint32_t> edge_ordinals,
+    double amount,
+    bool fillet) noexcept {
+  return guarded([&] {
+    if (!body.valid() || edge_ordinals.empty() || edge_ordinals.size() > 64
+        || !std::isfinite(amount) || amount <= 0.0) {
+      return error_result(STATUS_INVALID_PARAMETER, "Body edge finish payload is outside the bounded envelope");
+    }
+    std::vector<TopoDS_Edge> selected;
+    selected.reserve(edge_ordinals.size());
+    std::uint32_t previous = 0;
+    bool first = true;
+    for (const std::uint32_t ordinal : edge_ordinals) {
+      if ((!first && ordinal <= previous)
+          || ordinal >= body.impl().summary.edge_count) {
+        return error_result(STATUS_INVALID_PARAMETER, "Body edge finish ordinals are invalid or non-canonical");
+      }
+      const TopoDS_Edge edge = edge_at_ordinal(body.impl().shape, ordinal);
+      if (edge.IsNull()) {
+        return error_result(STATUS_INVALID_SHAPE, "Body edge finish selected edge is absent");
+      }
+      selected.push_back(edge);
+      previous = ordinal;
+      first = false;
+    }
+
+    const auto collect_finished = [&](auto& operation) -> std::unique_ptr<NativeOperationResult> {
+      operation.Build();
+      if (!operation.IsDone() || operation.Shape().IsNull()) {
+        return error_result(STATUS_INVALID_SHAPE, "OCCT body edge finish did not complete");
+      }
+      const TopoDS_Shape result = operation.Shape();
+      std::vector<HistoryRecord> history;
+      std::vector<EdgeHistoryRecord> edge_history;
+      append_propagated_history(history, operation, result, body.impl());
+      append_propagated_edge_history(edge_history, operation, result, body.impl());
+      for (std::size_t index = 0; index < selected.size(); ++index) {
+        const TopoDS_Edge& source = selected[index];
+        const std::string source_id =
+            "generated-result/edge/" + std::to_string(edge_ordinals[index]);
+        const NCollection_List<TopoDS_Shape>& modified = operation.Modified(source);
+        const NCollection_List<TopoDS_Shape>& generated = operation.Generated(source);
+        for (NCollection_List<TopoDS_Shape>::Iterator iterator(modified);
+             iterator.More(); iterator.Next()) {
+          edge_history.push_back(edge_history_record(
+              "", fillet ? "fillet_selected_modified" : "chamfer_selected_modified",
+              source_id, result, iterator.Value()));
+        }
+        for (NCollection_List<TopoDS_Shape>::Iterator iterator(generated);
+             iterator.More(); iterator.Next()) {
+          edge_history.push_back(edge_history_record(
+              "", fillet ? "fillet_selected_generated" : "chamfer_selected_generated",
+              source_id, result, iterator.Value()));
+        }
+        if (operation.IsDeleted(source) || (modified.IsEmpty() && generated.IsEmpty())) {
+          edge_history.push_back(EdgeHistoryRecord{
+              "", fillet ? "fillet_selected_consumed" : "chamfer_selected_consumed",
+              source_id, 0, false});
+        }
+      }
+      return success_result(
+          result, std::move(history), false, false, std::move(edge_history));
+    };
+
+    if (fillet) {
+      BRepFilletAPI_MakeFillet operation(body.impl().shape);
+      for (const TopoDS_Edge& edge : selected) {
+        operation.Add(amount, edge);
+      }
+      return collect_finished(operation);
+    }
+    BRepFilletAPI_MakeChamfer operation(body.impl().shape);
+    for (const TopoDS_Edge& edge : selected) {
+      operation.Add(amount, edge);
+    }
+    return collect_finished(operation);
+  });
+}
+
 std::unique_ptr<NativeOperationResult> cut_box_native(
     const NativeOperationResult& base,
     double origin_x, double origin_y, double origin_z,
@@ -2658,6 +2865,81 @@ std::unique_ptr<NativeOperationResult> combine_bodies_native(
   });
 }
 
+std::unique_ptr<NativeOperationResult> boolean_bodies_native(
+    const NativeOperationResult& target, const NativeOperationResult& tool,
+    std::uint8_t operation_kind) noexcept {
+  return guarded([&] {
+    if (!target.valid() || !tool.valid() || target.impl().shape.IsNull() || tool.impl().shape.IsNull()) {
+      return error_result(STATUS_INVALID_PARAMETER, "Exact Boolean input body is unavailable");
+    }
+    const auto finish = [&](const TopoDS_Shape& result, std::vector<HistoryRecord> history) {
+      if (result.IsNull()) {
+        return error_result(STATUS_NULL_RESULT, "OCCT body Boolean returned a null shape");
+      }
+      const std::uint32_t solids = count_subshapes(result, TopAbs_SOLID);
+      if (solids == 0) {
+        return error_result(STATUS_INVALID_SHAPE, "OCCT body Boolean produced no solid result");
+      }
+      return success_result(result, std::move(history), solids >= 2);
+    };
+    if (operation_kind == 0) {
+      BRepAlgoAPI_Cut operation(target.impl().shape, tool.impl().shape);
+      operation.Build();
+      if (!operation.IsDone() || operation.HasErrors()) {
+        return error_result(STATUS_INVALID_SHAPE, "OCCT body cut did not complete");
+      }
+      const TopoDS_Shape result = operation.Shape();
+      std::vector<HistoryRecord> history;
+      append_propagated_history(history, operation, result, target.impl());
+      return finish(result, std::move(history));
+    }
+    if (operation_kind == 1) {
+      BRepAlgoAPI_Fuse operation(target.impl().shape, tool.impl().shape);
+      operation.Build();
+      if (operation.IsDone() && !operation.HasErrors()) {
+        operation.SimplifyResult(true, true);
+      }
+      if (!operation.IsDone() || operation.HasErrors()) {
+        return error_result(STATUS_INVALID_SHAPE, "OCCT body union did not complete");
+      }
+      const TopoDS_Shape result = operation.Shape();
+      std::vector<HistoryRecord> history;
+      append_propagated_history(history, operation, result, target.impl());
+      append_propagated_history(history, operation, result, tool.impl());
+      return finish(result, std::move(history));
+    }
+    if (operation_kind == 2) {
+      BRepAlgoAPI_Common operation(target.impl().shape, tool.impl().shape);
+      operation.Build();
+      if (!operation.IsDone() || operation.HasErrors()) {
+        return error_result(STATUS_INVALID_SHAPE, "OCCT body intersection did not complete");
+      }
+      const TopoDS_Shape result = operation.Shape();
+      std::vector<HistoryRecord> history;
+      append_propagated_history(history, operation, result, target.impl());
+      append_propagated_history(history, operation, result, tool.impl());
+      return finish(result, std::move(history));
+    }
+    if (operation_kind == 3) {
+      BOPAlgo_Splitter operation;
+      operation.AddArgument(target.impl().shape);
+      operation.AddTool(tool.impl().shape);
+      operation.Perform();
+      if (operation.HasErrors()) {
+        return error_result(STATUS_INVALID_SHAPE, "OCCT body split did not complete");
+      }
+      const TopoDS_Shape result = operation.Shape();
+      if (count_subshapes(result, TopAbs_SOLID) < 2) {
+        return error_result(STATUS_NO_GEOMETRIC_CHANGE, "Body split did not produce multiple target fragments");
+      }
+      std::vector<HistoryRecord> history;
+      append_propagated_history(history, operation, result, target.impl());
+      return finish(result, std::move(history));
+    }
+    return error_result(STATUS_INVALID_PARAMETER, "Exact body Boolean operation is unsupported");
+  });
+}
+
 rust::String export_step_native(
     const NativeOperationResult& body, rust::Str path) noexcept {
   try {
@@ -2754,9 +3036,11 @@ std::unique_ptr<NativeMeshResult> tessellate_body_native(
       return mesh_error(STATUS_INVALID_SHAPE, "OCCT tessellation did not complete");
     }
     auto impl = std::make_unique<NativeMeshResult::Impl>();
-    std::uint32_t face_ordinal = 0;
-    for (TopExp_Explorer explorer(shape, TopAbs_FACE); explorer.More(); explorer.Next(), ++face_ordinal) {
-      const TopoDS_Face face = TopoDS::Face(explorer.Current());
+    TopTools_IndexedMapOfShape faces;
+    TopExp::MapShapes(shape, TopAbs_FACE, faces);
+    for (Standard_Integer face_index = 1; face_index <= faces.Extent(); ++face_index) {
+      const auto face_ordinal = static_cast<std::uint32_t>(face_index - 1);
+      const TopoDS_Face face = TopoDS::Face(faces(face_index));
       TopLoc_Location location;
       const Handle(Poly_Triangulation) triangulation = BRep_Tool::Triangulation(face, location);
       if (triangulation.IsNull()) {

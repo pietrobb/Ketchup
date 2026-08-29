@@ -16,13 +16,14 @@ use ketchup_core::document::{
     BooleanOperation, BottleEdgeFinishKind, DerivedIdentity, NodeId, SlotPath, SlotSegment,
     Snapshot, Transform,
 };
+use ketchup_core::exact_brep_graph::ExactBRepGraph;
 use ketchup_core::exact_product::{
-    ExactBodyPackage, ExactFaceRole, ExactFeatureChainRequest, ExactLoftPackage, ExactLoftRequest,
-    ExactPlanarOffsetPackage, ExactPlanarOffsetRequest, ExactProductError, ExactProfileSegment,
-    ExactRenderPackage, ExactSweepPackage, ExactSweepRequest, LoftWorkerEvidence,
-    PlanarOffsetWorkerEvidence, SweepWorkerEvidence, SweepWorkerFaceEvidence,
-    build_box_render_package, build_loft_package, build_planar_offset_package, build_sweep_package,
-    canonical_reference_lineage_digest,
+    ExactBRepGraphPackage, ExactBRepGraphWorkerEvidence, ExactBodyPackage, ExactFaceRole,
+    ExactFeatureChainRequest, ExactLoftPackage, ExactLoftRequest, ExactPlanarOffsetPackage,
+    ExactPlanarOffsetRequest, ExactProductError, ExactProfileSegment, ExactRenderPackage,
+    ExactSweepPackage, ExactSweepRequest, LoftWorkerEvidence, PlanarOffsetWorkerEvidence,
+    SweepWorkerEvidence, SweepWorkerFaceEvidence, build_box_render_package, build_loft_package,
+    build_planar_offset_package, build_sweep_package, canonical_reference_lineage_digest,
 };
 use ketchup_core::graph::sha256_hex;
 use ketchup_core::import::{
@@ -473,6 +474,20 @@ pub struct WorkerRevolveResult {
     pub faces: Vec<WorkerFaceEvidence>,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct WorkerExactBRepGraphResult {
+    pub canonical_input_digest: String,
+    pub graph_digest: String,
+    pub producer_feature_id: u64,
+    pub result_fingerprint: String,
+    pub exact_input_digest: String,
+    pub volume_mm3: f64,
+    pub bounds_mm: [f64; 6],
+    pub topology_counts: [u32; 5],
+    pub backend: String,
+    pub tolerance: String,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum WorkerError {
     Spawn(String),
@@ -551,6 +566,7 @@ const M6_REVOLVE_CAPABILITY: &str = "M6_REVOLVE_V1";
 const M6_SHELL_CAPABILITY: &str = "M6_SHELL_V1";
 const M14_STEP_CAPABILITY: &str = "M14_STEP_V1";
 const M21_STEP_MODEL_CAPABILITY: &str = "M21_STEP_MODEL_V1";
+const EXACT_BREP_GRAPH_CAPABILITY: &str = "EXACT_BREP_GRAPH_V1";
 const DEFAULT_WORKER_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1064,6 +1080,139 @@ impl ExactWorkerClient {
                 M21_STEP_MODEL_CAPABILITY.to_owned(),
             ))
         }
+    }
+
+    fn verify_exact_brep_graph_capability(
+        &mut self,
+        cancelled: &AtomicBool,
+    ) -> Result<(), WorkerError> {
+        let request = format!("CAPS {EXACT_BREP_GRAPH_CAPABILITY}");
+        let response = self.request_with_cancellation(&request, cancelled)?;
+        if response == request {
+            Ok(())
+        } else {
+            self.terminate_worker();
+            Err(WorkerError::MissingCapability(
+                EXACT_BREP_GRAPH_CAPABILITY.to_owned(),
+            ))
+        }
+    }
+
+    fn evaluate_exact_brep_graph_with_cancellation(
+        &mut self,
+        graph: &ExactBRepGraph,
+        cancelled: &AtomicBool,
+    ) -> Result<WorkerExactBRepGraphResult, WorkerError> {
+        self.verify_exact_brep_graph_capability(cancelled)?;
+        let bytes = graph
+            .to_bytes()
+            .map_err(|error| WorkerError::Protocol(error.to_string()))?;
+        let response = self.request_with_cancellation(
+            &format!(
+                "EVAL_BREP_GRAPH_V1 {} {}",
+                graph.graph_digest,
+                hex_encode(&bytes)
+            ),
+            cancelled,
+        )?;
+        match parse_exact_brep_graph_result(&response) {
+            Err(WorkerError::Protocol(response)) => self.fail_protocol(response),
+            result => result,
+        }
+    }
+
+    fn tessellate_exact_brep_graph_with_cancellation(
+        &mut self,
+        graph: &ExactBRepGraph,
+        result_fingerprint: &str,
+        output_path: &Path,
+        cancelled: &AtomicBool,
+    ) -> Result<StepImportMesh, WorkerError> {
+        self.verify_exact_brep_graph_capability(cancelled)?;
+        let bytes = graph
+            .to_bytes()
+            .map_err(|error| WorkerError::Protocol(error.to_string()))?;
+        let response = self.request_with_cancellation(
+            &format!(
+                "TESSELLATE_BREP_GRAPH_V1 {} {} {} {}",
+                graph.graph_digest,
+                hex_encode(&bytes),
+                result_fingerprint,
+                hex_encode(output_path.to_string_lossy().as_bytes())
+            ),
+            cancelled,
+        )?;
+        let fields = response.split_whitespace().collect::<Vec<_>>();
+        if matches!(fields.first(), Some(&"ERR") | Some(&"ERR_DETAIL")) {
+            return Err(parse_error_response(&response, &fields));
+        }
+        if fields.len() != 7
+            || fields[0] != "OK_BREP_GRAPH_MESH_V1"
+            || fields[1] != graph.graph_digest
+            || fields[2] != result_fingerprint
+            || !is_sha256_digest(fields[5])
+        {
+            return self.fail_protocol(response);
+        }
+        let (Ok(vertex_count), Ok(triangle_count)) =
+            (fields[3].parse::<u32>(), fields[4].parse::<u32>())
+        else {
+            return self.fail_protocol(response);
+        };
+        let encoded = std::fs::read(output_path)
+            .map_err(|error| WorkerError::Transport(error.to_string()))?;
+        if sha256_hex(&encoded) != fields[5] {
+            return Err(WorkerError::Transport(
+                "exact B-Rep graph mesh digest does not match the worker receipt".to_owned(),
+            ));
+        }
+        let mesh = StepImportMesh::decode(&encoded)
+            .map_err(|error| WorkerError::Protocol(error.to_string()))?;
+        if mesh.vertices_mm.len() as u32 != vertex_count
+            || mesh.triangles.len() as u32 != triangle_count
+        {
+            return Err(WorkerError::Transport(
+                "exact B-Rep graph mesh size does not match the worker receipt".to_owned(),
+            ));
+        }
+        Ok(mesh)
+    }
+
+    fn export_exact_brep_graph_step_with_cancellation(
+        &mut self,
+        graph: &ExactBRepGraph,
+        result_fingerprint: &str,
+        output_path: &Path,
+        cancelled: &AtomicBool,
+    ) -> Result<(), WorkerError> {
+        self.verify_exact_brep_graph_capability(cancelled)?;
+        let bytes = graph
+            .to_bytes()
+            .map_err(|error| WorkerError::Protocol(error.to_string()))?;
+        let response = self.request_with_cancellation(
+            &format!(
+                "EXPORT_BREP_GRAPH_STEP_V1 {} {} {} {}",
+                graph.graph_digest,
+                hex_encode(&bytes),
+                result_fingerprint,
+                hex_encode(output_path.to_string_lossy().as_bytes())
+            ),
+            cancelled,
+        )?;
+        let fields = response.split_whitespace().collect::<Vec<_>>();
+        if matches!(fields.first(), Some(&"ERR") | Some(&"ERR_DETAIL")) {
+            return Err(parse_error_response(&response, &fields));
+        }
+        if fields
+            != [
+                "OK_BREP_GRAPH_STEP_V1",
+                graph.graph_digest.as_str(),
+                result_fingerprint,
+            ]
+        {
+            return self.fail_protocol(response);
+        }
+        Ok(())
     }
 
     fn evaluate_planar_offset_request_with_cancellation(
@@ -1943,12 +2092,13 @@ impl ExactWorkerClient {
                 [parse_bits(5)?, parse_bits(6)?, parse_bits(7)?],
                 [parse_bits(8)?, parse_bits(9)?, parse_bits(10)?],
             ];
-            if fields[11..=14]
-                .iter()
-                .any(|value| value.parse::<u32>().is_err())
-            {
-                return None;
-            }
+            let topology_counts = [
+                fields[11].parse::<u32>().ok()?,
+                fields[12].parse::<u32>().ok()?,
+                fields[13].parse::<u32>().ok()?,
+                fields[14].parse::<u32>().ok()?,
+                solid_count,
+            ];
             let source_unit = match hex_decode_utf8(fields[15])?.as_str() {
                 "millimetre" => ImportLengthUnit::Millimetre,
                 "centimetre" => ImportLengthUnit::Centimetre,
@@ -1961,6 +2111,7 @@ impl ExactWorkerClient {
                 source_unit,
                 result_fingerprint: fields[2].to_owned(),
                 solid_count,
+                topology_counts,
                 volume_mm3,
                 bounds_mm,
                 backend: hex_decode_utf8(fields[16])?,
@@ -2632,6 +2783,89 @@ impl ExactWorkerSupervisor {
         .map_err(Into::into)
     }
 
+    pub fn evaluate_exact_brep_graph(
+        &mut self,
+        graph: &ExactBRepGraph,
+    ) -> Result<ExactBRepGraphPackage, WorkerError> {
+        self.client.ensure_not_cancelled(&NEVER_CANCELLED)?;
+        let result = match self
+            .client
+            .evaluate_exact_brep_graph_with_cancellation(graph, &NEVER_CANCELLED)
+        {
+            Ok(result) => result,
+            Err(error) if error.permits_restart() => {
+                self.client = Self::spawn_verified_client(&self.executable, &NEVER_CANCELLED)?;
+                self.client
+                    .evaluate_exact_brep_graph_with_cancellation(graph, &NEVER_CANCELLED)?
+            }
+            Err(error) => return Err(error),
+        };
+        if result.canonical_input_digest != graph.canonical_input_digest
+            || result.graph_digest != graph.graph_digest
+            || result.producer_feature_id != graph.producer_feature_id
+            || result.result_fingerprint.is_empty()
+            || result.exact_input_digest.is_empty()
+            || !result.volume_mm3.is_finite()
+            || result.volume_mm3 <= 0.0
+            || result.bounds_mm.iter().any(|value| !value.is_finite())
+            || result.topology_counts.contains(&0)
+            || result.backend.is_empty()
+            || result.tolerance.is_empty()
+        {
+            return Err(WorkerError::Protocol(
+                "exact B-Rep graph result does not match its request".to_owned(),
+            ));
+        }
+        let mesh_file = tempfile::Builder::new()
+            .prefix(".ketchup-brep-graph-mesh-")
+            .suffix(".bin")
+            .tempfile()
+            .map_err(|error| WorkerError::Transport(error.to_string()))?;
+        let mesh = match self.client.tessellate_exact_brep_graph_with_cancellation(
+            graph,
+            &result.result_fingerprint,
+            mesh_file.path(),
+            &NEVER_CANCELLED,
+        ) {
+            Ok(mesh) => mesh,
+            Err(error) if error.permits_restart() => {
+                self.client = Self::spawn_verified_client(&self.executable, &NEVER_CANCELLED)?;
+                self.client.tessellate_exact_brep_graph_with_cancellation(
+                    graph,
+                    &result.result_fingerprint,
+                    mesh_file.path(),
+                    &NEVER_CANCELLED,
+                )?
+            }
+            Err(error) => return Err(error),
+        };
+        ExactBRepGraphPackage::from_worker_evidence(
+            graph,
+            ExactBRepGraphWorkerEvidence {
+                exact_input_digest: result.exact_input_digest,
+                result_fingerprint: result.result_fingerprint,
+                volume_mm3: result.volume_mm3,
+                topology_counts: result.topology_counts,
+                bounds_mm: [
+                    [
+                        result.bounds_mm[0],
+                        result.bounds_mm[1],
+                        result.bounds_mm[2],
+                    ],
+                    [
+                        result.bounds_mm[3],
+                        result.bounds_mm[4],
+                        result.bounds_mm[5],
+                    ],
+                ],
+                backend: result.backend,
+                tolerance: result.tolerance,
+            },
+            &mesh,
+        )
+        .map_err(|error| WorkerError::Protocol(error.to_string()))
+    }
+
     pub fn evaluate_rectangle(
         &mut self,
         request: &ExactFeatureChainRequest,
@@ -2745,6 +2979,56 @@ impl ExactWorkerSupervisor {
         Ok(())
     }
 
+    pub fn export_exact_brep_graph_step(
+        &mut self,
+        snapshot: &Snapshot,
+        expected: &ExactBRepGraphPackage,
+        path: &Path,
+    ) -> Result<(), M6EvaluationError> {
+        if !expected.is_current(snapshot) {
+            return Err(ExactProductError::StaleResult.into());
+        }
+        let graph = ExactBRepGraph::from_snapshot(
+            snapshot,
+            expected.identity.definition_id,
+            expected.identity.producer_feature_id,
+        )
+        .map_err(|_| ExactProductError::InvalidWorkerEvidence)?;
+        if graph != expected.graph {
+            return Err(ExactProductError::InvalidWorkerEvidence.into());
+        }
+        let parent = path.parent().unwrap_or_else(|| Path::new("."));
+        let temporary = tempfile::Builder::new()
+            .prefix(".ketchup-brep-graph-step-")
+            .suffix(".tmp")
+            .tempfile_in(parent)
+            .map_err(|error| WorkerError::Transport(error.to_string()))?;
+        let temporary = temporary.into_temp_path();
+        let export = self.client.export_exact_brep_graph_step_with_cancellation(
+            &graph,
+            &expected.identity.result_fingerprint,
+            &temporary,
+            &NEVER_CANCELLED,
+        );
+        match export {
+            Ok(()) => {}
+            Err(error) if error.permits_restart() => {
+                self.client = Self::spawn_verified_client(&self.executable, &NEVER_CANCELLED)?;
+                self.client.export_exact_brep_graph_step_with_cancellation(
+                    &graph,
+                    &expected.identity.result_fingerprint,
+                    &temporary,
+                    &NEVER_CANCELLED,
+                )?;
+            }
+            Err(error) => return Err(error.into()),
+        }
+        temporary
+            .persist(path)
+            .map_err(|error| WorkerError::Transport(error.error.to_string()))?;
+        Ok(())
+    }
+
     pub fn export_current_model_step(
         &mut self,
         snapshot: &Snapshot,
@@ -2772,6 +3056,18 @@ impl ExactWorkerSupervisor {
                         expected.identity.definition_id,
                     )?;
                     expected.validate_for_request(&request)?;
+                }
+                ExactBodyPackage::Graph(expected) => {
+                    if ExactBRepGraph::from_snapshot(
+                        snapshot,
+                        expected.identity.definition_id,
+                        expected.identity.producer_feature_id,
+                    )
+                    .as_ref()
+                        != Ok(&expected.graph)
+                    {
+                        return Err(ExactProductError::InvalidWorkerEvidence.into());
+                    }
                 }
                 ExactBodyPackage::Imported(expected) => {
                     if sha256_hex(&expected.source_bytes)
@@ -2836,6 +3132,14 @@ impl ExactWorkerSupervisor {
                         )
                     }
                 }
+                ExactBodyPackage::Graph(expected) => {
+                    self.client.export_exact_brep_graph_step_with_cancellation(
+                        &expected.graph,
+                        &expected.identity.result_fingerprint,
+                        &source,
+                        &NEVER_CANCELLED,
+                    )
+                }
                 ExactBodyPackage::Imported(expected) => {
                     std::fs::write(&source, &expected.source_bytes)
                         .map_err(|error| WorkerError::Transport(error.to_string()))
@@ -2878,6 +3182,14 @@ impl ExactWorkerSupervisor {
                                     &NEVER_CANCELLED,
                                 )?;
                             }
+                        }
+                        ExactBodyPackage::Graph(expected) => {
+                            self.client.export_exact_brep_graph_step_with_cancellation(
+                                &expected.graph,
+                                &expected.identity.result_fingerprint,
+                                &source,
+                                &NEVER_CANCELLED,
+                            )?;
                         }
                         ExactBodyPackage::Imported(expected) => {
                             std::fs::write(&source, &expected.source_bytes)
@@ -4933,6 +5245,63 @@ fn push_aabb_request(line: &mut String, bounds: Aabb) {
     for value in bounds.min().into_iter().chain(bounds.max()) {
         line.push_str(&format!(" {:016x}", value.to_bits()));
     }
+}
+
+fn parse_exact_brep_graph_result(
+    response: &str,
+) -> Result<WorkerExactBRepGraphResult, WorkerError> {
+    let fields = response.split_whitespace().collect::<Vec<_>>();
+    if matches!(fields.first(), Some(&"ERR") | Some(&"ERR_DETAIL")) {
+        return Err(parse_error_response(response, &fields));
+    }
+    if fields.len() != 20
+        || fields[0] != "OK_BREP_GRAPH_V1"
+        || !is_sha256_digest(fields[1])
+        || !is_sha256_digest(fields[2])
+        || !is_fnv1a64_digest(fields[4])
+        || !is_fnv1a64_digest(fields[5])
+    {
+        return Err(WorkerError::Protocol(response.to_owned()));
+    }
+    let parse_f64 = |index: usize| {
+        u64::from_str_radix(fields[index], 16)
+            .map(f64::from_bits)
+            .map_err(|_| WorkerError::Protocol(response.to_owned()))
+    };
+    let parse_u32 = |index: usize| {
+        fields[index]
+            .parse::<u32>()
+            .map_err(|_| WorkerError::Protocol(response.to_owned()))
+    };
+    Ok(WorkerExactBRepGraphResult {
+        canonical_input_digest: fields[1].to_owned(),
+        graph_digest: fields[2].to_owned(),
+        producer_feature_id: fields[3]
+            .parse::<u64>()
+            .map_err(|_| WorkerError::Protocol(response.to_owned()))?,
+        result_fingerprint: fields[4].to_owned(),
+        exact_input_digest: fields[5].to_owned(),
+        volume_mm3: parse_f64(6)?,
+        bounds_mm: [
+            parse_f64(7)?,
+            parse_f64(8)?,
+            parse_f64(9)?,
+            parse_f64(10)?,
+            parse_f64(11)?,
+            parse_f64(12)?,
+        ],
+        topology_counts: [
+            parse_u32(13)?,
+            parse_u32(14)?,
+            parse_u32(15)?,
+            parse_u32(16)?,
+            parse_u32(17)?,
+        ],
+        backend: hex_decode_utf8(fields[18])
+            .ok_or_else(|| WorkerError::Protocol(response.to_owned()))?,
+        tolerance: hex_decode_utf8(fields[19])
+            .ok_or_else(|| WorkerError::Protocol(response.to_owned()))?,
+    })
 }
 
 fn parse_p6_loft_result(response: &str) -> Result<WorkerLoftResult, WorkerError> {

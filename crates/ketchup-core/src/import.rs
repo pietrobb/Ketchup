@@ -349,6 +349,7 @@ pub struct StepImportEvidence {
     pub source_unit: ImportLengthUnit,
     pub result_fingerprint: String,
     pub solid_count: u32,
+    pub topology_counts: [u32; 5],
     pub volume_mm3: f64,
     pub bounds_mm: [[f64; 3]; 2],
     pub backend: String,
@@ -528,6 +529,13 @@ pub fn plan_step_import(
     if evidence.result_fingerprint.is_empty()
         || evidence.solid_count == 0
         || evidence.solid_count > 1_024
+        || evidence.topology_counts.contains(&0)
+        || evidence.topology_counts[4] != evidence.solid_count
+        || evidence.topology_counts[..3]
+            .iter()
+            .map(|count| u64::from(*count))
+            .sum::<u64>()
+            > crate::topology::MAX_GENERATED_TOPOLOGICAL_REFERENCES
         || !evidence.volume_mm3.is_finite()
         || evidence.volume_mm3 <= 0.0
         || !bounds_valid
@@ -627,6 +635,7 @@ pub fn plan_step_import(
                 source_byte_len: source.len() as u64,
                 result_fingerprint: evidence.result_fingerprint.clone(),
                 solid_count: evidence.solid_count,
+                topology_counts: Some(evidence.topology_counts),
                 volume_mm3: evidence.volume_mm3,
                 bounds_mm: evidence.bounds_mm,
                 backend: evidence.backend.clone(),

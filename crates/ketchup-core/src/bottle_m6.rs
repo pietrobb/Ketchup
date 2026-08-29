@@ -166,6 +166,8 @@ impl ExactRevolveRequest {
                 | FeatureKind::Extrusion { .. }
                 | FeatureKind::Pad(_)
                 | FeatureKind::SketchPocket(_)
+                | FeatureKind::TopologyShell { .. }
+                | FeatureKind::TopologyEdgeFinish { .. }
                 | FeatureKind::ThroughCut { .. }
                 | FeatureKind::Pocket { .. }
                 | FeatureKind::Boolean { .. }

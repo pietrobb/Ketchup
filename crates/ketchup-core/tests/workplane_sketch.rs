@@ -9,9 +9,11 @@ use ketchup_core::exact_product::{
 };
 use ketchup_core::persistence;
 use ketchup_core::sketch::{
-    PrincipalPlane, SketchConstraint, SketchConstraintId, SketchConstraintKind, SketchEntity,
-    SketchEntityId, SketchError, SketchPointKind, SketchPointRef, SketchSolveStatus, SketchSpec,
-    WorkplaneFrame, WorkplaneSpec, WorkplaneSupport, WorkplaneSupportHealth,
+    MAX_SKETCH_CONSTRAINTS, MAX_SKETCH_ENTITIES, PrincipalPlane, SketchConstraint,
+    SketchConstraintId, SketchConstraintKind, SketchEntity, SketchEntityId, SketchError,
+    SketchPointKind, SketchPointRef, SketchSolveStatus, SketchSpec, SolvedSketchRegionEdge,
+    SolvedSketchRegionProfile, WorkplaneFrame, WorkplaneSpec, WorkplaneSupport,
+    WorkplaneSupportHealth,
 };
 use ketchup_core::state_view::encode_semantic_state;
 
@@ -196,6 +198,238 @@ fn line_arc_and_circle_keep_stable_ids_and_report_deterministic_remaining_dof() 
     assert_eq!(reopened_sketch.solve().unwrap(), first);
     assert_eq!(reopened.canonical_digest(), committed_digest);
     assert_eq!(persistence::save(&reopened), bytes);
+}
+
+#[test]
+fn underconstrained_closed_geometry_produces_deterministic_regions() {
+    let sketch = SketchSpec {
+        workplane: XY,
+        entities: vec![
+            SketchEntity::Line {
+                id: SketchEntityId(1),
+                start_mm: [0.0, 0.0],
+                end_mm: [10.0, 0.0],
+            },
+            SketchEntity::Line {
+                id: SketchEntityId(2),
+                start_mm: [10.0, 0.0],
+                end_mm: [10.0, 10.0],
+            },
+            SketchEntity::Line {
+                id: SketchEntityId(3),
+                start_mm: [10.0, 10.0],
+                end_mm: [0.0, 10.0],
+            },
+            SketchEntity::Line {
+                id: SketchEntityId(4),
+                start_mm: [0.0, 10.0],
+                end_mm: [0.0, 0.0],
+            },
+        ],
+        constraints: Vec::new(),
+    };
+
+    assert_eq!(
+        sketch.solve().unwrap().status,
+        SketchSolveStatus::UnderConstrained { remaining_dof: 16 }
+    );
+    let first = sketch.solved_regions().unwrap();
+    assert_eq!(first, sketch.solved_regions().unwrap());
+    assert_eq!(first.len(), 1);
+    assert_eq!(
+        first[0].profile,
+        SolvedSketchRegionProfile::Polyline(vec![
+            [0.0, 0.0],
+            [10.0, 0.0],
+            [10.0, 10.0],
+            [0.0, 10.0],
+        ])
+    );
+}
+
+#[test]
+fn region_identity_survives_edge_reversal_and_boundary_orientation_stays_contiguous() {
+    let sketches = [
+        SketchSpec {
+            workplane: XY,
+            entities: vec![
+                SketchEntity::Line {
+                    id: SketchEntityId(1),
+                    start_mm: [-5.0, 0.0],
+                    end_mm: [5.0, 0.0],
+                },
+                SketchEntity::Arc {
+                    id: SketchEntityId(2),
+                    start_mm: [-5.0, 0.0],
+                    end_mm: [5.0, 0.0],
+                    center_mm: [0.0, 0.0],
+                    clockwise: true,
+                },
+            ],
+            constraints: Vec::new(),
+        },
+        SketchSpec {
+            workplane: XY,
+            entities: vec![
+                SketchEntity::Line {
+                    id: SketchEntityId(1),
+                    start_mm: [5.0, 0.0],
+                    end_mm: [-5.0, 0.0],
+                },
+                SketchEntity::Arc {
+                    id: SketchEntityId(2),
+                    start_mm: [5.0, 0.0],
+                    end_mm: [-5.0, 0.0],
+                    center_mm: [0.0, 0.0],
+                    clockwise: false,
+                },
+            ],
+            constraints: Vec::new(),
+        },
+    ];
+
+    let regions = sketches.map(|sketch| sketch.solved_regions().unwrap().remove(0));
+    assert_eq!(regions[0].id, regions[1].id);
+    assert_eq!(regions[0].entity_ids, regions[1].entity_ids);
+    for region in regions {
+        let SolvedSketchRegionProfile::Boundary(edges) = region.profile else {
+            panic!("expected line/arc boundary");
+        };
+        assert_eq!(edges.len(), 2);
+        assert_eq!(edges[0].end_mm(), edges[1].start_mm());
+        assert_eq!(edges[1].end_mm(), edges[0].start_mm());
+    }
+}
+
+#[test]
+fn line_arc_boundary_is_oriented_and_open_or_branched_geometry_fails_closed() {
+    let semicircle = SketchSpec {
+        workplane: XY,
+        entities: vec![
+            SketchEntity::Line {
+                id: SketchEntityId(1),
+                start_mm: [-5.0, 0.0],
+                end_mm: [5.0, 0.0],
+            },
+            SketchEntity::Arc {
+                id: SketchEntityId(2),
+                start_mm: [-5.0, 0.0],
+                end_mm: [5.0, 0.0],
+                center_mm: [0.0, 0.0],
+                clockwise: true,
+            },
+        ],
+        constraints: Vec::new(),
+    };
+    let first = semicircle.solved_regions().unwrap();
+    let second = semicircle.solved_regions().unwrap();
+    assert_eq!(first, second);
+    assert_eq!(
+        first[0].entity_ids,
+        vec![SketchEntityId(1), SketchEntityId(2)]
+    );
+    assert_eq!(
+        first[0].profile,
+        SolvedSketchRegionProfile::Boundary(vec![
+            SolvedSketchRegionEdge::Line {
+                start_mm: [-5.0, 0.0],
+                end_mm: [5.0, 0.0],
+            },
+            SolvedSketchRegionEdge::Arc {
+                start_mm: [5.0, 0.0],
+                end_mm: [-5.0, 0.0],
+                center_mm: [0.0, 0.0],
+                clockwise: false,
+            },
+        ])
+    );
+
+    let open = SketchSpec {
+        workplane: XY,
+        entities: semicircle.entities[..1].to_vec(),
+        constraints: Vec::new(),
+    };
+    assert_eq!(open.solved_regions(), Err(SketchError::OpenRegion));
+
+    let mut branched_entities = semicircle.entities;
+    branched_entities.push(SketchEntity::Line {
+        id: SketchEntityId(3),
+        start_mm: [5.0, 0.0],
+        end_mm: [5.0, 5.0],
+    });
+    let branched = SketchSpec {
+        workplane: XY,
+        entities: branched_entities,
+        constraints: Vec::new(),
+    };
+    assert_eq!(
+        branched.solved_regions(),
+        Err(SketchError::InvalidRegionIdentity)
+    );
+}
+
+#[test]
+fn zero_area_closed_boundary_fails_closed() {
+    let degenerate = SketchSpec {
+        workplane: XY,
+        entities: vec![
+            SketchEntity::Line {
+                id: SketchEntityId(1),
+                start_mm: [0.0, 0.0],
+                end_mm: [1.0, 0.0],
+            },
+            SketchEntity::Line {
+                id: SketchEntityId(2),
+                start_mm: [1.0, 0.0],
+                end_mm: [2.0, 0.0],
+            },
+            SketchEntity::Line {
+                id: SketchEntityId(3),
+                start_mm: [2.0, 0.0],
+                end_mm: [0.0, 0.0],
+            },
+        ],
+        constraints: Vec::new(),
+    };
+
+    assert_eq!(degenerate.solved_regions(), Err(SketchError::OpenRegion));
+}
+
+#[test]
+fn entity_constraint_and_solver_dof_limits_fail_closed() {
+    let line = |id| SketchEntity::Line {
+        id: SketchEntityId(id),
+        start_mm: [id as f64, 0.0],
+        end_mm: [id as f64, 1.0],
+    };
+    let entity_limited = SketchSpec {
+        workplane: XY,
+        entities: vec![line(1); MAX_SKETCH_ENTITIES + 1],
+        constraints: Vec::new(),
+    };
+    assert_eq!(entity_limited.solve(), Err(SketchError::ResourceLimit));
+
+    let constraint_limited = SketchSpec {
+        workplane: XY,
+        entities: vec![line(1)],
+        constraints: vec![
+            SketchConstraint {
+                id: SketchConstraintId(1),
+                kind: SketchConstraintKind::Horizontal {
+                    entity: SketchEntityId(1),
+                },
+            };
+            MAX_SKETCH_CONSTRAINTS + 1
+        ],
+    };
+    assert_eq!(constraint_limited.solve(), Err(SketchError::ResourceLimit));
+
+    let solver_limited = SketchSpec {
+        workplane: XY,
+        entities: (1..=129).map(line).collect(),
+        constraints: Vec::new(),
+    };
+    assert_eq!(solver_limited.solve(), Err(SketchError::ResourceLimit));
 }
 
 #[test]

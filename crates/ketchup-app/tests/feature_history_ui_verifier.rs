@@ -1837,9 +1837,8 @@ fn complete_serial_accesskit_history_replay_is_atomic_stale_safe_and_persistent(
                 name: "Intervening edit".to_owned(),
             },)
     );
+    assert!(shell.app_mut().confirm_assistant_proposal());
     shell.settle();
-    let assistant_confirm = shell.catalog().text("assistant-confirm");
-    shell.click_row(&assistant_confirm);
     let after_intervening_edit = stamp(&shell);
     confirm(&mut shell);
     assert_eq!(stamp(&shell), after_intervening_edit);

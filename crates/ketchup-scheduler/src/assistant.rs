@@ -1,6 +1,6 @@
 use ketchup_core::assistant_sidecar::{
-    AssistantApiDiagnostics, AssistantCapability, AssistantChatResult, AssistantDistribution,
-    AssistantHandshake, AssistantModelIntent,
+    AssistantApiDiagnostics, AssistantCadEditProgram, AssistantCapability, AssistantChatResult,
+    AssistantDistribution, AssistantHandshake, AssistantModelIntent,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -35,6 +35,7 @@ impl AssistantCancellation {
 #[derive(Clone, Debug, PartialEq)]
 pub struct AssistantProcessChatResult {
     pub result: AssistantChatResult,
+    pub cad_edit_program: Option<AssistantCadEditProgram>,
     pub diagnostics: Option<AssistantApiDiagnostics>,
 }
 
@@ -62,6 +63,8 @@ enum SidecarResponse {
         request_id: String,
         message: String,
         model_intent: Box<Option<AssistantModelIntent>>,
+        #[serde(default)]
+        cad_edit_program: Box<Option<AssistantCadEditProgram>>,
         diagnostics: Option<Box<AssistantApiDiagnostics>>,
     },
     Error {
@@ -211,6 +214,7 @@ impl AssistantProcessClient {
                 request_id: returned_id,
                 message,
                 model_intent,
+                cad_edit_program,
                 diagnostics,
             } if returned_id == request_id => {
                 let result = AssistantChatResult {
@@ -218,6 +222,16 @@ impl AssistantProcessClient {
                     model_intent: *model_intent,
                 };
                 result.validate().map_err(AssistantProcessError::Protocol)?;
+                if result.model_intent.is_some() && cad_edit_program.is_some() {
+                    return Err(AssistantProcessError::Protocol(
+                        "assistant returned multiple mutation programs".to_owned(),
+                    ));
+                }
+                if let Some(program) = cad_edit_program.as_ref() {
+                    program
+                        .validate()
+                        .map_err(AssistantProcessError::Protocol)?;
+                }
                 if let Some(diagnostics) = diagnostics.as_ref() {
                     diagnostics
                         .validate()
@@ -225,6 +239,7 @@ impl AssistantProcessClient {
                 }
                 Ok(AssistantProcessChatResult {
                     result,
+                    cad_edit_program: *cad_edit_program,
                     diagnostics: diagnostics.map(|diagnostics| *diagnostics),
                 })
             }

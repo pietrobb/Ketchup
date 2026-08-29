@@ -99,6 +99,7 @@ fn exact_step_import_is_one_deterministic_persistent_undoable_transaction() {
         source_unit: ImportLengthUnit::Millimetre,
         result_fingerprint: "0123456789abcdef".to_owned(),
         solid_count: 1,
+        topology_counts: [8, 12, 6, 1, 1],
         volume_mm3: 1_000.0,
         bounds_mm: [[0.0, 0.0, 0.0], [10.0, 10.0, 10.0]],
         backend: "occt-test".to_owned(),
@@ -126,6 +127,7 @@ fn exact_step_import_is_one_deterministic_persistent_undoable_transaction() {
         .unwrap();
     assert_eq!(exact.source_byte_len, source.len() as u64);
     assert_eq!(exact.result_fingerprint, evidence.result_fingerprint);
+    assert_eq!(exact.topology_counts, Some(evidence.topology_counts));
     assert_eq!(
         committed
             .import_receipt(ImportId(1))
@@ -183,6 +185,7 @@ fn exact_step_plan_refuses_invalid_worker_evidence_without_mutation() {
         source_unit: ImportLengthUnit::Millimetre,
         result_fingerprint: "0123456789abcdef".to_owned(),
         solid_count: 1,
+        topology_counts: [8, 12, 6, 1, 1],
         volume_mm3: 1.0,
         bounds_mm: [[0.0; 3], [1.0; 3]],
         backend: "occt-test".to_owned(),

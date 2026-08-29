@@ -1,9 +1,14 @@
 use ketchup_core::assistant_sidecar::{
     ASSISTANT_PROTOCOL_VERSION, AssistantBalloonTextIntent, AssistantBeamNotchIntent,
-    AssistantBottleFinishKind, AssistantBottleIntent, AssistantDistribution, AssistantHandshake,
-    AssistantHandshakeError, AssistantKetchupBottleIntent, AssistantLinearArrayIntent,
-    AssistantModelIntent, AssistantOrientedBeamIntent, AssistantParameterEditIntent,
-    AssistantProfileTranslationIntent, AssistantTeapotIntent, distribution_is_enabled,
+    AssistantBottleFinishKind, AssistantBottleIntent, AssistantCadDeletePolicy,
+    AssistantCadEditOperation, AssistantCadEditProgram, AssistantCadEntitySelector,
+    AssistantCadRotation, AssistantDistribution, AssistantHandshake, AssistantHandshakeError,
+    AssistantKetchupBottleIntent, AssistantLinearArrayIntent, AssistantModelIntent,
+    AssistantOrientedBeamIntent, AssistantParameterEditIntent, AssistantPrincipalPlane,
+    AssistantProfileTranslationIntent, AssistantRejectionDiagnostic, AssistantRejectionPhase,
+    AssistantRotationIntent, AssistantSketchConstraint, AssistantSketchEntity,
+    AssistantSketchPointKind, AssistantSketchPointRef, AssistantTeapotIntent,
+    AssistantWorkplaneSpec, distribution_is_enabled,
 };
 
 const PUBLIC_HANDSHAKE: &str = r#"{
@@ -69,11 +74,391 @@ fn handshake_rejects_unknown_providers_models_and_protocol_versions() {
 }
 
 #[test]
+fn cad_edit_program_contract_is_typed_strict_and_round_trips() {
+    let explicit = AssistantCadEntitySelector::Occurrences {
+        occurrence_ids: vec![7, 9],
+    };
+    let program = AssistantCadEditProgram {
+        operations: vec![
+            AssistantCadEditOperation::Delete {
+                selector: explicit.clone(),
+                dependency_policy: AssistantCadDeletePolicy::RemoveReferences,
+            },
+            AssistantCadEditOperation::Transform {
+                selector: AssistantCadEntitySelector::CurrentSelection {},
+                translation_mm: [10.0, -2.0, 5.0],
+                rotation: Some(AssistantCadRotation {
+                    pivot_mm: [1.0, 2.0, 3.0],
+                    axis: [1.0, 1.0, 0.0],
+                    angle_degrees: 45.0,
+                }),
+            },
+            AssistantCadEditOperation::Copy {
+                selector: explicit.clone(),
+                translation_mm: [25.0, 0.0, 0.0],
+            },
+            AssistantCadEditOperation::LinearPattern {
+                selector: explicit.clone(),
+                instances: 4,
+                step_mm: [0.0, 20.0, 0.0],
+            },
+            AssistantCadEditOperation::Mirror {
+                selector: explicit,
+                plane_origin_mm: [0.0, 0.0, 0.0],
+                plane_normal: [1.0, 0.0, 0.0],
+            },
+        ],
+    };
+
+    assert_eq!(program.validate(), Ok(()));
+    let serialized = serde_json::to_value(&program).unwrap();
+    assert_eq!(serialized["operations"][0]["operation"], "delete");
+    assert_eq!(
+        serialized["operations"][0]["dependency_policy"],
+        "remove_references"
+    );
+    assert_eq!(
+        serialized["operations"][1]["selector"]["type"],
+        "current_selection"
+    );
+    assert_eq!(serialized["operations"][3]["operation"], "linear_pattern");
+    assert_eq!(serialized["operations"][4]["operation"], "mirror");
+    assert_eq!(
+        serde_json::from_value::<AssistantCadEditProgram>(serialized).unwrap(),
+        program
+    );
+
+    let unknown = serde_json::json!({
+        "operations": [{
+            "operation": "copy",
+            "selector": {"type": "occurrences", "occurrence_ids": [7]},
+            "translation_mm": [1.0, 0.0, 0.0],
+            "shell_command": "bypass"
+        }]
+    });
+    assert!(serde_json::from_value::<AssistantCadEditProgram>(unknown).is_err());
+    let polluted_selection = serde_json::json!({
+        "operations": [{
+            "operation": "delete",
+            "selector": {"type": "current_selection", "occurrence_ids": [7]},
+            "dependency_policy": "reject_if_referenced"
+        }]
+    });
+    assert!(serde_json::from_value::<AssistantCadEditProgram>(polluted_selection).is_err());
+}
+
+#[test]
+fn cad_edit_sketch_contract_is_typed_strict_and_round_trips() {
+    let program = AssistantCadEditProgram {
+        operations: vec![
+            AssistantCadEditOperation::CreateSketch {
+                definition_id: 1,
+                name: "Mixed sketch".to_owned(),
+                workplane: AssistantWorkplaneSpec::Principal {
+                    plane: AssistantPrincipalPlane::Xy,
+                },
+                entities: vec![
+                    AssistantSketchEntity::Line {
+                        id: 1,
+                        start_mm: [-10.0, 0.0],
+                        end_mm: [10.0, 0.0],
+                    },
+                    AssistantSketchEntity::Arc {
+                        id: 2,
+                        start_mm: [10.0, 0.0],
+                        end_mm: [-10.0, 0.0],
+                        center_mm: [0.0, 0.0],
+                        clockwise: false,
+                    },
+                    AssistantSketchEntity::Circle {
+                        id: 3,
+                        center_mm: [20.0, 0.0],
+                        radius_mm: 5.0,
+                    },
+                ],
+                constraints: vec![
+                    AssistantSketchConstraint::Horizontal {
+                        id: 1,
+                        entity_id: 1,
+                    },
+                    AssistantSketchConstraint::Radius {
+                        id: 2,
+                        entity_id: 3,
+                        value_mm: 5.0,
+                    },
+                    AssistantSketchConstraint::FixedPoint {
+                        id: 3,
+                        point: AssistantSketchPointRef {
+                            entity_id: 1,
+                            point: AssistantSketchPointKind::Start,
+                        },
+                        position_mm: [-10.0, 0.0],
+                    },
+                ],
+            },
+            AssistantCadEditOperation::SetDimension {
+                feature_id: 12,
+                constraint_id: Some(2),
+                value_mm: 7.5,
+            },
+        ],
+    };
+
+    assert_eq!(program.validate(), Ok(()));
+    let serialized = serde_json::to_value(&program).unwrap();
+    assert_eq!(serialized["operations"][0]["operation"], "create_sketch");
+    assert_eq!(serialized["operations"][0]["workplane"]["plane"], "xy");
+    assert_eq!(serialized["operations"][0]["entities"][1]["type"], "arc");
+    assert_eq!(serialized["operations"][1]["operation"], "set_dimension");
+    assert_eq!(
+        serde_json::from_value::<AssistantCadEditProgram>(serialized).unwrap(),
+        program
+    );
+
+    let unknown_entity_field = serde_json::json!({
+        "operations": [{
+            "operation": "create_sketch",
+            "definition_id": 1,
+            "name": "Rejected",
+            "workplane": {"type": "principal", "plane": "xy"},
+            "entities": [{
+                "type": "circle",
+                "id": 1,
+                "center_mm": [0.0, 0.0],
+                "radius_mm": 5.0,
+                "script": "bypass"
+            }],
+            "constraints": []
+        }]
+    });
+    assert!(serde_json::from_value::<AssistantCadEditProgram>(unknown_entity_field).is_err());
+}
+
+#[test]
+fn cad_edit_program_contract_fails_closed_on_targets_geometry_and_resources() {
+    let copy = |occurrence_ids| AssistantCadEditProgram {
+        operations: vec![AssistantCadEditOperation::Copy {
+            selector: AssistantCadEntitySelector::Occurrences { occurrence_ids },
+            translation_mm: [1.0, 0.0, 0.0],
+        }],
+    };
+    assert!(copy(Vec::new()).validate().is_err());
+    assert!(copy(vec![7, 7]).validate().is_err());
+    assert!(copy(vec![0]).validate().is_err());
+
+    let invalid_rotation = AssistantCadEditProgram {
+        operations: vec![AssistantCadEditOperation::Transform {
+            selector: AssistantCadEntitySelector::CurrentSelection {},
+            translation_mm: [0.0; 3],
+            rotation: Some(AssistantCadRotation {
+                pivot_mm: [0.0; 3],
+                axis: [0.0; 3],
+                angle_degrees: 90.0,
+            }),
+        }],
+    };
+    assert!(invalid_rotation.validate().is_err());
+
+    let unbounded_mirror = AssistantCadEditProgram {
+        operations: vec![AssistantCadEditOperation::Mirror {
+            selector: AssistantCadEntitySelector::CurrentSelection {},
+            plane_origin_mm: [f64::INFINITY, 0.0, 0.0],
+            plane_normal: [1.0, 0.0, 0.0],
+        }],
+    };
+    assert!(unbounded_mirror.validate().is_err());
+
+    let too_many_outputs = AssistantCadEditProgram {
+        operations: vec![AssistantCadEditOperation::LinearPattern {
+            selector: AssistantCadEntitySelector::Occurrences {
+                occurrence_ids: (1..=100).collect(),
+            },
+            instances: 7,
+            step_mm: [10.0, 0.0, 0.0],
+        }],
+    };
+    assert_eq!(
+        too_many_outputs.validate(),
+        Err("assistant CAD edit program creates too many occurrences".to_owned())
+    );
+
+    let too_many_operations = AssistantCadEditProgram {
+        operations: (0..65)
+            .map(|_| AssistantCadEditOperation::Delete {
+                selector: AssistantCadEntitySelector::CurrentSelection {},
+                dependency_policy: AssistantCadDeletePolicy::RejectIfReferenced,
+            })
+            .collect(),
+    };
+    assert!(too_many_operations.validate().is_err());
+}
+
+#[test]
+fn cad_edit_program_conservatively_budgets_current_selection_outputs() {
+    let selector = AssistantCadEntitySelector::CurrentSelection {};
+    let mut operations = vec![AssistantCadEditOperation::LinearPattern {
+        selector: selector.clone(),
+        instances: 4,
+        step_mm: [1.0, 0.0, 0.0],
+    }];
+    operations.push(AssistantCadEditOperation::Copy {
+        selector: selector.clone(),
+        translation_mm: [1.0, 0.0, 0.0],
+    });
+    operations.push(AssistantCadEditOperation::Mirror {
+        selector: selector.clone(),
+        plane_origin_mm: [0.0; 3],
+        plane_normal: [1.0, 0.0, 0.0],
+    });
+    assert_eq!(
+        AssistantCadEditProgram {
+            operations: operations.clone(),
+        }
+        .validate(),
+        Ok(())
+    );
+
+    operations.push(AssistantCadEditOperation::Copy {
+        selector,
+        translation_mm: [0.0, 1.0, 0.0],
+    });
+    assert_eq!(
+        AssistantCadEditProgram { operations }.validate(),
+        Err("assistant CAD edit program creates too many occurrences".to_owned())
+    );
+}
+
+#[test]
+fn cad_edit_selector_and_generated_output_boundaries_fail_closed() {
+    let current = AssistantCadEntitySelector::CurrentSelection {};
+    assert!(current.validate_resolved_target_count(0).is_err());
+    assert_eq!(current.validate_resolved_target_count(100), Ok(()));
+    assert!(current.validate_resolved_target_count(101).is_err());
+
+    let explicit_limit = AssistantCadEntitySelector::Occurrences {
+        occurrence_ids: (1..=100).collect(),
+    };
+    assert_eq!(explicit_limit.validate_resolved_target_count(100), Ok(()));
+    let too_many_explicit = AssistantCadEntitySelector::Occurrences {
+        occurrence_ids: (1..=101).collect(),
+    };
+    assert!(
+        too_many_explicit
+            .validate_resolved_target_count(100)
+            .is_err()
+    );
+
+    let mut boundary_operations = vec![AssistantCadEditOperation::LinearPattern {
+        selector: explicit_limit,
+        instances: 6,
+        step_mm: [1.0, 0.0, 0.0],
+    }];
+    boundary_operations.push(AssistantCadEditOperation::Copy {
+        selector: AssistantCadEntitySelector::Occurrences {
+            occurrence_ids: (101..=112).collect(),
+        },
+        translation_mm: [0.0, 1.0, 0.0],
+    });
+    assert_eq!(
+        AssistantCadEditProgram {
+            operations: boundary_operations.clone(),
+        }
+        .validate(),
+        Ok(())
+    );
+
+    boundary_operations.push(AssistantCadEditOperation::Mirror {
+        selector: AssistantCadEntitySelector::Occurrences {
+            occurrence_ids: vec![113],
+        },
+        plane_origin_mm: [0.0; 3],
+        plane_normal: [1.0, 0.0, 0.0],
+    });
+    assert_eq!(
+        AssistantCadEditProgram {
+            operations: boundary_operations,
+        }
+        .validate(),
+        Err("assistant CAD edit program creates too many occurrences".to_owned())
+    );
+}
+
+#[test]
+fn assistant_rotation_is_shape_independent_arbitrary_axis_and_fail_closed() {
+    let valid = AssistantModelIntent {
+        replace_scene: false,
+        boxes: Vec::new(),
+        translations: Vec::new(),
+        rotations: vec![AssistantRotationIntent {
+            occurrence_id: Some(7),
+            group_id: None,
+            pivot_mm: [12.5, -3.0, 40.0],
+            axis: [1.0, 2.0, 3.0],
+            angle_degrees: 37.25,
+        }],
+        profile_translations: Vec::new(),
+        parameter_edits: Vec::new(),
+        linear_arrays: Vec::new(),
+        bottles: Vec::new(),
+        gable_roofs: Vec::new(),
+        staircases: Vec::new(),
+        oriented_beams: Vec::new(),
+        balloon_texts: Vec::new(),
+    };
+    assert!(valid.validate().is_ok());
+    let serialized = serde_json::to_value(&valid).unwrap();
+    assert_eq!(
+        serialized["rotations"][0]["axis"],
+        serde_json::json!([1.0, 2.0, 3.0])
+    );
+    assert!(serialized["rotations"][0].get("group_id").is_none());
+
+    let zero_axis = AssistantModelIntent {
+        rotations: vec![AssistantRotationIntent {
+            axis: [0.0, 0.0, 0.0],
+            ..valid.rotations[0].clone()
+        }],
+        ..valid.clone()
+    };
+    assert_eq!(
+        zero_axis.validate(),
+        Err("assistant rotation is invalid".to_owned())
+    );
+
+    let ambiguous_target = AssistantModelIntent {
+        rotations: vec![AssistantRotationIntent {
+            group_id: Some(8),
+            ..valid.rotations[0].clone()
+        }],
+        ..valid.clone()
+    };
+    assert_eq!(
+        ambiguous_target.validate(),
+        Err("assistant rotation is invalid".to_owned())
+    );
+
+    let conflicting_move = AssistantModelIntent {
+        translations: vec![
+            ketchup_core::assistant_sidecar::AssistantTranslationIntent {
+                occurrence_id: 7,
+                delta_mm: [1.0, 0.0, 0.0],
+            },
+        ],
+        ..valid
+    };
+    assert_eq!(
+        conflicting_move.validate(),
+        Err("assistant rotation is invalid".to_owned())
+    );
+}
+
+#[test]
 fn assistant_array_budget_matches_the_canonical_proposal_command_limit() {
     let valid = AssistantModelIntent {
         replace_scene: false,
         boxes: Vec::new(),
         translations: Vec::new(),
+        rotations: Vec::new(),
         profile_translations: Vec::new(),
         parameter_edits: Vec::new(),
         linear_arrays: vec![AssistantLinearArrayIntent {
@@ -109,6 +494,7 @@ fn assistant_profile_translation_is_single_bounded_and_unmixed() {
         replace_scene: false,
         boxes: Vec::new(),
         translations: Vec::new(),
+        rotations: Vec::new(),
         profile_translations: vec![AssistantProfileTranslationIntent {
             definition_id: 1,
             body_id: 2,
@@ -130,6 +516,7 @@ fn assistant_profile_translation_is_single_bounded_and_unmixed() {
     );
 
     let zero = AssistantModelIntent {
+        rotations: Vec::new(),
         profile_translations: vec![AssistantProfileTranslationIntent {
             delta_mm: [0.0, 0.0],
             ..valid.profile_translations[0].clone()
@@ -162,6 +549,7 @@ fn assistant_parameter_edit_is_single_bounded_and_unmixed() {
         replace_scene: false,
         boxes: Vec::new(),
         translations: Vec::new(),
+        rotations: Vec::new(),
         profile_translations: Vec::new(),
         parameter_edits: vec![AssistantParameterEditIntent {
             definition_id: 1,
@@ -488,6 +876,98 @@ fn assistant_bottle_intent_rejects_unknown_fields() {
         }]
     }"#;
     assert!(serde_json::from_str::<AssistantModelIntent>(unknown).is_err());
+}
+
+#[test]
+fn assistant_rejection_diagnostic_is_typed_bounded_and_strict() {
+    let diagnostic = AssistantRejectionDiagnostic {
+        phase: AssistantRejectionPhase::CanonicalValidation,
+        code: "canonical.occurrence_in_assembly_mate".to_owned(),
+        operation: "delete_occurrence".to_owned(),
+        target: "occurrence:17".to_owned(),
+        failed_invariant: "An occurrence referenced by an assembly mate cannot be deleted."
+            .to_owned(),
+        repair_hint: "Delete or replace assembly mate 42 before retrying the deletion.".to_owned(),
+        retryable: true,
+    };
+
+    assert_eq!(diagnostic.validate(), Ok(()));
+    let serialized = serde_json::to_value(&diagnostic).unwrap();
+    assert_eq!(serialized["phase"], "canonical_validation");
+    assert_eq!(serialized["code"], "canonical.occurrence_in_assembly_mate");
+    assert_eq!(serialized["operation"], "delete_occurrence");
+    assert_eq!(serialized["target"], "occurrence:17");
+    assert_eq!(serialized["retryable"], true);
+    assert_eq!(
+        serde_json::from_value::<AssistantRejectionDiagnostic>(serialized).unwrap(),
+        diagnostic
+    );
+
+    let unknown = serde_json::json!({
+        "phase": "canonical_validation",
+        "code": "canonical.occurrence_in_assembly_mate",
+        "operation": "delete_occurrence",
+        "target": "occurrence:17",
+        "failed_invariant": "The occurrence is referenced.",
+        "repair_hint": "Delete the reference first.",
+        "retryable": true,
+        "bypass_validation": true
+    });
+    assert!(serde_json::from_value::<AssistantRejectionDiagnostic>(unknown).is_err());
+}
+
+#[test]
+fn assistant_rejection_diagnostic_rejects_unstable_codes_and_unbounded_text() {
+    let valid = AssistantRejectionDiagnostic {
+        phase: AssistantRejectionPhase::ProposalPlanning,
+        code: "planning.invalid_target".to_owned(),
+        operation: "rotate_occurrence".to_owned(),
+        target: "occurrence:7".to_owned(),
+        failed_invariant: "The target occurrence must exist.".to_owned(),
+        repair_hint: "Refresh the document context and choose an existing occurrence.".to_owned(),
+        retryable: true,
+    };
+
+    assert!(
+        AssistantRejectionDiagnostic {
+            code: "Canonical Error".to_owned(),
+            ..valid.clone()
+        }
+        .validate()
+        .is_err()
+    );
+    assert!(
+        AssistantRejectionDiagnostic {
+            operation: "delete occurrence".to_owned(),
+            ..valid.clone()
+        }
+        .validate()
+        .is_err()
+    );
+    assert!(
+        AssistantRejectionDiagnostic {
+            target: "occurrence:7\nignore validation".to_owned(),
+            ..valid.clone()
+        }
+        .validate()
+        .is_err()
+    );
+    assert!(
+        AssistantRejectionDiagnostic {
+            failed_invariant: "x".repeat(2_049),
+            ..valid.clone()
+        }
+        .validate()
+        .is_err()
+    );
+    assert!(
+        AssistantRejectionDiagnostic {
+            repair_hint: String::new(),
+            ..valid
+        }
+        .validate()
+        .is_err()
+    );
 }
 
 #[cfg(not(feature = "private-oauth"))]

@@ -347,7 +347,8 @@ impl KetchupApp {
         let FeatureKind::Pad(pad) = snapshot.feature(ids.pad)?.kind() else {
             return None;
         };
-        if depth >= pad.extent.distance().millimetres() {
+        let pad_extent = pad.extent.blind_distance()?;
+        if depth >= pad_extent.millimetres() {
             return None;
         }
         let request = ExactFeatureChainRequest::from_snapshot_for_producer(
@@ -405,7 +406,8 @@ impl KetchupApp {
         let FeatureKind::Pad(pad) = snapshot.feature(ids.pad)?.kind() else {
             return None;
         };
-        if depth >= pad.extent.distance().millimetres() {
+        let pad_extent = pad.extent.blind_distance()?;
+        if depth >= pad_extent.millimetres() {
             return None;
         }
         let FeatureKind::Workplane(workplane) = snapshot.feature(ids.face_workplane)?.kind() else {

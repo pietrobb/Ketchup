@@ -223,16 +223,26 @@ impl KetchupApp {
                 label: self.catalog.text("feature-history-parameter-extent"),
                 value_mm: height.millimetres(),
             }],
-            FeatureKind::Pad(spec) => vec![ParameterChoice {
-                target: ExactParameterEditTarget::FeatureDimension(feature_id),
-                label: self.catalog.text("feature-history-parameter-extent"),
-                value_mm: spec.extent.distance().millimetres(),
-            }],
-            FeatureKind::SketchPocket(spec) => vec![ParameterChoice {
-                target: ExactParameterEditTarget::FeatureDimension(feature_id),
-                label: self.catalog.text("feature-history-parameter-depth"),
-                value_mm: spec.extent.distance().millimetres(),
-            }],
+            FeatureKind::Pad(spec) => spec
+                .extent
+                .blind_distance()
+                .map(|distance| ParameterChoice {
+                    target: ExactParameterEditTarget::FeatureDimension(feature_id),
+                    label: self.catalog.text("feature-history-parameter-extent"),
+                    value_mm: distance.millimetres(),
+                })
+                .into_iter()
+                .collect(),
+            FeatureKind::SketchPocket(spec) => spec
+                .extent
+                .blind_distance()
+                .map(|distance| ParameterChoice {
+                    target: ExactParameterEditTarget::FeatureDimension(feature_id),
+                    label: self.catalog.text("feature-history-parameter-depth"),
+                    value_mm: distance.millimetres(),
+                })
+                .into_iter()
+                .collect(),
             FeatureKind::Pocket { depth, .. } => vec![ParameterChoice {
                 target: ExactParameterEditTarget::FeatureDimension(feature_id),
                 label: self.catalog.text("feature-history-parameter-depth"),

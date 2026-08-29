@@ -165,6 +165,17 @@ mod ffi {
             amount: f64,
             fillet: bool,
         ) -> UniquePtr<NativeOperationResult>;
+        fn shell_body_native(
+            body: &NativeOperationResult,
+            face_ordinals: &[u32],
+            thickness: f64,
+        ) -> UniquePtr<NativeOperationResult>;
+        fn finish_body_native(
+            body: &NativeOperationResult,
+            edge_ordinals: &[u32],
+            amount: f64,
+            fillet: bool,
+        ) -> UniquePtr<NativeOperationResult>;
         fn cut_box_native(
             base: &NativeOperationResult,
             origin_x: f64,
@@ -267,6 +278,11 @@ mod ffi {
         fn combine_bodies_native(
             base: &NativeOperationResult,
             added: &NativeOperationResult,
+        ) -> UniquePtr<NativeOperationResult>;
+        fn boolean_bodies_native(
+            target: &NativeOperationResult,
+            tool: &NativeOperationResult,
+            operation: u8,
         ) -> UniquePtr<NativeOperationResult>;
         fn export_step_native(body: &NativeOperationResult, path: &str) -> String;
         fn tessellate_body_native(
@@ -651,6 +667,14 @@ impl fmt::Debug for ExactOpOutput {
             .field("history_confidence", &self.history_confidence)
             .finish()
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExactBodyBooleanOperation {
+    Cut,
+    Union,
+    Intersect,
+    Split,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -1180,6 +1204,94 @@ impl ExactBackend {
         )
     }
 
+    pub fn shell_body(
+        &self,
+        body: &ExactBody,
+        face_ordinals: &[u32],
+        thickness_mm: f64,
+    ) -> Result<ExactOpOutput, GeometryError> {
+        let input = format!(
+            "shell_body:{}:{face_ordinals:?}:{:016x}",
+            body.result_fingerprint,
+            thickness_mm.to_bits()
+        );
+        validate_length(thickness_mm, "thickness_mm", "shell_body", &input)?;
+        if face_ordinals.is_empty()
+            || face_ordinals.len() > 64
+            || face_ordinals.windows(2).any(|pair| pair[0] >= pair[1])
+            || face_ordinals
+                .iter()
+                .any(|ordinal| *ordinal >= body.topology.face_count)
+        {
+            return Err(parameter_error(
+                GeometryErrorCode::InvalidParameter,
+                "shell_body",
+                &input,
+                "Shell faces must be a non-empty canonical in-range selection".to_owned(),
+            ));
+        }
+        let native = body.native.as_ref().ok_or_else(|| GeometryError {
+            code: GeometryErrorCode::NullResult,
+            diagnostic: "Exact body lost its owned native shape".to_owned(),
+            operation: "shell_body",
+            input_digest: stable_digest(&input),
+            backend_fingerprint: BACKEND_FINGERPRINT,
+        })?;
+        collect_output(
+            ffi::shell_body_native(native, face_ordinals, thickness_mm),
+            "shell_body",
+            &input,
+            HistoryConfidence::Partial,
+        )
+    }
+
+    pub fn finish_body(
+        &self,
+        body: &ExactBody,
+        edge_ordinals: &[u32],
+        finish: BottleEdgeFinish,
+        amount_mm: f64,
+    ) -> Result<ExactOpOutput, GeometryError> {
+        let input = format!(
+            "finish_body:{}:{edge_ordinals:?}:{finish:?}:{:016x}",
+            body.result_fingerprint,
+            amount_mm.to_bits()
+        );
+        validate_length(amount_mm, "amount_mm", "finish_body", &input)?;
+        if edge_ordinals.is_empty()
+            || edge_ordinals.len() > 64
+            || edge_ordinals.windows(2).any(|pair| pair[0] >= pair[1])
+            || edge_ordinals
+                .iter()
+                .any(|ordinal| *ordinal >= body.topology.edge_count)
+        {
+            return Err(parameter_error(
+                GeometryErrorCode::InvalidParameter,
+                "finish_body",
+                &input,
+                "Finish edges must be a non-empty canonical in-range selection".to_owned(),
+            ));
+        }
+        let native = body.native.as_ref().ok_or_else(|| GeometryError {
+            code: GeometryErrorCode::NullResult,
+            diagnostic: "Exact body lost its owned native shape".to_owned(),
+            operation: "finish_body",
+            input_digest: stable_digest(&input),
+            backend_fingerprint: BACKEND_FINGERPRINT,
+        })?;
+        collect_output(
+            ffi::finish_body_native(
+                native,
+                edge_ordinals,
+                amount_mm,
+                finish == BottleEdgeFinish::Fillet,
+            ),
+            "finish_body",
+            &input,
+            HistoryConfidence::Partial,
+        )
+    }
+
     pub fn exception_probe(&self) -> Result<ExactOpOutput, GeometryError> {
         collect_output(
             ffi::exception_probe_native(),
@@ -1275,6 +1387,44 @@ impl ExactBackend {
             "combine_bodies",
             &input,
             HistoryConfidence::None,
+        )
+    }
+
+    pub fn boolean_bodies(
+        &self,
+        target: &ExactBody,
+        tool: &ExactBody,
+        operation: ExactBodyBooleanOperation,
+    ) -> Result<ExactOpOutput, GeometryError> {
+        let input = format!(
+            "boolean_bodies:{operation:?}:{}:{}",
+            target.result_fingerprint, tool.result_fingerprint
+        );
+        let native_target = target.native.as_ref().ok_or_else(|| GeometryError {
+            code: GeometryErrorCode::NullResult,
+            diagnostic: "Target exact body lost its owned native shape".to_owned(),
+            operation: "boolean_bodies",
+            input_digest: stable_digest(&input),
+            backend_fingerprint: BACKEND_FINGERPRINT,
+        })?;
+        let native_tool = tool.native.as_ref().ok_or_else(|| GeometryError {
+            code: GeometryErrorCode::NullResult,
+            diagnostic: "Tool exact body lost its owned native shape".to_owned(),
+            operation: "boolean_bodies",
+            input_digest: stable_digest(&input),
+            backend_fingerprint: BACKEND_FINGERPRINT,
+        })?;
+        let operation_code = match operation {
+            ExactBodyBooleanOperation::Cut => 0,
+            ExactBodyBooleanOperation::Union => 1,
+            ExactBodyBooleanOperation::Intersect => 2,
+            ExactBodyBooleanOperation::Split => 3,
+        };
+        collect_output(
+            ffi::boolean_bodies_native(native_target, native_tool, operation_code),
+            "boolean_bodies",
+            &input,
+            HistoryConfidence::Partial,
         )
     }
 

@@ -1,26 +1,32 @@
 #![forbid(unsafe_code)]
 
-use ketchup_core::exact_product::ExactCircleProfile;
+use ketchup_core::exact_brep_graph::{
+    ExactBRepBooleanOperation, ExactBRepEdgeFinishKind, ExactBRepGraph, ExactBRepLinearInterval,
+    ExactBRepOperation, ExactBRepPlanarGeometry, ExactBRepPlanarSegment, ExactBRepProfile,
+    ExactBRepTopologyKind, ExactBRepTopologySelector,
+};
+use ketchup_core::exact_product::{EXACT_BREP_GRAPH_EVALUATOR_V1, ExactCircleProfile};
 use ketchup_core::graph::sha256_hex;
 use ketchup_core::import::{
     MAX_STEP_MESH_TRIANGLES, MAX_STEP_SOURCE_BYTES, StepImportMesh, StepMeshTriangle,
 };
 use ketchup_exact::{
     BottleEdgeFinish, BoxSpec, CircleExtrudeSpec, CutMode, CylinderToolSpec, ExactBackend,
-    HalfLapFaceRole, HalfLapNotchSpec, HalfLapParticipant, PlanarProfileSegment, Point3,
-    RectangleExtrudeSpec, RectangleOffsetSpec, RectangleSweepSpec, ReferenceResolution, Size3,
-    SplineLoftSection, SplineLoftSpec, StabilityClass, capture_bounded_pocket_references,
-    capture_bounded_through_cut_references, capture_box_shell_references,
-    capture_circle_extrusion_references, capture_circular_pocket_references,
-    capture_circular_split_references, capture_circular_through_cut_references,
-    capture_contained_polygon_intersection_references, capture_contained_polygon_union_references,
-    capture_general_revolve_references, capture_guaranteed_references,
-    capture_half_lap_notch_references, capture_mixed_profile_extrusion_references,
-    capture_planar_offset_reference, capture_polygon_through_cut_references,
-    capture_profile_split_references, capture_rectangular_intersection_references,
-    capture_rectangular_split_references, capture_rectangular_sweep_references,
-    capture_rectangular_union_references, capture_revolve_references, capture_shell_references,
-    capture_spline_loft_references, resolve_subshape_reference,
+    ExactBodyBooleanOperation, ExactOpOutput, HalfLapFaceRole, HalfLapNotchSpec,
+    HalfLapParticipant, PlanarProfileSegment, Point3, RectangleExtrudeSpec, RectangleOffsetSpec,
+    RectangleSweepSpec, ReferenceResolution, Size3, SplineLoftSection, SplineLoftSpec,
+    StabilityClass, capture_bounded_pocket_references, capture_bounded_through_cut_references,
+    capture_box_shell_references, capture_circle_extrusion_references,
+    capture_circular_pocket_references, capture_circular_split_references,
+    capture_circular_through_cut_references, capture_contained_polygon_intersection_references,
+    capture_contained_polygon_union_references, capture_general_revolve_references,
+    capture_guaranteed_references, capture_half_lap_notch_references,
+    capture_mixed_profile_extrusion_references, capture_planar_offset_reference,
+    capture_polygon_through_cut_references, capture_profile_split_references,
+    capture_rectangular_intersection_references, capture_rectangular_split_references,
+    capture_rectangular_sweep_references, capture_rectangular_union_references,
+    capture_revolve_references, capture_shell_references, capture_spline_loft_references,
+    resolve_subshape_reference,
 };
 use ketchup_scheduler::{
     StepAssemblyManifest, StepFeatureExportSpec, StepProfileSegment, StepRevolveExportSpec,
@@ -76,6 +82,36 @@ fn handle_request(backend: &ExactBackend, request: &str) -> Option<String> {
         (Some("CAPS"), Some("M14_STEP_V1"), None) => Some("CAPS M14_STEP_V1".to_owned()),
         (Some("CAPS"), Some("M21_STEP_MODEL_V1"), None) => {
             Some("CAPS M21_STEP_MODEL_V1".to_owned())
+        }
+        (Some("CAPS"), Some("EXACT_BREP_GRAPH_V1"), None) => {
+            Some("CAPS EXACT_BREP_GRAPH_V1".to_owned())
+        }
+        (Some("TESSELLATE_BREP_GRAPH_V1"), Some(graph_digest), Some(encoded_graph)) => {
+            let remaining = fields.collect::<Vec<_>>();
+            Some(exact_brep_graph_mesh_response(
+                backend,
+                graph_digest,
+                encoded_graph,
+                &remaining,
+            ))
+        }
+        (Some("EXPORT_BREP_GRAPH_STEP_V1"), Some(graph_digest), Some(encoded_graph)) => {
+            let remaining = fields.collect::<Vec<_>>();
+            Some(exact_brep_graph_step_response(
+                backend,
+                graph_digest,
+                encoded_graph,
+                &remaining,
+            ))
+        }
+        (Some("EVAL_BREP_GRAPH_V1"), Some(graph_digest), Some(encoded_graph)) => {
+            if fields.next().is_some() {
+                return Some("ERR invalid_request".to_owned());
+            }
+            let Some(graph) = decode_exact_brep_graph(graph_digest, encoded_graph) else {
+                return Some("ERR invalid_request".to_owned());
+            };
+            Some(exact_brep_graph_response(backend, &graph))
         }
         (Some("EXPORT_REVOLVE_STEP_M21_V1"), Some(document_id), Some(producer_feature_id)) => {
             let remaining = fields.collect::<Vec<_>>();
@@ -981,6 +1017,567 @@ fn handle_request(backend: &ExactBackend, request: &str) -> Option<String> {
         }
         (Some("CRASH"), None, None) => std::process::abort(),
         _ => Some("ERR invalid_request".to_owned()),
+    }
+}
+
+const MAX_EXACT_BREP_GRAPH_MESH_TRIANGLES: u32 = 200_000;
+
+fn decode_exact_brep_graph(graph_digest: &str, encoded_graph: &str) -> Option<ExactBRepGraph> {
+    if !is_canonical_digest(graph_digest) {
+        return None;
+    }
+    let bytes = decode_hex_bytes(encoded_graph)?;
+    let graph = ExactBRepGraph::from_bytes(&bytes).ok()?;
+    (graph.graph_digest == graph_digest).then_some(graph)
+}
+
+fn exact_brep_graph_mesh_response(
+    backend: &ExactBackend,
+    graph_digest: &str,
+    encoded_graph: &str,
+    fields: &[&str],
+) -> String {
+    if fields.len() != 2 || !is_result_fingerprint(fields[0]) {
+        return "ERR invalid_request".to_owned();
+    }
+    let Some(graph) = decode_exact_brep_graph(graph_digest, encoded_graph) else {
+        return "ERR invalid_request".to_owned();
+    };
+    let Some(output_path) = decode_hex_utf8(fields[1]) else {
+        return "ERR invalid_request".to_owned();
+    };
+    let output = match evaluate_exact_brep_graph(backend, &graph) {
+        Ok(output) if output.body.result_fingerprint == fields[0] => output,
+        Ok(_) => return "ERR invalid_result".to_owned(),
+        Err(error) => return geometry_error_response(&error),
+    };
+    let bounds = output.body.topology.bounds_mm;
+    let diagonal = ((bounds.max.x - bounds.min.x).powi(2)
+        + (bounds.max.y - bounds.min.y).powi(2)
+        + (bounds.max.z - bounds.min.z).powi(2))
+    .sqrt();
+    if !diagonal.is_finite() || diagonal <= 0.0 {
+        return "ERR invalid_shape".to_owned();
+    }
+    let deflection = (diagonal * 1.0e-3).max(1.0e-3);
+    let mesh = match backend.tessellate_body(
+        &output.body,
+        deflection,
+        STEP_MESH_ANGULAR_DEFLECTION,
+        MAX_EXACT_BREP_GRAPH_MESH_TRIANGLES,
+    ) {
+        Ok(mesh) => StepImportMesh {
+            vertices_mm: mesh.vertices_mm,
+            triangles: mesh
+                .triangles
+                .into_iter()
+                .map(|triangle| StepMeshTriangle {
+                    vertex_indices: triangle.vertex_indices,
+                    face_ordinal: triangle.face_ordinal,
+                })
+                .collect(),
+        },
+        Err(error) => return geometry_error_response(&error),
+    };
+    let encoded = mesh.encode();
+    if let Err(error) = std::fs::write(&output_path, &encoded) {
+        return transport_error_response("tessellate_exact_brep_graph", &error.to_string());
+    }
+    format!(
+        "OK_BREP_GRAPH_MESH_V1 {graph_digest} {} {} {} {} {:016x}",
+        output.body.result_fingerprint,
+        mesh.vertices_mm.len(),
+        mesh.triangles.len(),
+        sha256_hex(&encoded),
+        deflection.to_bits(),
+    )
+}
+
+fn exact_brep_graph_step_response(
+    backend: &ExactBackend,
+    graph_digest: &str,
+    encoded_graph: &str,
+    fields: &[&str],
+) -> String {
+    if fields.len() != 2 || !is_result_fingerprint(fields[0]) {
+        return "ERR invalid_request".to_owned();
+    }
+    let Some(graph) = decode_exact_brep_graph(graph_digest, encoded_graph) else {
+        return "ERR invalid_request".to_owned();
+    };
+    let Some(output_path) = decode_hex_utf8(fields[1]) else {
+        return "ERR invalid_request".to_owned();
+    };
+    let output = match evaluate_exact_brep_graph(backend, &graph) {
+        Ok(output) if output.body.result_fingerprint == fields[0] => output,
+        Ok(_) => return "ERR invalid_result".to_owned(),
+        Err(error) => return geometry_error_response(&error),
+    };
+    match backend.export_step(&output.body, &output_path) {
+        Ok(()) => format!(
+            "OK_BREP_GRAPH_STEP_V1 {graph_digest} {}",
+            output.body.result_fingerprint
+        ),
+        Err(error) => geometry_error_response(&error),
+    }
+}
+
+fn exact_brep_graph_response(backend: &ExactBackend, graph: &ExactBRepGraph) -> String {
+    let output = match evaluate_exact_brep_graph(backend, graph) {
+        Ok(output) => output,
+        Err(error) => return geometry_error_response(&error),
+    };
+    let topology = &output.body.topology;
+    format!(
+        "OK_BREP_GRAPH_V1 {} {} {} {} {} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {} {} {} {} {} {} {}",
+        graph.canonical_input_digest,
+        graph.graph_digest,
+        graph.producer_feature_id,
+        output.body.result_fingerprint,
+        output.input_digest,
+        topology.volume_mm3.to_bits(),
+        topology.bounds_mm.min.x.to_bits(),
+        topology.bounds_mm.min.y.to_bits(),
+        topology.bounds_mm.min.z.to_bits(),
+        topology.bounds_mm.max.x.to_bits(),
+        topology.bounds_mm.max.y.to_bits(),
+        topology.bounds_mm.max.z.to_bits(),
+        topology.vertex_count,
+        topology.edge_count,
+        topology.face_count,
+        topology.shell_count,
+        topology.solid_count,
+        encode_hex(output.backend_fingerprint.as_bytes()),
+        encode_hex(output.tolerance_report.profile.as_bytes()),
+    )
+}
+
+fn evaluate_exact_brep_graph(
+    backend: &ExactBackend,
+    graph: &ExactBRepGraph,
+) -> Result<ExactOpOutput, ketchup_exact::GeometryError> {
+    graph
+        .validate()
+        .map_err(|error| exact_brep_graph_error(graph, &error.to_string()))?;
+    let mut outputs = Vec::<ExactOpOutput>::with_capacity(graph.nodes.len());
+    for node in &graph.nodes {
+        let output = match &node.operation {
+            ExactBRepOperation::Extrude {
+                profile, interval, ..
+            } => exact_brep_profile_body(backend, &graph.profiles[profile.0 as usize], *interval)?,
+            ExactBRepOperation::ProfileCut {
+                target,
+                profile,
+                interval,
+                ..
+            } => {
+                let target = &outputs[target.0 as usize].body;
+                let tool = exact_brep_profile_body(
+                    backend,
+                    &graph.profiles[profile.0 as usize],
+                    *interval,
+                )?;
+                backend.boolean_bodies(target, &tool.body, ExactBodyBooleanOperation::Cut)?
+            }
+            ExactBRepOperation::Boolean {
+                operation,
+                target,
+                tool,
+            } => {
+                let target = &outputs[target.0 as usize].body;
+                let tool = &outputs[tool.0 as usize].body;
+                backend.boolean_bodies(
+                    target,
+                    tool,
+                    match operation {
+                        ExactBRepBooleanOperation::Cut => ExactBodyBooleanOperation::Cut,
+                        ExactBRepBooleanOperation::Union => ExactBodyBooleanOperation::Union,
+                        ExactBRepBooleanOperation::Intersect => {
+                            ExactBodyBooleanOperation::Intersect
+                        }
+                        ExactBRepBooleanOperation::Split => ExactBodyBooleanOperation::Split,
+                    },
+                )?
+            }
+            ExactBRepOperation::Revolve {
+                profile,
+                axis_start_bits,
+                axis_end_bits,
+                angle_degrees_bits,
+            } => exact_brep_revolve(
+                backend,
+                &graph.profiles[profile.0 as usize],
+                axis_start_bits.map(f64::from_bits),
+                axis_end_bits.map(f64::from_bits),
+                f64::from_bits(*angle_degrees_bits),
+            )?,
+            ExactBRepOperation::Sweep { profile, path } => exact_brep_sweep(
+                backend,
+                &graph.profiles[profile.0 as usize],
+                &graph.profiles[path.0 as usize],
+            )?,
+            ExactBRepOperation::Loft { sections } => {
+                let sections = sections
+                    .iter()
+                    .map(|section| {
+                        let profile = &graph.profiles[section.profile.0 as usize];
+                        let ExactBRepPlanarGeometry::Spline { control_point_bits } =
+                            &profile.geometry
+                        else {
+                            return Err(exact_brep_profile_error(
+                                profile,
+                                "exact loft requires bounded spline sections",
+                            ));
+                        };
+                        Ok(SplineLoftSection {
+                            elevation_mm: f64::from_bits(section.elevation_bits),
+                            control_points_mm: control_point_bits
+                                .iter()
+                                .map(|point| point.map(f64::from_bits))
+                                .collect(),
+                        })
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                backend.loft_spline(&SplineLoftSpec { sections })?
+            }
+            ExactBRepOperation::Shell {
+                target,
+                removed_faces,
+                thickness_bits,
+            } => {
+                let target_output = &outputs[target.0 as usize];
+                let ordinals = exact_brep_topology_ordinals(
+                    graph,
+                    *target,
+                    target_output,
+                    removed_faces,
+                    ExactBRepTopologyKind::Face,
+                )?;
+                backend.shell_body(
+                    &target_output.body,
+                    &ordinals,
+                    f64::from_bits(*thickness_bits),
+                )?
+            }
+            ExactBRepOperation::EdgeFinish {
+                target,
+                edges,
+                kind,
+                amount_bits,
+            } => {
+                let target_output = &outputs[target.0 as usize];
+                let ordinals = exact_brep_topology_ordinals(
+                    graph,
+                    *target,
+                    target_output,
+                    edges,
+                    ExactBRepTopologyKind::Edge,
+                )?;
+                backend.finish_body(
+                    &target_output.body,
+                    &ordinals,
+                    match kind {
+                        ExactBRepEdgeFinishKind::Fillet => BottleEdgeFinish::Fillet,
+                        ExactBRepEdgeFinishKind::Chamfer => BottleEdgeFinish::Chamfer,
+                    },
+                    f64::from_bits(*amount_bits),
+                )?
+            }
+            ExactBRepOperation::ImportedExact { .. } => {
+                return Err(exact_brep_graph_error(
+                    graph,
+                    "graph operation is not supported by this worker capability",
+                ));
+            }
+        };
+        outputs.push(output);
+    }
+    outputs
+        .pop()
+        .ok_or_else(|| exact_brep_graph_error(graph, "graph produced no exact body"))
+}
+
+fn exact_brep_topology_ordinals(
+    graph: &ExactBRepGraph,
+    target: ketchup_core::exact_brep_graph::ExactBRepNodeId,
+    target_output: &ExactOpOutput,
+    selectors: &[ExactBRepTopologySelector],
+    expected_kind: ExactBRepTopologyKind,
+) -> Result<Vec<u32>, ketchup_exact::GeometryError> {
+    let target_node = &graph.nodes[target.0 as usize];
+    let kind_token = match expected_kind {
+        ExactBRepTopologyKind::Face => "face",
+        ExactBRepTopologyKind::Edge => "edge",
+    };
+    let producer_prefix = format!("generated-result/{kind_token}/");
+    let source_prefix = format!("generated-source/{kind_token}/");
+    let mut ordinals = selectors
+        .iter()
+        .map(|selector| {
+            if selector.kind != expected_kind {
+                return Err(exact_brep_graph_error(
+                    graph,
+                    "topology selector has the wrong element kind",
+                ));
+            }
+            let reference = selector
+                .reference()
+                .map_err(|error| exact_brep_graph_error(graph, &error.to_string()))?;
+            if reference.producer_feature_id.0 != target_node.source_feature_id
+                || reference.source_feature_id.0 != target_node.source_feature_id
+                || reference.result_fingerprint != target_output.body.result_fingerprint
+                || reference.evaluator != EXACT_BREP_GRAPH_EVALUATOR_V1
+                || reference.backend != target_output.backend_fingerprint
+                || reference.tolerance != target_output.tolerance_report.profile
+            {
+                return Err(exact_brep_graph_error(
+                    graph,
+                    "topology selector is stale or belongs to a different exact target",
+                ));
+            }
+            let ordinal_token = reference
+                .producer_element_id
+                .strip_prefix(&producer_prefix)
+                .ok_or_else(|| {
+                    exact_brep_graph_error(graph, "topology selector producer token is invalid")
+                })?;
+            let ordinal = ordinal_token.parse::<u32>().map_err(|_| {
+                exact_brep_graph_error(graph, "topology selector ordinal is invalid")
+            })?;
+            if ordinal_token != ordinal.to_string()
+                || reference.source_element_id != format!("{source_prefix}{ordinal}")
+            {
+                return Err(exact_brep_graph_error(
+                    graph,
+                    "topology selector ordinal encoding is non-canonical",
+                ));
+            }
+            Ok(ordinal)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    ordinals.sort_unstable();
+    if ordinals.windows(2).any(|pair| pair[0] == pair[1]) {
+        return Err(exact_brep_graph_error(
+            graph,
+            "topology selector ordinals are duplicated",
+        ));
+    }
+    Ok(ordinals)
+}
+
+fn exact_brep_revolve(
+    backend: &ExactBackend,
+    profile: &ExactBRepProfile,
+    axis_start_mm: [f64; 2],
+    axis_end_mm: [f64; 2],
+    angle_degrees: f64,
+) -> Result<ExactOpOutput, ketchup_exact::GeometryError> {
+    let segments = exact_brep_boundary_segments(profile, true)?;
+    backend.revolve_general_profile(&segments, axis_start_mm, axis_end_mm, angle_degrees)
+}
+
+fn exact_brep_sweep(
+    backend: &ExactBackend,
+    profile: &ExactBRepProfile,
+    path: &ExactBRepProfile,
+) -> Result<ExactOpOutput, ketchup_exact::GeometryError> {
+    let ExactBRepPlanarGeometry::Boundary {
+        closed: false,
+        segments,
+    } = &path.geometry
+    else {
+        return Err(exact_brep_profile_error(
+            path,
+            "exact sweep requires an open planar path",
+        ));
+    };
+    let [
+        ExactBRepPlanarSegment::Line {
+            start_bits,
+            end_bits,
+        },
+    ] = segments.as_slice()
+    else {
+        return Err(exact_brep_profile_error(
+            path,
+            "exact sweep currently requires one straight path segment",
+        ));
+    };
+    let start = start_bits.map(f64::from_bits);
+    let end = end_bits.map(f64::from_bits);
+    let direction = [end[0] - start[0], end[1] - start[1]];
+    let length = direction[0].hypot(direction[1]);
+    let tangent = [direction[0] / length, direction[1] / length];
+    let section = [tangent[1], -tangent[0]];
+    let local = exact_brep_profile_body(
+        backend,
+        profile,
+        ExactBRepLinearInterval {
+            direction_bits: [
+                profile.frame_bits[9],
+                profile.frame_bits[10],
+                profile.frame_bits[11],
+            ],
+            start_bits: 0.0_f64.to_bits(),
+            end_bits: length.to_bits(),
+        },
+    )?;
+    backend.transform_body(
+        &local.body,
+        &[
+            section[0], 0.0, tangent[0], start[0], section[1], 0.0, tangent[1], start[1], 0.0, 1.0,
+            0.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+        ],
+    )
+}
+
+fn exact_brep_boundary_segments(
+    profile: &ExactBRepProfile,
+    require_closed: bool,
+) -> Result<Vec<PlanarProfileSegment>, ketchup_exact::GeometryError> {
+    let ExactBRepPlanarGeometry::Boundary { closed, segments } = &profile.geometry else {
+        return Err(exact_brep_profile_error(
+            profile,
+            "exact operation requires a line/arc boundary",
+        ));
+    };
+    if *closed != require_closed {
+        return Err(exact_brep_profile_error(
+            profile,
+            "exact boundary closure does not match the operation",
+        ));
+    }
+    Ok(segments
+        .iter()
+        .map(|segment| match segment {
+            ExactBRepPlanarSegment::Line {
+                start_bits,
+                end_bits,
+            } => PlanarProfileSegment::Line {
+                start_mm: start_bits.map(f64::from_bits),
+                end_mm: end_bits.map(f64::from_bits),
+            },
+            ExactBRepPlanarSegment::CircularArc {
+                start_bits,
+                end_bits,
+                center_bits,
+                clockwise,
+            } => PlanarProfileSegment::CircularArc {
+                start_mm: start_bits.map(f64::from_bits),
+                end_mm: end_bits.map(f64::from_bits),
+                center_mm: center_bits.map(f64::from_bits),
+                clockwise: *clockwise,
+            },
+        })
+        .collect())
+}
+
+fn exact_brep_profile_body(
+    backend: &ExactBackend,
+    profile: &ExactBRepProfile,
+    interval: ExactBRepLinearInterval,
+) -> Result<ExactOpOutput, ketchup_exact::GeometryError> {
+    let distance_mm = interval.length_mm();
+    let local = match &profile.geometry {
+        ExactBRepPlanarGeometry::Boundary {
+            closed: true,
+            segments,
+        } => {
+            let segments = segments
+                .iter()
+                .map(|segment| match segment {
+                    ExactBRepPlanarSegment::Line {
+                        start_bits,
+                        end_bits,
+                    } => PlanarProfileSegment::Line {
+                        start_mm: start_bits.map(f64::from_bits),
+                        end_mm: end_bits.map(f64::from_bits),
+                    },
+                    ExactBRepPlanarSegment::CircularArc {
+                        start_bits,
+                        end_bits,
+                        center_bits,
+                        clockwise,
+                    } => PlanarProfileSegment::CircularArc {
+                        start_mm: start_bits.map(f64::from_bits),
+                        end_mm: end_bits.map(f64::from_bits),
+                        center_mm: center_bits.map(f64::from_bits),
+                        clockwise: *clockwise,
+                    },
+                })
+                .collect::<Vec<_>>();
+            backend.extrude_mixed_profile(&segments, distance_mm)?
+        }
+        ExactBRepPlanarGeometry::Circle {
+            center_bits,
+            radius_bits,
+        } => backend.extrude_circle(CircleExtrudeSpec {
+            center_mm: center_bits.map(f64::from_bits),
+            radius_mm: f64::from_bits(*radius_bits),
+            height_mm: distance_mm,
+        })?,
+        ExactBRepPlanarGeometry::Boundary { closed: false, .. }
+        | ExactBRepPlanarGeometry::Spline { .. } => {
+            return Err(exact_brep_profile_error(
+                profile,
+                "exact extrusion requires a closed line/arc/circle profile",
+            ));
+        }
+    };
+    let frame = profile.frame_bits.map(f64::from_bits);
+    let direction = interval.direction();
+    let start_mm = interval.start_mm();
+    let origin = [
+        frame[0] + direction[0] * start_mm,
+        frame[1] + direction[1] * start_mm,
+        frame[2] + direction[2] * start_mm,
+    ];
+    backend.transform_body(
+        &local.body,
+        &[
+            frame[3],
+            frame[6],
+            direction[0],
+            origin[0],
+            frame[4],
+            frame[7],
+            direction[1],
+            origin[1],
+            frame[5],
+            frame[8],
+            direction[2],
+            origin[2],
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+        ],
+    )
+}
+
+fn exact_brep_graph_error(
+    graph: &ExactBRepGraph,
+    diagnostic: &str,
+) -> ketchup_exact::GeometryError {
+    ketchup_exact::GeometryError {
+        code: ketchup_exact::GeometryErrorCode::InvalidParameter,
+        diagnostic: diagnostic.to_owned(),
+        operation: "evaluate_exact_brep_graph",
+        input_digest: graph.graph_digest.clone(),
+        backend_fingerprint: ketchup_exact::backend_fingerprint(),
+    }
+}
+
+fn exact_brep_profile_error(
+    profile: &ExactBRepProfile,
+    diagnostic: &str,
+) -> ketchup_exact::GeometryError {
+    ketchup_exact::GeometryError {
+        code: ketchup_exact::GeometryErrorCode::InvalidProfile,
+        diagnostic: diagnostic.to_owned(),
+        operation: "evaluate_exact_brep_profile",
+        input_digest: sha256_hex(format!("profile:{}", profile.id.0).as_bytes()),
+        backend_fingerprint: ketchup_exact::backend_fingerprint(),
     }
 }
 

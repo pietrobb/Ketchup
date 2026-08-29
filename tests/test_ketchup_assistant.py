@@ -335,6 +335,140 @@ def test_public_sidecar_has_no_shell_filesystem_browser_or_agent_authority():
         assert forbidden not in source
 
 
+def test_public_sidecar_parses_strict_bounded_cad_edit_program():
+    selector = {"type": "occurrences", "occurrence_ids": [7, 9]}
+    program = {
+        "operations": [
+            {
+                "operation": "create_sketch",
+                "definition_id": 1,
+                "name": "Mixed sketch",
+                "workplane": {"type": "principal", "plane": "xy"},
+                "entities": [
+                    {"type": "line", "id": 1, "start_mm": [0, 0], "end_mm": [10, 0]},
+                    {
+                        "type": "arc",
+                        "id": 2,
+                        "start_mm": [10, 0],
+                        "end_mm": [0, 0],
+                        "center_mm": [5, 0],
+                        "clockwise": False,
+                    },
+                    {"type": "circle", "id": 3, "center_mm": [20, 0], "radius_mm": 5},
+                ],
+                "constraints": [
+                    {"type": "horizontal", "id": 1, "entity_id": 1},
+                    {"type": "radius", "id": 2, "entity_id": 3, "value_mm": 5},
+                ],
+            },
+            {
+                "operation": "set_dimension",
+                "feature_id": 12,
+                "constraint_id": 2,
+                "value_mm": 7.5,
+            },
+            {
+                "operation": "delete",
+                "selector": selector,
+                "dependency_policy": "reject_if_referenced",
+            },
+            {
+                "operation": "transform",
+                "selector": {"type": "current_selection"},
+                "translation_mm": [0, 0, 0],
+                "rotation": {
+                    "pivot_mm": [0, 0, 0],
+                    "axis": [0, 0, 1],
+                    "angle_degrees": 90,
+                },
+            },
+            {"operation": "copy", "selector": selector, "translation_mm": [10, 0, 0]},
+            {
+                "operation": "linear_pattern",
+                "selector": selector,
+                "instances": 3,
+                "step_mm": [0, 20, 0],
+            },
+            {
+                "operation": "mirror",
+                "selector": selector,
+                "plane_origin_mm": [0, 0, 0],
+                "plane_normal": [1, 0, 0],
+            },
+        ]
+    }
+    result = assistant._parse_assistant_result(
+        json.dumps(
+            {
+                "message": "Prepared one bounded occurrence edit.",
+                "model_intent": None,
+                "cad_edit_program": program,
+            }
+        )
+    )
+    assert result["cad_edit_program"] == program
+    assert result["model_intent"] is None
+    assert "never invent IDs for host-generated features or occurrences" in assistant.SYSTEM_PROMPT
+
+    boundary = {
+        "operations": [
+            {
+                "operation": "linear_pattern",
+                "selector": selector,
+                "instances": 257,
+                "step_mm": [1, 0, 0],
+            }
+        ]
+    }
+    assert assistant._validate_cad_edit_program(boundary) == boundary
+
+    invalid_programs = [
+        {
+            "operations": [
+                {
+                    "operation": "linear_pattern",
+                    "selector": {"type": "current_selection"},
+                    "instances": 7,
+                    "step_mm": [1, 0, 0],
+                }
+            ]
+        },
+        {
+            "operations": [
+                {
+                    "operation": "linear_pattern",
+                    "selector": selector,
+                    "instances": 258,
+                    "step_mm": [1, 0, 0],
+                }
+            ]
+        },
+        {
+            "operations": [
+                {
+                    "operation": "copy",
+                    "selector": {"type": "current_selection", "occurrence_ids": [7]},
+                    "translation_mm": [1, 0, 0],
+                }
+            ]
+        },
+    ]
+    for invalid_program in invalid_programs:
+        with pytest.raises(assistant.ProtocolError):
+            assistant._validate_cad_edit_program(invalid_program)
+
+    with pytest.raises(assistant.ProtocolError):
+        assistant._parse_assistant_result(
+            json.dumps(
+                {
+                    "message": "Ambiguous.",
+                    "model_intent": {"replace_scene": False, "boxes": []},
+                    "cad_edit_program": program,
+                }
+            )
+        )
+
+
 def test_public_sidecar_parses_bounded_model_intent_and_rejects_invalid_geometry():
     valid = json.dumps(
         {

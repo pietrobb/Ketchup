@@ -718,6 +718,92 @@ fn box_shell_fillet_and_chamfer_are_exact_deterministic_and_keep_stable_faces() 
 }
 
 #[test]
+fn topology_selected_shell_fillet_and_chamfer_apply_to_an_existing_exact_body() {
+    let backend = ExactBackend::new();
+    let base = backend
+        .extrude_rectangle(RectangleExtrudeSpec {
+            width_mm: 37.0,
+            depth_mm: 23.0,
+            height_mm: 19.0,
+        })
+        .unwrap();
+    let removed_face = base
+        .body
+        .topology
+        .faces
+        .iter()
+        .find(|face| (face.centroid_mm.z - 19.0).abs() <= 1.0e-6)
+        .unwrap()
+        .ordinal;
+
+    let shell = backend
+        .shell_body(&base.body, &[removed_face], 1.5)
+        .unwrap();
+    let repeated_shell = backend
+        .shell_body(&base.body, &[removed_face], 1.5)
+        .unwrap();
+    assert_valid(&shell);
+    assert!(shell.body.topology.volume_mm3 < base.body.topology.volume_mm3);
+    assert_eq!(shell.input_digest, repeated_shell.input_digest);
+    assert_eq!(
+        shell.body.result_fingerprint,
+        repeated_shell.body.result_fingerprint
+    );
+    assert!(shell.topology_history.iter().any(|entry| {
+        entry.source_element_id == format!("generated-result/face/{removed_face}")
+            && entry.relation.starts_with("shell_selected_")
+    }));
+
+    let selected_edge = base
+        .body
+        .topology
+        .edges
+        .iter()
+        .find(|edge| edge.adjacent_face_ordinals.len() == 2)
+        .unwrap()
+        .ordinal;
+    for finish in [BottleEdgeFinish::Fillet, BottleEdgeFinish::Chamfer] {
+        let output = backend
+            .finish_body(&base.body, &[selected_edge], finish, 0.75)
+            .unwrap();
+        let repeated = backend
+            .finish_body(&base.body, &[selected_edge], finish, 0.75)
+            .unwrap();
+        assert_valid(&output);
+        assert_eq!(output.input_digest, repeated.input_digest);
+        assert_eq!(
+            output.body.result_fingerprint,
+            repeated.body.result_fingerprint
+        );
+        assert!(output.topology_history.iter().any(|entry| {
+            entry.source_element_id == format!("generated-result/edge/{selected_edge}")
+                && (entry.relation.starts_with("fillet_selected_")
+                    || entry.relation.starts_with("chamfer_selected_"))
+        }));
+    }
+
+    assert_eq!(
+        backend
+            .shell_body(&base.body, &[removed_face, removed_face], 1.5)
+            .unwrap_err()
+            .code,
+        GeometryErrorCode::InvalidParameter
+    );
+    assert_eq!(
+        backend
+            .finish_body(
+                &base.body,
+                &[base.body.topology.edge_count],
+                BottleEdgeFinish::Fillet,
+                0.75,
+            )
+            .unwrap_err()
+            .code,
+        GeometryErrorCode::InvalidParameter
+    );
+}
+
+#[test]
 fn general_polygon_revolve_honours_axis_angle_and_stable_roles() {
     let backend = ExactBackend::new();
     let profile = [

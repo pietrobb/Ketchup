@@ -196,7 +196,7 @@ fn exact_body_parameter_preview_has_manual_ai_parity_and_one_undo() {
     let FeatureKind::Pad(pad) = snapshot.feature(PAD).unwrap().kind() else {
         panic!("expected Pad");
     };
-    assert_eq!(pad.extent.distance().millimetres(), 9.0);
+    assert_eq!(pad.extent.blind_distance().unwrap().millimetres(), 9.0);
 
     document.undo().unwrap();
     assert_eq!(document.current().canonical_digest(), before.1);
@@ -588,7 +588,7 @@ fn circular_pocket_profile_moves_without_changing_radius_and_is_one_undo_step() 
         FeatureKind::SketchPocket(spec)
             if spec.target == PAD
                 && spec.sketch == CUT_SKETCH
-                && spec.extent.distance().millimetres() == 8.0
+                && spec.extent.blind_distance().unwrap().millimetres() == 8.0
     ));
 
     document.undo().unwrap();

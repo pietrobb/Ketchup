@@ -20,7 +20,7 @@ use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use ketchup_app::dialogs::ScriptedFileDialogs;
 use ketchup_app::{AppCommand, AssistantTransport, AssistantTransportResponse, KetchupApp};
 use ketchup_core::assistant_sidecar::{
-    AssistantApiDiagnostics, AssistantChatResult, AssistantHandshake,
+    AssistantApiDiagnostics, AssistantCadEditProgram, AssistantChatResult, AssistantHandshake,
 };
 use ketchup_interaction::{LocaleCatalog, Vec3};
 use ketchup_scheduler::assistant::AssistantCancellation;
@@ -36,6 +36,7 @@ const SCREEN: Vec2 = Vec2::new(1600.0, 1000.0);
 
 pub struct ScriptedAssistantTransport {
     responses: Mutex<VecDeque<(String, AssistantChatResult)>>,
+    cad_edit_programs: Mutex<VecDeque<(String, AssistantCadEditProgram)>>,
     diagnostics: Mutex<VecDeque<AssistantApiDiagnostics>>,
     request_ids: Mutex<Vec<String>>,
     contexts: Mutex<Vec<serde_json::Value>>,
@@ -48,6 +49,7 @@ impl ScriptedAssistantTransport {
     pub fn new(responses: impl IntoIterator<Item = (String, AssistantChatResult)>) -> Self {
         Self {
             responses: Mutex::new(responses.into_iter().collect()),
+            cad_edit_programs: Mutex::new(VecDeque::new()),
             diagnostics: Mutex::new(VecDeque::new()),
             request_ids: Mutex::new(Vec::new()),
             contexts: Mutex::new(Vec::new()),
@@ -64,6 +66,17 @@ impl ScriptedAssistantTransport {
 
     pub fn queue_diagnostics(&self, diagnostics: AssistantApiDiagnostics) {
         self.diagnostics.lock().unwrap().push_back(diagnostics);
+    }
+
+    pub fn queue_cad_edit_program(
+        &self,
+        message: impl Into<String>,
+        program: AssistantCadEditProgram,
+    ) {
+        self.cad_edit_programs
+            .lock()
+            .unwrap()
+            .push_back((message.into(), program));
     }
 
     pub fn remaining_responses(&self) -> usize {
@@ -133,8 +146,16 @@ impl AssistantTransport for ScriptedAssistantTransport {
         cancellation: AssistantCancellation,
     ) -> Result<AssistantTransportResponse, String> {
         let result = self.chat(handshake, request_id, message, context, cancellation)?;
+        let cad_edit_program = {
+            let mut programs = self.cad_edit_programs.lock().unwrap();
+            programs
+                .iter()
+                .position(|(expected, _)| expected == message)
+                .and_then(|index| programs.remove(index).map(|(_, program)| program))
+        };
         Ok(AssistantTransportResponse {
             result,
+            cad_edit_program,
             diagnostics: self.diagnostics.lock().unwrap().pop_front(),
         })
     }

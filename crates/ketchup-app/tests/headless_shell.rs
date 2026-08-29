@@ -18,21 +18,27 @@ use ketchup_app::{
     RectangularPatternSpec,
 };
 use ketchup_core::document::{
-    BottleEdgeFinishKind, CanonicalCommand, CommandBatch, DefinitionId, DerivedIdentity, Dimension,
-    DocumentStore, EvaluationIdentity, FeatureId, FeatureKind, FeatureParameterBinding,
+    CanonicalCommand, CommandBatch, DefinitionId, DerivedIdentity, Dimension, DocumentStore,
+    EdgeFinishKind, EvaluationIdentity, FeatureId, FeatureKind, FeatureParameterBinding,
     FeatureParameterSlot, FeatureParameterTarget, InstancePath, NodeId, OccurrenceId, PortSpec,
     RuleOutput, SlotPath, SlotSegment, TagId, Transform,
 };
+use ketchup_core::exact_brep_graph::ExactBRepGraph;
 use ketchup_core::exact_product::{
     EXACT_BOOLEAN_INTERSECT_EVALUATOR_V1, EXACT_BOOLEAN_SPLIT_EVALUATOR_V1,
     EXACT_BOOLEAN_UNION_EVALUATOR_V1, EXACT_CIRCLE_EVALUATOR_V1, EXACT_CIRCULAR_CUT_EVALUATOR_V1,
     EXACT_LOFT_EVALUATOR_V1, EXACT_PLANAR_OFFSET_EVALUATOR_V1, EXACT_SWEEP_EVALUATOR_V1,
-    ExactFaceRole, ExactFeatureChainRequest,
+    ExactBRepGraphPackage, ExactBRepGraphWorkerEvidence, ExactBodyPackage, ExactFaceRole,
+    ExactFeatureChainRequest,
 };
 use ketchup_core::graph::{EvaluationStatus, EvaluatorNodeKind};
+use ketchup_core::import::{StepImportMesh, StepMeshTriangle};
 use ketchup_core::intent::WorkflowIntent;
 use ketchup_core::persistence;
-use ketchup_interaction::{Axis, ElementId, LocaleCatalog, SnapKind, Vec3};
+use ketchup_core::topology::TopologicalElementKind;
+use ketchup_interaction::{
+    Axis, LocaleCatalog, SnapKind, Vec3, exact_projection::TopologicalPickLocator,
+};
 use ketchup_scheduler::ExactWorkerSupervisor;
 
 const PARAMETRIC_PROFILE: FeatureId = FeatureId(10);
@@ -9672,6 +9678,123 @@ fn spline_profiles_preview_exact_loft_and_commit_from_localized_headless_shell()
 }
 
 #[test]
+fn exact_worker_preserves_assembly_references_while_publishing_general_finish_topology() {
+    let mut shell = Shell::new();
+    shell
+        .app_mut()
+        .connect_exact_worker(exact_worker_path())
+        .unwrap();
+    let before_revision = shell.app().document_revision();
+    let before_digest = shell.app().canonical_digest();
+    let locator = TopologicalPickLocator {
+        instance_path: InstancePath::root(OccurrenceId(1)),
+        producer_feature_id: FeatureId(2),
+        kind: TopologicalElementKind::Face,
+        ordinal: 3,
+    };
+    let mut prepared = false;
+    for _ in 0..150 {
+        shell.settle();
+        if shell.app().exact_stable_reference_count() >= 2
+            && shell.app_mut().prepare_assistant_general_finish(
+                locator.clone(),
+                GeneralFinishKind::Shell,
+                2.0,
+            )
+        {
+            prepared = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(prepared, "{}", shell.app().action_digest());
+    assert!(shell.app().exact_stable_reference_count() >= 2);
+    let preview = shell.app().general_finish_preview_parameters().unwrap();
+    assert_eq!(preview.0, FeatureId(2));
+    assert_eq!(preview.1.kind, TopologicalElementKind::Face);
+    assert_eq!(preview.1.producer_element_id, "generated-result/face/3");
+    assert_eq!(preview.2, GeneralFinishKind::Shell);
+    assert_eq!(shell.app().document_revision(), before_revision);
+    assert_eq!(shell.app().canonical_digest(), before_digest);
+}
+
+fn install_general_finish_graph_result(shell: &mut Shell, producer_feature_id: FeatureId) {
+    let snapshot = shell.app().document_snapshot();
+    let graph =
+        ExactBRepGraph::from_snapshot(&snapshot, DefinitionId(1), producer_feature_id).unwrap();
+    let vertices_mm = vec![
+        [0.0, 0.0, 0.0],
+        [100.0, 0.0, 0.0],
+        [0.0, 60.0, 0.0],
+        [100.0, 60.0, 0.0],
+        [0.0, 0.0, 20.0],
+        [100.0, 0.0, 20.0],
+        [0.0, 60.0, 20.0],
+        [100.0, 60.0, 20.0],
+    ];
+    let triangles = [
+        ([0, 2, 1], 0),
+        ([1, 2, 3], 0),
+        ([4, 5, 6], 1),
+        ([5, 7, 6], 1),
+        ([0, 1, 4], 2),
+        ([1, 5, 4], 2),
+        ([2, 6, 3], 3),
+        ([3, 6, 7], 3),
+        ([0, 4, 2], 4),
+        ([2, 4, 6], 4),
+        ([1, 3, 5], 5),
+        ([3, 7, 5], 5),
+    ]
+    .into_iter()
+    .map(|(vertex_indices, face_ordinal)| StepMeshTriangle {
+        vertex_indices,
+        face_ordinal,
+    })
+    .collect();
+    let package = ExactBRepGraphPackage::from_worker_evidence(
+        &graph,
+        ExactBRepGraphWorkerEvidence {
+            exact_input_digest: format!("headless-finish-input-{}", producer_feature_id.0),
+            result_fingerprint: format!("headless-finish-result-{}", producer_feature_id.0),
+            volume_mm3: 120_000.0,
+            topology_counts: [8, 12, 6, 1, 1],
+            bounds_mm: [[0.0, 0.0, 0.0], [100.0, 60.0, 20.0]],
+            backend: "headless-finish-backend.v1".into(),
+            tolerance: "1e-7-mm".into(),
+        },
+        &StepImportMesh {
+            vertices_mm,
+            triangles,
+        },
+    )
+    .unwrap();
+    assert!(
+        shell
+            .app_mut()
+            .headless_install_exact_package(ExactBodyPackage::Graph(package))
+    );
+}
+
+fn select_general_finish_topology(
+    shell: &mut Shell,
+    producer_feature_id: FeatureId,
+    kind: TopologicalElementKind,
+    ordinal: u32,
+) {
+    assert!(
+        shell
+            .app_mut()
+            .select_topological_locator(TopologicalPickLocator {
+                instance_path: InstancePath::root(OccurrenceId(1)),
+                producer_feature_id,
+                kind,
+                ordinal,
+            })
+    );
+}
+
+#[test]
 fn general_shell_fillet_and_chamfer_preview_exact_stable_selections_and_persist() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("general-shell-finish.ketchup");
@@ -9679,29 +9802,24 @@ fn general_shell_fillet_and_chamfer_preview_exact_stable_selections_and_persist(
         .queue_save(&path)
         .queue_open(&path);
     let mut shell = Shell::with_dialogs(dialogs);
+    install_general_finish_graph_result(&mut shell, FeatureId(2));
+    select_general_finish_topology(&mut shell, FeatureId(2), TopologicalElementKind::Face, 3);
 
-    shell.click_at(shell.top_face_centre(1));
-    assert!(matches!(
-        shell.app().selected_reference().unwrap().element,
-        ElementId::Face {
-            axis: Axis::Z,
-            side: ketchup_interaction::Side::Maximum,
-        }
-    ));
     let before_revision = shell.app().document_revision();
     let before_digest = shell.app().canonical_digest();
     shell.open_menu("menu-model");
     assert!(shell.offers(AppCommand::Shell));
     shell.click_command(AppCommand::Shell);
+    let shell_preview = shell.app().general_finish_preview_parameters().unwrap();
+    assert_eq!(shell_preview.0, FeatureId(2));
+    assert_eq!(shell_preview.1.kind, TopologicalElementKind::Face);
+    assert_eq!(shell_preview.1.producer_feature_id, FeatureId(2));
     assert_eq!(
-        shell.app().general_finish_preview_parameters(),
-        Some((
-            ketchup_core::document::FeatureId(2),
-            "extrusion.top".to_owned(),
-            GeneralFinishKind::Shell,
-            2.0,
-        ))
+        shell_preview.1.producer_element_id,
+        "generated-result/face/3"
     );
+    assert_eq!(shell_preview.2, GeneralFinishKind::Shell);
+    assert_eq!(shell_preview.3, 2.0);
     assert_eq!(shell.app().document_revision(), before_revision);
     assert_eq!(shell.app().canonical_digest(), before_digest);
 
@@ -9715,62 +9833,80 @@ fn general_shell_fillet_and_chamfer_preview_exact_stable_selections_and_persist(
     shell.press_key(Key::Enter);
 
     let shell_digest = shell.app().canonical_digest();
-    let shell_parameters = shell.app().latest_general_shell_parameters().unwrap();
+    let shell_parameters = shell.app().latest_topology_shell_parameters().unwrap();
     assert_eq!(shell.app().document_revision(), before_revision + 1);
-    assert_eq!(shell_parameters.1, "extrusion.top");
+    assert_eq!(shell_parameters.1, shell_preview.1);
     assert_eq!(shell_parameters.2, 2.5);
 
-    assert!(matches!(
-        shell.app().selected_reference().unwrap().element,
-        ElementId::Face {
-            axis: Axis::Z,
-            side: ketchup_interaction::Side::Maximum,
-        }
+    install_general_finish_graph_result(&mut shell, shell_parameters.0);
+    let edge_locator = TopologicalPickLocator {
+        instance_path: InstancePath::root(OccurrenceId(1)),
+        producer_feature_id: shell_parameters.0,
+        kind: TopologicalElementKind::Edge,
+        ordinal: 2,
+    };
+    let assistant_revision = shell.app().document_revision();
+    let assistant_digest = shell.app().canonical_digest();
+    assert!(shell.app_mut().prepare_assistant_general_finish(
+        edge_locator,
+        GeneralFinishKind::Fillet,
+        1.25,
     ));
-
-    shell.open_menu("menu-model");
-    assert!(shell.offers(AppCommand::Fillet));
-    assert!(shell.offers(AppCommand::Chamfer));
-    shell.click_command(AppCommand::Fillet);
+    let fillet_preview = shell.app().general_finish_preview_parameters().unwrap();
+    assert_eq!(fillet_preview.0, shell_parameters.0);
+    assert_eq!(fillet_preview.1.kind, TopologicalElementKind::Edge);
     assert_eq!(
-        shell.app().general_finish_preview_parameters(),
-        Some((
-            shell_parameters.0,
-            "shell.edge.top-east".to_owned(),
-            GeneralFinishKind::Fillet,
-            1.0,
-        ))
+        fillet_preview.1.producer_element_id,
+        "generated-result/edge/2"
     );
-    assert_eq!(shell.app().canonical_digest(), shell_digest);
-    shell.type_text("1.25");
-    shell.press_key(Key::Enter);
+    assert_eq!(fillet_preview.2, GeneralFinishKind::Fillet);
+    assert_eq!(fillet_preview.3, 1.25);
+    assert_eq!(shell.app().document_revision(), assistant_revision);
+    assert_eq!(shell.app().canonical_digest(), assistant_digest);
+    assert!(shell.app_mut().confirm_assistant_general_finish());
 
     let fillet_digest = shell.app().canonical_digest();
-    let fillet = shell.app().latest_general_edge_finish_parameters().unwrap();
+    let fillet = shell
+        .app()
+        .latest_topology_edge_finish_parameters()
+        .unwrap();
     assert_eq!(shell.app().document_revision(), before_revision + 2);
-    assert_eq!(fillet.1, "shell.edge.top-east");
-    assert_eq!(fillet.2, BottleEdgeFinishKind::Fillet);
+    assert_eq!(fillet.1, fillet_preview.1);
+    assert_eq!(fillet.2, EdgeFinishKind::Fillet);
     assert_eq!(fillet.3, 1.25);
     shell.key(Key::Z, ctrl());
     assert_eq!(shell.app().canonical_digest(), shell_digest);
     assert!(
         shell
             .app()
-            .latest_general_edge_finish_parameters()
+            .latest_topology_edge_finish_parameters()
             .is_none()
     );
 
-    shell.click_menu_command("menu-model", AppCommand::Chamfer);
-    assert_eq!(
-        shell.app().general_finish_preview_parameters().unwrap().2,
-        GeneralFinishKind::Chamfer
+    install_general_finish_graph_result(&mut shell, shell_parameters.0);
+    select_general_finish_topology(
+        &mut shell,
+        shell_parameters.0,
+        TopologicalElementKind::Edge,
+        9,
     );
+    shell.click_menu_command("menu-model", AppCommand::Chamfer);
+    let chamfer_preview = shell.app().general_finish_preview_parameters().unwrap();
+    assert_eq!(
+        chamfer_preview.1.producer_element_id,
+        "generated-result/edge/9"
+    );
+    assert_eq!(chamfer_preview.2, GeneralFinishKind::Chamfer);
     shell.type_text("0.75");
     shell.press_key(Key::Enter);
     let chamfer_digest = shell.app().canonical_digest();
-    let chamfer = shell.app().latest_general_edge_finish_parameters().unwrap();
+    let chamfer = shell
+        .app()
+        .latest_topology_edge_finish_parameters()
+        .unwrap();
     assert_ne!(chamfer_digest, fillet_digest);
-    assert_eq!(chamfer.2, BottleEdgeFinishKind::Chamfer);
+    assert_eq!(chamfer.1.producer_element_id, "generated-result/edge/9");
+    assert_eq!(chamfer.2, EdgeFinishKind::Chamfer);
     assert_eq!(chamfer.3, 0.75);
     shell.key(Key::Z, ctrl());
     assert_eq!(shell.app().canonical_digest(), shell_digest);
@@ -9780,15 +9916,15 @@ fn general_shell_fillet_and_chamfer_preview_exact_stable_selections_and_persist(
     shell.click_menu_command("menu-file", AppCommand::SaveAs);
     assert!(path.is_file());
     shell.click_menu_command("menu-file", AppCommand::New);
-    assert!(shell.app().latest_general_shell_parameters().is_none());
+    assert!(shell.app().latest_topology_shell_parameters().is_none());
     shell.click_menu_command("menu-file", AppCommand::Open);
     assert_eq!(shell.app().canonical_digest(), chamfer_digest);
     assert_eq!(
-        shell.app().latest_general_shell_parameters(),
+        shell.app().latest_topology_shell_parameters(),
         Some(shell_parameters)
     );
     assert_eq!(
-        shell.app().latest_general_edge_finish_parameters(),
+        shell.app().latest_topology_edge_finish_parameters(),
         Some(chamfer)
     );
 }

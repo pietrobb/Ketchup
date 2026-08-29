@@ -14,7 +14,7 @@ use crate::document::{
     BottleEdgeFinishKind, CanonicalCommand, CanonicalError, ClassificationCategory,
     ClassificationCategoryId, ClassificationDimension, ClassificationDimensionId, Collection,
     CollectionId, CommandBatch, Definition, DefinitionId, Dimension, DimensionDisplayUnit,
-    DimensionPresentation, DocumentStore, EvaluationIdentity, EvaluatorNode,
+    DimensionPresentation, DocumentStore, EdgeFinishKind, EvaluationIdentity, EvaluatorNode,
     ExactReferenceConversionConsequence, ExactToMeshConversion, Feature, FeatureBodyOwnership,
     FeatureId, FeatureKind, FeatureParameterBinding, FeatureParameterFreshnessAudit,
     FeatureParameterProvenance, FeatureParameterSlot, FeatureParameterTarget, Group, GroupId,
@@ -37,15 +37,17 @@ use crate::import::{
 };
 use crate::prismatic::{Aabb, CanonicalJoint, JointId, TolerancePolicy};
 use crate::sketch::{
-    FeatureDirection, FeatureExtent, MAX_SKETCH_CONSTRAINTS, MAX_SKETCH_ENTITIES, PadSpec,
-    PocketSpec, PrincipalPlane, SketchConstraint, SketchConstraintId, SketchConstraintKind,
-    SketchEntity, SketchEntityId, SketchPointKind, SketchPointRef, SketchRegionId, SketchSpec,
-    WorkplaneFrame, WorkplaneSpec, WorkplaneSupport, WorkplaneSupportHealth,
+    FeatureDirection, FeatureExtent, FeatureExtentEnd, MAX_SKETCH_CONSTRAINTS, MAX_SKETCH_ENTITIES,
+    PadSpec, PocketSpec, PrincipalPlane, SketchConstraint, SketchConstraintId,
+    SketchConstraintKind, SketchEntity, SketchEntityId, SketchPointKind, SketchPointRef,
+    SketchRegionId, SketchSpec, WorkplaneFrame, WorkplaneSpec, WorkplaneSupport,
+    WorkplaneSupportHealth,
 };
 use crate::space::{
     CanonicalClearanceVolume, CanonicalSpace, ClearanceCoordinateFrame, ClearanceOwner,
     ClearanceSeverity, ClearanceVolumeId, SpaceId,
 };
+use crate::topology::TopologicalElementRef;
 
 const MAGIC: &[u8; 10] = b"KETCHUPDOC";
 const CONTAINER_MAGIC: &[u8; 10] = b"KETCHUPCTR";
@@ -71,7 +73,10 @@ const BODY_CONTRACT_SCHEMA: u16 = 34;
 const BODY_CONSUMPTION_SCHEMA: u16 = 35;
 const BODY_FEATURE_SUPPRESSION_SCHEMA: u16 = 36;
 const CLASSIFICATION_DIMENSION_SCHEMA: u16 = 37;
-pub const CURRENT_SCHEMA: u16 = CLASSIFICATION_DIMENSION_SCHEMA;
+const FEATURE_EXTENT_SCHEMA: u16 = 38;
+const IMPORTED_TOPOLOGY_COUNTS_SCHEMA: u16 = 39;
+const TOPOLOGICAL_FEATURE_REFERENCE_SCHEMA: u16 = 40;
+pub const CURRENT_SCHEMA: u16 = TOPOLOGICAL_FEATURE_REFERENCE_SCHEMA;
 const COLLECTION_SCHEMA: u16 = 15;
 const TAG_SCHEMA: u16 = 14;
 const PERSISTENT_DIMENSION_SCHEMA: u16 = 13;
@@ -116,6 +121,8 @@ struct ProductSchemaCapabilities {
     loft_spline: bool,
     import_receipts: bool,
     imported_exact_body: bool,
+    imported_topology_counts: bool,
+    topological_feature_references: bool,
     sketchup_scene: bool,
     workplane_sketch: bool,
     assembly_contract: bool,
@@ -124,6 +131,7 @@ struct ProductSchemaCapabilities {
     body_consumption: bool,
     body_feature_suppression: bool,
     classification_dimensions: bool,
+    feature_extents: bool,
 }
 
 impl ProductSchemaCapabilities {
@@ -153,6 +161,8 @@ impl ProductSchemaCapabilities {
         loft_spline: false,
         import_receipts: false,
         imported_exact_body: false,
+        imported_topology_counts: false,
+        topological_feature_references: false,
         sketchup_scene: false,
         workplane_sketch: false,
         assembly_contract: false,
@@ -161,6 +171,7 @@ impl ProductSchemaCapabilities {
         body_consumption: false,
         body_feature_suppression: false,
         classification_dimensions: false,
+        feature_extents: false,
     };
 
     const fn current(schema: u16) -> Self {
@@ -190,6 +201,8 @@ impl ProductSchemaCapabilities {
             loft_spline: schema >= LOFT_SPLINE_SCHEMA,
             import_receipts: schema >= IMPORT_RECEIPT_SCHEMA,
             imported_exact_body: schema >= IMPORTED_EXACT_BODY_SCHEMA,
+            imported_topology_counts: schema >= IMPORTED_TOPOLOGY_COUNTS_SCHEMA,
+            topological_feature_references: schema >= TOPOLOGICAL_FEATURE_REFERENCE_SCHEMA,
             sketchup_scene: schema >= SKETCHUP_SCENE_SCHEMA,
             workplane_sketch: schema >= WORKPLANE_SKETCH_SCHEMA,
             assembly_contract: schema >= ASSEMBLY_CONTRACT_SCHEMA,
@@ -198,6 +211,7 @@ impl ProductSchemaCapabilities {
             body_consumption: schema >= BODY_CONSUMPTION_SCHEMA,
             body_feature_suppression: schema >= BODY_FEATURE_SUPPRESSION_SCHEMA,
             classification_dimensions: schema >= CLASSIFICATION_DIMENSION_SCHEMA,
+            feature_extents: schema >= FEATURE_EXTENT_SCHEMA,
         }
     }
 }
@@ -986,6 +1000,61 @@ fn write_exact_reference(bytes: &mut Vec<u8>, value: &BodySubshapeRef) {
     push_string(bytes, &value.corroborating_geometry_fingerprint);
 }
 
+fn write_feature_direction(bytes: &mut Vec<u8>, direction: FeatureDirection) {
+    match direction {
+        FeatureDirection::AlongNormal => push_u8(bytes, 1),
+        FeatureDirection::OppositeNormal => push_u8(bytes, 2),
+        FeatureDirection::Vector(vector) => {
+            push_u8(bytes, 3);
+            for component in vector {
+                push_u64(bytes, component.to_bits());
+            }
+        }
+    }
+}
+
+fn write_extent_dimension(bytes: &mut Vec<u8>, distance: &Dimension) {
+    push_string(bytes, distance.source_token());
+    push_u64(bytes, distance.millimetres().to_bits());
+}
+
+fn write_feature_extent_end(bytes: &mut Vec<u8>, end: &FeatureExtentEnd) {
+    match end {
+        FeatureExtentEnd::Blind(distance) => {
+            push_u8(bytes, 1);
+            write_extent_dimension(bytes, distance);
+        }
+        FeatureExtentEnd::ThroughAll => push_u8(bytes, 2),
+        FeatureExtentEnd::UpToFace(reference) => {
+            push_u8(bytes, 3);
+            write_exact_reference(bytes, reference);
+        }
+    }
+}
+
+fn write_feature_extent(bytes: &mut Vec<u8>, extent: &FeatureExtent) {
+    match extent {
+        FeatureExtent::Blind(distance) => {
+            push_u8(bytes, 1);
+            write_extent_dimension(bytes, distance);
+        }
+        FeatureExtent::ThroughAll => push_u8(bytes, 2),
+        FeatureExtent::UpToFace(reference) => {
+            push_u8(bytes, 3);
+            write_exact_reference(bytes, reference);
+        }
+        FeatureExtent::Symmetric(distance) => {
+            push_u8(bytes, 4);
+            write_extent_dimension(bytes, distance);
+        }
+        FeatureExtent::Bidirectional { along, opposite } => {
+            push_u8(bytes, 5);
+            write_feature_extent_end(bytes, along);
+            write_feature_extent_end(bytes, opposite);
+        }
+    }
+}
+
 fn write_persistent_dimension(bytes: &mut Vec<u8>, dimension: &PersistentDimension) {
     push_u64(bytes, dimension.id.0);
     push_string(bytes, &dimension.name);
@@ -1316,30 +1385,16 @@ fn write_features(bytes: &mut Vec<u8>, product: &ProductModel) {
                 push_u8(bytes, 19);
                 push_u64(bytes, spec.sketch.0);
                 push_u64(bytes, spec.region.0);
-                push_u8(
-                    bytes,
-                    match spec.direction {
-                        FeatureDirection::AlongNormal => 1,
-                        FeatureDirection::OppositeNormal => 2,
-                    },
-                );
-                push_string(bytes, spec.extent.distance().source_token());
-                push_u64(bytes, spec.extent.distance().millimetres().to_bits());
+                write_feature_direction(bytes, spec.direction);
+                write_feature_extent(bytes, &spec.extent);
             }
             FeatureKind::SketchPocket(spec) => {
                 push_u8(bytes, 20);
                 push_u64(bytes, spec.target.0);
                 push_u64(bytes, spec.sketch.0);
                 push_u64(bytes, spec.region.0);
-                push_u8(
-                    bytes,
-                    match spec.direction {
-                        FeatureDirection::AlongNormal => 1,
-                        FeatureDirection::OppositeNormal => 2,
-                    },
-                );
-                push_string(bytes, spec.extent.distance().source_token());
-                push_u64(bytes, spec.extent.distance().millimetres().to_bits());
+                write_feature_direction(bytes, spec.direction);
+                write_feature_extent(bytes, &spec.extent);
                 write_exact_reference(bytes, &spec.support);
             }
             FeatureKind::ThroughCut { target, profile } => {
@@ -1457,6 +1512,42 @@ fn write_features(bytes: &mut Vec<u8>, product: &ProductModel) {
                 push_string(bytes, amount.source_token());
                 push_u64(bytes, amount.millimetres().to_bits());
             }
+            FeatureKind::TopologyShell {
+                target,
+                removed_faces,
+                thickness,
+            } => {
+                push_u8(bytes, 21);
+                push_u64(bytes, target.0);
+                push_u32(bytes, removed_faces.len() as u32);
+                for reference in removed_faces {
+                    push_topological_reference(bytes, reference);
+                }
+                push_string(bytes, thickness.source_token());
+                push_u64(bytes, thickness.millimetres().to_bits());
+            }
+            FeatureKind::TopologyEdgeFinish {
+                target,
+                edges,
+                kind,
+                amount,
+            } => {
+                push_u8(bytes, 22);
+                push_u64(bytes, target.0);
+                push_u32(bytes, edges.len() as u32);
+                for reference in edges {
+                    push_topological_reference(bytes, reference);
+                }
+                push_u8(
+                    bytes,
+                    match kind {
+                        EdgeFinishKind::Fillet => 1,
+                        EdgeFinishKind::Chamfer => 2,
+                    },
+                );
+                push_string(bytes, amount.source_token());
+                push_u64(bytes, amount.millimetres().to_bits());
+            }
             FeatureKind::ImportedExactBody(spec) => {
                 push_u8(bytes, 16);
                 push_string(bytes, &spec.schema);
@@ -1465,6 +1556,15 @@ fn write_features(bytes: &mut Vec<u8>, product: &ProductModel) {
                 push_u64(bytes, spec.source_byte_len);
                 push_string(bytes, &spec.result_fingerprint);
                 push_u32(bytes, spec.solid_count);
+                match spec.topology_counts {
+                    Some(topology_counts) => {
+                        push_u8(bytes, 1);
+                        for count in topology_counts {
+                            push_u32(bytes, count);
+                        }
+                    }
+                    None => push_u8(bytes, 0),
+                }
                 push_u64(bytes, spec.volume_mm3.to_bits());
                 for coordinate in spec.bounds_mm.iter().flatten() {
                     push_u64(bytes, coordinate.to_bits());
@@ -1805,6 +1905,9 @@ fn load_document(
             | BODY_CONTRACT_SCHEMA
             | BODY_CONSUMPTION_SCHEMA
             | BODY_FEATURE_SUPPRESSION_SCHEMA
+            | CLASSIFICATION_DIMENSION_SCHEMA
+            | FEATURE_EXTENT_SCHEMA
+            | IMPORTED_TOPOLOGY_COUNTS_SCHEMA
             | CURRENT_SCHEMA
     ) {
         return Err(PersistenceError::UnsupportedSchema(schema));
@@ -2354,6 +2457,16 @@ fn read_ids(reader: &mut Reader<'_>) -> Result<Vec<u64>, PersistenceError> {
     Ok(ids)
 }
 
+fn read_topological_reference(
+    reader: &mut Reader<'_>,
+) -> Result<TopologicalElementRef, PersistenceError> {
+    let length = usize::try_from(reader.count_with_limit(128 * 1024)?)
+        .map_err(|_| PersistenceError::LengthOverflow)?;
+    TopologicalElementRef::from_bytes(reader.take(length)?).map_err(|_| {
+        PersistenceError::InvalidCanonicalData(CanonicalError::InvalidTopologicalFeatureReference)
+    })
+}
+
 fn read_exact_reference(reader: &mut Reader<'_>) -> Result<BodySubshapeRef, PersistenceError> {
     let reference = BodySubshapeRef {
         schema: reader.string()?,
@@ -2382,6 +2495,53 @@ fn read_exact_reference(reader: &mut Reader<'_>) -> Result<BodySubshapeRef, Pers
         return Err(PersistenceError::InvalidExactReference);
     }
     Ok(reference)
+}
+
+fn read_feature_direction(reader: &mut Reader<'_>) -> Result<FeatureDirection, PersistenceError> {
+    match reader.u8()? {
+        1 => Ok(FeatureDirection::AlongNormal),
+        2 => Ok(FeatureDirection::OppositeNormal),
+        3 => Ok(FeatureDirection::Vector([
+            f64::from_bits(reader.u64()?),
+            f64::from_bits(reader.u64()?),
+            f64::from_bits(reader.u64()?),
+        ])),
+        value => Err(PersistenceError::InvalidFeatureKind(value)),
+    }
+}
+
+fn read_extent_dimension(reader: &mut Reader<'_>) -> Result<Dimension, PersistenceError> {
+    Ok(Dimension::new(
+        reader.string()?,
+        f64::from_bits(reader.u64()?),
+    )?)
+}
+
+fn read_feature_extent_end(reader: &mut Reader<'_>) -> Result<FeatureExtentEnd, PersistenceError> {
+    match reader.u8()? {
+        1 => Ok(FeatureExtentEnd::Blind(read_extent_dimension(reader)?)),
+        2 => Ok(FeatureExtentEnd::ThroughAll),
+        3 => Ok(FeatureExtentEnd::UpToFace(Box::new(read_exact_reference(
+            reader,
+        )?))),
+        value => Err(PersistenceError::InvalidFeatureKind(value)),
+    }
+}
+
+fn read_feature_extent(reader: &mut Reader<'_>) -> Result<FeatureExtent, PersistenceError> {
+    match reader.u8()? {
+        1 => Ok(FeatureExtent::Blind(read_extent_dimension(reader)?)),
+        2 => Ok(FeatureExtent::ThroughAll),
+        3 => Ok(FeatureExtent::UpToFace(Box::new(read_exact_reference(
+            reader,
+        )?))),
+        4 => Ok(FeatureExtent::Symmetric(read_extent_dimension(reader)?)),
+        5 => Ok(FeatureExtent::Bidirectional {
+            along: read_feature_extent_end(reader)?,
+            opposite: read_feature_extent_end(reader)?,
+        }),
+        value => Err(PersistenceError::InvalidFeatureKind(value)),
+    }
 }
 
 fn write_import_receipt(bytes: &mut Vec<u8>, receipt: &ImportReceipt) {
@@ -2869,29 +3029,39 @@ fn read_product(
             19 if capabilities.workplane_sketch => FeatureKind::Pad(PadSpec {
                 sketch: FeatureId(reader.u64()?),
                 region: SketchRegionId(reader.u64()?),
-                direction: match reader.u8()? {
-                    1 => FeatureDirection::AlongNormal,
-                    2 => FeatureDirection::OppositeNormal,
-                    value => return Err(PersistenceError::InvalidFeatureKind(value)),
+                direction: if capabilities.feature_extents {
+                    read_feature_direction(reader)?
+                } else {
+                    match reader.u8()? {
+                        1 => FeatureDirection::AlongNormal,
+                        2 => FeatureDirection::OppositeNormal,
+                        value => return Err(PersistenceError::InvalidFeatureKind(value)),
+                    }
                 },
-                extent: FeatureExtent::Blind(Dimension::new(
-                    reader.string()?,
-                    f64::from_bits(reader.u64()?),
-                )?),
+                extent: if capabilities.feature_extents {
+                    read_feature_extent(reader)?
+                } else {
+                    FeatureExtent::Blind(read_extent_dimension(reader)?)
+                },
             }),
             20 if capabilities.workplane_sketch => FeatureKind::SketchPocket(PocketSpec {
                 target: FeatureId(reader.u64()?),
                 sketch: FeatureId(reader.u64()?),
                 region: SketchRegionId(reader.u64()?),
-                direction: match reader.u8()? {
-                    1 => FeatureDirection::AlongNormal,
-                    2 => FeatureDirection::OppositeNormal,
-                    value => return Err(PersistenceError::InvalidFeatureKind(value)),
+                direction: if capabilities.feature_extents {
+                    read_feature_direction(reader)?
+                } else {
+                    match reader.u8()? {
+                        1 => FeatureDirection::AlongNormal,
+                        2 => FeatureDirection::OppositeNormal,
+                        value => return Err(PersistenceError::InvalidFeatureKind(value)),
+                    }
                 },
-                extent: FeatureExtent::Blind(Dimension::new(
-                    reader.string()?,
-                    f64::from_bits(reader.u64()?),
-                )?),
+                extent: if capabilities.feature_extents {
+                    read_feature_extent(reader)?
+                } else {
+                    FeatureExtent::Blind(read_extent_dimension(reader)?)
+                },
                 support: Box::new(read_exact_reference(reader)?),
             }),
             3 if capabilities.through_cut => FeatureKind::ThroughCut {
@@ -2973,6 +3143,35 @@ fn read_product(
                     amount: Dimension::new(reader.string()?, f64::from_bits(reader.u64()?))?,
                 }
             }
+            21 if capabilities.topological_feature_references => {
+                let target = FeatureId(reader.u64()?);
+                let mut removed_faces = Vec::new();
+                for _ in 0..reader.count_with_limit(64)? {
+                    removed_faces.push(read_topological_reference(reader)?);
+                }
+                FeatureKind::TopologyShell {
+                    target,
+                    removed_faces,
+                    thickness: Dimension::new(reader.string()?, f64::from_bits(reader.u64()?))?,
+                }
+            }
+            22 if capabilities.topological_feature_references => {
+                let target = FeatureId(reader.u64()?);
+                let mut edges = Vec::new();
+                for _ in 0..reader.count_with_limit(64)? {
+                    edges.push(read_topological_reference(reader)?);
+                }
+                FeatureKind::TopologyEdgeFinish {
+                    target,
+                    edges,
+                    kind: match reader.u8()? {
+                        1 => EdgeFinishKind::Fillet,
+                        2 => EdgeFinishKind::Chamfer,
+                        value => return Err(PersistenceError::InvalidFeatureKind(value)),
+                    },
+                    amount: Dimension::new(reader.string()?, f64::from_bits(reader.u64()?))?,
+                }
+            }
             8 if capabilities.boolean => FeatureKind::Boolean {
                 operation: match reader.u8()? {
                     1 => BooleanOperation::Cut,
@@ -3017,6 +3216,21 @@ fn read_product(
                 let source_byte_len = reader.u64()?;
                 let result_fingerprint = reader.string()?;
                 let solid_count = reader.u32()?;
+                let topology_counts = if capabilities.imported_topology_counts {
+                    match reader.u8()? {
+                        0 => None,
+                        1 => {
+                            let mut counts = [0_u32; 5];
+                            for count in &mut counts {
+                                *count = reader.u32()?;
+                            }
+                            Some(counts)
+                        }
+                        value => return Err(PersistenceError::InvalidBoolean(value)),
+                    }
+                } else {
+                    None
+                };
                 let volume_mm3 = f64::from_bits(reader.u64()?);
                 let mut bounds_mm = [[0.0; 3]; 2];
                 for coordinate in bounds_mm.iter_mut().flatten() {
@@ -3029,6 +3243,7 @@ fn read_product(
                     source_byte_len,
                     result_fingerprint,
                     solid_count,
+                    topology_counts,
                     volume_mm3,
                     bounds_mm,
                     backend: reader.string()?,
@@ -3893,6 +4108,13 @@ fn push_u64(bytes: &mut Vec<u8>, value: u64) {
 fn push_string(bytes: &mut Vec<u8>, value: &str) {
     push_u32(bytes, value.len() as u32);
     bytes.extend_from_slice(value.as_bytes());
+}
+fn push_topological_reference(bytes: &mut Vec<u8>, reference: &TopologicalElementRef) {
+    let encoded = reference
+        .to_bytes()
+        .expect("canonical topological feature reference is serializable");
+    push_u32(bytes, encoded.len() as u32);
+    bytes.extend_from_slice(&encoded);
 }
 fn push_transform(bytes: &mut Vec<u8>, transform: Transform) {
     for value in transform.matrix() {

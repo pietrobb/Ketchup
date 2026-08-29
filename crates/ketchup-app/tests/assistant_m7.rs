@@ -7,15 +7,18 @@ use ketchup_app::{AppCommand, AssistantMessageRole, AssistantProvider, Assistant
 use ketchup_core::assistant_sidecar::{
     ASSISTANT_PROTOCOL_VERSION, AssistantApiDiagnostics, AssistantBalloonTextIntent,
     AssistantBeamNotchIntent, AssistantBottleFinishKind, AssistantBottleIntent, AssistantBoxIntent,
-    AssistantChatResult, AssistantDistribution, AssistantGableRoofIntent,
-    AssistantKetchupBottleIntent, AssistantLinearArrayIntent, AssistantModelIntent,
-    AssistantOrientedBeamIntent, AssistantParameterEditIntent, AssistantProfileTranslationIntent,
-    AssistantStaircaseIntent, AssistantSubtractionIntent, AssistantTeapotIntent,
-    AssistantTranslationIntent,
+    AssistantCadDeletePolicy, AssistantCadEditOperation, AssistantCadEditProgram,
+    AssistantCadEntitySelector, AssistantChatResult, AssistantDistribution,
+    AssistantGableRoofIntent, AssistantKetchupBottleIntent, AssistantLinearArrayIntent,
+    AssistantModelIntent, AssistantOrientedBeamIntent, AssistantParameterEditIntent,
+    AssistantPrincipalPlane, AssistantProfileTranslationIntent, AssistantRotationIntent,
+    AssistantSketchConstraint, AssistantSketchEntity, AssistantSketchPointKind,
+    AssistantSketchPointRef, AssistantStaircaseIntent, AssistantSubtractionIntent,
+    AssistantTeapotIntent, AssistantTranslationIntent, AssistantWorkplaneSpec,
 };
 use ketchup_core::document::{
     BodyId, CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId,
-    FeatureKind, NodeId, OccurrenceId, ProposalGoal, ProposalValue, TagId, Transform,
+    FeatureKind, GroupId, NodeId, OccurrenceId, ProposalGoal, ProposalValue, TagId, Transform,
 };
 use ketchup_core::intent::WorkflowIntent;
 use ketchup_core::persistence;
@@ -181,6 +184,113 @@ fn write_assistant_parameter_fixture(path: &std::path::Path) {
     persistence::save_atomic(path, &document.current()).unwrap();
 }
 
+fn write_assistant_rotation_fixture(path: &std::path::Path) {
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DefinitionId(1),
+                name: "Arbitrary profile body".to_owned(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(1),
+                definition_id: DefinitionId(1),
+                name: "Non-box profile".to_owned(),
+                kind: FeatureKind::Profile {
+                    points_mm: vec![[0.0, 0.0], [31.0, 4.0], [23.0, 29.0], [2.0, 18.0]],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(2),
+                definition_id: DefinitionId(1),
+                name: "Non-box extrusion".to_owned(),
+                kind: FeatureKind::Extrusion {
+                    profile: FeatureId(1),
+                    height: Dimension::from_decimal("17").unwrap(),
+                },
+            },
+            CanonicalCommand::CreateGroup {
+                id: GroupId(2),
+                name: "Rotated parent assembly".to_owned(),
+                transform: Transform::from_matrix([
+                    0.0, -1.0, 0.0, 100.0, 1.0, 0.0, 0.0, 50.0, 0.0, 0.0, 1.0, 10.0, 0.0, 0.0, 0.0,
+                    1.0,
+                ])
+                .unwrap(),
+                parent: None,
+            },
+            CanonicalCommand::CreateGroup {
+                id: GroupId(1),
+                name: "Arbitrary assembly".to_owned(),
+                transform: Transform::identity(),
+                parent: Some(GroupId(2)),
+            },
+            CanonicalCommand::CreateOccurrence {
+                id: OccurrenceId(1),
+                definition_id: DefinitionId(1),
+                name: "Grouped arbitrary body".to_owned(),
+                transform: Transform::identity(),
+                parent: Some(GroupId(1)),
+                tag: None,
+                visible: true,
+            },
+            CanonicalCommand::CreateOccurrence {
+                id: OccurrenceId(2),
+                definition_id: DefinitionId(1),
+                name: "Root arbitrary body".to_owned(),
+                transform: Transform::from_translation(60.0, 0.0, 0.0).unwrap(),
+                parent: None,
+                tag: None,
+                visible: true,
+            },
+        ]))
+        .unwrap();
+    document.discard_history_before_current();
+    persistence::save_atomic(path, &document.current()).unwrap();
+}
+
+fn transform_point(transform: Transform, point: [f64; 3]) -> [f64; 3] {
+    let matrix = transform.matrix();
+    [
+        matrix[0] * point[0] + matrix[1] * point[1] + matrix[2] * point[2] + matrix[3],
+        matrix[4] * point[0] + matrix[5] * point[1] + matrix[6] * point[2] + matrix[7],
+        matrix[8] * point[0] + matrix[9] * point[1] + matrix[10] * point[2] + matrix[11],
+    ]
+}
+
+fn assert_point_near(actual: [f64; 3], expected: [f64; 3]) {
+    for axis in 0..3 {
+        assert!((actual[axis] - expected[axis]).abs() < 1.0e-9);
+    }
+}
+
+fn rotate_point_about_axis(
+    point: [f64; 3],
+    pivot: [f64; 3],
+    axis: [f64; 3],
+    angle_degrees: f64,
+) -> [f64; 3] {
+    let axis_length = axis.iter().map(|value| value * value).sum::<f64>().sqrt();
+    let unit = axis.map(|value| value / axis_length);
+    let vector = [
+        point[0] - pivot[0],
+        point[1] - pivot[1],
+        point[2] - pivot[2],
+    ];
+    let dot = unit[0] * vector[0] + unit[1] * vector[1] + unit[2] * vector[2];
+    let cross = [
+        unit[1] * vector[2] - unit[2] * vector[1],
+        unit[2] * vector[0] - unit[0] * vector[2],
+        unit[0] * vector[1] - unit[1] * vector[0],
+    ];
+    let (sin, cos) = angle_degrees.to_radians().sin_cos();
+    [
+        pivot[0] + vector[0] * cos + cross[0] * sin + unit[0] * dot * (1.0 - cos),
+        pivot[1] + vector[1] * cos + cross[1] * sin + unit[1] * dot * (1.0 - cos),
+        pivot[2] + vector[2] * cos + cross[2] * sin + unit[2] * dot * (1.0 - cos),
+    ]
+}
+
 fn wait_for_assistant_proposal(shell: &mut Shell) {
     let confirm = shell.catalog().text("assistant-confirm");
     for _ in 0..100 {
@@ -191,6 +301,165 @@ fn wait_for_assistant_proposal(shell: &mut Shell) {
         std::thread::sleep(Duration::from_millis(5));
     }
     panic!("scripted assistant response did not reach accessible proposal review");
+}
+
+#[test]
+fn assistant_rotates_arbitrary_occurrences_and_groups_around_arbitrary_world_axes() {
+    let directory = tempfile::tempdir().unwrap();
+    let fixture = directory
+        .path()
+        .join("assistant-arbitrary-rotation.ketchup");
+    write_assistant_rotation_fixture(&fixture);
+    let dialogs = ScriptedFileDialogs::new()
+        .queue_open(&fixture)
+        .always_discard();
+    let mut shell = Shell::with_dialogs(dialogs);
+    shell.click_menu_command("menu-file", AppCommand::Open);
+
+    let before_snapshot = shell.app().document_snapshot();
+    let first_before = before_snapshot
+        .occurrence(OccurrenceId(1))
+        .unwrap()
+        .transform();
+    let first_before_world = before_snapshot
+        .world_transform_for_occurrence(OccurrenceId(1))
+        .unwrap();
+    let group_before_world = before_snapshot
+        .world_transform_for_group(GroupId(1))
+        .unwrap();
+    let second_before = before_snapshot
+        .occurrence(OccurrenceId(2))
+        .unwrap()
+        .transform();
+    let before_digest = shell.app().canonical_digest();
+    let before_revision = shell.app().document_revision();
+    let before_undo = shell.app().undo_step_count();
+    let first_pivot = [12.5, -3.0, 40.0];
+    let first_axis = [1.0, 2.0, 3.0];
+
+    assert!(apply_reviewed_model_intent(
+        &mut shell,
+        AssistantModelIntent {
+            replace_scene: false,
+            boxes: Vec::new(),
+            translations: Vec::new(),
+            rotations: vec![
+                AssistantRotationIntent {
+                    occurrence_id: Some(1),
+                    group_id: None,
+                    pivot_mm: first_pivot,
+                    axis: first_axis,
+                    angle_degrees: 37.25,
+                },
+                AssistantRotationIntent {
+                    occurrence_id: Some(2),
+                    group_id: None,
+                    pivot_mm: [-8.0, 11.0, 6.0],
+                    axis: [-2.0, 5.0, 1.0],
+                    angle_degrees: -61.5,
+                },
+            ],
+            profile_translations: Vec::new(),
+            parameter_edits: Vec::new(),
+            linear_arrays: Vec::new(),
+            bottles: Vec::new(),
+            gable_roofs: Vec::new(),
+            staircases: Vec::new(),
+            oriented_beams: Vec::new(),
+            balloon_texts: Vec::new(),
+        }
+    ));
+    assert_eq!(shell.app().document_revision(), before_revision + 1);
+    assert_eq!(shell.app().undo_step_count(), before_undo + 1);
+    let rotated_snapshot = shell.app().document_snapshot();
+    let first_rotated = rotated_snapshot
+        .occurrence(OccurrenceId(1))
+        .unwrap()
+        .transform();
+    let first_rotated_world = rotated_snapshot
+        .world_transform_for_occurrence(OccurrenceId(1))
+        .unwrap();
+    let second_rotated = rotated_snapshot
+        .occurrence(OccurrenceId(2))
+        .unwrap()
+        .transform();
+    assert_ne!(first_rotated, first_before);
+    assert_ne!(second_rotated, second_before);
+    let first_local_point = [7.0, -4.0, 3.0];
+    assert_point_near(
+        transform_point(first_rotated_world, first_local_point),
+        rotate_point_about_axis(
+            transform_point(first_before_world, first_local_point),
+            first_pivot,
+            first_axis,
+            37.25,
+        ),
+    );
+
+    shell.click_menu_command("menu-edit", AppCommand::Undo);
+    assert_eq!(shell.app().canonical_digest(), before_digest);
+    assert_eq!(
+        shell
+            .app()
+            .document_snapshot()
+            .occurrence(OccurrenceId(1))
+            .unwrap()
+            .transform(),
+        first_before
+    );
+
+    let group_pivot = [4.0, 7.0, -2.0];
+    let group_axis = [3.0, -1.0, 2.0];
+    assert!(apply_reviewed_model_intent(
+        &mut shell,
+        AssistantModelIntent {
+            replace_scene: false,
+            boxes: Vec::new(),
+            translations: Vec::new(),
+            rotations: vec![AssistantRotationIntent {
+                occurrence_id: None,
+                group_id: Some(1),
+                pivot_mm: group_pivot,
+                axis: group_axis,
+                angle_degrees: 22.75,
+            }],
+            profile_translations: Vec::new(),
+            parameter_edits: Vec::new(),
+            linear_arrays: Vec::new(),
+            bottles: Vec::new(),
+            gable_roofs: Vec::new(),
+            staircases: Vec::new(),
+            oriented_beams: Vec::new(),
+            balloon_texts: Vec::new(),
+        }
+    ));
+    let group_snapshot = shell.app().document_snapshot();
+    let group_rotated = group_snapshot.group(GroupId(1)).unwrap().transform();
+    let group_rotated_world = group_snapshot
+        .world_transform_for_group(GroupId(1))
+        .unwrap();
+    let group_local_point = [-2.0, 5.0, 9.0];
+    assert_point_near(
+        transform_point(group_rotated_world, group_local_point),
+        rotate_point_about_axis(
+            transform_point(group_before_world, group_local_point),
+            group_pivot,
+            group_axis,
+            22.75,
+        ),
+    );
+    shell.click_menu_command("menu-edit", AppCommand::Undo);
+    assert_eq!(shell.app().canonical_digest(), before_digest);
+    shell.click_menu_command("menu-edit", AppCommand::Redo);
+    assert_eq!(
+        shell
+            .app()
+            .document_snapshot()
+            .group(GroupId(1))
+            .unwrap()
+            .transform(),
+        group_rotated
+    );
 }
 
 #[test]
@@ -233,6 +502,100 @@ fn assistant_enter_sends_and_shift_enter_keeps_composing() {
     let new_chat = shell.catalog().text("assistant-new-chat");
     shell.click_row(&new_chat);
     assert!(shell.app().assistant_messages().is_empty());
+}
+
+#[test]
+fn assistant_follow_up_move_right_is_not_misclassified_as_validation_repair() {
+    let create_request = "Urob mäkčenie na to č v podobnej balónovej geometrii";
+    let move_request =
+        "Trošku ho posuň doprava, aby bol v strede nad tým céčkom. Teraz je trošku posunutý";
+    let transport = Arc::new(ScriptedAssistantTransport::new([
+        (
+            create_request.to_owned(),
+            AssistantChatResult {
+                message: "Pridávam samostatný mäkčeň.".to_owned(),
+                model_intent: Some(AssistantModelIntent {
+                    replace_scene: false,
+                    boxes: Vec::new(),
+                    translations: Vec::new(),
+                    rotations: Vec::new(),
+                    profile_translations: Vec::new(),
+                    parameter_edits: Vec::new(),
+                    linear_arrays: Vec::new(),
+                    bottles: Vec::new(),
+                    balloon_texts: vec![AssistantBalloonTextIntent {
+                        name: "Balloon caron".to_owned(),
+                        text: "ˇ".to_owned(),
+                        height_mm: 40.0,
+                        depth_mm: 16.0,
+                        stroke_width_mm: 8.0,
+                        letter_spacing_mm: 0.0,
+                        origin_mm: [40.0, 0.0, 100.0],
+                    }],
+                    gable_roofs: Vec::new(),
+                    staircases: Vec::new(),
+                    oriented_beams: Vec::new(),
+                }),
+            },
+        ),
+        (
+            move_request.to_owned(),
+            AssistantChatResult {
+                message: "Posúvam mäkčeň doprava.".to_owned(),
+                model_intent: Some(AssistantModelIntent {
+                    replace_scene: false,
+                    boxes: Vec::new(),
+                    translations: vec![AssistantTranslationIntent {
+                        occurrence_id: 1,
+                        delta_mm: [5.0, 0.0, 0.0],
+                    }],
+                    rotations: Vec::new(),
+                    profile_translations: Vec::new(),
+                    parameter_edits: Vec::new(),
+                    linear_arrays: Vec::new(),
+                    bottles: Vec::new(),
+                    balloon_texts: Vec::new(),
+                    gable_roofs: Vec::new(),
+                    staircases: Vec::new(),
+                    oriented_beams: Vec::new(),
+                }),
+            },
+        ),
+    ]));
+    let mut shell = Shell::with_assistant_transport(transport.clone());
+    let input_label = shell.catalog().text("assistant-input-hint");
+    let confirm = shell.catalog().text("assistant-confirm");
+
+    shell.focus_text_input(&input_label);
+    shell.type_text(create_request);
+    shell.press_key(egui::Key::Enter);
+    wait_for_assistant_proposal(&mut shell);
+    shell.click_row(&confirm);
+    let before_move = shell
+        .app()
+        .document_snapshot()
+        .occurrence(OccurrenceId(1))
+        .expect("the first turn must create the standalone caron")
+        .transform();
+
+    shell.focus_text_input(&input_label);
+    shell.type_text(move_request);
+    shell.press_key(egui::Key::Enter);
+    wait_for_assistant_proposal(&mut shell);
+    assert_eq!(transport.remaining_responses(), 0);
+    shell.click_row(&confirm);
+
+    let after_move = shell
+        .app()
+        .document_snapshot()
+        .occurrence(OccurrenceId(1))
+        .expect("the second turn must retain the standalone caron")
+        .transform();
+    let before_matrix = before_move.matrix();
+    let after_matrix = after_move.matrix();
+    assert_eq!(after_matrix[3], before_matrix[3] + 5.0);
+    assert_eq!(after_matrix[7], before_matrix[7]);
+    assert_eq!(after_matrix[11], before_matrix[11]);
 }
 
 #[test]
@@ -432,6 +795,92 @@ fn injected_assistant_results_are_validated_fail_closed() {
 }
 
 #[test]
+fn canonical_rejection_reaches_accesskit_without_generic_error_degradation() {
+    let request = "Move missing occurrence 999";
+    let rejected_result = || AssistantChatResult {
+        message: "Moved the requested occurrence.".to_owned(),
+        model_intent: Some(AssistantModelIntent {
+            replace_scene: false,
+            boxes: Vec::new(),
+            translations: vec![AssistantTranslationIntent {
+                occurrence_id: 999,
+                delta_mm: [10.0, 0.0, 0.0],
+            }],
+            rotations: Vec::new(),
+            profile_translations: Vec::new(),
+            parameter_edits: Vec::new(),
+            linear_arrays: Vec::new(),
+            bottles: Vec::new(),
+            gable_roofs: Vec::new(),
+            staircases: Vec::new(),
+            oriented_beams: Vec::new(),
+            balloon_texts: Vec::new(),
+        }),
+    };
+    let transport = Arc::new(ScriptedAssistantTransport::new([
+        (request.to_owned(), rejected_result()),
+        (request.to_owned(), rejected_result()),
+    ]));
+    let mut shell = Shell::with_assistant_transport(transport.clone());
+    let before_revision = shell.app().document_revision();
+    let before_digest = shell.app().canonical_digest();
+    let before_undo_steps = shell.app().undo_step_count();
+
+    shell.focus_text_input(&shell.catalog().text("assistant-input-hint"));
+    shell.type_text(request);
+    shell.press_key(egui::Key::Enter);
+    for _ in 0..200 {
+        shell.step();
+        if shell
+            .app()
+            .assistant_messages()
+            .iter()
+            .filter(|message| message.diagnostic.is_some())
+            .count()
+            == 2
+        {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    shell.settle();
+
+    let diagnostic_messages = shell
+        .app()
+        .assistant_messages()
+        .iter()
+        .filter(|message| message.diagnostic.is_some())
+        .collect::<Vec<_>>();
+    assert_eq!(diagnostic_messages.len(), 2);
+    for message in &diagnostic_messages {
+        let diagnostic = message.diagnostic.as_ref().unwrap();
+        assert_eq!(diagnostic.code, "canonical.occurrence_not_found");
+        assert_eq!(diagnostic.operation, "translate_occurrence");
+        assert_eq!(diagnostic.target, "occurrence:999");
+        assert_eq!(diagnostic.failed_invariant, "occurrence 999 does not exist");
+        assert!(message.text.contains("canonical.occurrence_not_found"));
+        assert!(message.text.contains("occurrence 999 does not exist"));
+    }
+    let visible_rejection = &diagnostic_messages.last().unwrap().text;
+    assert!(shell.has_visible_label(visible_rejection));
+    assert_ne!(
+        visible_rejection,
+        &shell.catalog().text("assistant-error-rejected-change")
+    );
+    assert_eq!(transport.contexts().len(), 2);
+    assert_eq!(transport.contexts()[1]["assistant_replan"]["attempt"], 1);
+    assert_eq!(
+        transport.contexts()[1]["assistant_replan"]["max_attempts"],
+        1
+    );
+    assert_eq!(transport.remaining_responses(), 0);
+    assert!(shell.app().assistant_proposal().is_none());
+    assert_eq!(shell.app().document_revision(), before_revision);
+    assert_eq!(shell.app().canonical_digest(), before_digest);
+    assert_eq!(shell.app().undo_step_count(), before_undo_steps);
+}
+
+#[test]
 fn scripted_assistant_model_review_cancel_confirm_undo_and_redo_use_accesskit() {
     let scripted_result = |name: &str| AssistantChatResult {
         message: format!("Review {name}"),
@@ -444,6 +893,7 @@ fn scripted_assistant_model_review_cancel_confirm_undo_and_redo_use_accesskit() 
                 subtract_boxes: Vec::new(),
             }],
             translations: Vec::new(),
+            rotations: Vec::new(),
             profile_translations: Vec::new(),
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
@@ -509,6 +959,490 @@ fn scripted_assistant_model_review_cancel_confirm_undo_and_redo_use_accesskit() 
 }
 
 #[test]
+fn scripted_cad_edit_program_reviews_selection_transform_copy_pattern_mirror_delete_and_one_undo() {
+    let request = "Transform, copy, pattern, mirror, then delete my selection";
+    let selector = AssistantCadEntitySelector::CurrentSelection {};
+    let program = AssistantCadEditProgram {
+        operations: vec![
+            AssistantCadEditOperation::Transform {
+                selector: selector.clone(),
+                translation_mm: [10.0, 0.0, 0.0],
+                rotation: None,
+            },
+            AssistantCadEditOperation::Copy {
+                selector: selector.clone(),
+                translation_mm: [0.0, 20.0, 0.0],
+            },
+            AssistantCadEditOperation::LinearPattern {
+                selector: selector.clone(),
+                instances: 3,
+                step_mm: [30.0, 0.0, 0.0],
+            },
+            AssistantCadEditOperation::Mirror {
+                selector: selector.clone(),
+                plane_origin_mm: [0.0, 0.0, 0.0],
+                plane_normal: [1.0, 0.0, 0.0],
+            },
+            AssistantCadEditOperation::Delete {
+                selector,
+                dependency_policy: AssistantCadDeletePolicy::RemoveReferences,
+            },
+        ],
+    };
+    let transport = Arc::new(ScriptedAssistantTransport::new([(
+        request.to_owned(),
+        AssistantChatResult {
+            message: "Review the bounded occurrence edit.".to_owned(),
+            model_intent: None,
+        },
+    )]));
+    transport.queue_cad_edit_program(request, program);
+    let mut shell = Shell::with_assistant_transport(transport.clone());
+    shell.click_menu_command("menu-edit", AppCommand::SelectAll);
+    assert_eq!(shell.app().selected_occurrence_count(), 1);
+
+    let baseline_revision = shell.app().document_revision();
+    let baseline_digest = shell.app().canonical_digest();
+    let baseline_undo_steps = shell.app().undo_step_count();
+    let baseline_snapshot = shell.app().document_snapshot();
+    let baseline_occurrences = baseline_snapshot.occurrences().count();
+    let baseline_definition = baseline_snapshot
+        .occurrence(OccurrenceId(1))
+        .unwrap()
+        .definition_id();
+
+    let input_label = shell.catalog().text("assistant-input-hint");
+    shell.focus_text_input(&input_label);
+    shell.type_text(request);
+    shell.press_key(egui::Key::Enter);
+    wait_for_assistant_proposal(&mut shell);
+
+    assert_eq!(
+        transport.contexts()[0]["selected_occurrence_ids"],
+        serde_json::json!([1])
+    );
+    assert_eq!(shell.app().document_revision(), baseline_revision);
+    assert_eq!(shell.app().canonical_digest(), baseline_digest);
+    assert_eq!(shell.app().undo_step_count(), baseline_undo_steps);
+    assert_eq!(
+        shell.app().document_snapshot().occurrences().count(),
+        baseline_occurrences
+    );
+    assert!(shell.has_visible_label(&shell.catalog().text("assistant-review-title")));
+
+    let proposal = shell.app().assistant_proposal().unwrap();
+    assert_eq!(proposal.batch().commands().len(), 6);
+    assert!(matches!(
+        proposal.batch().commands()[0],
+        CanonicalCommand::SetOccurrenceTransform {
+            id: OccurrenceId(1),
+            ..
+        }
+    ));
+    assert_eq!(
+        proposal
+            .batch()
+            .commands()
+            .iter()
+            .filter_map(|command| match command {
+                CanonicalCommand::CreateOccurrence { id, .. } => Some(*id),
+                _ => None,
+            })
+            .collect::<Vec<_>>(),
+        vec![
+            OccurrenceId(2),
+            OccurrenceId(3),
+            OccurrenceId(4),
+            OccurrenceId(5)
+        ]
+    );
+    assert!(matches!(
+        proposal.batch().commands()[5],
+        CanonicalCommand::DeleteOccurrence {
+            id: OccurrenceId(1)
+        }
+    ));
+
+    let confirm = shell.catalog().text("assistant-confirm");
+    shell.click_row(&confirm);
+    assert_eq!(shell.app().document_revision(), baseline_revision + 1);
+    assert_eq!(shell.app().undo_step_count(), baseline_undo_steps + 1);
+    let committed_digest = shell.app().canonical_digest();
+    assert_ne!(committed_digest, baseline_digest);
+    let committed = shell.app().document_snapshot();
+    assert!(committed.occurrence(OccurrenceId(1)).is_none());
+    assert_eq!(committed.occurrences().count(), baseline_occurrences + 3);
+    for id in 2..=5 {
+        assert_eq!(
+            committed
+                .occurrence(OccurrenceId(id))
+                .unwrap()
+                .definition_id(),
+            baseline_definition
+        );
+    }
+
+    let undo_change = shell.catalog().text("assistant-undo-change");
+    shell.click_row(&undo_change);
+    assert_eq!(shell.app().document_revision(), baseline_revision);
+    assert_eq!(shell.app().canonical_digest(), baseline_digest);
+    assert_eq!(shell.app().undo_step_count(), baseline_undo_steps);
+    let undone = shell.app().document_snapshot();
+    assert!(undone.occurrence(OccurrenceId(1)).is_some());
+    for id in 2..=5 {
+        assert!(undone.occurrence(OccurrenceId(id)).is_none());
+    }
+    assert_eq!(transport.remaining_responses(), 0);
+}
+
+#[test]
+fn scripted_sketch_program_reviews_creates_and_edits_workplanes_entities_and_constraints() {
+    let create_principal = "Create a reviewed mixed sketch on the XY workplane";
+    let create_offset = "Create a reviewed circle sketch on an offset workplane";
+    let edit_dimensions = "Edit the offset workplane and circle radius together";
+    let chat_result = |message: &str| AssistantChatResult {
+        message: message.to_owned(),
+        model_intent: None,
+    };
+    let transport = Arc::new(ScriptedAssistantTransport::new([
+        (
+            create_principal.to_owned(),
+            chat_result("Review the principal workplane and mixed sketch."),
+        ),
+        (
+            create_offset.to_owned(),
+            chat_result("Review the offset workplane and circle sketch."),
+        ),
+        (
+            edit_dimensions.to_owned(),
+            chat_result("Review both dimension edits."),
+        ),
+    ]));
+    let point = |entity_id, point| AssistantSketchPointRef { entity_id, point };
+    transport.queue_cad_edit_program(
+        create_principal,
+        AssistantCadEditProgram {
+            operations: vec![AssistantCadEditOperation::CreateSketch {
+                definition_id: 1,
+                name: "Mixed boundary sketch".to_owned(),
+                workplane: AssistantWorkplaneSpec::Principal {
+                    plane: AssistantPrincipalPlane::Xy,
+                },
+                entities: vec![
+                    AssistantSketchEntity::Line {
+                        id: 1,
+                        start_mm: [-20.0, 0.0],
+                        end_mm: [20.0, 0.0],
+                    },
+                    AssistantSketchEntity::Arc {
+                        id: 2,
+                        start_mm: [20.0, 0.0],
+                        end_mm: [-20.0, 0.0],
+                        center_mm: [0.0, 0.0],
+                        clockwise: false,
+                    },
+                    AssistantSketchEntity::Circle {
+                        id: 3,
+                        center_mm: [50.0, 0.0],
+                        radius_mm: 5.0,
+                    },
+                ],
+                constraints: vec![
+                    AssistantSketchConstraint::Horizontal {
+                        id: 1,
+                        entity_id: 1,
+                    },
+                    AssistantSketchConstraint::Radius {
+                        id: 2,
+                        entity_id: 3,
+                        value_mm: 5.0,
+                    },
+                    AssistantSketchConstraint::FixedPoint {
+                        id: 3,
+                        point: point(1, AssistantSketchPointKind::Start),
+                        position_mm: [-20.0, 0.0],
+                    },
+                ],
+            }],
+        },
+    );
+    let mut shell = Shell::with_assistant_transport(transport.clone());
+    let input = shell.catalog().text("assistant-input-hint");
+    let confirm = shell.catalog().text("assistant-confirm");
+
+    let before_revision = shell.app().document_revision();
+    let before_digest = shell.app().canonical_digest();
+    let before_undo = shell.app().undo_step_count();
+    shell.focus_text_input(&input);
+    shell.type_text(create_principal);
+    shell.press_key(egui::Key::Enter);
+    wait_for_assistant_proposal(&mut shell);
+    assert!(shell.has_visible_label(&shell.catalog().text("assistant-review-title")));
+    assert_eq!(shell.app().document_revision(), before_revision);
+    assert_eq!(shell.app().canonical_digest(), before_digest);
+    shell.click_row(&confirm);
+    assert_eq!(shell.app().document_revision(), before_revision + 1);
+    assert_eq!(shell.app().undo_step_count(), before_undo + 1);
+
+    let principal_snapshot = shell.app().document_snapshot();
+    let principal_workplane_id = principal_snapshot
+        .features()
+        .find(|feature| feature.name() == "Mixed boundary sketch workplane")
+        .unwrap()
+        .id();
+    let mixed_sketch_id = principal_snapshot
+        .features()
+        .find(|feature| feature.name() == "Mixed boundary sketch")
+        .unwrap()
+        .id();
+    let FeatureKind::Sketch(mixed) = principal_snapshot.feature(mixed_sketch_id).unwrap().kind()
+    else {
+        panic!("expected reviewed canonical mixed sketch")
+    };
+    assert_eq!(mixed.entities.len(), 3);
+    assert_eq!(mixed.constraints.len(), 3);
+    assert_eq!(mixed.solved_regions().unwrap().len(), 2);
+
+    transport.queue_cad_edit_program(
+        create_offset,
+        AssistantCadEditProgram {
+            operations: vec![AssistantCadEditOperation::CreateSketch {
+                definition_id: 1,
+                name: "Offset circle sketch".to_owned(),
+                workplane: AssistantWorkplaneSpec::Offset {
+                    base_feature_id: principal_workplane_id.0,
+                    distance_mm: 12.0,
+                },
+                entities: vec![AssistantSketchEntity::Circle {
+                    id: 1,
+                    center_mm: [8.0, 9.0],
+                    radius_mm: 6.0,
+                }],
+                constraints: vec![AssistantSketchConstraint::Radius {
+                    id: 1,
+                    entity_id: 1,
+                    value_mm: 6.0,
+                }],
+            }],
+        },
+    );
+    let before_offset_revision = shell.app().document_revision();
+    let before_offset_digest = shell.app().canonical_digest();
+    shell.focus_text_input(&input);
+    shell.type_text(create_offset);
+    shell.press_key(egui::Key::Enter);
+    wait_for_assistant_proposal(&mut shell);
+    assert_eq!(shell.app().document_revision(), before_offset_revision);
+    assert_eq!(shell.app().canonical_digest(), before_offset_digest);
+    shell.click_row(&confirm);
+
+    let offset_snapshot = shell.app().document_snapshot();
+    let offset_workplane_id = offset_snapshot
+        .features()
+        .find(|feature| feature.name() == "Offset circle sketch workplane")
+        .unwrap()
+        .id();
+    let offset_sketch_id = offset_snapshot
+        .features()
+        .find(|feature| feature.name() == "Offset circle sketch")
+        .unwrap()
+        .id();
+    transport.queue_cad_edit_program(
+        edit_dimensions,
+        AssistantCadEditProgram {
+            operations: vec![
+                AssistantCadEditOperation::SetDimension {
+                    feature_id: offset_workplane_id.0,
+                    constraint_id: None,
+                    value_mm: 18.0,
+                },
+                AssistantCadEditOperation::SetDimension {
+                    feature_id: offset_sketch_id.0,
+                    constraint_id: Some(1),
+                    value_mm: 9.0,
+                },
+            ],
+        },
+    );
+    let before_edit_revision = shell.app().document_revision();
+    let before_edit_digest = shell.app().canonical_digest();
+    let before_edit_undo = shell.app().undo_step_count();
+    shell.focus_text_input(&input);
+    shell.type_text(edit_dimensions);
+    shell.press_key(egui::Key::Enter);
+    wait_for_assistant_proposal(&mut shell);
+    assert_eq!(shell.app().document_revision(), before_edit_revision);
+    assert_eq!(shell.app().canonical_digest(), before_edit_digest);
+    shell.click_row(&confirm);
+
+    assert_eq!(shell.app().document_revision(), before_edit_revision + 1);
+    assert_eq!(shell.app().undo_step_count(), before_edit_undo + 1);
+    let edited = shell.app().document_snapshot();
+    let FeatureKind::Workplane(workplane) = edited.feature(offset_workplane_id).unwrap().kind()
+    else {
+        panic!("expected reviewed offset workplane")
+    };
+    assert!(matches!(
+        &workplane.support,
+        ketchup_core::sketch::WorkplaneSupport::Offset { distance, .. }
+            if distance.millimetres() == 18.0
+    ));
+    let FeatureKind::Sketch(sketch) = edited.feature(offset_sketch_id).unwrap().kind() else {
+        panic!("expected reviewed offset sketch")
+    };
+    assert!(matches!(
+        &sketch.constraints[0].kind,
+        SketchConstraintKind::Radius { value, .. } if value.millimetres() == 9.0
+    ));
+    assert!(matches!(
+        &sketch.solve_geometry().unwrap().entities[0],
+        SketchEntity::Circle { radius_mm, .. } if *radius_mm == 9.0
+    ));
+
+    shell.click_menu_command("menu-edit", AppCommand::Undo);
+    assert_eq!(shell.app().canonical_digest(), before_edit_digest);
+    assert_eq!(transport.remaining_responses(), 0);
+}
+
+#[test]
+fn scripted_sketch_program_refuses_stale_preview_and_invalid_constraint_without_mutation() {
+    let stale_request = "Prepare a reviewed sketch that will become stale";
+    let stale_transport = Arc::new(ScriptedAssistantTransport::new([(
+        stale_request.to_owned(),
+        AssistantChatResult {
+            message: "Review the sketch before applying it.".to_owned(),
+            model_intent: None,
+        },
+    )]));
+    stale_transport.queue_cad_edit_program(
+        stale_request,
+        AssistantCadEditProgram {
+            operations: vec![AssistantCadEditOperation::CreateSketch {
+                definition_id: 1,
+                name: "Stale sketch".to_owned(),
+                workplane: AssistantWorkplaneSpec::Principal {
+                    plane: AssistantPrincipalPlane::Xy,
+                },
+                entities: vec![AssistantSketchEntity::Circle {
+                    id: 1,
+                    center_mm: [0.0, 0.0],
+                    radius_mm: 4.0,
+                }],
+                constraints: vec![AssistantSketchConstraint::Radius {
+                    id: 1,
+                    entity_id: 1,
+                    value_mm: 4.0,
+                }],
+            }],
+        },
+    );
+    let mut stale_shell = Shell::with_assistant_transport(stale_transport.clone());
+    let input = stale_shell.catalog().text("assistant-input-hint");
+    stale_shell.focus_text_input(&input);
+    stale_shell.type_text(stale_request);
+    stale_shell.press_key(egui::Key::Enter);
+    wait_for_assistant_proposal(&mut stale_shell);
+    assert!(stale_shell.app().assistant_proposal().is_some());
+
+    stale_shell.click_menu_command("menu-edit", AppCommand::SelectAll);
+    stale_shell.click_menu_command("menu-view", AppCommand::Hide);
+    let intervening_revision = stale_shell.app().document_revision();
+    let intervening_digest = stale_shell.app().canonical_digest();
+    let intervening_undo = stale_shell.app().undo_step_count();
+    stale_shell.settle();
+    stale_shell.click_row(&stale_shell.catalog().text("assistant-confirm"));
+
+    assert!(stale_shell.app().assistant_proposal().is_none());
+    assert_eq!(stale_shell.app().document_revision(), intervening_revision);
+    assert_eq!(stale_shell.app().canonical_digest(), intervening_digest);
+    assert_eq!(stale_shell.app().undo_step_count(), intervening_undo);
+    assert!(
+        stale_shell
+            .app()
+            .document_snapshot()
+            .features()
+            .all(|feature| feature.name() != "Stale sketch")
+    );
+    assert_eq!(stale_transport.remaining_responses(), 0);
+
+    let invalid_request = "Create a sketch with an invalid constraint reference";
+    let rejected_result = || AssistantChatResult {
+        message: "Review the constrained sketch.".to_owned(),
+        model_intent: None,
+    };
+    let invalid_transport = Arc::new(ScriptedAssistantTransport::new([
+        (invalid_request.to_owned(), rejected_result()),
+        (invalid_request.to_owned(), rejected_result()),
+    ]));
+    let invalid_program = AssistantCadEditProgram {
+        operations: vec![AssistantCadEditOperation::CreateSketch {
+            definition_id: 1,
+            name: "Rejected sketch".to_owned(),
+            workplane: AssistantWorkplaneSpec::Principal {
+                plane: AssistantPrincipalPlane::Xy,
+            },
+            entities: vec![AssistantSketchEntity::Circle {
+                id: 1,
+                center_mm: [0.0, 0.0],
+                radius_mm: 4.0,
+            }],
+            constraints: vec![AssistantSketchConstraint::Radius {
+                id: 1,
+                entity_id: 999,
+                value_mm: 4.0,
+            }],
+        }],
+    };
+    invalid_transport.queue_cad_edit_program(invalid_request, invalid_program.clone());
+    invalid_transport.queue_cad_edit_program(invalid_request, invalid_program);
+    let mut invalid_shell = Shell::with_assistant_transport(invalid_transport.clone());
+    let before_revision = invalid_shell.app().document_revision();
+    let before_digest = invalid_shell.app().canonical_digest();
+    let before_undo = invalid_shell.app().undo_step_count();
+    let input = invalid_shell.catalog().text("assistant-input-hint");
+    invalid_shell.focus_text_input(&input);
+    invalid_shell.type_text(invalid_request);
+    invalid_shell.press_key(egui::Key::Enter);
+    for _ in 0..200 {
+        invalid_shell.step();
+        if invalid_shell
+            .app()
+            .assistant_messages()
+            .iter()
+            .filter(|message| message.diagnostic.is_some())
+            .count()
+            == 2
+        {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    invalid_shell.settle();
+
+    assert_eq!(
+        invalid_shell
+            .app()
+            .assistant_messages()
+            .iter()
+            .filter(|message| message.diagnostic.is_some())
+            .count(),
+        2
+    );
+    assert!(invalid_shell.app().assistant_proposal().is_none());
+    assert_eq!(invalid_shell.app().document_revision(), before_revision);
+    assert_eq!(invalid_shell.app().canonical_digest(), before_digest);
+    assert_eq!(invalid_shell.app().undo_step_count(), before_undo);
+    assert!(
+        invalid_shell
+            .app()
+            .document_snapshot()
+            .features()
+            .all(|feature| feature.name() != "Rejected sketch")
+    );
+    assert_eq!(invalid_transport.remaining_responses(), 0);
+}
+
+#[test]
 fn verbal_bottle_goal_with_dimension_constraint_completes_verified_one_undo_cycle() {
     let request = "Create an editable ketchup bottle with a 30 mm body radius";
     let transport = Arc::new(ScriptedAssistantTransport::new([(
@@ -519,6 +1453,7 @@ fn verbal_bottle_goal_with_dimension_constraint_completes_verified_one_undo_cycl
                 replace_scene: false,
                 boxes: Vec::new(),
                 translations: Vec::new(),
+                rotations: Vec::new(),
                 profile_translations: Vec::new(),
                 parameter_edits: Vec::new(),
                 linear_arrays: Vec::new(),
@@ -645,6 +1580,7 @@ fn assistant_profile_translation_reviews_confirms_undoes_and_fails_closed() {
             replace_scene: false,
             boxes: Vec::new(),
             translations: Vec::new(),
+            rotations: Vec::new(),
             profile_translations: vec![AssistantProfileTranslationIntent {
                 definition_id: 1,
                 body_id: BodyId(1).0,
@@ -689,6 +1625,7 @@ fn assistant_profile_translation_reviews_confirms_undoes_and_fails_closed() {
                 replace_scene: false,
                 boxes: Vec::new(),
                 translations: Vec::new(),
+                rotations: Vec::new(),
                 profile_translations: vec![AssistantProfileTranslationIntent {
                     definition_id: 1,
                     body_id: 1,
@@ -740,6 +1677,7 @@ fn assistant_parameter_edit_uses_the_selected_exact_target_for_feature_and_const
             replace_scene: false,
             boxes: Vec::new(),
             translations: Vec::new(),
+            rotations: Vec::new(),
             profile_translations: Vec::new(),
             parameter_edits: vec![AssistantParameterEditIntent {
                 definition_id: 1,
@@ -763,7 +1701,7 @@ fn assistant_parameter_edit_uses_the_selected_exact_target_for_feature_and_const
             .feature(FeatureId(13))
             .unwrap()
             .kind(),
-        FeatureKind::Pad(spec) if spec.extent.distance().millimetres() == 7.5
+        FeatureKind::Pad(spec) if spec.extent.blind_distance().unwrap().millimetres() == 7.5
     ));
     shell.click_menu_command("menu-edit", AppCommand::Undo);
     assert_eq!(shell.app().canonical_digest(), before_digest);
@@ -803,6 +1741,7 @@ fn assistant_parameter_edit_uses_the_selected_exact_target_for_feature_and_const
             replace_scene: false,
             boxes: Vec::new(),
             translations: Vec::new(),
+            rotations: Vec::new(),
             profile_translations: Vec::new(),
             parameter_edits: vec![AssistantParameterEditIntent {
                 definition_id: 1,
@@ -837,6 +1776,7 @@ fn assistant_parameter_edit_uses_the_selected_exact_target_for_feature_and_const
                 replace_scene: false,
                 boxes: Vec::new(),
                 translations: Vec::new(),
+                rotations: Vec::new(),
                 profile_translations: Vec::new(),
                 parameter_edits: vec![AssistantParameterEditIntent {
                     definition_id: 1,
@@ -911,6 +1851,7 @@ fn assistant_context_runs_current_collision_validation_without_mutating_or_addin
                 },
             ],
             translations: Vec::new(),
+            rotations: Vec::new(),
             profile_translations: Vec::new(),
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
@@ -952,6 +1893,7 @@ fn assistant_context_runs_current_collision_validation_without_mutating_or_addin
                 occurrence_id: right_id,
                 delta_mm: [50.0, 0.0, 0.0],
             }],
+            rotations: Vec::new(),
             profile_translations: Vec::new(),
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
@@ -1014,6 +1956,7 @@ fn assistant_context_finds_transitively_supported_and_floating_parts_without_mut
                 },
             ],
             translations: Vec::new(),
+            rotations: Vec::new(),
             profile_translations: Vec::new(),
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
@@ -1051,6 +1994,7 @@ fn assistant_context_finds_transitively_supported_and_floating_parts_without_mut
                 occurrence_id: floating_id,
                 delta_mm: [0.0, 0.0, -50.0],
             }],
+            rotations: Vec::new(),
             profile_translations: Vec::new(),
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
@@ -1223,6 +2167,7 @@ fn assistant_chat_reports_shelf_deflection_tipping_and_anchoring_with_explicit_l
                 },
             ],
             translations: Vec::new(),
+            rotations: Vec::new(),
             profile_translations: Vec::new(),
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
@@ -1373,6 +2318,7 @@ fn assistant_chat_reports_hardware_and_manufacturing_rules_with_named_elements_a
                 },
             ],
             translations: Vec::new(),
+            rotations: Vec::new(),
             profile_translations: Vec::new(),
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
@@ -1516,6 +2462,7 @@ fn assistant_chat_reports_room_placement_and_blocked_passages_from_named_envelop
                 },
             ],
             translations: Vec::new(),
+            rotations: Vec::new(),
             profile_translations: Vec::new(),
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
@@ -1663,6 +2610,7 @@ fn assistant_chat_calculates_static_load_from_explicit_canonical_physics_inputs(
                 },
             ],
             translations: Vec::new(),
+            rotations: Vec::new(),
             profile_translations: Vec::new(),
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
@@ -1825,6 +2773,7 @@ fn assistant_repairs_a_collision_through_preview_confirmation_revalidation_and_o
                 },
             ],
             translations: Vec::new(),
+            rotations: Vec::new(),
             profile_translations: Vec::new(),
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
@@ -1898,6 +2847,7 @@ fn assistant_repairs_an_unsupported_part_and_reruns_only_gravity_support() {
                 subtract_boxes: Vec::new(),
             }],
             translations: Vec::new(),
+            rotations: Vec::new(),
             profile_translations: Vec::new(),
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
@@ -1985,6 +2935,7 @@ fn assistant_repairs_all_safe_collision_and_support_findings_in_one_confirmed_ba
                 },
             ],
             translations: Vec::new(),
+            rotations: Vec::new(),
             profile_translations: Vec::new(),
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
@@ -2218,6 +3169,7 @@ fn public_apply_helpers_cannot_bypass_review_for_non_whitelisted_changes() {
                     subtract_boxes: Vec::new(),
                 }],
                 translations: Vec::new(),
+                rotations: Vec::new(),
                 profile_translations: Vec::new(),
                 parameter_edits: Vec::new(),
                 linear_arrays: Vec::new(),
@@ -2662,6 +3614,7 @@ fn assistant_creates_a_rectangular_prism_as_one_reviewed_batch_and_one_undo_step
                     subtract_boxes: Vec::new(),
                 }],
                 translations: Vec::new(),
+                rotations: Vec::new(),
                 profile_translations: Vec::new(),
                 parameter_edits: Vec::new(),
                 linear_arrays: Vec::new(),
@@ -2710,6 +3663,7 @@ fn assistant_replacement_review_hides_internal_digests_and_describes_removals() 
                     subtract_boxes: Vec::new(),
                 }],
                 translations: Vec::new(),
+                rotations: Vec::new(),
                 profile_translations: Vec::new(),
                 parameter_edits: Vec::new(),
                 linear_arrays: Vec::new(),
@@ -2794,6 +3748,7 @@ fn assistant_model_intent_applies_real_3d_boxes_immediately_as_one_undoable_batc
                 },
             ],
             translations: Vec::new(),
+            rotations: Vec::new(),
             profile_translations: Vec::new(),
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
@@ -2838,6 +3793,7 @@ fn assistant_teapot_intent_creates_smooth_hollow_saved_model_as_one_undo_step() 
             replace_scene: false,
             boxes: Vec::new(),
             translations: Vec::new(),
+            rotations: Vec::new(),
             profile_translations: Vec::new(),
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
@@ -3038,6 +3994,7 @@ fn assistant_balloon_text_creates_inflated_letters_with_holes_depth_save_and_und
             replace_scene: false,
             boxes: Vec::new(),
             translations: Vec::new(),
+            rotations: Vec::new(),
             profile_translations: Vec::new(),
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
@@ -3134,6 +4091,7 @@ fn assistant_balloon_text_supports_the_complete_rounded_uppercase_and_digit_alph
             replace_scene: false,
             boxes: Vec::new(),
             translations: Vec::new(),
+            rotations: Vec::new(),
             profile_translations: Vec::new(),
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
@@ -3206,6 +4164,7 @@ fn assistant_ketchup_bottle_creates_saved_rounded_squeeze_model_as_one_undo_step
             replace_scene: false,
             boxes: Vec::new(),
             translations: Vec::new(),
+            rotations: Vec::new(),
             profile_translations: Vec::new(),
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
@@ -3374,6 +4333,7 @@ fn assistant_bottle_intent_creates_editable_feature_chain_as_one_undo_step() {
             replace_scene: false,
             boxes: Vec::new(),
             translations: Vec::new(),
+            rotations: Vec::new(),
             profile_translations: Vec::new(),
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
@@ -3467,6 +4427,7 @@ fn assistant_builds_gable_roof_floor_opening_and_staircase_as_one_undo_step() {
                 }],
             }],
             translations: Vec::new(),
+            rotations: Vec::new(),
             profile_translations: Vec::new(),
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
@@ -3554,6 +4515,7 @@ fn assistant_builds_sloped_rafters_with_real_notches_and_central_purlin() {
             replace_scene: true,
             boxes: Vec::new(),
             translations: Vec::new(),
+            rotations: Vec::new(),
             profile_translations: Vec::new(),
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
@@ -3717,6 +4679,7 @@ fn assistant_subtractions_create_one_real_grooved_body_as_one_undo_step() {
                 subtract_boxes,
             }],
             translations: Vec::new(),
+            rotations: Vec::new(),
             profile_translations: Vec::new(),
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
@@ -3792,6 +4755,7 @@ fn assistant_moves_existing_grooved_body_without_rebuilding_its_geometry() {
                 subtract_boxes,
             }],
             translations: Vec::new(),
+            rotations: Vec::new(),
             profile_translations: Vec::new(),
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
@@ -3818,6 +4782,7 @@ fn assistant_moves_existing_grooved_body_without_rebuilding_its_geometry() {
         AssistantModelIntent {
             replace_scene: false,
             boxes: Vec::new(),
+            rotations: Vec::new(),
             profile_translations: Vec::new(),
             parameter_edits: Vec::new(),
             translations: vec![AssistantTranslationIntent {
@@ -3887,6 +4852,7 @@ fn assistant_context_keeps_all_17_plain_and_7_grooved_parts_copyable_with_bounds
             replace_scene: true,
             boxes,
             translations: Vec::new(),
+            rotations: Vec::new(),
             profile_translations: Vec::new(),
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
@@ -3938,6 +4904,7 @@ fn assistant_stacks_24_existing_parts_into_20_layers_as_shared_occurrences_in_on
             replace_scene: true,
             boxes,
             translations: Vec::new(),
+            rotations: Vec::new(),
             profile_translations: Vec::new(),
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
@@ -3965,6 +4932,7 @@ fn assistant_stacks_24_existing_parts_into_20_layers_as_shared_occurrences_in_on
             replace_scene: false,
             boxes: Vec::new(),
             translations: Vec::new(),
+            rotations: Vec::new(),
             profile_translations: Vec::new(),
             parameter_edits: Vec::new(),
             linear_arrays: vec![AssistantLinearArrayIntent {

@@ -6,9 +6,13 @@
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, Stroke, Vec2};
 use ketchup_core::assistant_sidecar::{
     ASSISTANT_PROTOCOL_VERSION, AssistantApiDiagnostics, AssistantBalloonTextIntent,
-    AssistantBottleFinishKind, AssistantBottleIntent, AssistantBoxIntent, AssistantCapability,
-    AssistantChatResult, AssistantDistribution, AssistantGableRoofIntent, AssistantHandshake,
-    AssistantModelIntent, AssistantOrientedBeamIntent, AssistantStaircaseIntent,
+    AssistantBottleFinishKind, AssistantBottleIntent, AssistantBoxIntent, AssistantCadDeletePolicy,
+    AssistantCadEditOperation, AssistantCadEditProgram, AssistantCadEntitySelector,
+    AssistantCapability, AssistantChatResult, AssistantDistribution, AssistantGableRoofIntent,
+    AssistantHandshake, AssistantModelIntent, AssistantOrientedBeamIntent, AssistantPrincipalPlane,
+    AssistantRejectionDiagnostic, AssistantRejectionPhase, AssistantSketchConstraint,
+    AssistantSketchEntity, AssistantSketchPointKind, AssistantSketchPointRef,
+    AssistantStaircaseIntent, AssistantWorkplaneSpec,
 };
 use ketchup_core::beam_m4ae::{
     BeamChangeSummary, BeamSlice, BeamValidationVerdict, BeamWorkspace, GroovePosition, GroupedBom,
@@ -18,13 +22,14 @@ use ketchup_core::bottle_m6::{BottleAuthorityReport, ExactRevolvePackage, ExactR
 use ketchup_core::document::{
     AuthenticatedApprover, AuthoritativeDependency, BOTTLE_SHELL_OPENING_FACE_ROLE,
     BOTTLE_SHOULDER_EDGE_ROLE, BodyId, BooleanOperation, BottleControlDimension,
-    BottleEdgeFinishKind, CanonicalCommand, ClassificationCategoryId, ClassificationDimensionId,
-    CloneDefinitionPlan, CollectionId, CommandBatch, DefinitionId, Dimension, DimensionDisplayUnit,
-    DimensionPresentation, DocumentId, DocumentStore, EvaluationIdentity, FeatureId, FeatureKind,
-    FeatureParameterSlot, FeatureParameterTarget, GroupId, HighRiskClass, HighRiskScope,
-    InstancePath, LoftSection, MAX_HUMAN_CONFIRMATION_LIFETIME_MS, MESH_BODY_SCHEMA_V1,
-    MeshAuthority, MeshBodySpec, NodeId, OccurrenceId, PersistentDimensionId, ProfileSegment,
-    Proposal, ProposalCommitError, ProposalContext, ProposalGoal, ProposalPrincipal, ProposalValue,
+    BottleEdgeFinishKind, CanonicalCommand, CanonicalError, ClassificationCategoryId,
+    ClassificationDimensionId, CloneDefinitionPlan, CollectionId, CommandBatch, DefinitionId,
+    Dimension, DimensionDisplayUnit, DimensionPresentation, DocumentId, DocumentStore,
+    EdgeFinishKind, EvaluationIdentity, FeatureId, FeatureKind, FeatureParameterSlot,
+    FeatureParameterTarget, GroupId, HighRiskClass, HighRiskScope, InstancePath, LoftSection,
+    MAX_HUMAN_CONFIRMATION_LIFETIME_MS, MESH_BODY_SCHEMA_V1, MeshAuthority, MeshBodySpec, NodeId,
+    OccurrenceId, PersistentDimensionId, ProfileSegment, Proposal, ProposalCommitError,
+    ProposalContext, ProposalGoal, ProposalPrepareError, ProposalPrincipal, ProposalValue,
     SceneOccurrence, SceneQueryContext, SideEffectAuthorizationReceipt, SlotPath, Snapshot,
     SolidToolPlan, StableEdgeRole, StableFaceRole, TagId, TipReplacementParent,
     TipReplacementProposal, Transform, TrustedConfirmationSurface,
@@ -33,12 +38,15 @@ use ketchup_core::document::{
 use ketchup_core::document::{
     OverrideParameterSpec, PersistentDimension, PersistentDimensionTarget, SlotResolution,
 };
+use ketchup_core::exact_brep_graph::ExactBRepGraph;
 use ketchup_core::exact_product::{
     AssemblySelectionTarget, ExactBodyPackage, ExactBodyView, ExactFaceRole,
     ExactFeatureChainRequest, ExactLoftRequest, ExactMeshExport, ExactPlanarOffsetRequest,
     ExactResultRegistry, ExactStlExport, ExactSweepRequest, ImportedExactPackage,
     exact_model_stl_export, is_line_arc_capsule_profile,
 };
+#[cfg(test)]
+use ketchup_core::exact_product::{ExactBRepGraphPackage, ExactBRepGraphWorkerEvidence};
 use ketchup_core::exact_validation::{
     BuiltinGeneralBodyValidator, BuiltinGravitySupportValidator, GeneralBodyParticipant,
     GeneralClearanceCase, GravitySupportParticipant, general_body_input_bytes,
@@ -55,15 +63,20 @@ use ketchup_core::import::{
     STEP_PARSER_ID, STEP_PARSER_VERSION, StepImportEvidence, inspect_dxf, inspect_sketchup_scene,
     parse_stl, plan_dxf_import, plan_sketchup_scene_import, plan_step_import, plan_stl_import,
 };
+#[cfg(test)]
+use ketchup_core::import::{StepImportMesh, StepMeshTriangle};
 use ketchup_core::intent::{IntentRequest, WorkflowIntent, propose_intent};
 use ketchup_core::prismatic::{JointId, TolerancePolicy};
 use ketchup_core::sketch::{
-    PrincipalPlane, SketchEntity, WorkplaneFrame, WorkplaneSpec, WorkplaneSupport,
+    PrincipalPlane, SketchConstraint, SketchConstraintId, SketchConstraintKind, SketchEntity,
+    SketchEntityId, SketchPointKind, SketchPointRef, SketchSpec, WorkplaneFrame, WorkplaneSpec,
+    WorkplaneSupport,
 };
 #[cfg(test)]
 use ketchup_core::space::ClearanceOwner;
 use ketchup_core::space::{ClearanceSeverity, ClearanceVolumeId, SpaceId};
 use ketchup_core::state_view::{AGENT_STATE_VIEW_V1, encode_semantic_state};
+use ketchup_core::topology::{TopologicalElementKind, TopologicalElementRef};
 use ketchup_core::validation::{
     DiagnosticSeverity, EvidenceClass, HostNeutralValidator, ValidationExecution,
     ValidationInvocation, ValidationReport, ValidationState,
@@ -71,7 +84,9 @@ use ketchup_core::validation::{
 use ketchup_interaction::{
     Axis, ElementId, ExactHit, LocaleCatalog, PickResult, Ray, SelectionId, Side, SnapKind,
     SnapPolicy, SnapResult, SnapTracker, Vec3,
-    exact_projection::ExactInteractionProjection,
+    exact_projection::{
+        ExactInteractionProjection, SnapshotBoundTopologicalSelection, TopologicalPickLocator,
+    },
     face_intent::{FaceIntentTarget, TransientFaceIntent},
     mesh_projection::MeshInteractionProjection,
     projection::{CanonicalInteractionProjection, InteractionProjection, ProjectedBox},
@@ -261,13 +276,150 @@ fn selection_suffix<'a>(query: &'a str, markers: &[&str]) -> Option<&'a str> {
         .next()
 }
 
+fn bind_assistant_cad_current_selection(
+    program: &mut AssistantCadEditProgram,
+    occurrence_ids: &[u64],
+) {
+    for operation in &mut program.operations {
+        let Some(selector) = (match operation {
+            AssistantCadEditOperation::CreateSketch { .. }
+            | AssistantCadEditOperation::SetDimension { .. } => None,
+            AssistantCadEditOperation::Delete { selector, .. }
+            | AssistantCadEditOperation::Transform { selector, .. }
+            | AssistantCadEditOperation::Copy { selector, .. }
+            | AssistantCadEditOperation::LinearPattern { selector, .. }
+            | AssistantCadEditOperation::Mirror { selector, .. } => Some(selector),
+        }) else {
+            continue;
+        };
+        if matches!(selector, AssistantCadEntitySelector::CurrentSelection {}) {
+            *selector = AssistantCadEntitySelector::Occurrences {
+                occurrence_ids: occurrence_ids.to_vec(),
+            };
+        }
+    }
+}
+
+fn assistant_principal_plane(plane: AssistantPrincipalPlane) -> PrincipalPlane {
+    match plane {
+        AssistantPrincipalPlane::Xy => PrincipalPlane::Xy,
+        AssistantPrincipalPlane::Yz => PrincipalPlane::Yz,
+        AssistantPrincipalPlane::Xz => PrincipalPlane::Xz,
+    }
+}
+
+fn assistant_sketch_point_ref(point: AssistantSketchPointRef) -> SketchPointRef {
+    SketchPointRef {
+        entity: SketchEntityId(point.entity_id),
+        point: match point.point {
+            AssistantSketchPointKind::Start => SketchPointKind::Start,
+            AssistantSketchPointKind::End => SketchPointKind::End,
+            AssistantSketchPointKind::Center => SketchPointKind::Center,
+        },
+    }
+}
+
+fn assistant_sketch_entity(entity: &AssistantSketchEntity) -> SketchEntity {
+    match entity {
+        AssistantSketchEntity::Line {
+            id,
+            start_mm,
+            end_mm,
+        } => SketchEntity::Line {
+            id: SketchEntityId(*id),
+            start_mm: *start_mm,
+            end_mm: *end_mm,
+        },
+        AssistantSketchEntity::Arc {
+            id,
+            start_mm,
+            end_mm,
+            center_mm,
+            clockwise,
+        } => SketchEntity::Arc {
+            id: SketchEntityId(*id),
+            start_mm: *start_mm,
+            end_mm: *end_mm,
+            center_mm: *center_mm,
+            clockwise: *clockwise,
+        },
+        AssistantSketchEntity::Circle {
+            id,
+            center_mm,
+            radius_mm,
+        } => SketchEntity::Circle {
+            id: SketchEntityId(*id),
+            center_mm: *center_mm,
+            radius_mm: *radius_mm,
+        },
+    }
+}
+
+fn assistant_sketch_constraint(
+    constraint: &AssistantSketchConstraint,
+) -> Result<SketchConstraint, CanonicalError> {
+    let (id, kind) = match constraint {
+        AssistantSketchConstraint::Horizontal { id, entity_id } => (
+            *id,
+            SketchConstraintKind::Horizontal {
+                entity: SketchEntityId(*entity_id),
+            },
+        ),
+        AssistantSketchConstraint::Vertical { id, entity_id } => (
+            *id,
+            SketchConstraintKind::Vertical {
+                entity: SketchEntityId(*entity_id),
+            },
+        ),
+        AssistantSketchConstraint::Coincident { id, a, b } => (
+            *id,
+            SketchConstraintKind::Coincident {
+                a: assistant_sketch_point_ref(*a),
+                b: assistant_sketch_point_ref(*b),
+            },
+        ),
+        AssistantSketchConstraint::Distance { id, a, b, value_mm } => (
+            *id,
+            SketchConstraintKind::Distance {
+                a: assistant_sketch_point_ref(*a),
+                b: assistant_sketch_point_ref(*b),
+                value: Dimension::new(value_mm.to_string(), *value_mm)?,
+            },
+        ),
+        AssistantSketchConstraint::Radius {
+            id,
+            entity_id,
+            value_mm,
+        } => (
+            *id,
+            SketchConstraintKind::Radius {
+                entity: SketchEntityId(*entity_id),
+                value: Dimension::new(value_mm.to_string(), *value_mm)?,
+            },
+        ),
+        AssistantSketchConstraint::FixedPoint {
+            id,
+            point,
+            position_mm,
+        } => (
+            *id,
+            SketchConstraintKind::FixedPoint {
+                point: assistant_sketch_point_ref(*point),
+                position_mm: *position_mm,
+            },
+        ),
+    };
+    Ok(SketchConstraint {
+        id: SketchConstraintId(id),
+        kind,
+    })
+}
+
 fn assistant_query_requests_repair(query: &str) -> bool {
-    let normalized = query.to_lowercase();
-    normalized.contains("oprav")
-        || normalized.contains("repair")
-        || normalized
-            .split(|character: char| !character.is_alphanumeric())
-            .any(|word| word == "fix")
+    query
+        .to_lowercase()
+        .split(|character: char| !character.is_alphanumeric())
+        .any(|word| word.starts_with("oprav") || word.starts_with("repair") || word == "fix")
 }
 
 fn resolve_assistant_validator_names(text: &str) -> (BTreeSet<&'static str>, Vec<String>) {
@@ -2604,10 +2756,10 @@ struct GeneralFinishSourcePlan {
     definition_id: DefinitionId,
     target_feature_id: FeatureId,
     target_feature_kind: FeatureKind,
-    stable_role: String,
+    topological_selection: SnapshotBoundTopologicalSelection,
     kind: GeneralFinishKind,
     world_transform: Transform,
-    exact_request: ExactFeatureChainRequest,
+    exact_graph: ExactBRepGraph,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -2616,7 +2768,7 @@ struct GeneralFinishPreviewPlan {
     generated_feature_id: FeatureId,
     amount_mm_bits: u64,
     command: CanonicalCommand,
-    exact_request: ExactFeatureChainRequest,
+    exact_graph: ExactBRepGraph,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -5163,6 +5315,7 @@ struct InteractionProjectionCache {
 struct SelectionState {
     occurrences: BTreeSet<InstancePath>,
     primary: Option<SelectionId>,
+    topological: Option<SnapshotBoundTopologicalSelection>,
     selected_group: Option<GroupId>,
     edit_context: Vec<EditContext>,
 }
@@ -5171,6 +5324,7 @@ impl SelectionState {
     fn clear(&mut self) {
         self.occurrences.clear();
         self.primary = None;
+        self.topological = None;
         self.selected_group = None;
     }
 
@@ -5179,6 +5333,7 @@ impl SelectionState {
     }
 
     fn select_exact(&mut self, selection: SelectionId, additive: bool) {
+        self.topological = None;
         let instance_path = selection.instance_path.clone();
         if additive && self.occurrences.contains(&instance_path) {
             self.occurrences.remove(&instance_path);
@@ -5199,6 +5354,15 @@ impl SelectionState {
         self.selected_group = None;
     }
 
+    fn select_topological(
+        &mut self,
+        selection: SelectionId,
+        topological: SnapshotBoundTopologicalSelection,
+    ) {
+        self.select_exact(selection, false);
+        self.topological = Some(topological);
+    }
+
     fn select_path(&mut self, instance_path: InstancePath, additive: bool) {
         if additive && self.occurrences.contains(&instance_path) {
             self.occurrences.remove(&instance_path);
@@ -5209,6 +5373,7 @@ impl SelectionState {
             self.occurrences.insert(instance_path);
         }
         self.primary = None;
+        self.topological = None;
         self.selected_group = None;
     }
 
@@ -5257,10 +5422,19 @@ struct ClassificationDimensionRow {
 }
 
 type ExactSource = (DocumentId, u64, String);
-type ExactEvaluationResult = Result<Vec<Arc<ExactBodyPackage>>, String>;
+struct ExactEvaluationProducts {
+    render_packages: Vec<Arc<ExactBodyPackage>>,
+    topology_packages: Vec<Arc<ExactBodyPackage>>,
+}
+
+type ExactEvaluationResult = Result<ExactEvaluationProducts, String>;
 
 enum ExactEvaluationRequest {
-    Rectangle(Box<ExactFeatureChainRequest>),
+    Graph(Box<ExactBRepGraph>),
+    Rectangle {
+        request: Box<ExactFeatureChainRequest>,
+        topology: Option<Box<ExactBRepGraph>>,
+    },
     Revolve(Box<ExactRevolveRequest>),
     Imported(DefinitionId, Vec<u8>),
 }
@@ -5363,6 +5537,8 @@ pub struct AssistantChatMessage {
     pub role: AssistantMessageRole,
     pub text: String,
     pub source: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diagnostic: Option<AssistantRejectionDiagnostic>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -5849,6 +6025,7 @@ fn bounded_assistant_provider_context(mut context: serde_json::Value) -> serde_j
 #[derive(Clone, Debug)]
 pub struct AssistantTransportResponse {
     pub result: AssistantChatResult,
+    pub cad_edit_program: Option<AssistantCadEditProgram>,
     pub diagnostics: Option<AssistantApiDiagnostics>,
 }
 
@@ -5886,6 +6063,7 @@ pub trait AssistantTransport: Send + Sync {
         self.chat(handshake, request_id, message, context, cancellation)
             .map(|result| AssistantTransportResponse {
                 result,
+                cad_edit_program: None,
                 diagnostics: None,
             })
     }
@@ -5927,6 +6105,7 @@ impl AssistantTransport for ProcessAssistantTransport {
             .chat_exchange(request_id, message, context)
             .map(|exchange| AssistantTransportResponse {
                 result: exchange.result,
+                cad_edit_program: exchange.cad_edit_program,
                 diagnostics: exchange.diagnostics,
             })
             .map_err(|error| error.to_string());
@@ -5938,11 +6117,14 @@ impl AssistantTransport for ProcessAssistantTransport {
 struct AssistantChatTask {
     receiver: Receiver<Result<AssistantTransportResponse, String>>,
     request_id: String,
+    message: String,
+    replan_attempted: bool,
     started_at: Instant,
     cancellation: AssistantCancellation,
     document_id: DocumentId,
     revision_id: u64,
     canonical_digest: String,
+    selected_occurrence_ids: Vec<u64>,
     source: String,
 }
 
@@ -5957,6 +6139,9 @@ fn assistant_clock_frame(elapsed: Duration) -> &'static str {
 
 struct AssistantPendingExecution {
     result: AssistantChatResult,
+    cad_edit_program: Option<AssistantCadEditProgram>,
+    message: String,
+    replan_attempted: bool,
     document_id: DocumentId,
     revision_id: u64,
     canonical_digest: String,
@@ -6019,6 +6204,7 @@ pub enum AssistantIntentKind {
 enum AssistantPreviewSource {
     Workflow(WorkflowIntent),
     Model(AssistantModelIntent),
+    CadEdit(AssistantCadEditProgram),
     ValidationRepair(AssistantValidationSelection),
 }
 
@@ -6049,6 +6235,140 @@ impl std::ops::Deref for AssistantPreviewPlan {
 
     fn deref(&self) -> &Self::Target {
         &self.proposal
+    }
+}
+
+type AssistantRejection = Box<AssistantRejectionDiagnostic>;
+type AssistantPlanningResult<T> = Result<T, AssistantRejection>;
+
+fn assistant_rejection_phase_key(phase: AssistantRejectionPhase) -> &'static str {
+    match phase {
+        AssistantRejectionPhase::IntentValidation => "assistant-rejection-phase-intent-validation",
+        AssistantRejectionPhase::ProposalPlanning => "assistant-rejection-phase-proposal-planning",
+        AssistantRejectionPhase::CanonicalValidation => {
+            "assistant-rejection-phase-canonical-validation"
+        }
+        AssistantRejectionPhase::ExactValidation => "assistant-rejection-phase-exact-validation",
+        AssistantRejectionPhase::DomainValidation => "assistant-rejection-phase-domain-validation",
+        AssistantRejectionPhase::CommitValidation => "assistant-rejection-phase-commit-validation",
+    }
+}
+
+fn assistant_rejection(
+    phase: AssistantRejectionPhase,
+    code: impl Into<String>,
+    operation: impl Into<String>,
+    target: impl Into<String>,
+    failed_invariant: impl Into<String>,
+    repair_hint: impl Into<String>,
+    retryable: bool,
+) -> AssistantRejection {
+    let diagnostic = AssistantRejectionDiagnostic {
+        phase,
+        code: code.into(),
+        operation: operation.into(),
+        target: target.into(),
+        failed_invariant: failed_invariant.into(),
+        repair_hint: repair_hint.into(),
+        retryable,
+    };
+    debug_assert_eq!(diagnostic.validate(), Ok(()));
+    Box::new(diagnostic)
+}
+
+fn assistant_planning_rejection(
+    code: &'static str,
+    operation: &str,
+    target: &str,
+    failed_invariant: impl Into<String>,
+    repair_hint: &'static str,
+) -> AssistantRejection {
+    assistant_rejection(
+        AssistantRejectionPhase::ProposalPlanning,
+        code,
+        operation,
+        target,
+        failed_invariant,
+        repair_hint,
+        true,
+    )
+}
+
+fn assistant_canonical_rejection(
+    error: CanonicalError,
+    operation: &str,
+    target: &str,
+) -> AssistantRejection {
+    let retryable = !matches!(
+        error,
+        CanonicalError::IdExhausted | CanonicalError::RevisionExhausted
+    );
+    assistant_rejection(
+        AssistantRejectionPhase::CanonicalValidation,
+        error.code(),
+        operation,
+        target,
+        error.to_string(),
+        "Revise the target or operation so the reported canonical invariant remains valid.",
+        retryable,
+    )
+}
+
+fn assistant_proposal_prepare_rejection(
+    error: ProposalPrepareError,
+    operation: &str,
+    target: &str,
+) -> AssistantRejection {
+    match error {
+        ProposalPrepareError::Canonical(error) => {
+            assistant_canonical_rejection(error, operation, target)
+        }
+        ProposalPrepareError::HostBudgetExceeded => assistant_rejection(
+            AssistantRejectionPhase::ProposalPlanning,
+            "planning.host_budget_exceeded",
+            operation,
+            target,
+            "The proposal exceeds the host work budget.",
+            "Reduce the number of requested edits and retry.",
+            true,
+        ),
+        ProposalPrepareError::RequestedBudgetExceeded => assistant_rejection(
+            AssistantRejectionPhase::ProposalPlanning,
+            "planning.requested_budget_exceeded",
+            operation,
+            target,
+            "The proposal exceeds its declared work budget.",
+            "Split the request into smaller atomic edits and retry.",
+            true,
+        ),
+        ProposalPrepareError::Confirmation(error) => assistant_rejection(
+            AssistantRejectionPhase::ProposalPlanning,
+            "planning.confirmation_requirement_invalid",
+            operation,
+            target,
+            error.to_string(),
+            "Use the required review and confirmation path for this operation.",
+            false,
+        ),
+    }
+}
+
+fn assistant_feature_edit_rejection(
+    error: ketchup_core::feature_history::BodyParameterEditError,
+    operation: &str,
+    target: &str,
+) -> AssistantRejection {
+    match error {
+        ketchup_core::feature_history::BodyParameterEditError::Proposal(error) => {
+            assistant_proposal_prepare_rejection(error, operation, target)
+        }
+        error => assistant_planning_rejection(
+            "planning.feature_edit_rejected",
+            operation,
+            target,
+            error.to_string(),
+            "Refresh the exact feature target and request a supported bounded edit.",
+        ),
     }
 }
 
@@ -6986,6 +7306,7 @@ pub struct KetchupApp {
     exact_worker_attempted: bool,
     exact_task: Option<ExactEvaluationTask>,
     exact_results: ExactResultRegistry,
+    topology_results: ExactResultRegistry,
     exact_source: Option<ExactSource>,
     exact_retry_at: Option<Instant>,
     beam_workspace: Option<BeamWorkspace>,
@@ -7217,6 +7538,7 @@ impl KetchupApp {
             exact_worker_attempted: false,
             exact_task: None,
             exact_results: ExactResultRegistry::default(),
+            topology_results: ExactResultRegistry::default(),
             exact_source: None,
             exact_retry_at: None,
             beam_workspace: None,
@@ -7381,6 +7703,7 @@ impl KetchupApp {
             task.cancelled.store(true, Ordering::Release);
         }
         self.exact_results.clear();
+        self.topology_results.clear();
         self.render_plan = None;
         self.exact_source = None;
         self.exact_retry_at = None;
@@ -9302,9 +9625,25 @@ impl KetchupApp {
     fn derive_assistant_workflow_proposal(
         &self,
         intent: &WorkflowIntent,
-    ) -> Result<Proposal, String> {
-        let proposal = propose_intent(&self.document, IntentRequest::m7a(intent.clone()))
-            .map_err(|error| error.to_string())?;
+    ) -> AssistantPlanningResult<Proposal> {
+        let target = format!("document:{}", self.document.current().document_id().0);
+        let proposal = propose_intent(&self.document, IntentRequest::m7a(intent.clone())).map_err(
+            |error| match error {
+                ketchup_core::intent::IntentError::Canonical(error) => {
+                    assistant_canonical_rejection(error, "workflow_intent", &target)
+                }
+                ketchup_core::intent::IntentError::Proposal(error) => {
+                    assistant_proposal_prepare_rejection(error, "workflow_intent", &target)
+                }
+                error => assistant_planning_rejection(
+                    "planning.intent_capability_denied",
+                    "workflow_intent",
+                    &target,
+                    error.to_string(),
+                    "Request an operation granted to the local Assistant capability set.",
+                ),
+            },
+        )?;
         if !matches!(intent, WorkflowIntent::SetFeatureDimension { .. }) {
             return Ok(proposal);
         }
@@ -9317,7 +9656,9 @@ impl KetchupApp {
             requested_budget: proposal.requested_budget(),
         };
         self.prepare_smart_push_pull_proposal_with_context(proposal.batch().clone(), context)
-            .ok_or_else(|| "assistant smart push/pull proposal was rejected".to_owned())
+            .map_err(|error| {
+                assistant_proposal_prepare_rejection(error, "set_feature_dimension", &target)
+            })
     }
 
     pub fn prepare_assistant_intent(&mut self, intent: WorkflowIntent) -> bool {
@@ -9346,7 +9687,7 @@ impl KetchupApp {
                 self.assistant_proposal = None;
                 self.digest = self.catalog.format(
                     "assistant-digest-rejected",
-                    &BTreeMap::from([("reason", error)]),
+                    &BTreeMap::from([("reason", error.failed_invariant)]),
                 );
                 false
             }
@@ -9367,24 +9708,28 @@ impl KetchupApp {
             return false;
         };
         let snapshot = self.document.current();
+        let rederived = self.derive_assistant_preview_plan(&plan.source);
         if plan.document_id() != snapshot.document_id()
             || plan.provenance_revision() != snapshot.revision_id()
             || plan.provenance_digest() != snapshot.canonical_digest()
-            || self.derive_assistant_preview_plan(&plan.source).as_ref() != Some(&plan)
+            || rederived.as_ref().ok() != Some(&plan)
         {
+            let reason = rederived
+                .err()
+                .map(|diagnostic| diagnostic.failed_invariant)
+                .unwrap_or_else(|| self.catalog.text("assistant-error-stale-response"));
             self.status_key = "status-ready";
             self.digest = self.catalog.format(
                 "assistant-digest-rejected",
-                &BTreeMap::from([(
-                    "reason",
-                    self.catalog.text("assistant-error-stale-response"),
-                )]),
+                &BTreeMap::from([("reason", reason)]),
             );
             return false;
         }
         let repair_selection = match &plan.source {
             AssistantPreviewSource::ValidationRepair(selection) => Some(selection.clone()),
-            AssistantPreviewSource::Workflow(_) | AssistantPreviewSource::Model(_) => None,
+            AssistantPreviewSource::Workflow(_)
+            | AssistantPreviewSource::Model(_)
+            | AssistantPreviewSource::CadEdit(_) => None,
         };
         let repair_preview = plan.repair.clone();
         match self.document.commit_verified_proposal(&plan.proposal) {
@@ -10270,7 +10615,15 @@ impl KetchupApp {
                 entry.namespace() == ASSISTANT_CHAT_NAMESPACE && entry.path() == ASSISTANT_CHAT_PATH
             })
             .and_then(|entry| serde_json::from_slice::<AssistantConversation>(entry.bytes()).ok())
-            .filter(|conversation| conversation.document_id == document_id)
+            .filter(|conversation| {
+                conversation.document_id == document_id
+                    && conversation.messages.iter().all(|message| {
+                        message
+                            .diagnostic
+                            .as_ref()
+                            .is_none_or(|diagnostic| diagnostic.validate().is_ok())
+                    })
+            })
             .map_or_else(Vec::new, |conversation| conversation.messages);
         self.saved_assistant_conversation_digest =
             assistant_conversation_digest(&self.assistant_messages);
@@ -10917,6 +11270,7 @@ impl KetchupApp {
                         AssistantMessageRole::Error => "error",
                     },
                     "text": message.text,
+                    "diagnostic": message.diagnostic,
                 })
             })
             .collect::<Vec<_>>();
@@ -10977,6 +11331,7 @@ impl KetchupApp {
             "project_memory": project_memory,
             "validation": validation,
             "selected_occurrence_ids": selected_occurrence_ids,
+            "selected_group_id": self.selection.selected_group.map(|id| id.0),
             "selected_profile_translation_target": selected_profile_translation_target,
             "selected_parameter_edit_target": selected_parameter_edit_target,
             "occurrence_count": occurrence_count,
@@ -10987,63 +11342,91 @@ impl KetchupApp {
         })
     }
 
-    fn send_assistant_message(&mut self, context: &egui::Context) {
-        if self.assistant_chat_task.is_some() || self.assistant_pending_execution.is_some() {
-            return;
+    fn localized_assistant_rejection(
+        &self,
+        diagnostic: &AssistantRejectionDiagnostic,
+        replan_will_run: bool,
+    ) -> String {
+        let mut text = self.catalog.format(
+            "assistant-rejection-detail",
+            &BTreeMap::from([
+                (
+                    "phase",
+                    self.catalog
+                        .text(assistant_rejection_phase_key(diagnostic.phase)),
+                ),
+                ("code", diagnostic.code.clone()),
+                ("operation", diagnostic.operation.clone()),
+                ("target", diagnostic.target.clone()),
+                ("invariant", diagnostic.failed_invariant.clone()),
+                ("repair", diagnostic.repair_hint.clone()),
+                (
+                    "retryable",
+                    self.catalog.text(if diagnostic.retryable {
+                        "assistant-value-true"
+                    } else {
+                        "assistant-value-false"
+                    }),
+                ),
+            ]),
+        );
+        if replan_will_run {
+            text.push('\n');
+            text.push_str(&self.catalog.text("assistant-rejection-replan-once"));
         }
-        let message = self.assistant_input.trim().to_owned();
-        if message.is_empty() {
-            return;
-        }
-        if assistant_query_requests_repair(&message) {
-            self.assistant_input.clear();
-            let source = self.assistant_source_label();
-            self.assistant_messages.push(AssistantChatMessage {
-                role: AssistantMessageRole::User,
-                text: message.clone(),
-                source: source.clone(),
-            });
-            let prepared = self.prepare_assistant_validation_repair(&message);
-            self.assistant_messages.push(AssistantChatMessage {
-                role: if prepared {
-                    AssistantMessageRole::Assistant
-                } else {
-                    AssistantMessageRole::Error
-                },
-                text: self.catalog.text(if prepared {
-                    "assistant-repair-preview-message"
-                } else {
-                    "assistant-repair-unavailable"
-                }),
-                source,
-            });
-            self.store_assistant_conversation();
-            return;
-        }
+        text
+    }
+
+    fn record_assistant_rejection(
+        &mut self,
+        diagnostic: AssistantRejectionDiagnostic,
+        replan_will_run: bool,
+    ) -> AssistantRejectionDiagnostic {
+        self.assistant_proposal = None;
+        self.digest = self.catalog.format(
+            "assistant-digest-rejected",
+            &BTreeMap::from([("reason", diagnostic.failed_invariant.clone())]),
+        );
+        self.assistant_messages.push(AssistantChatMessage {
+            role: AssistantMessageRole::Error,
+            text: self.localized_assistant_rejection(&diagnostic, replan_will_run),
+            source: self.catalog.text("assistant-role-error"),
+            diagnostic: Some(diagnostic.clone()),
+        });
+        diagnostic
+    }
+
+    fn assistant_replan_context(
+        &self,
+        message: &str,
+        diagnostic: &AssistantRejectionDiagnostic,
+    ) -> serde_json::Value {
+        let mut context = self.assistant_context_for(message);
+        context["assistant_replan"] = serde_json::json!({
+            "attempt": 1,
+            "max_attempts": 1,
+            "diagnostic": diagnostic,
+        });
+        bounded_assistant_provider_context(context)
+    }
+
+    fn start_assistant_request(
+        &mut self,
+        context: &egui::Context,
+        message: String,
+        document_context: serde_json::Value,
+        source: String,
+        replan_attempted: bool,
+    ) -> Result<(), String> {
         let handshake = self.assistant_handshake();
-        if let Err(error) = handshake.validate() {
-            self.assistant_messages.push(AssistantChatMessage {
-                role: AssistantMessageRole::Error,
-                text: error.to_string(),
-                source: self.assistant_source_label(),
-            });
-            return;
-        }
-        self.assistant_input.clear();
-        let document_context =
-            bounded_assistant_provider_context(self.assistant_context_for(&message));
+        handshake.validate().map_err(|error| error.to_string())?;
         let request_document_id = self.document.current().document_id();
         let request_revision_id = self.document.current().revision_id();
         let request_canonical_digest = self.document.current().canonical_digest();
-        let source = self.assistant_source_label();
-        self.assistant_messages.push(AssistantChatMessage {
-            role: AssistantMessageRole::User,
-            text: message.clone(),
-            source: source.clone(),
-        });
         self.assistant_request_sequence = self.assistant_request_sequence.saturating_add(1);
         let request_id = format!("chat-{}", self.assistant_request_sequence);
         let task_request_id = request_id.clone();
+        let task_message = message.clone();
         let transport = Arc::clone(&self.assistant_transport);
         let repaint = context.clone();
         let cancellation = AssistantCancellation::default();
@@ -11072,17 +11455,107 @@ impl KetchupApp {
         self.assistant_chat_task = Some(AssistantChatTask {
             receiver,
             request_id: task_request_id,
+            message: task_message,
+            replan_attempted,
             started_at: Instant::now(),
             cancellation,
             document_id: request_document_id,
             revision_id: request_revision_id,
             canonical_digest: request_canonical_digest,
+            selected_occurrence_ids: self
+                .selected_occurrence_ids()
+                .into_iter()
+                .map(|id| id.0)
+                .collect(),
             source,
         });
+        Ok(())
     }
 
-    fn derive_assistant_model_proposal(&self, intent: &AssistantModelIntent) -> Option<Proposal> {
-        intent.validate().ok()?;
+    fn send_assistant_message(&mut self, context: &egui::Context) {
+        if self.assistant_chat_task.is_some() || self.assistant_pending_execution.is_some() {
+            return;
+        }
+        let message = self.assistant_input.trim().to_owned();
+        if message.is_empty() {
+            return;
+        }
+        if assistant_query_requests_repair(&message) {
+            self.assistant_input.clear();
+            let source = self.assistant_source_label();
+            self.assistant_messages.push(AssistantChatMessage {
+                role: AssistantMessageRole::User,
+                text: message.clone(),
+                source: source.clone(),
+                diagnostic: None,
+            });
+            let prepared = self.prepare_assistant_validation_repair(&message);
+            self.assistant_messages.push(AssistantChatMessage {
+                role: if prepared {
+                    AssistantMessageRole::Assistant
+                } else {
+                    AssistantMessageRole::Error
+                },
+                text: self.catalog.text(if prepared {
+                    "assistant-repair-preview-message"
+                } else {
+                    "assistant-repair-unavailable"
+                }),
+                source,
+                diagnostic: None,
+            });
+            self.store_assistant_conversation();
+            return;
+        }
+        self.assistant_input.clear();
+        let document_context =
+            bounded_assistant_provider_context(self.assistant_context_for(&message));
+        let source = self.assistant_source_label();
+        self.assistant_messages.push(AssistantChatMessage {
+            role: AssistantMessageRole::User,
+            text: message.clone(),
+            source: source.clone(),
+            diagnostic: None,
+        });
+        if let Err(error) =
+            self.start_assistant_request(context, message, document_context, source.clone(), false)
+        {
+            self.assistant_messages.push(AssistantChatMessage {
+                role: AssistantMessageRole::Error,
+                text: error,
+                source,
+                diagnostic: None,
+            });
+            self.store_assistant_conversation();
+        }
+    }
+
+    fn derive_assistant_model_proposal(
+        &self,
+        intent: &AssistantModelIntent,
+    ) -> AssistantPlanningResult<Proposal> {
+        let document_target = format!("document:{}", self.document.current().document_id().0);
+        intent.validate().map_err(|error| {
+            assistant_rejection(
+                AssistantRejectionPhase::IntentValidation,
+                "intent.model_invalid",
+                "model_intent",
+                &document_target,
+                error,
+                "Return a bounded model intent that satisfies the Assistant schema invariants.",
+                true,
+            )
+        })?;
+        for translation in &intent.translations {
+            let occurrence_id = OccurrenceId(translation.occurrence_id);
+            if self.document.current().occurrence(occurrence_id).is_none() {
+                return Err(assistant_canonical_rejection(
+                    CanonicalError::OccurrenceNotFound(occurrence_id),
+                    "translate_occurrence",
+                    &format!("occurrence:{}", occurrence_id.0),
+                ));
+            }
+        }
         if let [edit] = intent.parameter_edits.as_slice() {
             let target = match edit.constraint_id {
                 Some(constraint_id) => ketchup_core::feature_history::ExactParameterEditTarget::SketchConstraintDimension {
@@ -11093,15 +11566,33 @@ impl KetchupApp {
                     FeatureId(edit.feature_id),
                 ),
             };
+            let edit_target = format!("feature:{}", edit.feature_id);
             let (definition_id, body_id, selected_target, _, _) =
-                self.assistant_parameter_edit_target()?;
+                self.assistant_parameter_edit_target().ok_or_else(|| {
+                    assistant_planning_rejection(
+                        "planning.parameter_target_unavailable",
+                        "edit_parameter",
+                        &edit_target,
+                        "The requested parameter is not the active exact selection.",
+                        "Select the exact editable feature or sketch constraint and retry.",
+                    )
+                })?;
             if definition_id.0 != edit.definition_id
                 || body_id.0 != edit.body_id
                 || selected_target != target
             {
-                return None;
+                return Err(assistant_planning_rejection(
+                    "planning.parameter_target_mismatch",
+                    "edit_parameter",
+                    &edit_target,
+                    "The requested parameter does not match the active exact selection.",
+                    "Refresh the selection context and retry against the selected parameter.",
+                ));
             }
-            let dimension = Dimension::new(edit.value_mm.to_string(), edit.value_mm).ok()?;
+            let dimension =
+                Dimension::new(edit.value_mm.to_string(), edit.value_mm).map_err(|error| {
+                    assistant_canonical_rejection(error, "edit_parameter", &edit_target)
+                })?;
             return ketchup_core::feature_history::prepare_body_parameter_edit(
                 &self.document,
                 ketchup_core::feature_history::BodyParameterEditRequest {
@@ -11114,10 +11605,13 @@ impl KetchupApp {
                 },
                 ProposalPrincipal::LocalAssistant,
             )
-            .ok()
-            .map(|preview| preview.proposal);
+            .map(|preview| preview.proposal)
+            .map_err(|error| {
+                assistant_feature_edit_rejection(error, "edit_parameter", &edit_target)
+            });
         }
         if let [translation] = intent.profile_translations.as_slice() {
+            let profile_target = format!("feature:{}", translation.profile_id);
             return ketchup_core::feature_history::prepare_body_profile_translation(
                 &self.document,
                 ketchup_core::feature_history::BodyProfileTranslationRequest {
@@ -11128,9 +11622,581 @@ impl KetchupApp {
                 },
                 ProposalPrincipal::LocalAssistant,
             )
-            .ok()
-            .map(|preview| preview.proposal);
+            .map(|preview| preview.proposal)
+            .map_err(|error| {
+                assistant_feature_edit_rejection(error, "translate_profile", &profile_target)
+            });
         }
+        let batch = self.derive_assistant_model_batch(intent).ok_or_else(|| {
+            assistant_planning_rejection(
+                "planning.model_intent_unplannable",
+                "model_intent",
+                &document_target,
+                "The validated model intent could not be converted into a canonical command batch.",
+                "Refresh document context and request only targets and geometry that still exist.",
+            )
+        })?;
+        self.document
+            .prepare_proposal_with_context(batch, ProposalContext::local_assistant_model())
+            .map_err(|error| {
+                assistant_proposal_prepare_rejection(error, "model_intent", &document_target)
+            })
+    }
+
+    fn resolve_assistant_cad_selector(
+        &self,
+        snapshot: &Snapshot,
+        selector: &AssistantCadEntitySelector,
+        operation: &str,
+    ) -> AssistantPlanningResult<Vec<OccurrenceId>> {
+        let ids = match selector {
+            AssistantCadEntitySelector::CurrentSelection {} => self
+                .selected_occurrence_ids()
+                .into_iter()
+                .collect::<Vec<_>>(),
+            AssistantCadEntitySelector::Occurrences { occurrence_ids } => occurrence_ids
+                .iter()
+                .copied()
+                .map(OccurrenceId)
+                .collect::<Vec<_>>(),
+        };
+        selector
+            .validate_resolved_target_count(ids.len())
+            .map_err(|error| {
+                assistant_planning_rejection(
+                    "planning.cad_selector_invalid",
+                    operation,
+                    "occurrence_selection",
+                    error,
+                    "Select between one and 100 root occurrences that still exist, then retry.",
+                )
+            })?;
+        if let Some(id) = ids.iter().find(|id| snapshot.occurrence(**id).is_none()) {
+            return Err(assistant_canonical_rejection(
+                CanonicalError::OccurrenceNotFound(*id),
+                operation,
+                &format!("occurrence:{}", id.0),
+            ));
+        }
+        Ok(ids)
+    }
+
+    pub fn plan_assistant_cad_edit_program(
+        &self,
+        program: &AssistantCadEditProgram,
+    ) -> Result<CommandBatch, Box<AssistantRejectionDiagnostic>> {
+        let snapshot = self.document.current();
+        let document_target = format!("document:{}", snapshot.document_id().0);
+        program.validate().map_err(|error| {
+            assistant_rejection(
+                AssistantRejectionPhase::IntentValidation,
+                "intent.cad_edit_program_invalid",
+                "cad_edit_program",
+                &document_target,
+                error,
+                "Return a bounded CAD edit program that satisfies the Assistant schema invariants.",
+                true,
+            )
+        })?;
+
+        let mut commands = Vec::new();
+        let mut working_transforms = snapshot
+            .occurrences()
+            .map(|occurrence| (occurrence.id(), occurrence.transform()))
+            .collect::<BTreeMap<_, _>>();
+        let mut collection_members = snapshot
+            .collections()
+            .map(|collection| {
+                (
+                    collection.id(),
+                    collection.occurrence_ids().collect::<Vec<_>>(),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let mut mate_endpoints = snapshot
+            .assembly_mates()
+            .map(|mate| {
+                (
+                    mate.id(),
+                    (
+                        mate.endpoint_a().occurrence_id(),
+                        mate.endpoint_b().occurrence_id(),
+                    ),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let mut next_occurrence = snapshot
+            .occurrences()
+            .map(|occurrence| occurrence.id().0)
+            .max()
+            .unwrap_or(0)
+            .checked_add(1);
+        let mut next_feature = snapshot
+            .features()
+            .map(|feature| feature.id().0)
+            .max()
+            .unwrap_or(0)
+            .checked_add(1);
+
+        for operation in &program.operations {
+            let operation_name = match operation {
+                AssistantCadEditOperation::CreateSketch { .. } => "create_sketch",
+                AssistantCadEditOperation::SetDimension { .. } => "set_dimension",
+                AssistantCadEditOperation::Delete { .. } => "delete_occurrence",
+                AssistantCadEditOperation::Transform { .. } => "transform_occurrence",
+                AssistantCadEditOperation::Copy { .. } => "copy_occurrence",
+                AssistantCadEditOperation::LinearPattern { .. } => "linear_pattern_occurrence",
+                AssistantCadEditOperation::Mirror { .. } => "mirror_occurrence",
+            };
+            let selector = match operation {
+                AssistantCadEditOperation::CreateSketch { .. }
+                | AssistantCadEditOperation::SetDimension { .. } => None,
+                AssistantCadEditOperation::Delete { selector, .. }
+                | AssistantCadEditOperation::Transform { selector, .. }
+                | AssistantCadEditOperation::Copy { selector, .. }
+                | AssistantCadEditOperation::LinearPattern { selector, .. }
+                | AssistantCadEditOperation::Mirror { selector, .. } => Some(selector),
+            };
+            let targets = selector.map_or_else(
+                || Ok(Vec::new()),
+                |selector| self.resolve_assistant_cad_selector(&snapshot, selector, operation_name),
+            )?;
+            if let Some(id) = targets
+                .iter()
+                .find(|id| !working_transforms.contains_key(id))
+            {
+                return Err(assistant_planning_rejection(
+                    "planning.cad_target_deleted",
+                    operation_name,
+                    &format!("occurrence:{}", id.0),
+                    "An earlier operation in this CAD edit program already deleted the target.",
+                    "Remove the later operation or target an occurrence that remains in the program.",
+                ));
+            }
+
+            match operation {
+                AssistantCadEditOperation::CreateSketch {
+                    definition_id,
+                    name,
+                    workplane,
+                    entities,
+                    constraints,
+                } => {
+                    let definition_id = DefinitionId(*definition_id);
+                    if snapshot.definition(definition_id).is_none() {
+                        return Err(assistant_canonical_rejection(
+                            CanonicalError::DefinitionNotFound(definition_id),
+                            operation_name,
+                            &format!("definition:{}", definition_id.0),
+                        ));
+                    }
+                    let workplane_id = next_feature.map(FeatureId).ok_or_else(|| {
+                        assistant_canonical_rejection(
+                            CanonicalError::IdExhausted,
+                            operation_name,
+                            &document_target,
+                        )
+                    })?;
+                    let sketch_id =
+                        workplane_id
+                            .0
+                            .checked_add(1)
+                            .map(FeatureId)
+                            .ok_or_else(|| {
+                                assistant_canonical_rejection(
+                                    CanonicalError::IdExhausted,
+                                    operation_name,
+                                    &document_target,
+                                )
+                            })?;
+                    next_feature = sketch_id.0.checked_add(1);
+                    let workplane = match workplane {
+                        AssistantWorkplaneSpec::Principal { plane } => {
+                            WorkplaneSpec::principal(assistant_principal_plane(*plane))
+                        }
+                        AssistantWorkplaneSpec::Offset {
+                            base_feature_id,
+                            distance_mm,
+                        } => {
+                            let base = FeatureId(*base_feature_id);
+                            let base_frame = snapshot
+                                .feature(base)
+                                .and_then(|feature| match feature.kind() {
+                                    FeatureKind::Workplane(spec) => Some(spec.frame),
+                                    _ => None,
+                                })
+                                .ok_or_else(|| {
+                                    assistant_planning_rejection(
+                                        "planning.workplane_base_unavailable",
+                                        operation_name,
+                                        &format!("feature:{}", base.0),
+                                        "The requested offset base is not an existing workplane.",
+                                        "Refresh document context and target an existing workplane.",
+                                    )
+                                })?;
+                            let distance = Dimension::new(distance_mm.to_string(), *distance_mm)
+                                .map_err(|error| {
+                                    assistant_canonical_rejection(
+                                        error,
+                                        operation_name,
+                                        &format!("feature:{}", base.0),
+                                    )
+                                })?;
+                            WorkplaneSpec {
+                                support: WorkplaneSupport::Offset { base, distance },
+                                frame: base_frame.offset(*distance_mm),
+                            }
+                        }
+                    };
+                    let constraints = constraints
+                        .iter()
+                        .map(assistant_sketch_constraint)
+                        .collect::<Result<Vec<_>, _>>()
+                        .map_err(|error| {
+                            assistant_canonical_rejection(
+                                error,
+                                operation_name,
+                                &format!("feature:{}", sketch_id.0),
+                            )
+                        })?;
+                    commands.extend([
+                        CanonicalCommand::CreateFeature {
+                            id: workplane_id,
+                            definition_id,
+                            name: format!("{name} workplane"),
+                            kind: FeatureKind::Workplane(workplane),
+                        },
+                        CanonicalCommand::CreateFeature {
+                            id: sketch_id,
+                            definition_id,
+                            name: name.clone(),
+                            kind: FeatureKind::Sketch(SketchSpec {
+                                workplane: workplane_id,
+                                entities: entities.iter().map(assistant_sketch_entity).collect(),
+                                constraints,
+                            }),
+                        },
+                    ]);
+                }
+                AssistantCadEditOperation::SetDimension {
+                    feature_id,
+                    constraint_id,
+                    value_mm,
+                } => {
+                    let feature_id = FeatureId(*feature_id);
+                    let dimension =
+                        Dimension::new(value_mm.to_string(), *value_mm).map_err(|error| {
+                            assistant_canonical_rejection(
+                                error,
+                                operation_name,
+                                &format!("feature:{}", feature_id.0),
+                            )
+                        })?;
+                    commands.push(if let Some(constraint_id) = constraint_id {
+                        CanonicalCommand::SetSketchConstraintDimension {
+                            id: feature_id,
+                            constraint_id: SketchConstraintId(*constraint_id),
+                            dimension,
+                        }
+                    } else {
+                        CanonicalCommand::SetFeatureDimension {
+                            id: feature_id,
+                            dimension,
+                        }
+                    });
+                }
+                AssistantCadEditOperation::Delete {
+                    dependency_policy, ..
+                } => {
+                    let target_set = targets.iter().copied().collect::<BTreeSet<_>>();
+                    let referenced_collections = collection_members
+                        .iter()
+                        .filter(|(_, members)| members.iter().any(|id| target_set.contains(id)))
+                        .map(|(id, _)| *id)
+                        .collect::<Vec<_>>();
+                    let incident_mates = mate_endpoints
+                        .iter()
+                        .filter(|(_, (left, right))| {
+                            target_set.contains(left) || target_set.contains(right)
+                        })
+                        .map(|(id, _)| *id)
+                        .collect::<Vec<_>>();
+                    if *dependency_policy == AssistantCadDeletePolicy::RejectIfReferenced
+                        && (!referenced_collections.is_empty() || !incident_mates.is_empty())
+                    {
+                        let id = targets[0];
+                        return Err(assistant_planning_rejection(
+                            "planning.cad_delete_referenced",
+                            operation_name,
+                            &format!("occurrence:{}", id.0),
+                            "The occurrence is referenced by a collection or assembly mate.",
+                            "Use remove_references only when removing those dependencies is intended.",
+                        ));
+                    }
+                    if *dependency_policy == AssistantCadDeletePolicy::RemoveReferences {
+                        for collection_id in referenced_collections {
+                            let members = collection_members
+                                .get_mut(&collection_id)
+                                .expect("referenced collection came from the working map");
+                            members.retain(|id| !target_set.contains(id));
+                            commands.push(CanonicalCommand::SetCollectionOccurrences {
+                                id: collection_id,
+                                occurrence_ids: members.clone(),
+                            });
+                        }
+                        for mate_id in incident_mates {
+                            mate_endpoints.remove(&mate_id);
+                            commands.push(CanonicalCommand::DeleteAssemblyMate { id: mate_id });
+                        }
+                    }
+                    for id in targets {
+                        working_transforms.remove(&id);
+                        commands.push(CanonicalCommand::DeleteOccurrence { id });
+                    }
+                }
+                AssistantCadEditOperation::Transform {
+                    translation_mm,
+                    rotation,
+                    ..
+                } => {
+                    let delta = Vec3::new(translation_mm[0], translation_mm[1], translation_mm[2]);
+                    let world_rotation = rotation
+                        .as_ref()
+                        .map(|rotation| {
+                            world_axis_rotation_transform(
+                                Vec3::new(
+                                    rotation.pivot_mm[0],
+                                    rotation.pivot_mm[1],
+                                    rotation.pivot_mm[2],
+                                ),
+                                Vec3::new(rotation.axis[0], rotation.axis[1], rotation.axis[2]),
+                                rotation.angle_degrees,
+                            )
+                        })
+                        .transpose()
+                        .map_err(|()| {
+                            assistant_planning_rejection(
+                                "planning.cad_transform_invalid",
+                                operation_name,
+                                "occurrence_selection",
+                                "The requested rigid transform could not be represented.",
+                                "Use a finite translation and a non-zero finite rotation axis.",
+                            )
+                        })?;
+                    for id in targets {
+                        let current = working_transforms[&id];
+                        let translated = translated_transform(current, delta).map_err(|()| {
+                            assistant_planning_rejection(
+                                "planning.cad_transform_invalid",
+                                operation_name,
+                                &format!("occurrence:{}", id.0),
+                                "The requested translation could not be represented.",
+                                "Use a finite bounded translation.",
+                            )
+                        })?;
+                        let transform = if let Some(world_rotation) = world_rotation {
+                            let occurrence = snapshot
+                                .occurrence(id)
+                                .expect("resolved CAD selector targets a snapshot occurrence");
+                            let parent_transform = occurrence
+                                .parent()
+                                .map_or(Some(Transform::identity()), |parent| {
+                                    snapshot.world_transform_for_group(parent)
+                                })
+                                .ok_or_else(|| {
+                                    assistant_planning_rejection(
+                                        "planning.cad_parent_transform_unavailable",
+                                        operation_name,
+                                        &format!("occurrence:{}", id.0),
+                                        "The occurrence parent transform could not be resolved.",
+                                        "Refresh the document context and retry the transform.",
+                                    )
+                                })?;
+                            rotation_in_parent_space(
+                                world_rotation,
+                                parent_transform,
+                                translated,
+                            )
+                            .ok_or_else(|| {
+                                assistant_planning_rejection(
+                                    "planning.cad_transform_invalid",
+                                    operation_name,
+                                    &format!("occurrence:{}", id.0),
+                                    "The requested world-space rotation could not be represented in the occurrence parent.",
+                                    "Use a finite rigid parent and rotation.",
+                                )
+                            })?
+                        } else {
+                            translated
+                        };
+                        working_transforms.insert(id, transform);
+                        commands.push(CanonicalCommand::SetOccurrenceTransform { id, transform });
+                    }
+                }
+                AssistantCadEditOperation::Copy { translation_mm, .. } => {
+                    let delta = Vec3::new(translation_mm[0], translation_mm[1], translation_mm[2]);
+                    for id in targets {
+                        let source = snapshot
+                            .occurrence(id)
+                            .expect("resolved CAD selector targets a snapshot occurrence");
+                        let transform = translated_transform(working_transforms[&id], delta)
+                            .map_err(|()| {
+                                assistant_planning_rejection(
+                                    "planning.cad_copy_invalid",
+                                    operation_name,
+                                    &format!("occurrence:{}", id.0),
+                                    "The requested copy transform could not be represented.",
+                                    "Use a finite bounded translation.",
+                                )
+                            })?;
+                        let occurrence_id = next_occurrence.map(OccurrenceId).ok_or_else(|| {
+                            assistant_canonical_rejection(
+                                CanonicalError::IdExhausted,
+                                operation_name,
+                                &document_target,
+                            )
+                        })?;
+                        next_occurrence = occurrence_id.0.checked_add(1);
+                        commands.push(CanonicalCommand::CreateOccurrence {
+                            id: occurrence_id,
+                            definition_id: source.definition_id(),
+                            name: source.name().to_owned(),
+                            transform,
+                            parent: source.parent(),
+                            tag: source.tag(),
+                            visible: source.visible(),
+                        });
+                    }
+                }
+                AssistantCadEditOperation::LinearPattern {
+                    instances, step_mm, ..
+                } => {
+                    let step = Vec3::new(step_mm[0], step_mm[1], step_mm[2]);
+                    for instance in 1..*instances {
+                        let delta = step * f64::from(instance);
+                        for id in &targets {
+                            let source = snapshot
+                                .occurrence(*id)
+                                .expect("resolved CAD selector targets a snapshot occurrence");
+                            let transform = translated_transform(working_transforms[id], delta)
+                                .map_err(|()| {
+                                    assistant_planning_rejection(
+                                        "planning.cad_pattern_invalid",
+                                        operation_name,
+                                        &format!("occurrence:{}", id.0),
+                                        "The requested pattern transform could not be represented.",
+                                        "Use a finite bounded pattern step and instance count.",
+                                    )
+                                })?;
+                            let occurrence_id =
+                                next_occurrence.map(OccurrenceId).ok_or_else(|| {
+                                    assistant_canonical_rejection(
+                                        CanonicalError::IdExhausted,
+                                        operation_name,
+                                        &document_target,
+                                    )
+                                })?;
+                            next_occurrence = occurrence_id.0.checked_add(1);
+                            commands.push(CanonicalCommand::CreateOccurrence {
+                                id: occurrence_id,
+                                definition_id: source.definition_id(),
+                                name: source.name().to_owned(),
+                                transform,
+                                parent: source.parent(),
+                                tag: source.tag(),
+                                visible: source.visible(),
+                            });
+                        }
+                    }
+                }
+                AssistantCadEditOperation::Mirror {
+                    plane_origin_mm,
+                    plane_normal,
+                    ..
+                } => {
+                    let world_mirror = world_plane_mirror_transform(
+                        Vec3::new(plane_origin_mm[0], plane_origin_mm[1], plane_origin_mm[2]),
+                        Vec3::new(plane_normal[0], plane_normal[1], plane_normal[2]),
+                    )
+                    .map_err(|()| {
+                        assistant_planning_rejection(
+                            "planning.cad_mirror_invalid",
+                            operation_name,
+                            "occurrence_selection",
+                            "The requested mirror plane could not be represented.",
+                            "Use a finite plane origin and non-zero finite normal.",
+                        )
+                    })?;
+                    for id in targets {
+                        let source = snapshot
+                            .occurrence(id)
+                            .expect("resolved CAD selector targets a snapshot occurrence");
+                        let parent_transform = source
+                            .parent()
+                            .map_or(Some(Transform::identity()), |parent| {
+                                snapshot.world_transform_for_group(parent)
+                            })
+                            .ok_or_else(|| {
+                                assistant_planning_rejection(
+                                    "planning.cad_parent_transform_unavailable",
+                                    operation_name,
+                                    &format!("occurrence:{}", id.0),
+                                    "The occurrence parent transform could not be resolved.",
+                                    "Refresh the document context and retry the mirror.",
+                                )
+                            })?;
+                        let transform = rotation_in_parent_space(
+                            world_mirror,
+                            parent_transform,
+                            working_transforms[&id],
+                        )
+                        .ok_or_else(|| {
+                            assistant_planning_rejection(
+                                "planning.cad_mirror_invalid",
+                                operation_name,
+                                &format!("occurrence:{}", id.0),
+                                "The requested mirror could not be represented in the occurrence parent.",
+                                "Use a finite invertible parent transform and mirror plane.",
+                            )
+                        })?;
+                        let occurrence_id = next_occurrence.map(OccurrenceId).ok_or_else(|| {
+                            assistant_canonical_rejection(
+                                CanonicalError::IdExhausted,
+                                operation_name,
+                                &document_target,
+                            )
+                        })?;
+                        next_occurrence = occurrence_id.0.checked_add(1);
+                        commands.push(CanonicalCommand::CreateOccurrence {
+                            id: occurrence_id,
+                            definition_id: source.definition_id(),
+                            name: source.name().to_owned(),
+                            transform,
+                            parent: source.parent(),
+                            tag: source.tag(),
+                            visible: source.visible(),
+                        });
+                    }
+                }
+            }
+        }
+        Ok(CommandBatch::new(commands))
+    }
+
+    fn derive_assistant_cad_edit_proposal(
+        &self,
+        program: &AssistantCadEditProgram,
+    ) -> AssistantPlanningResult<Proposal> {
+        let target = format!("document:{}", self.document.current().document_id().0);
+        let batch = self.plan_assistant_cad_edit_program(program)?;
+        self.document
+            .prepare_proposal_with_context(batch, ProposalContext::local_assistant_model())
+            .map_err(|error| {
+                assistant_proposal_prepare_rejection(error, "cad_edit_program", &target)
+            })
+    }
+
+    fn derive_assistant_model_batch(&self, intent: &AssistantModelIntent) -> Option<CommandBatch> {
         let snapshot = self.document.current();
         let mut commands = Vec::new();
         if intent.replace_scene {
@@ -11178,6 +12244,53 @@ impl KetchupApp {
                 id: OccurrenceId(translation.occurrence_id),
                 transform,
             });
+        }
+        for rotation in &intent.rotations {
+            let [pivot_x, pivot_y, pivot_z] = rotation.pivot_mm;
+            let [axis_x, axis_y, axis_z] = rotation.axis;
+            let world_rotation = world_axis_rotation_transform(
+                Vec3::new(pivot_x, pivot_y, pivot_z),
+                Vec3::new(axis_x, axis_y, axis_z),
+                rotation.angle_degrees,
+            )
+            .ok()?;
+            match (rotation.occurrence_id, rotation.group_id) {
+                (Some(id), None) => {
+                    let occurrence_id = OccurrenceId(id);
+                    let occurrence = snapshot.occurrence(occurrence_id)?;
+                    let parent_transform = occurrence
+                        .parent()
+                        .map_or(Some(Transform::identity()), |parent| {
+                            snapshot.world_transform_for_group(parent)
+                        })?;
+                    commands.push(CanonicalCommand::SetOccurrenceTransform {
+                        id: occurrence_id,
+                        transform: rotation_in_parent_space(
+                            world_rotation,
+                            parent_transform,
+                            occurrence.transform(),
+                        )?,
+                    });
+                }
+                (None, Some(id)) => {
+                    let group_id = GroupId(id);
+                    let group = snapshot.group(group_id)?;
+                    let parent_transform = group
+                        .parent()
+                        .map_or(Some(Transform::identity()), |parent| {
+                            snapshot.world_transform_for_group(parent)
+                        })?;
+                    commands.push(CanonicalCommand::SetGroupTransform {
+                        id: group_id,
+                        transform: rotation_in_parent_space(
+                            world_rotation,
+                            parent_transform,
+                            group.transform(),
+                        )?,
+                    });
+                }
+                _ => return None,
+            }
         }
         for array in &intent.linear_arrays {
             let sources = array
@@ -11597,12 +12710,7 @@ impl KetchupApp {
             next_feature = feature.0.checked_add(feature_count);
             next_occurrence = occurrence.0.checked_add(1);
         }
-        self.document
-            .prepare_proposal_with_context(
-                CommandBatch::new(commands),
-                ProposalContext::local_assistant_model(),
-            )
-            .ok()
+        Some(CommandBatch::new(commands))
     }
 
     fn assistant_collision_repair_delta(
@@ -11741,23 +12849,52 @@ impl KetchupApp {
     fn derive_assistant_validation_repair_plan(
         &self,
         selection: &AssistantValidationSelection,
-    ) -> Option<AssistantPreviewPlan> {
+    ) -> AssistantPlanningResult<AssistantPreviewPlan> {
+        let target = format!("document:{}", self.document.current().document_id().0);
         if !selection.is_valid() {
-            return None;
+            return Err(assistant_rejection(
+                AssistantRejectionPhase::DomainValidation,
+                "validator.selection_invalid",
+                "validation_repair",
+                &target,
+                "The requested validator selection is empty or contains unknown validators.",
+                "Choose one or more known validators and retry.",
+                true,
+            ));
         }
         let snapshot = self.document.current();
         let validation_before =
             self.assistant_validation_context(&snapshot, &self.exact_results, selection);
         if validation_before["complete"].as_bool() != Some(true) {
-            return None;
+            return Err(assistant_rejection(
+                AssistantRejectionPhase::DomainValidation,
+                "validator.evidence_incomplete",
+                "validation_repair",
+                &target,
+                "The requested validator evidence is incomplete for the current snapshot.",
+                "Resolve missing exact or validator evidence before requesting a repair.",
+                true,
+            ));
         }
 
         let mut candidate = snapshot;
         let mut validation_after = validation_before.clone();
-        let mut issue_total = Self::assistant_validation_issue_total(&validation_after)?;
+        let mut issue_total = Self::assistant_validation_issue_total(&validation_after)
+            .ok_or_else(|| {
+                assistant_rejection(
+                    AssistantRejectionPhase::DomainValidation,
+                    "validator.result_invalid",
+                    "validation_repair",
+                    &target,
+                    "The validator result does not contain a bounded issue count.",
+                    "Re-run validation against the current canonical snapshot.",
+                    true,
+                )
+            })?;
         let mut target_transforms = BTreeMap::new();
         let mut accepted_steps = Vec::new();
         let mut final_proposal = None;
+        let mut last_rejection = None;
         for _ in 0..MAX_ASSISTANT_VALIDATION_ISSUES {
             let mut accepted = None;
             for step in self.assistant_validation_repair_steps(&candidate, &validation_after) {
@@ -11783,14 +12920,30 @@ impl KetchupApp {
                         transform: *transform,
                     })
                     .collect();
-                let Ok(proposal) = self.document.prepare_proposal_with_context(
+                let proposal = match self.document.prepare_proposal_with_context(
                     CommandBatch::new(commands),
                     ProposalContext::local_assistant_model(),
-                ) else {
-                    continue;
+                ) {
+                    Ok(proposal) => proposal,
+                    Err(error) => {
+                        last_rejection = Some(assistant_proposal_prepare_rejection(
+                            error,
+                            "validation_repair",
+                            &target,
+                        ));
+                        continue;
+                    }
                 };
-                let Ok(trial_candidate) = self.document.preview_batch(proposal.batch()) else {
-                    continue;
+                let trial_candidate = match self.document.preview_batch(proposal.batch()) {
+                    Ok(candidate) => candidate,
+                    Err(error) => {
+                        last_rejection = Some(assistant_canonical_rejection(
+                            error,
+                            "validation_repair",
+                            &target,
+                        ));
+                        continue;
+                    }
                 };
                 let trial_results =
                     ExactResultRegistry::carried_forward(&trial_candidate, &self.exact_results);
@@ -11837,9 +12990,22 @@ impl KetchupApp {
             }
         }
 
-        Some(AssistantPreviewPlan {
+        let proposal = final_proposal.ok_or_else(|| {
+            last_rejection.unwrap_or_else(|| {
+                assistant_rejection(
+                    AssistantRejectionPhase::DomainValidation,
+                    "validator.no_safe_repair",
+                    "validation_repair",
+                    &target,
+                    "No bounded repair candidate reduced the requested validator issues.",
+                    "Revise the model or request a narrower repair after reviewing the validator issues.",
+                    true,
+                )
+            })
+        })?;
+        Ok(AssistantPreviewPlan {
             source: AssistantPreviewSource::ValidationRepair(selection.clone()),
-            proposal: final_proposal?,
+            proposal,
             repair: Some(AssistantRepairPreview {
                 steps: accepted_steps,
                 validation_before,
@@ -11851,19 +13017,22 @@ impl KetchupApp {
     fn derive_assistant_preview_plan(
         &self,
         source: &AssistantPreviewSource,
-    ) -> Option<AssistantPreviewPlan> {
+    ) -> AssistantPlanningResult<AssistantPreviewPlan> {
         let proposal = match source {
             AssistantPreviewSource::Workflow(intent) => {
-                self.derive_assistant_workflow_proposal(intent).ok()?
+                self.derive_assistant_workflow_proposal(intent)?
             }
             AssistantPreviewSource::Model(intent) => {
                 self.derive_assistant_model_proposal(intent)?
+            }
+            AssistantPreviewSource::CadEdit(program) => {
+                self.derive_assistant_cad_edit_proposal(program)?
             }
             AssistantPreviewSource::ValidationRepair(selection) => {
                 return self.derive_assistant_validation_repair_plan(selection);
             }
         };
-        Some(AssistantPreviewPlan {
+        Ok(AssistantPreviewPlan {
             source: source.clone(),
             proposal,
             repair: None,
@@ -11873,10 +13042,16 @@ impl KetchupApp {
     fn prepare_assistant_validation_repair(&mut self, query: &str) -> bool {
         let source =
             AssistantPreviewSource::ValidationRepair(AssistantValidationSelection::parse(query));
-        let Some(plan) = self.derive_assistant_preview_plan(&source) else {
-            self.assistant_proposal = None;
-            self.digest = self.catalog.text("assistant-repair-unavailable");
-            return false;
+        let plan = match self.derive_assistant_preview_plan(&source) {
+            Ok(plan) => plan,
+            Err(error) => {
+                self.assistant_proposal = None;
+                self.digest = self.catalog.format(
+                    "assistant-digest-rejected",
+                    &BTreeMap::from([("reason", error.failed_invariant)]),
+                );
+                return false;
+            }
         };
         self.digest = self.catalog.format(
             "assistant-digest-preview",
@@ -11891,27 +13066,11 @@ impl KetchupApp {
         true
     }
 
-    pub fn prepare_assistant_model_intent(&mut self, intent: AssistantModelIntent) -> bool {
-        if let Err(error) = intent.validate() {
-            self.assistant_proposal = None;
-            self.digest = self.catalog.format(
-                "assistant-digest-rejected",
-                &BTreeMap::from([("reason", error)]),
-            );
-            return false;
-        }
-        let source = AssistantPreviewSource::Model(intent);
-        let Some(plan) = self.derive_assistant_preview_plan(&source) else {
-            self.assistant_proposal = None;
-            self.digest = self.catalog.format(
-                "assistant-digest-rejected",
-                &BTreeMap::from([(
-                    "reason",
-                    "assistant model intent could not be planned".to_owned(),
-                )]),
-            );
-            return false;
-        };
+    fn prepare_assistant_preview_source(
+        &mut self,
+        source: AssistantPreviewSource,
+    ) -> AssistantPlanningResult<()> {
+        let plan = self.derive_assistant_preview_plan(&source)?;
         self.digest = self.catalog.format(
             "assistant-digest-preview",
             &BTreeMap::from([
@@ -11922,7 +13081,28 @@ impl KetchupApp {
         self.status_key = "status-preview";
         self.assistant_verification = None;
         self.assistant_proposal = Some(plan);
-        true
+        Ok(())
+    }
+
+    fn prepare_assistant_model_intent_result(
+        &mut self,
+        intent: AssistantModelIntent,
+    ) -> AssistantPlanningResult<()> {
+        self.prepare_assistant_preview_source(AssistantPreviewSource::Model(intent))
+    }
+
+    pub fn prepare_assistant_model_intent(&mut self, intent: AssistantModelIntent) -> bool {
+        match self.prepare_assistant_model_intent_result(intent) {
+            Ok(()) => true,
+            Err(error) => {
+                self.assistant_proposal = None;
+                self.digest = self.catalog.format(
+                    "assistant-digest-rejected",
+                    &BTreeMap::from([("reason", error.failed_invariant)]),
+                );
+                false
+            }
+        }
     }
 
     pub fn apply_assistant_model_intent(&mut self, intent: AssistantModelIntent) -> bool {
@@ -11935,7 +13115,7 @@ impl KetchupApp {
     }
 
     fn poll_assistant_chat(&mut self, context: &egui::Context) {
-        if let Some(pending) = self.assistant_pending_execution.take() {
+        if let Some(mut pending) = self.assistant_pending_execution.take() {
             let snapshot = self.document.current();
             if snapshot.document_id() != pending.document_id
                 || snapshot.revision_id() != pending.revision_id
@@ -11945,26 +13125,55 @@ impl KetchupApp {
                     role: AssistantMessageRole::Error,
                     text: self.catalog.text("assistant-error-stale-response"),
                     source: self.catalog.text("assistant-role-error"),
-                });
-            } else if self.prepare_assistant_model_intent(
-                pending
-                    .result
-                    .model_intent
-                    .expect("pending execution always carries a model intent"),
-            ) {
-                let answer = pending.result.message;
-                self.remember_latest_assistant_exchange(&answer);
-                self.assistant_messages.push(AssistantChatMessage {
-                    role: AssistantMessageRole::Assistant,
-                    text: answer,
-                    source: pending.source,
+                    diagnostic: None,
                 });
             } else {
-                self.assistant_messages.push(AssistantChatMessage {
-                    role: AssistantMessageRole::Error,
-                    text: self.catalog.text("assistant-error-rejected-change"),
-                    source: self.catalog.text("assistant-role-error"),
-                });
+                let source = if let Some(program) = pending.cad_edit_program.take() {
+                    AssistantPreviewSource::CadEdit(program)
+                } else {
+                    AssistantPreviewSource::Model(
+                        pending
+                            .result
+                            .model_intent
+                            .take()
+                            .expect("pending execution always carries one mutation program"),
+                    )
+                };
+                match self.prepare_assistant_preview_source(source) {
+                    Ok(()) => {
+                        let answer = pending.result.message;
+                        self.remember_latest_assistant_exchange(&answer);
+                        self.assistant_messages.push(AssistantChatMessage {
+                            role: AssistantMessageRole::Assistant,
+                            text: answer,
+                            source: pending.source,
+                            diagnostic: None,
+                        });
+                    }
+                    Err(rejection) => {
+                        let replan_will_run = rejection.retryable && !pending.replan_attempted;
+                        let diagnostic =
+                            self.record_assistant_rejection(*rejection, replan_will_run);
+                        if replan_will_run {
+                            let document_context =
+                                self.assistant_replan_context(&pending.message, &diagnostic);
+                            if let Err(text) = self.start_assistant_request(
+                                context,
+                                pending.message,
+                                document_context,
+                                pending.source.clone(),
+                                true,
+                            ) {
+                                self.assistant_messages.push(AssistantChatMessage {
+                                    role: AssistantMessageRole::Error,
+                                    text,
+                                    source: pending.source,
+                                    diagnostic: None,
+                                });
+                            }
+                        }
+                    }
+                }
             }
             self.store_assistant_conversation();
             return;
@@ -11975,9 +13184,12 @@ impl KetchupApp {
         };
         let source = task.source.clone();
         let request_id = task.request_id.clone();
+        let request_message = task.message.clone();
+        let replan_attempted = task.replan_attempted;
         let request_document_id = task.document_id;
         let request_revision_id = task.revision_id;
         let request_canonical_digest = task.canonical_digest.clone();
+        let request_selected_occurrence_ids = task.selected_occurrence_ids.clone();
         match task.receiver.try_recv() {
             Ok(response) => {
                 self.assistant_chat_task = None;
@@ -11994,12 +13206,24 @@ impl KetchupApp {
                         self.assistant_selected_api_log =
                             self.assistant_api_logs.len().checked_sub(1);
                     }
-                    response.result
+                    let mut cad_edit_program = response.cad_edit_program;
+                    if let Some(program) = cad_edit_program.as_mut() {
+                        bind_assistant_cad_current_selection(
+                            program,
+                            &request_selected_occurrence_ids,
+                        );
+                    }
+                    (response.result, cad_edit_program)
                 });
                 match result {
-                    Ok(result) if result.model_intent.is_some() => {
+                    Ok((result, cad_edit_program))
+                        if result.model_intent.is_some() || cad_edit_program.is_some() =>
+                    {
                         self.assistant_pending_execution = Some(AssistantPendingExecution {
                             result,
+                            cad_edit_program,
+                            message: request_message,
+                            replan_attempted,
                             document_id: request_document_id,
                             revision_id: request_revision_id,
                             canonical_digest: request_canonical_digest,
@@ -12008,18 +13232,20 @@ impl KetchupApp {
                         context.request_repaint();
                         return;
                     }
-                    Ok(result) => {
+                    Ok((result, _)) => {
                         self.remember_latest_assistant_exchange(&result.message);
                         self.assistant_messages.push(AssistantChatMessage {
                             role: AssistantMessageRole::Assistant,
                             text: result.message,
                             source,
+                            diagnostic: None,
                         });
                     }
                     Err(text) => self.assistant_messages.push(AssistantChatMessage {
                         role: AssistantMessageRole::Error,
                         text,
                         source,
+                        diagnostic: None,
                     }),
                 }
                 self.store_assistant_conversation();
@@ -12031,6 +13257,7 @@ impl KetchupApp {
                     role: AssistantMessageRole::Error,
                     text: self.catalog.text("assistant-error-disconnected"),
                     source,
+                    diagnostic: None,
                 });
                 self.store_assistant_conversation();
             }
@@ -12127,10 +13354,14 @@ impl KetchupApp {
     /// carrying forward re-checks every product against `snapshot` and drops
     /// whatever it no longer carries the evidence for.
     fn rebind_exact_results(&mut self, snapshot: &Snapshot) {
-        if self.exact_results.is_bound_to(snapshot) {
-            return;
+        if !self.exact_results.is_bound_to(snapshot) {
+            self.exact_results =
+                ExactResultRegistry::carried_forward(snapshot, &self.exact_results);
         }
-        self.exact_results = ExactResultRegistry::carried_forward(snapshot, &self.exact_results);
+        if !self.topology_results.is_bound_to(snapshot) {
+            self.topology_results =
+                ExactResultRegistry::carried_forward(snapshot, &self.topology_results);
+        }
     }
 
     fn refresh_exact_products(&mut self, context: &egui::Context) {
@@ -12161,16 +13392,22 @@ impl KetchupApp {
                 Ok(result) => {
                     let task = self.exact_task.take().expect("the completed task exists");
                     if task.source == source && !task.cancelled.load(Ordering::Acquire) {
-                        match result.and_then(|packages| {
+                        match result.and_then(|products| {
                             let mut results = self.exact_results.clone();
-                            for package in packages {
+                            for package in products.render_packages {
                                 results
                                     .insert_current(&snapshot, package)
                                     .map_err(|error| error.to_string())?;
                             }
-                            Ok(results)
+                            let mut topology_results = self.topology_results.clone();
+                            for package in products.topology_packages {
+                                topology_results
+                                    .insert_current(&snapshot, package)
+                                    .map_err(|error| error.to_string())?;
+                            }
+                            Ok((results, topology_results))
                         }) {
-                            Ok(results) => {
+                            Ok((results, topology_results)) => {
                                 let references = results
                                     .values()
                                     .flat_map(|package| package.references())
@@ -12186,6 +13423,7 @@ impl KetchupApp {
                                     .is_ok()
                                 {
                                     self.exact_results = results;
+                                    self.topology_results = topology_results;
                                     self.render_plan =
                                         Some(Arc::new(InstancedRenderPlan::from_snapshot(
                                             &snapshot,
@@ -12231,6 +13469,7 @@ impl KetchupApp {
             Ok(graph) => graph,
             Err(_) => {
                 self.exact_results.clear();
+                self.topology_results.clear();
                 self.exact_source = None;
                 return;
             }
@@ -12307,14 +13546,42 @@ impl KetchupApp {
                 }) {
                     return Ok(None);
                 }
+                if snapshot.feature(feature_id).is_some_and(|feature| {
+                    matches!(
+                        feature.kind(),
+                        FeatureKind::TopologyShell { .. } | FeatureKind::TopologyEdgeFinish { .. }
+                    )
+                }) && let Ok(graph) =
+                    ExactBRepGraph::from_snapshot(&snapshot, definition_id, feature_id)
+                {
+                    return Ok(Some((
+                        definition_id,
+                        ExactEvaluationRequest::Graph(Box::new(graph)),
+                    )));
+                }
                 if let Ok(request) = ExactFeatureChainRequest::from_snapshot_for_producer(
                     &snapshot,
                     definition_id,
                     feature_id,
                 ) {
+                    let topology = snapshot
+                        .feature(feature_id)
+                        .filter(|feature| {
+                            matches!(
+                                feature.kind(),
+                                FeatureKind::Extrusion { .. } | FeatureKind::Pad(_)
+                            )
+                        })
+                        .and_then(|_| {
+                            ExactBRepGraph::from_snapshot(&snapshot, definition_id, feature_id).ok()
+                        })
+                        .map(Box::new);
                     return Ok(Some((
                         definition_id,
-                        ExactEvaluationRequest::Rectangle(Box::new(request)),
+                        ExactEvaluationRequest::Rectangle {
+                            request: Box::new(request),
+                            topology,
+                        },
                     )));
                 }
                 if let Ok(request) = ExactRevolveRequest::from_snapshot(&snapshot, definition_id)
@@ -12377,20 +13644,42 @@ impl KetchupApp {
                 let mut worker =
                     ExactWorkerSupervisor::spawn_with_cancellation(executable, &worker_cancelled)
                         .map_err(|error| error.to_string())?;
-                let mut packages = Vec::new();
+                let mut render_packages = Vec::new();
+                let mut topology_packages = Vec::new();
                 for (_definition_id, request) in requests {
                     if worker_cancelled.load(Ordering::Acquire) {
                         return Err("exact evaluation cancelled".to_owned());
                     }
-                    let package = match request {
-                        ExactEvaluationRequest::Rectangle(request) => worker
-                            .evaluate_rectangle_with_cancellation(&request, &worker_cancelled)
-                            .map(ExactBodyPackage::from)
-                            .map_err(|error| error.to_string())?,
-                        ExactEvaluationRequest::Revolve(request) => worker
-                            .evaluate_revolve_with_cancellation(&request, &worker_cancelled)
-                            .map(ExactBodyPackage::from)
-                            .map_err(|error| error.to_string())?,
+                    let (package, topology_package) = match request {
+                        ExactEvaluationRequest::Graph(graph) => {
+                            let package = worker
+                                .evaluate_exact_brep_graph(&graph)
+                                .map(ExactBodyPackage::Graph)
+                                .map_err(|error| error.to_string())?;
+                            (package.clone(), Some(package))
+                        }
+                        ExactEvaluationRequest::Rectangle { request, topology } => {
+                            let package = worker
+                                .evaluate_rectangle_with_cancellation(&request, &worker_cancelled)
+                                .map(ExactBodyPackage::from)
+                                .map_err(|error| error.to_string())?;
+                            let topology_package = topology
+                                .map(|graph| {
+                                    worker
+                                        .evaluate_exact_brep_graph(&graph)
+                                        .map(ExactBodyPackage::Graph)
+                                        .map_err(|error| error.to_string())
+                                })
+                                .transpose()?;
+                            (package, topology_package)
+                        }
+                        ExactEvaluationRequest::Revolve(request) => (
+                            worker
+                                .evaluate_revolve_with_cancellation(&request, &worker_cancelled)
+                                .map(ExactBodyPackage::from)
+                                .map_err(|error| error.to_string())?,
+                            None,
+                        ),
                         ExactEvaluationRequest::Imported(definition_id, source) => {
                             let definition =
                                 snapshot.definition(definition_id).ok_or_else(|| {
@@ -12420,10 +13709,11 @@ impl KetchupApp {
                                 );
                             }
                             let source_unit = receipt.units().source_unit();
-                            let expected = StepImportEvidence {
+                            let mut expected = StepImportEvidence {
                                 source_unit,
                                 result_fingerprint: spec.result_fingerprint.clone(),
                                 solid_count: spec.solid_count,
+                                topology_counts: spec.topology_counts.unwrap_or([0; 5]),
                                 volume_mm3: spec.volume_mm3,
                                 bounds_mm: spec.bounds_mm,
                                 backend: spec.backend.clone(),
@@ -12446,6 +13736,9 @@ impl KetchupApp {
                                     &worker_cancelled,
                                 )
                                 .map_err(|error| error.to_string())?;
+                            if spec.topology_counts.is_none() {
+                                expected.topology_counts = actual.topology_counts;
+                            }
                             if actual != expected {
                                 return Err("imported STEP worker evidence does not match canonical specification".to_owned());
                             }
@@ -12463,19 +13756,26 @@ impl KetchupApp {
                                     &worker_cancelled,
                                 )
                                 .map_err(|error| error.to_string())?;
-                            ImportedExactPackage::from_snapshot(
+                            let package = ImportedExactPackage::from_snapshot(
                                 &snapshot,
                                 definition_id,
                                 source,
                                 &mesh,
                             )
                             .map(ExactBodyPackage::Imported)
-                            .map_err(|error| error.to_string())?
+                            .map_err(|error| error.to_string())?;
+                            (package.clone(), Some(package))
                         }
                     };
-                    packages.push(Arc::new(package));
+                    render_packages.push(Arc::new(package));
+                    if let Some(package) = topology_package {
+                        topology_packages.push(Arc::new(package));
+                    }
                 }
-                Ok(packages)
+                Ok(ExactEvaluationProducts {
+                    render_packages,
+                    topology_packages,
+                })
             })();
             if !worker_cancelled.load(Ordering::Acquire) && sender.send(result).is_ok() {
                 repaint.request_repaint();
@@ -12495,6 +13795,35 @@ impl KetchupApp {
         self.exact_worker_attempted = true;
     }
 
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn headless_install_exact_package(&mut self, package: ExactBodyPackage) -> bool {
+        if let Some(task) = self.exact_task.take() {
+            task.cancelled.store(true, Ordering::Release);
+        }
+        let snapshot = self.document.current();
+        let source = (
+            snapshot.document_id(),
+            snapshot.revision_id(),
+            snapshot.canonical_digest(),
+        );
+        let package = Arc::new(package);
+        let mut exact_results = ExactResultRegistry::default();
+        let mut topology_results = ExactResultRegistry::default();
+        let inserted = exact_results
+            .insert_current(&snapshot, Arc::clone(&package))
+            .is_ok()
+            && (package.topological_references().is_empty()
+                || topology_results.insert_current(&snapshot, package).is_ok());
+        if inserted {
+            self.exact_results = exact_results;
+            self.topology_results = topology_results;
+            self.exact_source = Some(source);
+            self.exact_retry_at = None;
+        }
+        inserted
+    }
+
     pub fn connect_exact_worker(&mut self, executable: impl AsRef<Path>) -> Result<(), String> {
         let executable = executable.as_ref();
         if !executable.is_file() {
@@ -12509,6 +13838,7 @@ impl KetchupApp {
         self.exact_worker_path = Some(executable.to_owned());
         self.exact_worker_attempted = true;
         self.exact_results.clear();
+        self.topology_results.clear();
         self.exact_source = None;
         self.exact_retry_at = None;
         self.beam_m5_products = None;
@@ -12602,6 +13932,10 @@ impl KetchupApp {
 
     fn exact_projection(&self, snapshot: &Snapshot) -> ExactInteractionProjection {
         ExactInteractionProjection::from_snapshot(snapshot, &self.exact_results)
+    }
+
+    fn topology_projection(&self, snapshot: &Snapshot) -> ExactInteractionProjection {
+        ExactInteractionProjection::from_snapshot(snapshot, &self.topology_results)
     }
 
     /// The cached feature edges of `definition_id`, rebuilt only when
@@ -13492,6 +14826,51 @@ impl KetchupApp {
             return false;
         };
         self.apply_deselect_source_plan(plan)
+    }
+
+    fn bind_topological_selection(
+        &self,
+        locator: &TopologicalPickLocator,
+    ) -> Option<SnapshotBoundTopologicalSelection> {
+        let snapshot = self.document.current();
+        self.topology_projection(&snapshot)
+            .topological_pick_current(&snapshot, &self.topology_results, locator)
+            .ok()
+    }
+
+    #[doc(hidden)]
+    pub fn select_topological_locator(&mut self, locator: TopologicalPickLocator) -> bool {
+        let Some(topological) = self.bind_topological_selection(&locator) else {
+            return false;
+        };
+        let target = topological.target();
+        let element = match locator.kind {
+            TopologicalElementKind::Face => ElementId::Face {
+                axis: Axis::Z,
+                side: Side::Maximum,
+            },
+            TopologicalElementKind::Edge => {
+                let Ok(ordinal) = u8::try_from(locator.ordinal) else {
+                    return false;
+                };
+                ElementId::Edge(ordinal)
+            }
+            TopologicalElementKind::Vertex => {
+                let Ok(ordinal) = u8::try_from(locator.ordinal) else {
+                    return false;
+                };
+                ElementId::Endpoint(ordinal)
+            }
+        };
+        self.selection.select_topological(
+            SelectionId {
+                definition_id: target.reference.definition_id,
+                instance_path: target.instance_path.clone(),
+                element,
+            },
+            topological,
+        );
+        true
     }
 
     fn select_from_viewport(&mut self, target: Option<SelectionId>, additive: bool) {
@@ -14747,64 +16126,68 @@ impl KetchupApp {
         true
     }
 
-    fn selected_general_shell_target(&self) -> Option<(DefinitionId, FeatureId, StableFaceRole)> {
+    fn selected_general_finish_target(
+        &self,
+        kind: TopologicalElementKind,
+    ) -> Option<(
+        DefinitionId,
+        FeatureId,
+        SnapshotBoundTopologicalSelection,
+        TopologicalElementRef,
+    )> {
         let selection = self.selection.primary.as_ref()?;
-        if selection.element
-            != (ElementId::Face {
-                axis: Axis::Z,
-                side: Side::Maximum,
-            })
-            || !selection.instance_path.is_root()
+        let topological = self.selection.topological.as_ref()?;
+        let snapshot = self.document.current();
+        let resolved = topological
+            .resolve_current(&snapshot, &self.topology_results)
+            .ok()?;
+        if resolved.instance_path != selection.instance_path
+            || resolved.reference.definition_id != selection.definition_id
+            || resolved.reference.kind != kind
         {
             return None;
         }
-        let item = self
-            .active_boxes()
-            .into_iter()
-            .find(|item| item.instance_path == selection.instance_path)?;
-        let extrusion = item.extrusion_feature_id?;
-        let snapshot = self.document.current();
-        let request =
-            ExactFeatureChainRequest::from_snapshot(&snapshot, selection.definition_id).ok()?;
-        if request.shell.is_some() {
+        let target_feature_id = resolved.reference.producer_feature_id;
+        let target = snapshot.feature(target_feature_id)?;
+        if target.definition_id() != selection.definition_id || !target.kind().produces_body() {
             return None;
         }
+        let package = self
+            .exact_results
+            .get_render(&snapshot, selection.definition_id)?;
+        if package.producer_feature_id() != target_feature_id {
+            return None;
+        }
+        ExactBRepGraph::from_snapshot(&snapshot, selection.definition_id, target_feature_id)
+            .ok()?;
         Some((
             selection.definition_id,
-            extrusion,
-            StableFaceRole::new("extrusion.top").expect("the built-in top face role is valid"),
+            target_feature_id,
+            topological.clone(),
+            resolved.reference,
         ))
+    }
+
+    fn selected_general_shell_target(
+        &self,
+    ) -> Option<(
+        DefinitionId,
+        FeatureId,
+        SnapshotBoundTopologicalSelection,
+        TopologicalElementRef,
+    )> {
+        self.selected_general_finish_target(TopologicalElementKind::Face)
     }
 
     fn selected_general_edge_finish_target(
         &self,
-    ) -> Option<(DefinitionId, FeatureId, StableEdgeRole)> {
-        let selection = self.selection.primary.as_ref()?;
-        if !matches!(
-            selection.element,
-            ElementId::Edge(7)
-                | ElementId::EdgeMidpoint(7)
-                | ElementId::Face {
-                    axis: Axis::Z,
-                    side: Side::Maximum,
-                }
-        ) || !selection.instance_path.is_root()
-        {
-            return None;
-        }
-        let snapshot = self.document.current();
-        let request =
-            ExactFeatureChainRequest::from_snapshot(&snapshot, selection.definition_id).ok()?;
-        let shell = request.shell?;
-        if shell.edge_finish_feature_id.is_some() {
-            return None;
-        }
-        Some((
-            selection.definition_id,
-            shell.shell_feature_id,
-            StableEdgeRole::new("shell.edge.top-east")
-                .expect("the built-in top-east edge role is valid"),
-        ))
+    ) -> Option<(
+        DefinitionId,
+        FeatureId,
+        SnapshotBoundTopologicalSelection,
+        TopologicalElementRef,
+    )> {
+        self.selected_general_finish_target(TopologicalElementKind::Edge)
     }
 
     fn general_finish_source_plan(
@@ -14812,14 +16195,10 @@ impl KetchupApp {
         kind: GeneralFinishKind,
     ) -> Option<GeneralFinishSourcePlan> {
         let selection = self.selection.primary.as_ref()?;
-        let (definition_id, target_feature_id, stable_role) = match kind {
-            GeneralFinishKind::Shell => {
-                let (definition_id, target, role) = self.selected_general_shell_target()?;
-                (definition_id, target, role.as_str().to_owned())
-            }
+        let (definition_id, target_feature_id, topological_selection, reference) = match kind {
+            GeneralFinishKind::Shell => self.selected_general_shell_target()?,
             GeneralFinishKind::Fillet | GeneralFinishKind::Chamfer => {
-                let (definition_id, target, role) = self.selected_general_edge_finish_target()?;
-                (definition_id, target, role.as_str().to_owned())
+                self.selected_general_edge_finish_target()?
             }
         };
         let snapshot = self.document.current();
@@ -14828,8 +16207,9 @@ impl KetchupApp {
             .resolve_instance_path(&selection.instance_path)
             .ok()?
             .world_transform;
-        let exact_request =
-            ExactFeatureChainRequest::from_snapshot(&snapshot, definition_id).ok()?;
+        let exact_graph =
+            ExactBRepGraph::from_snapshot(&snapshot, definition_id, target_feature_id).ok()?;
+        debug_assert_eq!(reference.producer_feature_id, target_feature_id);
         Some(GeneralFinishSourcePlan {
             source_document_id: snapshot.document_id(),
             source_revision: snapshot.revision_id(),
@@ -14840,10 +16220,10 @@ impl KetchupApp {
             definition_id,
             target_feature_id,
             target_feature_kind,
-            stable_role,
+            topological_selection,
             kind,
             world_transform,
-            exact_request,
+            exact_graph,
         })
     }
 
@@ -14873,23 +16253,31 @@ impl KetchupApp {
             .unwrap_or(0)
             .checked_add(1)
             .map(FeatureId)?;
+        let resolved = source
+            .topological_selection
+            .resolve_current(&snapshot, &self.topology_results)
+            .ok()?;
+        if resolved.reference.producer_feature_id != source.target_feature_id {
+            return None;
+        }
+        let reference = resolved.reference;
         let (feature_kind, name_key) = match source.kind {
             GeneralFinishKind::Shell => (
-                FeatureKind::Shell {
+                FeatureKind::TopologyShell {
                     target: source.target_feature_id,
-                    removed_faces: vec![StableFaceRole::new(source.stable_role.clone()).ok()?],
+                    removed_faces: vec![reference],
                     thickness: dimension,
                 },
                 "model-shell-feature",
             ),
             GeneralFinishKind::Fillet | GeneralFinishKind::Chamfer => (
-                FeatureKind::BottleEdgeFinish {
+                FeatureKind::TopologyEdgeFinish {
                     target: source.target_feature_id,
-                    edges: vec![StableEdgeRole::new(source.stable_role.clone()).ok()?],
+                    edges: vec![reference],
                     kind: if source.kind == GeneralFinishKind::Fillet {
-                        BottleEdgeFinishKind::Fillet
+                        EdgeFinishKind::Fillet
                     } else {
-                        BottleEdgeFinishKind::Chamfer
+                        EdgeFinishKind::Chamfer
                     },
                     amount: dimension,
                 },
@@ -14908,16 +16296,19 @@ impl KetchupApp {
         };
         let batch = CommandBatch::new(vec![command.clone()]);
         let preview_snapshot = self.document.preview_batch(&batch).ok()?;
-        let exact_request =
-            ExactFeatureChainRequest::from_snapshot(&preview_snapshot, source.definition_id)
-                .ok()?;
+        let exact_graph = ExactBRepGraph::from_snapshot(
+            &preview_snapshot,
+            source.definition_id,
+            generated_feature_id,
+        )
+        .ok()?;
         Some((
             GeneralFinishPreviewPlan {
                 source: source.clone(),
                 generated_feature_id,
                 amount_mm_bits: amount_mm.to_bits(),
                 command,
-                exact_request,
+                exact_graph,
             },
             batch,
         ))
@@ -14950,15 +16341,44 @@ impl KetchupApp {
         true
     }
 
+    pub fn prepare_assistant_general_finish(
+        &mut self,
+        locator: TopologicalPickLocator,
+        kind: GeneralFinishKind,
+        amount_mm: f64,
+    ) -> bool {
+        if !amount_mm.is_finite() || amount_mm <= 0.0 || !self.select_topological_locator(locator) {
+            return false;
+        }
+        self.clear_ephemeral_edit_state();
+        self.active_tool = match kind {
+            GeneralFinishKind::Shell => ActiveTool::Shell,
+            GeneralFinishKind::Fillet => ActiveTool::Fillet,
+            GeneralFinishKind::Chamfer => ActiveTool::Chamfer,
+        };
+        self.value_input = amount_mm.to_string();
+        self.refresh_general_finish_preview()
+    }
+
+    pub fn confirm_assistant_general_finish(&mut self) -> bool {
+        self.confirm_general_finish_preview()
+    }
+
     #[must_use]
     pub fn general_finish_preview_parameters(
         &self,
-    ) -> Option<(FeatureId, String, GeneralFinishKind, f64)> {
+    ) -> Option<(FeatureId, TopologicalElementRef, GeneralFinishKind, f64)> {
         let preview = self.general_finish_preview.as_ref()?;
         self.general_finish_preview_is_current().then(|| {
             (
                 preview.plan.source.target_feature_id,
-                preview.plan.source.stable_role.clone(),
+                preview
+                    .plan
+                    .source
+                    .topological_selection
+                    .target()
+                    .reference
+                    .clone(),
                 preview.plan.source.kind,
                 f64::from_bits(preview.plan.amount_mm_bits),
             )
@@ -15017,6 +16437,58 @@ impl KetchupApp {
                 Some((
                     feature.id(),
                     edges.first()?.as_str().to_owned(),
+                    *kind,
+                    amount.millimetres(),
+                ))
+            })
+            .last()
+    }
+
+    #[must_use]
+    pub fn latest_topology_shell_parameters(
+        &self,
+    ) -> Option<(FeatureId, TopologicalElementRef, f64)> {
+        self.document
+            .current()
+            .features()
+            .filter_map(|feature| {
+                let FeatureKind::TopologyShell {
+                    removed_faces,
+                    thickness,
+                    ..
+                } = feature.kind()
+                else {
+                    return None;
+                };
+                Some((
+                    feature.id(),
+                    removed_faces.first()?.clone(),
+                    thickness.millimetres(),
+                ))
+            })
+            .last()
+    }
+
+    #[must_use]
+    pub fn latest_topology_edge_finish_parameters(
+        &self,
+    ) -> Option<(FeatureId, TopologicalElementRef, EdgeFinishKind, f64)> {
+        self.document
+            .current()
+            .features()
+            .filter_map(|feature| {
+                let FeatureKind::TopologyEdgeFinish {
+                    edges,
+                    kind,
+                    amount,
+                    ..
+                } = feature.kind()
+                else {
+                    return None;
+                };
+                Some((
+                    feature.id(),
+                    edges.first()?.clone(),
                     *kind,
                     amount.millimetres(),
                 ))
@@ -22639,16 +24111,15 @@ impl KetchupApp {
             _ => return None,
         };
         self.prepare_smart_push_pull_proposal_with_context(batch, context)
+            .ok()
     }
 
     fn prepare_smart_push_pull_proposal_with_context(
         &self,
         batch: CommandBatch,
         context: ProposalContext,
-    ) -> Option<Proposal> {
-        self.document
-            .prepare_proposal_with_context(batch, context)
-            .ok()
+    ) -> Result<Proposal, ProposalPrepareError> {
+        self.document.prepare_proposal_with_context(batch, context)
     }
 
     fn push_pull_planning_snapshot(&self) -> Snapshot {
@@ -23940,6 +25411,15 @@ impl KetchupApp {
             {
                 self.selection.primary = None;
             }
+        }
+        if self.selection.primary.is_none()
+            || self
+                .selection
+                .topological
+                .as_ref()
+                .is_some_and(|selection| !selection.is_current(&snapshot))
+        {
+            self.selection.topological = None;
         }
         if self
             .last_move
@@ -27190,7 +28670,13 @@ impl KetchupApp {
                     .filter(|snap| matches!(snap.reference.element, ElementId::EdgeMidpoint(_)))
                     .map(|snap| snap.reference.clone())
                     .or_else(|| self.hovered.clone());
-                self.select_from_viewport(target, additive);
+                let topological = target.as_ref().and_then(|selection| {
+                    self.topological_selection_at_screen(pointer, response.rect, selection)
+                });
+                self.select_from_viewport(target.clone(), additive);
+                if !additive && self.selection.primary == target {
+                    self.selection.topological = topological;
+                }
             } else if matches!(
                 self.active_tool,
                 ActiveTool::SolidSubtract
@@ -28497,6 +29983,45 @@ impl KetchupApp {
         }
 
         box_pick
+    }
+
+    fn topological_selection_at_screen(
+        &self,
+        pointer: Pos2,
+        rect: Rect,
+        selection: &SelectionId,
+    ) -> Option<SnapshotBoundTopologicalSelection> {
+        let ray = self.view_ray(pointer, rect)?;
+        let snapshot = self.document.current();
+        let projection = self.topology_projection(&snapshot);
+        let hit = projection.exact_surface_pick(ray)?;
+        if hit.definition_id != selection.definition_id
+            || hit.instance_path != selection.instance_path
+        {
+            return None;
+        }
+        match selection.element {
+            ElementId::Face { .. } => hit.topological_target,
+            ElementId::Edge(ordinal) | ElementId::EdgeMidpoint(ordinal) => {
+                let producer_feature_id = self
+                    .topology_results
+                    .get_render(&snapshot, selection.definition_id)?
+                    .producer_feature_id();
+                projection
+                    .topological_pick_current(
+                        &snapshot,
+                        &self.topology_results,
+                        &TopologicalPickLocator {
+                            instance_path: selection.instance_path.clone(),
+                            producer_feature_id,
+                            kind: TopologicalElementKind::Edge,
+                            ordinal: u32::from(ordinal),
+                        },
+                    )
+                    .ok()
+            }
+            _ => None,
+        }
     }
 
     fn exact_pick_at_screen(&self, pointer: Pos2, rect: Rect) -> Option<SelectionId> {
@@ -34904,6 +36429,55 @@ const fn axis_direction(axis: Axis) -> Vec3 {
     }
 }
 
+fn inverse_affine_transform(transform: Transform) -> Option<Transform> {
+    let matrix = transform.matrix();
+    let [a, b, c, d, e, f, g, h, i] = [
+        matrix[0], matrix[1], matrix[2], matrix[4], matrix[5], matrix[6], matrix[8], matrix[9],
+        matrix[10],
+    ];
+    let determinant = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g);
+    if !determinant.is_finite() || determinant.abs() <= 1.0e-12 {
+        return None;
+    }
+    let inverse_determinant = 1.0 / determinant;
+    let inverse_basis = [
+        (e * i - f * h) * inverse_determinant,
+        (c * h - b * i) * inverse_determinant,
+        (b * f - c * e) * inverse_determinant,
+        (f * g - d * i) * inverse_determinant,
+        (a * i - c * g) * inverse_determinant,
+        (c * d - a * f) * inverse_determinant,
+        (d * h - e * g) * inverse_determinant,
+        (b * g - a * h) * inverse_determinant,
+        (a * e - b * d) * inverse_determinant,
+    ];
+    let translation = [matrix[3], matrix[7], matrix[11]];
+    let mut inverse = [0.0; 16];
+    for row in 0..3 {
+        inverse[row * 4] = inverse_basis[row * 3];
+        inverse[row * 4 + 1] = inverse_basis[row * 3 + 1];
+        inverse[row * 4 + 2] = inverse_basis[row * 3 + 2];
+        inverse[row * 4 + 3] = -(0..3)
+            .map(|column| inverse_basis[row * 3 + column] * translation[column])
+            .sum::<f64>();
+    }
+    inverse[15] = 1.0;
+    Transform::from_matrix(inverse).ok()
+}
+
+fn rotation_in_parent_space(
+    world_rotation: Transform,
+    parent_world_transform: Transform,
+    local_transform: Transform,
+) -> Option<Transform> {
+    let parent_inverse = inverse_affine_transform(parent_world_transform)?;
+    let transformed = parent_inverse
+        .compose(world_rotation)
+        .compose(parent_world_transform)
+        .compose(local_transform);
+    Transform::from_matrix(*transformed.matrix()).ok()
+}
+
 /// The world transform that turns `angle_degrees` about `axis` through
 /// `centre_mm`, ready to be composed in front of an occurrence transform.
 fn world_rotation_transform(
@@ -34911,11 +36485,49 @@ fn world_rotation_transform(
     axis: Axis,
     angle_degrees: f64,
 ) -> Result<Transform, ()> {
-    if !angle_degrees.is_finite() {
+    world_axis_rotation_transform(centre_mm, axis_direction(axis), angle_degrees)
+}
+
+fn world_plane_mirror_transform(origin_mm: Vec3, normal: Vec3) -> Result<Transform, ()> {
+    let normal_length = vector_length(normal);
+    if !normal_length.is_finite() || normal_length <= f64::EPSILON {
+        return Err(());
+    }
+    let unit = normal * (1.0 / normal_length);
+    let components = [unit.x, unit.y, unit.z];
+    let origin = [origin_mm.x, origin_mm.y, origin_mm.z];
+    if origin.iter().any(|value| !value.is_finite()) {
+        return Err(());
+    }
+    let offset = 2.0
+        * components
+            .iter()
+            .zip(origin)
+            .map(|(normal, coordinate)| normal * coordinate)
+            .sum::<f64>();
+    let mut matrix = [0.0; 16];
+    for row in 0..3 {
+        for column in 0..3 {
+            matrix[row * 4 + column] = if row == column { 1.0 } else { 0.0 };
+            matrix[row * 4 + column] -= 2.0 * components[row] * components[column];
+        }
+        matrix[row * 4 + 3] = components[row] * offset;
+    }
+    matrix[15] = 1.0;
+    Transform::from_matrix(matrix).map_err(|_| ())
+}
+
+fn world_axis_rotation_transform(
+    centre_mm: Vec3,
+    axis: Vec3,
+    angle_degrees: f64,
+) -> Result<Transform, ()> {
+    let axis_length = vector_length(axis);
+    if !angle_degrees.is_finite() || !axis_length.is_finite() || axis_length <= f64::EPSILON {
         return Err(());
     }
     let (sin, cos) = angle_degrees.to_radians().sin_cos();
-    let unit = axis_direction(axis);
+    let unit = axis * (1.0 / axis_length);
     let one_minus_cos = 1.0 - cos;
     let basis = [
         [
@@ -36217,6 +37829,400 @@ mod tests {
     use ketchup_core::graph::{EvaluatorNodeKind, PortSpec};
 
     #[test]
+    fn cad_edit_program_compiles_selection_to_one_host_id_canonical_batch() {
+        let mut app = KetchupApp::new();
+        app.selection.occurrences = BTreeSet::from([InstancePath::root(OccurrenceId(1))]);
+        let selector = AssistantCadEntitySelector::CurrentSelection {};
+        let program = AssistantCadEditProgram {
+            operations: vec![
+                AssistantCadEditOperation::Transform {
+                    selector: selector.clone(),
+                    translation_mm: [10.0, 0.0, 0.0],
+                    rotation: Some(ketchup_core::assistant_sidecar::AssistantCadRotation {
+                        pivot_mm: [0.0, 0.0, 0.0],
+                        axis: [0.0, 0.0, 1.0],
+                        angle_degrees: 90.0,
+                    }),
+                },
+                AssistantCadEditOperation::Copy {
+                    selector: selector.clone(),
+                    translation_mm: [0.0, 20.0, 0.0],
+                },
+                AssistantCadEditOperation::LinearPattern {
+                    selector: selector.clone(),
+                    instances: 3,
+                    step_mm: [25.0, 0.0, 0.0],
+                },
+                AssistantCadEditOperation::Mirror {
+                    selector,
+                    plane_origin_mm: [0.0, 0.0, 0.0],
+                    plane_normal: [1.0, 0.0, 0.0],
+                },
+            ],
+        };
+
+        let batch = app.plan_assistant_cad_edit_program(&program).unwrap();
+        assert_eq!(batch.commands().len(), 5);
+        assert!(matches!(
+            batch.commands()[0],
+            CanonicalCommand::SetOccurrenceTransform {
+                id: OccurrenceId(1),
+                ..
+            }
+        ));
+        assert_eq!(
+            batch
+                .commands()
+                .iter()
+                .filter_map(|command| match command {
+                    CanonicalCommand::CreateOccurrence { id, .. } => Some(*id),
+                    _ => None,
+                })
+                .collect::<Vec<_>>(),
+            vec![
+                OccurrenceId(2),
+                OccurrenceId(3),
+                OccurrenceId(4),
+                OccurrenceId(5)
+            ]
+        );
+
+        app.document.apply_batch(&batch).unwrap();
+        assert_eq!(app.occurrence_count(), 5);
+        assert_eq!(
+            app.document
+                .current()
+                .occurrence(OccurrenceId(1))
+                .unwrap()
+                .transform(),
+            match batch.commands()[0] {
+                CanonicalCommand::SetOccurrenceTransform { transform, .. } => transform,
+                _ => unreachable!(),
+            }
+        );
+    }
+
+    #[test]
+    fn cad_edit_current_selection_binds_to_request_time_occurrences() {
+        let explicit = AssistantCadEntitySelector::Occurrences {
+            occurrence_ids: vec![9],
+        };
+        let mut program = AssistantCadEditProgram {
+            operations: vec![
+                AssistantCadEditOperation::Copy {
+                    selector: AssistantCadEntitySelector::CurrentSelection {},
+                    translation_mm: [10.0, 0.0, 0.0],
+                },
+                AssistantCadEditOperation::Mirror {
+                    selector: explicit.clone(),
+                    plane_origin_mm: [0.0, 0.0, 0.0],
+                    plane_normal: [1.0, 0.0, 0.0],
+                },
+            ],
+        };
+
+        bind_assistant_cad_current_selection(&mut program, &[3, 4]);
+
+        assert!(matches!(
+            &program.operations[0],
+            AssistantCadEditOperation::Copy {
+                selector: AssistantCadEntitySelector::Occurrences { occurrence_ids },
+                ..
+            } if occurrence_ids == &[3, 4]
+        ));
+        assert!(matches!(
+            &program.operations[1],
+            AssistantCadEditOperation::Mirror { selector, .. } if selector == &explicit
+        ));
+    }
+
+    #[test]
+    fn cad_edit_program_enters_revision_bound_preview_without_mutating_document() {
+        let mut app = KetchupApp::new();
+        let snapshot = app.document.current().clone();
+        let undo_steps = app.document.visible_undo_steps();
+        let program = AssistantCadEditProgram {
+            operations: vec![AssistantCadEditOperation::Copy {
+                selector: AssistantCadEntitySelector::Occurrences {
+                    occurrence_ids: vec![1],
+                },
+                translation_mm: [10.0, 0.0, 0.0],
+            }],
+        };
+
+        app.prepare_assistant_preview_source(AssistantPreviewSource::CadEdit(program.clone()))
+            .unwrap();
+
+        let preview = app.assistant_proposal.as_ref().unwrap();
+        assert_eq!(preview.source, AssistantPreviewSource::CadEdit(program));
+        assert_eq!(preview.document_id(), snapshot.document_id());
+        assert_eq!(preview.provenance_revision(), snapshot.revision_id());
+        assert_eq!(preview.provenance_digest(), snapshot.canonical_digest());
+        assert_eq!(app.occurrence_count(), 1);
+        assert_eq!(app.document.visible_undo_steps(), undo_steps);
+    }
+
+    #[test]
+    fn cad_edit_delete_rejects_or_removes_canonical_references_atomically() {
+        let mut app = KetchupApp::new();
+        app.document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::CreateCollection {
+                    id: CollectionId(1),
+                    name: "Protected selection".to_owned(),
+                },
+                CanonicalCommand::SetCollectionOccurrences {
+                    id: CollectionId(1),
+                    occurrence_ids: vec![OccurrenceId(1)],
+                },
+            ]))
+            .unwrap();
+        let selector = AssistantCadEntitySelector::Occurrences {
+            occurrence_ids: vec![1],
+        };
+        let rejected = app
+            .plan_assistant_cad_edit_program(&AssistantCadEditProgram {
+                operations: vec![AssistantCadEditOperation::Delete {
+                    selector: selector.clone(),
+                    dependency_policy: AssistantCadDeletePolicy::RejectIfReferenced,
+                }],
+            })
+            .unwrap_err();
+        assert_eq!(rejected.code, "planning.cad_delete_referenced");
+        assert_eq!(app.occurrence_count(), 1);
+
+        let batch = app
+            .plan_assistant_cad_edit_program(&AssistantCadEditProgram {
+                operations: vec![AssistantCadEditOperation::Delete {
+                    selector,
+                    dependency_policy: AssistantCadDeletePolicy::RemoveReferences,
+                }],
+            })
+            .unwrap();
+        assert!(matches!(
+            batch.commands(),
+            [
+                CanonicalCommand::SetCollectionOccurrences {
+                    id: CollectionId(1),
+                    occurrence_ids
+                },
+                CanonicalCommand::DeleteOccurrence {
+                    id: OccurrenceId(1)
+                }
+            ] if occurrence_ids.is_empty()
+        ));
+        app.document.apply_batch(&batch).unwrap();
+        assert_eq!(app.occurrence_count(), 0);
+        assert_eq!(
+            app.document
+                .current()
+                .collection(CollectionId(1))
+                .unwrap()
+                .occurrence_ids()
+                .count(),
+            0
+        );
+    }
+
+    #[test]
+    fn assistant_preview_planner_preserves_canonical_and_validator_diagnostics() {
+        let app = KetchupApp::new();
+        let canonical = app
+            .derive_assistant_preview_plan(&AssistantPreviewSource::Workflow(
+                WorkflowIntent::SetOccurrenceVisibility {
+                    target: OccurrenceId(999),
+                    visible: false,
+                },
+            ))
+            .unwrap_err();
+        assert_eq!(
+            canonical.phase,
+            AssistantRejectionPhase::CanonicalValidation
+        );
+        assert_eq!(canonical.code, "canonical.occurrence_not_found");
+        assert_eq!(canonical.operation, "workflow_intent");
+        assert_eq!(
+            canonical.target,
+            format!("document:{}", app.document.current().document_id().0)
+        );
+        assert_eq!(canonical.failed_invariant, "occurrence 999 does not exist");
+        assert!(canonical.retryable);
+        assert_eq!(canonical.validate(), Ok(()));
+
+        let invalid_model = serde_json::from_value::<AssistantModelIntent>(serde_json::json!({
+            "replace_scene": false
+        }))
+        .unwrap();
+        let intent = app
+            .derive_assistant_preview_plan(&AssistantPreviewSource::Model(invalid_model))
+            .unwrap_err();
+        assert_eq!(intent.phase, AssistantRejectionPhase::IntentValidation);
+        assert_eq!(intent.code, "intent.model_invalid");
+        assert_eq!(intent.validate(), Ok(()));
+
+        let selection = AssistantValidationSelection {
+            mode: "selected",
+            requested: BTreeSet::new(),
+            unknown: vec!["mystery".to_owned()],
+        };
+        let validator = app
+            .derive_assistant_preview_plan(&AssistantPreviewSource::ValidationRepair(selection))
+            .unwrap_err();
+        assert_eq!(validator.phase, AssistantRejectionPhase::DomainValidation);
+        assert_eq!(validator.code, "validator.selection_invalid");
+        assert_eq!(validator.validate(), Ok(()));
+    }
+
+    #[test]
+    fn structured_rejection_is_localized_and_drives_exactly_one_bounded_replan() {
+        struct RejectedReplanTransport {
+            contexts: std::sync::Mutex<Vec<serde_json::Value>>,
+        }
+
+        impl AssistantTransport for RejectedReplanTransport {
+            fn chat(
+                &self,
+                _handshake: AssistantHandshake,
+                _request_id: &str,
+                _message: &str,
+                context: &serde_json::Value,
+                _cancellation: AssistantCancellation,
+            ) -> Result<AssistantChatResult, String> {
+                self.contexts.lock().unwrap().push(context.clone());
+                Ok(AssistantChatResult {
+                    message: "Still targets a missing occurrence.".to_owned(),
+                    model_intent: Some(missing_occurrence_model_intent()),
+                })
+            }
+        }
+
+        fn missing_occurrence_model_intent() -> AssistantModelIntent {
+            AssistantModelIntent {
+                replace_scene: false,
+                boxes: Vec::new(),
+                translations: vec![
+                    ketchup_core::assistant_sidecar::AssistantTranslationIntent {
+                        occurrence_id: 999,
+                        delta_mm: [10.0, 0.0, 0.0],
+                    },
+                ],
+                rotations: Vec::new(),
+                profile_translations: Vec::new(),
+                parameter_edits: Vec::new(),
+                linear_arrays: Vec::new(),
+                bottles: Vec::new(),
+                gable_roofs: Vec::new(),
+                staircases: Vec::new(),
+                oriented_beams: Vec::new(),
+                balloon_texts: Vec::new(),
+            }
+        }
+
+        let transport = Arc::new(RejectedReplanTransport {
+            contexts: std::sync::Mutex::new(Vec::new()),
+        });
+        let mut app = KetchupApp::new();
+        app.assistant_transport = transport.clone();
+        app.assistant_messages.push(AssistantChatMessage {
+            role: AssistantMessageRole::User,
+            text: "Move occurrence 999.".to_owned(),
+            source: "test".to_owned(),
+            diagnostic: None,
+        });
+        let before = (
+            app.document.current().revision_id(),
+            app.document.current().canonical_digest(),
+            app.document.visible_undo_steps(),
+        );
+        app.assistant_pending_execution = Some(AssistantPendingExecution {
+            cad_edit_program: None,
+            result: AssistantChatResult {
+                message: "Moved it.".to_owned(),
+                model_intent: Some(missing_occurrence_model_intent()),
+            },
+            message: "Move occurrence 999.".to_owned(),
+            replan_attempted: false,
+            document_id: app.document.current().document_id(),
+            revision_id: app.document.current().revision_id(),
+            canonical_digest: app.document.current().canonical_digest(),
+            source: "test".to_owned(),
+        });
+        let context = egui::Context::default();
+
+        app.poll_assistant_chat(&context);
+
+        let first_diagnostic = app
+            .assistant_messages
+            .last()
+            .and_then(|message| message.diagnostic.clone())
+            .expect("the first rejection preserves its structured diagnostic");
+        assert_eq!(first_diagnostic.code, "canonical.occurrence_not_found");
+        assert!(app.assistant_chat_task.is_some());
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while app.assistant_pending_execution.is_none()
+            && app.assistant_chat_task.is_some()
+            && Instant::now() < deadline
+        {
+            std::thread::sleep(Duration::from_millis(5));
+            app.poll_assistant_chat(&context);
+        }
+        assert!(app.assistant_pending_execution.is_some());
+
+        let contexts = transport.contexts.lock().unwrap();
+        assert_eq!(contexts.len(), 1);
+        assert_eq!(contexts[0]["assistant_replan"]["attempt"], 1);
+        assert_eq!(contexts[0]["assistant_replan"]["max_attempts"], 1);
+        assert_eq!(
+            contexts[0]["assistant_replan"]["diagnostic"],
+            serde_json::to_value(&first_diagnostic).unwrap()
+        );
+        assert!(
+            assistant_context_byte_length(&contexts[0]) <= MAX_ASSISTANT_PROVIDER_CONTEXT_BYTES
+        );
+        drop(contexts);
+
+        app.poll_assistant_chat(&context);
+
+        assert!(app.assistant_chat_task.is_none());
+        assert!(app.assistant_pending_execution.is_none());
+        assert_eq!(transport.contexts.lock().unwrap().len(), 1);
+        assert_eq!(
+            app.assistant_messages
+                .iter()
+                .filter(|message| message.diagnostic.is_some())
+                .count(),
+            2
+        );
+        assert_eq!(
+            (
+                app.document.current().revision_id(),
+                app.document.current().canonical_digest(),
+                app.document.visible_undo_steps(),
+            ),
+            before
+        );
+        let english = app.localized_assistant_rejection(&first_diagnostic, true);
+        let slovak = KetchupApp::with_catalog(LocaleCatalog::slovak())
+            .localized_assistant_rejection(&first_diagnostic, true);
+        for text in [english, slovak] {
+            assert!(text.contains("canonical.occurrence_not_found"));
+            assert!(text.contains("occurrence 999 does not exist"));
+        }
+    }
+
+    #[test]
+    fn canonical_error_codes_are_stable_machine_identifiers() {
+        assert_eq!(
+            CanonicalError::OccurrenceInAssemblyMate(OccurrenceId(17)).code(),
+            "canonical.occurrence_in_assembly_mate"
+        );
+        assert_eq!(
+            CanonicalError::DefinitionNotFound(DefinitionId(9)).code(),
+            "canonical.definition_not_found"
+        );
+    }
+
+    #[test]
     fn assistant_path_resolution_skips_a_stale_higher_priority_candidate() {
         let directory = tempfile::tempdir().unwrap();
         let stale = directory.path().join("stale.exe");
@@ -36335,6 +38341,75 @@ mod tests {
         );
     }
 
+    fn install_initial_graph_result(app: &mut KetchupApp) {
+        let snapshot = app.document.current();
+        let graph =
+            ExactBRepGraph::from_snapshot(&snapshot, INITIAL_BOX_DEFINITION, FeatureId(2)).unwrap();
+        let item = app.active_boxes().into_iter().next().unwrap();
+        let minimum = item.origin_mm;
+        let maximum = item.origin_mm + item.size_mm;
+        let vertices_mm = box_corners(item.size_mm.x, item.size_mm.y, item.size_mm.z)
+            .map(|point| {
+                let point = point + minimum;
+                [point.x, point.y, point.z]
+            })
+            .to_vec();
+        let triangles = [
+            ([0, 2, 1], 0),
+            ([1, 2, 3], 0),
+            ([4, 5, 6], 1),
+            ([5, 7, 6], 1),
+            ([0, 1, 4], 2),
+            ([1, 5, 4], 2),
+            ([2, 6, 3], 3),
+            ([3, 6, 7], 3),
+            ([0, 4, 2], 4),
+            ([2, 4, 6], 4),
+            ([1, 3, 5], 5),
+            ([3, 7, 5], 5),
+        ]
+        .into_iter()
+        .map(|(vertex_indices, face_ordinal)| StepMeshTriangle {
+            vertex_indices,
+            face_ordinal,
+        })
+        .collect();
+        let package = ExactBRepGraphPackage::from_worker_evidence(
+            &graph,
+            ExactBRepGraphWorkerEvidence {
+                exact_input_digest: "headless-topology-input".into(),
+                result_fingerprint: "headless-topology-result".into(),
+                volume_mm3: item.size_mm.x * item.size_mm.y * item.size_mm.z,
+                topology_counts: [8, 12, 6, 1, 1],
+                bounds_mm: [
+                    [minimum.x, minimum.y, minimum.z],
+                    [maximum.x, maximum.y, maximum.z],
+                ],
+                backend: "headless-topology-backend.v1".into(),
+                tolerance: "1e-7-mm".into(),
+            },
+            &StepImportMesh {
+                vertices_mm,
+                triangles,
+            },
+        )
+        .unwrap();
+        assert!(app.headless_install_exact_package(ExactBodyPackage::Graph(package)));
+    }
+
+    fn select_initial_topological(
+        app: &mut KetchupApp,
+        kind: TopologicalElementKind,
+        ordinal: u32,
+    ) {
+        assert!(app.select_topological_locator(TopologicalPickLocator {
+            instance_path: InstancePath::root(OccurrenceId(1)),
+            producer_feature_id: FeatureId(2),
+            kind,
+            ordinal,
+        }));
+    }
+
     #[test]
     fn manual_and_assistant_push_pull_share_the_identical_canonical_batch() {
         let mut app = KetchupApp::new();
@@ -36424,6 +38499,7 @@ mod tests {
                     delta_mm: [5.0, 0.0, 0.0],
                 },
             ],
+            rotations: Vec::new(),
             profile_translations: Vec::new(),
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
@@ -36485,6 +38561,7 @@ mod tests {
             role: AssistantMessageRole::User,
             text: "Create a shelf.".to_owned(),
             source: "test".to_owned(),
+            diagnostic: None,
         });
         assert!(app.is_dirty());
         assert!(app.save_document_to(&path));
@@ -36540,6 +38617,29 @@ mod tests {
     }
 
     #[test]
+    fn assistant_context_exposes_the_selected_group_for_generic_rotation() {
+        let mut app = KetchupApp::new();
+        app.document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::CreateGroup {
+                    id: GroupId(1),
+                    name: "Rotatable group".to_owned(),
+                    transform: Transform::identity(),
+                    parent: None,
+                },
+                CanonicalCommand::SetOccurrenceParent {
+                    id: OccurrenceId(1),
+                    parent: Some(GroupId(1)),
+                },
+            ]))
+            .unwrap();
+        assert!(app.select_group(GroupId(1)));
+
+        let context = app.assistant_context();
+        assert_eq!(context["selected_group_id"], 1);
+    }
+
+    #[test]
     fn provider_context_remains_bounded_for_extreme_selection_and_history() {
         let long_text = "x".repeat(4 * 1024);
         let occurrences = (1..=100)
@@ -36579,6 +38679,7 @@ mod tests {
                 "issues": issues,
             },
             "selected_occurrence_ids": (1..=100).collect::<Vec<_>>(),
+            "selected_group_id": 1,
             "selected_profile_translation_target": null,
             "selected_parameter_edit_target": null,
             "occurrence_count": 100,
@@ -36603,10 +38704,12 @@ mod tests {
             role: AssistantMessageRole::User,
             text: "Remember the shelf spacing.".to_owned(),
             source: "test".to_owned(),
+            diagnostic: None,
         });
         let (sender, receiver) = mpsc::channel();
         sender
             .send(Ok(AssistantTransportResponse {
+                cad_edit_program: None,
                 result: AssistantChatResult {
                     message: "The shelf spacing is 320 mm.".to_owned(),
                     model_intent: None,
@@ -36616,7 +38719,10 @@ mod tests {
             .unwrap();
         app.assistant_chat_task = Some(AssistantChatTask {
             receiver,
+            selected_occurrence_ids: Vec::new(),
             request_id: "test".to_owned(),
+            message: "test".to_owned(),
+            replan_attempted: false,
             started_at: Instant::now(),
             cancellation: AssistantCancellation::default(),
             document_id: app.document.current().document_id(),
@@ -36635,12 +38741,16 @@ mod tests {
             role: AssistantMessageRole::User,
             text: "Do not remember a failed request.".to_owned(),
             source: "test".to_owned(),
+            diagnostic: None,
         });
         let (sender, receiver) = mpsc::channel();
         sender.send(Err("provider unavailable".to_owned())).unwrap();
         failed.assistant_chat_task = Some(AssistantChatTask {
             receiver,
+            selected_occurrence_ids: Vec::new(),
             request_id: "test".to_owned(),
+            message: "test".to_owned(),
+            replan_attempted: false,
             started_at: Instant::now(),
             cancellation: AssistantCancellation::default(),
             document_id: failed.document.current().document_id(),
@@ -36756,7 +38866,10 @@ mod tests {
         let (_sender, receiver) = mpsc::channel();
         app.assistant_chat_task = Some(AssistantChatTask {
             receiver,
+            selected_occurrence_ids: Vec::new(),
             request_id: "test".to_owned(),
+            message: "test".to_owned(),
+            replan_attempted: false,
             started_at: Instant::now(),
             cancellation: cancellation.clone(),
             document_id: app.document.current().document_id(),
@@ -36778,7 +38891,10 @@ mod tests {
         let (_new_sender, new_receiver) = mpsc::channel();
         app.assistant_chat_task = Some(AssistantChatTask {
             receiver: new_receiver,
+            selected_occurrence_ids: Vec::new(),
             request_id: "test".to_owned(),
+            message: "test".to_owned(),
+            replan_attempted: false,
             started_at: Instant::now(),
             cancellation: new_cancellation.clone(),
             document_id: app.document.current().document_id(),
@@ -36799,7 +38915,10 @@ mod tests {
         let (_open_sender, open_receiver) = mpsc::channel();
         app.assistant_chat_task = Some(AssistantChatTask {
             receiver: open_receiver,
+            selected_occurrence_ids: Vec::new(),
             request_id: "test".to_owned(),
+            message: "test".to_owned(),
+            replan_attempted: false,
             started_at: Instant::now(),
             cancellation: open_cancellation.clone(),
             document_id: app.document.current().document_id(),
@@ -36830,7 +38949,10 @@ mod tests {
         let (_sender, receiver) = mpsc::channel();
         app.assistant_chat_task = Some(AssistantChatTask {
             receiver,
+            selected_occurrence_ids: Vec::new(),
             request_id: "test".to_owned(),
+            message: "test".to_owned(),
+            replan_attempted: false,
             started_at: Instant::now() - Duration::from_secs(7),
             cancellation: AssistantCancellation::default(),
             document_id: app.document.current().document_id(),
@@ -36867,6 +38989,9 @@ mod tests {
         let state = harness.state_mut();
         state.assistant_chat_task = None;
         state.assistant_pending_execution = Some(AssistantPendingExecution {
+            cad_edit_program: None,
+            message: "test".to_owned(),
+            replan_attempted: false,
             result: AssistantChatResult {
                 message: "Moved it.".to_owned(),
                 model_intent: Some(AssistantModelIntent {
@@ -36878,6 +39003,7 @@ mod tests {
                             delta_mm: [25.0, 0.0, 0.0],
                         },
                     ],
+                    rotations: Vec::new(),
                     profile_translations: Vec::new(),
                     parameter_edits: Vec::new(),
                     linear_arrays: Vec::new(),
@@ -36921,6 +39047,9 @@ mod tests {
         let mut app = KetchupApp::new();
         let revision = app.document.current().revision_id();
         app.assistant_pending_execution = Some(AssistantPendingExecution {
+            cad_edit_program: None,
+            message: "test".to_owned(),
+            replan_attempted: false,
             result: AssistantChatResult {
                 message: "Moved it.".to_owned(),
                 model_intent: Some(AssistantModelIntent {
@@ -36932,6 +39061,7 @@ mod tests {
                             delta_mm: [25.0, 0.0, 0.0],
                         },
                     ],
+                    rotations: Vec::new(),
                     profile_translations: Vec::new(),
                     parameter_edits: Vec::new(),
                     linear_arrays: Vec::new(),
@@ -36963,7 +39093,10 @@ mod tests {
         let (sender, receiver) = mpsc::channel();
         app.assistant_chat_task = Some(AssistantChatTask {
             receiver,
+            selected_occurrence_ids: Vec::new(),
             request_id: "test".to_owned(),
+            message: "test".to_owned(),
+            replan_attempted: false,
             started_at: Instant::now(),
             cancellation: AssistantCancellation::default(),
             document_id: app.document.current().document_id(),
@@ -36973,6 +39106,7 @@ mod tests {
         });
         sender
             .send(Ok(AssistantTransportResponse {
+                cad_edit_program: None,
                 result: AssistantChatResult {
                     message: "Moved it.".to_owned(),
                     model_intent: Some(AssistantModelIntent {
@@ -36984,6 +39118,7 @@ mod tests {
                                 delta_mm: [25.0, 0.0, 0.0],
                             },
                         ],
+                        rotations: Vec::new(),
                         profile_translations: Vec::new(),
                         parameter_edits: Vec::new(),
                         linear_arrays: Vec::new(),
@@ -37049,6 +39184,7 @@ mod tests {
                     subtract_boxes: Vec::new(),
                 }],
                 translations: Vec::new(),
+                rotations: Vec::new(),
                 profile_translations: Vec::new(),
                 parameter_edits: Vec::new(),
                 linear_arrays: Vec::new(),
@@ -37098,7 +39234,10 @@ mod tests {
         let cancellation = AssistantCancellation::default();
         app.assistant_chat_task = Some(AssistantChatTask {
             receiver,
+            selected_occurrence_ids: Vec::new(),
             request_id: "test".to_owned(),
+            message: "test".to_owned(),
+            replan_attempted: false,
             started_at: Instant::now(),
             cancellation,
             document_id: request_document_id,
@@ -37120,6 +39259,7 @@ mod tests {
         let undo_steps = app.document.visible_undo_steps();
         sender
             .send(Ok(AssistantTransportResponse {
+                cad_edit_program: None,
                 result: AssistantChatResult {
                     message: "Moved it.".to_owned(),
                     model_intent: Some(AssistantModelIntent {
@@ -37131,6 +39271,7 @@ mod tests {
                                 delta_mm: [100.0, 0.0, 0.0],
                             },
                         ],
+                        rotations: Vec::new(),
                         profile_translations: Vec::new(),
                         parameter_edits: Vec::new(),
                         linear_arrays: Vec::new(),
@@ -37170,11 +39311,21 @@ mod tests {
                 role: AssistantMessageRole::User,
                 text: "Posuň hranol o 100 mm.".to_owned(),
                 source: "Codex OAuth · gpt-test".to_owned(),
+                diagnostic: None,
             },
             AssistantChatMessage {
-                role: AssistantMessageRole::Assistant,
-                text: "Hranol som posunul.".to_owned(),
+                role: AssistantMessageRole::Error,
+                text: "Výskyt 999 neexistuje.".to_owned(),
                 source: "Codex OAuth · gpt-test".to_owned(),
+                diagnostic: Some(AssistantRejectionDiagnostic {
+                    phase: AssistantRejectionPhase::CanonicalValidation,
+                    code: "canonical.occurrence_not_found".to_owned(),
+                    operation: "translate_occurrence".to_owned(),
+                    target: "occurrence:999".to_owned(),
+                    failed_invariant: "occurrence 999 does not exist".to_owned(),
+                    repair_hint: "Choose an occurrence that exists.".to_owned(),
+                    retryable: true,
+                }),
             },
         ];
 
@@ -38401,6 +40552,7 @@ endsolid tetrahedron\n";
                     ],
                 }],
                 translations: Vec::new(),
+                rotations: Vec::new(),
                 profile_translations: Vec::new(),
                 parameter_edits: Vec::new(),
                 linear_arrays: Vec::new(),
@@ -43447,7 +45599,8 @@ endsolid tetrahedron\n";
     fn general_finish_exact_plan_rejects_tamper_drift_stale_and_replay_atomically() {
         fn prepared_shell() -> KetchupApp {
             let mut app = KetchupApp::new();
-            select_initial_top_face(&mut app);
+            install_initial_graph_result(&mut app);
+            select_initial_topological(&mut app, TopologicalElementKind::Face, 3);
             app.dispatch_command(AppCommand::Shell);
             assert!(app.general_finish_preview_is_current());
             app
@@ -43495,7 +45648,7 @@ endsolid tetrahedron\n";
             .as_mut()
             .unwrap()
             .plan
-            .exact_request
+            .exact_graph
             .canonical_input_digest = "tampered".to_owned();
         assert!(!request_tamper.confirm_general_finish_preview());
         assert_unchanged(&request_tamper, revision, &digest, undo_steps);
@@ -43510,7 +45663,9 @@ endsolid tetrahedron\n";
             .unwrap()
             .plan
             .source
-            .stable_role = "extrusion.bottom".to_owned();
+            .target_feature_kind = FeatureKind::Profile {
+            points_mm: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]],
+        };
         assert!(!source_tamper.confirm_general_finish_preview());
         assert_unchanged(&source_tamper, revision, &digest, undo_steps);
 
@@ -45297,6 +47452,7 @@ endsolid tetrahedron\n";
                     },
                 ],
                 translations: Vec::new(),
+                rotations: Vec::new(),
                 profile_translations: Vec::new(),
                 parameter_edits: Vec::new(),
                 linear_arrays: Vec::new(),

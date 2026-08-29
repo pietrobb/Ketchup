@@ -55,6 +55,12 @@ elif mode == "chat":
     print(json.dumps({"type":"chat-result","request_id":request["request_id"],"message":"bounded answer","model_intent":None}), flush=True)
     shutdown = json.loads(sys.stdin.readline())
     print(json.dumps({"type":"bye"}), flush=True)
+elif mode == "cad-edit":
+    print(json.dumps({"type":"chat-result","request_id":request["request_id"],"message":"bounded edit","model_intent":None,"cad_edit_program":{"operations":[{"operation":"copy","selector":{"type":"occurrences","occurrence_ids":[7]},"translation_mm":[10,0,0]}]}}), flush=True)
+    shutdown = json.loads(sys.stdin.readline())
+    print(json.dumps({"type":"bye"}), flush=True)
+elif mode == "cad-edit-unbounded":
+    print(json.dumps({"type":"chat-result","request_id":request["request_id"],"message":"unbounded edit","model_intent":None,"cad_edit_program":{"operations":[{"operation":"linear_pattern","selector":{"type":"current_selection"},"instances":7,"step_mm":[1,0,0]}]}}), flush=True)
 elif mode == "diagnostics":
     print(json.dumps({"type":"chat-result","request_id":request["request_id"],"message":"observed answer","model_intent":None,"diagnostics":{"provider":"anthropic-api","model":"claude-sonnet-4-6","duration_ms":1250,"input_tokens":1234,"output_tokens":56,"cache_read_tokens":700,"cache_write_tokens":0,"stop_reason":"end_turn","system_prompt":"exact system","request_payload":{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"hello"}]},"response_text":"observed answer"}}), flush=True)
     shutdown = json.loads(sys.stdin.readline())
@@ -98,6 +104,40 @@ fn assistant_process_completes_bounded_handshake_chat_and_shutdown() {
     assert!(result.model_intent.is_none());
     assert_eq!(client.shutdown(), Ok(()));
     assert_eq!(client.shutdown(), Ok(()));
+}
+
+#[test]
+fn assistant_process_transports_only_bounded_cad_edit_programs() {
+    let temp = TempDir::new().unwrap();
+    let script = write_mock(&temp, "cad-edit");
+    let mut client = AssistantProcessClient::spawn(
+        python(),
+        &arguments(&script, "cad-edit"),
+        public_handshake(),
+        Duration::from_secs(10),
+    )
+    .unwrap();
+
+    let exchange = client
+        .chat_exchange("request-cad", "Copy occurrence 7", &json!({}))
+        .unwrap();
+    assert!(exchange.result.model_intent.is_none());
+    assert_eq!(exchange.cad_edit_program.unwrap().operations.len(), 1);
+    assert_eq!(client.shutdown(), Ok(()));
+
+    let invalid_temp = TempDir::new().unwrap();
+    let invalid_script = write_mock(&invalid_temp, "cad-edit-unbounded");
+    let mut invalid_client = AssistantProcessClient::spawn(
+        python(),
+        &arguments(&invalid_script, "cad-edit-unbounded"),
+        public_handshake(),
+        Duration::from_secs(10),
+    )
+    .unwrap();
+    assert!(matches!(
+        invalid_client.chat_exchange("request-unbounded", "Pattern selection", &json!({})),
+        Err(AssistantProcessError::Protocol(_))
+    ));
 }
 
 #[test]

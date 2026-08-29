@@ -376,7 +376,7 @@ fn offset_pad_and_face_pocket_recompute_safely_through_headless_accesskit() {
     let FeatureKind::SketchPocket(spec) = pocket_snapshot.feature(POCKET).unwrap().kind() else {
         panic!("expected sketch Pocket");
     };
-    assert_eq!(spec.extent.distance().millimetres(), 7.0);
+    assert_eq!(spec.extent.blind_distance().unwrap().millimetres(), 7.0);
 
     assert!(prepare_dimension(&mut shell, POCKET_BASE_PAD, "20"));
     shell.click_row(&confirm);

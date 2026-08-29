@@ -7,10 +7,17 @@ use crate::document::{
     FeatureId, FeatureKind, InstancePath, MESH_BODY_SCHEMA_V1, MeshAuthority, MeshBodySpec,
     ProfileSegment, Snapshot, Transform,
 };
+use crate::exact_brep_graph::ExactBRepGraph;
 use crate::graph::DerivedIdentity;
+use crate::import::StepImportMesh;
 use crate::sketch::{
-    FeatureDirection, SolvedSketchRegion, SolvedSketchRegionProfile, WorkplaneSpec,
-    WorkplaneSupport, WorkplaneSupportHealth,
+    FeatureDirection, SolvedSketchRegion, SolvedSketchRegionEdge, SolvedSketchRegionProfile,
+    WorkplaneSpec, WorkplaneSupport, WorkplaneSupportHealth,
+};
+use crate::topology::{
+    TopologicalElementKind, TopologicalElementRef, TopologicalReferenceResolution,
+    publish_generated_topological_references, publish_imported_topological_references,
+    resolve_topological_reference as resolve_role_neutral_topological_reference,
 };
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -19,6 +26,7 @@ use std::fmt::Write as _;
 use std::sync::Arc;
 
 pub const EXACT_PRODUCT_SCHEMA_V1: &str = "ketchup.exact-product.v1";
+pub const EXACT_BREP_GRAPH_EVALUATOR_V1: &str = "ketchup.exact-brep-graph-evaluator.v1";
 pub const EXACT_RECTANGLE_EVALUATOR_V1: &str = "ketchup.exact-rectangle-evaluator.v1";
 pub const EXACT_CIRCLE_EVALUATOR_V1: &str = "ketchup.exact-circle-evaluator.v1";
 pub const EXACT_ARC_PROFILE_EVALUATOR_V1: &str = "ketchup.exact-arc-profile-evaluator.v1";
@@ -673,16 +681,175 @@ pub struct ImportedExactPackage {
     pub source_sha256: [u8; 32],
     pub source_bytes: Vec<u8>,
     pub solid_count: u32,
+    pub topology_counts: Option<[u32; 5]>,
     pub volume_mm3: f64,
     pub bounds_mm: [[f64; 3]; 2],
     pub vertices: Vec<ExactVertex>,
     pub triangles: Vec<ExactTriangle>,
+    pub triangle_face_ordinals: Vec<u32>,
+    pub topological_references: Vec<TopologicalElementRef>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExactBRepGraphPackage {
+    pub identity: BodyResultIdentity,
+    pub graph: ExactBRepGraph,
+    pub volume_mm3: f64,
+    pub topology_counts: [u32; 5],
+    pub bounds_mm: [[f64; 3]; 2],
+    pub vertices: Vec<ExactVertex>,
+    pub triangles: Vec<ExactTriangle>,
+    pub triangle_face_ordinals: Vec<u32>,
+    pub topological_references: Vec<TopologicalElementRef>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExactBRepGraphWorkerEvidence {
+    pub exact_input_digest: String,
+    pub result_fingerprint: String,
+    pub volume_mm3: f64,
+    pub topology_counts: [u32; 5],
+    pub bounds_mm: [[f64; 3]; 2],
+    pub backend: String,
+    pub tolerance: String,
+}
+
+impl ExactBRepGraphPackage {
+    pub fn from_worker_evidence(
+        graph: &ExactBRepGraph,
+        evidence: ExactBRepGraphWorkerEvidence,
+        mesh: &StepImportMesh,
+    ) -> Result<Self, ExactProductError> {
+        graph
+            .validate()
+            .map_err(|_| ExactProductError::InvalidWorkerEvidence)?;
+        let vertex_count = mesh.vertices_mm.len();
+        if evidence.exact_input_digest.is_empty()
+            || evidence.result_fingerprint.is_empty()
+            || evidence.backend.is_empty()
+            || evidence.tolerance.is_empty()
+            || !evidence.volume_mm3.is_finite()
+            || evidence.volume_mm3 <= 0.0
+            || evidence.topology_counts.contains(&0)
+            || evidence
+                .bounds_mm
+                .iter()
+                .flatten()
+                .any(|value| !value.is_finite())
+            || (0..3).any(|axis| evidence.bounds_mm[0][axis] >= evidence.bounds_mm[1][axis])
+            || mesh.triangles.is_empty()
+            || !mesh.is_within_bounds(evidence.bounds_mm, IMPORTED_MESH_BOUNDS_TOLERANCE_MM)
+            || mesh.triangles.iter().any(|triangle| {
+                triangle.face_ordinal >= evidence.topology_counts[2]
+                    || triangle
+                        .vertex_indices
+                        .iter()
+                        .any(|index| *index as usize >= vertex_count)
+            })
+        {
+            return Err(ExactProductError::InvalidWorkerEvidence);
+        }
+        let producer_feature_id = FeatureId(graph.producer_feature_id);
+        let profile_feature_id = graph
+            .profiles
+            .first()
+            .map_or(producer_feature_id, |profile| {
+                FeatureId(profile.source_feature_id)
+            });
+        let identity = BodyResultIdentity {
+            schema: EXACT_PRODUCT_SCHEMA_V1.to_owned(),
+            document_id: DocumentId(graph.document_id),
+            source_revision: graph.source_revision,
+            source_digest: graph.source_digest.clone(),
+            definition_id: DefinitionId(graph.definition_id),
+            profile_feature_id,
+            extrusion_feature_id: producer_feature_id,
+            producer_feature_id,
+            canonical_input_digest: graph.canonical_input_digest.clone(),
+            exact_input_digest: evidence.exact_input_digest,
+            result_fingerprint: evidence.result_fingerprint,
+            evaluator: EXACT_BREP_GRAPH_EVALUATOR_V1.to_owned(),
+            backend: evidence.backend,
+            tolerance: evidence.tolerance,
+        };
+        let topological_references =
+            publish_generated_topological_references(&identity, evidence.topology_counts)
+                .map_err(|_| ExactProductError::InvalidWorkerEvidence)?;
+        Ok(Self {
+            identity,
+            graph: graph.clone(),
+            volume_mm3: evidence.volume_mm3,
+            topology_counts: evidence.topology_counts,
+            bounds_mm: evidence.bounds_mm,
+            vertices: mesh
+                .vertices_mm
+                .iter()
+                .copied()
+                .map(|position_mm| ExactVertex { position_mm })
+                .collect(),
+            triangles: mesh
+                .triangles
+                .iter()
+                .map(|triangle| ExactTriangle {
+                    vertex_indices: triangle.vertex_indices,
+                    face_role: None,
+                })
+                .collect(),
+            triangle_face_ordinals: mesh
+                .triangles
+                .iter()
+                .map(|triangle| triangle.face_ordinal)
+                .collect(),
+            topological_references,
+        })
+    }
+
+    fn matches_graph(&self, graph: &ExactBRepGraph) -> bool {
+        self.identity.document_id == DocumentId(graph.document_id)
+            && self.identity.definition_id == DefinitionId(graph.definition_id)
+            && self.identity.producer_feature_id == FeatureId(graph.producer_feature_id)
+            && self.identity.canonical_input_digest == graph.canonical_input_digest
+            && self.identity.evaluator == EXACT_BREP_GRAPH_EVALUATOR_V1
+            && self.graph == *graph
+    }
+
+    #[must_use]
+    pub fn is_current(&self, snapshot: &Snapshot) -> bool {
+        self.identity.source_revision == snapshot.revision_id()
+            && self.identity.source_digest == snapshot.canonical_digest()
+            && ExactBRepGraph::from_snapshot(
+                snapshot,
+                self.identity.definition_id,
+                self.identity.producer_feature_id,
+            )
+            .is_ok_and(|graph| self.matches_graph(&graph))
+    }
+
+    #[must_use]
+    pub fn rebound_to(&self, snapshot: &Snapshot) -> Option<Self> {
+        let graph = ExactBRepGraph::from_snapshot(
+            snapshot,
+            self.identity.definition_id,
+            self.identity.producer_feature_id,
+        )
+        .ok()?;
+        if graph.graph_digest != self.graph.graph_digest {
+            return None;
+        }
+        let mut rebound = self.clone();
+        rebound.identity.source_revision = snapshot.revision_id();
+        rebound.identity.source_digest = snapshot.canonical_digest();
+        rebound.identity.canonical_input_digest = graph.canonical_input_digest.clone();
+        rebound.graph = graph;
+        Some(rebound)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum ExactBodyPackage {
     Rectangle(ExactRenderPackage),
     Revolve(crate::bottle_m6::ExactRevolvePackage),
+    Graph(ExactBRepGraphPackage),
     Imported(ImportedExactPackage),
 }
 
@@ -753,7 +920,13 @@ impl ImportedExactPackage {
         {
             return Err(ExactProductError::InvalidWorkerEvidence);
         }
-        if !mesh.is_within_bounds(spec.bounds_mm, IMPORTED_MESH_BOUNDS_TOLERANCE_MM) {
+        if !mesh.is_within_bounds(spec.bounds_mm, IMPORTED_MESH_BOUNDS_TOLERANCE_MM)
+            || spec.topology_counts.is_some_and(|counts| {
+                mesh.triangles
+                    .iter()
+                    .any(|triangle| triangle.face_ordinal >= counts[2])
+            })
+        {
             return Err(ExactProductError::InvalidWorkerEvidence);
         }
         let vertices = mesh
@@ -780,30 +953,46 @@ impl ImportedExactPackage {
             .iter()
             .map(|byte| format!("{byte:02x}"))
             .collect::<String>();
+        let identity = BodyResultIdentity {
+            schema: EXACT_PRODUCT_SCHEMA_V1.to_owned(),
+            document_id: snapshot.document_id(),
+            source_revision: snapshot.revision_id(),
+            source_digest,
+            definition_id,
+            profile_feature_id: *feature_id,
+            extrusion_feature_id: *feature_id,
+            producer_feature_id: *feature_id,
+            canonical_input_digest: source_identity.clone(),
+            exact_input_digest: source_identity,
+            result_fingerprint: spec.result_fingerprint.clone(),
+            evaluator: "ketchup.imported-step-evaluator.v1".to_owned(),
+            backend: spec.backend.clone(),
+            tolerance: spec.tolerance.clone(),
+        };
+        let topological_references = spec
+            .topology_counts
+            .map(|counts| {
+                publish_imported_topological_references(&identity, &source_sha256, counts)
+            })
+            .transpose()
+            .map_err(|_| ExactProductError::InvalidWorkerEvidence)?
+            .unwrap_or_default();
         Ok(Self {
-            identity: BodyResultIdentity {
-                schema: EXACT_PRODUCT_SCHEMA_V1.to_owned(),
-                document_id: snapshot.document_id(),
-                source_revision: snapshot.revision_id(),
-                source_digest,
-                definition_id,
-                profile_feature_id: *feature_id,
-                extrusion_feature_id: *feature_id,
-                producer_feature_id: *feature_id,
-                canonical_input_digest: source_identity.clone(),
-                exact_input_digest: source_identity,
-                result_fingerprint: spec.result_fingerprint.clone(),
-                evaluator: "ketchup.imported-step-evaluator.v1".to_owned(),
-                backend: spec.backend.clone(),
-                tolerance: spec.tolerance.clone(),
-            },
+            identity,
             source_sha256,
             source_bytes,
             solid_count: spec.solid_count,
+            topology_counts: spec.topology_counts,
             volume_mm3: spec.volume_mm3,
             bounds_mm: spec.bounds_mm,
             vertices,
             triangles,
+            triangle_face_ordinals: mesh
+                .triangles
+                .iter()
+                .map(|triangle| triangle.face_ordinal)
+                .collect(),
+            topological_references,
         })
     }
 
@@ -824,6 +1013,7 @@ impl ImportedExactPackage {
                             && spec.source_byte_len == self.source_bytes.len() as u64
                             && spec.result_fingerprint == self.identity.result_fingerprint
                             && spec.solid_count == self.solid_count
+                            && spec.topology_counts == self.topology_counts
                             && spec.volume_mm3 == self.volume_mm3
                             && spec.bounds_mm == self.bounds_mm
                             && spec.backend == self.identity.backend
@@ -864,6 +1054,7 @@ impl ExactBodyPackage {
         match self {
             Self::Rectangle(package) => package.identity.definition_id,
             Self::Revolve(package) => package.identity.definition_id,
+            Self::Graph(package) => package.identity.definition_id,
             Self::Imported(package) => package.identity.definition_id,
         }
     }
@@ -873,6 +1064,7 @@ impl ExactBodyPackage {
         match self {
             Self::Rectangle(package) => package.identity.producer_feature_id,
             Self::Revolve(package) => package.identity.producer_feature_id,
+            Self::Graph(package) => package.identity.producer_feature_id,
             Self::Imported(package) => package.identity.producer_feature_id,
         }
     }
@@ -908,6 +1100,20 @@ impl ExactBodyPackage {
                 schema: package.identity.schema.clone(),
                 result_fingerprint: package.identity.result_fingerprint.clone(),
             },
+            Self::Graph(package) => ExactResultKey {
+                document_id: package.identity.document_id,
+                source_revision: package.identity.source_revision,
+                source_digest: package.identity.source_digest.clone(),
+                definition_id: package.identity.definition_id,
+                producer_feature_id: package.identity.producer_feature_id,
+                canonical_input_digest: package.identity.canonical_input_digest.clone(),
+                exact_input_digest: package.identity.exact_input_digest.clone(),
+                evaluator: package.identity.evaluator.clone(),
+                backend: package.identity.backend.clone(),
+                tolerance: package.identity.tolerance.clone(),
+                schema: package.identity.schema.clone(),
+                result_fingerprint: package.identity.result_fingerprint.clone(),
+            },
             Self::Imported(package) => ExactResultKey {
                 document_id: package.identity.document_id,
                 source_revision: package.identity.source_revision,
@@ -930,6 +1136,7 @@ impl ExactBodyPackage {
         match self {
             Self::Rectangle(package) => package.is_current(snapshot),
             Self::Revolve(package) => package.is_current(snapshot),
+            Self::Graph(package) => package.is_current(snapshot),
             Self::Imported(package) => package.is_current(snapshot),
         }
     }
@@ -980,6 +1187,7 @@ impl ExactBodyPackage {
                 rebound.validate_for_request(&request).ok()?;
                 Some(Self::Revolve(rebound))
             }
+            Self::Graph(package) => package.rebound_to(snapshot).map(Self::Graph),
             Self::Imported(package) => package.rebound_to(snapshot).map(Self::Imported),
         }
     }
@@ -989,6 +1197,7 @@ impl ExactBodyPackage {
         match self {
             Self::Rectangle(package) => package.bounds_mm,
             Self::Revolve(package) => package.bounds_mm,
+            Self::Graph(package) => package.bounds_mm,
             Self::Imported(package) => package.bounds_mm,
         }
     }
@@ -998,6 +1207,7 @@ impl ExactBodyPackage {
         match self {
             Self::Rectangle(package) => &package.vertices,
             Self::Revolve(package) => &package.vertices,
+            Self::Graph(package) => &package.vertices,
             Self::Imported(package) => &package.vertices,
         }
     }
@@ -1007,6 +1217,7 @@ impl ExactBodyPackage {
         match self {
             Self::Rectangle(package) => &package.triangles,
             Self::Revolve(package) => &package.triangles,
+            Self::Graph(package) => &package.triangles,
             Self::Imported(package) => &package.triangles,
         }
     }
@@ -1016,8 +1227,42 @@ impl ExactBodyPackage {
         match self {
             Self::Rectangle(package) => &package.references,
             Self::Revolve(package) => &package.references,
-            Self::Imported(_) => &[],
+            Self::Graph(_) | Self::Imported(_) => &[],
         }
+    }
+
+    #[must_use]
+    pub fn topological_references(&self) -> &[TopologicalElementRef] {
+        match self {
+            Self::Graph(package) => &package.topological_references,
+            Self::Imported(package) => &package.topological_references,
+            Self::Rectangle(_) | Self::Revolve(_) => &[],
+        }
+    }
+
+    #[must_use]
+    pub fn topological_reference(
+        &self,
+        kind: TopologicalElementKind,
+        ordinal: u32,
+    ) -> Option<&TopologicalElementRef> {
+        self.topological_references()
+            .iter()
+            .filter(|reference| reference.kind == kind)
+            .nth(ordinal as usize)
+    }
+
+    #[must_use]
+    pub fn topological_reference_for_triangle(
+        &self,
+        triangle_index: usize,
+    ) -> Option<&TopologicalElementRef> {
+        let face_ordinal = match self {
+            Self::Graph(package) => package.triangle_face_ordinals.get(triangle_index),
+            Self::Imported(package) => package.triangle_face_ordinals.get(triangle_index),
+            Self::Rectangle(_) | Self::Revolve(_) => None,
+        }?;
+        self.topological_reference(TopologicalElementKind::Face, *face_ordinal)
     }
 
     #[must_use]
@@ -1036,7 +1281,7 @@ impl ExactBodyPackage {
     pub fn revolve(&self) -> Option<&crate::bottle_m6::ExactRevolvePackage> {
         match self {
             Self::Revolve(package) => Some(package),
-            Self::Rectangle(_) | Self::Imported(_) => None,
+            Self::Rectangle(_) | Self::Graph(_) | Self::Imported(_) => None,
         }
     }
 
@@ -1135,6 +1380,7 @@ impl ExactBodyView for ExactBodyPackage {
         match self {
             Self::Rectangle(package) => &package.identity.tolerance,
             Self::Revolve(package) => &package.identity.tolerance,
+            Self::Graph(package) => &package.identity.tolerance,
             Self::Imported(package) => &package.identity.tolerance,
         }
     }
@@ -1143,6 +1389,7 @@ impl ExactBodyView for ExactBodyPackage {
         match self {
             Self::Rectangle(package) => &package.identity.source_digest,
             Self::Revolve(package) => &package.identity.source_digest,
+            Self::Graph(package) => &package.identity.source_digest,
             Self::Imported(package) => &package.identity.source_digest,
         }
     }
@@ -1155,6 +1402,7 @@ impl ExactBodyView for ExactBodyPackage {
         match self {
             Self::Rectangle(package) => &package.identity.result_fingerprint,
             Self::Revolve(package) => &package.identity.result_fingerprint,
+            Self::Graph(package) => &package.identity.result_fingerprint,
             Self::Imported(package) => &package.identity.result_fingerprint,
         }
     }
@@ -1355,6 +1603,12 @@ impl From<ExactRenderPackage> for ExactBodyPackage {
 impl From<crate::bottle_m6::ExactRevolvePackage> for ExactBodyPackage {
     fn from(package: crate::bottle_m6::ExactRevolvePackage) -> Self {
         Self::Revolve(package)
+    }
+}
+
+impl From<ExactBRepGraphPackage> for ExactBodyPackage {
+    fn from(package: ExactBRepGraphPackage) -> Self {
+        Self::Graph(package)
     }
 }
 
@@ -1778,6 +2032,20 @@ impl ExactResultRegistry {
             .filter(|package| package.definition_id() == definition_id);
         let package = matches.next()?;
         matches.next().is_none().then_some(package)
+    }
+
+    #[must_use]
+    pub fn resolve_topological_reference(
+        &self,
+        snapshot: &Snapshot,
+        reference: &TopologicalElementRef,
+    ) -> TopologicalReferenceResolution {
+        let candidates = self
+            .packages
+            .values()
+            .filter(|package| package.is_current(snapshot))
+            .flat_map(|package| package.topological_references());
+        resolve_role_neutral_topological_reference(snapshot, reference, candidates)
     }
 
     #[must_use]
@@ -6297,18 +6565,42 @@ impl ExactFeatureChainRequest {
             })
             .ok_or(ExactProductError::UnsupportedDefinition)?;
         let pad_region = selected_solved_region(pad_sketch, pad.region)?;
-        let height_mm = pad.extent.distance().millimetres();
+        let height_mm = match &pad.extent {
+            crate::sketch::FeatureExtent::Blind(distance) => distance.millimetres(),
+            _ => return Err(ExactProductError::UnsupportedDefinition),
+        };
         let direction_sign = match pad.direction {
             FeatureDirection::AlongNormal => 1.0,
             FeatureDirection::OppositeNormal => -1.0,
+            FeatureDirection::Vector(_) => return Err(ExactProductError::UnsupportedDefinition),
         };
-        let (width_mm, depth_mm, circle, mut frame) =
-            exact_region_profile(pad_region, pad_workplane)?;
+        let ExactRegionProfile {
+            width_mm,
+            depth_mm,
+            circle,
+            mixed_profile,
+            mut frame,
+        } = exact_region_profile(pad_region, pad_workplane)?;
         let (boolean, pocket_depth_bits) = if let Some((feature_id, pocket)) = pocket {
+            let pocket_depth_mm = match &pocket.extent {
+                crate::sketch::FeatureExtent::Blind(distance) => distance.millimetres(),
+                _ => return Err(ExactProductError::UnsupportedThroughCut),
+            };
+            let directions_are_opposite = matches!(
+                (pad.direction, pocket.direction),
+                (
+                    FeatureDirection::AlongNormal,
+                    FeatureDirection::OppositeNormal
+                ) | (
+                    FeatureDirection::OppositeNormal,
+                    FeatureDirection::AlongNormal
+                )
+            );
             if pocket.target != pad_id
                 || circle.is_some()
-                || pocket.direction == pad.direction
-                || pocket.extent.distance().millimetres() >= height_mm
+                || mixed_profile.is_some()
+                || !directions_are_opposite
+                || pocket_depth_mm >= height_mm
                 || pocket.support.producer_feature_id != pad_id
             {
                 return Err(ExactProductError::UnsupportedThroughCut);
@@ -6338,11 +6630,21 @@ impl ExactFeatureChainRequest {
                 return Err(ExactProductError::UnsupportedDefinition);
             }
             let pocket_region = selected_solved_region(pocket_sketch, pocket.region)?;
-            let (min_x, min_y, max_x, max_y, pocket_circle) = match &pocket_region.profile {
-                SolvedSketchRegionProfile::Polyline(points) => {
+            let (min_x, min_y, max_x, max_y, pocket_circle, pocket_profile) = match &pocket_region
+                .profile
+            {
+                SolvedSketchRegionProfile::Polyline(points)
+                    if rectangle_bounds(points).is_some() =>
+                {
                     let [min_x, min_y, max_x, max_y] =
                         rectangle_bounds(points).ok_or(ExactProductError::UnsupportedProfile)?;
-                    (min_x, min_y, max_x, max_y, None)
+                    (min_x, min_y, max_x, max_y, None, None)
+                }
+                SolvedSketchRegionProfile::Polyline(_) | SolvedSketchRegionProfile::Boundary(_) => {
+                    let profile = exact_mixed_profile_from_solved(&pocket_region.profile)
+                        .ok_or(ExactProductError::UnsupportedProfile)?;
+                    let [min_x, min_y, max_x, max_y] = profile.bounds_bits.map(f64::from_bits);
+                    (min_x, min_y, max_x, max_y, None, Some(profile))
                 }
                 SolvedSketchRegionProfile::Circle {
                     center_mm,
@@ -6358,6 +6660,7 @@ impl ExactFeatureChainRequest {
                         radius_bits: radius_mm.to_bits(),
                         clockwise: false,
                     }),
+                    None,
                 ),
             };
             if min_x <= 0.0 || min_y <= 0.0 || max_x >= width_mm || max_y >= depth_mm {
@@ -6375,9 +6678,9 @@ impl ExactFeatureChainRequest {
                     width_bits: (max_x - min_x).to_bits(),
                     depth_bits: (max_y - min_y).to_bits(),
                     circle: pocket_circle,
-                    profile: None,
+                    profile: pocket_profile,
                 }),
-                Some(pocket.extent.distance().millimetres().to_bits()),
+                Some(pocket_depth_mm.to_bits()),
             )
         } else {
             (None, None)
@@ -6402,6 +6705,9 @@ impl ExactFeatureChainRequest {
         for bits in frame_bits {
             write!(canonical_input, ":{bits:016x}").expect("writing to String cannot fail");
         }
+        if let Some(profile) = &mixed_profile {
+            append_exact_mixed_profile_identity(&mut canonical_input, "pad-profile", profile);
+        }
         if let Some(circle) = circle {
             write!(
                 canonical_input,
@@ -6424,6 +6730,13 @@ impl ExactFeatureChainRequest {
                 pocket_depth_bits.unwrap_or_default(),
             )
             .expect("writing to String cannot fail");
+            if let Some(profile) = &cut.profile {
+                append_exact_mixed_profile_identity(
+                    &mut canonical_input,
+                    "pocket-profile",
+                    profile,
+                );
+            }
         }
         let canonical_input_digest = digest(&canonical_input);
         Ok(Self {
@@ -6437,7 +6750,7 @@ impl ExactFeatureChainRequest {
             depth_bits: depth_mm.to_bits(),
             height_bits: height_mm.to_bits(),
             circle,
-            mixed_profile: None,
+            mixed_profile,
             pocket_depth_bits,
             workplane_frame_bits: Some(frame_bits),
             boolean,
@@ -12526,10 +12839,18 @@ fn selected_solved_region(
         .ok_or(ExactProductError::UnsupportedProfile)
 }
 
+struct ExactRegionProfile {
+    width_mm: f64,
+    depth_mm: f64,
+    circle: Option<ExactCircleProfile>,
+    mixed_profile: Option<ExactMixedProfile>,
+    frame: [f64; 12],
+}
+
 fn exact_region_profile(
     region: SolvedSketchRegion,
     workplane: &WorkplaneSpec,
-) -> Result<(f64, f64, Option<ExactCircleProfile>, [f64; 12]), ExactProductError> {
+) -> Result<ExactRegionProfile, ExactProductError> {
     let frame = workplane.frame;
     let mut transform = [
         frame.origin_mm[0],
@@ -12545,29 +12866,132 @@ fn exact_region_profile(
         frame.normal[1],
         frame.normal[2],
     ];
-    match region.profile {
-        SolvedSketchRegionProfile::Polyline(points) => {
-            let [min_x, min_y, max_x, max_y] =
-                rectangle_bounds(&points).ok_or(ExactProductError::UnsupportedProfile)?;
-            for (axis, coordinate) in transform.iter_mut().take(3).enumerate() {
-                *coordinate += frame.x_axis[axis] * min_x + frame.y_axis[axis] * min_y;
-            }
-            Ok((max_x - min_x, max_y - min_y, None, transform))
+    if let SolvedSketchRegionProfile::Polyline(points) = &region.profile
+        && let Some([min_x, min_y, max_x, max_y]) = rectangle_bounds(points)
+    {
+        for (axis, coordinate) in transform.iter_mut().take(3).enumerate() {
+            *coordinate += frame.x_axis[axis] * min_x + frame.y_axis[axis] * min_y;
+        }
+        return Ok(ExactRegionProfile {
+            width_mm: max_x - min_x,
+            depth_mm: max_y - min_y,
+            circle: None,
+            mixed_profile: None,
+            frame: transform,
+        });
+    }
+    match &region.profile {
+        SolvedSketchRegionProfile::Polyline(_) | SolvedSketchRegionProfile::Boundary(_) => {
+            let profile = exact_mixed_profile_from_solved(&region.profile)
+                .ok_or(ExactProductError::UnsupportedProfile)?;
+            let [min_x, min_y, max_x, max_y] = profile.bounds_bits.map(f64::from_bits);
+            Ok(ExactRegionProfile {
+                width_mm: max_x - min_x,
+                depth_mm: max_y - min_y,
+                circle: None,
+                mixed_profile: Some(profile),
+                frame: transform,
+            })
         }
         SolvedSketchRegionProfile::Circle {
             center_mm,
             radius_mm,
-        } => Ok((
-            radius_mm * 2.0,
-            radius_mm * 2.0,
-            Some(ExactCircleProfile {
+        } => Ok(ExactRegionProfile {
+            width_mm: radius_mm * 2.0,
+            depth_mm: radius_mm * 2.0,
+            circle: Some(ExactCircleProfile {
                 center_x_bits: center_mm[0].to_bits(),
                 center_y_bits: center_mm[1].to_bits(),
                 radius_bits: radius_mm.to_bits(),
                 clockwise: false,
             }),
-            transform,
-        )),
+            mixed_profile: None,
+            frame: transform,
+        }),
+    }
+}
+
+fn exact_mixed_profile_from_solved(
+    profile: &SolvedSketchRegionProfile,
+) -> Option<ExactMixedProfile> {
+    let segments = match profile {
+        SolvedSketchRegionProfile::Polyline(points) => points
+            .iter()
+            .zip(points.iter().cycle().skip(1))
+            .take(points.len())
+            .map(|(start_mm, end_mm)| ProfileSegment::Line {
+                start_mm: *start_mm,
+                end_mm: *end_mm,
+            })
+            .collect::<Vec<_>>(),
+        SolvedSketchRegionProfile::Boundary(edges) => edges
+            .iter()
+            .map(|edge| match edge {
+                SolvedSketchRegionEdge::Line { start_mm, end_mm } => ProfileSegment::Line {
+                    start_mm: *start_mm,
+                    end_mm: *end_mm,
+                },
+                SolvedSketchRegionEdge::Arc {
+                    start_mm,
+                    end_mm,
+                    center_mm,
+                    clockwise,
+                } => ProfileSegment::CircularArc {
+                    start_mm: *start_mm,
+                    end_mm: *end_mm,
+                    center_mm: *center_mm,
+                    clockwise: *clockwise,
+                },
+            })
+            .collect(),
+        SolvedSketchRegionProfile::Circle { .. } => return None,
+    };
+    exact_mixed_profile(&segments, true)
+}
+
+fn append_exact_mixed_profile_identity(
+    input: &mut String,
+    label: &str,
+    profile: &ExactMixedProfile,
+) {
+    write!(
+        input,
+        ":{label}:{:016x}:{:016x}:{:016x}:{:016x}:{:016x}",
+        profile.bounds_bits[0],
+        profile.bounds_bits[1],
+        profile.bounds_bits[2],
+        profile.bounds_bits[3],
+        profile.area_bits,
+    )
+    .expect("writing to String cannot fail");
+    for segment in &profile.segments {
+        match segment {
+            ExactProfileSegment::Line {
+                start_bits,
+                end_bits,
+            } => write!(
+                input,
+                ":L:{:016x}:{:016x}:{:016x}:{:016x}",
+                start_bits[0], start_bits[1], end_bits[0], end_bits[1],
+            ),
+            ExactProfileSegment::CircularArc {
+                start_bits,
+                end_bits,
+                center_bits,
+                clockwise,
+            } => write!(
+                input,
+                ":A:{:016x}:{:016x}:{:016x}:{:016x}:{:016x}:{:016x}:{}",
+                start_bits[0],
+                start_bits[1],
+                end_bits[0],
+                end_bits[1],
+                center_bits[0],
+                center_bits[1],
+                clockwise,
+            ),
+        }
+        .expect("writing to String cannot fail");
     }
 }
 
