@@ -3616,6 +3616,7 @@ fn assistant_balloon_glyph_paths(character: char) -> Vec<AssistantBalloonPath> {
             arc([0.40, 0.69], [0.29, 0.27], 0.0, 360.0, 20, true),
             line(&[[0.68, 0.68], [0.64, 0.31], [0.48, 0.08], [0.20, 0.05]]),
         ],
+        'ˇ' => vec![line(&[[0.10, 0.70], [0.40, 0.35], [0.70, 0.70]])],
         _ => Vec::new(),
     }
 }
@@ -12723,6 +12724,66 @@ impl KetchupApp {
             .collect()
     }
 
+    fn active_frame_bounds(&self) -> Vec<(Vec3, Vec3)> {
+        let mut bounds = self
+            .active_boxes()
+            .into_iter()
+            .map(|item| (item.origin_mm, item.size_mm))
+            .collect::<Vec<_>>();
+        let snapshot = self.document.current();
+        for occurrence in self.active_scene_query() {
+            let Some(definition) = snapshot.definition(occurrence.definition_id) else {
+                continue;
+            };
+            let matrix = occurrence.transform.matrix();
+            let mut mesh_vertices = definition
+                .feature_ids()
+                .iter()
+                .filter_map(|feature_id| snapshot.feature(*feature_id))
+                .filter_map(|feature| match feature.kind() {
+                    FeatureKind::MeshBody(mesh) => Some(mesh.vertices_mm.iter()),
+                    _ => None,
+                })
+                .flatten()
+                .map(|vertex| {
+                    Vec3::new(
+                        matrix[0] * vertex[0]
+                            + matrix[1] * vertex[1]
+                            + matrix[2] * vertex[2]
+                            + matrix[3],
+                        matrix[4] * vertex[0]
+                            + matrix[5] * vertex[1]
+                            + matrix[6] * vertex[2]
+                            + matrix[7],
+                        matrix[8] * vertex[0]
+                            + matrix[9] * vertex[1]
+                            + matrix[10] * vertex[2]
+                            + matrix[11],
+                    )
+                });
+            let Some(first) = mesh_vertices.next() else {
+                continue;
+            };
+            let (minimum, maximum) =
+                mesh_vertices.fold((first, first), |(minimum, maximum), point| {
+                    (
+                        Vec3::new(
+                            minimum.x.min(point.x),
+                            minimum.y.min(point.y),
+                            minimum.z.min(point.z),
+                        ),
+                        Vec3::new(
+                            maximum.x.max(point.x),
+                            maximum.y.max(point.y),
+                            maximum.z.max(point.z),
+                        ),
+                    )
+                });
+            bounds.push((minimum, maximum - minimum));
+        }
+        bounds
+    }
+
     fn active_boxes(&self) -> Vec<RenderBox> {
         let snapshot = self.document.current();
         self.refresh_interaction_projection_cache(&snapshot);
@@ -18041,9 +18102,9 @@ impl KetchupApp {
     pub fn home_view(&mut self) {
         self.yaw = -2.25;
         self.pitch = 0.52;
-        let boxes = self.active_boxes();
-        let count = boxes.len();
-        if !self.frame_boxes(&boxes) {
+        let bounds = self.active_frame_bounds();
+        let count = bounds.len();
+        if !self.frame_bounds(&bounds) {
             self.camera_target_z = 10.0;
             self.pan = Vec2::ZERO;
             self.zoom = 2.8;
@@ -18066,9 +18127,9 @@ impl KetchupApp {
 
     /// Frame every visible occurrence in the viewport laid out by the last frame.
     pub fn zoom_fit(&mut self) {
-        let boxes = self.active_boxes();
-        let count = self.active_box_count();
-        if self.frame_boxes(&boxes) {
+        let bounds = self.active_frame_bounds();
+        let count = bounds.len();
+        if self.frame_bounds(&bounds) {
             self.digest = self.catalog.format(
                 "digest-zoom-fit",
                 &BTreeMap::from([("count", count.to_string())]),
@@ -18162,14 +18223,21 @@ impl KetchupApp {
     }
 
     fn frame_boxes(&mut self, boxes: &[RenderBox]) -> bool {
+        let bounds = boxes
+            .iter()
+            .map(|item| (item.origin_mm, item.size_mm))
+            .collect::<Vec<_>>();
+        self.frame_bounds(&bounds)
+    }
+
+    fn frame_bounds(&mut self, bounds: &[(Vec3, Vec3)]) -> bool {
         let Some(rect) = self.viewport_rect else {
             return false;
         };
-        let corners = boxes
+        let corners = bounds
             .iter()
-            .flat_map(|item| {
-                box_corners(item.size_mm.x, item.size_mm.y, item.size_mm.z)
-                    .map(|point| point + item.origin_mm)
+            .flat_map(|(origin, size)| {
+                box_corners(size.x, size.y, size.z).map(|point| point + *origin)
             })
             .collect::<Vec<_>>();
         let Some(first) = corners.first().copied() else {
@@ -34185,21 +34253,45 @@ fn assistant_models_for(provider: AssistantProvider) -> Vec<String> {
         .collect()
 }
 
+fn first_existing_assistant_path(
+    candidates: impl IntoIterator<Item = Option<PathBuf>>,
+) -> Option<PathBuf> {
+    candidates.into_iter().flatten().find(|path| path.is_file())
+}
+
+#[cfg(windows)]
+fn persistent_user_environment_path(name: &str) -> Option<PathBuf> {
+    use winreg::RegKey;
+    use winreg::enums::HKEY_CURRENT_USER;
+
+    RegKey::predef(HKEY_CURRENT_USER)
+        .open_subkey("Environment")
+        .ok()?
+        .get_value::<String, _>(name)
+        .ok()
+        .map(PathBuf::from)
+}
+
+#[cfg(not(windows))]
+fn persistent_user_environment_path(_name: &str) -> Option<PathBuf> {
+    None
+}
+
 fn assistant_sidecar_command(
     distribution: AssistantDistribution,
 ) -> Result<(PathBuf, Vec<std::ffi::OsString>), String> {
     match distribution {
         AssistantDistribution::PrivateOauth => {
-            let path = std::env::var_os("KETCHUP_PRIVATE_ASSISTANT")
-                .map(PathBuf::from)
-                .or_else(|| {
-                    std::env::current_exe().ok().and_then(|path| {
-                        path.parent()
-                            .map(|parent| parent.join("KetchupPrivateAssistant.exe"))
-                    })
-                })
-                .filter(|path| path.is_file())
-                .ok_or_else(|| "KetchupPrivateAssistant.exe was not found".to_owned())?;
+            let beside_app = std::env::current_exe().ok().and_then(|path| {
+                path.parent()
+                    .map(|parent| parent.join("KetchupPrivateAssistant.exe"))
+            });
+            let path = first_existing_assistant_path([
+                std::env::var_os("KETCHUP_PRIVATE_ASSISTANT").map(PathBuf::from),
+                beside_app,
+                persistent_user_environment_path("KETCHUP_PRIVATE_ASSISTANT"),
+            ])
+            .ok_or_else(|| "KetchupPrivateAssistant.exe was not found".to_owned())?;
             Ok((path, Vec::new()))
         }
         AssistantDistribution::PublicApi => {
@@ -36123,6 +36215,19 @@ mod tests {
     use egui_kittest::kittest::Queryable as _;
     use ketchup_core::document::ProposalGoal;
     use ketchup_core::graph::{EvaluatorNodeKind, PortSpec};
+
+    #[test]
+    fn assistant_path_resolution_skips_a_stale_higher_priority_candidate() {
+        let directory = tempfile::tempdir().unwrap();
+        let stale = directory.path().join("stale.exe");
+        let installed = directory.path().join("KetchupPrivateAssistant.exe");
+        std::fs::write(&installed, b"sidecar").unwrap();
+
+        assert_eq!(
+            first_existing_assistant_path([Some(stale), Some(installed.clone()), None]),
+            Some(installed)
+        );
+    }
 
     #[test]
     fn export_rollback_preserves_concurrent_destination_and_original_backup() {

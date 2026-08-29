@@ -178,6 +178,10 @@ impl Shell {
         Self::build(KetchupApp::new().with_dialogs(Box::new(dialogs)))
     }
 
+    pub fn with_dialogs_at_size(dialogs: ScriptedFileDialogs, size: Vec2) -> Self {
+        Self::build_at_size(KetchupApp::new().with_dialogs(Box::new(dialogs)), size)
+    }
+
     pub fn with_assistant_transport(transport: Arc<dyn AssistantTransport>) -> Self {
         Self::with_dialogs_and_assistant_transport(ScriptedFileDialogs::new(), transport)
     }
@@ -194,8 +198,12 @@ impl Shell {
     }
 
     fn build(app: KetchupApp) -> Self {
+        Self::build_at_size(app, SCREEN)
+    }
+
+    fn build_at_size(app: KetchupApp, size: Vec2) -> Self {
         let mut harness = Harness::builder()
-            .with_size(SCREEN)
+            .with_size(size)
             // The default frame step is a quarter of a second, which is longer
             // than the double-click delay — two clicks would never pair up.
             .with_step_dt(1.0 / 60.0)
@@ -286,6 +294,16 @@ impl Shell {
             .query_all_by_role_and_label(Role::Button, &label)
             .next()
             .is_some()
+    }
+
+    /// Rectangle of the top-most visible control that dispatches `command`.
+    pub fn command_rect(&self, command: AppCommand) -> Rect {
+        let label = self.app().command_label(command);
+        self.harness
+            .query_all_by_role_and_label(Role::Button, &label)
+            .min_by(|left, right| left.rect().top().total_cmp(&right.rect().top()))
+            .expect("the visible command control must exist")
+            .rect()
     }
 
     /// Move screen-reader focus to a command through its AccessKit action.
@@ -465,6 +483,15 @@ impl Shell {
     /// and therefore has no accessible node to address.
     pub fn click_at(&mut self, position: Pos2) {
         self.click_at_with(position, Modifiers::NONE);
+    }
+
+    /// Click once without waiting for hover tooltips to stop requesting repaints.
+    pub fn click_at_once(&mut self, position: Pos2) {
+        self.gap();
+        self.move_pointer(position);
+        self.button(position, Modifiers::NONE, true);
+        self.advance(CLICK_STEP);
+        self.button(position, Modifiers::NONE, false);
     }
 
     /// Click at `position` with `modifiers` held.

@@ -625,6 +625,10 @@ def test_public_sidecar_parses_bounded_balloon_text_with_holes_and_depth():
     }
     answer = json.dumps({"message": "Prepared balloon letters.", "model_intent": {"replace_scene": False, "boxes": [], "balloon_texts": [text]}})
     assert assistant._parse_assistant_result(answer)["model_intent"]["balloon_texts"] == [text]
+    caron = {**text, "name": "Balloon caron", "text": "ˇ"}
+    caron_answer = json.dumps({"message": "Prepared a separate caron.", "model_intent": {"replace_scene": False, "boxes": [], "balloon_texts": [caron]}})
+    assert assistant._parse_assistant_result(caron_answer)["model_intent"]["balloon_texts"] == [caron]
+    assert "standalone caron ˇ" in assistant.SYSTEM_PROMPT
     assert "fully rounded in every direction with spherical ends" in assistant.SYSTEM_PROMPT
     assert "never use flat-faced or digital display segments" in assistant.SYSTEM_PROMPT
     invalid = json.loads(answer)

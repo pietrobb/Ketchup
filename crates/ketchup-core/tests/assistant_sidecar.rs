@@ -431,7 +431,7 @@ fn assistant_balloon_text_round_trips_and_rejects_unsupported_or_flat_letters() 
             "boxes": [],
             "balloon_texts": [{
                 "name": "Balloon KECUP",
-                "text": "KECUP 3D",
+                "text": "KECUP 3D ˇ",
                 "height_mm": 120.0,
                 "depth_mm": 42.0,
                 "stroke_width_mm": 20.0,
@@ -442,7 +442,7 @@ fn assistant_balloon_text_round_trips_and_rejects_unsupported_or_flat_letters() 
     )
     .unwrap();
     assert!(intent.validate().is_ok());
-    assert_eq!(intent.balloon_texts[0].text, "KECUP 3D");
+    assert_eq!(intent.balloon_texts[0].text, "KECUP 3D ˇ");
 
     let lowercase = AssistantModelIntent {
         balloon_texts: vec![AssistantBalloonTextIntent {

@@ -3157,6 +3157,15 @@ fn assistant_balloon_text_supports_the_complete_rounded_uppercase_and_digit_alph
                     letter_spacing_mm: 4.0,
                     origin_mm: [0.0, 0.0, 60.0],
                 },
+                AssistantBalloonTextIntent {
+                    name: "Standalone balloon caron".to_owned(),
+                    text: "ˇ".to_owned(),
+                    height_mm: 40.0,
+                    depth_mm: 16.0,
+                    stroke_width_mm: 8.0,
+                    letter_spacing_mm: 4.0,
+                    origin_mm: [0.0, 0.0, 120.0],
+                },
             ],
             gable_roofs: Vec::new(),
             staircases: Vec::new(),
@@ -3167,6 +3176,7 @@ fn assistant_balloon_text_supports_the_complete_rounded_uppercase_and_digit_alph
     for name in [
         "Complete balloon alphabet inflated text",
         "Complete balloon digits inflated text",
+        "Standalone balloon caron inflated text",
     ] {
         let feature = snapshot
             .features()
@@ -3601,6 +3611,89 @@ fn assistant_builds_sloped_rafters_with_real_notches_and_central_purlin() {
 }
 
 #[test]
+fn top_bar_zoom_fit_physically_frames_saved_organic_models() {
+    for fixture in [
+        "assistant-balloon-letters.ketchup",
+        "assistant-ketchup-squeeze-bottle.ketchup",
+        "assistant-rounded-teapot.ketchup",
+    ] {
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../examples")
+            .join(fixture);
+        let dialogs = ScriptedFileDialogs::new()
+            .queue_open(&path)
+            .always_discard();
+        let window = egui::Vec2::new(1_100.0, 720.0);
+        let mut shell = Shell::with_dialogs_at_size(dialogs, window);
+        shell.click_menu_command("menu-file", AppCommand::Open);
+        shell.settle();
+
+        let viewport = shell.viewport_rect();
+        for _ in 0..8 {
+            shell.scroll_at(viewport.center(), 120.0);
+        }
+        let zoom_before = shell.app().camera_zoom();
+        let button = shell.command_rect(AppCommand::ZoomFit);
+        assert!(
+            button.center().x >= 0.0 && button.center().x <= window.x,
+            "{fixture} Zoom Fit button must be on screen, got {button:?}"
+        );
+        shell.click_at_once(button.center());
+
+        assert_ne!(
+            shell.app().camera_zoom(),
+            zoom_before,
+            "{fixture} top-bar Zoom Fit click must change the camera"
+        );
+        let expected = shell.catalog().format(
+            "digest-zoom-fit",
+            &std::collections::BTreeMap::from([(
+                "count",
+                shell.app().active_box_count().to_string(),
+            )]),
+        );
+        assert_eq!(shell.app().action_digest(), expected);
+
+        let snapshot = shell.app().document_snapshot();
+        for occurrence in snapshot
+            .occurrences()
+            .filter(|occurrence| occurrence.visible())
+        {
+            let transform = occurrence.transform();
+            let matrix = transform.matrix();
+            let definition = snapshot.definition(occurrence.definition_id()).unwrap();
+            for feature_id in definition.feature_ids() {
+                let feature = snapshot.feature(*feature_id).unwrap();
+                let FeatureKind::MeshBody(mesh) = feature.kind() else {
+                    continue;
+                };
+                for vertex in &mesh.vertices_mm {
+                    let world = Vec3::new(
+                        matrix[0] * vertex[0]
+                            + matrix[1] * vertex[1]
+                            + matrix[2] * vertex[2]
+                            + matrix[3],
+                        matrix[4] * vertex[0]
+                            + matrix[5] * vertex[1]
+                            + matrix[6] * vertex[2]
+                            + matrix[7],
+                        matrix[8] * vertex[0]
+                            + matrix[9] * vertex[1]
+                            + matrix[10] * vertex[2]
+                            + matrix[11],
+                    );
+                    let screen = shell.app().project_to_screen(world, viewport);
+                    assert!(
+                        viewport.contains(screen),
+                        "{fixture} Zoom Fit omitted mesh vertex {world:?}, projected to {screen:?}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn assistant_subtractions_create_one_real_grooved_body_as_one_undo_step() {
     let mut shell = Shell::new();
     let initial_revision = shell.app().document_revision();
@@ -3670,7 +3763,7 @@ fn assistant_subtractions_create_one_real_grooved_body_as_one_undo_step() {
     );
     let measured = shell
         .app()
-        .measurement_point_at_screen(pointer + eframe::egui::Vec2::new(8.0, 0.0), rect, 140.0)
+        .measurement_point_at_screen(pointer, rect, 140.0)
         .expect("Measure must resolve a nearby grooved-body vertex");
     assert!(measured.distance(groove_corner) < 1.0e-9);
 

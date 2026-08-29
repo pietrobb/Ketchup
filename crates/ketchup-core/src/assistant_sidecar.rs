@@ -490,7 +490,7 @@ impl AssistantModelIntent {
                 || characters.iter().all(|character| *character == ' ')
                 || characters
                     .iter()
-                    .any(|character| !matches!(character, 'A'..='Z' | '0'..='9' | ' '))
+                    .any(|character| !matches!(character, 'A'..='Z' | '0'..='9' | ' ' | 'ˇ'))
                 || !text.height_mm.is_finite()
                 || !(10.0..=MAX_ASSISTANT_TEAPOT_DIMENSION_MM).contains(&text.height_mm)
                 || !text.depth_mm.is_finite()
