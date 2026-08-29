@@ -25,7 +25,7 @@ use ketchup_core::sketch::{
     SketchSpec, WorkplaneSpec,
 };
 use ketchup_interaction::{LocaleCatalog, Vec3};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -2937,8 +2937,8 @@ fn assistant_balloon_text_creates_inflated_letters_with_holes_depth_save_and_und
             linear_arrays: Vec::new(),
             bottles: Vec::new(),
             balloon_texts: vec![AssistantBalloonTextIntent {
-                name: "Balloon OA".to_owned(),
-                text: "O A".to_owned(),
+                name: "Balloon KECUP".to_owned(),
+                text: "KECUP".to_owned(),
                 height_mm: 120.0,
                 depth_mm: 42.0,
                 stroke_width_mm: 20.0,
@@ -2954,30 +2954,39 @@ fn assistant_balloon_text_creates_inflated_letters_with_holes_depth_save_and_und
     let snapshot = shell.app().document_snapshot();
     let feature = snapshot
         .features()
-        .find(|feature| feature.name() == "Balloon OA inflated text")
+        .find(|feature| feature.name() == "Balloon KECUP inflated text")
         .expect("balloon text mesh must exist");
     let FeatureKind::MeshBody(mesh) = feature.kind() else {
         panic!("balloon text must be one canonical mesh body");
     };
-    assert!(mesh.vertices_mm.len() > 650);
-    assert!(mesh.triangles.len() > 1_200);
+    assert!(mesh.vertices_mm.len() > 3_000);
+    assert!(mesh.triangles.len() > 6_000);
     assert!(mesh.vertices_mm.iter().any(|point| point[1] == -21.0));
     assert!(mesh.vertices_mm.iter().any(|point| point[1] == 21.0));
+    let depth_layers = mesh
+        .vertices_mm
+        .iter()
+        .map(|point| (point[1] * 1_000.0).round() as i64)
+        .collect::<BTreeSet<_>>();
+    assert!(
+        depth_layers.len() > 20,
+        "inflated glyphs must have continuously rounded depth, not three beveled slabs"
+    );
     assert!(
         !mesh
             .vertices_mm
             .iter()
-            .any(|point| (point[0] - 48.0).abs() < 5.0 && (point[2] - 60.0).abs() < 5.0),
-        "the centre of O must remain a through opening"
+            .any(|point| (point[0] - 520.8).abs() < 5.0 && (point[2] - 90.0).abs() < 5.0),
+        "the bowl of P must remain a through opening"
     );
     assert!(matches!(
         &mesh.authority,
         ketchup_core::document::MeshAuthority::Authored { provenance }
-            if provenance == "ketchup-assistant-balloon-text-v1"
+            if provenance == "ketchup-assistant-balloon-text-v2"
     ));
     let occurrence = snapshot
         .occurrences()
-        .find(|occurrence| occurrence.name() == "Balloon OA occurrence")
+        .find(|occurrence| occurrence.name() == "Balloon KECUP occurrence")
         .expect("balloon text occurrence must exist");
     let transform = occurrence.transform();
     let matrix = transform.matrix();
@@ -2990,10 +2999,13 @@ fn assistant_balloon_text_creates_inflated_letters_with_holes_depth_save_and_und
     assert_eq!(reopened.canonical_digest(), snapshot.canonical_digest());
     let fixture_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../examples/assistant-balloon-letters.ketchup");
+    if std::env::var_os("UPDATE_ASSISTANT_BALLOON_FIXTURE").is_some() {
+        persistence::save_atomic(&fixture_path, &snapshot).unwrap();
+    }
     let fixture = persistence::load_file(&fixture_path).unwrap().snapshot();
     let fixture_feature = fixture
         .features()
-        .find(|feature| feature.name() == "Balloon OA inflated text")
+        .find(|feature| feature.name() == "Balloon KECUP inflated text")
         .expect("saved balloon text fixture must remain openable");
     let FeatureKind::MeshBody(fixture_mesh) = fixture_feature.kind() else {
         panic!("saved balloon text fixture must retain its canonical mesh body");
@@ -3005,6 +3017,66 @@ fn assistant_balloon_text_creates_inflated_letters_with_holes_depth_save_and_und
     assert!(shell.app_mut().undo());
     assert_eq!(shell.app().document_revision(), initial_revision);
     assert_eq!(shell.app().canonical_digest(), initial_digest);
+}
+
+#[test]
+fn assistant_balloon_text_supports_the_complete_rounded_uppercase_and_digit_alphabet() {
+    let mut shell = Shell::new();
+    assert!(apply_reviewed_model_intent(
+        &mut shell,
+        AssistantModelIntent {
+            replace_scene: false,
+            boxes: Vec::new(),
+            translations: Vec::new(),
+            profile_translations: Vec::new(),
+            parameter_edits: Vec::new(),
+            linear_arrays: Vec::new(),
+            bottles: Vec::new(),
+            balloon_texts: vec![
+                AssistantBalloonTextIntent {
+                    name: "Complete balloon alphabet".to_owned(),
+                    text: "ABCDEFGHIJKLMNOPQRSTUVWXYZ".to_owned(),
+                    height_mm: 40.0,
+                    depth_mm: 16.0,
+                    stroke_width_mm: 8.0,
+                    letter_spacing_mm: 4.0,
+                    origin_mm: [0.0, 0.0, 0.0],
+                },
+                AssistantBalloonTextIntent {
+                    name: "Complete balloon digits".to_owned(),
+                    text: "0123456789".to_owned(),
+                    height_mm: 40.0,
+                    depth_mm: 16.0,
+                    stroke_width_mm: 8.0,
+                    letter_spacing_mm: 4.0,
+                    origin_mm: [0.0, 0.0, 60.0],
+                },
+            ],
+            gable_roofs: Vec::new(),
+            staircases: Vec::new(),
+            oriented_beams: Vec::new(),
+        }
+    ));
+    let snapshot = shell.app().document_snapshot();
+    for name in [
+        "Complete balloon alphabet inflated text",
+        "Complete balloon digits inflated text",
+    ] {
+        let feature = snapshot
+            .features()
+            .find(|feature| feature.name() == name)
+            .expect("every supported balloon glyph must produce a mesh body");
+        let FeatureKind::MeshBody(mesh) = feature.kind() else {
+            panic!("every supported balloon glyph must be a canonical mesh body");
+        };
+        assert!(mesh.vertices_mm.len() < 100_000);
+        assert!(mesh.triangles.len() < 200_000);
+        assert!(matches!(
+            &mesh.authority,
+            ketchup_core::document::MeshAuthority::Authored { provenance }
+                if provenance == "ketchup-assistant-balloon-text-v2"
+        ));
+    }
 }
 
 #[test]
@@ -3035,8 +3107,8 @@ fn assistant_ketchup_bottle_creates_saved_rounded_squeeze_model_as_one_undo_step
                 teapot: None,
                 ketchup_bottle: Some(AssistantKetchupBottleIntent {
                     body_depth_ratio: 0.68,
-                    cap_radius_mm: 17.0,
-                    cap_height_mm: 16.0,
+                    cap_radius_mm: 19.5,
+                    cap_height_mm: 24.0,
                     label_width_mm: 58.0,
                     label_height_mm: 72.0,
                     label_relief_mm: 2.5,
@@ -3050,42 +3122,122 @@ fn assistant_ketchup_bottle_creates_saved_rounded_squeeze_model_as_one_undo_step
         }
     ));
     let snapshot = shell.app().document_snapshot();
-    let feature = snapshot
+    let body_occurrence = snapshot
+        .occurrences()
+        .find(|occurrence| occurrence.name() == "Kečup squeeze bottle body occurrence")
+        .expect("separate bottle body occurrence must exist");
+    let cap_occurrence = snapshot
+        .occurrences()
+        .find(|occurrence| occurrence.name() == "Kečup squeeze bottle cap occurrence")
+        .expect("separate removable cap occurrence must exist");
+    assert_ne!(
+        body_occurrence.definition_id(),
+        cap_occurrence.definition_id(),
+        "the cap must be independently selectable and removable"
+    );
+    let body_feature = snapshot
         .features()
-        .find(|feature| feature.name() == "Kečup squeeze bottle squeeze bottle")
-        .expect("ketchup bottle mesh must exist");
-    let FeatureKind::MeshBody(mesh) = feature.kind() else {
-        panic!("ketchup bottle must be one canonical mesh body");
+        .find(|feature| feature.name() == "Kečup squeeze bottle clean threaded body")
+        .expect("clean threaded bottle body must exist");
+    let cap_feature = snapshot
+        .features()
+        .find(|feature| feature.name() == "Kečup squeeze bottle removable threaded cap")
+        .expect("removable threaded cap must exist");
+    let FeatureKind::MeshBody(body_mesh) = body_feature.kind() else {
+        panic!("ketchup bottle body must be a canonical mesh body");
     };
-    assert!(mesh.vertices_mm.len() > 700);
-    assert!(mesh.triangles.len() > 1_500);
-    let x_extent = mesh
+    let FeatureKind::MeshBody(cap_mesh) = cap_feature.kind() else {
+        panic!("ketchup bottle cap must be a canonical mesh body");
+    };
+    assert!(body_mesh.vertices_mm.len() > 3_000);
+    assert!(body_mesh.triangles.len() > 6_000);
+    assert!(cap_mesh.vertices_mm.len() > 3_000);
+    assert!(cap_mesh.triangles.len() > 6_000);
+    let x_extent = body_mesh
         .vertices_mm
         .iter()
         .map(|point| point[0].abs())
         .fold(0.0, f64::max);
-    let y_extent = mesh
+    let y_extent = body_mesh
         .vertices_mm
         .iter()
+        .filter(|point| point[2] < 145.0)
         .map(|point| point[1].abs())
         .fold(0.0, f64::max);
     assert!(x_extent > y_extent * 1.25);
-    assert!(mesh.vertices_mm.iter().any(|point| point[2] > 205.0));
+    let body_thread_radii = body_mesh
+        .vertices_mm
+        .iter()
+        .filter(|point| point[2] > 174.0 && point[2] < 190.0)
+        .map(|point| point[0].hypot(point[1]))
+        .collect::<Vec<_>>();
+    assert!(
+        body_thread_radii.iter().copied().fold(0.0, f64::max) > 16.0,
+        "the neck must carry a raised external helix"
+    );
+    assert!(
+        body_thread_radii
+            .iter()
+            .copied()
+            .fold(f64::INFINITY, f64::min)
+            < 15.1,
+        "the helical neck must retain land between thread turns"
+    );
+    let cap_inner_radii = cap_mesh
+        .vertices_mm
+        .iter()
+        .filter(|point| {
+            point[2] > 173.0
+                && point[2] < 193.0
+                && point[0].hypot(point[1]) > 14.0
+                && point[0].hypot(point[1]) < 17.5
+        })
+        .map(|point| point[0].hypot(point[1]))
+        .collect::<Vec<_>>();
+    assert!(
+        cap_inner_radii.iter().copied().fold(0.0, f64::max) > 16.4,
+        "the cap must carry a complementary internal helical groove"
+    );
+    assert!(
+        cap_inner_radii
+            .iter()
+            .copied()
+            .fold(f64::INFINITY, f64::min)
+            < 15.5,
+        "the cap groove must return to its clearance land"
+    );
     assert!(matches!(
-        &mesh.authority,
+        &body_mesh.authority,
         ketchup_core::document::MeshAuthority::Authored { provenance }
-            if provenance == "ketchup-assistant-squeeze-bottle-v1"
+            if provenance == "ketchup-assistant-squeeze-bottle-body-v2"
+    ));
+    assert!(matches!(
+        &cap_mesh.authority,
+        ketchup_core::document::MeshAuthority::Authored { provenance }
+            if provenance == "ketchup-assistant-threaded-cap-v1"
     ));
     let fixture_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../examples/assistant-ketchup-squeeze-bottle.ketchup");
-    if !fixture_path.exists() {
+    if std::env::var_os("UPDATE_ASSISTANT_KETCHUP_FIXTURE").is_some() {
         persistence::save_atomic(&fixture_path, &snapshot).unwrap();
     }
     let fixture = persistence::load_file(&fixture_path).unwrap().snapshot();
     assert!(
         fixture
             .features()
-            .any(|feature| feature.name() == "Kečup squeeze bottle squeeze bottle")
+            .any(|feature| { feature.name() == "Kečup squeeze bottle clean threaded body" })
+    );
+    assert!(
+        fixture
+            .features()
+            .any(|feature| { feature.name() == "Kečup squeeze bottle removable threaded cap" })
+    );
+    assert_eq!(
+        fixture
+            .occurrences()
+            .filter(|occurrence| occurrence.name().starts_with("Kečup squeeze bottle"))
+            .count(),
+        2
     );
     assert!(shell.app_mut().undo());
     assert_eq!(shell.app().document_revision(), initial_revision);

@@ -386,8 +386,8 @@ fn assistant_ketchup_bottle_intent_round_trips_and_rejects_invalid_relief() {
                 "origin_mm": [0.0, 0.0, 0.0],
                 "ketchup_bottle": {
                     "body_depth_ratio": 0.68,
-                    "cap_radius_mm": 17.0,
-                    "cap_height_mm": 16.0,
+                    "cap_radius_mm": 19.5,
+                    "cap_height_mm": 24.0,
                     "label_width_mm": 58.0,
                     "label_height_mm": 72.0,
                     "label_relief_mm": 2.5,

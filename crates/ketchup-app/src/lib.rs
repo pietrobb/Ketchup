@@ -3012,98 +3012,236 @@ fn assistant_teapot_mesh(item: &AssistantBottleIntent) -> Option<MeshBodySpec> {
     })
 }
 
-fn assistant_ketchup_bottle_mesh(item: &AssistantBottleIntent) -> Option<MeshBodySpec> {
+#[derive(Clone, Copy)]
+enum AssistantKetchupRingSurface {
+    Plain,
+    GripRibs { count: u32 },
+    ExternalThread { start_z: f64, end_z: f64 },
+    InternalThread { start_z: f64, end_z: f64 },
+}
+
+#[derive(Clone, Copy)]
+struct AssistantKetchupRing {
+    radius: f64,
+    z: f64,
+    surface: AssistantKetchupRingSurface,
+}
+
+fn assistant_ketchup_thread_bump(angle: f64, z: f64, start_z: f64, pitch: f64) -> f64 {
+    let phase =
+        (angle - std::f64::consts::TAU * (z - start_z) / pitch).rem_euclid(std::f64::consts::TAU);
+    let distance = phase.min(std::f64::consts::TAU - phase);
+    let half_width = 0.42;
+    if distance >= half_width {
+        0.0
+    } else {
+        0.5 * (1.0 + (std::f64::consts::PI * distance / half_width).cos())
+    }
+}
+
+fn assistant_append_ketchup_profile(
+    vertices: &mut Vec<[f64; 3]>,
+    triangles: &mut Vec<[u32; 3]>,
+    profile: &[AssistantKetchupRing],
+    segments: usize,
+    thread_pitch: f64,
+    thread_height: f64,
+) {
+    let rings = profile
+        .iter()
+        .map(|ring| {
+            if ring.radius.abs() <= f64::EPSILON {
+                let id = vertices.len() as u32;
+                vertices.push([0.0, 0.0, ring.z]);
+                vec![id]
+            } else {
+                (0..segments)
+                    .map(|segment| {
+                        let angle = std::f64::consts::TAU * segment as f64 / segments as f64;
+                        let radius = match ring.surface {
+                            AssistantKetchupRingSurface::Plain => ring.radius,
+                            AssistantKetchupRingSurface::GripRibs { count } => {
+                                ring.radius
+                                    * (1.0 + 0.025 * (1.0 + (f64::from(count) * angle).cos()))
+                            }
+                            AssistantKetchupRingSurface::ExternalThread { start_z, end_z }
+                            | AssistantKetchupRingSurface::InternalThread { start_z, end_z } => {
+                                let taper_distance = thread_pitch * 0.35;
+                                let taper = ((ring.z - start_z) / taper_distance)
+                                    .min((end_z - ring.z) / taper_distance)
+                                    .clamp(0.0, 1.0);
+                                ring.radius
+                                    + thread_height
+                                        * taper
+                                        * assistant_ketchup_thread_bump(
+                                            angle,
+                                            ring.z,
+                                            start_z,
+                                            thread_pitch,
+                                        )
+                            }
+                        };
+                        let id = vertices.len() as u32;
+                        vertices.push([radius * angle.cos(), radius * angle.sin(), ring.z]);
+                        id
+                    })
+                    .collect()
+            }
+        })
+        .collect::<Vec<Vec<u32>>>();
+    for index in 0..rings.len() {
+        let next_index = (index + 1) % rings.len();
+        let (ring, next_ring) = (&rings[index], &rings[next_index]);
+        match (ring.len(), next_ring.len()) {
+            (1, 1) => {}
+            (1, _) => {
+                for segment in 0..segments {
+                    let next = (segment + 1) % segments;
+                    triangles.push([ring[0], next_ring[segment], next_ring[next]]);
+                }
+            }
+            (_, 1) => {
+                for segment in 0..segments {
+                    let next = (segment + 1) % segments;
+                    triangles.push([ring[segment], next_ring[0], ring[next]]);
+                }
+            }
+            _ => {
+                for segment in 0..segments {
+                    let next = (segment + 1) % segments;
+                    triangles.extend([
+                        [ring[segment], next_ring[segment], next_ring[next]],
+                        [ring[segment], next_ring[next], ring[next]],
+                    ]);
+                }
+            }
+        }
+    }
+}
+
+fn assistant_ketchup_bottle_body_mesh(item: &AssistantBottleIntent) -> Option<MeshBodySpec> {
+    const SEGMENTS: usize = 64;
+    const THREAD_ROWS: usize = 48;
     let style = item.ketchup_bottle.as_ref()?;
     let radius = item.body_radius_mm;
     let wall = item.wall_thickness_mm;
     let body_height = item.body_height_mm;
     let shoulder_top = body_height + item.shoulder_rise_mm;
     let top = shoulder_top + item.neck_height_mm;
-    let profile = [
-        [0.0, 0.0],
-        [radius * 0.72, 0.0],
-        [radius * 0.95, body_height * 0.06],
-        [radius, body_height * 0.18],
-        [radius, body_height * 0.68],
-        [radius * 0.95, body_height * 0.82],
-        [radius * 0.72, body_height],
-        [item.neck_radius_mm, shoulder_top],
-        [item.neck_radius_mm, top],
-        [item.neck_radius_mm - wall, top],
-        [item.neck_radius_mm - wall, shoulder_top],
-        [radius * 0.72 - wall, body_height],
-        [radius * 0.95 - wall, body_height * 0.82],
-        [radius - wall, body_height * 0.68],
-        [radius - wall, body_height * 0.18],
-        [radius * 0.95 - wall, body_height * 0.06],
-        [radius * 0.72 - wall, wall],
-        [0.0, wall],
+    let thread_pitch = (wall * 2.75).clamp(4.5, item.neck_height_mm * 0.45);
+    let thread_height = wall * 0.55;
+    let plain = AssistantKetchupRingSurface::Plain;
+    let mut profile = vec![
+        AssistantKetchupRing {
+            radius: 0.0,
+            z: 0.0,
+            surface: plain,
+        },
+        AssistantKetchupRing {
+            radius: radius * 0.72,
+            z: 0.0,
+            surface: plain,
+        },
+        AssistantKetchupRing {
+            radius: radius * 0.95,
+            z: body_height * 0.06,
+            surface: plain,
+        },
+        AssistantKetchupRing {
+            radius,
+            z: body_height * 0.18,
+            surface: plain,
+        },
+        AssistantKetchupRing {
+            radius,
+            z: body_height * 0.68,
+            surface: plain,
+        },
+        AssistantKetchupRing {
+            radius: radius * 0.95,
+            z: body_height * 0.82,
+            surface: plain,
+        },
+        AssistantKetchupRing {
+            radius: radius * 0.72,
+            z: body_height,
+            surface: plain,
+        },
+        AssistantKetchupRing {
+            radius: item.neck_radius_mm,
+            z: shoulder_top,
+            surface: plain,
+        },
     ];
+    profile.extend((1..=THREAD_ROWS).map(|row| AssistantKetchupRing {
+        radius: item.neck_radius_mm,
+        z: shoulder_top + item.neck_height_mm * row as f64 / THREAD_ROWS as f64,
+        surface: AssistantKetchupRingSurface::ExternalThread {
+            start_z: shoulder_top,
+            end_z: top,
+        },
+    }));
+    profile.extend([
+        AssistantKetchupRing {
+            radius: item.neck_radius_mm - wall,
+            z: top,
+            surface: plain,
+        },
+        AssistantKetchupRing {
+            radius: item.neck_radius_mm - wall,
+            z: shoulder_top,
+            surface: plain,
+        },
+        AssistantKetchupRing {
+            radius: radius * 0.72 - wall,
+            z: body_height,
+            surface: plain,
+        },
+        AssistantKetchupRing {
+            radius: radius * 0.95 - wall,
+            z: body_height * 0.82,
+            surface: plain,
+        },
+        AssistantKetchupRing {
+            radius: radius - wall,
+            z: body_height * 0.68,
+            surface: plain,
+        },
+        AssistantKetchupRing {
+            radius: radius - wall,
+            z: body_height * 0.18,
+            surface: plain,
+        },
+        AssistantKetchupRing {
+            radius: radius * 0.95 - wall,
+            z: body_height * 0.06,
+            surface: plain,
+        },
+        AssistantKetchupRing {
+            radius: radius * 0.72 - wall,
+            z: wall,
+            surface: plain,
+        },
+        AssistantKetchupRing {
+            radius: 0.0,
+            z: wall,
+            surface: plain,
+        },
+    ]);
     let mut vertices_mm = Vec::new();
     let mut triangles = Vec::new();
-    assistant_append_revolved_profile(&mut vertices_mm, &mut triangles, &profile, 40);
+    assistant_append_ketchup_profile(
+        &mut vertices_mm,
+        &mut triangles,
+        &profile,
+        SEGMENTS,
+        thread_pitch,
+        thread_height,
+    );
     for vertex in &mut vertices_mm {
-        vertex[1] *= style.body_depth_ratio;
-    }
-
-    const CAP_SEGMENTS: usize = 40;
-    let cap_base = top + wall * 0.25;
-    let bottom_center = vertices_mm.len() as u32;
-    vertices_mm.push([0.0, 0.0, cap_base]);
-    let top_center = vertices_mm.len() as u32;
-    vertices_mm.push([0.0, 0.0, cap_base + style.cap_height_mm]);
-    let mut bottom_ring = Vec::with_capacity(CAP_SEGMENTS);
-    let mut top_ring = Vec::with_capacity(CAP_SEGMENTS);
-    for segment in 0..CAP_SEGMENTS {
-        let angle = std::f64::consts::TAU * segment as f64 / CAP_SEGMENTS as f64;
-        let rib = 1.0 + 0.035 * (1.0 + (f64::from(style.grip_rib_count) * angle).cos());
-        let x = style.cap_radius_mm * rib * angle.cos();
-        let y = style.cap_radius_mm * rib * angle.sin();
-        bottom_ring.push(vertices_mm.len() as u32);
-        vertices_mm.push([x, y, cap_base]);
-        top_ring.push(vertices_mm.len() as u32);
-        vertices_mm.push([x, y, cap_base + style.cap_height_mm]);
-    }
-    for segment in 0..CAP_SEGMENTS {
-        let next = (segment + 1) % CAP_SEGMENTS;
-        triangles.extend([
-            [bottom_center, bottom_ring[segment], bottom_ring[next]],
-            [bottom_ring[segment], top_ring[segment], top_ring[next]],
-            [bottom_ring[segment], top_ring[next], bottom_ring[next]],
-            [top_center, top_ring[next], top_ring[segment]],
-        ]);
-    }
-
-    const LABEL_SEGMENTS: usize = 32;
-    let label_center_z = body_height * 0.48;
-    let label_back_y = -radius * style.body_depth_ratio * 0.99;
-    let label_front_y = label_back_y - style.label_relief_mm;
-    let back_center = vertices_mm.len() as u32;
-    vertices_mm.push([0.0, label_back_y, label_center_z]);
-    let front_center = vertices_mm.len() as u32;
-    vertices_mm.push([0.0, label_front_y, label_center_z]);
-    let mut back_ring = Vec::with_capacity(LABEL_SEGMENTS);
-    let mut front_ring = Vec::with_capacity(LABEL_SEGMENTS);
-    for segment in 0..LABEL_SEGMENTS {
-        let angle = std::f64::consts::TAU * segment as f64 / LABEL_SEGMENTS as f64;
-        let point = [
-            style.label_width_mm * 0.5 * angle.cos(),
-            label_back_y,
-            label_center_z + style.label_height_mm * 0.5 * angle.sin(),
-        ];
-        back_ring.push(vertices_mm.len() as u32);
-        vertices_mm.push(point);
-        front_ring.push(vertices_mm.len() as u32);
-        vertices_mm.push([point[0], label_front_y, point[2]]);
-    }
-    for segment in 0..LABEL_SEGMENTS {
-        let next = (segment + 1) % LABEL_SEGMENTS;
-        triangles.extend([
-            [back_center, back_ring[next], back_ring[segment]],
-            [front_center, front_ring[segment], front_ring[next]],
-            [back_ring[segment], back_ring[next], front_ring[next]],
-            [back_ring[segment], front_ring[next], front_ring[segment]],
-        ]);
+        if vertex[2] <= shoulder_top {
+            vertex[1] *= style.body_depth_ratio;
+        }
     }
     for triangle in &mut triangles {
         triangle.swap(1, 2);
@@ -3113,168 +3251,573 @@ fn assistant_ketchup_bottle_mesh(item: &AssistantBottleIntent) -> Option<MeshBod
         vertices_mm,
         triangles,
         authority: MeshAuthority::Authored {
-            provenance: "ketchup-assistant-squeeze-bottle-v1".to_owned(),
+            provenance: "ketchup-assistant-squeeze-bottle-body-v2".to_owned(),
         },
     })
 }
 
-fn assistant_balloon_glyph_mask(character: char) -> u16 {
-    let bits = |segments: &[u8]| {
-        segments
-            .iter()
-            .fold(0u16, |mask, segment| mask | (1u16 << segment))
+fn assistant_ketchup_bottle_cap_mesh(item: &AssistantBottleIntent) -> Option<MeshBodySpec> {
+    const SEGMENTS: usize = 64;
+    const THREAD_ROWS: usize = 48;
+    let style = item.ketchup_bottle.as_ref()?;
+    let wall = item.wall_thickness_mm;
+    let shoulder_top = item.body_height_mm + item.shoulder_rise_mm;
+    let neck_top = shoulder_top + item.neck_height_mm;
+    let cap_base = shoulder_top - wall * 0.25;
+    let cap_top = cap_base + style.cap_height_mm;
+    let inner_top = cap_top - wall * 1.5;
+    if inner_top <= neck_top + wall * 0.25 {
+        return None;
+    }
+    let thread_pitch = (wall * 2.75).clamp(4.5, item.neck_height_mm * 0.45);
+    let thread_height = wall * 0.55;
+    let clearance = wall * 0.20;
+    let plain = AssistantKetchupRingSurface::Plain;
+    let grip = AssistantKetchupRingSurface::GripRibs {
+        count: style.grip_rib_count,
     };
-    match character {
-        'A' => bits(&[0, 1, 2, 3, 4, 5]),
-        'B' | '8' => bits(&[0, 1, 2, 3, 4, 5, 6]),
-        'C' => bits(&[0, 1, 4, 6]),
-        'D' | 'O' | '0' => bits(&[0, 1, 2, 4, 5, 6]),
-        'E' | '6' => bits(&[0, 1, 3, 4, 6]),
-        'F' => bits(&[0, 1, 3, 4]),
-        'G' => bits(&[0, 1, 3, 4, 5, 6]),
-        'H' => bits(&[1, 2, 3, 4, 5]),
-        'I' => bits(&[0, 6, 11, 12]),
-        'J' => bits(&[2, 4, 5, 6]),
-        'K' => bits(&[1, 4, 8, 10]),
-        'L' => bits(&[1, 4, 6]),
-        'M' => bits(&[1, 2, 4, 5, 7, 8]),
-        'N' => bits(&[1, 2, 4, 5, 7, 10]),
-        'P' => bits(&[0, 1, 2, 3, 4]),
-        'Q' => bits(&[0, 1, 2, 4, 5, 6, 10]),
-        'R' => bits(&[0, 1, 2, 3, 4, 10]),
-        'S' | '5' => bits(&[0, 1, 3, 5, 6]),
-        'T' => bits(&[0, 11, 12]),
-        'U' => bits(&[1, 2, 4, 5, 6]),
-        'V' => bits(&[1, 2, 9, 10]),
-        'W' => bits(&[1, 2, 4, 5, 9, 10]),
-        'X' => bits(&[7, 8, 9, 10]),
-        'Y' => bits(&[7, 8, 12]),
-        'Z' | '2' => bits(&[0, 8, 9, 6]),
-        '1' => bits(&[2, 5]),
-        '3' => bits(&[0, 2, 3, 5, 6]),
-        '4' => bits(&[1, 2, 3, 5]),
-        '7' => bits(&[0, 2, 5]),
-        '9' => bits(&[0, 1, 2, 3, 5, 6]),
-        _ => 0,
+    let mut profile = vec![
+        AssistantKetchupRing {
+            radius: style.cap_radius_mm * 0.96,
+            z: cap_base,
+            surface: grip,
+        },
+        AssistantKetchupRing {
+            radius: style.cap_radius_mm,
+            z: cap_base + style.cap_height_mm * 0.18,
+            surface: grip,
+        },
+        AssistantKetchupRing {
+            radius: style.cap_radius_mm,
+            z: cap_top - wall,
+            surface: grip,
+        },
+        AssistantKetchupRing {
+            radius: style.cap_radius_mm * 0.92,
+            z: cap_top,
+            surface: plain,
+        },
+        AssistantKetchupRing {
+            radius: 0.0,
+            z: cap_top,
+            surface: plain,
+        },
+        AssistantKetchupRing {
+            radius: 0.0,
+            z: inner_top,
+            surface: plain,
+        },
+        AssistantKetchupRing {
+            radius: item.neck_radius_mm + clearance,
+            z: inner_top,
+            surface: plain,
+        },
+    ];
+    profile.extend((1..=THREAD_ROWS).map(|row| AssistantKetchupRing {
+        radius: item.neck_radius_mm + clearance,
+        z: inner_top - (inner_top - cap_base) * row as f64 / THREAD_ROWS as f64,
+        surface: AssistantKetchupRingSurface::InternalThread {
+            start_z: cap_base,
+            end_z: inner_top,
+        },
+    }));
+    let mut vertices_mm = Vec::new();
+    let mut triangles = Vec::new();
+    assistant_append_ketchup_profile(
+        &mut vertices_mm,
+        &mut triangles,
+        &profile,
+        SEGMENTS,
+        thread_pitch,
+        thread_height + clearance,
+    );
+    for triangle in &mut triangles {
+        triangle.swap(1, 2);
+    }
+    Some(MeshBodySpec {
+        schema: MESH_BODY_SCHEMA_V1.to_owned(),
+        vertices_mm,
+        triangles,
+        authority: MeshAuthority::Authored {
+            provenance: "ketchup-assistant-threaded-cap-v1".to_owned(),
+        },
+    })
+}
+
+struct AssistantBalloonPath {
+    points: Vec<[f64; 2]>,
+    closed: bool,
+}
+
+struct AssistantBalloonCap {
+    center: [f64; 3],
+    outward: [f64; 2],
+    normal: [f64; 2],
+    radial_radius: f64,
+    depth_radius: f64,
+    reverse: bool,
+}
+
+fn assistant_balloon_line(points: &[[f64; 2]]) -> AssistantBalloonPath {
+    AssistantBalloonPath {
+        points: points.to_vec(),
+        closed: false,
     }
 }
 
-fn assistant_append_balloon_stroke(
+fn assistant_balloon_arc(
+    center: [f64; 2],
+    radii: [f64; 2],
+    start_degrees: f64,
+    end_degrees: f64,
+    steps: usize,
+    closed: bool,
+) -> AssistantBalloonPath {
+    let point_count = if closed { steps } else { steps + 1 };
+    let points = (0..point_count)
+        .map(|step| {
+            let fraction = step as f64 / steps as f64;
+            let angle = (start_degrees + (end_degrees - start_degrees) * fraction).to_radians();
+            [
+                center[0] + radii[0] * angle.cos(),
+                center[1] + radii[1] * angle.sin(),
+            ]
+        })
+        .collect();
+    AssistantBalloonPath { points, closed }
+}
+
+fn assistant_balloon_glyph_paths(character: char) -> Vec<AssistantBalloonPath> {
+    let line = assistant_balloon_line;
+    let arc = assistant_balloon_arc;
+    match character {
+        'A' => vec![
+            line(&[[0.08, 0.05], [0.40, 0.95], [0.72, 0.05]]),
+            line(&[[0.22, 0.43], [0.58, 0.43]]),
+        ],
+        'B' => vec![
+            line(&[[0.12, 0.05], [0.12, 0.95]]),
+            line(&[
+                [0.12, 0.95],
+                [0.48, 0.95],
+                [0.70, 0.84],
+                [0.70, 0.71],
+                [0.62, 0.56],
+                [0.12, 0.52],
+            ]),
+            line(&[
+                [0.12, 0.52],
+                [0.60, 0.49],
+                [0.72, 0.34],
+                [0.69, 0.17],
+                [0.50, 0.05],
+                [0.12, 0.05],
+            ]),
+        ],
+        'C' => vec![arc([0.42, 0.50], [0.34, 0.45], 42.0, 318.0, 18, false)],
+        'D' => vec![
+            line(&[[0.12, 0.05], [0.12, 0.95]]),
+            line(&[
+                [0.12, 0.95],
+                [0.49, 0.94],
+                [0.72, 0.75],
+                [0.74, 0.50],
+                [0.72, 0.25],
+                [0.49, 0.06],
+                [0.12, 0.05],
+            ]),
+        ],
+        'E' => vec![
+            line(&[[0.12, 0.05], [0.12, 0.95]]),
+            line(&[[0.12, 0.95], [0.70, 0.95]]),
+            line(&[[0.12, 0.51], [0.58, 0.51]]),
+            line(&[[0.12, 0.05], [0.70, 0.05]]),
+        ],
+        'F' => vec![
+            line(&[[0.12, 0.05], [0.12, 0.95]]),
+            line(&[[0.12, 0.95], [0.70, 0.95]]),
+            line(&[[0.12, 0.51], [0.58, 0.51]]),
+        ],
+        'G' => vec![
+            arc([0.42, 0.50], [0.34, 0.45], 42.0, 318.0, 18, false),
+            line(&[[0.46, 0.49], [0.73, 0.49], [0.73, 0.20]]),
+        ],
+        'H' => vec![
+            line(&[[0.12, 0.05], [0.12, 0.95]]),
+            line(&[[0.68, 0.05], [0.68, 0.95]]),
+            line(&[[0.12, 0.50], [0.68, 0.50]]),
+        ],
+        'I' => vec![
+            line(&[[0.15, 0.95], [0.65, 0.95]]),
+            line(&[[0.40, 0.95], [0.40, 0.05]]),
+            line(&[[0.15, 0.05], [0.65, 0.05]]),
+        ],
+        'J' => vec![
+            line(&[[0.18, 0.95], [0.68, 0.95]]),
+            line(&[
+                [0.58, 0.95],
+                [0.58, 0.28],
+                [0.52, 0.11],
+                [0.36, 0.04],
+                [0.18, 0.10],
+                [0.10, 0.25],
+            ]),
+        ],
+        'K' => vec![
+            line(&[[0.12, 0.05], [0.12, 0.95]]),
+            line(&[[0.68, 0.95], [0.13, 0.48], [0.70, 0.05]]),
+        ],
+        'L' => vec![line(&[[0.12, 0.95], [0.12, 0.05], [0.70, 0.05]])],
+        'M' => vec![line(&[
+            [0.08, 0.05],
+            [0.08, 0.95],
+            [0.40, 0.55],
+            [0.72, 0.95],
+            [0.72, 0.05],
+        ])],
+        'N' => vec![line(&[
+            [0.10, 0.05],
+            [0.10, 0.95],
+            [0.70, 0.05],
+            [0.70, 0.95],
+        ])],
+        'O' | '0' => vec![arc([0.40, 0.50], [0.32, 0.45], 0.0, 360.0, 24, true)],
+        'P' => vec![
+            line(&[[0.12, 0.05], [0.12, 0.95]]),
+            line(&[
+                [0.12, 0.95],
+                [0.50, 0.95],
+                [0.70, 0.83],
+                [0.70, 0.68],
+                [0.55, 0.54],
+                [0.12, 0.54],
+            ]),
+        ],
+        'Q' => vec![
+            arc([0.40, 0.50], [0.32, 0.45], 0.0, 360.0, 24, true),
+            line(&[[0.46, 0.28], [0.74, 0.02]]),
+        ],
+        'R' => vec![
+            line(&[[0.12, 0.05], [0.12, 0.95]]),
+            line(&[
+                [0.12, 0.95],
+                [0.50, 0.95],
+                [0.70, 0.83],
+                [0.70, 0.68],
+                [0.55, 0.54],
+                [0.12, 0.54],
+            ]),
+            line(&[[0.45, 0.54], [0.72, 0.05]]),
+        ],
+        'S' => vec![line(&[
+            [0.70, 0.86],
+            [0.58, 0.96],
+            [0.31, 0.94],
+            [0.12, 0.79],
+            [0.18, 0.61],
+            [0.60, 0.43],
+            [0.70, 0.25],
+            [0.56, 0.08],
+            [0.28, 0.05],
+            [0.10, 0.16],
+        ])],
+        'T' => vec![
+            line(&[[0.08, 0.95], [0.72, 0.95]]),
+            line(&[[0.40, 0.95], [0.40, 0.05]]),
+        ],
+        'U' => vec![line(&[
+            [0.10, 0.95],
+            [0.10, 0.28],
+            [0.15, 0.12],
+            [0.29, 0.04],
+            [0.51, 0.04],
+            [0.65, 0.12],
+            [0.70, 0.28],
+            [0.70, 0.95],
+        ])],
+        'V' => vec![line(&[[0.08, 0.95], [0.40, 0.05], [0.72, 0.95]])],
+        'W' => vec![line(&[
+            [0.06, 0.95],
+            [0.22, 0.05],
+            [0.40, 0.48],
+            [0.58, 0.05],
+            [0.74, 0.95],
+        ])],
+        'X' => vec![
+            line(&[[0.08, 0.95], [0.72, 0.05]]),
+            line(&[[0.72, 0.95], [0.08, 0.05]]),
+        ],
+        'Y' => vec![
+            line(&[[0.08, 0.95], [0.40, 0.52], [0.72, 0.95]]),
+            line(&[[0.40, 0.52], [0.40, 0.05]]),
+        ],
+        'Z' | '2' => vec![line(&[
+            [0.10, 0.95],
+            [0.70, 0.95],
+            [0.10, 0.05],
+            [0.70, 0.05],
+        ])],
+        '1' => vec![line(&[[0.25, 0.78], [0.42, 0.95], [0.42, 0.05]])],
+        '3' => vec![line(&[
+            [0.15, 0.88],
+            [0.35, 0.96],
+            [0.62, 0.90],
+            [0.70, 0.72],
+            [0.56, 0.52],
+            [0.70, 0.31],
+            [0.62, 0.11],
+            [0.35, 0.04],
+            [0.14, 0.13],
+        ])],
+        '4' => vec![
+            line(&[[0.58, 0.05], [0.58, 0.95]]),
+            line(&[[0.58, 0.95], [0.10, 0.35], [0.72, 0.35]]),
+        ],
+        '5' => vec![line(&[
+            [0.68, 0.95],
+            [0.15, 0.95],
+            [0.12, 0.55],
+            [0.51, 0.55],
+            [0.68, 0.42],
+            [0.68, 0.18],
+            [0.50, 0.05],
+            [0.18, 0.10],
+        ])],
+        '6' => vec![
+            arc([0.40, 0.32], [0.29, 0.28], 0.0, 360.0, 20, true),
+            line(&[[0.13, 0.33], [0.17, 0.69], [0.34, 0.91], [0.62, 0.94]]),
+        ],
+        '7' => vec![line(&[[0.10, 0.95], [0.70, 0.95], [0.30, 0.05]])],
+        '8' => vec![
+            arc([0.40, 0.72], [0.27, 0.23], 0.0, 360.0, 18, true),
+            arc([0.40, 0.28], [0.29, 0.24], 0.0, 360.0, 18, true),
+        ],
+        '9' => vec![
+            arc([0.40, 0.69], [0.29, 0.27], 0.0, 360.0, 20, true),
+            line(&[[0.68, 0.68], [0.64, 0.31], [0.48, 0.08], [0.20, 0.05]]),
+        ],
+        _ => Vec::new(),
+    }
+}
+
+fn assistant_smooth_balloon_path(path: &mut AssistantBalloonPath) {
+    if path.closed || path.points.len() < 3 {
+        return;
+    }
+    for _ in 0..2 {
+        let mut smoothed = Vec::with_capacity(path.points.len() * 2);
+        smoothed.push(path.points[0]);
+        for pair in path.points.windows(2) {
+            let [first, second] = [pair[0], pair[1]];
+            smoothed.extend([
+                [
+                    first[0] * 0.75 + second[0] * 0.25,
+                    first[1] * 0.75 + second[1] * 0.25,
+                ],
+                [
+                    first[0] * 0.25 + second[0] * 0.75,
+                    first[1] * 0.25 + second[1] * 0.75,
+                ],
+            ]);
+        }
+        smoothed.push(*path.points.last().expect("balloon path has points"));
+        path.points = smoothed;
+    }
+}
+
+fn assistant_append_balloon_cap(
     vertices: &mut Vec<[f64; 3]>,
     triangles: &mut Vec<[u32; 3]>,
-    start: [f64; 2],
-    end: [f64; 2],
-    radius: f64,
-    depth: f64,
+    cap: AssistantBalloonCap,
+    equator: &[u32],
 ) {
-    const ARC_STEPS: usize = 8;
-    let delta = [end[0] - start[0], end[1] - start[1]];
-    let length = (delta[0] * delta[0] + delta[1] * delta[1]).sqrt();
-    let direction = [delta[0] / length, delta[1] / length];
-    let perpendicular = [-direction[1], direction[0]];
-    let mut outline = Vec::with_capacity((ARC_STEPS + 1) * 2);
-    for step in 0..=ARC_STEPS {
-        let angle = std::f64::consts::PI * step as f64 / ARC_STEPS as f64;
-        outline.push([
-            end[0] + radius * (perpendicular[0] * angle.cos() + direction[0] * angle.sin()),
-            end[1] + radius * (perpendicular[1] * angle.cos() + direction[1] * angle.sin()),
-        ]);
+    const CROSS_SECTION_STEPS: usize = 24;
+    let AssistantBalloonCap {
+        center,
+        outward,
+        normal,
+        radial_radius,
+        depth_radius,
+        reverse,
+    } = cap;
+    const HEMISPHERE_STEPS: usize = 8;
+    let mut previous = equator.to_vec();
+    for latitude in 1..HEMISPHERE_STEPS {
+        let phi = std::f64::consts::FRAC_PI_2 * latitude as f64 / HEMISPHERE_STEPS as f64;
+        let axial = radial_radius * phi.sin();
+        let radial_scale = phi.cos();
+        let current = (0..CROSS_SECTION_STEPS)
+            .map(|segment| {
+                let angle = std::f64::consts::TAU * segment as f64 / CROSS_SECTION_STEPS as f64;
+                let id = vertices.len() as u32;
+                vertices.push([
+                    center[0]
+                        + outward[0] * axial
+                        + normal[0] * radial_radius * radial_scale * angle.sin(),
+                    center[1] + depth_radius * radial_scale * angle.cos(),
+                    center[2]
+                        + outward[1] * axial
+                        + normal[1] * radial_radius * radial_scale * angle.sin(),
+                ]);
+                id
+            })
+            .collect::<Vec<_>>();
+        for segment in 0..CROSS_SECTION_STEPS {
+            let next = (segment + 1) % CROSS_SECTION_STEPS;
+            let mut pair = [
+                [previous[segment], current[segment], current[next]],
+                [previous[segment], current[next], previous[next]],
+            ];
+            if reverse {
+                pair[0].swap(1, 2);
+                pair[1].swap(1, 2);
+            }
+            triangles.extend(pair);
+        }
+        previous = current;
     }
-    for step in 0..=ARC_STEPS {
-        let angle = std::f64::consts::PI * step as f64 / ARC_STEPS as f64;
-        outline.push([
-            start[0] - radius * (perpendicular[0] * angle.cos() + direction[0] * angle.sin()),
-            start[1] - radius * (perpendicular[1] * angle.cos() + direction[1] * angle.sin()),
-        ]);
+    let pole = vertices.len() as u32;
+    vertices.push([
+        center[0] + outward[0] * radial_radius,
+        center[1],
+        center[2] + outward[1] * radial_radius,
+    ]);
+    for segment in 0..CROSS_SECTION_STEPS {
+        let next = (segment + 1) % CROSS_SECTION_STEPS;
+        let mut triangle = [previous[segment], pole, previous[next]];
+        if reverse {
+            triangle.swap(1, 2);
+        }
+        triangles.push(triangle);
     }
-    let center = [(start[0] + end[0]) * 0.5, (start[1] + end[1]) * 0.5];
-    let ring_specs = [(-depth * 0.34, 0.72), (0.0, 1.0), (depth * 0.34, 0.72)];
-    let rings = ring_specs
-        .into_iter()
-        .map(|(y, scale)| {
-            outline
-                .iter()
-                .map(|point| {
+}
+
+fn assistant_append_balloon_path(
+    vertices: &mut Vec<[f64; 3]>,
+    triangles: &mut Vec<[u32; 3]>,
+    path: &AssistantBalloonPath,
+    radial_radius: f64,
+    depth_radius: f64,
+) {
+    const CROSS_SECTION_STEPS: usize = 24;
+    if path.points.len() < 2 {
+        return;
+    }
+    let tangents = (0..path.points.len())
+        .map(|index| {
+            let previous = if path.closed {
+                path.points[(index + path.points.len() - 1) % path.points.len()]
+            } else {
+                path.points[index.saturating_sub(1)]
+            };
+            let next = if path.closed {
+                path.points[(index + 1) % path.points.len()]
+            } else {
+                path.points[(index + 1).min(path.points.len() - 1)]
+            };
+            let delta = [next[0] - previous[0], next[1] - previous[1]];
+            let length = (delta[0] * delta[0] + delta[1] * delta[1]).sqrt();
+            [delta[0] / length, delta[1] / length]
+        })
+        .collect::<Vec<_>>();
+    let rings = path
+        .points
+        .iter()
+        .zip(tangents.iter())
+        .map(|(center, tangent)| {
+            let normal = [-tangent[1], tangent[0]];
+            (0..CROSS_SECTION_STEPS)
+                .map(|segment| {
+                    let angle = std::f64::consts::TAU * segment as f64 / CROSS_SECTION_STEPS as f64;
                     let id = vertices.len() as u32;
                     vertices.push([
-                        center[0] + (point[0] - center[0]) * scale,
-                        y,
-                        center[1] + (point[1] - center[1]) * scale,
+                        center[0] + normal[0] * radial_radius * angle.sin(),
+                        depth_radius * angle.cos(),
+                        center[1] + normal[1] * radial_radius * angle.sin(),
                     ]);
                     id
                 })
                 .collect::<Vec<_>>()
         })
         .collect::<Vec<_>>();
-    let front = vertices.len() as u32;
-    vertices.push([center[0], -depth * 0.5, center[1]]);
-    let back = vertices.len() as u32;
-    vertices.push([center[0], depth * 0.5, center[1]]);
-    for index in 0..outline.len() {
-        let next = (index + 1) % outline.len();
-        triangles.push([front, rings[0][next], rings[0][index]]);
-        for ring in 0..rings.len() - 1 {
+    let connection_count = if path.closed {
+        rings.len()
+    } else {
+        rings.len() - 1
+    };
+    for ring_index in 0..connection_count {
+        let next_ring = (ring_index + 1) % rings.len();
+        for segment in 0..CROSS_SECTION_STEPS {
+            let next = (segment + 1) % CROSS_SECTION_STEPS;
             triangles.extend([
-                [rings[ring][index], rings[ring][next], rings[ring + 1][next]],
                 [
-                    rings[ring][index],
-                    rings[ring + 1][next],
-                    rings[ring + 1][index],
+                    rings[ring_index][segment],
+                    rings[next_ring][segment],
+                    rings[next_ring][next],
+                ],
+                [
+                    rings[ring_index][segment],
+                    rings[next_ring][next],
+                    rings[ring_index][next],
                 ],
             ]);
         }
-        let last = rings.len() - 1;
-        triangles.push([back, rings[last][index], rings[last][next]]);
+    }
+    if !path.closed {
+        for (index, direction, reverse) in [(0, -1.0, true), (path.points.len() - 1, 1.0, false)] {
+            let tangent = tangents[index];
+            assistant_append_balloon_cap(
+                vertices,
+                triangles,
+                AssistantBalloonCap {
+                    center: [path.points[index][0], 0.0, path.points[index][1]],
+                    outward: [tangent[0] * direction, tangent[1] * direction],
+                    normal: [-tangent[1], tangent[0]],
+                    radial_radius,
+                    depth_radius,
+                    reverse,
+                },
+                &rings[index],
+            );
+        }
     }
 }
 
 fn assistant_balloon_text_mesh(item: &AssistantBalloonTextIntent) -> Option<MeshBodySpec> {
-    let segments = [
-        [0.15, 1.0, 0.65, 1.0],
-        [0.12, 0.92, 0.12, 0.55],
-        [0.68, 0.92, 0.68, 0.55],
-        [0.15, 0.50, 0.65, 0.50],
-        [0.12, 0.45, 0.12, 0.08],
-        [0.68, 0.45, 0.68, 0.08],
-        [0.15, 0.0, 0.65, 0.0],
-        [0.15, 0.95, 0.38, 0.55],
-        [0.65, 0.95, 0.42, 0.55],
-        [0.38, 0.45, 0.15, 0.05],
-        [0.42, 0.45, 0.65, 0.05],
-        [0.40, 0.95, 0.40, 0.55],
-        [0.40, 0.45, 0.40, 0.05],
-    ];
     let mut vertices_mm = Vec::new();
     let mut triangles = Vec::new();
     let mut cursor = 0.0;
-    let advance = item.height_mm * 0.82 + item.letter_spacing_mm;
+    let advance = item.height_mm * 0.88 + item.letter_spacing_mm;
     for character in item.text.chars() {
         if character == ' ' {
             cursor += item.height_mm * 0.55 + item.letter_spacing_mm;
             continue;
         }
-        let mask = assistant_balloon_glyph_mask(character);
-        for (index, [start_x, start_z, end_x, end_z]) in segments.iter().copied().enumerate() {
-            if mask & (1u16 << index) == 0 {
-                continue;
+        for mut path in assistant_balloon_glyph_paths(character) {
+            assistant_smooth_balloon_path(&mut path);
+            for point in &mut path.points {
+                point[0] = cursor + point[0] * item.height_mm;
+                point[1] *= item.height_mm;
             }
-            assistant_append_balloon_stroke(
+            assistant_append_balloon_path(
                 &mut vertices_mm,
                 &mut triangles,
-                [cursor + start_x * item.height_mm, start_z * item.height_mm],
-                [cursor + end_x * item.height_mm, end_z * item.height_mm],
+                &path,
                 item.stroke_width_mm * 0.5,
-                item.depth_mm,
+                item.depth_mm * 0.5,
             );
         }
         cursor += advance;
+    }
+    for triangle in &mut triangles {
+        triangle.swap(1, 2);
     }
     (!vertices_mm.is_empty()).then_some(MeshBodySpec {
         schema: MESH_BODY_SCHEMA_V1.to_owned(),
         vertices_mm,
         triangles,
         authority: MeshAuthority::Authored {
-            provenance: "ketchup-assistant-balloon-text-v1".to_owned(),
+            provenance: "ketchup-assistant-balloon-text-v2".to_owned(),
         },
     })
 }
@@ -10677,34 +11220,57 @@ impl KetchupApp {
                 continue;
             }
             if bottle.ketchup_bottle.is_some() {
-                let definition = next_definition.map(DefinitionId)?;
-                let feature = next_feature.map(FeatureId)?;
-                let occurrence = next_occurrence.map(OccurrenceId)?;
+                let body_definition = next_definition.map(DefinitionId)?;
+                let cap_definition = body_definition.0.checked_add(1).map(DefinitionId)?;
+                let body_feature = next_feature.map(FeatureId)?;
+                let cap_feature = body_feature.0.checked_add(1).map(FeatureId)?;
+                let body_occurrence = next_occurrence.map(OccurrenceId)?;
+                let cap_occurrence = body_occurrence.0.checked_add(1).map(OccurrenceId)?;
                 let [x, y, z] = bottle.origin_mm;
+                let transform = Transform::from_translation(x, y, z).ok()?;
                 commands.extend([
                     CanonicalCommand::CreateDefinition {
-                        id: definition,
-                        name: bottle.name.clone(),
+                        id: body_definition,
+                        name: format!("{} body", bottle.name),
                     },
                     CanonicalCommand::CreateFeature {
-                        id: feature,
-                        definition_id: definition,
-                        name: format!("{} squeeze bottle", bottle.name),
-                        kind: FeatureKind::MeshBody(assistant_ketchup_bottle_mesh(bottle)?),
+                        id: body_feature,
+                        definition_id: body_definition,
+                        name: format!("{} clean threaded body", bottle.name),
+                        kind: FeatureKind::MeshBody(assistant_ketchup_bottle_body_mesh(bottle)?),
                     },
                     CanonicalCommand::CreateOccurrence {
-                        id: occurrence,
-                        definition_id: definition,
-                        name: format!("{} occurrence", bottle.name),
-                        transform: Transform::from_translation(x, y, z).ok()?,
+                        id: body_occurrence,
+                        definition_id: body_definition,
+                        name: format!("{} body occurrence", bottle.name),
+                        transform,
+                        parent: None,
+                        tag: None,
+                        visible: true,
+                    },
+                    CanonicalCommand::CreateDefinition {
+                        id: cap_definition,
+                        name: format!("{} cap", bottle.name),
+                    },
+                    CanonicalCommand::CreateFeature {
+                        id: cap_feature,
+                        definition_id: cap_definition,
+                        name: format!("{} removable threaded cap", bottle.name),
+                        kind: FeatureKind::MeshBody(assistant_ketchup_bottle_cap_mesh(bottle)?),
+                    },
+                    CanonicalCommand::CreateOccurrence {
+                        id: cap_occurrence,
+                        definition_id: cap_definition,
+                        name: format!("{} cap occurrence", bottle.name),
+                        transform,
                         parent: None,
                         tag: None,
                         visible: true,
                     },
                 ]);
-                next_definition = definition.0.checked_add(1);
-                next_feature = feature.0.checked_add(1);
-                next_occurrence = occurrence.0.checked_add(1);
+                next_definition = cap_definition.0.checked_add(1);
+                next_feature = cap_feature.0.checked_add(1);
+                next_occurrence = cap_occurrence.0.checked_add(1);
                 continue;
             }
             let definition = next_definition.map(DefinitionId)?;

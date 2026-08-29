@@ -256,8 +256,9 @@ impl AssistantBottleIntent {
                         || *value <= 0.0
                         || *value > MAX_ASSISTANT_TEAPOT_DIMENSION_MM
                 })
-                || ketchup.cap_radius_mm < self.neck_radius_mm * 0.9
+                || ketchup.cap_radius_mm <= self.neck_radius_mm + self.wall_thickness_mm * 1.75
                 || ketchup.cap_radius_mm >= self.body_radius_mm * 0.55
+                || ketchup.cap_height_mm <= self.neck_height_mm + self.wall_thickness_mm * 2.0
                 || ketchup.cap_height_mm >= self.body_height_mm * 0.35
                 || ketchup.label_width_mm >= self.body_radius_mm * 1.8
                 || ketchup.label_height_mm >= self.body_height_mm * 0.7

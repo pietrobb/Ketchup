@@ -600,7 +600,7 @@ def test_public_sidecar_parses_only_bounded_smooth_teapot_workflows():
 
 
 def test_public_sidecar_parses_bounded_ketchup_squeeze_bottle():
-    bottle = {"name": "Kečup squeeze bottle", "body_radius_mm": 38, "body_height_mm": 145, "shoulder_rise_mm": 28, "neck_radius_mm": 15, "neck_height_mm": 18, "wall_thickness_mm": 2, "finish_kind": "fillet", "finish_amount_mm": 2, "origin_mm": [0, 0, 0], "ketchup_bottle": {"body_depth_ratio": 0.68, "cap_radius_mm": 17, "cap_height_mm": 16, "label_width_mm": 58, "label_height_mm": 72, "label_relief_mm": 2.5, "grip_rib_count": 20}}
+    bottle = {"name": "Kečup squeeze bottle", "body_radius_mm": 38, "body_height_mm": 145, "shoulder_rise_mm": 28, "neck_radius_mm": 15, "neck_height_mm": 18, "wall_thickness_mm": 2, "finish_kind": "fillet", "finish_amount_mm": 2, "origin_mm": [0, 0, 0], "ketchup_bottle": {"body_depth_ratio": 0.68, "cap_radius_mm": 19.5, "cap_height_mm": 24, "label_width_mm": 58, "label_height_mm": 72, "label_relief_mm": 2.5, "grip_rib_count": 20}}
     answer = json.dumps({"message": "Prepared squeeze bottle.", "model_intent": {"replace_scene": False, "boxes": [], "bottles": [bottle]}})
     assert assistant._parse_assistant_result(answer)["model_intent"]["bottles"] == [bottle]
     invalid = json.loads(answer)
@@ -611,8 +611,8 @@ def test_public_sidecar_parses_bounded_ketchup_squeeze_bottle():
 
 def test_public_sidecar_parses_bounded_balloon_text_with_holes_and_depth():
     text = {
-        "name": "Balloon OA",
-        "text": "O A",
+        "name": "Balloon KECUP",
+        "text": "KECUP",
         "height_mm": 120,
         "depth_mm": 42,
         "stroke_width_mm": 20,
@@ -621,7 +621,8 @@ def test_public_sidecar_parses_bounded_balloon_text_with_holes_and_depth():
     }
     answer = json.dumps({"message": "Prepared balloon letters.", "model_intent": {"replace_scene": False, "boxes": [], "balloon_texts": [text]}})
     assert assistant._parse_assistant_result(answer)["model_intent"]["balloon_texts"] == [text]
-    assert "preserves through openings" in assistant.SYSTEM_PROMPT
+    assert "fully rounded in every direction with spherical ends" in assistant.SYSTEM_PROMPT
+    assert "never use flat-faced or digital display segments" in assistant.SYSTEM_PROMPT
     invalid = json.loads(answer)
     invalid["model_intent"]["balloon_texts"][0]["stroke_width_mm"] = 40
     with pytest.raises(assistant.ProtocolError):
