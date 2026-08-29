@@ -2767,7 +2767,7 @@ fn assistant_append_pipe(
     outer_radii: &[f64],
     inner_radii: Option<&[f64]>,
 ) {
-    const SEGMENTS: usize = 16;
+    const SEGMENTS: usize = 24;
     let ring_points = |center: [f64; 3], tangent: [f64; 3], radius: f64| {
         let length = (tangent[0] * tangent[0] + tangent[2] * tangent[2]).sqrt();
         let normal = [-tangent[2] / length, 0.0, tangent[0] / length];
@@ -2871,7 +2871,7 @@ fn assistant_append_pipe(
     }
 }
 
-fn assistant_teapot_mesh(item: &AssistantBottleIntent) -> Option<MeshBodySpec> {
+fn assistant_teapot_body_mesh(item: &AssistantBottleIntent) -> Option<MeshBodySpec> {
     let teapot = item.teapot.as_ref()?;
     let radius = item.body_radius_mm;
     let wall = item.wall_thickness_mm;
@@ -2931,21 +2931,21 @@ fn assistant_teapot_mesh(item: &AssistantBottleIntent) -> Option<MeshBodySpec> {
         None,
     );
 
-    let spout_start = [radius * 0.78, 0.0, body_height * 0.52];
+    let spout_start = [radius * 0.82, 0.0, body_height * 0.54];
     let spout_control_1 = [
-        radius + teapot.spout_length_mm * 0.15,
+        radius + teapot.spout_length_mm * 0.12,
         0.0,
         body_height * 0.58,
     ];
     let spout_control_2 = [
-        radius + teapot.spout_length_mm * 0.65,
+        radius + teapot.spout_length_mm * 0.58,
         0.0,
-        body_height * 0.90,
+        body_height * 0.74,
     ];
-    let spout_end = [radius + teapot.spout_length_mm, 0.0, top * 0.92];
-    let spout_centers = (0..=12)
+    let spout_end = [radius + teapot.spout_length_mm * 0.96, 0.0, top * 0.88];
+    let spout_centers = (0..=24)
         .map(|index| {
-            let t = index as f64 / 12.0;
+            let t = index as f64 / 24.0;
             let one_minus_t = 1.0 - t;
             [0, 1, 2].map(|axis| {
                 one_minus_t.powi(3) * spout_start[axis]
@@ -2958,7 +2958,7 @@ fn assistant_teapot_mesh(item: &AssistantBottleIntent) -> Option<MeshBodySpec> {
     let spout_outer = (0..spout_centers.len())
         .map(|index| {
             let t = index as f64 / (spout_centers.len() - 1) as f64;
-            teapot.spout_radius_mm * (1.35 - 0.35 * t)
+            teapot.spout_radius_mm * (1.18 - 0.42 * t)
         })
         .collect::<Vec<_>>();
     let spout_inner = spout_outer
@@ -2973,31 +2973,6 @@ fn assistant_teapot_mesh(item: &AssistantBottleIntent) -> Option<MeshBodySpec> {
         Some(&spout_inner),
     );
 
-    let lid_base = top + wall * 0.25;
-    let lid_profile = [
-        [0.0, lid_base],
-        [item.neck_radius_mm * 1.08, lid_base],
-        [
-            item.neck_radius_mm * 1.12,
-            lid_base + teapot.lid_height_mm * 0.20,
-        ],
-        [
-            item.neck_radius_mm * 0.72,
-            lid_base + teapot.lid_height_mm * 0.75,
-        ],
-        [0.0, lid_base + teapot.lid_height_mm],
-    ];
-    assistant_append_revolved_profile(&mut vertices_mm, &mut triangles, &lid_profile, 32);
-    let knob_base = lid_base + teapot.lid_height_mm;
-    let knob = teapot.lid_knob_radius_mm;
-    let knob_profile = [
-        [0.0, knob_base],
-        [knob * 0.75, knob_base + knob * 0.20],
-        [knob, knob_base + knob],
-        [knob * 0.75, knob_base + knob * 1.80],
-        [0.0, knob_base + knob * 2.0],
-    ];
-    assistant_append_revolved_profile(&mut vertices_mm, &mut triangles, &knob_profile, 24);
     for triangle in &mut triangles {
         triangle.swap(1, 2);
     }
@@ -3007,7 +2982,52 @@ fn assistant_teapot_mesh(item: &AssistantBottleIntent) -> Option<MeshBodySpec> {
         vertices_mm,
         triangles,
         authority: MeshAuthority::Authored {
-            provenance: "ketchup-assistant-rounded-teapot-v1".to_owned(),
+            provenance: "ketchup-assistant-rounded-teapot-body-v2".to_owned(),
+        },
+    })
+}
+
+fn assistant_teapot_lid_mesh(item: &AssistantBottleIntent) -> Option<MeshBodySpec> {
+    let teapot = item.teapot.as_ref()?;
+    let wall = item.wall_thickness_mm;
+    let top = item.body_height_mm + item.shoulder_rise_mm + item.neck_height_mm;
+    let lid_base = top + wall * 0.20;
+    let seat_clearance = wall * 0.20;
+    let seat_radius = item.neck_radius_mm - wall - seat_clearance;
+    let seat_bottom = top - (item.neck_height_mm * 0.42).min(teapot.lid_height_mm * 0.38);
+    let knob = teapot.lid_knob_radius_mm;
+    let knob_base = lid_base + teapot.lid_height_mm;
+    let profile = [
+        [0.0, seat_bottom],
+        [seat_radius * 0.82, seat_bottom],
+        [seat_radius, seat_bottom + wall * 0.55],
+        [seat_radius, top + wall * 0.10],
+        [item.neck_radius_mm * 1.08, lid_base],
+        [
+            item.neck_radius_mm * 1.12,
+            lid_base + teapot.lid_height_mm * 0.20,
+        ],
+        [
+            item.neck_radius_mm * 0.72,
+            lid_base + teapot.lid_height_mm * 0.75,
+        ],
+        [knob * 0.78, knob_base],
+        [knob, knob_base + knob * 0.72],
+        [knob * 0.72, knob_base + knob * 1.52],
+        [0.0, knob_base + knob * 1.72],
+    ];
+    let mut vertices_mm = Vec::new();
+    let mut triangles = Vec::new();
+    assistant_append_revolved_profile(&mut vertices_mm, &mut triangles, &profile, 48);
+    for triangle in &mut triangles {
+        triangle.swap(1, 2);
+    }
+    Some(MeshBodySpec {
+        schema: MESH_BODY_SCHEMA_V1.to_owned(),
+        vertices_mm,
+        triangles,
+        authority: MeshAuthority::Authored {
+            provenance: "ketchup-assistant-removable-teapot-lid-v1".to_owned(),
         },
     })
 }
@@ -11189,34 +11209,57 @@ impl KetchupApp {
         }
         for bottle in &intent.bottles {
             if bottle.teapot.is_some() {
-                let definition = next_definition.map(DefinitionId)?;
-                let feature = next_feature.map(FeatureId)?;
-                let occurrence = next_occurrence.map(OccurrenceId)?;
+                let body_definition = next_definition.map(DefinitionId)?;
+                let lid_definition = body_definition.0.checked_add(1).map(DefinitionId)?;
+                let body_feature = next_feature.map(FeatureId)?;
+                let lid_feature = body_feature.0.checked_add(1).map(FeatureId)?;
+                let body_occurrence = next_occurrence.map(OccurrenceId)?;
+                let lid_occurrence = body_occurrence.0.checked_add(1).map(OccurrenceId)?;
                 let [x, y, z] = bottle.origin_mm;
+                let transform = Transform::from_translation(x, y, z).ok()?;
                 commands.extend([
                     CanonicalCommand::CreateDefinition {
-                        id: definition,
-                        name: bottle.name.clone(),
+                        id: body_definition,
+                        name: format!("{} body", bottle.name),
                     },
                     CanonicalCommand::CreateFeature {
-                        id: feature,
-                        definition_id: definition,
-                        name: format!("{} smooth hollow vessel", bottle.name),
-                        kind: FeatureKind::MeshBody(assistant_teapot_mesh(bottle)?),
+                        id: body_feature,
+                        definition_id: body_definition,
+                        name: format!("{} smooth hollow body", bottle.name),
+                        kind: FeatureKind::MeshBody(assistant_teapot_body_mesh(bottle)?),
                     },
                     CanonicalCommand::CreateOccurrence {
-                        id: occurrence,
-                        definition_id: definition,
-                        name: format!("{} occurrence", bottle.name),
-                        transform: Transform::from_translation(x, y, z).ok()?,
+                        id: body_occurrence,
+                        definition_id: body_definition,
+                        name: format!("{} body occurrence", bottle.name),
+                        transform,
+                        parent: None,
+                        tag: None,
+                        visible: true,
+                    },
+                    CanonicalCommand::CreateDefinition {
+                        id: lid_definition,
+                        name: format!("{} lid", bottle.name),
+                    },
+                    CanonicalCommand::CreateFeature {
+                        id: lid_feature,
+                        definition_id: lid_definition,
+                        name: format!("{} removable seated lid", bottle.name),
+                        kind: FeatureKind::MeshBody(assistant_teapot_lid_mesh(bottle)?),
+                    },
+                    CanonicalCommand::CreateOccurrence {
+                        id: lid_occurrence,
+                        definition_id: lid_definition,
+                        name: format!("{} lid occurrence", bottle.name),
+                        transform,
                         parent: None,
                         tag: None,
                         visible: true,
                     },
                 ]);
-                next_definition = definition.0.checked_add(1);
-                next_feature = feature.0.checked_add(1);
-                next_occurrence = occurrence.0.checked_add(1);
+                next_definition = lid_definition.0.checked_add(1);
+                next_feature = lid_feature.0.checked_add(1);
+                next_occurrence = lid_occurrence.0.checked_add(1);
                 continue;
             }
             if bottle.ketchup_bottle.is_some() {

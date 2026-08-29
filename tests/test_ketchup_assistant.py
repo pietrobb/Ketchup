@@ -591,6 +591,7 @@ def test_public_sidecar_parses_only_bounded_smooth_teapot_workflows():
         }
     )
     assert assistant._parse_assistant_result(answer)["model_intent"]["bottles"] == [teapot]
+    assert "separate removable lid with a locating seat" in assistant.SYSTEM_PROMPT
     assert "never approximate a tea pot or cup with boxes" in assistant.SYSTEM_PROMPT
 
     invalid = json.loads(answer)

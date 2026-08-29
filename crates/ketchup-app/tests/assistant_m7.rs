@@ -2870,26 +2870,112 @@ fn assistant_teapot_intent_creates_smooth_hollow_saved_model_as_one_undo_step() 
     ));
 
     assert_eq!(shell.app().document_revision(), initial_revision + 1);
-    assert!(shell.app().feature_count() > initial_features);
-    assert!(shell.app().occurrence_count() >= 1);
+    assert_eq!(shell.app().feature_count(), initial_features + 2);
     let snapshot = shell.app().document_snapshot();
-    let feature = snapshot
+    let body_occurrence = snapshot
+        .occurrences()
+        .find(|occurrence| occurrence.name() == "Rounded tea pot body occurrence")
+        .expect("separate teapot body occurrence must exist");
+    let lid_occurrence = snapshot
+        .occurrences()
+        .find(|occurrence| occurrence.name() == "Rounded tea pot lid occurrence")
+        .expect("separate removable lid occurrence must exist");
+    assert_ne!(
+        body_occurrence.definition_id(),
+        lid_occurrence.definition_id(),
+        "the lid must be independently selectable and removable"
+    );
+    let body_feature = snapshot
         .features()
-        .find(|feature| feature.name() == "Rounded tea pot smooth hollow vessel")
-        .expect("teapot mesh must exist");
-    let FeatureKind::MeshBody(mesh) = feature.kind() else {
-        panic!("teapot must be one canonical mesh body");
+        .find(|feature| feature.name() == "Rounded tea pot smooth hollow body")
+        .expect("teapot body mesh must exist");
+    let lid_feature = snapshot
+        .features()
+        .find(|feature| feature.name() == "Rounded tea pot removable seated lid")
+        .expect("separate seated lid mesh must exist");
+    let FeatureKind::MeshBody(body_mesh) = body_feature.kind() else {
+        panic!("teapot body must be a canonical mesh body");
     };
-    assert!(mesh.vertices_mm.len() > 1_200);
-    assert!(mesh.triangles.len() > 2_000);
-    assert!(mesh.vertices_mm.contains(&[42.0, 0.0, 141.0]));
-    assert!(mesh.vertices_mm.contains(&[39.0, 0.0, 141.0]));
-    assert!(mesh.vertices_mm.iter().any(|vertex| vertex[0] > 170.0));
-    assert!(mesh.vertices_mm.iter().any(|vertex| vertex[0] < -110.0));
+    let FeatureKind::MeshBody(lid_mesh) = lid_feature.kind() else {
+        panic!("teapot lid must be a canonical mesh body");
+    };
+    let assert_closed_manifold = |mesh: &ketchup_core::document::MeshBodySpec| {
+        let mut edges = BTreeMap::<(u32, u32), (usize, i32)>::new();
+        let mut signed_volume = 0.0;
+        for triangle in &mesh.triangles {
+            let [a, b, c] = *triangle;
+            assert!(a != b && b != c && c != a);
+            let va = mesh.vertices_mm[a as usize];
+            let vb = mesh.vertices_mm[b as usize];
+            let vc = mesh.vertices_mm[c as usize];
+            signed_volume += va[0] * (vb[1] * vc[2] - vb[2] * vc[1])
+                + va[1] * (vb[2] * vc[0] - vb[0] * vc[2])
+                + va[2] * (vb[0] * vc[1] - vb[1] * vc[0]);
+            for (start, end) in [(a, b), (b, c), (c, a)] {
+                let key = (start.min(end), start.max(end));
+                let edge = edges.entry(key).or_default();
+                edge.0 += 1;
+                edge.1 += if start < end { 1 } else { -1 };
+            }
+        }
+        assert!(
+            edges
+                .values()
+                .all(|(count, balance)| *count == 2 && *balance == 0)
+        );
+        assert!(signed_volume.abs() > 1.0);
+    };
+    assert_closed_manifold(body_mesh);
+    assert_closed_manifold(lid_mesh);
+    assert!(body_mesh.vertices_mm.len() > 1_800);
+    assert!(body_mesh.triangles.len() > 3_000);
+    assert!(lid_mesh.vertices_mm.len() > 400);
+    assert!(lid_mesh.triangles.len() > 800);
+    assert!(body_mesh.vertices_mm.contains(&[42.0, 0.0, 141.0]));
+    assert!(body_mesh.vertices_mm.contains(&[39.0, 0.0, 141.0]));
+    assert!(body_mesh.vertices_mm.iter().any(|vertex| vertex[0] > 165.0));
+    assert!(
+        body_mesh
+            .vertices_mm
+            .iter()
+            .any(|vertex| vertex[0] < -110.0)
+    );
+    let spout_tip_radii = body_mesh
+        .vertices_mm
+        .iter()
+        .filter(|vertex| (vertex[0] - 170.8).abs() < 0.1 && (vertex[2] - 124.08).abs() < 0.1)
+        .map(|vertex| vertex[1].abs())
+        .collect::<Vec<_>>();
+    assert!(spout_tip_radii.iter().copied().fold(0.0, f64::max) > 10.5);
+    assert!(
+        spout_tip_radii
+            .iter()
+            .copied()
+            .fold(f64::INFINITY, f64::min)
+            < 8.0,
+        "the tapered spout tip must retain a distinct open inner radius"
+    );
+    assert!(
+        lid_mesh
+            .vertices_mm
+            .iter()
+            .any(|vertex| { vertex[2] < 141.0 && vertex[0].hypot(vertex[1]) > 37.0 })
+    );
+    assert!(
+        lid_mesh
+            .vertices_mm
+            .iter()
+            .any(|vertex| { vertex[2] > 141.0 && vertex[0].hypot(vertex[1]) > 45.0 })
+    );
     assert!(matches!(
-        &mesh.authority,
+        &body_mesh.authority,
         ketchup_core::document::MeshAuthority::Authored { provenance }
-            if provenance == "ketchup-assistant-rounded-teapot-v1"
+            if provenance == "ketchup-assistant-rounded-teapot-body-v2"
+    ));
+    assert!(matches!(
+        &lid_mesh.authority,
+        ketchup_core::document::MeshAuthority::Authored { provenance }
+            if provenance == "ketchup-assistant-removable-teapot-lid-v1"
     ));
 
     let directory = tempfile::tempdir().unwrap();
@@ -2900,21 +2986,41 @@ fn assistant_teapot_intent_creates_smooth_hollow_saved_model_as_one_undo_step() 
     assert!(
         reopened
             .features()
-            .any(|feature| feature.name() == "Rounded tea pot smooth hollow vessel")
+            .any(|feature| feature.name() == "Rounded tea pot smooth hollow body")
+    );
+    assert!(
+        reopened
+            .features()
+            .any(|feature| feature.name() == "Rounded tea pot removable seated lid")
     );
     let fixture_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../examples/assistant-rounded-teapot.ketchup");
+    if std::env::var_os("UPDATE_ASSISTANT_TEAPOT_FIXTURE").is_some() {
+        persistence::save_atomic(&fixture_path, &snapshot).unwrap();
+    }
     let fixture = persistence::load_file(&fixture_path).unwrap().snapshot();
-    let fixture_feature = fixture
-        .features()
-        .find(|feature| feature.name() == "Rounded tea pot smooth hollow vessel")
-        .expect("saved teapot fixture must remain openable");
-    let FeatureKind::MeshBody(fixture_mesh) = fixture_feature.kind() else {
-        panic!("saved teapot fixture must retain its canonical mesh body");
-    };
-    assert_eq!(fixture_mesh.vertices_mm.len(), mesh.vertices_mm.len());
-    assert_eq!(fixture_mesh.triangles.len(), mesh.triangles.len());
-    assert_eq!(fixture_mesh.authority, mesh.authority);
+    for (name, expected) in [
+        ("Rounded tea pot smooth hollow body", body_mesh),
+        ("Rounded tea pot removable seated lid", lid_mesh),
+    ] {
+        let fixture_feature = fixture
+            .features()
+            .find(|feature| feature.name() == name)
+            .expect("saved teapot fixture must retain both removable parts");
+        let FeatureKind::MeshBody(fixture_mesh) = fixture_feature.kind() else {
+            panic!("saved teapot fixture parts must remain canonical mesh bodies");
+        };
+        assert_eq!(fixture_mesh.vertices_mm.len(), expected.vertices_mm.len());
+        assert_eq!(fixture_mesh.triangles.len(), expected.triangles.len());
+        assert_eq!(fixture_mesh.authority, expected.authority);
+    }
+    assert_eq!(
+        fixture
+            .occurrences()
+            .filter(|occurrence| occurrence.name().starts_with("Rounded tea pot"))
+            .count(),
+        2
+    );
 
     assert!(shell.app_mut().undo());
     assert_eq!(shell.app().document_revision(), initial_revision);
