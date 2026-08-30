@@ -1829,6 +1829,7 @@ fn complete_serial_accesskit_history_replay_is_atomic_stale_safe_and_persistent(
     replace_exact_value(&mut shell, "40");
     click_preview(&mut shell, "feature-history-preview-edit");
     assert!(shell.app().feature_history_preview_pending());
+    let before_intervening_edit = stamp(&shell);
     assert!(
         shell
             .app_mut()
@@ -1837,9 +1838,23 @@ fn complete_serial_accesskit_history_replay_is_atomic_stale_safe_and_persistent(
                 name: "Intervening edit".to_owned(),
             },)
     );
-    assert!(shell.app_mut().confirm_assistant_proposal());
     shell.settle();
+    let assistant_confirm = shell.catalog().text("assistant-confirm");
+    shell.click_row(&assistant_confirm);
     let after_intervening_edit = stamp(&shell);
+    assert_eq!(after_intervening_edit.0, before_intervening_edit.0 + 1);
+    assert_eq!(after_intervening_edit.2, before_intervening_edit.2 + 1);
+    assert!(shell.app().assistant_proposal().is_none());
+    assert!(shell.app().feature_history_preview_pending());
+    assert_eq!(
+        shell
+            .app()
+            .document_snapshot()
+            .definition(DEFINITION)
+            .unwrap()
+            .name(),
+        "Intervening edit"
+    );
     confirm(&mut shell);
     assert_eq!(stamp(&shell), after_intervening_edit);
     assert!(matches!(
