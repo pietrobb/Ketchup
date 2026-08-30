@@ -9,6 +9,11 @@ use crate::assembly::{
     ASSEMBLY_MATE_SCHEMA_V1, AssemblyMate, AssemblyMateEndpoint, AssemblyMateId, AssemblyMateKind,
     AssemblyReferenceHealth,
 };
+use crate::assembly_joint::{
+    ASSEMBLY_JOINT_SCHEMA_V1, ASSEMBLY_MOTION_STUDY_SCHEMA_V1, AssemblyJoint, AssemblyJointAxis,
+    AssemblyJointId, AssemblyJointKind, AssemblyJointLimits, AssemblyMotionDriver,
+    AssemblyMotionStudy, AssemblyMotionStudyId,
+};
 use crate::document::{
     BOTTLE_SHELL_OPENING_FACE_ROLE, BOTTLE_SHOULDER_EDGE_ROLE, Body, BodyId, BooleanOperation,
     BottleEdgeFinishKind, CanonicalCommand, CanonicalError, ClassificationCategory,
@@ -77,7 +82,8 @@ const FEATURE_EXTENT_SCHEMA: u16 = 38;
 const IMPORTED_TOPOLOGY_COUNTS_SCHEMA: u16 = 39;
 const TOPOLOGICAL_FEATURE_REFERENCE_SCHEMA: u16 = 40;
 const GENERAL_PARAMETER_PATH_SCHEMA: u16 = 41;
-pub const CURRENT_SCHEMA: u16 = GENERAL_PARAMETER_PATH_SCHEMA;
+const ASSEMBLY_KINEMATICS_SCHEMA: u16 = 42;
+pub const CURRENT_SCHEMA: u16 = ASSEMBLY_KINEMATICS_SCHEMA;
 const COLLECTION_SCHEMA: u16 = 15;
 const TAG_SCHEMA: u16 = 14;
 const PERSISTENT_DIMENSION_SCHEMA: u16 = 13;
@@ -134,6 +140,7 @@ struct ProductSchemaCapabilities {
     body_feature_suppression: bool,
     classification_dimensions: bool,
     feature_extents: bool,
+    assembly_kinematics: bool,
 }
 
 impl ProductSchemaCapabilities {
@@ -175,6 +182,7 @@ impl ProductSchemaCapabilities {
         body_feature_suppression: false,
         classification_dimensions: false,
         feature_extents: false,
+        assembly_kinematics: false,
     };
 
     const fn current(schema: u16) -> Self {
@@ -216,6 +224,7 @@ impl ProductSchemaCapabilities {
             body_feature_suppression: schema >= BODY_FEATURE_SUPPRESSION_SCHEMA,
             classification_dimensions: schema >= CLASSIFICATION_DIMENSION_SCHEMA,
             feature_extents: schema >= FEATURE_EXTENT_SCHEMA,
+            assembly_kinematics: schema >= ASSEMBLY_KINEMATICS_SCHEMA,
         }
     }
 }
@@ -741,6 +750,14 @@ pub fn save(snapshot: &Snapshot) -> Vec<u8> {
         push_u64(&mut payload, occurrence_id.0);
         push_u64(&mut payload, dimension_id.0);
         push_u64(&mut payload, category_id.0);
+    }
+    push_u32(&mut payload, product.assembly_joints.len() as u32);
+    for joint in product.assembly_joints.values() {
+        write_assembly_joint(&mut payload, joint);
+    }
+    push_u32(&mut payload, product.assembly_motion_studies.len() as u32);
+    for study in product.assembly_motion_studies.values() {
+        write_assembly_motion_study(&mut payload, study);
     }
 
     let mut manifest = Vec::new();
@@ -1681,6 +1698,64 @@ fn write_assembly_mate(bytes: &mut Vec<u8>, mate: &AssemblyMate) {
             push_u8(bytes, 4);
             push_u64(bytes, angle_degrees.to_bits());
         }
+    }
+}
+
+fn write_assembly_joint(bytes: &mut Vec<u8>, joint: &AssemblyJoint) {
+    push_string(bytes, joint.schema());
+    push_u64(bytes, joint.id().0);
+    push_u64(bytes, joint.parent_occurrence_id().0);
+    push_u64(bytes, joint.child_occurrence_id().0);
+    match joint.kind() {
+        AssemblyJointKind::Fixed => push_u8(bytes, 1),
+        AssemblyJointKind::Revolute {
+            axis,
+            limits,
+            position_degrees,
+        } => {
+            push_u8(bytes, 2);
+            write_assembly_joint_axis(bytes, axis);
+            write_assembly_joint_limits(bytes, limits);
+            push_u64(bytes, position_degrees.to_bits());
+        }
+        AssemblyJointKind::Prismatic {
+            axis,
+            limits,
+            position_mm,
+        } => {
+            push_u8(bytes, 3);
+            write_assembly_joint_axis(bytes, axis);
+            write_assembly_joint_limits(bytes, limits);
+            push_u64(bytes, position_mm.to_bits());
+        }
+    }
+}
+
+fn write_assembly_joint_axis(bytes: &mut Vec<u8>, axis: AssemblyJointAxis) {
+    for value in axis.direction_in_parent() {
+        push_u64(bytes, value.to_bits());
+    }
+    for value in axis.pivot_in_parent_mm() {
+        push_u64(bytes, value.to_bits());
+    }
+}
+
+fn write_assembly_joint_limits(bytes: &mut Vec<u8>, limits: Option<AssemblyJointLimits>) {
+    push_u8(bytes, u8::from(limits.is_some()));
+    if let Some(limits) = limits {
+        push_u64(bytes, limits.min().to_bits());
+        push_u64(bytes, limits.max().to_bits());
+    }
+}
+
+fn write_assembly_motion_study(bytes: &mut Vec<u8>, study: &AssemblyMotionStudy) {
+    push_string(bytes, study.schema());
+    push_u64(bytes, study.id().0);
+    push_string(bytes, study.name());
+    push_u32(bytes, study.drivers().len() as u32);
+    for driver in study.drivers() {
+        push_u64(bytes, driver.joint_id().0);
+        push_u64(bytes, driver.position().to_bits());
     }
 }
 
@@ -2913,6 +2988,91 @@ fn read_assembly_mate(reader: &mut Reader<'_>) -> Result<AssemblyMate, Persisten
     })
 }
 
+fn read_assembly_joint(reader: &mut Reader<'_>) -> Result<AssemblyJoint, PersistenceError> {
+    let schema = reader.string()?;
+    if schema != ASSEMBLY_JOINT_SCHEMA_V1 {
+        return Err(PersistenceError::InvalidAssemblyJoint);
+    }
+    let id = AssemblyJointId(reader.u64()?);
+    let parent_occurrence_id = OccurrenceId(reader.u64()?);
+    let child_occurrence_id = OccurrenceId(reader.u64()?);
+    let kind = match reader.u8()? {
+        1 => AssemblyJointKind::Fixed,
+        2 => AssemblyJointKind::Revolute {
+            axis: read_assembly_joint_axis(reader)?,
+            limits: read_assembly_joint_limits(reader)?,
+            position_degrees: f64::from_bits(reader.u64()?),
+        },
+        3 => AssemblyJointKind::Prismatic {
+            axis: read_assembly_joint_axis(reader)?,
+            limits: read_assembly_joint_limits(reader)?,
+            position_mm: f64::from_bits(reader.u64()?),
+        },
+        _ => return Err(PersistenceError::InvalidAssemblyJoint),
+    };
+    Ok(AssemblyJoint {
+        schema,
+        id,
+        parent_occurrence_id,
+        child_occurrence_id,
+        kind,
+    })
+}
+
+fn read_assembly_joint_axis(
+    reader: &mut Reader<'_>,
+) -> Result<AssemblyJointAxis, PersistenceError> {
+    let mut direction_in_parent = [0.0; 3];
+    let mut pivot_in_parent_mm = [0.0; 3];
+    for value in &mut direction_in_parent {
+        *value = f64::from_bits(reader.u64()?);
+    }
+    for value in &mut pivot_in_parent_mm {
+        *value = f64::from_bits(reader.u64()?);
+    }
+    Ok(AssemblyJointAxis {
+        direction_in_parent,
+        pivot_in_parent_mm,
+    })
+}
+
+fn read_assembly_joint_limits(
+    reader: &mut Reader<'_>,
+) -> Result<Option<AssemblyJointLimits>, PersistenceError> {
+    if reader.boolean()? {
+        Ok(Some(AssemblyJointLimits::new(
+            f64::from_bits(reader.u64()?),
+            f64::from_bits(reader.u64()?),
+        )))
+    } else {
+        Ok(None)
+    }
+}
+
+fn read_assembly_motion_study(
+    reader: &mut Reader<'_>,
+) -> Result<AssemblyMotionStudy, PersistenceError> {
+    let schema = reader.string()?;
+    if schema != ASSEMBLY_MOTION_STUDY_SCHEMA_V1 {
+        return Err(PersistenceError::InvalidAssemblyMotionStudy);
+    }
+    let id = AssemblyMotionStudyId(reader.u64()?);
+    let name = reader.string()?;
+    let mut drivers = Vec::new();
+    for _ in 0..reader.count()? {
+        drivers.push(AssemblyMotionDriver::new(
+            AssemblyJointId(reader.u64()?),
+            f64::from_bits(reader.u64()?),
+        ));
+    }
+    Ok(AssemblyMotionStudy {
+        schema,
+        id,
+        name,
+        drivers,
+    })
+}
+
 fn read_drawing_sheet(reader: &mut Reader<'_>) -> Result<DrawingSheet, PersistenceError> {
     if reader.string()? != ORTHOGRAPHIC_DRAWING_SCHEMA_V1 {
         return Err(PersistenceError::InvalidCanonicalData(
@@ -3749,6 +3909,28 @@ fn read_product(
                 }
             }
         }
+        if capabilities.assembly_kinematics {
+            for _ in 0..reader.count()? {
+                let joint = read_assembly_joint(reader)?;
+                if product
+                    .assembly_joints
+                    .insert(joint.id(), Arc::new(joint))
+                    .is_some()
+                {
+                    return Err(PersistenceError::DuplicateAssemblyJoint);
+                }
+            }
+            for _ in 0..reader.count()? {
+                let study = read_assembly_motion_study(reader)?;
+                if product
+                    .assembly_motion_studies
+                    .insert(study.id(), Arc::new(study))
+                    .is_some()
+                {
+                    return Err(PersistenceError::DuplicateAssemblyMotionStudy);
+                }
+            }
+        }
     }
     if !capabilities.body_contract {
         crate::document::migrate_legacy_body_contract(&mut product)?;
@@ -3855,6 +4037,8 @@ pub enum PersistenceError {
     InvalidClearanceSeverity(u8),
     InvalidExactReference,
     InvalidAssemblyMate,
+    InvalidAssemblyJoint,
+    InvalidAssemblyMotionStudy,
     ChecksumMismatch,
     ResourceLimit,
     UnsupportedEnvelopeIdentity,
@@ -3874,6 +4058,8 @@ pub enum PersistenceError {
     DuplicateOccurrence(OccurrenceId),
     DuplicateGroundedOccurrence(OccurrenceId),
     DuplicateAssemblyMate,
+    DuplicateAssemblyJoint,
+    DuplicateAssemblyMotionStudy,
     DuplicateGroup(GroupId),
     DuplicateLocalGroup(LocalGroupKey),
     DuplicateLocalOccurrence(LocalOccurrenceKey),
@@ -3977,6 +4163,10 @@ impl fmt::Display for PersistenceError {
                 formatter.write_str("exact reference evidence is invalid")
             }
             Self::InvalidAssemblyMate => formatter.write_str("assembly mate is invalid"),
+            Self::InvalidAssemblyJoint => formatter.write_str("assembly joint is invalid"),
+            Self::InvalidAssemblyMotionStudy => {
+                formatter.write_str("assembly motion study is invalid")
+            }
             Self::ChecksumMismatch => formatter.write_str("document checksum does not match"),
             Self::ResourceLimit => formatter.write_str("document exceeds a resource limit"),
             Self::UnsupportedEnvelopeIdentity => {
@@ -4016,6 +4206,12 @@ impl fmt::Display for PersistenceError {
                 write!(formatter, "document repeats grounded occurrence {}", id.0)
             }
             Self::DuplicateAssemblyMate => formatter.write_str("document repeats an assembly mate"),
+            Self::DuplicateAssemblyJoint => {
+                formatter.write_str("document repeats an assembly joint")
+            }
+            Self::DuplicateAssemblyMotionStudy => {
+                formatter.write_str("document repeats an assembly motion study")
+            }
             Self::DuplicateGroup(id) => write!(formatter, "document repeats group {}", id.0),
             Self::DuplicateLocalGroup(key) => write!(
                 formatter,

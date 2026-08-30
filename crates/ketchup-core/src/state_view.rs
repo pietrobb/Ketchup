@@ -1,4 +1,5 @@
 use crate::assembly::{AssemblyDofStatus, AssemblyMateKind, AssemblyReferenceHealth};
+use crate::assembly_joint::AssemblyJointKind;
 use crate::document::{
     EvaluationReport, EvaluationStatus, EvaluatorNodeKind, InstancePathStep, ParameterValueType,
     Snapshot, Transform, UnitSystem,
@@ -2025,6 +2026,77 @@ pub fn encode_semantic_state_with_results(
             mate.endpoint_b().occurrence_id().0,
             health(mate.endpoint_a().health()),
             health(mate.endpoint_b().health())
+        )
+        .unwrap();
+    }
+    for joint in snapshot.assembly_joints() {
+        let kind = match joint.kind() {
+            AssemblyJointKind::Fixed => "fixed".to_owned(),
+            AssemblyJointKind::Revolute {
+                axis,
+                limits,
+                position_degrees,
+            } => format!(
+                "revolute,axis:{:?},pivot_mm:{:?},limits:{limits:?},position_degrees_f64_bits:{:016x}",
+                axis.direction_in_parent(),
+                axis.pivot_in_parent_mm(),
+                position_degrees.to_bits()
+            ),
+            AssemblyJointKind::Prismatic {
+                axis,
+                limits,
+                position_mm,
+            } => format!(
+                "prismatic,axis:{:?},pivot_mm:{:?},limits:{limits:?},position_mm_f64_bits:{:016x}",
+                axis.direction_in_parent(),
+                axis.pivot_in_parent_mm(),
+                position_mm.to_bits()
+            ),
+        };
+        writeln!(
+            complete,
+            "assembly_joint.{}=schema:{:?},parent:{},child:{},kind:{kind}",
+            joint.id().0,
+            joint.schema(),
+            joint.parent_occurrence_id().0,
+            joint.child_occurrence_id().0
+        )
+        .unwrap();
+        writeln!(
+            agent,
+            "assembly_joint.{}=parent:{},child:{},kind:{kind}",
+            joint.id().0,
+            joint.parent_occurrence_id().0,
+            joint.child_occurrence_id().0
+        )
+        .unwrap();
+    }
+    for study in snapshot.assembly_motion_studies() {
+        let drivers = study
+            .drivers()
+            .iter()
+            .map(|driver| {
+                format!(
+                    "{}:{:016x}",
+                    driver.joint_id().0,
+                    driver.position().to_bits()
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        writeln!(
+            complete,
+            "assembly_motion_study.{}=schema:{:?},name:{:?},drivers:{drivers}",
+            study.id().0,
+            study.schema(),
+            study.name()
+        )
+        .unwrap();
+        writeln!(
+            agent,
+            "assembly_motion_study.{}=name:{:?},drivers:{drivers}",
+            study.id().0,
+            study.name()
         )
         .unwrap();
     }

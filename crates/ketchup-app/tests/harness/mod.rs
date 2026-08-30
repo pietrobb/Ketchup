@@ -465,7 +465,7 @@ impl Shell {
         self.gap();
         self.harness
             .get_by_role_and_label(Role::Button, label)
-            .click();
+            .click_accesskit();
         self.harness.run();
     }
 
@@ -493,6 +493,16 @@ impl Shell {
             .get_by_role_and_label(Role::Button, label)
             .click();
         self.harness.run();
+    }
+
+    /// Click the outliner row while holding keyboard modifiers.
+    pub fn click_row_with(&mut self, label: &str, modifiers: Modifiers) {
+        let position = self
+            .harness
+            .get_by_role_and_label(Role::Button, label)
+            .rect()
+            .center();
+        self.click_at_with(position, modifiers);
     }
 
     /// Move the synthetic pointer and run a frame.

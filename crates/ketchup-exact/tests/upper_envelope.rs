@@ -1063,3 +1063,57 @@ fn exact_contained_cylinder_split_preserves_volume_and_creates_two_solids() {
         );
     }
 }
+
+#[test]
+fn step_import_can_address_each_transferred_solid_independently() {
+    let backend = ExactBackend::new();
+    let first = backend
+        .make_box(BoxSpec {
+            origin_mm: Point3::ORIGIN,
+            size_mm: Size3 {
+                x: 10.0,
+                y: 20.0,
+                z: 30.0,
+            },
+        })
+        .unwrap();
+    let second = backend
+        .make_box(BoxSpec {
+            origin_mm: Point3 {
+                x: 100.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            size_mm: Size3 {
+                x: 40.0,
+                y: 50.0,
+                z: 60.0,
+            },
+        })
+        .unwrap();
+    let assembly = backend.combine_bodies(&first.body, &second.body).unwrap();
+    let path = std::env::temp_dir().join(format!(
+        "ketchup-step-solid-addressing-{}.step",
+        std::process::id()
+    ));
+    backend
+        .export_step(&assembly.body, path.to_str().unwrap())
+        .unwrap();
+
+    let solid_0 = backend
+        .import_step_solid(path.to_str().unwrap(), 0)
+        .unwrap();
+    let solid_1 = backend
+        .import_step_solid(path.to_str().unwrap(), 1)
+        .unwrap();
+    let out_of_range = backend
+        .import_step_solid(path.to_str().unwrap(), 2)
+        .unwrap_err();
+    std::fs::remove_file(path).unwrap();
+
+    assert_valid(&solid_0);
+    assert_valid(&solid_1);
+    assert_close(solid_0.body.topology.volume_mm3, 6_000.0);
+    assert_close(solid_1.body.topology.volume_mm3, 120_000.0);
+    assert_eq!(out_of_range.code, GeometryErrorCode::InvalidParameter);
+}

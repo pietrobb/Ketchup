@@ -2,6 +2,12 @@ use crate::assembly::{
     ASSEMBLY_MATE_SCHEMA_V1, AssemblyDofDiagnostic, AssemblyDofStatus, AssemblyMate,
     AssemblyMateId, AssemblyMateKind, AssemblyReferenceHealth,
 };
+use crate::assembly_joint::{
+    ASSEMBLY_JOINT_SCHEMA_V1, ASSEMBLY_MOTION_STUDY_SCHEMA_V1, AssemblyJoint, AssemblyJointId,
+    AssemblyJointKind, AssemblyJointLimits, AssemblyMotionStudy, AssemblyMotionStudyId,
+    joint_motion_states_equal, solve_assembly_joint_kinematics_with_kind_overrides,
+    transforms_equivalent,
+};
 use crate::bottle_m6::{ExactRevolveRequest, reference_matches_revolve_request};
 use crate::drawing::{DrawingError, DrawingSheet, DrawingSheetId, DrawingSource};
 use crate::exact_product::{
@@ -1531,6 +1537,8 @@ pub(crate) struct ProductModel {
     pub(crate) occurrences: BTreeMap<OccurrenceId, Arc<Occurrence>>,
     pub(crate) grounded_occurrences: BTreeSet<OccurrenceId>,
     pub(crate) assembly_mates: BTreeMap<AssemblyMateId, Arc<AssemblyMate>>,
+    pub(crate) assembly_joints: BTreeMap<AssemblyJointId, Arc<AssemblyJoint>>,
+    pub(crate) assembly_motion_studies: BTreeMap<AssemblyMotionStudyId, Arc<AssemblyMotionStudy>>,
     pub(crate) drawing_sheets: BTreeMap<DrawingSheetId, Arc<DrawingSheet>>,
     pub(crate) groups: BTreeMap<GroupId, Arc<Group>>,
     pub(crate) local_occurrences: BTreeMap<LocalOccurrenceKey, Arc<LocalOccurrence>>,
@@ -1579,6 +1587,8 @@ impl Default for ProductModel {
             occurrences: BTreeMap::new(),
             grounded_occurrences: BTreeSet::new(),
             assembly_mates: BTreeMap::new(),
+            assembly_joints: BTreeMap::new(),
+            assembly_motion_studies: BTreeMap::new(),
             drawing_sheets: BTreeMap::new(),
             groups: BTreeMap::new(),
             local_occurrences: BTreeMap::new(),
@@ -2058,6 +2068,27 @@ pub enum CanonicalCommand {
     DeleteAssemblyMate {
         id: AssemblyMateId,
     },
+    CreateAssemblyJoint(AssemblyJoint),
+    SetAssemblyJointKind {
+        id: AssemblyJointId,
+        kind: AssemblyJointKind,
+    },
+    SetAssemblyJointPosition {
+        id: AssemblyJointId,
+        position: f64,
+    },
+    SetAssemblyJointLimits {
+        id: AssemblyJointId,
+        limits: Option<AssemblyJointLimits>,
+    },
+    DeleteAssemblyJoint {
+        id: AssemblyJointId,
+    },
+    CreateAssemblyMotionStudy(AssemblyMotionStudy),
+    UpdateAssemblyMotionStudy(AssemblyMotionStudy),
+    DeleteAssemblyMotionStudy {
+        id: AssemblyMotionStudyId,
+    },
     CreateDrawingSheet(DrawingSheet),
     UpdateDrawingSheet(DrawingSheet),
     DeleteDrawingSheet {
@@ -2215,6 +2246,8 @@ pub enum AuthoritativeDependency {
     Occurrence(OccurrenceId),
     GroundedOccurrence(OccurrenceId),
     AssemblyMate(AssemblyMateId),
+    AssemblyJoint(AssemblyJointId),
+    AssemblyMotionStudy(AssemblyMotionStudyId),
     DrawingSheet(DrawingSheetId),
     Group(GroupId),
     LocalGroup(LocalGroupKey),
@@ -3084,6 +3117,30 @@ impl Snapshot {
 
     pub fn assembly_mates(&self) -> impl Iterator<Item = &AssemblyMate> {
         self.product.assembly_mates.values().map(Arc::as_ref)
+    }
+
+    #[must_use]
+    pub fn assembly_joint(&self, id: AssemblyJointId) -> Option<&AssemblyJoint> {
+        self.product.assembly_joints.get(&id).map(Arc::as_ref)
+    }
+
+    pub fn assembly_joints(&self) -> impl Iterator<Item = &AssemblyJoint> {
+        self.product.assembly_joints.values().map(Arc::as_ref)
+    }
+
+    #[must_use]
+    pub fn assembly_motion_study(&self, id: AssemblyMotionStudyId) -> Option<&AssemblyMotionStudy> {
+        self.product
+            .assembly_motion_studies
+            .get(&id)
+            .map(Arc::as_ref)
+    }
+
+    pub fn assembly_motion_studies(&self) -> impl Iterator<Item = &AssemblyMotionStudy> {
+        self.product
+            .assembly_motion_studies
+            .values()
+            .map(Arc::as_ref)
     }
 
     #[must_use]
@@ -5105,6 +5162,11 @@ impl DocumentStore {
                     }) {
                         return Err(CanonicalError::OccurrenceInAssemblyMate(*id));
                     }
+                    if product.assembly_joints.values().any(|joint| {
+                        joint.parent_occurrence_id() == *id || joint.child_occurrence_id() == *id
+                    }) {
+                        return Err(CanonicalError::OccurrenceInAssemblyJoint(*id));
+                    }
                     product
                         .occurrences
                         .remove(id)
@@ -5238,6 +5300,99 @@ impl DocumentStore {
                         .assembly_mates
                         .remove(id)
                         .ok_or(CanonicalError::AssemblyMateNotFound(*id))?;
+                }
+                CanonicalCommand::CreateAssemblyJoint(joint) => {
+                    ensure_product_id(joint.id().0)?;
+                    if product.assembly_joints.contains_key(&joint.id()) {
+                        return Err(CanonicalError::AssemblyJointAlreadyExists(joint.id()));
+                    }
+                    validate_assembly_joint(&product, joint)?;
+                    product
+                        .assembly_joints
+                        .insert(joint.id(), Arc::new(joint.clone()));
+                }
+                CanonicalCommand::SetAssemblyJointKind { id, kind } => {
+                    let existing = product
+                        .assembly_joints
+                        .get(id)
+                        .ok_or(CanonicalError::AssemblyJointNotFound(*id))?;
+                    let replacement = AssemblyJoint {
+                        kind: *kind,
+                        ..existing.as_ref().clone()
+                    };
+                    validate_assembly_joint(&product, &replacement)?;
+                    product.assembly_joints.insert(*id, Arc::new(replacement));
+                }
+                CanonicalCommand::SetAssemblyJointPosition { id, position } => {
+                    let existing = product
+                        .assembly_joints
+                        .get(id)
+                        .ok_or(CanonicalError::AssemblyJointNotFound(*id))?;
+                    let kind = existing
+                        .kind()
+                        .with_position(*position)
+                        .ok_or(CanonicalError::InvalidAssemblyJoint(*id))?;
+                    let replacement = AssemblyJoint {
+                        kind,
+                        ..existing.as_ref().clone()
+                    };
+                    validate_assembly_joint(&product, &replacement)?;
+                    product.assembly_joints.insert(*id, Arc::new(replacement));
+                }
+                CanonicalCommand::SetAssemblyJointLimits { id, limits } => {
+                    let existing = product
+                        .assembly_joints
+                        .get(id)
+                        .ok_or(CanonicalError::AssemblyJointNotFound(*id))?;
+                    let kind = existing
+                        .kind()
+                        .with_limits(*limits)
+                        .ok_or(CanonicalError::InvalidAssemblyJoint(*id))?;
+                    let replacement = AssemblyJoint {
+                        kind,
+                        ..existing.as_ref().clone()
+                    };
+                    validate_assembly_joint(&product, &replacement)?;
+                    product.assembly_joints.insert(*id, Arc::new(replacement));
+                }
+                CanonicalCommand::DeleteAssemblyJoint { id } => {
+                    if product.assembly_motion_studies.values().any(|study| {
+                        study
+                            .drivers()
+                            .iter()
+                            .any(|driver| driver.joint_id() == *id)
+                    }) {
+                        return Err(CanonicalError::AssemblyJointInMotionStudy(*id));
+                    }
+                    product
+                        .assembly_joints
+                        .remove(id)
+                        .ok_or(CanonicalError::AssemblyJointNotFound(*id))?;
+                }
+                CanonicalCommand::CreateAssemblyMotionStudy(study) => {
+                    ensure_product_id(study.id().0)?;
+                    if product.assembly_motion_studies.contains_key(&study.id()) {
+                        return Err(CanonicalError::AssemblyMotionStudyAlreadyExists(study.id()));
+                    }
+                    validate_assembly_motion_study(&product, study)?;
+                    product
+                        .assembly_motion_studies
+                        .insert(study.id(), Arc::new(study.clone()));
+                }
+                CanonicalCommand::UpdateAssemblyMotionStudy(study) => {
+                    if !product.assembly_motion_studies.contains_key(&study.id()) {
+                        return Err(CanonicalError::AssemblyMotionStudyNotFound(study.id()));
+                    }
+                    validate_assembly_motion_study(&product, study)?;
+                    product
+                        .assembly_motion_studies
+                        .insert(study.id(), Arc::new(study.clone()));
+                }
+                CanonicalCommand::DeleteAssemblyMotionStudy { id } => {
+                    product
+                        .assembly_motion_studies
+                        .remove(id)
+                        .ok_or(CanonicalError::AssemblyMotionStudyNotFound(*id))?;
                 }
                 CanonicalCommand::CreateDrawingSheet(sheet) => {
                     if product.drawing_sheets.contains_key(&sheet.id()) {
@@ -5447,6 +5602,7 @@ impl DocumentStore {
         refresh_override_health(&mut product);
         validate_overrides(&product)?;
         validate_product(&product)?;
+        validate_assembly_joint_motion_publication(&current, &product, batch)?;
         let revision_id = self.next_revision_id;
         let following_revision_id = revision_id
             .checked_add(1)
@@ -7252,9 +7408,18 @@ pub enum CanonicalError {
     OccurrenceAlreadyExists(OccurrenceId),
     OccurrenceNotFound(OccurrenceId),
     OccurrenceInAssemblyMate(OccurrenceId),
+    OccurrenceInAssemblyJoint(OccurrenceId),
     AssemblyMateAlreadyExists(AssemblyMateId),
     AssemblyMateNotFound(AssemblyMateId),
     InvalidAssemblyMate(AssemblyMateId),
+    AssemblyJointAlreadyExists(AssemblyJointId),
+    AssemblyJointNotFound(AssemblyJointId),
+    AssemblyJointInMotionStudy(AssemblyJointId),
+    InvalidAssemblyJoint(AssemblyJointId),
+    UnsynchronizedAssemblyJointPosition(AssemblyJointId),
+    AssemblyMotionStudyAlreadyExists(AssemblyMotionStudyId),
+    AssemblyMotionStudyNotFound(AssemblyMotionStudyId),
+    InvalidAssemblyMotionStudy(AssemblyMotionStudyId),
     StaleAssemblySolve,
     InvalidAssemblySolvePublication,
     DrawingSheetAlreadyExists(DrawingSheetId),
@@ -7374,9 +7539,22 @@ impl CanonicalError {
             Self::OccurrenceAlreadyExists(..) => "canonical.occurrence_already_exists",
             Self::OccurrenceNotFound(..) => "canonical.occurrence_not_found",
             Self::OccurrenceInAssemblyMate(..) => "canonical.occurrence_in_assembly_mate",
+            Self::OccurrenceInAssemblyJoint(..) => "canonical.occurrence_in_assembly_joint",
             Self::AssemblyMateAlreadyExists(..) => "canonical.assembly_mate_already_exists",
             Self::AssemblyMateNotFound(..) => "canonical.assembly_mate_not_found",
             Self::InvalidAssemblyMate(..) => "canonical.invalid_assembly_mate",
+            Self::AssemblyJointAlreadyExists(..) => "canonical.assembly_joint_already_exists",
+            Self::AssemblyJointNotFound(..) => "canonical.assembly_joint_not_found",
+            Self::AssemblyJointInMotionStudy(..) => "canonical.assembly_joint_in_motion_study",
+            Self::InvalidAssemblyJoint(..) => "canonical.invalid_assembly_joint",
+            Self::UnsynchronizedAssemblyJointPosition(..) => {
+                "canonical.unsynchronized_assembly_joint_position"
+            }
+            Self::AssemblyMotionStudyAlreadyExists(..) => {
+                "canonical.assembly_motion_study_already_exists"
+            }
+            Self::AssemblyMotionStudyNotFound(..) => "canonical.assembly_motion_study_not_found",
+            Self::InvalidAssemblyMotionStudy(..) => "canonical.invalid_assembly_motion_study",
             Self::StaleAssemblySolve => "canonical.stale_assembly_solve",
             Self::InvalidAssemblySolvePublication => "canonical.invalid_assembly_solve_publication",
             Self::DrawingSheetAlreadyExists(..) => "canonical.drawing_sheet_already_exists",
@@ -7586,6 +7764,9 @@ impl fmt::Display for CanonicalError {
             Self::OccurrenceInAssemblyMate(id) => {
                 write!(formatter, "occurrence {} is still used by an assembly mate", id.0)
             }
+            Self::OccurrenceInAssemblyJoint(id) => {
+                write!(formatter, "occurrence {} is still used by an assembly joint", id.0)
+            }
             Self::AssemblyMateAlreadyExists(id) => {
                 write!(formatter, "assembly mate {} already exists", id.0)
             }
@@ -7594,6 +7775,32 @@ impl fmt::Display for CanonicalError {
             }
             Self::InvalidAssemblyMate(id) => {
                 write!(formatter, "assembly mate {} is invalid or unresolved", id.0)
+            }
+            Self::AssemblyJointAlreadyExists(id) => {
+                write!(formatter, "assembly joint {} already exists", id.0)
+            }
+            Self::AssemblyJointNotFound(id) => {
+                write!(formatter, "assembly joint {} does not exist", id.0)
+            }
+            Self::AssemblyJointInMotionStudy(id) => {
+                write!(formatter, "assembly joint {} is still used by a motion study", id.0)
+            }
+            Self::InvalidAssemblyJoint(id) => {
+                write!(formatter, "assembly joint {} is invalid", id.0)
+            }
+            Self::UnsynchronizedAssemblyJointPosition(id) => write!(
+                formatter,
+                "assembly joint {} position requires an atomic solve transform",
+                id.0
+            ),
+            Self::AssemblyMotionStudyAlreadyExists(id) => {
+                write!(formatter, "assembly motion study {} already exists", id.0)
+            }
+            Self::AssemblyMotionStudyNotFound(id) => {
+                write!(formatter, "assembly motion study {} does not exist", id.0)
+            }
+            Self::InvalidAssemblyMotionStudy(id) => {
+                write!(formatter, "assembly motion study {} is invalid", id.0)
             }
             Self::StaleAssemblySolve => {
                 formatter.write_str("assembly solve source revision or digest is stale")
@@ -11391,6 +11598,73 @@ fn validate_assembly_mate(
     Ok(())
 }
 
+fn validate_assembly_joint(
+    product: &ProductModel,
+    joint: &AssemblyJoint,
+) -> Result<(), CanonicalError> {
+    if !joint.has_valid_shape()
+        || joint.schema() != ASSEMBLY_JOINT_SCHEMA_V1
+        || !product
+            .occurrences
+            .contains_key(&joint.parent_occurrence_id())
+        || !product
+            .occurrences
+            .contains_key(&joint.child_occurrence_id())
+        || product.assembly_joints.values().any(|existing| {
+            existing.id() != joint.id()
+                && existing.child_occurrence_id() == joint.child_occurrence_id()
+        })
+    {
+        return Err(CanonicalError::InvalidAssemblyJoint(joint.id()));
+    }
+
+    let mut parent_by_child = product
+        .assembly_joints
+        .values()
+        .filter(|existing| existing.id() != joint.id())
+        .map(|existing| {
+            (
+                existing.child_occurrence_id(),
+                existing.parent_occurrence_id(),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    parent_by_child.insert(joint.child_occurrence_id(), joint.parent_occurrence_id());
+    let mut cursor = joint.parent_occurrence_id();
+    let mut visited = BTreeSet::new();
+    while let Some(parent) = parent_by_child.get(&cursor).copied() {
+        if parent == joint.child_occurrence_id() || !visited.insert(cursor) {
+            return Err(CanonicalError::InvalidAssemblyJoint(joint.id()));
+        }
+        cursor = parent;
+    }
+    Ok(())
+}
+
+fn validate_assembly_motion_study(
+    product: &ProductModel,
+    study: &AssemblyMotionStudy,
+) -> Result<(), CanonicalError> {
+    if !study.has_valid_shape() || study.schema() != ASSEMBLY_MOTION_STUDY_SCHEMA_V1 {
+        return Err(CanonicalError::InvalidAssemblyMotionStudy(study.id()));
+    }
+    ensure_name(study.name())?;
+    for driver in study.drivers() {
+        let joint = product
+            .assembly_joints
+            .get(&driver.joint_id())
+            .ok_or(CanonicalError::AssemblyJointNotFound(driver.joint_id()))?;
+        if joint
+            .kind()
+            .with_position(driver.position())
+            .is_none_or(|kind| !kind.is_valid())
+        {
+            return Err(CanonicalError::InvalidAssemblyMotionStudy(study.id()));
+        }
+    }
+    Ok(())
+}
+
 fn validate_drawing_sheet(
     product: &ProductModel,
     sheet: &DrawingSheet,
@@ -11407,6 +11681,101 @@ fn validate_drawing_sheet(
     crate::drawing::validate_source(&snapshot, sheet.source()).map_err(CanonicalError::Drawing)
 }
 
+fn validate_assembly_joint_motion_publication(
+    current: &Snapshot,
+    product: &ProductModel,
+    batch: &CommandBatch,
+) -> Result<(), CanonicalError> {
+    let final_joints_by_child = product
+        .assembly_joints
+        .values()
+        .map(|joint| (joint.child_occurrence_id(), joint.as_ref()))
+        .collect::<BTreeMap<_, _>>();
+    for before in current.assembly_joints() {
+        if let Some(after) = product.assembly_joints.get(&before.id())
+            && (before.parent_occurrence_id() != after.parent_occurrence_id()
+                || before.child_occurrence_id() != after.child_occurrence_id())
+        {
+            return Err(CanonicalError::UnsynchronizedAssemblyJointPosition(
+                before.id(),
+            ));
+        }
+        if let Some(after) = final_joints_by_child.get(&before.child_occurrence_id())
+            && after.id() != before.id()
+        {
+            return Err(CanonicalError::UnsynchronizedAssemblyJointPosition(
+                before.id(),
+            ));
+        }
+    }
+
+    let kind_overrides = current
+        .assembly_joints()
+        .filter_map(|before| {
+            product
+                .assembly_joints
+                .get(&before.id())
+                .filter(|after| !joint_motion_states_equal(before.kind(), after.kind()))
+                .map(|after| (before.id(), after.kind()))
+        })
+        .collect::<BTreeMap<_, _>>();
+    let Some(first_changed_joint_id) = kind_overrides.keys().next().copied() else {
+        return Ok(());
+    };
+
+    let expected_solution =
+        solve_assembly_joint_kinematics_with_kind_overrides(current, &kind_overrides)
+            .map_err(|_| CanonicalError::InvalidAssemblySolvePublication)?;
+    let required_transform_ids = kind_overrides
+        .keys()
+        .filter_map(|id| {
+            current
+                .assembly_joint(*id)
+                .map(AssemblyJoint::child_occurrence_id)
+        })
+        .collect::<BTreeSet<_>>();
+    let expected_transforms = expected_solution
+        .poses()
+        .iter()
+        .filter_map(|pose| {
+            current
+                .occurrence(pose.occurrence_id())
+                .filter(|occurrence| {
+                    required_transform_ids.contains(&pose.occurrence_id())
+                        || !transforms_equivalent(occurrence.transform(), pose.local_transform())
+                })
+                .map(|_| (pose.occurrence_id(), pose.local_transform()))
+        })
+        .collect::<Vec<_>>();
+    let solve_publications = batch
+        .commands
+        .iter()
+        .filter_map(|command| match command {
+            CanonicalCommand::ApplyAssemblySolve { transforms, .. } => Some(transforms),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if solve_publications.len() != 1
+        || solve_publications[0].len() != expected_transforms.len()
+        || solve_publications[0].iter().zip(&expected_transforms).any(
+            |((actual_id, actual), (expected_id, expected))| {
+                actual_id != expected_id || !transforms_equivalent(*actual, *expected)
+            },
+        )
+        || expected_transforms.iter().any(|(id, expected)| {
+            product
+                .occurrences
+                .get(id)
+                .is_none_or(|occurrence| !transforms_equivalent(occurrence.transform(), *expected))
+        })
+    {
+        return Err(CanonicalError::UnsynchronizedAssemblyJointPosition(
+            first_changed_joint_id,
+        ));
+    }
+    Ok(())
+}
+
 fn validate_product(product: &ProductModel) -> Result<(), CanonicalError> {
     ensure_product_id(product.document_id.0)?;
     if let Some(id) = product
@@ -11421,6 +11790,18 @@ fn validate_product(product: &ProductModel) -> Result<(), CanonicalError> {
             return Err(CanonicalError::InvalidAssemblyMate(*id));
         }
         validate_assembly_mate(product, mate, false)?;
+    }
+    for (id, joint) in &product.assembly_joints {
+        if *id != joint.id() {
+            return Err(CanonicalError::InvalidAssemblyJoint(*id));
+        }
+        validate_assembly_joint(product, joint)?;
+    }
+    for (id, study) in &product.assembly_motion_studies {
+        if *id != study.id() {
+            return Err(CanonicalError::InvalidAssemblyMotionStudy(*id));
+        }
+        validate_assembly_motion_study(product, study)?;
     }
     for (id, sheet) in &product.drawing_sheets {
         if *id != sheet.id() {
@@ -13101,6 +13482,22 @@ fn authoritative_writes(
             | CanonicalCommand::DeleteAssemblyMate { id } => {
                 writes.insert(AuthoritativeDependency::AssemblyMate(*id));
             }
+            CanonicalCommand::CreateAssemblyJoint(joint) => {
+                writes.insert(AuthoritativeDependency::AssemblyJoint(joint.id()));
+            }
+            CanonicalCommand::SetAssemblyJointKind { id, .. }
+            | CanonicalCommand::SetAssemblyJointPosition { id, .. }
+            | CanonicalCommand::SetAssemblyJointLimits { id, .. }
+            | CanonicalCommand::DeleteAssemblyJoint { id } => {
+                writes.insert(AuthoritativeDependency::AssemblyJoint(*id));
+            }
+            CanonicalCommand::CreateAssemblyMotionStudy(study)
+            | CanonicalCommand::UpdateAssemblyMotionStudy(study) => {
+                writes.insert(AuthoritativeDependency::AssemblyMotionStudy(study.id()));
+            }
+            CanonicalCommand::DeleteAssemblyMotionStudy { id } => {
+                writes.insert(AuthoritativeDependency::AssemblyMotionStudy(*id));
+            }
             CanonicalCommand::CreateDrawingSheet(sheet)
             | CanonicalCommand::UpdateDrawingSheet(sheet) => {
                 writes.insert(AuthoritativeDependency::DrawingSheet(sheet.id()));
@@ -13347,6 +13744,16 @@ fn authoritative_dependencies(
                         );
                     }
                 }
+                dependencies.extend(
+                    snapshot
+                        .assembly_joints()
+                        .map(|joint| AuthoritativeDependency::AssemblyJoint(joint.id())),
+                );
+                dependencies.extend(
+                    snapshot
+                        .assembly_motion_studies()
+                        .map(|study| AuthoritativeDependency::AssemblyMotionStudy(study.id())),
+                );
             }
             CanonicalCommand::ApplyAssemblySolve { transforms, .. } => {
                 dependencies.extend(
@@ -13372,6 +13779,16 @@ fn authoritative_dependencies(
                         );
                     }
                 }
+                dependencies.extend(
+                    snapshot
+                        .assembly_joints()
+                        .map(|joint| AuthoritativeDependency::AssemblyJoint(joint.id())),
+                );
+                dependencies.extend(
+                    snapshot
+                        .assembly_motion_studies()
+                        .map(|study| AuthoritativeDependency::AssemblyMotionStudy(study.id())),
+                );
             }
             CanonicalCommand::SetOccurrenceGrounded { id, .. } => {
                 dependencies.insert(AuthoritativeDependency::Occurrence(*id));
@@ -13413,6 +13830,59 @@ fn authoritative_dependencies(
             }
             CanonicalCommand::DeleteAssemblyMate { id } => {
                 dependencies.insert(AuthoritativeDependency::AssemblyMate(*id));
+            }
+            CanonicalCommand::CreateAssemblyJoint(joint) => {
+                dependencies.insert(AuthoritativeDependency::AssemblyJoint(joint.id()));
+                dependencies.insert(AuthoritativeDependency::Occurrence(
+                    joint.parent_occurrence_id(),
+                ));
+                dependencies.insert(AuthoritativeDependency::Occurrence(
+                    joint.child_occurrence_id(),
+                ));
+                dependencies.extend(
+                    snapshot
+                        .assembly_joints()
+                        .map(|joint| AuthoritativeDependency::AssemblyJoint(joint.id())),
+                );
+            }
+            CanonicalCommand::SetAssemblyJointKind { id, .. }
+            | CanonicalCommand::SetAssemblyJointPosition { id, .. }
+            | CanonicalCommand::SetAssemblyJointLimits { id, .. } => {
+                dependencies.insert(AuthoritativeDependency::AssemblyJoint(*id));
+                if let Some(joint) = snapshot.assembly_joint(*id) {
+                    dependencies.insert(AuthoritativeDependency::Occurrence(
+                        joint.parent_occurrence_id(),
+                    ));
+                    dependencies.insert(AuthoritativeDependency::Occurrence(
+                        joint.child_occurrence_id(),
+                    ));
+                }
+                dependencies.extend(
+                    snapshot
+                        .assembly_joints()
+                        .map(|joint| AuthoritativeDependency::AssemblyJoint(joint.id())),
+                );
+            }
+            CanonicalCommand::DeleteAssemblyJoint { id } => {
+                dependencies.insert(AuthoritativeDependency::AssemblyJoint(*id));
+                dependencies.extend(
+                    snapshot
+                        .assembly_motion_studies()
+                        .map(|study| AuthoritativeDependency::AssemblyMotionStudy(study.id())),
+                );
+            }
+            CanonicalCommand::CreateAssemblyMotionStudy(study)
+            | CanonicalCommand::UpdateAssemblyMotionStudy(study) => {
+                dependencies.insert(AuthoritativeDependency::AssemblyMotionStudy(study.id()));
+                dependencies.extend(
+                    study
+                        .drivers()
+                        .iter()
+                        .map(|driver| AuthoritativeDependency::AssemblyJoint(driver.joint_id())),
+                );
+            }
+            CanonicalCommand::DeleteAssemblyMotionStudy { id } => {
+                dependencies.insert(AuthoritativeDependency::AssemblyMotionStudy(*id));
             }
             CanonicalCommand::CreateDrawingSheet(sheet)
             | CanonicalCommand::UpdateDrawingSheet(sheet) => {
@@ -13998,6 +14468,20 @@ fn digest_snapshot(snapshot: &Snapshot) -> String {
     digest.u64(snapshot.product.assembly_mates.len() as u64);
     for mate in snapshot.product.assembly_mates.values() {
         digest.assembly_mate(mate);
+    }
+    if !snapshot.product.assembly_joints.is_empty() {
+        digest.bytes(b"canonical-assembly-joints.v1");
+        digest.u64(snapshot.product.assembly_joints.len() as u64);
+        for joint in snapshot.product.assembly_joints.values() {
+            digest.assembly_joint(joint);
+        }
+    }
+    if !snapshot.product.assembly_motion_studies.is_empty() {
+        digest.bytes(b"canonical-assembly-motion-studies.v1");
+        digest.u64(snapshot.product.assembly_motion_studies.len() as u64);
+        for study in snapshot.product.assembly_motion_studies.values() {
+            digest.assembly_motion_study(study);
+        }
     }
     if !snapshot.product.drawing_sheets.is_empty() {
         digest.bytes(b"canonical-drawing-sheets.v1");
@@ -14901,6 +15385,70 @@ impl StableDigest {
         }
     }
 
+    fn assembly_joint(&mut self, joint: &AssemblyJoint) {
+        self.bytes(joint.schema().as_bytes());
+        self.u64(joint.id().0);
+        self.u64(joint.parent_occurrence_id().0);
+        self.u64(joint.child_occurrence_id().0);
+        self.assembly_joint_kind(joint.kind());
+    }
+
+    fn assembly_joint_kind(&mut self, kind: AssemblyJointKind) {
+        match kind {
+            AssemblyJointKind::Fixed => self.byte(1),
+            AssemblyJointKind::Revolute {
+                axis,
+                limits,
+                position_degrees,
+            } => {
+                self.byte(2);
+                self.assembly_joint_axis(axis);
+                self.assembly_joint_limits(limits);
+                self.u64(position_degrees.to_bits());
+            }
+            AssemblyJointKind::Prismatic {
+                axis,
+                limits,
+                position_mm,
+            } => {
+                self.byte(3);
+                self.assembly_joint_axis(axis);
+                self.assembly_joint_limits(limits);
+                self.u64(position_mm.to_bits());
+            }
+        }
+    }
+
+    fn assembly_joint_axis(&mut self, axis: crate::assembly_joint::AssemblyJointAxis) {
+        for value in axis.direction_in_parent() {
+            self.u64(value.to_bits());
+        }
+        for value in axis.pivot_in_parent_mm() {
+            self.u64(value.to_bits());
+        }
+    }
+
+    fn assembly_joint_limits(&mut self, limits: Option<AssemblyJointLimits>) {
+        if let Some(limits) = limits {
+            self.byte(1);
+            self.u64(limits.min().to_bits());
+            self.u64(limits.max().to_bits());
+        } else {
+            self.byte(0);
+        }
+    }
+
+    fn assembly_motion_study(&mut self, study: &AssemblyMotionStudy) {
+        self.bytes(study.schema().as_bytes());
+        self.u64(study.id().0);
+        self.bytes(study.name().as_bytes());
+        self.u64(study.drivers().len() as u64);
+        for driver in study.drivers() {
+            self.u64(driver.joint_id().0);
+            self.u64(driver.position().to_bits());
+        }
+    }
+
     fn drawing_sheet(&mut self, sheet: &DrawingSheet) {
         self.bytes(sheet.schema().as_bytes());
         self.u64(sheet.id().0);
@@ -15146,6 +15694,26 @@ impl StableDigest {
                 if let Some(mate) = product.assembly_mates.get(&id) {
                     self.byte(1);
                     self.assembly_mate(mate);
+                } else {
+                    self.byte(0);
+                }
+            }
+            AuthoritativeDependency::AssemblyJoint(id) => {
+                self.byte(34);
+                self.u64(id.0);
+                if let Some(joint) = product.assembly_joints.get(&id) {
+                    self.byte(1);
+                    self.assembly_joint(joint);
+                } else {
+                    self.byte(0);
+                }
+            }
+            AuthoritativeDependency::AssemblyMotionStudy(id) => {
+                self.byte(35);
+                self.u64(id.0);
+                if let Some(study) = product.assembly_motion_studies.get(&id) {
+                    self.byte(1);
+                    self.assembly_motion_study(study);
                 } else {
                     self.byte(0);
                 }
@@ -15653,6 +16221,41 @@ impl StableDigest {
             }
             CanonicalCommand::DeleteAssemblyMate { id } => {
                 self.byte(53);
+                self.u64(id.0);
+            }
+            CanonicalCommand::CreateAssemblyJoint(joint) => {
+                self.byte(74);
+                self.assembly_joint(joint);
+            }
+            CanonicalCommand::SetAssemblyJointKind { id, kind } => {
+                self.byte(75);
+                self.u64(id.0);
+                self.assembly_joint_kind(*kind);
+            }
+            CanonicalCommand::SetAssemblyJointPosition { id, position } => {
+                self.byte(76);
+                self.u64(id.0);
+                self.u64(position.to_bits());
+            }
+            CanonicalCommand::SetAssemblyJointLimits { id, limits } => {
+                self.byte(77);
+                self.u64(id.0);
+                self.assembly_joint_limits(*limits);
+            }
+            CanonicalCommand::DeleteAssemblyJoint { id } => {
+                self.byte(78);
+                self.u64(id.0);
+            }
+            CanonicalCommand::CreateAssemblyMotionStudy(study) => {
+                self.byte(79);
+                self.assembly_motion_study(study);
+            }
+            CanonicalCommand::UpdateAssemblyMotionStudy(study) => {
+                self.byte(80);
+                self.assembly_motion_study(study);
+            }
+            CanonicalCommand::DeleteAssemblyMotionStudy { id } => {
+                self.byte(81);
                 self.u64(id.0);
             }
             CanonicalCommand::CreateDrawingSheet(sheet) => {

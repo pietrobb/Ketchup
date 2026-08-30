@@ -4,6 +4,11 @@ use ketchup_core::assembly::{
     AssemblyRecomputePublishError, AssemblyRecomputeStatus, AssemblySolveResult,
     AssemblySolveStatus, AssemblySolverPolicy, recompute_rigid_assembly, solve_rigid_assembly,
 };
+use ketchup_core::assembly_joint::{
+    AssemblyJoint, AssemblyJointAxis, AssemblyJointId, AssemblyJointKind, AssemblyJointLimits,
+    AssemblyMotionDriver, AssemblyMotionStudy, AssemblyMotionStudyId,
+    solve_assembly_joint_kinematics_with_drivers,
+};
 #[cfg(debug_assertions)]
 use ketchup_core::drawing::project_orthographic_drawing;
 use ketchup_core::drawing::{
@@ -49,7 +54,7 @@ impl MateKindChoice {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-enum AssemblyPreviewSource {
+pub(super) enum AssemblyPreviewSource {
     InsertOccurrence {
         id: OccurrenceId,
         definition_id: DefinitionId,
@@ -70,6 +75,16 @@ enum AssemblyPreviewSource {
         editing: bool,
     },
     RemoveMate(AssemblyMateId),
+    Joint {
+        joint: AssemblyJoint,
+        selected_occurrences: [OccurrenceId; 2],
+        editing: bool,
+    },
+    MotionStudy {
+        study: AssemblyMotionStudy,
+        selected_occurrences: [OccurrenceId; 2],
+        editing: bool,
+    },
     Solve,
 }
 
@@ -85,6 +100,10 @@ impl AssemblyPreviewSource {
             Self::Mate { editing: true, .. } => "assembly-action-edit-mate",
             Self::Mate { editing: false, .. } => "assembly-action-create-mate",
             Self::RemoveMate(_) => "assembly-action-remove-mate",
+            Self::Joint { editing: true, .. } => "assembly-action-edit-joint",
+            Self::Joint { editing: false, .. } => "assembly-action-create-joint",
+            Self::MotionStudy { editing: true, .. } => "assembly-action-edit-motion-study",
+            Self::MotionStudy { editing: false, .. } => "assembly-action-create-motion-study",
             Self::Solve => "assembly-action-solve",
         }
     }
@@ -121,6 +140,9 @@ pub(super) struct AssemblyEditorState {
     value_input: String,
     reversed: bool,
     selected_mate: Option<AssemblyMateId>,
+    joint_position_input: String,
+    motion_position_input: String,
+    motion_name_input: String,
     preview: Option<AssemblyProposalPreview>,
     solve_result: Option<AssemblySolveResult>,
 }
@@ -134,6 +156,8 @@ enum AssemblyUiAction {
     EditMate(AssemblyMateId),
     RemoveMate(AssemblyMateId),
     PreviewMate,
+    PreviewJoint,
+    PreviewMotionStudy,
     Solve,
 }
 
@@ -212,6 +236,15 @@ impl KetchupApp {
         }
         if self.assembly_editor.value_input.is_empty() {
             self.assembly_editor.value_input = "0".to_owned();
+        }
+        if self.assembly_editor.joint_position_input.is_empty() {
+            self.assembly_editor.joint_position_input = "0".to_owned();
+        }
+        if self.assembly_editor.motion_position_input.is_empty() {
+            self.assembly_editor.motion_position_input = "25".to_owned();
+        }
+        if self.assembly_editor.motion_name_input.is_empty() {
+            self.assembly_editor.motion_name_input = "Motion study".to_owned();
         }
 
         let kind = self.assembly_editor.kind;
@@ -292,7 +325,7 @@ impl KetchupApp {
             .map_err(|error| error.to_string())
     }
 
-    fn derive_assembly_preview_proposal(
+    pub(super) fn derive_assembly_preview_proposal(
         &self,
         source: &AssemblyPreviewSource,
     ) -> Result<Proposal, String> {
@@ -356,6 +389,84 @@ impl KetchupApp {
             }
             AssemblyPreviewSource::RemoveMate(id) => {
                 CommandBatch::new(vec![CanonicalCommand::DeleteAssemblyMate { id: *id }])
+            }
+            AssemblyPreviewSource::Joint {
+                joint,
+                selected_occurrences,
+                editing,
+            } => {
+                if self
+                    .selected_occurrence_ids()
+                    .into_iter()
+                    .collect::<Vec<_>>()
+                    != selected_occurrences.to_vec()
+                    || snapshot.occurrence(selected_occurrences[0]).is_none()
+                    || snapshot.occurrence(selected_occurrences[1]).is_none()
+                    || *editing != snapshot.assembly_joint(joint.id()).is_some()
+                {
+                    return Err(self.catalog.text("error-preview-stale"));
+                }
+                if *editing {
+                    let position = joint
+                        .kind()
+                        .position()
+                        .ok_or_else(|| self.catalog.text("assembly-error-joint-position"))?;
+                    let solution = solve_assembly_joint_kinematics_with_drivers(
+                        &snapshot,
+                        &[AssemblyMotionDriver::new(joint.id(), position)],
+                    )
+                    .map_err(|error| error.to_string())?;
+                    let transforms = solution
+                        .poses()
+                        .iter()
+                        .filter_map(|pose| {
+                            snapshot
+                                .occurrence(pose.occurrence_id())
+                                .filter(|occurrence| {
+                                    occurrence.transform() != pose.local_transform()
+                                })
+                                .map(|_| (pose.occurrence_id(), pose.local_transform()))
+                        })
+                        .collect::<Vec<_>>();
+                    CommandBatch::new(vec![
+                        CanonicalCommand::SetAssemblyJointPosition {
+                            id: joint.id(),
+                            position,
+                        },
+                        CanonicalCommand::ApplyAssemblySolve {
+                            source_revision: snapshot.revision_id(),
+                            source_digest: snapshot.canonical_digest(),
+                            transforms,
+                        },
+                    ])
+                } else {
+                    CommandBatch::new(vec![CanonicalCommand::CreateAssemblyJoint(joint.clone())])
+                }
+            }
+            AssemblyPreviewSource::MotionStudy {
+                study,
+                selected_occurrences,
+                editing,
+            } => {
+                if self
+                    .selected_occurrence_ids()
+                    .into_iter()
+                    .collect::<Vec<_>>()
+                    != selected_occurrences.to_vec()
+                    || *editing != snapshot.assembly_motion_study(study.id()).is_some()
+                    || study
+                        .drivers()
+                        .iter()
+                        .any(|driver| snapshot.assembly_joint(driver.joint_id()).is_none())
+                {
+                    return Err(self.catalog.text("error-preview-stale"));
+                }
+                let command = if *editing {
+                    CanonicalCommand::UpdateAssemblyMotionStudy(study.clone())
+                } else {
+                    CanonicalCommand::CreateAssemblyMotionStudy(study.clone())
+                };
+                CommandBatch::new(vec![command])
             }
             AssemblyPreviewSource::Solve => return self.plan_assembly_solve(),
         };
@@ -455,6 +566,201 @@ impl KetchupApp {
 
     fn preview_ground_occurrence(&mut self, id: OccurrenceId, grounded: bool) -> bool {
         self.prepare_assembly_preview(AssemblyPreviewSource::GroundOccurrence { id, grounded })
+    }
+
+    pub(super) fn assembly_kinematic_selection(&self) -> Option<[OccurrenceId; 2]> {
+        self.selected_occurrence_ids()
+            .into_iter()
+            .collect::<Vec<_>>()
+            .try_into()
+            .ok()
+    }
+
+    fn assembly_joint_preview_source(&self) -> Result<AssemblyPreviewSource, String> {
+        let selected_occurrences = self
+            .assembly_kinematic_selection()
+            .ok_or_else(|| self.catalog.text("assembly-error-joint-selection"))?;
+        let snapshot = self.document.current();
+        let existing = snapshot.assembly_joints().find(|joint| {
+            joint.parent_occurrence_id() == selected_occurrences[0]
+                && joint.child_occurrence_id() == selected_occurrences[1]
+        });
+        let position_mm = self
+            .assembly_editor
+            .joint_position_input
+            .trim()
+            .parse::<f64>()
+            .map_err(|_| self.catalog.text("assembly-error-joint-position"))?;
+        let id = existing.map_or_else(
+            || {
+                AssemblyJointId(
+                    snapshot
+                        .assembly_joints()
+                        .map(|joint| joint.id().0)
+                        .max()
+                        .unwrap_or(0)
+                        + 1,
+                )
+            },
+            AssemblyJoint::id,
+        );
+        Ok(AssemblyPreviewSource::Joint {
+            joint: AssemblyJoint::new(
+                id,
+                selected_occurrences[0],
+                selected_occurrences[1],
+                AssemblyJointKind::Prismatic {
+                    axis: AssemblyJointAxis::new([1.0, 0.0, 0.0], [0.0, 0.0, 0.0]),
+                    limits: Some(AssemblyJointLimits::new(-100.0, 100.0)),
+                    position_mm,
+                },
+            ),
+            selected_occurrences,
+            editing: existing.is_some(),
+        })
+    }
+
+    fn assembly_motion_study_preview_source(&self) -> Result<AssemblyPreviewSource, String> {
+        let selected_occurrences = self
+            .assembly_kinematic_selection()
+            .ok_or_else(|| self.catalog.text("assembly-error-joint-selection"))?;
+        let snapshot = self.document.current();
+        let joint = snapshot
+            .assembly_joints()
+            .find(|joint| {
+                joint.parent_occurrence_id() == selected_occurrences[0]
+                    && joint.child_occurrence_id() == selected_occurrences[1]
+            })
+            .ok_or_else(|| self.catalog.text("assembly-error-motion-joint"))?;
+        let position = self
+            .assembly_editor
+            .motion_position_input
+            .trim()
+            .parse::<f64>()
+            .map_err(|_| self.catalog.text("assembly-error-motion-position"))?;
+        let name = self.assembly_editor.motion_name_input.trim();
+        if name.is_empty() {
+            return Err(self.catalog.text("assembly-error-motion-name"));
+        }
+        let existing = snapshot.assembly_motion_studies().find(|study| {
+            study
+                .drivers()
+                .iter()
+                .any(|driver| driver.joint_id() == joint.id())
+        });
+        let id = existing.map_or_else(
+            || {
+                AssemblyMotionStudyId(
+                    snapshot
+                        .assembly_motion_studies()
+                        .map(|study| study.id().0)
+                        .max()
+                        .unwrap_or(0)
+                        + 1,
+                )
+            },
+            AssemblyMotionStudy::id,
+        );
+        let reference_position = joint.kind().position().unwrap_or(0.0);
+        let drivers = existing.map_or_else(
+            || vec![AssemblyMotionDriver::new(joint.id(), position)],
+            |study| {
+                study
+                    .drivers()
+                    .iter()
+                    .map(|driver| {
+                        let coupled_position = if driver.joint_id() == joint.id() {
+                            position
+                        } else if reference_position.abs() > f64::EPSILON {
+                            snapshot
+                                .assembly_joint(driver.joint_id())
+                                .and_then(|coupled| coupled.kind().position())
+                                .map_or(driver.position(), |current| {
+                                    current / reference_position * position
+                                })
+                        } else {
+                            driver.position()
+                        };
+                        AssemblyMotionDriver::new(driver.joint_id(), coupled_position)
+                    })
+                    .collect()
+            },
+        );
+        Ok(AssemblyPreviewSource::MotionStudy {
+            study: AssemblyMotionStudy::new(id, name, drivers),
+            selected_occurrences,
+            editing: existing.is_some(),
+        })
+    }
+
+    fn preview_assembly_joint_from_selection(&mut self) -> bool {
+        match self.assembly_joint_preview_source() {
+            Ok(source) => self.prepare_assembly_preview(source),
+            Err(error) => {
+                self.assembly_error(error);
+                false
+            }
+        }
+    }
+
+    fn preview_assembly_motion_study_from_selection(&mut self) -> bool {
+        match self.assembly_motion_study_preview_source() {
+            Ok(source) => self.prepare_assembly_preview(source),
+            Err(error) => {
+                self.assembly_error(error);
+                false
+            }
+        }
+    }
+
+    fn prepare_assistant_assembly_source(&mut self, source: AssemblyPreviewSource) -> bool {
+        match self.derive_assembly_preview_proposal(&source) {
+            Ok(proposal) => {
+                self.digest = self.catalog.format(
+                    "assistant-digest-preview",
+                    &BTreeMap::from([
+                        (
+                            "reads",
+                            proposal.authoritative_dependencies().len().to_string(),
+                        ),
+                        ("writes", proposal.authoritative_writes().len().to_string()),
+                    ]),
+                );
+                self.status_key = "status-preview";
+                self.assistant_verification = None;
+                self.assistant_proposal = Some(AssistantPreviewPlan {
+                    source: AssistantPreviewSource::Assembly(source),
+                    proposal,
+                    repair: None,
+                });
+                true
+            }
+            Err(error) => {
+                self.assistant_proposal = None;
+                self.assembly_error(error);
+                false
+            }
+        }
+    }
+
+    pub fn prepare_assistant_assembly_joint_from_selection(&mut self) -> bool {
+        match self.assembly_joint_preview_source() {
+            Ok(source) => self.prepare_assistant_assembly_source(source),
+            Err(error) => {
+                self.assembly_error(error);
+                false
+            }
+        }
+    }
+
+    pub fn prepare_assistant_motion_study_from_selection(&mut self) -> bool {
+        match self.assembly_motion_study_preview_source() {
+            Ok(source) => self.prepare_assistant_assembly_source(source),
+            Err(error) => {
+                self.assembly_error(error);
+                false
+            }
+        }
     }
 
     fn plan_selection_drawing(
@@ -953,6 +1259,53 @@ impl KetchupApp {
             });
         }
 
+        ui.separator();
+        ui.label(self.catalog.text("assembly-kinematics-title"));
+        let joint_position_label = self.catalog.text("assembly-joint-position");
+        let joint_position = ui.add(
+            egui::TextEdit::singleline(&mut self.assembly_editor.joint_position_input)
+                .hint_text(&joint_position_label),
+        );
+        joint_position.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, &joint_position_label)
+        });
+        let has_kinematic_selection = self.assembly_kinematic_selection().is_some();
+        if ui
+            .add_enabled(
+                has_kinematic_selection,
+                egui::Button::new(self.catalog.text("assembly-preview-joint")),
+            )
+            .clicked()
+        {
+            action = Some(AssemblyUiAction::PreviewJoint);
+        }
+        let motion_name_label = self.catalog.text("assembly-motion-name");
+        let motion_name = ui.add(
+            egui::TextEdit::singleline(&mut self.assembly_editor.motion_name_input)
+                .hint_text(&motion_name_label),
+        );
+        motion_name.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, &motion_name_label)
+        });
+        let motion_position_label = self.catalog.text("assembly-motion-position");
+        let motion_position = ui.add(
+            egui::TextEdit::singleline(&mut self.assembly_editor.motion_position_input)
+                .hint_text(&motion_position_label),
+        );
+        motion_position.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, &motion_position_label)
+        });
+        if ui
+            .add_enabled(
+                has_kinematic_selection,
+                egui::Button::new(self.catalog.text("assembly-preview-motion-study")),
+            )
+            .clicked()
+        {
+            action = Some(AssemblyUiAction::PreviewMotionStudy);
+        }
+        ui.separator();
+
         let previous_kind = self.assembly_editor.kind;
         let kind_label = self.catalog.text("assembly-mate-kind");
         let kind_response = egui::ComboBox::from_id_salt("assembly-mate-kind")
@@ -1128,6 +1481,12 @@ impl KetchupApp {
             Some(AssemblyUiAction::PreviewMate) => {
                 self.preview_editor_mate();
             }
+            Some(AssemblyUiAction::PreviewJoint) => {
+                self.preview_assembly_joint_from_selection();
+            }
+            Some(AssemblyUiAction::PreviewMotionStudy) => {
+                self.preview_assembly_motion_study_from_selection();
+            }
             Some(AssemblyUiAction::Solve) => {
                 self.preview_assembly_solve();
             }
@@ -1143,6 +1502,22 @@ impl KetchupApp {
     #[must_use]
     pub fn assembly_mate_count(&self) -> usize {
         self.document.current().assembly_mates().count()
+    }
+
+    #[must_use]
+    pub fn assembly_joint_count(&self) -> usize {
+        self.document.current().assembly_joints().count()
+    }
+
+    #[must_use]
+    pub fn assembly_motion_study_count(&self) -> usize {
+        self.document.current().assembly_motion_studies().count()
+    }
+
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn headless_set_assembly_motion_position(&mut self, position: f64) {
+        self.assembly_editor.motion_position_input = position.to_string();
     }
 
     #[must_use]

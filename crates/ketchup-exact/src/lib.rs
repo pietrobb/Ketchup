@@ -275,6 +275,10 @@ mod ffi {
         ) -> UniquePtr<NativeOperationResult>;
         fn exception_probe_native() -> UniquePtr<NativeOperationResult>;
         fn import_step_native(path: &str) -> UniquePtr<NativeOperationResult>;
+        fn import_step_solid_native(
+            path: &str,
+            solid_ordinal: u32,
+        ) -> UniquePtr<NativeOperationResult>;
         fn step_length_unit_native(path: &str) -> String;
         fn transform_body_native(
             body: &NativeOperationResult,
@@ -1354,6 +1358,28 @@ impl ExactBackend {
         collect_output(
             ffi::import_step_native(path),
             "import_step",
+            &input,
+            HistoryConfidence::None,
+        )
+    }
+
+    pub fn import_step_solid(
+        &self,
+        path: &str,
+        solid_ordinal: u32,
+    ) -> Result<ExactOpOutput, GeometryError> {
+        let input = format!("import_step_solid:{path}:{solid_ordinal}");
+        if path.trim().is_empty() {
+            return Err(parameter_error(
+                GeometryErrorCode::InvalidParameter,
+                "import_step_solid",
+                &input,
+                "STEP path must not be empty".to_owned(),
+            ));
+        }
+        collect_output(
+            ffi::import_step_solid_native(path, solid_ordinal),
+            "import_step_solid",
             &input,
             HistoryConfidence::None,
         )

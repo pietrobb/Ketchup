@@ -6759,6 +6759,7 @@ pub enum AssistantIntentKind {
 #[derive(Clone, Debug, PartialEq)]
 enum AssistantPreviewSource {
     Workflow(WorkflowIntent),
+    Assembly(assembly_ui::AssemblyPreviewSource),
     Model(AssistantModelIntent),
     CadEdit(AssistantCadEditProgram),
     ValidationRepair(AssistantValidationSelection),
@@ -10282,6 +10283,11 @@ impl KetchupApp {
                 != self.saved_assistant_conversation_digest
     }
 
+    /// Opens a native Kečup document from a caller-provided path.
+    pub fn open_document_path(&mut self, path: &Path) -> bool {
+        self.open_document_from(path)
+    }
+
     /// Path the active document is bound to, if it has been saved or opened.
     #[must_use]
     pub fn document_path(&self) -> Option<&Path> {
@@ -10400,6 +10406,7 @@ impl KetchupApp {
         let repair_selection = match &plan.source {
             AssistantPreviewSource::ValidationRepair(selection) => Some(selection.clone()),
             AssistantPreviewSource::Workflow(_)
+            | AssistantPreviewSource::Assembly(_)
             | AssistantPreviewSource::Model(_)
             | AssistantPreviewSource::CadEdit(_) => None,
         };
@@ -10534,6 +10541,12 @@ impl KetchupApp {
             }
             AuthoritativeDependency::AssemblyMate(id) => {
                 Some(("assistant-entity-assembly-mate", id.0))
+            }
+            AuthoritativeDependency::AssemblyJoint(id) => {
+                Some(("assistant-entity-assembly-joint", id.0))
+            }
+            AuthoritativeDependency::AssemblyMotionStudy(id) => {
+                Some(("assistant-entity-assembly-motion-study", id.0))
             }
             AuthoritativeDependency::DrawingSheet(_) => None,
             AuthoritativeDependency::OccurrenceCollections(id) => {
@@ -14047,6 +14060,17 @@ impl KetchupApp {
             AssistantPreviewSource::Workflow(intent) => {
                 self.derive_assistant_workflow_proposal(intent)?
             }
+            AssistantPreviewSource::Assembly(source) => self
+                .derive_assembly_preview_proposal(source)
+                .map_err(|error| {
+                    assistant_planning_rejection(
+                        "planning.assembly_kinematics_invalid",
+                        "assembly_kinematics",
+                        "current_selection",
+                        error,
+                        "Restore the original two-occurrence selection and retry the preview.",
+                    )
+                })?,
             AssistantPreviewSource::Model(intent) => {
                 self.derive_assistant_model_proposal(intent)?
             }
@@ -14461,7 +14485,8 @@ impl KetchupApp {
                                     return;
                                 }
                             }
-                            Err(_) => {
+                            Err(error) => {
+                                eprintln!("exact evaluation rejected: {error}");
                                 self.exact_retry_at = Some(Instant::now() + Duration::from_secs(1));
                             }
                         }
@@ -14813,7 +14838,9 @@ impl KetchupApp {
                                 expected.topology_counts = actual.topology_counts;
                             }
                             if actual != expected {
-                                return Err("imported STEP worker evidence does not match canonical specification".to_owned());
+                                return Err(format!(
+                                    "imported STEP worker evidence does not match canonical specification: expected={expected:?}, actual={actual:?}"
+                                ));
                             }
                             let mesh_target = tempfile::Builder::new()
                                 .prefix("ketchup-imported-step-mesh-")
@@ -33715,6 +33742,27 @@ impl KetchupApp {
                 .small()
                 .color(palette.accent),
         );
+        ui.horizontal_wrapped(|ui| {
+            let enabled = self.assembly_kinematic_selection().is_some();
+            if ui
+                .add_enabled(
+                    enabled,
+                    egui::Button::new(self.catalog.text("assistant-preview-assembly-joint")),
+                )
+                .clicked()
+            {
+                self.prepare_assistant_assembly_joint_from_selection();
+            }
+            if ui
+                .add_enabled(
+                    enabled,
+                    egui::Button::new(self.catalog.text("assistant-preview-motion-study")),
+                )
+                .clicked()
+            {
+                self.prepare_assistant_motion_study_from_selection();
+            }
+        });
         ui.label(
             egui::RichText::new(self.catalog.text("assistant-boundary"))
                 .small()

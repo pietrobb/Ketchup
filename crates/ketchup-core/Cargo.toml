@@ -18,5 +18,8 @@ serde_json = "1.0"
 sha2 = "0.10.9"
 tempfile = "3.23.0"
 
+[dev-dependencies]
+ketchup-exact = { path = "../ketchup-exact" }
+
 [lints]
 workspace = true

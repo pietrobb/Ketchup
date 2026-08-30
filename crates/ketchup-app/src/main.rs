@@ -5,7 +5,8 @@ use ketchup_app::{KetchupApp, inspect_native_document};
 fn main() -> eframe::Result {
     let mut arguments = std::env::args_os();
     let _executable = arguments.next();
-    if arguments.next().as_deref() == Some(std::ffi::OsStr::new("--inspect-native-document")) {
+    let first_argument = arguments.next();
+    if first_argument.as_deref() == Some(std::ffi::OsStr::new("--inspect-native-document")) {
         let Some(path) = arguments.next() else {
             eprintln!("--inspect-native-document requires one path");
             std::process::exit(2);
@@ -23,13 +24,20 @@ fn main() -> eframe::Result {
         }
         return Ok(());
     }
+    let document_path = first_argument.map(std::path::PathBuf::from);
+    if arguments.next().is_some() {
+        eprintln!("ketchup-app accepts at most one document path");
+        std::process::exit(2);
+    }
     eframe::run_native(
         &KetchupApp::title(),
         KetchupApp::native_options(),
-        Box::new(|creation_context| {
-            Ok(Box::new(KetchupApp::from_creation_context(
-                creation_context,
-            )))
+        Box::new(move |creation_context| {
+            let mut app = KetchupApp::from_creation_context(creation_context);
+            if let Some(path) = document_path.as_deref() {
+                app.open_document_path(path);
+            }
+            Ok(Box::new(app))
         }),
     )
 }

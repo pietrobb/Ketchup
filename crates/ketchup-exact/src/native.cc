@@ -2868,6 +2868,28 @@ std::unique_ptr<NativeOperationResult> import_step_native(rust::Str path) noexce
   });
 }
 
+std::unique_ptr<NativeOperationResult> import_step_solid_native(
+    rust::Str path, std::uint32_t solid_ordinal) noexcept {
+  return guarded([&] {
+    const std::string native_path(path.data(), path.size());
+    STEPControl_Reader reader;
+    if (reader.ReadFile(native_path.c_str()) != IFSelect_RetDone) {
+      return error_result(STATUS_INVALID_PARAMETER, "STEP reader could not read the fixture");
+    }
+    if (reader.TransferRoots() == 0) {
+      return error_result(STATUS_INVALID_SHAPE, "STEP fixture contains no transferable roots");
+    }
+    TopExp_Explorer explorer(reader.OneShape(), TopAbs_SOLID);
+    for (std::uint32_t ordinal = 0; ordinal < solid_ordinal && explorer.More(); ++ordinal) {
+      explorer.Next();
+    }
+    if (!explorer.More()) {
+      return error_result(STATUS_INVALID_PARAMETER, "STEP solid ordinal is outside the transferred assembly");
+    }
+    return success_result(explorer.Current(), {});
+  });
+}
+
 rust::String step_length_unit_native(rust::Str path) noexcept {
   try {
     const std::string native_path(path.data(), path.size());
