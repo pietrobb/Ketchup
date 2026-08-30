@@ -67,6 +67,7 @@ impl Default for PartAuthoringUiState {
 }
 
 impl KetchupApp {
+    #[cfg(test)]
     pub(super) fn show_part_authoring_ui(&mut self, ui: &mut egui::Ui) {
         let title = self.catalog.text("part-authoring-title");
         egui::CollapsingHeader::new(title)
@@ -185,6 +186,7 @@ impl KetchupApp {
         }
     }
 
+    #[cfg(test)]
     fn derive_part_authoring_proposal(
         &self,
         source: &PartAuthoringSource,
@@ -197,6 +199,7 @@ impl KetchupApp {
             .map_err(|error| error.to_string())
     }
 
+    #[cfg(test)]
     fn prepare_part_authoring_preview(&mut self) -> bool {
         let Some(source) = self.part_authoring_source() else {
             self.digest = self.catalog.text("part-authoring-invalid");
@@ -220,6 +223,7 @@ impl KetchupApp {
         true
     }
 
+    #[cfg(test)]
     fn confirm_part_authoring_preview(&mut self) -> bool {
         let Some(preview) = self.part_authoring.preview.take() else {
             return false;

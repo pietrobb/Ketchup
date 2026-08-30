@@ -1,7 +1,7 @@
 use crate::assembly::{AssemblyDofStatus, AssemblyMateKind, AssemblyReferenceHealth};
 use crate::document::{
-    EvaluationReport, EvaluationStatus, EvaluatorNodeKind, InstancePathStep, Snapshot, Transform,
-    UnitSystem,
+    EvaluationReport, EvaluationStatus, EvaluatorNodeKind, InstancePathStep, ParameterValueType,
+    Snapshot, Transform, UnitSystem,
 };
 use crate::graph::{OverrideMergePolicy, RuleOutput, SlotResolution, SlotSegment, ValueType};
 use crate::space::{ClearanceOwner, ClearanceSeverity};
@@ -11,6 +11,14 @@ use std::fmt::Write;
 pub const COMPLETE_STATE_VIEW_V1: &str = "ketchup.state-view.complete.v1";
 pub const AGENT_STATE_VIEW_V1: &str = "ketchup.state-view.agent.v1";
 pub const SEMANTIC_ENCODER_V1: &str = "ketchup.semantic-state.v1";
+
+const fn parameter_value_type_label(value_type: ParameterValueType) -> &'static str {
+    match value_type {
+        ParameterValueType::Length => "length",
+        ParameterValueType::Angle => "angle",
+        ParameterValueType::Scalar => "scalar",
+    }
+}
 
 fn write_feature_extent(
     output: &mut String,
@@ -348,9 +356,17 @@ pub fn encode_semantic_state_with_results(
         for output in [&mut complete, &mut agent] {
             writeln!(
                 output,
+                "parameter_binding.{}.{}.value_type={}",
+                binding.target.feature_id.0,
+                binding.target.path.as_str(),
+                parameter_value_type_label(binding.target.value_type)
+            )
+            .unwrap();
+            writeln!(
+                output,
                 "parameter_binding.{}.{}.derived_from.root={}",
                 binding.target.feature_id.0,
-                binding.target.slot.label(),
+                binding.target.path.as_str(),
                 binding.derived_from.root_rule_node_id.0
             )
             .unwrap();
@@ -358,7 +374,7 @@ pub fn encode_semantic_state_with_results(
                 output,
                 "parameter_binding.{}.{}.derived_from.slot_path={}",
                 binding.target.feature_id.0,
-                binding.target.slot.label(),
+                binding.target.path.as_str(),
                 slot_path(binding.derived_from.slot_path.segments())
             )
             .unwrap();
@@ -368,7 +384,7 @@ pub fn encode_semantic_state_with_results(
     for dimension in snapshot.persistent_dimensions() {
         let target = match &dimension.target {
             crate::document::PersistentDimensionTarget::FeatureParameter(target) => {
-                format!("feature:{}:{}", target.feature_id.0, target.slot.label())
+                format!("feature:{}:{}", target.feature_id.0, target.path.as_str())
             }
             crate::document::PersistentDimensionTarget::DerivedOutput(target) => format!(
                 "slot:{}:{}",
@@ -380,13 +396,24 @@ pub fn encode_semantic_state_with_results(
                 producer_feature_id,
                 semantic_role,
                 source_element_id,
-                slot,
+                path,
+                value_type,
             } => format!(
-                "exact:{}:{}:{semantic_role:?}:{source_element_id:?}:{}",
+                "exact:{}:{}:{semantic_role:?}:{source_element_id:?}:{}:{value_type:?}",
                 definition_id.0,
                 producer_feature_id.0,
-                slot.label()
+                path.as_str()
             ),
+        };
+        let value_type = match &dimension.target {
+            crate::document::PersistentDimensionTarget::FeatureParameter(target) => {
+                Some(target.value_type)
+            }
+            crate::document::PersistentDimensionTarget::ExactFeatureParameter {
+                value_type,
+                ..
+            } => Some(*value_type),
+            crate::document::PersistentDimensionTarget::DerivedOutput(_) => None,
         };
         let projection = snapshot
             .project_persistent_dimension(dimension.id)
@@ -411,6 +438,15 @@ pub fn encode_semantic_state_with_results(
                 dimension.id.0
             )
             .unwrap();
+            if let Some(value_type) = value_type {
+                writeln!(
+                    output,
+                    "persistent_dimension.{}.value_type={}",
+                    dimension.id.0,
+                    parameter_value_type_label(value_type)
+                )
+                .unwrap();
+            }
             writeln!(
                 output,
                 "persistent_dimension.{}.unit={}",
@@ -1398,6 +1434,43 @@ pub fn encode_semantic_state_with_results(
                     target.0,
                     edges.len(),
                     amount.millimetres()
+                )
+                .unwrap();
+            }
+            crate::document::FeatureKind::TopologyFaceOffset {
+                target,
+                face,
+                distance,
+            } => {
+                writeln!(
+                    complete,
+                    "feature.{}.kind=topology_face_offset",
+                    feature.id().0
+                )
+                .unwrap();
+                writeln!(complete, "feature.{}.target={}", feature.id().0, target.0).unwrap();
+                writeln!(
+                    complete,
+                    "feature.{}.face.lineage={:?}",
+                    feature.id().0,
+                    face.lineage_digest
+                )
+                .unwrap();
+                writeln!(
+                    complete,
+                    "feature.{}.distance.f64_bits={:016x}",
+                    feature.id().0,
+                    distance.millimetres().to_bits()
+                )
+                .unwrap();
+                writeln!(
+                    agent,
+                    "feature.{}=name:{:?},kind:topology_face_offset,definition:{},target:{},distance_mm:{:?}",
+                    feature.id().0,
+                    feature.name(),
+                    feature.definition_id().0,
+                    target.0,
+                    distance.millimetres()
                 )
                 .unwrap();
             }

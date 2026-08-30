@@ -79,6 +79,9 @@ std::unique_ptr<NativeOperationResult> finish_shell_revolve_profile_native(
 std::unique_ptr<NativeOperationResult> shell_body_native(
     const NativeOperationResult& body, rust::Slice<const std::uint32_t> face_ordinals,
     double thickness) noexcept;
+std::unique_ptr<NativeOperationResult> offset_body_face_native(
+    const NativeOperationResult& body, std::uint32_t face_ordinal,
+    double distance) noexcept;
 std::unique_ptr<NativeOperationResult> finish_body_native(
     const NativeOperationResult& body, rust::Slice<const std::uint32_t> edge_ordinals,
     double amount, bool fillet) noexcept;

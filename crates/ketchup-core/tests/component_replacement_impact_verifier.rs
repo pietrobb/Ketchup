@@ -3,8 +3,9 @@ use ketchup_core::assembly::{
     AssemblySolverPolicy, solve_rigid_assembly,
 };
 use ketchup_core::document::{
-    BodyId, CanonicalCommand, CanonicalError, CommandBatch, DefinitionId, Dimension, DocumentStore,
-    FeatureId, FeatureKind, OccurrenceId, ProposalPrincipal, StableFaceRole, Transform,
+    BodyId, CanonicalCommand, CanonicalError, CollectionId, CommandBatch, DefinitionId, Dimension,
+    DocumentStore, FeatureId, FeatureKind, OccurrenceId, ProposalPrincipal, StableFaceRole,
+    Transform,
 };
 use ketchup_core::drawing::{
     DrawingSheet, DrawingSheetId, DrawingSource, OrthographicViewKind, project_orthographic_drawing,
@@ -35,6 +36,7 @@ const TARGET_OCCURRENCE: OccurrenceId = OccurrenceId(4200);
 const MATE: AssemblyMateId = AssemblyMateId(4300);
 const AXIAL_MATE: AssemblyMateId = AssemblyMateId(4301);
 const SHEET: DrawingSheetId = DrawingSheetId(4400);
+const COLLECTION: CollectionId = CollectionId(4500);
 const ROLES: [ExactFaceRole; 3] = [
     ExactFaceRole::Top,
     ExactFaceRole::Bottom,
@@ -258,6 +260,14 @@ fn seed() -> DocumentStore {
                 )
                 .unwrap(),
             ),
+            CanonicalCommand::CreateCollection {
+                id: COLLECTION,
+                name: "Verifier replacement selection".into(),
+            },
+            CanonicalCommand::SetCollectionOccurrences {
+                id: COLLECTION,
+                occurrence_ids: vec![SELECTED, SIBLING, TARGET_OCCURRENCE],
+            },
         ]))
         .unwrap();
     document
@@ -1107,4 +1117,37 @@ fn stale_failed_lost_and_cyclic_inputs_preserve_canonical_history_and_exact_outp
         CanonicalError::FeatureDependencyCycle(FIRST_SHELL)
     );
     assert_eq!(store_stamp(&cyclic_document), cyclic_before);
+}
+
+#[test]
+fn collection_drawing_and_candidate_digest_tampering_fails_closed() {
+    let mut document = seed();
+    let mut results = registry(&document.current(), false);
+    let impact = project_component_replacement_impact(
+        &document,
+        &results,
+        ComponentReplacementImpactRequest::new(&document.current(), SELECTED, TARGET),
+    )
+    .unwrap();
+    assert_eq!(impact.collection_dependencies.len(), 1);
+    assert_eq!(impact.collection_dependencies[0].collection_id, COLLECTION);
+    assert_eq!(impact.drawing_views.len(), 3);
+
+    let before = store_stamp(&document);
+    let results_before = results.contents_stamp();
+    let mut missing_collection = impact.clone();
+    missing_collection.collection_dependencies.clear();
+    let mut missing_drawing = impact.clone();
+    missing_drawing.drawing_views.pop();
+    let mut wrong_candidate_digest = impact;
+    wrong_candidate_digest.candidate_digest = Some("tampered-candidate".into());
+
+    for tampered in [missing_collection, missing_drawing, wrong_candidate_digest] {
+        assert!(matches!(
+            commit_component_replacement(&mut document, &mut results, &tampered),
+            Err(ComponentReplacementCommitError::InvalidImpact(_))
+        ));
+        assert_eq!(store_stamp(&document), before);
+        assert_eq!(results.contents_stamp(), results_before);
+    }
 }

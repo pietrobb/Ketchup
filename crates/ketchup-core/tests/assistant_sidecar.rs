@@ -2,13 +2,13 @@ use ketchup_core::assistant_sidecar::{
     ASSISTANT_PROTOCOL_VERSION, AssistantBalloonTextIntent, AssistantBeamNotchIntent,
     AssistantBottleFinishKind, AssistantBottleIntent, AssistantCadDeletePolicy,
     AssistantCadEditOperation, AssistantCadEditProgram, AssistantCadEntitySelector,
-    AssistantCadRotation, AssistantDistribution, AssistantHandshake, AssistantHandshakeError,
-    AssistantKetchupBottleIntent, AssistantLinearArrayIntent, AssistantModelIntent,
-    AssistantOrientedBeamIntent, AssistantParameterEditIntent, AssistantPrincipalPlane,
-    AssistantProfileTranslationIntent, AssistantRejectionDiagnostic, AssistantRejectionPhase,
-    AssistantRotationIntent, AssistantSketchConstraint, AssistantSketchEntity,
-    AssistantSketchPointKind, AssistantSketchPointRef, AssistantTeapotIntent,
-    AssistantWorkplaneSpec, distribution_is_enabled,
+    AssistantCadPartFeature, AssistantCadRotation, AssistantDistribution, AssistantHandshake,
+    AssistantHandshakeError, AssistantKetchupBottleIntent, AssistantLinearArrayIntent,
+    AssistantModelIntent, AssistantOrientedBeamIntent, AssistantParameterEditIntent,
+    AssistantPrincipalPlane, AssistantProfileTranslationIntent, AssistantRejectionDiagnostic,
+    AssistantRejectionPhase, AssistantRotationIntent, AssistantSketchConstraint,
+    AssistantSketchEntity, AssistantSketchPointKind, AssistantSketchPointRef,
+    AssistantTeapotIntent, AssistantWorkplaneSpec, distribution_is_enabled,
 };
 
 const PUBLIC_HANDSHAKE: &str = r#"{
@@ -232,6 +232,55 @@ fn cad_edit_sketch_contract_is_typed_strict_and_round_trips() {
         }]
     });
     assert!(serde_json::from_value::<AssistantCadEditProgram>(unknown_entity_field).is_err());
+}
+
+#[test]
+fn cad_edit_part_contract_is_typed_bounded_and_round_trips() {
+    let program = AssistantCadEditProgram {
+        operations: vec![AssistantCadEditOperation::CreatePart {
+            name: "Editable prism".to_owned(),
+            workplane: AssistantWorkplaneSpec::Principal {
+                plane: AssistantPrincipalPlane::Xy,
+            },
+            entities: vec![AssistantSketchEntity::Circle {
+                id: 1,
+                center_mm: [0.0, 0.0],
+                radius_mm: 12.0,
+            }],
+            constraints: vec![AssistantSketchConstraint::Radius {
+                id: 1,
+                entity_id: 1,
+                value_mm: 12.0,
+            }],
+            feature: AssistantCadPartFeature::Extrusion { distance_mm: 30.0 },
+            translation_mm: [5.0, 6.0, 7.0],
+            rotation: Some(AssistantCadRotation {
+                pivot_mm: [5.0, 6.0, 7.0],
+                axis: [0.0, 1.0, 0.0],
+                angle_degrees: 45.0,
+            }),
+        }],
+    };
+
+    assert_eq!(program.validate(), Ok(()));
+    let serialized = serde_json::to_value(&program).unwrap();
+    assert_eq!(serialized["operations"][0]["operation"], "create_part");
+    assert_eq!(serialized["operations"][0]["feature"]["type"], "extrusion");
+    assert_eq!(
+        serde_json::from_value::<AssistantCadEditProgram>(serialized).unwrap(),
+        program
+    );
+
+    let mut invalid_feature = program.clone();
+    let AssistantCadEditOperation::CreatePart { feature, .. } = &mut invalid_feature.operations[0]
+    else {
+        unreachable!()
+    };
+    *feature = AssistantCadPartFeature::Extrusion { distance_mm: 0.0 };
+    assert_eq!(
+        invalid_feature.validate(),
+        Err("assistant CAD part feature is invalid".to_owned())
+    );
 }
 
 #[test]

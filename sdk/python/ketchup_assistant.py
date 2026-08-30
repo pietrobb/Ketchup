@@ -68,10 +68,11 @@ SYSTEM_PROMPT = (
     "unsupported or unavailable occurrences or say that the relevant check is incomplete or skipped. Return ONLY "
     "one JSON object with exactly three fields: message (a concise user-facing string), "
     "model_intent (null for discussion or CAD edits), and cad_edit_program (null unless proposing typed CAD operations). "
-    "Never return both mutation fields. Use cad_edit_program for create_sketch, set_dimension, delete, rigid transform, copy, linear pattern, or mirror. "
+    "Never return both mutation fields. Use cad_edit_program for create_part, create_sketch, set_dimension, delete, rigid transform, copy, linear pattern, or mirror. "
+    "create_part atomically creates a host-ID-assigned definition, workplane, sketch, universal feature, and occurrence. It has name, workplane, entities, constraints, feature, translation_mm, and optional rotation; feature is currently {type: extrusion, distance_mm: positive length}. "
     "create_sketch has definition_id, name, workplane, entities, and constraints; workplane is principal with plane xy/yz/xz or offset with an existing base_feature_id and distance_mm. "
     "Entities are typed line/arc/circle records with positive stable IDs and 2D millimetre coordinates. Constraints are typed horizontal/vertical/coincident/distance/radius/fixed_point records with positive stable IDs and point refs {entity_id, point: start/end/center}. "
-    "The host assigns workplane and sketch feature IDs. set_dimension targets an existing feature_id, optional constraint_id, and positive value_mm. "
+    "The host assigns create_part definition, feature, and occurrence IDs and create_sketch workplane and sketch feature IDs. set_dimension targets an existing feature_id, optional constraint_id, and positive value_mm. "
     "Occurrence operations have a selector: either {type: current_selection} or {type: occurrences, occurrence_ids: [positive unique IDs]}. "
     "Delete also has dependency_policy reject_if_referenced or remove_references. Transform has translation_mm and optional rotation with pivot_mm, non-zero axis, and angle_degrees. "
     "Copy has non-zero translation_mm. Linear_pattern has instances including originals and non-zero step_mm. Mirror has plane_origin_mm and non-zero plane_normal. "
@@ -619,16 +620,42 @@ def _validate_cad_edit_program(program: object) -> dict:
         operation_type = operation["operation"]
         target_count = 0
         generated_per_target = 0
-        if operation_type == "create_sketch":
-            if set(operation) != {
-                "operation", "definition_id", "name", "workplane", "entities", "constraints"
-            }:
-                raise ProtocolError("provider CAD sketch creation contains missing or unknown fields")
+        if operation_type in {"create_sketch", "create_part"}:
+            if operation_type == "create_sketch":
+                if set(operation) != {
+                    "operation", "definition_id", "name", "workplane", "entities", "constraints"
+                }:
+                    raise ProtocolError("provider CAD sketch creation contains missing or unknown fields")
+                if (
+                    not isinstance(operation["definition_id"], int)
+                    or isinstance(operation["definition_id"], bool)
+                    or operation["definition_id"] <= 0
+                ):
+                    raise ProtocolError("provider CAD sketch creation target is invalid")
+            else:
+                if not {"operation", "name", "workplane", "entities", "constraints", "feature", "translation_mm"} <= set(operation) <= {
+                    "operation", "name", "workplane", "entities", "constraints", "feature", "translation_mm", "rotation"
+                }:
+                    raise ProtocolError("provider CAD part creation contains missing or unknown fields")
+                feature = operation["feature"]
+                if (
+                    not isinstance(feature, dict)
+                    or set(feature) != {"type", "distance_mm"}
+                    or feature["type"] != "extrusion"
+                    or not isinstance(feature["distance_mm"], (int, float))
+                    or isinstance(feature["distance_mm"], bool)
+                    or not math.isfinite(feature["distance_mm"])
+                    or not 0 < feature["distance_mm"] <= 1_000_000
+                ):
+                    raise ProtocolError("provider CAD part feature is invalid")
+                _validate_vector(operation["translation_mm"], "provider CAD part translation_mm", positive=False)
+                rotation = operation.get("rotation")
+                if rotation is not None:
+                    _validate_cad_rotation(rotation)
+                target_count = 1
+                generated_per_target = 1
             if (
-                not isinstance(operation["definition_id"], int)
-                or isinstance(operation["definition_id"], bool)
-                or operation["definition_id"] <= 0
-                or not isinstance(operation["name"], str)
+                not isinstance(operation["name"], str)
                 or not operation["name"].strip()
                 or len(operation["name"].encode("utf-8")) > 128
             ):
@@ -685,7 +712,7 @@ def _validate_cad_edit_program(program: object) -> dict:
             if "selector" not in operation:
                 raise ProtocolError("provider CAD edit selector is missing")
             target_count = _validate_cad_selector(operation["selector"])
-        if operation_type in {"create_sketch", "set_dimension"}:
+        if operation_type in {"create_sketch", "create_part", "set_dimension"}:
             pass
         elif operation_type == "delete":
             if set(operation) != {"operation", "selector", "dependency_policy"} or operation[

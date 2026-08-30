@@ -206,6 +206,11 @@ pub enum ExactBRepOperation {
         kind: ExactBRepEdgeFinishKind,
         amount_bits: u64,
     },
+    FaceOffset {
+        target: ExactBRepNodeId,
+        face: ExactBRepTopologySelector,
+        distance_bits: u64,
+    },
     Revolve {
         profile: ExactBRepProfileId,
         axis_start_bits: [u64; 2],
@@ -231,7 +236,8 @@ impl ExactBRepOperation {
         match self {
             Self::ProfileCut { target, .. }
             | Self::Shell { target, .. }
-            | Self::EdgeFinish { target, .. } => vec![*target],
+            | Self::EdgeFinish { target, .. }
+            | Self::FaceOffset { target, .. } => vec![*target],
             Self::Boolean { target, tool, .. } => vec![*target, *tool],
             Self::Extrude { .. }
             | Self::Revolve { .. }
@@ -251,6 +257,7 @@ impl ExactBRepOperation {
             Self::Boolean { .. }
             | Self::Shell { .. }
             | Self::EdgeFinish { .. }
+            | Self::FaceOffset { .. }
             | Self::ImportedExact { .. } => Vec::new(),
         }
     }
@@ -322,6 +329,19 @@ impl ExactBRepGraph {
         graph.canonical_input_digest = graph.compute_canonical_input_digest();
         graph.validate()?;
         Ok(graph)
+    }
+
+    pub fn producer_bounds_mm(&self) -> Result<Option<[[f64; 3]; 2]>, ExactBRepGraphError> {
+        self.validate()?;
+        let mut node_bounds = Vec::with_capacity(self.nodes.len());
+        for node in &self.nodes {
+            node_bounds.push(operation_bounds(
+                &node.operation,
+                &self.profiles,
+                &node_bounds,
+            )?);
+        }
+        Ok(node_bounds.last().copied().flatten())
     }
 
     pub fn to_bytes(&self) -> Result<Vec<u8>, ExactBRepGraphError> {
@@ -581,6 +601,21 @@ impl<'a> GraphCompiler<'a> {
                 edges: topology_selectors(edges, TopologicalElementKind::Edge, *target)?,
                 kind: (*kind).into(),
                 amount_bits: positive_distance(amount.millimetres())?,
+            },
+            FeatureKind::TopologyFaceOffset {
+                target,
+                face,
+                distance,
+            } => ExactBRepOperation::FaceOffset {
+                target: self.compile_body(*target)?,
+                face: topology_selectors(
+                    std::slice::from_ref(face),
+                    TopologicalElementKind::Face,
+                    *target,
+                )?
+                .pop()
+                .ok_or(ExactBRepGraphError::InvalidTopologySelector)?,
+                distance_bits: signed_distance(distance.millimetres())?,
             },
             FeatureKind::Revolve {
                 profile,
@@ -1091,7 +1126,8 @@ fn operation_bounds(
         } => swept_profile_bounds(&profiles[profile.0 as usize], *interval).map(Some),
         ExactBRepOperation::ProfileCut { target, .. }
         | ExactBRepOperation::Shell { target, .. }
-        | ExactBRepOperation::EdgeFinish { target, .. } => Ok(node_bounds[target.0 as usize]),
+        | ExactBRepOperation::EdgeFinish { target, .. }
+        | ExactBRepOperation::FaceOffset { target, .. } => Ok(node_bounds[target.0 as usize]),
         ExactBRepOperation::Boolean {
             operation,
             target,
@@ -1267,6 +1303,14 @@ fn positive_distance(value: f64) -> Result<u64, ExactBRepGraphError> {
     }
 }
 
+fn signed_distance(value: f64) -> Result<u64, ExactBRepGraphError> {
+    if value.is_finite() && value.abs() > MIN_LENGTH_MM && value.abs() <= MAX_ABS_MM {
+        Ok(value.to_bits())
+    } else {
+        Err(ExactBRepGraphError::InvalidParameter)
+    }
+}
+
 fn valid_frame(bits: [u64; 12]) -> bool {
     bits.map(f64::from_bits)
         .into_iter()
@@ -1410,6 +1454,10 @@ fn valid_operation(
         let value = f64::from_bits(bits);
         value.is_finite() && value > MIN_LENGTH_MM && value <= MAX_ABS_MM
     };
+    let signed = |bits| {
+        let value = f64::from_bits(bits);
+        value.is_finite() && value.abs() > MIN_LENGTH_MM && value.abs() <= MAX_ABS_MM
+    };
     match operation {
         ExactBRepOperation::Extrude {
             distance_bits,
@@ -1459,6 +1507,21 @@ fn valid_operation(
                 && valid_topology_selectors(
                     edges,
                     ExactBRepTopologyKind::Edge,
+                    document_id,
+                    definition_id,
+                    *target,
+                    prior_nodes,
+                )
+        }
+        ExactBRepOperation::FaceOffset {
+            target,
+            face,
+            distance_bits,
+        } => {
+            signed(*distance_bits)
+                && valid_topology_selectors(
+                    std::slice::from_ref(face),
+                    ExactBRepTopologyKind::Face,
                     document_id,
                     definition_id,
                     *target,

@@ -11,6 +11,7 @@ use ketchup_app::AppCommand;
 use ketchup_app::dialogs::ScriptedFileDialogs;
 use ketchup_core::assembly::{AssemblyMateKind, AssemblySolveStatus};
 use ketchup_core::document::{DefinitionId, FeatureId, FeatureKind};
+use ketchup_core::drawing::{DrawingSheetId, DrawingSource};
 use ketchup_core::intent::WorkflowIntent;
 use ketchup_core::persistence;
 use ketchup_interaction::LocaleCatalog;
@@ -559,12 +560,264 @@ fn lost_reference_solve_after_open_is_fail_closed_without_exact_results() {
 }
 
 #[test]
+fn drawing_from_selection_is_previewed_cancelable_and_one_step_undoable() {
+    let mut shell = Shell::new();
+    shell
+        .app_mut()
+        .connect_exact_worker(exact_worker_path())
+        .unwrap();
+    wait_for_stable_references(&mut shell);
+    shell.click_menu_command("menu-edit", AppCommand::SelectAll);
+    assert_eq!(shell.app().selected_occurrence_count(), 1);
+    open_assembly_editor(&mut shell);
+
+    let preview = shell.catalog().text("assembly-preview-selection-drawing");
+    let before = (
+        shell.app().document_revision(),
+        shell.app().canonical_digest(),
+        shell.app().undo_step_count(),
+    );
+    shell.click_button_label(&preview);
+    assert!(shell.app().assembly_preview_pending());
+    assert_eq!(
+        (
+            shell.app().document_revision(),
+            shell.app().canonical_digest(),
+            shell.app().undo_step_count(),
+        ),
+        before
+    );
+    let cancel = shell.catalog().text("assembly-cancel-preview");
+    shell.click_button_label(&cancel);
+    assert_eq!(shell.app().document_snapshot().drawing_sheets().count(), 0);
+    assert_eq!(shell.app().canonical_digest(), before.1);
+
+    shell.click_button_label(&preview);
+    confirm_preview(&mut shell);
+    assert_eq!(shell.app().document_snapshot().drawing_sheets().count(), 1);
+    assert_eq!(shell.app().document_revision(), before.0 + 1);
+    assert_eq!(shell.app().undo_step_count(), before.2 + 1);
+    shell.click_menu_command("menu-edit", AppCommand::Undo);
+    assert_eq!(shell.app().document_snapshot().drawing_sheets().count(), 0);
+    shell.click_menu_command("menu-edit", AppCommand::Redo);
+    assert_eq!(shell.app().document_snapshot().drawing_sheets().count(), 1);
+}
+
+#[test]
+fn selection_drawing_rejects_drift_and_non_rigid_sources_then_round_trips_exactly() {
+    let directory = tempfile::tempdir().unwrap();
+    let saved = directory.path().join("selection-drawing.ketchup");
+    let dialogs = ScriptedFileDialogs::new()
+        .queue_save(&saved)
+        .queue_open(&saved)
+        .always_discard();
+    let mut shell = Shell::with_dialogs(dialogs);
+    shell
+        .app_mut()
+        .connect_exact_worker(exact_worker_path())
+        .unwrap();
+    wait_for_stable_references(&mut shell);
+    shell.click_menu_command("menu-edit", AppCommand::SelectAll);
+    open_assembly_editor(&mut shell);
+
+    let preview = shell.catalog().text("assembly-preview-selection-drawing");
+    let confirm = shell.catalog().text("assembly-confirm-preview");
+    let cancel = shell.catalog().text("assembly-cancel-preview");
+    let initial = (
+        shell.app().document_revision(),
+        shell.app().canonical_digest(),
+        shell.app().undo_step_count(),
+    );
+    shell.click_button_label(&preview);
+    assert!(shell.app().assembly_preview_pending());
+    shell.click_menu_command("menu-edit", AppCommand::Deselect);
+    assert_eq!(shell.app().selected_occurrence_count(), 0);
+    shell.click_button_label(&confirm);
+    assert!(!shell.app().assembly_preview_pending());
+    assert_eq!(
+        (
+            shell.app().document_revision(),
+            shell.app().canonical_digest(),
+            shell.app().undo_step_count(),
+        ),
+        initial,
+        "selection drift must invalidate confirmation without mutation"
+    );
+
+    shell.click_menu_command("menu-edit", AppCommand::SelectAll);
+    shell.click_button_label(&preview);
+    assert!(shell.app().assembly_preview_pending());
+    shell.click_button_label(&cancel);
+    assert_eq!(shell.app().document_snapshot().drawing_sheets().count(), 0);
+    assert_eq!(shell.app().canonical_digest(), initial.1);
+
+    insert_occurrence(&mut shell);
+    insert_occurrence(&mut shell);
+    let occurrences = shell
+        .app()
+        .document_snapshot()
+        .occurrences()
+        .map(|occurrence| (occurrence.id(), occurrence.name().to_owned()))
+        .collect::<Vec<_>>();
+    assert_eq!(occurrences.len(), 3);
+    shell.click_menu_command("menu-edit", AppCommand::Deselect);
+    shell.click_menu_command("menu-edit", AppCommand::SelectAll);
+    assert_eq!(shell.app().selected_occurrence_count(), 3);
+
+    let before_non_rigid = (
+        shell.app().document_revision(),
+        shell.app().canonical_digest(),
+        shell.app().undo_step_count(),
+    );
+    shell.click_button_label(&preview);
+    assert!(!shell.app().assembly_preview_pending());
+    assert_eq!(
+        (
+            shell.app().document_revision(),
+            shell.app().canonical_digest(),
+            shell.app().undo_step_count(),
+        ),
+        before_non_rigid,
+        "an unconstrained multi-selection must be refused fail-closed"
+    );
+
+    for (_, name) in &occurrences {
+        let ground = shell.catalog().format(
+            "assembly-preview-ground",
+            &std::collections::BTreeMap::from([("name", name.clone())]),
+        );
+        shell.click_button_label(&ground);
+        confirm_preview(&mut shell);
+    }
+    assert_eq!(shell.app().grounded_occurrence_count(), 3);
+    shell.click_menu_command("menu-edit", AppCommand::Deselect);
+    shell.click_menu_command("menu-edit", AppCommand::SelectAll);
+
+    let before_commit = (
+        shell.app().document_revision(),
+        shell.app().canonical_digest(),
+        shell.app().undo_step_count(),
+    );
+    shell.click_button_label(&preview);
+    assert!(shell.app().assembly_preview_pending());
+    assert_eq!(shell.app().canonical_digest(), before_commit.1);
+    confirm_preview(&mut shell);
+    assert_eq!(shell.app().document_revision(), before_commit.0 + 1);
+    assert_eq!(shell.app().undo_step_count(), before_commit.2 + 1);
+
+    let sheet_id = DrawingSheetId(1);
+    let occurrence_ids = occurrences.iter().map(|(id, _)| *id).collect::<Vec<_>>();
+    assert_eq!(
+        shell
+            .app()
+            .document_snapshot()
+            .drawing_sheet(sheet_id)
+            .unwrap()
+            .source(),
+        &DrawingSource::RigidAssembly {
+            occurrence_ids: occurrence_ids.clone(),
+        }
+    );
+    let exact_fingerprint = shell
+        .app()
+        .headless_drawing_fingerprint(sheet_id)
+        .expect("the selected rigid assembly must have a current exact drawing");
+    assert_eq!(exact_fingerprint.1, vec!["front", "top", "right"]);
+    let committed_digest = shell.app().canonical_digest();
+
+    shell.click_menu_command("menu-edit", AppCommand::Undo);
+    assert!(
+        shell
+            .app()
+            .document_snapshot()
+            .drawing_sheet(sheet_id)
+            .is_none()
+    );
+    shell.click_menu_command("menu-edit", AppCommand::Redo);
+    assert_eq!(shell.app().canonical_digest(), committed_digest);
+    assert_eq!(
+        shell.app().headless_drawing_fingerprint(sheet_id),
+        Some(exact_fingerprint.clone())
+    );
+
+    shell.click_menu_command("menu-file", AppCommand::SaveAs);
+    assert!(saved.is_file());
+    let persisted = persistence::load_file(&saved).unwrap();
+    assert_eq!(
+        persisted
+            .snapshot()
+            .drawing_sheet(sheet_id)
+            .unwrap()
+            .source(),
+        &DrawingSource::RigidAssembly { occurrence_ids }
+    );
+    shell.click_menu_command("menu-file", AppCommand::New);
+    shell.click_menu_command("menu-file", AppCommand::Open);
+    assert_eq!(shell.app().canonical_digest(), committed_digest);
+    wait_for_stable_references(&mut shell);
+    assert_eq!(
+        shell.app().headless_drawing_fingerprint(sheet_id),
+        Some(exact_fingerprint)
+    );
+    assert!(!shell.app().can_undo());
+}
+
+#[test]
+fn production_surface_excludes_capstone_actions_and_keeps_general_workflows() {
+    for catalog in [LocaleCatalog::english(), LocaleCatalog::slovak()] {
+        let mut shell = Shell::with_catalog(catalog);
+
+        let part_authoring = shell.catalog().text("part-authoring-title");
+        assert!(!shell.has_role_and_label(Role::Button, &part_authoring));
+
+        for key in ["feature-history-title", "body-title", "assembly-title"] {
+            let label = shell.catalog().text(key);
+            assert!(
+                shell.has_role_and_label(Role::Button, &label),
+                "missing general production workflow {key}: {label}"
+            );
+        }
+
+        open_assembly_editor(&mut shell);
+        for key in [
+            "assembly-preview-insert",
+            "assembly-preview-selection-drawing",
+        ] {
+            let label = shell.catalog().text(key);
+            assert!(
+                shell.has_role_and_label(Role::Button, &label),
+                "missing general Assembly/Drawing action {key}: {label}"
+            );
+        }
+        for key in [
+            "assembly-preview-capstone",
+            "assembly-preview-capstone-drawing",
+        ] {
+            let label = shell.catalog().text(key);
+            assert!(
+                !shell.has_role_and_label(Role::Button, &label),
+                "product-specific action remains on the production surface: {key}: {label}"
+            );
+        }
+
+        shell.click_command(AppCommand::Rectangle);
+        let face_workflow = shell.catalog().text("face-workflow-title");
+        assert!(
+            shell.has_role_and_label(Role::Button, &face_workflow),
+            "missing general selection-driven Part workflow: {face_workflow}"
+        );
+        assert!(shell.offers(AppCommand::PushPull));
+    }
+}
+
+#[test]
 fn assembly_editor_controls_are_localized_and_accessible() {
     for catalog in [LocaleCatalog::english(), LocaleCatalog::slovak()] {
         let mut shell = Shell::with_catalog(catalog);
         open_assembly_editor(&mut shell);
         for key in [
             "assembly-preview-insert",
+            "assembly-preview-selection-drawing",
             "assembly-mate-kind",
             "assembly-reference-a",
             "assembly-reference-b",
@@ -572,7 +825,10 @@ fn assembly_editor_controls_are_localized_and_accessible() {
             let label = shell.catalog().text(key);
             assert!(
                 shell.has_role_and_label(
-                    if key == "assembly-preview-insert" {
+                    if matches!(
+                        key,
+                        "assembly-preview-insert" | "assembly-preview-selection-drawing"
+                    ) {
                         Role::Button
                     } else {
                         Role::ComboBox

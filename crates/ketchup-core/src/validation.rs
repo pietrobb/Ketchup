@@ -1,13 +1,166 @@
-use crate::document::{DocumentId, Snapshot};
+use crate::document::{
+    ClassificationCategoryId, ClassificationDimensionId, DocumentId, OccurrenceId, Snapshot,
+};
 use crate::exact_product::BodyResultIdentity;
 use crate::graph::{DerivedIdentity, sha256_hex};
 use crate::prismatic::{
     Aabb, CanonicalJoint, ExactPrismaticBody, JointId, JointValidationOutcome, TolerancePolicy,
     validate_joint_geometry,
 };
+use std::collections::BTreeMap;
+use std::fmt;
 
 pub const VALIDATOR_PROTOCOL_V1: &str = "ketchup.validator-protocol.v1";
 pub const DIAGNOSTIC_SCHEMA_V1: &str = "ketchup.validation-diagnostic.v1";
+pub const VALIDATOR_ROLE_DIMENSION_V1: &str = "ketchup.validator-role.v1";
+pub const VALIDATOR_ROLE_INPUT_V1: &str = "ketchup.validator-role-input.v1";
+
+#[derive(Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+pub struct ValidatorRole(String);
+
+impl ValidatorRole {
+    pub fn new(value: impl Into<String>) -> Result<Self, ValidatorRoleError> {
+        let value = value.into();
+        if value.is_empty()
+            || value.len() > 128
+            || !value.bytes().all(|byte| {
+                byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_' | b':' | b'/')
+            })
+        {
+            return Err(ValidatorRoleError::InvalidRole(value));
+        }
+        Ok(Self(value))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ValidatorRoleAssignment {
+    pub occurrence_id: OccurrenceId,
+    pub category_id: ClassificationCategoryId,
+    pub role: ValidatorRole,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ValidatorRoleIndex {
+    dimension_id: ClassificationDimensionId,
+    assignments: BTreeMap<OccurrenceId, ValidatorRoleAssignment>,
+}
+
+impl ValidatorRoleIndex {
+    pub fn from_snapshot(snapshot: &Snapshot) -> Result<Self, ValidatorRoleError> {
+        let dimensions = snapshot
+            .classification_dimensions()
+            .filter(|dimension| dimension.name() == VALIDATOR_ROLE_DIMENSION_V1)
+            .collect::<Vec<_>>();
+        let [dimension] = dimensions.as_slice() else {
+            return Err(if dimensions.is_empty() {
+                ValidatorRoleError::DimensionMissing
+            } else {
+                ValidatorRoleError::DimensionAmbiguous
+            });
+        };
+        let roles = dimension
+            .categories()
+            .map(|category| ValidatorRole::new(category.name()).map(|role| (category.id(), role)))
+            .collect::<Result<BTreeMap<_, _>, _>>()?;
+        let assignments = snapshot
+            .occurrences()
+            .filter_map(|occurrence| {
+                snapshot
+                    .occurrence_classification(occurrence.id(), dimension.id())
+                    .map(|category_id| (occurrence.id(), category_id))
+            })
+            .map(|(occurrence_id, category_id)| {
+                let role = roles.get(&category_id).cloned().ok_or(
+                    ValidatorRoleError::CategoryMissing {
+                        dimension_id: dimension.id(),
+                        category_id,
+                    },
+                )?;
+                Ok((
+                    occurrence_id,
+                    ValidatorRoleAssignment {
+                        occurrence_id,
+                        category_id,
+                        role,
+                    },
+                ))
+            })
+            .collect::<Result<BTreeMap<_, _>, _>>()?;
+        Ok(Self {
+            dimension_id: dimension.id(),
+            assignments,
+        })
+    }
+
+    #[must_use]
+    pub const fn dimension_id(&self) -> ClassificationDimensionId {
+        self.dimension_id
+    }
+
+    #[must_use]
+    pub fn role(&self, occurrence_id: OccurrenceId) -> Option<&ValidatorRole> {
+        self.assignments
+            .get(&occurrence_id)
+            .map(|assignment| &assignment.role)
+    }
+
+    pub fn assignments(&self) -> impl Iterator<Item = &ValidatorRoleAssignment> {
+        self.assignments.values()
+    }
+
+    #[must_use]
+    pub fn input_bytes(&self) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        push_bytes(&mut bytes, VALIDATOR_ROLE_INPUT_V1.as_bytes());
+        bytes.extend_from_slice(&self.dimension_id.0.to_le_bytes());
+        bytes.extend_from_slice(&(self.assignments.len() as u64).to_le_bytes());
+        for assignment in self.assignments.values() {
+            bytes.extend_from_slice(&assignment.occurrence_id.0.to_le_bytes());
+            bytes.extend_from_slice(&assignment.category_id.0.to_le_bytes());
+            push_bytes(&mut bytes, assignment.role.as_str().as_bytes());
+        }
+        bytes
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ValidatorRoleError {
+    DimensionMissing,
+    DimensionAmbiguous,
+    InvalidRole(String),
+    CategoryMissing {
+        dimension_id: ClassificationDimensionId,
+        category_id: ClassificationCategoryId,
+    },
+}
+
+impl fmt::Display for ValidatorRoleError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::DimensionMissing => formatter.write_str("validator role dimension is missing"),
+            Self::DimensionAmbiguous => {
+                formatter.write_str("validator role dimension is ambiguous")
+            }
+            Self::InvalidRole(role) => write!(formatter, "validator role {role:?} is invalid"),
+            Self::CategoryMissing {
+                dimension_id,
+                category_id,
+            } => write!(
+                formatter,
+                "validator role category {} is missing from dimension {}",
+                category_id.0, dimension_id.0
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ValidatorRoleError {}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, PartialOrd, Ord)]
 pub enum ValidationClass {

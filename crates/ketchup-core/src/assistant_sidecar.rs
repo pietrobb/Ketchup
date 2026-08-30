@@ -163,6 +163,27 @@ pub enum AssistantWorkplaneSpec {
     },
 }
 
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum AssistantCadPartFeature {
+    Extrusion { distance_mm: f64 },
+}
+
+impl AssistantCadPartFeature {
+    fn validate(&self) -> Result<(), String> {
+        match self {
+            Self::Extrusion { distance_mm }
+                if distance_mm.is_finite()
+                    && *distance_mm > 0.0
+                    && *distance_mm <= MAX_ASSISTANT_ABS_MM =>
+            {
+                Ok(())
+            }
+            Self::Extrusion { .. } => Err("assistant CAD part feature is invalid".to_owned()),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AssistantSketchPointKind {
@@ -243,6 +264,16 @@ pub enum AssistantCadEditOperation {
         workplane: AssistantWorkplaneSpec,
         entities: Vec<AssistantSketchEntity>,
         constraints: Vec<AssistantSketchConstraint>,
+    },
+    CreatePart {
+        name: String,
+        workplane: AssistantWorkplaneSpec,
+        entities: Vec<AssistantSketchEntity>,
+        constraints: Vec<AssistantSketchConstraint>,
+        feature: AssistantCadPartFeature,
+        translation_mm: [f64; 3],
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rotation: Option<AssistantCadRotation>,
     },
     SetDimension {
         feature_id: u64,
@@ -442,6 +473,39 @@ impl AssistantSketchConstraint {
     }
 }
 
+fn validate_assistant_sketch_payload(
+    name: &str,
+    workplane: &AssistantWorkplaneSpec,
+    entities: &[AssistantSketchEntity],
+    constraints: &[AssistantSketchConstraint],
+) -> Result<(), String> {
+    if name.trim().is_empty()
+        || name.len() > MAX_ASSISTANT_NAME_BYTES
+        || name.chars().any(char::is_control)
+        || entities.is_empty()
+        || entities.len() > crate::sketch::MAX_SKETCH_ENTITIES
+        || constraints.len() > crate::sketch::MAX_SKETCH_CONSTRAINTS
+    {
+        return Err("assistant sketch creation is invalid".to_owned());
+    }
+    workplane.validate()?;
+    let mut entity_ids = BTreeSet::new();
+    for entity in entities {
+        entity.validate()?;
+        if !entity_ids.insert(entity.id()) {
+            return Err("assistant sketch entity IDs are invalid".to_owned());
+        }
+    }
+    let mut constraint_ids = BTreeSet::new();
+    for constraint in constraints {
+        constraint.validate()?;
+        if !constraint_ids.insert(constraint.id()) {
+            return Err("assistant sketch constraint IDs are invalid".to_owned());
+        }
+    }
+    Ok(())
+}
+
 impl AssistantCadEditProgram {
     pub fn validate(&self) -> Result<(), String> {
         if self.operations.is_empty() || self.operations.len() > MAX_ASSISTANT_CAD_EDIT_OPERATIONS {
@@ -452,6 +516,7 @@ impl AssistantCadEditProgram {
             let bounded_targets = match operation {
                 AssistantCadEditOperation::CreateSketch { .. }
                 | AssistantCadEditOperation::SetDimension { .. } => 0,
+                AssistantCadEditOperation::CreatePart { .. } => 1,
                 AssistantCadEditOperation::Delete { selector, .. }
                 | AssistantCadEditOperation::Transform { selector, .. }
                 | AssistantCadEditOperation::Copy { selector, .. }
@@ -468,32 +533,30 @@ impl AssistantCadEditProgram {
                     entities,
                     constraints,
                 } => {
-                    if *definition_id == 0
-                        || name.trim().is_empty()
-                        || name.len() > MAX_ASSISTANT_NAME_BYTES
-                        || name.chars().any(char::is_control)
-                        || entities.is_empty()
-                        || entities.len() > crate::sketch::MAX_SKETCH_ENTITIES
-                        || constraints.len() > crate::sketch::MAX_SKETCH_CONSTRAINTS
-                    {
+                    if *definition_id == 0 {
                         return Err("assistant sketch creation is invalid".to_owned());
                     }
-                    workplane.validate()?;
-                    let mut entity_ids = BTreeSet::new();
-                    for entity in entities {
-                        entity.validate()?;
-                        if !entity_ids.insert(entity.id()) {
-                            return Err("assistant sketch entity IDs are invalid".to_owned());
-                        }
-                    }
-                    let mut constraint_ids = BTreeSet::new();
-                    for constraint in constraints {
-                        constraint.validate()?;
-                        if !constraint_ids.insert(constraint.id()) {
-                            return Err("assistant sketch constraint IDs are invalid".to_owned());
-                        }
-                    }
+                    validate_assistant_sketch_payload(name, workplane, entities, constraints)?;
                     0
+                }
+                AssistantCadEditOperation::CreatePart {
+                    name,
+                    workplane,
+                    entities,
+                    constraints,
+                    feature,
+                    translation_mm,
+                    rotation,
+                } => {
+                    validate_assistant_sketch_payload(name, workplane, entities, constraints)?;
+                    feature.validate()?;
+                    if !assistant_cad_vector_is_bounded(*translation_mm) {
+                        return Err("assistant CAD part placement is invalid".to_owned());
+                    }
+                    if let Some(rotation) = rotation {
+                        rotation.validate()?;
+                    }
+                    1
                 }
                 AssistantCadEditOperation::SetDimension {
                     feature_id,

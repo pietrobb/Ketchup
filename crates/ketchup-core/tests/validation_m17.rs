@@ -1,7 +1,7 @@
 use ketchup_core::document::{
-    CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId, FeatureKind,
-    InstancePath, MESH_BODY_SCHEMA_V1, MeshAuthority, MeshBodySpec, NodeId, OccurrenceId,
-    Transform,
+    CanonicalCommand, ClassificationCategoryId, ClassificationDimensionId, CommandBatch,
+    DefinitionId, Dimension, DocumentStore, FeatureId, FeatureKind, InstancePath,
+    MESH_BODY_SCHEMA_V1, MeshAuthority, MeshBodySpec, NodeId, OccurrenceId, Transform,
 };
 use ketchup_core::exact_product::{
     ExactBodyPackage, ExactFaceRole, ExactFeatureChainRequest, ExactResultRegistry,
@@ -24,8 +24,9 @@ use ketchup_core::space::{
     ClearanceValidationError, ClearanceVolumeId, SpaceId, validate_clearance_occupancy,
 };
 use ketchup_core::validation::{
-    EvidenceClass, EvidenceCounts, HostNeutralValidator, ValidationExecution, ValidationInvocation,
-    ValidationState,
+    EvidenceClass, EvidenceCounts, HostNeutralValidator, VALIDATOR_ROLE_DIMENSION_V1,
+    ValidationExecution, ValidationInvocation, ValidationState, ValidatorRoleError,
+    ValidatorRoleIndex,
 };
 use std::sync::Arc;
 
@@ -42,6 +43,119 @@ const SPACE_LEFT: SpaceId = SpaceId(30);
 const SPACE_RIGHT: SpaceId = SpaceId(31);
 const CLEARANCE: ClearanceVolumeId = ClearanceVolumeId(32);
 const SPACE_RULE: NodeId = NodeId(33);
+const ROLE_DIMENSION: ClassificationDimensionId = ClassificationDimensionId(900);
+const ROLE_CATEGORY_SUBJECT: ClassificationCategoryId = ClassificationCategoryId(901);
+const ROLE_CATEGORY_SUPPORT: ClassificationCategoryId = ClassificationCategoryId(902);
+
+#[test]
+fn validator_roles_are_explicit_name_invariant_and_deterministic() {
+    let mut document = exact_only_document();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::UpsertClassificationDimension {
+                id: ROLE_DIMENSION,
+                name: VALIDATOR_ROLE_DIMENSION_V1.to_owned(),
+                categories: vec![
+                    (ROLE_CATEGORY_SUBJECT, "structure.loaded-subject".to_owned()),
+                    (ROLE_CATEGORY_SUPPORT, "structure.support".to_owned()),
+                ],
+            },
+            CanonicalCommand::SetOccurrenceClassification {
+                occurrence_id: EXACT_LEFT,
+                dimension_id: ROLE_DIMENSION,
+                category_id: Some(ROLE_CATEGORY_SUBJECT),
+            },
+            CanonicalCommand::SetOccurrenceClassification {
+                occurrence_id: EXACT_RIGHT,
+                dimension_id: ROLE_DIMENSION,
+                category_id: Some(ROLE_CATEGORY_SUPPORT),
+            },
+        ]))
+        .unwrap();
+
+    let before = ValidatorRoleIndex::from_snapshot(&document.current()).unwrap();
+    assert_eq!(before.dimension_id(), ROLE_DIMENSION);
+    assert_eq!(
+        before.role(EXACT_LEFT).unwrap().as_str(),
+        "structure.loaded-subject"
+    );
+    assert_eq!(
+        before.role(EXACT_RIGHT).unwrap().as_str(),
+        "structure.support"
+    );
+    assert_eq!(before.assignments().count(), 2);
+    let input_before_rename = before.input_bytes();
+
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::RenameEntity {
+                id: EXACT_LEFT,
+                name: "support-looking shelf room passage".to_owned(),
+            },
+            CanonicalCommand::RenameEntity {
+                id: EXACT_RIGHT,
+                name: "unrelated opaque name".to_owned(),
+            },
+        ]))
+        .unwrap();
+    let after = ValidatorRoleIndex::from_snapshot(&document.current()).unwrap();
+    assert_eq!(after, before);
+    assert_eq!(after.input_bytes(), input_before_rename);
+
+    let reopened = persistence::load(&persistence::save(&document.current())).unwrap();
+    let reopened_index = ValidatorRoleIndex::from_snapshot(&reopened.snapshot()).unwrap();
+    assert_eq!(reopened_index, after);
+    assert_eq!(reopened_index.input_bytes(), input_before_rename);
+}
+
+#[test]
+fn validator_role_schema_fails_closed_when_missing_ambiguous_or_invalid() {
+    let missing = exact_only_document();
+    assert_eq!(
+        ValidatorRoleIndex::from_snapshot(&missing.current()),
+        Err(ValidatorRoleError::DimensionMissing)
+    );
+
+    let mut invalid = exact_only_document();
+    invalid
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::UpsertClassificationDimension {
+                id: ROLE_DIMENSION,
+                name: VALIDATOR_ROLE_DIMENSION_V1.to_owned(),
+                categories: vec![(ROLE_CATEGORY_SUBJECT, "invalid role with spaces".to_owned())],
+            },
+        ]))
+        .unwrap();
+    assert_eq!(
+        ValidatorRoleIndex::from_snapshot(&invalid.current()),
+        Err(ValidatorRoleError::InvalidRole(
+            "invalid role with spaces".to_owned()
+        ))
+    );
+
+    let mut ambiguous = exact_only_document();
+    ambiguous
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::UpsertClassificationDimension {
+                id: ROLE_DIMENSION,
+                name: VALIDATOR_ROLE_DIMENSION_V1.to_owned(),
+                categories: vec![(ROLE_CATEGORY_SUBJECT, "structure.subject".to_owned())],
+            },
+            CanonicalCommand::UpsertClassificationDimension {
+                id: ClassificationDimensionId(910),
+                name: VALIDATOR_ROLE_DIMENSION_V1.to_owned(),
+                categories: vec![(
+                    ClassificationCategoryId(911),
+                    "structure.support".to_owned(),
+                )],
+            },
+        ]))
+        .unwrap();
+    assert_eq!(
+        ValidatorRoleIndex::from_snapshot(&ambiguous.current()),
+        Err(ValidatorRoleError::DimensionAmbiguous)
+    );
+}
 
 #[test]
 fn general_collision_and_clearance_bind_current_exact_and_mesh_occurrences() {

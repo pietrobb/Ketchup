@@ -2,8 +2,8 @@ use ketchup_core::assembly::{
     AssemblyMate, AssemblyMateEndpoint, AssemblyMateId, AssemblyMateKind,
 };
 use ketchup_core::document::{
-    BodyId, CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentId, DocumentStore,
-    FeatureId, FeatureKind, OccurrenceId, Transform,
+    BodyId, CanonicalCommand, CollectionId, CommandBatch, DefinitionId, Dimension, DocumentId,
+    DocumentStore, FeatureId, FeatureKind, GroupId, OccurrenceId, Transform,
 };
 use ketchup_core::drawing::{
     DrawingSheet, DrawingSheetId, DrawingSource, OrthographicViewKind, project_orthographic_drawing,
@@ -33,6 +33,8 @@ const TARGET_OCCURRENCE: OccurrenceId = OccurrenceId(200);
 const MATE: AssemblyMateId = AssemblyMateId(300);
 const AXIAL_MATE: AssemblyMateId = AssemblyMateId(301);
 const SHEET: DrawingSheetId = DrawingSheetId(400);
+const COLLECTION: CollectionId = CollectionId(500);
+const GROUP: GroupId = GroupId(600);
 
 #[derive(Debug, Eq, PartialEq)]
 struct Stamp {
@@ -249,6 +251,14 @@ fn seed(reverse_occurrences: bool) -> DocumentStore {
                 )
                 .unwrap(),
             ),
+            CanonicalCommand::CreateCollection {
+                id: COLLECTION,
+                name: "Replacement selection".into(),
+            },
+            CanonicalCommand::SetCollectionOccurrences {
+                id: COLLECTION,
+                occurrence_ids: vec![SELECTED, SIBLING, TARGET_OCCURRENCE],
+            },
         ]))
         .unwrap();
     document
@@ -321,6 +331,10 @@ fn replacement_impact_is_deterministic_complete_and_non_mutating() {
     assert_eq!(
         first_impact.unchanged_target_occurrences,
         second_impact.unchanged_target_occurrences
+    );
+    assert_eq!(
+        first_impact.collection_dependencies,
+        second_impact.collection_dependencies
     );
     assert_eq!(first_impact.drawing_views, second_impact.drawing_views);
     assert_eq!(first_impact.exports, second_impact.exports);
@@ -398,6 +412,19 @@ fn replacement_impact_is_deterministic_complete_and_non_mutating() {
             .map(|reference| reference.mate_id)
             .collect::<Vec<_>>(),
         vec![MATE, AXIAL_MATE]
+    );
+    assert_eq!(first_impact.collection_dependencies.len(), 1);
+    assert_eq!(
+        first_impact.collection_dependencies[0].collection_id,
+        COLLECTION
+    );
+    assert_eq!(
+        first_impact.collection_dependencies[0].occurrence_ids_before,
+        vec![SELECTED, SIBLING, TARGET_OCCURRENCE]
+    );
+    assert_eq!(
+        first_impact.collection_dependencies[0].occurrence_ids_after,
+        vec![SELECTED, SIBLING, TARGET_OCCURRENCE]
     );
     assert_eq!(
         first_impact
@@ -738,6 +765,93 @@ fn replacement_commit_rebinds_dependencies_and_rejects_tampered_correspondence()
     );
     assert_eq!(stamp(&document), before);
     assert_eq!(results.contents_stamp(), results_before);
+}
+
+#[test]
+fn replacement_preserves_parented_world_placement_collections_and_drawings_atomically() {
+    let mut document = seed(false);
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateGroup {
+                id: GROUP,
+                name: "Positioned assembly".into(),
+                transform: Transform::from_translation(7.0, 11.0, 13.0).unwrap(),
+                parent: None,
+            },
+            CanonicalCommand::SetOccurrenceTransform {
+                id: SELECTED,
+                transform: Transform::from_translation(-2.0, -5.0, -6.0).unwrap(),
+            },
+            CanonicalCommand::SetOccurrenceParent {
+                id: SELECTED,
+                parent: Some(GROUP),
+            },
+        ]))
+        .unwrap();
+    let source = document.current();
+    let selected_before = source.occurrence(SELECTED).unwrap().clone();
+    let world_before = source.world_transform_for_occurrence(SELECTED).unwrap();
+    let collection_before = source.collection(COLLECTION).unwrap().clone();
+    let drawing_before = source.drawing_sheet(SHEET).unwrap().clone();
+    let sibling_before = source.occurrence(SIBLING).unwrap().clone();
+    let target_occurrence_before = source.occurrence(TARGET_OCCURRENCE).unwrap().clone();
+    let source_mates =
+        [MATE, AXIAL_MATE].map(|mate_id| source.assembly_mate(mate_id).unwrap().clone());
+    let before = stamp(&document);
+    let mut results = registry(&source);
+
+    let impact = project_component_replacement_impact(
+        &document,
+        &results,
+        ComponentReplacementImpactRequest::new(&source, SELECTED, TARGET),
+    )
+    .unwrap();
+
+    assert_eq!(impact.selected_transform, world_before);
+    assert_eq!(impact.collection_dependencies.len(), 1);
+    assert_eq!(
+        impact.collection_dependencies[0].occurrence_ids_before,
+        impact.collection_dependencies[0].occurrence_ids_after
+    );
+    assert!(matches!(
+        impact.proposal.as_ref().unwrap().batch().commands(),
+        [
+            CanonicalCommand::RepointOccurrence { .. },
+            CanonicalCommand::RebindAssemblyMate(_),
+            CanonicalCommand::RebindAssemblyMate(_)
+        ]
+    ));
+
+    let receipt = commit_component_replacement(&mut document, &mut results, &impact).unwrap();
+    let committed = document.current();
+    let selected_after = committed.occurrence(SELECTED).unwrap();
+    assert_eq!(receipt.rebound_mate_ids, vec![MATE, AXIAL_MATE]);
+    assert_eq!(selected_after.id(), selected_before.id());
+    assert_eq!(selected_after.definition_id(), TARGET);
+    assert_eq!(selected_after.transform(), selected_before.transform());
+    assert_eq!(selected_after.parent(), selected_before.parent());
+    assert_eq!(
+        committed.world_transform_for_occurrence(SELECTED),
+        Some(world_before)
+    );
+    assert_eq!(committed.collection(COLLECTION), Some(&collection_before));
+    assert_eq!(committed.drawing_sheet(SHEET), Some(&drawing_before));
+    assert_eq!(committed.occurrence(SIBLING), Some(&sibling_before));
+    assert_eq!(
+        committed.occurrence(TARGET_OCCURRENCE),
+        Some(&target_occurrence_before)
+    );
+    for (mate_id, source_mate) in [MATE, AXIAL_MATE].into_iter().zip(&source_mates) {
+        let rebound = committed.assembly_mate(mate_id).unwrap();
+        assert_eq!(rebound.endpoint_b(), source_mate.endpoint_b());
+        assert_eq!(rebound.endpoint_a().occurrence_id(), SELECTED);
+        assert_eq!(rebound.endpoint_a().reference().definition_id, TARGET);
+    }
+    assert_eq!(document.revision_count(), before.revisions + 1);
+    assert_eq!(document.visible_undo_steps(), before.undo + 1);
+    assert_eq!(document.visible_redo_steps(), 0);
+    assert_eq!(receipt.drawings.len(), 1);
+    assert!(receipt.drawings[0].is_current(&committed));
 }
 
 #[test]

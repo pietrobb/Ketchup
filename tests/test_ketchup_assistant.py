@@ -362,6 +362,24 @@ def test_public_sidecar_parses_strict_bounded_cad_edit_program():
                 ],
             },
             {
+                "operation": "create_part",
+                "name": "Editable prism",
+                "workplane": {"type": "principal", "plane": "xy"},
+                "entities": [
+                    {"type": "circle", "id": 1, "center_mm": [0, 0], "radius_mm": 12}
+                ],
+                "constraints": [
+                    {"type": "radius", "id": 1, "entity_id": 1, "value_mm": 12}
+                ],
+                "feature": {"type": "extrusion", "distance_mm": 30},
+                "translation_mm": [5, 6, 7],
+                "rotation": {
+                    "pivot_mm": [5, 6, 7],
+                    "axis": [0, 1, 0],
+                    "angle_degrees": 45,
+                },
+            },
+            {
                 "operation": "set_dimension",
                 "feature_id": 12,
                 "constraint_id": 2,
@@ -449,6 +467,21 @@ def test_public_sidecar_parses_strict_bounded_cad_edit_program():
                     "operation": "copy",
                     "selector": {"type": "current_selection", "occurrence_ids": [7]},
                     "translation_mm": [1, 0, 0],
+                }
+            ]
+        },
+        {
+            "operations": [
+                {
+                    "operation": "create_part",
+                    "name": "Rejected",
+                    "workplane": {"type": "principal", "plane": "xy"},
+                    "entities": [
+                        {"type": "circle", "id": 1, "center_mm": [0, 0], "radius_mm": 1}
+                    ],
+                    "constraints": [],
+                    "feature": {"type": "extrusion", "distance_mm": 0},
+                    "translation_mm": [0, 0, 0],
                 }
             ]
         },

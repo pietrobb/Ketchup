@@ -2,8 +2,9 @@ use ketchup_core::assembly::{
     AssemblyMate, AssemblyMateEndpoint, AssemblyMateId, AssemblyMateKind,
 };
 use ketchup_core::document::{
-    BodyId, CanonicalCommand, CanonicalError, CommandBatch, DefinitionId, Dimension, DocumentStore,
-    FeatureId, FeatureKind, OccurrenceId, ProposalPrincipal, StableFaceRole, Transform,
+    BodyId, CanonicalCommand, CanonicalError, CollectionId, CommandBatch, DefinitionId, Dimension,
+    DocumentStore, FeatureId, FeatureKind, GroupId, OccurrenceId, ProposalPrincipal,
+    StableFaceRole, Transform,
 };
 use ketchup_core::drawing::{
     DrawingError, DrawingSheet, DrawingSheetId, DrawingSource, OrthographicViewKind,
@@ -37,6 +38,8 @@ const OTHER: OccurrenceId = OccurrenceId(30);
 const MATE: AssemblyMateId = AssemblyMateId(40);
 const AXIAL_MATE: AssemblyMateId = AssemblyMateId(41);
 const SHEET: DrawingSheetId = DrawingSheetId(50);
+const COLLECTION: CollectionId = CollectionId(60);
+const GROUP: GroupId = GroupId(70);
 
 #[derive(Debug, Eq, PartialEq)]
 struct Stamp {
@@ -221,6 +224,14 @@ fn seed(reverse_occurrences: bool) -> DocumentStore {
                 DrawingSheet::new(SHEET, "Reused part", DrawingSource::Definition(DEFINITION))
                     .unwrap(),
             ),
+            CanonicalCommand::CreateCollection {
+                id: COLLECTION,
+                name: "Assembly selection".into(),
+            },
+            CanonicalCommand::SetCollectionOccurrences {
+                id: COLLECTION,
+                occurrence_ids: vec![FIRST, SECOND, OTHER],
+            },
         ]))
         .unwrap();
     document
@@ -306,6 +317,10 @@ fn fork_impact_is_deterministic_complete_and_non_mutating() {
     assert_eq!(
         first_impact.unchanged_sibling_occurrences,
         second_impact.unchanged_sibling_occurrences
+    );
+    assert_eq!(
+        first_impact.collection_dependencies,
+        second_impact.collection_dependencies
     );
     assert_eq!(first_impact.drawing_views, second_impact.drawing_views);
     assert_eq!(first_impact.exports, second_impact.exports);
@@ -421,6 +436,19 @@ fn fork_impact_is_deterministic_complete_and_non_mutating() {
     assert_eq!(first_impact.mate_references.len(), 1);
     assert_eq!(first_impact.mate_references[0].mate_id, MATE);
     assert_eq!(first_impact.mate_references[0].occurrence_id, FIRST);
+    assert_eq!(first_impact.collection_dependencies.len(), 1);
+    assert_eq!(
+        first_impact.collection_dependencies[0].collection_id,
+        COLLECTION
+    );
+    assert_eq!(
+        first_impact.collection_dependencies[0].occurrence_ids_before,
+        vec![FIRST, SECOND, OTHER]
+    );
+    assert_eq!(
+        first_impact.collection_dependencies[0].occurrence_ids_after,
+        vec![FIRST, SECOND, OTHER]
+    );
     assert_eq!(
         first_impact
             .drawing_views
@@ -646,6 +674,117 @@ fn independent_atomic_fork_verifier_covers_parity_cancel_outputs_and_round_trip(
 }
 
 #[test]
+fn independent_fork_verifier_rejects_stale_and_tampered_dependency_reviews() {
+    let mut document = seed(false);
+    let source = document.current();
+    let mut exact_results = registry(&source, "source-verifier");
+    let impact = project_occurrence_fork_impact(
+        &document,
+        &exact_results,
+        edit_request(&source, FIRST),
+        ProposalPrincipal::ManualClient,
+    )
+    .unwrap();
+    let candidate = document.preview_batch(impact.proposal.batch()).unwrap();
+    let evaluated = Arc::new(ExactBodyPackage::from(exact_package_for(
+        &candidate,
+        impact.fork_definition_id,
+        "fork-verifier",
+    )));
+    let before = stamp(&document);
+    let results_before = exact_results.contents_stamp();
+    let saved_before = persistence::save(&source);
+
+    let mut tampered_collection = impact.clone();
+    tampered_collection.collection_dependencies.clear();
+    let mut evaluations = 0;
+    assert!(matches!(
+        commit_occurrence_fork_change(
+            &mut document,
+            &mut exact_results,
+            &tampered_collection,
+            |_| -> Result<Arc<ExactBodyPackage>, String> {
+                evaluations += 1;
+                Ok(Arc::clone(&evaluated))
+            },
+        ),
+        Err(OccurrenceForkPropagationError::InvalidImpact(reason))
+            if reason.contains("collection dependency evidence")
+    ));
+    assert_eq!(evaluations, 0);
+    assert_eq!(stamp(&document), before);
+    assert_eq!(exact_results.contents_stamp(), results_before);
+    assert_eq!(persistence::save(&document.current()), saved_before);
+
+    let mut tampered_drawings = impact.clone();
+    tampered_drawings.drawing_views.clear();
+    assert!(matches!(
+        commit_occurrence_fork_change(
+            &mut document,
+            &mut exact_results,
+            &tampered_drawings,
+            |_| -> Result<Arc<ExactBodyPackage>, String> { unreachable!() },
+        ),
+        Err(OccurrenceForkPropagationError::InvalidImpact(reason))
+            if reason.contains("drawing dependency evidence")
+    ));
+    assert_eq!(stamp(&document), before);
+    assert_eq!(exact_results.contents_stamp(), results_before);
+
+    let mut tampered_digest = impact.clone();
+    tampered_digest.candidate_digest.push('0');
+    assert!(matches!(
+        commit_occurrence_fork_change(
+            &mut document,
+            &mut exact_results,
+            &tampered_digest,
+            |_| -> Result<Arc<ExactBodyPackage>, String> { unreachable!() },
+        ),
+        Err(OccurrenceForkPropagationError::InvalidImpact(reason))
+            if reason.contains("candidate digest")
+    ));
+    assert_eq!(stamp(&document), before);
+    assert_eq!(exact_results.contents_stamp(), results_before);
+
+    let mut stale_document = seed(false);
+    let stale_source = stale_document.current();
+    let mut stale_results = registry(&stale_source, "stale-source");
+    let stale_impact = project_occurrence_fork_impact(
+        &stale_document,
+        &stale_results,
+        edit_request(&stale_source, FIRST),
+        ProposalPrincipal::LocalAssistant,
+    )
+    .unwrap();
+    stale_document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetOccurrenceVisibility {
+                id: OTHER,
+                visible: false,
+            },
+        ]))
+        .unwrap();
+    let stale_before = stamp(&stale_document);
+    let stale_results_before = stale_results.contents_stamp();
+    let stale_saved_before = persistence::save(&stale_document.current());
+    assert_eq!(
+        commit_occurrence_fork_change(
+            &mut stale_document,
+            &mut stale_results,
+            &stale_impact,
+            |_| -> Result<Arc<ExactBodyPackage>, String> { unreachable!() },
+        ),
+        Err(OccurrenceForkPropagationError::Stale)
+    );
+    assert_eq!(stamp(&stale_document), stale_before);
+    assert_eq!(stale_results.contents_stamp(), stale_results_before);
+    assert_eq!(
+        persistence::save(&stale_document.current()),
+        stale_saved_before
+    );
+}
+
+#[test]
 fn reviewed_occurrence_fork_commits_once_and_refreshes_only_the_selected_branch() {
     let mut document = seed(false);
     let source = document.current();
@@ -753,6 +892,24 @@ fn reviewed_occurrence_fork_commits_once_and_refreshes_only_the_selected_branch(
 #[test]
 fn occurrence_fork_refreshes_only_selected_planar_axial_dependencies_and_outputs() {
     let mut document = seed(false);
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateGroup {
+                id: GROUP,
+                name: "Positioned assembly".into(),
+                transform: Transform::from_translation(7.0, 11.0, 13.0).unwrap(),
+                parent: None,
+            },
+            CanonicalCommand::SetOccurrenceTransform {
+                id: FIRST,
+                transform: Transform::from_translation(-7.0, -11.0, -13.0).unwrap(),
+            },
+            CanonicalCommand::SetOccurrenceParent {
+                id: FIRST,
+                parent: Some(GROUP),
+            },
+        ]))
+        .unwrap();
     let axial_evidence = exact_package(&document.current(), "axial-evidence");
     document
         .apply_batch(&CommandBatch::new(vec![
@@ -777,6 +934,10 @@ fn occurrence_fork_refreshes_only_selected_planar_axial_dependencies_and_outputs
         ]))
         .unwrap();
     let source = document.current();
+    let source_selected = source.occurrence(FIRST).unwrap().clone();
+    let source_world_transform = source.world_transform_for_occurrence(FIRST).unwrap();
+    let source_collection = source.collection(COLLECTION).unwrap().clone();
+    let source_drawing_source = source.drawing_sheet(SHEET).unwrap().source().clone();
     let source_sibling = source.occurrence(SECOND).unwrap().clone();
     let source_mates =
         [MATE, AXIAL_MATE].map(|mate_id| source.assembly_mate(mate_id).unwrap().clone());
@@ -847,6 +1008,20 @@ fn occurrence_fork_refreshes_only_selected_planar_axial_dependencies_and_outputs
     assert_eq!(document.revision_count(), before.revisions + 1);
     assert_eq!(document.visible_undo_steps(), before.undo + 1);
     let committed = document.current();
+    let committed_selected = committed.occurrence(FIRST).unwrap();
+    assert_eq!(committed_selected.id(), source_selected.id());
+    assert_eq!(committed_selected.name(), source_selected.name());
+    assert_eq!(committed_selected.transform(), source_selected.transform());
+    assert_eq!(committed_selected.parent(), source_selected.parent());
+    assert_eq!(
+        committed.world_transform_for_occurrence(FIRST),
+        Some(source_world_transform)
+    );
+    assert_eq!(committed.collection(COLLECTION), Some(&source_collection));
+    assert_eq!(
+        committed.drawing_sheet(SHEET).unwrap().source(),
+        &source_drawing_source
+    );
     assert_eq!(committed.occurrence(SECOND), Some(&source_sibling));
     for (mate_id, source_mate) in [MATE, AXIAL_MATE].into_iter().zip(&source_mates) {
         let committed_mate = committed.assembly_mate(mate_id).unwrap();
@@ -893,6 +1068,18 @@ fn occurrence_fork_refreshes_only_selected_planar_axial_dependencies_and_outputs
     let reopened_snapshot = reopened.snapshot();
     let reopened_results = ExactResultRegistry::carried_forward(&reopened_snapshot, &exact_results);
     assert_eq!(reopened_snapshot.canonical_digest(), committed_digest);
+    assert_eq!(
+        reopened_snapshot.world_transform_for_occurrence(FIRST),
+        Some(source_world_transform)
+    );
+    assert_eq!(
+        reopened_snapshot.collection(COLLECTION),
+        Some(&source_collection)
+    );
+    assert_eq!(
+        reopened_snapshot.drawing_sheet(SHEET).unwrap().source(),
+        &source_drawing_source
+    );
     assert_eq!(
         [MATE, AXIAL_MATE].map(|mate_id| reopened_snapshot.assembly_mate(mate_id).unwrap().clone()),
         committed_mates
@@ -1677,6 +1864,10 @@ fn hidden_single_use_lost_and_ambiguous_inputs_are_rejected_observationally() {
         .apply_batch(&CommandBatch::new(vec![
             CanonicalCommand::DeleteAssemblyMate { id: MATE },
             CanonicalCommand::DeleteDrawingSheet { id: SHEET },
+            CanonicalCommand::SetCollectionOccurrences {
+                id: COLLECTION,
+                occurrence_ids: vec![FIRST, OTHER],
+            },
             CanonicalCommand::DeleteOccurrence { id: SECOND },
         ]))
         .unwrap();

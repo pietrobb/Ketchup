@@ -25,9 +25,9 @@ use crate::import::{
 };
 use crate::prismatic::{CanonicalJoint, JointId, PrismaticError};
 use crate::sketch::{
-    PadPocketOperation, PadSpec, PocketSpec, PrincipalPlane, SketchConstraintId,
-    SketchConstraintKind, SketchEntity, SketchError, SketchPointKind, SketchSpec, WorkplaneFrame,
-    WorkplaneSpec, WorkplaneSupport, WorkplaneSupportHealth,
+    FeatureExtent, FeatureExtentEnd, PadPocketOperation, PadSpec, PocketSpec, PrincipalPlane,
+    SketchConstraintId, SketchConstraintKind, SketchEntity, SketchError, SketchPointKind,
+    SketchSpec, WorkplaneFrame, WorkplaneSpec, WorkplaneSupport, WorkplaneSupportHealth,
 };
 use crate::space::{
     CanonicalClearanceVolume, CanonicalSpace, ClearanceCoordinateFrame, ClearanceOwner,
@@ -242,39 +242,110 @@ impl StableEdgeRole {
 
 pub const BOTTLE_SHELL_OPENING_FACE_ROLE: &str = "revolve.mouth";
 pub const BOTTLE_SHOULDER_EDGE_ROLE: &str = "shell.edge.shoulder";
+pub const MAX_PARAMETER_PATH_BYTES: usize = 256;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, PartialOrd, Ord)]
-pub enum FeatureParameterSlot {
-    Height,
-    BodyRadius,
-    BodyHeight,
-    ShoulderRise,
-    Thickness,
-    Amount,
-    ProfileWidth,
-    ProfileHeight,
-}
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct ParameterPath(String);
 
-impl FeatureParameterSlot {
-    #[must_use]
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::Height => "height",
-            Self::BodyRadius => "body_radius",
-            Self::BodyHeight => "body_height",
-            Self::ShoulderRise => "shoulder_rise",
-            Self::Thickness => "thickness",
-            Self::Amount => "amount",
-            Self::ProfileWidth => "profile_width",
-            Self::ProfileHeight => "profile_height",
+impl ParameterPath {
+    pub fn new(path: impl Into<String>) -> Result<Self, ParameterPathError> {
+        let path = path.into();
+        if path.is_empty() {
+            return Err(ParameterPathError::Empty);
         }
+        if path.len() > MAX_PARAMETER_PATH_BYTES {
+            return Err(ParameterPathError::TooLong);
+        }
+        if path.split('.').any(|segment| {
+            segment.is_empty()
+                || !segment
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+        }) {
+            return Err(ParameterPathError::InvalidSegment);
+        }
+        Ok(Self(path))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ParameterPathError {
+    Empty,
+    TooLong,
+    InvalidSegment,
+}
+
+impl fmt::Display for ParameterPathError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Empty => "parameter path is empty",
+            Self::TooLong => "parameter path exceeds the resource limit",
+            Self::InvalidSegment => "parameter path contains an invalid segment",
+        })
+    }
+}
+
+impl std::error::Error for ParameterPathError {}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum ParameterValueType {
+    Length,
+    Angle,
+    Scalar,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ParameterDescriptor {
+    path: ParameterPath,
+    value_type: ParameterValueType,
+}
+
+impl ParameterDescriptor {
+    pub fn new(
+        path: impl Into<String>,
+        value_type: ParameterValueType,
+    ) -> Result<Self, ParameterPathError> {
+        Ok(Self {
+            path: ParameterPath::new(path)?,
+            value_type,
+        })
+    }
+
+    #[must_use]
+    pub fn path(&self) -> &ParameterPath {
+        &self.path
+    }
+
+    #[must_use]
+    pub const fn value_type(&self) -> ParameterValueType {
+        self.value_type
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 pub struct FeatureParameterTarget {
     pub feature_id: FeatureId,
-    pub slot: FeatureParameterSlot,
+    pub path: ParameterPath,
+    pub value_type: ParameterValueType,
+}
+
+impl FeatureParameterTarget {
+    pub fn new(
+        feature_id: FeatureId,
+        path: impl Into<String>,
+        value_type: ParameterValueType,
+    ) -> Result<Self, ParameterPathError> {
+        Ok(Self {
+            feature_id,
+            path: ParameterPath::new(path)?,
+            value_type,
+        })
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -310,7 +381,7 @@ pub enum FeatureParameterFreshness {
     Stale(FeatureParameterStaleReason),
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FeatureParameterFreshnessAudit {
     pub target: FeatureParameterTarget,
     pub freshness: FeatureParameterFreshness,
@@ -496,6 +567,11 @@ pub enum FeatureKind {
         kind: EdgeFinishKind,
         amount: Dimension,
     },
+    TopologyFaceOffset {
+        target: FeatureId,
+        face: TopologicalElementRef,
+        distance: Dimension,
+    },
     ThroughCut {
         target: FeatureId,
         profile: FeatureId,
@@ -527,6 +603,195 @@ pub enum FeatureKind {
 
 impl FeatureKind {
     #[must_use]
+    pub fn parameter_descriptors(&self) -> Vec<ParameterDescriptor> {
+        let mut descriptors = Vec::new();
+        match self {
+            Self::Workplane(WorkplaneSpec {
+                support: WorkplaneSupport::Offset { .. },
+                ..
+            }) => push_parameter_descriptor(
+                &mut descriptors,
+                "support.offset.distance",
+                ParameterValueType::Length,
+            ),
+            Self::Sketch(spec) => {
+                for entity in &spec.entities {
+                    let id = entity.id().0;
+                    match entity {
+                        SketchEntity::Line { .. } => {
+                            for point in ["start", "end"] {
+                                for axis in ["x", "y"] {
+                                    push_parameter_descriptor(
+                                        &mut descriptors,
+                                        format!("entities.{id}.{point}.{axis}"),
+                                        ParameterValueType::Length,
+                                    );
+                                }
+                            }
+                        }
+                        SketchEntity::Arc { .. } => {
+                            for point in ["start", "end", "center"] {
+                                for axis in ["x", "y"] {
+                                    push_parameter_descriptor(
+                                        &mut descriptors,
+                                        format!("entities.{id}.{point}.{axis}"),
+                                        ParameterValueType::Length,
+                                    );
+                                }
+                            }
+                        }
+                        SketchEntity::Circle { .. } => {
+                            for axis in ["x", "y"] {
+                                push_parameter_descriptor(
+                                    &mut descriptors,
+                                    format!("entities.{id}.center.{axis}"),
+                                    ParameterValueType::Length,
+                                );
+                            }
+                            push_parameter_descriptor(
+                                &mut descriptors,
+                                format!("entities.{id}.radius"),
+                                ParameterValueType::Length,
+                            );
+                        }
+                    }
+                }
+                for constraint in &spec.constraints {
+                    let id = constraint.id.0;
+                    match constraint.kind {
+                        SketchConstraintKind::Distance { .. }
+                        | SketchConstraintKind::Radius { .. } => push_parameter_descriptor(
+                            &mut descriptors,
+                            format!("constraints.{id}.value"),
+                            ParameterValueType::Length,
+                        ),
+                        SketchConstraintKind::FixedPoint { .. } => {
+                            for axis in ["x", "y"] {
+                                push_parameter_descriptor(
+                                    &mut descriptors,
+                                    format!("constraints.{id}.position.{axis}"),
+                                    ParameterValueType::Length,
+                                );
+                            }
+                        }
+                        SketchConstraintKind::Horizontal { .. }
+                        | SketchConstraintKind::Vertical { .. }
+                        | SketchConstraintKind::Coincident { .. } => {}
+                    }
+                }
+            }
+            Self::Profile { points_mm } => {
+                if is_axis_aligned_rectangle(points_mm) {
+                    push_parameter_descriptor(
+                        &mut descriptors,
+                        "bounds.width",
+                        ParameterValueType::Length,
+                    );
+                    push_parameter_descriptor(
+                        &mut descriptors,
+                        "bounds.height",
+                        ParameterValueType::Length,
+                    );
+                }
+                for (index, _) in points_mm.iter().enumerate() {
+                    for axis in ["x", "y"] {
+                        push_parameter_descriptor(
+                            &mut descriptors,
+                            format!("points.{index}.{axis}"),
+                            ParameterValueType::Length,
+                        );
+                    }
+                }
+            }
+            Self::SegmentProfile { segments, .. } => {
+                for (index, segment) in segments.iter().enumerate() {
+                    for point in ["start", "end"] {
+                        for axis in ["x", "y"] {
+                            push_parameter_descriptor(
+                                &mut descriptors,
+                                format!("segments.{index}.{point}.{axis}"),
+                                ParameterValueType::Length,
+                            );
+                        }
+                    }
+                    if matches!(segment, ProfileSegment::CircularArc { .. }) {
+                        for axis in ["x", "y"] {
+                            push_parameter_descriptor(
+                                &mut descriptors,
+                                format!("segments.{index}.center.{axis}"),
+                                ParameterValueType::Length,
+                            );
+                        }
+                    }
+                }
+            }
+            Self::SplineProfile { control_points_mm } => {
+                for (index, _) in control_points_mm.iter().enumerate() {
+                    for axis in ["x", "y"] {
+                        push_parameter_descriptor(
+                            &mut descriptors,
+                            format!("control_points.{index}.{axis}"),
+                            ParameterValueType::Length,
+                        );
+                    }
+                }
+            }
+            Self::Extrusion { .. } => {
+                push_parameter_descriptor(&mut descriptors, "height", ParameterValueType::Length)
+            }
+            Self::Pad(spec) => describe_feature_extent(&mut descriptors, "extent", &spec.extent),
+            Self::SketchPocket(spec) => {
+                describe_feature_extent(&mut descriptors, "extent", &spec.extent);
+            }
+            Self::BottleProfileControl { .. } => {
+                for path in ["body_radius", "body_height", "shoulder_rise"] {
+                    push_parameter_descriptor(&mut descriptors, path, ParameterValueType::Length);
+                }
+            }
+            Self::Revolve { .. } => {
+                for point in ["axis_start", "axis_end"] {
+                    for axis in ["x", "y"] {
+                        push_parameter_descriptor(
+                            &mut descriptors,
+                            format!("{point}.{axis}"),
+                            ParameterValueType::Length,
+                        );
+                    }
+                }
+                push_parameter_descriptor(&mut descriptors, "angle", ParameterValueType::Angle);
+            }
+            Self::Shell { .. } | Self::TopologyShell { .. } => {
+                push_parameter_descriptor(&mut descriptors, "thickness", ParameterValueType::Length)
+            }
+            Self::BottleEdgeFinish { .. } | Self::TopologyEdgeFinish { .. } => {
+                push_parameter_descriptor(&mut descriptors, "amount", ParameterValueType::Length);
+            }
+            Self::TopologyFaceOffset { .. } | Self::PlanarOffset { .. } => {
+                push_parameter_descriptor(&mut descriptors, "distance", ParameterValueType::Length);
+            }
+            Self::Pocket { .. } => {
+                push_parameter_descriptor(&mut descriptors, "depth", ParameterValueType::Length)
+            }
+            Self::Loft { sections } => {
+                for (index, _) in sections.iter().enumerate() {
+                    push_parameter_descriptor(
+                        &mut descriptors,
+                        format!("sections.{index}.elevation"),
+                        ParameterValueType::Length,
+                    );
+                }
+            }
+            Self::ThroughCut { .. }
+            | Self::Boolean { .. }
+            | Self::Sweep { .. }
+            | Self::ImportedExactBody(_)
+            | Self::MeshBody(_)
+            | Self::Workplane(_) => {}
+        }
+        descriptors
+    }
+
+    #[must_use]
     pub fn dependencies(&self) -> BTreeSet<FeatureId> {
         match self {
             Self::Workplane(spec) => match &spec.support {
@@ -553,7 +818,8 @@ impl FeatureKind {
             Self::Shell { target, .. }
             | Self::BottleEdgeFinish { target, .. }
             | Self::TopologyShell { target, .. }
-            | Self::TopologyEdgeFinish { target, .. } => [*target].into_iter().collect(),
+            | Self::TopologyEdgeFinish { target, .. }
+            | Self::TopologyFaceOffset { target, .. } => [*target].into_iter().collect(),
             Self::ThroughCut { target, profile }
             | Self::Pocket {
                 target, profile, ..
@@ -593,6 +859,7 @@ impl FeatureKind {
                 | Self::BottleEdgeFinish { .. }
                 | Self::TopologyShell { .. }
                 | Self::TopologyEdgeFinish { .. }
+                | Self::TopologyFaceOffset { .. }
                 | Self::ThroughCut { .. }
                 | Self::Pocket { .. }
                 | Self::Boolean { .. }
@@ -611,6 +878,52 @@ impl FeatureKind {
             axis_end_mm: [0.0, 1.0],
             angle_degrees: 360.0,
         }
+    }
+}
+
+fn push_parameter_descriptor(
+    descriptors: &mut Vec<ParameterDescriptor>,
+    path: impl Into<String>,
+    value_type: ParameterValueType,
+) {
+    descriptors.push(
+        ParameterDescriptor::new(path, value_type)
+            .expect("feature-derived parameter paths are canonical and bounded"),
+    );
+}
+
+fn describe_feature_extent(
+    descriptors: &mut Vec<ParameterDescriptor>,
+    prefix: &str,
+    extent: &crate::sketch::FeatureExtent,
+) {
+    match extent {
+        crate::sketch::FeatureExtent::Blind(_) | crate::sketch::FeatureExtent::Symmetric(_) => {
+            push_parameter_descriptor(
+                descriptors,
+                format!("{prefix}.distance"),
+                ParameterValueType::Length,
+            );
+        }
+        crate::sketch::FeatureExtent::Bidirectional { along, opposite } => {
+            describe_feature_extent_end(descriptors, &format!("{prefix}.along"), along);
+            describe_feature_extent_end(descriptors, &format!("{prefix}.opposite"), opposite);
+        }
+        crate::sketch::FeatureExtent::ThroughAll | crate::sketch::FeatureExtent::UpToFace(_) => {}
+    }
+}
+
+fn describe_feature_extent_end(
+    descriptors: &mut Vec<ParameterDescriptor>,
+    prefix: &str,
+    extent: &crate::sketch::FeatureExtentEnd,
+) {
+    if matches!(extent, crate::sketch::FeatureExtentEnd::Blind(_)) {
+        push_parameter_descriptor(
+            descriptors,
+            format!("{prefix}.distance"),
+            ParameterValueType::Length,
+        );
     }
 }
 
@@ -696,7 +1009,7 @@ impl FeatureDependencyGraph {
         let mut dependents = product
             .features
             .keys()
-            .copied()
+            .cloned()
             .map(|id| (id, BTreeSet::new()))
             .collect::<BTreeMap<_, _>>();
         let mut indegree = BTreeMap::new();
@@ -783,7 +1096,7 @@ impl FeatureDependencyGraph {
         roots: impl IntoIterator<Item = FeatureId>,
     ) -> BTreeSet<FeatureId> {
         let mut closure = roots.into_iter().collect::<BTreeSet<_>>();
-        let mut pending = closure.iter().copied().collect::<Vec<_>>();
+        let mut pending = closure.iter().cloned().collect::<Vec<_>>();
         while let Some(id) = pending.pop() {
             if let Some(dependents) = self.dependents.get(&id) {
                 for dependent in dependents {
@@ -1030,7 +1343,7 @@ impl Collection {
     }
 
     pub fn occurrence_ids(&self) -> impl Iterator<Item = OccurrenceId> + '_ {
-        self.occurrence_ids.iter().copied()
+        self.occurrence_ids.iter().cloned()
     }
 }
 
@@ -1408,7 +1721,8 @@ pub enum PersistentDimensionTarget {
         producer_feature_id: FeatureId,
         semantic_role: String,
         source_element_id: String,
-        slot: FeatureParameterSlot,
+        path: ParameterPath,
+        value_type: ParameterValueType,
     },
 }
 
@@ -1881,7 +2195,7 @@ pub struct MultiBodyBooleanPlan {
     pub tool_policy: ToolBodyPolicy,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum AuthoritativeDependency {
     EvaluatorNode(NodeId),
     Override(u64),
@@ -2055,7 +2369,7 @@ pub enum ProposalConfirmation {
     HumanOnly(HighRiskScope),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProposalGoal {
     CanonicalPreview,
     CreateEvaluatorInput(NodeId),
@@ -2109,7 +2423,7 @@ pub enum ProposalGoal {
     ConvertEmptyGroupToComponent(GroupId),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProposalAssumption {
     TargetExists(AuthoritativeDependency),
     TargetMissing(AuthoritativeDependency),
@@ -2408,7 +2722,7 @@ impl Snapshot {
     }
 
     pub fn evaluator_node_ids(&self) -> impl Iterator<Item = NodeId> + '_ {
-        self.product.evaluator_nodes.keys().copied()
+        self.product.evaluator_nodes.keys().cloned()
     }
 
     #[must_use]
@@ -2441,27 +2755,27 @@ impl Snapshot {
     #[must_use]
     pub fn feature_parameter_binding(
         &self,
-        target: FeatureParameterTarget,
+        target: &FeatureParameterTarget,
     ) -> Option<&FeatureParameterBinding> {
         self.product
             .feature_parameter_bindings
-            .get(&target)
+            .get(target)
             .map(Arc::as_ref)
     }
 
     #[must_use]
-    pub fn has_feature_parameter(&self, target: FeatureParameterTarget) -> bool {
+    pub fn has_feature_parameter(&self, target: &FeatureParameterTarget) -> bool {
         feature_parameter_dimension(&self.product, target).is_some()
     }
 
     #[must_use]
     pub fn feature_parameter_provenance(
         &self,
-        target: FeatureParameterTarget,
+        target: &FeatureParameterTarget,
     ) -> Option<&FeatureParameterProvenance> {
         self.product
             .feature_parameter_provenance
-            .get(&target)
+            .get(target)
             .map(Arc::as_ref)
     }
 
@@ -2478,7 +2792,7 @@ impl Snapshot {
                 let freshness =
                     audit_feature_parameter_binding(&self.product, binding, identity, &report);
                 Ok(FeatureParameterFreshnessAudit {
-                    target: binding.target,
+                    target: binding.target.clone(),
                     freshness,
                 })
             })
@@ -2660,7 +2974,7 @@ impl Snapshot {
         self.product
             .classification_assignments
             .get(&(occurrence_id, dimension_id))
-            .copied()
+            .cloned()
     }
 
     pub fn occurrence_classifications(
@@ -2760,7 +3074,7 @@ impl Snapshot {
     }
 
     pub fn grounded_occurrences(&self) -> impl Iterator<Item = OccurrenceId> + '_ {
-        self.product.grounded_occurrences.iter().copied()
+        self.product.grounded_occurrences.iter().cloned()
     }
 
     #[must_use]
@@ -3808,11 +4122,13 @@ impl DocumentStore {
                     product.feature_parameter_provenance.remove(&binding.target);
                     product
                         .feature_parameter_bindings
-                        .insert(binding.target, Arc::new(binding.clone()));
+                        .insert(binding.target.clone(), Arc::new(binding.clone()));
                 }
                 CanonicalCommand::DeleteFeatureParameterBinding { target } => {
                     if product.feature_parameter_bindings.remove(target).is_none() {
-                        return Err(CanonicalError::FeatureParameterBindingNotFound(*target));
+                        return Err(CanonicalError::FeatureParameterBindingNotFound(
+                            target.clone(),
+                        ));
                     }
                     product.feature_parameter_provenance.remove(target);
                 }
@@ -4044,7 +4360,7 @@ impl DocumentStore {
                     if occurrence_ids.windows(2).any(|pair| pair[0] >= pair[1]) {
                         return Err(CanonicalError::CollectionMembershipNotCanonical(*id));
                     }
-                    let canonical = occurrence_ids.iter().copied().collect::<BTreeSet<_>>();
+                    let canonical = occurrence_ids.iter().cloned().collect::<BTreeSet<_>>();
                     for occurrence_id in &canonical {
                         if !product.occurrences.contains_key(occurrence_id) {
                             return Err(CanonicalError::OccurrenceNotFound(*occurrence_id));
@@ -4327,7 +4643,7 @@ impl DocumentStore {
                         .unwrap_or_default();
                     let requested_suppressed = suppressed_feature_ids
                         .iter()
-                        .copied()
+                        .cloned()
                         .collect::<BTreeSet<_>>();
                     if current_suppressed == requested_suppressed {
                         return Err(CanonicalError::FeatureSuppressionUnchanged(
@@ -4339,7 +4655,7 @@ impl DocumentStore {
                         current_suppressed
                             .iter()
                             .chain(&requested_suppressed)
-                            .copied(),
+                            .cloned(),
                     );
                     if requested_suppressed.is_empty() {
                         product.body_feature_suppression.remove(&key);
@@ -4411,7 +4727,7 @@ impl DocumentStore {
                     let feature_ids = definition
                         .feature_ids
                         .iter()
-                        .copied()
+                        .cloned()
                         .filter(|candidate| candidate != id)
                         .collect();
                     let mut feature_body_ownership = definition.feature_body_ownership.clone();
@@ -5149,7 +5465,7 @@ impl DocumentStore {
             .features
             .keys()
             .chain(product.features.keys())
-            .copied()
+            .cloned()
             .collect::<BTreeSet<_>>()
             .into_iter()
             .filter(|id| current.product.features.get(id) != product.features.get(id))
@@ -5159,7 +5475,7 @@ impl DocumentStore {
             changed_features
                 .iter()
                 .chain(&explicit_dirty_features)
-                .copied()
+                .cloned()
                 .filter(|id| product.features.contains_key(id)),
         );
         let feature_states = feature_graph.evaluation_states(&dirty_features, &BTreeSet::new());
@@ -5419,7 +5735,7 @@ impl DocumentStore {
             corrected_revision,
             &batch,
             &authoritative_writes,
-            context.goal,
+            context.goal.clone(),
         )
         .map_err(TipReplacementProposalError::Preparation)?;
         Ok(TipReplacementProposal {
@@ -5478,11 +5794,11 @@ impl DocumentStore {
                 let actual_diff: Vec<_> = proposal
                     .authoritative_writes
                     .iter()
-                    .copied()
+                    .cloned()
                     .map(|target| ProposalDiffEntry {
-                        target,
-                        before: proposal_value(&parent, target, proposal.goal),
-                        after: proposal_value(revision.snapshot(), target, proposal.goal),
+                        target: target.clone(),
+                        before: proposal_value(&parent, target.clone(), proposal.goal.clone()),
+                        after: proposal_value(revision.snapshot(), target, proposal.goal.clone()),
                     })
                     .collect();
                 let actual_result_digest =
@@ -5578,7 +5894,7 @@ impl DocumentStore {
             .map_err(TipReplacementProposalError::Preparation)?;
         validate_confirmation_requirement(&ProposalContext {
             principal: proposal.principal,
-            goal: proposal.goal,
+            goal: proposal.goal.clone(),
             assumptions: proposal.assumptions.clone(),
             risk: proposal.risk,
             confirmation: proposal.confirmation.clone(),
@@ -5590,7 +5906,7 @@ impl DocumentStore {
             proposal.corrected_revision,
             &proposal.batch,
             &authoritative_writes,
-            proposal.goal,
+            proposal.goal.clone(),
         )
         .map_err(TipReplacementProposalError::Preparation)?;
         if authoritative_diff != proposal.authoritative_diff
@@ -5720,7 +6036,7 @@ impl DocumentStore {
                 || definition
                     .feature_ids()
                     .iter()
-                    .copied()
+                    .cloned()
                     .any(|dependent_id| {
                         dependent_id != feature_id
                             && snapshot.feature(dependent_id).is_some_and(|dependent| {
@@ -5801,8 +6117,12 @@ impl DocumentStore {
             write_targets: authoritative_writes.len(),
         };
         validate_proposal_budget(context.requested_budget, cost)?;
-        let (authoritative_diff, intended_result_digest) =
-            proposal_candidate(&snapshot, &batch, &authoritative_writes, context.goal)?;
+        let (authoritative_diff, intended_result_digest) = proposal_candidate(
+            &snapshot,
+            &batch,
+            &authoritative_writes,
+            context.goal.clone(),
+        )?;
         Ok(Proposal {
             document_id: snapshot.document_id(),
             provenance_revision: snapshot.revision_id,
@@ -6029,7 +6349,7 @@ impl DocumentStore {
             &current,
             &proposal.batch,
             &proposal.authoritative_writes,
-            proposal.goal,
+            proposal.goal.clone(),
         )
         .map_err(ProposalCommitError::Preparation)?;
         if diff != proposal.authoritative_diff
@@ -6204,8 +6524,8 @@ impl TipReplacementProposal {
     }
 
     #[must_use]
-    pub const fn goal(&self) -> ProposalGoal {
-        self.goal
+    pub fn goal(&self) -> ProposalGoal {
+        self.goal.clone()
     }
 
     #[must_use]
@@ -6307,8 +6627,8 @@ impl Proposal {
     }
 
     #[must_use]
-    pub const fn goal(&self) -> ProposalGoal {
-        self.goal
+    pub fn goal(&self) -> ProposalGoal {
+        self.goal.clone()
     }
 
     #[must_use]
@@ -7251,13 +7571,13 @@ impl fmt::Display for CanonicalError {
                 formatter,
                 "feature {} parameter {} has an invalid derived binding",
                 target.feature_id.0,
-                target.slot.label()
+                target.path.as_str()
             ),
             Self::FeatureParameterBindingNotFound(target) => write!(
                 formatter,
                 "feature {} parameter {} has no derived binding",
                 target.feature_id.0,
-                target.slot.label()
+                target.path.as_str()
             ),
             Self::OccurrenceAlreadyExists(id) => {
                 write!(formatter, "occurrence {} already exists", id.0)
@@ -7444,6 +7764,15 @@ fn validate_persistent_dimension(dimension: &PersistentDimension) -> Result<(), 
     )?;
     if matches!(
         &dimension.target,
+        PersistentDimensionTarget::FeatureParameter(FeatureParameterTarget {
+            value_type: ParameterValueType::Angle | ParameterValueType::Scalar,
+            ..
+        }) | PersistentDimensionTarget::ExactFeatureParameter {
+            value_type: ParameterValueType::Angle | ParameterValueType::Scalar,
+            ..
+        }
+    ) || matches!(
+        &dimension.target,
         PersistentDimensionTarget::ExactFeatureParameter {
             definition_id,
             producer_feature_id,
@@ -7466,7 +7795,7 @@ fn resolve_persistent_dimension(
 ) -> (DimensionReferenceHealth, Option<f64>) {
     match &dimension.target {
         PersistentDimensionTarget::FeatureParameter(target) => {
-            let value = feature_parameter_value_bits(product, *target).map(f64::from_bits);
+            let value = feature_parameter_value_bits(product, target).map(f64::from_bits);
             if value.is_some() {
                 (DimensionReferenceHealth::Resolved, value)
             } else {
@@ -7499,7 +7828,8 @@ fn resolve_persistent_dimension(
             producer_feature_id,
             semantic_role,
             source_element_id,
-            slot,
+            path,
+            value_type,
         } => {
             let candidates = product
                 .exact_reference_evidence
@@ -7518,9 +7848,10 @@ fn resolve_persistent_dimension(
                 1 => {
                     let value = feature_parameter_value_bits(
                         product,
-                        FeatureParameterTarget {
+                        &FeatureParameterTarget {
                             feature_id: *producer_feature_id,
-                            slot: *slot,
+                            path: path.clone(),
+                            value_type: *value_type,
                         },
                     )
                     .map(f64::from_bits);
@@ -7539,42 +7870,10 @@ fn resolve_persistent_dimension(
     }
 }
 
-const fn feature_parameter_slot_tag(slot: FeatureParameterSlot) -> u8 {
-    match slot {
-        FeatureParameterSlot::Height => 1,
-        FeatureParameterSlot::BodyRadius => 2,
-        FeatureParameterSlot::BodyHeight => 3,
-        FeatureParameterSlot::ShoulderRise => 4,
-        FeatureParameterSlot::Thickness => 5,
-        FeatureParameterSlot::Amount => 6,
-        FeatureParameterSlot::ProfileWidth => 7,
-        FeatureParameterSlot::ProfileHeight => 8,
-    }
-}
-
-fn feature_supports_parameter_slot(kind: &FeatureKind, slot: FeatureParameterSlot) -> bool {
-    match (kind, slot) {
-        (
-            FeatureKind::Extrusion { .. }
-            | FeatureKind::Pocket { .. }
-            | FeatureKind::Pad(_)
-            | FeatureKind::SketchPocket(_),
-            FeatureParameterSlot::Height,
-        )
-        | (
-            FeatureKind::BottleProfileControl { .. },
-            FeatureParameterSlot::BodyRadius
-            | FeatureParameterSlot::BodyHeight
-            | FeatureParameterSlot::ShoulderRise,
-        )
-        | (FeatureKind::Shell { .. }, FeatureParameterSlot::Thickness)
-        | (FeatureKind::BottleEdgeFinish { .. }, FeatureParameterSlot::Amount) => true,
-        (
-            FeatureKind::Profile { points_mm },
-            FeatureParameterSlot::ProfileWidth | FeatureParameterSlot::ProfileHeight,
-        ) => is_axis_aligned_rectangle(points_mm),
-        _ => false,
-    }
+fn feature_supports_parameter_target(kind: &FeatureKind, target: &FeatureParameterTarget) -> bool {
+    kind.parameter_descriptors().iter().any(|descriptor| {
+        descriptor.path() == &target.path && descriptor.value_type() == target.value_type
+    })
 }
 
 fn audit_feature_parameter_binding(
@@ -7599,7 +7898,7 @@ fn audit_feature_parameter_binding(
             Some(FeatureParameterStaleReason::InputChanged)
         } else if provenance.result_digest != output.result_digest {
             Some(FeatureParameterStaleReason::ResultChanged)
-        } else if feature_parameter_value_bits(product, binding.target)
+        } else if feature_parameter_value_bits(product, &binding.target)
             .is_none_or(|value_bits| value_bits != provenance.applied_value_bits)
         {
             Some(FeatureParameterStaleReason::AppliedValueChanged)
@@ -7617,89 +7916,215 @@ fn audit_feature_parameter_binding(
 
 fn feature_parameter_dimension(
     product: &ProductModel,
-    target: FeatureParameterTarget,
+    target: &FeatureParameterTarget,
 ) -> Option<Dimension> {
     let feature = product.features.get(&target.feature_id)?;
-    match (&feature.kind, target.slot) {
-        (FeatureKind::Extrusion { height, .. }, FeatureParameterSlot::Height) => {
-            Some(height.clone())
+    if !feature_supports_parameter_target(&feature.kind, target) {
+        return None;
+    }
+    let value = feature_kind_parameter_value(&feature.kind, target.path.as_str())?;
+    Dimension::new(value.to_string(), value).ok()
+}
+
+fn feature_parameter_value_bits(
+    product: &ProductModel,
+    target: &FeatureParameterTarget,
+) -> Option<u64> {
+    feature_parameter_dimension(product, target).map(|value| value.millimetres().to_bits())
+}
+
+fn feature_kind_parameter_value(kind: &FeatureKind, path: &str) -> Option<f64> {
+    let parts = path.split('.').collect::<Vec<_>>();
+    match kind {
+        FeatureKind::Workplane(spec) => match (&spec.support, parts.as_slice()) {
+            (WorkplaneSupport::Offset { distance, .. }, ["support", "offset", "distance"]) => {
+                Some(distance.millimetres())
+            }
+            _ => None,
+        },
+        FeatureKind::Sketch(spec) => sketch_parameter_value(spec, &parts),
+        FeatureKind::Profile { points_mm } => match parts.as_slice() {
+            ["bounds", "width"] if is_axis_aligned_rectangle(points_mm) => {
+                Some(points_mm[1][0] - points_mm[0][0])
+            }
+            ["bounds", "height"] if is_axis_aligned_rectangle(points_mm) => {
+                Some(points_mm[3][1] - points_mm[0][1])
+            }
+            ["points", index, axis] => {
+                point_coordinate(*points_mm.get(index.parse::<usize>().ok()?)?, axis)
+            }
+            _ => None,
+        },
+        FeatureKind::SegmentProfile { segments, .. } => segment_parameter_value(segments, &parts),
+        FeatureKind::SplineProfile { control_points_mm } => match parts.as_slice() {
+            ["control_points", index, axis] => {
+                point_coordinate(*control_points_mm.get(index.parse::<usize>().ok()?)?, axis)
+            }
+            _ => None,
+        },
+        FeatureKind::Extrusion { height, .. } if path == "height" => Some(height.millimetres()),
+        FeatureKind::Pad(spec) => {
+            extent_parameter_value(&spec.extent, path.strip_prefix("extent.")?)
         }
-        (FeatureKind::Pocket { depth, .. }, FeatureParameterSlot::Height) => Some(depth.clone()),
-        (
-            FeatureKind::BottleProfileControl { body_radius, .. },
-            FeatureParameterSlot::BodyRadius,
-        ) => Some(body_radius.clone()),
-        (
-            FeatureKind::BottleProfileControl { body_height, .. },
-            FeatureParameterSlot::BodyHeight,
-        ) => Some(body_height.clone()),
-        (
-            FeatureKind::BottleProfileControl { shoulder_rise, .. },
-            FeatureParameterSlot::ShoulderRise,
-        ) => Some(shoulder_rise.clone()),
-        (FeatureKind::Shell { thickness, .. }, FeatureParameterSlot::Thickness) => {
-            Some(thickness.clone())
+        FeatureKind::SketchPocket(spec) => {
+            extent_parameter_value(&spec.extent, path.strip_prefix("extent.")?)
         }
-        (FeatureKind::BottleEdgeFinish { amount, .. }, FeatureParameterSlot::Amount) => {
-            Some(amount.clone())
-        }
-        (FeatureKind::Profile { points_mm }, FeatureParameterSlot::ProfileWidth)
-            if is_axis_aligned_rectangle(points_mm) =>
+        FeatureKind::BottleProfileControl {
+            body_radius,
+            body_height,
+            shoulder_rise,
+            ..
+        } => match path {
+            "body_radius" => Some(body_radius.millimetres()),
+            "body_height" => Some(body_height.millimetres()),
+            "shoulder_rise" => Some(shoulder_rise.millimetres()),
+            _ => None,
+        },
+        FeatureKind::Revolve {
+            axis_start_mm,
+            axis_end_mm,
+            angle_degrees,
+            ..
+        } => match parts.as_slice() {
+            ["axis_start", axis] => point_coordinate(*axis_start_mm, axis),
+            ["axis_end", axis] => point_coordinate(*axis_end_mm, axis),
+            ["angle"] => Some(*angle_degrees),
+            _ => None,
+        },
+        FeatureKind::Shell { thickness, .. } | FeatureKind::TopologyShell { thickness, .. }
+            if path == "thickness" =>
         {
-            let value = points_mm[1][0] - points_mm[0][0];
-            Dimension::new(value.to_string(), value).ok()
+            Some(thickness.millimetres())
         }
-        (FeatureKind::Profile { points_mm }, FeatureParameterSlot::ProfileHeight)
-            if is_axis_aligned_rectangle(points_mm) =>
+        FeatureKind::BottleEdgeFinish { amount, .. }
+        | FeatureKind::TopologyEdgeFinish { amount, .. }
+            if path == "amount" =>
         {
-            let value = points_mm[3][1] - points_mm[0][1];
-            Dimension::new(value.to_string(), value).ok()
+            Some(amount.millimetres())
+        }
+        FeatureKind::TopologyFaceOffset { distance, .. }
+        | FeatureKind::PlanarOffset { distance, .. }
+            if path == "distance" =>
+        {
+            Some(distance.millimetres())
+        }
+        FeatureKind::Pocket { depth, .. } if path == "depth" => Some(depth.millimetres()),
+        FeatureKind::Loft { sections } => match parts.as_slice() {
+            ["sections", index, "elevation"] => {
+                Some(sections.get(index.parse::<usize>().ok()?)?.elevation_mm)
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn sketch_parameter_value(spec: &SketchSpec, parts: &[&str]) -> Option<f64> {
+    match parts {
+        ["entities", id, point, axis] => {
+            let id = id.parse::<u64>().ok()?;
+            let entity = spec.entities.iter().find(|entity| entity.id().0 == id)?;
+            match (entity, *point) {
+                (
+                    SketchEntity::Line { start_mm, .. } | SketchEntity::Arc { start_mm, .. },
+                    "start",
+                ) => point_coordinate(*start_mm, axis),
+                (SketchEntity::Line { end_mm, .. } | SketchEntity::Arc { end_mm, .. }, "end") => {
+                    point_coordinate(*end_mm, axis)
+                }
+                (
+                    SketchEntity::Arc { center_mm, .. } | SketchEntity::Circle { center_mm, .. },
+                    "center",
+                ) => point_coordinate(*center_mm, axis),
+                _ => None,
+            }
+        }
+        ["entities", id, "radius"] => {
+            let id = id.parse::<u64>().ok()?;
+            spec.entities
+                .iter()
+                .find(|entity| entity.id().0 == id)
+                .and_then(|entity| match entity {
+                    SketchEntity::Circle { radius_mm, .. } => Some(*radius_mm),
+                    _ => None,
+                })
+        }
+        ["constraints", id, "value"] => {
+            let id = id.parse::<u64>().ok()?;
+            spec.constraints
+                .iter()
+                .find(|constraint| constraint.id.0 == id)
+                .and_then(|constraint| match &constraint.kind {
+                    SketchConstraintKind::Distance { value, .. }
+                    | SketchConstraintKind::Radius { value, .. } => Some(value.millimetres()),
+                    _ => None,
+                })
+        }
+        ["constraints", id, "position", axis] => {
+            let id = id.parse::<u64>().ok()?;
+            spec.constraints
+                .iter()
+                .find(|constraint| constraint.id.0 == id)
+                .and_then(|constraint| match &constraint.kind {
+                    SketchConstraintKind::FixedPoint { position_mm, .. } => {
+                        point_coordinate(*position_mm, axis)
+                    }
+                    _ => None,
+                })
         }
         _ => None,
     }
 }
 
-fn feature_parameter_value_bits(
-    product: &ProductModel,
-    target: FeatureParameterTarget,
-) -> Option<u64> {
-    let feature = product.features.get(&target.feature_id)?;
-    let value = match (&feature.kind, target.slot) {
-        (FeatureKind::Extrusion { height, .. }, FeatureParameterSlot::Height) => {
-            height.millimetres()
-        }
-        (FeatureKind::Pocket { depth, .. }, FeatureParameterSlot::Height) => depth.millimetres(),
-        (
-            FeatureKind::BottleProfileControl { body_radius, .. },
-            FeatureParameterSlot::BodyRadius,
-        ) => body_radius.millimetres(),
-        (
-            FeatureKind::BottleProfileControl { body_height, .. },
-            FeatureParameterSlot::BodyHeight,
-        ) => body_height.millimetres(),
-        (
-            FeatureKind::BottleProfileControl { shoulder_rise, .. },
-            FeatureParameterSlot::ShoulderRise,
-        ) => shoulder_rise.millimetres(),
-        (FeatureKind::Shell { thickness, .. }, FeatureParameterSlot::Thickness) => {
-            thickness.millimetres()
-        }
-        (FeatureKind::BottleEdgeFinish { amount, .. }, FeatureParameterSlot::Amount) => {
-            amount.millimetres()
-        }
-        (FeatureKind::Profile { points_mm }, FeatureParameterSlot::ProfileWidth)
-            if is_axis_aligned_rectangle(points_mm) =>
-        {
-            points_mm[1][0] - points_mm[0][0]
-        }
-        (FeatureKind::Profile { points_mm }, FeatureParameterSlot::ProfileHeight)
-            if is_axis_aligned_rectangle(points_mm) =>
-        {
-            points_mm[3][1] - points_mm[0][1]
-        }
-        _ => return None,
+fn segment_parameter_value(segments: &[ProfileSegment], parts: &[&str]) -> Option<f64> {
+    let ["segments", index, point, axis] = parts else {
+        return None;
     };
-    Some(value.to_bits())
+    let segment = segments.get(index.parse::<usize>().ok()?)?;
+    match (segment, *point) {
+        (
+            ProfileSegment::Line { start_mm, .. } | ProfileSegment::CircularArc { start_mm, .. },
+            "start",
+        ) => point_coordinate(*start_mm, axis),
+        (
+            ProfileSegment::Line { end_mm, .. } | ProfileSegment::CircularArc { end_mm, .. },
+            "end",
+        ) => point_coordinate(*end_mm, axis),
+        (ProfileSegment::CircularArc { center_mm, .. }, "center") => {
+            point_coordinate(*center_mm, axis)
+        }
+        _ => None,
+    }
+}
+
+fn extent_parameter_value(extent: &FeatureExtent, path: &str) -> Option<f64> {
+    match (extent, path) {
+        (FeatureExtent::Blind(distance) | FeatureExtent::Symmetric(distance), "distance") => {
+            Some(distance.millimetres())
+        }
+        (FeatureExtent::Bidirectional { along, .. }, "along.distance") => {
+            extent_end_parameter_value(along)
+        }
+        (FeatureExtent::Bidirectional { opposite, .. }, "opposite.distance") => {
+            extent_end_parameter_value(opposite)
+        }
+        _ => None,
+    }
+}
+
+fn extent_end_parameter_value(extent: &FeatureExtentEnd) -> Option<f64> {
+    match extent {
+        FeatureExtentEnd::Blind(distance) => Some(distance.millimetres()),
+        FeatureExtentEnd::ThroughAll | FeatureExtentEnd::UpToFace(_) => None,
+    }
+}
+
+fn point_coordinate(point: [f64; 2], axis: &str) -> Option<f64> {
+    match axis {
+        "x" => Some(point[0]),
+        "y" => Some(point[1]),
+        _ => None,
+    }
 }
 
 fn recompute_feature_parameters(
@@ -7712,7 +8137,7 @@ fn recompute_feature_parameters(
     let affected = if let Some(affected) = affected_nodes {
         affected
     } else {
-        all_nodes = product.evaluator_nodes.keys().copied().collect();
+        all_nodes = product.evaluator_nodes.keys().cloned().collect();
         &all_nodes
     };
     let report = evaluate_affected(&product.evaluator_nodes, identity, previous, affected)
@@ -7736,9 +8161,9 @@ fn recompute_feature_parameters(
                     binding.derived_from.root_rule_node_id,
                 ))?;
         let dimension = Dimension::new(output.value.to_string(), output.value)?;
-        set_feature_parameter(product, binding.target, dimension)?;
+        set_feature_parameter(product, &binding.target, dimension)?;
         product.feature_parameter_provenance.insert(
-            binding.target,
+            binding.target.clone(),
             Arc::new(FeatureParameterProvenance {
                 identity: identity.clone(),
                 input_digest: output.input_digest.clone(),
@@ -7752,90 +8177,25 @@ fn recompute_feature_parameters(
 
 fn set_feature_parameter(
     product: &mut ProductModel,
-    target: FeatureParameterTarget,
+    target: &FeatureParameterTarget,
     dimension: Dimension,
 ) -> Result<(), CanonicalError> {
     let feature = product
         .features
         .get(&target.feature_id)
         .ok_or(CanonicalError::FeatureNotFound(target.feature_id))?;
-    let kind = match (&feature.kind, target.slot) {
-        (FeatureKind::Extrusion { profile, .. }, FeatureParameterSlot::Height) => {
-            FeatureKind::Extrusion {
-                profile: *profile,
-                height: dimension,
-            }
-        }
-        (
-            FeatureKind::Pocket {
-                target, profile, ..
-            },
-            FeatureParameterSlot::Height,
-        ) => FeatureKind::Pocket {
-            target: *target,
-            profile: *profile,
-            depth: dimension,
-        },
-        (
-            FeatureKind::Profile { points_mm },
-            FeatureParameterSlot::ProfileWidth | FeatureParameterSlot::ProfileHeight,
-        ) => FeatureKind::Profile {
-            points_mm: resize_axis_aligned_rectangle(points_mm, target, dimension.millimetres())?,
-        },
-        (
-            FeatureKind::BottleProfileControl {
-                profile,
-                body_radius,
-                body_height,
-                shoulder_rise,
-            },
-            slot,
-        ) => FeatureKind::BottleProfileControl {
-            profile: *profile,
-            body_radius: if slot == FeatureParameterSlot::BodyRadius {
-                dimension.clone()
-            } else {
-                body_radius.clone()
-            },
-            body_height: if slot == FeatureParameterSlot::BodyHeight {
-                dimension.clone()
-            } else {
-                body_height.clone()
-            },
-            shoulder_rise: if slot == FeatureParameterSlot::ShoulderRise {
-                dimension
-            } else {
-                shoulder_rise.clone()
-            },
-        },
-        (
-            FeatureKind::Shell {
-                target,
-                removed_faces,
-                ..
-            },
-            FeatureParameterSlot::Thickness,
-        ) => FeatureKind::Shell {
-            target: *target,
-            removed_faces: removed_faces.clone(),
-            thickness: dimension,
-        },
-        (
-            FeatureKind::BottleEdgeFinish {
-                target,
-                edges,
-                kind,
-                ..
-            },
-            FeatureParameterSlot::Amount,
-        ) => FeatureKind::BottleEdgeFinish {
-            target: *target,
-            edges: edges.clone(),
-            kind: *kind,
-            amount: dimension,
-        },
-        _ => return Err(CanonicalError::InvalidFeatureParameterBinding(target)),
-    };
+    if !feature_supports_parameter_target(&feature.kind, target) {
+        return Err(CanonicalError::InvalidFeatureParameterBinding(
+            target.clone(),
+        ));
+    }
+    let mut kind = feature.kind.clone();
+    if !set_feature_kind_parameter(&mut kind, target, &dimension)? {
+        return Err(CanonicalError::InvalidFeatureParameterBinding(
+            target.clone(),
+        ));
+    }
+    validate_feature_kind(&kind)?;
     product.features.insert(
         target.feature_id,
         Arc::new(Feature {
@@ -7846,6 +8206,259 @@ fn set_feature_parameter(
         }),
     );
     Ok(())
+}
+
+fn set_feature_kind_parameter(
+    kind: &mut FeatureKind,
+    target: &FeatureParameterTarget,
+    dimension: &Dimension,
+) -> Result<bool, CanonicalError> {
+    let path = target.path.as_str();
+    let parts = path.split('.').collect::<Vec<_>>();
+    let value = dimension.millimetres();
+    let updated = match kind {
+        FeatureKind::Workplane(spec) => match (&mut spec.support, parts.as_slice()) {
+            (WorkplaneSupport::Offset { distance, .. }, ["support", "offset", "distance"]) => {
+                *distance = dimension.clone();
+                true
+            }
+            _ => false,
+        },
+        FeatureKind::Sketch(spec) => set_sketch_parameter(spec, &parts, dimension),
+        FeatureKind::Profile { points_mm } => match parts.as_slice() {
+            ["bounds", "width"] | ["bounds", "height"] => {
+                *points_mm = resize_axis_aligned_rectangle(points_mm, target, value)?;
+                true
+            }
+            ["points", index, axis] => points_mm
+                .get_mut(index.parse::<usize>().ok().unwrap_or(usize::MAX))
+                .is_some_and(|point| set_point_coordinate(point, axis, value)),
+            _ => false,
+        },
+        FeatureKind::SegmentProfile { segments, .. } => {
+            set_segment_parameter(segments, &parts, value)
+        }
+        FeatureKind::SplineProfile { control_points_mm } => match parts.as_slice() {
+            ["control_points", index, axis] => control_points_mm
+                .get_mut(index.parse::<usize>().ok().unwrap_or(usize::MAX))
+                .is_some_and(|point| set_point_coordinate(point, axis, value)),
+            _ => false,
+        },
+        FeatureKind::Extrusion { height, .. } if path == "height" => {
+            *height = dimension.clone();
+            true
+        }
+        FeatureKind::Pad(spec) => path
+            .strip_prefix("extent.")
+            .is_some_and(|path| set_extent_parameter(&mut spec.extent, path, dimension)),
+        FeatureKind::SketchPocket(spec) => path
+            .strip_prefix("extent.")
+            .is_some_and(|path| set_extent_parameter(&mut spec.extent, path, dimension)),
+        FeatureKind::BottleProfileControl {
+            body_radius,
+            body_height,
+            shoulder_rise,
+            ..
+        } => match path {
+            "body_radius" => {
+                *body_radius = dimension.clone();
+                true
+            }
+            "body_height" => {
+                *body_height = dimension.clone();
+                true
+            }
+            "shoulder_rise" => {
+                *shoulder_rise = dimension.clone();
+                true
+            }
+            _ => false,
+        },
+        FeatureKind::Revolve {
+            axis_start_mm,
+            axis_end_mm,
+            angle_degrees,
+            ..
+        } => match parts.as_slice() {
+            ["axis_start", axis] => set_point_coordinate(axis_start_mm, axis, value),
+            ["axis_end", axis] => set_point_coordinate(axis_end_mm, axis, value),
+            ["angle"] => {
+                *angle_degrees = value;
+                true
+            }
+            _ => false,
+        },
+        FeatureKind::Shell { thickness, .. } | FeatureKind::TopologyShell { thickness, .. }
+            if path == "thickness" =>
+        {
+            *thickness = dimension.clone();
+            true
+        }
+        FeatureKind::BottleEdgeFinish { amount, .. }
+        | FeatureKind::TopologyEdgeFinish { amount, .. }
+            if path == "amount" =>
+        {
+            *amount = dimension.clone();
+            true
+        }
+        FeatureKind::TopologyFaceOffset { distance, .. }
+        | FeatureKind::PlanarOffset { distance, .. }
+            if path == "distance" =>
+        {
+            *distance = dimension.clone();
+            true
+        }
+        FeatureKind::Pocket { depth, .. } if path == "depth" => {
+            *depth = dimension.clone();
+            true
+        }
+        FeatureKind::Loft { sections } => match parts.as_slice() {
+            ["sections", index, "elevation"] => sections
+                .get_mut(index.parse::<usize>().ok().unwrap_or(usize::MAX))
+                .is_some_and(|section| {
+                    section.elevation_mm = value;
+                    true
+                }),
+            _ => false,
+        },
+        _ => false,
+    };
+    Ok(updated)
+}
+
+fn set_sketch_parameter(spec: &mut SketchSpec, parts: &[&str], dimension: &Dimension) -> bool {
+    let value = dimension.millimetres();
+    match parts {
+        ["entities", id, point, axis] => {
+            let Ok(id) = id.parse::<u64>() else {
+                return false;
+            };
+            let Some(entity) = spec.entities.iter_mut().find(|entity| entity.id().0 == id) else {
+                return false;
+            };
+            match (entity, *point) {
+                (
+                    SketchEntity::Line { start_mm, .. } | SketchEntity::Arc { start_mm, .. },
+                    "start",
+                ) => set_point_coordinate(start_mm, axis, value),
+                (SketchEntity::Line { end_mm, .. } | SketchEntity::Arc { end_mm, .. }, "end") => {
+                    set_point_coordinate(end_mm, axis, value)
+                }
+                (
+                    SketchEntity::Arc { center_mm, .. } | SketchEntity::Circle { center_mm, .. },
+                    "center",
+                ) => set_point_coordinate(center_mm, axis, value),
+                _ => false,
+            }
+        }
+        ["entities", id, "radius"] => {
+            let Ok(id) = id.parse::<u64>() else {
+                return false;
+            };
+            spec.entities
+                .iter_mut()
+                .find(|entity| entity.id().0 == id)
+                .is_some_and(|entity| match entity {
+                    SketchEntity::Circle { radius_mm, .. } => {
+                        *radius_mm = value;
+                        true
+                    }
+                    _ => false,
+                })
+        }
+        ["constraints", id, "value"] => {
+            let Ok(id) = id.parse::<u64>() else {
+                return false;
+            };
+            spec.constraints
+                .iter_mut()
+                .find(|constraint| constraint.id.0 == id)
+                .is_some_and(|constraint| match &mut constraint.kind {
+                    SketchConstraintKind::Distance { value, .. }
+                    | SketchConstraintKind::Radius { value, .. } => {
+                        *value = dimension.clone();
+                        true
+                    }
+                    _ => false,
+                })
+        }
+        ["constraints", id, "position", axis] => {
+            let Ok(id) = id.parse::<u64>() else {
+                return false;
+            };
+            spec.constraints
+                .iter_mut()
+                .find(|constraint| constraint.id.0 == id)
+                .is_some_and(|constraint| match &mut constraint.kind {
+                    SketchConstraintKind::FixedPoint { position_mm, .. } => {
+                        set_point_coordinate(position_mm, axis, value)
+                    }
+                    _ => false,
+                })
+        }
+        _ => false,
+    }
+}
+
+fn set_segment_parameter(segments: &mut [ProfileSegment], parts: &[&str], value: f64) -> bool {
+    let ["segments", index, point, axis] = parts else {
+        return false;
+    };
+    let Ok(index) = index.parse::<usize>() else {
+        return false;
+    };
+    let Some(segment) = segments.get_mut(index) else {
+        return false;
+    };
+    match (segment, *point) {
+        (
+            ProfileSegment::Line { start_mm, .. } | ProfileSegment::CircularArc { start_mm, .. },
+            "start",
+        ) => set_point_coordinate(start_mm, axis, value),
+        (
+            ProfileSegment::Line { end_mm, .. } | ProfileSegment::CircularArc { end_mm, .. },
+            "end",
+        ) => set_point_coordinate(end_mm, axis, value),
+        (ProfileSegment::CircularArc { center_mm, .. }, "center") => {
+            set_point_coordinate(center_mm, axis, value)
+        }
+        _ => false,
+    }
+}
+
+fn set_extent_parameter(extent: &mut FeatureExtent, path: &str, dimension: &Dimension) -> bool {
+    match (extent, path) {
+        (FeatureExtent::Blind(distance) | FeatureExtent::Symmetric(distance), "distance") => {
+            *distance = dimension.clone();
+            true
+        }
+        (FeatureExtent::Bidirectional { along, .. }, "along.distance") => {
+            set_extent_end_parameter(along, dimension)
+        }
+        (FeatureExtent::Bidirectional { opposite, .. }, "opposite.distance") => {
+            set_extent_end_parameter(opposite, dimension)
+        }
+        _ => false,
+    }
+}
+
+fn set_extent_end_parameter(extent: &mut FeatureExtentEnd, dimension: &Dimension) -> bool {
+    match extent {
+        FeatureExtentEnd::Blind(distance) => {
+            *distance = dimension.clone();
+            true
+        }
+        FeatureExtentEnd::ThroughAll | FeatureExtentEnd::UpToFace(_) => false,
+    }
+}
+
+fn set_point_coordinate(point: &mut [f64; 2], axis: &str, value: f64) -> bool {
+    match axis {
+        "x" => point[0] = value,
+        "y" => point[1] = value,
+        _ => return false,
+    }
+    true
 }
 
 const MAX_STABLE_SUBSHAPE_ROLE_BYTES: usize = 128;
@@ -7961,6 +8574,7 @@ fn feature_kind_is_solid(kind: &FeatureKind) -> bool {
             | FeatureKind::BottleEdgeFinish { .. }
             | FeatureKind::TopologyShell { .. }
             | FeatureKind::TopologyEdgeFinish { .. }
+            | FeatureKind::TopologyFaceOffset { .. }
             | FeatureKind::ThroughCut { .. }
             | FeatureKind::Pocket { .. }
             | FeatureKind::Boolean { .. }
@@ -7978,6 +8592,7 @@ fn primary_solid_dependency(kind: &FeatureKind) -> Option<FeatureId> {
         | FeatureKind::BottleEdgeFinish { target, .. }
         | FeatureKind::TopologyShell { target, .. }
         | FeatureKind::TopologyEdgeFinish { target, .. }
+        | FeatureKind::TopologyFaceOffset { target, .. }
         | FeatureKind::ThroughCut { target, .. }
         | FeatureKind::Pocket { target, .. }
         | FeatureKind::Boolean { target, .. } => Some(*target),
@@ -8063,7 +8678,7 @@ fn validate_feature_body_ownership_change(
                 .iter()
                 .chain(ownership.output_body_id.iter())
                 .find(|id| !definition.bodies.contains_key(id))
-                .copied()
+                .cloned()
                 .expect("a missing body was detected"),
         ));
     }
@@ -8108,7 +8723,7 @@ fn ordered_body_feature_history(
     let mut pending = graph
         .topological_order()
         .iter()
-        .copied()
+        .cloned()
         .filter(|id| {
             definition
                 .feature_body_ownership
@@ -8140,7 +8755,7 @@ fn ordered_body_feature_history(
     Ok(graph
         .topological_order()
         .iter()
-        .copied()
+        .cloned()
         .filter(|id| history.contains(id))
         .collect())
 }
@@ -8173,7 +8788,7 @@ fn validate_body_feature_suppression(
     }
     let suppressed = suppressed_feature_ids
         .iter()
-        .copied()
+        .cloned()
         .collect::<BTreeSet<_>>();
     if suppressed.len() != suppressed_feature_ids.len()
         || suppressed.iter().any(|id| {
@@ -8196,13 +8811,13 @@ fn validate_body_dependency_graph(definition: &Definition) -> Result<(), Canonic
     let mut edges = definition
         .bodies
         .keys()
-        .copied()
+        .cloned()
         .map(|id| (id, BTreeSet::new()))
         .collect::<BTreeMap<_, _>>();
     let mut indegree = definition
         .bodies
         .keys()
-        .copied()
+        .cloned()
         .map(|id| (id, 0_usize))
         .collect::<BTreeMap<_, _>>();
     for ownership in definition.feature_body_ownership.values() {
@@ -8243,7 +8858,7 @@ fn validate_body_dependency_graph(definition: &Definition) -> Result<(), Canonic
 pub(crate) fn migrate_legacy_body_contract(
     product: &mut ProductModel,
 ) -> Result<(), CanonicalError> {
-    let definition_ids = product.definitions.keys().copied().collect::<Vec<_>>();
+    let definition_ids = product.definitions.keys().cloned().collect::<Vec<_>>();
     for definition_id in definition_ids {
         let mut definition = product.definitions[&definition_id].as_ref().clone();
         definition.bodies = BTreeMap::from([(DEFAULT_BODY_ID, default_body())]);
@@ -8384,6 +8999,16 @@ fn validate_feature_kind(kind: &FeatureKind) -> Result<(), CanonicalError> {
                 return Err(CanonicalError::DimensionOutsideEnvelope);
             }
             validate_topological_feature_references(edges, TopologicalElementKind::Edge)
+        }
+        FeatureKind::TopologyFaceOffset { face, distance, .. } => {
+            Dimension::new(distance.source_token.clone(), distance.millimetres).map(|_| ())?;
+            if distance.millimetres.abs() <= PROFILE_EPSILON_MM {
+                return Err(CanonicalError::DimensionOutsideEnvelope);
+            }
+            validate_topological_feature_references(
+                std::slice::from_ref(face),
+                TopologicalElementKind::Face,
+            )
         }
         FeatureKind::ImportedExactBody(spec) => validate_imported_exact_body(spec),
         FeatureKind::MeshBody(spec) => validate_mesh_body(spec),
@@ -8637,7 +9262,7 @@ fn mesh_vertex_fans_are_manifold(
         }
     }
     incident.iter().enumerate().all(|(vertex, faces)| {
-        let Some(start) = faces.first().copied() else {
+        let Some(start) = faces.first().cloned() else {
             return false;
         };
         if faces.iter().any(|face| {
@@ -8653,7 +9278,7 @@ fn mesh_vertex_fans_are_manifold(
             if visited.insert(face)
                 && let Some(neighbours) = adjacency[vertex].get(&face)
             {
-                pending.extend(neighbours.iter().copied());
+                pending.extend(neighbours.iter().cloned());
             }
         }
         &visited == faces
@@ -8675,28 +9300,34 @@ fn is_axis_aligned_rectangle(points_mm: &[[f64; 2]]) -> bool {
 
 fn resize_axis_aligned_rectangle(
     points_mm: &[[f64; 2]],
-    target: FeatureParameterTarget,
+    target: &FeatureParameterTarget,
     value_mm: f64,
 ) -> Result<Vec<[f64; 2]>, CanonicalError> {
     if !is_axis_aligned_rectangle(points_mm) {
-        return Err(CanonicalError::InvalidFeatureParameterBinding(target));
+        return Err(CanonicalError::InvalidFeatureParameterBinding(
+            target.clone(),
+        ));
     }
     if value_mm <= PROFILE_EPSILON_MM {
         return Err(CanonicalError::DimensionOutsideEnvelope);
     }
     let mut resized = points_mm.to_vec();
-    match target.slot {
-        FeatureParameterSlot::ProfileWidth => {
+    match target.path.as_str() {
+        "bounds.width" => {
             let right = points_mm[0][0] + value_mm;
             resized[1][0] = right;
             resized[2][0] = right;
         }
-        FeatureParameterSlot::ProfileHeight => {
+        "bounds.height" => {
             let top = points_mm[0][1] + value_mm;
             resized[2][1] = top;
             resized[3][1] = top;
         }
-        _ => return Err(CanonicalError::InvalidFeatureParameterBinding(target)),
+        _ => {
+            return Err(CanonicalError::InvalidFeatureParameterBinding(
+                target.clone(),
+            ));
+        }
     }
     validate_feature_kind(&FeatureKind::Profile {
         points_mm: resized.clone(),
@@ -8957,7 +9588,7 @@ fn clone_definition_and_repoint(
         || feature_id_map
             .iter()
             .map(|(source_id, _)| *source_id)
-            .ne(source.feature_ids.iter().copied())
+            .ne(source.feature_ids.iter().cloned())
     {
         return Err(CanonicalError::InvalidFeatureMap);
     }
@@ -9072,7 +9703,9 @@ fn clone_definition_and_repoint(
                 kind: *kind,
                 amount: amount.clone(),
             },
-            FeatureKind::TopologyShell { .. } | FeatureKind::TopologyEdgeFinish { .. } => {
+            FeatureKind::TopologyShell { .. }
+            | FeatureKind::TopologyEdgeFinish { .. }
+            | FeatureKind::TopologyFaceOffset { .. } => {
                 return Err(CanonicalError::InvalidFeatureMap);
             }
             FeatureKind::ThroughCut { target, profile } => FeatureKind::ThroughCut {
@@ -9174,7 +9807,7 @@ fn clone_definition_and_repoint(
                         .map(|feature_id| {
                             mapping
                                 .get(&feature_id)
-                                .copied()
+                                .cloned()
                                 .ok_or(CanonicalError::InvalidFeatureMap)
                         })
                         .transpose()?,
@@ -9253,7 +9886,7 @@ fn clone_definition_and_repoint(
             .map(|feature_id| {
                 mapping
                     .get(&feature_id)
-                    .copied()
+                    .cloned()
                     .ok_or(CanonicalError::InvalidFeatureMap)
             })
             .collect::<Result<BTreeSet<_>, _>>()?;
@@ -9270,10 +9903,11 @@ fn clone_definition_and_repoint(
                 .map(|new_feature_id| {
                     let target = FeatureParameterTarget {
                         feature_id: *new_feature_id,
-                        slot: binding.target.slot,
+                        path: binding.target.path.clone(),
+                        value_type: binding.target.value_type,
                     };
                     (
-                        target,
+                        target.clone(),
                         Arc::new(FeatureParameterBinding {
                             target,
                             derived_from: binding.derived_from.clone(),
@@ -9515,10 +10149,11 @@ fn apply_solid_tool(
                 .map(move |binding| {
                     let target = FeatureParameterTarget {
                         feature_id: output_id,
-                        slot: binding.target.slot,
+                        path: binding.target.path.clone(),
+                        value_type: binding.target.value_type,
                     };
                     (
-                        target,
+                        target.clone(),
                         Arc::new(FeatureParameterBinding {
                             target,
                             derived_from: binding.derived_from.clone(),
@@ -10155,7 +10790,7 @@ fn descendant_groups(
     Ok(product
         .groups
         .keys()
-        .copied()
+        .cloned()
         .filter(|id| group_is_descendant(product, root, *id))
         .collect())
 }
@@ -10201,9 +10836,9 @@ fn conversion_mappings(
     plan: &ConvertGroupPlan,
 ) -> Result<Vec<ConversionMapping>, CanonicalError> {
     let converted_groups = descendant_groups(product, plan.group_id)?;
-    let converted_group_set: BTreeSet<_> = converted_groups.iter().copied().collect();
+    let converted_group_set: BTreeSet<_> = converted_groups.iter().cloned().collect();
     let mut mappings = Vec::new();
-    for id in product.groups.keys().copied() {
+    for id in product.groups.keys().cloned() {
         let old_path = WorldEntityPath {
             groups: world_group_lineage(product, id)?,
             occurrence: None,
@@ -10310,7 +10945,7 @@ fn convert_group_to_component_model(
         .as_ref()
         .clone();
     let groups = descendant_groups(product, plan.group_id)?;
-    let group_set: BTreeSet<_> = groups.iter().copied().collect();
+    let group_set: BTreeSet<_> = groups.iter().cloned().collect();
     let occurrence_ids: Vec<_> = product
         .occurrences
         .values()
@@ -10322,7 +10957,7 @@ fn convert_group_to_component_model(
         .collect();
     let local_group_ids = groups
         .iter()
-        .copied()
+        .cloned()
         .filter(|id| *id != plan.group_id)
         .map(|id| LocalGroupId(id.0))
         .collect::<Vec<_>>();
@@ -10338,7 +10973,7 @@ fn convert_group_to_component_model(
             ..new_definition(plan.new_definition_id, plan.component_name.clone())
         }),
     );
-    for id in groups.iter().copied().filter(|id| *id != plan.group_id) {
+    for id in groups.iter().cloned().filter(|id| *id != plan.group_id) {
         let group = product.groups[&id].as_ref();
         let key = LocalGroupKey {
             definition_id: plan.new_definition_id,
@@ -10940,7 +11575,7 @@ fn validate_product(product: &ProductModel) -> Result<(), CanonicalError> {
                     .feature_body_ownership
                     .keys()
                     .find(|id| !seen.contains(id))
-                    .copied()
+                    .cloned()
                     .unwrap_or(FeatureId(0)),
             ));
         }
@@ -11204,6 +11839,20 @@ fn validate_product(product: &ProductModel) -> Result<(), CanonicalError> {
                 )?;
                 validate_topological_target(product, definition, feature.id, target, &edges)?;
             }
+            FeatureKind::TopologyFaceOffset { target, face, .. } => {
+                validate_topological_feature_context(
+                    product.document_id,
+                    feature.definition_id,
+                    &feature.kind,
+                )?;
+                validate_topological_target(
+                    product,
+                    definition,
+                    feature.id,
+                    target,
+                    std::slice::from_ref(&face),
+                )?;
+            }
             FeatureKind::ThroughCut { target, profile } => {
                 let target = product
                     .features
@@ -11408,7 +12057,7 @@ fn validate_product(product: &ProductModel) -> Result<(), CanonicalError> {
                                 || receipt.source_sha256() != &spec.source_sha256
                                 || receipt.source_byte_len() != spec.source_byte_len
                         });
-                if definition.feature_ids.as_slice() != [feature.id] || receipt_is_invalid {
+                if definition.feature_ids.first() != Some(&feature.id) || receipt_is_invalid {
                     return Err(CanonicalError::InvalidFeatureOwnership(feature.id));
                 }
             }
@@ -11550,11 +12199,14 @@ fn validate_product(product: &ProductModel) -> Result<(), CanonicalError> {
             .get(&target.feature_id)
             .ok_or(CanonicalError::FeatureNotFound(target.feature_id))?;
         if binding.target != *target
-            || !feature_supports_parameter_slot(&feature.kind, target.slot)
+            || !feature_supports_parameter_target(&feature.kind, target)
+            || feature_parameter_value_bits(product, target).is_none()
             || resolve_derived_identity(&product.evaluator_nodes, &binding.derived_from)
                 != SlotResolution::Resolved
         {
-            return Err(CanonicalError::InvalidFeatureParameterBinding(*target));
+            return Err(CanonicalError::InvalidFeatureParameterBinding(
+                target.clone(),
+            ));
         }
     }
     for (target, provenance) in &product.feature_parameter_provenance {
@@ -11563,7 +12215,9 @@ fn validate_product(product: &ProductModel) -> Result<(), CanonicalError> {
             || provenance.result_digest.is_empty()
             || provenance.identity.validate().is_err()
         {
-            return Err(CanonicalError::InvalidFeatureParameterBinding(*target));
+            return Err(CanonicalError::InvalidFeatureParameterBinding(
+                target.clone(),
+            ));
         }
     }
     for occurrence in product.occurrences.values() {
@@ -11717,7 +12371,7 @@ fn validate_definition_ownership_graph(product: &ProductModel) -> Result<(), Can
     }
 
     let mut visited = BTreeSet::new();
-    for definition_id in product.definitions.keys().copied() {
+    for definition_id in product.definitions.keys().cloned() {
         visit(definition_id, product, &mut BTreeSet::new(), &mut visited)?;
     }
     Ok(())
@@ -11864,11 +12518,11 @@ fn proposal_candidate(
     let after = revision.snapshot();
     let diff = writes
         .iter()
-        .copied()
+        .cloned()
         .map(|target| ProposalDiffEntry {
-            target,
-            before: proposal_value(snapshot, target, goal),
-            after: proposal_value(after, target, goal),
+            target: target.clone(),
+            before: proposal_value(snapshot, target.clone(), goal.clone()),
+            after: proposal_value(after, target, goal.clone()),
         })
         .collect();
     Ok((diff, dependency_digest(after, writes)))
@@ -11888,11 +12542,11 @@ fn tip_replacement_candidate(
     let after = revision.snapshot();
     let diff = writes
         .iter()
-        .copied()
+        .cloned()
         .map(|target| ProposalDiffEntry {
-            target,
-            before: proposal_value(parent, target, goal),
-            after: proposal_value(after, target, goal),
+            target: target.clone(),
+            before: proposal_value(parent, target.clone(), goal.clone()),
+            after: proposal_value(after, target, goal.clone()),
         })
         .collect();
     Ok((after.clone(), diff, dependency_digest(after, writes)))
@@ -11983,10 +12637,10 @@ fn proposal_value(
             ) =>
         {
             snapshot
-                .feature_parameter_binding(target)
+                .feature_parameter_binding(&target)
                 .map_or(ProposalValue::Missing, |binding| {
                     ProposalValue::FeatureParameterBindingState {
-                        target: binding.target,
+                        target: binding.target.clone(),
                         derived_from: binding.derived_from.clone(),
                     }
                 })
@@ -12064,7 +12718,7 @@ fn proposal_value(
             snapshot
                 .feature(id)
                 .map_or(ProposalValue::Missing, |feature| {
-                    if let ProposalGoal::RecomputeFeatureParameter(parameter) = goal
+                    if let ProposalGoal::RecomputeFeatureParameter(ref parameter) = goal
                         && parameter.feature_id == id
                     {
                         return feature_parameter_dimension(&snapshot.product, parameter)
@@ -12313,11 +12967,13 @@ fn authoritative_writes(
             }
             CanonicalCommand::UpsertFeatureParameterBinding(binding) => {
                 writes.insert(AuthoritativeDependency::FeatureParameterBinding(
-                    binding.target,
+                    binding.target.clone(),
                 ));
             }
             CanonicalCommand::DeleteFeatureParameterBinding { target } => {
-                writes.insert(AuthoritativeDependency::FeatureParameterBinding(*target));
+                writes.insert(AuthoritativeDependency::FeatureParameterBinding(
+                    target.clone(),
+                ));
             }
             CanonicalCommand::RecomputeFeatureParameters { .. } => {
                 writes.extend(
@@ -12491,7 +13147,7 @@ fn authoritative_writes(
                 writes.extend(
                     plan.result_feature_ids
                         .iter()
-                        .copied()
+                        .cloned()
                         .map(AuthoritativeDependency::Feature),
                 );
             }
@@ -12647,7 +13303,8 @@ fn authoritative_dependencies(
                     FeatureKind::Shell { target, .. }
                     | FeatureKind::BottleEdgeFinish { target, .. }
                     | FeatureKind::TopologyShell { target, .. }
-                    | FeatureKind::TopologyEdgeFinish { target, .. } => {
+                    | FeatureKind::TopologyEdgeFinish { target, .. }
+                    | FeatureKind::TopologyFaceOffset { target, .. } => {
                         add_feature_dependency_closure(snapshot, *target, &mut dependencies);
                     }
                     FeatureKind::Profile { .. }
@@ -12768,13 +13425,13 @@ fn authoritative_dependencies(
                         dependencies.extend(
                             occurrence_ids
                                 .iter()
-                                .copied()
+                                .cloned()
                                 .map(AuthoritativeDependency::Occurrence),
                         );
                         dependencies.extend(
                             occurrence_ids
                                 .iter()
-                                .copied()
+                                .cloned()
                                 .map(AuthoritativeDependency::GroundedOccurrence),
                         );
                         dependencies.extend(
@@ -12896,7 +13553,7 @@ fn authoritative_dependencies(
                 dependencies.extend(
                     plan.result_feature_ids
                         .iter()
-                        .copied()
+                        .cloned()
                         .map(AuthoritativeDependency::Feature),
                 );
             }
@@ -12940,7 +13597,7 @@ fn authoritative_dependencies(
             }
             CanonicalCommand::UpsertFeatureParameterBinding(binding) => {
                 dependencies.insert(AuthoritativeDependency::FeatureParameterBinding(
-                    binding.target,
+                    binding.target.clone(),
                 ));
                 add_feature_dependency_closure(
                     snapshot,
@@ -12954,12 +13611,14 @@ fn authoritative_dependencies(
                 );
             }
             CanonicalCommand::DeleteFeatureParameterBinding { target } => {
-                dependencies.insert(AuthoritativeDependency::FeatureParameterBinding(*target));
+                dependencies.insert(AuthoritativeDependency::FeatureParameterBinding(
+                    target.clone(),
+                ));
             }
             CanonicalCommand::RecomputeFeatureParameters { .. } => {
                 for binding in snapshot.feature_parameter_bindings() {
                     dependencies.insert(AuthoritativeDependency::FeatureParameterBinding(
-                        binding.target,
+                        binding.target.clone(),
                     ));
                     add_feature_dependency_closure(
                         snapshot,
@@ -12996,7 +13655,7 @@ fn authoritative_dependencies(
                         .adjacent_to()
                         .iter()
                         .chain(space.accessible_to())
-                        .copied()
+                        .cloned()
                         .map(AuthoritativeDependency::Space),
                 );
             }
@@ -13093,7 +13752,7 @@ fn authoritative_dependencies(
                 dependencies.extend(
                     occurrence_ids
                         .iter()
-                        .copied()
+                        .cloned()
                         .map(AuthoritativeDependency::Occurrence),
                 );
             }
@@ -13180,7 +13839,8 @@ fn add_feature_dependency_closure(
             FeatureKind::Shell { target, .. }
             | FeatureKind::BottleEdgeFinish { target, .. }
             | FeatureKind::TopologyShell { target, .. }
-            | FeatureKind::TopologyEdgeFinish { target, .. } => {
+            | FeatureKind::TopologyEdgeFinish { target, .. }
+            | FeatureKind::TopologyFaceOffset { target, .. } => {
                 add_feature_dependency_closure(snapshot, *target, dependencies);
             }
             FeatureKind::Profile { .. }
@@ -13213,7 +13873,7 @@ fn dependency_digest(
     digest.bytes(b"ketchup.authoritative-dependencies.v1");
     digest.u64(dependencies.len() as u64);
     for dependency in dependencies {
-        digest.authoritative_dependency(snapshot.product(), *dependency);
+        digest.authoritative_dependency(snapshot.product(), dependency.clone());
     }
     digest.finish()
 }
@@ -13443,9 +14103,18 @@ impl StableDigest {
         }
     }
 
+    fn feature_parameter_target(&mut self, target: &FeatureParameterTarget) {
+        self.u64(target.feature_id.0);
+        self.bytes(target.path.as_str().as_bytes());
+        self.byte(match target.value_type {
+            ParameterValueType::Length => 1,
+            ParameterValueType::Angle => 2,
+            ParameterValueType::Scalar => 3,
+        });
+    }
+
     fn feature_parameter_binding(&mut self, binding: &FeatureParameterBinding) {
-        self.u64(binding.target.feature_id.0);
-        self.byte(feature_parameter_slot_tag(binding.target.slot));
+        self.feature_parameter_target(&binding.target);
         self.u64(binding.derived_from.root_rule_node_id.0);
         self.slot_path(&binding.derived_from.slot_path);
     }
@@ -13534,8 +14203,7 @@ impl StableDigest {
         match &dimension.target {
             PersistentDimensionTarget::FeatureParameter(target) => {
                 self.byte(1);
-                self.u64(target.feature_id.0);
-                self.byte(feature_parameter_slot_tag(target.slot));
+                self.feature_parameter_target(target);
             }
             PersistentDimensionTarget::DerivedOutput(target) => {
                 self.byte(2);
@@ -13547,14 +14215,18 @@ impl StableDigest {
                 producer_feature_id,
                 semantic_role,
                 source_element_id,
-                slot,
+                path,
+                value_type,
             } => {
                 self.byte(3);
                 self.u64(definition_id.0);
-                self.u64(producer_feature_id.0);
+                self.feature_parameter_target(&FeatureParameterTarget {
+                    feature_id: *producer_feature_id,
+                    path: path.clone(),
+                    value_type: *value_type,
+                });
                 self.bytes(semantic_role.as_bytes());
                 self.bytes(source_element_id.as_bytes());
-                self.byte(feature_parameter_slot_tag(*slot));
             }
         }
         self.byte(match dimension.presentation.unit {
@@ -14096,6 +14768,17 @@ impl StableDigest {
                 self.bytes(amount.source_token.as_bytes());
                 self.u64(amount.millimetres.to_bits());
             }
+            FeatureKind::TopologyFaceOffset {
+                target,
+                face,
+                distance,
+            } => {
+                self.byte(23);
+                self.u64(target.0);
+                self.topological_reference(face);
+                self.bytes(distance.source_token.as_bytes());
+                self.u64(distance.millimetres.to_bits());
+            }
             FeatureKind::ImportedExactBody(spec) => {
                 self.byte(16);
                 self.bytes(spec.schema.as_bytes());
@@ -14301,8 +14984,7 @@ impl StableDigest {
             }
             AuthoritativeDependency::FeatureParameterBinding(target) => {
                 self.byte(14);
-                self.u64(target.feature_id.0);
-                self.byte(feature_parameter_slot_tag(target.slot));
+                self.feature_parameter_target(&target);
                 if let Some(binding) = product.feature_parameter_bindings.get(&target) {
                     self.byte(1);
                     self.feature_parameter_binding(binding);
@@ -14624,7 +15306,7 @@ impl StableDigest {
                 let descendants = product
                     .groups
                     .keys()
-                    .copied()
+                    .cloned()
                     .filter(|id| group_is_descendant(product, root, *id))
                     .collect::<BTreeSet<_>>();
                 self.u64(descendants.len() as u64);
@@ -15128,8 +15810,7 @@ impl StableDigest {
             }
             CanonicalCommand::DeleteFeatureParameterBinding { target } => {
                 self.byte(34);
-                self.u64(target.feature_id.0);
-                self.byte(feature_parameter_slot_tag(target.slot));
+                self.feature_parameter_target(target);
             }
             CanonicalCommand::RecomputeFeatureParameters { identity } => {
                 self.byte(35);
@@ -15242,5 +15923,152 @@ impl StableDigest {
 
     fn finish(self) -> String {
         format!("{:016x}", self.0)
+    }
+}
+
+#[cfg(test)]
+mod parameter_contract_tests {
+    use super::*;
+    use crate::sketch::{
+        FeatureDirection, SketchConstraint, SketchEntityId, SketchPointRef, SketchRegionId,
+    };
+
+    fn dimension(value: f64) -> Dimension {
+        Dimension::new(value.to_string(), value).unwrap()
+    }
+
+    fn assert_descriptors_have_read_write_accessors(kind: FeatureKind) {
+        validate_feature_kind(&kind).unwrap();
+        let descriptors = kind.parameter_descriptors();
+        assert!(!descriptors.is_empty());
+        for descriptor in descriptors {
+            let value = feature_kind_parameter_value(&kind, descriptor.path().as_str())
+                .unwrap_or_else(|| panic!("missing reader for {}", descriptor.path().as_str()));
+            let target = FeatureParameterTarget::new(
+                FeatureId(99),
+                descriptor.path().as_str(),
+                descriptor.value_type(),
+            )
+            .unwrap();
+            let mut updated = kind.clone();
+            assert!(
+                set_feature_kind_parameter(&mut updated, &target, &dimension(value)).unwrap(),
+                "missing writer for {}",
+                descriptor.path().as_str()
+            );
+            validate_feature_kind(&updated).unwrap_or_else(|error| {
+                panic!(
+                    "writer for {} produced invalid feature: {error}",
+                    descriptor.path().as_str()
+                )
+            });
+            assert_eq!(
+                feature_kind_parameter_value(&updated, descriptor.path().as_str()),
+                Some(value)
+            );
+        }
+    }
+
+    #[test]
+    fn every_structural_descriptor_has_a_valid_read_write_round_trip() {
+        let sketch = FeatureKind::Sketch(SketchSpec {
+            workplane: FeatureId(1),
+            entities: vec![SketchEntity::Circle {
+                id: SketchEntityId(1),
+                center_mm: [3.0, 4.0],
+                radius_mm: 2.0,
+            }],
+            constraints: vec![
+                SketchConstraint {
+                    id: SketchConstraintId(1),
+                    kind: SketchConstraintKind::Radius {
+                        entity: SketchEntityId(1),
+                        value: dimension(2.0),
+                    },
+                },
+                SketchConstraint {
+                    id: SketchConstraintId(2),
+                    kind: SketchConstraintKind::FixedPoint {
+                        point: SketchPointRef {
+                            entity: SketchEntityId(1),
+                            point: SketchPointKind::Center,
+                        },
+                        position_mm: [3.0, 4.0],
+                    },
+                },
+            ],
+        });
+        let kinds = vec![
+            FeatureKind::Workplane(WorkplaneSpec {
+                support: WorkplaneSupport::Offset {
+                    base: FeatureId(1),
+                    distance: dimension(8.0),
+                },
+                frame: WorkplaneFrame::principal(PrincipalPlane::Xy),
+            }),
+            sketch,
+            FeatureKind::Profile {
+                points_mm: vec![[0.0, 0.0], [4.0, 0.0], [4.0, 2.0], [0.0, 2.0]],
+            },
+            FeatureKind::SegmentProfile {
+                segments: vec![ProfileSegment::Line {
+                    start_mm: [0.0, 0.0],
+                    end_mm: [4.0, 2.0],
+                }],
+                closed: false,
+            },
+            FeatureKind::SplineProfile {
+                control_points_mm: vec![[0.0, 0.0], [4.0, 0.0], [4.0, 2.0], [0.0, 2.0]],
+            },
+            FeatureKind::Extrusion {
+                profile: FeatureId(1),
+                height: dimension(12.0),
+            },
+            FeatureKind::Pad(PadSpec {
+                sketch: FeatureId(1),
+                region: SketchRegionId(1),
+                direction: FeatureDirection::AlongNormal,
+                extent: FeatureExtent::Bidirectional {
+                    along: FeatureExtentEnd::Blind(dimension(6.0)),
+                    opposite: FeatureExtentEnd::Blind(dimension(3.0)),
+                },
+            }),
+            FeatureKind::BottleProfileControl {
+                profile: FeatureId(1),
+                body_radius: dimension(20.0),
+                body_height: dimension(50.0),
+                shoulder_rise: dimension(8.0),
+            },
+            FeatureKind::Revolve {
+                profile: FeatureId(1),
+                axis_start_mm: [0.0, 0.0],
+                axis_end_mm: [0.0, 1.0],
+                angle_degrees: 180.0,
+            },
+            FeatureKind::Pocket {
+                target: FeatureId(2),
+                profile: FeatureId(1),
+                depth: dimension(5.0),
+            },
+            FeatureKind::PlanarOffset {
+                profile: FeatureId(1),
+                distance: dimension(2.0),
+            },
+            FeatureKind::Loft {
+                sections: vec![
+                    LoftSection {
+                        profile: FeatureId(1),
+                        elevation_mm: 0.0,
+                    },
+                    LoftSection {
+                        profile: FeatureId(2),
+                        elevation_mm: 10.0,
+                    },
+                ],
+            },
+        ];
+        for kind in kinds {
+            assert_descriptors_have_read_write_accessors(kind);
+        }
     }
 }

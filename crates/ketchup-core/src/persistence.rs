@@ -17,12 +17,12 @@ use crate::document::{
     DimensionPresentation, DocumentStore, EdgeFinishKind, EvaluationIdentity, EvaluatorNode,
     ExactReferenceConversionConsequence, ExactToMeshConversion, Feature, FeatureBodyOwnership,
     FeatureId, FeatureKind, FeatureParameterBinding, FeatureParameterFreshnessAudit,
-    FeatureParameterProvenance, FeatureParameterSlot, FeatureParameterTarget, Group, GroupId,
-    ImportedExactBodySpec, InstancePath, InstancePathStep, LocalGroup, LocalGroupId, LocalGroupKey,
-    LocalOccurrence, LocalOccurrenceId, LocalOccurrenceKey, LoftSection, MeshAuthority,
-    MeshBodySpec, NodeId, Occurrence, OccurrenceId, PersistentDimension, PersistentDimensionId,
-    PersistentDimensionTarget, ProductModel, ProfileSegment, Snapshot, StableEdgeRole,
-    StableFaceRole, Tag, TagId, Transform, UnitSystem,
+    FeatureParameterProvenance, FeatureParameterTarget, Group, GroupId, ImportedExactBodySpec,
+    InstancePath, InstancePathStep, LocalGroup, LocalGroupId, LocalGroupKey, LocalOccurrence,
+    LocalOccurrenceId, LocalOccurrenceKey, LoftSection, MeshAuthority, MeshBodySpec, NodeId,
+    Occurrence, OccurrenceId, ParameterPath, ParameterValueType, PersistentDimension,
+    PersistentDimensionId, PersistentDimensionTarget, ProductModel, ProfileSegment, Snapshot,
+    StableEdgeRole, StableFaceRole, Tag, TagId, Transform, UnitSystem,
 };
 use crate::drawing::{DrawingSheet, DrawingSheetId, DrawingSource, ORTHOGRAPHIC_DRAWING_SCHEMA_V1};
 use crate::exact_product::{BODY_SUBSHAPE_REF_SCHEMA_V1, BodySubshapeRef, ReferenceStability};
@@ -76,7 +76,8 @@ const CLASSIFICATION_DIMENSION_SCHEMA: u16 = 37;
 const FEATURE_EXTENT_SCHEMA: u16 = 38;
 const IMPORTED_TOPOLOGY_COUNTS_SCHEMA: u16 = 39;
 const TOPOLOGICAL_FEATURE_REFERENCE_SCHEMA: u16 = 40;
-pub const CURRENT_SCHEMA: u16 = TOPOLOGICAL_FEATURE_REFERENCE_SCHEMA;
+const GENERAL_PARAMETER_PATH_SCHEMA: u16 = 41;
+pub const CURRENT_SCHEMA: u16 = GENERAL_PARAMETER_PATH_SCHEMA;
 const COLLECTION_SCHEMA: u16 = 15;
 const TAG_SCHEMA: u16 = 14;
 const PERSISTENT_DIMENSION_SCHEMA: u16 = 13;
@@ -123,6 +124,7 @@ struct ProductSchemaCapabilities {
     imported_exact_body: bool,
     imported_topology_counts: bool,
     topological_feature_references: bool,
+    general_parameter_paths: bool,
     sketchup_scene: bool,
     workplane_sketch: bool,
     assembly_contract: bool,
@@ -163,6 +165,7 @@ impl ProductSchemaCapabilities {
         imported_exact_body: false,
         imported_topology_counts: false,
         topological_feature_references: false,
+        general_parameter_paths: false,
         sketchup_scene: false,
         workplane_sketch: false,
         assembly_contract: false,
@@ -203,6 +206,7 @@ impl ProductSchemaCapabilities {
             imported_exact_body: schema >= IMPORTED_EXACT_BODY_SCHEMA,
             imported_topology_counts: schema >= IMPORTED_TOPOLOGY_COUNTS_SCHEMA,
             topological_feature_references: schema >= TOPOLOGICAL_FEATURE_REFERENCE_SCHEMA,
+            general_parameter_paths: schema >= GENERAL_PARAMETER_PATH_SCHEMA,
             sketchup_scene: schema >= SKETCHUP_SCENE_SCHEMA,
             workplane_sketch: schema >= WORKPLANE_SKETCH_SCHEMA,
             assembly_contract: schema >= ASSEMBLY_CONTRACT_SCHEMA,
@@ -1061,8 +1065,7 @@ fn write_persistent_dimension(bytes: &mut Vec<u8>, dimension: &PersistentDimensi
     match &dimension.target {
         PersistentDimensionTarget::FeatureParameter(target) => {
             push_u8(bytes, 1);
-            push_u64(bytes, target.feature_id.0);
-            write_feature_parameter_slot(bytes, target.slot);
+            write_feature_parameter_target(bytes, target);
         }
         PersistentDimensionTarget::DerivedOutput(target) => {
             push_u8(bytes, 2);
@@ -1073,14 +1076,21 @@ fn write_persistent_dimension(bytes: &mut Vec<u8>, dimension: &PersistentDimensi
             producer_feature_id,
             semantic_role,
             source_element_id,
-            slot,
+            path,
+            value_type,
         } => {
             push_u8(bytes, 3);
             push_u64(bytes, definition_id.0);
-            push_u64(bytes, producer_feature_id.0);
+            write_feature_parameter_target(
+                bytes,
+                &FeatureParameterTarget {
+                    feature_id: *producer_feature_id,
+                    path: path.clone(),
+                    value_type: *value_type,
+                },
+            );
             push_string(bytes, semantic_role);
             push_string(bytes, source_element_id);
-            write_feature_parameter_slot(bytes, *slot);
         }
     }
     push_u8(
@@ -1094,37 +1104,21 @@ fn write_persistent_dimension(bytes: &mut Vec<u8>, dimension: &PersistentDimensi
     push_u8(bytes, dimension.presentation.decimal_places);
 }
 
-fn write_feature_parameter_slot(bytes: &mut Vec<u8>, slot: FeatureParameterSlot) {
+fn write_feature_parameter_target(bytes: &mut Vec<u8>, target: &FeatureParameterTarget) {
+    push_u64(bytes, target.feature_id.0);
+    push_string(bytes, target.path.as_str());
     push_u8(
         bytes,
-        match slot {
-            FeatureParameterSlot::Height => 1,
-            FeatureParameterSlot::BodyRadius => 2,
-            FeatureParameterSlot::BodyHeight => 3,
-            FeatureParameterSlot::ShoulderRise => 4,
-            FeatureParameterSlot::Thickness => 5,
-            FeatureParameterSlot::Amount => 6,
-            FeatureParameterSlot::ProfileWidth => 7,
-            FeatureParameterSlot::ProfileHeight => 8,
+        match target.value_type {
+            ParameterValueType::Length => 1,
+            ParameterValueType::Angle => 2,
+            ParameterValueType::Scalar => 3,
         },
     );
 }
 
 fn write_feature_parameter_binding(bytes: &mut Vec<u8>, binding: &FeatureParameterBinding) {
-    push_u64(bytes, binding.target.feature_id.0);
-    push_u8(
-        bytes,
-        match binding.target.slot {
-            FeatureParameterSlot::Height => 1,
-            FeatureParameterSlot::BodyRadius => 2,
-            FeatureParameterSlot::BodyHeight => 3,
-            FeatureParameterSlot::ShoulderRise => 4,
-            FeatureParameterSlot::Thickness => 5,
-            FeatureParameterSlot::Amount => 6,
-            FeatureParameterSlot::ProfileWidth => 7,
-            FeatureParameterSlot::ProfileHeight => 8,
-        },
-    );
+    write_feature_parameter_target(bytes, &binding.target);
     write_identity(bytes, &binding.derived_from);
 }
 
@@ -1547,6 +1541,17 @@ fn write_features(bytes: &mut Vec<u8>, product: &ProductModel) {
                 );
                 push_string(bytes, amount.source_token());
                 push_u64(bytes, amount.millimetres().to_bits());
+            }
+            FeatureKind::TopologyFaceOffset {
+                target,
+                face,
+                distance,
+            } => {
+                push_u8(bytes, 23);
+                push_u64(bytes, target.0);
+                push_topological_reference(bytes, face);
+                push_string(bytes, distance.source_token());
+                push_u64(bytes, distance.millimetres().to_bits());
             }
             FeatureKind::ImportedExactBody(spec) => {
                 push_u8(bytes, 16);
@@ -2257,40 +2262,87 @@ fn read_identity(reader: &mut Reader<'_>) -> Result<DerivedIdentity, Persistence
         .map_err(PersistenceError::from)
 }
 
-fn read_feature_parameter_slot(
+fn read_legacy_parameter_path(reader: &mut Reader<'_>) -> Result<ParameterPath, PersistenceError> {
+    let path = match reader.u8()? {
+        1 => "height",
+        2 => "body_radius",
+        3 => "body_height",
+        4 => "shoulder_rise",
+        5 => "thickness",
+        6 => "amount",
+        7 => "bounds.width",
+        8 => "bounds.height",
+        value => return Err(PersistenceError::InvalidParameterSlot(value)),
+    };
+    ParameterPath::new(path).map_err(|_| PersistenceError::InvalidParameterPath)
+}
+
+fn read_feature_parameter_target(
     reader: &mut Reader<'_>,
-) -> Result<FeatureParameterSlot, PersistenceError> {
-    match reader.u8()? {
-        1 => Ok(FeatureParameterSlot::Height),
-        2 => Ok(FeatureParameterSlot::BodyRadius),
-        3 => Ok(FeatureParameterSlot::BodyHeight),
-        4 => Ok(FeatureParameterSlot::ShoulderRise),
-        5 => Ok(FeatureParameterSlot::Thickness),
-        6 => Ok(FeatureParameterSlot::Amount),
-        7 => Ok(FeatureParameterSlot::ProfileWidth),
-        8 => Ok(FeatureParameterSlot::ProfileHeight),
-        value => Err(PersistenceError::InvalidParameterSlot(value)),
-    }
+    general_parameter_paths: bool,
+) -> Result<FeatureParameterTarget, PersistenceError> {
+    let feature_id = FeatureId(reader.u64()?);
+    let (path, value_type) = if general_parameter_paths {
+        let path = ParameterPath::new(reader.string()?)
+            .map_err(|_| PersistenceError::InvalidParameterPath)?;
+        let value_type = match reader.u8()? {
+            1 => ParameterValueType::Length,
+            2 => ParameterValueType::Angle,
+            3 => ParameterValueType::Scalar,
+            value => return Err(PersistenceError::InvalidParameterValueType(value)),
+        };
+        (path, value_type)
+    } else {
+        (
+            read_legacy_parameter_path(reader)?,
+            ParameterValueType::Length,
+        )
+    };
+    Ok(FeatureParameterTarget {
+        feature_id,
+        path,
+        value_type,
+    })
 }
 
 fn read_persistent_dimension(
     reader: &mut Reader<'_>,
+    general_parameter_paths: bool,
 ) -> Result<PersistentDimension, PersistenceError> {
     let id = PersistentDimensionId(reader.u64()?);
     let name = reader.string()?;
     let target = match reader.u8()? {
-        1 => PersistentDimensionTarget::FeatureParameter(FeatureParameterTarget {
-            feature_id: FeatureId(reader.u64()?),
-            slot: read_feature_parameter_slot(reader)?,
-        }),
+        1 => PersistentDimensionTarget::FeatureParameter(read_feature_parameter_target(
+            reader,
+            general_parameter_paths,
+        )?),
         2 => PersistentDimensionTarget::DerivedOutput(read_identity(reader)?),
-        3 => PersistentDimensionTarget::ExactFeatureParameter {
-            definition_id: DefinitionId(reader.u64()?),
-            producer_feature_id: FeatureId(reader.u64()?),
-            semantic_role: reader.string()?,
-            source_element_id: reader.string()?,
-            slot: read_feature_parameter_slot(reader)?,
-        },
+        3 => {
+            let definition_id = DefinitionId(reader.u64()?);
+            if general_parameter_paths {
+                let target = read_feature_parameter_target(reader, true)?;
+                PersistentDimensionTarget::ExactFeatureParameter {
+                    definition_id,
+                    producer_feature_id: target.feature_id,
+                    semantic_role: reader.string()?,
+                    source_element_id: reader.string()?,
+                    path: target.path,
+                    value_type: target.value_type,
+                }
+            } else {
+                let producer_feature_id = FeatureId(reader.u64()?);
+                let semantic_role = reader.string()?;
+                let source_element_id = reader.string()?;
+                PersistentDimensionTarget::ExactFeatureParameter {
+                    definition_id,
+                    producer_feature_id,
+                    semantic_role,
+                    source_element_id,
+                    path: read_legacy_parameter_path(reader)?,
+                    value_type: ParameterValueType::Length,
+                }
+            }
+        }
         value => return Err(PersistenceError::InvalidPersistentDimensionTarget(value)),
     };
     let unit = match reader.u8()? {
@@ -2305,11 +2357,10 @@ fn read_persistent_dimension(
 
 fn read_feature_parameter_binding(
     reader: &mut Reader<'_>,
+    general_parameter_paths: bool,
 ) -> Result<FeatureParameterBinding, PersistenceError> {
-    let feature_id = FeatureId(reader.u64()?);
-    let slot = read_feature_parameter_slot(reader)?;
     Ok(FeatureParameterBinding {
-        target: FeatureParameterTarget { feature_id, slot },
+        target: read_feature_parameter_target(reader, general_parameter_paths)?,
         derived_from: read_identity(reader)?,
     })
 }
@@ -2911,11 +2962,12 @@ fn read_product(
         }
         if capabilities.parametric_bindings {
             for _ in 0..reader.count()? {
-                let binding = read_feature_parameter_binding(reader)?;
-                let target = binding.target;
+                let binding =
+                    read_feature_parameter_binding(reader, capabilities.general_parameter_paths)?;
+                let target = binding.target.clone();
                 if product
                     .feature_parameter_bindings
-                    .insert(target, Arc::new(binding))
+                    .insert(target.clone(), Arc::new(binding))
                     .is_some()
                 {
                     return Err(PersistenceError::DuplicateFeatureParameterBinding);
@@ -3172,6 +3224,11 @@ fn read_product(
                     amount: Dimension::new(reader.string()?, f64::from_bits(reader.u64()?))?,
                 }
             }
+            23 if capabilities.topological_feature_references => FeatureKind::TopologyFaceOffset {
+                target: FeatureId(reader.u64()?),
+                face: read_topological_reference(reader)?,
+                distance: Dimension::new(reader.string()?, f64::from_bits(reader.u64()?))?,
+            },
             8 if capabilities.boolean => FeatureKind::Boolean {
                 operation: match reader.u8()? {
                     1 => BooleanOperation::Cut,
@@ -3433,7 +3490,8 @@ fn read_product(
         }
         if capabilities.persistent_dimensions {
             for _ in 0..reader.count()? {
-                let dimension = read_persistent_dimension(reader)?;
+                let dimension =
+                    read_persistent_dimension(reader, capabilities.general_parameter_paths)?;
                 if product
                     .persistent_dimensions
                     .insert(dimension.id, Arc::new(dimension.clone()))
@@ -3788,6 +3846,8 @@ pub enum PersistenceError {
     InvalidReferenceStability(u8),
     InvalidOptionalMarker(u8),
     InvalidParameterSlot(u8),
+    InvalidParameterPath,
+    InvalidParameterValueType(u8),
     InvalidPersistentDimensionTarget(u8),
     InvalidDimensionDisplayUnit(u8),
     InvalidClearanceOwner(u8),
@@ -3893,6 +3953,10 @@ impl fmt::Display for PersistenceError {
             }
             Self::InvalidParameterSlot(value) => {
                 write!(formatter, "feature parameter slot {value} is invalid")
+            }
+            Self::InvalidParameterPath => formatter.write_str("feature parameter path is invalid"),
+            Self::InvalidParameterValueType(value) => {
+                write!(formatter, "feature parameter value type {value} is invalid")
             }
             Self::InvalidPersistentDimensionTarget(value) => {
                 write!(formatter, "persistent dimension target {value} is invalid")

@@ -276,6 +276,56 @@ fn topology_shell_and_edge_finish_compile_to_typed_target_bound_nodes() {
 }
 
 #[test]
+fn topology_face_offset_compiles_and_round_trips_with_signed_distance() {
+    let mut document = arbitrary_boolean_document();
+    let face = topology_reference(
+        &document.current(),
+        BOOLEAN,
+        TopologicalElementKind::Face,
+        2,
+    );
+    let offset = FeatureId(40);
+    document
+        .apply_batch(&CommandBatch::new(vec![CanonicalCommand::CreateFeature {
+            id: offset,
+            definition_id: DEFINITION,
+            name: "Topology face offset".into(),
+            kind: FeatureKind::TopologyFaceOffset {
+                target: BOOLEAN,
+                face: face.clone(),
+                distance: dimension(-3.5),
+            },
+        }]))
+        .unwrap();
+
+    let snapshot = document.current();
+    let graph = ExactBRepGraph::from_snapshot(&snapshot, DEFINITION, offset).unwrap();
+    assert_eq!(graph.nodes.len(), 4);
+    let ExactBRepOperation::FaceOffset {
+        target,
+        face: selector,
+        distance_bits,
+    } = &graph.nodes[3].operation
+    else {
+        panic!("last node must be a topology face offset");
+    };
+    assert_eq!(target.0, 2);
+    assert_eq!(selector.kind, ExactBRepTopologyKind::Face);
+    assert_eq!(selector.reference().unwrap(), face);
+    assert_eq!(f64::from_bits(*distance_bits), -3.5);
+    assert_eq!(
+        ExactBRepGraph::from_bytes(&graph.to_bytes().unwrap()).unwrap(),
+        graph
+    );
+
+    let reopened = persistence::load(&persistence::save(&snapshot)).unwrap();
+    assert_eq!(
+        ExactBRepGraph::from_snapshot(&reopened.snapshot(), DEFINITION, offset).unwrap(),
+        graph
+    );
+}
+
+#[test]
 fn graph_digest_and_payload_tampering_fail_closed() {
     let graph =
         ExactBRepGraph::from_snapshot(&arbitrary_boolean_document().current(), DEFINITION, BOOLEAN)

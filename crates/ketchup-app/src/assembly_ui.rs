@@ -6,8 +6,11 @@ use ketchup_core::assembly::{
 };
 #[cfg(debug_assertions)]
 use ketchup_core::drawing::project_orthographic_drawing;
-use ketchup_core::drawing::{DrawingSheet, DrawingSource, prepare_create_drawing_sheet};
-use ketchup_core::exact_product::{BodySubshapeRef, ExactFaceRole};
+use ketchup_core::drawing::{
+    DrawingSheet, DrawingSheetId, DrawingSource, prepare_create_drawing_sheet,
+};
+use ketchup_core::exact_product::BodySubshapeRef;
+#[cfg(debug_assertions)]
 use ketchup_core::release_capstone::ReleaseCapstoneContract;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -57,8 +60,11 @@ enum AssemblyPreviewSource {
         id: OccurrenceId,
         grounded: bool,
     },
-    CapstoneAssembly,
-    CapstoneDrawing,
+    SelectionDrawing {
+        occurrence_ids: Vec<OccurrenceId>,
+        sheet_id: DrawingSheetId,
+        name: String,
+    },
     Mate {
         mate: AssemblyMate,
         editing: bool,
@@ -75,8 +81,7 @@ impl AssemblyPreviewSource {
             Self::GroundOccurrence {
                 grounded: false, ..
             } => "assembly-action-unground",
-            Self::CapstoneAssembly => "assembly-action-capstone",
-            Self::CapstoneDrawing => "assembly-action-capstone-drawing",
+            Self::SelectionDrawing { .. } => "assembly-action-selection-drawing",
             Self::Mate { editing: true, .. } => "assembly-action-edit-mate",
             Self::Mate { editing: false, .. } => "assembly-action-create-mate",
             Self::RemoveMate(_) => "assembly-action-remove-mate",
@@ -122,8 +127,7 @@ pub(super) struct AssemblyEditorState {
 
 enum AssemblyUiAction {
     Insert,
-    ComposeCapstone,
-    CreateCapstoneDrawing,
+    CreateSelectionDrawing,
     Ground(OccurrenceId, bool),
     SelectEndpointA(OccurrenceId),
     SelectEndpointB(OccurrenceId),
@@ -319,10 +323,13 @@ impl KetchupApp {
                     grounded: *grounded,
                 }])
             }
-            AssemblyPreviewSource::CapstoneAssembly => self
-                .plan_capstone_assembly()
-                .ok_or_else(|| self.catalog.text("assembly-error-solve-refused"))?,
-            AssemblyPreviewSource::CapstoneDrawing => return self.plan_capstone_drawing(),
+            AssemblyPreviewSource::SelectionDrawing {
+                occurrence_ids,
+                sheet_id,
+                name,
+            } => {
+                return self.plan_selection_drawing(occurrence_ids, *sheet_id, name);
+            }
             AssemblyPreviewSource::Mate { mate, editing } => {
                 let existing = snapshot.assembly_mate(mate.id());
                 if *editing != existing.is_some() {
@@ -450,100 +457,38 @@ impl KetchupApp {
         self.prepare_assembly_preview(AssemblyPreviewSource::GroundOccurrence { id, grounded })
     }
 
-    fn plan_capstone_assembly(&self) -> Option<CommandBatch> {
-        let contract = ReleaseCapstoneContract::mechanical_plate_fixture();
+    fn plan_selection_drawing(
+        &self,
+        occurrence_ids: &[OccurrenceId],
+        sheet_id: DrawingSheetId,
+        name: &str,
+    ) -> Result<Proposal, String> {
         let snapshot = self.document.current();
-        if snapshot.assembly_mates().next().is_some()
-            || snapshot.drawing_sheet(contract.drawing_sheet_id).is_some()
+        let selected = self.selected_occurrence_ids();
+        if occurrence_ids.is_empty()
+            || occurrence_ids.iter().copied().collect::<BTreeSet<_>>() != selected
+            || snapshot.drawing_sheet(sheet_id).is_some()
         {
-            return None;
-        }
-        for occurrence_id in [
-            contract.plate_occurrence_id,
-            contract.first_shared_occurrence_id,
-            contract.second_shared_occurrence_id,
-        ] {
-            if snapshot.occurrence_effectively_visible(occurrence_id) != Some(true) {
-                return None;
-            }
-        }
-        let plate = self
-            .exact_results
-            .get_render(&snapshot, contract.plate_definition_id)?;
-        let fastener = self
-            .exact_results
-            .get_render(&snapshot, contract.shared_definition_id)?;
-        let plate_top = plate.reference(ExactFaceRole::Top)?.clone();
-        let fastener_bottom = fastener.reference(ExactFaceRole::Bottom)?.clone();
-        let fastener_axis = fastener.reference(ExactFaceRole::CircleSide)?.clone();
-        let batch = CommandBatch::new(vec![
-            CanonicalCommand::SetOccurrenceGrounded {
-                id: contract.plate_occurrence_id,
-                grounded: true,
-            },
-            CanonicalCommand::SetOccurrenceGrounded {
-                id: contract.second_shared_occurrence_id,
-                grounded: true,
-            },
-            CanonicalCommand::CreateAssemblyMate(AssemblyMate::new(
-                contract.planar_mate_id,
-                AssemblyMateEndpoint::resolved(contract.plate_occurrence_id, plate_top.clone()),
-                AssemblyMateEndpoint::resolved(
-                    contract.first_shared_occurrence_id,
-                    fastener_bottom,
-                ),
-                AssemblyMateKind::CoincidentPlanar {
-                    offset_mm: f64::from(contract.dimensions.plate_height_mm),
-                    reversed: false,
-                },
-            )),
-            CanonicalCommand::CreateAssemblyMate(AssemblyMate::new(
-                contract.axial_mate_id,
-                AssemblyMateEndpoint::resolved(contract.plate_occurrence_id, plate_top),
-                AssemblyMateEndpoint::resolved(contract.first_shared_occurrence_id, fastener_axis),
-                AssemblyMateKind::ConcentricAxial { reversed: false },
-            )),
-        ]);
-        let candidate = self.document.preview_batch(&batch).ok()?;
-        let solved = solve_rigid_assembly(&candidate, AssemblySolverPolicy::default()).ok()?;
-        (solved.status() == AssemblySolveStatus::FullyConstrained
-            && solved.remaining_dof() == 0
-            && solved.redundant_mate_ids().is_empty()
-            && solved.conflicting_mate_ids().is_empty())
-        .then_some(batch)
-    }
-
-    fn preview_capstone_assembly(&mut self) -> bool {
-        self.prepare_assembly_preview(AssemblyPreviewSource::CapstoneAssembly)
-    }
-
-    fn plan_capstone_drawing(&self) -> Result<Proposal, String> {
-        let contract = ReleaseCapstoneContract::mechanical_plate_fixture();
-        let snapshot = self.document.current();
-        if snapshot.drawing_sheet(contract.drawing_sheet_id).is_some() {
             return Err(self.catalog.text("error-preview-stale"));
         }
-        let solved = solve_rigid_assembly(&snapshot, AssemblySolverPolicy::default())
-            .map_err(|error| error.to_string())?;
-        if solved.status() != AssemblySolveStatus::FullyConstrained
-            || solved.remaining_dof() != 0
-            || !solved.redundant_mate_ids().is_empty()
-            || !solved.conflicting_mate_ids().is_empty()
-        {
-            return Err(self.catalog.text("assembly-error-solve-refused"));
-        }
-        let sheet = DrawingSheet::new(
-            contract.drawing_sheet_id,
-            self.catalog.text("assembly-capstone-drawing-name"),
+        let source = if let [occurrence_id] = occurrence_ids {
+            let definition_id = snapshot
+                .occurrence(*occurrence_id)
+                .ok_or_else(|| self.catalog.text("error-preview-stale"))?
+                .definition_id();
+            DrawingSource::Definition(definition_id)
+        } else {
+            if occurrence_ids
+                .iter()
+                .any(|occurrence_id| snapshot.occurrence(*occurrence_id).is_none())
+            {
+                return Err(self.catalog.text("error-preview-stale"));
+            }
             DrawingSource::RigidAssembly {
-                occurrence_ids: vec![
-                    contract.plate_occurrence_id,
-                    contract.first_shared_occurrence_id,
-                    contract.second_shared_occurrence_id,
-                ],
-            },
-        )
-        .map_err(|error| error.to_string())?;
+                occurrence_ids: occurrence_ids.to_vec(),
+            }
+        };
+        let sheet = DrawingSheet::new(sheet_id, name, source).map_err(|error| error.to_string())?;
         let (proposal, drawing) =
             prepare_create_drawing_sheet(&self.document, &self.exact_results, sheet)
                 .map_err(|error| error.to_string())?;
@@ -558,8 +503,44 @@ impl KetchupApp {
         Ok(proposal)
     }
 
-    fn preview_capstone_drawing(&mut self) -> bool {
-        self.prepare_assembly_preview(AssemblyPreviewSource::CapstoneDrawing)
+    fn preview_selection_drawing(&mut self) -> bool {
+        let snapshot = self.document.current();
+        let occurrence_ids = self
+            .selected_occurrence_ids()
+            .into_iter()
+            .collect::<Vec<_>>();
+        if occurrence_ids.is_empty() {
+            self.assembly_error(self.catalog.text("assembly-error-drawing-selection"));
+            return false;
+        }
+        let sheet_id = DrawingSheetId(
+            snapshot
+                .drawing_sheets()
+                .map(|sheet| sheet.id().0)
+                .max()
+                .unwrap_or(0)
+                + 1,
+        );
+        let name = if let [occurrence_id] = occurrence_ids.as_slice() {
+            let Some(occurrence) = snapshot.occurrence(*occurrence_id) else {
+                self.assembly_error(self.catalog.text("assembly-error-drawing-selection"));
+                return false;
+            };
+            self.catalog.format(
+                "assembly-selection-drawing-part-name",
+                &BTreeMap::from([("name", occurrence.name().to_owned())]),
+            )
+        } else {
+            self.catalog.format(
+                "assembly-selection-drawing-name",
+                &BTreeMap::from([("count", occurrence_ids.len().to_string())]),
+            )
+        };
+        self.prepare_assembly_preview(AssemblyPreviewSource::SelectionDrawing {
+            occurrence_ids,
+            sheet_id,
+            name,
+        })
     }
 
     fn selected_assembly_reference(
@@ -907,18 +888,14 @@ impl KetchupApp {
             .clicked()
             .then_some(AssemblyUiAction::Insert);
         if ui
-            .button(self.catalog.text("assembly-preview-capstone"))
+            .add_enabled(
+                !self.selected_occurrence_ids().is_empty(),
+                egui::Button::new(self.catalog.text("assembly-preview-selection-drawing")),
+            )
             .clicked()
         {
-            action = Some(AssemblyUiAction::ComposeCapstone);
+            action = Some(AssemblyUiAction::CreateSelectionDrawing);
         }
-        if ui
-            .button(self.catalog.text("assembly-preview-capstone-drawing"))
-            .clicked()
-        {
-            action = Some(AssemblyUiAction::CreateCapstoneDrawing);
-        }
-
         ui.label(self.catalog.text("assembly-occurrences"));
         for occurrence in snapshot.occurrences() {
             let id = occurrence.id();
@@ -1130,11 +1107,8 @@ impl KetchupApp {
             Some(AssemblyUiAction::Insert) => {
                 self.preview_insert_occurrence();
             }
-            Some(AssemblyUiAction::ComposeCapstone) => {
-                self.preview_capstone_assembly();
-            }
-            Some(AssemblyUiAction::CreateCapstoneDrawing) => {
-                self.preview_capstone_drawing();
+            Some(AssemblyUiAction::CreateSelectionDrawing) => {
+                self.preview_selection_drawing();
             }
             Some(AssemblyUiAction::Ground(id, grounded)) => {
                 self.preview_ground_occurrence(id, grounded);
@@ -1219,6 +1193,25 @@ impl KetchupApp {
             solved.remaining_dof(),
             solved.redundant_mate_ids().len(),
             solved.conflicting_mate_ids().len(),
+        ))
+    }
+
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn headless_drawing_fingerprint(
+        &self,
+        sheet_id: DrawingSheetId,
+    ) -> Option<(String, Vec<&'static str>)> {
+        let snapshot = self.document.current();
+        let sheet = snapshot.drawing_sheet(sheet_id)?;
+        let drawing = project_orthographic_drawing(&snapshot, &self.exact_results, sheet).ok()?;
+        Some((
+            drawing.result_digest,
+            drawing
+                .views
+                .iter()
+                .map(|view| view.kind.stable_name())
+                .collect(),
         ))
     }
 

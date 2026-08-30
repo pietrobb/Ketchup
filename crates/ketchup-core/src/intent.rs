@@ -756,7 +756,7 @@ pub fn propose_intent(
             output_port,
             semantic_key,
         } => {
-            if store.current().feature_parameter_binding(target).is_some() {
+            if store.current().feature_parameter_binding(&target).is_some() {
                 return Err(
                     crate::document::CanonicalError::InvalidFeatureParameterBinding(target).into(),
                 );
@@ -771,8 +771,8 @@ pub fn propose_intent(
             )
             .map_err(crate::document::CanonicalError::Graph)?;
             (
-                ProposalGoal::CreateFeatureParameterBinding(target),
-                AuthoritativeDependency::FeatureParameterBinding(target),
+                ProposalGoal::CreateFeatureParameterBinding(target.clone()),
+                AuthoritativeDependency::FeatureParameterBinding(target.clone()),
                 CanonicalCommand::UpsertFeatureParameterBinding(FeatureParameterBinding {
                     target,
                     derived_from,
@@ -780,8 +780,8 @@ pub fn propose_intent(
             )
         }
         WorkflowIntent::DeleteFeatureParameterBinding { target } => (
-            ProposalGoal::DeleteFeatureParameterBinding(target),
-            AuthoritativeDependency::FeatureParameterBinding(target),
+            ProposalGoal::DeleteFeatureParameterBinding(target.clone()),
+            AuthoritativeDependency::FeatureParameterBinding(target.clone()),
             CanonicalCommand::DeleteFeatureParameterBinding { target },
         ),
         WorkflowIntent::CreatePersistentDimension {
@@ -797,7 +797,7 @@ pub fn propose_intent(
                         .into(),
                 );
             }
-            if !snapshot.has_feature_parameter(dimension_target) {
+            if !snapshot.has_feature_parameter(&dimension_target) {
                 return Err(
                     crate::document::CanonicalError::InvalidPersistentDimensionTarget.into(),
                 );
@@ -940,7 +940,7 @@ pub fn propose_intent(
                 );
             }
             (
-                ProposalGoal::RecomputeFeatureParameter(target),
+                ProposalGoal::RecomputeFeatureParameter(target.clone()),
                 AuthoritativeDependency::Feature(target.feature_id),
                 CanonicalCommand::RecomputeFeatureParameters {
                     identity: EvaluationIdentity::default(),
@@ -1441,7 +1441,7 @@ pub fn propose_intent(
         vec![ProposalAssumption::TargetExists(target)]
     } else {
         vec![
-            ProposalAssumption::TargetExists(target),
+            ProposalAssumption::TargetExists(target.clone()),
             ProposalAssumption::TargetHasDimension(target),
         ]
     };

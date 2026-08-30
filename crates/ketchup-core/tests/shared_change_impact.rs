@@ -2,8 +2,9 @@ use ketchup_core::assembly::{
     AssemblyMate, AssemblyMateEndpoint, AssemblyMateId, AssemblyMateKind,
 };
 use ketchup_core::document::{
-    BodyId, CanonicalCommand, CanonicalError, CommandBatch, DefinitionId, Dimension, DocumentStore,
-    FeatureId, FeatureKind, OccurrenceId, ProposalPrincipal, StableFaceRole, Transform,
+    BodyId, CanonicalCommand, CanonicalError, CollectionId, CommandBatch, DefinitionId, Dimension,
+    DocumentStore, FeatureId, FeatureKind, GroupId, OccurrenceId, ProposalCommitError,
+    ProposalPrincipal, StableFaceRole, Transform,
 };
 use ketchup_core::drawing::{
     DrawingSheet, DrawingSheetId, DrawingSource, OrthographicDrawing, OrthographicViewKind,
@@ -20,8 +21,10 @@ use ketchup_core::feature_history::{
 };
 use ketchup_core::persistence;
 use ketchup_core::shared_change::{
-    SharedChangeExportEligibility, SharedChangeExportFormat, SharedChangeImpactError,
-    SharedChangePropagationError, SharedDefinitionChangeRequest, commit_shared_definition_change,
+    OCCURRENCE_EDIT_IMPACT_SCHEMA_V1, OccurrenceDrawingDependencyAction, OccurrenceEdit,
+    OccurrenceEditImpactError, OccurrenceEditRequest, SharedChangeExportEligibility,
+    SharedChangeExportFormat, SharedChangeImpactError, SharedChangePropagationError,
+    SharedDefinitionChangeRequest, commit_shared_definition_change, project_occurrence_edit_impact,
     project_shared_change_impact,
 };
 use std::sync::Arc;
@@ -36,6 +39,7 @@ const OTHER: OccurrenceId = OccurrenceId(30);
 const MATE: AssemblyMateId = AssemblyMateId(40);
 const AXIAL_MATE: AssemblyMateId = AssemblyMateId(41);
 const SHEET: DrawingSheetId = DrawingSheetId(50);
+const COLLECTION: CollectionId = CollectionId(70);
 
 #[derive(Debug, Eq, PartialEq)]
 struct Stamp {
@@ -54,6 +58,33 @@ fn stamp(document: &DocumentStore) -> Stamp {
         undo: document.visible_undo_steps(),
         redo: document.visible_redo_steps(),
     }
+}
+
+#[test]
+fn occurrence_edit_contract_binds_provenance_and_preserves_world_space_by_default() {
+    let document = seed(false);
+    let snapshot = document.current();
+    let delete = OccurrenceEditRequest::delete(&snapshot, FIRST);
+    let reparent = OccurrenceEditRequest::reparent(&snapshot, FIRST, Some(GroupId(60)));
+
+    assert_eq!(
+        OCCURRENCE_EDIT_IMPACT_SCHEMA_V1,
+        "ketchup.occurrence-edit-impact.v1"
+    );
+    assert_eq!(delete.source_revision, snapshot.revision_id());
+    assert_eq!(delete.source_digest, snapshot.canonical_digest());
+    assert_eq!(delete.target_occurrence_id, FIRST);
+    assert_eq!(delete.edit, OccurrenceEdit::Delete);
+    assert_eq!(reparent.source_revision, snapshot.revision_id());
+    assert_eq!(reparent.source_digest, snapshot.canonical_digest());
+    assert_eq!(reparent.target_occurrence_id, FIRST);
+    assert_eq!(
+        reparent.edit,
+        OccurrenceEdit::Reparent {
+            parent: Some(GroupId(60)),
+            preserve_world_transform: true,
+        }
+    );
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -244,6 +275,583 @@ fn seed_rigid_dependencies() -> DocumentStore {
         ]))
         .unwrap();
     document
+}
+
+#[test]
+fn dependency_aware_delete_is_one_reviewed_atomic_proposal() {
+    let mut document = seed_rigid_dependencies();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateCollection {
+                id: COLLECTION,
+                name: "Assembly selection".into(),
+            },
+            CanonicalCommand::SetCollectionOccurrences {
+                id: COLLECTION,
+                occurrence_ids: vec![FIRST, SECOND, OTHER],
+            },
+        ]))
+        .unwrap();
+    let source = document.current();
+    let before = stamp(&document);
+    let unrelated_before = source.occurrence(OTHER).unwrap().clone();
+
+    let impact = project_occurrence_edit_impact(
+        &document,
+        OccurrenceEditRequest::delete(&source, FIRST),
+        ProposalPrincipal::LocalAssistant,
+    )
+    .unwrap();
+
+    assert_eq!(stamp(&document), before);
+    assert!(impact.is_review_only());
+    assert_eq!(impact.schema, OCCURRENCE_EDIT_IMPACT_SCHEMA_V1);
+    assert_eq!(impact.source_revision, source.revision_id());
+    assert_eq!(impact.source_digest, source.canonical_digest());
+    assert_ne!(impact.candidate_digest, impact.source_digest);
+    assert_eq!(impact.target_occurrence_id, FIRST);
+    assert_eq!(impact.target_instance_path.root_occurrence(), FIRST);
+    assert_eq!(impact.edit, OccurrenceEdit::Delete);
+    assert_eq!(impact.parent_before, None);
+    assert_eq!(impact.parent_after, None);
+    assert_eq!(impact.local_transform_before, Transform::identity());
+    assert_eq!(impact.local_transform_after, None);
+    assert_eq!(impact.world_transform_before, Transform::identity());
+    assert_eq!(impact.world_transform_after, None);
+    assert_eq!(impact.incident_mate_ids, vec![MATE, AXIAL_MATE]);
+    assert_eq!(impact.collection_dependencies.len(), 1);
+    assert_eq!(impact.collection_dependencies[0].collection_id, COLLECTION);
+    assert_eq!(
+        impact.collection_dependencies[0].occurrence_ids_before,
+        vec![FIRST, SECOND, OTHER]
+    );
+    assert_eq!(
+        impact.collection_dependencies[0].occurrence_ids_after,
+        vec![SECOND, OTHER]
+    );
+    assert_eq!(impact.drawing_dependencies.len(), 1);
+    assert_eq!(impact.drawing_dependencies[0].sheet_id, SHEET);
+    assert_eq!(
+        impact.drawing_dependencies[0].action,
+        OccurrenceDrawingDependencyAction::UpdateRigidAssembly {
+            occurrence_ids: vec![SECOND],
+        }
+    );
+
+    let commands = impact.proposal.batch().commands();
+    assert_eq!(commands.len(), 5);
+    assert!(matches!(
+        commands[0],
+        CanonicalCommand::DeleteAssemblyMate { id: MATE }
+    ));
+    assert!(matches!(
+        commands[1],
+        CanonicalCommand::DeleteAssemblyMate { id: AXIAL_MATE }
+    ));
+    assert!(matches!(
+        &commands[2],
+        CanonicalCommand::SetCollectionOccurrences { id: COLLECTION, occurrence_ids }
+            if occurrence_ids == &vec![SECOND, OTHER]
+    ));
+    assert!(matches!(
+        &commands[3],
+        CanonicalCommand::UpdateDrawingSheet(sheet)
+            if sheet.id() == SHEET
+                && sheet.source() == &DrawingSource::RigidAssembly {
+                    occurrence_ids: vec![SECOND],
+                }
+    ));
+    assert!(matches!(
+        commands[4],
+        CanonicalCommand::DeleteOccurrence { id: FIRST }
+    ));
+
+    document.commit_proposal(&impact.proposal).unwrap();
+    let committed = document.current();
+    assert_eq!(committed.canonical_digest(), impact.candidate_digest);
+    assert!(committed.occurrence(FIRST).is_none());
+    assert_eq!(committed.occurrence(OTHER), Some(&unrelated_before));
+    assert!(committed.assembly_mate(MATE).is_none());
+    assert!(committed.assembly_mate(AXIAL_MATE).is_none());
+    assert_eq!(
+        committed
+            .collection(COLLECTION)
+            .unwrap()
+            .occurrence_ids()
+            .collect::<Vec<_>>(),
+        vec![SECOND, OTHER]
+    );
+    assert_eq!(
+        committed.drawing_sheet(SHEET).unwrap().source(),
+        &DrawingSource::RigidAssembly {
+            occurrence_ids: vec![SECOND],
+        }
+    );
+    assert_eq!(document.revision_count(), before.revisions + 1);
+    assert_eq!(document.visible_undo_steps(), before.undo + 1);
+}
+
+#[test]
+fn dependency_aware_delete_verifier_covers_cancel_stale_persistence_and_undo_redo() {
+    let mut document = seed_rigid_dependencies();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateCollection {
+                id: COLLECTION,
+                name: "Persistent selection".into(),
+            },
+            CanonicalCommand::SetCollectionOccurrences {
+                id: COLLECTION,
+                occurrence_ids: vec![FIRST, SECOND, OTHER],
+            },
+        ]))
+        .unwrap();
+    let source = document.current();
+    let cancelled_before = stamp(&document);
+    let bytes_before_cancel = persistence::save(&source);
+    let stale_request = OccurrenceEditRequest::delete(&source, FIRST);
+    let cancelled = project_occurrence_edit_impact(
+        &document,
+        stale_request.clone(),
+        ProposalPrincipal::LocalAssistant,
+    )
+    .unwrap();
+
+    drop(cancelled);
+    assert_eq!(stamp(&document), cancelled_before);
+    assert_eq!(persistence::save(&document.current()), bytes_before_cancel);
+
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetOccurrenceVisibility {
+                id: OTHER,
+                visible: false,
+            },
+        ]))
+        .unwrap();
+    let changed = stamp(&document);
+    assert_eq!(
+        project_occurrence_edit_impact(&document, stale_request, ProposalPrincipal::LocalAssistant,),
+        Err(OccurrenceEditImpactError::Stale)
+    );
+    assert_eq!(stamp(&document), changed);
+
+    let stale_impact = project_occurrence_edit_impact(
+        &document,
+        OccurrenceEditRequest::delete(&document.current(), FIRST),
+        ProposalPrincipal::ManualClient,
+    )
+    .unwrap();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetOccurrenceVisibility {
+                id: OTHER,
+                visible: true,
+            },
+        ]))
+        .unwrap();
+    let before_stale_commit = stamp(&document);
+    assert!(matches!(
+        document.commit_proposal(&stale_impact.proposal),
+        Err(ProposalCommitError::Stale(_))
+    ));
+    assert_eq!(stamp(&document), before_stale_commit);
+
+    let impact = project_occurrence_edit_impact(
+        &document,
+        OccurrenceEditRequest::delete(&document.current(), FIRST),
+        ProposalPrincipal::ManualClient,
+    )
+    .unwrap();
+    let before_commit = stamp(&document);
+    document.commit_proposal(&impact.proposal).unwrap();
+    let committed = document.current();
+    let committed_digest = committed.canonical_digest();
+    assert_eq!(committed_digest, impact.candidate_digest);
+    assert_eq!(document.revision_count(), before_commit.revisions + 1);
+    assert_eq!(document.visible_undo_steps(), before_commit.undo + 1);
+    assert_eq!(document.visible_redo_steps(), 0);
+
+    let reopened = persistence::load(&persistence::save(&committed))
+        .unwrap()
+        .into_editable()
+        .ok()
+        .unwrap();
+    let reopened = reopened.current();
+    assert_eq!(reopened.canonical_digest(), committed_digest);
+    assert!(reopened.occurrence(FIRST).is_none());
+    assert!(reopened.assembly_mate(MATE).is_none());
+    assert!(reopened.assembly_mate(AXIAL_MATE).is_none());
+    assert_eq!(
+        reopened
+            .collection(COLLECTION)
+            .unwrap()
+            .occurrence_ids()
+            .collect::<Vec<_>>(),
+        vec![SECOND, OTHER]
+    );
+    assert_eq!(
+        reopened.drawing_sheet(SHEET).unwrap().source(),
+        &DrawingSource::RigidAssembly {
+            occurrence_ids: vec![SECOND],
+        }
+    );
+
+    document.undo().unwrap();
+    assert_eq!(document.current().canonical_digest(), before_commit.digest);
+    assert_eq!(document.visible_undo_steps(), before_commit.undo);
+    assert_eq!(document.visible_redo_steps(), 1);
+    document.redo().unwrap();
+    assert_eq!(document.current().canonical_digest(), committed_digest);
+    assert_eq!(document.visible_undo_steps(), before_commit.undo + 1);
+    assert_eq!(document.visible_redo_steps(), 0);
+}
+
+#[test]
+fn dependency_aware_delete_removes_a_drawing_with_an_empty_reduced_source() {
+    let mut document = seed(false);
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::DeleteAssemblyMate { id: MATE },
+            CanonicalCommand::SetOccurrenceGrounded {
+                id: FIRST,
+                grounded: true,
+            },
+            CanonicalCommand::UpdateDrawingSheet(
+                DrawingSheet::new(
+                    SHEET,
+                    "Single rigid source",
+                    DrawingSource::RigidAssembly {
+                        occurrence_ids: vec![FIRST],
+                    },
+                )
+                .unwrap(),
+            ),
+        ]))
+        .unwrap();
+    let source = document.current();
+
+    let impact = project_occurrence_edit_impact(
+        &document,
+        OccurrenceEditRequest::delete(&source, FIRST),
+        ProposalPrincipal::ManualClient,
+    )
+    .unwrap();
+
+    assert!(impact.incident_mate_ids.is_empty());
+    assert_eq!(impact.drawing_dependencies.len(), 1);
+    assert_eq!(impact.drawing_dependencies[0].sheet_id, SHEET);
+    assert_eq!(
+        impact.drawing_dependencies[0].action,
+        OccurrenceDrawingDependencyAction::DeleteSheet
+    );
+    assert!(matches!(
+        impact.proposal.batch().commands()[0],
+        CanonicalCommand::DeleteDrawingSheet { id: SHEET }
+    ));
+    assert!(matches!(
+        impact.proposal.batch().commands()[1],
+        CanonicalCommand::DeleteOccurrence { id: FIRST }
+    ));
+
+    document.commit_proposal(&impact.proposal).unwrap();
+    assert!(document.current().drawing_sheet(SHEET).is_none());
+    assert!(document.current().occurrence(FIRST).is_none());
+    assert!(document.current().occurrence(SECOND).is_some());
+}
+
+#[test]
+fn dependency_aware_reparent_preserves_world_transform_mates_and_collections() {
+    let parent = GroupId(60);
+    let nested_parent = GroupId(61);
+    let mut document = seed_rigid_dependencies();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateGroup {
+                id: parent,
+                name: "Rotated assembly".into(),
+                transform: Transform::from_matrix([
+                    0.0, -1.0, 0.0, 100.0, 1.0, 0.0, 0.0, 10.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0,
+                    1.0,
+                ])
+                .unwrap(),
+                parent: None,
+            },
+            CanonicalCommand::CreateGroup {
+                id: nested_parent,
+                name: "Nested assembly".into(),
+                transform: Transform::from_translation(-20.0, 40.0, 0.0).unwrap(),
+                parent: Some(parent),
+            },
+            CanonicalCommand::CreateCollection {
+                id: COLLECTION,
+                name: "Preserved selection".into(),
+            },
+            CanonicalCommand::SetCollectionOccurrences {
+                id: COLLECTION,
+                occurrence_ids: vec![FIRST, SECOND, OTHER],
+            },
+        ]))
+        .unwrap();
+    let source = document.current();
+    let before = stamp(&document);
+    let mate_before = source.assembly_mate(MATE).unwrap().clone();
+    let axial_mate_before = source.assembly_mate(AXIAL_MATE).unwrap().clone();
+    let drawing_before = source.drawing_sheet(SHEET).unwrap().clone();
+    let unrelated_before = source.occurrence(OTHER).unwrap().clone();
+    let world_before = source.world_transform_for_occurrence(FIRST).unwrap();
+    let expected_local = Transform::from_matrix([
+        0.0, 1.0, 0.0, 10.0, -1.0, 0.0, 0.0, 60.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+    ])
+    .unwrap();
+
+    let impact = project_occurrence_edit_impact(
+        &document,
+        OccurrenceEditRequest::reparent(&source, FIRST, Some(nested_parent)),
+        ProposalPrincipal::LocalAssistant,
+    )
+    .unwrap();
+
+    assert_eq!(stamp(&document), before);
+    assert!(impact.is_review_only());
+    assert_eq!(impact.parent_before, None);
+    assert_eq!(impact.parent_after, Some(nested_parent));
+    assert_eq!(impact.local_transform_before, Transform::identity());
+    assert_eq!(impact.local_transform_after, Some(expected_local));
+    assert_eq!(impact.world_transform_before, world_before);
+    assert_eq!(impact.world_transform_after, Some(world_before));
+    assert_eq!(impact.incident_mate_ids, vec![MATE, AXIAL_MATE]);
+    assert_eq!(impact.collection_dependencies.len(), 1);
+    assert_eq!(
+        impact.collection_dependencies[0].occurrence_ids_before,
+        vec![FIRST, SECOND, OTHER]
+    );
+    assert_eq!(
+        impact.collection_dependencies[0].occurrence_ids_after,
+        vec![FIRST, SECOND, OTHER]
+    );
+    assert!(impact.drawing_dependencies.is_empty());
+    assert_eq!(impact.proposal.batch().commands().len(), 2);
+    assert!(matches!(
+        impact.proposal.batch().commands()[0],
+        CanonicalCommand::SetOccurrenceTransform {
+            id: FIRST,
+            transform,
+        } if transform == expected_local
+    ));
+    assert!(matches!(
+        impact.proposal.batch().commands()[1],
+        CanonicalCommand::SetOccurrenceParent {
+            id: FIRST,
+            parent: Some(id),
+        } if id == nested_parent
+    ));
+
+    document.commit_proposal(&impact.proposal).unwrap();
+    let committed = document.current();
+    assert_eq!(committed.canonical_digest(), impact.candidate_digest);
+    assert_eq!(
+        committed.occurrence(FIRST).unwrap().parent(),
+        Some(nested_parent)
+    );
+    assert_eq!(
+        committed.occurrence(FIRST).unwrap().transform(),
+        expected_local
+    );
+    assert_eq!(
+        committed.world_transform_for_occurrence(FIRST),
+        Some(world_before)
+    );
+    assert_eq!(committed.assembly_mate(MATE), Some(&mate_before));
+    assert_eq!(
+        committed.assembly_mate(AXIAL_MATE),
+        Some(&axial_mate_before)
+    );
+    assert_eq!(committed.drawing_sheet(SHEET), Some(&drawing_before));
+    assert_eq!(committed.occurrence(OTHER), Some(&unrelated_before));
+    assert_eq!(
+        committed
+            .collection(COLLECTION)
+            .unwrap()
+            .occurrence_ids()
+            .collect::<Vec<_>>(),
+        vec![FIRST, SECOND, OTHER]
+    );
+    assert_eq!(document.revision_count(), before.revisions + 1);
+    assert_eq!(document.visible_undo_steps(), before.undo + 1);
+}
+
+#[test]
+fn dependency_aware_reparent_verifier_covers_failures_persistence_and_undo_redo() {
+    let parent = GroupId(62);
+    let nested_parent = GroupId(63);
+    let singular_parent = GroupId(64);
+    let missing_parent = GroupId(999);
+    let mut document = seed_rigid_dependencies();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateGroup {
+                id: parent,
+                name: "Verifier root".into(),
+                transform: Transform::from_matrix([
+                    0.0, -1.0, 0.0, 75.0, 1.0, 0.0, 0.0, -25.0, 0.0, 0.0, 1.0, 5.0, 0.0, 0.0, 0.0,
+                    1.0,
+                ])
+                .unwrap(),
+                parent: None,
+            },
+            CanonicalCommand::CreateGroup {
+                id: nested_parent,
+                name: "Verifier nested".into(),
+                transform: Transform::from_translation(15.0, 20.0, -5.0).unwrap(),
+                parent: Some(parent),
+            },
+            CanonicalCommand::CreateGroup {
+                id: singular_parent,
+                name: "Non-invertible parent".into(),
+                transform: Transform::from_matrix([
+                    0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+                ])
+                .unwrap(),
+                parent: None,
+            },
+            CanonicalCommand::CreateCollection {
+                id: COLLECTION,
+                name: "Verifier selection".into(),
+            },
+            CanonicalCommand::SetCollectionOccurrences {
+                id: COLLECTION,
+                occurrence_ids: vec![FIRST, SECOND, OTHER],
+            },
+        ]))
+        .unwrap();
+
+    let before_cycle = stamp(&document);
+    assert!(matches!(
+        document.apply_batch(&CommandBatch::new(vec![CanonicalCommand::SetGroupParent {
+            id: parent,
+            parent: Some(nested_parent),
+        }])),
+        Err(CanonicalError::GroupCycle(id)) if id == parent
+    ));
+    assert_eq!(stamp(&document), before_cycle);
+
+    let source = document.current();
+    let before_invalid = stamp(&document);
+    assert_eq!(
+        project_occurrence_edit_impact(
+            &document,
+            OccurrenceEditRequest::reparent(&source, FIRST, Some(missing_parent)),
+            ProposalPrincipal::ManualClient,
+        ),
+        Err(OccurrenceEditImpactError::ParentNotFound(missing_parent))
+    );
+    assert_eq!(stamp(&document), before_invalid);
+    assert_eq!(
+        project_occurrence_edit_impact(
+            &document,
+            OccurrenceEditRequest::reparent(&source, FIRST, Some(singular_parent)),
+            ProposalPrincipal::ManualClient,
+        ),
+        Err(OccurrenceEditImpactError::NonInvertibleParent(
+            singular_parent
+        ))
+    );
+    assert_eq!(stamp(&document), before_invalid);
+
+    let stale_request = OccurrenceEditRequest::reparent(&source, FIRST, Some(nested_parent));
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetOccurrenceVisibility {
+                id: OTHER,
+                visible: false,
+            },
+        ]))
+        .unwrap();
+    let before_stale_request = stamp(&document);
+    assert_eq!(
+        project_occurrence_edit_impact(&document, stale_request, ProposalPrincipal::LocalAssistant,),
+        Err(OccurrenceEditImpactError::Stale)
+    );
+    assert_eq!(stamp(&document), before_stale_request);
+
+    let stale_impact = project_occurrence_edit_impact(
+        &document,
+        OccurrenceEditRequest::reparent(&document.current(), FIRST, Some(nested_parent)),
+        ProposalPrincipal::LocalAssistant,
+    )
+    .unwrap();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetGroupTransform {
+                id: parent,
+                transform: Transform::from_translation(1.0, 2.0, 3.0).unwrap(),
+            },
+        ]))
+        .unwrap();
+    let before_stale_commit = stamp(&document);
+    assert!(matches!(
+        document.commit_proposal(&stale_impact.proposal),
+        Err(ProposalCommitError::Stale(_))
+    ));
+    assert_eq!(stamp(&document), before_stale_commit);
+
+    let source = document.current();
+    let world_before = source.world_transform_for_occurrence(FIRST).unwrap();
+    let mate_before = source.assembly_mate(MATE).unwrap().clone();
+    let axial_mate_before = source.assembly_mate(AXIAL_MATE).unwrap().clone();
+    let drawing_before = source.drawing_sheet(SHEET).unwrap().clone();
+    let before_commit = stamp(&document);
+    let impact = project_occurrence_edit_impact(
+        &document,
+        OccurrenceEditRequest::reparent(&source, FIRST, Some(nested_parent)),
+        ProposalPrincipal::ManualClient,
+    )
+    .unwrap();
+
+    document.commit_proposal(&impact.proposal).unwrap();
+    let committed = document.current();
+    let committed_digest = committed.canonical_digest();
+    assert_eq!(committed_digest, impact.candidate_digest);
+    assert_eq!(document.revision_count(), before_commit.revisions + 1);
+    assert_eq!(document.visible_undo_steps(), before_commit.undo + 1);
+    assert_eq!(document.visible_redo_steps(), 0);
+
+    let reopened = persistence::load(&persistence::save(&committed))
+        .unwrap()
+        .into_editable()
+        .ok()
+        .unwrap();
+    let reopened = reopened.current();
+    assert_eq!(reopened.canonical_digest(), committed_digest);
+    assert_eq!(
+        reopened.occurrence(FIRST).unwrap().parent(),
+        Some(nested_parent)
+    );
+    assert_eq!(
+        reopened.world_transform_for_occurrence(FIRST),
+        Some(world_before)
+    );
+    assert_eq!(reopened.assembly_mate(MATE), Some(&mate_before));
+    assert_eq!(reopened.assembly_mate(AXIAL_MATE), Some(&axial_mate_before));
+    assert_eq!(reopened.drawing_sheet(SHEET), Some(&drawing_before));
+    assert_eq!(
+        reopened
+            .collection(COLLECTION)
+            .unwrap()
+            .occurrence_ids()
+            .collect::<Vec<_>>(),
+        vec![FIRST, SECOND, OTHER]
+    );
+
+    document.undo().unwrap();
+    assert_eq!(document.current().canonical_digest(), before_commit.digest);
+    assert_eq!(document.visible_undo_steps(), before_commit.undo);
+    assert_eq!(document.visible_redo_steps(), 1);
+    document.redo().unwrap();
+    assert_eq!(document.current().canonical_digest(), committed_digest);
+    assert_eq!(document.visible_undo_steps(), before_commit.undo + 1);
+    assert_eq!(document.visible_redo_steps(), 0);
 }
 
 fn edit_request(snapshot: &ketchup_core::document::Snapshot) -> SharedDefinitionChangeRequest {

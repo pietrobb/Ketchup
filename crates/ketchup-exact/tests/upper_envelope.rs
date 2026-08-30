@@ -66,6 +66,35 @@ fn boxes_may_touch_positive_and_negative_coordinate_limits() {
 }
 
 #[test]
+fn planar_box_face_offsets_expand_and_contract_exact_volume() {
+    let backend = ExactBackend::new();
+    let base = backend
+        .make_box(BoxSpec {
+            origin_mm: Point3::ORIGIN,
+            size_mm: Size3 {
+                x: 100.0,
+                y: 60.0,
+                z: 20.0,
+            },
+        })
+        .unwrap();
+    let expanded = backend.offset_body_face(&base.body, 0, 5.0).unwrap();
+    let contracted = backend.offset_body_face(&base.body, 0, -5.0).unwrap();
+
+    assert_valid(&expanded);
+    assert_valid(&contracted);
+    assert!(expanded.body.topology.volume_mm3 > base.body.topology.volume_mm3);
+    assert!(contracted.body.topology.volume_mm3 < base.body.topology.volume_mm3);
+    assert_eq!(
+        backend
+            .offset_body_face(&base.body, base.body.topology.face_count, 5.0)
+            .unwrap_err()
+            .code,
+        GeometryErrorCode::InvalidParameter
+    );
+}
+
+#[test]
 fn maximum_length_may_end_exactly_at_positive_coordinate_limit() {
     let output = ExactBackend::new()
         .make_box(BoxSpec {

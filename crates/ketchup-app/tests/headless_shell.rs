@@ -20,7 +20,7 @@ use ketchup_app::{
 use ketchup_core::document::{
     CanonicalCommand, CommandBatch, DefinitionId, DerivedIdentity, Dimension, DocumentStore,
     EdgeFinishKind, EvaluationIdentity, FeatureId, FeatureKind, FeatureParameterBinding,
-    FeatureParameterSlot, FeatureParameterTarget, InstancePath, NodeId, OccurrenceId, PortSpec,
+    FeatureParameterTarget, InstancePath, NodeId, OccurrenceId, ParameterValueType, PortSpec,
     RuleOutput, SlotPath, SlotSegment, TagId, Transform,
 };
 use ketchup_core::exact_brep_graph::ExactBRepGraph;
@@ -32,12 +32,12 @@ use ketchup_core::exact_product::{
     ExactFeatureChainRequest,
 };
 use ketchup_core::graph::{EvaluationStatus, EvaluatorNodeKind};
-use ketchup_core::import::{StepImportMesh, StepMeshTriangle};
+use ketchup_core::import::{ImportFormat, StepImportMesh, StepMeshTriangle};
 use ketchup_core::intent::WorkflowIntent;
 use ketchup_core::persistence;
 use ketchup_core::topology::TopologicalElementKind;
 use ketchup_interaction::{
-    Axis, LocaleCatalog, SnapKind, Vec3, exact_projection::TopologicalPickLocator,
+    Axis, ElementId, LocaleCatalog, Side, SnapKind, Vec3, exact_projection::TopologicalPickLocator,
 };
 use ketchup_scheduler::ExactWorkerSupervisor;
 
@@ -118,10 +118,12 @@ fn write_parametric_fixture(path: &Path) {
                 expression: "$305 * 3".to_owned(),
             },
             CanonicalCommand::UpsertFeatureParameterBinding(FeatureParameterBinding {
-                target: FeatureParameterTarget {
-                    feature_id: PARAMETRIC_PROFILE,
-                    slot: FeatureParameterSlot::ProfileWidth,
-                },
+                target: FeatureParameterTarget::new(
+                    PARAMETRIC_PROFILE,
+                    "bounds.width",
+                    ParameterValueType::Length,
+                )
+                .unwrap(),
                 derived_from: DerivedIdentity::new(
                     PARAMETRIC_RULE,
                     SlotPath::new(vec![width_output]).unwrap(),
@@ -9791,6 +9793,284 @@ fn select_general_finish_topology(
                 kind,
                 ordinal,
             })
+    );
+}
+
+#[test]
+fn topology_bound_push_pull_edits_a_non_top_planar_face_through_headless_ui() {
+    let mut shell = Shell::new();
+    install_general_finish_graph_result(&mut shell, FeatureId(2));
+    select_general_finish_topology(&mut shell, FeatureId(2), TopologicalElementKind::Face, 3);
+    assert_eq!(
+        shell.app().selected_reference().unwrap().element,
+        ElementId::Face {
+            axis: Axis::Y,
+            side: Side::Maximum,
+        }
+    );
+    let before_revision = shell.app().document_revision();
+    let before_digest = shell.app().canonical_digest();
+
+    shell.click_command(AppCommand::PushPull);
+    shell.type_text("5");
+    shell.press_key(Key::Enter);
+
+    assert_eq!(shell.app().document_revision(), before_revision + 1);
+    let committed_digest = shell.app().canonical_digest();
+    assert_ne!(committed_digest, before_digest);
+    assert_eq!(
+        shell.app().occurrence_box_geometry(1),
+        Some((Vec3::new(0.0, 0.0, 0.0), Vec3::new(100.0, 65.0, 20.0)))
+    );
+    shell.key(Key::Z, ctrl());
+    assert_eq!(shell.app().canonical_digest(), before_digest);
+    shell.key(Key::Y, ctrl());
+    assert_eq!(shell.app().canonical_digest(), committed_digest);
+}
+
+#[test]
+fn imported_exact_finishes_and_face_push_pull_recompute_through_headless_ui() {
+    let source_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../corpora/r0/step/self-authored-box.step");
+    let directory = tempfile::tempdir().unwrap();
+    let document_path = directory.path().join("imported-face-push-pull.ketchup");
+    let dialogs = ScriptedFileDialogs::new()
+        .queue_import(ImportFormat::Step, &source_path)
+        .queue_save(&document_path)
+        .queue_open(&document_path)
+        .always_discard();
+    let mut shell = Shell::with_dialogs(dialogs);
+    shell
+        .app_mut()
+        .connect_exact_worker(exact_worker_path())
+        .unwrap();
+    shell.click_at(shell.viewport_rect().center());
+    assert!(shell.app_mut().delete_selected());
+    shell.settle();
+
+    shell.click_menu_command("menu-file", AppCommand::ImportExactStep);
+    shell.click_button_label(&shell.catalog().text("dialog-import-step-confirm"));
+    wait_for_one_exact_body(&mut shell);
+    let snapshot = shell.app().document_snapshot();
+    let imported = snapshot
+        .features()
+        .find(|feature| matches!(feature.kind(), FeatureKind::ImportedExactBody(_)))
+        .unwrap();
+    let imported_feature_id = imported.id();
+    let imported_definition_id = imported.definition_id();
+    let imported_occurrence_id = snapshot
+        .occurrences()
+        .find(|occurrence| occurrence.definition_id() == imported_definition_id)
+        .unwrap()
+        .id();
+    assert_eq!(
+        shell.app().exact_current_producer_ids(),
+        [imported_feature_id]
+    );
+    let imported_digest = shell.app().canonical_digest();
+    for (kind, element_kind, ordinal, amount_mm) in [
+        (
+            GeneralFinishKind::Shell,
+            TopologicalElementKind::Face,
+            1,
+            1.0,
+        ),
+        (
+            GeneralFinishKind::Fillet,
+            TopologicalElementKind::Edge,
+            0,
+            0.75,
+        ),
+        (
+            GeneralFinishKind::Chamfer,
+            TopologicalElementKind::Edge,
+            5,
+            0.75,
+        ),
+    ] {
+        let before_revision = shell.app().document_revision();
+        let before_undo_steps = shell.app().undo_step_count();
+        assert!(shell.app_mut().prepare_assistant_general_finish(
+            TopologicalPickLocator {
+                instance_path: InstancePath::root(imported_occurrence_id),
+                producer_feature_id: imported_feature_id,
+                kind: element_kind,
+                ordinal,
+            },
+            kind,
+            amount_mm,
+        ));
+        let preview = shell.app().general_finish_preview_parameters().unwrap();
+        assert_eq!(preview.0, imported_feature_id);
+        assert_eq!(preview.1.kind, element_kind);
+        assert_eq!(preview.1.producer_feature_id, imported_feature_id);
+        assert_eq!(preview.2, kind);
+        assert_eq!(preview.3, amount_mm);
+        assert_eq!(shell.app().document_revision(), before_revision);
+        assert_eq!(shell.app().canonical_digest(), imported_digest);
+        assert!(shell.app_mut().confirm_assistant_general_finish());
+        assert!(shell.app().document_revision() > before_revision);
+        assert_eq!(shell.app().undo_step_count(), before_undo_steps + 1);
+        let committed_digest = shell.app().canonical_digest();
+        let generated_feature_id = match kind {
+            GeneralFinishKind::Shell => shell.app().latest_topology_shell_parameters().unwrap().0,
+            GeneralFinishKind::Fillet | GeneralFinishKind::Chamfer => {
+                shell
+                    .app()
+                    .latest_topology_edge_finish_parameters()
+                    .unwrap()
+                    .0
+            }
+        };
+        for _ in 0..300 {
+            shell.settle();
+            if shell
+                .app()
+                .exact_current_producer_ids()
+                .contains(&generated_feature_id)
+            {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(
+            shell
+                .app()
+                .exact_current_producer_ids()
+                .contains(&generated_feature_id),
+            "{kind:?}: {}",
+            shell.app().action_digest()
+        );
+        shell.key(Key::Z, ctrl());
+        assert_eq!(shell.app().canonical_digest(), imported_digest);
+        shell.key(Key::Y, ctrl());
+        assert_eq!(shell.app().canonical_digest(), committed_digest);
+        for _ in 0..300 {
+            shell.settle();
+            if shell
+                .app()
+                .exact_current_producer_ids()
+                .contains(&generated_feature_id)
+            {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(
+            shell
+                .app()
+                .exact_current_producer_ids()
+                .contains(&generated_feature_id),
+            "{kind:?} did not recompute after Redo"
+        );
+        shell.key(Key::Z, ctrl());
+        assert_eq!(shell.app().canonical_digest(), imported_digest);
+    }
+    assert!(!shell.app_mut().prepare_assistant_general_finish(
+        TopologicalPickLocator {
+            instance_path: InstancePath::root(imported_occurrence_id),
+            producer_feature_id: imported_feature_id,
+            kind: TopologicalElementKind::Face,
+            ordinal: u32::MAX,
+        },
+        GeneralFinishKind::Shell,
+        1.0,
+    ));
+    assert_eq!(shell.app().canonical_digest(), imported_digest);
+    assert!(
+        shell
+            .app_mut()
+            .select_topological_locator(TopologicalPickLocator {
+                instance_path: InstancePath::root(imported_occurrence_id),
+                producer_feature_id: imported_feature_id,
+                kind: TopologicalElementKind::Face,
+                ordinal: 0,
+            })
+    );
+    let before_revision = shell.app().document_revision();
+    let before_undo_steps = shell.app().undo_step_count();
+    let before_digest = shell.app().canonical_digest();
+    shell.app_mut().set_push_pull_distance_input("5");
+    assert!(shell.app_mut().start_preview());
+    assert_eq!(shell.app().document_revision(), before_revision);
+    assert_eq!(shell.app().canonical_digest(), before_digest);
+    assert!(shell.app_mut().confirm_preview());
+
+    assert!(shell.app().document_revision() > before_revision);
+    assert_eq!(shell.app().undo_step_count(), before_undo_steps + 1);
+    let committed_digest = shell.app().canonical_digest();
+    let snapshot = shell.app().document_snapshot();
+    let (offset_feature_id, offset_target, offset_face, offset_distance) = snapshot
+        .features()
+        .find_map(|feature| match feature.kind() {
+            FeatureKind::TopologyFaceOffset {
+                target,
+                face,
+                distance,
+            } => Some((feature.id(), *target, face, distance.millimetres())),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(offset_target, imported_feature_id);
+    assert_eq!(offset_face.producer_feature_id, imported_feature_id);
+    assert_eq!(offset_face.producer_element_id, "imported-result/face/0");
+    assert_eq!(offset_distance, 5.0);
+    let graph = ExactBRepGraph::from_snapshot(&snapshot, imported_definition_id, offset_feature_id)
+        .unwrap();
+    let source = std::fs::read(&source_path).unwrap();
+    let mut tampered_source = source.clone();
+    tampered_source[0] ^= 1;
+    let mut direct_worker = ExactWorkerSupervisor::spawn(exact_worker_path()).unwrap();
+    assert!(
+        direct_worker
+            .evaluate_exact_brep_graph_with_imported_source(&graph, &tampered_source)
+            .is_err()
+    );
+    direct_worker
+        .evaluate_exact_brep_graph_with_imported_source(&graph, &source)
+        .unwrap();
+    for _ in 0..300 {
+        shell.settle();
+        if shell
+            .app()
+            .exact_current_producer_ids()
+            .contains(&offset_feature_id)
+        {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        shell
+            .app()
+            .exact_current_producer_ids()
+            .contains(&offset_feature_id)
+    );
+
+    shell.key(Key::Z, ctrl());
+    assert_eq!(shell.app().canonical_digest(), before_digest);
+    shell.key(Key::Y, ctrl());
+    assert_eq!(shell.app().canonical_digest(), committed_digest);
+    shell.click_menu_command("menu-file", AppCommand::Save);
+    shell.click_menu_command("menu-file", AppCommand::New);
+    shell.click_menu_command("menu-file", AppCommand::Open);
+    assert_eq!(shell.app().canonical_digest(), committed_digest);
+    for _ in 0..300 {
+        shell.settle();
+        if shell
+            .app()
+            .exact_current_producer_ids()
+            .contains(&offset_feature_id)
+        {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        shell
+            .app()
+            .exact_current_producer_ids()
+            .contains(&offset_feature_id)
     );
 }
 

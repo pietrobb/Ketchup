@@ -7,14 +7,14 @@ use crate::assembly::{
 };
 use crate::document::DocumentStore;
 use crate::document::{
-    AuthoritativeDependency, BodyId, CanonicalCommand, CloneDefinitionPlan, CommandBatch,
-    DefinitionId, DocumentId, FeatureId, InstancePath, OccurrenceId, Proposal, ProposalAssumption,
-    ProposalBudget, ProposalCommitError, ProposalConfirmation, ProposalContext, ProposalGoal,
-    ProposalPrincipal, ProposalRisk, Snapshot, Transform,
+    AuthoritativeDependency, BodyId, CanonicalCommand, CloneDefinitionPlan, CollectionId,
+    CommandBatch, DefinitionId, DocumentId, FeatureId, GroupId, InstancePath, OccurrenceId,
+    Proposal, ProposalAssumption, ProposalBudget, ProposalCommitError, ProposalConfirmation,
+    ProposalContext, ProposalGoal, ProposalPrincipal, ProposalRisk, Snapshot, Transform,
 };
 use crate::drawing::{
-    DrawingSheetId, DrawingSource, OrthographicDrawing, OrthographicViewKind,
-    project_orthographic_drawing,
+    DrawingSheet, DrawingSheetId, DrawingSource, OrthographicDrawing, OrthographicViewKind,
+    project_orthographic_drawing, validate_source,
 };
 use crate::exact_product::{
     BodySubshapeRef, ExactBodyPackage, ExactFeatureChainRequest, ExactProductError,
@@ -27,6 +27,568 @@ use crate::feature_history::{
 };
 use std::fmt;
 use std::sync::Arc;
+
+pub const OCCURRENCE_EDIT_IMPACT_SCHEMA_V1: &str = "ketchup.occurrence-edit-impact.v1";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OccurrenceEdit {
+    Delete,
+    Reparent {
+        parent: Option<GroupId>,
+        preserve_world_transform: bool,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct OccurrenceEditRequest {
+    pub source_revision: u64,
+    pub source_digest: String,
+    pub target_occurrence_id: OccurrenceId,
+    pub edit: OccurrenceEdit,
+}
+
+impl OccurrenceEditRequest {
+    #[must_use]
+    pub fn delete(snapshot: &Snapshot, target_occurrence_id: OccurrenceId) -> Self {
+        Self {
+            source_revision: snapshot.revision_id(),
+            source_digest: snapshot.canonical_digest(),
+            target_occurrence_id,
+            edit: OccurrenceEdit::Delete,
+        }
+    }
+
+    #[must_use]
+    pub fn reparent(
+        snapshot: &Snapshot,
+        target_occurrence_id: OccurrenceId,
+        parent: Option<GroupId>,
+    ) -> Self {
+        Self {
+            source_revision: snapshot.revision_id(),
+            source_digest: snapshot.canonical_digest(),
+            target_occurrence_id,
+            edit: OccurrenceEdit::Reparent {
+                parent,
+                preserve_world_transform: true,
+            },
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OccurrenceCollectionDependencyImpact {
+    pub collection_id: CollectionId,
+    pub occurrence_ids_before: Vec<OccurrenceId>,
+    pub occurrence_ids_after: Vec<OccurrenceId>,
+}
+
+fn preserved_collection_dependencies(
+    snapshot: &Snapshot,
+    occurrence_id: OccurrenceId,
+) -> Vec<OccurrenceCollectionDependencyImpact> {
+    let mut dependencies = snapshot
+        .collections()
+        .filter_map(|collection| {
+            let occurrence_ids = collection.occurrence_ids().collect::<Vec<_>>();
+            occurrence_ids
+                .contains(&occurrence_id)
+                .then(|| OccurrenceCollectionDependencyImpact {
+                    collection_id: collection.id(),
+                    occurrence_ids_before: occurrence_ids.clone(),
+                    occurrence_ids_after: occurrence_ids,
+                })
+        })
+        .collect::<Vec<_>>();
+    dependencies.sort_by_key(|dependency| dependency.collection_id);
+    dependencies
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum OccurrenceDrawingDependencyAction {
+    UpdateRigidAssembly { occurrence_ids: Vec<OccurrenceId> },
+    DeleteSheet,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OccurrenceDrawingDependencyImpact {
+    pub sheet_id: DrawingSheetId,
+    pub occurrence_ids_before: Vec<OccurrenceId>,
+    pub action: OccurrenceDrawingDependencyAction,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct OccurrenceEditImpactProjection {
+    pub schema: &'static str,
+    pub source_revision: u64,
+    pub source_digest: String,
+    pub candidate_digest: String,
+    pub target_occurrence_id: OccurrenceId,
+    pub target_instance_path: InstancePath,
+    pub edit: OccurrenceEdit,
+    pub parent_before: Option<GroupId>,
+    pub parent_after: Option<GroupId>,
+    pub local_transform_before: Transform,
+    pub local_transform_after: Option<Transform>,
+    pub world_transform_before: Transform,
+    pub world_transform_after: Option<Transform>,
+    pub incident_mate_ids: Vec<AssemblyMateId>,
+    pub collection_dependencies: Vec<OccurrenceCollectionDependencyImpact>,
+    pub drawing_dependencies: Vec<OccurrenceDrawingDependencyImpact>,
+    pub proposal: Proposal,
+}
+
+impl OccurrenceEditImpactProjection {
+    #[must_use]
+    pub fn is_review_only(&self) -> bool {
+        matches!(
+            self.proposal.confirmation(),
+            ProposalConfirmation::ReviewRequired
+        )
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum OccurrenceEditImpactError {
+    Stale,
+    OccurrenceNotFound(OccurrenceId),
+    ParentNotFound(GroupId),
+    UnchangedParent(OccurrenceId),
+    NonInvertibleParent(GroupId),
+    InvalidCandidate(String),
+}
+
+impl fmt::Display for OccurrenceEditImpactError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Stale => formatter.write_str("occurrence edit request is stale"),
+            Self::OccurrenceNotFound(id) => write!(formatter, "occurrence {} was not found", id.0),
+            Self::ParentNotFound(id) => write!(formatter, "parent group {} was not found", id.0),
+            Self::UnchangedParent(id) => {
+                write!(
+                    formatter,
+                    "occurrence {} already has the requested parent",
+                    id.0
+                )
+            }
+            Self::NonInvertibleParent(id) => write!(
+                formatter,
+                "parent group {} does not have an invertible world transform",
+                id.0
+            ),
+            Self::InvalidCandidate(reason) => formatter.write_str(reason),
+        }
+    }
+}
+
+impl std::error::Error for OccurrenceEditImpactError {}
+
+pub fn project_occurrence_edit_impact(
+    document: &DocumentStore,
+    request: OccurrenceEditRequest,
+    principal: ProposalPrincipal,
+) -> Result<OccurrenceEditImpactProjection, OccurrenceEditImpactError> {
+    let source = document.current();
+    if request.source_revision != source.revision_id()
+        || request.source_digest != source.canonical_digest()
+    {
+        return Err(OccurrenceEditImpactError::Stale);
+    }
+    let target = source.occurrence(request.target_occurrence_id).ok_or(
+        OccurrenceEditImpactError::OccurrenceNotFound(request.target_occurrence_id),
+    )?;
+    let target_instance_path = InstancePath::root(request.target_occurrence_id);
+    let parent_before = target.parent();
+    let local_transform_before = target.transform();
+    let world_transform_before = source
+        .world_transform_for_occurrence(request.target_occurrence_id)
+        .ok_or_else(|| {
+            OccurrenceEditImpactError::InvalidCandidate(
+                "target occurrence has no valid world transform".to_owned(),
+            )
+        })?;
+
+    let mut incident_mate_ids = source
+        .assembly_mates()
+        .filter(|mate| {
+            mate.endpoint_a().occurrence_id() == request.target_occurrence_id
+                || mate.endpoint_b().occurrence_id() == request.target_occurrence_id
+        })
+        .map(AssemblyMate::id)
+        .collect::<Vec<_>>();
+    incident_mate_ids.sort_unstable();
+
+    if let OccurrenceEdit::Reparent {
+        parent,
+        preserve_world_transform,
+    } = request.edit
+    {
+        if !preserve_world_transform {
+            return Err(OccurrenceEditImpactError::InvalidCandidate(
+                "occurrence reparent must preserve its world transform".to_owned(),
+            ));
+        }
+        if parent == parent_before {
+            return Err(OccurrenceEditImpactError::UnchangedParent(
+                request.target_occurrence_id,
+            ));
+        }
+        let parent_world_transform = match parent {
+            Some(id) => {
+                if source.group(id).is_none() {
+                    return Err(OccurrenceEditImpactError::ParentNotFound(id));
+                }
+                source
+                    .world_transform_for_group(id)
+                    .ok_or(OccurrenceEditImpactError::ParentNotFound(id))?
+            }
+            None => Transform::identity(),
+        };
+        let inverse_parent = invert_affine_transform(parent_world_transform).ok_or_else(|| {
+            parent.map_or_else(
+                || {
+                    OccurrenceEditImpactError::InvalidCandidate(
+                        "root world transform is not invertible".to_owned(),
+                    )
+                },
+                OccurrenceEditImpactError::NonInvertibleParent,
+            )
+        })?;
+        let local_transform_after = inverse_parent.compose(world_transform_before);
+        let commands = vec![
+            CanonicalCommand::SetOccurrenceTransform {
+                id: request.target_occurrence_id,
+                transform: local_transform_after,
+            },
+            CanonicalCommand::SetOccurrenceParent {
+                id: request.target_occurrence_id,
+                parent,
+            },
+        ];
+        let mut assumptions = vec![ProposalAssumption::TargetExists(
+            AuthoritativeDependency::Occurrence(request.target_occurrence_id),
+        )];
+        if let Some(id) = parent {
+            assumptions.push(ProposalAssumption::TargetExists(
+                AuthoritativeDependency::Group(id),
+            ));
+        }
+        let proposal = document
+            .prepare_proposal_with_context(
+                CommandBatch::new(commands),
+                ProposalContext {
+                    principal,
+                    goal: ProposalGoal::SetOccurrenceParent(request.target_occurrence_id),
+                    assumptions,
+                    risk: ProposalRisk::Standard,
+                    confirmation: ProposalConfirmation::ReviewRequired,
+                    requested_budget: ProposalBudget::HOST_MAX,
+                },
+            )
+            .map_err(|error| OccurrenceEditImpactError::InvalidCandidate(error.to_string()))?;
+        let candidate = document
+            .preview_batch(proposal.batch())
+            .map_err(|error| OccurrenceEditImpactError::InvalidCandidate(error.to_string()))?;
+        let candidate_target = candidate.occurrence(request.target_occurrence_id).ok_or(
+            OccurrenceEditImpactError::OccurrenceNotFound(request.target_occurrence_id),
+        )?;
+        let world_transform_after = candidate
+            .world_transform_for_occurrence(request.target_occurrence_id)
+            .ok_or_else(|| {
+                OccurrenceEditImpactError::InvalidCandidate(
+                    "reparented occurrence has no valid world transform".to_owned(),
+                )
+            })?;
+        if candidate_target.parent() != parent
+            || candidate_target.transform() != local_transform_after
+            || !transforms_nearly_equal(world_transform_after, world_transform_before)
+            || !source.assembly_mates().eq(candidate.assembly_mates())
+            || !source.collections().eq(candidate.collections())
+            || !source.drawing_sheets().eq(candidate.drawing_sheets())
+        {
+            return Err(OccurrenceEditImpactError::InvalidCandidate(
+                "occurrence reparent candidate did not preserve world-space dependencies"
+                    .to_owned(),
+            ));
+        }
+        for occurrence in source
+            .occurrences()
+            .filter(|occurrence| occurrence.id() != request.target_occurrence_id)
+        {
+            if candidate.occurrence(occurrence.id()) != Some(occurrence) {
+                return Err(OccurrenceEditImpactError::InvalidCandidate(
+                    "occurrence reparent candidate changed an unrelated occurrence".to_owned(),
+                ));
+            }
+        }
+        let collection_dependencies = source
+            .collections()
+            .filter_map(|collection| {
+                let occurrence_ids = collection.occurrence_ids().collect::<Vec<_>>();
+                occurrence_ids
+                    .contains(&request.target_occurrence_id)
+                    .then(|| OccurrenceCollectionDependencyImpact {
+                        collection_id: collection.id(),
+                        occurrence_ids_before: occurrence_ids.clone(),
+                        occurrence_ids_after: occurrence_ids,
+                    })
+            })
+            .collect();
+
+        return Ok(OccurrenceEditImpactProjection {
+            schema: OCCURRENCE_EDIT_IMPACT_SCHEMA_V1,
+            source_revision: source.revision_id(),
+            source_digest: source.canonical_digest(),
+            candidate_digest: candidate.canonical_digest(),
+            target_occurrence_id: request.target_occurrence_id,
+            target_instance_path,
+            edit: request.edit,
+            parent_before,
+            parent_after: parent,
+            local_transform_before,
+            local_transform_after: Some(local_transform_after),
+            world_transform_before,
+            world_transform_after: Some(world_transform_after),
+            incident_mate_ids,
+            collection_dependencies,
+            drawing_dependencies: Vec::new(),
+            proposal,
+        });
+    }
+
+    let mut commands = incident_mate_ids
+        .iter()
+        .map(|id| CanonicalCommand::DeleteAssemblyMate { id: *id })
+        .collect::<Vec<_>>();
+
+    let mut collection_dependencies = Vec::new();
+    for collection in source.collections() {
+        let occurrence_ids_before = collection.occurrence_ids().collect::<Vec<_>>();
+        if !occurrence_ids_before.contains(&request.target_occurrence_id) {
+            continue;
+        }
+        let occurrence_ids_after = occurrence_ids_before
+            .iter()
+            .copied()
+            .filter(|id| *id != request.target_occurrence_id)
+            .collect::<Vec<_>>();
+        commands.push(CanonicalCommand::SetCollectionOccurrences {
+            id: collection.id(),
+            occurrence_ids: occurrence_ids_after.clone(),
+        });
+        collection_dependencies.push(OccurrenceCollectionDependencyImpact {
+            collection_id: collection.id(),
+            occurrence_ids_before,
+            occurrence_ids_after,
+        });
+    }
+
+    let impacted_drawings = source
+        .drawing_sheets()
+        .filter_map(|sheet| {
+            let DrawingSource::RigidAssembly { occurrence_ids } = sheet.source() else {
+                return None;
+            };
+            occurrence_ids
+                .contains(&request.target_occurrence_id)
+                .then(|| {
+                    (
+                        sheet.id(),
+                        sheet.name().to_owned(),
+                        occurrence_ids.clone(),
+                        occurrence_ids
+                            .iter()
+                            .copied()
+                            .filter(|id| *id != request.target_occurrence_id)
+                            .collect::<Vec<_>>(),
+                    )
+                })
+        })
+        .collect::<Vec<_>>();
+    let mut dependency_commands = commands.clone();
+    dependency_commands.extend(
+        impacted_drawings
+            .iter()
+            .map(|(sheet_id, _, _, _)| CanonicalCommand::DeleteDrawingSheet { id: *sheet_id }),
+    );
+    let dependency_candidate = document
+        .preview_batch(&CommandBatch::new(dependency_commands))
+        .map_err(|error| OccurrenceEditImpactError::InvalidCandidate(error.to_string()))?;
+    let mut drawing_dependencies = Vec::new();
+    for (sheet_id, sheet_name, occurrence_ids_before, occurrence_ids_after) in impacted_drawings {
+        let updated_source = DrawingSource::RigidAssembly {
+            occurrence_ids: occurrence_ids_after.clone(),
+        };
+        let update = (!occurrence_ids_after.is_empty()
+            && validate_source(&dependency_candidate, &updated_source).is_ok())
+        .then(|| DrawingSheet::new(sheet_id, sheet_name, updated_source))
+        .transpose()
+        .map_err(|error| OccurrenceEditImpactError::InvalidCandidate(error.to_string()))?;
+        let action = if let Some(updated_sheet) = update {
+            commands.push(CanonicalCommand::UpdateDrawingSheet(updated_sheet));
+            OccurrenceDrawingDependencyAction::UpdateRigidAssembly {
+                occurrence_ids: occurrence_ids_after,
+            }
+        } else {
+            commands.push(CanonicalCommand::DeleteDrawingSheet { id: sheet_id });
+            OccurrenceDrawingDependencyAction::DeleteSheet
+        };
+        drawing_dependencies.push(OccurrenceDrawingDependencyImpact {
+            sheet_id,
+            occurrence_ids_before,
+            action,
+        });
+    }
+    commands.push(CanonicalCommand::DeleteOccurrence {
+        id: request.target_occurrence_id,
+    });
+
+    let proposal = document
+        .prepare_proposal_with_context(
+            CommandBatch::new(commands),
+            ProposalContext {
+                principal,
+                goal: ProposalGoal::DeleteOccurrence(request.target_occurrence_id),
+                assumptions: vec![ProposalAssumption::TargetExists(
+                    AuthoritativeDependency::Occurrence(request.target_occurrence_id),
+                )],
+                risk: ProposalRisk::Standard,
+                confirmation: ProposalConfirmation::ReviewRequired,
+                requested_budget: ProposalBudget::HOST_MAX,
+            },
+        )
+        .map_err(|error| OccurrenceEditImpactError::InvalidCandidate(error.to_string()))?;
+    let candidate = document
+        .preview_batch(proposal.batch())
+        .map_err(|error| OccurrenceEditImpactError::InvalidCandidate(error.to_string()))?;
+
+    if candidate.occurrence(request.target_occurrence_id).is_some()
+        || incident_mate_ids
+            .iter()
+            .any(|id| candidate.assembly_mate(*id).is_some())
+        || collection_dependencies.iter().any(|impact| {
+            candidate
+                .collection(impact.collection_id)
+                .is_none_or(|collection| {
+                    collection.occurrence_ids().collect::<Vec<_>>() != impact.occurrence_ids_after
+                })
+        })
+        || drawing_dependencies
+            .iter()
+            .any(|impact| match &impact.action {
+                OccurrenceDrawingDependencyAction::UpdateRigidAssembly { occurrence_ids } => {
+                    candidate
+                        .drawing_sheet(impact.sheet_id)
+                        .is_none_or(|sheet| {
+                            sheet.source()
+                                != &DrawingSource::RigidAssembly {
+                                    occurrence_ids: occurrence_ids.clone(),
+                                }
+                        })
+                }
+                OccurrenceDrawingDependencyAction::DeleteSheet => {
+                    candidate.drawing_sheet(impact.sheet_id).is_some()
+                }
+            })
+    {
+        return Err(OccurrenceEditImpactError::InvalidCandidate(
+            "occurrence delete candidate did not apply its complete dependency closure".to_owned(),
+        ));
+    }
+    for occurrence in source
+        .occurrences()
+        .filter(|occurrence| occurrence.id() != request.target_occurrence_id)
+    {
+        if candidate.occurrence(occurrence.id()) != Some(occurrence) {
+            return Err(OccurrenceEditImpactError::InvalidCandidate(
+                "occurrence delete candidate changed an unrelated occurrence".to_owned(),
+            ));
+        }
+    }
+
+    Ok(OccurrenceEditImpactProjection {
+        schema: OCCURRENCE_EDIT_IMPACT_SCHEMA_V1,
+        source_revision: source.revision_id(),
+        source_digest: source.canonical_digest(),
+        candidate_digest: candidate.canonical_digest(),
+        target_occurrence_id: request.target_occurrence_id,
+        target_instance_path,
+        edit: request.edit,
+        parent_before,
+        parent_after: None,
+        local_transform_before,
+        local_transform_after: None,
+        world_transform_before,
+        world_transform_after: None,
+        incident_mate_ids,
+        collection_dependencies,
+        drawing_dependencies,
+        proposal,
+    })
+}
+
+fn invert_affine_transform(transform: Transform) -> Option<Transform> {
+    let matrix = transform.matrix();
+    let determinant = matrix[0] * (matrix[5] * matrix[10] - matrix[6] * matrix[9])
+        - matrix[1] * (matrix[4] * matrix[10] - matrix[6] * matrix[8])
+        + matrix[2] * (matrix[4] * matrix[9] - matrix[5] * matrix[8]);
+    if !determinant.is_finite() || determinant == 0.0 {
+        return None;
+    }
+    let inverse_determinant = determinant.recip();
+    let inverse_linear = [
+        (matrix[5] * matrix[10] - matrix[6] * matrix[9]) * inverse_determinant,
+        (matrix[2] * matrix[9] - matrix[1] * matrix[10]) * inverse_determinant,
+        (matrix[1] * matrix[6] - matrix[2] * matrix[5]) * inverse_determinant,
+        (matrix[6] * matrix[8] - matrix[4] * matrix[10]) * inverse_determinant,
+        (matrix[0] * matrix[10] - matrix[2] * matrix[8]) * inverse_determinant,
+        (matrix[2] * matrix[4] - matrix[0] * matrix[6]) * inverse_determinant,
+        (matrix[4] * matrix[9] - matrix[5] * matrix[8]) * inverse_determinant,
+        (matrix[1] * matrix[8] - matrix[0] * matrix[9]) * inverse_determinant,
+        (matrix[0] * matrix[5] - matrix[1] * matrix[4]) * inverse_determinant,
+    ];
+    let translation = [matrix[3], matrix[7], matrix[11]];
+    let inverse_translation = [
+        -(inverse_linear[0] * translation[0]
+            + inverse_linear[1] * translation[1]
+            + inverse_linear[2] * translation[2]),
+        -(inverse_linear[3] * translation[0]
+            + inverse_linear[4] * translation[1]
+            + inverse_linear[5] * translation[2]),
+        -(inverse_linear[6] * translation[0]
+            + inverse_linear[7] * translation[1]
+            + inverse_linear[8] * translation[2]),
+    ];
+    Transform::from_matrix([
+        inverse_linear[0],
+        inverse_linear[1],
+        inverse_linear[2],
+        inverse_translation[0],
+        inverse_linear[3],
+        inverse_linear[4],
+        inverse_linear[5],
+        inverse_translation[1],
+        inverse_linear[6],
+        inverse_linear[7],
+        inverse_linear[8],
+        inverse_translation[2],
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+    ])
+    .ok()
+}
+
+fn transforms_nearly_equal(left: Transform, right: Transform) -> bool {
+    left.matrix()
+        .iter()
+        .zip(right.matrix())
+        .all(|(left, right)| {
+            let scale = left.abs().max(right.abs()).max(1.0);
+            (left - right).abs() <= scale * 1.0e-10
+        })
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum SharedDefinitionChange {
@@ -164,6 +726,7 @@ pub struct OccurrenceForkImpactProjection {
     pub unchanged_definition_ids: Vec<DefinitionId>,
     pub exact_jobs: Vec<SharedChangeExactJob>,
     pub mate_references: Vec<OccurrenceForkMateReferenceImpact>,
+    pub collection_dependencies: Vec<OccurrenceCollectionDependencyImpact>,
     pub drawing_views: Vec<SharedChangeDrawingViewImpact>,
     pub exports: Vec<SharedChangeExportImpact>,
     pub proposal: Proposal,
@@ -293,6 +856,7 @@ pub struct ComponentReplacementImpactProjection {
     pub unchanged_definition_ids: Vec<DefinitionId>,
     pub exact_jobs: Vec<SharedChangeExactJob>,
     pub mate_references: Vec<ComponentReplacementMateReferenceImpact>,
+    pub collection_dependencies: Vec<OccurrenceCollectionDependencyImpact>,
     pub drawing_views: Vec<SharedChangeDrawingViewImpact>,
     pub exports: Vec<SharedChangeExportImpact>,
     pub proposal: Option<Proposal>,
@@ -667,6 +1231,13 @@ where
             "selected occurrence no longer uses the projected source definition".to_owned(),
         ));
     }
+    let selected_world_transform = source
+        .world_transform_for_occurrence(impact.selected_occurrence_id)
+        .ok_or_else(|| {
+            OccurrenceForkPropagationError::InvalidImpact(
+                "selected occurrence has no valid source world transform".to_owned(),
+            )
+        })?;
     let source_definition = source
         .definition(impact.source_definition_id)
         .ok_or_else(|| {
@@ -727,6 +1298,40 @@ where
     if expected_siblings != impact.unchanged_sibling_occurrences {
         return Err(OccurrenceForkPropagationError::InvalidImpact(
             "occurrence fork sibling-isolation evidence is incomplete".to_owned(),
+        ));
+    }
+    if preserved_collection_dependencies(&source, impact.selected_occurrence_id)
+        != impact.collection_dependencies
+    {
+        return Err(OccurrenceForkPropagationError::InvalidImpact(
+            "occurrence fork collection dependency evidence is incomplete".to_owned(),
+        ));
+    }
+    let mut expected_drawing_views = source
+        .drawing_sheets()
+        .filter(|sheet| {
+            matches!(
+                sheet.source(),
+                DrawingSource::RigidAssembly { occurrence_ids }
+                    if occurrence_ids.contains(&impact.selected_occurrence_id)
+            )
+        })
+        .flat_map(|sheet| {
+            [
+                OrthographicViewKind::Front,
+                OrthographicViewKind::Top,
+                OrthographicViewKind::Right,
+            ]
+            .map(|view| SharedChangeDrawingViewImpact {
+                sheet_id: sheet.id(),
+                view,
+            })
+        })
+        .collect::<Vec<_>>();
+    expected_drawing_views.sort_unstable();
+    if expected_drawing_views != impact.drawing_views {
+        return Err(OccurrenceForkPropagationError::InvalidImpact(
+            "occurrence fork drawing dependency evidence is incomplete".to_owned(),
         ));
     }
 
@@ -852,15 +1457,21 @@ where
                 "occurrence fork candidate lost the selected occurrence".to_owned(),
             )
         })?;
-    if candidate_selected.definition_id() != impact.fork_definition_id
+    if candidate_selected.id() != selected.id()
+        || candidate_selected.definition_id() != impact.fork_definition_id
         || candidate_selected.name() != selected.name()
         || candidate_selected.transform() != selected.transform()
         || candidate_selected.parent() != selected.parent()
         || candidate_selected.tag() != selected.tag()
         || candidate_selected.visible() != selected.visible()
+        || candidate
+            .world_transform_for_occurrence(impact.selected_occurrence_id)
+            .is_none_or(|transform| !transforms_nearly_equal(transform, selected_world_transform))
+        || !source.collections().eq(candidate.collections())
+        || !source.drawing_sheets().eq(candidate.drawing_sheets())
     {
         return Err(OccurrenceForkPropagationError::InvalidImpact(
-            "occurrence fork candidate changed more than the selected definition reference"
+            "occurrence fork candidate changed identity, world placement, or preserved dependencies"
                 .to_owned(),
         ));
     }
@@ -1024,6 +1635,14 @@ where
             .collect::<Vec<_>>();
         if transforms
             .iter()
+            .any(|(occurrence_id, _)| *occurrence_id == impact.selected_occurrence_id)
+        {
+            return Err(OccurrenceForkPropagationError::Dependency(
+                "local rigid solve would move the selected occurrence world placement".to_owned(),
+            ));
+        }
+        if transforms
+            .iter()
             .any(|(occurrence_id, _)| sibling_ids.contains(occurrence_id))
         {
             return Err(OccurrenceForkPropagationError::Dependency(
@@ -1057,6 +1676,17 @@ where
         .preview_batch(proposal.batch())
         .map_err(|error| OccurrenceForkPropagationError::Dependency(error.to_string()))?;
     let final_results = ExactResultRegistry::carried_forward(&final_candidate, &staged_results);
+    if final_candidate
+        .world_transform_for_occurrence(impact.selected_occurrence_id)
+        .is_none_or(|transform| !transforms_nearly_equal(transform, selected_world_transform))
+        || !source.collections().eq(final_candidate.collections())
+        || !source.drawing_sheets().eq(final_candidate.drawing_sheets())
+    {
+        return Err(OccurrenceForkPropagationError::Dependency(
+            "occurrence fork did not preserve world placement, collections, and drawing sources"
+                .to_owned(),
+        ));
+    }
     validate_occurrence_fork_mates(&source, &final_candidate, &final_results, impact)?;
     let drawings = refresh_occurrence_fork_drawings(&final_candidate, &final_results, impact)?;
     let exports =
@@ -2520,7 +3150,8 @@ pub fn project_component_replacement_impact_for_principal(
     let candidate_selected = candidate.occurrence(request.selected_occurrence_id).ok_or(
         ComponentReplacementImpactError::OccurrenceNotFound(request.selected_occurrence_id),
     )?;
-    if candidate_selected.definition_id() != *target_definition_id
+    if candidate_selected.id() != selected.id()
+        || candidate_selected.definition_id() != *target_definition_id
         || candidate_selected.name() != selected.name()
         || candidate_selected.transform() != selected.transform()
         || candidate_selected.parent() != selected.parent()
@@ -2528,9 +3159,14 @@ pub fn project_component_replacement_impact_for_principal(
         || candidate_selected.visible() != selected.visible()
         || candidate.occurrence_is_grounded(request.selected_occurrence_id)
             != source.occurrence_is_grounded(request.selected_occurrence_id)
+        || candidate
+            .world_transform_for_occurrence(request.selected_occurrence_id)
+            .is_none_or(|transform| !transforms_nearly_equal(transform, selected_scene.transform))
+        || !source.collections().eq(candidate.collections())
+        || !source.drawing_sheets().eq(candidate.drawing_sheets())
     {
         return Err(ComponentReplacementImpactError::Unsupported(
-            "component replacement candidate changed more than the selected definition reference"
+            "component replacement candidate changed identity, world placement, or preserved dependencies"
                 .to_owned(),
         ));
     }
@@ -2597,6 +3233,10 @@ pub fn project_component_replacement_impact_for_principal(
         unchanged_definition_ids,
         exact_jobs,
         mate_references,
+        collection_dependencies: preserved_collection_dependencies(
+            &source,
+            request.selected_occurrence_id,
+        ),
         drawing_views,
         exports,
         proposal,
@@ -2750,6 +3390,14 @@ pub fn commit_component_replacement(
             "selected occurrence no longer uses the reviewed source definition".to_owned(),
         ));
     }
+    if source
+        .world_transform_for_occurrence(impact.selected_occurrence_id)
+        .is_none_or(|transform| !transforms_nearly_equal(transform, impact.selected_transform))
+    {
+        return Err(ComponentReplacementCommitError::InvalidImpact(
+            "selected occurrence no longer has the reviewed world placement".to_owned(),
+        ));
+    }
     let expected_definition_ids = source
         .definitions()
         .map(|definition| definition.id())
@@ -2757,6 +3405,40 @@ pub fn commit_component_replacement(
     if expected_definition_ids != impact.unchanged_definition_ids {
         return Err(ComponentReplacementCommitError::InvalidImpact(
             "component replacement definition-isolation evidence is incomplete".to_owned(),
+        ));
+    }
+    if preserved_collection_dependencies(&source, impact.selected_occurrence_id)
+        != impact.collection_dependencies
+    {
+        return Err(ComponentReplacementCommitError::InvalidImpact(
+            "component replacement collection dependency evidence is incomplete".to_owned(),
+        ));
+    }
+    let mut expected_drawing_views = source
+        .drawing_sheets()
+        .filter(|sheet| {
+            matches!(
+                sheet.source(),
+                DrawingSource::RigidAssembly { occurrence_ids }
+                    if occurrence_ids.contains(&impact.selected_occurrence_id)
+            )
+        })
+        .flat_map(|sheet| {
+            [
+                OrthographicViewKind::Front,
+                OrthographicViewKind::Top,
+                OrthographicViewKind::Right,
+            ]
+            .map(|view| SharedChangeDrawingViewImpact {
+                sheet_id: sheet.id(),
+                view,
+            })
+        })
+        .collect::<Vec<_>>();
+    expected_drawing_views.sort_unstable();
+    if expected_drawing_views != impact.drawing_views {
+        return Err(ComponentReplacementCommitError::InvalidImpact(
+            "component replacement drawing dependency evidence is incomplete".to_owned(),
         ));
     }
 
@@ -2775,7 +3457,8 @@ pub fn commit_component_replacement(
                 "component replacement candidate lost the selected occurrence".to_owned(),
             )
         })?;
-    if candidate_selected.definition_id() != impact.target_definition_id
+    if candidate_selected.id() != selected.id()
+        || candidate_selected.definition_id() != impact.target_definition_id
         || candidate_selected.name() != selected.name()
         || candidate_selected.transform() != selected.transform()
         || candidate_selected.parent() != selected.parent()
@@ -2783,9 +3466,15 @@ pub fn commit_component_replacement(
         || candidate_selected.visible() != selected.visible()
         || candidate.occurrence_is_grounded(impact.selected_occurrence_id)
             != source.occurrence_is_grounded(impact.selected_occurrence_id)
+        || candidate
+            .world_transform_for_occurrence(impact.selected_occurrence_id)
+            .is_none_or(|transform| !transforms_nearly_equal(transform, impact.selected_transform))
+        || !source.collections().eq(candidate.collections())
+        || !source.drawing_sheets().eq(candidate.drawing_sheets())
     {
         return Err(ComponentReplacementCommitError::InvalidImpact(
-            "component replacement changed more than the selected definition reference".to_owned(),
+            "component replacement changed identity, world placement, or preserved dependencies"
+                .to_owned(),
         ));
     }
     let solved_transform_ids = proposal
@@ -3604,6 +4293,10 @@ pub fn project_occurrence_fork_impact(
             .collect(),
         exact_jobs,
         mate_references,
+        collection_dependencies: preserved_collection_dependencies(
+            &source,
+            request.selected_occurrence_id,
+        ),
         drawing_views,
         exports,
         proposal,

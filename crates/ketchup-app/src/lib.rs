@@ -8,11 +8,12 @@ use ketchup_core::assistant_sidecar::{
     ASSISTANT_PROTOCOL_VERSION, AssistantApiDiagnostics, AssistantBalloonTextIntent,
     AssistantBottleFinishKind, AssistantBottleIntent, AssistantBoxIntent, AssistantCadDeletePolicy,
     AssistantCadEditOperation, AssistantCadEditProgram, AssistantCadEntitySelector,
-    AssistantCapability, AssistantChatResult, AssistantDistribution, AssistantGableRoofIntent,
-    AssistantHandshake, AssistantModelIntent, AssistantOrientedBeamIntent, AssistantPrincipalPlane,
-    AssistantRejectionDiagnostic, AssistantRejectionPhase, AssistantSketchConstraint,
-    AssistantSketchEntity, AssistantSketchPointKind, AssistantSketchPointRef,
-    AssistantStaircaseIntent, AssistantWorkplaneSpec,
+    AssistantCadPartFeature, AssistantCapability, AssistantChatResult, AssistantDistribution,
+    AssistantGableRoofIntent, AssistantHandshake, AssistantModelIntent,
+    AssistantOrientedBeamIntent, AssistantPrincipalPlane, AssistantRejectionDiagnostic,
+    AssistantRejectionPhase, AssistantSketchConstraint, AssistantSketchEntity,
+    AssistantSketchPointKind, AssistantSketchPointRef, AssistantStaircaseIntent,
+    AssistantWorkplaneSpec,
 };
 use ketchup_core::beam_m4ae::{
     BeamChangeSummary, BeamSlice, BeamValidationVerdict, BeamWorkspace, GroovePosition, GroupedBom,
@@ -25,20 +26,21 @@ use ketchup_core::document::{
     BottleEdgeFinishKind, CanonicalCommand, CanonicalError, ClassificationCategoryId,
     ClassificationDimensionId, CloneDefinitionPlan, CollectionId, CommandBatch, DefinitionId,
     Dimension, DimensionDisplayUnit, DimensionPresentation, DocumentId, DocumentStore,
-    EdgeFinishKind, EvaluationIdentity, FeatureId, FeatureKind, FeatureParameterSlot,
-    FeatureParameterTarget, GroupId, HighRiskClass, HighRiskScope, InstancePath, LoftSection,
-    MAX_HUMAN_CONFIRMATION_LIFETIME_MS, MESH_BODY_SCHEMA_V1, MeshAuthority, MeshBodySpec, NodeId,
-    OccurrenceId, PersistentDimensionId, ProfileSegment, Proposal, ProposalCommitError,
-    ProposalContext, ProposalGoal, ProposalPrepareError, ProposalPrincipal, ProposalValue,
-    SceneOccurrence, SceneQueryContext, SideEffectAuthorizationReceipt, SlotPath, Snapshot,
-    SolidToolPlan, StableEdgeRole, StableFaceRole, TagId, TipReplacementParent,
-    TipReplacementProposal, Transform, TrustedConfirmationSurface,
+    EdgeFinishKind, EvaluationIdentity, FeatureId, FeatureKind, FeatureParameterTarget, GroupId,
+    HighRiskClass, HighRiskScope, InstancePath, LoftSection, MAX_HUMAN_CONFIRMATION_LIFETIME_MS,
+    MESH_BODY_SCHEMA_V1, MeshAuthority, MeshBodySpec, NodeId, OccurrenceId, PersistentDimensionId,
+    ProfileSegment, Proposal, ProposalCommitError, ProposalContext, ProposalGoal,
+    ProposalPrepareError, ProposalPrincipal, ProposalValue, SceneOccurrence, SceneQueryContext,
+    SideEffectAuthorizationReceipt, SlotPath, Snapshot, SolidToolPlan, StableEdgeRole,
+    StableFaceRole, TagId, TipReplacementParent, TipReplacementProposal, Transform,
+    TrustedConfirmationSurface,
 };
 #[cfg(test)]
 use ketchup_core::document::{
-    OverrideParameterSpec, PersistentDimension, PersistentDimensionTarget, SlotResolution,
+    OverrideParameterSpec, ParameterValueType, PersistentDimension, PersistentDimensionTarget,
+    SlotResolution,
 };
-use ketchup_core::exact_brep_graph::ExactBRepGraph;
+use ketchup_core::exact_brep_graph::{ExactBRepGraph, ExactBRepOperation};
 use ketchup_core::exact_product::{
     AssemblySelectionTarget, ExactBodyPackage, ExactBodyView, ExactFaceRole,
     ExactFeatureChainRequest, ExactLoftRequest, ExactMeshExport, ExactPlanarOffsetRequest,
@@ -48,8 +50,10 @@ use ketchup_core::exact_product::{
 #[cfg(test)]
 use ketchup_core::exact_product::{ExactBRepGraphPackage, ExactBRepGraphWorkerEvidence};
 use ketchup_core::exact_validation::{
-    BuiltinGeneralBodyValidator, BuiltinGravitySupportValidator, GeneralBodyParticipant,
-    GeneralClearanceCase, GravitySupportParticipant, general_body_input_bytes,
+    BuiltinGeneralBodyValidator, BuiltinGravitySupportValidator,
+    GENERAL_BODY_SOURCE_FRAME_METHOD_V1, GeneralBodyNarrowPhaseRelation, GeneralBodyParticipant,
+    GeneralBodySource, GeneralClearanceCase, GravitySupportInput, GravitySupportParticipant,
+    general_body_containment, general_body_input_bytes, general_body_narrow_phase,
     general_body_validation_policy, gravity_support_input_bytes, gravity_support_validation_policy,
 };
 use ketchup_core::fabrication::{FullBomProjection, PieceDimensionSheet};
@@ -68,9 +72,9 @@ use ketchup_core::import::{StepImportMesh, StepMeshTriangle};
 use ketchup_core::intent::{IntentRequest, WorkflowIntent, propose_intent};
 use ketchup_core::prismatic::{JointId, TolerancePolicy};
 use ketchup_core::sketch::{
-    PrincipalPlane, SketchConstraint, SketchConstraintId, SketchConstraintKind, SketchEntity,
-    SketchEntityId, SketchPointKind, SketchPointRef, SketchSpec, WorkplaneFrame, WorkplaneSpec,
-    WorkplaneSupport,
+    FeatureDirection, FeatureExtent, PadSpec, PrincipalPlane, SketchConstraint, SketchConstraintId,
+    SketchConstraintKind, SketchEntity, SketchEntityId, SketchPointKind, SketchPointRef,
+    SketchSpec, WorkplaneFrame, WorkplaneSpec, WorkplaneSupport,
 };
 #[cfg(test)]
 use ketchup_core::space::ClearanceOwner;
@@ -79,7 +83,8 @@ use ketchup_core::state_view::{AGENT_STATE_VIEW_V1, encode_semantic_state};
 use ketchup_core::topology::{TopologicalElementKind, TopologicalElementRef};
 use ketchup_core::validation::{
     DiagnosticSeverity, EvidenceClass, HostNeutralValidator, ValidationExecution,
-    ValidationInvocation, ValidationReport, ValidationState,
+    ValidationInvocation, ValidationReport, ValidationState, ValidatorRoleError,
+    ValidatorRoleIndex,
 };
 use ketchup_interaction::{
     Axis, ElementId, ExactHit, LocaleCatalog, PickResult, Ray, SelectionId, Side, SnapKind,
@@ -180,6 +185,8 @@ const MAX_ASSISTANT_MEMORY_RETRIEVAL_BYTES: usize = 8 * 1024;
 const MAX_ASSISTANT_MEMORY_STORAGE_BYTES: usize = 320 * 1024;
 const MAX_ASSISTANT_VALIDATION_OCCURRENCES: usize = 100;
 const MAX_ASSISTANT_VALIDATION_ISSUES: usize = 100;
+pub const ASSISTANT_REPAIR_PROGRAM_SCHEMA_V1: &str = "ketchup.assistant-repair-program.v1";
+const MAX_ASSISTANT_REPAIR_TRANSLATION_MM: f64 = 1_000_000.0;
 const ASSISTANT_VALIDATOR_IDS: [&str; 9] = [
     "collision",
     "gravity_support",
@@ -283,6 +290,7 @@ fn bind_assistant_cad_current_selection(
     for operation in &mut program.operations {
         let Some(selector) = (match operation {
             AssistantCadEditOperation::CreateSketch { .. }
+            | AssistantCadEditOperation::CreatePart { .. }
             | AssistantCadEditOperation::SetDimension { .. } => None,
             AssistantCadEditOperation::Delete { selector, .. }
             | AssistantCadEditOperation::Transform { selector, .. }
@@ -605,135 +613,78 @@ fn resolve_assistant_validator_names(text: &str) -> (BTreeSet<&'static str>, Vec
     (resolved, unknown)
 }
 
-fn assistant_name_has_role(name: &str, roles: &[&str]) -> bool {
-    let normalized = name.to_lowercase();
-    roles.iter().any(|role| normalized.contains(role))
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AssistantSpatialRoleKind {
+    Room,
+    Furniture,
+    Passage {
+        surface_axes: [usize; 2],
+        height_axis: usize,
+    },
+    Obstacle,
+    Context,
 }
 
-fn assistant_is_shelf(name: &str) -> bool {
-    assistant_name_has_role(
-        name,
-        &[
-            "shelf", "polica", "police", "políc", "polic", "polička", "policka",
-        ],
-    )
+#[derive(Clone, Copy, Debug)]
+struct AssistantSpatialRole<'a> {
+    kind: AssistantSpatialRoleKind,
+    group: &'a str,
 }
 
-fn assistant_is_case_furniture(name: &str) -> bool {
-    assistant_name_has_role(
-        name,
-        &[
-            "cabinet", "wardrobe", "bookcase", "cupboard", "dresser", "skri", "regál", "regal",
-            "komod", "nábytok", "nabytok",
-        ],
-    )
+fn assistant_spatial_role(role: &str) -> Option<AssistantSpatialRole<'_>> {
+    let (role, group) = role.split_once(':')?;
+    if group.is_empty() {
+        return None;
+    }
+    let kind = match role {
+        "spatial.room" => AssistantSpatialRoleKind::Room,
+        "spatial.furniture" => AssistantSpatialRoleKind::Furniture,
+        "spatial.passage.xy" => AssistantSpatialRoleKind::Passage {
+            surface_axes: [0, 1],
+            height_axis: 2,
+        },
+        "spatial.passage.xz" => AssistantSpatialRoleKind::Passage {
+            surface_axes: [0, 2],
+            height_axis: 1,
+        },
+        "spatial.passage.yz" => AssistantSpatialRoleKind::Passage {
+            surface_axes: [1, 2],
+            height_axis: 0,
+        },
+        "spatial.obstacle" => AssistantSpatialRoleKind::Obstacle,
+        "spatial.context" => AssistantSpatialRoleKind::Context,
+        _ => return None,
+    };
+    Some(AssistantSpatialRole { kind, group })
 }
 
-fn assistant_is_panel(name: &str) -> bool {
-    assistant_name_has_role(
-        name,
-        &[
-            "panel", "shelf", "polica", "police", "side", "bočnica", "bocnica", "back", "chrbát",
-            "chrbat", "door", "dvere",
-        ],
-    )
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AssistantPhysicsRoleKind {
+    GravityBody,
+    GravityGround,
+    StaticLoad,
+    StaticSupport,
 }
 
-fn assistant_is_hole(name: &str) -> bool {
-    assistant_name_has_role(
-        name,
-        &[
-            "hole",
-            "drill",
-            "bore",
-            "diera",
-            "otvor",
-            "hinge cup",
-            "pántová miska",
-            "pantova miska",
-            "pántový otvor",
-            "pantovy otvor",
-        ],
-    )
+#[derive(Clone, Copy, Debug)]
+struct AssistantPhysicsRole<'a> {
+    kind: AssistantPhysicsRoleKind,
+    group: &'a str,
 }
 
-fn assistant_is_hinge(name: &str) -> bool {
-    assistant_name_has_role(name, &["hinge", "pánt", "pant"])
-}
-
-fn assistant_is_drawer_slide(name: &str) -> bool {
-    assistant_name_has_role(
-        name,
-        &[
-            "drawer slide",
-            "drawer runner",
-            "výsuv",
-            "vysuv",
-            "koľaj",
-            "kolaj",
-        ],
-    )
-}
-
-fn assistant_is_room_envelope(name: &str) -> bool {
-    assistant_name_has_role(
-        name,
-        &[
-            "room envelope",
-            "room boundary",
-            "obálka miestnosti",
-            "obalka miestnosti",
-            "hranica miestnosti",
-        ],
-    )
-}
-
-fn assistant_is_passage_envelope(name: &str) -> bool {
-    assistant_name_has_role(
-        name,
-        &[
-            "passage",
-            "walkway",
-            "aisle",
-            "corridor",
-            "priechod",
-            "ulička",
-            "ulicka",
-            "komunikácia",
-            "komunikacia",
-        ],
-    )
-}
-
-fn assistant_is_room_furniture(name: &str) -> bool {
-    assistant_is_case_furniture(name)
-        || assistant_name_has_role(
-            name,
-            &[
-                "furniture",
-                "chair",
-                "table",
-                "sofa",
-                "bed",
-                "desk",
-                "nábytok",
-                "nabytok",
-                "stoli",
-                "stôl",
-                "stol",
-                "pohov",
-                "posteľ",
-                "postel",
-            ],
-        )
-}
-
-fn assistant_is_room_shell(name: &str) -> bool {
-    assistant_is_room_envelope(name)
-        || assistant_name_has_role(
-            name,
-            &["floor", "wall", "ceiling", "podlaha", "stena", "strop"],
-        )
+fn assistant_physics_role(role: &str) -> Option<AssistantPhysicsRole<'_>> {
+    let (role, group) = role.split_once(':')?;
+    if group.is_empty() {
+        return None;
+    }
+    let kind = match role {
+        "physics.gravity.body" => AssistantPhysicsRoleKind::GravityBody,
+        "physics.gravity.ground" => AssistantPhysicsRoleKind::GravityGround,
+        "physics.static.load" => AssistantPhysicsRoleKind::StaticLoad,
+        "physics.static.support" => AssistantPhysicsRoleKind::StaticSupport,
+        _ => return None,
+    };
+    Some(AssistantPhysicsRole { kind, group })
 }
 
 fn assistant_evidence_label(evidence: &EvidenceClass) -> &'static str {
@@ -743,9 +694,28 @@ fn assistant_evidence_label(evidence: &EvidenceClass) -> &'static str {
     }
 }
 
+fn assistant_shelf_role_axes(role: &str) -> Option<([usize; 2], usize)> {
+    match role {
+        "furniture.shelf.xy" => Some(([0, 1], 2)),
+        "furniture.shelf.xz" => Some(([0, 2], 1)),
+        "furniture.shelf.yz" => Some(([1, 2], 0)),
+        _ => None,
+    }
+}
+
+fn assistant_case_role_axis(role: &str) -> Option<usize> {
+    match role {
+        "furniture.case.x" => Some(0),
+        "furniture.case.y" => Some(1),
+        "furniture.case.z" => Some(2),
+        _ => None,
+    }
+}
+
 fn assistant_shelf_deflection_report(
     participants: &[GeneralBodyParticipant],
     names: &BTreeMap<OccurrenceId, String>,
+    roles: &Result<ValidatorRoleIndex, ValidatorRoleError>,
     selected: bool,
     coverage_complete: bool,
 ) -> serde_json::Value {
@@ -760,23 +730,55 @@ fn assistant_shelf_deflection_report(
             "issues": [],
         });
     }
+    let roles = match roles {
+        Ok(roles) => roles,
+        Err(error) => {
+            return serde_json::json!({
+                "state": "not_evaluated",
+                "complete": false,
+                "applicable_count": 0,
+                "issue_count": 0,
+                "issues_complete": true,
+                "role_error": error.to_string(),
+                "evaluations": [],
+                "not_evaluated": [],
+                "issues": [],
+            });
+        }
+    };
 
     let mut evaluations = Vec::new();
+    let mut not_evaluated = Vec::new();
     let mut issues = Vec::new();
     for participant in participants {
         let occurrence_id = participant.instance_path().root_occurrence();
-        let Some(name) = names
-            .get(&occurrence_id)
-            .filter(|name| assistant_is_shelf(name))
-        else {
+        let Some(role) = roles.role(occurrence_id) else {
             continue;
         };
-        let bounds = participant.bounds();
-        let dimensions =
-            std::array::from_fn::<_, 3, _>(|axis| bounds.max()[axis] - bounds.min()[axis]);
-        let span_mm = dimensions[0].max(dimensions[1]);
-        let depth_mm = dimensions[0].min(dimensions[1]);
-        let thickness_mm = dimensions[2];
+        let Some((surface_axes, thickness_axis)) = assistant_shelf_role_axes(role.as_str()) else {
+            continue;
+        };
+        let name = names
+            .get(&occurrence_id)
+            .expect("validated visible participants retain display names");
+        let geometry = participant.geometry_evidence();
+        let vertical_alignment = geometry
+            .source_axis_world_z_alignment(thickness_axis)
+            .expect("declared source axis is bounded");
+        if vertical_alignment < 1.0 - 1.0e-9 {
+            not_evaluated.push(serde_json::json!({
+                "occurrence_id": occurrence_id.0,
+                "name": name,
+                "role": role.as_str(),
+                "reason": "declared shelf thickness axis is not aligned with world gravity",
+                "source_axis_world_z_alignment": vertical_alignment,
+            }));
+            continue;
+        }
+        let dimensions = geometry.source_frame_extents_mm();
+        let span_mm = dimensions[surface_axes[0]].max(dimensions[surface_axes[1]]);
+        let depth_mm = dimensions[surface_axes[0]].min(dimensions[surface_axes[1]]);
+        let thickness_mm = dimensions[thickness_axis];
         let second_moment_mm4 = depth_mm * thickness_mm.powi(3) / 12.0;
         let line_load_n_mm = SHELF_DESIGN_LOAD_N / span_mm;
         let predicted_deflection_mm = 5.0 * line_load_n_mm * span_mm.powi(4)
@@ -787,7 +789,9 @@ fn assistant_shelf_deflection_report(
         let evaluation = serde_json::json!({
             "occurrence_id": occurrence_id.0,
             "name": name,
-            "role_source": "occurrence_name",
+            "role": role.as_str(),
+            "role_source": "canonical_classification",
+            "geometry_method": GENERAL_BODY_SOURCE_FRAME_METHOD_V1,
             "evidence_class": assistant_evidence_label(participant.evidence_class()),
             "span_mm": span_mm,
             "depth_mm": depth_mm,
@@ -806,6 +810,9 @@ fn assistant_shelf_deflection_report(
                 "severity": "warning",
                 "occurrence_id": occurrence_id.0,
                 "name": name,
+                "role": role.as_str(),
+                "role_source": "canonical_classification",
+                "geometry_method": GENERAL_BODY_SOURCE_FRAME_METHOD_V1,
                 "evidence_class": assistant_evidence_label(participant.evidence_class()),
                 "span_mm": span_mm,
                 "depth_mm": depth_mm,
@@ -819,7 +826,8 @@ fn assistant_shelf_deflection_report(
         evaluations.push(evaluation);
     }
     let issue_count = issues.len();
-    let state = if !coverage_complete {
+    let complete = coverage_complete && not_evaluated.is_empty();
+    let state = if !complete {
         "not_evaluated"
     } else if issue_count > 0 {
         "failed"
@@ -828,7 +836,7 @@ fn assistant_shelf_deflection_report(
     };
     serde_json::json!({
         "state": state,
-        "complete": coverage_complete && issue_count <= MAX_ASSISTANT_VALIDATION_ISSUES,
+        "complete": complete && issue_count <= MAX_ASSISTANT_VALIDATION_ISSUES,
         "applicable_count": evaluations.len(),
         "issue_count": issue_count,
         "issues_complete": issue_count <= MAX_ASSISTANT_VALIDATION_ISSUES,
@@ -842,12 +850,14 @@ fn assistant_shelf_deflection_report(
             "maximum_mm": SHELF_MAX_DEFLECTION_MM,
         },
         "assumptions": [
-            "occurrence names declare shelf roles",
+            "canonical validator roles declare shelf plane and thickness axis",
+            "source-frame extents are bound to the accepted body geometry",
             "uniform 500 N service load",
             "2500 N/mm2 engineered-wood elastic modulus",
             "simple supports at both span ends",
         ],
         "evaluations": evaluations.into_iter().take(MAX_ASSISTANT_VALIDATION_ISSUES).collect::<Vec<_>>(),
+        "not_evaluated": not_evaluated.into_iter().take(MAX_ASSISTANT_VALIDATION_ISSUES).collect::<Vec<_>>(),
         "issues": issues.into_iter().take(MAX_ASSISTANT_VALIDATION_ISSUES).collect::<Vec<_>>(),
     })
 }
@@ -855,6 +865,7 @@ fn assistant_shelf_deflection_report(
 fn assistant_tipping_report(
     participants: &[GeneralBodyParticipant],
     names: &BTreeMap<OccurrenceId, String>,
+    roles: &Result<ValidatorRoleIndex, ValidatorRoleError>,
     selected: bool,
     coverage_complete: bool,
 ) -> serde_json::Value {
@@ -869,34 +880,71 @@ fn assistant_tipping_report(
             "issues": [],
         });
     }
+    let roles = match roles {
+        Ok(roles) => roles,
+        Err(error) => {
+            return serde_json::json!({
+                "state": "not_evaluated",
+                "complete": false,
+                "applicable_count": 0,
+                "issue_count": 0,
+                "issues_complete": true,
+                "role_error": error.to_string(),
+                "evaluations": [],
+                "not_evaluated": [],
+                "issues": [],
+            });
+        }
+    };
 
     let mut evaluations = Vec::new();
+    let mut not_evaluated = Vec::new();
     let mut issues = Vec::new();
     for participant in participants {
         let occurrence_id = participant.instance_path().root_occurrence();
-        let Some(name) = names
-            .get(&occurrence_id)
-            .filter(|name| assistant_is_case_furniture(name))
-        else {
+        let Some(role) = roles.role(occurrence_id) else {
             continue;
         };
-        let bounds = participant.bounds();
-        let dimensions =
-            std::array::from_fn::<_, 3, _>(|axis| bounds.max()[axis] - bounds.min()[axis]);
-        let base_depth_mm = dimensions[0].min(dimensions[1]);
-        let height_mm = dimensions[2];
+        let Some(vertical_axis) = assistant_case_role_axis(role.as_str()) else {
+            continue;
+        };
+        let name = names
+            .get(&occurrence_id)
+            .expect("validated visible participants retain display names");
+        let geometry = participant.geometry_evidence();
+        let vertical_alignment = geometry
+            .source_axis_world_z_alignment(vertical_axis)
+            .expect("declared source axis is bounded");
+        if vertical_alignment < 1.0 - 1.0e-9 {
+            not_evaluated.push(serde_json::json!({
+                "occurrence_id": occurrence_id.0,
+                "name": name,
+                "role": role.as_str(),
+                "reason": "declared case-furniture vertical axis is not aligned with world gravity",
+                "source_axis_world_z_alignment": vertical_alignment,
+            }));
+            continue;
+        }
+        let dimensions = geometry.source_frame_extents_mm();
+        let base_axes = (0..3)
+            .filter(|axis| *axis != vertical_axis)
+            .collect::<Vec<_>>();
+        let base_depth_mm = dimensions[base_axes[0]].min(dimensions[base_axes[1]]);
+        let height_mm = dimensions[vertical_axis];
         let centre_of_mass_height_mm = height_mm / 2.0;
         let critical_tip_angle_degrees = (base_depth_mm / height_mm).atan().to_degrees();
         let failed = critical_tip_angle_degrees < MINIMUM_TIP_ANGLE_DEGREES;
         let evaluation = serde_json::json!({
             "occurrence_id": occurrence_id.0,
             "name": name,
-            "role_source": "occurrence_name",
+            "role": role.as_str(),
+            "role_source": "canonical_classification",
+            "geometry_method": GENERAL_BODY_SOURCE_FRAME_METHOD_V1,
             "evidence_class": assistant_evidence_label(participant.evidence_class()),
             "base_depth_mm": base_depth_mm,
             "height_mm": height_mm,
             "centre_of_mass_height_mm": centre_of_mass_height_mm,
-            "mass_model": "uniform_aabb",
+            "mass_model": "uniform_source_frame_envelope",
             "critical_tip_angle_degrees": critical_tip_angle_degrees,
             "minimum_tip_angle_degrees": MINIMUM_TIP_ANGLE_DEGREES,
             "result": if failed { "failed" } else { "passed" },
@@ -907,6 +955,9 @@ fn assistant_tipping_report(
                 "severity": "warning",
                 "occurrence_id": occurrence_id.0,
                 "name": name,
+                "role": role.as_str(),
+                "role_source": "canonical_classification",
+                "geometry_method": GENERAL_BODY_SOURCE_FRAME_METHOD_V1,
                 "evidence_class": assistant_evidence_label(participant.evidence_class()),
                 "base_depth_mm": base_depth_mm,
                 "height_mm": height_mm,
@@ -918,7 +969,8 @@ fn assistant_tipping_report(
         evaluations.push(evaluation);
     }
     let issue_count = issues.len();
-    let state = if !coverage_complete {
+    let complete = coverage_complete && not_evaluated.is_empty();
+    let state = if !complete {
         "not_evaluated"
     } else if issue_count > 0 {
         "failed"
@@ -927,19 +979,21 @@ fn assistant_tipping_report(
     };
     serde_json::json!({
         "state": state,
-        "complete": coverage_complete && issue_count <= MAX_ASSISTANT_VALIDATION_ISSUES,
+        "complete": complete && issue_count <= MAX_ASSISTANT_VALIDATION_ISSUES,
         "applicable_count": evaluations.len(),
         "issue_count": issue_count,
         "issues_complete": issue_count <= MAX_ASSISTANT_VALIDATION_ISSUES,
-        "inputs": { "mass_model": "uniform_aabb" },
+        "inputs": { "mass_model": "uniform_source_frame_envelope" },
         "limit": { "minimum_tip_angle_degrees": MINIMUM_TIP_ANGLE_DEGREES },
         "assumptions": [
-            "occurrence names declare case-furniture roles",
-            "mass is uniformly distributed inside the reported bounds",
+            "canonical validator roles declare the case-furniture vertical axis",
+            "source-frame extents are bound to the accepted body geometry",
+            "mass is uniformly distributed inside the source-frame envelope",
             "the full reported base depth contacts a level floor",
             "no external pull or shelf load is included",
         ],
         "evaluations": evaluations.into_iter().take(MAX_ASSISTANT_VALIDATION_ISSUES).collect::<Vec<_>>(),
+        "not_evaluated": not_evaluated.into_iter().take(MAX_ASSISTANT_VALIDATION_ISSUES).collect::<Vec<_>>(),
         "issues": issues.into_iter().take(MAX_ASSISTANT_VALIDATION_ISSUES).collect::<Vec<_>>(),
     })
 }
@@ -947,6 +1001,7 @@ fn assistant_tipping_report(
 fn assistant_anchoring_report(
     participants: &[GeneralBodyParticipant],
     names: &BTreeMap<OccurrenceId, String>,
+    roles: &Result<ValidatorRoleIndex, ValidatorRoleError>,
     selected: bool,
     coverage_complete: bool,
 ) -> serde_json::Value {
@@ -962,29 +1017,67 @@ fn assistant_anchoring_report(
             "issues": [],
         });
     }
+    let roles = match roles {
+        Ok(roles) => roles,
+        Err(error) => {
+            return serde_json::json!({
+                "state": "not_evaluated",
+                "complete": false,
+                "applicable_count": 0,
+                "required_count": 0,
+                "issue_count": 0,
+                "issues_complete": true,
+                "role_error": error.to_string(),
+                "evaluations": [],
+                "not_evaluated": [],
+                "issues": [],
+            });
+        }
+    };
 
     let mut evaluations = Vec::new();
+    let mut not_evaluated = Vec::new();
     let mut issues = Vec::new();
     for participant in participants {
         let occurrence_id = participant.instance_path().root_occurrence();
-        let Some(name) = names
-            .get(&occurrence_id)
-            .filter(|name| assistant_is_case_furniture(name))
-        else {
+        let Some(role) = roles.role(occurrence_id) else {
             continue;
         };
-        let bounds = participant.bounds();
-        let dimensions =
-            std::array::from_fn::<_, 3, _>(|axis| bounds.max()[axis] - bounds.min()[axis]);
-        let base_depth_mm = dimensions[0].min(dimensions[1]);
-        let height_mm = dimensions[2];
+        let Some(vertical_axis) = assistant_case_role_axis(role.as_str()) else {
+            continue;
+        };
+        let name = names
+            .get(&occurrence_id)
+            .expect("validated visible participants retain display names");
+        let geometry = participant.geometry_evidence();
+        let vertical_alignment = geometry
+            .source_axis_world_z_alignment(vertical_axis)
+            .expect("declared source axis is bounded");
+        if vertical_alignment < 1.0 - 1.0e-9 {
+            not_evaluated.push(serde_json::json!({
+                "occurrence_id": occurrence_id.0,
+                "name": name,
+                "role": role.as_str(),
+                "reason": "declared case-furniture vertical axis is not aligned with world gravity",
+                "source_axis_world_z_alignment": vertical_alignment,
+            }));
+            continue;
+        }
+        let dimensions = geometry.source_frame_extents_mm();
+        let base_axes = (0..3)
+            .filter(|axis| *axis != vertical_axis)
+            .collect::<Vec<_>>();
+        let base_depth_mm = dimensions[base_axes[0]].min(dimensions[base_axes[1]]);
+        let height_mm = dimensions[vertical_axis];
         let height_depth_ratio = height_mm / base_depth_mm;
         let anchoring_required = height_mm >= ANCHORING_MINIMUM_HEIGHT_MM
             && height_depth_ratio >= ANCHORING_MINIMUM_HEIGHT_DEPTH_RATIO;
         let evaluation = serde_json::json!({
             "occurrence_id": occurrence_id.0,
             "name": name,
-            "role_source": "occurrence_name",
+            "role": role.as_str(),
+            "role_source": "canonical_classification",
+            "geometry_method": GENERAL_BODY_SOURCE_FRAME_METHOD_V1,
             "evidence_class": assistant_evidence_label(participant.evidence_class()),
             "base_depth_mm": base_depth_mm,
             "height_mm": height_mm,
@@ -1001,6 +1094,9 @@ fn assistant_anchoring_report(
                 "severity": "warning",
                 "occurrence_id": occurrence_id.0,
                 "name": name,
+                "role": role.as_str(),
+                "role_source": "canonical_classification",
+                "geometry_method": GENERAL_BODY_SOURCE_FRAME_METHOD_V1,
                 "evidence_class": assistant_evidence_label(participant.evidence_class()),
                 "base_depth_mm": base_depth_mm,
                 "height_mm": height_mm,
@@ -1013,7 +1109,8 @@ fn assistant_anchoring_report(
         evaluations.push(evaluation);
     }
     let issue_count = issues.len();
-    let state = if !coverage_complete {
+    let complete = coverage_complete && not_evaluated.is_empty();
+    let state = if !complete {
         "not_evaluated"
     } else if issue_count > 0 {
         "failed"
@@ -1022,7 +1119,7 @@ fn assistant_anchoring_report(
     };
     serde_json::json!({
         "state": state,
-        "complete": coverage_complete && issue_count <= MAX_ASSISTANT_VALIDATION_ISSUES,
+        "complete": complete && issue_count <= MAX_ASSISTANT_VALIDATION_ISSUES,
         "applicable_count": evaluations.len(),
         "required_count": issue_count,
         "issue_count": issue_count,
@@ -1032,18 +1129,74 @@ fn assistant_anchoring_report(
             "minimum_height_depth_ratio": ANCHORING_MINIMUM_HEIGHT_DEPTH_RATIO,
         },
         "assumptions": [
-            "occurrence names declare case-furniture roles",
+            "canonical validator roles declare the case-furniture vertical axis",
+            "source-frame extents are bound to the accepted body geometry",
             "wall-anchor declarations are not represented by the current document schema",
             "a requirement is reported rather than claiming that an anchor is absent",
         ],
         "evaluations": evaluations.into_iter().take(MAX_ASSISTANT_VALIDATION_ISSUES).collect::<Vec<_>>(),
+        "not_evaluated": not_evaluated.into_iter().take(MAX_ASSISTANT_VALIDATION_ISSUES).collect::<Vec<_>>(),
         "issues": issues.into_iter().take(MAX_ASSISTANT_VALIDATION_ISSUES).collect::<Vec<_>>(),
     })
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AssistantManufacturingRoleKind {
+    Panel,
+    Hole,
+    HingeCup,
+    LinearHardwarePair,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct AssistantManufacturingRole<'a> {
+    kind: AssistantManufacturingRoleKind,
+    axis: usize,
+    group: &'a str,
+}
+
+fn assistant_manufacturing_role(role: &str) -> Option<AssistantManufacturingRole<'_>> {
+    let (role, group) = role.split_once(':')?;
+    if group.is_empty() {
+        return None;
+    }
+    let (kind, axis) = match role {
+        "manufacturing.panel.xy" => (AssistantManufacturingRoleKind::Panel, 2),
+        "manufacturing.panel.xz" => (AssistantManufacturingRoleKind::Panel, 1),
+        "manufacturing.panel.yz" => (AssistantManufacturingRoleKind::Panel, 0),
+        "manufacturing.hole.x" => (AssistantManufacturingRoleKind::Hole, 0),
+        "manufacturing.hole.y" => (AssistantManufacturingRoleKind::Hole, 1),
+        "manufacturing.hole.z" => (AssistantManufacturingRoleKind::Hole, 2),
+        "manufacturing.hinge-cup.x" => (AssistantManufacturingRoleKind::HingeCup, 0),
+        "manufacturing.hinge-cup.y" => (AssistantManufacturingRoleKind::HingeCup, 1),
+        "manufacturing.hinge-cup.z" => (AssistantManufacturingRoleKind::HingeCup, 2),
+        "hardware.linear-pair.x" => (AssistantManufacturingRoleKind::LinearHardwarePair, 0),
+        "hardware.linear-pair.y" => (AssistantManufacturingRoleKind::LinearHardwarePair, 1),
+        "hardware.linear-pair.z" => (AssistantManufacturingRoleKind::LinearHardwarePair, 2),
+        _ => return None,
+    };
+    Some(AssistantManufacturingRole { kind, axis, group })
+}
+
+fn assistant_general_body_source_label(source: &GeneralBodySource) -> &'static str {
+    match source {
+        GeneralBodySource::Exact(_) => "accepted_exact_brep",
+        GeneralBodySource::CanonicalMesh { .. } => "canonical_mesh_topology",
+        GeneralBodySource::CanonicalExtrusion { .. } => "canonical_extrusion_topology",
+        GeneralBodySource::CanonicalExactGraph { .. } => "canonical_exact_feature_graph",
+    }
+}
+
+fn assistant_axis_offset_mm(point: [f64; 3], origin: [f64; 3], direction: [f64; 3]) -> f64 {
+    (0..3)
+        .map(|coordinate| (point[coordinate] - origin[coordinate]) * direction[coordinate])
+        .sum()
 }
 
 fn assistant_hardware_manufacturing_report(
     participants: &[GeneralBodyParticipant],
     names: &BTreeMap<OccurrenceId, String>,
+    roles: &Result<ValidatorRoleIndex, ValidatorRoleError>,
     selected: bool,
     coverage_complete: bool,
 ) -> serde_json::Value {
@@ -1059,15 +1212,35 @@ fn assistant_hardware_manufacturing_report(
             "not_evaluated": [],
         });
     }
+    let roles = match roles {
+        Ok(roles) => roles,
+        Err(error) => {
+            return serde_json::json!({
+                "state": "not_evaluated",
+                "complete": false,
+                "applicable_count": 0,
+                "issue_count": 0,
+                "issues_complete": true,
+                "role_error": error.to_string(),
+                "evaluations": [],
+                "not_evaluated": [],
+                "issues": [],
+            });
+        }
+    };
 
     struct Geometry<'a> {
         occurrence_id: OccurrenceId,
         name: &'a str,
-        minimum: [f64; 3],
-        maximum: [f64; 3],
+        role: &'a str,
+        role_kind: AssistantManufacturingRoleKind,
+        axis: usize,
+        group: &'a str,
         dimensions: [f64; 3],
         centre: [f64; 3],
+        axes: [[f64; 3]; 3],
         evidence_class: &'static str,
+        topology_source: &'static str,
     }
 
     let geometries = participants
@@ -1075,26 +1248,34 @@ fn assistant_hardware_manufacturing_report(
         .filter_map(|participant| {
             let occurrence_id = participant.instance_path().root_occurrence();
             let name = names.get(&occurrence_id)?;
-            let bounds = participant.bounds();
-            let minimum = std::array::from_fn(|axis| bounds.min()[axis]);
-            let maximum = std::array::from_fn(|axis| bounds.max()[axis]);
-            let dimensions = std::array::from_fn(|axis| maximum[axis] - minimum[axis]);
-            let centre = std::array::from_fn(|axis| f64::midpoint(minimum[axis], maximum[axis]));
+            let role = roles.role(occurrence_id)?;
+            let parsed_role = assistant_manufacturing_role(role.as_str())?;
+            let geometry = participant.geometry_evidence();
             Some(Geometry {
                 occurrence_id,
                 name,
-                minimum,
-                maximum,
-                dimensions,
-                centre,
+                role: role.as_str(),
+                role_kind: parsed_role.kind,
+                axis: parsed_role.axis,
+                group: parsed_role.group,
+                dimensions: geometry.source_frame_extents_mm(),
+                centre: geometry.source_frame_center_world_mm(),
+                axes: std::array::from_fn(|axis| {
+                    geometry
+                        .source_axis_world_direction(axis)
+                        .expect("declared source axis is bounded")
+                }),
                 evidence_class: assistant_evidence_label(participant.evidence_class()),
+                topology_source: assistant_general_body_source_label(participant.source()),
             })
         })
         .collect::<Vec<_>>();
     let panel_indices = geometries
         .iter()
         .enumerate()
-        .filter_map(|(index, geometry)| assistant_is_panel(geometry.name).then_some(index))
+        .filter_map(|(index, geometry)| {
+            (geometry.role_kind == AssistantManufacturingRoleKind::Panel).then_some(index)
+        })
         .collect::<Vec<_>>();
     let mut evaluations = Vec::new();
     let mut issues = Vec::new();
@@ -1102,17 +1283,17 @@ fn assistant_hardware_manufacturing_report(
 
     for &panel_index in &panel_indices {
         let panel = &geometries[panel_index];
-        let thickness_mm = panel
-            .dimensions
-            .into_iter()
-            .min_by(f64::total_cmp)
-            .expect("a panel has three dimensions");
+        let thickness_mm = panel.dimensions[panel.axis];
         let failed = thickness_mm < MINIMUM_PANEL_THICKNESS_MM;
         evaluations.push(serde_json::json!({
             "rule": "panel_minimum_thickness",
             "occurrence_id": panel.occurrence_id.0,
             "name": panel.name,
+            "role": panel.role,
+            "role_source": "canonical_classification",
+            "topology_source": panel.topology_source,
             "evidence_class": panel.evidence_class,
+            "thickness_axis": panel.axis,
             "thickness_mm": thickness_mm,
             "minimum_thickness_mm": MINIMUM_PANEL_THICKNESS_MM,
             "result": if failed { "failed" } else { "passed" },
@@ -1123,7 +1304,11 @@ fn assistant_hardware_manufacturing_report(
                 "severity": "warning",
                 "occurrence_id": panel.occurrence_id.0,
                 "name": panel.name,
+                "role": panel.role,
+                "role_source": "canonical_classification",
+                "topology_source": panel.topology_source,
                 "evidence_class": panel.evidence_class,
+                "thickness_axis": panel.axis,
                 "thickness_mm": thickness_mm,
                 "minimum_thickness_mm": MINIMUM_PANEL_THICKNESS_MM,
                 "rule": "panel stock thickness must be at least 6 mm",
@@ -1132,51 +1317,69 @@ fn assistant_hardware_manufacturing_report(
     }
 
     let mut holes = Vec::new();
-    for (hole_index, hole) in geometries
-        .iter()
-        .enumerate()
-        .filter(|(_, geometry)| assistant_is_hole(geometry.name))
-    {
-        let host_index = panel_indices
+    for (hole_index, hole) in geometries.iter().enumerate().filter(|(_, geometry)| {
+        matches!(
+            geometry.role_kind,
+            AssistantManufacturingRoleKind::Hole | AssistantManufacturingRoleKind::HingeCup
+        )
+    }) {
+        let host_indices = panel_indices
             .iter()
             .copied()
-            .filter(|panel_index| {
-                let panel = &geometries[*panel_index];
-                panel.occurrence_id != hole.occurrence_id
-                    && (0..3).all(|axis| {
-                        hole.centre[axis] >= panel.minimum[axis]
-                            && hole.centre[axis] <= panel.maximum[axis]
-                    })
-            })
-            .min_by(|left, right| {
-                let volume =
-                    |index: usize| geometries[index].dimensions.into_iter().product::<f64>();
-                volume(*left).total_cmp(&volume(*right))
-            });
-        let Some(host_index) = host_index else {
+            .filter(|panel_index| geometries[*panel_index].group == hole.group)
+            .collect::<Vec<_>>();
+        let [host_index] = host_indices.as_slice() else {
             not_evaluated.push(serde_json::json!({
                 "validator": "hardware_manufacturing",
                 "occurrence_id": hole.occurrence_id.0,
                 "name": hole.name,
-                "reason": "containing_named_panel_not_identified",
+                "role": hole.role,
+                "association": hole.group,
+                "reason": "explicit_panel_association_is_missing_or_ambiguous",
             }));
             evaluations.push(serde_json::json!({
                 "rule": "hole_edge_and_spacing",
                 "occurrence_id": hole.occurrence_id.0,
                 "name": hole.name,
+                "role": hole.role,
                 "result": "not_evaluated",
-                "reason": "containing_named_panel_not_identified",
+                "reason": "explicit_panel_association_is_missing_or_ambiguous",
             }));
             continue;
         };
+        let host_index = *host_index;
         let host = &geometries[host_index];
-        let axis = host
-            .dimensions
-            .iter()
-            .enumerate()
-            .min_by(|left, right| left.1.total_cmp(right.1))
-            .map(|(axis, _)| axis)
-            .expect("a panel has three dimensions");
+        let axis = hole.axis;
+        if host.axis != axis {
+            not_evaluated.push(serde_json::json!({
+                "validator": "hardware_manufacturing",
+                "occurrence_id": hole.occurrence_id.0,
+                "name": hole.name,
+                "role": hole.role,
+                "host_role": host.role,
+                "reason": "declared_hole_axis_does_not_match_panel_normal",
+            }));
+            continue;
+        }
+        if (0..3).any(|candidate| {
+            let alignment = (0..3)
+                .map(|coordinate| {
+                    hole.axes[candidate][coordinate] * host.axes[candidate][coordinate]
+                })
+                .sum::<f64>()
+                .abs();
+            alignment < 1.0 - 1.0e-9
+        }) {
+            not_evaluated.push(serde_json::json!({
+                "validator": "hardware_manufacturing",
+                "occurrence_id": hole.occurrence_id.0,
+                "name": hole.name,
+                "role": hole.role,
+                "host_role": host.role,
+                "reason": "hole_and_panel_source_frames_are_not_axis_aligned",
+            }));
+            continue;
+        }
         let radial_axes = (0..3)
             .filter(|candidate| *candidate != axis)
             .collect::<Vec<_>>();
@@ -1189,21 +1392,26 @@ fn assistant_hardware_manufacturing_report(
         let depth_mm = hole.dimensions[axis];
         let edge_material_mm = radial_axes
             .iter()
-            .flat_map(|radial_axis| {
-                [
-                    hole.centre[*radial_axis] - host.minimum[*radial_axis] - radius_mm,
-                    host.maximum[*radial_axis] - hole.centre[*radial_axis] - radius_mm,
-                ]
+            .map(|radial_axis| {
+                host.dimensions[*radial_axis] / 2.0
+                    - assistant_axis_offset_mm(hole.centre, host.centre, host.axes[*radial_axis])
+                        .abs()
+                    - radius_mm
             })
             .min_by(f64::total_cmp)
-            .expect("a hole has four radial edge distances");
+            .expect("a hole has two radial edge distances");
         let edge_failed = edge_material_mm < MINIMUM_HOLE_EDGE_MATERIAL_MM;
         evaluations.push(serde_json::json!({
             "rule": "hole_edge_distance",
             "occurrence_id": hole.occurrence_id.0,
             "name": hole.name,
+            "role": hole.role,
+            "role_source": "canonical_classification",
             "host_occurrence_id": host.occurrence_id.0,
             "host_name": host.name,
+            "host_role": host.role,
+            "association": hole.group,
+            "topology_source": hole.topology_source,
             "evidence_class": hole.evidence_class,
             "diameter_mm": diameter_mm,
             "depth_mm": depth_mm,
@@ -1225,7 +1433,7 @@ fn assistant_hardware_manufacturing_report(
                 "rule": "hole perimeter must leave at least 5 mm of material to every panel edge",
             }));
         }
-        if assistant_is_hinge(hole.name) {
+        if hole.role_kind == AssistantManufacturingRoleKind::HingeCup {
             let hinge_failed = diameter_mm < MINIMUM_HINGE_CUP_DIAMETER_MM
                 || depth_mm < MINIMUM_HINGE_CUP_DEPTH_MM;
             evaluations.push(serde_json::json!({
@@ -1267,14 +1475,17 @@ fn assistant_hardware_manufacturing_report(
             }
             let left_hole = &geometries[left.0];
             let right_hole = &geometries[right.0];
+            let host = &geometries[left.1];
             let radial_distance_mm = (0..3)
                 .filter(|axis| *axis != left.2)
-                .map(|axis| (left_hole.centre[axis] - right_hole.centre[axis]).powi(2))
+                .map(|axis| {
+                    assistant_axis_offset_mm(right_hole.centre, left_hole.centre, host.axes[axis])
+                        .powi(2)
+                })
                 .sum::<f64>()
                 .sqrt();
             let material_between_mm = radial_distance_mm - left.3 - right.3;
             if material_between_mm < MINIMUM_HOLE_SPACING_MATERIAL_MM {
-                let host = &geometries[left.1];
                 issues.push(serde_json::json!({
                     "code": "manufacturing.hole_spacing_below_minimum",
                     "severity": "warning",
@@ -1292,60 +1503,54 @@ fn assistant_hardware_manufacturing_report(
         }
     }
 
-    let hardware_indices = geometries
+    let mut linear_pairs: BTreeMap<_, Vec<_>> = BTreeMap::new();
+    for geometry in geometries
         .iter()
-        .enumerate()
-        .filter_map(|(index, geometry)| {
-            ((assistant_is_hinge(geometry.name) || assistant_is_drawer_slide(geometry.name))
-                && !assistant_is_hole(geometry.name))
-            .then_some(index)
-        })
-        .collect::<Vec<_>>();
-    for left_index in 0..hardware_indices.len() {
-        for &right_index in &hardware_indices[left_index + 1..] {
-            let left = &geometries[hardware_indices[left_index]];
-            let right = &geometries[right_index];
-            if (0..3).all(|axis| {
-                left.minimum[axis] < right.maximum[axis] && right.minimum[axis] < left.maximum[axis]
-            }) {
-                issues.push(serde_json::json!({
-                    "code": "manufacturing.hardware_envelope_conflict",
-                    "severity": "warning",
-                    "left_occurrence_id": left.occurrence_id.0,
-                    "left_name": left.name,
-                    "right_occurrence_id": right.occurrence_id.0,
-                    "right_name": right.name,
-                    "rule": "named hardware installation envelopes must not overlap",
-                }));
-            }
-        }
+        .filter(|geometry| geometry.role_kind == AssistantManufacturingRoleKind::LinearHardwarePair)
+    {
+        linear_pairs
+            .entry(geometry.group)
+            .or_default()
+            .push(geometry);
     }
-
-    let slides = geometries
-        .iter()
-        .filter(|geometry| assistant_is_drawer_slide(geometry.name))
-        .collect::<Vec<_>>();
-    if slides.len() == 2 {
-        let lengths = slides
-            .iter()
-            .map(|slide| {
-                slide
-                    .dimensions
-                    .into_iter()
-                    .max_by(f64::total_cmp)
-                    .expect("a slide has three dimensions")
-            })
-            .collect::<Vec<_>>();
-        let length_mismatch_mm = (lengths[0] - lengths[1]).abs();
-        let vertical_mismatch_mm = (slides[0].centre[2] - slides[1].centre[2]).abs();
+    for (group, pair) in linear_pairs {
+        let [left, right] = pair.as_slice() else {
+            issues.push(serde_json::json!({
+                "code": "hardware.linear_pair_incomplete",
+                "severity": "warning",
+                "association": group,
+                "occurrence_ids": pair.iter().map(|member| member.occurrence_id.0).collect::<Vec<_>>(),
+                "names": pair.iter().map(|member| member.name).collect::<Vec<_>>(),
+                "declared_member_count": pair.len(),
+                "required_member_count": 2,
+                "rule": "a declared linear-hardware pair requires exactly two members",
+            }));
+            continue;
+        };
+        if left.axis != right.axis {
+            not_evaluated.push(serde_json::json!({
+                "validator": "hardware_manufacturing",
+                "association": group,
+                "occurrence_ids": [left.occurrence_id.0, right.occurrence_id.0],
+                "reason": "linear_pair_axes_do_not_match",
+            }));
+            continue;
+        }
+        let length_mismatch_mm = (left.dimensions[left.axis] - right.dimensions[right.axis]).abs();
+        let vertical_mismatch_mm = (left.centre[2] - right.centre[2]).abs();
         let failed = length_mismatch_mm > MAXIMUM_DRAWER_SLIDE_LENGTH_MISMATCH_MM
             || vertical_mismatch_mm > MAXIMUM_DRAWER_SLIDE_VERTICAL_MISMATCH_MM;
         evaluations.push(serde_json::json!({
-            "rule": "drawer_slide_pair_alignment",
-            "left_occurrence_id": slides[0].occurrence_id.0,
-            "left_name": slides[0].name,
-            "right_occurrence_id": slides[1].occurrence_id.0,
-            "right_name": slides[1].name,
+            "rule": "linear_hardware_pair_alignment",
+            "association": group,
+            "left_occurrence_id": left.occurrence_id.0,
+            "left_name": left.name,
+            "left_role": left.role,
+            "right_occurrence_id": right.occurrence_id.0,
+            "right_name": right.name,
+            "right_role": right.role,
+            "topology_sources": [left.topology_source, right.topology_source],
+            "length_axis": left.axis,
             "length_mismatch_mm": length_mismatch_mm,
             "vertical_mismatch_mm": vertical_mismatch_mm,
             "maximum_length_mismatch_mm": MAXIMUM_DRAWER_SLIDE_LENGTH_MISMATCH_MM,
@@ -1354,29 +1559,20 @@ fn assistant_hardware_manufacturing_report(
         }));
         if failed {
             issues.push(serde_json::json!({
-                "code": "manufacturing.drawer_slide_pair_misaligned",
+                "code": "hardware.linear_pair_misaligned",
                 "severity": "warning",
-                "left_occurrence_id": slides[0].occurrence_id.0,
-                "left_name": slides[0].name,
-                "right_occurrence_id": slides[1].occurrence_id.0,
-                "right_name": slides[1].name,
+                "association": group,
+                "left_occurrence_id": left.occurrence_id.0,
+                "left_name": left.name,
+                "right_occurrence_id": right.occurrence_id.0,
+                "right_name": right.name,
                 "length_mismatch_mm": length_mismatch_mm,
                 "vertical_mismatch_mm": vertical_mismatch_mm,
                 "maximum_length_mismatch_mm": MAXIMUM_DRAWER_SLIDE_LENGTH_MISMATCH_MM,
                 "maximum_vertical_mismatch_mm": MAXIMUM_DRAWER_SLIDE_VERTICAL_MISMATCH_MM,
-                "rule": "a drawer-slide pair must have equal length and Z alignment within 1 mm",
+                "rule": "a linear-hardware pair must have equal declared-axis length and world-Z alignment within 1 mm",
             }));
         }
-    } else if !slides.is_empty() {
-        issues.push(serde_json::json!({
-            "code": "manufacturing.drawer_slide_pair_incomplete",
-            "severity": "warning",
-            "occurrence_ids": slides.iter().map(|slide| slide.occurrence_id.0).collect::<Vec<_>>(),
-            "names": slides.iter().map(|slide| slide.name).collect::<Vec<_>>(),
-            "declared_slide_count": slides.len(),
-            "required_slide_count": 2,
-            "rule": "one drawer requires exactly one declared pair of slides",
-        }));
     }
 
     let issue_count = issues.len();
@@ -1406,11 +1602,11 @@ fn assistant_hardware_manufacturing_report(
             "minimum_panel_thickness_mm": MINIMUM_PANEL_THICKNESS_MM,
         },
         "assumptions": [
-            "occurrence names declare panels, holes, hinges, and drawer slides",
-            "hole occurrences are installation envelopes whose centres lie inside their named host panels",
-            "the host panel's smallest AABB dimension is its thickness axis",
-            "hole radial envelopes are conservatively treated as circular using their largest radial dimension",
-            "one validation scope represents at most one drawer-slide pair",
+            "canonical validator roles declare panels, holes, hinge cups, linear-hardware pairs, source axes, and association groups",
+            "a hole or hinge-cup association group must resolve to exactly one explicitly declared host panel",
+            "panel thickness and hole depth use declared source-frame axes bound to accepted topology",
+            "hole radial envelopes are conservatively treated as circular using their largest source-frame radial extent",
+            "each linear-hardware association group must contain exactly two members",
         ],
         "evaluations": evaluations.into_iter().take(MAX_ASSISTANT_VALIDATION_ISSUES).collect::<Vec<_>>(),
         "issues": issues.into_iter().take(MAX_ASSISTANT_VALIDATION_ISSUES).collect::<Vec<_>>(),
@@ -1421,6 +1617,8 @@ fn assistant_hardware_manufacturing_report(
 fn assistant_room_placement_report(
     participants: &[GeneralBodyParticipant],
     names: &BTreeMap<OccurrenceId, String>,
+    roles: &Result<ValidatorRoleIndex, ValidatorRoleError>,
+    tolerance: TolerancePolicy,
     selected: bool,
     coverage_complete: bool,
 ) -> serde_json::Value {
@@ -1436,13 +1634,29 @@ fn assistant_room_placement_report(
             "not_evaluated": [],
         });
     }
+    let roles = match roles {
+        Ok(roles) => roles,
+        Err(error) => {
+            return serde_json::json!({
+                "state": "not_evaluated",
+                "complete": false,
+                "applicable_count": 0,
+                "issue_count": 0,
+                "issues_complete": true,
+                "role_error": error.to_string(),
+                "evaluations": [],
+                "issues": [],
+                "not_evaluated": [],
+            });
+        }
+    };
 
     struct Geometry<'a> {
         occurrence_id: OccurrenceId,
         name: &'a str,
-        minimum: [f64; 3],
-        maximum: [f64; 3],
-        evidence_class: &'static str,
+        participant: &'a GeneralBodyParticipant,
+        kind: AssistantSpatialRoleKind,
+        group: &'a str,
     }
 
     let geometries = participants
@@ -1450,19 +1664,21 @@ fn assistant_room_placement_report(
         .filter_map(|participant| {
             let occurrence_id = participant.instance_path().root_occurrence();
             let name = names.get(&occurrence_id)?;
-            let bounds = participant.bounds();
+            let role = roles
+                .role(occurrence_id)
+                .and_then(|role| assistant_spatial_role(role.as_str()))?;
             Some(Geometry {
                 occurrence_id,
                 name,
-                minimum: std::array::from_fn(|axis| bounds.min()[axis]),
-                maximum: std::array::from_fn(|axis| bounds.max()[axis]),
-                evidence_class: assistant_evidence_label(participant.evidence_class()),
+                participant,
+                kind: role.kind,
+                group: role.group,
             })
         })
         .collect::<Vec<_>>();
     let rooms = geometries
         .iter()
-        .filter(|geometry| assistant_is_room_envelope(geometry.name))
+        .filter(|geometry| geometry.kind == AssistantSpatialRoleKind::Room)
         .collect::<Vec<_>>();
     if rooms.is_empty() {
         return serde_json::json!({
@@ -1476,41 +1692,48 @@ fn assistant_room_placement_report(
             "issues": [],
             "not_evaluated": [{
                 "validator": "room_placement",
-                "reason": "named_room_envelope_not_found",
-                "required_name_role": "Room envelope / Room boundary / Obálka miestnosti",
+                "reason": "spatial_room_role_not_found",
+                "required_role": "spatial.room:<group>",
             }],
         });
     }
 
     let mut evaluations = Vec::new();
     let mut issues = Vec::new();
+    let mut not_evaluated = Vec::new();
     for furniture in geometries
         .iter()
-        .filter(|geometry| assistant_is_room_furniture(geometry.name))
+        .filter(|geometry| geometry.kind == AssistantSpatialRoleKind::Furniture)
     {
-        let room = rooms
+        let matching_rooms = rooms
             .iter()
             .copied()
-            .max_by(|left, right| {
-                let overlap_area = |candidate: &Geometry<'_>| {
-                    (candidate.maximum[0].min(furniture.maximum[0])
-                        - candidate.minimum[0].max(furniture.minimum[0]))
-                    .max(0.0)
-                        * (candidate.maximum[1].min(furniture.maximum[1])
-                            - candidate.minimum[1].max(furniture.minimum[1]))
-                        .max(0.0)
-                };
-                overlap_area(left).total_cmp(&overlap_area(right))
-            })
-            .expect("a named room envelope exists");
-        let clearances_mm = [
-            furniture.minimum[0] - room.minimum[0],
-            room.maximum[0] - furniture.maximum[0],
-            furniture.minimum[1] - room.minimum[1],
-            room.maximum[1] - furniture.maximum[1],
-            furniture.minimum[2] - room.minimum[2],
-            room.maximum[2] - furniture.maximum[2],
-        ];
+            .filter(|room| room.group == furniture.group)
+            .collect::<Vec<_>>();
+        let [room] = matching_rooms.as_slice() else {
+            not_evaluated.push(serde_json::json!({
+                "validator": "room_placement",
+                "occurrence_id": furniture.occurrence_id.0,
+                "role": format!("spatial.furniture:{}", furniture.group),
+                "reason": if matching_rooms.is_empty() {
+                    "associated_room_role_not_found"
+                } else {
+                    "associated_room_role_ambiguous"
+                },
+            }));
+            continue;
+        };
+        let Ok(containment) =
+            general_body_containment(room.participant, furniture.participant, tolerance)
+        else {
+            not_evaluated.push(serde_json::json!({
+                "validator": "room_placement",
+                "occurrence_id": furniture.occurrence_id.0,
+                "reason": "oriented_geometry_evidence_unavailable",
+            }));
+            continue;
+        };
+        let clearances_mm = containment.clearances_mm;
         let outside_by_mm = clearances_mm.map(|clearance| (-clearance).max(0.0));
         let maximum_outside_mm = outside_by_mm
             .into_iter()
@@ -1518,12 +1741,15 @@ fn assistant_room_placement_report(
             .unwrap_or(0.0);
         let failed = maximum_outside_mm > ROOM_PLACEMENT_TOLERANCE_MM;
         evaluations.push(serde_json::json!({
-            "rule": "furniture_inside_named_room_envelope",
+            "rule": "furniture_inside_associated_room",
             "occurrence_id": furniture.occurrence_id.0,
             "name": furniture.name,
+            "role": format!("spatial.furniture:{}", furniture.group),
             "room_occurrence_id": room.occurrence_id.0,
             "room_name": room.name,
-            "evidence_class": furniture.evidence_class,
+            "room_role": format!("spatial.room:{}", room.group),
+            "evidence_class": assistant_evidence_label(&containment.evidence_class),
+            "narrow_phase_method": containment.method,
             "clearances_mm": {
                 "left": clearances_mm[0],
                 "right": clearances_mm[1],
@@ -1544,7 +1770,10 @@ fn assistant_room_placement_report(
                 "name": furniture.name,
                 "room_occurrence_id": room.occurrence_id.0,
                 "room_name": room.name,
-                "evidence_class": furniture.evidence_class,
+                "role": format!("spatial.furniture:{}", furniture.group),
+                "room_role": format!("spatial.room:{}", room.group),
+                "evidence_class": assistant_evidence_label(&containment.evidence_class),
+                "narrow_phase_method": containment.method,
                 "outside_by_mm": {
                     "left": outside_by_mm[0],
                     "right": outside_by_mm[1],
@@ -1555,40 +1784,44 @@ fn assistant_room_placement_report(
                 },
                 "maximum_outside_mm": maximum_outside_mm,
                 "boundary_tolerance_mm": ROOM_PLACEMENT_TOLERANCE_MM,
-                "rule": "a named furniture occurrence must stay inside its best-overlapping named room envelope",
+                "rule": "a spatial.furniture occurrence must stay inside its associated spatial.room envelope",
             }));
         }
     }
     let issue_count = issues.len();
     let state = if issue_count > 0 {
         "failed"
-    } else if !coverage_complete {
+    } else if !coverage_complete || !not_evaluated.is_empty() {
         "not_evaluated"
     } else {
         "passed"
     };
     serde_json::json!({
         "state": state,
-        "complete": coverage_complete && issue_count <= MAX_ASSISTANT_VALIDATION_ISSUES,
+        "complete": coverage_complete
+            && not_evaluated.is_empty()
+            && issue_count <= MAX_ASSISTANT_VALIDATION_ISSUES,
         "applicable_count": evaluations.len(),
         "room_count": rooms.len(),
         "issue_count": issue_count,
         "issues_complete": issue_count <= MAX_ASSISTANT_VALIDATION_ISSUES,
         "limits": { "boundary_tolerance_mm": ROOM_PLACEMENT_TOLERANCE_MM },
         "assumptions": [
-            "occurrence names explicitly declare room envelopes and furniture roles",
-            "room and furniture bounds use the current revision-bound world-space geometry",
-            "with multiple rooms, each furniture item is assigned to the room with the largest XY overlap",
+            "canonical spatial roles explicitly associate furniture with exactly one room group",
+            "containment uses current revision-bound oriented source-frame geometry",
+            "non-exact body envelopes retain tolerant false-positive-only evidence",
         ],
         "evaluations": evaluations.into_iter().take(MAX_ASSISTANT_VALIDATION_ISSUES).collect::<Vec<_>>(),
         "issues": issues.into_iter().take(MAX_ASSISTANT_VALIDATION_ISSUES).collect::<Vec<_>>(),
-        "not_evaluated": [],
+        "not_evaluated": not_evaluated,
     })
 }
 
 fn assistant_passage_clearance_report(
     participants: &[GeneralBodyParticipant],
     names: &BTreeMap<OccurrenceId, String>,
+    roles: &Result<ValidatorRoleIndex, ValidatorRoleError>,
+    tolerance: TolerancePolicy,
     selected: bool,
     coverage_complete: bool,
 ) -> serde_json::Value {
@@ -1604,14 +1837,29 @@ fn assistant_passage_clearance_report(
             "not_evaluated": [],
         });
     }
+    let roles = match roles {
+        Ok(roles) => roles,
+        Err(error) => {
+            return serde_json::json!({
+                "state": "not_evaluated",
+                "complete": false,
+                "applicable_count": 0,
+                "issue_count": 0,
+                "issues_complete": true,
+                "role_error": error.to_string(),
+                "evaluations": [],
+                "issues": [],
+                "not_evaluated": [],
+            });
+        }
+    };
 
     struct Geometry<'a> {
         occurrence_id: OccurrenceId,
         name: &'a str,
-        minimum: [f64; 3],
-        maximum: [f64; 3],
-        dimensions: [f64; 3],
-        evidence_class: &'static str,
+        participant: &'a GeneralBodyParticipant,
+        kind: AssistantSpatialRoleKind,
+        group: &'a str,
     }
 
     let geometries = participants
@@ -1619,22 +1867,21 @@ fn assistant_passage_clearance_report(
         .filter_map(|participant| {
             let occurrence_id = participant.instance_path().root_occurrence();
             let name = names.get(&occurrence_id)?;
-            let bounds = participant.bounds();
-            let minimum = std::array::from_fn(|axis| bounds.min()[axis]);
-            let maximum = std::array::from_fn(|axis| bounds.max()[axis]);
+            let role = roles
+                .role(occurrence_id)
+                .and_then(|role| assistant_spatial_role(role.as_str()))?;
             Some(Geometry {
                 occurrence_id,
                 name,
-                minimum,
-                maximum,
-                dimensions: std::array::from_fn(|axis| maximum[axis] - minimum[axis]),
-                evidence_class: assistant_evidence_label(participant.evidence_class()),
+                participant,
+                kind: role.kind,
+                group: role.group,
             })
         })
         .collect::<Vec<_>>();
     let passages = geometries
         .iter()
-        .filter(|geometry| assistant_is_passage_envelope(geometry.name))
+        .filter(|geometry| matches!(geometry.kind, AssistantSpatialRoleKind::Passage { .. }))
         .collect::<Vec<_>>();
     if passages.is_empty() {
         return serde_json::json!({
@@ -1651,24 +1898,47 @@ fn assistant_passage_clearance_report(
             "issues": [],
             "not_evaluated": [{
                 "validator": "passage_clearance",
-                "reason": "named_passage_envelope_not_found",
-                "required_name_role": "Passage / Walkway / Priechod",
+                "reason": "spatial_passage_role_not_found",
+                "required_role": "spatial.passage.{xy|xz|yz}:<group>",
             }],
         });
     }
 
     let mut evaluations = Vec::new();
     let mut issues = Vec::new();
+    let mut not_evaluated = Vec::new();
     for passage in &passages {
-        let width_mm = passage.dimensions[0].min(passage.dimensions[1]);
-        let headroom_mm = passage.dimensions[2];
+        let AssistantSpatialRoleKind::Passage {
+            surface_axes,
+            height_axis,
+        } = passage.kind
+        else {
+            unreachable!("passages were filtered by canonical role");
+        };
+        let geometry = passage.participant.geometry_evidence();
+        let dimensions_mm: [f64; 3] = std::array::from_fn(|axis| {
+            geometry.source_frame_extents_mm()[axis]
+                * geometry
+                    .source_axis_world_scale(axis)
+                    .expect("three source-axis scales are always present")
+        });
+        let width_mm = dimensions_mm[surface_axes[0]].min(dimensions_mm[surface_axes[1]]);
+        let headroom_mm = dimensions_mm[height_axis];
         let envelope_failed =
             width_mm < MINIMUM_PASSAGE_WIDTH_MM || headroom_mm < MINIMUM_PASSAGE_HEADROOM_MM;
         evaluations.push(serde_json::json!({
             "rule": "minimum_passage_envelope",
             "occurrence_id": passage.occurrence_id.0,
             "name": passage.name,
-            "evidence_class": passage.evidence_class,
+            "role": format!("spatial.passage.{}:{}", match height_axis {
+                2 => "xy",
+                1 => "xz",
+                0 => "yz",
+                _ => unreachable!("source geometry has three axes"),
+            }, passage.group),
+            "role_source": "canonical_classification",
+            "evidence_class": assistant_evidence_label(passage.participant.evidence_class()),
+            "source_frame_method": GENERAL_BODY_SOURCE_FRAME_METHOD_V1,
             "width_mm": width_mm,
             "headroom_mm": headroom_mm,
             "minimum_width_mm": MINIMUM_PASSAGE_WIDTH_MM,
@@ -1685,20 +1955,29 @@ fn assistant_passage_clearance_report(
                 "headroom_mm": headroom_mm,
                 "minimum_width_mm": MINIMUM_PASSAGE_WIDTH_MM,
                 "minimum_headroom_mm": MINIMUM_PASSAGE_HEADROOM_MM,
-                "rule": "a named passage envelope must be at least 900 mm wide and 2000 mm high",
+                "rule": "a spatial.passage envelope must be at least 900 mm wide and 2000 mm high",
             }));
         }
         for obstacle in geometries.iter().filter(|geometry| {
             geometry.occurrence_id != passage.occurrence_id
-                && !assistant_is_passage_envelope(geometry.name)
-                && !assistant_is_room_shell(geometry.name)
+                && geometry.group == passage.group
+                && matches!(
+                    geometry.kind,
+                    AssistantSpatialRoleKind::Furniture | AssistantSpatialRoleKind::Obstacle
+                )
         }) {
-            let overlap_mm = std::array::from_fn::<_, 3, _>(|axis| {
-                (passage.maximum[axis].min(obstacle.maximum[axis])
-                    - passage.minimum[axis].max(obstacle.minimum[axis]))
-                .max(0.0)
-            });
-            if overlap_mm.into_iter().all(|overlap| overlap > 0.0) {
+            let Ok(narrow_phase) =
+                general_body_narrow_phase(passage.participant, obstacle.participant, tolerance)
+            else {
+                not_evaluated.push(serde_json::json!({
+                    "validator": "passage_clearance",
+                    "passage_occurrence_id": passage.occurrence_id.0,
+                    "obstacle_occurrence_id": obstacle.occurrence_id.0,
+                    "reason": "oriented_geometry_evidence_unavailable",
+                }));
+                continue;
+            };
+            if narrow_phase.relation == GeneralBodyNarrowPhaseRelation::Intersecting {
                 issues.push(serde_json::json!({
                     "code": "room.passage_blocked",
                     "severity": "warning",
@@ -1706,10 +1985,16 @@ fn assistant_passage_clearance_report(
                     "passage_name": passage.name,
                     "obstacle_occurrence_id": obstacle.occurrence_id.0,
                     "obstacle_name": obstacle.name,
-                    "evidence_class": obstacle.evidence_class,
-                    "overlap_mm": overlap_mm,
-                    "overlap_volume_mm3": overlap_mm.into_iter().product::<f64>(),
-                    "rule": "a named passage envelope must not overlap a modeled obstacle",
+                    "obstacle_role": format!("spatial.{}:{}", match obstacle.kind {
+                        AssistantSpatialRoleKind::Furniture => "furniture",
+                        AssistantSpatialRoleKind::Obstacle => "obstacle",
+                        _ => unreachable!("obstacles were filtered by canonical role"),
+                    }, obstacle.group),
+                    "evidence_class": assistant_evidence_label(&narrow_phase.evidence_class),
+                    "narrow_phase_method": narrow_phase.method,
+                    "narrow_phase_relation": "intersecting",
+                    "minimum_penetration_mm": (-narrow_phase.signed_separation_mm).max(0.0),
+                    "rule": "a spatial.passage envelope must not intersect an associated spatial obstacle",
                 }));
             }
         }
@@ -1717,14 +2002,16 @@ fn assistant_passage_clearance_report(
     let issue_count = issues.len();
     let state = if issue_count > 0 {
         "failed"
-    } else if !coverage_complete {
+    } else if !coverage_complete || !not_evaluated.is_empty() {
         "not_evaluated"
     } else {
         "passed"
     };
     serde_json::json!({
         "state": state,
-        "complete": coverage_complete && issue_count <= MAX_ASSISTANT_VALIDATION_ISSUES,
+        "complete": coverage_complete
+            && not_evaluated.is_empty()
+            && issue_count <= MAX_ASSISTANT_VALIDATION_ISSUES,
         "applicable_count": passages.len(),
         "issue_count": issue_count,
         "issues_complete": issue_count <= MAX_ASSISTANT_VALIDATION_ISSUES,
@@ -1733,19 +2020,65 @@ fn assistant_passage_clearance_report(
             "minimum_headroom_mm": MINIMUM_PASSAGE_HEADROOM_MM,
         },
         "assumptions": [
-            "occurrence names explicitly declare reserved passage envelopes",
-            "room envelopes, floors, walls, and ceilings are context rather than obstacles",
-            "strict positive world-space AABB overlap is treated as a blocked passage",
+            "canonical spatial roles explicitly declare passages, obstacles, and association groups",
+            "passage width and headroom use explicit source-frame role axes",
+            "blocked-passage authority comes from exact/tolerant OBB-SAT narrow-phase geometry",
         ],
         "evaluations": evaluations.into_iter().take(MAX_ASSISTANT_VALIDATION_ISSUES).collect::<Vec<_>>(),
         "issues": issues.into_iter().take(MAX_ASSISTANT_VALIDATION_ISSUES).collect::<Vec<_>>(),
-        "not_evaluated": [],
+        "not_evaluated": not_evaluated,
+    })
+}
+
+#[derive(Clone, Copy, Debug)]
+struct AssistantGravityInput {
+    node_ids: [u64; 3],
+    vector_m_s2: [f64; 3],
+    direction: [f64; 3],
+    magnitude_m_s2: f64,
+}
+
+fn assistant_gravity_input(snapshot: &Snapshot) -> Result<AssistantGravityInput, &'static str> {
+    let mut components = [Vec::<(u64, f64)>::new(), Vec::new(), Vec::new()];
+    for node in snapshot.evaluator_nodes() {
+        let Some(value) = node.dimension().map(|dimension| dimension.millimetres()) else {
+            continue;
+        };
+        let axis = match node.name() {
+            "physics.gravity_x_m_s2" => Some(0),
+            "physics.gravity_y_m_s2" => Some(1),
+            "physics.gravity_z_m_s2" => Some(2),
+            _ => None,
+        };
+        if let Some(axis) = axis {
+            components[axis].push((node.id().0, value));
+        }
+    }
+    if components.iter().any(|values| values.len() != 1) {
+        return Err("missing_or_ambiguous_gravity_vector");
+    }
+    let node_ids = std::array::from_fn(|axis| components[axis][0].0);
+    let vector_m_s2 = std::array::from_fn(|axis| components[axis][0].1);
+    let magnitude_m_s2 = vector_m_s2
+        .into_iter()
+        .map(|value| value * value)
+        .sum::<f64>()
+        .sqrt();
+    if magnitude_m_s2 <= f64::EPSILON {
+        return Err("zero_gravity_vector");
+    }
+    Ok(AssistantGravityInput {
+        node_ids,
+        vector_m_s2,
+        direction: vector_m_s2.map(|value| value / magnitude_m_s2),
+        magnitude_m_s2,
     })
 }
 
 fn assistant_static_load_report(
     snapshot: &Snapshot,
     names: &BTreeMap<OccurrenceId, String>,
+    roles: &Result<ValidatorRoleIndex, ValidatorRoleError>,
     selected: bool,
     coverage_complete: bool,
 ) -> serde_json::Value {
@@ -1762,115 +2095,78 @@ fn assistant_static_load_report(
         });
     }
 
+    let Ok(roles) = roles else {
+        return serde_json::json!({
+            "state": "not_evaluated",
+            "complete": false,
+            "applicable_count": 0,
+            "issue_count": 0,
+            "issues_complete": true,
+            "evaluations": [],
+            "issues": [],
+            "not_evaluated": [{
+                "validator": "static_load",
+                "reason": "missing_or_ambiguous_canonical_roles",
+                "role_error": roles.as_ref().unwrap_err().to_string(),
+            }],
+        });
+    };
+
     let occurrence_parameter = |name: &str, prefix: &str| {
         name.strip_prefix(prefix)
             .and_then(|suffix| suffix.parse::<u64>().ok())
             .filter(|id| *id > 0)
             .map(OccurrenceId)
     };
-    let mut gravity = BTreeMap::<&str, Vec<(u64, f64)>>::new();
     let mut masses = BTreeMap::<OccurrenceId, Vec<(u64, f64)>>::new();
     let mut applied_loads = BTreeMap::<OccurrenceId, Vec<(u64, f64)>>::new();
     let mut capacities = BTreeMap::<OccurrenceId, Vec<(u64, f64)>>::new();
-    let mut links = Vec::<(OccurrenceId, OccurrenceId, u64, f64)>::new();
 
     for node in snapshot.evaluator_nodes() {
         let Some(value) = node.dimension().map(|dimension| dimension.millimetres()) else {
             continue;
         };
-        match node.name() {
-            "physics.gravity_x_m_s2" => gravity.entry("x").or_default().push((node.id().0, value)),
-            "physics.gravity_y_m_s2" => gravity.entry("y").or_default().push((node.id().0, value)),
-            "physics.gravity_z_m_s2" => gravity.entry("z").or_default().push((node.id().0, value)),
-            name => {
-                if let Some(occurrence_id) =
-                    occurrence_parameter(name, "physics.mass_kg.occurrence.")
-                {
-                    masses
-                        .entry(occurrence_id)
-                        .or_default()
-                        .push((node.id().0, value));
-                } else if let Some(occurrence_id) =
-                    occurrence_parameter(name, "physics.applied_load_n.occurrence.")
-                {
-                    applied_loads
-                        .entry(occurrence_id)
-                        .or_default()
-                        .push((node.id().0, value));
-                } else if let Some(occurrence_id) =
-                    occurrence_parameter(name, "physics.support_capacity_n.occurrence.")
-                {
-                    capacities
-                        .entry(occurrence_id)
-                        .or_default()
-                        .push((node.id().0, value));
-                } else if let Some(link) = name.strip_prefix("physics.support_link.load.")
-                    && let Some((loaded, support)) = link.split_once(".support.")
-                    && let (Ok(loaded), Ok(support)) =
-                        (loaded.parse::<u64>(), support.parse::<u64>())
-                    && loaded > 0
-                    && support > 0
-                {
-                    links.push((
-                        OccurrenceId(loaded),
-                        OccurrenceId(support),
-                        node.id().0,
-                        value,
-                    ));
-                }
-            }
+        let name = node.name();
+        if let Some(occurrence_id) = occurrence_parameter(name, "physics.mass_kg.occurrence.") {
+            masses
+                .entry(occurrence_id)
+                .or_default()
+                .push((node.id().0, value));
+        } else if let Some(occurrence_id) =
+            occurrence_parameter(name, "physics.applied_load_n.occurrence.")
+        {
+            applied_loads
+                .entry(occurrence_id)
+                .or_default()
+                .push((node.id().0, value));
+        } else if let Some(occurrence_id) =
+            occurrence_parameter(name, "physics.support_capacity_n.occurrence.")
+        {
+            capacities
+                .entry(occurrence_id)
+                .or_default()
+                .push((node.id().0, value));
         }
     }
 
-    let gravity_values = ["x", "y", "z"].map(|axis| gravity.get(axis));
-    if gravity_values
-        .iter()
-        .any(|declarations| declarations.is_none_or(|values| values.len() != 1))
-    {
-        return serde_json::json!({
-            "state": "not_evaluated",
-            "complete": false,
-            "applicable_count": 0,
-            "issue_count": 0,
-            "issues_complete": true,
-            "input_contract": "canonical evaluator parameter nodes",
-            "required_global_inputs": [
-                "physics.gravity_x_m_s2",
-                "physics.gravity_y_m_s2",
-                "physics.gravity_z_m_s2",
-            ],
-            "evaluations": [],
-            "issues": [],
-            "not_evaluated": [{
-                "validator": "static_load",
-                "reason": "missing_or_ambiguous_gravity_vector",
-            }],
-        });
-    }
-    let gravity_components = gravity_values.map(|declarations| declarations.unwrap()[0].1);
-    let gravity_node_ids = gravity_values.map(|declarations| declarations.unwrap()[0].0);
-    let gravity_magnitude_m_s2 = gravity_components
-        .into_iter()
-        .map(|value| value * value)
-        .sum::<f64>()
-        .sqrt();
-    if gravity_magnitude_m_s2 <= f64::EPSILON {
-        return serde_json::json!({
-            "state": "not_evaluated",
-            "complete": false,
-            "applicable_count": 0,
-            "issue_count": 0,
-            "issues_complete": true,
-            "evaluations": [],
-            "issues": [],
-            "not_evaluated": [{
-                "validator": "static_load",
-                "reason": "zero_gravity_vector",
-                "gravity_node_ids": gravity_node_ids,
-            }],
-        });
-    }
-    let gravity_direction = gravity_components.map(|value| value / gravity_magnitude_m_s2);
+    let gravity = match assistant_gravity_input(snapshot) {
+        Ok(gravity) => gravity,
+        Err(reason) => {
+            return serde_json::json!({
+                "state": "not_evaluated",
+                "complete": false,
+                "applicable_count": 0,
+                "issue_count": 0,
+                "issues_complete": true,
+                "evaluations": [],
+                "issues": [],
+                "not_evaluated": [{
+                    "validator": "static_load",
+                    "reason": reason,
+                }],
+            });
+        }
+    };
 
     let mut evaluations = Vec::new();
     let mut issues = Vec::new();
@@ -1885,12 +2181,27 @@ fn assistant_static_load_report(
     for (loaded_id, mass_declarations) in &masses {
         let loaded_name = names.get(loaded_id);
         let load_declarations = applied_loads.get(loaded_id);
-        let support_links = links
-            .iter()
-            .filter(|(candidate, _, _, _)| candidate == loaded_id)
-            .collect::<Vec<_>>();
+        let loaded_role = roles
+            .role(*loaded_id)
+            .and_then(|role| assistant_physics_role(role.as_str()));
+        let support_ids = loaded_role
+            .filter(|role| role.kind == AssistantPhysicsRoleKind::StaticLoad)
+            .map(|loaded_role| {
+                roles
+                    .assignments()
+                    .filter_map(|assignment| {
+                        let role = assistant_physics_role(assignment.role.as_str())?;
+                        (role.kind == AssistantPhysicsRoleKind::StaticSupport
+                            && role.group == loaded_role.group)
+                            .then_some(assignment.occurrence_id)
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
         let missing_reason = if loaded_name.is_none() {
             Some("loaded_occurrence_not_visible")
+        } else if loaded_role.is_none_or(|role| role.kind != AssistantPhysicsRoleKind::StaticLoad) {
+            Some("missing_or_invalid_static_load_role")
         } else if mass_declarations.len() != 1 {
             Some("missing_or_ambiguous_mass")
         } else if mass_declarations[0].1 < 0.0 {
@@ -1899,14 +2210,9 @@ fn assistant_static_load_report(
             Some("missing_or_ambiguous_applied_load")
         } else if load_declarations.unwrap()[0].1 < 0.0 {
             Some("negative_applied_load")
-        } else if support_links.is_empty() {
-            Some("support_link_not_found")
-        } else if support_links
-            .iter()
-            .any(|(_, _, _, enabled)| *enabled != 1.0)
-        {
-            Some("invalid_support_link_declaration")
-        } else if support_links.iter().any(|(_, support_id, _, _)| {
+        } else if support_ids.is_empty() {
+            Some("static_support_role_not_found")
+        } else if support_ids.iter().any(|support_id| {
             !names.contains_key(support_id)
                 || capacities
                     .get(support_id)
@@ -1928,14 +2234,14 @@ fn assistant_static_load_report(
 
         let (mass_node_id, mass_kg) = mass_declarations[0];
         let (applied_load_node_id, applied_load_n) = load_declarations.unwrap()[0];
-        let support_inputs = support_links
+        let support_inputs = support_ids
             .iter()
-            .map(|(_, support_id, link_node_id, _)| {
+            .map(|support_id| {
                 let (capacity_node_id, capacity_n) = capacities[support_id][0];
                 serde_json::json!({
                     "occurrence_id": support_id.0,
                     "name": names.get(support_id),
-                    "link_node_id": link_node_id,
+                    "role_case": loaded_role.unwrap().group,
                     "capacity_node_id": capacity_node_id,
                     "capacity_n": capacity_n,
                 })
@@ -1945,7 +2251,7 @@ fn assistant_static_load_report(
             .iter()
             .filter_map(|support| support["capacity_n"].as_f64())
             .sum::<f64>();
-        let weight_force_n = mass_kg * gravity_magnitude_m_s2;
+        let weight_force_n = mass_kg * gravity.magnitude_m_s2;
         let resultant_force_n = weight_force_n + applied_load_n;
         let capacity_margin_n = total_support_capacity_n - resultant_force_n;
         let failed = capacity_margin_n < 0.0;
@@ -1956,10 +2262,10 @@ fn assistant_static_load_report(
             "mass": { "node_id": mass_node_id, "value_kg": mass_kg },
             "applied_load": { "node_id": applied_load_node_id, "value_n": applied_load_n },
             "gravity": {
-                "node_ids": gravity_node_ids,
-                "vector_m_s2": gravity_components,
-                "direction": gravity_direction,
-                "magnitude_m_s2": gravity_magnitude_m_s2,
+                "node_ids": gravity.node_ids,
+                "vector_m_s2": gravity.vector_m_s2,
+                "direction": gravity.direction,
+                "magnitude_m_s2": gravity.magnitude_m_s2,
             },
             "supports": support_inputs,
             "weight_force_n": weight_force_n,
@@ -1978,7 +2284,7 @@ fn assistant_static_load_report(
                 "resultant_force_n": resultant_force_n,
                 "total_support_capacity_n": total_support_capacity_n,
                 "capacity_shortfall_n": -capacity_margin_n,
-                "support_occurrence_ids": support_links.iter().map(|(_, support_id, _, _)| support_id.0).collect::<Vec<_>>(),
+                "support_occurrence_ids": support_ids.iter().map(|support_id| support_id.0).collect::<Vec<_>>(),
                 "rule": "the sum of explicitly declared support capacities must cover the explicitly calculated static load",
             }));
         }
@@ -2010,7 +2316,7 @@ fn assistant_static_load_report(
             "mass": "physics.mass_kg.occurrence.<id>",
             "applied_load": "physics.applied_load_n.occurrence.<id>",
             "gravity": ["physics.gravity_x_m_s2", "physics.gravity_y_m_s2", "physics.gravity_z_m_s2"],
-            "support_link": "physics.support_link.load.<loaded_id>.support.<support_id> = 1",
+            "roles": ["physics.static.load:<case>", "physics.static.support:<case>"],
             "support_capacity": "physics.support_capacity_n.occurrence.<support_id>",
         },
         "assumptions": [
@@ -2314,6 +2620,8 @@ struct PushPullSourcePlan {
     edit_context: Vec<EditContext>,
     planning: PushPullPlanningPlan,
     target: SelectionId,
+    topological_selection: Option<SnapshotBoundTopologicalSelection>,
+    topological_reference: Option<TopologicalElementRef>,
     target_box: RenderBox,
     exact_request: Option<ExactFeatureChainRequest>,
 }
@@ -2508,6 +2816,8 @@ struct SmartPushPullChooserSourcePlan {
     edit_context: Vec<EditContext>,
     planning: PushPullPlanningPlan,
     selection: SelectionId,
+    topological_selection: Option<SnapshotBoundTopologicalSelection>,
+    topological_reference: Option<TopologicalElementRef>,
     distance_expression: String,
     distance_mm_bits: u64,
     tool_box: RenderBox,
@@ -3995,78 +4305,160 @@ fn assistant_balloon_text_mesh(item: &AssistantBalloonTextIntent) -> Option<Mesh
     })
 }
 
-fn assistant_gable_roof_mesh(item: &AssistantGableRoofIntent) -> MeshBodySpec {
-    let half_span = item.span_mm * 0.5;
-    let section = [
-        [0.0, 0.0],
-        [half_span, item.rise_mm],
-        [item.span_mm, 0.0],
-        [item.span_mm, item.thickness_mm],
-        [half_span, item.rise_mm + item.thickness_mm],
-        [0.0, item.thickness_mm],
-    ];
-    let mut vertices_mm = Vec::with_capacity(12);
-    for x in [0.0, item.length_mm] {
-        vertices_mm.extend(section.map(|[y, z]| [x, y, z]));
-    }
-    let mut triangles = vec![
-        [0, 4, 1],
-        [0, 5, 4],
-        [1, 3, 2],
-        [1, 4, 3],
-        [6, 7, 10],
-        [6, 10, 11],
-        [7, 8, 9],
-        [7, 9, 10],
-    ];
-    for index in 0..section.len() as u32 {
-        let next = (index + 1) % section.len() as u32;
-        triangles.extend([
-            [index, next, next + section.len() as u32],
-            [
-                index,
-                next + section.len() as u32,
-                index + section.len() as u32,
-            ],
-        ]);
-    }
-    MeshBodySpec {
-        schema: MESH_BODY_SCHEMA_V1.to_owned(),
-        vertices_mm,
-        triangles,
-        authority: MeshAuthority::Authored {
-            provenance: "ketchup-assistant-gable-roof-v1".to_owned(),
-        },
-    }
+struct AssistantPrismaticMacro {
+    profile_points_mm: Vec<[f64; 2]>,
+    distance_mm: f64,
+    transform: Transform,
 }
 
-fn assistant_staircase_mesh(item: &AssistantStaircaseIntent) -> Option<MeshBodySpec> {
+fn assistant_prismatic_macro_commands(
+    name: &str,
+    macro_spec: AssistantPrismaticMacro,
+    definition_id: DefinitionId,
+    workplane_id: FeatureId,
+    occurrence_id: OccurrenceId,
+) -> Option<Vec<CanonicalCommand>> {
+    let sketch_id = workplane_id.0.checked_add(1).map(FeatureId)?;
+    let body_id = workplane_id.0.checked_add(2).map(FeatureId)?;
+    if macro_spec.profile_points_mm.len() < 3 {
+        return None;
+    }
+    let mut entities = Vec::with_capacity(macro_spec.profile_points_mm.len());
+    let mut constraints = Vec::with_capacity(macro_spec.profile_points_mm.len() * 2);
+    for index in 0..macro_spec.profile_points_mm.len() {
+        let entity = SketchEntityId(index as u64 + 1);
+        let start = macro_spec.profile_points_mm[index];
+        let end = macro_spec.profile_points_mm[(index + 1) % macro_spec.profile_points_mm.len()];
+        entities.push(SketchEntity::Line {
+            id: entity,
+            start_mm: start,
+            end_mm: end,
+        });
+        for (point_index, (point, position_mm)) in
+            [(SketchPointKind::Start, start), (SketchPointKind::End, end)]
+                .into_iter()
+                .enumerate()
+        {
+            constraints.push(SketchConstraint {
+                id: SketchConstraintId(index as u64 * 2 + point_index as u64 + 1),
+                kind: SketchConstraintKind::FixedPoint {
+                    point: SketchPointRef { entity, point },
+                    position_mm,
+                },
+            });
+        }
+    }
+    let sketch = SketchSpec {
+        workplane: workplane_id,
+        entities,
+        constraints,
+    };
+    let regions = sketch.solved_regions().ok()?;
+    let [region] = regions.as_slice() else {
+        return None;
+    };
+    let distance =
+        Dimension::new(macro_spec.distance_mm.to_string(), macro_spec.distance_mm).ok()?;
+    Some(vec![
+        CanonicalCommand::CreateDefinition {
+            id: definition_id,
+            name: name.to_owned(),
+        },
+        CanonicalCommand::CreateFeature {
+            id: workplane_id,
+            definition_id,
+            name: format!("{name} workplane"),
+            kind: FeatureKind::Workplane(WorkplaneSpec::principal(PrincipalPlane::Xy)),
+        },
+        CanonicalCommand::CreateFeature {
+            id: sketch_id,
+            definition_id,
+            name: format!("{name} sketch"),
+            kind: FeatureKind::Sketch(sketch),
+        },
+        CanonicalCommand::CreateFeature {
+            id: body_id,
+            definition_id,
+            name: format!("{name} feature"),
+            kind: FeatureKind::Pad(PadSpec {
+                sketch: sketch_id,
+                region: region.id,
+                direction: FeatureDirection::AlongNormal,
+                extent: FeatureExtent::Blind(distance),
+            }),
+        },
+        CanonicalCommand::CreateOccurrence {
+            id: occurrence_id,
+            definition_id,
+            name: name.to_owned(),
+            transform: macro_spec.transform,
+            parent: None,
+            tag: None,
+            visible: true,
+        },
+    ])
+}
+
+fn assistant_gable_roof_macro(item: &AssistantGableRoofIntent) -> Option<AssistantPrismaticMacro> {
+    let half_span = item.span_mm * 0.5;
+    let [x, y, z] = item.origin_mm;
+    Some(AssistantPrismaticMacro {
+        profile_points_mm: vec![
+            [0.0, 0.0],
+            [half_span, item.rise_mm],
+            [item.span_mm, 0.0],
+            [item.span_mm, item.thickness_mm],
+            [half_span, item.rise_mm + item.thickness_mm],
+            [0.0, item.thickness_mm],
+        ],
+        distance_mm: item.length_mm,
+        transform: Transform::from_matrix([
+            0.0, 0.0, 1.0, x, 1.0, 0.0, 0.0, y, 0.0, 1.0, 0.0, z, 0.0, 0.0, 0.0, 1.0,
+        ])
+        .ok()?,
+    })
+}
+
+fn assistant_staircase_macro(item: &AssistantStaircaseIntent) -> Option<AssistantPrismaticMacro> {
     let tread_mm = item.run_mm / f64::from(item.step_count);
     let riser_mm = item.rise_mm / f64::from(item.step_count);
-    let subtract_boxes = (0..item.step_count.saturating_sub(1))
-        .map(|step| {
-            let retained_height = f64::from(step + 1) * riser_mm;
-            ketchup_core::assistant_sidecar::AssistantSubtractionIntent {
-                size_mm: [tread_mm, item.width_mm, item.rise_mm - retained_height],
-                origin_mm: [f64::from(step) * tread_mm, 0.0, retained_height],
-            }
-        })
-        .collect();
-    assistant_subtracted_box_mesh(&AssistantBoxIntent {
-        name: item.name.clone(),
-        size_mm: [item.run_mm, item.width_mm, item.rise_mm],
-        origin_mm: [0.0, 0.0, 0.0],
-        subtract_boxes,
-    })
-    .map(|mut mesh| {
-        mesh.authority = MeshAuthority::Authored {
-            provenance: "ketchup-assistant-staircase-v1".to_owned(),
-        };
-        mesh
+    let mut profile_points_mm = vec![[0.0, 0.0], [item.run_mm, 0.0], [item.run_mm, item.rise_mm]];
+    for step in (0..item.step_count).rev() {
+        let x = f64::from(step) * tread_mm;
+        profile_points_mm.push([x, f64::from(step + 1) * riser_mm]);
+        if step > 0 {
+            profile_points_mm.push([x, f64::from(step) * riser_mm]);
+        }
+    }
+    let [x, y, z] = item.origin_mm;
+    Some(AssistantPrismaticMacro {
+        profile_points_mm,
+        distance_mm: item.width_mm,
+        transform: Transform::from_matrix([
+            1.0,
+            0.0,
+            0.0,
+            x,
+            0.0,
+            0.0,
+            -1.0,
+            y + item.width_mm,
+            0.0,
+            1.0,
+            0.0,
+            z,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+        ])
+        .ok()?,
     })
 }
 
-fn assistant_oriented_beam_mesh(item: &AssistantOrientedBeamIntent) -> Option<MeshBodySpec> {
+fn assistant_oriented_beam_macro(
+    item: &AssistantOrientedBeamIntent,
+) -> Option<AssistantPrismaticMacro> {
     let length_mm = item
         .start_mm
         .iter()
@@ -4074,30 +4466,49 @@ fn assistant_oriented_beam_mesh(item: &AssistantOrientedBeamIntent) -> Option<Me
         .map(|(start, end)| (end - start).powi(2))
         .sum::<f64>()
         .sqrt();
-    let subtract_boxes = item
-        .bottom_notches
-        .iter()
-        .map(
-            |notch| ketchup_core::assistant_sidecar::AssistantSubtractionIntent {
-                size_mm: [notch.length_mm, item.width_mm, notch.depth_mm],
-                origin_mm: [notch.from_start_mm, 0.0, 0.0],
-            },
-        )
-        .collect();
-    let mut mesh = assistant_subtracted_box_mesh(&AssistantBoxIntent {
-        name: item.name.clone(),
-        size_mm: [length_mm, item.width_mm, item.depth_mm],
-        origin_mm: [0.0, 0.0, 0.0],
-        subtract_boxes,
-    })?;
-    for vertex in &mut mesh.vertices_mm {
-        vertex[1] -= item.width_mm * 0.5;
-        vertex[2] -= item.depth_mm * 0.5;
+    let bottom = item.depth_mm * -0.5;
+    let top = item.depth_mm * 0.5;
+    let mut notches = item.bottom_notches.iter().collect::<Vec<_>>();
+    notches.sort_by(|left, right| left.from_start_mm.total_cmp(&right.from_start_mm));
+    let mut profile_points_mm = vec![[0.0, bottom]];
+    for notch in notches {
+        let start = notch.from_start_mm;
+        let end = start + notch.length_mm;
+        profile_points_mm.extend([
+            [start, bottom],
+            [start, bottom + notch.depth_mm],
+            [end, bottom + notch.depth_mm],
+            [end, bottom],
+        ]);
     }
-    mesh.authority = MeshAuthority::Authored {
-        provenance: "ketchup-assistant-oriented-beam-v1".to_owned(),
-    };
-    Some(mesh)
+    profile_points_mm.extend([[length_mm, bottom], [length_mm, top], [0.0, top]]);
+    profile_points_mm.dedup_by(|left, right| {
+        left[0].to_bits() == right[0].to_bits() && left[1].to_bits() == right[1].to_bits()
+    });
+    let profile_to_beam = Transform::from_matrix([
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        -item.width_mm * 0.5,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+    ])
+    .ok()?;
+    Some(AssistantPrismaticMacro {
+        profile_points_mm,
+        distance_mm: item.width_mm,
+        transform: assistant_oriented_beam_transform(item)?.compose(profile_to_beam),
+    })
 }
 
 fn assistant_oriented_beam_transform(item: &AssistantOrientedBeamIntent) -> Option<Transform> {
@@ -4151,6 +4562,148 @@ fn assistant_oriented_beam_transform(item: &AssistantOrientedBeamIntent) -> Opti
     .ok()
 }
 
+fn assistant_subtracted_box_feature_commands(
+    item: &AssistantBoxIntent,
+    definition_id: DefinitionId,
+    workplane_id: FeatureId,
+) -> Option<(Vec<CanonicalCommand>, u64)> {
+    let rectangle_sketch = |workplane: FeatureId, origin_mm: [f64; 2], size_mm: [f64; 2]| {
+        let [x, y] = origin_mm;
+        let [width, depth] = size_mm;
+        let points = [
+            [x, y],
+            [x + width, y],
+            [x + width, y + depth],
+            [x, y + depth],
+        ];
+        let mut entities = Vec::with_capacity(points.len());
+        let mut constraints = Vec::with_capacity(points.len() * 2);
+        for index in 0..points.len() {
+            let entity = SketchEntityId(index as u64 + 1);
+            let start = points[index];
+            let end = points[(index + 1) % points.len()];
+            entities.push(SketchEntity::Line {
+                id: entity,
+                start_mm: start,
+                end_mm: end,
+            });
+            for (point_index, (point, position_mm)) in
+                [(SketchPointKind::Start, start), (SketchPointKind::End, end)]
+                    .into_iter()
+                    .enumerate()
+            {
+                constraints.push(SketchConstraint {
+                    id: SketchConstraintId(index as u64 * 2 + point_index as u64 + 1),
+                    kind: SketchConstraintKind::FixedPoint {
+                        point: SketchPointRef { entity, point },
+                        position_mm,
+                    },
+                });
+            }
+        }
+        let sketch = SketchSpec {
+            workplane,
+            entities,
+            constraints,
+        };
+        let regions = sketch.solved_regions().ok()?;
+        let [region] = regions.as_slice() else {
+            return None;
+        };
+        Some((sketch, region.id))
+    };
+
+    let sketch_id = workplane_id.0.checked_add(1).map(FeatureId)?;
+    let body_id = workplane_id.0.checked_add(2).map(FeatureId)?;
+    let [width, depth, height] = item.size_mm;
+    let (sketch, region) = rectangle_sketch(workplane_id, [0.0, 0.0], [width, depth])?;
+    let height = Dimension::new(height.to_string(), height).ok()?;
+    let mut commands = vec![
+        CanonicalCommand::CreateFeature {
+            id: workplane_id,
+            definition_id,
+            name: format!("{} workplane", item.name),
+            kind: FeatureKind::Workplane(WorkplaneSpec::principal(PrincipalPlane::Xy)),
+        },
+        CanonicalCommand::CreateFeature {
+            id: sketch_id,
+            definition_id,
+            name: format!("{} base sketch", item.name),
+            kind: FeatureKind::Sketch(sketch),
+        },
+        CanonicalCommand::CreateFeature {
+            id: body_id,
+            definition_id,
+            name: format!("{} base pad", item.name),
+            kind: FeatureKind::Pad(PadSpec {
+                sketch: sketch_id,
+                region,
+                direction: FeatureDirection::AlongNormal,
+                extent: FeatureExtent::Blind(height),
+            }),
+        },
+    ];
+    let mut target = body_id;
+    let mut next_feature = body_id.0.checked_add(1)?;
+    for (index, subtraction) in item.subtract_boxes.iter().enumerate() {
+        let cut_workplane = FeatureId(next_feature);
+        let cut_sketch = next_feature.checked_add(1).map(FeatureId)?;
+        let cut_tool = next_feature.checked_add(2).map(FeatureId)?;
+        let cut_result = next_feature.checked_add(3).map(FeatureId)?;
+        let [cut_width, cut_depth, cut_height] = subtraction.size_mm;
+        let [cut_x, cut_y, cut_z] = subtraction.origin_mm;
+        let offset = Dimension::new(cut_z.to_string(), cut_z).ok()?;
+        let distance = Dimension::new(cut_height.to_string(), cut_height).ok()?;
+        let (sketch, region) =
+            rectangle_sketch(cut_workplane, [cut_x, cut_y], [cut_width, cut_depth])?;
+        commands.extend([
+            CanonicalCommand::CreateFeature {
+                id: cut_workplane,
+                definition_id,
+                name: format!("{} cut {} workplane", item.name, index + 1),
+                kind: FeatureKind::Workplane(WorkplaneSpec {
+                    support: WorkplaneSupport::Offset {
+                        base: workplane_id,
+                        distance: offset,
+                    },
+                    frame: WorkplaneFrame::principal(PrincipalPlane::Xy).offset(cut_z),
+                }),
+            },
+            CanonicalCommand::CreateFeature {
+                id: cut_sketch,
+                definition_id,
+                name: format!("{} cut {} sketch", item.name, index + 1),
+                kind: FeatureKind::Sketch(sketch),
+            },
+            CanonicalCommand::CreateFeature {
+                id: cut_tool,
+                definition_id,
+                name: format!("{} cut {} tool", item.name, index + 1),
+                kind: FeatureKind::Pad(PadSpec {
+                    sketch: cut_sketch,
+                    region,
+                    direction: FeatureDirection::AlongNormal,
+                    extent: FeatureExtent::Blind(distance),
+                }),
+            },
+            CanonicalCommand::CreateFeature {
+                id: cut_result,
+                definition_id,
+                name: format!("{} cut {} result", item.name, index + 1),
+                kind: FeatureKind::Boolean {
+                    operation: BooleanOperation::Cut,
+                    target,
+                    tool: cut_tool,
+                },
+            },
+        ]);
+        target = cut_result;
+        next_feature = cut_result.0.checked_add(1)?;
+    }
+    Some((commands, next_feature.checked_sub(workplane_id.0)?))
+}
+
+#[allow(dead_code)]
 fn assistant_subtracted_box_mesh(item: &AssistantBoxIntent) -> Option<MeshBodySpec> {
     let [width, depth, height] = item.size_mm;
     let mut xs = vec![0.0, width];
@@ -5430,7 +5983,10 @@ struct ExactEvaluationProducts {
 type ExactEvaluationResult = Result<ExactEvaluationProducts, String>;
 
 enum ExactEvaluationRequest {
-    Graph(Box<ExactBRepGraph>),
+    Graph {
+        graph: Box<ExactBRepGraph>,
+        imported_source: Option<Vec<u8>>,
+    },
     Rectangle {
         request: Box<ExactFeatureChainRequest>,
         topology: Option<Box<ExactBRepGraph>>,
@@ -6208,17 +6764,132 @@ enum AssistantPreviewSource {
     ValidationRepair(AssistantValidationSelection),
 }
 
-#[derive(Clone, Debug, PartialEq)]
-struct AssistantRepairStep {
-    validator: &'static str,
-    issue_code: &'static str,
-    occurrence_ids: Vec<u64>,
-    delta_mm: [f64; 3],
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
+pub enum AssistantRepairOperation {
+    ResolveCollision {
+        left_occurrence_id: u64,
+        moved_occurrence_id: u64,
+        delta_mm: [f64; 3],
+    },
+    RestoreGravitySupport {
+        occurrence_id: u64,
+        support_occurrence_id: u64,
+        gravity_direction: [f64; 3],
+        delta_mm: [f64; 3],
+    },
+}
+
+impl AssistantRepairOperation {
+    const fn validator(&self) -> &'static str {
+        match self {
+            Self::ResolveCollision { .. } => "collision",
+            Self::RestoreGravitySupport { .. } => "gravity_support",
+        }
+    }
+
+    const fn issue_code(&self) -> &'static str {
+        match self {
+            Self::ResolveCollision { .. } => "collision.detected",
+            Self::RestoreGravitySupport { .. } => "gravity.unsupported",
+        }
+    }
+
+    fn occurrence_ids(&self) -> Vec<u64> {
+        match self {
+            Self::ResolveCollision {
+                left_occurrence_id,
+                moved_occurrence_id,
+                ..
+            } => vec![*left_occurrence_id, *moved_occurrence_id],
+            Self::RestoreGravitySupport { occurrence_id, .. } => vec![*occurrence_id],
+        }
+    }
+
+    const fn moved_occurrence_id(&self) -> u64 {
+        match self {
+            Self::ResolveCollision {
+                moved_occurrence_id,
+                ..
+            } => *moved_occurrence_id,
+            Self::RestoreGravitySupport { occurrence_id, .. } => *occurrence_id,
+        }
+    }
+
+    const fn delta_mm(&self) -> [f64; 3] {
+        match self {
+            Self::ResolveCollision { delta_mm, .. }
+            | Self::RestoreGravitySupport { delta_mm, .. } => *delta_mm,
+        }
+    }
+
+    fn validate(&self) -> bool {
+        let occurrence_ids = match self {
+            Self::ResolveCollision {
+                left_occurrence_id,
+                moved_occurrence_id,
+                ..
+            } => [*left_occurrence_id, *moved_occurrence_id],
+            Self::RestoreGravitySupport {
+                occurrence_id,
+                support_occurrence_id,
+                gravity_direction,
+                ..
+            } => {
+                if gravity_direction
+                    .iter()
+                    .any(|component| !component.is_finite())
+                    || (gravity_direction
+                        .iter()
+                        .map(|value| value * value)
+                        .sum::<f64>()
+                        - 1.0)
+                        .abs()
+                        > 1.0e-9
+                {
+                    return false;
+                }
+                [*occurrence_id, *support_occurrence_id]
+            }
+        };
+        occurrence_ids[0] != occurrence_ids[1]
+            && self.delta_mm().iter().all(|component| {
+                component.is_finite() && component.abs() <= MAX_ASSISTANT_REPAIR_TRANSLATION_MM
+            })
+            && self
+                .delta_mm()
+                .iter()
+                .any(|component| component.abs() > f64::EPSILON)
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AssistantRepairProgram {
+    pub schema: String,
+    pub document_id: u64,
+    pub revision_id: u64,
+    pub canonical_digest: String,
+    pub max_operations: usize,
+    pub operations: Vec<AssistantRepairOperation>,
+}
+
+impl AssistantRepairProgram {
+    fn validate(&self) -> bool {
+        self.schema == ASSISTANT_REPAIR_PROGRAM_SCHEMA_V1
+            && self.max_operations == MAX_ASSISTANT_VALIDATION_ISSUES
+            && !self.operations.is_empty()
+            && self.operations.len() <= self.max_operations
+            && self
+                .operations
+                .iter()
+                .all(AssistantRepairOperation::validate)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
 struct AssistantRepairPreview {
-    steps: Vec<AssistantRepairStep>,
+    program: AssistantRepairProgram,
     validation_before: serde_json::Value,
     validation_after: serde_json::Value,
 }
@@ -6372,13 +7043,14 @@ fn assistant_feature_edit_rejection(
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct AssistantVerification {
     pub revision_id: u64,
     pub command_digest: String,
     pub result_digest: String,
     pub canonical_digest: String,
     pub verified_write_count: usize,
+    pub repair_program: Option<AssistantRepairProgram>,
     pub repair_validator: Option<String>,
     pub validation_before: Option<serde_json::Value>,
     pub validation_after: Option<serde_json::Value>,
@@ -9734,8 +10406,8 @@ impl KetchupApp {
         let repair_preview = plan.repair.clone();
         match self.document.commit_verified_proposal(&plan.proposal) {
             Ok(committed) => {
-                let (repair_validator, validation_before, validation_after) = repair_preview
-                    .map_or((None, None, None), |repair| {
+                let (repair_program, repair_validator, validation_before, validation_after) =
+                    repair_preview.map_or((None, None, None, None), |repair| {
                         let snapshot = self.document.current();
                         self.rebind_exact_results(&snapshot);
                         let selection = repair_selection
@@ -9748,14 +10420,16 @@ impl KetchupApp {
                         );
                         debug_assert_eq!(revalidated, repair.validation_after);
                         let validators = repair
-                            .steps
+                            .program
+                            .operations
                             .iter()
-                            .map(|step| step.validator)
+                            .map(AssistantRepairOperation::validator)
                             .collect::<BTreeSet<_>>()
                             .into_iter()
                             .collect::<Vec<_>>()
                             .join(" + ");
                         (
+                            Some(repair.program),
                             Some(validators),
                             Some(repair.validation_before),
                             Some(revalidated),
@@ -9767,6 +10441,7 @@ impl KetchupApp {
                     result_digest: committed.result_digest().to_owned(),
                     canonical_digest: self.document.current().canonical_digest(),
                     verified_write_count: committed.verified_writes().len(),
+                    repair_program,
                     repair_validator,
                     validation_before,
                     validation_after,
@@ -9804,6 +10479,14 @@ impl KetchupApp {
     #[must_use]
     pub fn assistant_proposal(&self) -> Option<&Proposal> {
         self.assistant_proposal.as_ref().map(|plan| &plan.proposal)
+    }
+
+    #[must_use]
+    pub fn assistant_repair_program(&self) -> Option<&AssistantRepairProgram> {
+        self.assistant_proposal
+            .as_ref()
+            .and_then(|plan| plan.repair.as_ref())
+            .map(|repair| &repair.program)
     }
 
     fn assistant_proposal_target_label(&self, target: &AuthoritativeDependency) -> String {
@@ -9868,7 +10551,7 @@ impl KetchupApp {
                     "assistant-target-feature-parameter",
                     &BTreeMap::from([
                         ("feature", target.feature_id.0.to_string()),
-                        ("slot", target.slot.label().to_owned()),
+                        ("slot", target.path.as_str().to_owned()),
                     ]),
                 );
             }
@@ -10182,7 +10865,7 @@ impl KetchupApp {
                 "assistant-value-feature-parameter-binding-state",
                 &BTreeMap::from([
                     ("feature", target.feature_id.0.to_string()),
-                    ("slot", target.slot.label().to_owned()),
+                    ("slot", target.path.as_str().to_owned()),
                     ("rule", derived_from.root_rule_node_id.0.to_string()),
                     ("path", Self::assistant_derived_identity_label(derived_from)),
                 ]),
@@ -10302,7 +10985,7 @@ impl KetchupApp {
             } => {
                 let target = match target {
                     ketchup_core::document::PersistentDimensionTarget::FeatureParameter(target) => {
-                        format!("{}:{}", target.feature_id.0, target.slot.label())
+                        format!("{}:{}", target.feature_id.0, target.path.as_str())
                     }
                     ketchup_core::document::PersistentDimensionTarget::DerivedOutput(identity) => {
                         Self::assistant_derived_identity_label(identity)
@@ -10312,14 +10995,15 @@ impl KetchupApp {
                         producer_feature_id,
                         semantic_role,
                         source_element_id,
-                        slot,
+                        path,
+                        value_type,
                     } => format!(
-                        "{}:{}:{}:{}:{}",
+                        "{}:{}:{}:{}:{}:{value_type:?}",
                         definition_id.0,
                         producer_feature_id.0,
                         semantic_role,
                         source_element_id,
-                        slot.label()
+                        path.as_str()
                     ),
                 };
                 self.catalog.format(
@@ -10840,15 +11524,41 @@ impl KetchupApp {
                 })),
             }
         }
-        let gravity_participants = participants
-            .iter()
-            .cloned()
-            .map(|body| {
-                let grounded =
-                    snapshot.occurrence_is_grounded(body.instance_path().root_occurrence());
-                GravitySupportParticipant::new(body, grounded)
+        let validator_roles = ValidatorRoleIndex::from_snapshot(snapshot);
+        let gravity_participants = validator_roles
+            .as_ref()
+            .ok()
+            .map(|roles| {
+                participants
+                    .iter()
+                    .filter_map(|body| {
+                        let occurrence_id = body.instance_path().root_occurrence();
+                        let role = roles
+                            .role(occurrence_id)
+                            .and_then(|role| assistant_physics_role(role.as_str()))?;
+                        matches!(
+                            role.kind,
+                            AssistantPhysicsRoleKind::GravityBody
+                                | AssistantPhysicsRoleKind::GravityGround
+                        )
+                        .then(|| {
+                            GravitySupportParticipant::new(
+                                body.clone(),
+                                role.group,
+                                role.kind == AssistantPhysicsRoleKind::GravityGround
+                                    || snapshot.occurrence_is_grounded(occurrence_id),
+                            )
+                        })
+                    })
+                    .collect::<Vec<_>>()
             })
-            .collect::<Vec<_>>();
+            .unwrap_or_default();
+        let gravity_validator_input = assistant_gravity_input(snapshot)
+            .ok()
+            .filter(|_| !gravity_participants.is_empty())
+            .and_then(|gravity| {
+                GravitySupportInput::new(gravity_participants.clone(), gravity.vector_m_s2).ok()
+            });
         let mut cases = Vec::new();
         if selection.requested.contains("collision") {
             for left_index in 0..participants.len() {
@@ -10882,64 +11592,78 @@ impl KetchupApp {
                 input: &cases,
             })
         });
-        let gravity_report = selection.requested.contains("gravity_support").then(|| {
-            let validator = BuiltinGravitySupportValidator::new(tolerance);
-            let policy = gravity_support_validation_policy();
-            let input = gravity_support_input_bytes(&gravity_participants);
-            let invocation = ValidationInvocation::bind(
-                snapshot,
-                validator.descriptor(),
-                &policy,
-                Vec::new(),
-                &input,
-            );
-            validator.invoke(ValidationExecution {
-                snapshot,
-                invocation,
-                policy: &policy,
-                input: &gravity_participants,
-            })
-        });
+        let gravity_report = selection
+            .requested
+            .contains("gravity_support")
+            .then_some(gravity_validator_input.as_ref())
+            .flatten()
+            .map(|validator_input| {
+                let validator = BuiltinGravitySupportValidator::new(tolerance);
+                let policy = gravity_support_validation_policy();
+                let input = gravity_support_input_bytes(validator_input);
+                let invocation = ValidationInvocation::bind(
+                    snapshot,
+                    validator.descriptor(),
+                    &policy,
+                    Vec::new(),
+                    &input,
+                );
+                validator.invoke(ValidationExecution {
+                    snapshot,
+                    invocation,
+                    policy: &policy,
+                    input: validator_input,
+                })
+            });
         let coverage_complete = occurrence_limit_complete && unavailable.is_empty();
         let shelf_deflection = assistant_shelf_deflection_report(
             &participants,
             &names,
+            &validator_roles,
             selection.requested.contains("shelf_deflection"),
             coverage_complete,
         );
         let tipping = assistant_tipping_report(
             &participants,
             &names,
+            &validator_roles,
             selection.requested.contains("tipping"),
             coverage_complete,
         );
         let anchoring = assistant_anchoring_report(
             &participants,
             &names,
+            &validator_roles,
             selection.requested.contains("anchoring"),
             coverage_complete,
         );
         let hardware_manufacturing = assistant_hardware_manufacturing_report(
             &participants,
             &names,
+            &validator_roles,
             selection.requested.contains("hardware_manufacturing"),
             coverage_complete,
         );
         let room_placement = assistant_room_placement_report(
             &participants,
             &names,
+            &validator_roles,
+            tolerance,
             selection.requested.contains("room_placement"),
             coverage_complete,
         );
         let passage_clearance = assistant_passage_clearance_report(
             &participants,
             &names,
+            &validator_roles,
+            tolerance,
             selection.requested.contains("passage_clearance"),
             coverage_complete,
         );
         let static_load = assistant_static_load_report(
             snapshot,
             &names,
+            &validator_roles,
             selection.requested.contains("static_load"),
             coverage_complete,
         );
@@ -11036,6 +11760,16 @@ impl KetchupApp {
                     }
                 };
                 (state, issue_count, issues, report.assumptions.clone())
+            } else if selection.requested.contains("gravity_support") {
+                (
+                    "not_evaluated",
+                    0,
+                    Vec::new(),
+                    vec![
+                        "explicit gravity roles and a typed non-zero gravity vector are required"
+                            .to_owned(),
+                    ],
+                )
             } else {
                 ("skipped", 0, Vec::new(), Vec::new())
             };
@@ -11546,6 +12280,20 @@ impl KetchupApp {
                 true,
             )
         })?;
+        if intent
+            .bottles
+            .iter()
+            .any(|bottle| bottle.teapot.is_some() || bottle.ketchup_bottle.is_some())
+            || !intent.balloon_texts.is_empty()
+        {
+            return Err(assistant_planning_rejection(
+                "planning.editable_macro_required",
+                "model_intent",
+                &document_target,
+                "The model intent would create a non-editable mesh instead of a bounded sketch, feature, and transform program.",
+                "Use the generic create_part or CAD edit contract with supported universal sketch, feature, and transform operations.",
+            ));
+        }
         for translation in &intent.translations {
             let occurrence_id = OccurrenceId(translation.occurrence_id);
             if self.document.current().occurrence(occurrence_id).is_none() {
@@ -11725,6 +12473,12 @@ impl KetchupApp {
                 )
             })
             .collect::<BTreeMap<_, _>>();
+        let mut next_definition = snapshot
+            .definitions()
+            .map(|definition| definition.id().0)
+            .max()
+            .unwrap_or(0)
+            .checked_add(1);
         let mut next_occurrence = snapshot
             .occurrences()
             .map(|occurrence| occurrence.id().0)
@@ -11741,6 +12495,7 @@ impl KetchupApp {
         for operation in &program.operations {
             let operation_name = match operation {
                 AssistantCadEditOperation::CreateSketch { .. } => "create_sketch",
+                AssistantCadEditOperation::CreatePart { .. } => "create_part",
                 AssistantCadEditOperation::SetDimension { .. } => "set_dimension",
                 AssistantCadEditOperation::Delete { .. } => "delete_occurrence",
                 AssistantCadEditOperation::Transform { .. } => "transform_occurrence",
@@ -11750,6 +12505,7 @@ impl KetchupApp {
             };
             let selector = match operation {
                 AssistantCadEditOperation::CreateSketch { .. }
+                | AssistantCadEditOperation::CreatePart { .. }
                 | AssistantCadEditOperation::SetDimension { .. } => None,
                 AssistantCadEditOperation::Delete { selector, .. }
                 | AssistantCadEditOperation::Transform { selector, .. }
@@ -11875,6 +12631,229 @@ impl KetchupApp {
                                 entities: entities.iter().map(assistant_sketch_entity).collect(),
                                 constraints,
                             }),
+                        },
+                    ]);
+                }
+                AssistantCadEditOperation::CreatePart {
+                    name,
+                    workplane,
+                    entities,
+                    constraints,
+                    feature,
+                    translation_mm,
+                    rotation,
+                } => {
+                    let definition_id = next_definition.map(DefinitionId).ok_or_else(|| {
+                        assistant_canonical_rejection(
+                            CanonicalError::IdExhausted,
+                            operation_name,
+                            &document_target,
+                        )
+                    })?;
+                    next_definition = definition_id.0.checked_add(1);
+                    let workplane_id = next_feature.map(FeatureId).ok_or_else(|| {
+                        assistant_canonical_rejection(
+                            CanonicalError::IdExhausted,
+                            operation_name,
+                            &document_target,
+                        )
+                    })?;
+                    let sketch_id =
+                        workplane_id
+                            .0
+                            .checked_add(1)
+                            .map(FeatureId)
+                            .ok_or_else(|| {
+                                assistant_canonical_rejection(
+                                    CanonicalError::IdExhausted,
+                                    operation_name,
+                                    &document_target,
+                                )
+                            })?;
+                    let body_id = sketch_id.0.checked_add(1).map(FeatureId).ok_or_else(|| {
+                        assistant_canonical_rejection(
+                            CanonicalError::IdExhausted,
+                            operation_name,
+                            &document_target,
+                        )
+                    })?;
+                    next_feature = body_id.0.checked_add(1);
+                    let occurrence_id = next_occurrence.map(OccurrenceId).ok_or_else(|| {
+                        assistant_canonical_rejection(
+                            CanonicalError::IdExhausted,
+                            operation_name,
+                            &document_target,
+                        )
+                    })?;
+                    next_occurrence = occurrence_id.0.checked_add(1);
+                    let workplane = match workplane {
+                        AssistantWorkplaneSpec::Principal { plane } => {
+                            WorkplaneSpec::principal(assistant_principal_plane(*plane))
+                        }
+                        AssistantWorkplaneSpec::Offset {
+                            base_feature_id,
+                            distance_mm,
+                        } => {
+                            let base = FeatureId(*base_feature_id);
+                            let base_frame = snapshot
+                                .feature(base)
+                                .and_then(|feature| match feature.kind() {
+                                    FeatureKind::Workplane(spec) => Some(spec.frame),
+                                    _ => None,
+                                })
+                                .ok_or_else(|| {
+                                    assistant_planning_rejection(
+                                        "planning.workplane_base_unavailable",
+                                        operation_name,
+                                        &format!("feature:{}", base.0),
+                                        "The requested offset base is not an existing workplane.",
+                                        "Refresh document context and target an existing workplane.",
+                                    )
+                                })?;
+                            let distance = Dimension::new(distance_mm.to_string(), *distance_mm)
+                                .map_err(|error| {
+                                    assistant_canonical_rejection(
+                                        error,
+                                        operation_name,
+                                        &format!("feature:{}", base.0),
+                                    )
+                                })?;
+                            WorkplaneSpec {
+                                support: WorkplaneSupport::Offset { base, distance },
+                                frame: base_frame.offset(*distance_mm),
+                            }
+                        }
+                    };
+                    let constraints = constraints
+                        .iter()
+                        .map(assistant_sketch_constraint)
+                        .collect::<Result<Vec<_>, _>>()
+                        .map_err(|error| {
+                            assistant_canonical_rejection(
+                                error,
+                                operation_name,
+                                &format!("feature:{}", sketch_id.0),
+                            )
+                        })?;
+                    let sketch = SketchSpec {
+                        workplane: workplane_id,
+                        entities: entities.iter().map(assistant_sketch_entity).collect(),
+                        constraints,
+                    };
+                    let regions = sketch.solved_regions().map_err(|error| {
+                        assistant_canonical_rejection(
+                            CanonicalError::Sketch(error),
+                            operation_name,
+                            &format!("feature:{}", sketch_id.0),
+                        )
+                    })?;
+                    let [region] = regions.as_slice() else {
+                        return Err(assistant_planning_rejection(
+                            "planning.cad_part_region_ambiguous",
+                            operation_name,
+                            &format!("feature:{}", sketch_id.0),
+                            "The part sketch must resolve to exactly one closed region.",
+                            "Return one closed, fully constrained sketch region for this part.",
+                        ));
+                    };
+                    let body_kind = match feature {
+                        AssistantCadPartFeature::Extrusion { distance_mm } => {
+                            let height = Dimension::new(distance_mm.to_string(), *distance_mm)
+                                .map_err(|error| {
+                                    assistant_canonical_rejection(
+                                        error,
+                                        operation_name,
+                                        &format!("feature:{}", body_id.0),
+                                    )
+                                })?;
+                            FeatureKind::Pad(PadSpec {
+                                sketch: sketch_id,
+                                region: region.id,
+                                direction: FeatureDirection::AlongNormal,
+                                extent: FeatureExtent::Blind(height),
+                            })
+                        }
+                    };
+                    let translated = translated_transform(
+                        Transform::identity(),
+                        Vec3::new(translation_mm[0], translation_mm[1], translation_mm[2]),
+                    )
+                    .map_err(|()| {
+                        assistant_planning_rejection(
+                            "planning.cad_part_placement_invalid",
+                            operation_name,
+                            &format!("occurrence:{}", occurrence_id.0),
+                            "The requested part translation could not be represented.",
+                            "Use a finite bounded translation.",
+                        )
+                    })?;
+                    let transform = if let Some(rotation) = rotation {
+                        let world_rotation = world_axis_rotation_transform(
+                            Vec3::new(
+                                rotation.pivot_mm[0],
+                                rotation.pivot_mm[1],
+                                rotation.pivot_mm[2],
+                            ),
+                            Vec3::new(rotation.axis[0], rotation.axis[1], rotation.axis[2]),
+                            rotation.angle_degrees,
+                        )
+                        .map_err(|()| {
+                            assistant_planning_rejection(
+                                "planning.cad_part_placement_invalid",
+                                operation_name,
+                                &format!("occurrence:{}", occurrence_id.0),
+                                "The requested part rotation could not be represented.",
+                                "Use a finite pivot and non-zero finite rotation axis.",
+                            )
+                        })?;
+                        rotation_in_parent_space(
+                            world_rotation,
+                            Transform::identity(),
+                            translated,
+                        )
+                        .ok_or_else(|| {
+                            assistant_planning_rejection(
+                                "planning.cad_part_placement_invalid",
+                                operation_name,
+                                &format!("occurrence:{}", occurrence_id.0),
+                                "The requested part placement is not a representable rigid transform.",
+                                "Use a finite rigid translation and rotation.",
+                            )
+                        })?
+                    } else {
+                        translated
+                    };
+                    commands.extend([
+                        CanonicalCommand::CreateDefinition {
+                            id: definition_id,
+                            name: name.clone(),
+                        },
+                        CanonicalCommand::CreateFeature {
+                            id: workplane_id,
+                            definition_id,
+                            name: format!("{name} workplane"),
+                            kind: FeatureKind::Workplane(workplane),
+                        },
+                        CanonicalCommand::CreateFeature {
+                            id: sketch_id,
+                            definition_id,
+                            name: format!("{name} sketch"),
+                            kind: FeatureKind::Sketch(sketch),
+                        },
+                        CanonicalCommand::CreateFeature {
+                            id: body_id,
+                            definition_id,
+                            name: format!("{name} feature"),
+                            kind: body_kind,
+                        },
+                        CanonicalCommand::CreateOccurrence {
+                            id: occurrence_id,
+                            definition_id,
+                            name: name.clone(),
+                            transform,
+                            parent: None,
+                            tag: None,
+                            visible: true,
                         },
                     ]);
                 }
@@ -12569,93 +13548,49 @@ impl KetchupApp {
             let definition = next_definition.map(DefinitionId)?;
             let feature = next_feature.map(FeatureId)?;
             let occurrence = next_occurrence.map(OccurrenceId)?;
-            let [x, y, z] = roof.origin_mm;
-            commands.extend([
-                CanonicalCommand::CreateDefinition {
-                    id: definition,
-                    name: roof.name.clone(),
-                },
-                CanonicalCommand::CreateFeature {
-                    id: feature,
-                    definition_id: definition,
-                    name: format!("{} solid", roof.name),
-                    kind: FeatureKind::MeshBody(assistant_gable_roof_mesh(roof)),
-                },
-                CanonicalCommand::CreateOccurrence {
-                    id: occurrence,
-                    definition_id: definition,
-                    name: roof.name.clone(),
-                    transform: Transform::from_translation(x, y, z).ok()?,
-                    parent: None,
-                    tag: None,
-                    visible: true,
-                },
-            ]);
+            commands.extend(assistant_prismatic_macro_commands(
+                &roof.name,
+                assistant_gable_roof_macro(roof)?,
+                definition,
+                feature,
+                occurrence,
+            )?);
             next_definition = definition.0.checked_add(1);
-            next_feature = feature.0.checked_add(1);
+            next_feature = feature.0.checked_add(3);
             next_occurrence = occurrence.0.checked_add(1);
         }
         for stairs in &intent.staircases {
             let definition = next_definition.map(DefinitionId)?;
             let feature = next_feature.map(FeatureId)?;
             let occurrence = next_occurrence.map(OccurrenceId)?;
-            let [x, y, z] = stairs.origin_mm;
-            commands.extend([
-                CanonicalCommand::CreateDefinition {
-                    id: definition,
-                    name: stairs.name.clone(),
-                },
-                CanonicalCommand::CreateFeature {
-                    id: feature,
-                    definition_id: definition,
-                    name: format!("{} solid", stairs.name),
-                    kind: FeatureKind::MeshBody(assistant_staircase_mesh(stairs)?),
-                },
-                CanonicalCommand::CreateOccurrence {
-                    id: occurrence,
-                    definition_id: definition,
-                    name: stairs.name.clone(),
-                    transform: Transform::from_translation(x, y, z).ok()?,
-                    parent: None,
-                    tag: None,
-                    visible: true,
-                },
-            ]);
+            commands.extend(assistant_prismatic_macro_commands(
+                &stairs.name,
+                assistant_staircase_macro(stairs)?,
+                definition,
+                feature,
+                occurrence,
+            )?);
             next_definition = definition.0.checked_add(1);
-            next_feature = feature.0.checked_add(1);
+            next_feature = feature.0.checked_add(3);
             next_occurrence = occurrence.0.checked_add(1);
         }
         for beam in &intent.oriented_beams {
             let definition = next_definition.map(DefinitionId)?;
             let feature = next_feature.map(FeatureId)?;
             let occurrence = next_occurrence.map(OccurrenceId)?;
-            commands.extend([
-                CanonicalCommand::CreateDefinition {
-                    id: definition,
-                    name: beam.name.clone(),
-                },
-                CanonicalCommand::CreateFeature {
-                    id: feature,
-                    definition_id: definition,
-                    name: format!("{} solid", beam.name),
-                    kind: FeatureKind::MeshBody(assistant_oriented_beam_mesh(beam)?),
-                },
-                CanonicalCommand::CreateOccurrence {
-                    id: occurrence,
-                    definition_id: definition,
-                    name: beam.name.clone(),
-                    transform: assistant_oriented_beam_transform(beam)?,
-                    parent: None,
-                    tag: None,
-                    visible: true,
-                },
-            ]);
+            commands.extend(assistant_prismatic_macro_commands(
+                &beam.name,
+                assistant_oriented_beam_macro(beam)?,
+                definition,
+                feature,
+                occurrence,
+            )?);
             next_definition = definition.0.checked_add(1);
-            next_feature = feature.0.checked_add(1);
+            next_feature = feature.0.checked_add(3);
             next_occurrence = occurrence.0.checked_add(1);
         }
         for item in &intent.boxes {
-            let feature_count = if item.subtract_boxes.is_empty() { 2 } else { 1 };
+            let feature_count;
             let definition = next_definition.map(DefinitionId)?;
             let feature = next_feature.map(FeatureId)?;
             let occurrence = next_occurrence.map(OccurrenceId)?;
@@ -12667,6 +13602,7 @@ impl KetchupApp {
                 name: item.name.clone(),
             });
             if item.subtract_boxes.is_empty() {
+                feature_count = 2;
                 let extrusion = feature.0.checked_add(1).map(FeatureId)?;
                 let height_dimension = Dimension::new(height.to_string(), height).ok()?;
                 commands.extend([
@@ -12689,13 +13625,10 @@ impl KetchupApp {
                     },
                 ]);
             } else {
-                let mesh = assistant_subtracted_box_mesh(item)?;
-                commands.push(CanonicalCommand::CreateFeature {
-                    id: feature,
-                    definition_id: definition,
-                    name: format!("{} solid", item.name),
-                    kind: FeatureKind::MeshBody(mesh),
-                });
+                let (feature_commands, count) =
+                    assistant_subtracted_box_feature_commands(item, definition, feature)?;
+                feature_count = count;
+                commands.extend(feature_commands);
             }
             commands.push(CanonicalCommand::CreateOccurrence {
                 id: occurrence,
@@ -12713,50 +13646,72 @@ impl KetchupApp {
         Some(CommandBatch::new(commands))
     }
 
-    fn assistant_collision_repair_delta(
+    fn assistant_repair_participants(
         &self,
         snapshot: &Snapshot,
+    ) -> BTreeMap<OccurrenceId, GeneralBodyParticipant> {
+        let exact_results = ExactResultRegistry::carried_forward(snapshot, &self.exact_results);
+        snapshot
+            .scene_query()
+            .into_iter()
+            .filter(|occurrence| occurrence.visible)
+            .take(MAX_ASSISTANT_VALIDATION_OCCURRENCES)
+            .filter_map(|occurrence| {
+                let occurrence_id = occurrence.instance_path.root_occurrence();
+                GeneralBodyParticipant::accept(
+                    snapshot,
+                    &exact_results,
+                    occurrence.instance_path,
+                    TolerancePolicy::default(),
+                )
+                .ok()
+                .map(|participant| (occurrence_id, participant))
+            })
+            .collect()
+    }
+
+    fn assistant_collision_repair_delta(
+        participants: &BTreeMap<OccurrenceId, GeneralBodyParticipant>,
         left_id: OccurrenceId,
         right_id: OccurrenceId,
     ) -> Option<[f64; 3]> {
-        let boxes = self.active_boxes_for_snapshot(snapshot);
-        let left = boxes
-            .iter()
-            .find(|item| item.instance_path == InstancePath::root(left_id))?;
-        let right = boxes
-            .iter()
-            .find(|item| item.instance_path == InstancePath::root(right_id))?;
-        let clearance_mm = 0.01;
-        let candidates = [
-            [
-                left.origin_mm.x + left.size_mm.x - right.origin_mm.x + clearance_mm,
-                0.0,
-                0.0,
-            ],
-            [
-                -(right.origin_mm.x + right.size_mm.x - left.origin_mm.x + clearance_mm),
-                0.0,
-                0.0,
-            ],
-            [
-                0.0,
-                left.origin_mm.y + left.size_mm.y - right.origin_mm.y + clearance_mm,
-                0.0,
-            ],
-            [
-                0.0,
-                -(right.origin_mm.y + right.size_mm.y - left.origin_mm.y + clearance_mm),
-                0.0,
-            ],
-        ];
-        candidates
-            .into_iter()
-            .filter(|delta| delta.iter().any(|value| value.abs() > clearance_mm))
-            .min_by(|left, right| {
-                let left_distance = left.iter().map(|value| value.abs()).sum::<f64>();
-                let right_distance = right.iter().map(|value| value.abs()).sum::<f64>();
-                left_distance.total_cmp(&right_distance)
-            })
+        let tolerance = TolerancePolicy::default();
+        let narrow_phase = general_body_narrow_phase(
+            participants.get(&left_id)?,
+            participants.get(&right_id)?,
+            tolerance,
+        )
+        .ok()?;
+        if narrow_phase.relation != GeneralBodyNarrowPhaseRelation::Intersecting {
+            return None;
+        }
+        let distance_mm = -narrow_phase.signed_separation_mm + tolerance.epsilon_mm();
+        Some(
+            narrow_phase
+                .separation_axis_world
+                .map(|component| component * distance_mm),
+        )
+    }
+
+    fn assistant_body_projection_interval(
+        body: &GeneralBodyParticipant,
+        axis: [f64; 3],
+    ) -> Option<[f64; 2]> {
+        let geometry = body.geometry_evidence();
+        let center = geometry.source_frame_center_world_mm();
+        let center_projection = (0..3).map(|index| center[index] * axis[index]).sum::<f64>();
+        let extents = geometry.source_frame_extents_mm();
+        let mut radius = 0.0;
+        for (source_axis, extent) in extents.into_iter().enumerate() {
+            let direction = geometry.source_axis_world_direction(source_axis)?;
+            let scale = geometry.source_axis_world_scale(source_axis)?;
+            let alignment = (0..3)
+                .map(|index| direction[index] * axis[index])
+                .sum::<f64>()
+                .abs();
+            radius += extent * scale * alignment * 0.5;
+        }
+        Some([center_projection - radius, center_projection + radius])
     }
 
     fn assistant_validation_issue_total(validation: &serde_json::Value) -> Option<u64> {
@@ -12768,33 +13723,38 @@ impl KetchupApp {
 
     fn assistant_repair_issue_remains(
         validation: &serde_json::Value,
-        validator: &str,
-        occurrence_ids: &[u64],
+        operation: &AssistantRepairOperation,
     ) -> bool {
-        let issues = validation[validator]["issues"]
+        let issues = validation[operation.validator()]["issues"]
             .as_array()
             .map(Vec::as_slice)
             .unwrap_or_default();
-        match (validator, occurrence_ids) {
-            ("collision", [left_id, right_id]) => issues.iter().any(|issue| {
+        match operation {
+            AssistantRepairOperation::ResolveCollision {
+                left_occurrence_id,
+                moved_occurrence_id,
+                ..
+            } => issues.iter().any(|issue| {
                 let found_left = issue["left_occurrence_id"].as_u64();
                 let found_right = issue["right_occurrence_id"].as_u64();
-                (found_left == Some(*left_id) && found_right == Some(*right_id))
-                    || (found_left == Some(*right_id) && found_right == Some(*left_id))
+                (found_left == Some(*left_occurrence_id)
+                    && found_right == Some(*moved_occurrence_id))
+                    || (found_left == Some(*moved_occurrence_id)
+                        && found_right == Some(*left_occurrence_id))
             }),
-            ("gravity_support", [occurrence_id]) => issues
+            AssistantRepairOperation::RestoreGravitySupport { occurrence_id, .. } => issues
                 .iter()
                 .any(|issue| issue["occurrence_id"].as_u64() == Some(*occurrence_id)),
-            _ => true,
         }
     }
 
-    fn assistant_validation_repair_steps(
+    fn assistant_validation_repair_operations(
         &self,
         snapshot: &Snapshot,
         validation: &serde_json::Value,
-    ) -> Vec<AssistantRepairStep> {
-        let mut steps = Vec::new();
+    ) -> Vec<AssistantRepairOperation> {
+        let participants = self.assistant_repair_participants(snapshot);
+        let mut operations = Vec::new();
         for issue in validation["collision"]["issues"]
             .as_array()
             .map(Vec::as_slice)
@@ -12808,17 +13768,22 @@ impl KetchupApp {
             };
             let (left_id, right_id) = (OccurrenceId(left_id), OccurrenceId(right_id));
             if let Some(delta_mm) =
-                self.assistant_collision_repair_delta(snapshot, left_id, right_id)
+                Self::assistant_collision_repair_delta(&participants, left_id, right_id)
             {
-                steps.push(AssistantRepairStep {
-                    validator: "collision",
-                    issue_code: "collision.detected",
-                    occurrence_ids: vec![left_id.0, right_id.0],
+                operations.push(AssistantRepairOperation::ResolveCollision {
+                    left_occurrence_id: left_id.0,
+                    moved_occurrence_id: right_id.0,
                     delta_mm,
                 });
             }
         }
-        let boxes = self.active_boxes_for_snapshot(snapshot);
+        let Ok(roles) = ValidatorRoleIndex::from_snapshot(snapshot) else {
+            return operations;
+        };
+        let Ok(gravity) = assistant_gravity_input(snapshot) else {
+            return operations;
+        };
+        let support_direction = gravity.direction.map(|component| -component);
         for issue in validation["gravity_support"]["issues"]
             .as_array()
             .map(Vec::as_slice)
@@ -12827,23 +13792,53 @@ impl KetchupApp {
             let Some(occurrence_id) = issue["occurrence_id"].as_u64().map(OccurrenceId) else {
                 continue;
             };
-            let Some(item) = boxes
-                .iter()
-                .find(|item| item.instance_path == InstancePath::root(occurrence_id))
+            let Some(candidate) = participants.get(&occurrence_id) else {
+                continue;
+            };
+            let Some(candidate_role) = roles
+                .role(occurrence_id)
+                .and_then(|role| assistant_physics_role(role.as_str()))
             else {
                 continue;
             };
-            let delta_z = -item.origin_mm.z;
-            if delta_z.abs() > f64::EPSILON {
-                steps.push(AssistantRepairStep {
-                    validator: "gravity_support",
-                    issue_code: "gravity.unsupported",
-                    occurrence_ids: vec![occurrence_id.0],
-                    delta_mm: [0.0, 0.0, delta_z],
-                });
+            let Some([candidate_min, _]) =
+                Self::assistant_body_projection_interval(candidate, support_direction)
+            else {
+                continue;
+            };
+            for (support_occurrence_id, support) in &participants {
+                let Some(support_role) = roles
+                    .role(*support_occurrence_id)
+                    .and_then(|role| assistant_physics_role(role.as_str()))
+                else {
+                    continue;
+                };
+                if *support_occurrence_id == occurrence_id
+                    || support_role.group != candidate_role.group
+                    || (support_role.kind != AssistantPhysicsRoleKind::GravityGround
+                        && !snapshot.occurrence_is_grounded(*support_occurrence_id))
+                {
+                    continue;
+                }
+                let Some([_, support_max]) =
+                    Self::assistant_body_projection_interval(support, support_direction)
+                else {
+                    continue;
+                };
+                let distance_mm = support_max - candidate_min;
+                let delta_mm = support_direction.map(|component| component * distance_mm);
+                let operation = AssistantRepairOperation::RestoreGravitySupport {
+                    occurrence_id: occurrence_id.0,
+                    support_occurrence_id: support_occurrence_id.0,
+                    gravity_direction: gravity.direction,
+                    delta_mm,
+                };
+                if operation.validate() {
+                    operations.push(operation);
+                }
             }
         }
-        steps
+        operations
     }
 
     fn derive_assistant_validation_repair_plan(
@@ -12892,20 +13887,22 @@ impl KetchupApp {
                 )
             })?;
         let mut target_transforms = BTreeMap::new();
-        let mut accepted_steps = Vec::new();
+        let mut accepted_operations = Vec::new();
         let mut final_proposal = None;
         let mut last_rejection = None;
         for _ in 0..MAX_ASSISTANT_VALIDATION_ISSUES {
             let mut accepted = None;
-            for step in self.assistant_validation_repair_steps(&candidate, &validation_after) {
-                let Some(moved_occurrence) = step.occurrence_ids.last().copied().map(OccurrenceId)
-                else {
+            for operation in
+                self.assistant_validation_repair_operations(&candidate, &validation_after)
+            {
+                if !operation.validate() {
                     continue;
-                };
+                }
+                let moved_occurrence = OccurrenceId(operation.moved_occurrence_id());
                 let Some(occurrence) = candidate.occurrence(moved_occurrence) else {
                     continue;
                 };
-                let [x, y, z] = step.delta_mm;
+                let [x, y, z] = operation.delta_mm();
                 let Ok(transform) =
                     translated_transform(occurrence.transform(), Vec3::new(x, y, z))
                 else {
@@ -12955,17 +13952,13 @@ impl KetchupApp {
                 };
                 if trial_validation["complete"].as_bool() != Some(true)
                     || trial_validation["requested"] != validation_before["requested"]
-                    || Self::assistant_repair_issue_remains(
-                        &trial_validation,
-                        step.validator,
-                        &step.occurrence_ids,
-                    )
+                    || Self::assistant_repair_issue_remains(&trial_validation, &operation)
                     || trial_total >= issue_total
                 {
                     continue;
                 }
                 accepted = Some((
-                    step,
+                    operation,
                     trial_transforms,
                     proposal,
                     trial_candidate,
@@ -12974,12 +13967,18 @@ impl KetchupApp {
                 ));
                 break;
             }
-            let Some((step, transforms, proposal, next_candidate, next_validation, next_total)) =
-                accepted
+            let Some((
+                operation,
+                transforms,
+                proposal,
+                next_candidate,
+                next_validation,
+                next_total,
+            )) = accepted
             else {
                 break;
             };
-            accepted_steps.push(step);
+            accepted_operations.push(operation);
             target_transforms = transforms;
             final_proposal = Some(proposal);
             candidate = next_candidate;
@@ -13003,11 +14002,37 @@ impl KetchupApp {
                 )
             })
         })?;
+        let program = AssistantRepairProgram {
+            schema: ASSISTANT_REPAIR_PROGRAM_SCHEMA_V1.to_owned(),
+            document_id: validation_before["document_id"]
+                .as_u64()
+                .expect("complete validator evidence carries a document ID"),
+            revision_id: validation_before["revision"]
+                .as_u64()
+                .expect("complete validator evidence carries a revision"),
+            canonical_digest: validation_before["canonical_digest"]
+                .as_str()
+                .expect("complete validator evidence carries a canonical digest")
+                .to_owned(),
+            max_operations: MAX_ASSISTANT_VALIDATION_ISSUES,
+            operations: accepted_operations,
+        };
+        if !program.validate() {
+            return Err(assistant_rejection(
+                AssistantRejectionPhase::DomainValidation,
+                "validator.repair_program_invalid",
+                "validation_repair",
+                &target,
+                "The generated repair program violates its typed bounds or provenance contract.",
+                "Re-run validation against the current canonical snapshot.",
+                true,
+            ));
+        }
         Ok(AssistantPreviewPlan {
             source: AssistantPreviewSource::ValidationRepair(selection.clone()),
             proposal,
             repair: Some(AssistantRepairPreview {
-                steps: accepted_steps,
+                program,
                 validation_before,
                 validation_after,
             }),
@@ -13549,14 +14574,54 @@ impl KetchupApp {
                 if snapshot.feature(feature_id).is_some_and(|feature| {
                     matches!(
                         feature.kind(),
-                        FeatureKind::TopologyShell { .. } | FeatureKind::TopologyEdgeFinish { .. }
+                        FeatureKind::TopologyShell { .. }
+                            | FeatureKind::TopologyEdgeFinish { .. }
+                            | FeatureKind::TopologyFaceOffset { .. }
                     )
                 }) && let Ok(graph) =
                     ExactBRepGraph::from_snapshot(&snapshot, definition_id, feature_id)
                 {
+                    let imported_source = graph
+                        .nodes
+                        .iter()
+                        .find_map(|node| match &node.operation {
+                            ExactBRepOperation::ImportedExact {
+                                source_sha256,
+                                source_byte_len,
+                                ..
+                            } => Some((source_sha256, *source_byte_len)),
+                            _ => None,
+                        })
+                        .map(|(source_sha256, source_byte_len)| {
+                            let hash = source_sha256
+                                .iter()
+                                .map(|byte| format!("{byte:02x}"))
+                                .collect::<String>();
+                            let source = self
+                                .container_data
+                                .blobs()
+                                .get(&hash)
+                                .cloned()
+                                .ok_or_else(|| {
+                                    "imported exact graph source blob is missing".to_owned()
+                                })?;
+                            if source.len() as u64 != source_byte_len
+                                || sha256_bytes(&source) != *source_sha256
+                            {
+                                return Err(
+                                    "imported exact graph source blob does not match canonical identity"
+                                        .to_owned(),
+                                );
+                            }
+                            Ok(source)
+                        })
+                        .transpose()?;
                     return Ok(Some((
                         definition_id,
-                        ExactEvaluationRequest::Graph(Box::new(graph)),
+                        ExactEvaluationRequest::Graph {
+                            graph: Box::new(graph),
+                            imported_source,
+                        },
                     )));
                 }
                 if let Ok(request) = ExactFeatureChainRequest::from_snapshot_for_producer(
@@ -13651,11 +14716,19 @@ impl KetchupApp {
                         return Err("exact evaluation cancelled".to_owned());
                     }
                     let (package, topology_package) = match request {
-                        ExactEvaluationRequest::Graph(graph) => {
-                            let package = worker
-                                .evaluate_exact_brep_graph(&graph)
-                                .map(ExactBodyPackage::Graph)
-                                .map_err(|error| error.to_string())?;
+                        ExactEvaluationRequest::Graph {
+                            graph,
+                            imported_source,
+                        } => {
+                            let package = match imported_source {
+                                Some(source) => worker
+                                    .evaluate_exact_brep_graph_with_imported_source(
+                                        &graph, &source,
+                                    ),
+                                None => worker.evaluate_exact_brep_graph(&graph),
+                            }
+                            .map(ExactBodyPackage::Graph)
+                            .map_err(|error| error.to_string())?;
                             (package.clone(), Some(package))
                         }
                         ExactEvaluationRequest::Rectangle { request, topology } => {
@@ -14157,6 +15230,48 @@ impl KetchupApp {
             .iter()
             .filter(|occurrence| occurrence.visible)
             .filter_map(|occurrence| {
+                if occurrence.box_proxy.is_none() {
+                    let [minimum, maximum] = self.definition_local_bounds(
+                        &snapshot,
+                        occurrence.body.definition_id,
+                        occurrence.local_box,
+                    )?;
+                    let size = maximum - minimum;
+                    let [world_minimum, world_maximum] = bounds_of(
+                        box_corners(size.x, size.y, size.z)
+                            .into_iter()
+                            .map(|corner| {
+                                transform_model_point(
+                                    occurrence.canonical_world_transform,
+                                    corner + minimum,
+                                )
+                            }),
+                    )?;
+                    let profile_feature_id = occurrence.body.profile_feature_id.or_else(|| {
+                        snapshot
+                            .definition(occurrence.body.definition_id)?
+                            .feature_ids()
+                            .iter()
+                            .find_map(|feature_id| {
+                                matches!(
+                                    snapshot.feature(*feature_id)?.kind(),
+                                    FeatureKind::Profile { .. }
+                                        | FeatureKind::SegmentProfile { .. }
+                                        | FeatureKind::SplineProfile { .. }
+                                        | FeatureKind::Sketch(_)
+                                )
+                                .then_some(*feature_id)
+                            })
+                    })?;
+                    return Some(RenderBox {
+                        definition_id: occurrence.body.definition_id,
+                        profile_feature_id,
+                        extrusion_feature_id: occurrence.body.extrusion_feature_id,
+                        instance_path: occurrence.instance_path.clone(),
+                        origin_mm: world_minimum,
+                        size_mm: world_maximum - world_minimum,
+                    });
+                }
                 let box_proxy = occurrence.box_proxy?;
                 let matrix = occurrence.canonical_world_transform.matrix();
                 let translation_only = matrix[0] == 1.0
@@ -14838,6 +15953,78 @@ impl KetchupApp {
             .ok()
     }
 
+    fn topological_push_pull_box(
+        &self,
+        snapshot: &Snapshot,
+        target: &SelectionId,
+        reference: &TopologicalElementRef,
+    ) -> Option<RenderBox> {
+        let package = self
+            .topology_results
+            .get_render(snapshot, reference.definition_id)?;
+        if reference.kind != TopologicalElementKind::Face
+            || reference.definition_id != target.definition_id
+            || reference.producer_feature_id != package.producer_feature_id()
+        {
+            return None;
+        }
+        let occurrence = snapshot
+            .scene_query()
+            .into_iter()
+            .find(|occurrence| occurrence.instance_path == target.instance_path)?;
+        let matrix = occurrence.transform.matrix();
+        if matrix[0] != 1.0
+            || matrix[1] != 0.0
+            || matrix[2] != 0.0
+            || matrix[4] != 0.0
+            || matrix[5] != 1.0
+            || matrix[6] != 0.0
+            || matrix[8] != 0.0
+            || matrix[9] != 0.0
+            || matrix[10] != 1.0
+            || matrix[12] != 0.0
+            || matrix[13] != 0.0
+            || matrix[14] != 0.0
+            || matrix[15] != 1.0
+        {
+            return None;
+        }
+        let [minimum, maximum] = package.bounds_mm();
+        Some(RenderBox {
+            definition_id: target.definition_id,
+            profile_feature_id: reference.producer_feature_id,
+            extrusion_feature_id: None,
+            instance_path: target.instance_path.clone(),
+            origin_mm: Vec3::new(
+                minimum[0] + matrix[3],
+                minimum[1] + matrix[7],
+                minimum[2] + matrix[11],
+            ),
+            size_mm: Vec3::new(
+                maximum[0] - minimum[0],
+                maximum[1] - minimum[1],
+                maximum[2] - minimum[2],
+            ),
+        })
+    }
+
+    fn topological_push_pull_face_element(
+        &self,
+        snapshot: &Snapshot,
+        reference: &TopologicalElementRef,
+    ) -> Option<ElementId> {
+        if reference.kind != TopologicalElementKind::Face {
+            return None;
+        }
+        let package = self
+            .topology_results
+            .get_render(snapshot, reference.definition_id)?;
+        if package.producer_feature_id() != reference.producer_feature_id {
+            return None;
+        }
+        axis_aligned_topological_face_element(package.as_ref(), reference)
+    }
+
     #[doc(hidden)]
     pub fn select_topological_locator(&mut self, locator: TopologicalPickLocator) -> bool {
         let Some(topological) = self.bind_topological_selection(&locator) else {
@@ -14845,10 +16032,12 @@ impl KetchupApp {
         };
         let target = topological.target();
         let element = match locator.kind {
-            TopologicalElementKind::Face => ElementId::Face {
-                axis: Axis::Z,
-                side: Side::Maximum,
-            },
+            TopologicalElementKind::Face => self
+                .topological_push_pull_face_element(&self.document.current(), &target.reference)
+                .unwrap_or(ElementId::Face {
+                    axis: Axis::Z,
+                    side: Side::Maximum,
+                }),
             TopologicalElementKind::Edge => {
                 let Ok(ordinal) = u8::try_from(locator.ordinal) else {
                     return false;
@@ -24799,13 +25988,8 @@ impl KetchupApp {
         }
         let snapshot = self.document.current();
         let planning_snapshot = self.push_pull_planning_snapshot();
-        let tool_box = self
-            .active_boxes_for_snapshot(&planning_snapshot)
-            .into_iter()
-            .find(|item| item.instance_path == selection.instance_path)?;
-        if tool_box.definition_id != selection.definition_id {
-            return None;
-        }
+        let push_pull_source = self.push_pull_source_plan(selection)?;
+        let tool_box = push_pull_source.target_box.clone();
         let tool_profile_kind = planning_snapshot
             .feature(tool_box.profile_feature_id)?
             .kind()
@@ -24823,6 +26007,8 @@ impl KetchupApp {
             edit_context: self.selection.edit_context.clone(),
             planning: self.push_pull_planning_plan()?,
             selection: selection.clone(),
+            topological_selection: push_pull_source.topological_selection,
+            topological_reference: push_pull_source.topological_reference,
             distance_expression: distance_expression.to_owned(),
             distance_mm_bits: distance_mm.to_bits(),
             tool_box,
@@ -24863,13 +26049,10 @@ impl KetchupApp {
             return false;
         }
         let planning_snapshot = self.push_pull_planning_snapshot();
-        let Some(item) = self
-            .active_boxes_for_snapshot(&planning_snapshot)
-            .into_iter()
-            .find(|item| item.instance_path == selection.instance_path)
-        else {
+        let Some(source) = self.push_pull_source_plan(&selection) else {
             return false;
         };
+        let item = source.target_box;
         let targets = self.profile_cut_targets(&selection, &item, distance_mm);
         if !targets.is_empty() {
             let Some(source) = self.smart_push_pull_chooser_source_plan(
@@ -24926,10 +26109,32 @@ impl KetchupApp {
     fn push_pull_source_plan(&self, target: &SelectionId) -> Option<PushPullSourcePlan> {
         let snapshot = self.document.current();
         let planning_snapshot = self.push_pull_planning_snapshot();
+        let (topological_selection, topological_reference) =
+            match self.selection.topological.as_ref() {
+                None => (None, None),
+                Some(topological) => {
+                    let resolved = topological
+                        .resolve_current(&snapshot, &self.topology_results)
+                        .ok()?;
+                    if resolved.instance_path != target.instance_path
+                        || resolved.reference.definition_id != target.definition_id
+                        || resolved.reference.kind != TopologicalElementKind::Face
+                        || self
+                            .topological_push_pull_face_element(&snapshot, &resolved.reference)?
+                            != target.element
+                    {
+                        return None;
+                    }
+                    (Some(topological.clone()), Some(resolved.reference))
+                }
+            };
         let target_box = self
             .active_boxes_for_snapshot(&planning_snapshot)
             .into_iter()
-            .find(|item| item.instance_path == target.instance_path)?;
+            .find(|item| item.instance_path == target.instance_path)
+            .or_else(|| {
+                self.topological_push_pull_box(&snapshot, target, topological_reference.as_ref()?)
+            })?;
         if target_box.definition_id != target.definition_id {
             return None;
         }
@@ -24944,6 +26149,8 @@ impl KetchupApp {
             edit_context: self.selection.edit_context.clone(),
             planning: self.push_pull_planning_plan()?,
             target: target.clone(),
+            topological_selection,
+            topological_reference,
             target_box,
             exact_request,
         })
@@ -24985,6 +26192,8 @@ impl KetchupApp {
             &planning_snapshot,
             &source.target,
             &source.target_box,
+            source.topological_reference.as_ref(),
+            distance_mm,
             new_extent_mm,
             format_height(new_extent_mm),
         )?;
@@ -26330,6 +27539,23 @@ impl KetchupApp {
             ]);
         }
         if let Some(definition) = snapshot.definition(definition_id) {
+            if let Some([minimum, maximum]) =
+                definition
+                    .feature_ids()
+                    .iter()
+                    .rev()
+                    .find_map(|feature_id| {
+                        ExactBRepGraph::from_snapshot(snapshot, definition_id, *feature_id)
+                            .ok()?
+                            .producer_bounds_mm()
+                            .ok()?
+                    })
+            {
+                return Some([
+                    Vec3::new(minimum[0], minimum[1], minimum[2]),
+                    Vec3::new(maximum[0], maximum[1], maximum[2]),
+                ]);
+            }
             for feature_id in definition.feature_ids() {
                 if let Some(feature) = snapshot.feature(*feature_id)
                     && let FeatureKind::MeshBody(mesh) = feature.kind()
@@ -31569,6 +32795,26 @@ impl KetchupApp {
         );
     }
 
+    fn assistant_feature_parameter_target(
+        &self,
+        feature_id: FeatureId,
+        path: &str,
+    ) -> Option<FeatureParameterTarget> {
+        let descriptor = self
+            .document
+            .current()
+            .feature(feature_id)?
+            .kind()
+            .parameter_descriptors()
+            .into_iter()
+            .find(|descriptor| descriptor.path().as_str() == path)?;
+        Some(FeatureParameterTarget {
+            feature_id,
+            path: descriptor.path().clone(),
+            value_type: descriptor.value_type(),
+        })
+    }
+
     fn prepare_assistant_from_inputs(&mut self) -> bool {
         let Ok(target) = self.assistant_target_input.trim().parse::<u64>() else {
             self.digest = self.catalog.text("assistant-error-target");
@@ -31641,21 +32887,13 @@ impl KetchupApp {
                         .text("assistant-error-create-feature-parameter-binding");
                     return false;
                 }
-                let slot = match fields[0] {
-                    "height" => FeatureParameterSlot::Height,
-                    "body_radius" => FeatureParameterSlot::BodyRadius,
-                    "body_height" => FeatureParameterSlot::BodyHeight,
-                    "shoulder_rise" => FeatureParameterSlot::ShoulderRise,
-                    "thickness" => FeatureParameterSlot::Thickness,
-                    "amount" => FeatureParameterSlot::Amount,
-                    "profile_width" => FeatureParameterSlot::ProfileWidth,
-                    "profile_height" => FeatureParameterSlot::ProfileHeight,
-                    _ => {
-                        self.digest = self
-                            .catalog
-                            .text("assistant-error-create-feature-parameter-binding");
-                        return false;
-                    }
+                let Some(parameter_target) =
+                    self.assistant_feature_parameter_target(FeatureId(target), fields[0])
+                else {
+                    self.digest = self
+                        .catalog
+                        .text("assistant-error-create-feature-parameter-binding");
+                    return false;
                 };
                 let Ok(rule) = fields[1].parse::<u64>() else {
                     self.digest = self
@@ -31664,10 +32902,7 @@ impl KetchupApp {
                     return false;
                 };
                 WorkflowIntent::CreateFeatureParameterBinding {
-                    target: FeatureParameterTarget {
-                        feature_id: FeatureId(target),
-                        slot,
-                    },
+                    target: parameter_target,
                     rule: NodeId(rule),
                     output_port: fields[2].to_owned(),
                     semantic_key: fields[3].to_owned(),
@@ -31687,21 +32922,13 @@ impl KetchupApp {
                         .text("assistant-error-create-persistent-dimension");
                     return false;
                 };
-                let slot = match fields[2] {
-                    "height" => FeatureParameterSlot::Height,
-                    "body_radius" => FeatureParameterSlot::BodyRadius,
-                    "body_height" => FeatureParameterSlot::BodyHeight,
-                    "shoulder_rise" => FeatureParameterSlot::ShoulderRise,
-                    "thickness" => FeatureParameterSlot::Thickness,
-                    "amount" => FeatureParameterSlot::Amount,
-                    "profile_width" => FeatureParameterSlot::ProfileWidth,
-                    "profile_height" => FeatureParameterSlot::ProfileHeight,
-                    _ => {
-                        self.digest = self
-                            .catalog
-                            .text("assistant-error-create-persistent-dimension");
-                        return false;
-                    }
+                let Some(dimension_target) =
+                    self.assistant_feature_parameter_target(FeatureId(feature_id), fields[2])
+                else {
+                    self.digest = self
+                        .catalog
+                        .text("assistant-error-create-persistent-dimension");
+                    return false;
                 };
                 let unit = match fields[3] {
                     "mm" => DimensionDisplayUnit::Millimetres,
@@ -31729,10 +32956,7 @@ impl KetchupApp {
                 WorkflowIntent::CreatePersistentDimension {
                     target: PersistentDimensionId(target),
                     name: fields[0].to_owned(),
-                    dimension_target: FeatureParameterTarget {
-                        feature_id: FeatureId(feature_id),
-                        slot,
-                    },
+                    dimension_target,
                     presentation,
                 }
             }
@@ -31918,27 +33142,16 @@ impl KetchupApp {
                 }
             }
             AssistantIntentKind::DeleteFeatureParameterBinding => {
-                let slot = match value_text.trim() {
-                    "height" => FeatureParameterSlot::Height,
-                    "body_radius" => FeatureParameterSlot::BodyRadius,
-                    "body_height" => FeatureParameterSlot::BodyHeight,
-                    "shoulder_rise" => FeatureParameterSlot::ShoulderRise,
-                    "thickness" => FeatureParameterSlot::Thickness,
-                    "amount" => FeatureParameterSlot::Amount,
-                    "profile_width" => FeatureParameterSlot::ProfileWidth,
-                    "profile_height" => FeatureParameterSlot::ProfileHeight,
-                    _ => {
-                        self.digest = self
-                            .catalog
-                            .text("assistant-error-delete-feature-parameter-binding");
-                        return false;
-                    }
+                let Some(parameter_target) =
+                    self.assistant_feature_parameter_target(FeatureId(target), value_text.trim())
+                else {
+                    self.digest = self
+                        .catalog
+                        .text("assistant-error-delete-feature-parameter-binding");
+                    return false;
                 };
                 WorkflowIntent::DeleteFeatureParameterBinding {
-                    target: FeatureParameterTarget {
-                        feature_id: FeatureId(target),
-                        slot,
-                    },
+                    target: parameter_target,
                 }
             }
             AssistantIntentKind::DeleteJoint => WorkflowIntent::DeleteJoint {
@@ -31956,27 +33169,16 @@ impl KetchupApp {
                 }
             }
             AssistantIntentKind::RecomputeFeatureParameter => {
-                let slot = match value_text.trim() {
-                    "height" => FeatureParameterSlot::Height,
-                    "body_radius" => FeatureParameterSlot::BodyRadius,
-                    "body_height" => FeatureParameterSlot::BodyHeight,
-                    "shoulder_rise" => FeatureParameterSlot::ShoulderRise,
-                    "thickness" => FeatureParameterSlot::Thickness,
-                    "amount" => FeatureParameterSlot::Amount,
-                    "profile_width" => FeatureParameterSlot::ProfileWidth,
-                    "profile_height" => FeatureParameterSlot::ProfileHeight,
-                    _ => {
-                        self.digest = self
-                            .catalog
-                            .text("assistant-error-recompute-feature-parameter");
-                        return false;
-                    }
+                let Some(parameter_target) =
+                    self.assistant_feature_parameter_target(FeatureId(target), value_text.trim())
+                else {
+                    self.digest = self
+                        .catalog
+                        .text("assistant-error-recompute-feature-parameter");
+                    return false;
                 };
                 WorkflowIntent::RecomputeFeatureParameter {
-                    target: FeatureParameterTarget {
-                        feature_id: FeatureId(target),
-                        slot,
-                    },
+                    target: parameter_target,
                 }
             }
             AssistantIntentKind::RuleDimension => WorkflowIntent::SetRuleDimension {
@@ -32708,14 +33910,14 @@ impl KetchupApp {
                             Self::assistant_validation_issue_total(&repair.validation_after)
                                 .unwrap_or_default();
                         ui.strong(self.catalog.text("assistant-repair-preview-title"));
-                        for step in &repair.steps {
+                        for operation in &repair.program.operations {
                             ui.monospace(self.catalog.format(
                                 "assistant-repair-preview-impact",
                                 &BTreeMap::from([
-                                    ("validator", step.validator.to_owned()),
-                                    ("issue", step.issue_code.to_owned()),
-                                    ("occurrences", format!("{:?}", step.occurrence_ids)),
-                                    ("delta", format!("{:?}", step.delta_mm)),
+                                    ("validator", operation.validator().to_owned()),
+                                    ("issue", operation.issue_code().to_owned()),
+                                    ("occurrences", format!("{:?}", operation.occurrence_ids())),
+                                    ("delta", format!("{:?}", operation.delta_mm())),
                                     ("before", before.to_string()),
                                     ("after", after.to_string()),
                                     (
@@ -36007,6 +37209,7 @@ impl KetchupApp {
                 .show(context, |ui| {
                     ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
                     self.show_face_workflow_ui(ui);
+                    #[cfg(test)]
                     self.show_part_authoring_ui(ui);
                     self.show_feature_history(ui);
                     self.show_body_editor(ui);
@@ -36031,6 +37234,7 @@ impl KetchupApp {
                 .show(context, |ui| {
                     ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
                     self.show_face_workflow_ui(ui);
+                    #[cfg(test)]
                     self.show_part_authoring_ui(ui);
                     self.show_feature_history(ui);
                     self.show_body_editor(ui);
@@ -36693,6 +37897,8 @@ fn push_pull_batch(
     snapshot: &Snapshot,
     selection: &SelectionId,
     item: &RenderBox,
+    topological_reference: Option<&TopologicalElementRef>,
+    distance_mm: f64,
     new_extent_mm: f64,
     source_token: String,
 ) -> Option<CommandBatch> {
@@ -36704,6 +37910,34 @@ fn push_pull_batch(
         || item.instance_path != selection.instance_path
     {
         return None;
+    }
+    if let Some(reference) = topological_reference {
+        let producer = snapshot.feature(reference.producer_feature_id)?;
+        if producer.definition_id() == selection.definition_id
+            && producer.kind().produces_body()
+            && item.profile_feature_id == reference.producer_feature_id
+            && reference.definition_id == selection.definition_id
+            && reference.kind == TopologicalElementKind::Face
+        {
+            let id = FeatureId(
+                snapshot
+                    .features()
+                    .map(|feature| feature.id().0)
+                    .max()
+                    .unwrap_or(0)
+                    .checked_add(1)?,
+            );
+            return Some(CommandBatch::new(vec![CanonicalCommand::CreateFeature {
+                id,
+                definition_id: selection.definition_id,
+                name: "Face Offset".to_owned(),
+                kind: FeatureKind::TopologyFaceOffset {
+                    target: reference.producer_feature_id,
+                    face: reference.clone(),
+                    distance: Dimension::new(format_height(distance_mm), distance_mm).ok()?,
+                },
+            }]));
+        }
     }
     let profile = snapshot.feature(item.profile_feature_id)?;
     if profile.definition_id() != selection.definition_id {
@@ -37756,6 +38990,80 @@ fn format_height(height: f64) -> String {
         .to_owned()
 }
 
+fn axis_aligned_topological_face_element(
+    package: &ExactBodyPackage,
+    reference: &TopologicalElementRef,
+) -> Option<ElementId> {
+    let face_ordinal = package
+        .topological_references()
+        .iter()
+        .filter(|candidate| candidate.kind == TopologicalElementKind::Face)
+        .position(|candidate| candidate == reference)
+        .and_then(|ordinal| u32::try_from(ordinal).ok())?;
+    let (bounds, vertices, triangles, triangle_face_ordinals) = match package {
+        ExactBodyPackage::Graph(package) => (
+            package.bounds_mm,
+            package.vertices.as_slice(),
+            package.triangles.as_slice(),
+            package.triangle_face_ordinals.as_slice(),
+        ),
+        ExactBodyPackage::Imported(package) => (
+            package.bounds_mm,
+            package.vertices.as_slice(),
+            package.triangles.as_slice(),
+            package.triangle_face_ordinals.as_slice(),
+        ),
+        ExactBodyPackage::Rectangle(_) | ExactBodyPackage::Revolve(_) => return None,
+    };
+    if triangles.len() != triangle_face_ordinals.len() {
+        return None;
+    }
+    let vertex_indices = triangles
+        .iter()
+        .zip(triangle_face_ordinals)
+        .filter(|(_, ordinal)| **ordinal == face_ordinal)
+        .flat_map(|(triangle, _)| triangle.vertex_indices)
+        .collect::<BTreeSet<_>>();
+    if vertex_indices.len() < 3 {
+        return None;
+    }
+    let mut face_bounds = [[f64::INFINITY; 3], [f64::NEG_INFINITY; 3]];
+    for index in vertex_indices {
+        let vertex = vertices.get(index as usize)?.position_mm;
+        for axis in 0..3 {
+            face_bounds[0][axis] = face_bounds[0][axis].min(vertex[axis]);
+            face_bounds[1][axis] = face_bounds[1][axis].max(vertex[axis]);
+        }
+    }
+    let scale = (0..3)
+        .map(|axis| bounds[1][axis] - bounds[0][axis])
+        .fold(1.0_f64, f64::max);
+    let tolerance = (scale * 1.0e-8).max(1.0e-6);
+    let planar_axes = (0..3)
+        .filter(|axis| face_bounds[1][*axis] - face_bounds[0][*axis] <= tolerance)
+        .collect::<Vec<_>>();
+    let [axis] = planar_axes.as_slice() else {
+        return None;
+    };
+    let coordinate = (face_bounds[0][*axis] + face_bounds[1][*axis]) * 0.5;
+    let at_minimum = (coordinate - bounds[0][*axis]).abs() <= tolerance;
+    let at_maximum = (coordinate - bounds[1][*axis]).abs() <= tolerance;
+    let side = match (at_minimum, at_maximum) {
+        (true, false) => Side::Minimum,
+        (false, true) => Side::Maximum,
+        _ => return None,
+    };
+    Some(ElementId::Face {
+        axis: match axis {
+            0 => Axis::X,
+            1 => Axis::Y,
+            2 => Axis::Z,
+            _ => unreachable!(),
+        },
+        side,
+    })
+}
+
 fn face_extent(item: &RenderBox, element: Option<&ElementId>) -> Option<f64> {
     match element? {
         ElementId::Face { axis: Axis::X, .. } => Some(item.size_mm.x),
@@ -38059,6 +39367,51 @@ mod tests {
         assert_eq!(intent.phase, AssistantRejectionPhase::IntentValidation);
         assert_eq!(intent.code, "intent.model_invalid");
         assert_eq!(intent.validate(), Ok(()));
+
+        let mesh_only_model = AssistantModelIntent {
+            replace_scene: false,
+            boxes: Vec::new(),
+            translations: Vec::new(),
+            rotations: Vec::new(),
+            profile_translations: Vec::new(),
+            parameter_edits: Vec::new(),
+            linear_arrays: Vec::new(),
+            bottles: Vec::new(),
+            gable_roofs: Vec::new(),
+            staircases: Vec::new(),
+            oriented_beams: Vec::new(),
+            balloon_texts: vec![AssistantBalloonTextIntent {
+                name: "Legacy mesh-only text".to_owned(),
+                text: "A".to_owned(),
+                height_mm: 40.0,
+                depth_mm: 16.0,
+                stroke_width_mm: 8.0,
+                letter_spacing_mm: 4.0,
+                origin_mm: [0.0, 0.0, 0.0],
+            }],
+        };
+        let editable_macro = app
+            .derive_assistant_preview_plan(&AssistantPreviewSource::Model(mesh_only_model))
+            .unwrap_err();
+        assert_eq!(
+            editable_macro.phase,
+            AssistantRejectionPhase::ProposalPlanning
+        );
+        assert_eq!(editable_macro.code, "planning.editable_macro_required");
+        assert_eq!(editable_macro.operation, "model_intent");
+        assert_eq!(
+            editable_macro.target,
+            format!("document:{}", app.document.current().document_id().0)
+        );
+        assert!(
+            editable_macro
+                .failed_invariant
+                .contains("non-editable mesh")
+        );
+        assert!(editable_macro.repair_hint.contains("create_part"));
+        assert!(editable_macro.retryable);
+        assert_eq!(editable_macro.validate(), Ok(()));
+        assert!(app.assistant_proposal.is_none());
 
         let selection = AssistantValidationSelection {
             mode: "selected",
@@ -42530,10 +43883,8 @@ endsolid tetrahedron\n";
         let profile = FeatureId(201);
         let feature = FeatureId(202);
         let rule = NodeId(203);
-        let target = FeatureParameterTarget {
-            feature_id: feature,
-            slot: FeatureParameterSlot::Height,
-        };
+        let target =
+            FeatureParameterTarget::new(feature, "height", ParameterValueType::Length).unwrap();
         let derived_from = DerivedIdentity::new(
             rule,
             SlotPath::new(vec![SlotSegment::new(rule, "result", "left").unwrap()]).unwrap(),
@@ -42594,7 +43945,7 @@ endsolid tetrahedron\n";
         let proposal = app.assistant_proposal().unwrap();
         assert_eq!(
             proposal.goal(),
-            ProposalGoal::CreateFeatureParameterBinding(target)
+            ProposalGoal::CreateFeatureParameterBinding(target.clone())
         );
         assert_eq!(proposal.authoritative_writes().len(), 1);
         assert_eq!(
@@ -42604,7 +43955,7 @@ endsolid tetrahedron\n";
         assert_eq!(
             proposal.authoritative_diff()[0].after,
             ProposalValue::FeatureParameterBindingState {
-                target,
+                target: target.clone(),
                 derived_from: derived_from.clone(),
             }
         );
@@ -42616,7 +43967,7 @@ endsolid tetrahedron\n";
         assert_eq!(
             app.document
                 .current()
-                .feature_parameter_binding(target)
+                .feature_parameter_binding(&target)
                 .unwrap()
                 .derived_from,
             derived_from
@@ -42626,7 +43977,7 @@ endsolid tetrahedron\n";
         assert!(
             app.document
                 .current()
-                .feature_parameter_binding(target)
+                .feature_parameter_binding(&target)
                 .is_none()
         );
     }
@@ -42638,10 +43989,8 @@ endsolid tetrahedron\n";
         let profile = FeatureId(205);
         let feature = FeatureId(206);
         let rule = NodeId(207);
-        let target = FeatureParameterTarget {
-            feature_id: feature,
-            slot: FeatureParameterSlot::Height,
-        };
+        let target =
+            FeatureParameterTarget::new(feature, "height", ParameterValueType::Length).unwrap();
         let derived_from = DerivedIdentity::new(
             rule,
             SlotPath::new(vec![SlotSegment::new(rule, "result", "left").unwrap()]).unwrap(),
@@ -42687,7 +44036,7 @@ endsolid tetrahedron\n";
                 },
                 CanonicalCommand::UpsertFeatureParameterBinding(
                     ketchup_core::document::FeatureParameterBinding {
-                        target,
+                        target: target.clone(),
                         derived_from: derived_from.clone(),
                     },
                 ),
@@ -42708,13 +44057,13 @@ endsolid tetrahedron\n";
         let proposal = app.assistant_proposal().unwrap();
         assert_eq!(
             proposal.goal(),
-            ProposalGoal::DeleteFeatureParameterBinding(target)
+            ProposalGoal::DeleteFeatureParameterBinding(target.clone())
         );
         assert_eq!(proposal.authoritative_writes().len(), 1);
         assert_eq!(
             proposal.authoritative_diff()[0].before,
             ProposalValue::FeatureParameterBindingState {
-                target,
+                target: target.clone(),
                 derived_from: derived_from.clone(),
             }
         );
@@ -42730,7 +44079,7 @@ endsolid tetrahedron\n";
         assert!(
             app.document
                 .current()
-                .feature_parameter_binding(target)
+                .feature_parameter_binding(&target)
                 .is_none()
         );
         assert_eq!(app.document.visible_undo_steps(), undo_before + 1);
@@ -42738,7 +44087,7 @@ endsolid tetrahedron\n";
         assert_eq!(
             app.document
                 .current()
-                .feature_parameter_binding(target)
+                .feature_parameter_binding(&target)
                 .unwrap()
                 .derived_from,
             derived_from
@@ -42752,10 +44101,8 @@ endsolid tetrahedron\n";
         let profile = FeatureId(209);
         let feature = FeatureId(210);
         let rule = NodeId(211);
-        let target = FeatureParameterTarget {
-            feature_id: feature,
-            slot: FeatureParameterSlot::Height,
-        };
+        let target =
+            FeatureParameterTarget::new(feature, "height", ParameterValueType::Length).unwrap();
         let derived_from = DerivedIdentity::new(
             rule,
             SlotPath::new(vec![SlotSegment::new(rule, "result", "height").unwrap()]).unwrap(),
@@ -42801,7 +44148,7 @@ endsolid tetrahedron\n";
                 },
                 CanonicalCommand::UpsertFeatureParameterBinding(
                     ketchup_core::document::FeatureParameterBinding {
-                        target,
+                        target: target.clone(),
                         derived_from,
                     },
                 ),
@@ -43410,11 +44757,10 @@ endsolid tetrahedron\n";
     fn assistant_delete_persistent_dimension_is_typed_observational_and_undoable() {
         let mut app = KetchupApp::new();
         let target = PersistentDimensionId(217);
-        let dimension_target =
-            PersistentDimensionTarget::FeatureParameter(FeatureParameterTarget {
-                feature_id: FeatureId(2),
-                slot: FeatureParameterSlot::ProfileWidth,
-            });
+        let dimension_target = PersistentDimensionTarget::FeatureParameter(
+            FeatureParameterTarget::new(FeatureId(2), "bounds.width", ParameterValueType::Length)
+                .unwrap(),
+        );
         let presentation =
             DimensionPresentation::new(DimensionDisplayUnit::Centimetres, 2).unwrap();
         let dimension = PersistentDimension::new(
@@ -43477,10 +44823,9 @@ endsolid tetrahedron\n";
     fn assistant_create_persistent_dimension_is_typed_observational_and_undoable() {
         let mut app = KetchupApp::new();
         let target = PersistentDimensionId(218);
-        let dimension_target = FeatureParameterTarget {
-            feature_id: FeatureId(2),
-            slot: FeatureParameterSlot::Height,
-        };
+        let dimension_target =
+            FeatureParameterTarget::new(FeatureId(2), "height", ParameterValueType::Length)
+                .unwrap();
         let presentation =
             DimensionPresentation::new(DimensionDisplayUnit::Centimetres, 2).unwrap();
         let revision_before = app.document_revision();
@@ -43508,7 +44853,7 @@ endsolid tetrahedron\n";
             proposal.authoritative_diff()[0].after,
             ProposalValue::PersistentDimensionState {
                 name: "Reviewed height".to_owned(),
-                target: PersistentDimensionTarget::FeatureParameter(dimension_target),
+                target: PersistentDimensionTarget::FeatureParameter(dimension_target.clone()),
                 presentation,
             }
         );
@@ -43782,6 +45127,8 @@ endsolid tetrahedron\n";
                     ..selection
                 },
                 &item,
+                None,
+                50.0,
                 150.0,
                 "150".to_owned(),
             )
@@ -45795,6 +47142,95 @@ endsolid tetrahedron\n";
             app.document.current().feature(FeatureId(4)).unwrap().kind(),
             FeatureKind::ThroughCut { .. }
         ));
+    }
+
+    #[test]
+    fn topology_bound_push_pull_uses_the_selected_planar_face_and_rejects_tamper() {
+        let mut app = KetchupApp::new();
+        install_initial_graph_result(&mut app);
+        select_initial_topological(&mut app, TopologicalElementKind::Face, 3);
+        assert_eq!(
+            app.selected_reference().unwrap().element,
+            ElementId::Face {
+                axis: Axis::Y,
+                side: Side::Maximum,
+            }
+        );
+        let source_digest = app.canonical_digest();
+        let source_revision = app.document_revision();
+        app.set_push_pull_distance_input("5");
+        assert!(app.start_preview());
+        assert_eq!(app.document_revision(), source_revision);
+        assert_eq!(app.canonical_digest(), source_digest);
+        let preview = app.preview_box.as_ref().unwrap();
+        assert_eq!(preview.plan.preview_box.size_mm.y, 65.0);
+        assert_eq!(preview.plan.preview_box.size_mm.z, 20.0);
+        let topology = preview.plan.source.topological_selection.as_ref().unwrap();
+        assert_eq!(
+            preview.plan.source.topological_reference.as_ref(),
+            Some(&topology.target().reference)
+        );
+        let manual_batch = preview.batch.clone();
+        let source = preview.plan.source.clone();
+        let (_, assistant_batch, assistant_proposal) = app
+            .derive_push_pull_preview_plan(&source, ProposalPrincipal::LocalAssistant, "5", 5.0)
+            .unwrap();
+        assert_eq!(assistant_batch, manual_batch);
+        assert_eq!(
+            assistant_proposal.principal(),
+            ProposalPrincipal::LocalAssistant
+        );
+        assert!(app.confirm_preview());
+        assert_eq!(
+            app.active_boxes().into_iter().next().unwrap().size_mm.y,
+            65.0
+        );
+        let committed_digest = app.canonical_digest();
+        let reopened = ketchup_core::persistence::load(&ketchup_core::persistence::save(
+            &app.document.current(),
+        ))
+        .unwrap()
+        .snapshot();
+        assert_eq!(reopened.canonical_digest(), committed_digest);
+        assert!(app.undo());
+        assert_eq!(app.canonical_digest(), source_digest);
+        assert!(app.redo());
+        assert_eq!(app.canonical_digest(), committed_digest);
+
+        let mut minimum_face = KetchupApp::new();
+        install_initial_graph_result(&mut minimum_face);
+        select_initial_topological(&mut minimum_face, TopologicalElementKind::Face, 4);
+        assert_eq!(
+            minimum_face.selected_reference().unwrap().element,
+            ElementId::Face {
+                axis: Axis::X,
+                side: Side::Minimum,
+            }
+        );
+        minimum_face.set_push_pull_distance_input("5");
+        assert!(minimum_face.start_preview());
+        let box_preview = &minimum_face.preview_box.as_ref().unwrap().plan.preview_box;
+        assert_eq!(box_preview.origin_mm.x, -5.0);
+        assert_eq!(box_preview.size_mm.x, 105.0);
+
+        let revision = minimum_face.document_revision();
+        let digest = minimum_face.canonical_digest();
+        let undo_steps = minimum_face.undo_step_count();
+        minimum_face
+            .preview_box
+            .as_mut()
+            .unwrap()
+            .plan
+            .source
+            .topological_reference
+            .as_mut()
+            .unwrap()
+            .producer_element_id
+            .push_str("-tampered");
+        assert!(!minimum_face.confirm_preview());
+        assert_eq!(minimum_face.document_revision(), revision);
+        assert_eq!(minimum_face.canonical_digest(), digest);
+        assert_eq!(minimum_face.undo_step_count(), undo_steps);
     }
 
     #[test]

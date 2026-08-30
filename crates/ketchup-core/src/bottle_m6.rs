@@ -168,6 +168,7 @@ impl ExactRevolveRequest {
                 | FeatureKind::SketchPocket(_)
                 | FeatureKind::TopologyShell { .. }
                 | FeatureKind::TopologyEdgeFinish { .. }
+                | FeatureKind::TopologyFaceOffset { .. }
                 | FeatureKind::ThroughCut { .. }
                 | FeatureKind::Pocket { .. }
                 | FeatureKind::Boolean { .. }

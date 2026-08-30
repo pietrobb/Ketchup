@@ -207,6 +207,18 @@ impl Shell {
         Self::with_dialogs_and_assistant_transport(ScriptedFileDialogs::new(), transport)
     }
 
+    pub fn with_assistant_transport_at_size(
+        transport: Arc<dyn AssistantTransport>,
+        size: Vec2,
+    ) -> Self {
+        Self::build_at_size(
+            KetchupApp::new()
+                .with_dialogs(Box::new(ScriptedFileDialogs::new()))
+                .with_assistant_transport(transport),
+            size,
+        )
+    }
+
     pub fn with_dialogs_and_assistant_transport(
         dialogs: ScriptedFileDialogs,
         transport: Arc<dyn AssistantTransport>,

@@ -5,18 +5,23 @@ use ketchup_core::document::{
     CommandBatch, ConvertedEntityId, DefinitionId, DerivedIdentity, Dimension,
     DimensionDisplayUnit, DimensionPresentation, DimensionReferenceHealth, DocumentStore,
     EvaluationIdentity, FeatureId, FeatureKind, FeatureParameterBinding, FeatureParameterFreshness,
-    FeatureParameterSlot, FeatureParameterStaleReason, FeatureParameterTarget, GroupId,
-    InstancePath, InstancePathStep, LocalGroupId, LocalGroupKey, LocalOccurrenceId,
-    LocalOccurrenceKey, LoftSection, MappingResolution, NodeId, OccurrenceId, PersistentDimension,
-    PersistentDimensionId, PersistentDimensionTarget, PortSpec, ProfileSegment, RuleOutput,
-    SceneQueryContext, SceneQueryError, SlotPath, SlotSegment, Snapshot, SolidToolPlan,
-    StableEdgeRole, StableFaceRole, TagId, Transform, UnresolvedMappingReason, WorldEntityPath,
+    FeatureParameterStaleReason, FeatureParameterTarget, GroupId, InstancePath, InstancePathStep,
+    LocalGroupId, LocalGroupKey, LocalOccurrenceId, LocalOccurrenceKey, LoftSection,
+    MappingResolution, NodeId, OccurrenceId, ParameterPath, ParameterPathError, ParameterValueType,
+    PersistentDimension, PersistentDimensionId, PersistentDimensionTarget, PortSpec,
+    ProfileSegment, RuleOutput, SceneQueryContext, SceneQueryError, SlotPath, SlotSegment,
+    Snapshot, SolidToolPlan, StableEdgeRole, StableFaceRole, TagId, Transform,
+    UnresolvedMappingReason, WorldEntityPath,
 };
 use ketchup_core::exact_product::{
     EXACT_BOOLEAN_INTERSECT_EVALUATOR_V1, EXACT_BOOLEAN_SPLIT_EVALUATOR_V1,
     EXACT_CIRCLE_EVALUATOR_V1, ExactFeatureChainRequest,
 };
 use ketchup_core::persistence;
+use ketchup_core::sketch::{
+    PrincipalPlane, SketchConstraint, SketchConstraintId, SketchConstraintKind, SketchEntity,
+    SketchEntityId, SketchPointKind, SketchPointRef, SketchSpec, WorkplaneSpec,
+};
 use ketchup_core::state_view::encode_semantic_state;
 
 const CABINET: DefinitionId = DefinitionId(1);
@@ -28,6 +33,103 @@ const GROUP: GroupId = GroupId(30);
 
 fn height(value: &str) -> Dimension {
     Dimension::from_decimal(value).unwrap()
+}
+
+#[test]
+fn parameter_paths_are_general_bounded_and_canonical() {
+    let path = ParameterPath::new("features.custom.wall_thickness").unwrap();
+    assert_eq!(path.as_str(), "features.custom.wall_thickness");
+    assert_eq!(ParameterPath::new(""), Err(ParameterPathError::Empty));
+    assert_eq!(
+        ParameterPath::new("features..height"),
+        Err(ParameterPathError::InvalidSegment)
+    );
+    assert_eq!(
+        ParameterPath::new("features.Height"),
+        Err(ParameterPathError::InvalidSegment)
+    );
+    assert_eq!(
+        ParameterPath::new("x".repeat(257)),
+        Err(ParameterPathError::TooLong)
+    );
+}
+
+#[test]
+fn parameter_descriptors_are_derived_from_feature_and_sketch_structure() {
+    let profile = FeatureKind::Profile {
+        points_mm: vec![[0.0, 0.0], [4.0, 2.0]],
+    };
+    assert_eq!(
+        profile
+            .parameter_descriptors()
+            .iter()
+            .map(|descriptor| (descriptor.path().as_str(), descriptor.value_type()))
+            .collect::<Vec<_>>(),
+        vec![
+            ("points.0.x", ParameterValueType::Length),
+            ("points.0.y", ParameterValueType::Length),
+            ("points.1.x", ParameterValueType::Length),
+            ("points.1.y", ParameterValueType::Length),
+        ]
+    );
+
+    let revolve = FeatureKind::Revolve {
+        profile: FeatureId(1),
+        axis_start_mm: [0.0, 0.0],
+        axis_end_mm: [0.0, 1.0],
+        angle_degrees: 180.0,
+    };
+    let revolve_descriptors = revolve.parameter_descriptors();
+    assert_eq!(revolve_descriptors.len(), 5);
+    assert_eq!(revolve_descriptors.last().unwrap().path().as_str(), "angle");
+    assert_eq!(
+        revolve_descriptors.last().unwrap().value_type(),
+        ParameterValueType::Angle
+    );
+
+    let center = SketchPointRef {
+        entity: SketchEntityId(7),
+        point: SketchPointKind::Center,
+    };
+    let sketch = FeatureKind::Sketch(SketchSpec {
+        workplane: FeatureId(1),
+        entities: vec![SketchEntity::Circle {
+            id: SketchEntityId(7),
+            center_mm: [3.0, 4.0],
+            radius_mm: 2.0,
+        }],
+        constraints: vec![
+            SketchConstraint {
+                id: SketchConstraintId(8),
+                kind: SketchConstraintKind::Radius {
+                    entity: SketchEntityId(7),
+                    value: height("2"),
+                },
+            },
+            SketchConstraint {
+                id: SketchConstraintId(9),
+                kind: SketchConstraintKind::FixedPoint {
+                    point: center,
+                    position_mm: [3.0, 4.0],
+                },
+            },
+        ],
+    });
+    assert_eq!(
+        sketch
+            .parameter_descriptors()
+            .iter()
+            .map(|descriptor| descriptor.path().as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "entities.7.center.x",
+            "entities.7.center.y",
+            "entities.7.radius",
+            "constraints.8.value",
+            "constraints.9.position.x",
+            "constraints.9.position.y",
+        ]
+    );
 }
 
 fn body_contract_tail_len(snapshot: &Snapshot) -> usize {
@@ -1438,18 +1540,127 @@ fn conversion_collision_and_local_ownership_cycle_fail_atomically() {
 }
 
 #[test]
+fn sketch_constraint_parameters_use_the_generic_binding_and_recompute_contract() {
+    const WORKPLANE: FeatureId = FeatureId(30);
+    const SKETCH: FeatureId = FeatureId(31);
+    const SOURCE: NodeId = NodeId(501);
+    const RULE: NodeId = NodeId(502);
+    let segment = SlotSegment::new(RULE, "dimensions", "radius").unwrap();
+    let target =
+        FeatureParameterTarget::new(SKETCH, "constraints.1.value", ParameterValueType::Length)
+            .unwrap();
+    let mut document = seed_product_document();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateFeature {
+                id: WORKPLANE,
+                definition_id: CABINET,
+                name: "Sketch plane".to_owned(),
+                kind: FeatureKind::Workplane(WorkplaneSpec::principal(PrincipalPlane::Xy)),
+            },
+            CanonicalCommand::CreateFeature {
+                id: SKETCH,
+                definition_id: CABINET,
+                name: "Constrained circle".to_owned(),
+                kind: FeatureKind::Sketch(SketchSpec {
+                    workplane: WORKPLANE,
+                    entities: vec![SketchEntity::Circle {
+                        id: SketchEntityId(1),
+                        center_mm: [0.0, 0.0],
+                        radius_mm: 2.0,
+                    }],
+                    constraints: vec![
+                        SketchConstraint {
+                            id: SketchConstraintId(1),
+                            kind: SketchConstraintKind::Radius {
+                                entity: SketchEntityId(1),
+                                value: height("2"),
+                            },
+                        },
+                        SketchConstraint {
+                            id: SketchConstraintId(2),
+                            kind: SketchConstraintKind::FixedPoint {
+                                point: SketchPointRef {
+                                    entity: SketchEntityId(1),
+                                    point: SketchPointKind::Center,
+                                },
+                                position_mm: [0.0, 0.0],
+                            },
+                        },
+                    ],
+                }),
+            },
+            CanonicalCommand::CreateEvaluatorNode {
+                id: SOURCE,
+                name: "Radius source".to_owned(),
+                dimension: height("3"),
+                dependencies: vec![],
+            },
+            CanonicalCommand::CreateRuleNode {
+                id: RULE,
+                name: "Sketch radius rule".to_owned(),
+                expression: "$501".to_owned(),
+                input_ports: vec![PortSpec::number("source").unwrap()],
+                output_ports: vec![PortSpec::number("dimensions").unwrap()],
+                outputs: vec![RuleOutput::new(segment.clone(), vec![]).unwrap()],
+                override_parameters: vec![],
+            },
+            CanonicalCommand::UpsertFeatureParameterBinding(FeatureParameterBinding {
+                target: target.clone(),
+                derived_from: DerivedIdentity::new(RULE, SlotPath::new(vec![segment]).unwrap())
+                    .unwrap(),
+            }),
+        ]))
+        .unwrap();
+
+    assert!(document.current().has_feature_parameter(&target));
+    let before = document.current().canonical_digest();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::RecomputeFeatureParameters {
+                identity: EvaluationIdentity::default(),
+            },
+        ]))
+        .unwrap();
+    let recomputed = document.current().canonical_digest();
+    assert_ne!(recomputed, before);
+    let current = document.current();
+    let FeatureKind::Sketch(sketch) = current.feature(SKETCH).unwrap().kind() else {
+        panic!("expected sketch");
+    };
+    assert!(matches!(
+        &sketch.constraints[0].kind,
+        SketchConstraintKind::Radius { value, .. }
+            if value.source_token() == "3" && value.millimetres() == 3.0
+    ));
+    assert_eq!(document.undo().unwrap().canonical_digest(), before);
+    assert_eq!(document.redo().unwrap().canonical_digest(), recomputed);
+
+    let reopened = persistence::load(&persistence::save(&document.current())).unwrap();
+    let reopened_snapshot = reopened.snapshot();
+    assert_eq!(reopened_snapshot.canonical_digest(), recomputed);
+    assert!(reopened_snapshot.has_feature_parameter(&target));
+    let FeatureKind::Sketch(sketch) = reopened_snapshot.feature(SKETCH).unwrap().kind() else {
+        panic!("expected reopened sketch");
+    };
+    assert!(matches!(
+        &sketch.constraints[0].kind,
+        SketchConstraintKind::Radius { value, .. }
+            if value.source_token() == "3" && value.millimetres() == 3.0
+    ));
+}
+
+#[test]
 fn feature_parameter_bindings_are_canonical_persisted_and_never_recompute_on_open() {
     const SOURCE: NodeId = NodeId(201);
     const RULE: NodeId = NodeId(202);
     let segment = SlotSegment::new(RULE, "dimensions", "extrusion_height").unwrap();
     let derived_from =
         DerivedIdentity::new(RULE, SlotPath::new(vec![segment.clone()]).unwrap()).unwrap();
-    let target = FeatureParameterTarget {
-        feature_id: EXTRUSION,
-        slot: FeatureParameterSlot::Height,
-    };
+    let target =
+        FeatureParameterTarget::new(PROFILE, "points.1.x", ParameterValueType::Length).unwrap();
     let binding = FeatureParameterBinding {
-        target,
+        target: target.clone(),
         derived_from: derived_from.clone(),
     };
     let mut document = seed_product_document();
@@ -1476,29 +1687,28 @@ fn feature_parameter_bindings_are_canonical_persisted_and_never_recompute_on_ope
 
     let bound = document.current();
     let bound_digest = bound.canonical_digest();
-    assert_eq!(bound.feature_parameter_binding(target), Some(&binding));
+    assert_eq!(bound.feature_parameter_binding(&target), Some(&binding));
     assert_eq!(bound.feature_parameter_bindings().count(), 1);
     let state = ketchup_core::state_view::encode_semantic_state(&bound);
     for view in [state.complete_v1(), state.agent_v1()] {
-        assert!(view.contains("parameter_binding.11.height.derived_from.root=202"));
+        assert!(view.contains("parameter_binding.10.points.1.x.value_type=length"));
+        assert!(view.contains("parameter_binding.10.points.1.x.derived_from.root=202"));
         assert!(view.contains(
-            "parameter_binding.11.height.derived_from.slot_path=202:\"dimensions\":\"extrusion_height\""
+            "parameter_binding.10.points.1.x.derived_from.slot_path=202:\"dimensions\":\"extrusion_height\""
         ));
     }
     assert!(matches!(
-        bound.feature(EXTRUSION).unwrap().kind(),
-        FeatureKind::Extrusion { height, .. }
-            if height.source_token() == "720" && height.millimetres() == 720.0
+        bound.feature(PROFILE).unwrap().kind(),
+        FeatureKind::Profile { points_mm } if points_mm[1][0] == 600.0
     ));
 
-    let invalid_target = FeatureParameterTarget {
-        feature_id: EXTRUSION,
-        slot: FeatureParameterSlot::Thickness,
-    };
+    let invalid_target =
+        FeatureParameterTarget::new(PROFILE, "constraints.1.value", ParameterValueType::Length)
+            .unwrap();
     let undo_before_invalid = document.visible_undo_steps();
     let invalid_slot_error = match document.apply_batch(&CommandBatch::new(vec![
         CanonicalCommand::UpsertFeatureParameterBinding(FeatureParameterBinding {
-            target: invalid_target,
+            target: invalid_target.clone(),
             derived_from: derived_from.clone(),
         }),
     ])) {
@@ -1512,6 +1722,20 @@ fn feature_parameter_bindings_are_canonical_persisted_and_never_recompute_on_ope
     assert_eq!(document.current().canonical_digest(), bound_digest);
     assert_eq!(document.visible_undo_steps(), undo_before_invalid);
 
+    let invalid_type =
+        FeatureParameterTarget::new(PROFILE, "points.1.x", ParameterValueType::Angle).unwrap();
+    assert!(matches!(
+        document.apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::UpsertFeatureParameterBinding(FeatureParameterBinding {
+                target: invalid_type.clone(),
+                derived_from: derived_from.clone(),
+            }),
+        ])),
+        Err(CanonicalError::InvalidFeatureParameterBinding(target)) if target == invalid_type
+    ));
+    assert_eq!(document.current().canonical_digest(), bound_digest);
+    assert_eq!(document.visible_undo_steps(), undo_before_invalid);
+
     let unresolved = DerivedIdentity::new(
         RULE,
         SlotPath::new(vec![
@@ -1522,7 +1746,7 @@ fn feature_parameter_bindings_are_canonical_persisted_and_never_recompute_on_ope
     .unwrap();
     let unresolved_error = match document.apply_batch(&CommandBatch::new(vec![
         CanonicalCommand::UpsertFeatureParameterBinding(FeatureParameterBinding {
-            target,
+            target: target.clone(),
             derived_from: unresolved,
         }),
     ])) {
@@ -1531,7 +1755,7 @@ fn feature_parameter_bindings_are_canonical_persisted_and_never_recompute_on_ope
     };
     assert_eq!(
         unresolved_error,
-        CanonicalError::InvalidFeatureParameterBinding(target)
+        CanonicalError::InvalidFeatureParameterBinding(target.clone())
     );
     assert_eq!(document.current().canonical_digest(), bound_digest);
 
@@ -1542,13 +1766,12 @@ fn feature_parameter_bindings_are_canonical_persisted_and_never_recompute_on_ope
     assert_eq!(loaded.snapshot().revision_id(), saved_revision);
     assert_eq!(loaded.snapshot().canonical_digest(), bound_digest);
     assert_eq!(
-        loaded.snapshot().feature_parameter_binding(target),
+        loaded.snapshot().feature_parameter_binding(&target),
         Some(&binding)
     );
     assert!(matches!(
-        loaded.snapshot().feature(EXTRUSION).unwrap().kind(),
-        FeatureKind::Extrusion { height, .. }
-            if height.source_token() == "720" && height.millimetres() == 720.0
+        loaded.snapshot().feature(PROFILE).unwrap().kind(),
+        FeatureKind::Profile { points_mm } if points_mm[1][0] == 600.0
     ));
     assert_eq!(document.visible_undo_steps(), saved_undo);
 
@@ -1556,12 +1779,12 @@ fn feature_parameter_bindings_are_canonical_persisted_and_never_recompute_on_ope
     assert!(
         document
             .current()
-            .feature_parameter_binding(target)
+            .feature_parameter_binding(&target)
             .is_none()
     );
     document.redo().unwrap();
     assert_eq!(
-        document.current().feature_parameter_binding(target),
+        document.current().feature_parameter_binding(&target),
         Some(&binding)
     );
 }
@@ -1571,10 +1794,8 @@ fn explicit_feature_parameter_recompute_is_deterministic_undoable_and_identity_b
     const SOURCE: NodeId = NodeId(201);
     const RULE: NodeId = NodeId(202);
     let segment = SlotSegment::new(RULE, "dimensions", "extrusion_height").unwrap();
-    let target = FeatureParameterTarget {
-        feature_id: EXTRUSION,
-        slot: FeatureParameterSlot::Height,
-    };
+    let target =
+        FeatureParameterTarget::new(EXTRUSION, "height", ParameterValueType::Length).unwrap();
     let mut document = seed_product_document();
     document
         .apply_batch(&CommandBatch::new(vec![
@@ -1594,7 +1815,7 @@ fn explicit_feature_parameter_recompute_is_deterministic_undoable_and_identity_b
                 override_parameters: vec![],
             },
             CanonicalCommand::UpsertFeatureParameterBinding(FeatureParameterBinding {
-                target,
+                target: target.clone(),
                 derived_from: DerivedIdentity::new(RULE, SlotPath::new(vec![segment]).unwrap())
                     .unwrap(),
             }),
@@ -1636,7 +1857,7 @@ fn explicit_feature_parameter_recompute_is_deterministic_undoable_and_identity_b
     assert_eq!(document.redo().unwrap().canonical_digest(), recomputed);
     let provenance = document
         .current()
-        .feature_parameter_provenance(target)
+        .feature_parameter_provenance(&target)
         .unwrap()
         .clone();
     assert_eq!(provenance.identity, identity);
@@ -1658,7 +1879,7 @@ fn explicit_feature_parameter_recompute_is_deterministic_undoable_and_identity_b
         FeatureParameterFreshness::Current
     );
     assert_eq!(
-        reopened.snapshot().feature_parameter_provenance(target),
+        reopened.snapshot().feature_parameter_provenance(&target),
         Some(&provenance)
     );
 
@@ -1770,10 +1991,12 @@ fn feature_parameter_recompute_rolls_back_every_target_when_one_value_is_invalid
                 override_parameters: vec![],
             },
             CanonicalCommand::UpsertFeatureParameterBinding(FeatureParameterBinding {
-                target: FeatureParameterTarget {
-                    feature_id: EXTRUSION,
-                    slot: FeatureParameterSlot::Height,
-                },
+                target: FeatureParameterTarget::new(
+                    EXTRUSION,
+                    "height",
+                    ParameterValueType::Length,
+                )
+                .unwrap(),
                 derived_from: DerivedIdentity::new(
                     GOOD_RULE,
                     SlotPath::new(vec![good_segment]).unwrap(),
@@ -1781,10 +2004,12 @@ fn feature_parameter_recompute_rolls_back_every_target_when_one_value_is_invalid
                 .unwrap(),
             }),
             CanonicalCommand::UpsertFeatureParameterBinding(FeatureParameterBinding {
-                target: FeatureParameterTarget {
-                    feature_id: SECOND_EXTRUSION,
-                    slot: FeatureParameterSlot::Height,
-                },
+                target: FeatureParameterTarget::new(
+                    SECOND_EXTRUSION,
+                    "height",
+                    ParameterValueType::Length,
+                )
+                .unwrap(),
                 derived_from: DerivedIdentity::new(
                     INVALID_RULE,
                     SlotPath::new(vec![invalid_segment]).unwrap(),
@@ -1833,14 +2058,10 @@ fn rectangle_numeric_constraints_are_persisted_dependent_only_and_atomic() {
 
     let width_segment = SlotSegment::new(WIDTH_RULE, "dimensions", "profile_width").unwrap();
     let height_segment = SlotSegment::new(HEIGHT_RULE, "dimensions", "profile_height").unwrap();
-    let width_target = FeatureParameterTarget {
-        feature_id: PROFILE,
-        slot: FeatureParameterSlot::ProfileWidth,
-    };
-    let height_target = FeatureParameterTarget {
-        feature_id: PROFILE,
-        slot: FeatureParameterSlot::ProfileHeight,
-    };
+    let width_target =
+        FeatureParameterTarget::new(PROFILE, "bounds.width", ParameterValueType::Length).unwrap();
+    let height_target =
+        FeatureParameterTarget::new(PROFILE, "bounds.height", ParameterValueType::Length).unwrap();
     let mut document = seed_product_document();
     document
         .apply_batch(&CommandBatch::new(vec![
@@ -1886,7 +2107,7 @@ fn rectangle_numeric_constraints_are_persisted_dependent_only_and_atomic() {
                 expression: "$305 * 2".to_owned(),
             },
             CanonicalCommand::UpsertFeatureParameterBinding(FeatureParameterBinding {
-                target: width_target,
+                target: width_target.clone(),
                 derived_from: DerivedIdentity::new(
                     WIDTH_RULE,
                     SlotPath::new(vec![width_segment]).unwrap(),
@@ -1894,7 +2115,7 @@ fn rectangle_numeric_constraints_are_persisted_dependent_only_and_atomic() {
                 .unwrap(),
             }),
             CanonicalCommand::UpsertFeatureParameterBinding(FeatureParameterBinding {
-                target: height_target,
+                target: height_target.clone(),
                 derived_from: DerivedIdentity::new(
                     HEIGHT_RULE,
                     SlotPath::new(vec![height_segment]).unwrap(),
@@ -1914,7 +2135,7 @@ fn rectangle_numeric_constraints_are_persisted_dependent_only_and_atomic() {
     let initial_digest = document.current().canonical_digest();
     let initial_height_provenance = document
         .current()
-        .feature_parameter_provenance(height_target)
+        .feature_parameter_provenance(&height_target)
         .unwrap()
         .clone();
 
@@ -1946,7 +2167,7 @@ fn rectangle_numeric_constraints_are_persisted_dependent_only_and_atomic() {
     assert_eq!(
         revision
             .snapshot()
-            .feature_parameter_provenance(height_target),
+            .feature_parameter_provenance(&height_target),
         Some(&initial_height_provenance)
     );
     assert_eq!(
@@ -2003,7 +2224,7 @@ fn rectangle_numeric_constraints_are_persisted_dependent_only_and_atomic() {
     };
     assert_eq!(
         irregular_error,
-        CanonicalError::InvalidFeatureParameterBinding(width_target)
+        CanonicalError::InvalidFeatureParameterBinding(height_target)
     );
     assert_eq!(document.current().canonical_digest(), resized_digest);
 }
@@ -2041,10 +2262,14 @@ fn persistent_associative_dimensions_preserve_targets_units_and_unresolved_state
                 PersistentDimension::new(
                     WIDTH_DIMENSION,
                     "Profile width",
-                    PersistentDimensionTarget::FeatureParameter(FeatureParameterTarget {
-                        feature_id: PROFILE,
-                        slot: FeatureParameterSlot::ProfileWidth,
-                    }),
+                    PersistentDimensionTarget::FeatureParameter(
+                        FeatureParameterTarget::new(
+                            PROFILE,
+                            "points.1.x",
+                            ParameterValueType::Length,
+                        )
+                        .unwrap(),
+                    ),
                     DimensionPresentation::new(DimensionDisplayUnit::Centimetres, 1).unwrap(),
                 )
                 .unwrap(),
@@ -2067,7 +2292,8 @@ fn persistent_associative_dimensions_preserve_targets_units_and_unresolved_state
                         producer_feature_id: EXTRUSION,
                         semantic_role: "top".to_owned(),
                         source_element_id: "face:top".to_owned(),
-                        slot: FeatureParameterSlot::Height,
+                        path: ParameterPath::new("height").unwrap(),
+                        value_type: ParameterValueType::Length,
                     },
                     DimensionPresentation::new(DimensionDisplayUnit::Millimetres, 2).unwrap(),
                 )
@@ -2077,6 +2303,12 @@ fn persistent_associative_dimensions_preserve_targets_units_and_unresolved_state
         .unwrap();
 
     let canonical = document.current();
+    let state = encode_semantic_state(&canonical);
+    for view in [state.complete_v1(), state.agent_v1()] {
+        assert!(view.contains("persistent_dimension.1.target=feature:10:points.1.x"));
+        assert!(view.contains("persistent_dimension.1.value_type=length"));
+        assert!(view.contains("persistent_dimension.3.value_type=length"));
+    }
     let width = canonical
         .project_persistent_dimension(WIDTH_DIMENSION)
         .unwrap();
@@ -2108,7 +2340,8 @@ fn persistent_associative_dimensions_preserve_targets_units_and_unresolved_state
             producer_feature_id: EXTRUSION,
             semantic_role: String::new(),
             source_element_id: String::new(),
-            slot: FeatureParameterSlot::Height,
+            path: ParameterPath::new("height").unwrap(),
+            value_type: ParameterValueType::Length,
         },
         presentation: DimensionPresentation::new(DimensionDisplayUnit::Millimetres, 2).unwrap(),
     };
@@ -2124,6 +2357,16 @@ fn persistent_associative_dimensions_preserve_targets_units_and_unresolved_state
     assert_eq!(reopened.source_schema(), persistence::CURRENT_SCHEMA);
     assert_eq!(reopened.snapshot().canonical_digest(), before_invalid);
     assert_eq!(reopened.snapshot().persistent_dimensions().count(), 3);
+    assert_eq!(
+        reopened
+            .snapshot()
+            .persistent_dimension(WIDTH_DIMENSION)
+            .unwrap()
+            .target,
+        PersistentDimensionTarget::FeatureParameter(
+            FeatureParameterTarget::new(PROFILE, "points.1.x", ParameterValueType::Length).unwrap()
+        )
+    );
     assert_eq!(
         reopened
             .snapshot()

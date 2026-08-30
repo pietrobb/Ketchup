@@ -1896,6 +1896,70 @@ std::unique_ptr<NativeOperationResult> shell_body_native(
   });
 }
 
+std::unique_ptr<NativeOperationResult> offset_body_face_native(
+    const NativeOperationResult& body,
+    std::uint32_t face_ordinal,
+    double distance) noexcept {
+  return guarded([&] {
+    if (!body.valid() || face_ordinal >= body.impl().summary.face_count
+        || !std::isfinite(distance) || std::abs(distance) < 1.0e-9) {
+      return error_result(STATUS_INVALID_PARAMETER, "Body face offset payload is outside the bounded envelope");
+    }
+    const TopoDS_Face face = face_at_ordinal(body.impl().shape, face_ordinal);
+    if (face.IsNull()) {
+      return error_result(STATUS_INVALID_SHAPE, "Body face offset selected face is absent");
+    }
+    const BRepAdaptor_Surface surface(face);
+    if (surface.GetType() != GeomAbs_Plane) {
+      return error_result(STATUS_INVALID_PARAMETER, "Body face offset requires a planar face");
+    }
+    gp_Dir normal = surface.Plane().Axis().Direction();
+    if (face.Orientation() == TopAbs_REVERSED) {
+      normal.Reverse();
+    }
+    const gp_Vec vector(normal.X() * distance, normal.Y() * distance, normal.Z() * distance);
+    BRepPrimAPI_MakePrism prism(face, vector, true, false);
+    if (!prism.IsDone() || prism.Shape().IsNull()) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT face offset prism did not complete");
+    }
+    const std::string source_id = "generated-result/face/" + std::to_string(face_ordinal);
+    if (distance > 0.0) {
+      BRepAlgoAPI_Fuse operation(body.impl().shape, prism.Shape());
+      operation.Build();
+      if (!operation.IsDone() || operation.HasErrors() || operation.Shape().IsNull()) {
+        return error_result(STATUS_INVALID_SHAPE, "OCCT outward face offset did not complete");
+      }
+      operation.SimplifyResult(true, true);
+      const TopoDS_Shape result = operation.Shape();
+      std::vector<HistoryRecord> history;
+      append_propagated_history(history, operation, result, body.impl());
+      const NCollection_List<TopoDS_Shape>& modified = operation.Modified(face);
+      for (NCollection_List<TopoDS_Shape>::Iterator iterator(modified);
+           iterator.More(); iterator.Next()) {
+        history.push_back(history_record(
+            "", "face_offset_selected_modified", source_id, result, iterator.Value()));
+      }
+      return success_result(result, std::move(history));
+    }
+    BRepAlgoAPI_Cut operation(body.impl().shape, prism.Shape());
+    operation.Build();
+    if (!operation.IsDone() || operation.HasErrors() || operation.Shape().IsNull()) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT inward face offset did not complete");
+    }
+    operation.SimplifyResult(true, true);
+    const TopoDS_Shape result = operation.Shape();
+    std::vector<HistoryRecord> history;
+    append_propagated_history(history, operation, result, body.impl());
+    const NCollection_List<TopoDS_Shape>& modified = operation.Modified(face);
+    for (NCollection_List<TopoDS_Shape>::Iterator iterator(modified);
+         iterator.More(); iterator.Next()) {
+      history.push_back(history_record(
+          "", "face_offset_selected_modified", source_id, result, iterator.Value()));
+    }
+    return success_result(result, std::move(history));
+  });
+}
+
 std::unique_ptr<NativeOperationResult> finish_body_native(
     const NativeOperationResult& body,
     rust::Slice<const std::uint32_t> edge_ordinals,

@@ -69,106 +69,367 @@ fn simple_extrusion_graph() -> ExactBRepGraph {
     ExactBRepGraph::from_snapshot(&document.current(), definition, extrusion).unwrap()
 }
 
-#[test]
-fn worker_evaluates_arbitrary_unequal_body_boolean_without_legacy_admission() {
-    let definition = DefinitionId(1);
-    let base_profile = FeatureId(10);
-    let base = FeatureId(11);
-    let tool_profile = FeatureId(20);
-    let tool = FeatureId(21);
-    let cut = FeatureId(30);
-    let union = FeatureId(31);
-    let intersect = FeatureId(32);
-    let split = FeatureId(33);
+fn generated_boolean_scales() -> Vec<[f64; 3]> {
+    let mut samples = vec![[0.5, 0.75, 0.6], [1.0, 1.0, 1.0], [3.0, 2.5, 1.75]];
+    let mut state = 0x4558_4143_5420_2026_u64;
+    let mut next = || {
+        state = state
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        ((state >> 11) as f64) / ((1_u64 << 53) as f64)
+    };
+    samples.extend((0..3).map(|_| [0.5 + next() * 2.5, 0.5 + next() * 2.0, 0.5 + next() * 1.25]));
+    samples
+}
+
+fn rigid_profile_variant(points: &[[f64; 2]], variant: usize) -> Vec<[f64; 2]> {
+    points
+        .iter()
+        .map(|[x, y]| match variant {
+            0 => [*x, *y],
+            1 => [*x + 37.0, *y - 23.0],
+            2 => [-*y + 11.0, *x + 29.0],
+            _ => unreachable!("property harness has exactly three rigid variants"),
+        })
+        .collect()
+}
+
+fn generated_boolean_document(
+    scales: [f64; 3],
+    rigid_variant: usize,
+) -> (
+    DocumentStore,
+    DefinitionId,
+    FeatureId,
+    FeatureId,
+    [(FeatureId, BooleanOperation); 4],
+) {
+    let definition = DefinitionId(80);
+    let base_profile = FeatureId(800);
+    let base = FeatureId(801);
+    let tool_profile = FeatureId(802);
+    let tool = FeatureId(803);
+    let operations = [
+        (FeatureId(804), BooleanOperation::Cut),
+        (FeatureId(805), BooleanOperation::Union),
+        (FeatureId(806), BooleanOperation::Intersect),
+        (FeatureId(807), BooleanOperation::Split),
+    ];
+    let [scale_x, scale_y, scale_z] = scales;
+    let scale_profile = |points: &[[f64; 2]]| {
+        points
+            .iter()
+            .map(|[x, y]| [x * scale_x, y * scale_y])
+            .collect::<Vec<_>>()
+    };
+    let base_points = rigid_profile_variant(
+        &scale_profile(&[
+            [-12.0, -8.0],
+            [18.0, -6.0],
+            [24.0, 9.0],
+            [3.0, 20.0],
+            [-17.0, 7.0],
+        ]),
+        rigid_variant,
+    );
+    let tool_points = rigid_profile_variant(
+        &scale_profile(&[[-3.0, -15.0], [27.0, 4.0], [5.0, 24.0]]),
+        rigid_variant,
+    );
+    let mut commands = vec![
+        CanonicalCommand::CreateDefinition {
+            id: definition,
+            name: "Generated Boolean property graph".into(),
+        },
+        CanonicalCommand::CreateFeature {
+            id: base_profile,
+            definition_id: definition,
+            name: "Generated target profile".into(),
+            kind: FeatureKind::Profile {
+                points_mm: base_points,
+            },
+        },
+        CanonicalCommand::CreateFeature {
+            id: base,
+            definition_id: definition,
+            name: "Generated target body".into(),
+            kind: FeatureKind::Extrusion {
+                profile: base_profile,
+                height: dimension(13.0 * scale_z),
+            },
+        },
+        CanonicalCommand::CreateFeature {
+            id: tool_profile,
+            definition_id: definition,
+            name: "Generated tool profile".into(),
+            kind: FeatureKind::Profile {
+                points_mm: tool_points,
+            },
+        },
+        CanonicalCommand::CreateFeature {
+            id: tool,
+            definition_id: definition,
+            name: "Generated tool body".into(),
+            kind: FeatureKind::Extrusion {
+                profile: tool_profile,
+                height: dimension(19.0 * scale_z),
+            },
+        },
+    ];
+    commands.extend(
+        operations.map(|(id, operation)| CanonicalCommand::CreateFeature {
+            id,
+            definition_id: definition,
+            name: format!("Generated {operation:?}"),
+            kind: FeatureKind::Boolean {
+                operation,
+                target: base,
+                tool,
+            },
+        }),
+    );
     let mut document = DocumentStore::new();
-    document
-        .apply_batch(&CommandBatch::new(vec![
-            CanonicalCommand::CreateDefinition {
-                id: definition,
-                name: "Generic Boolean graph".into(),
-            },
-            CanonicalCommand::CreateFeature {
-                id: base_profile,
-                definition_id: definition,
-                name: "Unequal pentagon".into(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![
-                        [-12.0, -8.0],
-                        [18.0, -6.0],
-                        [24.0, 9.0],
-                        [3.0, 20.0],
-                        [-17.0, 7.0],
-                    ],
-                },
-            },
-            CanonicalCommand::CreateFeature {
-                id: base,
-                definition_id: definition,
-                name: "Base".into(),
-                kind: FeatureKind::Extrusion {
-                    profile: base_profile,
-                    height: dimension(13.0),
-                },
-            },
-            CanonicalCommand::CreateFeature {
-                id: tool_profile,
-                definition_id: definition,
-                name: "Asymmetric triangle".into(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[-3.0, -15.0], [27.0, 4.0], [5.0, 24.0]],
-                },
-            },
-            CanonicalCommand::CreateFeature {
-                id: tool,
-                definition_id: definition,
-                name: "Tool".into(),
-                kind: FeatureKind::Extrusion {
-                    profile: tool_profile,
-                    height: dimension(19.0),
-                },
-            },
-            CanonicalCommand::CreateFeature {
-                id: cut,
-                definition_id: definition,
-                name: "Cut".into(),
-                kind: FeatureKind::Boolean {
-                    operation: BooleanOperation::Cut,
-                    target: base,
-                    tool,
-                },
-            },
-            CanonicalCommand::CreateFeature {
-                id: union,
-                definition_id: definition,
-                name: "Union".into(),
-                kind: FeatureKind::Boolean {
-                    operation: BooleanOperation::Union,
-                    target: base,
-                    tool,
-                },
-            },
-            CanonicalCommand::CreateFeature {
-                id: intersect,
-                definition_id: definition,
-                name: "Intersection".into(),
-                kind: FeatureKind::Boolean {
-                    operation: BooleanOperation::Intersect,
-                    target: base,
-                    tool,
-                },
-            },
-            CanonicalCommand::CreateFeature {
-                id: split,
-                definition_id: definition,
-                name: "Split".into(),
-                kind: FeatureKind::Boolean {
-                    operation: BooleanOperation::Split,
-                    target: base,
-                    tool,
-                },
-            },
-        ]))
-        .unwrap();
+    document.apply_batch(&CommandBatch::new(commands)).unwrap();
+    (document, definition, base, tool, operations)
+}
+
+#[test]
+fn generated_boolean_graph_properties_cover_all_operations_and_rigid_variants() {
+    let samples = generated_boolean_scales();
+    assert_eq!(samples, generated_boolean_scales());
+    assert_eq!(samples.len(), 6);
+    for (index, sample) in samples.iter().enumerate() {
+        assert!(
+            sample
+                .iter()
+                .all(|value| value.is_finite() && *value >= 0.5 && *value <= 3.0)
+        );
+        assert!(samples.iter().skip(index + 1).all(|candidate| {
+            candidate
+                .iter()
+                .zip(sample)
+                .any(|(left, right)| left.to_bits() != right.to_bits())
+        }));
+    }
+
+    let mut supervisor =
+        ExactWorkerSupervisor::spawn(env!("CARGO_BIN_EXE_ketchup-exact-worker")).unwrap();
+    for (sample_index, scales) in samples.into_iter().enumerate() {
+        let mut variant_volumes = [[0.0; 4]; 3];
+        for (rigid_variant, volumes) in variant_volumes.iter_mut().enumerate() {
+            let (document, definition, base, tool, operations) =
+                generated_boolean_document(scales, rigid_variant);
+            let snapshot = document.current();
+            let before_revision = snapshot.revision_id();
+            let before_digest = snapshot.canonical_digest();
+            let before_undo = document.visible_undo_steps();
+            let base_graph = ExactBRepGraph::from_snapshot(&snapshot, definition, base).unwrap();
+            let tool_graph = ExactBRepGraph::from_snapshot(&snapshot, definition, tool).unwrap();
+            let base_result = supervisor.evaluate_exact_brep_graph(&base_graph).unwrap();
+            let tool_result = supervisor.evaluate_exact_brep_graph(&tool_graph).unwrap();
+            let mut packages = Vec::new();
+
+            for (operation_index, (producer, operation)) in operations.into_iter().enumerate() {
+                let graph = ExactBRepGraph::from_snapshot(&snapshot, definition, producer).unwrap();
+                let package = supervisor
+                    .evaluate_exact_brep_graph(&graph)
+                    .unwrap_or_else(|error| {
+                        panic!(
+                            "sample {sample_index}, rigid variant {rigid_variant}, {operation:?}: {error:?}"
+                        )
+                    });
+                assert_eq!(
+                    supervisor.evaluate_exact_brep_graph(&graph).unwrap(),
+                    package,
+                    "sample {sample_index}, rigid variant {rigid_variant}, {operation:?} is not deterministic"
+                );
+                assert_eq!(package.graph, graph);
+                assert_eq!(
+                    package.identity.canonical_input_digest,
+                    graph.canonical_input_digest
+                );
+                assert_eq!(package.identity.producer_feature_id.0, producer.0);
+                assert!(package.is_current(&snapshot));
+                volumes[operation_index] = package.volume_mm3;
+                packages.push(package);
+            }
+
+            let tolerance = base_result.volume_mm3.max(tool_result.volume_mm3) * 1.0e-9;
+            assert!(
+                (volumes[0] + volumes[2] - base_result.volume_mm3).abs() <= tolerance,
+                "sample {sample_index}, rigid variant {rigid_variant}: cut + intersection must equal target"
+            );
+            assert!(
+                (volumes[1] + volumes[2] - base_result.volume_mm3 - tool_result.volume_mm3).abs()
+                    <= tolerance,
+                "sample {sample_index}, rigid variant {rigid_variant}: union + intersection must equal target + tool"
+            );
+            assert!(
+                (volumes[3] - base_result.volume_mm3).abs() <= tolerance,
+                "sample {sample_index}, rigid variant {rigid_variant}: split must preserve target volume"
+            );
+            assert!(packages[3].topology_counts[4] >= 2);
+
+            let registry = ExactResultRegistry::accept(
+                &snapshot,
+                packages
+                    .iter()
+                    .cloned()
+                    .map(ExactBodyPackage::Graph)
+                    .map(Arc::new),
+            )
+            .unwrap();
+            for package in &packages {
+                assert!(
+                    registry
+                        .get_result(&ExactBodyPackage::Graph(package.clone()).result_key())
+                        .is_some()
+                );
+            }
+            assert_eq!(document.current().revision_id(), before_revision);
+            assert_eq!(document.current().canonical_digest(), before_digest);
+            assert_eq!(document.visible_undo_steps(), before_undo);
+
+            let reopened = persistence::load(&persistence::save(&snapshot)).unwrap();
+            let reopened_snapshot = reopened.snapshot();
+            assert_eq!(reopened_snapshot.canonical_digest(), before_digest);
+            for ((producer, _), package) in operations.into_iter().zip(packages) {
+                assert_eq!(
+                    ExactBRepGraph::from_snapshot(&reopened_snapshot, definition, producer)
+                        .unwrap(),
+                    package.graph
+                );
+                assert!(package.is_current(&reopened_snapshot));
+            }
+        }
+
+        for operation_index in 0..4 {
+            let base = variant_volumes[0][operation_index];
+            for (rigid_variant, transformed) in variant_volumes.iter().enumerate().skip(1) {
+                assert!(
+                    (transformed[operation_index] - base).abs() <= base.max(1.0) * 1.0e-9,
+                    "sample {sample_index}, operation {operation_index}: rigid variant {rigid_variant} changed volume"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn generated_boolean_graph_property_verifier_confirms_round_trip_and_scaling() {
+    let samples = generated_boolean_scales();
+    assert_eq!(samples, generated_boolean_scales());
+    assert_eq!(samples.len(), 6);
+    assert_eq!(samples[0], [0.5, 0.75, 0.6]);
+    assert_eq!(samples[2], [3.0, 2.5, 1.75]);
+    for (index, [scale_x, scale_y, scale_z]) in samples.iter().copied().enumerate() {
+        assert!((0.5..=3.0).contains(&scale_x));
+        assert!((0.5..=2.5).contains(&scale_y));
+        assert!((0.5..=1.75).contains(&scale_z));
+        assert!(samples.iter().skip(index + 1).all(|candidate| {
+            candidate
+                .iter()
+                .zip([scale_x, scale_y, scale_z])
+                .any(|(left, right)| left.to_bits() != right.to_bits())
+        }));
+    }
+
+    let verification_samples = [samples[0], samples[2], samples[5]];
+    let mut normalized_reference: Option<[f64; 4]> = None;
+    let mut supervisor =
+        ExactWorkerSupervisor::spawn(env!("CARGO_BIN_EXE_ketchup-exact-worker")).unwrap();
+    for (sample_index, scales) in verification_samples.into_iter().enumerate() {
+        let mut rigid_reference: Option<[f64; 4]> = None;
+        for rigid_variant in 0..3 {
+            let (document, definition, base, tool, operations) =
+                generated_boolean_document(scales, rigid_variant);
+            let snapshot = document.current();
+            let before_revision = snapshot.revision_id();
+            let before_digest = snapshot.canonical_digest();
+            let before_undo = document.visible_undo_steps();
+            let reopened = persistence::load(&persistence::save(&snapshot)).unwrap();
+            let reopened_snapshot = reopened.snapshot();
+            assert_eq!(reopened_snapshot.canonical_digest(), before_digest);
+
+            let base_result = supervisor
+                .evaluate_exact_brep_graph(
+                    &ExactBRepGraph::from_snapshot(&snapshot, definition, base).unwrap(),
+                )
+                .unwrap();
+            let tool_result = supervisor
+                .evaluate_exact_brep_graph(
+                    &ExactBRepGraph::from_snapshot(&snapshot, definition, tool).unwrap(),
+                )
+                .unwrap();
+            let mut volumes = [0.0; 4];
+            for (operation_index, (producer, operation)) in operations.into_iter().enumerate() {
+                let graph = ExactBRepGraph::from_snapshot(&snapshot, definition, producer).unwrap();
+                let reopened_graph =
+                    ExactBRepGraph::from_snapshot(&reopened_snapshot, definition, producer)
+                        .unwrap();
+                assert_eq!(reopened_graph, graph);
+                let package = supervisor
+                    .evaluate_exact_brep_graph(&graph)
+                    .unwrap_or_else(|error| {
+                        panic!(
+                            "verifier sample {sample_index}, rigid variant {rigid_variant}, {operation:?}: {error:?}"
+                        )
+                    });
+                assert_eq!(
+                    supervisor.evaluate_exact_brep_graph(&graph).unwrap(),
+                    package
+                );
+                assert_eq!(
+                    supervisor
+                        .evaluate_exact_brep_graph(&reopened_graph)
+                        .unwrap(),
+                    package
+                );
+                assert!(package.is_current(&snapshot));
+                assert!(package.is_current(&reopened_snapshot));
+                volumes[operation_index] = package.volume_mm3;
+            }
+
+            let tolerance = base_result.volume_mm3.max(tool_result.volume_mm3) * 1.0e-9;
+            assert!((volumes[0] + volumes[2] - base_result.volume_mm3).abs() <= tolerance);
+            assert!(
+                (volumes[1] + volumes[2] - base_result.volume_mm3 - tool_result.volume_mm3).abs()
+                    <= tolerance
+            );
+            assert!((volumes[3] - base_result.volume_mm3).abs() <= tolerance);
+            if let Some(reference) = rigid_reference {
+                for (actual, expected) in volumes.into_iter().zip(reference) {
+                    assert!((actual - expected).abs() <= expected.max(1.0) * 1.0e-9);
+                }
+            } else {
+                rigid_reference = Some(volumes);
+            }
+
+            assert_eq!(document.current().revision_id(), before_revision);
+            assert_eq!(document.current().canonical_digest(), before_digest);
+            assert_eq!(document.visible_undo_steps(), before_undo);
+        }
+
+        let scale_product = scales.into_iter().product::<f64>();
+        let normalized = rigid_reference
+            .unwrap()
+            .map(|volume| volume / scale_product);
+        if let Some(reference) = normalized_reference {
+            for (actual, expected) in normalized.into_iter().zip(reference) {
+                assert!((actual - expected).abs() <= expected.max(1.0) * 1.0e-9);
+            }
+        } else {
+            normalized_reference = Some(normalized);
+        }
+    }
+}
+
+#[test]
+fn generated_boolean_graph_preserves_legacy_export_and_stale_contracts() {
+    let (mut document, definition, base, _, operations) =
+        generated_boolean_document([1.0, 1.0, 1.0], 0);
+    let intersect = operations[2].0;
+    let split = operations[3].0;
     let snapshot = document.current();
     assert_eq!(
         ExactFeatureChainRequest::from_snapshot_for_producer(&snapshot, definition, intersect),
@@ -176,31 +437,11 @@ fn worker_evaluates_arbitrary_unequal_body_boolean_without_legacy_admission() {
             BooleanOperation::Intersect
         ))
     );
+
+    let split_graph = ExactBRepGraph::from_snapshot(&snapshot, definition, split).unwrap();
     let mut supervisor =
         ExactWorkerSupervisor::spawn(env!("CARGO_BIN_EXE_ketchup-exact-worker")).unwrap();
-    let base_graph = ExactBRepGraph::from_snapshot(&snapshot, definition, base).unwrap();
-    let base_result = supervisor.evaluate_exact_brep_graph(&base_graph).unwrap();
-    let mut results = Vec::new();
-    for producer in [cut, union, intersect, split] {
-        let graph = ExactBRepGraph::from_snapshot(&snapshot, definition, producer).unwrap();
-        let first = supervisor
-            .evaluate_exact_brep_graph(&graph)
-            .unwrap_or_else(|error| panic!("producer {producer:?}: {error:?}"));
-        let second = supervisor.evaluate_exact_brep_graph(&graph).unwrap();
-        assert_eq!(first, second);
-        assert_eq!(first.graph.graph_digest, graph.graph_digest);
-        assert_eq!(first.identity.producer_feature_id.0, producer.0);
-        assert!(first.volume_mm3 > 0.0);
-        results.push(first);
-    }
-
-    assert!(results[0].volume_mm3 < base_result.volume_mm3);
-    assert!(results[1].volume_mm3 > base_result.volume_mm3);
-    assert!(results[2].volume_mm3 < base_result.volume_mm3);
-    assert!((results[3].volume_mm3 - base_result.volume_mm3).abs() <= 1.0e-6);
-    assert!(results[3].topology_counts[4] >= 2);
-
-    let split_package = results[3].clone();
+    let split_package = supervisor.evaluate_exact_brep_graph(&split_graph).unwrap();
     let split_body = ExactBodyPackage::Graph(split_package.clone());
     let result_key = split_body.result_key();
     let registry = ExactResultRegistry::accept(&snapshot, [Arc::new(split_body)]).unwrap();
@@ -220,14 +461,14 @@ fn worker_evaluates_arbitrary_unequal_body_boolean_without_legacy_admission() {
     .unwrap();
 
     let directory = tempfile::tempdir().unwrap();
-    let step_path = directory.path().join("mixed-operation-graph.step");
+    let step_path = directory.path().join("generated-boolean-graph.step");
     supervisor
         .export_exact_brep_graph_step(&snapshot, &split_package, &step_path)
         .unwrap();
     let step = std::fs::read(&step_path).unwrap();
     assert!(step.len() > 256);
     assert!(step.windows(9).any(|window| window == b"ISO-10303"));
-    let model_step_path = directory.path().join("mixed-operation-model.step");
+    let model_step_path = directory.path().join("generated-boolean-model.step");
     supervisor
         .export_current_model_step(
             &snapshot,

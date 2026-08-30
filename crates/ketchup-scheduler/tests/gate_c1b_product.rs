@@ -4,10 +4,11 @@ use ketchup_core::document::{
     BottleControlDimension, BottleEdgeFinishKind, CanonicalCommand, CanonicalError, CommandBatch,
     DefinitionId, DerivedIdentity, Dimension, DimensionDisplayUnit, DimensionPresentation,
     DimensionReferenceHealth, DocumentId, DocumentStore, EvaluationIdentity, FeatureId,
-    FeatureKind, FeatureParameterBinding, FeatureParameterFreshness, FeatureParameterSlot,
-    FeatureParameterStaleReason, FeatureParameterTarget, LoftSection, MeshAuthority, NodeId,
-    OccurrenceId, PersistentDimension, PersistentDimensionId, PersistentDimensionTarget, PortSpec,
-    ProfileSegment, RuleOutput, SlotPath, SlotSegment, StableEdgeRole, StableFaceRole, Transform,
+    FeatureKind, FeatureParameterBinding, FeatureParameterFreshness, FeatureParameterStaleReason,
+    FeatureParameterTarget, LoftSection, MeshAuthority, NodeId, OccurrenceId, ParameterPath,
+    ParameterValueType, PersistentDimension, PersistentDimensionId, PersistentDimensionTarget,
+    PortSpec, ProfileSegment, RuleOutput, SlotPath, SlotSegment, StableEdgeRole, StableFaceRole,
+    Transform,
 };
 use ketchup_core::exact_product::{
     EXACT_ARC_PROFILE_EVALUATOR_V1, EXACT_BOOLEAN_INTERSECT_EVALUATOR_V1,
@@ -48,149 +49,305 @@ const BOTTLE_SHELL: FeatureId = FeatureId(34);
 const BOTTLE_CONTROL: FeatureId = FeatureId(35);
 const BOTTLE_FINISH: FeatureId = FeatureId(36);
 
+fn generated_rectangle_dimension_samples() -> Vec<[f64; 3]> {
+    let mut samples = vec![[0.5, 0.75, 0.25], [1.0, 1.0, 1.0], [250.0, 180.0, 120.0]];
+    let mut state = 0x4b45_5453_5550_2026_u64;
+    let mut next = || {
+        state = state
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        ((state >> 11) as f64) / ((1_u64 << 53) as f64)
+    };
+    samples.extend((0..9).map(|_| {
+        [
+            0.5 + next() * 249.5,
+            0.5 + next() * 179.5,
+            0.25 + next() * 119.75,
+        ]
+    }));
+    samples
+}
+
 #[test]
-fn preregistered_c1b_product_corpus_has_zero_wrong_identities_and_survives_save_open() {
-    let corpus = include_str!("fixtures/c1b/rectangle-v1.tsv");
+fn generated_rectangle_samples_are_reproducible_bounded_and_round_trip_metamorphic() {
+    let samples = generated_rectangle_dimension_samples();
+    assert_eq!(samples, generated_rectangle_dimension_samples());
+    assert_eq!(samples.len(), 12);
+    assert_eq!(samples[0], [0.5, 0.75, 0.25]);
+    assert_eq!(samples[2], [250.0, 180.0, 120.0]);
+
+    for (sample_index, [base_width, base_depth, base_height]) in samples.iter().copied().enumerate()
+    {
+        assert!((0.5..=250.0).contains(&base_width));
+        assert!((0.5..=180.0).contains(&base_depth));
+        assert!((0.25..=120.0).contains(&base_height));
+        assert!(samples.iter().skip(sample_index + 1).all(|candidate| {
+            candidate[0].to_bits() != base_width.to_bits()
+                || candidate[1].to_bits() != base_depth.to_bits()
+                || candidate[2].to_bits() != base_height.to_bits()
+        }));
+
+        let mut volumes = [0.0; 3];
+        for (variant, [width, depth, height]) in [
+            [base_width, base_depth, base_height],
+            [base_depth, base_width, base_height],
+            [base_width * 1.5, base_depth * 1.5, base_height * 1.5],
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let case_id = format!("generated-verifier-{sample_index}-{variant}");
+            assert!(width.is_finite() && width > 0.0, "{case_id}");
+            assert!(depth.is_finite() && depth > 0.0, "{case_id}");
+            assert!(height.is_finite() && height > 0.0, "{case_id}");
+
+            let document = rectangle_document(width, depth, height);
+            let snapshot = document.current();
+            let request = ExactFeatureChainRequest::from_snapshot(&snapshot, DEFINITION).unwrap();
+            let reopened =
+                match ketchup_core::persistence::load(&ketchup_core::persistence::save(&snapshot))
+                    .unwrap()
+                {
+                    ketchup_core::persistence::LoadOutcome::Editable { document, .. } => document,
+                    ketchup_core::persistence::LoadOutcome::ReviewOnly(_) => {
+                        panic!("{case_id}: generated rectangle must reopen editable")
+                    }
+                };
+            let reopened_snapshot = reopened.current();
+            assert_eq!(
+                reopened_snapshot.canonical_digest(),
+                snapshot.canonical_digest()
+            );
+            assert_eq!(
+                ExactFeatureChainRequest::from_snapshot(&reopened_snapshot, DEFINITION).unwrap(),
+                request,
+                "{case_id}: exact request changed across save/open"
+            );
+
+            let first = ExactBackend::new()
+                .extrude_rectangle(RectangleExtrudeSpec {
+                    width_mm: width,
+                    depth_mm: depth,
+                    height_mm: height,
+                })
+                .unwrap();
+            let repeated = ExactBackend::new()
+                .extrude_rectangle(RectangleExtrudeSpec {
+                    width_mm: width,
+                    depth_mm: depth,
+                    height_mm: height,
+                })
+                .unwrap();
+            assert_eq!(
+                first.body.result_fingerprint, repeated.body.result_fingerprint,
+                "{case_id}: direct exact evaluation is not deterministic"
+            );
+            volumes[variant] = first.body.topology.volume_mm3;
+        }
+
+        assert!(
+            (volumes[1] - volumes[0]).abs() <= volumes[0].max(1.0) * 1.0e-10,
+            "sample {sample_index}: axis swap changed exact volume"
+        );
+        assert!(
+            (volumes[2] - volumes[0] * 1.5_f64.powi(3)).abs() <= volumes[2].max(1.0) * 1.0e-10,
+            "sample {sample_index}: exact volume did not scale cubically"
+        );
+    }
+}
+
+#[test]
+fn generated_rectangle_properties_have_stable_identities_and_survive_save_open() {
     let mut supervisor = ExactWorkerSupervisor::spawn(worker_path()).unwrap();
+    let samples = generated_rectangle_dimension_samples();
     let mut observed_cases = 0;
     let mut observed_roles = 0;
+    let mut observed_volumes = BTreeMap::<(usize, u8), f64>::new();
 
-    for line in corpus
-        .lines()
-        .skip(1)
-        .filter(|line| !line.trim().is_empty())
+    for (sample_index, [base_width, base_depth, base_height]) in samples.iter().copied().enumerate()
     {
-        let fields = line.split('\t').collect::<Vec<_>>();
-        assert_eq!(fields.len(), 4, "malformed preregistered C1b row: {line}");
-        let case_id = fields[0];
-        let width = fields[1].parse::<f64>().unwrap();
-        let depth = fields[2].parse::<f64>().unwrap();
-        let height = fields[3].parse::<f64>().unwrap();
-        let mut document = rectangle_document(width, depth, height);
-        let snapshot = document.current();
-        let request = ExactFeatureChainRequest::from_snapshot(&snapshot, DEFINITION).unwrap();
-        let package = supervisor.evaluate_rectangle(&request).unwrap();
-        assert!(package.is_current(&snapshot));
-        assert_eq!(package.vertices.len(), 8);
-        assert_eq!(package.triangles.len(), 12);
+        for (variant, [width, depth, height]) in [
+            [base_width, base_depth, base_height],
+            [base_depth, base_width, base_height],
+            [base_width * 1.5, base_depth * 1.5, base_height * 1.5],
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let case_id = format!("generated-{sample_index}-{variant}");
+            let mut document = rectangle_document(width, depth, height);
+            let snapshot = document.current();
+            let request = ExactFeatureChainRequest::from_snapshot(&snapshot, DEFINITION).unwrap();
+            let package = supervisor.evaluate_rectangle(&request).unwrap();
+            let repeated = supervisor.evaluate_rectangle(&request).unwrap();
+            assert!(package.is_current(&snapshot));
+            assert_eq!(package.identity, repeated.identity, "{case_id}");
+            assert_eq!(package.references, repeated.references, "{case_id}");
+            assert_eq!(package.vertices, repeated.vertices, "{case_id}");
+            assert_eq!(package.triangles, repeated.triangles, "{case_id}");
+            assert_eq!(package.vertices.len(), 8);
+            assert_eq!(package.triangles.len(), 12);
 
-        let direct = ExactBackend::new()
-            .extrude_rectangle(RectangleExtrudeSpec {
-                width_mm: width,
-                depth_mm: depth,
-                height_mm: height,
-            })
+            let direct = ExactBackend::new()
+                .extrude_rectangle(RectangleExtrudeSpec {
+                    width_mm: width,
+                    depth_mm: depth,
+                    height_mm: height,
+                })
+                .unwrap();
+            let expected_volume = width * depth * height;
+            assert!(
+                (direct.body.topology.volume_mm3 - expected_volume).abs()
+                    <= expected_volume.max(1.0) * 1.0e-10,
+                "{case_id}: exact volume {} differs from {expected_volume}",
+                direct.body.topology.volume_mm3
+            );
+            assert_eq!(
+                [
+                    direct.body.topology.vertex_count,
+                    direct.body.topology.edge_count,
+                    direct.body.topology.face_count,
+                    direct.body.topology.shell_count,
+                    direct.body.topology.solid_count,
+                ],
+                [8, 12, 6, 1, 1],
+                "{case_id}: rectangular extrusion topology changed"
+            );
+            observed_volumes.insert(
+                (sample_index, variant as u8),
+                direct.body.topology.volume_mm3,
+            );
+            assert_eq!(
+                package.identity.result_fingerprint, direct.body.result_fingerprint,
+                "{case_id}: worker and direct exact evaluation diverged"
+            );
+            let direct_references = capture_guaranteed_references(
+                &direct,
+                &snapshot.document_id().0.to_string(),
+                &EXTRUSION.0.to_string(),
+            )
             .unwrap();
-        let direct_references = capture_guaranteed_references(
-            &direct,
-            &snapshot.document_id().0.to_string(),
-            &EXTRUSION.0.to_string(),
-        )
-        .unwrap();
-        let results =
-            ExactResultRegistry::accept(&snapshot, [Arc::new(package.clone().into())]).unwrap();
-        let projection = ExactInteractionProjection::from_snapshot(&snapshot, &results);
-        assert_eq!(projection.occurrence_count(), 1);
+            let results =
+                ExactResultRegistry::accept(&snapshot, [Arc::new(package.clone().into())]).unwrap();
+            let projection = ExactInteractionProjection::from_snapshot(&snapshot, &results);
+            assert_eq!(projection.occurrence_count(), 1);
 
-        for role in [
-            ExactFaceRole::Top,
-            ExactFaceRole::Bottom,
-            ExactFaceRole::East,
-        ] {
-            let hit = projection
-                .exact_pick(ray_for(role, width, depth, height))
-                .unwrap_or_else(|| panic!("{case_id}: exact pick missed {role:?}"));
-            assert_eq!(hit.target.body.role(), Some(role), "{case_id}");
-            assert!(hit.target.body.has_valid_lineage(), "{case_id}");
-            let direct_reference = direct_references
-                .iter()
-                .find(|reference| reference.semantic_role == role.semantic_role())
-                .unwrap();
-            assert_eq!(
-                hit.target.body.document_id.0.to_string(),
-                direct_reference.document_id,
-                "{case_id}: document provenance differs for {role:?}"
-            );
-            assert_eq!(
-                hit.target.body.producer_feature_id.0.to_string(),
-                direct_reference.producer_feature_id,
-                "{case_id}: producer provenance differs for {role:?}"
-            );
-            assert_eq!(
-                hit.target.body.semantic_role,
-                direct_reference.semantic_role
-            );
-            assert_eq!(
-                hit.target.body.source_element_id,
-                direct_reference.source_element_id
-            );
-            assert_eq!(
-                hit.target.body.expected_type,
-                direct_reference.expected_type
-            );
-            assert_eq!(direct_reference.stability_class, StabilityClass::Guaranteed);
-            assert_eq!(
-                hit.target.body.backend, direct_reference.backend_fingerprint,
-                "{case_id}: backend provenance differs for {role:?}"
-            );
-            assert_eq!(
-                hit.target.body.lineage_digest, direct_reference.lineage_digest,
-                "{case_id}: canonical lineage differs for {role:?}"
-            );
-            let ReferenceResolution::Resolved { face_ordinal, .. } =
-                resolve_subshape_reference(direct_reference, &direct)
-            else {
-                panic!("{case_id}: direct resolver did not resolve {role:?}");
-            };
-            let direct_face = direct
-                .body
-                .topology
-                .faces
-                .iter()
-                .find(|face| face.ordinal == face_ordinal)
-                .unwrap();
-            assert_eq!(
-                hit.target.body.corroborating_geometry_fingerprint,
-                direct_face.geometric_fingerprint,
-                "{case_id}: interaction and direct resolver disagree for {role:?}"
-            );
-            observed_roles += 1;
-        }
-
-        let before_revision = snapshot.revision_id();
-        let before_digest = snapshot.canonical_digest();
-        let before_undo = document.visible_undo_steps();
-        for reference in package.references.clone() {
-            document
-                .register_exact_reference_evidence(reference)
-                .unwrap();
-        }
-        assert_eq!(document.current().revision_id(), before_revision);
-        assert_eq!(document.current().canonical_digest(), before_digest);
-        assert_eq!(document.visible_undo_steps(), before_undo);
-
-        let bytes = ketchup_core::persistence::save(&document.current());
-        let reopened = match ketchup_core::persistence::load(&bytes).unwrap() {
-            ketchup_core::persistence::LoadOutcome::Editable { document, .. } => document,
-            ketchup_core::persistence::LoadOutcome::ReviewOnly(_) => {
-                panic!("{case_id}: current exact reference evidence must open editable")
+            for role in [
+                ExactFaceRole::Top,
+                ExactFaceRole::Bottom,
+                ExactFaceRole::East,
+            ] {
+                let hit = projection
+                    .exact_pick(ray_for(role, width, depth, height))
+                    .unwrap_or_else(|| panic!("{case_id}: exact pick missed {role:?}"));
+                assert_eq!(hit.target.body.role(), Some(role), "{case_id}");
+                assert!(hit.target.body.has_valid_lineage(), "{case_id}");
+                let direct_reference = direct_references
+                    .iter()
+                    .find(|reference| reference.semantic_role == role.semantic_role())
+                    .unwrap();
+                assert_eq!(
+                    hit.target.body.document_id.0.to_string(),
+                    direct_reference.document_id,
+                    "{case_id}: document provenance differs for {role:?}"
+                );
+                assert_eq!(
+                    hit.target.body.producer_feature_id.0.to_string(),
+                    direct_reference.producer_feature_id,
+                    "{case_id}: producer provenance differs for {role:?}"
+                );
+                assert_eq!(
+                    hit.target.body.semantic_role,
+                    direct_reference.semantic_role
+                );
+                assert_eq!(
+                    hit.target.body.source_element_id,
+                    direct_reference.source_element_id
+                );
+                assert_eq!(
+                    hit.target.body.expected_type,
+                    direct_reference.expected_type
+                );
+                assert_eq!(direct_reference.stability_class, StabilityClass::Guaranteed);
+                assert_eq!(
+                    hit.target.body.backend, direct_reference.backend_fingerprint,
+                    "{case_id}: backend provenance differs for {role:?}"
+                );
+                assert_eq!(
+                    hit.target.body.lineage_digest, direct_reference.lineage_digest,
+                    "{case_id}: canonical lineage differs for {role:?}"
+                );
+                let ReferenceResolution::Resolved { face_ordinal, .. } =
+                    resolve_subshape_reference(direct_reference, &direct)
+                else {
+                    panic!("{case_id}: direct resolver did not resolve {role:?}");
+                };
+                let direct_face = direct
+                    .body
+                    .topology
+                    .faces
+                    .iter()
+                    .find(|face| face.ordinal == face_ordinal)
+                    .unwrap();
+                assert_eq!(
+                    hit.target.body.corroborating_geometry_fingerprint,
+                    direct_face.geometric_fingerprint,
+                    "{case_id}: interaction and direct resolver disagree for {role:?}"
+                );
+                observed_roles += 1;
             }
-        };
-        assert_eq!(reopened.current().canonical_digest(), before_digest);
-        let mut reopened_references = reopened
-            .current()
-            .exact_reference_evidence()
-            .cloned()
-            .collect::<Vec<_>>();
-        let mut expected_references = package.references.clone();
-        reopened_references.sort_by(|left, right| left.lineage_digest.cmp(&right.lineage_digest));
-        expected_references.sort_by(|left, right| left.lineage_digest.cmp(&right.lineage_digest));
-        assert_eq!(reopened_references, expected_references, "{case_id}");
-        observed_cases += 1;
+
+            let before_revision = snapshot.revision_id();
+            let before_digest = snapshot.canonical_digest();
+            let before_undo = document.visible_undo_steps();
+            for reference in package.references.clone() {
+                document
+                    .register_exact_reference_evidence(reference)
+                    .unwrap();
+            }
+            assert_eq!(document.current().revision_id(), before_revision);
+            assert_eq!(document.current().canonical_digest(), before_digest);
+            assert_eq!(document.visible_undo_steps(), before_undo);
+
+            let bytes = ketchup_core::persistence::save(&document.current());
+            let reopened = match ketchup_core::persistence::load(&bytes).unwrap() {
+                ketchup_core::persistence::LoadOutcome::Editable { document, .. } => document,
+                ketchup_core::persistence::LoadOutcome::ReviewOnly(_) => {
+                    panic!("{case_id}: current exact reference evidence must open editable")
+                }
+            };
+            assert_eq!(reopened.current().canonical_digest(), before_digest);
+            let mut reopened_references = reopened
+                .current()
+                .exact_reference_evidence()
+                .cloned()
+                .collect::<Vec<_>>();
+            let mut expected_references = package.references.clone();
+            reopened_references
+                .sort_by(|left, right| left.lineage_digest.cmp(&right.lineage_digest));
+            expected_references
+                .sort_by(|left, right| left.lineage_digest.cmp(&right.lineage_digest));
+            assert_eq!(reopened_references, expected_references, "{case_id}");
+            observed_cases += 1;
+        }
     }
 
-    assert_eq!(observed_cases, 9);
-    assert_eq!(observed_roles, 27);
+    assert_eq!(observed_cases, samples.len() * 3);
+    assert_eq!(observed_roles, samples.len() * 9);
+    for sample_index in 0..samples.len() {
+        let base = observed_volumes[&(sample_index, 0)];
+        let axis_swapped = observed_volumes[&(sample_index, 1)];
+        let uniformly_scaled = observed_volumes[&(sample_index, 2)];
+        assert!(
+            (axis_swapped - base).abs() <= base.max(1.0) * 1.0e-10,
+            "sample {sample_index}: swapping profile axes changed volume"
+        );
+        assert!(
+            (uniformly_scaled - base * 1.5_f64.powi(3)).abs()
+                <= uniformly_scaled.max(1.0) * 1.0e-10,
+            "sample {sample_index}: uniform scale did not scale volume cubically"
+        );
+    }
 }
 
 #[test]
@@ -362,7 +519,8 @@ fn persistent_exact_dimension_resolves_only_against_current_registered_semantic_
                         producer_feature_id: EXTRUSION,
                         semantic_role: ExactFaceRole::Top.semantic_role().to_owned(),
                         source_element_id: ExactFaceRole::Top.source_element_id().to_owned(),
-                        slot: FeatureParameterSlot::Height,
+                        path: ParameterPath::new("height").unwrap(),
+                        value_type: ParameterValueType::Length,
                     },
                     DimensionPresentation::new(DimensionDisplayUnit::Millimetres, 2).unwrap(),
                 )
@@ -444,10 +602,8 @@ fn explicit_parameter_recompute_restores_exact_registry_render_pick_and_export()
     const RULE: NodeId = NodeId(202);
     let identity = EvaluationIdentity::default();
     let segment = SlotSegment::new(RULE, "dimensions", "extrusion_height").unwrap();
-    let target = FeatureParameterTarget {
-        feature_id: EXTRUSION,
-        slot: FeatureParameterSlot::Height,
-    };
+    let target =
+        FeatureParameterTarget::new(EXTRUSION, "height", ParameterValueType::Length).unwrap();
     let mut document = rectangle_document(100.0, 60.0, 18.0);
     document
         .apply_batch(&CommandBatch::new(vec![

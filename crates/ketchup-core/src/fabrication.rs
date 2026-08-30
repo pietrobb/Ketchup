@@ -2,6 +2,7 @@ use crate::document::{
     BooleanOperation, DefinitionId, DocumentId, FeatureId, FeatureKind, InstancePath,
     InstancePathStep, Snapshot, Transform,
 };
+use crate::exact_brep_graph::ExactBRepGraph;
 use crate::exact_product::{
     BodyResultIdentity, BodySubshapeRef, ExactBodyPackage, ExactResultRegistry,
 };
@@ -798,7 +799,8 @@ pub fn project_general_fabrication(
                 }
             }
             GeneralBodySource::CanonicalMesh { .. }
-            | GeneralBodySource::CanonicalExtrusion { .. } => {
+            | GeneralBodySource::CanonicalExtrusion { .. }
+            | GeneralBodySource::CanonicalExactGraph { .. } => {
                 unresolved_sources.push(row.source.clone());
             }
         }
@@ -894,6 +896,23 @@ fn local_dimensions(
                 return Err(GeneralFabricationError::UnsupportedOrUnavailableGeometry);
             };
             spec.vertices_mm.clone()
+        }
+        GeneralBodySource::CanonicalExactGraph {
+            definition_id,
+            producer_feature_id,
+            graph_digest,
+        } => {
+            let graph =
+                ExactBRepGraph::from_snapshot(snapshot, *definition_id, *producer_feature_id)
+                    .map_err(|_| GeneralFabricationError::UnsupportedOrUnavailableGeometry)?;
+            if graph.graph_digest != *graph_digest {
+                return Err(GeneralFabricationError::UnsupportedOrUnavailableGeometry);
+            }
+            let [minimum, maximum] = graph
+                .producer_bounds_mm()
+                .map_err(|_| GeneralFabricationError::InvalidGeometry)?
+                .ok_or(GeneralFabricationError::InvalidGeometry)?;
+            vec![minimum, maximum]
         }
         GeneralBodySource::CanonicalExtrusion {
             definition_id,
@@ -1020,7 +1039,8 @@ fn source_definition_id(source: &GeneralBodySource) -> DefinitionId {
     match source {
         GeneralBodySource::Exact(key) => key.definition_id,
         GeneralBodySource::CanonicalMesh { definition_id, .. }
-        | GeneralBodySource::CanonicalExtrusion { definition_id, .. } => *definition_id,
+        | GeneralBodySource::CanonicalExtrusion { definition_id, .. }
+        | GeneralBodySource::CanonicalExactGraph { definition_id, .. } => *definition_id,
     }
 }
 
@@ -1157,6 +1177,16 @@ fn push_general_source(bytes: &mut Vec<u8>, source: &GeneralBodySource) {
             bytes.extend_from_slice(&profile_id.0.to_le_bytes());
             bytes.extend_from_slice(&extrusion_id.0.to_le_bytes());
             push_projection_bytes(bytes, geometry_digest.as_bytes());
+        }
+        GeneralBodySource::CanonicalExactGraph {
+            definition_id,
+            producer_feature_id,
+            graph_digest,
+        } => {
+            bytes.push(3);
+            bytes.extend_from_slice(&definition_id.0.to_le_bytes());
+            bytes.extend_from_slice(&producer_feature_id.0.to_le_bytes());
+            push_projection_bytes(bytes, graph_digest.as_bytes());
         }
     }
 }

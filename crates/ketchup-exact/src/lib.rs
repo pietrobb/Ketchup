@@ -170,6 +170,11 @@ mod ffi {
             face_ordinals: &[u32],
             thickness: f64,
         ) -> UniquePtr<NativeOperationResult>;
+        fn offset_body_face_native(
+            body: &NativeOperationResult,
+            face_ordinal: u32,
+            distance: f64,
+        ) -> UniquePtr<NativeOperationResult>;
         fn finish_body_native(
             body: &NativeOperationResult,
             edge_ordinals: &[u32],
@@ -1240,6 +1245,41 @@ impl ExactBackend {
         collect_output(
             ffi::shell_body_native(native, face_ordinals, thickness_mm),
             "shell_body",
+            &input,
+            HistoryConfidence::Partial,
+        )
+    }
+
+    pub fn offset_body_face(
+        &self,
+        body: &ExactBody,
+        face_ordinal: u32,
+        distance_mm: f64,
+    ) -> Result<ExactOpOutput, GeometryError> {
+        let input = format!(
+            "offset_body_face:{}:{face_ordinal}:{:016x}",
+            body.result_fingerprint,
+            distance_mm.to_bits()
+        );
+        validate_length(distance_mm.abs(), "distance_mm", "offset_body_face", &input)?;
+        if face_ordinal >= body.topology.face_count {
+            return Err(parameter_error(
+                GeometryErrorCode::InvalidParameter,
+                "offset_body_face",
+                &input,
+                "Face offset requires one in-range face and a non-zero distance".to_owned(),
+            ));
+        }
+        let native = body.native.as_ref().ok_or_else(|| GeometryError {
+            code: GeometryErrorCode::NullResult,
+            diagnostic: "Exact body lost its owned native shape".to_owned(),
+            operation: "offset_body_face",
+            input_digest: stable_digest(&input),
+            backend_fingerprint: BACKEND_FINGERPRINT,
+        })?;
+        collect_output(
+            ffi::offset_body_face_native(native, face_ordinal, distance_mm),
+            "offset_body_face",
             &input,
             HistoryConfidence::Partial,
         )

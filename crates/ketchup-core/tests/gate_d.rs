@@ -3,9 +3,9 @@ use ketchup_core::document::{
     BOTTLE_SHOULDER_EDGE_ROLE, BottleControlDimension, BottleEdgeFinishKind, CanonicalCommand,
     CollectionId, CommandBatch, DefinitionId, Dimension, DimensionDisplayUnit,
     DimensionPresentation, DocumentStore, EvaluatorNodeKind, FeatureId, FeatureKind,
-    FeatureParameterSlot, FeatureParameterTarget, GroupId, HighRiskClass, HighRiskScope,
-    HumanConfirmationError, MAX_HUMAN_CONFIRMATION_LIFETIME_MS, NodeId, OccurrenceId,
-    OverrideParameterSpec, PersistentDimension, PersistentDimensionId, PersistentDimensionTarget,
+    FeatureParameterTarget, GroupId, HighRiskClass, HighRiskScope, HumanConfirmationError,
+    MAX_HUMAN_CONFIRMATION_LIFETIME_MS, NodeId, OccurrenceId, OverrideParameterSpec,
+    ParameterValueType, PersistentDimension, PersistentDimensionId, PersistentDimensionTarget,
     PortSpec, Proposal, ProposalBudget, ProposalCommitError, ProposalConfirmation, ProposalContext,
     ProposalGoal, ProposalPrepareError, ProposalPrincipal, ProposalRisk, ProposalValue, RuleOutput,
     SlotPath, SlotResolution, SlotSegment, StableEdgeRole, StableFaceRole, TagId, Transform,
@@ -5171,10 +5171,8 @@ fn gate_d_delete_rule_override_rejects_denied_missing_and_stale_override() {
 #[test]
 fn gate_d_create_feature_parameter_binding_is_typed_observational_and_undoable() {
     let mut store = seed();
-    let target = FeatureParameterTarget {
-        feature_id: EXTRUSION,
-        slot: FeatureParameterSlot::Height,
-    };
+    let target =
+        FeatureParameterTarget::new(EXTRUSION, "height", ParameterValueType::Length).unwrap();
     let derived_from = ketchup_core::document::DerivedIdentity::new(
         RULE_OUTPUTS,
         SlotPath::new(vec![
@@ -5190,7 +5188,7 @@ fn gate_d_create_feature_parameter_binding_is_typed_observational_and_undoable()
     let proposal = propose_intent(
         &store,
         IntentRequest::m7a(WorkflowIntent::CreateFeatureParameterBinding {
-            target,
+            target: target.clone(),
             rule: RULE_OUTPUTS,
             output_port: "result".to_owned(),
             semantic_key: "left".to_owned(),
@@ -5200,13 +5198,13 @@ fn gate_d_create_feature_parameter_binding_is_typed_observational_and_undoable()
 
     assert_eq!(
         proposal.goal(),
-        ProposalGoal::CreateFeatureParameterBinding(target)
+        ProposalGoal::CreateFeatureParameterBinding(target.clone())
     );
     assert_eq!(
         proposal.assumptions(),
         &[
             ketchup_core::document::ProposalAssumption::TargetMissing(
-                AuthoritativeDependency::FeatureParameterBinding(target),
+                AuthoritativeDependency::FeatureParameterBinding(target.clone()),
             ),
             ketchup_core::document::ProposalAssumption::TargetExists(
                 AuthoritativeDependency::Feature(EXTRUSION),
@@ -5219,7 +5217,7 @@ fn gate_d_create_feature_parameter_binding_is_typed_observational_and_undoable()
     assert_eq!(
         proposal.authoritative_writes(),
         &std::collections::BTreeSet::from([AuthoritativeDependency::FeatureParameterBinding(
-            target
+            target.clone()
         )])
     );
     assert_eq!(
@@ -5229,7 +5227,7 @@ fn gate_d_create_feature_parameter_binding_is_typed_observational_and_undoable()
     assert_eq!(
         proposal.authoritative_diff()[0].after,
         ProposalValue::FeatureParameterBindingState {
-            target,
+            target: target.clone(),
             derived_from: derived_from.clone(),
         }
     );
@@ -5240,25 +5238,23 @@ fn gate_d_create_feature_parameter_binding_is_typed_observational_and_undoable()
     store.commit_verified_proposal(&proposal).unwrap();
     let created = store
         .current()
-        .feature_parameter_binding(target)
+        .feature_parameter_binding(&target)
         .unwrap()
         .clone();
     assert_eq!(created.target, target);
     assert_eq!(created.derived_from, derived_from);
     assert_eq!(store.visible_undo_steps(), undo_before + 1);
     store.undo().unwrap();
-    assert!(store.current().feature_parameter_binding(target).is_none());
+    assert!(store.current().feature_parameter_binding(&target).is_none());
 }
 
 #[test]
 fn gate_d_create_feature_parameter_binding_rejects_denied_invalid_occupied_and_stale() {
     let mut store = seed();
-    let target = FeatureParameterTarget {
-        feature_id: EXTRUSION,
-        slot: FeatureParameterSlot::Height,
-    };
+    let target =
+        FeatureParameterTarget::new(EXTRUSION, "height", ParameterValueType::Length).unwrap();
     let intent = || WorkflowIntent::CreateFeatureParameterBinding {
-        target,
+        target: target.clone(),
         rule: RULE_OUTPUTS,
         output_port: "result".to_owned(),
         semantic_key: "left".to_owned(),
@@ -5283,31 +5279,35 @@ fn gate_d_create_feature_parameter_binding_rejects_denied_invalid_occupied_and_s
     );
     for invalid in [
         WorkflowIntent::CreateFeatureParameterBinding {
-            target: FeatureParameterTarget {
-                feature_id: EXTRUSION,
-                slot: FeatureParameterSlot::ProfileWidth,
-            },
+            target: FeatureParameterTarget::new(
+                EXTRUSION,
+                "bounds.width",
+                ParameterValueType::Length,
+            )
+            .unwrap(),
             rule: RULE_OUTPUTS,
             output_port: "result".to_owned(),
             semantic_key: "left".to_owned(),
         },
         WorkflowIntent::CreateFeatureParameterBinding {
-            target: FeatureParameterTarget {
-                feature_id: FeatureId(999),
-                slot: FeatureParameterSlot::Height,
-            },
+            target: FeatureParameterTarget::new(
+                FeatureId(999),
+                "height",
+                ParameterValueType::Length,
+            )
+            .unwrap(),
             rule: RULE_OUTPUTS,
             output_port: "result".to_owned(),
             semantic_key: "left".to_owned(),
         },
         WorkflowIntent::CreateFeatureParameterBinding {
-            target,
+            target: target.clone(),
             rule: NodeId(999),
             output_port: "result".to_owned(),
             semantic_key: "left".to_owned(),
         },
         WorkflowIntent::CreateFeatureParameterBinding {
-            target,
+            target: target.clone(),
             rule: RULE_OUTPUTS,
             output_port: "result".to_owned(),
             semantic_key: "missing".to_owned(),
@@ -5332,13 +5332,13 @@ fn gate_d_create_feature_parameter_binding_rejects_denied_invalid_occupied_and_s
         Err(ProposalCommitError::Stale(_))
     ));
     assert_eq!(store.current().canonical_digest(), changed_digest);
-    assert!(store.current().feature_parameter_binding(target).is_none());
+    assert!(store.current().feature_parameter_binding(&target).is_none());
 
     store
         .apply_batch(&CommandBatch::new(vec![
             CanonicalCommand::UpsertFeatureParameterBinding(
                 ketchup_core::document::FeatureParameterBinding {
-                    target,
+                    target: target.clone(),
                     derived_from: ketchup_core::document::DerivedIdentity::new(
                         RULE_OUTPUTS,
                         SlotPath::new(vec![
@@ -5359,10 +5359,8 @@ fn gate_d_create_feature_parameter_binding_rejects_denied_invalid_occupied_and_s
 #[test]
 fn gate_d_delete_feature_parameter_binding_is_typed_observational_and_undoable() {
     let mut store = seed();
-    let target = FeatureParameterTarget {
-        feature_id: EXTRUSION,
-        slot: FeatureParameterSlot::Height,
-    };
+    let target =
+        FeatureParameterTarget::new(EXTRUSION, "height", ParameterValueType::Length).unwrap();
     let derived_from = ketchup_core::document::DerivedIdentity::new(
         RULE_OUTPUTS,
         SlotPath::new(vec![
@@ -5375,7 +5373,7 @@ fn gate_d_delete_feature_parameter_binding_is_typed_observational_and_undoable()
         .apply_batch(&CommandBatch::new(vec![
             CanonicalCommand::UpsertFeatureParameterBinding(
                 ketchup_core::document::FeatureParameterBinding {
-                    target,
+                    target: target.clone(),
                     derived_from: derived_from.clone(),
                 },
             ),
@@ -5387,30 +5385,32 @@ fn gate_d_delete_feature_parameter_binding_is_typed_observational_and_undoable()
 
     let proposal = propose_intent(
         &store,
-        IntentRequest::m7a(WorkflowIntent::DeleteFeatureParameterBinding { target }),
+        IntentRequest::m7a(WorkflowIntent::DeleteFeatureParameterBinding {
+            target: target.clone(),
+        }),
     )
     .unwrap();
 
     assert_eq!(
         proposal.goal(),
-        ProposalGoal::DeleteFeatureParameterBinding(target)
+        ProposalGoal::DeleteFeatureParameterBinding(target.clone())
     );
     assert_eq!(
         proposal.assumptions(),
         &[ketchup_core::document::ProposalAssumption::TargetExists(
-            AuthoritativeDependency::FeatureParameterBinding(target),
+            AuthoritativeDependency::FeatureParameterBinding(target.clone()),
         )]
     );
     assert_eq!(
         proposal.authoritative_writes(),
         &std::collections::BTreeSet::from([AuthoritativeDependency::FeatureParameterBinding(
-            target
+            target.clone()
         )])
     );
     assert_eq!(
         proposal.authoritative_diff()[0].before,
         ProposalValue::FeatureParameterBindingState {
-            target,
+            target: target.clone(),
             derived_from: derived_from.clone(),
         }
     );
@@ -5423,13 +5423,13 @@ fn gate_d_delete_feature_parameter_binding_is_typed_observational_and_undoable()
     assert_eq!(store.visible_undo_steps(), undo_before);
 
     store.commit_verified_proposal(&proposal).unwrap();
-    assert!(store.current().feature_parameter_binding(target).is_none());
+    assert!(store.current().feature_parameter_binding(&target).is_none());
     assert_eq!(store.visible_undo_steps(), undo_before + 1);
     store.undo().unwrap();
     assert_eq!(
         store
             .current()
-            .feature_parameter_binding(target)
+            .feature_parameter_binding(&target)
             .unwrap()
             .derived_from,
         derived_from
@@ -5439,10 +5439,8 @@ fn gate_d_delete_feature_parameter_binding_is_typed_observational_and_undoable()
 #[test]
 fn gate_d_delete_feature_parameter_binding_rejects_denied_missing_and_stale() {
     let mut store = seed();
-    let target = FeatureParameterTarget {
-        feature_id: EXTRUSION,
-        slot: FeatureParameterSlot::Height,
-    };
+    let target =
+        FeatureParameterTarget::new(EXTRUSION, "height", ParameterValueType::Length).unwrap();
     let derived_from = ketchup_core::document::DerivedIdentity::new(
         RULE_OUTPUTS,
         SlotPath::new(vec![
@@ -5455,13 +5453,15 @@ fn gate_d_delete_feature_parameter_binding_rejects_denied_missing_and_stale() {
         .apply_batch(&CommandBatch::new(vec![
             CanonicalCommand::UpsertFeatureParameterBinding(
                 ketchup_core::document::FeatureParameterBinding {
-                    target,
+                    target: target.clone(),
                     derived_from,
                 },
             ),
         ]))
         .unwrap();
-    let intent = || WorkflowIntent::DeleteFeatureParameterBinding { target };
+    let intent = || WorkflowIntent::DeleteFeatureParameterBinding {
+        target: target.clone(),
+    };
     let digest_before = store.current().canonical_digest();
 
     assert_eq!(
@@ -5484,10 +5484,12 @@ fn gate_d_delete_feature_parameter_binding_rejects_denied_missing_and_stale() {
         propose_intent(
             &store,
             IntentRequest::m7a(WorkflowIntent::DeleteFeatureParameterBinding {
-                target: FeatureParameterTarget {
-                    feature_id: EXTRUSION,
-                    slot: FeatureParameterSlot::ProfileWidth,
-                },
+                target: FeatureParameterTarget::new(
+                    EXTRUSION,
+                    "bounds.width",
+                    ParameterValueType::Length,
+                )
+                .unwrap(),
             }),
         )
         .is_err()
@@ -5523,7 +5525,7 @@ fn gate_d_delete_feature_parameter_binding_rejects_denied_missing_and_stale() {
             },
             CanonicalCommand::UpsertFeatureParameterBinding(
                 ketchup_core::document::FeatureParameterBinding {
-                    target,
+                    target: target.clone(),
                     derived_from: replacement_identity.clone(),
                 },
             ),
@@ -5538,7 +5540,7 @@ fn gate_d_delete_feature_parameter_binding_rejects_denied_missing_and_stale() {
     assert_eq!(
         store
             .current()
-            .feature_parameter_binding(target)
+            .feature_parameter_binding(&target)
             .unwrap()
             .derived_from,
         replacement_identity
@@ -5547,7 +5549,9 @@ fn gate_d_delete_feature_parameter_binding_rejects_denied_missing_and_stale() {
     let proposal = propose_intent(&store, IntentRequest::m7a(intent())).unwrap();
     store
         .apply_batch(&CommandBatch::new(vec![
-            CanonicalCommand::DeleteFeatureParameterBinding { target },
+            CanonicalCommand::DeleteFeatureParameterBinding {
+                target: target.clone(),
+            },
         ]))
         .unwrap();
     let removed_digest = store.current().canonical_digest();
@@ -5556,21 +5560,19 @@ fn gate_d_delete_feature_parameter_binding_rejects_denied_missing_and_stale() {
         Err(ProposalCommitError::Stale(_))
     ));
     assert_eq!(store.current().canonical_digest(), removed_digest);
-    assert!(store.current().feature_parameter_binding(target).is_none());
+    assert!(store.current().feature_parameter_binding(&target).is_none());
 }
 
 #[test]
 fn gate_d_recompute_feature_parameter_is_typed_observational_and_undoable() {
     let mut store = seed();
-    let target = FeatureParameterTarget {
-        feature_id: EXTRUSION,
-        slot: FeatureParameterSlot::Height,
-    };
+    let target =
+        FeatureParameterTarget::new(EXTRUSION, "height", ParameterValueType::Length).unwrap();
     store
         .apply_batch(&CommandBatch::new(vec![
             CanonicalCommand::UpsertFeatureParameterBinding(
                 ketchup_core::document::FeatureParameterBinding {
-                    target,
+                    target: target.clone(),
                     derived_from: ketchup_core::document::DerivedIdentity::new(
                         RULE_OUTPUTS,
                         SlotPath::new(vec![
@@ -5589,13 +5591,15 @@ fn gate_d_recompute_feature_parameter_is_typed_observational_and_undoable() {
 
     let proposal = propose_intent(
         &store,
-        IntentRequest::m7a(WorkflowIntent::RecomputeFeatureParameter { target }),
+        IntentRequest::m7a(WorkflowIntent::RecomputeFeatureParameter {
+            target: target.clone(),
+        }),
     )
     .unwrap();
 
     assert_eq!(
         proposal.goal(),
-        ProposalGoal::RecomputeFeatureParameter(target)
+        ProposalGoal::RecomputeFeatureParameter(target.clone())
     );
     assert_eq!(
         proposal.assumptions(),
@@ -5637,11 +5641,11 @@ fn gate_d_recompute_feature_parameter_is_typed_observational_and_undoable() {
 #[test]
 fn gate_d_recompute_feature_parameter_rejects_denied_missing_multiple_and_stale() {
     let mut store = seed();
-    let target = FeatureParameterTarget {
-        feature_id: EXTRUSION,
-        slot: FeatureParameterSlot::Height,
+    let target =
+        FeatureParameterTarget::new(EXTRUSION, "height", ParameterValueType::Length).unwrap();
+    let intent = || WorkflowIntent::RecomputeFeatureParameter {
+        target: target.clone(),
     };
-    let intent = || WorkflowIntent::RecomputeFeatureParameter { target };
     let digest_before = store.current().canonical_digest();
 
     assert_eq!(
@@ -5676,7 +5680,7 @@ fn gate_d_recompute_feature_parameter_rejects_denied_missing_multiple_and_stale(
     };
     store
         .apply_batch(&CommandBatch::new(vec![
-            CanonicalCommand::UpsertFeatureParameterBinding(binding(target)),
+            CanonicalCommand::UpsertFeatureParameterBinding(binding(target.clone())),
         ]))
         .unwrap();
     let proposal = propose_intent(&store, IntentRequest::m7a(intent())).unwrap();
@@ -5699,10 +5703,8 @@ fn gate_d_recompute_feature_parameter_rejects_denied_missing_multiple_and_stale(
         FeatureKind::Extrusion { height, .. } if height.millimetres() == 20.0
     ));
 
-    let second_target = FeatureParameterTarget {
-        feature_id: BOTTLE_SHELL,
-        slot: FeatureParameterSlot::Thickness,
-    };
+    let second_target =
+        FeatureParameterTarget::new(BOTTLE_SHELL, "thickness", ParameterValueType::Length).unwrap();
     store
         .apply_batch(&CommandBatch::new(vec![
             CanonicalCommand::UpsertFeatureParameterBinding(binding(second_target)),
@@ -6309,10 +6311,12 @@ fn gate_d_clone_profile_definition_rejects_denied_unsupported_stale_and_claimed(
         .apply_batch(&CommandBatch::new(vec![
             CanonicalCommand::UpsertFeatureParameterBinding(
                 ketchup_core::document::FeatureParameterBinding {
-                    target: FeatureParameterTarget {
-                        feature_id: FeatureId(90),
-                        slot: FeatureParameterSlot::ProfileWidth,
-                    },
+                    target: FeatureParameterTarget::new(
+                        FeatureId(90),
+                        "bounds.width",
+                        ParameterValueType::Length,
+                    )
+                    .unwrap(),
                     derived_from,
                 },
             ),
@@ -7462,10 +7466,9 @@ fn gate_d_delete_clearance_volume_rejects_denied_missing_and_stale_replacement()
 fn gate_d_delete_persistent_dimension_is_typed_observational_and_undoable() {
     let mut store = seed();
     let target = PersistentDimensionId(88);
-    let dimension_target = PersistentDimensionTarget::FeatureParameter(FeatureParameterTarget {
-        feature_id: PROFILE,
-        slot: FeatureParameterSlot::ProfileWidth,
-    });
+    let dimension_target = PersistentDimensionTarget::FeatureParameter(
+        FeatureParameterTarget::new(PROFILE, "bounds.width", ParameterValueType::Length).unwrap(),
+    );
     let presentation = DimensionPresentation::new(DimensionDisplayUnit::Centimetres, 2).unwrap();
     let dimension = PersistentDimension::new(
         target,
@@ -7533,10 +7536,9 @@ fn gate_d_delete_persistent_dimension_is_typed_observational_and_undoable() {
 fn gate_d_delete_persistent_dimension_rejects_denied_missing_and_stale_replacement() {
     let mut store = seed();
     let target = PersistentDimensionId(89);
-    let dimension_target = PersistentDimensionTarget::FeatureParameter(FeatureParameterTarget {
-        feature_id: PROFILE,
-        slot: FeatureParameterSlot::ProfileHeight,
-    });
+    let dimension_target = PersistentDimensionTarget::FeatureParameter(
+        FeatureParameterTarget::new(PROFILE, "bounds.height", ParameterValueType::Length).unwrap(),
+    );
     store
         .apply_batch(&CommandBatch::new(vec![
             CanonicalCommand::UpsertPersistentDimension(
@@ -7612,10 +7614,8 @@ fn gate_d_delete_persistent_dimension_rejects_denied_missing_and_stale_replaceme
 fn gate_d_create_persistent_dimension_is_typed_observational_and_undoable() {
     let mut store = seed();
     let target = PersistentDimensionId(90);
-    let dimension_target = FeatureParameterTarget {
-        feature_id: EXTRUSION,
-        slot: FeatureParameterSlot::Height,
-    };
+    let dimension_target =
+        FeatureParameterTarget::new(EXTRUSION, "height", ParameterValueType::Length).unwrap();
     let presentation = DimensionPresentation::new(DimensionDisplayUnit::Centimetres, 2).unwrap();
     let revision_before = store.current().revision_id();
     let digest_before = store.current().canonical_digest();
@@ -7626,7 +7626,7 @@ fn gate_d_create_persistent_dimension_is_typed_observational_and_undoable() {
         IntentRequest::m7a(WorkflowIntent::CreatePersistentDimension {
             target,
             name: "Reviewed height".to_owned(),
-            dimension_target,
+            dimension_target: dimension_target.clone(),
             presentation,
         }),
     )
@@ -7664,7 +7664,7 @@ fn gate_d_create_persistent_dimension_is_typed_observational_and_undoable() {
         proposal.authoritative_diff()[0].after,
         ProposalValue::PersistentDimensionState {
             name: "Reviewed height".to_owned(),
-            target: PersistentDimensionTarget::FeatureParameter(dimension_target),
+            target: PersistentDimensionTarget::FeatureParameter(dimension_target.clone()),
             presentation,
         }
     );
@@ -7676,7 +7676,7 @@ fn gate_d_create_persistent_dimension_is_typed_observational_and_undoable() {
     let created = PersistentDimension::new(
         target,
         "Reviewed height",
-        PersistentDimensionTarget::FeatureParameter(dimension_target),
+        PersistentDimensionTarget::FeatureParameter(dimension_target.clone()),
         presentation,
     )
     .unwrap();
@@ -7690,15 +7690,13 @@ fn gate_d_create_persistent_dimension_is_typed_observational_and_undoable() {
 fn gate_d_create_persistent_dimension_rejects_denied_reuse_and_stale_claim() {
     let mut store = seed();
     let target = PersistentDimensionId(91);
-    let dimension_target = FeatureParameterTarget {
-        feature_id: EXTRUSION,
-        slot: FeatureParameterSlot::Height,
-    };
+    let dimension_target =
+        FeatureParameterTarget::new(EXTRUSION, "height", ParameterValueType::Length).unwrap();
     let presentation = DimensionPresentation::new(DimensionDisplayUnit::Millimetres, 1).unwrap();
     let intent = || WorkflowIntent::CreatePersistentDimension {
         target,
         name: "Reviewed height".to_owned(),
-        dimension_target,
+        dimension_target: dimension_target.clone(),
         presentation,
     };
 
@@ -7720,14 +7718,8 @@ fn gate_d_create_persistent_dimension_rejects_denied_reuse_and_stale_claim() {
     );
     let digest_before = store.current().canonical_digest();
     for invalid_target in [
-        FeatureParameterTarget {
-            feature_id: FeatureId(999),
-            slot: FeatureParameterSlot::Height,
-        },
-        FeatureParameterTarget {
-            feature_id: EXTRUSION,
-            slot: FeatureParameterSlot::Thickness,
-        },
+        FeatureParameterTarget::new(FeatureId(999), "height", ParameterValueType::Length).unwrap(),
+        FeatureParameterTarget::new(EXTRUSION, "thickness", ParameterValueType::Length).unwrap(),
     ] {
         assert!(
             propose_intent(
@@ -7748,7 +7740,7 @@ fn gate_d_create_persistent_dimension_rejects_denied_reuse_and_stale_claim() {
     let replacement = PersistentDimension::new(
         target,
         "Concurrent height",
-        PersistentDimensionTarget::FeatureParameter(dimension_target),
+        PersistentDimensionTarget::FeatureParameter(dimension_target.clone()),
         DimensionPresentation::new(DimensionDisplayUnit::Inches, 3).unwrap(),
     )
     .unwrap();
