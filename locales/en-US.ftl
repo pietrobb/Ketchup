@@ -548,6 +548,7 @@ assistant-entity-occurrence = Occurrence
 assistant-entity-grounded-occurrence = Grounded occurrence
 assistant-entity-assembly-mate = Assembly mate
 assistant-entity-assembly-joint = Assembly joint
+assistant-entity-assembly-motion-coupling = Assembly motion coupling
 assistant-entity-assembly-motion-study = Assembly motion study
 assistant-entity-occurrence-collections = Occurrence collections
 assistant-entity-group = Group

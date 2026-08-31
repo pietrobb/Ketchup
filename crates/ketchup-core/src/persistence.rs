@@ -40,6 +40,10 @@ use crate::import::{
     ImportOutputRef, ImportReceipt, ImportUnitAuthority, ImportUnitDecision,
     MAX_IMPORT_DIAGNOSTICS, MAX_IMPORT_OUTPUTS,
 };
+use crate::mechanical_coupling::{
+    ASSEMBLY_MOTION_COUPLING_SCHEMA_V1, AssemblyMotionCoupling, AssemblyMotionCouplingId,
+    AssemblyMotionDirection, AssemblyTransmissionKind, GearMeshKind, ScrewHandedness,
+};
 use crate::prismatic::{Aabb, CanonicalJoint, JointId, TolerancePolicy};
 use crate::sketch::{
     FeatureDirection, FeatureExtent, FeatureExtentEnd, MAX_SKETCH_CONSTRAINTS, MAX_SKETCH_ENTITIES,
@@ -83,7 +87,8 @@ const IMPORTED_TOPOLOGY_COUNTS_SCHEMA: u16 = 39;
 const TOPOLOGICAL_FEATURE_REFERENCE_SCHEMA: u16 = 40;
 const GENERAL_PARAMETER_PATH_SCHEMA: u16 = 41;
 const ASSEMBLY_KINEMATICS_SCHEMA: u16 = 42;
-pub const CURRENT_SCHEMA: u16 = ASSEMBLY_KINEMATICS_SCHEMA;
+const ASSEMBLY_MOTION_COUPLING_SCHEMA: u16 = 43;
+pub const CURRENT_SCHEMA: u16 = ASSEMBLY_MOTION_COUPLING_SCHEMA;
 const COLLECTION_SCHEMA: u16 = 15;
 const TAG_SCHEMA: u16 = 14;
 const PERSISTENT_DIMENSION_SCHEMA: u16 = 13;
@@ -141,6 +146,7 @@ struct ProductSchemaCapabilities {
     classification_dimensions: bool,
     feature_extents: bool,
     assembly_kinematics: bool,
+    assembly_motion_couplings: bool,
 }
 
 impl ProductSchemaCapabilities {
@@ -183,6 +189,7 @@ impl ProductSchemaCapabilities {
         classification_dimensions: false,
         feature_extents: false,
         assembly_kinematics: false,
+        assembly_motion_couplings: false,
     };
 
     const fn current(schema: u16) -> Self {
@@ -225,6 +232,7 @@ impl ProductSchemaCapabilities {
             classification_dimensions: schema >= CLASSIFICATION_DIMENSION_SCHEMA,
             feature_extents: schema >= FEATURE_EXTENT_SCHEMA,
             assembly_kinematics: schema >= ASSEMBLY_KINEMATICS_SCHEMA,
+            assembly_motion_couplings: schema >= ASSEMBLY_MOTION_COUPLING_SCHEMA,
         }
     }
 }
@@ -754,6 +762,10 @@ pub fn save(snapshot: &Snapshot) -> Vec<u8> {
     push_u32(&mut payload, product.assembly_joints.len() as u32);
     for joint in product.assembly_joints.values() {
         write_assembly_joint(&mut payload, joint);
+    }
+    push_u32(&mut payload, product.assembly_motion_couplings.len() as u32);
+    for coupling in product.assembly_motion_couplings.values() {
+        write_assembly_motion_coupling(&mut payload, coupling);
     }
     push_u32(&mut payload, product.assembly_motion_studies.len() as u32);
     for study in product.assembly_motion_studies.values() {
@@ -1745,6 +1757,79 @@ fn write_assembly_joint_limits(bytes: &mut Vec<u8>, limits: Option<AssemblyJoint
     if let Some(limits) = limits {
         push_u64(bytes, limits.min().to_bits());
         push_u64(bytes, limits.max().to_bits());
+    }
+}
+
+fn write_assembly_motion_coupling(bytes: &mut Vec<u8>, coupling: &AssemblyMotionCoupling) {
+    push_string(bytes, coupling.schema());
+    push_u64(bytes, coupling.id().0);
+    push_u64(bytes, coupling.input_joint_id().0);
+    push_u64(bytes, coupling.output_joint_id().0);
+    push_u64(bytes, coupling.input_reference_position().to_bits());
+    push_u64(bytes, coupling.output_reference_position().to_bits());
+    match coupling.transmission() {
+        AssemblyTransmissionKind::GearPair {
+            input_teeth,
+            output_teeth,
+            mesh,
+        } => {
+            push_u8(bytes, 1);
+            push_u32(bytes, input_teeth);
+            push_u32(bytes, output_teeth);
+            push_u8(
+                bytes,
+                match mesh {
+                    GearMeshKind::External => 1,
+                    GearMeshKind::Internal => 2,
+                },
+            );
+        }
+        AssemblyTransmissionKind::Belt {
+            input_pitch_diameter_mm,
+            output_pitch_diameter_mm,
+            crossed,
+        } => {
+            push_u8(bytes, 2);
+            push_u64(bytes, input_pitch_diameter_mm.to_bits());
+            push_u64(bytes, output_pitch_diameter_mm.to_bits());
+            push_u8(bytes, u8::from(crossed));
+        }
+        AssemblyTransmissionKind::Chain {
+            input_sprocket_teeth,
+            output_sprocket_teeth,
+        } => {
+            push_u8(bytes, 3);
+            push_u32(bytes, input_sprocket_teeth);
+            push_u32(bytes, output_sprocket_teeth);
+        }
+        AssemblyTransmissionKind::RackAndPinion {
+            pinion_pitch_diameter_mm,
+            direction,
+        } => {
+            push_u8(bytes, 4);
+            push_u64(bytes, pinion_pitch_diameter_mm.to_bits());
+            push_u8(
+                bytes,
+                match direction {
+                    AssemblyMotionDirection::Same => 1,
+                    AssemblyMotionDirection::Opposite => 2,
+                },
+            );
+        }
+        AssemblyTransmissionKind::LeadScrew {
+            lead_mm_per_revolution,
+            handedness,
+        } => {
+            push_u8(bytes, 5);
+            push_u64(bytes, lead_mm_per_revolution.to_bits());
+            push_u8(
+                bytes,
+                match handedness {
+                    ScrewHandedness::Right => 1,
+                    ScrewHandedness::Left => 2,
+                },
+            );
+        }
     }
 }
 
@@ -3049,6 +3134,66 @@ fn read_assembly_joint_limits(
     }
 }
 
+fn read_assembly_motion_coupling(
+    reader: &mut Reader<'_>,
+) -> Result<AssemblyMotionCoupling, PersistenceError> {
+    let schema = reader.string()?;
+    if schema != ASSEMBLY_MOTION_COUPLING_SCHEMA_V1 {
+        return Err(PersistenceError::InvalidAssemblyMotionCoupling);
+    }
+    let id = AssemblyMotionCouplingId(reader.u64()?);
+    let input_joint_id = AssemblyJointId(reader.u64()?);
+    let output_joint_id = AssemblyJointId(reader.u64()?);
+    let input_reference_position = f64::from_bits(reader.u64()?);
+    let output_reference_position = f64::from_bits(reader.u64()?);
+    let transmission = match reader.u8()? {
+        1 => AssemblyTransmissionKind::GearPair {
+            input_teeth: reader.u32()?,
+            output_teeth: reader.u32()?,
+            mesh: match reader.u8()? {
+                1 => GearMeshKind::External,
+                2 => GearMeshKind::Internal,
+                _ => return Err(PersistenceError::InvalidAssemblyMotionCoupling),
+            },
+        },
+        2 => AssemblyTransmissionKind::Belt {
+            input_pitch_diameter_mm: f64::from_bits(reader.u64()?),
+            output_pitch_diameter_mm: f64::from_bits(reader.u64()?),
+            crossed: reader.boolean()?,
+        },
+        3 => AssemblyTransmissionKind::Chain {
+            input_sprocket_teeth: reader.u32()?,
+            output_sprocket_teeth: reader.u32()?,
+        },
+        4 => AssemblyTransmissionKind::RackAndPinion {
+            pinion_pitch_diameter_mm: f64::from_bits(reader.u64()?),
+            direction: match reader.u8()? {
+                1 => AssemblyMotionDirection::Same,
+                2 => AssemblyMotionDirection::Opposite,
+                _ => return Err(PersistenceError::InvalidAssemblyMotionCoupling),
+            },
+        },
+        5 => AssemblyTransmissionKind::LeadScrew {
+            lead_mm_per_revolution: f64::from_bits(reader.u64()?),
+            handedness: match reader.u8()? {
+                1 => ScrewHandedness::Right,
+                2 => ScrewHandedness::Left,
+                _ => return Err(PersistenceError::InvalidAssemblyMotionCoupling),
+            },
+        },
+        _ => return Err(PersistenceError::InvalidAssemblyMotionCoupling),
+    };
+    Ok(AssemblyMotionCoupling {
+        schema,
+        id,
+        input_joint_id,
+        output_joint_id,
+        input_reference_position,
+        output_reference_position,
+        transmission,
+    })
+}
+
 fn read_assembly_motion_study(
     reader: &mut Reader<'_>,
 ) -> Result<AssemblyMotionStudy, PersistenceError> {
@@ -3920,6 +4065,18 @@ fn read_product(
                     return Err(PersistenceError::DuplicateAssemblyJoint);
                 }
             }
+            if capabilities.assembly_motion_couplings {
+                for _ in 0..reader.count()? {
+                    let coupling = read_assembly_motion_coupling(reader)?;
+                    if product
+                        .assembly_motion_couplings
+                        .insert(coupling.id(), Arc::new(coupling))
+                        .is_some()
+                    {
+                        return Err(PersistenceError::DuplicateAssemblyMotionCoupling);
+                    }
+                }
+            }
             for _ in 0..reader.count()? {
                 let study = read_assembly_motion_study(reader)?;
                 if product
@@ -4038,6 +4195,7 @@ pub enum PersistenceError {
     InvalidExactReference,
     InvalidAssemblyMate,
     InvalidAssemblyJoint,
+    InvalidAssemblyMotionCoupling,
     InvalidAssemblyMotionStudy,
     ChecksumMismatch,
     ResourceLimit,
@@ -4059,6 +4217,7 @@ pub enum PersistenceError {
     DuplicateGroundedOccurrence(OccurrenceId),
     DuplicateAssemblyMate,
     DuplicateAssemblyJoint,
+    DuplicateAssemblyMotionCoupling,
     DuplicateAssemblyMotionStudy,
     DuplicateGroup(GroupId),
     DuplicateLocalGroup(LocalGroupKey),
@@ -4164,6 +4323,9 @@ impl fmt::Display for PersistenceError {
             }
             Self::InvalidAssemblyMate => formatter.write_str("assembly mate is invalid"),
             Self::InvalidAssemblyJoint => formatter.write_str("assembly joint is invalid"),
+            Self::InvalidAssemblyMotionCoupling => {
+                formatter.write_str("assembly motion coupling is invalid")
+            }
             Self::InvalidAssemblyMotionStudy => {
                 formatter.write_str("assembly motion study is invalid")
             }
@@ -4208,6 +4370,9 @@ impl fmt::Display for PersistenceError {
             Self::DuplicateAssemblyMate => formatter.write_str("document repeats an assembly mate"),
             Self::DuplicateAssemblyJoint => {
                 formatter.write_str("document repeats an assembly joint")
+            }
+            Self::DuplicateAssemblyMotionCoupling => {
+                formatter.write_str("document repeats an assembly motion coupling")
             }
             Self::DuplicateAssemblyMotionStudy => {
                 formatter.write_str("document repeats an assembly motion study")

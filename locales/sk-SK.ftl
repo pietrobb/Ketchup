@@ -548,6 +548,7 @@ assistant-entity-occurrence = Výskyt
 assistant-entity-grounded-occurrence = Ukotvený výskyt
 assistant-entity-assembly-mate = Väzba zostavy
 assistant-entity-assembly-joint = Kinematický spoj zostavy
+assistant-entity-assembly-motion-coupling = Prevodová väzba zostavy
 assistant-entity-assembly-motion-study = Pohybová štúdia zostavy
 assistant-entity-occurrence-collections = Kolekcie výskytu
 assistant-entity-group = Skupina

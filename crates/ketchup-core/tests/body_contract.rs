@@ -456,10 +456,31 @@ fn invalid_body_mutations_preserve_revision_digest_and_history() {
 fn malformed_persisted_ownership_and_duplicate_ids_fail_closed() {
     let document = seed();
     let before = stamp(&document);
+    let snapshot = document.current();
+    let ownership = snapshot
+        .definition(DEFINITION)
+        .unwrap()
+        .feature_body_ownership(EXTRUSION)
+        .unwrap();
+    let mut encoded_ownership = EXTRUSION.0.to_le_bytes().to_vec();
+    encoded_ownership.extend_from_slice(&(ownership.input_body_ids().len() as u32).to_le_bytes());
+    for input in ownership.input_body_ids() {
+        encoded_ownership.extend_from_slice(&input.0.to_le_bytes());
+    }
+    encoded_ownership.push(u8::from(ownership.output_body_id().is_some()));
+    if let Some(output) = ownership.output_body_id() {
+        encoded_ownership.extend_from_slice(&output.0.to_le_bytes());
+    }
 
     let mut missing_body = persistence::save(&document.current());
     rewrite_payload(&mut missing_body, |payload| {
-        let output_body = payload.len() - 20;
+        let matches = payload
+            .windows(encoded_ownership.len())
+            .enumerate()
+            .filter_map(|(offset, bytes)| (bytes == encoded_ownership).then_some(offset))
+            .collect::<Vec<_>>();
+        assert_eq!(matches.len(), 1);
+        let output_body = matches[0] + encoded_ownership.len() - 8;
         payload[output_body..output_body + 8].copy_from_slice(&BodyId(99).0.to_le_bytes());
     });
     assert!(matches!(
@@ -472,8 +493,14 @@ fn malformed_persisted_ownership_and_duplicate_ids_fail_closed() {
 
     let mut duplicate_ownership = persistence::save(&document.current());
     rewrite_payload(&mut duplicate_ownership, |payload| {
-        let second_feature_id = payload.len() - 33;
-        payload[second_feature_id..second_feature_id + 8].copy_from_slice(&PROFILE.0.to_le_bytes());
+        let matches = payload
+            .windows(encoded_ownership.len())
+            .enumerate()
+            .filter_map(|(offset, bytes)| (bytes == encoded_ownership).then_some(offset))
+            .collect::<Vec<_>>();
+        assert_eq!(matches.len(), 1);
+        let feature_id = matches[0];
+        payload[feature_id..feature_id + 8].copy_from_slice(&PROFILE.0.to_le_bytes());
     });
     assert!(matches!(
         persistence::load(&duplicate_ownership),

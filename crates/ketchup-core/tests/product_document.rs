@@ -304,7 +304,7 @@ fn product_schema_round_trip_preserves_identity_hierarchy_values_and_digest() {
     let manifest_length = u32::from_le_bytes(schema_fifteen[12..16].try_into().unwrap()) as usize;
     let payload_offset = 16 + manifest_length;
     strip_schema_34_tail(&mut schema_fifteen, &expected);
-    schema_fifteen.truncate(schema_fifteen.len() - 20);
+    schema_fifteen.truncate(schema_fifteen.len() - 32);
     schema_fifteen[10..12].copy_from_slice(&15_u16.to_le_bytes());
     let payload_length = (schema_fifteen.len() - payload_offset) as u64;
     schema_fifteen[16..24].copy_from_slice(&payload_length.to_le_bytes());
@@ -322,7 +322,7 @@ fn product_schema_round_trip_preserves_identity_hierarchy_values_and_digest() {
     let payload_offset = 16 + manifest_length;
     strip_schema_34_tail(&mut schema_nine, &expected);
     schema_nine.drain(payload_offset + 25..payload_offset + 29);
-    schema_nine.truncate(schema_nine.len() - 32);
+    schema_nine.truncate(schema_nine.len() - 44);
     schema_nine[10..12].copy_from_slice(&9_u16.to_le_bytes());
     let payload_length = (schema_nine.len() - payload_offset) as u64;
     schema_nine[16..24].copy_from_slice(&payload_length.to_le_bytes());

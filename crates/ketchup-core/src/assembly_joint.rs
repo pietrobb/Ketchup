@@ -2,6 +2,7 @@ use crate::document::{
     CanonicalCommand, CommandBatch, DocumentStore, GroupId, OccurrenceId, Proposal,
     ProposalPrepareError, Snapshot, Transform,
 };
+use crate::mechanical_coupling::{AssemblyMotionCoupling, AssemblyMotionCouplingId};
 use crate::prismatic::Aabb;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -896,6 +897,8 @@ pub enum AssemblyKinematicSolveError {
     FixedJointDriven(AssemblyJointId),
     InvalidDriverPosition(AssemblyJointId),
     OverConstrainedDriver(AssemblyJointId),
+    CouplingConflict(AssemblyMotionCouplingId),
+    CoupledPositionOutsideLimits(AssemblyJointId),
 }
 
 impl fmt::Display for AssemblyKinematicSolveError {
@@ -933,6 +936,16 @@ impl fmt::Display for AssemblyKinematicSolveError {
             Self::OverConstrainedDriver(id) => write!(
                 formatter,
                 "assembly joint {} has conflicting motion driver positions",
+                id.0
+            ),
+            Self::CouplingConflict(id) => write!(
+                formatter,
+                "assembly motion coupling {} conflicts with another driver or coupling",
+                id.0
+            ),
+            Self::CoupledPositionOutsideLimits(id) => write!(
+                formatter,
+                "assembly motion coupling drives joint {} outside its valid range",
                 id.0
             ),
         }
@@ -1291,6 +1304,9 @@ fn solve_assembly_joint_kinematics_internal(
     kind_overrides: &BTreeMap<AssemblyJointId, AssemblyJointKind>,
 ) -> Result<AssemblyKinematicSolution, AssemblyKinematicSolveError> {
     let driver_overrides = validate_driver_overrides(snapshot, drivers)?;
+    let position_overrides = propagate_motion_couplings(snapshot, &driver_overrides)?;
+    let remaining_dof_joint_ids =
+        remaining_dof_joint_ids(snapshot, position_overrides.keys().copied().collect());
     let mut source_world = BTreeMap::new();
     let mut occurrence_parents = BTreeMap::<OccurrenceId, Option<GroupId>>::new();
     for occurrence in snapshot.occurrences() {
@@ -1310,9 +1326,7 @@ fn solve_assembly_joint_kinematics_internal(
             let driver_count = driver_overrides
                 .get(&joint.id())
                 .map_or(0, |driver| driver.count);
-            let remaining_dof = u8::from(
-                joint.kind().position().is_some() && !driver_overrides.contains_key(&joint.id()),
-            );
+            let remaining_dof = u8::from(remaining_dof_joint_ids.contains(&joint.id()));
             AssemblyKinematicJointDiagnostic {
                 joint_id: joint.id(),
                 remaining_dof,
@@ -1366,7 +1380,7 @@ fn solve_assembly_joint_kinematics_internal(
                 AssemblyKinematicSolveError::NonInvertibleTransform(parent_id),
             )?;
             let target_kind = kind_overrides.get(&joint.id()).copied().unwrap_or_else(|| {
-                driver_overrides
+                position_overrides
                     .get(&joint.id())
                     .map_or(joint.kind(), |driver| {
                         joint
@@ -1422,7 +1436,7 @@ fn solve_assembly_joint_kinematics_internal(
         joint_diagnostics,
         redundant_driver_joint_ids,
         driven_joint_positions: if motion_study_solution {
-            driver_overrides
+            position_overrides
                 .iter()
                 .map(|(id, driver)| (*id, driver.position))
                 .collect()
@@ -1473,6 +1487,127 @@ fn validate_driver_overrides(
         }
     }
     Ok(overrides)
+}
+
+fn propagate_motion_couplings(
+    snapshot: &Snapshot,
+    drivers: &BTreeMap<AssemblyJointId, ValidatedDriver>,
+) -> Result<BTreeMap<AssemblyJointId, ValidatedDriver>, AssemblyKinematicSolveError> {
+    let couplings = snapshot.assembly_motion_couplings().collect::<Vec<_>>();
+    let mut positions = drivers.clone();
+
+    for _ in 0..=couplings.len() {
+        let mut advanced = false;
+        for coupling in &couplings {
+            let input = positions.get(&coupling.input_joint_id()).copied();
+            let output = positions.get(&coupling.output_joint_id()).copied();
+            match (input, output) {
+                (Some(input), Some(output)) => {
+                    if !coupled_positions_equal(
+                        output.position,
+                        coupling.output_position(input.position),
+                    ) {
+                        return Err(AssemblyKinematicSolveError::CouplingConflict(coupling.id()));
+                    }
+                }
+                (Some(input), None) => {
+                    insert_coupled_position(
+                        snapshot,
+                        &mut positions,
+                        coupling,
+                        coupling.output_joint_id(),
+                        coupling.output_position(input.position),
+                    )?;
+                    advanced = true;
+                }
+                (None, Some(output)) => {
+                    insert_coupled_position(
+                        snapshot,
+                        &mut positions,
+                        coupling,
+                        coupling.input_joint_id(),
+                        coupling.input_position(output.position),
+                    )?;
+                    advanced = true;
+                }
+                (None, None) => {}
+            }
+        }
+        if !advanced {
+            break;
+        }
+    }
+    Ok(positions)
+}
+
+fn insert_coupled_position(
+    snapshot: &Snapshot,
+    positions: &mut BTreeMap<AssemblyJointId, ValidatedDriver>,
+    coupling: &AssemblyMotionCoupling,
+    joint_id: AssemblyJointId,
+    position: f64,
+) -> Result<(), AssemblyKinematicSolveError> {
+    let joint = snapshot
+        .assembly_joint(joint_id)
+        .ok_or(AssemblyKinematicSolveError::CouplingConflict(coupling.id()))?;
+    let kind = joint
+        .kind()
+        .with_position(position)
+        .filter(|kind| kind.is_valid())
+        .ok_or(AssemblyKinematicSolveError::CoupledPositionOutsideLimits(
+            joint_id,
+        ))?;
+    let position = kind
+        .position()
+        .expect("validated coupled joint remains movable");
+    positions.insert(joint_id, ValidatedDriver { position, count: 0 });
+    Ok(())
+}
+
+fn coupled_positions_equal(left: f64, right: f64) -> bool {
+    let scale = left.abs().max(right.abs()).max(1.0);
+    (left - right).abs() <= 1.0e-10 * scale
+}
+
+fn remaining_dof_joint_ids(
+    snapshot: &Snapshot,
+    driven: BTreeSet<AssemblyJointId>,
+) -> BTreeSet<AssemblyJointId> {
+    let movable = snapshot
+        .assembly_joints()
+        .filter(|joint| joint.kind().position().is_some())
+        .map(AssemblyJoint::id)
+        .collect::<BTreeSet<_>>();
+    let mut adjacency = BTreeMap::<AssemblyJointId, BTreeSet<AssemblyJointId>>::new();
+    for coupling in snapshot.assembly_motion_couplings() {
+        adjacency
+            .entry(coupling.input_joint_id())
+            .or_default()
+            .insert(coupling.output_joint_id());
+        adjacency
+            .entry(coupling.output_joint_id())
+            .or_default()
+            .insert(coupling.input_joint_id());
+    }
+
+    let mut pending = movable;
+    let mut remaining = BTreeSet::new();
+    while let Some(start) = pending.pop_first() {
+        let mut component = BTreeSet::from([start]);
+        let mut frontier = vec![start];
+        while let Some(joint_id) = frontier.pop() {
+            for neighbour in adjacency.get(&joint_id).into_iter().flatten() {
+                if pending.remove(neighbour) {
+                    component.insert(*neighbour);
+                    frontier.push(*neighbour);
+                }
+            }
+        }
+        if component.is_disjoint(&driven) {
+            remaining.insert(start);
+        }
+    }
+    remaining
 }
 
 fn joint_motion_transform(kind: AssemblyJointKind) -> Transform {

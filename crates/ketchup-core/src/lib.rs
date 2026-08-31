@@ -19,6 +19,7 @@ pub mod graph;
 pub mod import;
 pub mod intent;
 pub mod linear_hardware;
+pub mod mechanical_coupling;
 pub mod persistence;
 pub mod prismatic;
 pub mod reference_examples;

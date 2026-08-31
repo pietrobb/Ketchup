@@ -10545,6 +10545,9 @@ impl KetchupApp {
             AuthoritativeDependency::AssemblyJoint(id) => {
                 Some(("assistant-entity-assembly-joint", id.0))
             }
+            AuthoritativeDependency::AssemblyMotionCoupling(id) => {
+                Some(("assistant-entity-assembly-motion-coupling", id.0))
+            }
             AuthoritativeDependency::AssemblyMotionStudy(id) => {
                 Some(("assistant-entity-assembly-motion-study", id.0))
             }

@@ -29,6 +29,10 @@ use crate::import::{
     ImportDiagnosticSeverity, ImportFormat, ImportId, ImportLengthUnit, ImportOutputRef,
     ImportReceipt, ImportUnitAuthority,
 };
+use crate::mechanical_coupling::{
+    ASSEMBLY_MOTION_COUPLING_SCHEMA_V1, AssemblyMotionCoupling, AssemblyMotionCouplingId,
+    CoupledJointKind,
+};
 use crate::prismatic::{CanonicalJoint, JointId, PrismaticError};
 use crate::sketch::{
     FeatureExtent, FeatureExtentEnd, PadPocketOperation, PadSpec, PocketSpec, PrincipalPlane,
@@ -1538,6 +1542,8 @@ pub(crate) struct ProductModel {
     pub(crate) grounded_occurrences: BTreeSet<OccurrenceId>,
     pub(crate) assembly_mates: BTreeMap<AssemblyMateId, Arc<AssemblyMate>>,
     pub(crate) assembly_joints: BTreeMap<AssemblyJointId, Arc<AssemblyJoint>>,
+    pub(crate) assembly_motion_couplings:
+        BTreeMap<AssemblyMotionCouplingId, Arc<AssemblyMotionCoupling>>,
     pub(crate) assembly_motion_studies: BTreeMap<AssemblyMotionStudyId, Arc<AssemblyMotionStudy>>,
     pub(crate) drawing_sheets: BTreeMap<DrawingSheetId, Arc<DrawingSheet>>,
     pub(crate) groups: BTreeMap<GroupId, Arc<Group>>,
@@ -1588,6 +1594,7 @@ impl Default for ProductModel {
             grounded_occurrences: BTreeSet::new(),
             assembly_mates: BTreeMap::new(),
             assembly_joints: BTreeMap::new(),
+            assembly_motion_couplings: BTreeMap::new(),
             assembly_motion_studies: BTreeMap::new(),
             drawing_sheets: BTreeMap::new(),
             groups: BTreeMap::new(),
@@ -2084,6 +2091,11 @@ pub enum CanonicalCommand {
     DeleteAssemblyJoint {
         id: AssemblyJointId,
     },
+    CreateAssemblyMotionCoupling(AssemblyMotionCoupling),
+    UpdateAssemblyMotionCoupling(AssemblyMotionCoupling),
+    DeleteAssemblyMotionCoupling {
+        id: AssemblyMotionCouplingId,
+    },
     CreateAssemblyMotionStudy(AssemblyMotionStudy),
     UpdateAssemblyMotionStudy(AssemblyMotionStudy),
     DeleteAssemblyMotionStudy {
@@ -2247,6 +2259,7 @@ pub enum AuthoritativeDependency {
     GroundedOccurrence(OccurrenceId),
     AssemblyMate(AssemblyMateId),
     AssemblyJoint(AssemblyJointId),
+    AssemblyMotionCoupling(AssemblyMotionCouplingId),
     AssemblyMotionStudy(AssemblyMotionStudyId),
     DrawingSheet(DrawingSheetId),
     Group(GroupId),
@@ -3126,6 +3139,24 @@ impl Snapshot {
 
     pub fn assembly_joints(&self) -> impl Iterator<Item = &AssemblyJoint> {
         self.product.assembly_joints.values().map(Arc::as_ref)
+    }
+
+    #[must_use]
+    pub fn assembly_motion_coupling(
+        &self,
+        id: AssemblyMotionCouplingId,
+    ) -> Option<&AssemblyMotionCoupling> {
+        self.product
+            .assembly_motion_couplings
+            .get(&id)
+            .map(Arc::as_ref)
+    }
+
+    pub fn assembly_motion_couplings(&self) -> impl Iterator<Item = &AssemblyMotionCoupling> {
+        self.product
+            .assembly_motion_couplings
+            .values()
+            .map(Arc::as_ref)
     }
 
     #[must_use]
@@ -5364,10 +5395,50 @@ impl DocumentStore {
                     }) {
                         return Err(CanonicalError::AssemblyJointInMotionStudy(*id));
                     }
+                    if product.assembly_motion_couplings.values().any(|coupling| {
+                        coupling.input_joint_id() == *id || coupling.output_joint_id() == *id
+                    }) {
+                        return Err(CanonicalError::AssemblyJointInMotionCoupling(*id));
+                    }
                     product
                         .assembly_joints
                         .remove(id)
                         .ok_or(CanonicalError::AssemblyJointNotFound(*id))?;
+                }
+                CanonicalCommand::CreateAssemblyMotionCoupling(coupling) => {
+                    ensure_product_id(coupling.id().0)?;
+                    if product
+                        .assembly_motion_couplings
+                        .contains_key(&coupling.id())
+                    {
+                        return Err(CanonicalError::AssemblyMotionCouplingAlreadyExists(
+                            coupling.id(),
+                        ));
+                    }
+                    validate_assembly_motion_coupling(&product, coupling)?;
+                    product
+                        .assembly_motion_couplings
+                        .insert(coupling.id(), Arc::new(coupling.clone()));
+                }
+                CanonicalCommand::UpdateAssemblyMotionCoupling(coupling) => {
+                    if !product
+                        .assembly_motion_couplings
+                        .contains_key(&coupling.id())
+                    {
+                        return Err(CanonicalError::AssemblyMotionCouplingNotFound(
+                            coupling.id(),
+                        ));
+                    }
+                    validate_assembly_motion_coupling(&product, coupling)?;
+                    product
+                        .assembly_motion_couplings
+                        .insert(coupling.id(), Arc::new(coupling.clone()));
+                }
+                CanonicalCommand::DeleteAssemblyMotionCoupling { id } => {
+                    product
+                        .assembly_motion_couplings
+                        .remove(id)
+                        .ok_or(CanonicalError::AssemblyMotionCouplingNotFound(*id))?;
                 }
                 CanonicalCommand::CreateAssemblyMotionStudy(study) => {
                     ensure_product_id(study.id().0)?;
@@ -7415,7 +7486,11 @@ pub enum CanonicalError {
     AssemblyJointAlreadyExists(AssemblyJointId),
     AssemblyJointNotFound(AssemblyJointId),
     AssemblyJointInMotionStudy(AssemblyJointId),
+    AssemblyJointInMotionCoupling(AssemblyJointId),
     InvalidAssemblyJoint(AssemblyJointId),
+    AssemblyMotionCouplingAlreadyExists(AssemblyMotionCouplingId),
+    AssemblyMotionCouplingNotFound(AssemblyMotionCouplingId),
+    InvalidAssemblyMotionCoupling(AssemblyMotionCouplingId),
     UnsynchronizedAssemblyJointPosition(AssemblyJointId),
     AssemblyMotionStudyAlreadyExists(AssemblyMotionStudyId),
     AssemblyMotionStudyNotFound(AssemblyMotionStudyId),
@@ -7546,7 +7621,17 @@ impl CanonicalError {
             Self::AssemblyJointAlreadyExists(..) => "canonical.assembly_joint_already_exists",
             Self::AssemblyJointNotFound(..) => "canonical.assembly_joint_not_found",
             Self::AssemblyJointInMotionStudy(..) => "canonical.assembly_joint_in_motion_study",
+            Self::AssemblyJointInMotionCoupling(..) => {
+                "canonical.assembly_joint_in_motion_coupling"
+            }
             Self::InvalidAssemblyJoint(..) => "canonical.invalid_assembly_joint",
+            Self::AssemblyMotionCouplingAlreadyExists(..) => {
+                "canonical.assembly_motion_coupling_already_exists"
+            }
+            Self::AssemblyMotionCouplingNotFound(..) => {
+                "canonical.assembly_motion_coupling_not_found"
+            }
+            Self::InvalidAssemblyMotionCoupling(..) => "canonical.invalid_assembly_motion_coupling",
             Self::UnsynchronizedAssemblyJointPosition(..) => {
                 "canonical.unsynchronized_assembly_joint_position"
             }
@@ -7785,6 +7870,11 @@ impl fmt::Display for CanonicalError {
             Self::AssemblyJointInMotionStudy(id) => {
                 write!(formatter, "assembly joint {} is still used by a motion study", id.0)
             }
+            Self::AssemblyJointInMotionCoupling(id) => write!(
+                formatter,
+                "assembly joint {} is still used by a motion coupling",
+                id.0
+            ),
             Self::InvalidAssemblyJoint(id) => {
                 write!(formatter, "assembly joint {} is invalid", id.0)
             }
@@ -7793,6 +7883,15 @@ impl fmt::Display for CanonicalError {
                 "assembly joint {} position requires an atomic solve transform",
                 id.0
             ),
+            Self::AssemblyMotionCouplingAlreadyExists(id) => {
+                write!(formatter, "assembly motion coupling {} already exists", id.0)
+            }
+            Self::AssemblyMotionCouplingNotFound(id) => {
+                write!(formatter, "assembly motion coupling {} does not exist", id.0)
+            }
+            Self::InvalidAssemblyMotionCoupling(id) => {
+                write!(formatter, "assembly motion coupling {} is invalid", id.0)
+            }
             Self::AssemblyMotionStudyAlreadyExists(id) => {
                 write!(formatter, "assembly motion study {} already exists", id.0)
             }
@@ -11641,6 +11740,132 @@ fn validate_assembly_joint(
     Ok(())
 }
 
+fn validate_assembly_motion_coupling(
+    product: &ProductModel,
+    coupling: &AssemblyMotionCoupling,
+) -> Result<(), CanonicalError> {
+    if !coupling.has_valid_shape() || coupling.schema() != ASSEMBLY_MOTION_COUPLING_SCHEMA_V1 {
+        return Err(CanonicalError::InvalidAssemblyMotionCoupling(coupling.id()));
+    }
+    let input = product
+        .assembly_joints
+        .get(&coupling.input_joint_id())
+        .ok_or(CanonicalError::AssemblyJointNotFound(
+            coupling.input_joint_id(),
+        ))?;
+    let output = product
+        .assembly_joints
+        .get(&coupling.output_joint_id())
+        .ok_or(CanonicalError::AssemblyJointNotFound(
+            coupling.output_joint_id(),
+        ))?;
+    let (expected_input, expected_output) = coupling.transmission().joint_kinds();
+    if joint_kind_class(input.kind()) != Some(expected_input)
+        || joint_kind_class(output.kind()) != Some(expected_output)
+        || input
+            .kind()
+            .with_position(coupling.input_reference_position())
+            .is_none_or(|kind| !kind.is_valid())
+        || output
+            .kind()
+            .with_position(coupling.output_reference_position())
+            .is_none_or(|kind| !kind.is_valid())
+        || !motion_values_equal(
+            output
+                .kind()
+                .position()
+                .expect("typed coupling output is movable"),
+            coupling.output_position(
+                input
+                    .kind()
+                    .position()
+                    .expect("typed coupling input is movable"),
+            ),
+        )
+    {
+        return Err(CanonicalError::InvalidAssemblyMotionCoupling(coupling.id()));
+    }
+
+    let mut couplings = product
+        .assembly_motion_couplings
+        .values()
+        .filter(|existing| existing.id() != coupling.id())
+        .map(Arc::as_ref)
+        .collect::<Vec<_>>();
+    couplings.push(coupling);
+    validate_motion_coupling_graph(&couplings)
+        .map_err(CanonicalError::InvalidAssemblyMotionCoupling)
+}
+
+fn joint_kind_class(kind: AssemblyJointKind) -> Option<CoupledJointKind> {
+    match kind {
+        AssemblyJointKind::Fixed => None,
+        AssemblyJointKind::Revolute { .. } => Some(CoupledJointKind::Revolute),
+        AssemblyJointKind::Prismatic { .. } => Some(CoupledJointKind::Prismatic),
+    }
+}
+
+fn validate_motion_coupling_graph(
+    couplings: &[&AssemblyMotionCoupling],
+) -> Result<(), AssemblyMotionCouplingId> {
+    let mut adjacency = BTreeMap::<
+        AssemblyJointId,
+        Vec<(AssemblyJointId, f64, f64, AssemblyMotionCouplingId)>,
+    >::new();
+    for coupling in couplings {
+        let scale = coupling.transmission().scale();
+        let offset =
+            coupling.output_reference_position() - scale * coupling.input_reference_position();
+        adjacency
+            .entry(coupling.input_joint_id())
+            .or_default()
+            .push((coupling.output_joint_id(), scale, offset, coupling.id()));
+        adjacency
+            .entry(coupling.output_joint_id())
+            .or_default()
+            .push((
+                coupling.input_joint_id(),
+                scale.recip(),
+                -offset / scale,
+                coupling.id(),
+            ));
+    }
+
+    let mut unresolved = adjacency.keys().copied().collect::<BTreeSet<_>>();
+    while let Some(root) = unresolved.pop_first() {
+        let mut transforms = BTreeMap::from([(root, (1.0_f64, 0.0_f64))]);
+        let mut pending = vec![root];
+        while let Some(joint_id) = pending.pop() {
+            let (source_scale, source_offset) = transforms[&joint_id];
+            for (neighbour, edge_scale, edge_offset, coupling_id) in
+                adjacency.get(&joint_id).into_iter().flatten()
+            {
+                let candidate = (
+                    edge_scale * source_scale,
+                    edge_scale * source_offset + edge_offset,
+                );
+                if let Some(existing) = transforms.get(neighbour) {
+                    if !motion_values_equal(existing.0, candidate.0)
+                        || !motion_values_equal(existing.1, candidate.1)
+                    {
+                        return Err(*coupling_id);
+                    }
+                } else {
+                    transforms.insert(*neighbour, candidate);
+                    unresolved.remove(neighbour);
+                    pending.push(*neighbour);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn motion_values_equal(left: f64, right: f64) -> bool {
+    let scale = left.abs().max(right.abs()).max(1.0);
+    (left - right).abs() <= 1.0e-10 * scale
+}
+
 fn validate_assembly_motion_study(
     product: &ProductModel,
     study: &AssemblyMotionStudy,
@@ -11796,6 +12021,12 @@ fn validate_product(product: &ProductModel) -> Result<(), CanonicalError> {
             return Err(CanonicalError::InvalidAssemblyJoint(*id));
         }
         validate_assembly_joint(product, joint)?;
+    }
+    for (id, coupling) in &product.assembly_motion_couplings {
+        if *id != coupling.id() {
+            return Err(CanonicalError::InvalidAssemblyMotionCoupling(*id));
+        }
+        validate_assembly_motion_coupling(product, coupling)?;
     }
     for (id, study) in &product.assembly_motion_studies {
         if *id != study.id() {
@@ -13491,6 +13722,15 @@ fn authoritative_writes(
             | CanonicalCommand::DeleteAssemblyJoint { id } => {
                 writes.insert(AuthoritativeDependency::AssemblyJoint(*id));
             }
+            CanonicalCommand::CreateAssemblyMotionCoupling(coupling)
+            | CanonicalCommand::UpdateAssemblyMotionCoupling(coupling) => {
+                writes.insert(AuthoritativeDependency::AssemblyMotionCoupling(
+                    coupling.id(),
+                ));
+            }
+            CanonicalCommand::DeleteAssemblyMotionCoupling { id } => {
+                writes.insert(AuthoritativeDependency::AssemblyMotionCoupling(*id));
+            }
             CanonicalCommand::CreateAssemblyMotionStudy(study)
             | CanonicalCommand::UpdateAssemblyMotionStudy(study) => {
                 writes.insert(AuthoritativeDependency::AssemblyMotionStudy(study.id()));
@@ -13870,6 +14110,29 @@ fn authoritative_dependencies(
                         .assembly_motion_studies()
                         .map(|study| AuthoritativeDependency::AssemblyMotionStudy(study.id())),
                 );
+                dependencies.extend(snapshot.assembly_motion_couplings().map(|coupling| {
+                    AuthoritativeDependency::AssemblyMotionCoupling(coupling.id())
+                }));
+            }
+            CanonicalCommand::CreateAssemblyMotionCoupling(coupling)
+            | CanonicalCommand::UpdateAssemblyMotionCoupling(coupling) => {
+                dependencies.insert(AuthoritativeDependency::AssemblyMotionCoupling(
+                    coupling.id(),
+                ));
+                dependencies.insert(AuthoritativeDependency::AssemblyJoint(
+                    coupling.input_joint_id(),
+                ));
+                dependencies.insert(AuthoritativeDependency::AssemblyJoint(
+                    coupling.output_joint_id(),
+                ));
+                dependencies.extend(
+                    snapshot
+                        .assembly_motion_couplings()
+                        .map(|value| AuthoritativeDependency::AssemblyMotionCoupling(value.id())),
+                );
+            }
+            CanonicalCommand::DeleteAssemblyMotionCoupling { id } => {
+                dependencies.insert(AuthoritativeDependency::AssemblyMotionCoupling(*id));
             }
             CanonicalCommand::CreateAssemblyMotionStudy(study)
             | CanonicalCommand::UpdateAssemblyMotionStudy(study) => {
@@ -14474,6 +14737,13 @@ fn digest_snapshot(snapshot: &Snapshot) -> String {
         digest.u64(snapshot.product.assembly_joints.len() as u64);
         for joint in snapshot.product.assembly_joints.values() {
             digest.assembly_joint(joint);
+        }
+    }
+    if !snapshot.product.assembly_motion_couplings.is_empty() {
+        digest.bytes(b"canonical-assembly-motion-couplings.v1");
+        digest.u64(snapshot.product.assembly_motion_couplings.len() as u64);
+        for coupling in snapshot.product.assembly_motion_couplings.values() {
+            digest.assembly_motion_coupling(coupling);
         }
     }
     if !snapshot.product.assembly_motion_studies.is_empty() {
@@ -15438,6 +15708,74 @@ impl StableDigest {
         }
     }
 
+    fn assembly_motion_coupling(&mut self, coupling: &AssemblyMotionCoupling) {
+        use crate::mechanical_coupling::{
+            AssemblyMotionDirection, AssemblyTransmissionKind, GearMeshKind, ScrewHandedness,
+        };
+
+        self.bytes(coupling.schema().as_bytes());
+        self.u64(coupling.id().0);
+        self.u64(coupling.input_joint_id().0);
+        self.u64(coupling.output_joint_id().0);
+        self.u64(coupling.input_reference_position().to_bits());
+        self.u64(coupling.output_reference_position().to_bits());
+        match coupling.transmission() {
+            AssemblyTransmissionKind::GearPair {
+                input_teeth,
+                output_teeth,
+                mesh,
+            } => {
+                self.byte(1);
+                self.u64(u64::from(input_teeth));
+                self.u64(u64::from(output_teeth));
+                self.byte(match mesh {
+                    GearMeshKind::External => 1,
+                    GearMeshKind::Internal => 2,
+                });
+            }
+            AssemblyTransmissionKind::Belt {
+                input_pitch_diameter_mm,
+                output_pitch_diameter_mm,
+                crossed,
+            } => {
+                self.byte(2);
+                self.u64(input_pitch_diameter_mm.to_bits());
+                self.u64(output_pitch_diameter_mm.to_bits());
+                self.byte(u8::from(crossed));
+            }
+            AssemblyTransmissionKind::Chain {
+                input_sprocket_teeth,
+                output_sprocket_teeth,
+            } => {
+                self.byte(3);
+                self.u64(u64::from(input_sprocket_teeth));
+                self.u64(u64::from(output_sprocket_teeth));
+            }
+            AssemblyTransmissionKind::RackAndPinion {
+                pinion_pitch_diameter_mm,
+                direction,
+            } => {
+                self.byte(4);
+                self.u64(pinion_pitch_diameter_mm.to_bits());
+                self.byte(match direction {
+                    AssemblyMotionDirection::Same => 1,
+                    AssemblyMotionDirection::Opposite => 2,
+                });
+            }
+            AssemblyTransmissionKind::LeadScrew {
+                lead_mm_per_revolution,
+                handedness,
+            } => {
+                self.byte(5);
+                self.u64(lead_mm_per_revolution.to_bits());
+                self.byte(match handedness {
+                    ScrewHandedness::Right => 1,
+                    ScrewHandedness::Left => 2,
+                });
+            }
+        }
+    }
+
     fn assembly_motion_study(&mut self, study: &AssemblyMotionStudy) {
         self.bytes(study.schema().as_bytes());
         self.u64(study.id().0);
@@ -15704,6 +16042,16 @@ impl StableDigest {
                 if let Some(joint) = product.assembly_joints.get(&id) {
                     self.byte(1);
                     self.assembly_joint(joint);
+                } else {
+                    self.byte(0);
+                }
+            }
+            AuthoritativeDependency::AssemblyMotionCoupling(id) => {
+                self.byte(36);
+                self.u64(id.0);
+                if let Some(coupling) = product.assembly_motion_couplings.get(&id) {
+                    self.byte(1);
+                    self.assembly_motion_coupling(coupling);
                 } else {
                     self.byte(0);
                 }
@@ -16244,6 +16592,18 @@ impl StableDigest {
             }
             CanonicalCommand::DeleteAssemblyJoint { id } => {
                 self.byte(78);
+                self.u64(id.0);
+            }
+            CanonicalCommand::CreateAssemblyMotionCoupling(coupling) => {
+                self.byte(82);
+                self.assembly_motion_coupling(coupling);
+            }
+            CanonicalCommand::UpdateAssemblyMotionCoupling(coupling) => {
+                self.byte(83);
+                self.assembly_motion_coupling(coupling);
+            }
+            CanonicalCommand::DeleteAssemblyMotionCoupling { id } => {
+                self.byte(84);
                 self.u64(id.0);
             }
             CanonicalCommand::CreateAssemblyMotionStudy(study) => {

@@ -5,6 +5,7 @@ use crate::document::{
     Snapshot, Transform, UnitSystem,
 };
 use crate::graph::{OverrideMergePolicy, RuleOutput, SlotResolution, SlotSegment, ValueType};
+use crate::mechanical_coupling::AssemblyTransmissionKind;
 use crate::space::{ClearanceOwner, ClearanceSeverity};
 use crate::validation::ValidationReport;
 use std::fmt::Write;
@@ -2070,6 +2071,59 @@ pub fn encode_semantic_state_with_results(
             joint.child_occurrence_id().0
         )
         .unwrap();
+    }
+    for coupling in snapshot.assembly_motion_couplings() {
+        let detail = match coupling.transmission() {
+            AssemblyTransmissionKind::GearPair {
+                input_teeth,
+                output_teeth,
+                mesh,
+            } => format!("input_teeth:{input_teeth},output_teeth:{output_teeth},mesh:{mesh:?}"),
+            AssemblyTransmissionKind::Belt {
+                input_pitch_diameter_mm,
+                output_pitch_diameter_mm,
+                crossed,
+            } => format!(
+                "input_pitch_diameter_bits:{:016x},output_pitch_diameter_bits:{:016x},crossed:{crossed}",
+                input_pitch_diameter_mm.to_bits(),
+                output_pitch_diameter_mm.to_bits()
+            ),
+            AssemblyTransmissionKind::Chain {
+                input_sprocket_teeth,
+                output_sprocket_teeth,
+            } => format!(
+                "input_sprocket_teeth:{input_sprocket_teeth},output_sprocket_teeth:{output_sprocket_teeth}"
+            ),
+            AssemblyTransmissionKind::RackAndPinion {
+                pinion_pitch_diameter_mm,
+                direction,
+            } => format!(
+                "pinion_pitch_diameter_bits:{:016x},direction:{direction:?}",
+                pinion_pitch_diameter_mm.to_bits()
+            ),
+            AssemblyTransmissionKind::LeadScrew {
+                lead_mm_per_revolution,
+                handedness,
+            } => format!(
+                "lead_bits:{:016x},handedness:{handedness:?}",
+                lead_mm_per_revolution.to_bits()
+            ),
+        };
+        for output in [&mut complete, &mut agent] {
+            writeln!(
+                output,
+                "assembly_motion_coupling.{}=schema:{:?},input:{},output:{},kind:{},input_reference_bits:{:016x},output_reference_bits:{:016x},scale_bits:{:016x},{detail}",
+                coupling.id().0,
+                coupling.schema(),
+                coupling.input_joint_id().0,
+                coupling.output_joint_id().0,
+                coupling.transmission().label(),
+                coupling.input_reference_position().to_bits(),
+                coupling.output_reference_position().to_bits(),
+                coupling.transmission().scale().to_bits()
+            )
+            .unwrap();
+        }
     }
     for study in snapshot.assembly_motion_studies() {
         let drivers = study
