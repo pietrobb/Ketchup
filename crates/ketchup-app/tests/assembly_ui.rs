@@ -1050,10 +1050,7 @@ fn hettich_drawer_example_opens_and_edits_through_the_general_headless_assembly_
     assert_eq!(imported.len(), 6);
     assert!(imported.iter().all(|(_, spec)| spec.solid_count == 1));
     let topology_totals = imported.iter().fold([0_u32; 5], |mut totals, (_, spec)| {
-        for (total, count) in totals
-            .iter_mut()
-            .zip(spec.topology_counts.unwrap().into_iter())
-        {
+        for (total, count) in totals.iter_mut().zip(spec.topology_counts.unwrap()) {
             *total += count;
         }
         totals

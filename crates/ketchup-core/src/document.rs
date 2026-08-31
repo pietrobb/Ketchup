@@ -11844,6 +11844,14 @@ fn validate_motion_coupling_graph(
                     edge_scale * source_scale,
                     edge_scale * source_offset + edge_offset,
                 );
+                if !candidate.0.is_finite()
+                    || candidate.0 == 0.0
+                    || !candidate.0.recip().is_finite()
+                    || !candidate.1.is_finite()
+                    || !(-candidate.1 / candidate.0).is_finite()
+                {
+                    return Err(*coupling_id);
+                }
                 if let Some(existing) = transforms.get(neighbour) {
                     if !motion_values_equal(existing.0, candidate.0)
                         || !motion_values_equal(existing.1, candidate.1)
@@ -13994,6 +14002,9 @@ fn authoritative_dependencies(
                         .assembly_motion_studies()
                         .map(|study| AuthoritativeDependency::AssemblyMotionStudy(study.id())),
                 );
+                dependencies.extend(snapshot.assembly_motion_couplings().map(|coupling| {
+                    AuthoritativeDependency::AssemblyMotionCoupling(coupling.id())
+                }));
             }
             CanonicalCommand::ApplyAssemblySolve { transforms, .. } => {
                 dependencies.extend(
@@ -14029,6 +14040,9 @@ fn authoritative_dependencies(
                         .assembly_motion_studies()
                         .map(|study| AuthoritativeDependency::AssemblyMotionStudy(study.id())),
                 );
+                dependencies.extend(snapshot.assembly_motion_couplings().map(|coupling| {
+                    AuthoritativeDependency::AssemblyMotionCoupling(coupling.id())
+                }));
             }
             CanonicalCommand::SetOccurrenceGrounded { id, .. } => {
                 dependencies.insert(AuthoritativeDependency::Occurrence(*id));
@@ -14102,6 +14116,14 @@ fn authoritative_dependencies(
                         .assembly_joints()
                         .map(|joint| AuthoritativeDependency::AssemblyJoint(joint.id())),
                 );
+                dependencies.extend(
+                    snapshot
+                        .assembly_motion_studies()
+                        .map(|study| AuthoritativeDependency::AssemblyMotionStudy(study.id())),
+                );
+                dependencies.extend(snapshot.assembly_motion_couplings().map(|coupling| {
+                    AuthoritativeDependency::AssemblyMotionCoupling(coupling.id())
+                }));
             }
             CanonicalCommand::DeleteAssemblyJoint { id } => {
                 dependencies.insert(AuthoritativeDependency::AssemblyJoint(*id));

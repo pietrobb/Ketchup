@@ -2073,6 +2073,9 @@ fn load_document(
             | CLASSIFICATION_DIMENSION_SCHEMA
             | FEATURE_EXTENT_SCHEMA
             | IMPORTED_TOPOLOGY_COUNTS_SCHEMA
+            | TOPOLOGICAL_FEATURE_REFERENCE_SCHEMA
+            | GENERAL_PARAMETER_PATH_SCHEMA
+            | ASSEMBLY_KINEMATICS_SCHEMA
             | CURRENT_SCHEMA
     ) {
         return Err(PersistenceError::UnsupportedSchema(schema));

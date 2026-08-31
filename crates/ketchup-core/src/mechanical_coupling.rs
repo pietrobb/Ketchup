@@ -247,6 +247,16 @@ impl AssemblyMotionCoupling {
             + (output_position - self.output_reference_position) / self.transmission.scale()
     }
 
+    fn has_finite_affine_transform(&self) -> bool {
+        let scale = self.transmission.scale();
+        let offset = self.output_reference_position - scale * self.input_reference_position;
+        scale.is_finite()
+            && scale != 0.0
+            && scale.recip().is_finite()
+            && offset.is_finite()
+            && (-offset / scale).is_finite()
+    }
+
     #[must_use]
     pub fn has_valid_shape(&self) -> bool {
         self.schema == ASSEMBLY_MOTION_COUPLING_SCHEMA_V1
@@ -257,8 +267,7 @@ impl AssemblyMotionCoupling {
             && valid_reference(self.input_reference_position)
             && valid_reference(self.output_reference_position)
             && self.transmission.is_valid()
-            && self.transmission.scale().is_finite()
-            && self.transmission.scale() != 0.0
+            && self.has_finite_affine_transform()
     }
 }
 

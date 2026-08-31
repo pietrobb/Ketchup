@@ -6,7 +6,7 @@ use ketchup_core::assembly_joint::{
 };
 use ketchup_core::document::{
     CanonicalCommand, CanonicalError, CommandBatch, DefinitionId, DocumentStore, OccurrenceId,
-    Transform,
+    ProposalCommitError, Transform,
 };
 use ketchup_core::mechanical_coupling::{
     AssemblyMotionCoupling, AssemblyMotionCouplingId, AssemblyMotionDirection,
@@ -233,6 +233,123 @@ fn one_driver_propagates_through_gears_belt_chain_rack_and_screw_and_round_trips
 }
 
 #[test]
+fn output_driver_propagates_backwards_through_nonzero_references() {
+    let mut document = transmission_document(AssemblyJointLimits::new(-100.0, 100.0));
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::UpdateAssemblyMotionCoupling(AssemblyMotionCoupling::new(
+                AssemblyMotionCouplingId(202),
+                GEAR_OUTPUT,
+                BELT_OUTPUT,
+                10.0,
+                20.0,
+                AssemblyTransmissionKind::Belt {
+                    input_pitch_diameter_mm: 40.0,
+                    output_pitch_diameter_mm: 20.0,
+                    crossed: false,
+                },
+            )),
+            CanonicalCommand::CreateAssemblyMotionStudy(AssemblyMotionStudy::new(
+                AssemblyMotionStudyId(301),
+                "reverse belt drive",
+                vec![AssemblyMotionDriver::new(BELT_OUTPUT, 40.0)],
+            )),
+        ]))
+        .unwrap();
+
+    let solution =
+        solve_assembly_motion_study(&document.current(), AssemblyMotionStudyId(301)).unwrap();
+    let positions = solution.driven_joint_positions();
+    assert_eq!(position(positions, BELT_OUTPUT), 40.0);
+    assert_eq!(position(positions, GEAR_OUTPUT), 20.0);
+    assert_eq!(position(positions, GEAR_INPUT), -40.0);
+
+    let snapshot = document.current();
+    let reverse = snapshot
+        .assembly_motion_coupling(AssemblyMotionCouplingId(202))
+        .unwrap();
+    assert_eq!(reverse.input_position(40.0), 20.0);
+    assert_eq!(reverse.output_position(20.0), 40.0);
+}
+
+#[test]
+fn coupling_changes_invalidate_prepared_motion_publications() {
+    let mut document = transmission_document(AssemblyJointLimits::new(-100.0, 100.0));
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateAssemblyMotionStudy(AssemblyMotionStudy::new(
+                STUDY,
+                "stale transmission",
+                vec![AssemblyMotionDriver::new(GEAR_INPUT, 180.0)],
+            )),
+        ]))
+        .unwrap();
+    let solution = solve_assembly_motion_study(&document.current(), STUDY).unwrap();
+    let proposal = solution.prepare_publication(&document).unwrap();
+
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::UpdateAssemblyMotionCoupling(AssemblyMotionCoupling::new(
+                AssemblyMotionCouplingId(202),
+                GEAR_OUTPUT,
+                BELT_OUTPUT,
+                0.0,
+                0.0,
+                AssemblyTransmissionKind::Belt {
+                    input_pitch_diameter_mm: 40.0,
+                    output_pitch_diameter_mm: 40.0,
+                    crossed: false,
+                },
+            )),
+        ]))
+        .unwrap();
+    let before_commit = document.current().canonical_digest();
+    assert!(matches!(
+        document.commit_proposal(&proposal),
+        Err(ProposalCommitError::Stale(_))
+    ));
+    assert_eq!(document.current().canonical_digest(), before_commit);
+}
+
+#[test]
+fn motion_study_changes_invalidate_prepared_joint_edits() {
+    let mut document = transmission_document(AssemblyJointLimits::new(-100.0, 100.0));
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateAssemblyMotionStudy(AssemblyMotionStudy::new(
+                STUDY,
+                "limit dependency",
+                vec![AssemblyMotionDriver::new(GEAR_INPUT, 180.0)],
+            )),
+        ]))
+        .unwrap();
+    let proposal = document
+        .prepare_proposal(CommandBatch::new(vec![
+            CanonicalCommand::SetAssemblyJointLimits {
+                id: GEAR_INPUT,
+                limits: Some(AssemblyJointLimits::new(-720.0, 720.0)),
+            },
+        ]))
+        .unwrap();
+
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::UpdateAssemblyMotionStudy(AssemblyMotionStudy::new(
+                STUDY,
+                "limit dependency",
+                vec![AssemblyMotionDriver::new(GEAR_INPUT, 90.0)],
+            )),
+        ]))
+        .unwrap();
+    let before_commit = document.current().canonical_digest();
+    assert!(matches!(
+        document.commit_proposal(&proposal),
+        Err(ProposalCommitError::Stale(_))
+    ));
+    assert_eq!(document.current().canonical_digest(), before_commit);
+}
+
+#[test]
 fn invalid_joint_types_and_inconsistent_cycles_fail_atomically() {
     let mut document = transmission_document(AssemblyJointLimits::new(-100.0, 100.0));
     let before = document.current().canonical_digest();
@@ -273,6 +390,66 @@ fn invalid_joint_types_and_inconsistent_cycles_fail_atomically() {
     assert!(matches!(
         document.apply_batch(&CommandBatch::new(vec![
             CanonicalCommand::CreateAssemblyMotionCoupling(inconsistent_cycle)
+        ])),
+        Err(CanonicalError::InvalidAssemblyMotionCoupling(_))
+    ));
+    assert_eq!(document.current().canonical_digest(), before);
+}
+
+#[test]
+fn non_invertible_and_non_composable_ratios_fail_atomically() {
+    let mut document = transmission_document(AssemblyJointLimits::new(-100.0, 100.0));
+    let before = document.current().canonical_digest();
+    let non_invertible = AssemblyMotionCoupling::new(
+        AssemblyMotionCouplingId(202),
+        GEAR_OUTPUT,
+        BELT_OUTPUT,
+        0.0,
+        0.0,
+        AssemblyTransmissionKind::Belt {
+            input_pitch_diameter_mm: 1.0e-320,
+            output_pitch_diameter_mm: 1.0,
+            crossed: false,
+        },
+    );
+    assert!(matches!(
+        document.apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::UpdateAssemblyMotionCoupling(non_invertible)
+        ])),
+        Err(CanonicalError::InvalidAssemblyMotionCoupling(
+            AssemblyMotionCouplingId(202)
+        ))
+    ));
+    assert_eq!(document.current().canonical_digest(), before);
+
+    let first = AssemblyMotionCoupling::new(
+        AssemblyMotionCouplingId(202),
+        GEAR_OUTPUT,
+        BELT_OUTPUT,
+        0.0,
+        0.0,
+        AssemblyTransmissionKind::Belt {
+            input_pitch_diameter_mm: 1.0e-200,
+            output_pitch_diameter_mm: 1.0,
+            crossed: false,
+        },
+    );
+    let second = AssemblyMotionCoupling::new(
+        AssemblyMotionCouplingId(203),
+        BELT_OUTPUT,
+        CHAIN_OUTPUT,
+        0.0,
+        0.0,
+        AssemblyTransmissionKind::Belt {
+            input_pitch_diameter_mm: 1.0e-200,
+            output_pitch_diameter_mm: 1.0,
+            crossed: false,
+        },
+    );
+    assert!(matches!(
+        document.apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::UpdateAssemblyMotionCoupling(first),
+            CanonicalCommand::UpdateAssemblyMotionCoupling(second),
         ])),
         Err(CanonicalError::InvalidAssemblyMotionCoupling(_))
     ));
