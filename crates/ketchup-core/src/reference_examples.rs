@@ -6,6 +6,7 @@ use crate::document::{
     CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId, FeatureKind,
     OccurrenceId, Transform,
 };
+use crate::mechanical_contract::{MechanicalConditionId, MechanicalInterfaceId};
 
 pub const HETTICH_EXAMPLE_BOTTOM: OccurrenceId = OccurrenceId(1);
 pub const HETTICH_EXAMPLE_LEFT_SIDE: OccurrenceId = OccurrenceId(2);
@@ -20,6 +21,29 @@ pub const HETTICH_EXAMPLE_DRAWER_BACK: OccurrenceId = OccurrenceId(10);
 pub const HETTICH_EXAMPLE_DRAWER_FRONT: OccurrenceId = OccurrenceId(11);
 pub const HETTICH_EXAMPLE_DRAWER_JOINT: AssemblyJointId = AssemblyJointId(104);
 pub const HETTICH_EXAMPLE_MOTION_STUDY: AssemblyMotionStudyId = AssemblyMotionStudyId(200);
+
+/// Imported STEP runner members, in the order the generator imports them.
+pub const HETTICH_EXAMPLE_RIGHT_CABINET_RAIL: OccurrenceId = OccurrenceId(12);
+pub const HETTICH_EXAMPLE_LEFT_CABINET_RAIL: OccurrenceId = OccurrenceId(13);
+pub const HETTICH_EXAMPLE_LEFT_INTERMEDIATE_RAIL: OccurrenceId = OccurrenceId(14);
+pub const HETTICH_EXAMPLE_LEFT_INTERMEDIATE_JOINT: AssemblyJointId = AssemblyJointId(113);
+
+/// The persisted mechanical contract of the example: which real faces carry which
+/// mechanical role, and which conditions prove those roles along the whole path.
+pub const HETTICH_EXAMPLE_RIGHT_RAIL_MOUNTING: MechanicalInterfaceId = MechanicalInterfaceId(120);
+pub const HETTICH_EXAMPLE_RIGHT_WALL_MOUNTING: MechanicalInterfaceId = MechanicalInterfaceId(121);
+pub const HETTICH_EXAMPLE_LEFT_RAIL_MOUNTING: MechanicalInterfaceId = MechanicalInterfaceId(122);
+pub const HETTICH_EXAMPLE_LEFT_WALL_MOUNTING: MechanicalInterfaceId = MechanicalInterfaceId(123);
+pub const HETTICH_EXAMPLE_DRAWER_BACK_FOOT: MechanicalInterfaceId = MechanicalInterfaceId(124);
+pub const HETTICH_EXAMPLE_DRAWER_BOTTOM_SUPPORT: MechanicalInterfaceId = MechanicalInterfaceId(125);
+pub const HETTICH_EXAMPLE_INTERMEDIATE_GUIDE: MechanicalInterfaceId = MechanicalInterfaceId(126);
+
+pub const HETTICH_EXAMPLE_RIGHT_MOUNTING_CONTACT: MechanicalConditionId =
+    MechanicalConditionId(130);
+pub const HETTICH_EXAMPLE_LEFT_MOUNTING_CONTACT: MechanicalConditionId = MechanicalConditionId(131);
+pub const HETTICH_EXAMPLE_DRAWER_SUPPORT: MechanicalConditionId = MechanicalConditionId(132);
+pub const HETTICH_EXAMPLE_GUIDE_ALIGNMENT: MechanicalConditionId = MechanicalConditionId(133);
+pub const HETTICH_EXAMPLE_DRAWER_TRAVEL: MechanicalConditionId = MechanicalConditionId(134);
 
 const HETTICH_DRAWER_SIDE_BOTTOM_Z_MM: f64 = 144.241_910_702_799_1;
 const HETTICH_DRAWER_BOTTOM_UNDERSIDE_Z_MM: f64 = HETTICH_DRAWER_SIDE_BOTTOM_Z_MM + 12.0;

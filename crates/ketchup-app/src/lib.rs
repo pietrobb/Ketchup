@@ -10551,6 +10551,12 @@ impl KetchupApp {
             AuthoritativeDependency::AssemblyMotionStudy(id) => {
                 Some(("assistant-entity-assembly-motion-study", id.0))
             }
+            AuthoritativeDependency::MechanicalInterface(id) => {
+                Some(("assistant-entity-mechanical-interface", id.0))
+            }
+            AuthoritativeDependency::MechanicalCondition(id) => {
+                Some(("assistant-entity-mechanical-condition", id.0))
+            }
             AuthoritativeDependency::DrawingSheet(_) => None,
             AuthoritativeDependency::OccurrenceCollections(id) => {
                 Some(("assistant-entity-occurrence-collections", id.0))

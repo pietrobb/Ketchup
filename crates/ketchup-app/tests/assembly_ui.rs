@@ -2,6 +2,7 @@
 
 mod harness;
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -14,15 +15,25 @@ use ketchup_core::assembly_joint::{
     AssemblyJointId, AssemblyJointKind, AssemblyMotionDriver,
     solve_assembly_joint_kinematics_with_drivers,
 };
-use ketchup_core::document::{DefinitionId, FeatureId, FeatureKind};
+use ketchup_core::document::{
+    CanonicalCommand, CommandBatch, DefinitionId, DocumentStore, FeatureId, FeatureKind, Transform,
+};
 use ketchup_core::drawing::{DrawingSheetId, DrawingSource};
 use ketchup_core::import::ImportFormat;
 use ketchup_core::intent::WorkflowIntent;
+use ketchup_core::mechanical_contract::{
+    MechanicalAxisAlignment, MechanicalCondition, MechanicalConditionKind, MechanicalInterface,
+    MechanicalPlanarFrame, MechanicalRole, MechanicalViolationKind, preview_mechanical_contract,
+};
 use ketchup_core::persistence;
 use ketchup_core::reference_examples::{
-    HETTICH_EXAMPLE_BOTTOM, HETTICH_EXAMPLE_DRAWER, HETTICH_EXAMPLE_DRAWER_JOINT,
-    HETTICH_EXAMPLE_DRAWER_LEFT_SIDE, HETTICH_EXAMPLE_DRAWER_RIGHT_SIDE, HETTICH_EXAMPLE_LEFT_SIDE,
-    HETTICH_EXAMPLE_MOTION_STUDY, HETTICH_EXAMPLE_RIGHT_SIDE,
+    HETTICH_EXAMPLE_BOTTOM, HETTICH_EXAMPLE_DRAWER, HETTICH_EXAMPLE_DRAWER_BACK,
+    HETTICH_EXAMPLE_DRAWER_JOINT, HETTICH_EXAMPLE_DRAWER_LEFT_SIDE,
+    HETTICH_EXAMPLE_DRAWER_RIGHT_SIDE, HETTICH_EXAMPLE_DRAWER_SUPPORT,
+    HETTICH_EXAMPLE_GUIDE_ALIGNMENT, HETTICH_EXAMPLE_LEFT_CABINET_RAIL,
+    HETTICH_EXAMPLE_LEFT_MOUNTING_CONTACT, HETTICH_EXAMPLE_LEFT_SIDE, HETTICH_EXAMPLE_MOTION_STUDY,
+    HETTICH_EXAMPLE_RIGHT_MOUNTING_CONTACT, HETTICH_EXAMPLE_RIGHT_RAIL_MOUNTING,
+    HETTICH_EXAMPLE_RIGHT_SIDE,
 };
 use ketchup_interaction::LocaleCatalog;
 
@@ -1033,6 +1044,207 @@ fn assembly_editor_controls_are_localized_and_accessible() {
     }
 }
 
+fn hettich_document() -> DocumentStore {
+    let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../examples/hettich-quadro-v6-drawer.ketchup");
+    match persistence::load(&std::fs::read(&source).unwrap()).unwrap() {
+        persistence::LoadOutcome::Editable { document, .. } => document,
+        persistence::LoadOutcome::ReviewOnly(_) => {
+            panic!("the shipped example must load as an editable document")
+        }
+    }
+}
+
+/// The shipped Hettich assembly is proven by the persisted mechanical contract that
+/// travels inside the document — not by anything this test knows about part names.
+/// Each mutation below is a real design error an author could make, and each one
+/// must be caught by the same production validator that accepts the correct file.
+#[test]
+fn the_hettich_assembly_is_proven_by_its_persisted_contract_and_rejects_real_mutations() {
+    let document = hettich_document();
+    let snapshot = document.current();
+
+    // 1. Roles and mounting faces come from the document, not from names.
+    let roles = snapshot
+        .mechanical_interfaces()
+        .map(|interface| (interface.id(), interface.occurrence_id(), interface.role()))
+        .collect::<Vec<_>>();
+    assert_eq!(roles.len(), 7);
+    assert_eq!(
+        roles
+            .iter()
+            .filter(|(_, _, role)| *role == MechanicalRole::Mounting)
+            .count(),
+        4
+    );
+    assert_eq!(
+        roles
+            .iter()
+            .filter(|(_, _, role)| *role == MechanicalRole::Support)
+            .count(),
+        2
+    );
+    assert_eq!(
+        roles
+            .iter()
+            .filter(|(_, _, role)| *role == MechanicalRole::Guide)
+            .count(),
+        1
+    );
+    assert_eq!(snapshot.mechanical_conditions().count(), 5);
+
+    let report = preview_mechanical_contract(&snapshot, HETTICH_EXAMPLE_MOTION_STUDY, 16).unwrap();
+    assert!(
+        report.is_satisfied(),
+        "the shipped assembly must satisfy its own contract: {:?}",
+        report.violations()
+    );
+    assert_eq!(report.evaluated_samples(), 17);
+    assert_eq!(report.evaluated_conditions(), 5);
+
+    // 2. A mounting face pushed 1 mm off the cabinet wall.
+    let mut mutated = hettich_document();
+    let rail = mutated
+        .current()
+        .occurrence(HETTICH_EXAMPLE_LEFT_CABINET_RAIL)
+        .unwrap()
+        .transform();
+    let mut matrix = *rail.matrix();
+    matrix[7] += 1.0;
+    mutated
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetOccurrenceTransform {
+                id: HETTICH_EXAMPLE_LEFT_CABINET_RAIL,
+                transform: Transform::from_matrix(matrix).unwrap(),
+            },
+        ]))
+        .unwrap();
+    let gap = preview_mechanical_contract(&mutated.current(), HETTICH_EXAMPLE_MOTION_STUDY, 4)
+        .unwrap()
+        .violations()
+        .iter()
+        .find(|violation| violation.condition_id() == Some(HETTICH_EXAMPLE_LEFT_MOUNTING_CONTACT))
+        .copied()
+        .expect("a rail floating 1 mm off its wall must be rejected");
+    let MechanicalViolationKind::ContactGap { measured_mm, .. } = gap.kind() else {
+        panic!("expected a mounting gap, got {:?}", gap.kind());
+    };
+    assert!((measured_mm.abs() - 1.0).abs() <= 1.0e-9);
+
+    // 3. A mounting interface whose declared normal points away from the wall.
+    let mut mutated = hettich_document();
+    let original = mutated
+        .current()
+        .mechanical_interface(HETTICH_EXAMPLE_RIGHT_RAIL_MOUNTING)
+        .unwrap()
+        .clone();
+    let frame = original.frame();
+    let reversed = MechanicalPlanarFrame::new(
+        frame.origin_mm(),
+        frame.normal().map(|value| -value),
+        frame.area_mm2(),
+        frame.bounds_mm(),
+    );
+    mutated
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::UpdateMechanicalInterface(MechanicalInterface::new(
+                original.id(),
+                original.occurrence_id(),
+                original.role(),
+                original.face_ordinal(),
+                original.geometry_fingerprint(),
+                reversed,
+            )),
+        ]))
+        .unwrap();
+    let flipped = preview_mechanical_contract(&mutated.current(), HETTICH_EXAMPLE_MOTION_STUDY, 4)
+        .unwrap()
+        .violations()
+        .iter()
+        .find(|violation| violation.condition_id() == Some(HETTICH_EXAMPLE_RIGHT_MOUNTING_CONTACT))
+        .copied()
+        .expect("a mounting face turned away from the wall must be rejected");
+    assert!(matches!(
+        flipped.kind(),
+        MechanicalViolationKind::ContactOrientation { .. }
+    ));
+
+    // 4. A supported part slid off the panel that carries it.
+    let mut mutated = hettich_document();
+    let back = mutated
+        .current()
+        .occurrence(HETTICH_EXAMPLE_DRAWER_BACK)
+        .unwrap()
+        .transform();
+    let mut matrix = *back.matrix();
+    matrix[3] += 40.0;
+    mutated
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetOccurrenceTransform {
+                id: HETTICH_EXAMPLE_DRAWER_BACK,
+                transform: Transform::from_matrix(matrix).unwrap(),
+            },
+        ]))
+        .unwrap();
+    let unsupported =
+        preview_mechanical_contract(&mutated.current(), HETTICH_EXAMPLE_MOTION_STUDY, 4)
+            .unwrap()
+            .violations()
+            .iter()
+            .find(|violation| violation.condition_id() == Some(HETTICH_EXAMPLE_DRAWER_SUPPORT))
+            .copied()
+            .expect("a part that no longer overlaps its support must be rejected");
+    assert!(matches!(
+        unsupported.kind(),
+        MechanicalViolationKind::SupportLost { .. }
+    ));
+
+    // 5. A guide plane declared to run along the travel axis instead of across it.
+    let mut mutated = hettich_document();
+    let guide = mutated
+        .current()
+        .mechanical_condition(HETTICH_EXAMPLE_GUIDE_ALIGNMENT)
+        .unwrap()
+        .clone();
+    let MechanicalConditionKind::JointAxisAlignment {
+        joint_id,
+        interface,
+        tolerance_degrees,
+        ..
+    } = guide.kind()
+    else {
+        panic!("the guide condition must constrain a joint axis");
+    };
+    mutated
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::UpdateMechanicalCondition(MechanicalCondition::new(
+                guide.id(),
+                MechanicalConditionKind::JointAxisAlignment {
+                    joint_id,
+                    interface,
+                    alignment: MechanicalAxisAlignment::Parallel,
+                    tolerance_degrees,
+                },
+            )),
+        ]))
+        .unwrap();
+    let misaligned =
+        preview_mechanical_contract(&mutated.current(), HETTICH_EXAMPLE_MOTION_STUDY, 4)
+            .unwrap()
+            .violations()
+            .iter()
+            .find(|violation| violation.condition_id() == Some(HETTICH_EXAMPLE_GUIDE_ALIGNMENT))
+            .copied()
+            .expect("a guide plane that does not face the declared axis must be rejected");
+    let MechanicalViolationKind::AxisMisaligned {
+        measured_degrees, ..
+    } = misaligned.kind()
+    else {
+        panic!("expected an axis failure, got {:?}", misaligned.kind());
+    };
+    assert!((measured_degrees - 90.0).abs() <= 1.0e-9);
+}
+
 #[test]
 fn hettich_drawer_example_opens_and_edits_through_the_general_headless_assembly_ui() {
     let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -1071,12 +1283,20 @@ fn hettich_drawer_example_opens_and_edits_through_the_general_headless_assembly_
             .count(),
         6
     );
+    // The runner members are selected by what they are — bodies imported from the
+    // STEP file — never by how they happen to be named.
+    let imported_definitions = imported
+        .iter()
+        .map(|(feature_id, _)| {
+            loaded_snapshot
+                .feature(*feature_id)
+                .unwrap()
+                .definition_id()
+        })
+        .collect::<BTreeSet<_>>();
     let mounted_parts = loaded_snapshot
         .occurrences()
-        .filter(|occurrence| {
-            occurrence.name().starts_with("Hettich ")
-                && !occurrence.name().contains("runner envelope")
-        })
+        .filter(|occurrence| imported_definitions.contains(&occurrence.definition_id()))
         .collect::<Vec<_>>();
     assert_eq!(mounted_parts.len(), 6);
     let left_wall_inner_y = loaded_snapshot
@@ -1105,6 +1325,20 @@ fn hettich_drawer_example_opens_and_edits_through_the_general_headless_assembly_
     assert_eq!(drawer_right_outer_y - drawer_left_outer_y, 522.0);
     assert_eq!(drawer_left_outer_y - left_wall_inner_y, 20.0);
     assert_eq!(right_wall_inner_y - drawer_right_outer_y, 20.0);
+    // Each member is measured, then the whole measured set is compared as a set.
+    // No expectation is keyed to a part name.
+    let mut measured = Vec::new();
+    let drawer_side_bottom_z = loaded_snapshot
+        .occurrence(HETTICH_EXAMPLE_DRAWER_LEFT_SIDE)
+        .unwrap()
+        .transform()
+        .matrix()[11];
+    let drawer_bottom_underside_z = loaded_snapshot
+        .occurrence(HETTICH_EXAMPLE_DRAWER)
+        .unwrap()
+        .transform()
+        .matrix()[11];
+    assert!((drawer_bottom_underside_z - drawer_side_bottom_z - 12.0).abs() <= 1.0e-6);
     for occurrence in &mounted_parts {
         let transform = occurrence.transform();
         let matrix = transform.matrix();
@@ -1124,78 +1358,35 @@ fn hettich_drawer_example_opens_and_edits_through_the_general_headless_assembly_
             })
             .unwrap()
             .1;
-        let (expected_face_count, expected_length_mm) =
-            if occurrence.name().contains("cabinet rail") {
-                (74, 418.6)
-            } else if occurrence.name().contains("intermediate rail") {
-                (50, 387.5)
-            } else {
-                (35, 482.5)
-            };
-        assert_eq!(
+        let mounted_depth = [
+            matrix[1] * spec.bounds_mm[0][1] + matrix[3],
+            matrix[1] * spec.bounds_mm[1][1] + matrix[3],
+        ];
+        let mounted_height = [
+            spec.bounds_mm[0][2] + matrix[11],
+            spec.bounds_mm[1][2] + matrix[11],
+        ];
+        assert!(mounted_height[0] >= 0.0 && mounted_height[1] <= 350.0);
+        assert!(mounted_depth[1] <= 600.0);
+        measured.push((
             spec.topology_counts.unwrap()[2],
-            expected_face_count,
-            "{} has the wrong mechanical role for its actual STEP geometry",
-            occurrence.name()
-        );
-        let length_mm = spec.bounds_mm[1][1] - spec.bounds_mm[0][1];
-        assert!(
-            (length_mm - expected_length_mm).abs() < 1.0e-6,
-            "{} has length {length_mm}, expected {expected_length_mm}",
-            occurrence.name()
-        );
-        if occurrence.name().contains("drawer rail") {
-            let drawer_side_bottom_z = loaded_snapshot
-                .occurrence(HETTICH_EXAMPLE_DRAWER_LEFT_SIDE)
-                .unwrap()
-                .transform()
-                .matrix()[11];
-            let drawer_bottom_underside_z = loaded_snapshot
-                .occurrence(HETTICH_EXAMPLE_DRAWER)
-                .unwrap()
-                .transform()
-                .matrix()[11];
-            let runner_top_z = spec.bounds_mm[1][2] + matrix[11];
-            assert!((runner_top_z - drawer_side_bottom_z).abs() <= 1.0e-6);
-            assert!((drawer_bottom_underside_z - drawer_side_bottom_z - 12.0).abs() <= 1.0e-6);
-        }
-        if occurrence.name().contains("cabinet rail") {
-            let (mounting_plane_x, wall_y) = if occurrence.name().contains("9117663_4") {
-                (spec.bounds_mm[0][0], right_wall_inner_y)
-            } else {
-                (spec.bounds_mm[1][0], left_wall_inner_y)
-            };
-            let mounting_plane_y = matrix[4] * mounting_plane_x + matrix[7];
-            let mounting_gap_mm = (mounting_plane_y - wall_y).abs();
-            assert!(
-                mounting_gap_mm <= 1.0e-6,
-                "{} mounting face floats {mounting_gap_mm} mm from the cabinet wall",
-                occurrence.name()
-            );
-            assert!(
-                (mounting_plane_y + 1.0 - wall_y).abs() > 0.999,
-                "a deliberate 1 mm mounting gap must be rejected"
-            );
-            let mounted_depth = [
-                matrix[1] * spec.bounds_mm[0][1] + matrix[3],
-                matrix[1] * spec.bounds_mm[1][1] + matrix[3],
-            ];
-            let mounted_height = [
-                spec.bounds_mm[0][2] + matrix[11],
-                spec.bounds_mm[1][2] + matrix[11],
-            ];
-            assert!(mounted_depth[0] >= 0.0 && mounted_depth[1] <= 600.0);
-            assert!(mounted_height[0] >= 0.0 && mounted_height[1] <= 350.0);
-        }
-        let expected_depth_translation = if occurrence.name().contains("cabinet rail") {
-            31.0
-        } else if occurrence.name().contains("intermediate rail") {
-            -194.0
-        } else {
-            -419.0
-        };
-        assert_eq!(matrix[3], expected_depth_translation);
+            format!("{:.4}", spec.bounds_mm[1][1] - spec.bounds_mm[0][1]),
+            format!("{:.4}", matrix[3]),
+            (mounted_height[1] - drawer_side_bottom_z).abs() <= 1.0e-6,
+        ));
     }
+    measured.sort();
+    assert_eq!(
+        measured,
+        vec![
+            (35, "482.5000".to_owned(), "-419.0000".to_owned(), true),
+            (35, "482.5000".to_owned(), "-419.0000".to_owned(), true),
+            (50, "387.5000".to_owned(), "-194.0000".to_owned(), false),
+            (50, "387.5000".to_owned(), "-194.0000".to_owned(), false),
+            (74, "418.6000".to_owned(), "31.0000".to_owned(), false),
+            (74, "418.6000".to_owned(), "31.0000".to_owned(), false),
+        ]
+    );
     let closed = solve_assembly_joint_kinematics_with_drivers(
         &loaded_snapshot,
         &[
@@ -1235,42 +1426,41 @@ fn hettich_drawer_example_opens_and_edits_through_the_general_headless_assembly_
             .transform()
             .matrix()[3];
     assert_eq!(drawer_travel_mm, 150.0);
+    let mut articulation = Vec::new();
     for occurrence in &mounted_parts {
         let moved_transform = moved
             .pose(occurrence.id())
             .expect("every exact runner part must have a solved kinematic pose")
             .world_transform();
         let moved_matrix = moved_transform.matrix();
-        let actual_travel_mm = moved_matrix[3] - occurrence.transform().matrix()[3];
-        let expected_travel_mm = if occurrence.name().contains("cabinet rail") {
-            0.0
-        } else if occurrence.name().contains("intermediate rail") {
-            drawer_travel_mm / 2.0
-        } else {
-            drawer_travel_mm
-        };
-        assert_eq!(
-            actual_travel_mm,
-            expected_travel_mm,
-            "{} is attached to the wrong moving member",
-            occurrence.name()
-        );
-        let expected_depth_translation = if occurrence.name().contains("cabinet rail") {
-            31.0
-        } else if occurrence.name().contains("intermediate rail") {
-            -119.0
-        } else {
-            -269.0
-        };
-        assert_eq!(
-            moved_matrix[3],
-            expected_depth_translation,
-            "{}",
-            occurrence.name()
-        );
         assert_eq!(moved_matrix[7], 600.0);
         assert_eq!(moved_matrix[11], 140.75);
+        articulation.push((
+            format!(
+                "{:.4}",
+                moved_matrix[3] - occurrence.transform().matrix()[3]
+            ),
+            format!("{:.4}", moved_matrix[3]),
+        ));
     }
+    articulation.sort();
+    assert_eq!(
+        articulation,
+        vec![
+            ("0.0000".to_owned(), "31.0000".to_owned()),
+            ("0.0000".to_owned(), "31.0000".to_owned()),
+            (format!("{drawer_travel_mm:.4}"), "-269.0000".to_owned()),
+            (format!("{drawer_travel_mm:.4}"), "-269.0000".to_owned()),
+            (
+                format!("{:.4}", drawer_travel_mm / 2.0),
+                "-119.0000".to_owned()
+            ),
+            (
+                format!("{:.4}", drawer_travel_mm / 2.0),
+                "-119.0000".to_owned()
+            ),
+        ]
+    );
     let directory = tempfile::tempdir().unwrap();
     let saved = directory.path().join("hettich-drawer-edited.ketchup");
     let dialogs = ScriptedFileDialogs::new()

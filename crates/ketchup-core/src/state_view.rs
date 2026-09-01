@@ -5,6 +5,7 @@ use crate::document::{
     Snapshot, Transform, UnitSystem,
 };
 use crate::graph::{OverrideMergePolicy, RuleOutput, SlotResolution, SlotSegment, ValueType};
+use crate::mechanical_contract::MechanicalConditionKind;
 use crate::mechanical_coupling::AssemblyTransmissionKind;
 use crate::space::{ClearanceOwner, ClearanceSeverity};
 use crate::validation::ValidationReport;
@@ -2121,6 +2122,87 @@ pub fn encode_semantic_state_with_results(
                 coupling.input_reference_position().to_bits(),
                 coupling.output_reference_position().to_bits(),
                 coupling.transmission().scale().to_bits()
+            )
+            .unwrap();
+        }
+    }
+    for interface in snapshot.mechanical_interfaces() {
+        let frame = interface.frame();
+        for output in [&mut complete, &mut agent] {
+            writeln!(
+                output,
+                "mechanical_interface.{}=schema:{:?},occurrence:{},role:{},face_ordinal:{},geometry_fingerprint:{:?},origin_bits:{:016x}/{:016x}/{:016x},normal_bits:{:016x}/{:016x}/{:016x},area_bits:{:016x}",
+                interface.id().0,
+                interface.schema(),
+                interface.occurrence_id().0,
+                interface.role().label(),
+                interface.face_ordinal(),
+                interface.geometry_fingerprint(),
+                frame.origin_mm()[0].to_bits(),
+                frame.origin_mm()[1].to_bits(),
+                frame.origin_mm()[2].to_bits(),
+                frame.normal()[0].to_bits(),
+                frame.normal()[1].to_bits(),
+                frame.normal()[2].to_bits(),
+                frame.area_mm2().to_bits()
+            )
+            .unwrap();
+        }
+    }
+    for condition in snapshot.mechanical_conditions() {
+        let detail = match condition.kind() {
+            MechanicalConditionKind::PlanarContact {
+                first,
+                second,
+                offset_mm,
+                tolerance_mm,
+            } => format!(
+                "first:{},second:{},offset_bits:{:016x},tolerance_bits:{:016x}",
+                first.0,
+                second.0,
+                offset_mm.to_bits(),
+                tolerance_mm.to_bits()
+            ),
+            MechanicalConditionKind::Support {
+                supported,
+                supporting,
+                tolerance_mm,
+            } => format!(
+                "supported:{},supporting:{},tolerance_bits:{:016x}",
+                supported.0,
+                supporting.0,
+                tolerance_mm.to_bits()
+            ),
+            MechanicalConditionKind::JointAxisAlignment {
+                joint_id,
+                interface,
+                alignment,
+                tolerance_degrees,
+            } => format!(
+                "joint:{},interface:{},alignment:{},tolerance_bits:{:016x}",
+                joint_id.0,
+                interface.0,
+                alignment.label(),
+                tolerance_degrees.to_bits()
+            ),
+            MechanicalConditionKind::JointTravel {
+                joint_id,
+                minimum,
+                maximum,
+            } => format!(
+                "joint:{},minimum_bits:{:016x},maximum_bits:{:016x}",
+                joint_id.0,
+                minimum.to_bits(),
+                maximum.to_bits()
+            ),
+        };
+        for output in [&mut complete, &mut agent] {
+            writeln!(
+                output,
+                "mechanical_condition.{}=schema:{:?},kind:{},{detail}",
+                condition.id().0,
+                condition.schema(),
+                condition.kind().label()
             )
             .unwrap();
         }

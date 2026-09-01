@@ -162,8 +162,14 @@ fn body_contract_tail_len(snapshot: &Snapshot) -> usize {
         .sum::<usize>()
 }
 
+/// Product sections appended after schema 34, each written as a u32 count followed
+/// by its entries. This fixture holds none of them, so only the counts are removed.
+const EMPTY_TRAILING_SECTION_COUNTS: usize = 6;
+
 fn strip_schema_34_tail(bytes: &mut Vec<u8>, snapshot: &Snapshot) {
-    bytes.truncate(bytes.len() - body_contract_tail_len(snapshot) - 16);
+    bytes.truncate(
+        bytes.len() - body_contract_tail_len(snapshot) - 4 * EMPTY_TRAILING_SECTION_COUNTS,
+    );
 }
 
 fn seed_product_document() -> DocumentStore {

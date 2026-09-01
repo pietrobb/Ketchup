@@ -5,15 +5,29 @@ use ketchup_core::assembly_joint::{
     AssemblyJoint, AssemblyJointAxis, AssemblyJointId, AssemblyJointKind, AssemblyJointLimits,
     AssemblyMotionDriver, AssemblyMotionStudy,
 };
-use ketchup_core::document::{CanonicalCommand, CommandBatch, OccurrenceId, Transform};
+use ketchup_core::document::{
+    CanonicalCommand, CommandBatch, DocumentStore, OccurrenceId, Transform,
+};
 use ketchup_core::graph::sha256_hex;
 use ketchup_core::import::{
     ImportLengthUnit, ImportOutputRef, StepImportEvidence, plan_step_import,
 };
+use ketchup_core::mechanical_contract::{
+    MechanicalAxisAlignment, MechanicalCondition, MechanicalConditionKind, MechanicalInterface,
+    MechanicalInterfaceId, MechanicalPlanarFrame, MechanicalRole, capture_authored_face_frame,
+    preview_mechanical_contract,
+};
 use ketchup_core::persistence::{self, ContainerData};
 use ketchup_core::reference_examples::{
-    HETTICH_EXAMPLE_BOTTOM, HETTICH_EXAMPLE_DRAWER, HETTICH_EXAMPLE_DRAWER_JOINT,
-    HETTICH_EXAMPLE_LEFT_RUNNER, HETTICH_EXAMPLE_MOTION_STUDY, HETTICH_EXAMPLE_RIGHT_RUNNER,
+    HETTICH_EXAMPLE_BOTTOM, HETTICH_EXAMPLE_DRAWER, HETTICH_EXAMPLE_DRAWER_BACK,
+    HETTICH_EXAMPLE_DRAWER_BACK_FOOT, HETTICH_EXAMPLE_DRAWER_BOTTOM_SUPPORT,
+    HETTICH_EXAMPLE_DRAWER_JOINT, HETTICH_EXAMPLE_DRAWER_SUPPORT, HETTICH_EXAMPLE_DRAWER_TRAVEL,
+    HETTICH_EXAMPLE_GUIDE_ALIGNMENT, HETTICH_EXAMPLE_INTERMEDIATE_GUIDE,
+    HETTICH_EXAMPLE_LEFT_INTERMEDIATE_JOINT, HETTICH_EXAMPLE_LEFT_MOUNTING_CONTACT,
+    HETTICH_EXAMPLE_LEFT_RAIL_MOUNTING, HETTICH_EXAMPLE_LEFT_RUNNER, HETTICH_EXAMPLE_LEFT_SIDE,
+    HETTICH_EXAMPLE_LEFT_WALL_MOUNTING, HETTICH_EXAMPLE_MOTION_STUDY,
+    HETTICH_EXAMPLE_RIGHT_MOUNTING_CONTACT, HETTICH_EXAMPLE_RIGHT_RAIL_MOUNTING,
+    HETTICH_EXAMPLE_RIGHT_RUNNER, HETTICH_EXAMPLE_RIGHT_SIDE, HETTICH_EXAMPLE_RIGHT_WALL_MOUNTING,
     hettich_quadro_v6_drawer_example,
 };
 use ketchup_exact::{ExactBackend, ExactOpOutput};
@@ -116,6 +130,100 @@ fn import_evidence(source_sha256: &str, output: &ExactOpOutput) -> StepImportEvi
     }
 }
 
+/// Captures a real planar face of an imported STEP solid as a mechanical frame.
+///
+/// The face is selected by measurement only — its surface must be a plane whose
+/// normal runs along `axis`, it must be at least `minimum_area_mm2` large, and it
+/// is picked either as the one closest to `target_mm` on that axis or, when no
+/// target is given, as the largest one. The stored normal is oriented outwards
+/// from the solid's own centre, because STEP surface normals carry no reliable
+/// orientation.
+fn captured_face(
+    output: &ExactOpOutput,
+    axis: usize,
+    target_mm: Option<f64>,
+    minimum_area_mm2: f64,
+    label: &str,
+) -> (u32, MechanicalPlanarFrame) {
+    let topology = &output.body.topology;
+    let bounds = &topology.bounds_mm;
+    let centre = [
+        (bounds.min.x + bounds.max.x) * 0.5,
+        (bounds.min.y + bounds.max.y) * 0.5,
+        (bounds.min.z + bounds.max.z) * 0.5,
+    ];
+    let component = |point: [f64; 3]| point[axis];
+    let candidates = topology.faces.iter().filter(|face| {
+        face.surface_kind == "plane"
+            && face.area_mm2 >= minimum_area_mm2
+            && (component([face.normal.x, face.normal.y, face.normal.z]).abs() - 1.0).abs()
+                <= 1.0e-9
+    });
+    let face = match target_mm {
+        Some(target) => candidates.min_by(|left, right| {
+            let distance = |face: &&ketchup_exact::FaceEvidence| {
+                (component([face.centroid_mm.x, face.centroid_mm.y, face.centroid_mm.z]) - target)
+                    .abs()
+            };
+            distance(left).total_cmp(&distance(right))
+        }),
+        None => candidates.max_by(|left, right| left.area_mm2.total_cmp(&right.area_mm2)),
+    }
+    .unwrap_or_else(|| {
+        panic!("{label}: no planar face on axis {axis} of at least {minimum_area_mm2} mm2")
+    });
+
+    let origin_mm = [face.centroid_mm.x, face.centroid_mm.y, face.centroid_mm.z];
+    let mut normal = [0.0; 3];
+    normal[axis] = if component(origin_mm) >= component(centre) {
+        1.0
+    } else {
+        -1.0
+    };
+    let frame = MechanicalPlanarFrame::new(
+        origin_mm,
+        normal,
+        face.area_mm2,
+        [
+            [
+                face.bounds_mm.min.x,
+                face.bounds_mm.min.y,
+                face.bounds_mm.min.z,
+            ],
+            [
+                face.bounds_mm.max.x,
+                face.bounds_mm.max.y,
+                face.bounds_mm.max.z,
+            ],
+        ],
+    );
+    assert!(
+        frame.is_valid(),
+        "{label}: captured face {} is not a usable planar frame",
+        face.ordinal
+    );
+    (face.ordinal, frame)
+}
+
+fn authored_interface(
+    document: &DocumentStore,
+    id: MechanicalInterfaceId,
+    occurrence_id: OccurrenceId,
+    role: MechanicalRole,
+    face_ordinal: u32,
+) -> CanonicalCommand {
+    let frame = capture_authored_face_frame(&document.current(), occurrence_id, face_ordinal)
+        .expect("authored cabinet and drawer panels expose their canonical box faces");
+    CanonicalCommand::CreateMechanicalInterface(MechanicalInterface::new(
+        id,
+        occurrence_id,
+        role,
+        face_ordinal,
+        "",
+        frame,
+    ))
+}
+
 fn cabinet_mounting_plane_x(output: &ExactOpOutput, expected_outer_x_mm: f64) -> f64 {
     let face = output
         .body
@@ -191,6 +299,7 @@ fn main() {
     );
     let mut imported_occurrences = Vec::new();
     let mut cabinet_mounting_planes_x = Vec::new();
+    let mut captured_interfaces = Vec::new();
 
     for (ordinal, part) in RUNNER_PARTS.iter().enumerate() {
         let extracted = backend
@@ -215,11 +324,38 @@ fn main() {
             .unwrap();
         let source_name = format!("{}.step", part.name);
         let extracted_sha256 = sha256_hex(&extracted_source);
+        let evidence = import_evidence(&extracted_sha256, &verified);
+        let fingerprint = evidence.result_fingerprint.clone();
+        captured_interfaces.push(match (ordinal, part.role) {
+            // The cabinet members are anchored by the large perforated flange that
+            // actually touches the cabinet wall, found by area and position.
+            (0, RunnerRole::Cabinet) => Some((
+                HETTICH_EXAMPLE_RIGHT_RAIL_MOUNTING,
+                MechanicalRole::Mounting,
+                fingerprint,
+                captured_face(&verified, 0, Some(0.0), 13_000.0, part.name),
+            )),
+            (1, RunnerRole::Cabinet) => Some((
+                HETTICH_EXAMPLE_LEFT_RAIL_MOUNTING,
+                MechanicalRole::Mounting,
+                fingerprint,
+                captured_face(&verified, 0, Some(562.0), 13_000.0, part.name),
+            )),
+            // The intermediate member's largest flank is the plane that must run
+            // along the pull-out direction for the runner to guide at all.
+            (2, RunnerRole::Intermediate) => Some((
+                HETTICH_EXAMPLE_INTERMEDIATE_GUIDE,
+                MechanicalRole::Guide,
+                fingerprint,
+                captured_face(&verified, 0, None, 1_000.0, part.name),
+            )),
+            _ => None,
+        });
         let import = plan_step_import(
             &document.current(),
             &extracted_source,
             &source_name,
-            &import_evidence(&extracted_sha256, &verified),
+            &evidence,
         )
         .unwrap();
         document.apply_batch(&import).unwrap();
@@ -314,6 +450,104 @@ fn main() {
         ),
     ));
     document.apply_batch(&CommandBatch::new(commands)).unwrap();
+
+    // The mechanical contract: every role below is carried by a real face of a real
+    // body and is proven by a condition that the validator measures at every sample
+    // of the motion study. Nothing here is derived from a part name.
+    let mut contract = Vec::new();
+    for (interface, occurrence) in captured_interfaces
+        .into_iter()
+        .zip(imported_occurrences.iter().copied())
+    {
+        let Some((id, role, fingerprint, (face_ordinal, frame))) = interface else {
+            continue;
+        };
+        contract.push(CanonicalCommand::CreateMechanicalInterface(
+            MechanicalInterface::new(id, occurrence, role, face_ordinal, fingerprint, frame),
+        ));
+    }
+    contract.extend([
+        authored_interface(
+            &document,
+            HETTICH_EXAMPLE_RIGHT_WALL_MOUNTING,
+            HETTICH_EXAMPLE_RIGHT_SIDE,
+            MechanicalRole::Mounting,
+            2,
+        ),
+        authored_interface(
+            &document,
+            HETTICH_EXAMPLE_LEFT_WALL_MOUNTING,
+            HETTICH_EXAMPLE_LEFT_SIDE,
+            MechanicalRole::Mounting,
+            3,
+        ),
+        authored_interface(
+            &document,
+            HETTICH_EXAMPLE_DRAWER_BOTTOM_SUPPORT,
+            HETTICH_EXAMPLE_DRAWER,
+            MechanicalRole::Support,
+            5,
+        ),
+        authored_interface(
+            &document,
+            HETTICH_EXAMPLE_DRAWER_BACK_FOOT,
+            HETTICH_EXAMPLE_DRAWER_BACK,
+            MechanicalRole::Support,
+            4,
+        ),
+        CanonicalCommand::CreateMechanicalCondition(MechanicalCondition::new(
+            HETTICH_EXAMPLE_RIGHT_MOUNTING_CONTACT,
+            MechanicalConditionKind::PlanarContact {
+                first: HETTICH_EXAMPLE_RIGHT_WALL_MOUNTING,
+                second: HETTICH_EXAMPLE_RIGHT_RAIL_MOUNTING,
+                offset_mm: 0.0,
+                tolerance_mm: MOUNTING_CONTACT_TOLERANCE_MM,
+            },
+        )),
+        CanonicalCommand::CreateMechanicalCondition(MechanicalCondition::new(
+            HETTICH_EXAMPLE_LEFT_MOUNTING_CONTACT,
+            MechanicalConditionKind::PlanarContact {
+                first: HETTICH_EXAMPLE_LEFT_WALL_MOUNTING,
+                second: HETTICH_EXAMPLE_LEFT_RAIL_MOUNTING,
+                offset_mm: 0.0,
+                tolerance_mm: MOUNTING_CONTACT_TOLERANCE_MM,
+            },
+        )),
+        CanonicalCommand::CreateMechanicalCondition(MechanicalCondition::new(
+            HETTICH_EXAMPLE_DRAWER_SUPPORT,
+            MechanicalConditionKind::Support {
+                supported: HETTICH_EXAMPLE_DRAWER_BACK_FOOT,
+                supporting: HETTICH_EXAMPLE_DRAWER_BOTTOM_SUPPORT,
+                tolerance_mm: MOUNTING_CONTACT_TOLERANCE_MM,
+            },
+        )),
+        CanonicalCommand::CreateMechanicalCondition(MechanicalCondition::new(
+            HETTICH_EXAMPLE_GUIDE_ALIGNMENT,
+            MechanicalConditionKind::JointAxisAlignment {
+                joint_id: HETTICH_EXAMPLE_LEFT_INTERMEDIATE_JOINT,
+                interface: HETTICH_EXAMPLE_INTERMEDIATE_GUIDE,
+                alignment: MechanicalAxisAlignment::Perpendicular,
+                tolerance_degrees: 1.0e-3,
+            },
+        )),
+        CanonicalCommand::CreateMechanicalCondition(MechanicalCondition::new(
+            HETTICH_EXAMPLE_DRAWER_TRAVEL,
+            MechanicalConditionKind::JointTravel {
+                joint_id: HETTICH_EXAMPLE_DRAWER_JOINT,
+                minimum: 0.0,
+                maximum: 450.0,
+            },
+        )),
+    ]);
+    document.apply_batch(&CommandBatch::new(contract)).unwrap();
+
+    let report =
+        preview_mechanical_contract(&document.current(), HETTICH_EXAMPLE_MOTION_STUDY, 16).unwrap();
+    assert!(
+        report.is_satisfied(),
+        "the shipped example must satisfy its own mechanical contract: {:?}",
+        report.violations()
+    );
 
     persistence::save_atomic_with_container(&output, &document.current(), &container).unwrap();
     println!("{}", output.display());

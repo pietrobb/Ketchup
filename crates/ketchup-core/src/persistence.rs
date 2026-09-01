@@ -40,6 +40,11 @@ use crate::import::{
     ImportOutputRef, ImportReceipt, ImportUnitAuthority, ImportUnitDecision,
     MAX_IMPORT_DIAGNOSTICS, MAX_IMPORT_OUTPUTS,
 };
+use crate::mechanical_contract::{
+    MECHANICAL_CONDITION_SCHEMA_V1, MECHANICAL_INTERFACE_SCHEMA_V1, MechanicalAxisAlignment,
+    MechanicalCondition, MechanicalConditionId, MechanicalConditionKind, MechanicalInterface,
+    MechanicalInterfaceId, MechanicalPlanarFrame, MechanicalRole,
+};
 use crate::mechanical_coupling::{
     ASSEMBLY_MOTION_COUPLING_SCHEMA_V1, AssemblyMotionCoupling, AssemblyMotionCouplingId,
     AssemblyMotionDirection, AssemblyTransmissionKind, GearMeshKind, ScrewHandedness,
@@ -88,7 +93,8 @@ const TOPOLOGICAL_FEATURE_REFERENCE_SCHEMA: u16 = 40;
 const GENERAL_PARAMETER_PATH_SCHEMA: u16 = 41;
 const ASSEMBLY_KINEMATICS_SCHEMA: u16 = 42;
 const ASSEMBLY_MOTION_COUPLING_SCHEMA: u16 = 43;
-pub const CURRENT_SCHEMA: u16 = ASSEMBLY_MOTION_COUPLING_SCHEMA;
+const MECHANICAL_CONTRACT_SCHEMA: u16 = 44;
+pub const CURRENT_SCHEMA: u16 = MECHANICAL_CONTRACT_SCHEMA;
 const COLLECTION_SCHEMA: u16 = 15;
 const TAG_SCHEMA: u16 = 14;
 const PERSISTENT_DIMENSION_SCHEMA: u16 = 13;
@@ -147,6 +153,7 @@ struct ProductSchemaCapabilities {
     feature_extents: bool,
     assembly_kinematics: bool,
     assembly_motion_couplings: bool,
+    mechanical_contract: bool,
 }
 
 impl ProductSchemaCapabilities {
@@ -190,6 +197,7 @@ impl ProductSchemaCapabilities {
         feature_extents: false,
         assembly_kinematics: false,
         assembly_motion_couplings: false,
+        mechanical_contract: false,
     };
 
     const fn current(schema: u16) -> Self {
@@ -233,6 +241,7 @@ impl ProductSchemaCapabilities {
             feature_extents: schema >= FEATURE_EXTENT_SCHEMA,
             assembly_kinematics: schema >= ASSEMBLY_KINEMATICS_SCHEMA,
             assembly_motion_couplings: schema >= ASSEMBLY_MOTION_COUPLING_SCHEMA,
+            mechanical_contract: schema >= MECHANICAL_CONTRACT_SCHEMA,
         }
     }
 }
@@ -770,6 +779,14 @@ pub fn save(snapshot: &Snapshot) -> Vec<u8> {
     push_u32(&mut payload, product.assembly_motion_studies.len() as u32);
     for study in product.assembly_motion_studies.values() {
         write_assembly_motion_study(&mut payload, study);
+    }
+    push_u32(&mut payload, product.mechanical_interfaces.len() as u32);
+    for interface in product.mechanical_interfaces.values() {
+        write_mechanical_interface(&mut payload, interface);
+    }
+    push_u32(&mut payload, product.mechanical_conditions.len() as u32);
+    for condition in product.mechanical_conditions.values() {
+        write_mechanical_condition(&mut payload, condition);
     }
 
     let mut manifest = Vec::new();
@@ -1757,6 +1774,92 @@ fn write_assembly_joint_limits(bytes: &mut Vec<u8>, limits: Option<AssemblyJoint
     if let Some(limits) = limits {
         push_u64(bytes, limits.min().to_bits());
         push_u64(bytes, limits.max().to_bits());
+    }
+}
+
+fn write_mechanical_interface(bytes: &mut Vec<u8>, interface: &MechanicalInterface) {
+    push_string(bytes, interface.schema());
+    push_u64(bytes, interface.id().0);
+    push_u64(bytes, interface.occurrence_id().0);
+    push_u8(
+        bytes,
+        match interface.role() {
+            MechanicalRole::Mounting => 1,
+            MechanicalRole::Support => 2,
+            MechanicalRole::Guide => 3,
+        },
+    );
+    push_u32(bytes, interface.face_ordinal());
+    push_string(bytes, interface.geometry_fingerprint());
+    let frame = interface.frame();
+    for value in frame.origin_mm() {
+        push_u64(bytes, value.to_bits());
+    }
+    for value in frame.normal() {
+        push_u64(bytes, value.to_bits());
+    }
+    push_u64(bytes, frame.area_mm2().to_bits());
+    for corner in frame.bounds_mm() {
+        for value in corner {
+            push_u64(bytes, value.to_bits());
+        }
+    }
+}
+
+fn write_mechanical_condition(bytes: &mut Vec<u8>, condition: &MechanicalCondition) {
+    push_string(bytes, condition.schema());
+    push_u64(bytes, condition.id().0);
+    match condition.kind() {
+        MechanicalConditionKind::PlanarContact {
+            first,
+            second,
+            offset_mm,
+            tolerance_mm,
+        } => {
+            push_u8(bytes, 1);
+            push_u64(bytes, first.0);
+            push_u64(bytes, second.0);
+            push_u64(bytes, offset_mm.to_bits());
+            push_u64(bytes, tolerance_mm.to_bits());
+        }
+        MechanicalConditionKind::Support {
+            supported,
+            supporting,
+            tolerance_mm,
+        } => {
+            push_u8(bytes, 2);
+            push_u64(bytes, supported.0);
+            push_u64(bytes, supporting.0);
+            push_u64(bytes, tolerance_mm.to_bits());
+        }
+        MechanicalConditionKind::JointAxisAlignment {
+            joint_id,
+            interface,
+            alignment,
+            tolerance_degrees,
+        } => {
+            push_u8(bytes, 3);
+            push_u64(bytes, joint_id.0);
+            push_u64(bytes, interface.0);
+            push_u8(
+                bytes,
+                match alignment {
+                    MechanicalAxisAlignment::Parallel => 1,
+                    MechanicalAxisAlignment::Perpendicular => 2,
+                },
+            );
+            push_u64(bytes, tolerance_degrees.to_bits());
+        }
+        MechanicalConditionKind::JointTravel {
+            joint_id,
+            minimum,
+            maximum,
+        } => {
+            push_u8(bytes, 4);
+            push_u64(bytes, joint_id.0);
+            push_u64(bytes, minimum.to_bits());
+            push_u64(bytes, maximum.to_bits());
+        }
     }
 }
 
@@ -3137,6 +3240,93 @@ fn read_assembly_joint_limits(
     }
 }
 
+fn read_mechanical_interface(
+    reader: &mut Reader<'_>,
+) -> Result<MechanicalInterface, PersistenceError> {
+    let schema = reader.string()?;
+    if schema != MECHANICAL_INTERFACE_SCHEMA_V1 {
+        return Err(PersistenceError::InvalidMechanicalInterface);
+    }
+    let id = MechanicalInterfaceId(reader.u64()?);
+    let occurrence_id = OccurrenceId(reader.u64()?);
+    let role = match reader.u8()? {
+        1 => MechanicalRole::Mounting,
+        2 => MechanicalRole::Support,
+        3 => MechanicalRole::Guide,
+        _ => return Err(PersistenceError::InvalidMechanicalInterface),
+    };
+    let face_ordinal = reader.u32()?;
+    let geometry_fingerprint = reader.string()?;
+    let origin_mm = read_vector3(reader)?;
+    let normal = read_vector3(reader)?;
+    let area_mm2 = f64::from_bits(reader.u64()?);
+    let bounds_mm = [read_vector3(reader)?, read_vector3(reader)?];
+    let interface = MechanicalInterface::new(
+        id,
+        occurrence_id,
+        role,
+        face_ordinal,
+        geometry_fingerprint,
+        MechanicalPlanarFrame::new(origin_mm, normal, area_mm2, bounds_mm),
+    );
+    if !interface.has_valid_shape() {
+        return Err(PersistenceError::InvalidMechanicalInterface);
+    }
+    Ok(interface)
+}
+
+fn read_vector3(reader: &mut Reader<'_>) -> Result<[f64; 3], PersistenceError> {
+    Ok([
+        f64::from_bits(reader.u64()?),
+        f64::from_bits(reader.u64()?),
+        f64::from_bits(reader.u64()?),
+    ])
+}
+
+fn read_mechanical_condition(
+    reader: &mut Reader<'_>,
+) -> Result<MechanicalCondition, PersistenceError> {
+    let schema = reader.string()?;
+    if schema != MECHANICAL_CONDITION_SCHEMA_V1 {
+        return Err(PersistenceError::InvalidMechanicalCondition);
+    }
+    let id = MechanicalConditionId(reader.u64()?);
+    let kind = match reader.u8()? {
+        1 => MechanicalConditionKind::PlanarContact {
+            first: MechanicalInterfaceId(reader.u64()?),
+            second: MechanicalInterfaceId(reader.u64()?),
+            offset_mm: f64::from_bits(reader.u64()?),
+            tolerance_mm: f64::from_bits(reader.u64()?),
+        },
+        2 => MechanicalConditionKind::Support {
+            supported: MechanicalInterfaceId(reader.u64()?),
+            supporting: MechanicalInterfaceId(reader.u64()?),
+            tolerance_mm: f64::from_bits(reader.u64()?),
+        },
+        3 => MechanicalConditionKind::JointAxisAlignment {
+            joint_id: AssemblyJointId(reader.u64()?),
+            interface: MechanicalInterfaceId(reader.u64()?),
+            alignment: match reader.u8()? {
+                1 => MechanicalAxisAlignment::Parallel,
+                2 => MechanicalAxisAlignment::Perpendicular,
+                _ => return Err(PersistenceError::InvalidMechanicalCondition),
+            },
+            tolerance_degrees: f64::from_bits(reader.u64()?),
+        },
+        4 => MechanicalConditionKind::JointTravel {
+            joint_id: AssemblyJointId(reader.u64()?),
+            minimum: f64::from_bits(reader.u64()?),
+            maximum: f64::from_bits(reader.u64()?),
+        },
+        _ => return Err(PersistenceError::InvalidMechanicalCondition),
+    };
+    let condition = MechanicalCondition::new(id, kind);
+    if !condition.has_valid_shape() {
+        return Err(PersistenceError::InvalidMechanicalCondition);
+    }
+    Ok(condition)
+}
+
 fn read_assembly_motion_coupling(
     reader: &mut Reader<'_>,
 ) -> Result<AssemblyMotionCoupling, PersistenceError> {
@@ -4090,6 +4280,28 @@ fn read_product(
                     return Err(PersistenceError::DuplicateAssemblyMotionStudy);
                 }
             }
+            if capabilities.mechanical_contract {
+                for _ in 0..reader.count()? {
+                    let interface = read_mechanical_interface(reader)?;
+                    if product
+                        .mechanical_interfaces
+                        .insert(interface.id(), Arc::new(interface))
+                        .is_some()
+                    {
+                        return Err(PersistenceError::DuplicateMechanicalInterface);
+                    }
+                }
+                for _ in 0..reader.count()? {
+                    let condition = read_mechanical_condition(reader)?;
+                    if product
+                        .mechanical_conditions
+                        .insert(condition.id(), Arc::new(condition))
+                        .is_some()
+                    {
+                        return Err(PersistenceError::DuplicateMechanicalCondition);
+                    }
+                }
+            }
         }
     }
     if !capabilities.body_contract {
@@ -4200,6 +4412,8 @@ pub enum PersistenceError {
     InvalidAssemblyJoint,
     InvalidAssemblyMotionCoupling,
     InvalidAssemblyMotionStudy,
+    InvalidMechanicalInterface,
+    InvalidMechanicalCondition,
     ChecksumMismatch,
     ResourceLimit,
     UnsupportedEnvelopeIdentity,
@@ -4222,6 +4436,8 @@ pub enum PersistenceError {
     DuplicateAssemblyJoint,
     DuplicateAssemblyMotionCoupling,
     DuplicateAssemblyMotionStudy,
+    DuplicateMechanicalInterface,
+    DuplicateMechanicalCondition,
     DuplicateGroup(GroupId),
     DuplicateLocalGroup(LocalGroupKey),
     DuplicateLocalOccurrence(LocalOccurrenceKey),
@@ -4329,6 +4545,12 @@ impl fmt::Display for PersistenceError {
             Self::InvalidAssemblyMotionCoupling => {
                 formatter.write_str("assembly motion coupling is invalid")
             }
+            Self::InvalidMechanicalInterface => {
+                formatter.write_str("mechanical interface is invalid")
+            }
+            Self::InvalidMechanicalCondition => {
+                formatter.write_str("mechanical condition is invalid")
+            }
             Self::InvalidAssemblyMotionStudy => {
                 formatter.write_str("assembly motion study is invalid")
             }
@@ -4376,6 +4598,12 @@ impl fmt::Display for PersistenceError {
             }
             Self::DuplicateAssemblyMotionCoupling => {
                 formatter.write_str("document repeats an assembly motion coupling")
+            }
+            Self::DuplicateMechanicalInterface => {
+                formatter.write_str("document repeats a mechanical interface")
+            }
+            Self::DuplicateMechanicalCondition => {
+                formatter.write_str("document repeats a mechanical condition")
             }
             Self::DuplicateAssemblyMotionStudy => {
                 formatter.write_str("document repeats an assembly motion study")

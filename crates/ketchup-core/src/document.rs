@@ -29,6 +29,10 @@ use crate::import::{
     ImportDiagnosticSeverity, ImportFormat, ImportId, ImportLengthUnit, ImportOutputRef,
     ImportReceipt, ImportUnitAuthority,
 };
+use crate::mechanical_contract::{
+    MECHANICAL_CONDITION_SCHEMA_V1, MECHANICAL_INTERFACE_SCHEMA_V1, MechanicalCondition,
+    MechanicalConditionId, MechanicalConditionKind, MechanicalInterface, MechanicalInterfaceId,
+};
 use crate::mechanical_coupling::{
     ASSEMBLY_MOTION_COUPLING_SCHEMA_V1, AssemblyMotionCoupling, AssemblyMotionCouplingId,
     CoupledJointKind,
@@ -1545,6 +1549,8 @@ pub(crate) struct ProductModel {
     pub(crate) assembly_motion_couplings:
         BTreeMap<AssemblyMotionCouplingId, Arc<AssemblyMotionCoupling>>,
     pub(crate) assembly_motion_studies: BTreeMap<AssemblyMotionStudyId, Arc<AssemblyMotionStudy>>,
+    pub(crate) mechanical_interfaces: BTreeMap<MechanicalInterfaceId, Arc<MechanicalInterface>>,
+    pub(crate) mechanical_conditions: BTreeMap<MechanicalConditionId, Arc<MechanicalCondition>>,
     pub(crate) drawing_sheets: BTreeMap<DrawingSheetId, Arc<DrawingSheet>>,
     pub(crate) groups: BTreeMap<GroupId, Arc<Group>>,
     pub(crate) local_occurrences: BTreeMap<LocalOccurrenceKey, Arc<LocalOccurrence>>,
@@ -1596,6 +1602,8 @@ impl Default for ProductModel {
             assembly_joints: BTreeMap::new(),
             assembly_motion_couplings: BTreeMap::new(),
             assembly_motion_studies: BTreeMap::new(),
+            mechanical_interfaces: BTreeMap::new(),
+            mechanical_conditions: BTreeMap::new(),
             drawing_sheets: BTreeMap::new(),
             groups: BTreeMap::new(),
             local_occurrences: BTreeMap::new(),
@@ -2101,6 +2109,16 @@ pub enum CanonicalCommand {
     DeleteAssemblyMotionStudy {
         id: AssemblyMotionStudyId,
     },
+    CreateMechanicalInterface(MechanicalInterface),
+    UpdateMechanicalInterface(MechanicalInterface),
+    DeleteMechanicalInterface {
+        id: MechanicalInterfaceId,
+    },
+    CreateMechanicalCondition(MechanicalCondition),
+    UpdateMechanicalCondition(MechanicalCondition),
+    DeleteMechanicalCondition {
+        id: MechanicalConditionId,
+    },
     CreateDrawingSheet(DrawingSheet),
     UpdateDrawingSheet(DrawingSheet),
     DeleteDrawingSheet {
@@ -2261,6 +2279,8 @@ pub enum AuthoritativeDependency {
     AssemblyJoint(AssemblyJointId),
     AssemblyMotionCoupling(AssemblyMotionCouplingId),
     AssemblyMotionStudy(AssemblyMotionStudyId),
+    MechanicalInterface(MechanicalInterfaceId),
+    MechanicalCondition(MechanicalConditionId),
     DrawingSheet(DrawingSheetId),
     Group(GroupId),
     LocalGroup(LocalGroupKey),
@@ -3157,6 +3177,24 @@ impl Snapshot {
             .assembly_motion_couplings
             .values()
             .map(Arc::as_ref)
+    }
+
+    #[must_use]
+    pub fn mechanical_interface(&self, id: MechanicalInterfaceId) -> Option<&MechanicalInterface> {
+        self.product.mechanical_interfaces.get(&id).map(Arc::as_ref)
+    }
+
+    pub fn mechanical_interfaces(&self) -> impl Iterator<Item = &MechanicalInterface> {
+        self.product.mechanical_interfaces.values().map(Arc::as_ref)
+    }
+
+    #[must_use]
+    pub fn mechanical_condition(&self, id: MechanicalConditionId) -> Option<&MechanicalCondition> {
+        self.product.mechanical_conditions.get(&id).map(Arc::as_ref)
+    }
+
+    pub fn mechanical_conditions(&self) -> impl Iterator<Item = &MechanicalCondition> {
+        self.product.mechanical_conditions.values().map(Arc::as_ref)
     }
 
     #[must_use]
@@ -5465,6 +5503,67 @@ impl DocumentStore {
                         .remove(id)
                         .ok_or(CanonicalError::AssemblyMotionStudyNotFound(*id))?;
                 }
+                CanonicalCommand::CreateMechanicalInterface(interface) => {
+                    ensure_product_id(interface.id().0)?;
+                    if product.mechanical_interfaces.contains_key(&interface.id()) {
+                        return Err(CanonicalError::MechanicalInterfaceAlreadyExists(
+                            interface.id(),
+                        ));
+                    }
+                    validate_mechanical_interface(&product, interface)?;
+                    product
+                        .mechanical_interfaces
+                        .insert(interface.id(), Arc::new(interface.clone()));
+                }
+                CanonicalCommand::UpdateMechanicalInterface(interface) => {
+                    if !product.mechanical_interfaces.contains_key(&interface.id()) {
+                        return Err(CanonicalError::MechanicalInterfaceNotFound(interface.id()));
+                    }
+                    validate_mechanical_interface(&product, interface)?;
+                    product
+                        .mechanical_interfaces
+                        .insert(interface.id(), Arc::new(interface.clone()));
+                }
+                CanonicalCommand::DeleteMechanicalInterface { id } => {
+                    if product
+                        .mechanical_conditions
+                        .values()
+                        .any(|condition| condition.kind().interfaces().contains(id))
+                    {
+                        return Err(CanonicalError::MechanicalInterfaceInCondition(*id));
+                    }
+                    product
+                        .mechanical_interfaces
+                        .remove(id)
+                        .ok_or(CanonicalError::MechanicalInterfaceNotFound(*id))?;
+                }
+                CanonicalCommand::CreateMechanicalCondition(condition) => {
+                    ensure_product_id(condition.id().0)?;
+                    if product.mechanical_conditions.contains_key(&condition.id()) {
+                        return Err(CanonicalError::MechanicalConditionAlreadyExists(
+                            condition.id(),
+                        ));
+                    }
+                    validate_mechanical_condition(&product, condition)?;
+                    product
+                        .mechanical_conditions
+                        .insert(condition.id(), Arc::new(condition.clone()));
+                }
+                CanonicalCommand::UpdateMechanicalCondition(condition) => {
+                    if !product.mechanical_conditions.contains_key(&condition.id()) {
+                        return Err(CanonicalError::MechanicalConditionNotFound(condition.id()));
+                    }
+                    validate_mechanical_condition(&product, condition)?;
+                    product
+                        .mechanical_conditions
+                        .insert(condition.id(), Arc::new(condition.clone()));
+                }
+                CanonicalCommand::DeleteMechanicalCondition { id } => {
+                    product
+                        .mechanical_conditions
+                        .remove(id)
+                        .ok_or(CanonicalError::MechanicalConditionNotFound(*id))?;
+                }
                 CanonicalCommand::CreateDrawingSheet(sheet) => {
                     if product.drawing_sheets.contains_key(&sheet.id()) {
                         return Err(CanonicalError::DrawingSheetAlreadyExists(sheet.id()));
@@ -7491,6 +7590,13 @@ pub enum CanonicalError {
     AssemblyMotionCouplingAlreadyExists(AssemblyMotionCouplingId),
     AssemblyMotionCouplingNotFound(AssemblyMotionCouplingId),
     InvalidAssemblyMotionCoupling(AssemblyMotionCouplingId),
+    MechanicalInterfaceAlreadyExists(MechanicalInterfaceId),
+    MechanicalInterfaceNotFound(MechanicalInterfaceId),
+    MechanicalInterfaceInCondition(MechanicalInterfaceId),
+    InvalidMechanicalInterface(MechanicalInterfaceId),
+    MechanicalConditionAlreadyExists(MechanicalConditionId),
+    MechanicalConditionNotFound(MechanicalConditionId),
+    InvalidMechanicalCondition(MechanicalConditionId),
     UnsynchronizedAssemblyJointPosition(AssemblyJointId),
     AssemblyMotionStudyAlreadyExists(AssemblyMotionStudyId),
     AssemblyMotionStudyNotFound(AssemblyMotionStudyId),
@@ -7632,6 +7738,19 @@ impl CanonicalError {
                 "canonical.assembly_motion_coupling_not_found"
             }
             Self::InvalidAssemblyMotionCoupling(..) => "canonical.invalid_assembly_motion_coupling",
+            Self::MechanicalInterfaceAlreadyExists(..) => {
+                "canonical.mechanical_interface_already_exists"
+            }
+            Self::MechanicalInterfaceNotFound(..) => "canonical.mechanical_interface_not_found",
+            Self::MechanicalInterfaceInCondition(..) => {
+                "canonical.mechanical_interface_in_condition"
+            }
+            Self::InvalidMechanicalInterface(..) => "canonical.invalid_mechanical_interface",
+            Self::MechanicalConditionAlreadyExists(..) => {
+                "canonical.mechanical_condition_already_exists"
+            }
+            Self::MechanicalConditionNotFound(..) => "canonical.mechanical_condition_not_found",
+            Self::InvalidMechanicalCondition(..) => "canonical.invalid_mechanical_condition",
             Self::UnsynchronizedAssemblyJointPosition(..) => {
                 "canonical.unsynchronized_assembly_joint_position"
             }
@@ -7891,6 +8010,29 @@ impl fmt::Display for CanonicalError {
             }
             Self::InvalidAssemblyMotionCoupling(id) => {
                 write!(formatter, "assembly motion coupling {} is invalid", id.0)
+            }
+            Self::MechanicalInterfaceAlreadyExists(id) => {
+                write!(formatter, "mechanical interface {} already exists", id.0)
+            }
+            Self::MechanicalInterfaceNotFound(id) => {
+                write!(formatter, "mechanical interface {} does not exist", id.0)
+            }
+            Self::MechanicalInterfaceInCondition(id) => write!(
+                formatter,
+                "mechanical interface {} is still used by a mechanical condition",
+                id.0
+            ),
+            Self::InvalidMechanicalInterface(id) => {
+                write!(formatter, "mechanical interface {} is invalid", id.0)
+            }
+            Self::MechanicalConditionAlreadyExists(id) => {
+                write!(formatter, "mechanical condition {} already exists", id.0)
+            }
+            Self::MechanicalConditionNotFound(id) => {
+                write!(formatter, "mechanical condition {} does not exist", id.0)
+            }
+            Self::InvalidMechanicalCondition(id) => {
+                write!(formatter, "mechanical condition {} is invalid", id.0)
             }
             Self::AssemblyMotionStudyAlreadyExists(id) => {
                 write!(formatter, "assembly motion study {} already exists", id.0)
@@ -11797,6 +11939,49 @@ fn validate_assembly_motion_coupling(
         .map_err(CanonicalError::InvalidAssemblyMotionCoupling)
 }
 
+fn validate_mechanical_interface(
+    product: &ProductModel,
+    interface: &MechanicalInterface,
+) -> Result<(), CanonicalError> {
+    if !interface.has_valid_shape() || interface.schema() != MECHANICAL_INTERFACE_SCHEMA_V1 {
+        return Err(CanonicalError::InvalidMechanicalInterface(interface.id()));
+    }
+    if !product.occurrences.contains_key(&interface.occurrence_id()) {
+        return Err(CanonicalError::OccurrenceNotFound(
+            interface.occurrence_id(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_mechanical_condition(
+    product: &ProductModel,
+    condition: &MechanicalCondition,
+) -> Result<(), CanonicalError> {
+    if !condition.has_valid_shape() || condition.schema() != MECHANICAL_CONDITION_SCHEMA_V1 {
+        return Err(CanonicalError::InvalidMechanicalCondition(condition.id()));
+    }
+    for interface_id in condition.kind().interfaces() {
+        if !product.mechanical_interfaces.contains_key(&interface_id) {
+            return Err(CanonicalError::MechanicalInterfaceNotFound(interface_id));
+        }
+    }
+    if let Some(joint_id) = condition.kind().joint_id()
+        && !product.assembly_joints.contains_key(&joint_id)
+    {
+        return Err(CanonicalError::AssemblyJointNotFound(joint_id));
+    }
+    if let MechanicalConditionKind::JointAxisAlignment { joint_id, .. } = condition.kind()
+        && product
+            .assembly_joints
+            .get(&joint_id)
+            .is_none_or(|joint| joint.kind().axis().is_none())
+    {
+        return Err(CanonicalError::InvalidMechanicalCondition(condition.id()));
+    }
+    Ok(())
+}
+
 fn joint_kind_class(kind: AssemblyJointKind) -> Option<CoupledJointKind> {
     match kind {
         AssemblyJointKind::Fixed => None,
@@ -12035,6 +12220,18 @@ fn validate_product(product: &ProductModel) -> Result<(), CanonicalError> {
             return Err(CanonicalError::InvalidAssemblyMotionCoupling(*id));
         }
         validate_assembly_motion_coupling(product, coupling)?;
+    }
+    for (id, interface) in &product.mechanical_interfaces {
+        if *id != interface.id() {
+            return Err(CanonicalError::InvalidMechanicalInterface(*id));
+        }
+        validate_mechanical_interface(product, interface)?;
+    }
+    for (id, condition) in &product.mechanical_conditions {
+        if *id != condition.id() {
+            return Err(CanonicalError::InvalidMechanicalCondition(*id));
+        }
+        validate_mechanical_condition(product, condition)?;
     }
     for (id, study) in &product.assembly_motion_studies {
         if *id != study.id() {
@@ -13746,6 +13943,20 @@ fn authoritative_writes(
             CanonicalCommand::DeleteAssemblyMotionStudy { id } => {
                 writes.insert(AuthoritativeDependency::AssemblyMotionStudy(*id));
             }
+            CanonicalCommand::CreateMechanicalInterface(interface)
+            | CanonicalCommand::UpdateMechanicalInterface(interface) => {
+                writes.insert(AuthoritativeDependency::MechanicalInterface(interface.id()));
+            }
+            CanonicalCommand::DeleteMechanicalInterface { id } => {
+                writes.insert(AuthoritativeDependency::MechanicalInterface(*id));
+            }
+            CanonicalCommand::CreateMechanicalCondition(condition)
+            | CanonicalCommand::UpdateMechanicalCondition(condition) => {
+                writes.insert(AuthoritativeDependency::MechanicalCondition(condition.id()));
+            }
+            CanonicalCommand::DeleteMechanicalCondition { id } => {
+                writes.insert(AuthoritativeDependency::MechanicalCondition(*id));
+            }
             CanonicalCommand::CreateDrawingSheet(sheet)
             | CanonicalCommand::UpdateDrawingSheet(sheet) => {
                 writes.insert(AuthoritativeDependency::DrawingSheet(sheet.id()));
@@ -14168,6 +14379,41 @@ fn authoritative_dependencies(
             }
             CanonicalCommand::DeleteAssemblyMotionStudy { id } => {
                 dependencies.insert(AuthoritativeDependency::AssemblyMotionStudy(*id));
+            }
+            CanonicalCommand::CreateMechanicalInterface(interface)
+            | CanonicalCommand::UpdateMechanicalInterface(interface) => {
+                dependencies.insert(AuthoritativeDependency::MechanicalInterface(interface.id()));
+                dependencies.insert(AuthoritativeDependency::Occurrence(
+                    interface.occurrence_id(),
+                ));
+            }
+            CanonicalCommand::DeleteMechanicalInterface { id } => {
+                dependencies.insert(AuthoritativeDependency::MechanicalInterface(*id));
+                dependencies.extend(
+                    snapshot.mechanical_conditions().map(|condition| {
+                        AuthoritativeDependency::MechanicalCondition(condition.id())
+                    }),
+                );
+            }
+            CanonicalCommand::CreateMechanicalCondition(condition)
+            | CanonicalCommand::UpdateMechanicalCondition(condition) => {
+                dependencies.insert(AuthoritativeDependency::MechanicalCondition(condition.id()));
+                dependencies.extend(
+                    condition
+                        .kind()
+                        .interfaces()
+                        .into_iter()
+                        .map(AuthoritativeDependency::MechanicalInterface),
+                );
+                dependencies.extend(
+                    condition
+                        .kind()
+                        .joint_id()
+                        .map(AuthoritativeDependency::AssemblyJoint),
+                );
+            }
+            CanonicalCommand::DeleteMechanicalCondition { id } => {
+                dependencies.insert(AuthoritativeDependency::MechanicalCondition(*id));
             }
             CanonicalCommand::CreateDrawingSheet(sheet)
             | CanonicalCommand::UpdateDrawingSheet(sheet) => {
@@ -14766,6 +15012,20 @@ fn digest_snapshot(snapshot: &Snapshot) -> String {
         digest.u64(snapshot.product.assembly_motion_couplings.len() as u64);
         for coupling in snapshot.product.assembly_motion_couplings.values() {
             digest.assembly_motion_coupling(coupling);
+        }
+    }
+    if !snapshot.product.mechanical_interfaces.is_empty() {
+        digest.bytes(b"canonical-mechanical-interfaces.v1");
+        digest.u64(snapshot.product.mechanical_interfaces.len() as u64);
+        for interface in snapshot.product.mechanical_interfaces.values() {
+            digest.mechanical_interface(interface);
+        }
+    }
+    if !snapshot.product.mechanical_conditions.is_empty() {
+        digest.bytes(b"canonical-mechanical-conditions.v1");
+        digest.u64(snapshot.product.mechanical_conditions.len() as u64);
+        for condition in snapshot.product.mechanical_conditions.values() {
+            digest.mechanical_condition(condition);
         }
     }
     if !snapshot.product.assembly_motion_studies.is_empty() {
@@ -15730,6 +15990,90 @@ impl StableDigest {
         }
     }
 
+    fn mechanical_interface(&mut self, interface: &MechanicalInterface) {
+        use crate::mechanical_contract::MechanicalRole;
+
+        self.bytes(interface.schema().as_bytes());
+        self.u64(interface.id().0);
+        self.u64(interface.occurrence_id().0);
+        self.byte(match interface.role() {
+            MechanicalRole::Mounting => 1,
+            MechanicalRole::Support => 2,
+            MechanicalRole::Guide => 3,
+        });
+        self.u64(u64::from(interface.face_ordinal()));
+        self.bytes(interface.geometry_fingerprint().as_bytes());
+        let frame = interface.frame();
+        for value in frame.origin_mm() {
+            self.u64(value.to_bits());
+        }
+        for value in frame.normal() {
+            self.u64(value.to_bits());
+        }
+        self.u64(frame.area_mm2().to_bits());
+        for corner in frame.bounds_mm() {
+            for value in corner {
+                self.u64(value.to_bits());
+            }
+        }
+    }
+
+    fn mechanical_condition(&mut self, condition: &MechanicalCondition) {
+        use crate::mechanical_contract::MechanicalAxisAlignment;
+
+        self.bytes(condition.schema().as_bytes());
+        self.u64(condition.id().0);
+        match condition.kind() {
+            MechanicalConditionKind::PlanarContact {
+                first,
+                second,
+                offset_mm,
+                tolerance_mm,
+            } => {
+                self.byte(1);
+                self.u64(first.0);
+                self.u64(second.0);
+                self.u64(offset_mm.to_bits());
+                self.u64(tolerance_mm.to_bits());
+            }
+            MechanicalConditionKind::Support {
+                supported,
+                supporting,
+                tolerance_mm,
+            } => {
+                self.byte(2);
+                self.u64(supported.0);
+                self.u64(supporting.0);
+                self.u64(tolerance_mm.to_bits());
+            }
+            MechanicalConditionKind::JointAxisAlignment {
+                joint_id,
+                interface,
+                alignment,
+                tolerance_degrees,
+            } => {
+                self.byte(3);
+                self.u64(joint_id.0);
+                self.u64(interface.0);
+                self.byte(match alignment {
+                    MechanicalAxisAlignment::Parallel => 1,
+                    MechanicalAxisAlignment::Perpendicular => 2,
+                });
+                self.u64(tolerance_degrees.to_bits());
+            }
+            MechanicalConditionKind::JointTravel {
+                joint_id,
+                minimum,
+                maximum,
+            } => {
+                self.byte(4);
+                self.u64(joint_id.0);
+                self.u64(minimum.to_bits());
+                self.u64(maximum.to_bits());
+            }
+        }
+    }
+
     fn assembly_motion_coupling(&mut self, coupling: &AssemblyMotionCoupling) {
         use crate::mechanical_coupling::{
             AssemblyMotionDirection, AssemblyTransmissionKind, GearMeshKind, ScrewHandedness,
@@ -16074,6 +16418,26 @@ impl StableDigest {
                 if let Some(coupling) = product.assembly_motion_couplings.get(&id) {
                     self.byte(1);
                     self.assembly_motion_coupling(coupling);
+                } else {
+                    self.byte(0);
+                }
+            }
+            AuthoritativeDependency::MechanicalInterface(id) => {
+                self.byte(37);
+                self.u64(id.0);
+                if let Some(interface) = product.mechanical_interfaces.get(&id) {
+                    self.byte(1);
+                    self.mechanical_interface(interface);
+                } else {
+                    self.byte(0);
+                }
+            }
+            AuthoritativeDependency::MechanicalCondition(id) => {
+                self.byte(38);
+                self.u64(id.0);
+                if let Some(condition) = product.mechanical_conditions.get(&id) {
+                    self.byte(1);
+                    self.mechanical_condition(condition);
                 } else {
                     self.byte(0);
                 }
@@ -16638,6 +17002,30 @@ impl StableDigest {
             }
             CanonicalCommand::DeleteAssemblyMotionStudy { id } => {
                 self.byte(81);
+                self.u64(id.0);
+            }
+            CanonicalCommand::CreateMechanicalInterface(interface) => {
+                self.byte(85);
+                self.mechanical_interface(interface);
+            }
+            CanonicalCommand::UpdateMechanicalInterface(interface) => {
+                self.byte(86);
+                self.mechanical_interface(interface);
+            }
+            CanonicalCommand::DeleteMechanicalInterface { id } => {
+                self.byte(87);
+                self.u64(id.0);
+            }
+            CanonicalCommand::CreateMechanicalCondition(condition) => {
+                self.byte(88);
+                self.mechanical_condition(condition);
+            }
+            CanonicalCommand::UpdateMechanicalCondition(condition) => {
+                self.byte(89);
+                self.mechanical_condition(condition);
+            }
+            CanonicalCommand::DeleteMechanicalCondition { id } => {
+                self.byte(90);
                 self.u64(id.0);
             }
             CanonicalCommand::CreateDrawingSheet(sheet) => {
