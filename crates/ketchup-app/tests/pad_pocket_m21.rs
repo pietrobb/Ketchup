@@ -1,3 +1,5 @@
+#![cfg(feature = "named-product-fixtures")]
+
 //! Program 2 Pad/Pocket workflows replayed offscreen through AccessKit.
 
 mod harness;

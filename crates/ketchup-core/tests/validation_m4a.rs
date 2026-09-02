@@ -1,3 +1,5 @@
+#![cfg(feature = "named-product-fixtures")]
+
 use ketchup_core::beam_m4ae::BeamWorkspace;
 use ketchup_core::prismatic::{
     Aabb, CanonicalJoint, ExactPrismaticBody, JointId, JointValidationOutcome, TolerancePolicy,

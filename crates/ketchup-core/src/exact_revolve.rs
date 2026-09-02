@@ -1,8 +1,8 @@
 #![forbid(unsafe_code)]
 
 use crate::document::{
-    BOTTLE_SHELL_OPENING_FACE_ROLE, BOTTLE_SHOULDER_EDGE_ROLE, BottleEdgeFinishKind, DefinitionId,
-    DocumentId, FeatureId, FeatureKind, ProfileSegment, Snapshot,
+    BOTTLE_SHELL_OPENING_FACE_ROLE, BOTTLE_SHOULDER_EDGE_ROLE, DefinitionId, DocumentId,
+    EdgeFinishKind, FeatureId, FeatureKind, ProfileSegment, Snapshot,
 };
 use crate::exact_product::{
     BODY_SUBSHAPE_REF_SCHEMA_V1, BodySubshapeRef, ExactFaceRole, ExactProductError,
@@ -57,7 +57,7 @@ pub struct ExactRevolveRequest {
     pub shell_feature_id: Option<FeatureId>,
     pub thickness_bits: Option<u64>,
     pub edge_finish_feature_id: Option<FeatureId>,
-    pub edge_finish_kind: Option<BottleEdgeFinishKind>,
+    pub edge_finish_kind: Option<EdgeFinishKind>,
     pub edge_finish_amount_bits: Option<u64>,
     pub points_bits: Vec<[u64; 2]>,
     pub segments: Option<Vec<ExactProfileSegment>>,
@@ -259,8 +259,8 @@ impl ExactRevolveRequest {
             thickness_bits.map_or(0, |bits| bits),
             edge_finish_feature_id.map_or(0, |id| id.0),
             edge_finish_kind.map_or(0, |kind| match kind {
-                BottleEdgeFinishKind::Fillet => 1,
-                BottleEdgeFinishKind::Chamfer => 2,
+                EdgeFinishKind::Fillet => 1,
+                EdgeFinishKind::Chamfer => 2,
             }),
             edge_finish_amount_bits.map_or(0, |bits| bits),
             source_digest,
@@ -567,8 +567,8 @@ impl ExactRevolveRequest {
                 self.thickness_bits.map_or(0, |bits| bits),
                 self.edge_finish_feature_id.map_or(0, |id| id.0),
                 self.edge_finish_kind.map_or(0, |kind| match kind {
-                    BottleEdgeFinishKind::Fillet => 1,
-                    BottleEdgeFinishKind::Chamfer => 2,
+                    EdgeFinishKind::Fillet => 1,
+                    EdgeFinishKind::Chamfer => 2,
                 }),
                 self.edge_finish_amount_bits.map_or(0, |bits| bits),
                 source_digest,
@@ -666,7 +666,7 @@ pub struct RevolveResultIdentity {
     pub shell_feature_id: Option<FeatureId>,
     pub thickness_bits: Option<u64>,
     pub edge_finish_feature_id: Option<FeatureId>,
-    pub edge_finish_kind: Option<BottleEdgeFinishKind>,
+    pub edge_finish_kind: Option<EdgeFinishKind>,
     pub edge_finish_amount_bits: Option<u64>,
     pub canonical_input_digest: String,
     pub exact_input_digest: String,
@@ -744,8 +744,8 @@ impl ExactRevolvePackage {
             request.thickness_bits.map_or(0, |bits| bits),
             request.edge_finish_feature_id.map_or(0, |id| id.0),
             request.edge_finish_kind.map_or("none", |kind| match kind {
-                BottleEdgeFinishKind::Fillet => "fillet",
-                BottleEdgeFinishKind::Chamfer => "chamfer",
+                EdgeFinishKind::Fillet => "fillet",
+                EdgeFinishKind::Chamfer => "chamfer",
             }),
             request.edge_finish_amount_bits.map_or(0, |bits| bits),
             request.canonical_input_digest,

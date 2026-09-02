@@ -237,6 +237,9 @@ impl Shell {
     fn build_at_size(app: KetchupApp, size: Vec2) -> Self {
         let mut harness = Harness::builder()
             .with_size(size)
+            // Exact workers can legitimately request more than the default four
+            // frames before publishing, but the replay must remain bounded.
+            .with_max_steps(64)
             // The default frame step is a quarter of a second, which is longer
             // than the double-click delay — two clicks would never pair up.
             .with_step_dt(1.0 / 60.0)

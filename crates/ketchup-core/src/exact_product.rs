@@ -1,11 +1,12 @@
 #![forbid(unsafe_code)]
 
+#[cfg(feature = "named-product-fixtures")]
 use crate::beam_m5::{BeamExactPiecePackage, BeamExactResultKey};
 use crate::document::{
-    BodyId, BooleanOperation, BottleEdgeFinishKind, CanonicalCommand, CommandBatch, DefinitionId,
-    DocumentId, ExactReferenceConversionConsequence, ExactToMeshConversion, FeatureDependencyGraph,
-    FeatureId, FeatureKind, InstancePath, MESH_BODY_SCHEMA_V1, MeshAuthority, MeshBodySpec,
-    ProfileSegment, Snapshot, Transform,
+    BodyId, BooleanOperation, CanonicalCommand, CommandBatch, DefinitionId, DocumentId,
+    EdgeFinishKind, ExactReferenceConversionConsequence, ExactToMeshConversion,
+    FeatureDependencyGraph, FeatureId, FeatureKind, InstancePath, MESH_BODY_SCHEMA_V1,
+    MeshAuthority, MeshBodySpec, ProfileSegment, Snapshot, Transform,
 };
 use crate::exact_brep_graph::ExactBRepGraph;
 use crate::graph::DerivedIdentity;
@@ -848,7 +849,7 @@ impl ExactBRepGraphPackage {
 #[derive(Clone, Debug, PartialEq)]
 pub enum ExactBodyPackage {
     Rectangle(ExactRenderPackage),
-    Revolve(crate::bottle_m6::ExactRevolvePackage),
+    Revolve(crate::exact_revolve::ExactRevolvePackage),
     Graph(ExactBRepGraphPackage),
     Imported(ImportedExactPackage),
 }
@@ -872,6 +873,9 @@ pub trait ExactBodyView {
     fn triangle_count(&self) -> usize;
     fn triangle_indices(&self, index: usize) -> [u32; 3];
     fn triangle_group(&self, index: usize) -> &'static str;
+    fn triangle_group_name(&self, index: usize) -> String {
+        self.triangle_group(index).to_owned()
+    }
     fn tolerance(&self) -> &str;
     fn source_digest(&self) -> &str;
     fn producer_identity(&self) -> String;
@@ -1163,7 +1167,7 @@ impl ExactBodyPackage {
                 Some(Self::Rectangle(rebound))
             }
             Self::Revolve(package) => {
-                let request = crate::bottle_m6::ExactRevolveRequest::from_snapshot(
+                let request = crate::exact_revolve::ExactRevolveRequest::from_snapshot(
                     snapshot,
                     package.identity.definition_id,
                 )
@@ -1278,7 +1282,7 @@ impl ExactBodyPackage {
     }
 
     #[must_use]
-    pub fn revolve(&self) -> Option<&crate::bottle_m6::ExactRevolvePackage> {
+    pub fn revolve(&self) -> Option<&crate::exact_revolve::ExactRevolvePackage> {
         match self {
             Self::Revolve(package) => Some(package),
             Self::Rectangle(_) | Self::Graph(_) | Self::Imported(_) => None,
@@ -1376,6 +1380,20 @@ impl ExactBodyView for ExactBodyPackage {
             .map_or("unreferenced", ExactFaceRole::semantic_role)
     }
 
+    fn triangle_group_name(&self, index: usize) -> String {
+        match self {
+            Self::Graph(package) => package.triangle_face_ordinals.get(index).map_or_else(
+                || "unreferenced".to_owned(),
+                |ordinal| format!("topological.face.{ordinal}"),
+            ),
+            Self::Imported(package) => package.triangle_face_ordinals.get(index).map_or_else(
+                || "unreferenced".to_owned(),
+                |ordinal| format!("imported.face.{ordinal}"),
+            ),
+            Self::Rectangle(_) | Self::Revolve(_) => self.triangle_group(index).to_owned(),
+        }
+    }
+
     fn tolerance(&self) -> &str {
         match self {
             Self::Rectangle(package) => &package.identity.tolerance,
@@ -1408,6 +1426,7 @@ impl ExactBodyView for ExactBodyPackage {
     }
 }
 
+#[cfg(feature = "named-product-fixtures")]
 impl ExactBodyView for BeamExactPiecePackage {
     fn bounds_mm(&self) -> [[f64; 3]; 2] {
         [self.bounds_mm.min(), self.bounds_mm.max()]
@@ -1475,8 +1494,8 @@ fn mesh_export_from_view(
     }
     let mut current_group = None;
     for triangle_index in 0..view.triangle_count() {
-        let group = view.triangle_group(triangle_index);
-        if current_group != Some(group) {
+        let group = view.triangle_group_name(triangle_index);
+        if current_group.as_ref() != Some(&group) {
             writeln!(mesh_obj, "g {group}").expect("writing to a String cannot fail");
             current_group = Some(group);
         }
@@ -1600,8 +1619,8 @@ impl From<ExactRenderPackage> for ExactBodyPackage {
     }
 }
 
-impl From<crate::bottle_m6::ExactRevolvePackage> for ExactBodyPackage {
-    fn from(package: crate::bottle_m6::ExactRevolvePackage) -> Self {
+impl From<crate::exact_revolve::ExactRevolvePackage> for ExactBodyPackage {
+    fn from(package: crate::exact_revolve::ExactRevolvePackage) -> Self {
         Self::Revolve(package)
     }
 }
@@ -1638,6 +1657,7 @@ pub struct ExactBodyResultKey {
 #[derive(Clone, Debug)]
 pub struct ExactResultRegistry {
     packages: BTreeMap<ExactResultKey, Arc<ExactBodyPackage>>,
+    #[cfg(feature = "named-product-fixtures")]
     beam_packages: BTreeMap<BeamExactResultKey, Arc<BeamExactPiecePackage>>,
     contents_stamp: u64,
 }
@@ -1646,6 +1666,7 @@ impl Default for ExactResultRegistry {
     fn default() -> Self {
         Self {
             packages: BTreeMap::new(),
+            #[cfg(feature = "named-product-fixtures")]
             beam_packages: BTreeMap::new(),
             contents_stamp: next_contents_stamp(),
         }
@@ -1771,6 +1792,7 @@ impl ExactResultRegistry {
         Ok(registry)
     }
 
+    #[cfg(feature = "named-product-fixtures")]
     pub fn accept_beam(
         snapshot: &Snapshot,
         packages: impl IntoIterator<Item = Arc<BeamExactPiecePackage>>,
@@ -1915,6 +1937,7 @@ impl ExactResultRegistry {
         Ok(())
     }
 
+    #[cfg(feature = "named-product-fixtures")]
     pub fn insert_current_beam(
         &mut self,
         snapshot: &Snapshot,
@@ -1961,11 +1984,13 @@ impl ExactResultRegistry {
     }
 
     #[must_use]
+    #[cfg(feature = "named-product-fixtures")]
     pub fn get_beam_result(&self, key: &BeamExactResultKey) -> Option<&Arc<BeamExactPiecePackage>> {
         self.beam_packages.get(key)
     }
 
     #[must_use]
+    #[cfg(feature = "named-product-fixtures")]
     pub fn get_beam(&self, piece: &DerivedIdentity) -> Option<&Arc<BeamExactPiecePackage>> {
         let mut matches = self
             .beam_packages
@@ -2120,6 +2145,7 @@ impl ExactResultRegistry {
         self.packages.values()
     }
 
+    #[cfg(feature = "named-product-fixtures")]
     pub fn beam_values(&self) -> impl Iterator<Item = &Arc<BeamExactPiecePackage>> {
         self.beam_packages.values()
     }
@@ -2130,6 +2156,7 @@ impl ExactResultRegistry {
     }
 
     #[must_use]
+    #[cfg(feature = "named-product-fixtures")]
     pub fn beam_len(&self) -> usize {
         self.beam_packages.len()
     }
@@ -2155,6 +2182,7 @@ impl ExactResultRegistry {
 
     pub fn clear(&mut self) {
         self.packages.clear();
+        #[cfg(feature = "named-product-fixtures")]
         self.beam_packages.clear();
         self.contents_stamp = next_contents_stamp();
     }
@@ -4683,7 +4711,7 @@ pub struct ExactBoxShellRequest {
     pub shell_feature_id: FeatureId,
     pub thickness_bits: u64,
     pub edge_finish_feature_id: Option<FeatureId>,
-    pub edge_finish_kind: Option<BottleEdgeFinishKind>,
+    pub edge_finish_kind: Option<EdgeFinishKind>,
     pub edge_finish_amount_bits: Option<u64>,
 }
 
@@ -6427,8 +6455,8 @@ impl ExactFeatureChainRequest {
         }
         if let Some(shell) = &shell {
             let finish_kind = shell.edge_finish_kind.map_or("none", |kind| match kind {
-                BottleEdgeFinishKind::Fillet => "fillet",
-                BottleEdgeFinishKind::Chamfer => "chamfer",
+                EdgeFinishKind::Fillet => "fillet",
+                EdgeFinishKind::Chamfer => "chamfer",
             });
             canonical_input_digest = digest(&format!(
                 "{canonical_input_digest}:shell:{}:{:016x}:finish:{}:{}:{:016x}",

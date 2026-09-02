@@ -1,3 +1,5 @@
+#![cfg(feature = "named-product-fixtures")]
+
 use ketchup_core::beam_m4ae::BeamWorkspace;
 use ketchup_core::beam_m5::{BeamNotchFaceRole, HalfLapParticipant};
 use ketchup_core::document::Transform;

@@ -4,9 +4,15 @@ pub mod adapters;
 pub mod assembly;
 pub mod assembly_joint;
 pub mod assistant_sidecar;
+#[cfg(feature = "named-product-fixtures")]
 pub mod beam_m4ae;
+#[cfg(feature = "named-product-fixtures")]
 pub mod beam_m5;
-pub mod bottle_m6;
+pub mod exact_revolve;
+
+pub mod bottle_m6 {
+    pub use crate::exact_revolve::*;
+}
 pub mod document;
 pub mod drawing;
 pub mod exact_brep_graph;
@@ -24,6 +30,7 @@ pub mod mechanical_coupling;
 pub mod persistence;
 pub mod prismatic;
 pub mod reference_examples;
+#[cfg(feature = "named-product-fixtures")]
 pub mod release_capstone;
 pub mod shared_change;
 pub mod sketch;

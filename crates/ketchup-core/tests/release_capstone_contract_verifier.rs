@@ -1,3 +1,5 @@
+#![cfg(feature = "named-product-fixtures")]
+
 use ketchup_core::document::{
     CanonicalCommand, CommandBatch, Dimension, DocumentStore, FeatureKind, ProposalContext,
     Transform,

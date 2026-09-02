@@ -2379,12 +2379,12 @@ fn load_document(
             )
             .is_ok_and(|request| {
                 reference.matches_request(&request) || reference.matches_legacy_request(&request)
-            }) || crate::bottle_m6::ExactRevolveRequest::from_snapshot(
+            }) || crate::exact_revolve::ExactRevolveRequest::from_snapshot(
                 &loaded_snapshot,
                 reference.definition_id,
             )
             .is_ok_and(|request| {
-                crate::bottle_m6::reference_matches_revolve_request(reference, &request)
+                crate::exact_revolve::reference_matches_revolve_request(reference, &request)
             });
         let matches_durable_anchor =
             crate::exact_product::ExactFeatureChainRequest::from_snapshot_for_producer(

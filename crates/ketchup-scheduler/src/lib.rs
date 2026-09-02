@@ -5,16 +5,14 @@ pub mod general;
 pub mod plugin;
 pub mod validator_runtime;
 
+#[cfg(feature = "named-product-fixtures")]
 use ketchup_core::beam_m5::{
     BeamExactPiecePackage, BeamExactPieceRequest, BeamM5Error, BeamNotchFaceRole,
     BeamWorkerFaceEvidence, BeamWorkerResult, HalfLapParticipant, build_piece_package,
 };
-use ketchup_core::bottle_m6::{
-    ExactRevolvePackage, ExactRevolveRequest, build_revolve_package, expected_volume_mm3,
-};
 use ketchup_core::document::{
-    BooleanOperation, BottleEdgeFinishKind, DerivedIdentity, NodeId, SlotPath, SlotSegment,
-    Snapshot, Transform,
+    BooleanOperation, DerivedIdentity, EdgeFinishKind, NodeId, SlotPath, SlotSegment, Snapshot,
+    Transform,
 };
 use ketchup_core::exact_brep_graph::{ExactBRepGraph, ExactBRepOperation};
 use ketchup_core::exact_product::{
@@ -25,11 +23,17 @@ use ketchup_core::exact_product::{
     SweepWorkerEvidence, SweepWorkerFaceEvidence, build_box_render_package, build_loft_package,
     build_planar_offset_package, build_sweep_package, canonical_reference_lineage_digest,
 };
+use ketchup_core::exact_revolve::{
+    ExactRevolvePackage, ExactRevolveRequest, build_revolve_package, expected_volume_mm3,
+};
 use ketchup_core::graph::sha256_hex;
 use ketchup_core::import::{
     ImportLengthUnit, MAX_STEP_SOURCE_BYTES, StepImportEvidence, StepImportMesh,
 };
-use ketchup_core::prismatic::{Aabb, JointId};
+#[cfg(feature = "named-product-fixtures")]
+use ketchup_core::prismatic::Aabb;
+#[cfg(feature = "named-product-fixtures")]
+use ketchup_core::prismatic::JointId;
 use ketchup_exact::GeometryErrorCode;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, VecDeque};
@@ -561,6 +565,7 @@ const P6_LOFT_CAPABILITY: &str = "P6_LOFT_V1";
 const P3_CIRCLE_CAPABILITY: &str = "P3_CIRCLE_V1";
 const P3_ARC_CAPABILITY: &str = "P3_ARC_V1";
 const P3_POLYGON_CUT_CAPABILITY: &str = "P3_POLYGON_CUT_V1";
+#[cfg(feature = "named-product-fixtures")]
 const M5_NOTCH_CAPABILITY: &str = "M5_NOTCH_V1";
 const M6_REVOLVE_CAPABILITY: &str = "M6_REVOLVE_V1";
 const M6_SHELL_CAPABILITY: &str = "M6_SHELL_V1";
@@ -786,8 +791,8 @@ impl From<&ExactFeatureChainRequest> for StepFeatureExportSpec {
             shell: request.shell.as_ref().map(|shell| StepShellSpec {
                 thickness_bits: shell.thickness_bits,
                 finish: shell.edge_finish_kind.map(|kind| match kind {
-                    BottleEdgeFinishKind::Fillet => "fillet".to_owned(),
-                    BottleEdgeFinishKind::Chamfer => "chamfer".to_owned(),
+                    EdgeFinishKind::Fillet => "fillet".to_owned(),
+                    EdgeFinishKind::Chamfer => "chamfer".to_owned(),
                 }),
                 amount_bits: shell.edge_finish_amount_bits,
             }),
@@ -1019,6 +1024,7 @@ impl ExactWorkerClient {
         }
     }
 
+    #[cfg(feature = "named-product-fixtures")]
     fn verify_m5_notch_capability(&mut self, cancelled: &AtomicBool) -> Result<(), WorkerError> {
         let response = self.request_with_cancellation("CAPS M5_NOTCH_V1", cancelled)?;
         if response == "CAPS M5_NOTCH_V1" {
@@ -1338,8 +1344,8 @@ impl ExactWorkerClient {
                             request.height_bits,
                             shell.thickness_bits,
                             match kind {
-                                BottleEdgeFinishKind::Fillet => "fillet",
-                                BottleEdgeFinishKind::Chamfer => "chamfer",
+                                EdgeFinishKind::Fillet => "fillet",
+                                EdgeFinishKind::Chamfer => "chamfer",
                             },
                             amount_bits,
                             request.document_id.0,
@@ -1875,8 +1881,8 @@ impl ExactWorkerClient {
                 request.canonical_input_digest,
                 thickness_bits,
                 match finish_kind {
-                    ketchup_core::document::BottleEdgeFinishKind::Fillet => "fillet",
-                    ketchup_core::document::BottleEdgeFinishKind::Chamfer => "chamfer",
+                    ketchup_core::document::EdgeFinishKind::Fillet => "fillet",
+                    ketchup_core::document::EdgeFinishKind::Chamfer => "chamfer",
                 },
                 amount_bits,
             )
@@ -1924,7 +1930,7 @@ impl ExactWorkerClient {
             request.edge_finish_amount_bits,
         ) {
             (
-                Some(ketchup_core::document::BottleEdgeFinishKind::Fillet),
+                Some(ketchup_core::document::EdgeFinishKind::Fillet),
                 Some(thickness),
                 Some(amount),
             ) => (
@@ -1933,7 +1939,7 @@ impl ExactWorkerClient {
                 format!("{amount:016x}"),
             ),
             (
-                Some(ketchup_core::document::BottleEdgeFinishKind::Chamfer),
+                Some(ketchup_core::document::EdgeFinishKind::Chamfer),
                 Some(thickness),
                 Some(amount),
             ) => (
@@ -2244,6 +2250,7 @@ impl ExactWorkerClient {
         Ok(())
     }
 
+    #[cfg(feature = "named-product-fixtures")]
     fn evaluate_beam_piece_request_with_cancellation(
         &mut self,
         request: &BeamExactPieceRequest,
@@ -3327,6 +3334,7 @@ impl ExactWorkerSupervisor {
         Ok(())
     }
 
+    #[cfg(feature = "named-product-fixtures")]
     pub fn evaluate_beam_piece(
         &mut self,
         request: &BeamExactPieceRequest,
@@ -3334,6 +3342,7 @@ impl ExactWorkerSupervisor {
         self.evaluate_beam_piece_with_cancellation(request, &NEVER_CANCELLED)
     }
 
+    #[cfg(feature = "named-product-fixtures")]
     pub fn evaluate_beam_piece_with_cancellation(
         &mut self,
         request: &BeamExactPieceRequest,
@@ -5223,12 +5232,14 @@ impl From<ExactProductError> for M6EvaluationError {
     }
 }
 
+#[cfg(feature = "named-product-fixtures")]
 #[derive(Debug)]
 pub enum M5EvaluationError {
     Worker(WorkerError),
     Product(BeamM5Error),
 }
 
+#[cfg(feature = "named-product-fixtures")]
 impl fmt::Display for M5EvaluationError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -5238,14 +5249,17 @@ impl fmt::Display for M5EvaluationError {
     }
 }
 
+#[cfg(feature = "named-product-fixtures")]
 impl std::error::Error for M5EvaluationError {}
 
+#[cfg(feature = "named-product-fixtures")]
 impl From<WorkerError> for M5EvaluationError {
     fn from(error: WorkerError) -> Self {
         Self::Worker(error)
     }
 }
 
+#[cfg(feature = "named-product-fixtures")]
 impl From<BeamM5Error> for M5EvaluationError {
     fn from(error: BeamM5Error) -> Self {
         Self::Product(error)
@@ -5315,6 +5329,7 @@ fn hex_decode_utf8(value: &str) -> Option<String> {
     String::from_utf8(bytes).ok()
 }
 
+#[cfg(feature = "named-product-fixtures")]
 fn push_aabb_request(line: &mut String, bounds: Aabb) {
     for value in bounds.min().into_iter().chain(bounds.max()) {
         line.push_str(&format!(" {:016x}", value.to_bits()));
@@ -5647,6 +5662,7 @@ fn parse_m6_revolve_result(response: &str) -> Result<WorkerRevolveResult, Worker
     })
 }
 
+#[cfg(feature = "named-product-fixtures")]
 fn parse_m5_exact_result(response: &str) -> Result<BeamWorkerResult, WorkerError> {
     let fields = response.split_whitespace().collect::<Vec<_>>();
     if fields.first() == Some(&"ERR") {

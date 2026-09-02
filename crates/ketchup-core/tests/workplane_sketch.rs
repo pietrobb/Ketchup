@@ -1194,7 +1194,7 @@ fn full_general_constraint_vocabulary_solves_geometric_invariants() {
             line(1, [-10.0, 0.0], [10.0, 0.0]),
             circle(2, [0.0, 5.0], 3.0),
         ],
-        vec![
+        [
             fixed_line(1, 1, [-10.0, 0.0], [10.0, 0.0]),
             vec![
                 SketchConstraint {
@@ -1250,7 +1250,7 @@ fn full_general_constraint_vocabulary_solves_geometric_invariants() {
             line(2, [-4.0, 2.0], [-5.0, 5.0]),
             line(3, [3.0, -1.0], [5.0, -5.0]),
         ],
-        vec![
+        [
             fixed_line(1, 1, [-10.0, 0.0], [10.0, 0.0]),
             vec![SketchConstraint {
                 id: SketchConstraintId(3),
@@ -1273,7 +1273,7 @@ fn full_general_constraint_vocabulary_solves_geometric_invariants() {
             line(1, [0.0, 0.0], [10.0, 0.0]),
             line(2, [2.0, 3.0], [2.0, 8.0]),
         ],
-        vec![
+        [
             fixed_line(1, 1, [0.0, 0.0], [10.0, 0.0]),
             vec![SketchConstraint {
                 id: SketchConstraintId(3),
@@ -1293,7 +1293,7 @@ fn full_general_constraint_vocabulary_solves_geometric_invariants() {
             line(1, [0.0, 0.0], [10.0, 0.0]),
             line(2, [2.0, 3.0], [2.0, 8.0]),
         ],
-        vec![
+        [
             fixed_line(1, 1, [0.0, 0.0], [10.0, 0.0]),
             vec![SketchConstraint {
                 id: SketchConstraintId(3),

@@ -1,3 +1,5 @@
+#![cfg(feature = "named-product-fixtures")]
+
 use ketchup_core::document::DocumentId;
 use ketchup_core::release_capstone::{
     CapstoneCapability, CapstoneObservationalPath, CapstoneOutputKind, CapstoneRefusalPath,

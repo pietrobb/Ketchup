@@ -1,3 +1,4 @@
+#[cfg(feature = "named-product-fixtures")]
 use ketchup_core::beam_m4ae::BeamWorkspace;
 use ketchup_core::document::{
     CanonicalCommand, CanonicalOverride, CollectionId, CommandBatch, DefinitionId, DerivedIdentity,
@@ -5,9 +6,11 @@ use ketchup_core::document::{
     OccurrenceId, OverrideParameterSpec, PortSpec, RuleOutput, SlotPath, SlotResolution,
     SlotSegment, TagId, Transform,
 };
+#[cfg(feature = "named-product-fixtures")]
+use ketchup_core::state_view::encode_semantic_state_with_results;
 use ketchup_core::state_view::{
     AGENT_STATE_VIEW_V1, COMPLETE_STATE_VIEW_V1, encode_semantic_state,
-    encode_semantic_state_with_evaluation, encode_semantic_state_with_results,
+    encode_semantic_state_with_evaluation,
 };
 use std::path::PathBuf;
 
@@ -344,6 +347,7 @@ fn final_m2_state_view_covers_graph_overrides_and_supplied_evaluation_without_mu
 }
 
 #[test]
+#[cfg(feature = "named-product-fixtures")]
 fn complete_and_agent_views_report_exact_and_tolerant_validation_counts_separately() {
     let workspace = BeamWorkspace::load().unwrap();
     let snapshot = workspace.snapshot();

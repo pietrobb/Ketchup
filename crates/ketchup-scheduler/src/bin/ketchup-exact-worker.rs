@@ -11,22 +11,25 @@ use ketchup_core::import::{
     MAX_STEP_MESH_TRIANGLES, MAX_STEP_SOURCE_BYTES, StepImportMesh, StepMeshTriangle,
 };
 use ketchup_exact::{
-    BottleEdgeFinish, BoxSpec, CircleExtrudeSpec, CutMode, CylinderToolSpec, ExactBackend,
-    ExactBodyBooleanOperation, ExactOpOutput, HalfLapFaceRole, HalfLapNotchSpec,
-    HalfLapParticipant, PlanarProfileSegment, Point3, RectangleExtrudeSpec, RectangleOffsetSpec,
-    RectangleSweepSpec, ReferenceResolution, Size3, SplineLoftSection, SplineLoftSpec,
-    StabilityClass, capture_bounded_pocket_references, capture_bounded_through_cut_references,
-    capture_box_shell_references, capture_circle_extrusion_references,
-    capture_circular_pocket_references, capture_circular_split_references,
-    capture_circular_through_cut_references, capture_contained_polygon_intersection_references,
-    capture_contained_polygon_union_references, capture_general_revolve_references,
-    capture_guaranteed_references, capture_half_lap_notch_references,
+    BoxSpec, CircleExtrudeSpec, CutMode, CylinderToolSpec, EdgeFinish, ExactBackend,
+    ExactBodyBooleanOperation, ExactOpOutput, PlanarProfileSegment, Point3, RectangleExtrudeSpec,
+    RectangleOffsetSpec, RectangleSweepSpec, ReferenceResolution, Size3, SplineLoftSection,
+    SplineLoftSpec, StabilityClass, capture_bounded_pocket_references,
+    capture_bounded_through_cut_references, capture_box_shell_references,
+    capture_circle_extrusion_references, capture_circular_pocket_references,
+    capture_circular_split_references, capture_circular_through_cut_references,
+    capture_contained_polygon_intersection_references, capture_contained_polygon_union_references,
+    capture_general_revolve_references, capture_guaranteed_references,
     capture_mixed_profile_extrusion_references, capture_planar_offset_reference,
     capture_polygon_through_cut_references, capture_profile_split_references,
     capture_rectangular_intersection_references, capture_rectangular_split_references,
     capture_rectangular_sweep_references, capture_rectangular_union_references,
     capture_revolve_references, capture_shell_references, capture_spline_loft_references,
     resolve_subshape_reference,
+};
+#[cfg(feature = "named-product-fixtures")]
+use ketchup_exact::{
+    HalfLapFaceRole, HalfLapNotchSpec, HalfLapParticipant, capture_half_lap_notch_references,
 };
 use ketchup_scheduler::{
     StepAssemblyManifest, StepFeatureExportSpec, StepProfileSegment, StepRevolveExportSpec,
@@ -72,6 +75,7 @@ fn handle_request(backend: &ExactBackend, request: &str) -> Option<String> {
         (Some("CAPS"), Some("P3_POLYGON_CUT_V1"), None) => {
             Some("CAPS P3_POLYGON_CUT_V1".to_owned())
         }
+        #[cfg(feature = "named-product-fixtures")]
         (Some("CAPS"), Some("M5_NOTCH_V1"), None) => Some("CAPS M5_NOTCH_V1".to_owned()),
         (Some("CAPS"), Some("M6_REVOLVE_V1"), None) => Some("CAPS M6_REVOLVE_V1".to_owned()),
         (Some("CAPS"), Some("P4_REVOLVE_V1"), None) => Some("CAPS P4_REVOLVE_V1".to_owned()),
@@ -159,6 +163,7 @@ fn handle_request(backend: &ExactBackend, request: &str) -> Option<String> {
                 &remaining,
             ))
         }
+        #[cfg(feature = "named-product-fixtures")]
         (Some("EVAL_NOTCHED_M5_V1"), Some(document_id), Some(piece_key)) => {
             let remaining = fields.collect::<Vec<_>>();
             Some(m5_notched_response(
@@ -1372,8 +1377,8 @@ fn evaluate_exact_brep_graph(
                     &target_output.body,
                     &ordinals,
                     match kind {
-                        ExactBRepEdgeFinishKind::Fillet => BottleEdgeFinish::Fillet,
-                        ExactBRepEdgeFinishKind::Chamfer => BottleEdgeFinish::Chamfer,
+                        ExactBRepEdgeFinishKind::Fillet => EdgeFinish::Fillet,
+                        ExactBRepEdgeFinishKind::Chamfer => EdgeFinish::Chamfer,
                     },
                     f64::from_bits(*amount_bits),
                 )?
@@ -2398,10 +2403,10 @@ fn p5_box_shell_response(
     };
     let output = match (finish, amount) {
         (Some("fillet"), Some(amount)) => {
-            backend.finish_shell_box(spec, thickness, BottleEdgeFinish::Fillet, amount)
+            backend.finish_shell_box(spec, thickness, EdgeFinish::Fillet, amount)
         }
         (Some("chamfer"), Some(amount)) => {
-            backend.finish_shell_box(spec, thickness, BottleEdgeFinish::Chamfer, amount)
+            backend.finish_shell_box(spec, thickness, EdgeFinish::Chamfer, amount)
         }
         (None, None) => backend.shell_box(spec, thickness),
         _ => return "ERR invalid_request".to_owned(),
@@ -3944,8 +3949,8 @@ fn m6_revolve_response(
     operation: Option<&str>,
 ) -> String {
     let finish = match operation {
-        Some("fillet") => Some(BottleEdgeFinish::Fillet),
-        Some("chamfer") => Some(BottleEdgeFinish::Chamfer),
+        Some("fillet") => Some(EdgeFinish::Fillet),
+        Some("chamfer") => Some(EdgeFinish::Chamfer),
         _ => None,
     };
     let shell = operation.is_some();
@@ -4140,9 +4145,9 @@ fn m14_step_export_response(
                 &points,
                 thickness,
                 if fields[2] == "fillet" {
-                    BottleEdgeFinish::Fillet
+                    EdgeFinish::Fillet
                 } else {
-                    BottleEdgeFinish::Chamfer
+                    EdgeFinish::Chamfer
                 },
                 amount,
             )
@@ -4271,9 +4276,9 @@ fn m21_box_step_export_response(
                 base,
                 thickness,
                 if kind == "fillet" {
-                    BottleEdgeFinish::Fillet
+                    EdgeFinish::Fillet
                 } else if kind == "chamfer" {
-                    BottleEdgeFinish::Chamfer
+                    EdgeFinish::Chamfer
                 } else {
                     return "ERR invalid_request".to_owned();
                 },
@@ -4864,6 +4869,7 @@ fn is_result_fingerprint(value: &str) -> bool {
         && value[8..].bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
+#[cfg(feature = "named-product-fixtures")]
 fn m5_notched_response(
     backend: &ExactBackend,
     document_id: &str,

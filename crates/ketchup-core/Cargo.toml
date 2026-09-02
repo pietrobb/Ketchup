@@ -9,6 +9,7 @@ repository.workspace = true
 
 [features]
 default = []
+named-product-fixtures = []
 private-oauth = []
 
 [dependencies]

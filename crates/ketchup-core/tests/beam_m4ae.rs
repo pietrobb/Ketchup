@@ -1,3 +1,5 @@
+#![cfg(feature = "named-product-fixtures")]
+
 use ketchup_core::beam_m4ae::*;
 use ketchup_core::fabrication::PieceDimensions;
 use ketchup_core::prismatic::*;

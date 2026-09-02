@@ -2401,7 +2401,7 @@ fn select_all_is_localized_exact_shortcut_parity_and_document_preserving() {
         shell.click_at(shell.top_face_centre(1));
         shell.click_menu_command("menu-edit", AppCommand::Copy);
         assert!(shell.app().command_is_enabled(AppCommand::Paste));
-        assert!(shell.app_mut().create_bottle());
+        assert!(shell.app_mut().create_box());
         shell.click_menu_command("menu-edit", AppCommand::Deselect);
         assert_eq!(shell.app().occurrence_count(), 2);
         assert_eq!(shell.app().selected_occurrence_count(), 0);

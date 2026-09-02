@@ -409,10 +409,12 @@ pub struct CylinderToolSpec {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum BottleEdgeFinish {
+pub enum EdgeFinish {
     Fillet,
     Chamfer,
 }
+
+pub type BottleEdgeFinish = EdgeFinish;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CutMode {
@@ -1117,7 +1119,7 @@ impl ExactBackend {
         &self,
         spec: RectangleExtrudeSpec,
         thickness_mm: f64,
-        finish: BottleEdgeFinish,
+        finish: EdgeFinish,
         amount_mm: f64,
     ) -> Result<ExactOpOutput, GeometryError> {
         let input = format!(
@@ -1127,8 +1129,8 @@ impl ExactBackend {
             spec.height_mm.to_bits(),
             thickness_mm.to_bits(),
             match finish {
-                BottleEdgeFinish::Fillet => "fillet",
-                BottleEdgeFinish::Chamfer => "chamfer",
+                EdgeFinish::Fillet => "fillet",
+                EdgeFinish::Chamfer => "chamfer",
             },
             amount_mm.to_bits(),
         );
@@ -1144,7 +1146,7 @@ impl ExactBackend {
                 spec.height_mm,
                 thickness_mm,
                 amount_mm,
-                finish == BottleEdgeFinish::Fillet,
+                finish == EdgeFinish::Fillet,
             ),
             "finish_shell_box",
             &input,
@@ -1180,15 +1182,15 @@ impl ExactBackend {
         &self,
         points_mm: &[[f64; 2]],
         thickness_mm: f64,
-        finish: BottleEdgeFinish,
+        finish: EdgeFinish,
         amount_mm: f64,
     ) -> Result<ExactOpOutput, GeometryError> {
         let input = format!(
             "finish_shell_revolve_profile:{points_mm:?}:{:016x}:{}:{:016x}",
             thickness_mm.to_bits(),
             match finish {
-                BottleEdgeFinish::Fillet => "fillet",
-                BottleEdgeFinish::Chamfer => "chamfer",
+                EdgeFinish::Fillet => "fillet",
+                EdgeFinish::Chamfer => "chamfer",
             },
             amount_mm.to_bits()
         );
@@ -1203,7 +1205,7 @@ impl ExactBackend {
             &flattened,
             thickness_mm,
             amount_mm,
-            finish == BottleEdgeFinish::Fillet,
+            finish == EdgeFinish::Fillet,
         );
         collect_output(
             native,
@@ -1293,7 +1295,7 @@ impl ExactBackend {
         &self,
         body: &ExactBody,
         edge_ordinals: &[u32],
-        finish: BottleEdgeFinish,
+        finish: EdgeFinish,
         amount_mm: f64,
     ) -> Result<ExactOpOutput, GeometryError> {
         let input = format!(
@@ -1328,7 +1330,7 @@ impl ExactBackend {
                 native,
                 edge_ordinals,
                 amount_mm,
-                finish == BottleEdgeFinish::Fillet,
+                finish == EdgeFinish::Fillet,
             ),
             "finish_body",
             &input,
@@ -6542,6 +6544,38 @@ mod tests {
     }
 
     #[test]
+    fn legacy_edge_finish_alias_produces_the_generic_exact_result() {
+        assert_eq!(
+            std::any::TypeId::of::<EdgeFinish>(),
+            std::any::TypeId::of::<BottleEdgeFinish>()
+        );
+        let backend = ExactBackend::new();
+        let spec = RectangleExtrudeSpec {
+            width_mm: 100.0,
+            depth_mm: 60.0,
+            height_mm: 20.0,
+        };
+        let generic = backend
+            .finish_shell_box(spec, 2.0, EdgeFinish::Fillet, 1.0)
+            .expect("generic edge finish must succeed");
+        let legacy = backend
+            .finish_shell_box(spec, 2.0, BottleEdgeFinish::Fillet, 1.0)
+            .expect("legacy edge finish alias must succeed");
+
+        assert_eq!(
+            generic.body.result_fingerprint,
+            legacy.body.result_fingerprint
+        );
+        assert_eq!(generic.body.topology, legacy.body.topology);
+        assert_eq!(generic.topology_history, legacy.topology_history);
+        assert_eq!(generic.tolerance_report, legacy.tolerance_report);
+        assert_eq!(generic.diagnostics, legacy.diagnostics);
+        assert_eq!(generic.input_digest, legacy.input_digest);
+        assert_eq!(generic.backend_fingerprint, legacy.backend_fingerprint);
+        assert_eq!(generic.history_confidence, legacy.history_confidence);
+    }
+
+    #[test]
     fn fixed_extrusion_is_valid_and_carries_guaranteed_history() {
         let output = ExactBackend::new()
             .extrude_rectangle(RectangleExtrudeSpec {
@@ -6800,7 +6834,7 @@ mod tests {
         ];
         let backend = ExactBackend::new();
         let shell = backend.shell_revolve_profile(&profile, 2.0).unwrap();
-        for finish in [BottleEdgeFinish::Fillet, BottleEdgeFinish::Chamfer] {
+        for finish in [EdgeFinish::Fillet, EdgeFinish::Chamfer] {
             let output = backend
                 .finish_shell_revolve_profile(&profile, 2.0, finish, 2.0)
                 .expect("bounded shoulder finish must succeed");
@@ -6824,7 +6858,7 @@ mod tests {
         }
         assert_eq!(
             backend
-                .finish_shell_revolve_profile(&profile, 2.0, BottleEdgeFinish::Fillet, 8.0)
+                .finish_shell_revolve_profile(&profile, 2.0, EdgeFinish::Fillet, 8.0)
                 .unwrap_err()
                 .code,
             GeometryErrorCode::InvalidParameter

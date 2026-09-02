@@ -1,3 +1,5 @@
+#![cfg(feature = "named-product-fixtures")]
+
 mod harness;
 use harness::Shell;
 use ketchup_app::dialogs::ScriptedFileDialogs;

@@ -1672,12 +1672,28 @@ fn named_assistant_generators_are_editable_or_fail_closed_with_bounded_macro_inp
         depth_mm: 60.0,
         bottom_notches: Vec::new(),
     });
-    for (editable, name) in [
+    #[cfg(not(feature = "named-product-fixtures"))]
+    {
+        assert!(!shell.app_mut().prepare_assistant_model_intent(vessel));
+        assert!(shell.app().assistant_proposal().is_none());
+        assert_eq!(shell.app().document_revision(), baseline_revision);
+        assert_eq!(shell.app().canonical_digest(), baseline_digest);
+        assert_eq!(shell.app().undo_step_count(), baseline_undo);
+    }
+    #[cfg(feature = "named-product-fixtures")]
+    let editable_generators = [
         (vessel, "Editable vessel"),
         (roof, "Editable roof"),
         (stairs, "Editable stairs"),
         (beam, "Editable beam"),
-    ] {
+    ];
+    #[cfg(not(feature = "named-product-fixtures"))]
+    let editable_generators = [
+        (roof, "Editable roof"),
+        (stairs, "Editable stairs"),
+        (beam, "Editable beam"),
+    ];
+    for (editable, name) in editable_generators {
         assert!(
             apply_reviewed_model_intent(&mut shell, editable),
             "{name} must produce a reviewed editable macro"
@@ -2164,6 +2180,7 @@ fn scripted_sketch_program_refuses_stale_preview_and_invalid_constraint_without_
 }
 
 #[test]
+#[cfg(feature = "named-product-fixtures")]
 fn verbal_bottle_goal_with_dimension_constraint_completes_verified_one_undo_cycle() {
     let request = "Create an editable ketchup bottle with a 30 mm body radius";
     let transport = Arc::new(ScriptedAssistantTransport::new([(
@@ -5188,6 +5205,7 @@ fn assistant_model_intent_applies_real_3d_boxes_immediately_as_one_undoable_batc
 }
 
 #[test]
+#[cfg(feature = "named-product-fixtures")]
 fn assistant_teapot_intent_creates_smooth_hollow_saved_model_as_one_undo_step() {
     let mut shell = Shell::new();
     let initial_revision = shell.app().document_revision();
@@ -5581,6 +5599,7 @@ fn assistant_balloon_text_supports_the_complete_rounded_uppercase_and_digit_alph
 }
 
 #[test]
+#[cfg(feature = "named-product-fixtures")]
 fn assistant_ketchup_bottle_creates_saved_rounded_squeeze_model_as_one_undo_step() {
     let mut shell = Shell::new();
     let initial_revision = shell.app().document_revision();
@@ -5753,6 +5772,7 @@ fn assistant_ketchup_bottle_creates_saved_rounded_squeeze_model_as_one_undo_step
 }
 
 #[test]
+#[cfg(feature = "named-product-fixtures")]
 fn assistant_bottle_intent_creates_editable_feature_chain_as_one_undo_step() {
     let mut shell = Shell::new();
     let initial_revision = shell.app().document_revision();
