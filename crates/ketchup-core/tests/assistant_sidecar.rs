@@ -235,6 +235,140 @@ fn cad_edit_sketch_contract_is_typed_strict_and_round_trips() {
 }
 
 #[test]
+fn cad_edit_full_sketch_constraint_vocabulary_is_typed_and_round_trips() {
+    let point = |entity_id, point| AssistantSketchPointRef { entity_id, point };
+    let constraints = vec![
+        AssistantSketchConstraint::Parallel {
+            id: 1,
+            a_entity_id: 1,
+            b_entity_id: 2,
+        },
+        AssistantSketchConstraint::Perpendicular {
+            id: 2,
+            a_entity_id: 3,
+            b_entity_id: 4,
+        },
+        AssistantSketchConstraint::Tangent {
+            id: 3,
+            a_entity_id: 5,
+            b_entity_id: 6,
+        },
+        AssistantSketchConstraint::Angle {
+            id: 4,
+            a_entity_id: 7,
+            b_entity_id: 8,
+            angle_degrees: 60.0,
+        },
+        AssistantSketchConstraint::Equal {
+            id: 5,
+            a_entity_id: 9,
+            b_entity_id: 10,
+        },
+        AssistantSketchConstraint::Symmetric {
+            id: 6,
+            a: point(12, AssistantSketchPointKind::Start),
+            b: point(13, AssistantSketchPointKind::Start),
+            axis_entity_id: 11,
+        },
+        AssistantSketchConstraint::Concentric {
+            id: 7,
+            a_entity_id: 14,
+            b_entity_id: 15,
+        },
+        AssistantSketchConstraint::Collinear {
+            id: 8,
+            a_entity_id: 16,
+            b_entity_id: 17,
+        },
+        AssistantSketchConstraint::Midpoint {
+            id: 9,
+            point: point(19, AssistantSketchPointKind::Start),
+            line_entity_id: 18,
+        },
+        AssistantSketchConstraint::PointOnCurve {
+            id: 10,
+            point: point(21, AssistantSketchPointKind::Start),
+            curve_entity_id: 20,
+        },
+    ];
+    let program = AssistantCadEditProgram {
+        operations: vec![AssistantCadEditOperation::CreateSketch {
+            definition_id: 1,
+            name: "General constraints".to_owned(),
+            workplane: AssistantWorkplaneSpec::Principal {
+                plane: AssistantPrincipalPlane::Xy,
+            },
+            entities: (1..=21)
+                .map(|id| {
+                    if [6, 14, 15, 20].contains(&id) {
+                        AssistantSketchEntity::Circle {
+                            id,
+                            center_mm: [id as f64, 0.0],
+                            radius_mm: 1.0,
+                        }
+                    } else {
+                        AssistantSketchEntity::Line {
+                            id,
+                            start_mm: [id as f64, 0.0],
+                            end_mm: [id as f64, 1.0],
+                        }
+                    }
+                })
+                .collect(),
+            constraints,
+        }],
+    };
+
+    assert_eq!(program.validate(), Ok(()));
+    let serialized = serde_json::to_value(&program).unwrap();
+    let constraint_json = serialized["operations"][0]["constraints"]
+        .as_array()
+        .unwrap();
+    assert_eq!(constraint_json[0]["type"], "parallel");
+    assert_eq!(constraint_json[9]["type"], "point_on_curve");
+    assert_eq!(
+        serde_json::from_value::<AssistantCadEditProgram>(serialized).unwrap(),
+        program
+    );
+
+    let mut invalid_angle = program.clone();
+    let AssistantCadEditOperation::CreateSketch { constraints, .. } =
+        &mut invalid_angle.operations[0]
+    else {
+        unreachable!()
+    };
+    let AssistantSketchConstraint::Angle { angle_degrees, .. } = &mut constraints[3] else {
+        unreachable!()
+    };
+    *angle_degrees = 180.0;
+    assert!(invalid_angle.validate().is_err());
+
+    let mut invalid_tangent = program.clone();
+    let AssistantCadEditOperation::CreateSketch { constraints, .. } =
+        &mut invalid_tangent.operations[0]
+    else {
+        unreachable!()
+    };
+    let AssistantSketchConstraint::Tangent { b_entity_id, .. } = &mut constraints[2] else {
+        unreachable!()
+    };
+    *b_entity_id = 4;
+    assert!(invalid_tangent.validate().is_err());
+
+    let mut missing_reference = program;
+    let AssistantCadEditOperation::CreateSketch { constraints, .. } =
+        &mut missing_reference.operations[0]
+    else {
+        unreachable!()
+    };
+    let AssistantSketchConstraint::Midpoint { line_entity_id, .. } = &mut constraints[8] else {
+        unreachable!()
+    };
+    *line_entity_id = 999;
+    assert!(missing_reference.validate().is_err());
+}
+
+#[test]
 fn cad_edit_part_contract_is_typed_bounded_and_round_trips() {
     let program = AssistantCadEditProgram {
         operations: vec![AssistantCadEditOperation::CreatePart {

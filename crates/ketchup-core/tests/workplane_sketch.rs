@@ -1054,6 +1054,579 @@ fn transitive_coincidence_is_rejected_as_redundant() {
 }
 
 #[test]
+fn full_general_constraint_vocabulary_solves_geometric_invariants() {
+    let line = |id, start_mm, end_mm| SketchEntity::Line {
+        id: SketchEntityId(id),
+        start_mm,
+        end_mm,
+    };
+    let circle = |id, center_mm, radius_mm| SketchEntity::Circle {
+        id: SketchEntityId(id),
+        center_mm,
+        radius_mm,
+    };
+    let fixed_line = |constraint_id, entity, start_mm, end_mm| {
+        vec![
+            SketchConstraint {
+                id: SketchConstraintId(constraint_id),
+                kind: SketchConstraintKind::FixedPoint {
+                    point: point(entity, SketchPointKind::Start),
+                    position_mm: start_mm,
+                },
+            },
+            SketchConstraint {
+                id: SketchConstraintId(constraint_id + 1),
+                kind: SketchConstraintKind::FixedPoint {
+                    point: point(entity, SketchPointKind::End),
+                    position_mm: end_mm,
+                },
+            },
+        ]
+    };
+    let solve = |entities, constraints| {
+        SketchSpec {
+            workplane: XY,
+            entities,
+            constraints,
+        }
+        .solve_geometry()
+        .unwrap()
+        .entities
+    };
+    let solved_line = |entities: &[SketchEntity], id| {
+        let SketchEntity::Line {
+            start_mm, end_mm, ..
+        } = entities
+            .iter()
+            .find(|entity| entity.id() == SketchEntityId(id))
+            .unwrap()
+        else {
+            panic!("expected line");
+        };
+        (*start_mm, *end_mm)
+    };
+    let direction = |line: ([f64; 2], [f64; 2])| {
+        let delta = [line.1[0] - line.0[0], line.1[1] - line.0[1]];
+        let length = delta[0].hypot(delta[1]);
+        [delta[0] / length, delta[1] / length]
+    };
+    let cross = |a: [f64; 2], b: [f64; 2]| a[0] * b[1] - a[1] * b[0];
+    let dot = |a: [f64; 2], b: [f64; 2]| a[0] * b[0] + a[1] * b[1];
+
+    for (kind, expected_dot) in [
+        (
+            SketchConstraintKind::Parallel {
+                a: SketchEntityId(1),
+                b: SketchEntityId(2),
+            },
+            Some(1.0),
+        ),
+        (
+            SketchConstraintKind::Perpendicular {
+                a: SketchEntityId(1),
+                b: SketchEntityId(2),
+            },
+            Some(0.0),
+        ),
+        (
+            SketchConstraintKind::Angle {
+                a: SketchEntityId(1),
+                b: SketchEntityId(2),
+                angle_degrees: 60.0,
+            },
+            Some(0.5),
+        ),
+        (
+            SketchConstraintKind::Collinear {
+                a: SketchEntityId(1),
+                b: SketchEntityId(2),
+            },
+            None,
+        ),
+    ] {
+        let mut constraints = fixed_line(1, 1, [0.0, 0.0], [10.0, 0.0]);
+        constraints.push(SketchConstraint {
+            id: SketchConstraintId(3),
+            kind,
+        });
+        let entities = solve(
+            vec![
+                line(1, [0.0, 0.0], [10.0, 0.0]),
+                line(2, [1.0, 4.0], [8.0, 7.0]),
+            ],
+            constraints,
+        );
+        let a = direction(solved_line(&entities, 1));
+        let b_line = solved_line(&entities, 2);
+        let b = direction(b_line);
+        if let Some(expected) = expected_dot {
+            if expected == 1.0 {
+                assert!(cross(a, b).abs() <= 1.0e-7);
+            } else {
+                assert!((dot(a, b) - expected).abs() <= 1.0e-7);
+            }
+        } else {
+            assert!(cross(a, b).abs() <= 1.0e-7);
+            assert!(b_line.0[1].abs() <= 1.0e-7);
+        }
+    }
+
+    let mut equal_constraints = fixed_line(1, 1, [0.0, 0.0], [10.0, 0.0]);
+    equal_constraints.push(SketchConstraint {
+        id: SketchConstraintId(3),
+        kind: SketchConstraintKind::Equal {
+            a: SketchEntityId(1),
+            b: SketchEntityId(2),
+        },
+    });
+    let equal = solve(
+        vec![
+            line(1, [0.0, 0.0], [10.0, 0.0]),
+            line(2, [0.0, 5.0], [4.0, 7.0]),
+        ],
+        equal_constraints,
+    );
+    let second = solved_line(&equal, 2);
+    assert!(((second.1[0] - second.0[0]).hypot(second.1[1] - second.0[1]) - 10.0).abs() <= 1.0e-7);
+
+    let tangent = solve(
+        vec![
+            line(1, [-10.0, 0.0], [10.0, 0.0]),
+            circle(2, [0.0, 5.0], 3.0),
+        ],
+        vec![
+            fixed_line(1, 1, [-10.0, 0.0], [10.0, 0.0]),
+            vec![
+                SketchConstraint {
+                    id: SketchConstraintId(3),
+                    kind: SketchConstraintKind::FixedPoint {
+                        point: point(2, SketchPointKind::Center),
+                        position_mm: [0.0, 5.0],
+                    },
+                },
+                SketchConstraint {
+                    id: SketchConstraintId(4),
+                    kind: SketchConstraintKind::Tangent {
+                        a: SketchEntityId(1),
+                        b: SketchEntityId(2),
+                    },
+                },
+            ],
+        ]
+        .concat(),
+    );
+    let SketchEntity::Circle { radius_mm, .. } = &tangent[1] else {
+        panic!("expected circle");
+    };
+    assert!((*radius_mm - 5.0).abs() <= 1.0e-7);
+
+    let concentric = solve(
+        vec![circle(1, [0.0, 0.0], 5.0), circle(2, [3.0, 4.0], 2.0)],
+        vec![
+            SketchConstraint {
+                id: SketchConstraintId(1),
+                kind: SketchConstraintKind::FixedPoint {
+                    point: point(1, SketchPointKind::Center),
+                    position_mm: [0.0, 0.0],
+                },
+            },
+            SketchConstraint {
+                id: SketchConstraintId(2),
+                kind: SketchConstraintKind::Concentric {
+                    a: SketchEntityId(1),
+                    b: SketchEntityId(2),
+                },
+            },
+        ],
+    );
+    let SketchEntity::Circle { center_mm, .. } = &concentric[1] else {
+        panic!("expected circle");
+    };
+    assert!(center_mm[0].abs() <= 1.0e-7 && center_mm[1].abs() <= 1.0e-7);
+
+    let symmetric = solve(
+        vec![
+            line(1, [-10.0, 0.0], [10.0, 0.0]),
+            line(2, [-4.0, 2.0], [-5.0, 5.0]),
+            line(3, [3.0, -1.0], [5.0, -5.0]),
+        ],
+        vec![
+            fixed_line(1, 1, [-10.0, 0.0], [10.0, 0.0]),
+            vec![SketchConstraint {
+                id: SketchConstraintId(3),
+                kind: SketchConstraintKind::Symmetric {
+                    a: point(2, SketchPointKind::Start),
+                    b: point(3, SketchPointKind::Start),
+                    axis: SketchEntityId(1),
+                },
+            }],
+        ]
+        .concat(),
+    );
+    let a = solved_line(&symmetric, 2).0;
+    let b = solved_line(&symmetric, 3).0;
+    assert!((a[0] - b[0]).abs() <= 1.0e-7);
+    assert!((a[1] + b[1]).abs() <= 1.0e-7);
+
+    let midpoint = solve(
+        vec![
+            line(1, [0.0, 0.0], [10.0, 0.0]),
+            line(2, [2.0, 3.0], [2.0, 8.0]),
+        ],
+        vec![
+            fixed_line(1, 1, [0.0, 0.0], [10.0, 0.0]),
+            vec![SketchConstraint {
+                id: SketchConstraintId(3),
+                kind: SketchConstraintKind::Midpoint {
+                    point: point(2, SketchPointKind::Start),
+                    line: SketchEntityId(1),
+                },
+            }],
+        ]
+        .concat(),
+    );
+    let midpoint_value = solved_line(&midpoint, 2).0;
+    assert!((midpoint_value[0] - 5.0).abs() <= 1.0e-7 && midpoint_value[1].abs() <= 1.0e-7);
+
+    let on_curve = solve(
+        vec![
+            line(1, [0.0, 0.0], [10.0, 0.0]),
+            line(2, [2.0, 3.0], [2.0, 8.0]),
+        ],
+        vec![
+            fixed_line(1, 1, [0.0, 0.0], [10.0, 0.0]),
+            vec![SketchConstraint {
+                id: SketchConstraintId(3),
+                kind: SketchConstraintKind::PointOnCurve {
+                    point: point(2, SketchPointKind::Start),
+                    curve: SketchEntityId(1),
+                },
+            }],
+        ]
+        .concat(),
+    );
+    assert!(solved_line(&on_curve, 2).0[1].abs() <= 1.0e-7);
+}
+
+#[test]
+fn arc_constraints_reject_the_excluded_supporting_circle_segment() {
+    let arc = SketchEntity::Arc {
+        id: SketchEntityId(1),
+        start_mm: [5.0, 0.0],
+        end_mm: [-5.0, 0.0],
+        center_mm: [0.0, 0.0],
+        clockwise: false,
+    };
+    let bounded = SketchSolverPolicy {
+        max_iterations: 1,
+        initial_damping: 1.0e20,
+        ..SketchSolverPolicy::default()
+    };
+    let point_on_excluded_half = SketchSpec {
+        workplane: XY,
+        entities: vec![
+            arc.clone(),
+            SketchEntity::Line {
+                id: SketchEntityId(2),
+                start_mm: [0.0, -5.0],
+                end_mm: [0.0, -8.0],
+            },
+        ],
+        constraints: vec![SketchConstraint {
+            id: SketchConstraintId(1),
+            kind: SketchConstraintKind::PointOnCurve {
+                point: point(2, SketchPointKind::Start),
+                curve: SketchEntityId(1),
+            },
+        }],
+    };
+    assert_eq!(
+        point_on_excluded_half.solve_geometry_with_policy(bounded),
+        Err(SketchError::NonConvergent)
+    );
+
+    let tangent_on_excluded_half = SketchSpec {
+        workplane: XY,
+        entities: vec![
+            arc,
+            SketchEntity::Line {
+                id: SketchEntityId(2),
+                start_mm: [-10.0, -5.0],
+                end_mm: [10.0, -5.0],
+            },
+        ],
+        constraints: vec![SketchConstraint {
+            id: SketchConstraintId(1),
+            kind: SketchConstraintKind::Tangent {
+                a: SketchEntityId(1),
+                b: SketchEntityId(2),
+            },
+        }],
+    };
+    assert_eq!(
+        tangent_on_excluded_half.solve_geometry_with_policy(bounded),
+        Err(SketchError::NonConvergent)
+    );
+}
+
+#[test]
+fn algebraically_overlapping_relations_are_rejected_as_redundant() {
+    let entities = vec![
+        SketchEntity::Line {
+            id: SketchEntityId(1),
+            start_mm: [0.0, 0.0],
+            end_mm: [10.0, 0.0],
+        },
+        SketchEntity::Line {
+            id: SketchEntityId(2),
+            start_mm: [0.0, 2.0],
+            end_mm: [5.0, 2.0],
+        },
+    ];
+    for constraints in [
+        vec![
+            SketchConstraint {
+                id: SketchConstraintId(1),
+                kind: SketchConstraintKind::Parallel {
+                    a: SketchEntityId(1),
+                    b: SketchEntityId(2),
+                },
+            },
+            SketchConstraint {
+                id: SketchConstraintId(2),
+                kind: SketchConstraintKind::Collinear {
+                    a: SketchEntityId(2),
+                    b: SketchEntityId(1),
+                },
+            },
+        ],
+        vec![
+            SketchConstraint {
+                id: SketchConstraintId(1),
+                kind: SketchConstraintKind::Perpendicular {
+                    a: SketchEntityId(1),
+                    b: SketchEntityId(2),
+                },
+            },
+            SketchConstraint {
+                id: SketchConstraintId(2),
+                kind: SketchConstraintKind::Angle {
+                    a: SketchEntityId(2),
+                    b: SketchEntityId(1),
+                    angle_degrees: 90.0,
+                },
+            },
+        ],
+    ] {
+        let sketch = SketchSpec {
+            workplane: XY,
+            entities: entities.clone(),
+            constraints,
+        };
+        assert_eq!(
+            sketch.solve(),
+            Err(SketchError::OverConstrained(SketchConstraintId(2)))
+        );
+    }
+}
+
+#[test]
+fn coincident_equal_circles_are_not_misclassified_as_tangent() {
+    let sketch = SketchSpec {
+        workplane: XY,
+        entities: vec![
+            SketchEntity::Circle {
+                id: SketchEntityId(1),
+                center_mm: [0.0, 0.0],
+                radius_mm: 5.0,
+            },
+            SketchEntity::Circle {
+                id: SketchEntityId(2),
+                center_mm: [0.0, 0.0],
+                radius_mm: 5.0,
+            },
+        ],
+        constraints: vec![SketchConstraint {
+            id: SketchConstraintId(1),
+            kind: SketchConstraintKind::Tangent {
+                a: SketchEntityId(1),
+                b: SketchEntityId(2),
+            },
+        }],
+    };
+
+    assert_eq!(sketch.solve(), Err(SketchError::NonConvergent));
+}
+
+#[test]
+fn full_general_constraint_vocabulary_is_lossless_across_save_open() {
+    let line = |id, start_mm, end_mm| SketchEntity::Line {
+        id: SketchEntityId(id),
+        start_mm,
+        end_mm,
+    };
+    let circle = |id, center_mm, radius_mm| SketchEntity::Circle {
+        id: SketchEntityId(id),
+        center_mm,
+        radius_mm,
+    };
+    let sketch = SketchSpec {
+        workplane: XY,
+        entities: vec![
+            line(1, [0.0, 0.0], [10.0, 0.0]),
+            line(2, [0.0, 2.0], [5.0, 2.0]),
+            line(3, [20.0, 0.0], [30.0, 0.0]),
+            line(4, [25.0, -5.0], [25.0, 5.0]),
+            line(5, [40.0, 0.0], [60.0, 0.0]),
+            circle(6, [50.0, 5.0], 5.0),
+            line(7, [70.0, 0.0], [80.0, 0.0]),
+            line(8, [70.0, 0.0], [75.0, 5.0 * 3.0_f64.sqrt()]),
+            line(9, [90.0, 0.0], [95.0, 0.0]),
+            line(10, [90.0, 2.0], [93.0, 6.0]),
+            line(11, [100.0, 0.0], [120.0, 0.0]),
+            line(12, [108.0, 3.0], [108.0, 5.0]),
+            line(13, [108.0, -3.0], [108.0, -5.0]),
+            circle(14, [130.0, 0.0], 5.0),
+            circle(15, [130.0, 0.0], 2.0),
+            line(16, [140.0, 0.0], [150.0, 0.0]),
+            line(17, [155.0, 0.0], [160.0, 0.0]),
+            line(18, [170.0, 0.0], [180.0, 0.0]),
+            line(19, [175.0, 0.0], [175.0, 5.0]),
+            circle(20, [190.0, 0.0], 5.0),
+            line(21, [195.0, 0.0], [200.0, 4.0]),
+        ],
+        constraints: vec![
+            SketchConstraint {
+                id: SketchConstraintId(1),
+                kind: SketchConstraintKind::Parallel {
+                    a: SketchEntityId(1),
+                    b: SketchEntityId(2),
+                },
+            },
+            SketchConstraint {
+                id: SketchConstraintId(2),
+                kind: SketchConstraintKind::Perpendicular {
+                    a: SketchEntityId(3),
+                    b: SketchEntityId(4),
+                },
+            },
+            SketchConstraint {
+                id: SketchConstraintId(3),
+                kind: SketchConstraintKind::Tangent {
+                    a: SketchEntityId(5),
+                    b: SketchEntityId(6),
+                },
+            },
+            SketchConstraint {
+                id: SketchConstraintId(4),
+                kind: SketchConstraintKind::Angle {
+                    a: SketchEntityId(7),
+                    b: SketchEntityId(8),
+                    angle_degrees: 60.0,
+                },
+            },
+            SketchConstraint {
+                id: SketchConstraintId(5),
+                kind: SketchConstraintKind::Equal {
+                    a: SketchEntityId(9),
+                    b: SketchEntityId(10),
+                },
+            },
+            SketchConstraint {
+                id: SketchConstraintId(6),
+                kind: SketchConstraintKind::Symmetric {
+                    a: point(12, SketchPointKind::Start),
+                    b: point(13, SketchPointKind::Start),
+                    axis: SketchEntityId(11),
+                },
+            },
+            SketchConstraint {
+                id: SketchConstraintId(7),
+                kind: SketchConstraintKind::Concentric {
+                    a: SketchEntityId(14),
+                    b: SketchEntityId(15),
+                },
+            },
+            SketchConstraint {
+                id: SketchConstraintId(8),
+                kind: SketchConstraintKind::Collinear {
+                    a: SketchEntityId(16),
+                    b: SketchEntityId(17),
+                },
+            },
+            SketchConstraint {
+                id: SketchConstraintId(9),
+                kind: SketchConstraintKind::Midpoint {
+                    point: point(19, SketchPointKind::Start),
+                    line: SketchEntityId(18),
+                },
+            },
+            SketchConstraint {
+                id: SketchConstraintId(10),
+                kind: SketchConstraintKind::PointOnCurve {
+                    point: point(21, SketchPointKind::Start),
+                    curve: SketchEntityId(20),
+                },
+            },
+        ],
+    };
+    let expected_constraints = sketch.constraints.clone();
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DEFINITION,
+                name: "General constraints".into(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: XY,
+                definition_id: DEFINITION,
+                name: "XY".into(),
+                kind: FeatureKind::Workplane(WorkplaneSpec::principal(PrincipalPlane::Xy)),
+            },
+            CanonicalCommand::CreateFeature {
+                id: SKETCH,
+                definition_id: DEFINITION,
+                name: "Full constraint vocabulary".into(),
+                kind: FeatureKind::Sketch(sketch),
+            },
+        ]))
+        .unwrap();
+
+    let committed = document.current();
+    let digest = committed.canonical_digest();
+    let bytes = persistence::save(&committed);
+    let reopened = persistence::load(&bytes).unwrap().snapshot();
+    let FeatureKind::Sketch(reopened_sketch) = reopened.feature(SKETCH).unwrap().kind() else {
+        panic!("expected reopened sketch");
+    };
+    assert_eq!(reopened_sketch.constraints, expected_constraints);
+    assert_eq!(reopened.canonical_digest(), digest);
+    assert_eq!(persistence::save(&reopened), bytes);
+
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetSketchConstraintDimension {
+                id: SKETCH,
+                constraint_id: SketchConstraintId(4),
+                dimension: Dimension::from_decimal("45").unwrap(),
+            },
+        ]))
+        .unwrap();
+    let edited = document.current();
+    let FeatureKind::Sketch(edited_sketch) = edited.feature(SKETCH).unwrap().kind() else {
+        panic!("expected edited sketch");
+    };
+    assert!(matches!(
+        edited_sketch.constraints[3].kind,
+        SketchConstraintKind::Angle {
+            angle_degrees: 45.0,
+            ..
+        }
+    ));
+}
+
+#[test]
 fn all_principal_planes_and_one_resolved_planar_face_support_are_canonical() {
     let mut document = DocumentStore::new();
     let document_id = document.current().document_id();

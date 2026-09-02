@@ -419,6 +419,120 @@ fn assistant_sketch_constraint(
                 position_mm: *position_mm,
             },
         ),
+        AssistantSketchConstraint::Parallel {
+            id,
+            a_entity_id,
+            b_entity_id,
+        } => (
+            *id,
+            SketchConstraintKind::Parallel {
+                a: SketchEntityId(*a_entity_id),
+                b: SketchEntityId(*b_entity_id),
+            },
+        ),
+        AssistantSketchConstraint::Perpendicular {
+            id,
+            a_entity_id,
+            b_entity_id,
+        } => (
+            *id,
+            SketchConstraintKind::Perpendicular {
+                a: SketchEntityId(*a_entity_id),
+                b: SketchEntityId(*b_entity_id),
+            },
+        ),
+        AssistantSketchConstraint::Tangent {
+            id,
+            a_entity_id,
+            b_entity_id,
+        } => (
+            *id,
+            SketchConstraintKind::Tangent {
+                a: SketchEntityId(*a_entity_id),
+                b: SketchEntityId(*b_entity_id),
+            },
+        ),
+        AssistantSketchConstraint::Angle {
+            id,
+            a_entity_id,
+            b_entity_id,
+            angle_degrees,
+        } => (
+            *id,
+            SketchConstraintKind::Angle {
+                a: SketchEntityId(*a_entity_id),
+                b: SketchEntityId(*b_entity_id),
+                angle_degrees: *angle_degrees,
+            },
+        ),
+        AssistantSketchConstraint::Equal {
+            id,
+            a_entity_id,
+            b_entity_id,
+        } => (
+            *id,
+            SketchConstraintKind::Equal {
+                a: SketchEntityId(*a_entity_id),
+                b: SketchEntityId(*b_entity_id),
+            },
+        ),
+        AssistantSketchConstraint::Symmetric {
+            id,
+            a,
+            b,
+            axis_entity_id,
+        } => (
+            *id,
+            SketchConstraintKind::Symmetric {
+                a: assistant_sketch_point_ref(*a),
+                b: assistant_sketch_point_ref(*b),
+                axis: SketchEntityId(*axis_entity_id),
+            },
+        ),
+        AssistantSketchConstraint::Concentric {
+            id,
+            a_entity_id,
+            b_entity_id,
+        } => (
+            *id,
+            SketchConstraintKind::Concentric {
+                a: SketchEntityId(*a_entity_id),
+                b: SketchEntityId(*b_entity_id),
+            },
+        ),
+        AssistantSketchConstraint::Collinear {
+            id,
+            a_entity_id,
+            b_entity_id,
+        } => (
+            *id,
+            SketchConstraintKind::Collinear {
+                a: SketchEntityId(*a_entity_id),
+                b: SketchEntityId(*b_entity_id),
+            },
+        ),
+        AssistantSketchConstraint::Midpoint {
+            id,
+            point,
+            line_entity_id,
+        } => (
+            *id,
+            SketchConstraintKind::Midpoint {
+                point: assistant_sketch_point_ref(*point),
+                line: SketchEntityId(*line_entity_id),
+            },
+        ),
+        AssistantSketchConstraint::PointOnCurve {
+            id,
+            point,
+            curve_entity_id,
+        } => (
+            *id,
+            SketchConstraintKind::PointOnCurve {
+                point: assistant_sketch_point_ref(*point),
+                curve: SketchEntityId(*curve_entity_id),
+            },
+        ),
     };
     Ok(SketchConstraint {
         id: SketchConstraintId(id),

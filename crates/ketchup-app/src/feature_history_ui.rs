@@ -199,11 +199,21 @@ impl KetchupApp {
                 .filter_map(|constraint| {
                     let value = match &constraint.kind {
                         SketchConstraintKind::Distance { value, .. }
-                        | SketchConstraintKind::Radius { value, .. } => value,
+                        | SketchConstraintKind::Radius { value, .. } => value.millimetres(),
+                        SketchConstraintKind::Angle { angle_degrees, .. } => *angle_degrees,
                         SketchConstraintKind::Horizontal { .. }
                         | SketchConstraintKind::Vertical { .. }
                         | SketchConstraintKind::Coincident { .. }
-                        | SketchConstraintKind::FixedPoint { .. } => return None,
+                        | SketchConstraintKind::FixedPoint { .. }
+                        | SketchConstraintKind::Parallel { .. }
+                        | SketchConstraintKind::Perpendicular { .. }
+                        | SketchConstraintKind::Tangent { .. }
+                        | SketchConstraintKind::Equal { .. }
+                        | SketchConstraintKind::Symmetric { .. }
+                        | SketchConstraintKind::Concentric { .. }
+                        | SketchConstraintKind::Collinear { .. }
+                        | SketchConstraintKind::Midpoint { .. }
+                        | SketchConstraintKind::PointOnCurve { .. } => return None,
                     };
                     Some(ParameterChoice {
                         target: ExactParameterEditTarget::SketchConstraintDimension {
@@ -214,7 +224,7 @@ impl KetchupApp {
                             "feature-history-parameter-constraint",
                             &BTreeMap::from([("id", constraint.id.0.to_string())]),
                         ),
-                        value_mm: value.millimetres(),
+                        value_mm: value,
                     })
                 })
                 .collect(),

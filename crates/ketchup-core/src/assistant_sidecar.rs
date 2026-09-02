@@ -2,7 +2,7 @@ use crate::bottle_m6::{
     controlled_bottle_profile, finish_amount_is_conservative, inner_shell_profile,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 pub const ASSISTANT_PROTOCOL_VERSION: u16 = 2;
@@ -253,6 +253,58 @@ pub enum AssistantSketchConstraint {
         point: AssistantSketchPointRef,
         position_mm: [f64; 2],
     },
+    Parallel {
+        id: u64,
+        a_entity_id: u64,
+        b_entity_id: u64,
+    },
+    Perpendicular {
+        id: u64,
+        a_entity_id: u64,
+        b_entity_id: u64,
+    },
+    Tangent {
+        id: u64,
+        a_entity_id: u64,
+        b_entity_id: u64,
+    },
+    Angle {
+        id: u64,
+        a_entity_id: u64,
+        b_entity_id: u64,
+        angle_degrees: f64,
+    },
+    Equal {
+        id: u64,
+        a_entity_id: u64,
+        b_entity_id: u64,
+    },
+    Symmetric {
+        id: u64,
+        a: AssistantSketchPointRef,
+        b: AssistantSketchPointRef,
+        axis_entity_id: u64,
+    },
+    Concentric {
+        id: u64,
+        a_entity_id: u64,
+        b_entity_id: u64,
+    },
+    Collinear {
+        id: u64,
+        a_entity_id: u64,
+        b_entity_id: u64,
+    },
+    Midpoint {
+        id: u64,
+        point: AssistantSketchPointRef,
+        line_entity_id: u64,
+    },
+    PointOnCurve {
+        id: u64,
+        point: AssistantSketchPointRef,
+        curve_entity_id: u64,
+    },
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -387,6 +439,27 @@ impl AssistantSketchEntity {
         }
     }
 
+    fn supports_point(&self, point: AssistantSketchPointKind) -> bool {
+        matches!(
+            (self, point),
+            (
+                Self::Line { .. } | Self::Arc { .. },
+                AssistantSketchPointKind::Start | AssistantSketchPointKind::End
+            ) | (
+                Self::Arc { .. } | Self::Circle { .. },
+                AssistantSketchPointKind::Center
+            )
+        )
+    }
+
+    fn is_line(&self) -> bool {
+        matches!(self, Self::Line { .. })
+    }
+
+    fn is_circular(&self) -> bool {
+        matches!(self, Self::Arc { .. } | Self::Circle { .. })
+    }
+
     fn validate(&self) -> Result<(), String> {
         let point = |point: &[f64; 2]| {
             point
@@ -429,7 +502,17 @@ impl AssistantSketchConstraint {
             | Self::Coincident { id, .. }
             | Self::Distance { id, .. }
             | Self::Radius { id, .. }
-            | Self::FixedPoint { id, .. } => *id,
+            | Self::FixedPoint { id, .. }
+            | Self::Parallel { id, .. }
+            | Self::Perpendicular { id, .. }
+            | Self::Tangent { id, .. }
+            | Self::Angle { id, .. }
+            | Self::Equal { id, .. }
+            | Self::Symmetric { id, .. }
+            | Self::Concentric { id, .. }
+            | Self::Collinear { id, .. }
+            | Self::Midpoint { id, .. }
+            | Self::PointOnCurve { id, .. } => *id,
         }
     }
 
@@ -465,11 +548,175 @@ impl AssistantSketchConstraint {
             Self::FixedPoint {
                 point, position_mm, ..
             } => valid_point_ref(point) && valid_point(position_mm),
+            Self::Parallel {
+                a_entity_id,
+                b_entity_id,
+                ..
+            }
+            | Self::Perpendicular {
+                a_entity_id,
+                b_entity_id,
+                ..
+            }
+            | Self::Tangent {
+                a_entity_id,
+                b_entity_id,
+                ..
+            }
+            | Self::Equal {
+                a_entity_id,
+                b_entity_id,
+                ..
+            }
+            | Self::Concentric {
+                a_entity_id,
+                b_entity_id,
+                ..
+            }
+            | Self::Collinear {
+                a_entity_id,
+                b_entity_id,
+                ..
+            } => *a_entity_id != 0 && *b_entity_id != 0 && a_entity_id != b_entity_id,
+            Self::Angle {
+                a_entity_id,
+                b_entity_id,
+                angle_degrees,
+                ..
+            } => {
+                *a_entity_id != 0
+                    && *b_entity_id != 0
+                    && a_entity_id != b_entity_id
+                    && angle_degrees.is_finite()
+                    && *angle_degrees > 0.0
+                    && *angle_degrees < 180.0
+            }
+            Self::Symmetric {
+                a,
+                b,
+                axis_entity_id,
+                ..
+            } => valid_point_ref(a) && valid_point_ref(b) && *a != *b && *axis_entity_id != 0,
+            Self::Midpoint {
+                point,
+                line_entity_id,
+                ..
+            } => valid_point_ref(point) && *line_entity_id != 0,
+            Self::PointOnCurve {
+                point,
+                curve_entity_id,
+                ..
+            } => valid_point_ref(point) && *curve_entity_id != 0,
         };
         if self.id() == 0 || !valid {
             return Err("assistant sketch constraint is invalid".to_owned());
         }
         Ok(())
+    }
+
+    fn validate_references(
+        &self,
+        entities: &BTreeMap<u64, &AssistantSketchEntity>,
+    ) -> Result<(), String> {
+        let entity = |id: u64| entities.get(&id).copied();
+        let point = |reference: &AssistantSketchPointRef| {
+            entity(reference.entity_id).is_some_and(|entity| entity.supports_point(reference.point))
+        };
+        let line_pair = |a: u64, b: u64| {
+            entity(a).is_some_and(AssistantSketchEntity::is_line)
+                && entity(b).is_some_and(AssistantSketchEntity::is_line)
+        };
+        let circular_pair = |a: u64, b: u64| {
+            entity(a).is_some_and(AssistantSketchEntity::is_circular)
+                && entity(b).is_some_and(AssistantSketchEntity::is_circular)
+        };
+        let valid = match self {
+            Self::Horizontal { entity_id, .. } | Self::Vertical { entity_id, .. } => {
+                entity(*entity_id).is_some_and(AssistantSketchEntity::is_line)
+            }
+            Self::Coincident { a, b, .. } | Self::Distance { a, b, .. } => point(a) && point(b),
+            Self::Radius { entity_id, .. } => {
+                entity(*entity_id).is_some_and(AssistantSketchEntity::is_circular)
+            }
+            Self::FixedPoint {
+                point: reference, ..
+            } => point(reference),
+            Self::Parallel {
+                a_entity_id,
+                b_entity_id,
+                ..
+            }
+            | Self::Perpendicular {
+                a_entity_id,
+                b_entity_id,
+                ..
+            }
+            | Self::Angle {
+                a_entity_id,
+                b_entity_id,
+                ..
+            }
+            | Self::Collinear {
+                a_entity_id,
+                b_entity_id,
+                ..
+            } => line_pair(*a_entity_id, *b_entity_id),
+            Self::Tangent {
+                a_entity_id,
+                b_entity_id,
+                ..
+            } => {
+                let a = entity(*a_entity_id);
+                let b = entity(*b_entity_id);
+                a.is_some()
+                    && b.is_some()
+                    && (a.is_some_and(AssistantSketchEntity::is_circular)
+                        || b.is_some_and(AssistantSketchEntity::is_circular))
+            }
+            Self::Equal {
+                a_entity_id,
+                b_entity_id,
+                ..
+            } => line_pair(*a_entity_id, *b_entity_id) || circular_pair(*a_entity_id, *b_entity_id),
+            Self::Symmetric {
+                a,
+                b,
+                axis_entity_id,
+                ..
+            } => {
+                point(a)
+                    && point(b)
+                    && entity(*axis_entity_id).is_some_and(AssistantSketchEntity::is_line)
+            }
+            Self::Concentric {
+                a_entity_id,
+                b_entity_id,
+                ..
+            } => circular_pair(*a_entity_id, *b_entity_id),
+            Self::Midpoint {
+                point: reference,
+                line_entity_id,
+                ..
+            } => {
+                point(reference)
+                    && reference.entity_id != *line_entity_id
+                    && entity(*line_entity_id).is_some_and(AssistantSketchEntity::is_line)
+            }
+            Self::PointOnCurve {
+                point: reference,
+                curve_entity_id,
+                ..
+            } => {
+                point(reference)
+                    && reference.entity_id != *curve_entity_id
+                    && entity(*curve_entity_id).is_some()
+            }
+        };
+        if valid {
+            Ok(())
+        } else {
+            Err("assistant sketch constraint reference is invalid".to_owned())
+        }
     }
 }
 
@@ -489,16 +736,17 @@ fn validate_assistant_sketch_payload(
         return Err("assistant sketch creation is invalid".to_owned());
     }
     workplane.validate()?;
-    let mut entity_ids = BTreeSet::new();
+    let mut entities_by_id = BTreeMap::new();
     for entity in entities {
         entity.validate()?;
-        if !entity_ids.insert(entity.id()) {
+        if entities_by_id.insert(entity.id(), entity).is_some() {
             return Err("assistant sketch entity IDs are invalid".to_owned());
         }
     }
     let mut constraint_ids = BTreeSet::new();
     for constraint in constraints {
         constraint.validate()?;
+        constraint.validate_references(&entities_by_id)?;
         if !constraint_ids.insert(constraint.id()) {
             return Err("assistant sketch constraint IDs are invalid".to_owned());
         }

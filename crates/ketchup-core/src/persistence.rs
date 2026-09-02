@@ -94,7 +94,8 @@ const GENERAL_PARAMETER_PATH_SCHEMA: u16 = 41;
 const ASSEMBLY_KINEMATICS_SCHEMA: u16 = 42;
 const ASSEMBLY_MOTION_COUPLING_SCHEMA: u16 = 43;
 const MECHANICAL_CONTRACT_SCHEMA: u16 = 44;
-pub const CURRENT_SCHEMA: u16 = MECHANICAL_CONTRACT_SCHEMA;
+const SKETCH_CONSTRAINT_VOCABULARY_SCHEMA: u16 = 45;
+pub const CURRENT_SCHEMA: u16 = SKETCH_CONSTRAINT_VOCABULARY_SCHEMA;
 const COLLECTION_SCHEMA: u16 = 15;
 const TAG_SCHEMA: u16 = 14;
 const PERSISTENT_DIMENSION_SCHEMA: u16 = 13;
@@ -154,6 +155,7 @@ struct ProductSchemaCapabilities {
     assembly_kinematics: bool,
     assembly_motion_couplings: bool,
     mechanical_contract: bool,
+    sketch_constraint_vocabulary: bool,
 }
 
 impl ProductSchemaCapabilities {
@@ -198,6 +200,7 @@ impl ProductSchemaCapabilities {
         assembly_kinematics: false,
         assembly_motion_couplings: false,
         mechanical_contract: false,
+        sketch_constraint_vocabulary: false,
     };
 
     const fn current(schema: u16) -> Self {
@@ -242,6 +245,7 @@ impl ProductSchemaCapabilities {
             assembly_kinematics: schema >= ASSEMBLY_KINEMATICS_SCHEMA,
             assembly_motion_couplings: schema >= ASSEMBLY_MOTION_COUPLING_SCHEMA,
             mechanical_contract: schema >= MECHANICAL_CONTRACT_SCHEMA,
+            sketch_constraint_vocabulary: schema >= SKETCH_CONSTRAINT_VOCABULARY_SCHEMA,
         }
     }
 }
@@ -1351,6 +1355,62 @@ fn write_sketch(bytes: &mut Vec<u8>, spec: &SketchSpec) {
                 push_u64(bytes, position_mm[0].to_bits());
                 push_u64(bytes, position_mm[1].to_bits());
             }
+            SketchConstraintKind::Parallel { a, b } => {
+                push_u8(bytes, 7);
+                push_u64(bytes, a.0);
+                push_u64(bytes, b.0);
+            }
+            SketchConstraintKind::Perpendicular { a, b } => {
+                push_u8(bytes, 8);
+                push_u64(bytes, a.0);
+                push_u64(bytes, b.0);
+            }
+            SketchConstraintKind::Tangent { a, b } => {
+                push_u8(bytes, 9);
+                push_u64(bytes, a.0);
+                push_u64(bytes, b.0);
+            }
+            SketchConstraintKind::Angle {
+                a,
+                b,
+                angle_degrees,
+            } => {
+                push_u8(bytes, 10);
+                push_u64(bytes, a.0);
+                push_u64(bytes, b.0);
+                push_u64(bytes, angle_degrees.to_bits());
+            }
+            SketchConstraintKind::Equal { a, b } => {
+                push_u8(bytes, 11);
+                push_u64(bytes, a.0);
+                push_u64(bytes, b.0);
+            }
+            SketchConstraintKind::Symmetric { a, b, axis } => {
+                push_u8(bytes, 12);
+                write_sketch_point_ref(bytes, *a);
+                write_sketch_point_ref(bytes, *b);
+                push_u64(bytes, axis.0);
+            }
+            SketchConstraintKind::Concentric { a, b } => {
+                push_u8(bytes, 13);
+                push_u64(bytes, a.0);
+                push_u64(bytes, b.0);
+            }
+            SketchConstraintKind::Collinear { a, b } => {
+                push_u8(bytes, 14);
+                push_u64(bytes, a.0);
+                push_u64(bytes, b.0);
+            }
+            SketchConstraintKind::Midpoint { point, line } => {
+                push_u8(bytes, 15);
+                write_sketch_point_ref(bytes, *point);
+                push_u64(bytes, line.0);
+            }
+            SketchConstraintKind::PointOnCurve { point, curve } => {
+                push_u8(bytes, 16);
+                write_sketch_point_ref(bytes, *point);
+                push_u64(bytes, curve.0);
+            }
         }
     }
 }
@@ -2179,6 +2239,8 @@ fn load_document(
             | TOPOLOGICAL_FEATURE_REFERENCE_SCHEMA
             | GENERAL_PARAMETER_PATH_SCHEMA
             | ASSEMBLY_KINEMATICS_SCHEMA
+            | ASSEMBLY_MOTION_COUPLING_SCHEMA
+            | MECHANICAL_CONTRACT_SCHEMA
             | CURRENT_SCHEMA
     ) {
         return Err(PersistenceError::UnsupportedSchema(schema));
@@ -3062,7 +3124,10 @@ fn read_sketch_point_ref(reader: &mut Reader<'_>) -> Result<SketchPointRef, Pers
     })
 }
 
-fn read_sketch(reader: &mut Reader<'_>) -> Result<SketchSpec, PersistenceError> {
+fn read_sketch(
+    reader: &mut Reader<'_>,
+    full_constraint_vocabulary: bool,
+) -> Result<SketchSpec, PersistenceError> {
     let workplane = FeatureId(reader.u64()?);
     let point = |reader: &mut Reader<'_>| -> Result<[f64; 2], PersistenceError> {
         Ok([f64::from_bits(reader.u64()?), f64::from_bits(reader.u64()?)])
@@ -3116,6 +3181,48 @@ fn read_sketch(reader: &mut Reader<'_>) -> Result<SketchSpec, PersistenceError> 
             6 => SketchConstraintKind::FixedPoint {
                 point: read_sketch_point_ref(reader)?,
                 position_mm: point(reader)?,
+            },
+            7 if full_constraint_vocabulary => SketchConstraintKind::Parallel {
+                a: SketchEntityId(reader.u64()?),
+                b: SketchEntityId(reader.u64()?),
+            },
+            8 if full_constraint_vocabulary => SketchConstraintKind::Perpendicular {
+                a: SketchEntityId(reader.u64()?),
+                b: SketchEntityId(reader.u64()?),
+            },
+            9 if full_constraint_vocabulary => SketchConstraintKind::Tangent {
+                a: SketchEntityId(reader.u64()?),
+                b: SketchEntityId(reader.u64()?),
+            },
+            10 if full_constraint_vocabulary => SketchConstraintKind::Angle {
+                a: SketchEntityId(reader.u64()?),
+                b: SketchEntityId(reader.u64()?),
+                angle_degrees: f64::from_bits(reader.u64()?),
+            },
+            11 if full_constraint_vocabulary => SketchConstraintKind::Equal {
+                a: SketchEntityId(reader.u64()?),
+                b: SketchEntityId(reader.u64()?),
+            },
+            12 if full_constraint_vocabulary => SketchConstraintKind::Symmetric {
+                a: read_sketch_point_ref(reader)?,
+                b: read_sketch_point_ref(reader)?,
+                axis: SketchEntityId(reader.u64()?),
+            },
+            13 if full_constraint_vocabulary => SketchConstraintKind::Concentric {
+                a: SketchEntityId(reader.u64()?),
+                b: SketchEntityId(reader.u64()?),
+            },
+            14 if full_constraint_vocabulary => SketchConstraintKind::Collinear {
+                a: SketchEntityId(reader.u64()?),
+                b: SketchEntityId(reader.u64()?),
+            },
+            15 if full_constraint_vocabulary => SketchConstraintKind::Midpoint {
+                point: read_sketch_point_ref(reader)?,
+                line: SketchEntityId(reader.u64()?),
+            },
+            16 if full_constraint_vocabulary => SketchConstraintKind::PointOnCurve {
+                point: read_sketch_point_ref(reader)?,
+                curve: SketchEntityId(reader.u64()?),
             },
             value => return Err(PersistenceError::InvalidFeatureKind(value)),
         };
@@ -3523,7 +3630,10 @@ fn read_product(
         let name = reader.string()?;
         let kind = match reader.u8()? {
             17 if capabilities.workplane_sketch => FeatureKind::Workplane(read_workplane(reader)?),
-            18 if capabilities.workplane_sketch => FeatureKind::Sketch(read_sketch(reader)?),
+            18 if capabilities.workplane_sketch => FeatureKind::Sketch(read_sketch(
+                reader,
+                capabilities.sketch_constraint_vocabulary,
+            )?),
             1 => {
                 let mut points_mm = Vec::new();
                 for _ in 0..reader.count()? {

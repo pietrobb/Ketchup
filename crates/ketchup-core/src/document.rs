@@ -679,6 +679,11 @@ impl FeatureKind {
                             format!("constraints.{id}.value"),
                             ParameterValueType::Length,
                         ),
+                        SketchConstraintKind::Angle { .. } => push_parameter_descriptor(
+                            &mut descriptors,
+                            format!("constraints.{id}.angle"),
+                            ParameterValueType::Angle,
+                        ),
                         SketchConstraintKind::FixedPoint { .. } => {
                             for axis in ["x", "y"] {
                                 push_parameter_descriptor(
@@ -690,7 +695,16 @@ impl FeatureKind {
                         }
                         SketchConstraintKind::Horizontal { .. }
                         | SketchConstraintKind::Vertical { .. }
-                        | SketchConstraintKind::Coincident { .. } => {}
+                        | SketchConstraintKind::Coincident { .. }
+                        | SketchConstraintKind::Parallel { .. }
+                        | SketchConstraintKind::Perpendicular { .. }
+                        | SketchConstraintKind::Tangent { .. }
+                        | SketchConstraintKind::Equal { .. }
+                        | SketchConstraintKind::Symmetric { .. }
+                        | SketchConstraintKind::Concentric { .. }
+                        | SketchConstraintKind::Collinear { .. }
+                        | SketchConstraintKind::Midpoint { .. }
+                        | SketchConstraintKind::PointOnCurve { .. } => {}
                     }
                 }
             }
@@ -4989,6 +5003,9 @@ impl DocumentStore {
                         | SketchConstraintKind::Radius { value, .. } => {
                             *value = dimension.clone();
                         }
+                        SketchConstraintKind::Angle { angle_degrees, .. } => {
+                            *angle_degrees = dimension.millimetres();
+                        }
                         _ => return Err(CanonicalError::FeatureHasNoDimension(*id)),
                     }
                     product.features.insert(
@@ -8508,6 +8525,16 @@ fn sketch_parameter_value(spec: &SketchSpec, parts: &[&str]) -> Option<f64> {
                     _ => None,
                 })
         }
+        ["constraints", id, "angle"] => {
+            let id = id.parse::<u64>().ok()?;
+            spec.constraints
+                .iter()
+                .find(|constraint| constraint.id.0 == id)
+                .and_then(|constraint| match &constraint.kind {
+                    SketchConstraintKind::Angle { angle_degrees, .. } => Some(*angle_degrees),
+                    _ => None,
+                })
+        }
         ["constraints", id, "position", axis] => {
             let id = id.parse::<u64>().ok()?;
             spec.constraints
@@ -8825,6 +8852,21 @@ fn set_sketch_parameter(spec: &mut SketchSpec, parts: &[&str], dimension: &Dimen
                     SketchConstraintKind::Distance { value, .. }
                     | SketchConstraintKind::Radius { value, .. } => {
                         *value = dimension.clone();
+                        true
+                    }
+                    _ => false,
+                })
+        }
+        ["constraints", id, "angle"] => {
+            let Ok(id) = id.parse::<u64>() else {
+                return false;
+            };
+            spec.constraints
+                .iter_mut()
+                .find(|constraint| constraint.id.0 == id)
+                .is_some_and(|constraint| match &mut constraint.kind {
+                    SketchConstraintKind::Angle { angle_degrees, .. } => {
+                        *angle_degrees = value;
                         true
                     }
                     _ => false,
@@ -15591,6 +15633,62 @@ impl StableDigest {
                             self.sketch_point_ref(*point);
                             self.u64(position_mm[0].to_bits());
                             self.u64(position_mm[1].to_bits());
+                        }
+                        SketchConstraintKind::Parallel { a, b } => {
+                            self.byte(7);
+                            self.u64(a.0);
+                            self.u64(b.0);
+                        }
+                        SketchConstraintKind::Perpendicular { a, b } => {
+                            self.byte(8);
+                            self.u64(a.0);
+                            self.u64(b.0);
+                        }
+                        SketchConstraintKind::Tangent { a, b } => {
+                            self.byte(9);
+                            self.u64(a.0);
+                            self.u64(b.0);
+                        }
+                        SketchConstraintKind::Angle {
+                            a,
+                            b,
+                            angle_degrees,
+                        } => {
+                            self.byte(10);
+                            self.u64(a.0);
+                            self.u64(b.0);
+                            self.u64(angle_degrees.to_bits());
+                        }
+                        SketchConstraintKind::Equal { a, b } => {
+                            self.byte(11);
+                            self.u64(a.0);
+                            self.u64(b.0);
+                        }
+                        SketchConstraintKind::Symmetric { a, b, axis } => {
+                            self.byte(12);
+                            self.sketch_point_ref(*a);
+                            self.sketch_point_ref(*b);
+                            self.u64(axis.0);
+                        }
+                        SketchConstraintKind::Concentric { a, b } => {
+                            self.byte(13);
+                            self.u64(a.0);
+                            self.u64(b.0);
+                        }
+                        SketchConstraintKind::Collinear { a, b } => {
+                            self.byte(14);
+                            self.u64(a.0);
+                            self.u64(b.0);
+                        }
+                        SketchConstraintKind::Midpoint { point, line } => {
+                            self.byte(15);
+                            self.sketch_point_ref(*point);
+                            self.u64(line.0);
+                        }
+                        SketchConstraintKind::PointOnCurve { point, curve } => {
+                            self.byte(16);
+                            self.sketch_point_ref(*point);
+                            self.u64(curve.0);
                         }
                     }
                 }

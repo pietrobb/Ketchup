@@ -276,7 +276,7 @@ pub fn prepare_body_parameter_edit(
                 constraint_id,
             } if matches!(feature.kind(), FeatureKind::Sketch(spec) if spec.constraints.iter().any(
                 |constraint| constraint.id == constraint_id
-                    && matches!(&constraint.kind, SketchConstraintKind::Distance { .. } | SketchConstraintKind::Radius { .. })
+                    && matches!(&constraint.kind, SketchConstraintKind::Distance { .. } | SketchConstraintKind::Radius { .. } | SketchConstraintKind::Angle { .. })
             )) =>
             {
                 CanonicalCommand::SetSketchConstraintDimension {

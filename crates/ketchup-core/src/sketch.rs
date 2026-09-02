@@ -313,6 +313,48 @@ pub enum SketchConstraintKind {
         point: SketchPointRef,
         position_mm: [f64; 2],
     },
+    Parallel {
+        a: SketchEntityId,
+        b: SketchEntityId,
+    },
+    Perpendicular {
+        a: SketchEntityId,
+        b: SketchEntityId,
+    },
+    Tangent {
+        a: SketchEntityId,
+        b: SketchEntityId,
+    },
+    Angle {
+        a: SketchEntityId,
+        b: SketchEntityId,
+        angle_degrees: f64,
+    },
+    Equal {
+        a: SketchEntityId,
+        b: SketchEntityId,
+    },
+    Symmetric {
+        a: SketchPointRef,
+        b: SketchPointRef,
+        axis: SketchEntityId,
+    },
+    Concentric {
+        a: SketchEntityId,
+        b: SketchEntityId,
+    },
+    Collinear {
+        a: SketchEntityId,
+        b: SketchEntityId,
+    },
+    Midpoint {
+        point: SketchPointRef,
+        line: SketchEntityId,
+    },
+    PointOnCurve {
+        point: SketchPointRef,
+        curve: SketchEntityId,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -653,6 +695,7 @@ impl SketchSpec {
         let mut coincidence_parents = BTreeMap::new();
         let mut previous_constraint = None;
         let mut signatures = BTreeSet::new();
+        let mut relation_equation_signatures = BTreeSet::new();
         let mut dimensional_constraints = Vec::new();
         let mut equation_count = 0usize;
         for constraint in &self.constraints {
@@ -673,7 +716,10 @@ impl SketchSpec {
                 coincidence_parents.insert(second, first);
             }
             let (signature, equations) = evaluate_constraint(constraint, &entities)?;
-            if !signatures.insert(signature) {
+            if !signatures.insert(signature)
+                || overlapping_relation_signature(&constraint.kind)
+                    .is_some_and(|signature| !relation_equation_signatures.insert(signature))
+            {
                 return Err(SketchError::OverConstrained(constraint.id));
             }
             if matches!(
@@ -681,6 +727,7 @@ impl SketchSpec {
                 SketchConstraintKind::Distance { .. }
                     | SketchConstraintKind::Radius { .. }
                     | SketchConstraintKind::FixedPoint { .. }
+                    | SketchConstraintKind::Angle { .. }
             ) {
                 dimensional_constraints.push(constraint);
             }
@@ -1081,6 +1128,123 @@ fn evaluate_constraint(
             signature.extend_from_slice(&position_mm[1].to_bits().to_le_bytes());
             2
         }
+        SketchConstraintKind::Parallel { a, b }
+        | SketchConstraintKind::Perpendicular { a, b }
+        | SketchConstraintKind::Collinear { a, b } => {
+            if a == b
+                || !matches!(entities.get(a).copied(), Some(SketchEntity::Line { .. }))
+                || !matches!(entities.get(b).copied(), Some(SketchEntity::Line { .. }))
+            {
+                return Err(SketchError::InvalidConstraintReference(constraint.id));
+            }
+            signature[0] = match constraint.kind {
+                SketchConstraintKind::Parallel { .. } => 7,
+                SketchConstraintKind::Perpendicular { .. } => 8,
+                SketchConstraintKind::Collinear { .. } => 14,
+                _ => unreachable!(),
+            };
+            let (first, second) = canonical_entity_pair(*a, *b);
+            signature.extend_from_slice(&first.0.to_le_bytes());
+            signature.extend_from_slice(&second.0.to_le_bytes());
+            if matches!(constraint.kind, SketchConstraintKind::Collinear { .. }) {
+                2
+            } else {
+                1
+            }
+        }
+        SketchConstraintKind::Tangent { a, b } => {
+            if a == b || !supports_tangent(entities.get(a).copied(), entities.get(b).copied()) {
+                return Err(SketchError::InvalidConstraintReference(constraint.id));
+            }
+            signature[0] = 9;
+            let (first, second) = canonical_entity_pair(*a, *b);
+            signature.extend_from_slice(&first.0.to_le_bytes());
+            signature.extend_from_slice(&second.0.to_le_bytes());
+            1
+        }
+        SketchConstraintKind::Angle {
+            a,
+            b,
+            angle_degrees,
+        } => {
+            if a == b
+                || !matches!(entities.get(a).copied(), Some(SketchEntity::Line { .. }))
+                || !matches!(entities.get(b).copied(), Some(SketchEntity::Line { .. }))
+                || !valid_angle_degrees(*angle_degrees)
+            {
+                return Err(SketchError::InvalidConstraintReference(constraint.id));
+            }
+            signature[0] = 10;
+            let (first, second) = canonical_entity_pair(*a, *b);
+            signature.extend_from_slice(&first.0.to_le_bytes());
+            signature.extend_from_slice(&second.0.to_le_bytes());
+            signature.extend_from_slice(&angle_degrees.to_bits().to_le_bytes());
+            1
+        }
+        SketchConstraintKind::Equal { a, b } => {
+            if a == b || !supports_equal(entities.get(a).copied(), entities.get(b).copied()) {
+                return Err(SketchError::InvalidConstraintReference(constraint.id));
+            }
+            signature[0] = 11;
+            let (first, second) = canonical_entity_pair(*a, *b);
+            signature.extend_from_slice(&first.0.to_le_bytes());
+            signature.extend_from_slice(&second.0.to_le_bytes());
+            1
+        }
+        SketchConstraintKind::Symmetric { a, b, axis } => {
+            point(*a)?;
+            point(*b)?;
+            if a == b || !matches!(entities.get(axis).copied(), Some(SketchEntity::Line { .. })) {
+                return Err(SketchError::InvalidConstraintReference(constraint.id));
+            }
+            signature[0] = 12;
+            let (first, second) = canonical_point_pair(*a, *b);
+            push_point_ref(&mut signature, first);
+            push_point_ref(&mut signature, second);
+            signature.extend_from_slice(&axis.0.to_le_bytes());
+            2
+        }
+        SketchConstraintKind::Concentric { a, b } => {
+            if a == b
+                || !is_circular_entity(entities.get(a).copied())
+                || !is_circular_entity(entities.get(b).copied())
+            {
+                return Err(SketchError::InvalidConstraintReference(constraint.id));
+            }
+            signature[0] = 13;
+            let (first, second) = canonical_entity_pair(*a, *b);
+            signature.extend_from_slice(&first.0.to_le_bytes());
+            signature.extend_from_slice(&second.0.to_le_bytes());
+            2
+        }
+        SketchConstraintKind::Midpoint {
+            point: reference,
+            line,
+        } => {
+            point(*reference)?;
+            if reference.entity == *line
+                || !matches!(entities.get(line).copied(), Some(SketchEntity::Line { .. }))
+            {
+                return Err(SketchError::InvalidConstraintReference(constraint.id));
+            }
+            signature[0] = 15;
+            push_point_ref(&mut signature, *reference);
+            signature.extend_from_slice(&line.0.to_le_bytes());
+            2
+        }
+        SketchConstraintKind::PointOnCurve {
+            point: reference,
+            curve,
+        } => {
+            point(*reference)?;
+            if reference.entity == *curve || !is_curve_entity(entities.get(curve).copied()) {
+                return Err(SketchError::InvalidConstraintReference(constraint.id));
+            }
+            signature[0] = 16;
+            push_point_ref(&mut signature, *reference);
+            signature.extend_from_slice(&curve.0.to_le_bytes());
+            1
+        }
     };
     Ok((signature, equations))
 }
@@ -1147,6 +1311,17 @@ fn dimensional_constraint_target(
             target.extend_from_slice(&entity.0.to_le_bytes());
             value.extend_from_slice(&dimension.millimetres().to_bits().to_le_bytes());
         }
+        SketchConstraintKind::Angle {
+            a,
+            b,
+            angle_degrees,
+        } => {
+            target.push(4);
+            let (first, second) = canonical_entity_pair(*a, *b);
+            target.extend_from_slice(&first.0.to_le_bytes());
+            target.extend_from_slice(&second.0.to_le_bytes());
+            value.extend_from_slice(&angle_degrees.to_bits().to_le_bytes());
+        }
         SketchConstraintKind::FixedPoint { point, position_mm } => {
             target.push(3);
             push_point_ref(&mut target, coincidence_root(coincidence_parents, *point));
@@ -1155,7 +1330,16 @@ fn dimensional_constraint_target(
         }
         SketchConstraintKind::Horizontal { .. }
         | SketchConstraintKind::Vertical { .. }
-        | SketchConstraintKind::Coincident { .. } => {
+        | SketchConstraintKind::Coincident { .. }
+        | SketchConstraintKind::Parallel { .. }
+        | SketchConstraintKind::Perpendicular { .. }
+        | SketchConstraintKind::Tangent { .. }
+        | SketchConstraintKind::Equal { .. }
+        | SketchConstraintKind::Symmetric { .. }
+        | SketchConstraintKind::Concentric { .. }
+        | SketchConstraintKind::Collinear { .. }
+        | SketchConstraintKind::Midpoint { .. }
+        | SketchConstraintKind::PointOnCurve { .. } => {
             unreachable!("only dimensional constraints are collected")
         }
     }
@@ -1224,6 +1408,17 @@ fn constraint_variable_equations(
         };
         Ok(variables)
     };
+    let entity_variables = |entity: SketchEntityId| {
+        let (base, width) = match layouts
+            .get(&entity)
+            .ok_or(SketchError::InvalidConstraintReference(constraint.id))?
+        {
+            VariableLayout::Line { base } => (*base, 4),
+            VariableLayout::Arc { base } => (*base, 5),
+            VariableLayout::Circle { base } => (*base, 3),
+        };
+        Ok((base..base + width).collect::<Vec<_>>())
+    };
     let union = |mut a: Vec<usize>, b: Vec<usize>| {
         a.extend(b);
         a.sort_unstable();
@@ -1264,6 +1459,72 @@ fn constraint_variable_equations(
             point_variables(*point, 0)?,
             point_variables(*point, 1)?,
         ]),
+        SketchConstraintKind::Parallel { a, b }
+        | SketchConstraintKind::Perpendicular { a, b }
+        | SketchConstraintKind::Tangent { a, b }
+        | SketchConstraintKind::Angle { a, b, .. }
+        | SketchConstraintKind::Equal { a, b } => {
+            Ok(vec![union(entity_variables(*a)?, entity_variables(*b)?)])
+        }
+        SketchConstraintKind::Symmetric { a, b, axis } => {
+            let variables = union(
+                union(
+                    union(point_variables(*a, 0)?, point_variables(*a, 1)?),
+                    union(point_variables(*b, 0)?, point_variables(*b, 1)?),
+                ),
+                entity_variables(*axis)?,
+            );
+            Ok(vec![variables.clone(), variables])
+        }
+        SketchConstraintKind::Concentric { a, b } => Ok(vec![
+            union(
+                point_variables(
+                    SketchPointRef {
+                        entity: *a,
+                        point: SketchPointKind::Center,
+                    },
+                    0,
+                )?,
+                point_variables(
+                    SketchPointRef {
+                        entity: *b,
+                        point: SketchPointKind::Center,
+                    },
+                    0,
+                )?,
+            ),
+            union(
+                point_variables(
+                    SketchPointRef {
+                        entity: *a,
+                        point: SketchPointKind::Center,
+                    },
+                    1,
+                )?,
+                point_variables(
+                    SketchPointRef {
+                        entity: *b,
+                        point: SketchPointKind::Center,
+                    },
+                    1,
+                )?,
+            ),
+        ]),
+        SketchConstraintKind::Collinear { a, b } => {
+            let variables = union(entity_variables(*a)?, entity_variables(*b)?);
+            Ok(vec![variables.clone(), variables])
+        }
+        SketchConstraintKind::Midpoint { point, line } => {
+            let variables = entity_variables(*line)?;
+            Ok(vec![
+                union(point_variables(*point, 0)?, variables.clone()),
+                union(point_variables(*point, 1)?, variables),
+            ])
+        }
+        SketchConstraintKind::PointOnCurve { point, curve } => Ok(vec![union(
+            union(point_variables(*point, 0)?, point_variables(*point, 1)?),
+            entity_variables(*curve)?,
+        )]),
     }
 }
 
@@ -1884,8 +2145,248 @@ fn project_constraint(
                 constraints,
             )?;
         }
+        SketchConstraintKind::Parallel { .. }
+        | SketchConstraintKind::Perpendicular { .. }
+        | SketchConstraintKind::Tangent { .. }
+        | SketchConstraintKind::Angle { .. }
+        | SketchConstraintKind::Equal { .. }
+        | SketchConstraintKind::Symmetric { .. }
+        | SketchConstraintKind::Concentric { .. }
+        | SketchConstraintKind::Collinear { .. }
+        | SketchConstraintKind::Midpoint { .. }
+        | SketchConstraintKind::PointOnCurve { .. } => {}
     }
     Ok(())
+}
+
+fn line_frame(
+    entities: &[SketchEntity],
+    indices: &BTreeMap<SketchEntityId, usize>,
+    id: SketchEntityId,
+    constraint_id: SketchConstraintId,
+) -> Result<([f64; 2], [f64; 2], f64), SketchError> {
+    let SketchEntity::Line {
+        start_mm, end_mm, ..
+    } = entity_ref(entities, indices, id, constraint_id)?
+    else {
+        return Err(SketchError::InvalidConstraintReference(constraint_id));
+    };
+    let delta = [end_mm[0] - start_mm[0], end_mm[1] - start_mm[1]];
+    let length = delta[0].hypot(delta[1]);
+    if length <= EPSILON_MM {
+        return Err(SketchError::InvalidConstraintReference(constraint_id));
+    }
+    Ok((*start_mm, [delta[0] / length, delta[1] / length], length))
+}
+
+fn circular_geometry(
+    entities: &[SketchEntity],
+    indices: &BTreeMap<SketchEntityId, usize>,
+    id: SketchEntityId,
+    constraint_id: SketchConstraintId,
+) -> Result<([f64; 2], f64), SketchError> {
+    match entity_ref(entities, indices, id, constraint_id)? {
+        SketchEntity::Arc {
+            start_mm,
+            center_mm,
+            ..
+        } => Ok((*center_mm, distance2(*start_mm, *center_mm))),
+        SketchEntity::Circle {
+            center_mm,
+            radius_mm,
+            ..
+        } => Ok((*center_mm, *radius_mm)),
+        SketchEntity::Line { .. } => Err(SketchError::InvalidConstraintReference(constraint_id)),
+    }
+}
+
+fn line_point_distance(point: [f64; 2], origin: [f64; 2], direction: [f64; 2]) -> f64 {
+    (point[0] - origin[0]) * direction[1] - (point[1] - origin[1]) * direction[0]
+}
+
+fn arc_endpoint_penalty(entity: &SketchEntity, point: [f64; 2]) -> f64 {
+    let SketchEntity::Arc {
+        start_mm,
+        end_mm,
+        center_mm,
+        clockwise,
+        ..
+    } = entity
+    else {
+        return 0.0;
+    };
+    let radius = distance2(*start_mm, *center_mm);
+    let start_angle = (start_mm[1] - center_mm[1]).atan2(start_mm[0] - center_mm[0]);
+    let end_angle = (end_mm[1] - center_mm[1]).atan2(end_mm[0] - center_mm[0]);
+    let point_angle = (point[1] - center_mm[1]).atan2(point[0] - center_mm[0]);
+    let (sweep, travel) = if *clockwise {
+        (
+            (start_angle - end_angle).rem_euclid(std::f64::consts::TAU),
+            (start_angle - point_angle).rem_euclid(std::f64::consts::TAU),
+        )
+    } else {
+        (
+            (end_angle - start_angle).rem_euclid(std::f64::consts::TAU),
+            (point_angle - start_angle).rem_euclid(std::f64::consts::TAU),
+        )
+    };
+    if travel <= sweep + EPSILON_MM / radius {
+        0.0
+    } else {
+        distance2(point, *start_mm).min(distance2(point, *end_mm))
+    }
+}
+
+fn bounded_arc_residual(base: f64, penalty: f64) -> f64 {
+    if penalty <= EPSILON_MM {
+        base
+    } else {
+        base.abs().hypot(penalty)
+    }
+}
+
+fn tangent_residual(
+    entities: &[SketchEntity],
+    indices: &BTreeMap<SketchEntityId, usize>,
+    a: SketchEntityId,
+    b: SketchEntityId,
+    constraint_id: SketchConstraintId,
+) -> Result<f64, SketchError> {
+    match (
+        entity_ref(entities, indices, a, constraint_id)?,
+        entity_ref(entities, indices, b, constraint_id)?,
+    ) {
+        (
+            SketchEntity::Line { .. },
+            circular @ (SketchEntity::Arc { .. } | SketchEntity::Circle { .. }),
+        ) => {
+            let (origin, direction, _) = line_frame(entities, indices, a, constraint_id)?;
+            let (center, radius) = circular_geometry(entities, indices, b, constraint_id)?;
+            let signed_distance = line_point_distance(center, origin, direction);
+            let contact = [
+                center[0] - signed_distance * direction[1],
+                center[1] + signed_distance * direction[0],
+            ];
+            Ok(bounded_arc_residual(
+                signed_distance.abs() - radius,
+                arc_endpoint_penalty(circular, contact),
+            ))
+        }
+        (SketchEntity::Arc { .. } | SketchEntity::Circle { .. }, SketchEntity::Line { .. }) => {
+            tangent_residual(entities, indices, b, a, constraint_id)
+        }
+        (
+            SketchEntity::Arc { .. } | SketchEntity::Circle { .. },
+            SketchEntity::Arc { .. } | SketchEntity::Circle { .. },
+        ) => {
+            let (a_center, a_radius) = circular_geometry(entities, indices, a, constraint_id)?;
+            let (b_center, b_radius) = circular_geometry(entities, indices, b, constraint_id)?;
+            let center_distance = distance2(a_center, b_center);
+            let external = center_distance - (a_radius + b_radius);
+            let radius_difference = (a_radius - b_radius).abs();
+            let internal = center_distance - radius_difference;
+            if center_distance <= EPSILON_MM {
+                return Ok(if radius_difference <= EPSILON_MM {
+                    external
+                } else {
+                    internal
+                });
+            }
+            let external_branch = external.abs() <= internal.abs();
+            let direction = [
+                (b_center[0] - a_center[0]) / center_distance,
+                (b_center[1] - a_center[1]) / center_distance,
+            ];
+            let (a_contact, b_contact, base) = if external_branch {
+                (
+                    [
+                        a_center[0] + direction[0] * a_radius,
+                        a_center[1] + direction[1] * a_radius,
+                    ],
+                    [
+                        b_center[0] - direction[0] * b_radius,
+                        b_center[1] - direction[1] * b_radius,
+                    ],
+                    external,
+                )
+            } else if a_radius >= b_radius {
+                (
+                    [
+                        a_center[0] + direction[0] * a_radius,
+                        a_center[1] + direction[1] * a_radius,
+                    ],
+                    [
+                        b_center[0] + direction[0] * b_radius,
+                        b_center[1] + direction[1] * b_radius,
+                    ],
+                    internal,
+                )
+            } else {
+                (
+                    [
+                        a_center[0] - direction[0] * a_radius,
+                        a_center[1] - direction[1] * a_radius,
+                    ],
+                    [
+                        b_center[0] - direction[0] * b_radius,
+                        b_center[1] - direction[1] * b_radius,
+                    ],
+                    internal,
+                )
+            };
+            let penalty =
+                arc_endpoint_penalty(entity_ref(entities, indices, a, constraint_id)?, a_contact)
+                    .hypot(arc_endpoint_penalty(
+                        entity_ref(entities, indices, b, constraint_id)?,
+                        b_contact,
+                    ));
+            Ok(bounded_arc_residual(base, penalty))
+        }
+        (SketchEntity::Line { .. }, SketchEntity::Line { .. }) => {
+            Err(SketchError::InvalidConstraintReference(constraint_id))
+        }
+    }
+}
+
+fn entity_measure(
+    entities: &[SketchEntity],
+    indices: &BTreeMap<SketchEntityId, usize>,
+    id: SketchEntityId,
+    constraint_id: SketchConstraintId,
+) -> Result<f64, SketchError> {
+    match entity_ref(entities, indices, id, constraint_id)? {
+        SketchEntity::Line {
+            start_mm, end_mm, ..
+        } => Ok(distance2(*start_mm, *end_mm)),
+        SketchEntity::Arc {
+            start_mm,
+            center_mm,
+            ..
+        } => Ok(distance2(*start_mm, *center_mm)),
+        SketchEntity::Circle { radius_mm, .. } => Ok(*radius_mm),
+    }
+}
+
+fn point_on_curve_residual(
+    entities: &[SketchEntity],
+    indices: &BTreeMap<SketchEntityId, usize>,
+    point: [f64; 2],
+    curve: SketchEntityId,
+    constraint_id: SketchConstraintId,
+) -> Result<f64, SketchError> {
+    match entity_ref(entities, indices, curve, constraint_id)? {
+        SketchEntity::Line { .. } => {
+            let (origin, direction, _) = line_frame(entities, indices, curve, constraint_id)?;
+            Ok(line_point_distance(point, origin, direction))
+        }
+        circular @ (SketchEntity::Arc { .. } | SketchEntity::Circle { .. }) => {
+            let (center, radius) = circular_geometry(entities, indices, curve, constraint_id)?;
+            Ok(bounded_arc_residual(
+                distance2(point, center) - radius,
+                arc_endpoint_penalty(circular, point),
+            ))
+        }
+    }
 }
 
 fn constraint_residuals(
@@ -1944,6 +2445,82 @@ fn constraint_residuals(
             SketchConstraintKind::FixedPoint { point, position_mm } => {
                 let actual = solved_point(entities, indices, *point, constraint.id)?;
                 residuals.extend([actual[0] - position_mm[0], actual[1] - position_mm[1]]);
+            }
+            SketchConstraintKind::Parallel { a, b } => {
+                let (_, a_direction, _) = line_frame(entities, indices, *a, constraint.id)?;
+                let (_, b_direction, _) = line_frame(entities, indices, *b, constraint.id)?;
+                residuals.push(a_direction[0] * b_direction[1] - a_direction[1] * b_direction[0]);
+            }
+            SketchConstraintKind::Perpendicular { a, b } => {
+                let (_, a_direction, _) = line_frame(entities, indices, *a, constraint.id)?;
+                let (_, b_direction, _) = line_frame(entities, indices, *b, constraint.id)?;
+                residuals.push(a_direction[0] * b_direction[0] + a_direction[1] * b_direction[1]);
+            }
+            SketchConstraintKind::Tangent { a, b } => {
+                residuals.push(tangent_residual(entities, indices, *a, *b, constraint.id)?);
+            }
+            SketchConstraintKind::Angle {
+                a,
+                b,
+                angle_degrees,
+            } => {
+                let (_, a_direction, _) = line_frame(entities, indices, *a, constraint.id)?;
+                let (_, b_direction, _) = line_frame(entities, indices, *b, constraint.id)?;
+                residuals.push(
+                    a_direction[0] * b_direction[0] + a_direction[1] * b_direction[1]
+                        - angle_degrees.to_radians().cos(),
+                );
+            }
+            SketchConstraintKind::Equal { a, b } => {
+                residuals.push(
+                    entity_measure(entities, indices, *a, constraint.id)?
+                        - entity_measure(entities, indices, *b, constraint.id)?,
+                );
+            }
+            SketchConstraintKind::Symmetric { a, b, axis } => {
+                let a = solved_point(entities, indices, *a, constraint.id)?;
+                let b = solved_point(entities, indices, *b, constraint.id)?;
+                let (origin, direction, _) = line_frame(entities, indices, *axis, constraint.id)?;
+                let midpoint = [(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5];
+                residuals.extend([
+                    line_point_distance(midpoint, origin, direction),
+                    (b[0] - a[0]) * direction[0] + (b[1] - a[1]) * direction[1],
+                ]);
+            }
+            SketchConstraintKind::Concentric { a, b } => {
+                let (a_center, _) = circular_geometry(entities, indices, *a, constraint.id)?;
+                let (b_center, _) = circular_geometry(entities, indices, *b, constraint.id)?;
+                residuals.extend([a_center[0] - b_center[0], a_center[1] - b_center[1]]);
+            }
+            SketchConstraintKind::Collinear { a, b } => {
+                let (a_origin, a_direction, _) = line_frame(entities, indices, *a, constraint.id)?;
+                let (b_origin, b_direction, _) = line_frame(entities, indices, *b, constraint.id)?;
+                residuals.extend([
+                    a_direction[0] * b_direction[1] - a_direction[1] * b_direction[0],
+                    line_point_distance(b_origin, a_origin, a_direction),
+                ]);
+            }
+            SketchConstraintKind::Midpoint { point, line } => {
+                let actual = solved_point(entities, indices, *point, constraint.id)?;
+                let SketchEntity::Line {
+                    start_mm, end_mm, ..
+                } = entity_ref(entities, indices, *line, constraint.id)?
+                else {
+                    return Err(SketchError::InvalidConstraintReference(constraint.id));
+                };
+                residuals.extend([
+                    actual[0] - (start_mm[0] + end_mm[0]) * 0.5,
+                    actual[1] - (start_mm[1] + end_mm[1]) * 0.5,
+                ]);
+            }
+            SketchConstraintKind::PointOnCurve { point, curve } => {
+                residuals.push(point_on_curve_residual(
+                    entities,
+                    indices,
+                    solved_point(entities, indices, *point, constraint.id)?,
+                    *curve,
+                    constraint.id,
+                )?);
             }
         }
     }
@@ -2219,6 +2796,61 @@ fn coincidence_root(
 
 fn canonical_point_pair(a: SketchPointRef, b: SketchPointRef) -> (SketchPointRef, SketchPointRef) {
     if a <= b { (a, b) } else { (b, a) }
+}
+
+fn canonical_entity_pair(a: SketchEntityId, b: SketchEntityId) -> (SketchEntityId, SketchEntityId) {
+    if a <= b { (a, b) } else { (b, a) }
+}
+
+fn overlapping_relation_signature(
+    kind: &SketchConstraintKind,
+) -> Option<(u8, SketchEntityId, SketchEntityId)> {
+    let (relation, a, b) = match kind {
+        SketchConstraintKind::Parallel { a, b } | SketchConstraintKind::Collinear { a, b } => {
+            (1, *a, *b)
+        }
+        SketchConstraintKind::Perpendicular { a, b }
+        | SketchConstraintKind::Angle {
+            a,
+            b,
+            angle_degrees: 90.0,
+        } => (2, *a, *b),
+        _ => return None,
+    };
+    let (a, b) = canonical_entity_pair(a, b);
+    Some((relation, a, b))
+}
+
+fn is_circular_entity(entity: Option<&SketchEntity>) -> bool {
+    matches!(
+        entity,
+        Some(SketchEntity::Arc { .. } | SketchEntity::Circle { .. })
+    )
+}
+
+fn is_curve_entity(entity: Option<&SketchEntity>) -> bool {
+    matches!(
+        entity,
+        Some(SketchEntity::Line { .. } | SketchEntity::Arc { .. } | SketchEntity::Circle { .. })
+    )
+}
+
+fn supports_tangent(a: Option<&SketchEntity>, b: Option<&SketchEntity>) -> bool {
+    is_curve_entity(a) && is_curve_entity(b) && (is_circular_entity(a) || is_circular_entity(b))
+}
+
+fn supports_equal(a: Option<&SketchEntity>, b: Option<&SketchEntity>) -> bool {
+    matches!(
+        (a, b),
+        (
+            Some(SketchEntity::Line { .. }),
+            Some(SketchEntity::Line { .. })
+        )
+    ) || (is_circular_entity(a) && is_circular_entity(b))
+}
+
+fn valid_angle_degrees(angle_degrees: f64) -> bool {
+    angle_degrees.is_finite() && angle_degrees > 0.0 && angle_degrees < 180.0
 }
 
 fn push_point_ref(bytes: &mut Vec<u8>, reference: SketchPointRef) {
