@@ -478,6 +478,8 @@ fn capstone_canonical_identity(shell: &Shell) -> Vec<String> {
 }
 
 fn open_part_authoring(shell: &mut Shell) {
+    shell.app_mut().headless_enable_part_authoring();
+    shell.settle();
     let title = shell.catalog().text("part-authoring-title");
     shell.click_role_and_label(Role::Button, &title);
 }
@@ -485,6 +487,85 @@ fn open_part_authoring(shell: &mut Shell) {
 fn click_part_authoring(shell: &mut Shell, key: &str) {
     let label = shell.catalog().text(key);
     shell.click_role_and_label(Role::Button, &label);
+}
+
+fn occurrence_name(shell: &Shell, id: OccurrenceId) -> String {
+    shell
+        .app()
+        .document_snapshot()
+        .occurrence(id)
+        .expect("the occurrence is authored")
+        .name()
+        .to_owned()
+}
+
+/// Ground an occurrence through the general Assembly editor and confirm it.
+fn ground_occurrence(shell: &mut Shell, id: OccurrenceId) {
+    let name = occurrence_name(shell, id);
+    let ground = shell
+        .catalog()
+        .format("assembly-preview-ground", &BTreeMap::from([("name", name)]));
+    shell.click_button_label(&ground);
+    let confirm = shell.catalog().text("assembly-confirm-preview");
+    shell.click_button_label(&confirm);
+}
+
+/// Author one mate through the general Assembly editor: pick the kind, both
+/// endpoints and both stable references, then preview and confirm.
+///
+/// The preview must leave the document untouched, which is asserted here so
+/// every mate in the capstone is proven to follow the atomic preview contract
+/// rather than only the composition as a whole.
+fn create_assembly_mate(
+    shell: &mut Shell,
+    endpoint_a: OccurrenceId,
+    endpoint_b: OccurrenceId,
+    kind_key: &str,
+    value: Option<&str>,
+    role_a: &str,
+    role_b: &str,
+) {
+    // The kind resets both references, so it has to be chosen first.
+    let kind_label = shell.catalog().text("assembly-mate-kind");
+    let kind_option = shell.catalog().text(kind_key);
+    shell.activate_role_and_label(Role::ComboBox, &kind_label);
+    shell.click_button_label(&kind_option);
+
+    let name_a = occurrence_name(shell, endpoint_a);
+    let label_a = shell.catalog().format(
+        "assembly-use-endpoint-a",
+        &BTreeMap::from([("name", name_a)]),
+    );
+    shell.click_button_label(&label_a);
+    let name_b = occurrence_name(shell, endpoint_b);
+    let label_b = shell.catalog().format(
+        "assembly-use-endpoint-b",
+        &BTreeMap::from([("name", name_b)]),
+    );
+    shell.click_button_label(&label_b);
+
+    if let Some(value) = value {
+        let value_label = shell.catalog().text("assembly-distance-value");
+        shell.focus_text_input(&value_label);
+        shell.key(Key::A, ctrl());
+        shell.type_text(value);
+    }
+    for (label_key, role) in [
+        ("assembly-reference-a", role_a),
+        ("assembly-reference-b", role_b),
+    ] {
+        let label = shell.catalog().text(label_key);
+        shell.activate_role_and_label(Role::ComboBox, &label);
+        shell.click_button_label(role);
+    }
+
+    let before = shell.app().canonical_digest();
+    let create = shell.catalog().text("assembly-preview-create-mate");
+    shell.click_button_label(&create);
+    assert!(shell.app().assembly_preview_pending());
+    assert_eq!(shell.app().canonical_digest(), before);
+    let confirm = shell.catalog().text("assembly-confirm-preview");
+    shell.click_button_label(&confirm);
 }
 
 fn open_feature_history(shell: &mut Shell) {
@@ -872,7 +953,7 @@ fn capstone_parts_are_authored_from_new_through_serial_accesskit() {
     assert!(
         shell
             .app()
-            .headless_part_authoring_unsupported_profile_refused()
+            .headless_part_authoring_unproducible_pocket_refused()
     );
     assert_eq!(
         (
@@ -1026,12 +1107,28 @@ fn capstone_parts_are_authored_from_new_through_serial_accesskit() {
     let parts_digest = shell.app().canonical_digest();
     let assembly_title = shell.catalog().text("assembly-title");
     shell.click_role_and_label(Role::Button, &assembly_title);
-    let compose = shell.catalog().text("assembly-preview-capstone");
-    shell.click_button_label(&compose);
-    assert!(shell.app().assembly_preview_pending());
-    assert_eq!(shell.app().canonical_digest(), parts_digest);
     let confirm = shell.catalog().text("assembly-confirm-preview");
-    shell.click_button_label(&confirm);
+    ground_occurrence(&mut shell, contract.plate_occurrence_id);
+    ground_occurrence(&mut shell, contract.second_shared_occurrence_id);
+    create_assembly_mate(
+        &mut shell,
+        contract.plate_occurrence_id,
+        contract.first_shared_occurrence_id,
+        "assembly-mate-coincident",
+        Some(&contract.dimensions.plate_height_mm.to_string()),
+        ExactFaceRole::Top.semantic_role(),
+        ExactFaceRole::Bottom.semantic_role(),
+    );
+    create_assembly_mate(
+        &mut shell,
+        contract.plate_occurrence_id,
+        contract.first_shared_occurrence_id,
+        "assembly-mate-concentric",
+        None,
+        ExactFaceRole::Top.semantic_role(),
+        ExactFaceRole::CircleSide.semantic_role(),
+    );
+    assert_ne!(shell.app().canonical_digest(), parts_digest);
     assert_eq!(shell.app().assembly_mate_count(), 2);
     assert_eq!(shell.app().grounded_occurrence_count(), 2);
     assert_eq!(
@@ -1142,7 +1239,8 @@ fn capstone_parts_are_authored_from_new_through_serial_accesskit() {
         InstancePath::root(contract.first_shared_occurrence_id)
     );
 
-    let drawing = shell.catalog().text("assembly-preview-capstone-drawing");
+    shell.click_menu_command("menu-edit", AppCommand::SelectAll);
+    let drawing = shell.catalog().text("assembly-preview-selection-drawing");
     shell.click_button_label(&drawing);
     assert!(shell.app().assembly_preview_pending());
     shell.click_button_label(&confirm);

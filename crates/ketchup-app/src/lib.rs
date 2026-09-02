@@ -94,7 +94,10 @@ use ketchup_interaction::{
     },
     face_intent::{FaceIntentTarget, TransientFaceIntent},
     mesh_projection::MeshInteractionProjection,
-    projection::{CanonicalInteractionProjection, InteractionProjection, ProjectedBox},
+    projection::{
+        CanonicalInteractionProjection, InteractionProjection, ProjectedBox,
+        definition_requires_evaluated_geometry,
+    },
     rectangle_face_authoring::{
         RectangleDirection, RectangleFaceAuthoring, RectangleFeatureIds, RectangleSize,
     },
@@ -8337,7 +8340,7 @@ impl KetchupApp {
         self.body_editor = body_ui::BodyEditorState::default();
         self.face_workflow = face_workflow_ui::FaceWorkflowUiState::default();
         self.feature_history = feature_history_ui::FeatureHistoryUiState::default();
-        self.part_authoring = part_authoring_ui::PartAuthoringUiState::default();
+        self.part_authoring.reset();
         self.selection = SelectionState::default();
         self.hovered = None;
         self.hover_pick = None;
@@ -11968,6 +11971,48 @@ impl KetchupApp {
         })
     }
 
+    /// World bounds of every visible body, whatever answers for its geometry.
+    ///
+    /// The assistant reasons about extents, not about which painter owns a
+    /// body, so this deliberately does not go through the render proxies: a
+    /// cut or revolved body has no box proxy yet still has bounds, and
+    /// describing it as absent would make the model plan around a void.
+    fn assistant_body_bounds(
+        &self,
+        snapshot: &Snapshot,
+    ) -> BTreeMap<OccurrenceId, (DefinitionId, [Vec3; 2])> {
+        self.refresh_interaction_projection_cache(snapshot);
+        let cache = self.interaction_projection_cache.borrow();
+        cache
+            .as_ref()
+            .expect("interaction cache was built")
+            .canonical
+            .occurrences()
+            .iter()
+            .filter(|occurrence| occurrence.visible)
+            .filter_map(|occurrence| {
+                let [minimum, maximum] = self.definition_local_bounds(
+                    snapshot,
+                    occurrence.body.definition_id,
+                    occurrence.local_box,
+                )?;
+                let size = maximum - minimum;
+                let bounds = bounds_of(box_corners(size.x, size.y, size.z).into_iter().map(
+                    |corner| {
+                        transform_model_point(
+                            occurrence.canonical_world_transform,
+                            corner + minimum,
+                        )
+                    },
+                ))?;
+                Some((
+                    occurrence.instance_path.root_occurrence(),
+                    (occurrence.body.definition_id, bounds),
+                ))
+            })
+            .collect()
+    }
+
     fn assistant_context_for(&self, query: &str) -> serde_json::Value {
         let snapshot = self.document.current();
         let semantic_state = encode_semantic_state(&snapshot);
@@ -11979,15 +12024,10 @@ impl KetchupApp {
             &self.exact_results,
             &validation_selection,
         );
-        let box_bounds = self
-            .active_boxes()
-            .into_iter()
-            .map(|item| {
-                (
-                    item.instance_path.root_occurrence(),
-                    [item.origin_mm, item.origin_mm + item.size_mm],
-                )
-            })
+        let body_bounds = self.assistant_body_bounds(&snapshot);
+        let box_bounds = body_bounds
+            .iter()
+            .map(|(occurrence_id, (_, bounds))| (*occurrence_id, *bounds))
             .collect::<BTreeMap<_, _>>();
         let scene_occurrences = snapshot.scene_query();
         let occurrence_count = scene_occurrences.len();
@@ -12066,16 +12106,16 @@ impl KetchupApp {
                 })
             },
         );
-        let boxes = self
-            .active_boxes()
+        let boxes = body_bounds
             .into_iter()
             .take(100)
-            .map(|item| {
+            .map(|(occurrence_id, (definition_id, [minimum, maximum]))| {
+                let size = maximum - minimum;
                 serde_json::json!({
-                    "occurrence_id": item.instance_path.root_occurrence().0,
-                    "definition_id": item.definition_id.0,
-                    "origin_mm": [item.origin_mm.x, item.origin_mm.y, item.origin_mm.z],
-                    "size_mm": [item.size_mm.x, item.size_mm.y, item.size_mm.z],
+                    "occurrence_id": occurrence_id.0,
+                    "definition_id": definition_id.0,
+                    "origin_mm": [minimum.x, minimum.y, minimum.z],
+                    "size_mm": [size.x, size.y, size.z],
                 })
             })
             .collect::<Vec<_>>();
@@ -15267,6 +15307,12 @@ impl KetchupApp {
             .filter(|occurrence| occurrence.visible)
             .filter_map(|occurrence| {
                 if occurrence.box_proxy.is_none() {
+                    if definition_requires_evaluated_geometry(
+                        &snapshot,
+                        occurrence.body.definition_id,
+                    ) {
+                        return None;
+                    }
                     let [minimum, maximum] = self.definition_local_bounds(
                         &snapshot,
                         occurrence.body.definition_id,
@@ -31307,7 +31353,21 @@ impl KetchupApp {
         let previous = self.hover_pick.as_ref().map(overlap_signature);
         let current = pick.as_ref().map(overlap_signature);
         if previous != current {
-            self.hover_overlap_index = 0;
+            // A background recompute can republish the same stack of bodies
+            // under an unmoved pointer. Resetting blindly would throw away the
+            // choice the user just cycled to with Tab and select whatever is
+            // frontmost instead, so the choice is carried over whenever the
+            // chosen body is still under the pointer.
+            self.hover_overlap_index = self
+                .hovered
+                .as_ref()
+                .and_then(|chosen| {
+                    current
+                        .as_ref()?
+                        .iter()
+                        .position(|candidate| candidate == chosen)
+                })
+                .unwrap_or(0);
             self.face_workflow.set_xray_preview(false);
         }
         let scale = f64::from(self.zoom) * f64::from(rect.width().min(rect.height())) / 420.0;
@@ -33936,7 +33996,7 @@ impl KetchupApp {
         if let Some(proposal) = self.assistant_proposal.clone() {
             let mut confirm_clicked = false;
             let mut cancel_clicked = false;
-            egui::Frame::new()
+            let review = egui::Frame::new()
                 .fill(palette.panel2)
                 .stroke(Stroke::new(1.0_f32, palette.accent))
                 .corner_radius(egui::CornerRadius::same(6))
@@ -34005,6 +34065,16 @@ impl KetchupApp {
                         cancel_clicked = ui.button(self.catalog.text("assistant-cancel")).clicked();
                     });
                 });
+            // The model stays unchanged until this proposal is answered, so a
+            // review that arrives below the fold of the dock would silently
+            // stall the whole conversation. Bring a freshly raised proposal
+            // into view once, without fighting scrolling afterwards.
+            let raised = egui::Id::new("assistant-proposal-raised");
+            let fingerprint = proposal.provenance_digest().to_owned();
+            if ui.data(|data| data.get_temp::<String>(raised)) != Some(fingerprint.clone()) {
+                review.response.scroll_to_me(Some(egui::Align::Center));
+                ui.data_mut(|data| data.insert_temp(raised, fingerprint));
+            }
             if confirm_clicked {
                 self.confirm_assistant_proposal();
             } else if cancel_clicked {
@@ -37265,14 +37335,15 @@ impl KetchupApp {
                 )
                 .show(context, |ui| {
                     ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
-                    self.show_face_workflow_ui(ui);
-                    #[cfg(test)]
-                    self.show_part_authoring_ui(ui);
-                    self.show_feature_history(ui);
-                    self.show_body_editor(ui);
-                    self.show_assembly_editor(ui);
-                    self.show_parameter_editor(ui);
-                    self.show_assistant(ui);
+                    dock_scroll_area().show(ui, |ui| {
+                        self.show_face_workflow_ui(ui);
+                        self.show_part_authoring_ui(ui);
+                        self.show_feature_history(ui);
+                        self.show_body_editor(ui);
+                        self.show_assembly_editor(ui);
+                        self.show_parameter_editor(ui);
+                        self.show_assistant(ui);
+                    });
                 });
             egui::CentralPanel::default()
                 .frame(egui::Frame::new().fill(palette.viewport_outer))
@@ -37290,14 +37361,15 @@ impl KetchupApp {
                 )
                 .show(context, |ui| {
                     ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
-                    self.show_face_workflow_ui(ui);
-                    #[cfg(test)]
-                    self.show_part_authoring_ui(ui);
-                    self.show_feature_history(ui);
-                    self.show_body_editor(ui);
-                    self.show_assembly_editor(ui);
-                    self.show_parameter_editor(ui);
-                    self.show_outliner_without_assistant(ui);
+                    dock_scroll_area().show(ui, |ui| {
+                        self.show_face_workflow_ui(ui);
+                        self.show_part_authoring_ui(ui);
+                        self.show_feature_history(ui);
+                        self.show_body_editor(ui);
+                        self.show_assembly_editor(ui);
+                        self.show_parameter_editor(ui);
+                        self.show_outliner_without_assistant(ui);
+                    });
                 });
             egui::CentralPanel::default()
                 .frame(
@@ -37414,6 +37486,17 @@ fn apply_shell_style(context: &egui::Context, palette: Palette) {
 }
 
 /// Draw a dock section title so every section reads at the same weight.
+/// The right dock stacks every editor panel, so its content is routinely
+/// taller than the window. Without a scroll area the overflow is simply
+/// unreachable: the panel below the fold is painted outside the dock and no
+/// click ever lands on it, which reads as a dead button rather than as
+/// content that is merely out of view.
+fn dock_scroll_area() -> egui::ScrollArea {
+    egui::ScrollArea::vertical()
+        .id_salt("right-dock-scroll")
+        .auto_shrink([false, false])
+}
+
 fn section_header(ui: &mut egui::Ui, palette: Palette, title: &str) {
     ui.add_space(9.0);
     ui.horizontal(|ui| {
@@ -41945,39 +42028,35 @@ endsolid tetrahedron\n";
 
     #[test]
     fn hovering_and_selecting_a_canonical_mesh_body_paints_its_outline() {
+        let source = jagged_sphere_binary_stl(6, 8);
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("small-sphere.stl");
+        std::fs::write(&path, &source).unwrap();
         let mut app = KetchupApp::new();
-        assert!(apply_reviewed_model_intent(
-            &mut app,
-            AssistantModelIntent {
-                replace_scene: true,
-                boxes: vec![AssistantBoxIntent {
-                    name: "Grooved beam".to_owned(),
-                    size_mm: [400.0, 100.0, 100.0],
-                    origin_mm: [0.0, 0.0, 0.0],
-                    subtract_boxes: vec![
-                        ketchup_core::assistant_sidecar::AssistantSubtractionIntent {
-                            size_mm: [40.0, 100.0, 30.0],
-                            origin_mm: [180.0, 0.0, 70.0],
-                        }
-                    ],
-                }],
-                translations: Vec::new(),
-                rotations: Vec::new(),
-                profile_translations: Vec::new(),
-                parameter_edits: Vec::new(),
-                linear_arrays: Vec::new(),
-                bottles: Vec::new(),
-                gable_roofs: Vec::new(),
-                staircases: Vec::new(),
-                oriented_beams: Vec::new(),
-                balloon_texts: Vec::new(),
-            }
-        ));
+        app.document = DocumentStore::new();
+        let snapshot = app.document.current();
+        let pending = PendingStlImport {
+            plan: app
+                .prepare_stl_import_preview_plan(StlImportSourcePlan {
+                    path,
+                    source: source.clone(),
+                    unit: ImportLengthUnit::Millimetre,
+                    document_id: snapshot.document_id(),
+                    revision_id: snapshot.revision_id(),
+                    canonical_digest: snapshot.canonical_digest(),
+                    source_sha256: sha256_bytes(&source),
+                    source_byte_len: source.len() as u64,
+                })
+                .unwrap(),
+            review_error: None,
+            invalidated: false,
+        };
+        assert!(app.import_stl_from(&pending), "{}", app.action_digest());
         let snapshot = app.document.current();
         let occurrence = snapshot.occurrences().next().unwrap().id();
         assert!(
             definition_mesh_body(&snapshot, snapshot.definitions().next().unwrap().id()).is_some(),
-            "the subtracted box is stored as a canonical mesh body"
+            "the imported sphere is stored as a canonical mesh body"
         );
         let context = egui::Context::default();
         let _ = context.run(egui::RawInput::default(), |context| app.ui(context));

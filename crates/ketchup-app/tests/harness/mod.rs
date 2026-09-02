@@ -371,9 +371,7 @@ impl Shell {
     }
 
     pub fn click_role_and_label(&mut self, role: Role, label: &str) {
-        self.gap();
-        self.harness.get_by_role_and_label(role, label).click();
-        self.harness.run();
+        self.activate_role_and_label(role, label);
     }
 
     /// Whether the command is the focused node in the current AccessKit tree.
@@ -458,6 +456,20 @@ impl Shell {
             .1
             .click();
         self.open_menu = None;
+        self.harness.run();
+    }
+
+    /// Activate a node through AccessKit rather than a synthetic pointer.
+    ///
+    /// The right dock scrolls, so a control can be published to assistive
+    /// technology yet lie outside the painted viewport; a pointer click would
+    /// then land on nothing. Screen-reader activation is what a keyboard or
+    /// AT user does, and it reaches the control wherever it sits.
+    pub fn activate_role_and_label(&mut self, role: Role, label: &str) {
+        self.gap();
+        self.harness
+            .get_by_role_and_label(role, label)
+            .click_accesskit();
         self.harness.run();
     }
 

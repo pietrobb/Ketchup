@@ -53,6 +53,9 @@ pub(super) struct PartAuthoringUiState {
     pocket_dimensions: String,
     fastener_dimensions: String,
     preview: Option<PartAuthoringPreview>,
+    /// The panel authors the release fixture, not a product part, so it stays
+    /// off the shell until a headless replay asks for it.
+    enabled: bool,
 }
 
 impl Default for PartAuthoringUiState {
@@ -62,13 +65,37 @@ impl Default for PartAuthoringUiState {
             pocket_dimensions: "20,4".to_owned(),
             fastener_dimensions: "12,30,24".to_owned(),
             preview: None,
+            enabled: false,
         }
     }
 }
 
+impl PartAuthoringUiState {
+    /// Drop the authored state a new or reopened document invalidates, while
+    /// keeping the opt-in: whether the panel is on the shell at all is a
+    /// surface choice, not a property of the open document.
+    pub(super) fn reset(&mut self) {
+        *self = Self {
+            enabled: self.enabled,
+            ..Self::default()
+        };
+    }
+}
+
 impl KetchupApp {
-    #[cfg(test)]
+    /// Opt the release-fixture authoring panel into the shell.
+    ///
+    /// Only a headless replay of the release capstone needs it; the production
+    /// surface must stay free of fixture-specific actions.
+    #[doc(hidden)]
+    pub fn headless_enable_part_authoring(&mut self) {
+        self.part_authoring.enabled = true;
+    }
+
     pub(super) fn show_part_authoring_ui(&mut self, ui: &mut egui::Ui) {
+        if !self.part_authoring.enabled {
+            return;
+        }
         let title = self.catalog.text("part-authoring-title");
         egui::CollapsingHeader::new(title)
             .id_salt("part-authoring")
@@ -186,7 +213,6 @@ impl KetchupApp {
         }
     }
 
-    #[cfg(test)]
     fn derive_part_authoring_proposal(
         &self,
         source: &PartAuthoringSource,
@@ -199,7 +225,6 @@ impl KetchupApp {
             .map_err(|error| error.to_string())
     }
 
-    #[cfg(test)]
     fn prepare_part_authoring_preview(&mut self) -> bool {
         let Some(source) = self.part_authoring_source() else {
             self.digest = self.catalog.text("part-authoring-invalid");
@@ -223,7 +248,6 @@ impl KetchupApp {
         true
     }
 
-    #[cfg(test)]
     fn confirm_part_authoring_preview(&mut self) -> bool {
         let Some(preview) = self.part_authoring.preview.take() else {
             return false;
@@ -566,7 +590,11 @@ impl KetchupApp {
     #[cfg(debug_assertions)]
     #[doc(hidden)]
     #[must_use]
-    pub fn headless_part_authoring_unsupported_profile_refused(&self) -> bool {
+    /// A circular pocket profile is producible now, so what must still be
+    /// refused is a pocket the pad cannot contain: this one reaches past the
+    /// plate outline, and authoring has to say so instead of emitting a body
+    /// whose cut runs off the edge.
+    pub fn headless_part_authoring_unproducible_pocket_refused(&self) -> bool {
         let contract = ReleaseCapstoneContract::mechanical_plate_fixture();
         let ids = contract.plate_feature_ids;
         let snapshot = self.document.current();
@@ -622,7 +650,7 @@ impl KetchupApp {
                 contract.plate_definition_id,
                 ids.pocket,
             ),
-            Err(ExactProductError::UnsupportedProfile)
+            Err(ExactProductError::UnsupportedThroughCut)
         )
     }
 

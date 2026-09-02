@@ -15,8 +15,6 @@ use ketchup_core::drawing::{
     DrawingSheet, DrawingSheetId, DrawingSource, prepare_create_drawing_sheet,
 };
 use ketchup_core::exact_product::BodySubshapeRef;
-#[cfg(debug_assertions)]
-use ketchup_core::release_capstone::ReleaseCapstoneContract;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 enum MateKindChoice {
@@ -1593,9 +1591,8 @@ impl KetchupApp {
     #[cfg(debug_assertions)]
     #[doc(hidden)]
     pub fn headless_capstone_drawing_fingerprint(&self) -> Option<(String, Vec<&'static str>)> {
-        let contract = ReleaseCapstoneContract::mechanical_plate_fixture();
         let snapshot = self.document.current();
-        let sheet = snapshot.drawing_sheet(contract.drawing_sheet_id)?;
+        let sheet = snapshot.drawing_sheets().next()?;
         let drawing = project_orthographic_drawing(&snapshot, &self.exact_results, sheet).ok()?;
         Some((
             drawing.result_digest,
@@ -1610,12 +1607,38 @@ impl KetchupApp {
     #[cfg(debug_assertions)]
     #[doc(hidden)]
     pub fn headless_capstone_assembly_refusal_paths(&self) -> Vec<&'static str> {
-        let contract = ReleaseCapstoneContract::mechanical_plate_fixture();
         let snapshot = self.document.current();
-        let Some(planar) = snapshot.assembly_mate(contract.planar_mate_id).cloned() else {
+        // Derived from the document rather than from a named product fixture:
+        // the refusal contract is a property of any planar-plus-axial rigid
+        // assembly, so a second document with the same shape is covered too.
+        let Some(planar) = snapshot
+            .assembly_mates()
+            .find(|mate| matches!(mate.kind(), AssemblyMateKind::CoincidentPlanar { .. }))
+            .cloned()
+        else {
             return Vec::new();
         };
-        let Some(axial) = snapshot.assembly_mate(contract.axial_mate_id).cloned() else {
+        let Some(axial) = snapshot
+            .assembly_mates()
+            .find(|mate| matches!(mate.kind(), AssemblyMateKind::ConcentricAxial { .. }))
+            .cloned()
+        else {
+            return Vec::new();
+        };
+        let Some(sheet_id) = snapshot.drawing_sheets().next().map(DrawingSheet::id) else {
+            return Vec::new();
+        };
+        // The occurrence that is grounded without carrying the planar mate:
+        // ungrounding it is what leaves the assembly under-constrained.
+        let Some(free_grounded) = snapshot
+            .occurrences()
+            .map(|occurrence| occurrence.id())
+            .filter(|id| snapshot.occurrence_is_grounded(*id))
+            .find(|id| {
+                *id != planar.endpoint_a().occurrence_id()
+                    && *id != planar.endpoint_b().occurrence_id()
+            })
+        else {
             return Vec::new();
         };
         let encoded = ketchup_core::persistence::save(&snapshot);
@@ -1626,9 +1649,7 @@ impl KetchupApp {
                 .ok()?;
             document
                 .apply_batch(&CommandBatch::new(vec![
-                    CanonicalCommand::DeleteDrawingSheet {
-                        id: contract.drawing_sheet_id,
-                    },
+                    CanonicalCommand::DeleteDrawingSheet { id: sheet_id },
                 ]))
                 .ok()?;
             Some(document)
@@ -1638,11 +1659,9 @@ impl KetchupApp {
         if let Some(mut document) = clone_document()
             && document
                 .apply_batch(&CommandBatch::new(vec![
-                    CanonicalCommand::DeleteAssemblyMate {
-                        id: contract.axial_mate_id,
-                    },
+                    CanonicalCommand::DeleteAssemblyMate { id: axial.id() },
                     CanonicalCommand::SetOccurrenceGrounded {
-                        id: contract.second_shared_occurrence_id,
+                        id: free_grounded,
                         grounded: false,
                     },
                 ]))
@@ -1693,12 +1712,8 @@ impl KetchupApp {
             );
             if document
                 .apply_batch(&CommandBatch::new(vec![
-                    CanonicalCommand::DeleteAssemblyMate {
-                        id: contract.planar_mate_id,
-                    },
-                    CanonicalCommand::DeleteAssemblyMate {
-                        id: contract.axial_mate_id,
-                    },
+                    CanonicalCommand::DeleteAssemblyMate { id: planar.id() },
+                    CanonicalCommand::DeleteAssemblyMate { id: axial.id() },
                     CanonicalCommand::CreateAssemblyMate(conflicting_a),
                     CanonicalCommand::CreateAssemblyMate(conflicting_b),
                 ]))
@@ -1717,14 +1732,14 @@ impl KetchupApp {
         if let Some(mut document) = clone_document()
             && let Ok(proposal) = document.prepare_proposal(CommandBatch::new(vec![
                 CanonicalCommand::SetOccurrenceGrounded {
-                    id: contract.second_shared_occurrence_id,
+                    id: free_grounded,
                     grounded: false,
                 },
             ]))
             && document
                 .apply_batch(&CommandBatch::new(vec![
                     CanonicalCommand::SetOccurrenceGrounded {
-                        id: contract.second_shared_occurrence_id,
+                        id: free_grounded,
                         grounded: false,
                     },
                 ]))

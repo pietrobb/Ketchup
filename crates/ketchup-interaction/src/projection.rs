@@ -200,14 +200,22 @@ impl InteractionProjection {
     }
 }
 
-fn canonical_box(
+/// Whether a definition carries an operation whose result no axis-aligned box
+/// can stand in for.
+///
+/// A subtractive or free-form operation removes or reshapes material, so a
+/// filled proxy would hide the very geometry that matters — a through hole
+/// would read as solid to render, pick and export alike. Such definitions are
+/// answered by the exact pipeline or by a canonical mesh body, never by a box.
+#[must_use]
+pub fn definition_requires_evaluated_geometry(
     snapshot: &Snapshot,
     definition_id: DefinitionId,
-) -> (Option<FeatureId>, Option<FeatureId>, Option<ProjectedBox>) {
+) -> bool {
     let Some(definition) = snapshot.definition(definition_id) else {
-        return (None, None, None);
+        return false;
     };
-    if definition.feature_ids().iter().any(|feature_id| {
+    definition.feature_ids().iter().any(|feature_id| {
         snapshot.feature(*feature_id).is_some_and(|feature| {
             matches!(
                 feature.kind(),
@@ -219,7 +227,17 @@ fn canonical_box(
                     | FeatureKind::Boolean { .. }
             )
         })
-    }) {
+    })
+}
+
+fn canonical_box(
+    snapshot: &Snapshot,
+    definition_id: DefinitionId,
+) -> (Option<FeatureId>, Option<FeatureId>, Option<ProjectedBox>) {
+    let Some(definition) = snapshot.definition(definition_id) else {
+        return (None, None, None);
+    };
+    if definition_requires_evaluated_geometry(snapshot, definition_id) {
         return (None, None, None);
     }
     let profiles = definition
