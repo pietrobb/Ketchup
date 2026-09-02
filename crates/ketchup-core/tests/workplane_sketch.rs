@@ -11,9 +11,9 @@ use ketchup_core::persistence;
 use ketchup_core::sketch::{
     MAX_SKETCH_CONSTRAINTS, MAX_SKETCH_ENTITIES, PrincipalPlane, SketchConstraint,
     SketchConstraintId, SketchConstraintKind, SketchEntity, SketchEntityId, SketchError,
-    SketchPointKind, SketchPointRef, SketchSolveStatus, SketchSpec, SolvedSketchRegionEdge,
-    SolvedSketchRegionProfile, WorkplaneFrame, WorkplaneSpec, WorkplaneSupport,
-    WorkplaneSupportHealth,
+    SketchPointKind, SketchPointRef, SketchSolveStatus, SketchSolverPolicy, SketchSpec,
+    SolvedSketchRegionEdge, SolvedSketchRegionProfile, WorkplaneFrame, WorkplaneSpec,
+    WorkplaneSupport, WorkplaneSupportHealth,
 };
 use ketchup_core::state_view::encode_semantic_state;
 
@@ -486,6 +486,316 @@ fn unsatisfied_geometry_is_solved_deterministically_and_conflicts_fail_closed() 
         conflicting.solve(),
         Err(SketchError::OverConstrained(SketchConstraintId(1)))
     );
+}
+
+#[test]
+fn coupled_constraints_use_least_squares_and_nonconvergence_is_not_overconstraint() {
+    let source = SketchEntity::Line {
+        id: SketchEntityId(1),
+        start_mm: [1.0, 2.0],
+        end_mm: [8.0, 7.0],
+    };
+    let sketch = SketchSpec {
+        workplane: XY,
+        entities: vec![source.clone()],
+        constraints: vec![
+            SketchConstraint {
+                id: SketchConstraintId(1),
+                kind: SketchConstraintKind::Horizontal {
+                    entity: SketchEntityId(1),
+                },
+            },
+            SketchConstraint {
+                id: SketchConstraintId(2),
+                kind: SketchConstraintKind::Distance {
+                    a: point(1, SketchPointKind::Start),
+                    b: point(1, SketchPointKind::End),
+                    value: Dimension::from_decimal("10").unwrap(),
+                },
+            },
+            SketchConstraint {
+                id: SketchConstraintId(3),
+                kind: SketchConstraintKind::FixedPoint {
+                    point: point(1, SketchPointKind::Start),
+                    position_mm: [0.0, 0.0],
+                },
+            },
+        ],
+    };
+
+    let first = sketch.solve_geometry().unwrap();
+    let second = sketch.solve_geometry().unwrap();
+    assert_eq!(first, second);
+    assert_eq!(sketch.entities, vec![source.clone()]);
+    assert_eq!(first.report.status, SketchSolveStatus::FullyConstrained);
+    let SketchEntity::Line {
+        start_mm, end_mm, ..
+    } = &first.entities[0]
+    else {
+        panic!("expected solved line");
+    };
+    assert!(start_mm[0].abs() <= 1.0e-7 && start_mm[1].abs() <= 1.0e-7);
+    assert!(((end_mm[0] - start_mm[0]).hypot(end_mm[1] - start_mm[1]) - 10.0).abs() <= 1.0e-7);
+    assert!((start_mm[1] - end_mm[1]).abs() <= 1.0e-7);
+
+    let bounded = SketchSolverPolicy {
+        max_iterations: 1,
+        initial_damping: 1.0e20,
+        ..SketchSolverPolicy::default()
+    };
+    assert_eq!(
+        sketch.solve_geometry_with_policy(bounded),
+        Err(SketchError::NonConvergent)
+    );
+    assert_eq!(sketch.entities, vec![source]);
+    assert_eq!(
+        sketch.solve_with_policy(SketchSolverPolicy {
+            max_iterations: 0,
+            ..SketchSolverPolicy::default()
+        }),
+        Err(SketchError::InvalidSolverPolicy)
+    );
+}
+
+#[test]
+fn conflicting_dimensions_are_overconstrained_before_numerical_solving() {
+    let sketch = SketchSpec {
+        workplane: XY,
+        entities: vec![SketchEntity::Line {
+            id: SketchEntityId(1),
+            start_mm: [0.0, 0.0],
+            end_mm: [5.0, 0.0],
+        }],
+        constraints: vec![
+            SketchConstraint {
+                id: SketchConstraintId(1),
+                kind: SketchConstraintKind::Distance {
+                    a: point(1, SketchPointKind::Start),
+                    b: point(1, SketchPointKind::End),
+                    value: Dimension::from_decimal("10").unwrap(),
+                },
+            },
+            SketchConstraint {
+                id: SketchConstraintId(2),
+                kind: SketchConstraintKind::Distance {
+                    a: point(1, SketchPointKind::Start),
+                    b: point(1, SketchPointKind::End),
+                    value: Dimension::from_decimal("20").unwrap(),
+                },
+            },
+        ],
+    };
+    assert_eq!(
+        sketch.solve(),
+        Err(SketchError::OverConstrained(SketchConstraintId(1)))
+    );
+}
+
+#[test]
+fn coincidence_partition_exposes_conflicting_dimensions() {
+    let sketch = SketchSpec {
+        workplane: XY,
+        entities: vec![
+            SketchEntity::Line {
+                id: SketchEntityId(1),
+                start_mm: [0.0, 0.0],
+                end_mm: [10.0, 0.0],
+            },
+            SketchEntity::Line {
+                id: SketchEntityId(2),
+                start_mm: [0.0, 1.0],
+                end_mm: [0.0, 5.0],
+            },
+        ],
+        constraints: vec![
+            SketchConstraint {
+                id: SketchConstraintId(1),
+                kind: SketchConstraintKind::Coincident {
+                    a: point(1, SketchPointKind::Start),
+                    b: point(2, SketchPointKind::Start),
+                },
+            },
+            SketchConstraint {
+                id: SketchConstraintId(2),
+                kind: SketchConstraintKind::Distance {
+                    a: point(1, SketchPointKind::Start),
+                    b: point(1, SketchPointKind::End),
+                    value: Dimension::from_decimal("10").unwrap(),
+                },
+            },
+            SketchConstraint {
+                id: SketchConstraintId(3),
+                kind: SketchConstraintKind::Distance {
+                    a: point(2, SketchPointKind::Start),
+                    b: point(1, SketchPointKind::End),
+                    value: Dimension::from_decimal("20").unwrap(),
+                },
+            },
+        ],
+    };
+    assert_eq!(
+        sketch.solve(),
+        Err(SketchError::OverConstrained(SketchConstraintId(2)))
+    );
+}
+
+#[test]
+fn numerical_solving_preserves_disconnected_entities_bit_for_bit() {
+    let circle = SketchEntity::Circle {
+        id: SketchEntityId(2),
+        center_mm: [50.0, 50.0],
+        radius_mm: 5.0e-7,
+    };
+    let arc = SketchEntity::Arc {
+        id: SketchEntityId(3),
+        start_mm: [105.0, 100.0],
+        end_mm: [100.0, 105.000_000_05],
+        center_mm: [100.0, 100.0],
+        clockwise: false,
+    };
+    let sketch = SketchSpec {
+        workplane: XY,
+        entities: vec![
+            SketchEntity::Line {
+                id: SketchEntityId(1),
+                start_mm: [1.0, 2.0],
+                end_mm: [8.0, 7.0],
+            },
+            circle.clone(),
+            arc.clone(),
+        ],
+        constraints: vec![
+            SketchConstraint {
+                id: SketchConstraintId(1),
+                kind: SketchConstraintKind::Horizontal {
+                    entity: SketchEntityId(1),
+                },
+            },
+            SketchConstraint {
+                id: SketchConstraintId(2),
+                kind: SketchConstraintKind::Distance {
+                    a: point(1, SketchPointKind::Start),
+                    b: point(1, SketchPointKind::End),
+                    value: Dimension::from_decimal("10").unwrap(),
+                },
+            },
+            SketchConstraint {
+                id: SketchConstraintId(3),
+                kind: SketchConstraintKind::FixedPoint {
+                    point: point(1, SketchPointKind::Start),
+                    position_mm: [0.0, 0.0],
+                },
+            },
+        ],
+    };
+    let solved = sketch.solve_geometry().unwrap();
+    assert_eq!(solved.entities[1], circle);
+    assert_eq!(solved.entities[2], arc);
+    assert_eq!(
+        sketch.solve_with_policy(SketchSolverPolicy {
+            tolerance_mm: 1.0,
+            ..SketchSolverPolicy::default()
+        }),
+        Err(SketchError::InvalidSolverPolicy)
+    );
+}
+
+#[test]
+fn aliased_arc_radius_distance_is_one_dimensional_target() {
+    let sketch = SketchSpec {
+        workplane: XY,
+        entities: vec![
+            SketchEntity::Arc {
+                id: SketchEntityId(1),
+                start_mm: [5.0, 0.0],
+                end_mm: [0.0, 5.0],
+                center_mm: [0.0, 0.0],
+                clockwise: false,
+            },
+            SketchEntity::Line {
+                id: SketchEntityId(2),
+                start_mm: [0.0, 0.0],
+                end_mm: [1.0, 1.0],
+            },
+        ],
+        constraints: vec![
+            SketchConstraint {
+                id: SketchConstraintId(1),
+                kind: SketchConstraintKind::Coincident {
+                    a: point(1, SketchPointKind::Center),
+                    b: point(2, SketchPointKind::Start),
+                },
+            },
+            SketchConstraint {
+                id: SketchConstraintId(2),
+                kind: SketchConstraintKind::Radius {
+                    entity: SketchEntityId(1),
+                    value: Dimension::from_decimal("5").unwrap(),
+                },
+            },
+            SketchConstraint {
+                id: SketchConstraintId(3),
+                kind: SketchConstraintKind::Distance {
+                    a: point(2, SketchPointKind::Start),
+                    b: point(1, SketchPointKind::Start),
+                    value: Dimension::from_decimal("6").unwrap(),
+                },
+            },
+        ],
+    };
+    assert_eq!(
+        sketch.solve(),
+        Err(SketchError::OverConstrained(SketchConstraintId(2)))
+    );
+}
+
+#[test]
+fn tiny_translated_arc_uses_non_prefix_active_columns() {
+    let sketch = SketchSpec {
+        workplane: XY,
+        entities: vec![
+            SketchEntity::Line {
+                id: SketchEntityId(1),
+                start_mm: [0.0, 0.0],
+                end_mm: [1.0, 1.0],
+            },
+            SketchEntity::Arc {
+                id: SketchEntityId(2),
+                start_mm: [999_998.999_999_8, 999_999.000_000_5],
+                end_mm: [999_998.999_999_3, 999_999.0],
+                center_mm: [999_998.999_999_8, 999_999.0],
+                clockwise: false,
+            },
+        ],
+        constraints: vec![
+            SketchConstraint {
+                id: SketchConstraintId(1),
+                kind: SketchConstraintKind::FixedPoint {
+                    point: point(2, SketchPointKind::Start),
+                    position_mm: [999_999.000_000_5, 999_999.0],
+                },
+            },
+            SketchConstraint {
+                id: SketchConstraintId(2),
+                kind: SketchConstraintKind::FixedPoint {
+                    point: point(2, SketchPointKind::End),
+                    position_mm: [999_999.0, 999_999.000_000_5],
+                },
+            },
+        ],
+    };
+    let solved = sketch.solve_geometry().unwrap();
+    assert_eq!(solved.entities[0], sketch.entities[0]);
+    let SketchEntity::Arc {
+        start_mm, end_mm, ..
+    } = solved.entities[1]
+    else {
+        panic!("expected solved arc");
+    };
+    assert!((start_mm[0] - 999_999.000_000_5).abs() <= 1.0e-7);
+    assert!((start_mm[1] - 999_999.0).abs() <= 1.0e-7);
+    assert!((end_mm[0] - 999_999.0).abs() <= 1.0e-7);
+    assert!((end_mm[1] - 999_999.000_000_5).abs() <= 1.0e-7);
 }
 
 #[test]

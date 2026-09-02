@@ -9,6 +9,8 @@ const MAX_ABS_MM: f64 = 1_000_000.0;
 const MAX_SKETCH_SOLVER_DOF: usize = 512;
 const EPSILON_MM: f64 = 1.0e-7;
 const FRAME_EPSILON: f64 = 1.0e-9;
+const MAX_SKETCH_SOLVER_ITERATIONS: u16 = 256;
+const MAX_SKETCH_NUMERICAL_EVALUATIONS: usize = 67_108_864;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct SketchEntityId(pub u64);
@@ -319,6 +321,43 @@ pub struct SketchConstraint {
     pub kind: SketchConstraintKind,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SketchSolverPolicy {
+    pub max_iterations: u16,
+    pub tolerance_mm: f64,
+    pub finite_difference_step: f64,
+    pub initial_damping: f64,
+}
+
+impl Default for SketchSolverPolicy {
+    fn default() -> Self {
+        Self {
+            max_iterations: 64,
+            tolerance_mm: EPSILON_MM,
+            finite_difference_step: 1.0e-6,
+            initial_damping: 1.0e-6,
+        }
+    }
+}
+
+impl SketchSolverPolicy {
+    fn validate(self) -> Result<Self, SketchError> {
+        if self.max_iterations == 0
+            || self.max_iterations > MAX_SKETCH_SOLVER_ITERATIONS
+            || !self.tolerance_mm.is_finite()
+            || self.tolerance_mm <= 0.0
+            || self.tolerance_mm > EPSILON_MM
+            || !self.finite_difference_step.is_finite()
+            || self.finite_difference_step <= 0.0
+            || !self.initial_damping.is_finite()
+            || self.initial_damping <= 0.0
+        {
+            return Err(SketchError::InvalidSolverPolicy);
+        }
+        Ok(self)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SketchSolveStatus {
     UnderConstrained { remaining_dof: usize },
@@ -564,10 +603,25 @@ pub struct SketchSpec {
 
 impl SketchSpec {
     pub fn solve(&self) -> Result<SketchSolveReport, SketchError> {
-        Ok(self.solve_geometry()?.report)
+        self.solve_with_policy(SketchSolverPolicy::default())
+    }
+
+    pub fn solve_with_policy(
+        &self,
+        policy: SketchSolverPolicy,
+    ) -> Result<SketchSolveReport, SketchError> {
+        Ok(self.solve_geometry_with_policy(policy)?.report)
     }
 
     pub fn solve_geometry(&self) -> Result<SketchSolution, SketchError> {
+        self.solve_geometry_with_policy(SketchSolverPolicy::default())
+    }
+
+    pub fn solve_geometry_with_policy(
+        &self,
+        policy: SketchSolverPolicy,
+    ) -> Result<SketchSolution, SketchError> {
+        let policy = policy.validate()?;
         if self.workplane.0 == 0 {
             return Err(SketchError::MissingWorkplaneSupport(self.workplane));
         }
@@ -599,6 +653,7 @@ impl SketchSpec {
         let mut coincidence_parents = BTreeMap::new();
         let mut previous_constraint = None;
         let mut signatures = BTreeSet::new();
+        let mut dimensional_constraints = Vec::new();
         let mut equation_count = 0usize;
         for constraint in &self.constraints {
             if constraint.id.0 == 0 {
@@ -621,6 +676,14 @@ impl SketchSpec {
             if !signatures.insert(signature) {
                 return Err(SketchError::OverConstrained(constraint.id));
             }
+            if matches!(
+                constraint.kind,
+                SketchConstraintKind::Distance { .. }
+                    | SketchConstraintKind::Radius { .. }
+                    | SketchConstraintKind::FixedPoint { .. }
+            ) {
+                dimensional_constraints.push(constraint);
+            }
             equation_count = equation_count
                 .checked_add(equations)
                 .ok_or(SketchError::ResourceLimit)?;
@@ -630,6 +693,18 @@ impl SketchSpec {
                 &variable_layouts,
             )?);
             constraint_equation_ranges.push((constraint.id, start..rank_equations.len()));
+        }
+        let mut dimensional_targets = BTreeMap::new();
+        for constraint in dimensional_constraints {
+            let (target, value) =
+                dimensional_constraint_target(constraint, &coincidence_parents, &entities)?;
+            if let Some((first_id, first_value)) = dimensional_targets.get(&target) {
+                if first_value != &value {
+                    return Err(SketchError::OverConstrained(*first_id));
+                }
+            } else {
+                dimensional_targets.insert(target, (constraint.id, value));
+            }
         }
         let constraint_rank = structural_constraint_rank(&rank_equations, variable_count, None);
         for (constraint_id, range) in &constraint_equation_ranges {
@@ -647,7 +722,7 @@ impl SketchSpec {
             }
         };
         let mut solved_entities = self.entities.clone();
-        solve_constraints(&mut solved_entities, &self.constraints)?;
+        solve_constraints(&mut solved_entities, &self.constraints, policy)?;
         for entity in &solved_entities {
             entity.validate()?;
         }
@@ -830,6 +905,8 @@ pub enum SketchError {
     InvalidEntity(SketchEntityId),
     InvalidConstraintReference(SketchConstraintId),
     InvalidDimension,
+    InvalidSolverPolicy,
+    NonConvergent,
     InvalidFeatureDirection,
     InvalidFeatureExtentReference,
     OverConstrained(SketchConstraintId),
@@ -878,6 +955,9 @@ impl fmt::Display for SketchError {
                 id.0
             ),
             Self::InvalidDimension => formatter.write_str("sketch dimension is invalid"),
+            Self::InvalidSolverPolicy => formatter.write_str("sketch solver policy is invalid"),
+            Self::NonConvergent => formatter
+                .write_str("sketch solver did not converge within the bounded numerical policy"),
             Self::InvalidFeatureDirection => {
                 formatter.write_str("feature direction must be finite and non-zero")
             }
@@ -1003,6 +1083,83 @@ fn evaluate_constraint(
         }
     };
     Ok((signature, equations))
+}
+
+fn dimensional_constraint_target(
+    constraint: &SketchConstraint,
+    coincidence_parents: &BTreeMap<SketchPointRef, SketchPointRef>,
+    entities: &BTreeMap<SketchEntityId, &SketchEntity>,
+) -> Result<(Vec<u8>, Vec<u8>), SketchError> {
+    let mut target = Vec::new();
+    let mut value = Vec::new();
+    match &constraint.kind {
+        SketchConstraintKind::Distance {
+            a,
+            b,
+            value: dimension,
+        } => {
+            let a = coincidence_root(coincidence_parents, *a);
+            let b = coincidence_root(coincidence_parents, *b);
+            if a == b {
+                return Err(SketchError::OverConstrained(constraint.id));
+            }
+            let radial_entity = entities.iter().find_map(|(entity_id, entity)| {
+                if !matches!(entity, SketchEntity::Arc { .. }) {
+                    return None;
+                }
+                [SketchPointKind::Start, SketchPointKind::End]
+                    .into_iter()
+                    .any(|endpoint| {
+                        let center = coincidence_root(
+                            coincidence_parents,
+                            SketchPointRef {
+                                entity: *entity_id,
+                                point: SketchPointKind::Center,
+                            },
+                        );
+                        let endpoint = coincidence_root(
+                            coincidence_parents,
+                            SketchPointRef {
+                                entity: *entity_id,
+                                point: endpoint,
+                            },
+                        );
+                        canonical_point_pair(center, endpoint) == canonical_point_pair(a, b)
+                    })
+                    .then_some(*entity_id)
+            });
+            if let Some(entity) = radial_entity {
+                target.push(1);
+                target.extend_from_slice(&entity.0.to_le_bytes());
+            } else {
+                target.push(2);
+                let (first, second) = canonical_point_pair(a, b);
+                push_point_ref(&mut target, first);
+                push_point_ref(&mut target, second);
+            }
+            value.extend_from_slice(&dimension.millimetres().to_bits().to_le_bytes());
+        }
+        SketchConstraintKind::Radius {
+            entity,
+            value: dimension,
+        } => {
+            target.push(1);
+            target.extend_from_slice(&entity.0.to_le_bytes());
+            value.extend_from_slice(&dimension.millimetres().to_bits().to_le_bytes());
+        }
+        SketchConstraintKind::FixedPoint { point, position_mm } => {
+            target.push(3);
+            push_point_ref(&mut target, coincidence_root(coincidence_parents, *point));
+            value.extend_from_slice(&position_mm[0].to_bits().to_le_bytes());
+            value.extend_from_slice(&position_mm[1].to_bits().to_le_bytes());
+        }
+        SketchConstraintKind::Horizontal { .. }
+        | SketchConstraintKind::Vertical { .. }
+        | SketchConstraintKind::Coincident { .. } => {
+            unreachable!("only dimensional constraints are collected")
+        }
+    }
+    Ok((target, value))
 }
 
 #[derive(Clone, Copy)]
@@ -1158,32 +1315,459 @@ fn augment_constraint_rank(
 fn solve_constraints(
     entities: &mut [SketchEntity],
     constraints: &[SketchConstraint],
+    policy: SketchSolverPolicy,
 ) -> Result<(), SketchError> {
     let indices = entities
         .iter()
         .enumerate()
         .map(|(index, entity)| (entity.id(), index))
         .collect::<BTreeMap<_, _>>();
-    const MAX_SOLVE_ITERATIONS: usize = 256;
-    for _ in 0..MAX_SOLVE_ITERATIONS {
-        for constraint in constraints {
-            project_constraint(entities, &indices, constraint, constraints)?;
+
+    // Preserve the established branch choice and exact results for simple constraints.
+    for constraint in constraints {
+        project_constraint(entities, &indices, constraint, constraints)?;
+    }
+    let mut residual = constraint_residuals(entities, &indices, constraints)?;
+    if residuals_converged(&residual, policy.tolerance_mm) {
+        return Ok(());
+    }
+
+    let (layouts, variable_count) = variable_layouts(entities)?;
+    let equation_variables = constraints
+        .iter()
+        .map(|constraint| constraint_variable_equations(constraint, &layouts))
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+    if equation_variables.len() != residual.len() {
+        return Err(SketchError::NonConvergent);
+    }
+    let active_columns = equation_variables
+        .iter()
+        .flatten()
+        .copied()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let active_indices = active_columns
+        .iter()
+        .enumerate()
+        .map(|(active, original)| (*original, active))
+        .collect::<BTreeMap<_, _>>();
+    let reduced_equation_variables = equation_variables
+        .iter()
+        .map(|variables| {
+            variables
+                .iter()
+                .map(|variable| active_indices[variable])
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    let equation_nonzeros = reduced_equation_variables
+        .iter()
+        .map(Vec::len)
+        .sum::<usize>();
+    let finite_difference_work = active_columns
+        .len()
+        .checked_mul(residual.len())
+        .and_then(|work| work.checked_mul(2))
+        .ok_or(SketchError::ResourceLimit)?;
+    let conjugate_gradient_work = active_columns
+        .len()
+        .checked_mul(equation_nonzeros)
+        .and_then(|work| work.checked_mul(2))
+        .ok_or(SketchError::ResourceLimit)?;
+    let numerical_work = finite_difference_work
+        .checked_add(conjugate_gradient_work)
+        .and_then(|work| work.checked_mul(usize::from(policy.max_iterations)))
+        .ok_or(SketchError::ResourceLimit)?;
+    if numerical_work > MAX_SKETCH_NUMERICAL_EVALUATIONS {
+        return Err(SketchError::ResourceLimit);
+    }
+
+    let mut parameters = pack_solver_parameters(entities);
+    if parameters.len() != variable_count {
+        return Err(SketchError::NonConvergent);
+    }
+    let mut objective = residual_objective(&residual);
+    let mut damping = policy.initial_damping;
+
+    for _ in 0..policy.max_iterations {
+        let jacobian = numerical_sketch_jacobian(
+            SketchJacobianContext {
+                entities,
+                indices: &indices,
+                constraints,
+                active_columns: &active_columns,
+                equation_variables: &reduced_equation_variables,
+                policy,
+            },
+            &parameters,
+            &residual,
+        )?;
+        let Some(step) =
+            sketch_least_squares_step(&jacobian, &reduced_equation_variables, &residual, damping)
+        else {
+            damping *= 10.0;
+            if !damping.is_finite() {
+                break;
+            }
+            continue;
+        };
+        let mut candidate_parameters = parameters.clone();
+        for (column, delta) in active_columns.iter().zip(step) {
+            candidate_parameters[*column] += delta;
         }
-        if constraints.iter().all(|constraint| {
-            constraint_residual(entities, &indices, constraint)
-                .is_ok_and(|residual| residual <= EPSILON_MM)
-        }) {
-            return Ok(());
+        let mut candidate_entities = entities.to_vec();
+        if !unpack_solver_parameters(
+            &mut candidate_entities,
+            &candidate_parameters,
+            &active_columns,
+        ) {
+            damping *= 10.0;
+            continue;
+        }
+        let candidate_residual = constraint_residuals(&candidate_entities, &indices, constraints)?;
+        let candidate_objective = residual_objective(&candidate_residual);
+        if candidate_objective.is_finite() && candidate_objective < objective {
+            entities.clone_from_slice(&candidate_entities);
+            parameters = candidate_parameters;
+            residual = candidate_residual;
+            objective = candidate_objective;
+            if residuals_converged(&residual, policy.tolerance_mm) {
+                return Ok(());
+            }
+            damping = (damping * 0.25).max(f64::EPSILON);
+        } else {
+            damping *= 10.0;
+            if !damping.is_finite() {
+                break;
+            }
         }
     }
-    let conflicting = constraints
+
+    Err(SketchError::NonConvergent)
+}
+
+fn pack_solver_parameters(entities: &[SketchEntity]) -> Vec<f64> {
+    let mut parameters = Vec::new();
+    for entity in entities {
+        match entity {
+            SketchEntity::Line {
+                start_mm, end_mm, ..
+            } => parameters.extend([start_mm[0], start_mm[1], end_mm[0], end_mm[1]]),
+            SketchEntity::Arc {
+                start_mm,
+                end_mm,
+                center_mm,
+                ..
+            } => {
+                let radius = distance2(*start_mm, *center_mm);
+                parameters.extend([
+                    center_mm[0],
+                    center_mm[1],
+                    radius,
+                    (start_mm[1] - center_mm[1]).atan2(start_mm[0] - center_mm[0]),
+                    (end_mm[1] - center_mm[1]).atan2(end_mm[0] - center_mm[0]),
+                ]);
+            }
+            SketchEntity::Circle {
+                center_mm,
+                radius_mm,
+                ..
+            } => parameters.extend([center_mm[0], center_mm[1], *radius_mm]),
+        }
+    }
+    parameters
+}
+
+fn unpack_solver_parameters(
+    entities: &mut [SketchEntity],
+    parameters: &[f64],
+    active_columns: &[usize],
+) -> bool {
+    if parameters.iter().any(|value| !value.is_finite()) {
+        return false;
+    }
+    let mut offset = 0;
+    for entity in entities {
+        let width = entity.degrees_of_freedom();
+        let active = active_columns
+            .iter()
+            .any(|column| (offset..offset + width).contains(column));
+        let Some(values) = parameters.get(offset..offset + width) else {
+            return false;
+        };
+        if active {
+            match entity {
+                SketchEntity::Line {
+                    start_mm, end_mm, ..
+                } => {
+                    *start_mm = [values[0], values[1]];
+                    *end_mm = [values[2], values[3]];
+                }
+                SketchEntity::Arc {
+                    start_mm,
+                    end_mm,
+                    center_mm,
+                    ..
+                } => {
+                    let radius = values[2];
+                    if radius <= EPSILON_MM {
+                        return false;
+                    }
+                    *center_mm = [values[0], values[1]];
+                    *start_mm = [
+                        values[0] + radius * values[3].cos(),
+                        values[1] + radius * values[3].sin(),
+                    ];
+                    *end_mm = [
+                        values[0] + radius * values[4].cos(),
+                        values[1] + radius * values[4].sin(),
+                    ];
+                }
+                SketchEntity::Circle {
+                    center_mm,
+                    radius_mm,
+                    ..
+                } => {
+                    if values[2] <= EPSILON_MM {
+                        return false;
+                    }
+                    *center_mm = [values[0], values[1]];
+                    *radius_mm = values[2];
+                }
+            }
+        }
+        offset += width;
+    }
+    offset == parameters.len()
+}
+
+fn solver_parameter_step(entities: &[SketchEntity], column: usize, base_step: f64) -> f64 {
+    let mut offset = 0;
+    for entity in entities {
+        let width = entity.degrees_of_freedom();
+        if (offset..offset + width).contains(&column) {
+            if let SketchEntity::Arc {
+                center_mm,
+                start_mm,
+                ..
+            } = entity
+            {
+                let local = column - offset;
+                let coordinate_scale = center_mm[0].abs().max(center_mm[1].abs()).max(1.0);
+                let representable_mm = 64.0 * f64::EPSILON * coordinate_scale;
+                if local == 2 {
+                    return base_step.max(representable_mm);
+                }
+                if matches!(local, 3 | 4) {
+                    let radius = distance2(*start_mm, *center_mm).max(EPSILON_MM);
+                    return base_step.max(representable_mm / radius).min(0.25);
+                }
+            }
+            return base_step;
+        }
+        offset += width;
+    }
+    base_step
+}
+
+struct SketchJacobianContext<'a> {
+    entities: &'a [SketchEntity],
+    indices: &'a BTreeMap<SketchEntityId, usize>,
+    constraints: &'a [SketchConstraint],
+    active_columns: &'a [usize],
+    equation_variables: &'a [Vec<usize>],
+    policy: SketchSolverPolicy,
+}
+
+fn numerical_sketch_jacobian(
+    context: SketchJacobianContext<'_>,
+    parameters: &[f64],
+    baseline: &[f64],
+) -> Result<Vec<Vec<f64>>, SketchError> {
+    let mut jacobian = vec![vec![0.0; context.active_columns.len()]; baseline.len()];
+    for (active_column, column) in context.active_columns.iter().copied().enumerate() {
+        let step = solver_parameter_step(
+            context.entities,
+            column,
+            context.policy.finite_difference_step,
+        );
+        let mut positive_parameters = parameters.to_vec();
+        positive_parameters[column] += step;
+        let mut positive_entities = context.entities.to_vec();
+        let positive =
+            unpack_solver_parameters(&mut positive_entities, &positive_parameters, &[column])
+                .then(|| {
+                    constraint_residuals(&positive_entities, context.indices, context.constraints)
+                })
+                .transpose()?;
+
+        let mut negative_parameters = parameters.to_vec();
+        negative_parameters[column] -= step;
+        let mut negative_entities = context.entities.to_vec();
+        let negative =
+            unpack_solver_parameters(&mut negative_entities, &negative_parameters, &[column])
+                .then(|| {
+                    constraint_residuals(&negative_entities, context.indices, context.constraints)
+                })
+                .transpose()?;
+
+        for row in 0..baseline.len() {
+            if context.equation_variables[row]
+                .binary_search(&active_column)
+                .is_err()
+            {
+                continue;
+            }
+            jacobian[row][active_column] = match (&positive, &negative) {
+                (Some(positive), Some(negative)) => (positive[row] - negative[row]) / (2.0 * step),
+                (Some(positive), None) => (positive[row] - baseline[row]) / step,
+                (None, Some(negative)) => (baseline[row] - negative[row]) / step,
+                (None, None) => return Err(SketchError::NonConvergent),
+            };
+        }
+    }
+    Ok(jacobian)
+}
+
+fn sketch_least_squares_step(
+    jacobian: &[Vec<f64>],
+    equation_variables: &[Vec<usize>],
+    residual: &[f64],
+    damping: f64,
+) -> Option<Vec<f64>> {
+    let columns = jacobian.first().map_or(0, Vec::len);
+    if columns == 0 {
+        return Some(Vec::new());
+    }
+    let mut right = vec![0.0; columns];
+    let mut diagonal = vec![0.0; columns];
+    for (row, variables) in equation_variables.iter().enumerate() {
+        for &column in variables {
+            let derivative = jacobian[row][column];
+            right[column] -= derivative * residual[row];
+            diagonal[column] += derivative * derivative;
+        }
+    }
+    let damping_diagonal = diagonal
         .iter()
-        .find(|constraint| {
-            constraint_residual(entities, &indices, constraint)
-                .is_ok_and(|residual| residual > EPSILON_MM)
-        })
-        .map_or(SketchConstraintId(0), |constraint| constraint.id);
-    Err(SketchError::OverConstrained(conflicting))
+        .map(|value| damping * value.abs().max(1.0))
+        .collect::<Vec<_>>();
+    for (value, damping) in diagonal.iter_mut().zip(&damping_diagonal) {
+        *value += damping;
+    }
+    if diagonal
+        .iter()
+        .any(|value| !value.is_finite() || *value <= f64::EPSILON)
+    {
+        return None;
+    }
+
+    let mut solution = vec![0.0; columns];
+    let mut remainder = right.clone();
+    let mut preconditioned = remainder
+        .iter()
+        .zip(&diagonal)
+        .map(|(value, diagonal)| value / diagonal)
+        .collect::<Vec<_>>();
+    let mut direction = preconditioned.clone();
+    let mut product = dot_slice(&remainder, &preconditioned);
+    let initial_norm = remainder
+        .iter()
+        .fold(0.0_f64, |norm, value| norm.max(value.abs()));
+    if initial_norm <= f64::EPSILON {
+        return Some(solution);
+    }
+
+    for _ in 0..columns {
+        let applied =
+            apply_sketch_normal(jacobian, equation_variables, &damping_diagonal, &direction);
+        let denominator = dot_slice(&direction, &applied);
+        if !denominator.is_finite() {
+            return None;
+        }
+        if denominator <= f64::EPSILON {
+            break;
+        }
+        let alpha = product / denominator;
+        if !alpha.is_finite() {
+            return None;
+        }
+        for index in 0..columns {
+            solution[index] += alpha * direction[index];
+            remainder[index] -= alpha * applied[index];
+        }
+        let norm = remainder
+            .iter()
+            .fold(0.0_f64, |norm, value| norm.max(value.abs()));
+        if norm <= 1.0e-12 * initial_norm.max(1.0) {
+            break;
+        }
+        preconditioned = remainder
+            .iter()
+            .zip(&diagonal)
+            .map(|(value, diagonal)| value / diagonal)
+            .collect();
+        let next_product = dot_slice(&remainder, &preconditioned);
+        if !next_product.is_finite() {
+            return None;
+        }
+        if product.abs() <= f64::EPSILON {
+            break;
+        }
+        let beta = next_product / product;
+        for index in 0..columns {
+            direction[index] = preconditioned[index] + beta * direction[index];
+        }
+        product = next_product;
+    }
+    solution
+        .iter()
+        .all(|value| value.is_finite())
+        .then_some(solution)
+}
+
+fn apply_sketch_normal(
+    jacobian: &[Vec<f64>],
+    equation_variables: &[Vec<usize>],
+    damping_diagonal: &[f64],
+    vector: &[f64],
+) -> Vec<f64> {
+    let mut result = vector
+        .iter()
+        .zip(damping_diagonal)
+        .map(|(value, damping)| value * damping)
+        .collect::<Vec<_>>();
+    for (row, variables) in equation_variables.iter().enumerate() {
+        let projected = variables
+            .iter()
+            .map(|column| jacobian[row][*column] * vector[*column])
+            .sum::<f64>();
+        for &column in variables {
+            result[column] += jacobian[row][column] * projected;
+        }
+    }
+    result
+}
+
+fn dot_slice(left: &[f64], right: &[f64]) -> f64 {
+    left.iter()
+        .zip(right)
+        .map(|(left, right)| left * right)
+        .sum()
+}
+
+fn residuals_converged(residuals: &[f64], tolerance: f64) -> bool {
+    residuals
+        .iter()
+        .all(|residual| residual.is_finite() && residual.abs() <= tolerance)
+}
+
+fn residual_objective(residuals: &[f64]) -> f64 {
+    residuals.iter().map(|residual| residual * residual).sum()
 }
 
 fn project_constraint(
@@ -1304,60 +1888,66 @@ fn project_constraint(
     Ok(())
 }
 
-fn constraint_residual(
+fn constraint_residuals(
     entities: &[SketchEntity],
     indices: &BTreeMap<SketchEntityId, usize>,
-    constraint: &SketchConstraint,
-) -> Result<f64, SketchError> {
-    match &constraint.kind {
-        SketchConstraintKind::Horizontal { entity } => {
-            let SketchEntity::Line {
-                start_mm, end_mm, ..
-            } = entity_ref(entities, indices, *entity, constraint.id)?
-            else {
-                return Err(SketchError::InvalidConstraintReference(constraint.id));
-            };
-            Ok((start_mm[1] - end_mm[1]).abs())
-        }
-        SketchConstraintKind::Vertical { entity } => {
-            let SketchEntity::Line {
-                start_mm, end_mm, ..
-            } = entity_ref(entities, indices, *entity, constraint.id)?
-            else {
-                return Err(SketchError::InvalidConstraintReference(constraint.id));
-            };
-            Ok((start_mm[0] - end_mm[0]).abs())
-        }
-        SketchConstraintKind::Coincident { a, b } => Ok(distance2(
-            solved_point(entities, indices, *a, constraint.id)?,
-            solved_point(entities, indices, *b, constraint.id)?,
-        )),
-        SketchConstraintKind::Distance { a, b, value } => {
-            Ok((distance2(
-                solved_point(entities, indices, *a, constraint.id)?,
-                solved_point(entities, indices, *b, constraint.id)?,
-            ) - valid_positive_dimension(value)?)
-            .abs())
-        }
-        SketchConstraintKind::Radius { entity, value } => {
-            let actual = match entity_ref(entities, indices, *entity, constraint.id)? {
-                SketchEntity::Arc {
-                    start_mm,
-                    center_mm,
-                    ..
-                } => distance2(*start_mm, *center_mm),
-                SketchEntity::Circle { radius_mm, .. } => *radius_mm,
-                SketchEntity::Line { .. } => {
+    constraints: &[SketchConstraint],
+) -> Result<Vec<f64>, SketchError> {
+    let mut residuals = Vec::new();
+    for constraint in constraints {
+        match &constraint.kind {
+            SketchConstraintKind::Horizontal { entity } => {
+                let SketchEntity::Line {
+                    start_mm, end_mm, ..
+                } = entity_ref(entities, indices, *entity, constraint.id)?
+                else {
                     return Err(SketchError::InvalidConstraintReference(constraint.id));
-                }
-            };
-            Ok((actual - valid_positive_dimension(value)?).abs())
+                };
+                residuals.push(end_mm[1] - start_mm[1]);
+            }
+            SketchConstraintKind::Vertical { entity } => {
+                let SketchEntity::Line {
+                    start_mm, end_mm, ..
+                } = entity_ref(entities, indices, *entity, constraint.id)?
+                else {
+                    return Err(SketchError::InvalidConstraintReference(constraint.id));
+                };
+                residuals.push(end_mm[0] - start_mm[0]);
+            }
+            SketchConstraintKind::Coincident { a, b } => {
+                let a = solved_point(entities, indices, *a, constraint.id)?;
+                let b = solved_point(entities, indices, *b, constraint.id)?;
+                residuals.extend([a[0] - b[0], a[1] - b[1]]);
+            }
+            SketchConstraintKind::Distance { a, b, value } => {
+                residuals.push(
+                    distance2(
+                        solved_point(entities, indices, *a, constraint.id)?,
+                        solved_point(entities, indices, *b, constraint.id)?,
+                    ) - valid_positive_dimension(value)?,
+                );
+            }
+            SketchConstraintKind::Radius { entity, value } => {
+                let actual = match entity_ref(entities, indices, *entity, constraint.id)? {
+                    SketchEntity::Arc {
+                        start_mm,
+                        center_mm,
+                        ..
+                    } => distance2(*start_mm, *center_mm),
+                    SketchEntity::Circle { radius_mm, .. } => *radius_mm,
+                    SketchEntity::Line { .. } => {
+                        return Err(SketchError::InvalidConstraintReference(constraint.id));
+                    }
+                };
+                residuals.push(actual - valid_positive_dimension(value)?);
+            }
+            SketchConstraintKind::FixedPoint { point, position_mm } => {
+                let actual = solved_point(entities, indices, *point, constraint.id)?;
+                residuals.extend([actual[0] - position_mm[0], actual[1] - position_mm[1]]);
+            }
         }
-        SketchConstraintKind::FixedPoint { point, position_mm } => Ok(distance2(
-            solved_point(entities, indices, *point, constraint.id)?,
-            *position_mm,
-        )),
     }
+    Ok(residuals)
 }
 
 fn entity_ref<'a>(
