@@ -32,8 +32,10 @@ use ketchup_exact::{
     HalfLapFaceRole, HalfLapNotchSpec, HalfLapParticipant, capture_half_lap_notch_references,
 };
 use ketchup_scheduler::{
+    MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCE_BYTES, MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCES,
     StepAssemblyManifest, StepFeatureExportSpec, StepProfileSegment, StepRevolveExportSpec,
 };
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::io::{self, BufRead, Read, Write};
 use std::time::{Duration, Instant};
@@ -87,10 +89,10 @@ fn handle_request(backend: &ExactBackend, request: &str) -> Option<String> {
         (Some("CAPS"), Some("M21_STEP_MODEL_V1"), None) => {
             Some("CAPS M21_STEP_MODEL_V1".to_owned())
         }
-        (Some("CAPS"), Some("EXACT_BREP_GRAPH_V1"), None) => {
-            Some("CAPS EXACT_BREP_GRAPH_V1".to_owned())
+        (Some("CAPS"), Some("EXACT_BREP_GRAPH_V2"), None) => {
+            Some("CAPS EXACT_BREP_GRAPH_V2".to_owned())
         }
-        (Some("TESSELLATE_BREP_GRAPH_V1"), Some(graph_digest), Some(encoded_graph)) => {
+        (Some("TESSELLATE_BREP_GRAPH_V2"), Some(graph_digest), Some(encoded_graph)) => {
             let remaining = fields.collect::<Vec<_>>();
             Some(exact_brep_graph_mesh_response(
                 backend,
@@ -99,7 +101,7 @@ fn handle_request(backend: &ExactBackend, request: &str) -> Option<String> {
                 &remaining,
             ))
         }
-        (Some("EXPORT_BREP_GRAPH_STEP_V1"), Some(graph_digest), Some(encoded_graph)) => {
+        (Some("EXPORT_BREP_GRAPH_STEP_V2"), Some(graph_digest), Some(encoded_graph)) => {
             let remaining = fields.collect::<Vec<_>>();
             Some(exact_brep_graph_step_response(
                 backend,
@@ -108,7 +110,7 @@ fn handle_request(backend: &ExactBackend, request: &str) -> Option<String> {
                 &remaining,
             ))
         }
-        (Some("EVAL_BREP_GRAPH_V1"), Some(graph_digest), Some(encoded_graph)) => {
+        (Some("EVAL_BREP_GRAPH_V2"), Some(graph_digest), Some(encoded_graph)) => {
             let remaining = fields.collect::<Vec<_>>();
             let Some(graph) = decode_exact_brep_graph(graph_digest, encoded_graph) else {
                 return Some("ERR invalid_request".to_owned());
@@ -1034,51 +1036,92 @@ fn decode_exact_brep_graph(graph_digest: &str, encoded_graph: &str) -> Option<Ex
     (graph.graph_digest == graph_digest).then_some(graph)
 }
 
-fn verified_exact_brep_graph_source(
+fn verified_exact_brep_graph_sources(
     graph: &ExactBRepGraph,
     fields: &[&str],
-) -> Result<Option<tempfile::NamedTempFile>, String> {
-    if fields.is_empty() {
-        return Ok(None);
-    }
-    if fields.len() != 2 || !is_canonical_digest(fields[0]) {
-        return Err("ERR invalid_request".to_owned());
-    }
-    let Some(source_path) = decode_hex_utf8(fields[1]) else {
-        return Err("ERR invalid_request".to_owned());
-    };
-    let mut imported = graph.nodes.iter().filter_map(|node| match &node.operation {
-        ExactBRepOperation::ImportedExact {
+) -> Result<Vec<(String, tempfile::NamedTempFile)>, String> {
+    let mut expected = BTreeMap::<String, u64>::new();
+    let mut source_order = Vec::new();
+    for node in &graph.nodes {
+        let ExactBRepOperation::ImportedExact {
             source_sha256,
             source_byte_len,
             ..
-        } => Some((source_sha256, *source_byte_len)),
-        _ => None,
-    });
-    let Some((expected_sha256, expected_byte_len)) = imported.next() else {
+        } = &node.operation
+        else {
+            continue;
+        };
+        let source_sha256 = source_sha256
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        if let Some(previous_len) = expected.get(&source_sha256) {
+            if previous_len != source_byte_len {
+                return Err("ERR invalid_request".to_owned());
+            }
+        } else {
+            expected.insert(source_sha256.clone(), *source_byte_len);
+            source_order.push(source_sha256);
+        }
+    }
+    if source_order.len() > MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCES {
         return Err("ERR invalid_request".to_owned());
+    }
+    let source_fields = match fields {
+        [] => &[][..],
+        [source_sha256, source_path] if is_canonical_digest(source_sha256) => &fields[..2],
+        [count, remaining @ ..] => {
+            let Ok(count) = count.parse::<usize>() else {
+                return Err("ERR invalid_request".to_owned());
+            };
+            if count > MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCES
+                || remaining.len() != count.saturating_mul(2)
+            {
+                return Err("ERR invalid_request".to_owned());
+            }
+            remaining
+        }
     };
-    let expected_sha256 = expected_sha256
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
-    if imported.next().is_some() || fields[0] != expected_sha256 {
+    if source_fields.len() / 2 != source_order.len() {
         return Err("ERR invalid_request".to_owned());
     }
-    let source = verified_step_copy(&source_path, fields[0], "evaluate_exact_brep_graph")?;
-    if source
-        .as_file()
-        .metadata()
-        .map_err(|error| transport_error_response("evaluate_exact_brep_graph", &error.to_string()))?
-        .len()
-        != expected_byte_len
-    {
-        return Err(transport_error_response(
-            "evaluate_exact_brep_graph",
-            "STEP source byte length does not match the exact graph identity",
-        ));
+    let mut total_bytes = 0_u64;
+    let mut sources = Vec::with_capacity(source_order.len());
+    for (expected_sha256, fields) in source_order.iter().zip(source_fields.chunks_exact(2)) {
+        if fields[0] != expected_sha256 || !is_canonical_digest(fields[0]) {
+            return Err("ERR invalid_request".to_owned());
+        }
+        let Some(source_path) = decode_hex_utf8(fields[1]) else {
+            return Err("ERR invalid_request".to_owned());
+        };
+        let expected_byte_len = expected[expected_sha256];
+        total_bytes = total_bytes
+            .checked_add(expected_byte_len)
+            .ok_or_else(|| "ERR invalid_request".to_owned())?;
+        if expected_byte_len > MAX_STEP_SOURCE_BYTES
+            || total_bytes > MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCE_BYTES
+        {
+            return Err("ERR invalid_request".to_owned());
+        }
+        let source =
+            verified_step_copy(&source_path, expected_sha256, "evaluate_exact_brep_graph")?;
+        if source
+            .as_file()
+            .metadata()
+            .map_err(|error| {
+                transport_error_response("evaluate_exact_brep_graph", &error.to_string())
+            })?
+            .len()
+            != expected_byte_len
+        {
+            return Err(transport_error_response(
+                "evaluate_exact_brep_graph",
+                "STEP source byte length does not match the exact graph identity",
+            ));
+        }
+        sources.push((expected_sha256.clone(), source));
     }
-    Ok(Some(source))
+    Ok(sources)
 }
 
 fn exact_brep_graph_mesh_response(
@@ -1087,7 +1130,7 @@ fn exact_brep_graph_mesh_response(
     encoded_graph: &str,
     fields: &[&str],
 ) -> String {
-    if !matches!(fields.len(), 2 | 4) || !is_result_fingerprint(fields[0]) {
+    if fields.len() < 2 || !is_result_fingerprint(fields[0]) {
         return "ERR invalid_request".to_owned();
     }
     let Some(graph) = decode_exact_brep_graph(graph_digest, encoded_graph) else {
@@ -1096,15 +1139,11 @@ fn exact_brep_graph_mesh_response(
     let Some(output_path) = decode_hex_utf8(fields[1]) else {
         return "ERR invalid_request".to_owned();
     };
-    let source = match verified_exact_brep_graph_source(&graph, &fields[2..]) {
-        Ok(source) => source,
+    let sources = match verified_exact_brep_graph_sources(&graph, &fields[2..]) {
+        Ok(sources) => sources,
         Err(response) => return response,
     };
-    let output = match evaluate_exact_brep_graph(
-        backend,
-        &graph,
-        source.as_ref().map(|source| source.path()),
-    ) {
+    let output = match evaluate_exact_brep_graph(backend, &graph, &sources) {
         Ok(output) if output.body.result_fingerprint == fields[0] => output,
         Ok(_) => return "ERR invalid_result".to_owned(),
         Err(error) => return geometry_error_response(&error),
@@ -1157,7 +1196,7 @@ fn exact_brep_graph_step_response(
     encoded_graph: &str,
     fields: &[&str],
 ) -> String {
-    if !matches!(fields.len(), 2 | 4) || !is_result_fingerprint(fields[0]) {
+    if fields.len() < 2 || !is_result_fingerprint(fields[0]) {
         return "ERR invalid_request".to_owned();
     }
     let Some(graph) = decode_exact_brep_graph(graph_digest, encoded_graph) else {
@@ -1166,22 +1205,18 @@ fn exact_brep_graph_step_response(
     let Some(output_path) = decode_hex_utf8(fields[1]) else {
         return "ERR invalid_request".to_owned();
     };
-    let source = match verified_exact_brep_graph_source(&graph, &fields[2..]) {
-        Ok(source) => source,
+    let sources = match verified_exact_brep_graph_sources(&graph, &fields[2..]) {
+        Ok(sources) => sources,
         Err(response) => return response,
     };
-    let output = match evaluate_exact_brep_graph(
-        backend,
-        &graph,
-        source.as_ref().map(|source| source.path()),
-    ) {
+    let output = match evaluate_exact_brep_graph(backend, &graph, &sources) {
         Ok(output) if output.body.result_fingerprint == fields[0] => output,
         Ok(_) => return "ERR invalid_result".to_owned(),
         Err(error) => return geometry_error_response(&error),
     };
     match backend.export_step(&output.body, &output_path) {
         Ok(()) => format!(
-            "OK_BREP_GRAPH_STEP_V1 {graph_digest} {}",
+            "OK_BREP_GRAPH_STEP_V2 {graph_digest} {}",
             output.body.result_fingerprint
         ),
         Err(error) => geometry_error_response(&error),
@@ -1193,21 +1228,17 @@ fn exact_brep_graph_response(
     graph: &ExactBRepGraph,
     source_fields: &[&str],
 ) -> String {
-    let source = match verified_exact_brep_graph_source(graph, source_fields) {
-        Ok(source) => source,
+    let sources = match verified_exact_brep_graph_sources(graph, source_fields) {
+        Ok(sources) => sources,
         Err(response) => return response,
     };
-    let output = match evaluate_exact_brep_graph(
-        backend,
-        graph,
-        source.as_ref().map(|source| source.path()),
-    ) {
+    let output = match evaluate_exact_brep_graph(backend, graph, &sources) {
         Ok(output) => output,
         Err(error) => return geometry_error_response(&error),
     };
     let topology = &output.body.topology;
     format!(
-        "OK_BREP_GRAPH_V1 {} {} {} {} {} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {} {} {} {} {} {} {}",
+        "OK_BREP_GRAPH_V2 {} {} {} {} {} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {} {} {} {} {} {} {}",
         graph.canonical_input_digest,
         graph.graph_digest,
         graph.producer_feature_id,
@@ -1233,7 +1264,7 @@ fn exact_brep_graph_response(
 fn evaluate_exact_brep_graph(
     backend: &ExactBackend,
     graph: &ExactBRepGraph,
-    imported_source: Option<&std::path::Path>,
+    imported_sources: &[(String, tempfile::NamedTempFile)],
 ) -> Result<ExactOpOutput, ketchup_exact::GeometryError> {
     graph
         .validate()
@@ -1258,6 +1289,13 @@ fn evaluate_exact_brep_graph(
                 )?;
                 backend.boolean_bodies(target, &tool.body, ExactBodyBooleanOperation::Cut)?
             }
+            ExactBRepOperation::RigidTransform {
+                target,
+                matrix_bits,
+            } => backend.transform_body(
+                &outputs[target.0 as usize].body,
+                &matrix_bits.map(f64::from_bits),
+            )?,
             ExactBRepOperation::Boolean {
                 operation,
                 target,
@@ -1388,14 +1426,19 @@ fn evaluate_exact_brep_graph(
                 result_fingerprint,
                 ..
             } => {
-                let source = imported_source.ok_or_else(|| {
-                    exact_brep_graph_error(graph, "imported exact graph source is unavailable")
-                })?;
-                let mut output = backend.import_step(&source.to_string_lossy())?;
                 let source_sha256 = source_sha256
                     .iter()
                     .map(|byte| format!("{byte:02x}"))
                     .collect::<String>();
+                let source = imported_sources
+                    .iter()
+                    .find_map(|(digest, source)| {
+                        (digest == &source_sha256).then_some(source.path())
+                    })
+                    .ok_or_else(|| {
+                        exact_brep_graph_error(graph, "imported exact graph source is unavailable")
+                    })?;
+                let mut output = backend.import_step(&source.to_string_lossy())?;
                 if step_import_result_fingerprint(&source_sha256, &output) != *result_fingerprint {
                     return Err(exact_brep_graph_error(
                         graph,

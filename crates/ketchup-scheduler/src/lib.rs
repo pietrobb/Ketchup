@@ -571,7 +571,9 @@ const M6_REVOLVE_CAPABILITY: &str = "M6_REVOLVE_V1";
 const M6_SHELL_CAPABILITY: &str = "M6_SHELL_V1";
 const M14_STEP_CAPABILITY: &str = "M14_STEP_V1";
 const M21_STEP_MODEL_CAPABILITY: &str = "M21_STEP_MODEL_V1";
-const EXACT_BREP_GRAPH_CAPABILITY: &str = "EXACT_BREP_GRAPH_V1";
+const EXACT_BREP_GRAPH_CAPABILITY: &str = "EXACT_BREP_GRAPH_V2";
+pub const MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCES: usize = 64;
+pub const MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCE_BYTES: u64 = 128 * 1024 * 1024;
 const DEFAULT_WORKER_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1107,7 +1109,7 @@ impl ExactWorkerClient {
     fn evaluate_exact_brep_graph_with_cancellation(
         &mut self,
         graph: &ExactBRepGraph,
-        imported_source: Option<(&str, &Path)>,
+        imported_sources: &[(&str, &Path)],
         cancelled: &AtomicBool,
     ) -> Result<WorkerExactBRepGraphResult, WorkerError> {
         self.verify_exact_brep_graph_capability(cancelled)?;
@@ -1115,18 +1117,11 @@ impl ExactWorkerClient {
             .to_bytes()
             .map_err(|error| WorkerError::Protocol(error.to_string()))?;
         let mut request = format!(
-            "EVAL_BREP_GRAPH_V1 {} {}",
+            "EVAL_BREP_GRAPH_V2 {} {}",
             graph.graph_digest,
             hex_encode(&bytes)
         );
-        if let Some((source_sha256, source_path)) = imported_source {
-            write!(
-                request,
-                " {source_sha256} {}",
-                hex_encode(source_path.to_string_lossy().as_bytes())
-            )
-            .expect("writing to a String cannot fail");
-        }
+        append_exact_brep_graph_sources(&mut request, imported_sources);
         let response = self.request_with_cancellation(&request, cancelled)?;
         match parse_exact_brep_graph_result(&response) {
             Err(WorkerError::Protocol(response)) => self.fail_protocol(response),
@@ -1139,7 +1134,7 @@ impl ExactWorkerClient {
         graph: &ExactBRepGraph,
         result_fingerprint: &str,
         output_path: &Path,
-        imported_source: Option<(&str, &Path)>,
+        imported_sources: &[(&str, &Path)],
         cancelled: &AtomicBool,
     ) -> Result<StepImportMesh, WorkerError> {
         self.verify_exact_brep_graph_capability(cancelled)?;
@@ -1147,20 +1142,13 @@ impl ExactWorkerClient {
             .to_bytes()
             .map_err(|error| WorkerError::Protocol(error.to_string()))?;
         let mut request = format!(
-            "TESSELLATE_BREP_GRAPH_V1 {} {} {} {}",
+            "TESSELLATE_BREP_GRAPH_V2 {} {} {} {}",
             graph.graph_digest,
             hex_encode(&bytes),
             result_fingerprint,
             hex_encode(output_path.to_string_lossy().as_bytes())
         );
-        if let Some((source_sha256, source_path)) = imported_source {
-            write!(
-                request,
-                " {source_sha256} {}",
-                hex_encode(source_path.to_string_lossy().as_bytes())
-            )
-            .expect("writing to a String cannot fail");
-        }
+        append_exact_brep_graph_sources(&mut request, imported_sources);
         let response = self.request_with_cancellation(&request, cancelled)?;
         let fields = response.split_whitespace().collect::<Vec<_>>();
         if matches!(fields.first(), Some(&"ERR") | Some(&"ERR_DETAIL")) {
@@ -1203,29 +1191,29 @@ impl ExactWorkerClient {
         graph: &ExactBRepGraph,
         result_fingerprint: &str,
         output_path: &Path,
+        imported_sources: &[(&str, &Path)],
         cancelled: &AtomicBool,
     ) -> Result<(), WorkerError> {
         self.verify_exact_brep_graph_capability(cancelled)?;
         let bytes = graph
             .to_bytes()
             .map_err(|error| WorkerError::Protocol(error.to_string()))?;
-        let response = self.request_with_cancellation(
-            &format!(
-                "EXPORT_BREP_GRAPH_STEP_V1 {} {} {} {}",
-                graph.graph_digest,
-                hex_encode(&bytes),
-                result_fingerprint,
-                hex_encode(output_path.to_string_lossy().as_bytes())
-            ),
-            cancelled,
-        )?;
+        let mut request = format!(
+            "EXPORT_BREP_GRAPH_STEP_V2 {} {} {} {}",
+            graph.graph_digest,
+            hex_encode(&bytes),
+            result_fingerprint,
+            hex_encode(output_path.to_string_lossy().as_bytes())
+        );
+        append_exact_brep_graph_sources(&mut request, imported_sources);
+        let response = self.request_with_cancellation(&request, cancelled)?;
         let fields = response.split_whitespace().collect::<Vec<_>>();
         if matches!(fields.first(), Some(&"ERR") | Some(&"ERR_DETAIL")) {
             return Err(parse_error_response(&response, &fields));
         }
         if fields
             != [
-                "OK_BREP_GRAPH_STEP_V1",
+                "OK_BREP_GRAPH_STEP_V2",
                 graph.graph_digest.as_str(),
                 result_fingerprint,
             ]
@@ -2808,7 +2796,7 @@ impl ExactWorkerSupervisor {
         &mut self,
         graph: &ExactBRepGraph,
     ) -> Result<ExactBRepGraphPackage, WorkerError> {
-        self.evaluate_exact_brep_graph_from_source(graph, None)
+        self.evaluate_exact_brep_graph_with_imported_sources(graph, &[])
     }
 
     pub fn evaluate_exact_brep_graph_with_imported_source(
@@ -2816,56 +2804,110 @@ impl ExactWorkerSupervisor {
         graph: &ExactBRepGraph,
         source: &[u8],
     ) -> Result<ExactBRepGraphPackage, WorkerError> {
-        let mut imported = graph.nodes.iter().filter_map(|node| match &node.operation {
-            ExactBRepOperation::ImportedExact {
+        self.evaluate_exact_brep_graph_with_imported_sources(graph, &[source])
+    }
+
+    pub fn evaluate_exact_brep_graph_with_imported_sources(
+        &mut self,
+        graph: &ExactBRepGraph,
+        sources: &[&[u8]],
+    ) -> Result<ExactBRepGraphPackage, WorkerError> {
+        let mut expected = BTreeMap::<String, u64>::new();
+        let mut source_order = Vec::new();
+        for node in &graph.nodes {
+            let ExactBRepOperation::ImportedExact {
                 source_sha256,
                 source_byte_len,
                 ..
-            } => Some((source_sha256, *source_byte_len)),
-            _ => None,
-        });
-        let Some((expected_sha256, expected_byte_len)) = imported.next() else {
-            return Err(WorkerError::Protocol(
-                "exact B-Rep graph has no imported source".to_owned(),
-            ));
-        };
-        if imported.next().is_some()
-            || source.len() as u64 != expected_byte_len
-            || sha256_hex(source)
-                != expected_sha256
-                    .iter()
-                    .map(|byte| format!("{byte:02x}"))
-                    .collect::<String>()
+            } = &node.operation
+            else {
+                continue;
+            };
+            let source_sha256 = source_sha256
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>();
+            if let Some(previous_len) = expected.get(&source_sha256) {
+                if previous_len != source_byte_len {
+                    return Err(WorkerError::Protocol(
+                        "imported exact source identities disagree on byte length".to_owned(),
+                    ));
+                }
+            } else {
+                expected.insert(source_sha256.clone(), *source_byte_len);
+                source_order.push(source_sha256);
+            }
+        }
+        if source_order.len() > MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCES
+            || sources.len() != source_order.len()
         {
+            return Err(WorkerError::Protocol(
+                "imported exact source count does not match the bounded graph identity".to_owned(),
+            ));
+        }
+        let mut supplied = BTreeMap::<String, &[u8]>::new();
+        let mut total_bytes = 0_u64;
+        for source in sources {
+            let source_len = source.len() as u64;
+            total_bytes = total_bytes.checked_add(source_len).ok_or_else(|| {
+                WorkerError::Protocol(
+                    "imported exact sources exceed the bounded envelope".to_owned(),
+                )
+            })?;
+            if source_len > MAX_STEP_SOURCE_BYTES
+                || total_bytes > MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCE_BYTES
+                || supplied.insert(sha256_hex(source), *source).is_some()
+            {
+                return Err(WorkerError::Protocol(
+                    "imported exact sources exceed or duplicate the bounded envelope".to_owned(),
+                ));
+            }
+        }
+        let mut source_files = Vec::with_capacity(source_order.len());
+        for source_sha256 in source_order {
+            let expected_len = expected[&source_sha256];
+            let Some(source) = supplied.remove(&source_sha256) else {
+                return Err(WorkerError::Protocol(
+                    "imported exact source does not match its graph identity".to_owned(),
+                ));
+            };
+            if source.len() as u64 != expected_len {
+                return Err(WorkerError::Protocol(
+                    "imported exact source does not match its graph identity".to_owned(),
+                ));
+            }
+            let mut source_file = tempfile::Builder::new()
+                .prefix(".ketchup-brep-graph-source-")
+                .suffix(".step")
+                .tempfile()
+                .map_err(|error| WorkerError::Transport(error.to_string()))?;
+            source_file
+                .write_all(source)
+                .and_then(|()| source_file.flush())
+                .map_err(|error| WorkerError::Transport(error.to_string()))?;
+            source_files.push((source_sha256, source_file));
+        }
+        if !supplied.is_empty() {
             return Err(WorkerError::Protocol(
                 "imported exact source does not match its graph identity".to_owned(),
             ));
         }
-        let mut source_file = tempfile::Builder::new()
-            .prefix(".ketchup-brep-graph-source-")
-            .suffix(".step")
-            .tempfile()
-            .map_err(|error| WorkerError::Transport(error.to_string()))?;
-        source_file
-            .write_all(source)
-            .and_then(|()| source_file.flush())
-            .map_err(|error| WorkerError::Transport(error.to_string()))?;
-        let source_sha256 = sha256_hex(source);
-        self.evaluate_exact_brep_graph_from_source(
-            graph,
-            Some((&source_sha256, source_file.path())),
-        )
+        let source_paths = source_files
+            .iter()
+            .map(|(source_sha256, source)| (source_sha256.as_str(), source.path()))
+            .collect::<Vec<_>>();
+        self.evaluate_exact_brep_graph_from_sources(graph, &source_paths)
     }
 
-    fn evaluate_exact_brep_graph_from_source(
+    fn evaluate_exact_brep_graph_from_sources(
         &mut self,
         graph: &ExactBRepGraph,
-        imported_source: Option<(&str, &Path)>,
+        imported_sources: &[(&str, &Path)],
     ) -> Result<ExactBRepGraphPackage, WorkerError> {
         self.client.ensure_not_cancelled(&NEVER_CANCELLED)?;
         let result = match self.client.evaluate_exact_brep_graph_with_cancellation(
             graph,
-            imported_source,
+            imported_sources,
             &NEVER_CANCELLED,
         ) {
             Ok(result) => result,
@@ -2873,7 +2915,7 @@ impl ExactWorkerSupervisor {
                 self.client = Self::spawn_verified_client(&self.executable, &NEVER_CANCELLED)?;
                 self.client.evaluate_exact_brep_graph_with_cancellation(
                     graph,
-                    imported_source,
+                    imported_sources,
                     &NEVER_CANCELLED,
                 )?
             }
@@ -2904,7 +2946,7 @@ impl ExactWorkerSupervisor {
             graph,
             &result.result_fingerprint,
             mesh_file.path(),
-            imported_source,
+            imported_sources,
             &NEVER_CANCELLED,
         ) {
             Ok(mesh) => mesh,
@@ -2914,7 +2956,7 @@ impl ExactWorkerSupervisor {
                     graph,
                     &result.result_fingerprint,
                     mesh_file.path(),
-                    imported_source,
+                    imported_sources,
                     &NEVER_CANCELLED,
                 )?
             }
@@ -3066,6 +3108,16 @@ impl ExactWorkerSupervisor {
         expected: &ExactBRepGraphPackage,
         path: &Path,
     ) -> Result<(), M6EvaluationError> {
+        self.export_exact_brep_graph_step_with_imported_sources(snapshot, expected, path, &[])
+    }
+
+    pub fn export_exact_brep_graph_step_with_imported_sources(
+        &mut self,
+        snapshot: &Snapshot,
+        expected: &ExactBRepGraphPackage,
+        path: &Path,
+        sources: &[&[u8]],
+    ) -> Result<(), M6EvaluationError> {
         if !expected.is_current(snapshot) {
             return Err(ExactProductError::StaleResult.into());
         }
@@ -3078,6 +3130,8 @@ impl ExactWorkerSupervisor {
         if graph != expected.graph {
             return Err(ExactProductError::InvalidWorkerEvidence.into());
         }
+        let prepared = prepare_exact_brep_graph_sources(&graph, sources)?;
+        let source_paths = prepared.paths();
         let parent = path.parent().unwrap_or_else(|| Path::new("."));
         let temporary = tempfile::Builder::new()
             .prefix(".ketchup-brep-graph-step-")
@@ -3089,6 +3143,7 @@ impl ExactWorkerSupervisor {
             &graph,
             &expected.identity.result_fingerprint,
             &temporary,
+            &source_paths,
             &NEVER_CANCELLED,
         );
         match export {
@@ -3099,6 +3154,7 @@ impl ExactWorkerSupervisor {
                     &graph,
                     &expected.identity.result_fingerprint,
                     &temporary,
+                    &source_paths,
                     &NEVER_CANCELLED,
                 )?;
             }
@@ -3110,11 +3166,45 @@ impl ExactWorkerSupervisor {
         Ok(())
     }
 
+    fn export_exact_brep_graph_step_from_blobs_once(
+        &mut self,
+        graph: &ExactBRepGraph,
+        result_fingerprint: &str,
+        path: &Path,
+        imported_source_blobs: &BTreeMap<String, Vec<u8>>,
+    ) -> Result<(), WorkerError> {
+        let sources = exact_brep_graph_sources_from_blobs(graph, imported_source_blobs)?;
+        let prepared = prepare_exact_brep_graph_sources(graph, &sources)?;
+        let source_paths = prepared.paths();
+        self.client.export_exact_brep_graph_step_with_cancellation(
+            graph,
+            result_fingerprint,
+            path,
+            &source_paths,
+            &NEVER_CANCELLED,
+        )
+    }
+
     pub fn export_current_model_step(
         &mut self,
         snapshot: &Snapshot,
         occurrences: &[(ExactBodyPackage, Transform)],
         path: &Path,
+    ) -> Result<(), M6EvaluationError> {
+        self.export_current_model_step_with_imported_sources(
+            snapshot,
+            occurrences,
+            path,
+            &BTreeMap::new(),
+        )
+    }
+
+    pub fn export_current_model_step_with_imported_sources(
+        &mut self,
+        snapshot: &Snapshot,
+        occurrences: &[(ExactBodyPackage, Transform)],
+        path: &Path,
+        imported_source_blobs: &BTreeMap<String, Vec<u8>>,
     ) -> Result<(), M6EvaluationError> {
         if occurrences.is_empty() {
             return Err(ExactProductError::EmptyModelExport.into());
@@ -3213,14 +3303,13 @@ impl ExactWorkerSupervisor {
                         )
                     }
                 }
-                ExactBodyPackage::Graph(expected) => {
-                    self.client.export_exact_brep_graph_step_with_cancellation(
+                ExactBodyPackage::Graph(expected) => self
+                    .export_exact_brep_graph_step_from_blobs_once(
                         &expected.graph,
                         &expected.identity.result_fingerprint,
                         &source,
-                        &NEVER_CANCELLED,
-                    )
-                }
+                        imported_source_blobs,
+                    ),
                 ExactBodyPackage::Imported(expected) => {
                     std::fs::write(&source, &expected.source_bytes)
                         .map_err(|error| WorkerError::Transport(error.to_string()))
@@ -3265,11 +3354,11 @@ impl ExactWorkerSupervisor {
                             }
                         }
                         ExactBodyPackage::Graph(expected) => {
-                            self.client.export_exact_brep_graph_step_with_cancellation(
+                            self.export_exact_brep_graph_step_from_blobs_once(
                                 &expected.graph,
                                 &expected.identity.result_fingerprint,
                                 &source,
-                                &NEVER_CANCELLED,
+                                imported_source_blobs,
                             )?;
                         }
                         ExactBodyPackage::Imported(expected) => {
@@ -5314,6 +5403,154 @@ fn hex_encode(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
+struct PreparedExactBRepGraphSources {
+    files: Vec<(String, tempfile::NamedTempFile)>,
+}
+
+impl PreparedExactBRepGraphSources {
+    fn paths(&self) -> Vec<(&str, &Path)> {
+        self.files
+            .iter()
+            .map(|(source_sha256, source)| (source_sha256.as_str(), source.path()))
+            .collect()
+    }
+}
+
+fn prepare_exact_brep_graph_sources(
+    graph: &ExactBRepGraph,
+    sources: &[&[u8]],
+) -> Result<PreparedExactBRepGraphSources, WorkerError> {
+    let mut expected = BTreeMap::<String, u64>::new();
+    let mut source_order = Vec::new();
+    for node in &graph.nodes {
+        let ExactBRepOperation::ImportedExact {
+            source_sha256,
+            source_byte_len,
+            ..
+        } = &node.operation
+        else {
+            continue;
+        };
+        let source_sha256 = source_sha256
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        if let Some(previous_len) = expected.get(&source_sha256) {
+            if previous_len != source_byte_len {
+                return Err(WorkerError::Protocol(
+                    "imported exact source identities disagree on byte length".to_owned(),
+                ));
+            }
+        } else {
+            expected.insert(source_sha256.clone(), *source_byte_len);
+            source_order.push(source_sha256);
+        }
+    }
+    if source_order.len() > MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCES
+        || sources.len() != source_order.len()
+    {
+        return Err(WorkerError::Protocol(
+            "imported exact source count does not match the bounded graph identity".to_owned(),
+        ));
+    }
+    let mut supplied = BTreeMap::<String, &[u8]>::new();
+    let mut total_bytes = 0_u64;
+    for source in sources {
+        let source_len = source.len() as u64;
+        total_bytes = total_bytes.checked_add(source_len).ok_or_else(|| {
+            WorkerError::Protocol("imported exact sources exceed the bounded envelope".to_owned())
+        })?;
+        if source_len > MAX_STEP_SOURCE_BYTES
+            || total_bytes > MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCE_BYTES
+            || supplied.insert(sha256_hex(source), *source).is_some()
+        {
+            return Err(WorkerError::Protocol(
+                "imported exact sources exceed or duplicate the bounded envelope".to_owned(),
+            ));
+        }
+    }
+    let mut files = Vec::with_capacity(source_order.len());
+    for source_sha256 in source_order {
+        let expected_len = expected[&source_sha256];
+        let Some(source) = supplied.remove(&source_sha256) else {
+            return Err(WorkerError::Protocol(
+                "imported exact source does not match its graph identity".to_owned(),
+            ));
+        };
+        if source.len() as u64 != expected_len {
+            return Err(WorkerError::Protocol(
+                "imported exact source does not match its graph identity".to_owned(),
+            ));
+        }
+        let mut source_file = tempfile::Builder::new()
+            .prefix(".ketchup-brep-graph-source-")
+            .suffix(".step")
+            .tempfile()
+            .map_err(|error| WorkerError::Transport(error.to_string()))?;
+        source_file
+            .write_all(source)
+            .and_then(|()| source_file.flush())
+            .map_err(|error| WorkerError::Transport(error.to_string()))?;
+        files.push((source_sha256, source_file));
+    }
+    if !supplied.is_empty() {
+        return Err(WorkerError::Protocol(
+            "imported exact source does not match its graph identity".to_owned(),
+        ));
+    }
+    Ok(PreparedExactBRepGraphSources { files })
+}
+
+fn exact_brep_graph_sources_from_blobs<'a>(
+    graph: &ExactBRepGraph,
+    blobs: &'a BTreeMap<String, Vec<u8>>,
+) -> Result<Vec<&'a [u8]>, WorkerError> {
+    let mut sources = Vec::new();
+    let mut seen = BTreeMap::new();
+    for node in &graph.nodes {
+        let ExactBRepOperation::ImportedExact { source_sha256, .. } = &node.operation else {
+            continue;
+        };
+        let source_sha256 = source_sha256
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        if seen.insert(source_sha256.clone(), ()).is_some() {
+            continue;
+        }
+        let source = blobs.get(&source_sha256).ok_or_else(|| {
+            WorkerError::Protocol("imported exact source blob is unavailable".to_owned())
+        })?;
+        sources.push(source.as_slice());
+    }
+    Ok(sources)
+}
+
+fn append_exact_brep_graph_sources(request: &mut String, sources: &[(&str, &Path)]) {
+    match sources {
+        [] => {}
+        [(source_sha256, source_path)] => {
+            write!(
+                request,
+                " {source_sha256} {}",
+                hex_encode(source_path.to_string_lossy().as_bytes())
+            )
+            .expect("writing to a String cannot fail");
+        }
+        sources => {
+            write!(request, " {}", sources.len()).expect("writing to a String cannot fail");
+            for (source_sha256, source_path) in sources {
+                write!(
+                    request,
+                    " {source_sha256} {}",
+                    hex_encode(source_path.to_string_lossy().as_bytes())
+                )
+                .expect("writing to a String cannot fail");
+            }
+        }
+    }
+}
+
 fn hex_decode_utf8(value: &str) -> Option<String> {
     if value.is_empty() || !value.len().is_multiple_of(2) {
         return None;
@@ -5344,7 +5581,7 @@ fn parse_exact_brep_graph_result(
         return Err(parse_error_response(response, &fields));
     }
     if fields.len() != 20
-        || fields[0] != "OK_BREP_GRAPH_V1"
+        || fields[0] != "OK_BREP_GRAPH_V2"
         || !is_sha256_digest(fields[1])
         || !is_sha256_digest(fields[2])
         || !is_fnv1a64_digest(fields[4])

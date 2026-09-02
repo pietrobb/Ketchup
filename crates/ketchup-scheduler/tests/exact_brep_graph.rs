@@ -1,11 +1,14 @@
 use ketchup_core::document::{
     BooleanOperation, CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentStore,
-    EdgeFinishKind, FeatureId, FeatureKind, LoftSection, NodeId, ProfileSegment, Transform,
+    EdgeFinishKind, FeatureId, FeatureKind, LoftSection, NodeId, ProfileSegment, SolidToolPlan,
+    Transform,
 };
 use ketchup_core::exact_brep_graph::{ExactBRepGraph, MAX_EXACT_BREP_GRAPH_PROFILES};
 use ketchup_core::exact_product::{
     ExactBodyPackage, ExactFeatureChainRequest, ExactProductError, ExactResultRegistry,
 };
+use ketchup_core::graph::sha256_hex;
+use ketchup_core::import::plan_step_import;
 use ketchup_core::persistence;
 use ketchup_core::sketch::{
     FeatureDirection, FeatureExtent, FeatureExtentEnd, PadSpec, PrincipalPlane, SketchEntity,
@@ -17,7 +20,9 @@ use ketchup_core::topology::{
 use ketchup_scheduler::{
     DerivedResult, EvaluationScheduler, ExactWorkerSupervisor, InsertOutcome, WorkerError,
 };
+use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 fn dimension(value: f64) -> Dimension {
     Dimension::new(value.to_string(), value).unwrap()
@@ -191,6 +196,249 @@ fn generated_boolean_document(
     let mut document = DocumentStore::new();
     document.apply_batch(&CommandBatch::new(commands)).unwrap();
     (document, definition, base, tool, operations)
+}
+
+#[test]
+fn worker_binds_multiple_imported_sources_by_digest_for_boolean_and_mesh() {
+    let (document, definition, base, tool, _) = generated_boolean_document([1.0, 1.0, 1.0], 0);
+    let snapshot = document.current();
+    let directory = tempfile::tempdir().unwrap();
+    let cancelled = AtomicBool::new(false);
+    let mut supervisor =
+        ExactWorkerSupervisor::spawn(env!("CARGO_BIN_EXE_ketchup-exact-worker")).unwrap();
+    let mut sources = Vec::new();
+    let mut evidences = Vec::new();
+    let mut source_volumes = Vec::new();
+    for producer in [base, tool] {
+        let graph = ExactBRepGraph::from_snapshot(&snapshot, definition, producer).unwrap();
+        let package = supervisor.evaluate_exact_brep_graph(&graph).unwrap();
+        let path = directory.path().join(format!("source-{}.step", producer.0));
+        supervisor
+            .export_exact_brep_graph_step(&snapshot, &package, &path)
+            .unwrap();
+        let source = std::fs::read(&path).unwrap();
+        let source_sha256 = sha256_hex(&source);
+        let evidence = supervisor
+            .inspect_step_import_with_cancellation(&path, &source_sha256, &cancelled)
+            .unwrap();
+        source_volumes.push(evidence.volume_mm3);
+        sources.push(source);
+        evidences.push(evidence);
+    }
+
+    let mut imported_document = DocumentStore::new();
+    imported_document
+        .apply_batch(
+            &plan_step_import(
+                &imported_document.current(),
+                &sources[0],
+                "target.step",
+                &evidences[0],
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let target_definition = imported_document
+        .current()
+        .definitions()
+        .next()
+        .unwrap()
+        .id();
+    let target = imported_document.current().features().next().unwrap().id();
+    let target_occurrence = imported_document
+        .current()
+        .occurrences()
+        .next()
+        .unwrap()
+        .id();
+    let second_import = plan_step_import(
+        &imported_document.current(),
+        &sources[1],
+        "tool.step",
+        &evidences[1],
+    )
+    .unwrap();
+    imported_document.apply_batch(&second_import).unwrap();
+    let tool = imported_document
+        .current()
+        .features()
+        .find(|feature| feature.id() != target)
+        .unwrap()
+        .id();
+    let tool_occurrence = imported_document
+        .current()
+        .occurrences()
+        .find(|occurrence| occurrence.id() != target_occurrence)
+        .unwrap()
+        .id();
+    let result_definition = DefinitionId(3);
+    let result_features = [
+        FeatureId(3),
+        FeatureId(4),
+        FeatureId(5),
+        FeatureId(6),
+        FeatureId(7),
+    ];
+    let angle = 30.0_f64.to_radians();
+    let tool_transform = Transform::from_matrix([
+        angle.cos(),
+        -angle.sin(),
+        0.0,
+        4.0,
+        angle.sin(),
+        angle.cos(),
+        0.0,
+        -3.0,
+        0.0,
+        0.0,
+        1.0,
+        2.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+    ])
+    .unwrap();
+    let before_solid_tool = imported_document.current().canonical_digest();
+    imported_document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetOccurrenceTransform {
+                id: tool_occurrence,
+                transform: tool_transform,
+            },
+            CanonicalCommand::ApplySolidTool(SolidToolPlan {
+                operation: BooleanOperation::Union,
+                target_occurrence_id: target_occurrence,
+                target_feature_id: target,
+                tool_occurrence_id: tool_occurrence,
+                tool_feature_id: tool,
+                result_definition_id: result_definition,
+                result_feature_ids: result_features,
+                result_definition_name: "Imported source union".into(),
+                result_feature_name: "Rigid imported union".into(),
+                keep_tool: true,
+            }),
+        ]))
+        .unwrap();
+    let imported_snapshot = imported_document.current();
+    assert_eq!(
+        imported_snapshot
+            .occurrence(target_occurrence)
+            .unwrap()
+            .definition_id(),
+        result_definition
+    );
+    let producer = result_features[4];
+    let graph =
+        ExactBRepGraph::from_snapshot(&imported_snapshot, result_definition, producer).unwrap();
+    assert!(graph.nodes.iter().any(|node| matches!(
+        &node.operation,
+        ketchup_core::exact_brep_graph::ExactBRepOperation::RigidTransform { matrix_bits, .. }
+            if *matrix_bits == tool_transform.matrix().map(f64::to_bits)
+    )));
+    assert_ne!(target_definition, result_definition);
+    let reversed_sources = [sources[1].as_slice(), sources[0].as_slice()];
+    let package = supervisor
+        .evaluate_exact_brep_graph_with_imported_sources(&graph, &reversed_sources)
+        .unwrap();
+    assert_eq!(
+        supervisor
+            .evaluate_exact_brep_graph_with_imported_sources(&graph, &reversed_sources)
+            .unwrap(),
+        package
+    );
+    assert_eq!(package.graph, graph);
+    assert!(!package.vertices.is_empty());
+    assert!(!package.triangles.is_empty());
+    assert!(package.volume_mm3 >= source_volumes[0].max(source_volumes[1]));
+    assert!(package.volume_mm3 <= source_volumes.iter().sum::<f64>());
+    assert!(package.is_current(&imported_snapshot));
+    let exact_body = ExactBodyPackage::Graph(package.clone());
+    let result_key = exact_body.result_key();
+    let registry = ExactResultRegistry::accept(&imported_snapshot, [Arc::new(exact_body)]).unwrap();
+    assert!(registry.get_result(&result_key).is_some());
+    let mut container_data = persistence::ContainerData::default();
+    for source in &sources {
+        container_data.insert_import_blob(source.clone()).unwrap();
+    }
+    let reopened = persistence::load(
+        &persistence::save_container(&imported_snapshot, &container_data).unwrap(),
+    )
+    .unwrap();
+    let reopened_snapshot = reopened.snapshot();
+    assert_eq!(
+        reopened_snapshot.canonical_digest(),
+        imported_snapshot.canonical_digest()
+    );
+    assert_eq!(
+        ExactBRepGraph::from_snapshot(&reopened_snapshot, result_definition, producer).unwrap(),
+        graph
+    );
+    let graph_step = directory.path().join("imported-union.step");
+    supervisor
+        .export_exact_brep_graph_step_with_imported_sources(
+            &imported_snapshot,
+            &package,
+            &graph_step,
+            &reversed_sources,
+        )
+        .unwrap();
+    assert!(
+        std::fs::read(&graph_step)
+            .unwrap()
+            .windows(9)
+            .any(|window| window == b"ISO-10303")
+    );
+    let source_blobs = BTreeMap::from([
+        (sha256_hex(&sources[0]), sources[0].clone()),
+        (sha256_hex(&sources[1]), sources[1].clone()),
+    ]);
+    let model_step = directory.path().join("imported-union-model.step");
+    supervisor
+        .export_current_model_step_with_imported_sources(
+            &imported_snapshot,
+            &[(
+                ExactBodyPackage::Graph(package.clone()),
+                Transform::identity(),
+            )],
+            &model_step,
+            &source_blobs,
+        )
+        .unwrap();
+    assert!(
+        std::fs::read(&model_step)
+            .unwrap()
+            .windows(9)
+            .any(|window| window == b"ISO-10303")
+    );
+    assert!(
+        supervisor
+            .evaluate_exact_brep_graph_with_imported_sources(&graph, &[sources[0].as_slice()])
+            .is_err()
+    );
+    assert!(
+        supervisor
+            .evaluate_exact_brep_graph_with_imported_sources(
+                &graph,
+                &[sources[0].as_slice(), sources[0].as_slice()],
+            )
+            .is_err()
+    );
+    let undo_snapshot = imported_document.undo().unwrap();
+    assert_eq!(undo_snapshot.canonical_digest(), before_solid_tool);
+    assert_eq!(
+        undo_snapshot
+            .occurrence(target_occurrence)
+            .unwrap()
+            .definition_id(),
+        target_definition
+    );
+    let redo_snapshot = imported_document.redo().unwrap();
+    assert_eq!(
+        redo_snapshot.canonical_digest(),
+        imported_snapshot.canonical_digest()
+    );
+    assert!(package.is_current(&redo_snapshot));
 }
 
 #[test]

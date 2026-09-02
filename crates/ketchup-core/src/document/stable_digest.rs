@@ -964,6 +964,13 @@ impl StableDigest {
                 self.bytes(distance.source_token.as_bytes());
                 self.u64(distance.millimetres.to_bits());
             }
+            FeatureKind::RigidTransform { target, transform } => {
+                self.byte(24);
+                self.u64(target.0);
+                for value in transform.matrix() {
+                    self.u64(value.to_bits());
+                }
+            }
             FeatureKind::ImportedExactBody(spec) => {
                 self.byte(16);
                 self.bytes(spec.schema.as_bytes());

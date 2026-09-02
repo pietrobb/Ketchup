@@ -157,6 +157,45 @@ impl Transform {
         }
         Self { matrix: result }
     }
+
+    #[must_use]
+    pub fn rigid_inverse(self) -> Option<Self> {
+        let matrix = self.matrix;
+        let epsilon = 1.0e-9;
+        let rows = [
+            [matrix[0], matrix[1], matrix[2]],
+            [matrix[4], matrix[5], matrix[6]],
+            [matrix[8], matrix[9], matrix[10]],
+        ];
+        let dot = |left: [f64; 3], right: [f64; 3]| {
+            left[0] * right[0] + left[1] * right[1] + left[2] * right[2]
+        };
+        if matrix.iter().any(|value| !value.is_finite())
+            || matrix[12] != 0.0
+            || matrix[13] != 0.0
+            || matrix[14] != 0.0
+            || matrix[15] != 1.0
+            || rows
+                .iter()
+                .any(|row| (dot(*row, *row) - 1.0).abs() > epsilon)
+            || dot(rows[0], rows[1]).abs() > epsilon
+            || dot(rows[0], rows[2]).abs() > epsilon
+            || dot(rows[1], rows[2]).abs() > epsilon
+        {
+            return None;
+        }
+        let translation = [matrix[3], matrix[7], matrix[11]];
+        let mut inverse = Self::identity().matrix;
+        for row in 0..3 {
+            for column in 0..3 {
+                inverse[row * 4 + column] = matrix[column * 4 + row];
+            }
+            inverse[row * 4 + 3] = -(0..3)
+                .map(|axis| inverse[row * 4 + axis] * translation[axis])
+                .sum::<f64>();
+        }
+        Some(Self { matrix: inverse })
+    }
 }
 
 impl Default for Transform {
@@ -570,6 +609,10 @@ pub enum FeatureKind {
         sections: Vec<LoftSection>,
     },
     ImportedExactBody(ImportedExactBodySpec),
+    RigidTransform {
+        target: FeatureId,
+        transform: Transform,
+    },
     MeshBody(MeshBodySpec),
 }
 
@@ -771,6 +814,7 @@ impl FeatureKind {
             | Self::Boolean { .. }
             | Self::Sweep { .. }
             | Self::ImportedExactBody(_)
+            | Self::RigidTransform { .. }
             | Self::MeshBody(_)
             | Self::Workplane(_) => {}
         }
@@ -795,6 +839,7 @@ impl FeatureKind {
             | Self::SplineProfile { .. }
             | Self::ImportedExactBody(_)
             | Self::MeshBody(_) => BTreeSet::new(),
+            Self::RigidTransform { target, .. } => [*target].into_iter().collect(),
             Self::Extrusion { profile, .. }
             | Self::BottleProfileControl { profile, .. }
             | Self::Revolve { profile, .. }
@@ -852,6 +897,7 @@ impl FeatureKind {
                 | Self::Sweep { .. }
                 | Self::Loft { .. }
                 | Self::ImportedExactBody(_)
+                | Self::RigidTransform { .. }
                 | Self::MeshBody(_)
         )
     }
@@ -9029,6 +9075,7 @@ fn feature_kind_is_solid(kind: &FeatureKind) -> bool {
             | FeatureKind::Sweep { .. }
             | FeatureKind::Loft { .. }
             | FeatureKind::ImportedExactBody(_)
+            | FeatureKind::RigidTransform { .. }
             | FeatureKind::MeshBody(_)
     )
 }
@@ -9043,7 +9090,8 @@ fn primary_solid_dependency(kind: &FeatureKind) -> Option<FeatureId> {
         | FeatureKind::TopologyFaceOffset { target, .. }
         | FeatureKind::ThroughCut { target, .. }
         | FeatureKind::Pocket { target, .. }
-        | FeatureKind::Boolean { target, .. } => Some(*target),
+        | FeatureKind::Boolean { target, .. }
+        | FeatureKind::RigidTransform { target, .. } => Some(*target),
         _ => None,
     }
 }
@@ -9459,6 +9507,18 @@ fn validate_feature_kind(kind: &FeatureKind) -> Result<(), CanonicalError> {
             )
         }
         FeatureKind::ImportedExactBody(spec) => validate_imported_exact_body(spec),
+        FeatureKind::RigidTransform { transform, .. } => {
+            transform
+                .rigid_inverse()
+                .ok_or(CanonicalError::InvalidTransform)?;
+            if transform.matrix()[3].abs() > MAX_CANONICAL_ABS_MM
+                || transform.matrix()[7].abs() > MAX_CANONICAL_ABS_MM
+                || transform.matrix()[11].abs() > MAX_CANONICAL_ABS_MM
+            {
+                return Err(CanonicalError::InvalidTransform);
+            }
+            Ok(())
+        }
         FeatureKind::MeshBody(spec) => validate_mesh_body(spec),
         FeatureKind::Revolve {
             axis_start_mm,
@@ -10214,6 +10274,12 @@ fn clone_definition_and_repoint(
                     .collect::<Result<Vec<_>, CanonicalError>>()?,
             },
             FeatureKind::ImportedExactBody(spec) => FeatureKind::ImportedExactBody(spec.clone()),
+            FeatureKind::RigidTransform { target, transform } => FeatureKind::RigidTransform {
+                target: *mapping
+                    .get(target)
+                    .ok_or(CanonicalError::InvalidFeatureMap)?,
+                transform: *transform,
+            },
             FeatureKind::MeshBody(spec) => {
                 let mut spec = spec.clone();
                 if let MeshAuthority::ExactConversion(conversion) = &mut spec.authority {
@@ -10433,6 +10499,22 @@ fn apply_solid_tool(
     {
         return Err(CanonicalError::OccurrenceDefinitionMismatch);
     }
+    if let (
+        FeatureKind::ImportedExactBody(target_spec),
+        FeatureKind::ImportedExactBody(tool_spec),
+    ) = (&target_feature.kind, &tool_feature.kind)
+    {
+        return apply_imported_exact_solid_tool(
+            product,
+            plan,
+            target_occurrence,
+            tool_occurrence,
+            target_feature.name.clone(),
+            target_spec.clone(),
+            tool_feature.name.clone(),
+            tool_spec.clone(),
+        );
+    }
     let (target_profile_id, target_height) = match &target_feature.kind {
         FeatureKind::Extrusion { profile, height } => (*profile, height.clone()),
         _ => return Err(CanonicalError::InvalidSolidToolPlan),
@@ -10620,6 +10702,122 @@ fn apply_solid_tool(
     );
     if !plan.keep_tool {
         product.occurrences.remove(&plan.tool_occurrence_id);
+    }
+    Ok(())
+}
+
+fn apply_imported_exact_solid_tool(
+    product: &mut ProductModel,
+    plan: &SolidToolPlan,
+    target_occurrence: Occurrence,
+    tool_occurrence: Occurrence,
+    target_name: String,
+    target_spec: ImportedExactBodySpec,
+    tool_name: String,
+    tool_spec: ImportedExactBodySpec,
+) -> Result<(), CanonicalError> {
+    let snapshot = Snapshot {
+        revision_id: 0,
+        product: Arc::new(product.clone()),
+    };
+    let target_transform = snapshot
+        .world_transform_for_occurrence(plan.target_occurrence_id)
+        .and_then(Transform::rigid_inverse)
+        .ok_or(CanonicalError::UnsupportedSolidToolTransform)?;
+    let tool_transform = snapshot
+        .world_transform_for_occurrence(plan.tool_occurrence_id)
+        .ok_or(CanonicalError::UnsupportedSolidToolTransform)?;
+    let tool_relative_transform = target_transform.compose(tool_transform);
+    if tool_relative_transform.rigid_inverse().is_none() {
+        return Err(CanonicalError::UnsupportedSolidToolTransform);
+    }
+    let [target_source, target_body, tool_source, tool_body, result] = plan.result_feature_ids;
+    let features = [
+        Feature {
+            id: target_source,
+            definition_id: plan.result_definition_id,
+            name: target_name.clone(),
+            kind: FeatureKind::ImportedExactBody(target_spec),
+        },
+        Feature {
+            id: target_body,
+            definition_id: plan.result_definition_id,
+            name: target_name,
+            kind: FeatureKind::RigidTransform {
+                target: target_source,
+                transform: Transform::identity(),
+            },
+        },
+        Feature {
+            id: tool_source,
+            definition_id: plan.result_definition_id,
+            name: tool_name.clone(),
+            kind: FeatureKind::ImportedExactBody(tool_spec),
+        },
+        Feature {
+            id: tool_body,
+            definition_id: plan.result_definition_id,
+            name: tool_name,
+            kind: FeatureKind::RigidTransform {
+                target: tool_source,
+                transform: tool_relative_transform,
+            },
+        },
+        Feature {
+            id: result,
+            definition_id: plan.result_definition_id,
+            name: plan.result_feature_name.clone(),
+            kind: FeatureKind::Boolean {
+                operation: plan.operation,
+                target: target_body,
+                tool: tool_body,
+            },
+        },
+    ];
+    product.definitions.insert(
+        plan.result_definition_id,
+        Arc::new(Definition {
+            id: plan.result_definition_id,
+            name: plan.result_definition_name.clone(),
+            feature_ids: plan.result_feature_ids.to_vec(),
+            bodies: BTreeMap::from([(DEFAULT_BODY_ID, default_body())]),
+            active_body_id: DEFAULT_BODY_ID,
+            feature_body_ownership: BTreeMap::new(),
+            local_occurrence_ids: Vec::new(),
+            local_group_ids: Vec::new(),
+        }),
+    );
+    for feature in features {
+        validate_feature_kind(&feature.kind)?;
+        product.features.insert(feature.id, Arc::new(feature));
+    }
+    let mut result_definition = product.definitions[&plan.result_definition_id]
+        .as_ref()
+        .clone();
+    for feature_id in result_definition.feature_ids.clone() {
+        let feature = &product.features[&feature_id];
+        let ownership =
+            inferred_feature_body_ownership(product, &result_definition, &feature.kind)?;
+        result_definition
+            .feature_body_ownership
+            .insert(feature_id, ownership);
+    }
+    product
+        .definitions
+        .insert(plan.result_definition_id, Arc::new(result_definition));
+    product.occurrences.insert(
+        plan.target_occurrence_id,
+        Arc::new(Occurrence {
+            definition_id: plan.result_definition_id,
+            ..target_occurrence
+        }),
+    );
+    if !plan.keep_tool {
+        product.occurrences.remove(&plan.tool_occurrence_id);
+    } else {
+        product
+            .occurrences
+            .insert(plan.tool_occurrence_id, Arc::new(tool_occurrence));
     }
     Ok(())
 }
@@ -12874,7 +13072,29 @@ fn validate_product(product: &ProductModel) -> Result<(), CanonicalError> {
                                 || receipt.source_sha256() != &spec.source_sha256
                                 || receipt.source_byte_len() != spec.source_byte_len
                         });
-                if definition.feature_ids.first() != Some(&feature.id) || receipt_is_invalid {
+                if receipt_is_invalid {
+                    return Err(CanonicalError::InvalidFeatureOwnership(feature.id));
+                }
+            }
+            FeatureKind::RigidTransform { target, .. } => {
+                let target_feature = product
+                    .features
+                    .get(&target)
+                    .ok_or(CanonicalError::FeatureNotFound(target))?;
+                let feature_position = definition
+                    .feature_ids
+                    .iter()
+                    .position(|candidate| *candidate == feature.id)
+                    .expect("validated definition contains feature");
+                let target_precedes = definition
+                    .feature_ids
+                    .iter()
+                    .position(|candidate| *candidate == target)
+                    .is_some_and(|position| position < feature_position);
+                if target_feature.definition_id != feature.definition_id
+                    || !feature_kind_is_solid(&target_feature.kind)
+                    || !target_precedes
+                {
                     return Err(CanonicalError::InvalidFeatureOwnership(feature.id));
                 }
             }
@@ -14160,7 +14380,8 @@ fn authoritative_dependencies(
                     | FeatureKind::BottleEdgeFinish { target, .. }
                     | FeatureKind::TopologyShell { target, .. }
                     | FeatureKind::TopologyEdgeFinish { target, .. }
-                    | FeatureKind::TopologyFaceOffset { target, .. } => {
+                    | FeatureKind::TopologyFaceOffset { target, .. }
+                    | FeatureKind::RigidTransform { target, .. } => {
                         add_feature_dependency_closure(snapshot, *target, &mut dependencies);
                     }
                     FeatureKind::Profile { .. }
@@ -14841,7 +15062,8 @@ fn add_feature_dependency_closure(
             | FeatureKind::BottleEdgeFinish { target, .. }
             | FeatureKind::TopologyShell { target, .. }
             | FeatureKind::TopologyEdgeFinish { target, .. }
-            | FeatureKind::TopologyFaceOffset { target, .. } => {
+            | FeatureKind::TopologyFaceOffset { target, .. }
+            | FeatureKind::RigidTransform { target, .. } => {
                 add_feature_dependency_closure(snapshot, *target, dependencies);
             }
             FeatureKind::Profile { .. }

@@ -113,7 +113,8 @@ use ketchup_interaction::{
     },
 };
 use ketchup_scheduler::{
-    ExactWorkerSupervisor,
+    ExactWorkerSupervisor, MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCE_BYTES,
+    MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCES,
     assistant::{AssistantCancellation, AssistantProcessClient},
 };
 mod assembly_ui;
@@ -6056,7 +6057,7 @@ type ExactEvaluationResult = Result<ExactEvaluationProducts, String>;
 enum ExactEvaluationRequest {
     Graph {
         graph: Box<ExactBRepGraph>,
-        imported_source: Option<Vec<u8>>,
+        imported_sources: Vec<Vec<u8>>,
     },
     Rectangle {
         request: Box<ExactFeatureChainRequest>,
@@ -9545,7 +9546,12 @@ impl KetchupApp {
             let mut worker =
                 ExactWorkerSupervisor::spawn(executable).map_err(|error| error.to_string())?;
             worker
-                .export_current_model_step(&snapshot, &model, &prepared_step)
+                .export_current_model_step_with_imported_sources(
+                    &snapshot,
+                    &model,
+                    &prepared_step,
+                    self.container_data.blobs(),
+                )
                 .map_err(|error| error.to_string())?;
             let mut step = String::from_utf8(
                 std::fs::read(&prepared_step).map_err(|error| error.to_string())?,
@@ -14824,54 +14830,68 @@ impl KetchupApp {
                     None
                 };
                 if let Some(graph) = graph {
-                    let mut imported_sources = graph.nodes.iter().filter_map(|node| {
-                        match &node.operation {
-                            ExactBRepOperation::ImportedExact {
-                                source_sha256,
-                                source_byte_len,
-                                ..
-                            } => Some((source_sha256, *source_byte_len)),
-                            _ => None,
+                    let mut imported_sources = Vec::new();
+                    let mut imported_hashes = Vec::new();
+                    let mut imported_source_bytes = 0_u64;
+                    for node in &graph.nodes {
+                        let ExactBRepOperation::ImportedExact {
+                            source_sha256,
+                            source_byte_len,
+                            ..
+                        } = &node.operation
+                        else {
+                            continue;
+                        };
+                        if imported_hashes.contains(source_sha256) {
+                            continue;
                         }
-                    });
-                    let imported_source = match (imported_sources.next(), imported_sources.next()) {
-                        (None, None) => None,
-                        (Some((source_sha256, source_byte_len)), None) => {
-                            let hash = source_sha256
-                                .iter()
-                                .map(|byte| format!("{byte:02x}"))
-                                .collect::<String>();
-                            let Some(source) = self.container_data.blobs().get(&hash).cloned() else {
-                                eprintln!(
-                                    "exact B-Rep graph producer {} is missing its imported source blob",
-                                    feature_id.0
-                                );
-                                return Ok(None);
-                            };
-                            if source.len() as u64 != source_byte_len
-                                || sha256_bytes(&source) != *source_sha256
-                            {
-                                eprintln!(
-                                    "exact B-Rep graph producer {} has a mismatched imported source blob",
-                                    feature_id.0
-                                );
-                                return Ok(None);
-                            }
-                            Some(source)
-                        }
-                        (_, Some(_)) => {
+                        let Some(next_source_bytes) =
+                            imported_source_bytes.checked_add(*source_byte_len)
+                        else {
                             eprintln!(
-                                "exact B-Rep graph producer {} uses multiple imported sources, which the worker protocol does not support",
+                                "exact B-Rep graph producer {} exceeds the imported source byte envelope",
+                                feature_id.0
+                            );
+                            return Ok(None);
+                        };
+                        if imported_hashes.len() >= MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCES
+                            || next_source_bytes > MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCE_BYTES
+                        {
+                            eprintln!(
+                                "exact B-Rep graph producer {} exceeds the imported source envelope",
                                 feature_id.0
                             );
                             return Ok(None);
                         }
-                    };
+                        imported_source_bytes = next_source_bytes;
+                        let hash = source_sha256
+                            .iter()
+                            .map(|byte| format!("{byte:02x}"))
+                            .collect::<String>();
+                        let Some(source) = self.container_data.blobs().get(&hash).cloned() else {
+                            eprintln!(
+                                "exact B-Rep graph producer {} is missing an imported source blob",
+                                feature_id.0
+                            );
+                            return Ok(None);
+                        };
+                        if source.len() as u64 != *source_byte_len
+                            || sha256_bytes(&source) != *source_sha256
+                        {
+                            eprintln!(
+                                "exact B-Rep graph producer {} has a mismatched imported source blob",
+                                feature_id.0
+                            );
+                            return Ok(None);
+                        }
+                        imported_hashes.push(*source_sha256);
+                        imported_sources.push(source);
+                    }
                     return Ok(Some((
                         definition_id,
                         ExactEvaluationRequest::Graph {
                             graph: Box::new(graph),
-                            imported_source,
+                            imported_sources,
                         },
                     )));
                 }
@@ -14938,17 +14958,19 @@ impl KetchupApp {
                             Ok(match request {
                                 ExactEvaluationRequest::Graph {
                                     graph,
-                                    imported_source,
+                                    imported_sources,
                                 } => {
-                                    let package = match imported_source {
-                                        Some(source) => worker
-                                            .evaluate_exact_brep_graph_with_imported_source(
-                                                &graph, &source,
-                                            ),
-                                        None => worker.evaluate_exact_brep_graph(&graph),
-                                    }
-                                    .map(ExactBodyPackage::Graph)
-                                    .map_err(|error| error.to_string())?;
+                                    let imported_sources = imported_sources
+                                        .iter()
+                                        .map(Vec::as_slice)
+                                        .collect::<Vec<_>>();
+                                    let package = worker
+                                        .evaluate_exact_brep_graph_with_imported_sources(
+                                            &graph,
+                                            &imported_sources,
+                                        )
+                                        .map(ExactBodyPackage::Graph)
+                                        .map_err(|error| error.to_string())?;
                                     (package.clone(), Some(package))
                                 }
                                 ExactEvaluationRequest::Rectangle { request, topology } => {

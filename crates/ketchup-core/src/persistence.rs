@@ -95,7 +95,8 @@ const ASSEMBLY_KINEMATICS_SCHEMA: u16 = 42;
 const ASSEMBLY_MOTION_COUPLING_SCHEMA: u16 = 43;
 const MECHANICAL_CONTRACT_SCHEMA: u16 = 44;
 const SKETCH_CONSTRAINT_VOCABULARY_SCHEMA: u16 = 45;
-pub const CURRENT_SCHEMA: u16 = SKETCH_CONSTRAINT_VOCABULARY_SCHEMA;
+const RIGID_TRANSFORM_FEATURE_SCHEMA: u16 = 46;
+pub const CURRENT_SCHEMA: u16 = RIGID_TRANSFORM_FEATURE_SCHEMA;
 const COLLECTION_SCHEMA: u16 = 15;
 const TAG_SCHEMA: u16 = 14;
 const PERSISTENT_DIMENSION_SCHEMA: u16 = 13;
@@ -156,6 +157,7 @@ struct ProductSchemaCapabilities {
     assembly_motion_couplings: bool,
     mechanical_contract: bool,
     sketch_constraint_vocabulary: bool,
+    rigid_transform_feature: bool,
 }
 
 impl ProductSchemaCapabilities {
@@ -201,6 +203,7 @@ impl ProductSchemaCapabilities {
         assembly_motion_couplings: false,
         mechanical_contract: false,
         sketch_constraint_vocabulary: false,
+        rigid_transform_feature: false,
     };
 
     const fn current(schema: u16) -> Self {
@@ -246,6 +249,7 @@ impl ProductSchemaCapabilities {
             assembly_motion_couplings: schema >= ASSEMBLY_MOTION_COUPLING_SCHEMA,
             mechanical_contract: schema >= MECHANICAL_CONTRACT_SCHEMA,
             sketch_constraint_vocabulary: schema >= SKETCH_CONSTRAINT_VOCABULARY_SCHEMA,
+            rigid_transform_feature: schema >= RIGID_TRANSFORM_FEATURE_SCHEMA,
         }
     }
 }
@@ -1659,6 +1663,13 @@ fn write_features(bytes: &mut Vec<u8>, product: &ProductModel) {
                 push_string(bytes, distance.source_token());
                 push_u64(bytes, distance.millimetres().to_bits());
             }
+            FeatureKind::RigidTransform { target, transform } => {
+                push_u8(bytes, 24);
+                push_u64(bytes, target.0);
+                for value in transform.matrix() {
+                    push_u64(bytes, value.to_bits());
+                }
+            }
             FeatureKind::ImportedExactBody(spec) => {
                 push_u8(bytes, 16);
                 push_string(bytes, &spec.schema);
@@ -2241,6 +2252,7 @@ fn load_document(
             | ASSEMBLY_KINEMATICS_SCHEMA
             | ASSEMBLY_MOTION_COUPLING_SCHEMA
             | MECHANICAL_CONTRACT_SCHEMA
+            | SKETCH_CONSTRAINT_VOCABULARY_SCHEMA
             | CURRENT_SCHEMA
     ) {
         return Err(PersistenceError::UnsupportedSchema(schema));
@@ -3870,6 +3882,17 @@ fn read_product(
                     });
                 }
                 FeatureKind::Loft { sections }
+            }
+            24 if capabilities.rigid_transform_feature => {
+                let target = FeatureId(reader.u64()?);
+                let mut matrix = [0.0; 16];
+                for value in &mut matrix {
+                    *value = f64::from_bits(reader.u64()?);
+                }
+                FeatureKind::RigidTransform {
+                    target,
+                    transform: Transform::from_matrix(matrix)?,
+                }
             }
             16 if capabilities.imported_exact_body => {
                 let schema = reader.string()?;

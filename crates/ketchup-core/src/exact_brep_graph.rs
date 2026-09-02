@@ -1,6 +1,6 @@
 use crate::document::{
     BooleanOperation, DefinitionId, EdgeFinishKind, FeatureId, FeatureKind, LoftSection,
-    ProfileSegment, Snapshot,
+    ProfileSegment, Snapshot, Transform,
 };
 use crate::sketch::{
     FeatureDirection, FeatureExtent, FeatureExtentEnd, SketchRegionId, SolvedSketchRegionEdge,
@@ -12,7 +12,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
-pub const EXACT_BREP_GRAPH_SCHEMA_V1: &str = "ketchup.exact-brep-graph.v1";
+pub const EXACT_BREP_GRAPH_SCHEMA_V2: &str = "ketchup.exact-brep-graph.v2";
 pub const MAX_EXACT_BREP_GRAPH_PROFILES: usize = 1_024;
 pub const MAX_EXACT_BREP_GRAPH_NODES: usize = 1_024;
 pub const MAX_EXACT_BREP_GRAPH_SEGMENTS: usize = 16_384;
@@ -229,6 +229,10 @@ pub enum ExactBRepOperation {
         source_byte_len: u64,
         result_fingerprint: String,
     },
+    RigidTransform {
+        target: ExactBRepNodeId,
+        matrix_bits: [u64; 16],
+    },
 }
 
 impl ExactBRepOperation {
@@ -237,7 +241,8 @@ impl ExactBRepOperation {
             Self::ProfileCut { target, .. }
             | Self::Shell { target, .. }
             | Self::EdgeFinish { target, .. }
-            | Self::FaceOffset { target, .. } => vec![*target],
+            | Self::FaceOffset { target, .. }
+            | Self::RigidTransform { target, .. } => vec![*target],
             Self::Boolean { target, tool, .. } => vec![*target, *tool],
             Self::Extrude { .. }
             | Self::Revolve { .. }
@@ -258,7 +263,8 @@ impl ExactBRepOperation {
             | Self::Shell { .. }
             | Self::EdgeFinish { .. }
             | Self::FaceOffset { .. }
-            | Self::ImportedExact { .. } => Vec::new(),
+            | Self::ImportedExact { .. }
+            | Self::RigidTransform { .. } => Vec::new(),
         }
     }
 }
@@ -314,7 +320,7 @@ impl ExactBRepGraph {
         compiler.compile_body(producer_feature_id)?;
         let source_digest = snapshot.canonical_digest();
         let mut graph = Self {
-            schema: EXACT_BREP_GRAPH_SCHEMA_V1.to_owned(),
+            schema: EXACT_BREP_GRAPH_SCHEMA_V2.to_owned(),
             document_id: snapshot.document_id().0,
             source_revision: snapshot.revision_id(),
             source_digest,
@@ -365,7 +371,7 @@ impl ExactBRepGraph {
     }
 
     pub fn validate(&self) -> Result<(), ExactBRepGraphError> {
-        if self.schema != EXACT_BREP_GRAPH_SCHEMA_V1
+        if self.schema != EXACT_BREP_GRAPH_SCHEMA_V2
             || self.document_id == 0
             || self.definition_id == 0
             || self.producer_feature_id == 0
@@ -392,8 +398,22 @@ impl ExactBRepGraph {
             return Err(ExactBRepGraphError::ResourceLimit);
         }
         let mut source_features = BTreeSet::new();
+        let mut imported_source_nodes = 0_usize;
+        let mut imported_source_bytes = 0_u64;
         for (index, node) in self.nodes.iter().enumerate() {
             let id = ExactBRepNodeId(index as u32);
+            if let ExactBRepOperation::ImportedExact {
+                source_byte_len, ..
+            } = node.operation
+            {
+                imported_source_nodes += 1;
+                imported_source_bytes = imported_source_bytes
+                    .checked_add(source_byte_len)
+                    .ok_or(ExactBRepGraphError::ResourceLimit)?;
+                if imported_source_nodes > 64 || imported_source_bytes > 128 * 1024 * 1024 {
+                    return Err(ExactBRepGraphError::ResourceLimit);
+                }
+            }
             if node.id != id
                 || node.source_feature_id == 0
                 || !source_features.insert(node.source_feature_id)
@@ -640,6 +660,12 @@ impl<'a> GraphCompiler<'a> {
                 source_byte_len: spec.source_byte_len,
                 result_fingerprint: spec.result_fingerprint.clone(),
             },
+            FeatureKind::RigidTransform { target, transform } => {
+                ExactBRepOperation::RigidTransform {
+                    target: self.compile_body(*target)?,
+                    matrix_bits: transform.matrix().map(f64::to_bits),
+                }
+            }
             _ => return Err(ExactBRepGraphError::UnsupportedFeature(feature_id)),
         };
         let bounds = operation_bounds(&operation, &self.profiles, &self.node_bounds)?;
@@ -1128,6 +1154,12 @@ fn operation_bounds(
         | ExactBRepOperation::Shell { target, .. }
         | ExactBRepOperation::EdgeFinish { target, .. }
         | ExactBRepOperation::FaceOffset { target, .. } => Ok(node_bounds[target.0 as usize]),
+        ExactBRepOperation::RigidTransform {
+            target,
+            matrix_bits,
+        } => node_bounds[target.0 as usize]
+            .map(|bounds| transform_bounds(bounds, matrix_bits.map(f64::from_bits)))
+            .transpose(),
         ExactBRepOperation::Boolean {
             operation,
             target,
@@ -1149,6 +1181,33 @@ fn operation_bounds(
         | ExactBRepOperation::Sweep { .. }
         | ExactBRepOperation::Loft { .. }
         | ExactBRepOperation::ImportedExact { .. } => Ok(None),
+    }
+}
+
+fn transform_bounds(
+    bounds: [[f64; 3]; 2],
+    matrix: [f64; 16],
+) -> Result<[[f64; 3]; 2], ExactBRepGraphError> {
+    let mut transformed = [[f64::INFINITY; 3], [f64::NEG_INFINITY; 3]];
+    for x in [bounds[0][0], bounds[1][0]] {
+        for y in [bounds[0][1], bounds[1][1]] {
+            for z in [bounds[0][2], bounds[1][2]] {
+                let point = [
+                    matrix[0] * x + matrix[1] * y + matrix[2] * z + matrix[3],
+                    matrix[4] * x + matrix[5] * y + matrix[6] * z + matrix[7],
+                    matrix[8] * x + matrix[9] * y + matrix[10] * z + matrix[11],
+                ];
+                for axis in 0..3 {
+                    transformed[0][axis] = transformed[0][axis].min(point[axis]);
+                    transformed[1][axis] = transformed[1][axis].max(point[axis]);
+                }
+            }
+        }
+    }
+    if valid_bounds(transformed) {
+        Ok(transformed)
+    } else {
+        Err(ExactBRepGraphError::ResourceLimit)
     }
 }
 
@@ -1482,6 +1541,16 @@ fn valid_operation(
                     .is_none_or(|digest| !digest.is_empty() && digest.len() <= 256)
         }
         ExactBRepOperation::Boolean { target, tool, .. } => target != tool,
+        ExactBRepOperation::RigidTransform { matrix_bits, .. } => {
+            let matrix = matrix_bits.map(f64::from_bits);
+            Transform::from_matrix(matrix)
+                .ok()
+                .and_then(Transform::rigid_inverse)
+                .is_some()
+                && [matrix[3], matrix[7], matrix[11]]
+                    .into_iter()
+                    .all(|value| value.abs() <= MAX_ABS_MM)
+        }
         ExactBRepOperation::Shell {
             target,
             removed_faces,

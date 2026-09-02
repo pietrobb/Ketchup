@@ -1610,6 +1610,31 @@ pub fn encode_semantic_state_with_results(
                 )
                 .unwrap();
             }
+            crate::document::FeatureKind::RigidTransform { target, transform } => {
+                writeln!(complete, "feature.{}.kind=rigid_transform", feature.id().0).unwrap();
+                writeln!(complete, "feature.{}.target={}", feature.id().0, target.0).unwrap();
+                writeln!(
+                    complete,
+                    "feature.{}.matrix_bits={}",
+                    feature.id().0,
+                    transform
+                        .matrix()
+                        .iter()
+                        .map(|value| format!("{:016x}", value.to_bits()))
+                        .collect::<Vec<_>>()
+                        .join(",")
+                )
+                .unwrap();
+                writeln!(
+                    agent,
+                    "feature.{}=name:{:?},kind:rigid_transform,definition:{},target:{}",
+                    feature.id().0,
+                    feature.name(),
+                    feature.definition_id().0,
+                    target.0
+                )
+                .unwrap();
+            }
             crate::document::FeatureKind::ImportedExactBody(spec) => {
                 let source_sha256 = spec
                     .source_sha256
