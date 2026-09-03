@@ -23,7 +23,8 @@ use ketchup_core::assistant_sidecar::{
 use ketchup_core::document::{
     BodyId, BooleanOperation, CanonicalCommand, ClassificationCategoryId,
     ClassificationDimensionId, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId,
-    FeatureKind, GroupId, NodeId, OccurrenceId, ProposalGoal, ProposalValue, TagId, Transform,
+    FeatureKind, GroupId, NodeId, OccurrenceId, ProfileSegment, ProposalGoal, ProposalValue, TagId,
+    Transform,
 };
 use ketchup_core::exact_brep_graph::{ExactBRepGraph, ExactBRepOperation};
 use ketchup_core::intent::WorkflowIntent;
@@ -36,9 +37,31 @@ use ketchup_core::sketch::{
 use ketchup_core::state_view::encode_semantic_state;
 use ketchup_core::validation::VALIDATOR_ROLE_DIMENSION_V1;
 use ketchup_interaction::{LocaleCatalog, Vec3};
+use ketchup_scheduler::ExactWorkerSupervisor;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+fn exact_worker_path() -> std::path::PathBuf {
+    let name = if cfg!(windows) {
+        "ketchup-exact-worker.exe"
+    } else {
+        "ketchup-exact-worker"
+    };
+    let colocated = std::env::current_exe()
+        .unwrap()
+        .parent()
+        .and_then(std::path::Path::parent)
+        .unwrap()
+        .join(name);
+    if colocated.is_file() {
+        colocated
+    } else {
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/debug")
+            .join(name)
+    }
+}
 
 fn apply_reviewed_model_intent(shell: &mut Shell, intent: AssistantModelIntent) -> bool {
     shell.app_mut().prepare_assistant_model_intent(intent)
@@ -226,6 +249,69 @@ fn write_assistant_boolean_fixture(path: &std::path::Path) {
                 id: OccurrenceId(1),
                 definition_id: DefinitionId(1),
                 name: "Boolean inputs".to_owned(),
+                transform: Transform::identity(),
+                parent: None,
+                tag: None,
+                visible: true,
+            },
+        ]))
+        .unwrap();
+    document.discard_history_before_current();
+    persistence::save_atomic(path, &document.current()).unwrap();
+}
+
+fn write_assistant_sweep_fixture(path: &std::path::Path) {
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DefinitionId(1),
+                name: "Sweep inputs".to_owned(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(1),
+                definition_id: DefinitionId(1),
+                name: "Curved sweep profile".to_owned(),
+                kind: FeatureKind::SegmentProfile {
+                    segments: vec![
+                        ProfileSegment::Line {
+                            start_mm: [-2.0, -3.0],
+                            end_mm: [2.0, -3.0],
+                        },
+                        ProfileSegment::Line {
+                            start_mm: [2.0, -3.0],
+                            end_mm: [2.0, 3.0],
+                        },
+                        ProfileSegment::CircularArc {
+                            start_mm: [2.0, 3.0],
+                            end_mm: [-2.0, 3.0],
+                            center_mm: [0.0, 3.0],
+                            clockwise: false,
+                        },
+                        ProfileSegment::Line {
+                            start_mm: [-2.0, 3.0],
+                            end_mm: [-2.0, -3.0],
+                        },
+                    ],
+                    closed: true,
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(2),
+                definition_id: DefinitionId(1),
+                name: "Oblique sweep path".to_owned(),
+                kind: FeatureKind::SegmentProfile {
+                    segments: vec![ProfileSegment::Line {
+                        start_mm: [10.0, -5.0],
+                        end_mm: [24.0, 17.0],
+                    }],
+                    closed: false,
+                },
+            },
+            CanonicalCommand::CreateOccurrence {
+                id: OccurrenceId(1),
+                definition_id: DefinitionId(1),
+                name: "Sweep inputs".to_owned(),
                 transform: Transform::identity(),
                 parent: None,
                 tag: None,
@@ -2018,6 +2104,94 @@ fn scripted_append_pocket_is_exact_persistent_and_one_step() {
     let reopened = persistence::load_file(&saved_path).unwrap().snapshot();
     assert_eq!(reopened.canonical_digest(), committed_digest);
     assert!(ExactBRepGraph::from_snapshot(&reopened, DefinitionId(1), FeatureId(5)).is_ok());
+
+    shell.click_menu_command("menu-edit", AppCommand::Undo);
+    assert_eq!(shell.app().canonical_digest(), baseline_digest);
+    assert_eq!(shell.app().undo_step_count(), baseline_undo);
+    assert_eq!(shell.app().redo_step_count(), baseline_redo + 1);
+    shell.click_menu_command("menu-edit", AppCommand::Redo);
+    assert_eq!(shell.app().canonical_digest(), committed_digest);
+    assert_eq!(shell.app().undo_step_count(), baseline_undo + 1);
+    assert_eq!(shell.app().redo_step_count(), baseline_redo);
+    assert_eq!(transport.remaining_responses(), 0);
+}
+
+#[test]
+fn scripted_append_sweep_is_exact_persistent_and_one_step() {
+    let request = "Sweep the existing profile along the existing path";
+    let transport = Arc::new(ScriptedAssistantTransport::new([(
+        request.to_owned(),
+        AssistantChatResult {
+            message: "Review the exact sweep.".to_owned(),
+            model_intent: None,
+        },
+    )]));
+    transport.queue_cad_edit_program(
+        request,
+        AssistantCadEditProgram {
+            operations: vec![AssistantCadEditOperation::AppendFeature {
+                definition_id: 1,
+                name: "Assistant sweep".to_owned(),
+                feature: AssistantCadBodyFeature::Sweep {
+                    profile_feature_id: 1,
+                    path_feature_id: 2,
+                },
+            }],
+        },
+    );
+
+    let directory = tempfile::tempdir().unwrap();
+    let fixture_path = directory.path().join("assistant-sweep-inputs.ketchup");
+    write_assistant_sweep_fixture(&fixture_path);
+    let mut shell = Shell::with_assistant_transport(transport.clone());
+    assert!(shell.app_mut().open_document_path(&fixture_path));
+    shell.settle();
+    let baseline_revision = shell.app().document_revision();
+    let baseline_digest = shell.app().canonical_digest();
+    let baseline_undo = shell.app().undo_step_count();
+    let baseline_redo = shell.app().redo_step_count();
+    let baseline_occurrences = shell.app().document_snapshot().occurrences().count();
+
+    let input = shell.catalog().text("assistant-input-hint");
+    shell.focus_text_input(&input);
+    shell.type_text(request);
+    shell.press_key(egui::Key::Enter);
+    wait_for_assistant_proposal(&mut shell);
+    assert_eq!(shell.app().document_revision(), baseline_revision);
+    assert_eq!(shell.app().canonical_digest(), baseline_digest);
+    assert_eq!(shell.app().undo_step_count(), baseline_undo);
+
+    shell.click_row(&shell.catalog().text("assistant-confirm"));
+    assert_eq!(shell.app().document_revision(), baseline_revision + 1);
+    assert_eq!(shell.app().undo_step_count(), baseline_undo + 1);
+    let committed = shell.app().document_snapshot();
+    assert!(matches!(
+        committed.feature(FeatureId(3)).unwrap().kind(),
+        FeatureKind::Sweep {
+            profile: FeatureId(1),
+            path: FeatureId(2),
+        }
+    ));
+    let graph = ExactBRepGraph::from_snapshot(&committed, DefinitionId(1), FeatureId(3)).unwrap();
+    assert_eq!(graph.producer_feature_id, 3);
+    assert!(
+        graph
+            .nodes
+            .iter()
+            .any(|node| matches!(&node.operation, ExactBRepOperation::Sweep { .. }))
+    );
+    let mut worker = ExactWorkerSupervisor::spawn(exact_worker_path()).unwrap();
+    let package = worker.evaluate_exact_brep_graph(&graph).unwrap();
+    assert!(package.volume_mm3 > 0.0);
+    assert_eq!(package.topology_counts[4], 1);
+    assert_eq!(committed.occurrences().count(), baseline_occurrences);
+
+    let committed_digest = committed.canonical_digest();
+    let saved_path = directory.path().join("assistant-sweep-result.ketchup");
+    persistence::save_atomic(&saved_path, &committed).unwrap();
+    let reopened = persistence::load_file(&saved_path).unwrap().snapshot();
+    assert_eq!(reopened.canonical_digest(), committed_digest);
+    assert!(ExactBRepGraph::from_snapshot(&reopened, DefinitionId(1), FeatureId(3)).is_ok());
 
     shell.click_menu_command("menu-edit", AppCommand::Undo);
     assert_eq!(shell.app().canonical_digest(), baseline_digest);

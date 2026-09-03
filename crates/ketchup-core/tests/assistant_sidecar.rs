@@ -607,6 +607,91 @@ fn cad_edit_append_pocket_contract_is_strict_bounded_and_host_id_assigned() {
 }
 
 #[test]
+fn cad_edit_append_sweep_contract_is_strict_and_host_id_assigned() {
+    let program = AssistantCadEditProgram {
+        operations: vec![AssistantCadEditOperation::AppendFeature {
+            definition_id: 7,
+            name: "Exact sweep".to_owned(),
+            feature: AssistantCadBodyFeature::Sweep {
+                profile_feature_id: 11,
+                path_feature_id: 12,
+            },
+        }],
+    };
+
+    assert_eq!(program.validate(), Ok(()));
+    let serialized = serde_json::to_value(&program).unwrap();
+    assert_eq!(serialized["operations"][0]["feature"]["type"], "sweep");
+    assert!(
+        serialized["operations"][0]
+            .get("output_feature_id")
+            .is_none()
+    );
+    assert_eq!(
+        serde_json::from_value::<AssistantCadEditProgram>(serialized).unwrap(),
+        program
+    );
+
+    let same_input = AssistantCadEditProgram {
+        operations: vec![AssistantCadEditOperation::AppendFeature {
+            definition_id: 7,
+            name: "Invalid sweep".to_owned(),
+            feature: AssistantCadBodyFeature::Sweep {
+                profile_feature_id: 11,
+                path_feature_id: 11,
+            },
+        }],
+    };
+    assert_eq!(
+        same_input.validate(),
+        Err("assistant CAD body feature is invalid".to_owned())
+    );
+    for (profile_feature_id, path_feature_id) in [(0, 12), (11, 0)] {
+        let zero_input = AssistantCadEditProgram {
+            operations: vec![AssistantCadEditOperation::AppendFeature {
+                definition_id: 7,
+                name: "Invalid sweep".to_owned(),
+                feature: AssistantCadBodyFeature::Sweep {
+                    profile_feature_id,
+                    path_feature_id,
+                },
+            }],
+        };
+        assert_eq!(
+            zero_input.validate(),
+            Err("assistant CAD body feature is invalid".to_owned())
+        );
+    }
+
+    let injected_field = serde_json::json!({
+        "operations": [{
+            "operation": "append_feature",
+            "definition_id": 7,
+            "name": "Injected sweep",
+            "feature": {
+                "type": "sweep",
+                "profile_feature_id": 11,
+                "path_feature_id": 12,
+                "output_feature_id": 99
+            }
+        }]
+    });
+    assert!(serde_json::from_value::<AssistantCadEditProgram>(injected_field).is_err());
+    let missing_path = serde_json::json!({
+        "operations": [{
+            "operation": "append_feature",
+            "definition_id": 7,
+            "name": "Missing path",
+            "feature": {
+                "type": "sweep",
+                "profile_feature_id": 11
+            }
+        }]
+    });
+    assert!(serde_json::from_value::<AssistantCadEditProgram>(missing_path).is_err());
+}
+
+#[test]
 fn cad_edit_program_contract_fails_closed_on_targets_geometry_and_resources() {
     let copy = |occurrence_ids| AssistantCadEditProgram {
         operations: vec![AssistantCadEditOperation::Copy {

@@ -232,6 +232,87 @@ fn cad_edit_append_pocket_is_host_id_assigned_exact_and_one_step() {
 }
 
 #[test]
+fn cad_edit_append_sweep_is_host_id_assigned_exact_and_one_step() {
+    let mut app = KetchupApp::new();
+    app.document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(3),
+                definition_id: INITIAL_BOX_DEFINITION,
+                name: "Sweep profile".to_owned(),
+                kind: FeatureKind::Profile {
+                    points_mm: vec![[-2.0, -3.0], [2.0, -3.0], [2.0, 3.0], [-2.0, 3.0]],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(4),
+                definition_id: INITIAL_BOX_DEFINITION,
+                name: "Sweep path".to_owned(),
+                kind: FeatureKind::SegmentProfile {
+                    segments: vec![ProfileSegment::Line {
+                        start_mm: [10.0, -5.0],
+                        end_mm: [24.0, 17.0],
+                    }],
+                    closed: false,
+                },
+            },
+        ]))
+        .unwrap();
+    let baseline = app.document.current().clone();
+    let baseline_undo = app.document.visible_undo_steps();
+    let program = AssistantCadEditProgram {
+        operations: vec![AssistantCadEditOperation::AppendFeature {
+            definition_id: INITIAL_BOX_DEFINITION.0,
+            name: "Assistant sweep".to_owned(),
+            feature: AssistantCadBodyFeature::Sweep {
+                profile_feature_id: 3,
+                path_feature_id: 4,
+            },
+        }],
+    };
+
+    let batch = app.plan_assistant_cad_edit_program(&program).unwrap();
+    assert!(matches!(
+        batch.commands(),
+        [CanonicalCommand::CreateFeature {
+            id: FeatureId(5),
+            definition_id: INITIAL_BOX_DEFINITION,
+            kind: FeatureKind::Sweep {
+                profile: FeatureId(3),
+                path: FeatureId(4),
+            },
+            ..
+        }]
+    ));
+
+    app.prepare_assistant_preview_source(AssistantPreviewSource::CadEdit(program))
+        .unwrap();
+    assert_eq!(app.document.current().revision_id(), baseline.revision_id());
+    assert_eq!(
+        app.document.current().canonical_digest(),
+        baseline.canonical_digest()
+    );
+    assert_eq!(app.document.visible_undo_steps(), baseline_undo);
+    assert!(app.confirm_assistant_proposal());
+    let committed = app.document.current();
+    assert_eq!(committed.revision_id(), baseline.revision_id() + 1);
+    assert_eq!(app.document.visible_undo_steps(), baseline_undo + 1);
+    let graph =
+        ExactBRepGraph::from_snapshot(&committed, INITIAL_BOX_DEFINITION, FeatureId(5)).unwrap();
+    assert!(
+        graph
+            .nodes
+            .iter()
+            .any(|node| matches!(node.operation, ExactBRepOperation::Sweep { .. }))
+    );
+    assert!(app.undo());
+    assert_eq!(
+        app.document.current().canonical_digest(),
+        baseline.canonical_digest()
+    );
+}
+
+#[test]
 fn cad_edit_append_pocket_rejects_invalid_inputs_without_mutation() {
     let mut app = KetchupApp::new();
     app.document
@@ -284,6 +365,152 @@ fn cad_edit_append_pocket_rejects_invalid_inputs_without_mutation() {
     assert!(
         app.plan_assistant_cad_edit_program(&program(3, 2, 8.0))
             .is_err()
+    );
+    assert_eq!(app.document.current().revision_id(), baseline_revision);
+    assert_eq!(app.document.current().canonical_digest(), baseline_digest);
+    assert_eq!(app.document.visible_undo_steps(), baseline_undo);
+}
+
+#[test]
+fn cad_edit_append_sweep_rejects_unsupported_inputs_without_mutation() {
+    let mut app = KetchupApp::new();
+    app.document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(3),
+                definition_id: INITIAL_BOX_DEFINITION,
+                name: "Sweep profile".to_owned(),
+                kind: FeatureKind::Profile {
+                    points_mm: vec![[-2.0, -2.0], [2.0, -2.0], [2.0, 2.0], [-2.0, 2.0]],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(4),
+                definition_id: INITIAL_BOX_DEFINITION,
+                name: "Sweep path".to_owned(),
+                kind: FeatureKind::SegmentProfile {
+                    segments: vec![ProfileSegment::Line {
+                        start_mm: [0.0, 0.0],
+                        end_mm: [20.0, 0.0],
+                    }],
+                    closed: false,
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(5),
+                definition_id: INITIAL_BOX_DEFINITION,
+                name: "Unsupported spline".to_owned(),
+                kind: FeatureKind::SplineProfile {
+                    control_points_mm: vec![[-3.0, -2.0], [4.0, -2.0], [4.0, 3.0], [-3.0, 3.0]],
+                },
+            },
+            CanonicalCommand::CreateDefinition {
+                id: DefinitionId(2),
+                name: "Other definition".to_owned(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(6),
+                definition_id: DefinitionId(2),
+                name: "Other profile".to_owned(),
+                kind: FeatureKind::Profile {
+                    points_mm: vec![[0.0, 0.0], [5.0, 0.0], [5.0, 5.0], [0.0, 5.0]],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(7),
+                definition_id: INITIAL_BOX_DEFINITION,
+                name: "Zero-area boundary".to_owned(),
+                kind: FeatureKind::SegmentProfile {
+                    segments: vec![
+                        ProfileSegment::Line {
+                            start_mm: [0.0, 0.0],
+                            end_mm: [10.0, 0.0],
+                        },
+                        ProfileSegment::Line {
+                            start_mm: [10.0, 0.0],
+                            end_mm: [0.0, 0.0],
+                        },
+                    ],
+                    closed: true,
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(8),
+                definition_id: INITIAL_BOX_DEFINITION,
+                name: "Overlong path".to_owned(),
+                kind: FeatureKind::SegmentProfile {
+                    segments: vec![ProfileSegment::Line {
+                        start_mm: [0.0, 0.0],
+                        end_mm: [100_001.0, 0.0],
+                    }],
+                    closed: false,
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(9),
+                definition_id: INITIAL_BOX_DEFINITION,
+                name: "Sub-minimum arc".to_owned(),
+                kind: FeatureKind::SegmentProfile {
+                    segments: vec![
+                        ProfileSegment::CircularArc {
+                            start_mm: [0.001, 0.0],
+                            end_mm: [-0.001, 0.0],
+                            center_mm: [0.0, 0.0],
+                            clockwise: false,
+                        },
+                        ProfileSegment::Line {
+                            start_mm: [-0.001, 0.0],
+                            end_mm: [0.001, 0.0],
+                        },
+                    ],
+                    closed: true,
+                },
+            },
+        ]))
+        .unwrap();
+    let baseline_revision = app.document.current().revision_id();
+    let baseline_digest = app.document.current().canonical_digest();
+    let baseline_undo = app.document.visible_undo_steps();
+    let program = |profile_feature_id, path_feature_id| AssistantCadEditProgram {
+        operations: vec![AssistantCadEditOperation::AppendFeature {
+            definition_id: INITIAL_BOX_DEFINITION.0,
+            name: "Rejected sweep".to_owned(),
+            feature: AssistantCadBodyFeature::Sweep {
+                profile_feature_id,
+                path_feature_id,
+            },
+        }],
+    };
+
+    let cross_definition = app
+        .plan_assistant_cad_edit_program(&program(6, 4))
+        .unwrap_err();
+    assert_eq!(
+        cross_definition.code,
+        "planning.cad_feature_input_ownership_invalid"
+    );
+    let spline = app
+        .plan_assistant_cad_edit_program(&program(5, 4))
+        .unwrap_err();
+    assert_eq!(spline.code, "planning.cad_feature_input_unsupported");
+    let invalid_path = app
+        .plan_assistant_cad_edit_program(&program(3, 1))
+        .unwrap_err();
+    assert_eq!(invalid_path.code, "planning.cad_feature_input_unsupported");
+    let zero_area = app
+        .plan_assistant_cad_edit_program(&program(7, 4))
+        .unwrap_err();
+    assert_eq!(zero_area.code, "planning.cad_feature_input_unsupported");
+    let overlong_path = app
+        .plan_assistant_cad_edit_program(&program(3, 8))
+        .unwrap_err();
+    assert_eq!(overlong_path.code, "planning.cad_feature_input_unsupported");
+    let sub_minimum_arc = app
+        .plan_assistant_cad_edit_program(&program(9, 4))
+        .unwrap_err();
+    assert_eq!(
+        sub_minimum_arc.code,
+        "planning.cad_feature_input_unsupported"
     );
     assert_eq!(app.document.current().revision_id(), baseline_revision);
     assert_eq!(app.document.current().canonical_digest(), baseline_digest);

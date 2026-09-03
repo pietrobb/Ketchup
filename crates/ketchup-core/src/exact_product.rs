@@ -12592,6 +12592,11 @@ pub fn line_arc_capsule_corner_overlap(
 }
 
 #[must_use]
+pub fn line_arc_profile_bounds(segments: &[ProfileSegment], closed: bool) -> Option<[f64; 4]> {
+    exact_mixed_profile(segments, closed).map(|profile| profile.bounds_bits.map(f64::from_bits))
+}
+
+#[must_use]
 pub fn is_line_arc_capsule_profile(segments: &[ProfileSegment], closed: bool) -> bool {
     line_arc_capsule_profile_bounds(segments, closed).is_some()
 }
@@ -12638,7 +12643,7 @@ fn exact_mixed_profile(segments: &[ProfileSegment], closed: bool) -> Option<Exac
                 let radius = (start_mm[0] - center_mm[0]).hypot(start_mm[1] - center_mm[1]);
                 let end_radius = (end_mm[0] - center_mm[0]).hypot(end_mm[1] - center_mm[1]);
                 if !radius.is_finite()
-                    || radius <= 0.0
+                    || radius < 0.01
                     || (radius - end_radius).abs() > 1.0e-9 * radius.max(end_radius).max(1.0)
                 {
                     return None;

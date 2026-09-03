@@ -229,6 +229,10 @@ pub enum AssistantCadBodyFeature {
         profile_feature_id: u64,
         depth_mm: f64,
     },
+    Sweep {
+        profile_feature_id: u64,
+        path_feature_id: u64,
+    },
 }
 
 impl AssistantCadBodyFeature {
@@ -259,6 +263,16 @@ impl AssistantCadBodyFeature {
                 Ok(())
             }
             Self::Pocket { .. } => Err("assistant CAD body feature is invalid".to_owned()),
+            Self::Sweep {
+                profile_feature_id,
+                path_feature_id,
+            } if *profile_feature_id != 0
+                && *path_feature_id != 0
+                && profile_feature_id != path_feature_id =>
+            {
+                Ok(())
+            }
+            Self::Sweep { .. } => Err("assistant CAD body feature is invalid".to_owned()),
         }
     }
 }

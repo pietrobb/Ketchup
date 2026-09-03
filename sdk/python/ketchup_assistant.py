@@ -71,7 +71,7 @@ SYSTEM_PROMPT = (
     "model_intent (null for discussion or CAD edits), and cad_edit_program (null unless proposing typed CAD operations). "
     "Never return both mutation fields. Use cad_edit_program for create_part, create_sketch, append_feature, set_dimension, delete, rigid transform, copy, linear pattern, or mirror. "
     "create_part atomically creates a host-ID-assigned definition, workplane, sketch, universal feature, and occurrence. It has name, workplane, entities, constraints, feature, translation_mm, and optional rotation; feature is either {type: extrusion, distance_mm: positive length} or {type: revolve, axis_start_mm: [x,y], axis_end_mm: [x,y], angle_degrees: >0 and <=360}. "
-    "append_feature adds one host-ID-assigned feature to an existing definition. It has definition_id, name, and either feature {type: boolean, operation: cut|union|intersect, target_feature_id, tool_feature_id}, whose inputs are distinct supported exact body features in that definition, or feature {type: pocket, target_feature_id, profile_feature_id, depth_mm}, whose distinct inputs are a supported exact extrusion target and closed profile in that definition with positive bounded depth below the target height. "
+    "append_feature adds one host-ID-assigned feature to an existing definition. It has definition_id, name, and either feature {type: boolean, operation: cut|union|intersect, target_feature_id, tool_feature_id}, whose inputs are distinct supported exact body features in that definition; feature {type: pocket, target_feature_id, profile_feature_id, depth_mm}, whose distinct inputs are a supported exact extrusion target and closed profile in that definition with positive bounded depth below the target height; or feature {type: sweep, profile_feature_id, path_feature_id}, whose distinct inputs are a supported closed polygon or line/arc profile and one open straight path in that definition. "
     "create_sketch has definition_id, name, workplane, entities, and constraints; workplane is principal with plane xy/yz/xz or offset with an existing base_feature_id and distance_mm. "
     "Entities are typed line/arc/circle records with positive stable IDs and 2D millimetre coordinates. Constraints are typed horizontal/vertical/coincident/distance/radius/fixed_point records with positive stable IDs and point refs {entity_id, point: start/end/center}. "
     "The host assigns create_part definition, feature, and occurrence IDs and create_sketch workplane and sketch feature IDs. set_dimension targets an existing feature_id, optional constraint_id, and positive value_mm. "
@@ -767,6 +767,19 @@ def _validate_cad_edit_program(program: object) -> dict:
                     and not isinstance(depth_mm, bool)
                     and 0 < depth_mm <= 1_000_000
                     and math.isfinite(depth_mm)
+                )
+            elif feature.get("type") == "sweep":
+                profile_feature_id = feature.get("profile_feature_id")
+                path_feature_id = feature.get("path_feature_id")
+                valid_feature = (
+                    set(feature) == {"type", "profile_feature_id", "path_feature_id"}
+                    and isinstance(profile_feature_id, int)
+                    and not isinstance(profile_feature_id, bool)
+                    and 0 < profile_feature_id <= MAX_U64
+                    and isinstance(path_feature_id, int)
+                    and not isinstance(path_feature_id, bool)
+                    and 0 < path_feature_id <= MAX_U64
+                    and profile_feature_id != path_feature_id
                 )
             else:
                 valid_feature = False

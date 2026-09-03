@@ -402,6 +402,16 @@ def test_public_sidecar_parses_strict_bounded_cad_edit_program():
                 },
             },
             {
+                "operation": "append_feature",
+                "definition_id": 2,
+                "name": "Exact sweep",
+                "feature": {
+                    "type": "sweep",
+                    "profile_feature_id": 13,
+                    "path_feature_id": 14,
+                },
+            },
+            {
                 "operation": "set_dimension",
                 "feature_id": 12,
                 "constraint_id": 2,
@@ -656,6 +666,41 @@ def test_cad_append_pocket_matches_rust_boundaries_and_strict_fields():
         {**feature, "depth_mm": 1_000_001},
         {**feature, "depth_mm": 10**10_000},
         {**feature, "depth_mm": True},
+        {**feature, "output_feature_id": 99},
+    ]
+    for invalid_feature in invalid_features:
+        with pytest.raises(assistant.ProtocolError):
+            assistant._validate_cad_edit_program(
+                {"operations": [{**operation, "feature": invalid_feature}]}
+            )
+
+
+def test_cad_append_sweep_matches_rust_boundaries_and_strict_fields():
+    feature = {
+        "type": "sweep",
+        "profile_feature_id": 11,
+        "path_feature_id": 12,
+    }
+    operation = {
+        "operation": "append_feature",
+        "definition_id": 2,
+        "name": "Exact sweep",
+        "feature": feature,
+    }
+    assert assistant._validate_cad_edit_program({"operations": [operation]}) == {
+        "operations": [operation]
+    }
+    assert "closed polygon or line/arc profile" in assistant.SYSTEM_PROMPT
+
+    invalid_features = [
+        {**feature, "profile_feature_id": 0},
+        {**feature, "profile_feature_id": True},
+        {**feature, "profile_feature_id": assistant.MAX_U64 + 1},
+        {**feature, "path_feature_id": 11},
+        {**feature, "path_feature_id": 0},
+        {**feature, "path_feature_id": True},
+        {"type": "sweep", "profile_feature_id": 11},
+        {**feature, "path_feature_id": assistant.MAX_U64 + 1},
         {**feature, "output_feature_id": 99},
     ]
     for invalid_feature in invalid_features:

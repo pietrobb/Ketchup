@@ -52,6 +52,7 @@ use ketchup_core::exact_product::{
     ExactFeatureChainRequest, ExactLoftRequest, ExactMeshExport, ExactPlanarOffsetRequest,
     ExactResultRegistry, ExactStlExport, ExactSweepRequest, ImportedExactPackage,
     exact_body_terminal_features, exact_model_stl_export, is_line_arc_capsule_profile,
+    line_arc_profile_bounds,
 };
 #[cfg(test)]
 use ketchup_core::exact_product::{ExactBRepGraphPackage, ExactBRepGraphWorkerEvidence};
@@ -13186,6 +13187,72 @@ impl KetchupApp {
                                 },
                             )?,
                         },
+                        AssistantCadBodyFeature::Sweep {
+                            profile_feature_id,
+                            path_feature_id,
+                        } => {
+                            let profile = FeatureId(*profile_feature_id);
+                            let path = FeatureId(*path_feature_id);
+                            let profile_source = snapshot.feature(profile).ok_or_else(|| {
+                                assistant_canonical_rejection(
+                                    CanonicalError::FeatureNotFound(profile),
+                                    operation_name,
+                                    &format!("feature:{}", profile.0),
+                                )
+                            })?;
+                            let path_source = snapshot.feature(path).ok_or_else(|| {
+                                assistant_canonical_rejection(
+                                    CanonicalError::FeatureNotFound(path),
+                                    operation_name,
+                                    &format!("feature:{}", path.0),
+                                )
+                            })?;
+                            if profile_source.definition_id() != definition_id
+                                || path_source.definition_id() != definition_id
+                            {
+                                return Err(assistant_planning_rejection(
+                                    "planning.cad_feature_input_ownership_invalid",
+                                    operation_name,
+                                    "feature_inputs",
+                                    "The requested Sweep inputs belong to a different definition.",
+                                    "Target a supported profile and path in the requested definition.",
+                                ));
+                            }
+                            let valid_profile = matches!(
+                                profile_source.kind(),
+                                FeatureKind::Profile { points_mm } if points_mm.len() >= 3
+                            ) || matches!(
+                                profile_source.kind(),
+                                FeatureKind::SegmentProfile {
+                                    segments,
+                                    closed: true,
+                                } if line_arc_profile_bounds(segments, true).is_some()
+                            );
+                            let valid_path = matches!(
+                                path_source.kind(),
+                                FeatureKind::SegmentProfile {
+                                    segments,
+                                    closed: false,
+                                } if matches!(
+                                    segments.as_slice(),
+                                    [ProfileSegment::Line { start_mm, end_mm }]
+                                        if (0.01..=100_000.0).contains(
+                                            &(end_mm[0] - start_mm[0])
+                                                .hypot(end_mm[1] - start_mm[1])
+                                        )
+                                )
+                            );
+                            if !valid_profile || !valid_path {
+                                return Err(assistant_planning_rejection(
+                                    "planning.cad_feature_input_unsupported",
+                                    operation_name,
+                                    "feature_inputs",
+                                    "The requested Sweep profile or path is not supported by exact evaluation.",
+                                    "Use a closed polygon or line/arc profile and one open straight path in the same definition.",
+                                ));
+                            }
+                            FeatureKind::Sweep { profile, path }
+                        }
                     };
                     let id = next_feature.map(FeatureId).ok_or_else(|| {
                         assistant_canonical_rejection(
