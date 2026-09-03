@@ -28,7 +28,7 @@ use ketchup_core::document::{
     ProfileSegment, ProposalGoal, ProposalValue, TagId, Transform,
 };
 use ketchup_core::exact_brep_graph::{ExactBRepGraph, ExactBRepOperation};
-use ketchup_core::exact_product::ExactBodyPackage;
+use ketchup_core::exact_product::{ExactBodyPackage, ExactFaceRole, ExactPlanarOffsetRequest};
 use ketchup_core::intent::WorkflowIntent;
 use ketchup_core::persistence;
 use ketchup_core::sketch::{
@@ -251,6 +251,37 @@ fn write_assistant_boolean_fixture(path: &std::path::Path) {
                 id: OccurrenceId(1),
                 definition_id: DefinitionId(1),
                 name: "Boolean inputs".to_owned(),
+                transform: Transform::identity(),
+                parent: None,
+                tag: None,
+                visible: true,
+            },
+        ]))
+        .unwrap();
+    document.discard_history_before_current();
+    persistence::save_atomic(path, &document.current()).unwrap();
+}
+
+fn write_assistant_planar_offset_fixture(path: &std::path::Path) {
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DefinitionId(1),
+                name: "Planar offset input".to_owned(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(1),
+                definition_id: DefinitionId(1),
+                name: "Rectangle".to_owned(),
+                kind: FeatureKind::Profile {
+                    points_mm: vec![[10.0, 20.0], [110.0, 20.0], [110.0, 100.0], [10.0, 100.0]],
+                },
+            },
+            CanonicalCommand::CreateOccurrence {
+                id: OccurrenceId(1),
+                definition_id: DefinitionId(1),
+                name: "Planar offset input".to_owned(),
                 transform: Transform::identity(),
                 parent: None,
                 tag: None,
@@ -2145,6 +2176,116 @@ fn scripted_append_pocket_is_exact_persistent_and_one_step() {
     let reopened = persistence::load_file(&saved_path).unwrap().snapshot();
     assert_eq!(reopened.canonical_digest(), committed_digest);
     assert!(ExactBRepGraph::from_snapshot(&reopened, DefinitionId(1), FeatureId(5)).is_ok());
+
+    shell.click_menu_command("menu-edit", AppCommand::Undo);
+    assert_eq!(shell.app().canonical_digest(), baseline_digest);
+    assert_eq!(shell.app().undo_step_count(), baseline_undo);
+    assert_eq!(shell.app().redo_step_count(), baseline_redo + 1);
+    shell.click_menu_command("menu-edit", AppCommand::Redo);
+    assert_eq!(shell.app().canonical_digest(), committed_digest);
+    assert_eq!(shell.app().undo_step_count(), baseline_undo + 1);
+    assert_eq!(shell.app().redo_step_count(), baseline_redo);
+    assert_eq!(transport.remaining_responses(), 0);
+}
+
+#[test]
+fn scripted_append_planar_offset_is_exact_persistent_and_one_step() {
+    let request = "Offset the existing rectangle inward";
+    let transport = Arc::new(ScriptedAssistantTransport::new([(
+        request.to_owned(),
+        AssistantChatResult {
+            message: "Review the exact planar offset.".to_owned(),
+            model_intent: None,
+        },
+    )]));
+    transport.queue_cad_edit_program(
+        request,
+        AssistantCadEditProgram {
+            operations: vec![AssistantCadEditOperation::AppendFeature {
+                definition_id: 1,
+                name: "Assistant planar offset".to_owned(),
+                feature: AssistantCadBodyFeature::PlanarOffset {
+                    profile_feature_id: 1,
+                    distance_mm: -7.5,
+                },
+            }],
+        },
+    );
+
+    let directory = tempfile::tempdir().unwrap();
+    let fixture_path = directory
+        .path()
+        .join("assistant-planar-offset-input.ketchup");
+    write_assistant_planar_offset_fixture(&fixture_path);
+    let mut shell = Shell::with_assistant_transport(transport.clone());
+    assert!(shell.app_mut().open_document_path(&fixture_path));
+    shell.settle();
+    let baseline_revision = shell.app().document_revision();
+    let baseline_digest = shell.app().canonical_digest();
+    let baseline_undo = shell.app().undo_step_count();
+    let baseline_redo = shell.app().redo_step_count();
+    let baseline_occurrences = shell.app().document_snapshot().occurrences().count();
+
+    let input = shell.catalog().text("assistant-input-hint");
+    shell.focus_text_input(&input);
+    shell.type_text(request);
+    shell.press_key(egui::Key::Enter);
+    wait_for_assistant_proposal(&mut shell);
+    assert_eq!(shell.app().document_revision(), baseline_revision);
+    assert_eq!(shell.app().canonical_digest(), baseline_digest);
+    assert_eq!(shell.app().undo_step_count(), baseline_undo);
+
+    shell.click_row(&shell.catalog().text("assistant-confirm"));
+    assert_eq!(shell.app().document_revision(), baseline_revision + 1);
+    assert_eq!(shell.app().undo_step_count(), baseline_undo + 1);
+    let committed = shell.app().document_snapshot();
+    assert!(matches!(
+        committed.feature(FeatureId(2)).unwrap().kind(),
+        FeatureKind::PlanarOffset {
+            profile: FeatureId(1),
+            distance,
+        } if distance.millimetres() == -7.5
+    ));
+    let exact_request =
+        ExactPlanarOffsetRequest::from_snapshot(&committed, DefinitionId(1)).unwrap();
+    assert_eq!(exact_request.producer_feature_id(), FeatureId(2));
+    assert_eq!(
+        exact_request.expected_bounds_mm(),
+        [[17.5, 27.5, 0.0], [102.5, 92.5, 0.0]]
+    );
+    let mut worker = ExactWorkerSupervisor::spawn(exact_worker_path()).unwrap();
+    let package = worker.evaluate_planar_offset(&exact_request).unwrap();
+    assert!(package.is_current(&committed));
+    assert_eq!(package.bounds_mm, exact_request.expected_bounds_mm());
+    assert!((package.area_mm2 - exact_request.expected_area_mm2()).abs() <= 1.0e-6);
+    assert_eq!(package.vertices.len(), 4);
+    assert_eq!(package.triangles.len(), 2);
+    assert_eq!(
+        package.reference.role(),
+        Some(ExactFaceRole::PlanarOffsetFace)
+    );
+    assert!(package.reference.has_valid_lineage());
+    assert!(
+        package
+            .reference
+            .matches_planar_offset_request(&exact_request)
+    );
+    assert_eq!(package.reference.producer_feature_id, FeatureId(2));
+    assert_eq!(package.reference.profile_feature_id, FeatureId(1));
+    assert_eq!(committed.occurrences().count(), baseline_occurrences);
+
+    let committed_digest = committed.canonical_digest();
+    let saved_path = directory
+        .path()
+        .join("assistant-planar-offset-result.ketchup");
+    persistence::save_atomic(&saved_path, &committed).unwrap();
+    let reopened = persistence::load_file(&saved_path).unwrap().snapshot();
+    assert_eq!(reopened.canonical_digest(), committed_digest);
+    let reopened_request =
+        ExactPlanarOffsetRequest::from_snapshot(&reopened, DefinitionId(1)).unwrap();
+    let reopened_package = worker.evaluate_planar_offset(&reopened_request).unwrap();
+    assert!(reopened_package.is_current(&reopened));
+    assert_eq!(reopened_package.bounds_mm, package.bounds_mm);
 
     shell.click_menu_command("menu-edit", AppCommand::Undo);
     assert_eq!(shell.app().canonical_digest(), baseline_digest);

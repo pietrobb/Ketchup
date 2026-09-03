@@ -236,6 +236,10 @@ pub enum AssistantCadBodyFeature {
         profile_feature_id: u64,
         depth_mm: f64,
     },
+    PlanarOffset {
+        profile_feature_id: u64,
+        distance_mm: f64,
+    },
     Sweep {
         profile_feature_id: u64,
         path_feature_id: u64,
@@ -288,6 +292,17 @@ impl AssistantCadBodyFeature {
                 Ok(())
             }
             Self::Pocket { .. } => Err("assistant CAD body feature is invalid".to_owned()),
+            Self::PlanarOffset {
+                profile_feature_id,
+                distance_mm,
+            } if *profile_feature_id != 0
+                && distance_mm.is_finite()
+                && distance_mm.abs() > 1.0e-6
+                && distance_mm.abs() <= MAX_ASSISTANT_ABS_MM =>
+            {
+                Ok(())
+            }
+            Self::PlanarOffset { .. } => Err("assistant CAD body feature is invalid".to_owned()),
             Self::Sweep {
                 profile_feature_id,
                 path_feature_id,

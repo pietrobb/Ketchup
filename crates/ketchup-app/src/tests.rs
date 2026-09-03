@@ -233,6 +233,76 @@ fn cad_edit_append_pocket_is_host_id_assigned_exact_and_one_step() {
 }
 
 #[test]
+fn cad_edit_append_planar_offset_is_host_id_assigned_exact_and_one_step() {
+    let mut app = KetchupApp::new();
+    app.document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DefinitionId(2),
+                name: "Offset profile".to_owned(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(3),
+                definition_id: DefinitionId(2),
+                name: "Rectangle".to_owned(),
+                kind: FeatureKind::Profile {
+                    points_mm: vec![[10.0, 20.0], [90.0, 20.0], [90.0, 60.0], [10.0, 60.0]],
+                },
+            },
+        ]))
+        .unwrap();
+    let baseline = app.document.current().clone();
+    let baseline_undo = app.document.visible_undo_steps();
+    let program = AssistantCadEditProgram {
+        operations: vec![AssistantCadEditOperation::AppendFeature {
+            definition_id: 2,
+            name: "Assistant planar offset".to_owned(),
+            feature: AssistantCadBodyFeature::PlanarOffset {
+                profile_feature_id: 3,
+                distance_mm: -5.0,
+            },
+        }],
+    };
+
+    let batch = app.plan_assistant_cad_edit_program(&program).unwrap();
+    assert!(matches!(
+        batch.commands(),
+        [CanonicalCommand::CreateFeature {
+            id: FeatureId(4),
+            definition_id: DefinitionId(2),
+            kind: FeatureKind::PlanarOffset { profile: FeatureId(3), distance },
+            ..
+        }] if distance.millimetres() == -5.0
+    ));
+
+    app.prepare_assistant_preview_source(AssistantPreviewSource::CadEdit(program))
+        .unwrap();
+    assert_eq!(app.document.current().revision_id(), baseline.revision_id());
+    assert_eq!(
+        app.document.current().canonical_digest(),
+        baseline.canonical_digest()
+    );
+    assert_eq!(app.document.visible_undo_steps(), baseline_undo);
+    assert!(app.confirm_assistant_proposal());
+    let committed = app.document.current();
+    assert_eq!(committed.revision_id(), baseline.revision_id() + 1);
+    assert_eq!(app.document.visible_undo_steps(), baseline_undo + 1);
+    let request = ExactPlanarOffsetRequest::from_snapshot(&committed, DefinitionId(2)).unwrap();
+    assert_eq!(request.profile_feature_id, FeatureId(3));
+    assert_eq!(request.offset_feature_id, FeatureId(4));
+    assert_eq!(request.distance_mm(), -5.0);
+    assert_eq!(
+        request.expected_bounds_mm(),
+        [[15.0, 25.0, 0.0], [85.0, 55.0, 0.0]]
+    );
+    assert!(app.undo());
+    assert_eq!(
+        app.document.current().canonical_digest(),
+        baseline.canonical_digest()
+    );
+}
+
+#[test]
 fn cad_edit_append_sweep_is_host_id_assigned_exact_and_one_step() {
     let mut app = KetchupApp::new();
     app.document
@@ -792,6 +862,93 @@ fn cad_edit_append_pocket_rejects_invalid_inputs_without_mutation() {
     assert_eq!(app.document.current().revision_id(), baseline_revision);
     assert_eq!(app.document.current().canonical_digest(), baseline_digest);
     assert_eq!(app.document.visible_undo_steps(), baseline_undo);
+}
+
+#[test]
+fn cad_edit_append_planar_offset_rejects_unsupported_inputs_without_mutation() {
+    let mut app = KetchupApp::new();
+    app.document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DefinitionId(2),
+                name: "Other definition".to_owned(),
+            },
+        ]))
+        .unwrap();
+    let baseline_revision = app.document.current().revision_id();
+    let baseline_digest = app.document.current().canonical_digest();
+    let baseline_undo = app.document.visible_undo_steps();
+    let program = |definition_id, profile_feature_id, distance_mm| AssistantCadEditProgram {
+        operations: vec![AssistantCadEditOperation::AppendFeature {
+            definition_id,
+            name: "Rejected planar offset".to_owned(),
+            feature: AssistantCadBodyFeature::PlanarOffset {
+                profile_feature_id,
+                distance_mm,
+            },
+        }],
+    };
+
+    let extra_feature_error = app
+        .plan_assistant_cad_edit_program(&program(1, 1, 5.0))
+        .unwrap_err();
+    assert_eq!(
+        extra_feature_error.code,
+        "planning.cad_feature_input_unsupported"
+    );
+    let ownership_error = app
+        .plan_assistant_cad_edit_program(&program(2, 1, 5.0))
+        .unwrap_err();
+    assert_eq!(
+        ownership_error.code,
+        "planning.cad_feature_input_ownership_invalid"
+    );
+    assert!(
+        app.plan_assistant_cad_edit_program(&program(2, 999, 5.0))
+            .is_err()
+    );
+    assert_eq!(app.document.current().revision_id(), baseline_revision);
+    assert_eq!(app.document.current().canonical_digest(), baseline_digest);
+    assert_eq!(app.document.visible_undo_steps(), baseline_undo);
+
+    for (points_mm, distance_mm, expected_code) in [
+        (
+            vec![[0.0, 0.0], [80.0, 0.0], [40.0, 40.0]],
+            5.0,
+            "canonical.invalid_planar_offset",
+        ),
+        (
+            vec![[0.0, 0.0], [80.0, 0.0], [80.0, 40.0], [0.0, 40.0]],
+            -20.0,
+            "canonical.invalid_planar_offset",
+        ),
+    ] {
+        let mut app = KetchupApp::new();
+        app.document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::CreateDefinition {
+                    id: DefinitionId(2),
+                    name: "Offset profile".to_owned(),
+                },
+                CanonicalCommand::CreateFeature {
+                    id: FeatureId(3),
+                    definition_id: DefinitionId(2),
+                    name: "Invalid offset profile".to_owned(),
+                    kind: FeatureKind::Profile { points_mm },
+                },
+            ]))
+            .unwrap();
+        let baseline_revision = app.document.current().revision_id();
+        let baseline_digest = app.document.current().canonical_digest();
+        let baseline_undo = app.document.visible_undo_steps();
+        let error = app
+            .plan_assistant_cad_edit_program(&program(2, 3, distance_mm))
+            .unwrap_err();
+        assert_eq!(error.code, expected_code);
+        assert_eq!(app.document.current().revision_id(), baseline_revision);
+        assert_eq!(app.document.current().canonical_digest(), baseline_digest);
+        assert_eq!(app.document.visible_undo_steps(), baseline_undo);
+    }
 }
 
 #[test]

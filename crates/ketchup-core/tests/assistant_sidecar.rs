@@ -607,6 +607,84 @@ fn cad_edit_append_pocket_contract_is_strict_bounded_and_host_id_assigned() {
 }
 
 #[test]
+fn cad_edit_append_planar_offset_contract_is_strict_bounded_and_host_id_assigned() {
+    let program = |profile_feature_id, distance_mm| AssistantCadEditProgram {
+        operations: vec![AssistantCadEditOperation::AppendFeature {
+            definition_id: 7,
+            name: "Exact planar offset".to_owned(),
+            feature: AssistantCadBodyFeature::PlanarOffset {
+                profile_feature_id,
+                distance_mm,
+            },
+        }],
+    };
+    let valid = program(11, -8.0);
+
+    assert_eq!(valid.validate(), Ok(()));
+    let serialized = serde_json::to_value(&valid).unwrap();
+    assert_eq!(
+        serialized["operations"][0]["feature"]["type"],
+        "planar_offset"
+    );
+    assert!(
+        serialized["operations"][0]
+            .get("output_feature_id")
+            .is_none()
+    );
+    assert_eq!(
+        serde_json::from_value::<AssistantCadEditProgram>(serialized).unwrap(),
+        valid
+    );
+    assert_eq!(program(11, 1_000_000.0).validate(), Ok(()));
+    assert_eq!(program(11, -1_000_000.0).validate(), Ok(()));
+
+    for invalid in [
+        program(0, 8.0),
+        program(11, 0.0),
+        program(11, 1.0e-6),
+        program(11, -1.0e-6),
+        program(11, 1_000_000.1),
+        program(11, -1_000_000.1),
+        program(11, f64::NAN),
+        program(11, f64::INFINITY),
+    ] {
+        assert_eq!(
+            invalid.validate(),
+            Err("assistant CAD body feature is invalid".to_owned())
+        );
+    }
+
+    for invalid in [
+        serde_json::json!({
+            "operations": [{
+                "operation": "append_feature",
+                "definition_id": 7,
+                "name": "Injected offset",
+                "feature": {
+                    "type": "planar_offset",
+                    "profile_feature_id": 11,
+                    "distance_mm": 8,
+                    "output_feature_id": 99
+                }
+            }]
+        }),
+        serde_json::json!({
+            "operations": [{
+                "operation": "append_feature",
+                "definition_id": 7,
+                "name": "Missing distance",
+                "feature": {
+                    "type": "planar_offset",
+                    "profile_feature_id": 11
+                }
+            }]
+        }),
+    ] {
+        assert!(serde_json::from_value::<AssistantCadEditProgram>(invalid).is_err());
+    }
+}
+
+#[test]
 fn cad_edit_append_sweep_contract_is_strict_and_host_id_assigned() {
     let program = AssistantCadEditProgram {
         operations: vec![AssistantCadEditOperation::AppendFeature {

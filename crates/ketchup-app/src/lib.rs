@@ -12735,6 +12735,7 @@ impl KetchupApp {
 
         let mut commands = Vec::new();
         let mut appended_exact_features = Vec::new();
+        let mut appended_planar_offsets = Vec::new();
         let mut working_transforms = snapshot
             .occurrences()
             .map(|occurrence| (occurrence.id(), occurrence.transform()))
@@ -13264,6 +13265,54 @@ impl KetchupApp {
                                 },
                             )?,
                         },
+                        AssistantCadBodyFeature::PlanarOffset {
+                            profile_feature_id,
+                            distance_mm,
+                        } => {
+                            let profile = FeatureId(*profile_feature_id);
+                            let source = snapshot.feature(profile).ok_or_else(|| {
+                                assistant_canonical_rejection(
+                                    CanonicalError::FeatureNotFound(profile),
+                                    operation_name,
+                                    &format!("feature:{}", profile.0),
+                                )
+                            })?;
+                            if source.definition_id() != definition_id {
+                                return Err(assistant_planning_rejection(
+                                    "planning.cad_feature_input_ownership_invalid",
+                                    operation_name,
+                                    &format!("feature:{}", profile.0),
+                                    "The requested Planar Offset profile belongs to a different definition.",
+                                    "Target the sole supported exact rectangular profile in the requested definition.",
+                                ));
+                            }
+                            let definition = snapshot
+                                .definition(definition_id)
+                                .expect("Assistant AppendFeature definition was resolved");
+                            if snapshot.feature_is_suppressed(profile)
+                                || definition.feature_ids() != [profile]
+                                || !matches!(source.kind(), FeatureKind::Profile { .. })
+                            {
+                                return Err(assistant_planning_rejection(
+                                    "planning.cad_feature_input_unsupported",
+                                    operation_name,
+                                    &format!("feature:{}", profile.0),
+                                    "The requested Planar Offset profile is not supported by exact evaluation.",
+                                    "Use the sole unsuppressed rectangular profile in the requested definition.",
+                                ));
+                            }
+                            FeatureKind::PlanarOffset {
+                                profile,
+                                distance: Dimension::new(distance_mm.to_string(), *distance_mm)
+                                    .map_err(|error| {
+                                        assistant_canonical_rejection(
+                                            error,
+                                            operation_name,
+                                            "feature.distance_mm",
+                                        )
+                                    })?,
+                            }
+                        }
                         AssistantCadBodyFeature::Sweep {
                             profile_feature_id,
                             path_feature_id,
@@ -13618,7 +13667,11 @@ impl KetchupApp {
                         name: name.clone(),
                         kind,
                     });
-                    appended_exact_features.push((definition_id, id));
+                    if matches!(feature, AssistantCadBodyFeature::PlanarOffset { .. }) {
+                        appended_planar_offsets.push((definition_id, id));
+                    } else {
+                        appended_exact_features.push((definition_id, id));
+                    }
                 }
                 AssistantCadEditOperation::SetDimension {
                     feature_id,
@@ -13923,7 +13976,7 @@ impl KetchupApp {
             }
         }
         let batch = CommandBatch::new(commands);
-        if !appended_exact_features.is_empty() {
+        if !appended_exact_features.is_empty() || !appended_planar_offsets.is_empty() {
             let candidate = self.document.preview_batch(&batch).map_err(|error| {
                 assistant_canonical_rejection(error, "append_feature", &document_target)
             })?;
@@ -13939,6 +13992,27 @@ impl KetchupApp {
                         )
                     },
                 )?;
+            }
+            for (definition_id, feature_id) in appended_planar_offsets {
+                let request = ExactPlanarOffsetRequest::from_snapshot(&candidate, definition_id)
+                    .map_err(|error| {
+                        assistant_planning_rejection(
+                            "planning.cad_feature_result_unsupported",
+                            "append_feature",
+                            &format!("feature:{}", feature_id.0),
+                            error.to_string(),
+                            "Use one rectangular profile and a signed distance that leaves a non-collapsing planar result.",
+                        )
+                    })?;
+                if request.offset_feature_id != feature_id {
+                    return Err(assistant_planning_rejection(
+                        "planning.cad_feature_result_unsupported",
+                        "append_feature",
+                        &format!("feature:{}", feature_id.0),
+                        "The Planar Offset result does not match the host-assigned output feature.",
+                        "Use the sole rectangular profile in the requested definition.",
+                    ));
+                }
             }
         }
         Ok(batch)
