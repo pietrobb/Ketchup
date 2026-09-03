@@ -1168,13 +1168,16 @@ fn operation_bounds(
             let target = node_bounds[target.0 as usize];
             let tool = node_bounds[tool.0 as usize];
             Ok(match operation {
-                ExactBRepBooleanOperation::Cut | ExactBRepBooleanOperation::Split => target,
+                ExactBRepBooleanOperation::Cut => target,
                 ExactBRepBooleanOperation::Union => target
                     .zip(tool)
                     .map(|(target, tool)| bounds_union(target, tool)),
                 ExactBRepBooleanOperation::Intersect => target
                     .zip(tool)
                     .and_then(|(target, tool)| bounds_intersection(target, tool)),
+                ExactBRepBooleanOperation::Split => target
+                    .zip(tool)
+                    .and_then(|(target, tool)| bounds_intersection(target, tool).map(|_| target)),
             })
         }
         ExactBRepOperation::Revolve { .. }

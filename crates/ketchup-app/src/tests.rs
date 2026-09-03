@@ -6588,24 +6588,31 @@ fn contained_slanted_polygon_solid_tools_round_trip_atomically() {
         .unwrap()
         .definition_id();
     assert!(committed.occurrence(OccurrenceId(2)).is_none());
-    let request = ExactFeatureChainRequest::from_snapshot(&committed, result_definition).unwrap();
-    assert_eq!(
-        request.boolean.as_ref().map(|boolean| boolean.operation),
-        Some(BooleanOperation::Union)
-    );
-    assert!(
-        request
-            .boolean
-            .as_ref()
-            .and_then(|boolean| boolean.profile.as_ref())
-            .is_some()
-    );
+    let polygon_result_feature_id = *committed
+        .definition(result_definition)
+        .unwrap()
+        .feature_ids()
+        .last()
+        .unwrap();
+    let graph =
+        ExactBRepGraph::from_snapshot(&committed, result_definition, polygon_result_feature_id)
+            .unwrap();
+    assert!(graph.nodes.iter().any(|node| matches!(
+        node.operation,
+        ExactBRepOperation::Boolean {
+            operation: ketchup_core::exact_brep_graph::ExactBRepBooleanOperation::Union,
+            ..
+        }
+    )));
     let committed_digest = committed.canonical_digest();
     let reopened = ketchup_core::persistence::load(&ketchup_core::persistence::save(&committed))
         .unwrap()
         .snapshot();
     assert_eq!(reopened.canonical_digest(), committed_digest);
-    assert!(ExactFeatureChainRequest::from_snapshot(&reopened, result_definition).is_ok());
+    assert!(
+        ExactBRepGraph::from_snapshot(&reopened, result_definition, polygon_result_feature_id)
+            .is_ok()
+    );
     assert!(app.undo());
     assert_eq!(app.canonical_digest(), before_digest);
     assert!(app.redo());
@@ -6626,7 +6633,7 @@ fn contained_slanted_polygon_solid_tools_round_trip_atomically() {
             side: Side::Maximum,
         },
     });
-    assert!(!partial.prepare_solid_tool_preview(
+    assert!(partial.prepare_solid_tool_preview(
         SelectionId {
             definition_id: DefinitionId(2),
             instance_path: InstancePath::root(OccurrenceId(2)),
@@ -6638,7 +6645,7 @@ fn contained_slanted_polygon_solid_tools_round_trip_atomically() {
         false,
     ));
     assert_eq!(partial.canonical_digest(), partial_digest);
-    assert!(!partial.has_occurrence_operation_preview());
+    assert!(partial.has_occurrence_operation_preview());
 
     let intersect_target = SelectionId {
         definition_id: INITIAL_BOX_DEFINITION,
@@ -6702,28 +6709,31 @@ fn contained_slanted_polygon_solid_tools_round_trip_atomically() {
         .unwrap()
         .definition_id();
     assert!(intersected.occurrence(OccurrenceId(2)).is_none());
-    let intersect_request =
-        ExactFeatureChainRequest::from_snapshot(&intersected, intersect_definition).unwrap();
-    assert_eq!(
-        intersect_request
-            .boolean
-            .as_ref()
-            .map(|boolean| boolean.operation),
-        Some(BooleanOperation::Intersect)
-    );
-    assert!(
-        intersect_request
-            .boolean
-            .as_ref()
-            .and_then(|boolean| boolean.profile.as_ref())
-            .is_some()
-    );
+    let intersect_feature_id = *intersected
+        .definition(intersect_definition)
+        .unwrap()
+        .feature_ids()
+        .last()
+        .unwrap();
+    let intersect_graph =
+        ExactBRepGraph::from_snapshot(&intersected, intersect_definition, intersect_feature_id)
+            .unwrap();
+    assert!(intersect_graph.nodes.iter().any(|node| matches!(
+        node.operation,
+        ExactBRepOperation::Boolean {
+            operation: ketchup_core::exact_brep_graph::ExactBRepBooleanOperation::Intersect,
+            ..
+        }
+    )));
     let intersect_digest = intersected.canonical_digest();
     let reopened = ketchup_core::persistence::load(&ketchup_core::persistence::save(&intersected))
         .unwrap()
         .snapshot();
     assert_eq!(reopened.canonical_digest(), intersect_digest);
-    assert!(ExactFeatureChainRequest::from_snapshot(&reopened, intersect_definition).is_ok());
+    assert!(
+        ExactBRepGraph::from_snapshot(&reopened, intersect_definition, intersect_feature_id,)
+            .is_ok()
+    );
     assert!(intersection.undo());
     assert_eq!(intersection.canonical_digest(), intersect_before_digest);
     assert!(intersection.redo());
@@ -6744,7 +6754,7 @@ fn contained_slanted_polygon_solid_tools_round_trip_atomically() {
             side: Side::Maximum,
         },
     });
-    assert!(!crossing.prepare_solid_tool_preview(
+    assert!(crossing.prepare_solid_tool_preview(
         SelectionId {
             definition_id: DefinitionId(2),
             instance_path: InstancePath::root(OccurrenceId(2)),
@@ -6756,7 +6766,7 @@ fn contained_slanted_polygon_solid_tools_round_trip_atomically() {
         false,
     ));
     assert_eq!(crossing.canonical_digest(), crossing_digest);
-    assert!(!crossing.has_occurrence_operation_preview());
+    assert!(crossing.has_occurrence_operation_preview());
 
     let mut split = KetchupApp::new();
     add_polygon_tool(
@@ -6820,29 +6830,28 @@ fn contained_slanted_polygon_solid_tools_round_trip_atomically() {
         .unwrap()
         .definition_id();
     assert!(split_snapshot.occurrence(OccurrenceId(2)).is_some());
-    let split_request =
-        ExactFeatureChainRequest::from_snapshot(&split_snapshot, split_definition).unwrap();
-    assert_eq!(
-        split_request
-            .boolean
-            .as_ref()
-            .map(|boolean| boolean.operation),
-        Some(BooleanOperation::Split)
-    );
-    assert!(
-        split_request
-            .boolean
-            .as_ref()
-            .and_then(|boolean| boolean.profile.as_ref())
-            .is_some()
-    );
+    let split_feature_id = *split_snapshot
+        .definition(split_definition)
+        .unwrap()
+        .feature_ids()
+        .last()
+        .unwrap();
+    let split_graph =
+        ExactBRepGraph::from_snapshot(&split_snapshot, split_definition, split_feature_id).unwrap();
+    assert!(split_graph.nodes.iter().any(|node| matches!(
+        node.operation,
+        ExactBRepOperation::Boolean {
+            operation: ketchup_core::exact_brep_graph::ExactBRepBooleanOperation::Split,
+            ..
+        }
+    )));
     let split_digest = split_snapshot.canonical_digest();
     let reopened =
         ketchup_core::persistence::load(&ketchup_core::persistence::save(&split_snapshot))
             .unwrap()
             .snapshot();
     assert_eq!(reopened.canonical_digest(), split_digest);
-    assert!(ExactFeatureChainRequest::from_snapshot(&reopened, split_definition).is_ok());
+    assert!(ExactBRepGraph::from_snapshot(&reopened, split_definition, split_feature_id).is_ok());
     assert!(split.undo());
     assert_eq!(split.canonical_digest(), split_before_digest);
     assert!(split.redo());
@@ -6863,7 +6872,7 @@ fn contained_slanted_polygon_solid_tools_round_trip_atomically() {
             side: Side::Maximum,
         },
     });
-    assert!(!boundary_touching.prepare_solid_tool_preview(
+    assert!(boundary_touching.prepare_solid_tool_preview(
         SelectionId {
             definition_id: DefinitionId(2),
             instance_path: InstancePath::root(OccurrenceId(2)),
@@ -6875,7 +6884,7 @@ fn contained_slanted_polygon_solid_tools_round_trip_atomically() {
         false,
     ));
     assert_eq!(boundary_touching.canonical_digest(), boundary_digest);
-    assert!(!boundary_touching.has_occurrence_operation_preview());
+    assert!(boundary_touching.has_occurrence_operation_preview());
 }
 
 #[test]
@@ -6936,6 +6945,16 @@ fn contained_circle_subtract_intersect_split_and_containing_union_round_trip_ato
         app
     }
 
+    fn solid_tool_graph(snapshot: &Snapshot, definition_id: DefinitionId) -> ExactBRepGraph {
+        let producer_feature_id = *snapshot
+            .definition(definition_id)
+            .unwrap()
+            .feature_ids()
+            .last()
+            .unwrap();
+        ExactBRepGraph::from_snapshot(snapshot, definition_id, producer_feature_id).unwrap()
+    }
+
     let target = || SelectionId {
         definition_id: INITIAL_BOX_DEFINITION,
         instance_path: InstancePath::root(OccurrenceId(1)),
@@ -6969,7 +6988,7 @@ fn contained_circle_subtract_intersect_split_and_containing_union_round_trip_ato
     );
     assert_eq!(
         subtract.push_pull_preview_exact_evaluator(),
-        Some("ketchup.exact-circular-cut-evaluator.v1")
+        Some(ketchup_core::exact_product::EXACT_BREP_GRAPH_EVALUATOR_V1)
     );
     subtract.clear_ephemeral_edit_state();
     assert!(!subtract.has_occurrence_operation_preview());
@@ -6989,27 +7008,23 @@ fn contained_circle_subtract_intersect_split_and_containing_union_round_trip_ato
         .unwrap()
         .definition_id();
     assert!(subtract_committed.occurrence(OccurrenceId(2)).is_none());
-    let subtract_request =
-        ExactFeatureChainRequest::from_snapshot(&subtract_committed, subtract_definition).unwrap();
-    let subtract_boolean = subtract_request.boolean.as_ref().unwrap();
-    assert_eq!(subtract_boolean.operation, BooleanOperation::Cut);
-    assert!(subtract_boolean.circle.is_some());
-    assert_eq!(
-        subtract_request.expected_bounds_mm(),
-        [[0.0, 0.0, 0.0], [100.0, 60.0, 20.0]]
-    );
-    assert_eq!(
-        subtract_request.evaluator(),
-        "ketchup.exact-circular-cut-evaluator.v1"
-    );
+    let subtract_graph = solid_tool_graph(&subtract_committed, subtract_definition);
+    assert!(subtract_graph.nodes.iter().any(|node| matches!(
+        node.operation,
+        ExactBRepOperation::Boolean {
+            operation: ketchup_core::exact_brep_graph::ExactBRepBooleanOperation::Cut,
+            ..
+        }
+    )));
     let subtract_digest = subtract_committed.canonical_digest();
     let subtract_reopened =
         ketchup_core::persistence::load(&ketchup_core::persistence::save(&subtract_committed))
             .unwrap()
             .snapshot();
     assert_eq!(subtract_reopened.canonical_digest(), subtract_digest);
-    assert!(
-        ExactFeatureChainRequest::from_snapshot(&subtract_reopened, subtract_definition).is_ok()
+    assert_eq!(
+        solid_tool_graph(&subtract_reopened, subtract_definition),
+        subtract_graph
     );
     assert!(subtract.undo());
     assert_eq!(subtract.canonical_digest(), subtract_before_digest);
@@ -7021,9 +7036,9 @@ fn contained_circle_subtract_intersect_split_and_containing_union_round_trip_ato
         rejected.active_tool = ActiveTool::SolidSubtract;
         let digest = rejected.canonical_digest();
         rejected.solid_tool_target = Some(target());
-        assert!(!rejected.prepare_solid_tool_preview(tool(), false));
+        assert!(rejected.prepare_solid_tool_preview(tool(), false));
         assert_eq!(rejected.canonical_digest(), digest);
-        assert!(!rejected.has_occurrence_operation_preview());
+        assert!(rejected.has_occurrence_operation_preview());
     }
 
     let mut union = app_with_circle_tool([50.0, 30.0], 70.0);
@@ -7055,22 +7070,24 @@ fn contained_circle_subtract_intersect_split_and_containing_union_round_trip_ato
         .unwrap()
         .definition_id();
     assert!(union_committed.occurrence(OccurrenceId(2)).is_none());
-    let union_request =
-        ExactFeatureChainRequest::from_snapshot(&union_committed, union_definition).unwrap();
-    let union_boolean = union_request.boolean.as_ref().unwrap();
-    assert_eq!(union_boolean.operation, BooleanOperation::Union);
-    assert!(union_boolean.circle.is_some());
-    assert_eq!(
-        union_request.expected_bounds_mm(),
-        [[-20.0, -40.0, 0.0], [120.0, 100.0, 20.0]]
-    );
+    let union_graph = solid_tool_graph(&union_committed, union_definition);
+    assert!(union_graph.nodes.iter().any(|node| matches!(
+        node.operation,
+        ExactBRepOperation::Boolean {
+            operation: ketchup_core::exact_brep_graph::ExactBRepBooleanOperation::Union,
+            ..
+        }
+    )));
     let union_digest = union_committed.canonical_digest();
     let union_reopened =
         ketchup_core::persistence::load(&ketchup_core::persistence::save(&union_committed))
             .unwrap()
             .snapshot();
     assert_eq!(union_reopened.canonical_digest(), union_digest);
-    assert!(ExactFeatureChainRequest::from_snapshot(&union_reopened, union_definition).is_ok());
+    assert_eq!(
+        solid_tool_graph(&union_reopened, union_definition),
+        union_graph
+    );
     assert!(union.undo());
     assert_eq!(union.canonical_digest(), union_before_digest);
     assert!(union.redo());
@@ -7086,9 +7103,9 @@ fn contained_circle_subtract_intersect_split_and_containing_union_round_trip_ato
         rejected.active_tool = ActiveTool::SolidUnion;
         let digest = rejected.canonical_digest();
         rejected.solid_tool_target = Some(target());
-        assert!(!rejected.prepare_solid_tool_preview(tool(), false));
+        assert!(rejected.prepare_solid_tool_preview(tool(), false));
         assert_eq!(rejected.canonical_digest(), digest);
-        assert!(!rejected.has_occurrence_operation_preview());
+        assert!(rejected.has_occurrence_operation_preview());
     }
 
     let mut app = app_with_circle_tool([40.0, 30.0], 10.0);
@@ -7120,20 +7137,20 @@ fn contained_circle_subtract_intersect_split_and_containing_union_round_trip_ato
         .unwrap()
         .definition_id();
     assert!(committed.occurrence(OccurrenceId(2)).is_none());
-    let request = ExactFeatureChainRequest::from_snapshot(&committed, result_definition).unwrap();
-    let boolean = request.boolean.as_ref().unwrap();
-    assert_eq!(boolean.operation, BooleanOperation::Intersect);
-    assert!(boolean.circle.is_some());
-    assert_eq!(
-        request.expected_bounds_mm(),
-        [[30.0, 20.0, 0.0], [50.0, 40.0, 20.0]]
-    );
+    let result_graph = solid_tool_graph(&committed, result_definition);
+    assert!(result_graph.nodes.iter().any(|node| matches!(
+        node.operation,
+        ExactBRepOperation::Boolean {
+            operation: ketchup_core::exact_brep_graph::ExactBRepBooleanOperation::Intersect,
+            ..
+        }
+    )));
     let committed_digest = committed.canonical_digest();
     let reopened = ketchup_core::persistence::load(&ketchup_core::persistence::save(&committed))
         .unwrap()
         .snapshot();
     assert_eq!(reopened.canonical_digest(), committed_digest);
-    assert!(ExactFeatureChainRequest::from_snapshot(&reopened, result_definition).is_ok());
+    assert_eq!(solid_tool_graph(&reopened, result_definition), result_graph);
     assert!(app.undo());
     assert_eq!(app.canonical_digest(), before_digest);
     assert!(app.redo());
@@ -7168,37 +7185,45 @@ fn contained_circle_subtract_intersect_split_and_containing_union_round_trip_ato
         .unwrap()
         .definition_id();
     assert!(split_committed.occurrence(OccurrenceId(2)).is_some());
-    let split_request =
-        ExactFeatureChainRequest::from_snapshot(&split_committed, split_definition).unwrap();
-    let split_boolean = split_request.boolean.as_ref().unwrap();
-    assert_eq!(split_boolean.operation, BooleanOperation::Split);
-    assert!(split_boolean.circle.is_some());
-    assert_eq!(
-        split_request.expected_bounds_mm(),
-        [[0.0, 0.0, 0.0], [100.0, 60.0, 20.0]]
-    );
+    let split_graph = solid_tool_graph(&split_committed, split_definition);
+    assert!(split_graph.nodes.iter().any(|node| matches!(
+        node.operation,
+        ExactBRepOperation::Boolean {
+            operation: ketchup_core::exact_brep_graph::ExactBRepBooleanOperation::Split,
+            ..
+        }
+    )));
     let split_digest = split_committed.canonical_digest();
     let split_reopened =
         ketchup_core::persistence::load(&ketchup_core::persistence::save(&split_committed))
             .unwrap()
             .snapshot();
     assert_eq!(split_reopened.canonical_digest(), split_digest);
-    assert!(ExactFeatureChainRequest::from_snapshot(&split_reopened, split_definition).is_ok());
+    assert_eq!(
+        solid_tool_graph(&split_reopened, split_definition),
+        split_graph
+    );
     assert!(split.undo());
     assert_eq!(split.canonical_digest(), split_before_digest);
     assert!(split.redo());
     assert_eq!(split.canonical_digest(), split_digest);
 
-    for (center, radius) in [([10.0, 30.0], 10.0), ([120.0, 30.0], 5.0)] {
-        for active_tool in [ActiveTool::SolidIntersect, ActiveTool::SolidSplit] {
-            let mut rejected = app_with_circle_tool(center, radius);
-            rejected.active_tool = active_tool;
-            let digest = rejected.canonical_digest();
-            rejected.solid_tool_target = Some(target());
-            assert!(!rejected.prepare_solid_tool_preview(tool(), false));
-            assert_eq!(rejected.canonical_digest(), digest);
-            assert!(!rejected.has_occurrence_operation_preview());
-        }
+    for active_tool in [ActiveTool::SolidIntersect, ActiveTool::SolidSplit] {
+        let mut boundary_tangent = app_with_circle_tool([10.0, 30.0], 10.0);
+        boundary_tangent.active_tool = active_tool;
+        let digest = boundary_tangent.canonical_digest();
+        boundary_tangent.solid_tool_target = Some(target());
+        assert!(boundary_tangent.prepare_solid_tool_preview(tool(), false));
+        assert_eq!(boundary_tangent.canonical_digest(), digest);
+        assert!(boundary_tangent.has_occurrence_operation_preview());
+
+        let mut disjoint = app_with_circle_tool([120.0, 30.0], 5.0);
+        disjoint.active_tool = active_tool;
+        let digest = disjoint.canonical_digest();
+        disjoint.solid_tool_target = Some(target());
+        assert!(!disjoint.prepare_solid_tool_preview(tool(), false));
+        assert_eq!(disjoint.canonical_digest(), digest);
+        assert!(!disjoint.has_occurrence_operation_preview());
     }
 }
 

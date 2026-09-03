@@ -13,10 +13,10 @@ use ketchup_core::document::{
     Snapshot, SolidToolPlan, StableEdgeRole, StableFaceRole, TagId, Transform,
     UnresolvedMappingReason, WorldEntityPath,
 };
-use ketchup_core::exact_product::{
-    EXACT_BOOLEAN_INTERSECT_EVALUATOR_V1, EXACT_BOOLEAN_SPLIT_EVALUATOR_V1,
-    EXACT_CIRCLE_EVALUATOR_V1, ExactFeatureChainRequest,
+use ketchup_core::exact_brep_graph::{
+    ExactBRepBooleanOperation, ExactBRepGraph, ExactBRepOperation,
 };
+use ketchup_core::exact_product::{EXACT_CIRCLE_EVALUATOR_V1, ExactFeatureChainRequest};
 use ketchup_core::persistence;
 use ketchup_core::sketch::{
     PrincipalPlane, SketchConstraint, SketchConstraintId, SketchConstraintKind, SketchEntity,
@@ -2731,11 +2731,85 @@ fn separate_solid_tool_plan(operation: BooleanOperation, keep_tool: bool) -> Sol
             FeatureId(404),
             FeatureId(405),
             FeatureId(406),
+            FeatureId(407),
+            FeatureId(408),
         ],
         result_definition_name: "Solid Tool result".to_owned(),
         result_feature_name: "Boolean result".to_owned(),
         keep_tool,
     }
+}
+
+#[test]
+fn separate_occurrence_extrusions_use_graph_first_rigid_transform_and_distinct_heights() {
+    let mut document = seed_separate_solid_tool_document(0.0, 0.0, 30.0);
+    let angle = 30.0_f64.to_radians();
+    let tool_transform = Transform::from_matrix([
+        angle.cos(),
+        -angle.sin(),
+        0.0,
+        25.0,
+        angle.sin(),
+        angle.cos(),
+        0.0,
+        10.0,
+        0.0,
+        0.0,
+        1.0,
+        5.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+    ])
+    .unwrap();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetFeatureDimension {
+                id: FeatureId(203),
+                dimension: height("70"),
+            },
+            CanonicalCommand::SetOccurrenceTransform {
+                id: OccurrenceId(302),
+                transform: tool_transform,
+            },
+        ]))
+        .unwrap();
+    document.discard_history_before_current();
+
+    document
+        .apply_batch(&CommandBatch::new(vec![CanonicalCommand::ApplySolidTool(
+            separate_solid_tool_plan(BooleanOperation::Cut, true),
+        )]))
+        .unwrap();
+
+    let snapshot = document.current();
+    assert_eq!(
+        snapshot
+            .definition(DefinitionId(401))
+            .unwrap()
+            .feature_ids()
+            .len(),
+        7
+    );
+    assert!(matches!(
+        snapshot.feature(FeatureId(407)).unwrap().kind(),
+        FeatureKind::RigidTransform {
+            target: FeatureId(406),
+            transform,
+        } if *transform == tool_transform
+    ));
+    let graph =
+        ExactBRepGraph::from_snapshot(&snapshot, DefinitionId(401), FeatureId(408)).unwrap();
+    assert_eq!(
+        graph
+            .nodes
+            .iter()
+            .filter(|node| matches!(node.operation, ExactBRepOperation::RigidTransform { .. }))
+            .count(),
+        2
+    );
+    assert_eq!(document.visible_undo_steps(), 1);
 }
 
 #[test]
@@ -2775,32 +2849,35 @@ fn separate_occurrence_subtract_is_one_canonical_undo_step_and_persists_stable_i
             FeatureId(404),
             FeatureId(405),
             FeatureId(406),
+            FeatureId(407),
+            FeatureId(408),
         ]
     );
     assert!(matches!(
-        document.current().feature(FeatureId(404)).unwrap().kind(),
-        FeatureKind::Profile { points_mm }
-            if points_mm == &vec![[20.0, 20.0], [60.0, 20.0], [60.0, 50.0], [20.0, 50.0]]
+        document.current().feature(FeatureId(407)).unwrap().kind(),
+        FeatureKind::RigidTransform {
+            target: FeatureId(406),
+            transform,
+        } if transform.matrix()[3] == 20.0 && transform.matrix()[7] == 20.0
     ));
     assert!(matches!(
-        document.current().feature(FeatureId(406)).unwrap().kind(),
+        document.current().feature(FeatureId(408)).unwrap().kind(),
         FeatureKind::Boolean {
             operation: BooleanOperation::Cut,
-            target: FeatureId(403),
-            tool: FeatureId(405),
+            target: FeatureId(404),
+            tool: FeatureId(407),
         }
     ));
-    let exact =
-        ExactFeatureChainRequest::from_snapshot(&document.current(), DefinitionId(401)).unwrap();
-    assert_eq!(exact.extrusion_feature_id, FeatureId(403));
-    assert!(matches!(
-        exact.boolean,
-        Some(ref boolean)
-            if boolean.feature_id == FeatureId(406)
-                && boolean.operation == BooleanOperation::Cut
-                && boolean.target_feature_id == FeatureId(403)
-                && boolean.tool_feature_id == FeatureId(405)
-    ));
+    let graph =
+        ExactBRepGraph::from_snapshot(&document.current(), DefinitionId(401), FeatureId(408))
+            .unwrap();
+    assert!(graph.nodes.iter().any(|node| matches!(
+        node.operation,
+        ExactBRepOperation::Boolean {
+            operation: ExactBRepBooleanOperation::Cut,
+            ..
+        }
+    )));
 
     assert_eq!(document.undo().unwrap().canonical_digest(), before);
     assert_eq!(
@@ -2848,32 +2925,30 @@ fn separate_occurrence_union_keep_tool_preserves_both_occurrence_identities() {
     assert_eq!(tool.definition_id(), DefinitionId(201));
     assert_eq!(tool.transform().matrix()[3], 80.0);
     assert!(matches!(
-        document.current().feature(FeatureId(404)).unwrap().kind(),
-        FeatureKind::Profile { points_mm }
-            if points_mm == &vec![[80.0, 0.0], [120.0, 0.0], [120.0, 80.0], [80.0, 80.0]]
+        document.current().feature(FeatureId(407)).unwrap().kind(),
+        FeatureKind::RigidTransform {
+            target: FeatureId(406),
+            transform,
+        } if transform.matrix()[3] == 80.0
     ));
     assert!(matches!(
-        document.current().feature(FeatureId(406)).unwrap().kind(),
+        document.current().feature(FeatureId(408)).unwrap().kind(),
         FeatureKind::Boolean {
             operation: BooleanOperation::Union,
-            target: FeatureId(403),
-            tool: FeatureId(405),
+            target: FeatureId(404),
+            tool: FeatureId(407),
         }
     ));
-    let exact =
-        ExactFeatureChainRequest::from_snapshot(&document.current(), DefinitionId(401)).unwrap();
-    assert_eq!(
-        exact.expected_bounds_mm(),
-        [[0.0, 0.0, 0.0], [120.0, 80.0, 50.0]]
-    );
-    assert!(matches!(
-        exact.boolean,
-        Some(ref boolean)
-            if boolean.feature_id == FeatureId(406)
-                && boolean.operation == BooleanOperation::Union
-                && boolean.target_feature_id == FeatureId(403)
-                && boolean.tool_feature_id == FeatureId(405)
-    ));
+    let graph =
+        ExactBRepGraph::from_snapshot(&document.current(), DefinitionId(401), FeatureId(408))
+            .unwrap();
+    assert!(graph.nodes.iter().any(|node| matches!(
+        node.operation,
+        ExactBRepOperation::Boolean {
+            operation: ExactBRepBooleanOperation::Union,
+            ..
+        }
+    )));
     assert_eq!(document.visible_undo_steps(), 1);
 
     let reopened = persistence::load(&persistence::save(&document.current())).unwrap();
@@ -2900,33 +2975,29 @@ fn separate_occurrence_intersect_is_canonical_exact_unique_and_persistent() {
     assert_ne!(applied, before);
     assert_eq!(document.visible_undo_steps(), 1);
     assert!(matches!(
-        document.current().feature(FeatureId(406)).unwrap().kind(),
+        document.current().feature(FeatureId(408)).unwrap().kind(),
         FeatureKind::Boolean {
             operation: BooleanOperation::Intersect,
-            target: FeatureId(403),
-            tool: FeatureId(405),
+            target: FeatureId(404),
+            tool: FeatureId(407),
         }
     ));
     let state = encode_semantic_state(&document.current());
     assert!(
         state
             .complete_v1()
-            .contains("feature.406.operation=intersect")
+            .contains("feature.408.operation=intersect")
     );
-    let exact_request =
-        ExactFeatureChainRequest::from_snapshot(&document.current(), DefinitionId(401)).unwrap();
-    assert_eq!(
-        exact_request.boolean.as_ref().unwrap().operation,
-        BooleanOperation::Intersect
-    );
-    assert_eq!(
-        exact_request.evaluator(),
-        EXACT_BOOLEAN_INTERSECT_EVALUATOR_V1
-    );
-    assert_eq!(
-        exact_request.expected_bounds_mm(),
-        [[70.0, 20.0, 0.0], [100.0, 50.0, 50.0]]
-    );
+    let graph =
+        ExactBRepGraph::from_snapshot(&document.current(), DefinitionId(401), FeatureId(408))
+            .unwrap();
+    assert!(graph.nodes.iter().any(|node| matches!(
+        node.operation,
+        ExactBRepOperation::Boolean {
+            operation: ExactBRepBooleanOperation::Intersect,
+            ..
+        }
+    )));
 
     assert_eq!(document.undo().unwrap().canonical_digest(), before);
     assert_eq!(document.redo().unwrap().canonical_digest(), applied);
@@ -2940,8 +3011,8 @@ fn separate_occurrence_intersect_is_canonical_exact_unique_and_persistent() {
         .unwrap()
         .definition_id();
     let unique_features = unique.definition(unique_definition).unwrap().feature_ids();
-    let [_, unique_target, _, unique_tool, unique_result] = unique_features else {
-        panic!("Intersect Make Unique must preserve the five-feature chain");
+    let [_, _, unique_target, _, _, unique_tool, unique_result] = unique_features else {
+        panic!("Intersect Make Unique must preserve the graph-first chain");
     };
     assert!(matches!(
         unique.feature(*unique_result).unwrap().kind(),
@@ -2967,7 +3038,7 @@ fn separate_occurrence_intersect_is_canonical_exact_unique_and_persistent() {
     ));
 
     let mut touching = seed_separate_solid_tool_document(100.0, 0.0, 30.0);
-    let touching_before = touching.current().canonical_digest();
+    let touching_digest = touching.current().canonical_digest();
     assert_eq!(
         touching
             .apply_batch(&CommandBatch::new(vec![CanonicalCommand::ApplySolidTool(
@@ -2977,7 +3048,7 @@ fn separate_occurrence_intersect_is_canonical_exact_unique_and_persistent() {
             .unwrap(),
         CanonicalError::InvalidSolidToolPlan
     );
-    assert_eq!(touching.current().canonical_digest(), touching_before);
+    assert_eq!(touching.current().canonical_digest(), touching_digest);
     assert_eq!(touching.visible_undo_steps(), 0);
 }
 
@@ -3011,29 +3082,28 @@ fn separate_occurrence_split_is_stable_unique_persistent_and_exact_ready() {
     assert_eq!(splitter.transform().matrix()[3], 70.0);
     assert_eq!(splitter.transform().matrix()[7], 20.0);
     assert!(matches!(
-        document.current().feature(FeatureId(406)).unwrap().kind(),
+        document.current().feature(FeatureId(408)).unwrap().kind(),
         FeatureKind::Boolean {
             operation: BooleanOperation::Split,
-            target: FeatureId(403),
-            tool: FeatureId(405),
+            target: FeatureId(404),
+            tool: FeatureId(407),
         }
     ));
     assert!(
         encode_semantic_state(&document.current())
             .complete_v1()
-            .contains("feature.406.operation=split")
+            .contains("feature.408.operation=split")
     );
-    let exact_request =
-        ExactFeatureChainRequest::from_snapshot(&document.current(), DefinitionId(401)).unwrap();
-    assert_eq!(
-        exact_request.boolean.as_ref().unwrap().operation,
-        BooleanOperation::Split
-    );
-    assert_eq!(exact_request.evaluator(), EXACT_BOOLEAN_SPLIT_EVALUATOR_V1);
-    assert_eq!(
-        exact_request.expected_bounds_mm(),
-        [[0.0, 0.0, 0.0], [100.0, 80.0, 50.0]]
-    );
+    let graph =
+        ExactBRepGraph::from_snapshot(&document.current(), DefinitionId(401), FeatureId(408))
+            .unwrap();
+    assert!(graph.nodes.iter().any(|node| matches!(
+        node.operation,
+        ExactBRepOperation::Boolean {
+            operation: ExactBRepBooleanOperation::Split,
+            ..
+        }
+    )));
 
     assert_eq!(document.undo().unwrap().canonical_digest(), before);
     assert_eq!(document.redo().unwrap().canonical_digest(), applied);
@@ -3047,8 +3117,8 @@ fn separate_occurrence_split_is_stable_unique_persistent_and_exact_ready() {
         .unwrap()
         .definition_id();
     let unique_features = unique.definition(unique_definition).unwrap().feature_ids();
-    let [_, unique_target, _, unique_tool, unique_result] = unique_features else {
-        panic!("Split Make Unique must preserve the five-feature chain");
+    let [_, _, unique_target, _, _, unique_tool, unique_result] = unique_features else {
+        panic!("Split Make Unique must preserve the graph-first chain");
     };
     assert!(matches!(
         unique.feature(*unique_result).unwrap().kind(),
@@ -3088,7 +3158,7 @@ fn separate_occurrence_split_is_stable_unique_persistent_and_exact_ready() {
     assert_eq!(consume.visible_undo_steps(), 0);
 
     let mut touching = seed_separate_solid_tool_document(100.0, 0.0, 30.0);
-    let touching_before = touching.current().canonical_digest();
+    let touching_digest = touching.current().canonical_digest();
     assert_eq!(
         touching
             .apply_batch(&CommandBatch::new(vec![CanonicalCommand::ApplySolidTool(
@@ -3098,7 +3168,7 @@ fn separate_occurrence_split_is_stable_unique_persistent_and_exact_ready() {
             .unwrap(),
         CanonicalError::InvalidSolidToolPlan
     );
-    assert_eq!(touching.current().canonical_digest(), touching_before);
+    assert_eq!(touching.current().canonical_digest(), touching_digest);
     assert_eq!(touching.visible_undo_steps(), 0);
 }
 
@@ -3550,27 +3620,28 @@ fn bounded_spline_profile_loft_is_validated_undoable_visible_and_persistent() {
 }
 
 #[test]
-fn separate_occurrence_solid_tool_rejects_unsupported_exact_geometry_atomically() {
+fn separate_occurrence_solid_tool_defers_geometry_validity_to_exact_worker() {
     let mut document = seed_separate_solid_tool_document(100.0, 0.0, 80.0);
     let before = document.current().canonical_digest();
-    let error = document
+    document
         .apply_batch(&CommandBatch::new(vec![CanonicalCommand::ApplySolidTool(
             separate_solid_tool_plan(BooleanOperation::Union, true),
         )]))
-        .err()
-        .expect("touching-only union must fail before commit");
+        .unwrap();
 
-    assert_eq!(error, CanonicalError::InvalidSolidToolPlan);
-    assert_eq!(document.current().canonical_digest(), before);
-    assert_eq!(document.visible_undo_steps(), 0);
-    assert!(document.current().definition(DefinitionId(401)).is_none());
+    assert_ne!(document.current().canonical_digest(), before);
+    assert_eq!(document.visible_undo_steps(), 1);
+    assert!(
+        ExactBRepGraph::from_snapshot(&document.current(), DefinitionId(401), FeatureId(408),)
+            .is_ok()
+    );
     assert_eq!(
         document
             .current()
             .occurrence(OccurrenceId(301))
             .unwrap()
             .definition_id(),
-        DefinitionId(101)
+        DefinitionId(401)
     );
     assert!(document.current().occurrence(OccurrenceId(302)).is_some());
 }

@@ -2716,11 +2716,11 @@ struct SmartThroughCutPreviewPlan {
     source: SmartThroughCutSourcePlan,
     depth_mm_bits: u64,
     tool_feature_id: FeatureId,
-    result_feature_ids: [FeatureId; 5],
+    result_feature_ids: [FeatureId; 7],
     result_definition_id: DefinitionId,
     tool_transform: Transform,
     commands: Vec<CanonicalCommand>,
-    exact_request: ExactFeatureChainRequest,
+    exact_request: ExactBRepGraph,
     selection_after: SelectionId,
     preview_boxes: BTreeMap<OccurrenceId, RenderBox>,
     hidden_occurrences: BTreeSet<OccurrenceId>,
@@ -15588,32 +15588,27 @@ impl KetchupApp {
                     });
                 }
                 let box_proxy = occurrence.box_proxy?;
-                let matrix = occurrence.canonical_world_transform.matrix();
-                let translation_only = matrix[0] == 1.0
-                    && matrix[1] == 0.0
-                    && matrix[2] == 0.0
-                    && matrix[4] == 0.0
-                    && matrix[5] == 1.0
-                    && matrix[6] == 0.0
-                    && matrix[8] == 0.0
-                    && matrix[9] == 0.0
-                    && matrix[10] == 1.0
-                    && matrix[12] == 0.0
-                    && matrix[13] == 0.0
-                    && matrix[14] == 0.0
-                    && matrix[15] == 1.0;
-                let exact_bounds = exact_packages
-                    .as_ref()
-                    .and_then(|packages| packages.get(&occurrence.body.definition_id))
-                    .filter(|_| translation_only)
-                    .map(|package| package.bounds_mm());
+                let exact_bounds =
+                    exact_packages
+                        .as_ref()
+                        .and_then(|packages| packages.get(&occurrence.body.definition_id))
+                        .and_then(|package| {
+                            let [minimum, maximum] = package.bounds_mm();
+                            let minimum = Vec3::new(minimum[0], minimum[1], minimum[2]);
+                            let maximum = Vec3::new(maximum[0], maximum[1], maximum[2]);
+                            let size = maximum - minimum;
+                            bounds_of(box_corners(size.x, size.y, size.z).into_iter().map(
+                                |corner| {
+                                    transform_model_point(
+                                        occurrence.canonical_world_transform,
+                                        corner + minimum,
+                                    )
+                                },
+                            ))
+                        })
+                        .map(|[minimum, maximum]| (minimum, maximum - minimum));
                 let (origin_mm, size_mm) =
-                    exact_bounds.map_or((box_proxy.origin_mm, box_proxy.size_mm), |[min, max]| {
-                        (
-                            box_proxy.origin_mm + Vec3::new(min[0], min[1], min[2]),
-                            Vec3::new(max[0] - min[0], max[1] - min[1], max[2] - min[2]),
-                        )
-                    });
+                    exact_bounds.unwrap_or((box_proxy.origin_mm, box_proxy.size_mm));
                 Some(RenderBox {
                     definition_id: occurrence.body.definition_id,
                     profile_feature_id: occurrence.body.profile_feature_id?,
@@ -24709,7 +24704,10 @@ impl KetchupApp {
             );
             preview_box.origin_mm = minimum;
             preview_box.size_mm = maximum - minimum;
-        } else if source.operation == BooleanOperation::Intersect {
+        } else if matches!(
+            source.operation,
+            BooleanOperation::Intersect | BooleanOperation::Split
+        ) {
             let minimum = Vec3::new(
                 source
                     .target_box
@@ -24734,8 +24732,13 @@ impl KetchupApp {
                 target_maximum.y.min(tool_maximum.y),
                 target_maximum.z.min(tool_maximum.z),
             );
-            preview_box.origin_mm = minimum;
-            preview_box.size_mm = maximum - minimum;
+            if maximum.x <= minimum.x || maximum.y <= minimum.y || maximum.z <= minimum.z {
+                return None;
+            }
+            if source.operation == BooleanOperation::Intersect {
+                preview_box.origin_mm = minimum;
+                preview_box.size_mm = maximum - minimum;
+            }
         }
         let tool_occurrence_id = source.tool_selection.instance_path.root_occurrence();
         Some(SolidToolPreviewPlan {
@@ -25871,7 +25874,7 @@ impl KetchupApp {
             .unwrap_or(0)
             .checked_add(1)?;
         let tool_feature_id = FeatureId(first_feature_value);
-        let mut result_feature_ids = [FeatureId(0); 5];
+        let mut result_feature_ids = [FeatureId(0); 7];
         for (offset, id) in result_feature_ids.iter_mut().enumerate() {
             *id = FeatureId(first_feature_value.checked_add(offset as u64 + 1)?);
         }
@@ -25925,14 +25928,21 @@ impl KetchupApp {
         let batch = CommandBatch::new(commands.clone());
         let proposal = self.prepare_manual_push_pull_proposal(batch.clone())?;
         let preview_snapshot = proposal.preview(&self.document)?;
-        let exact_request =
-            ExactFeatureChainRequest::from_snapshot(&preview_snapshot, result_definition_id)
-                .ok()?;
-        if exact_request
-            .boolean
-            .as_ref()
-            .is_none_or(|boolean| boolean.operation != BooleanOperation::Cut)
-        {
+        let exact_request = ExactBRepGraph::from_snapshot(
+            &preview_snapshot,
+            result_definition_id,
+            *result_feature_ids.last()?,
+        )
+        .ok()?;
+        if exact_request.nodes.last().is_none_or(|node| {
+            !matches!(
+                node.operation,
+                ExactBRepOperation::Boolean {
+                    operation: ketchup_core::exact_brep_graph::ExactBRepBooleanOperation::Cut,
+                    ..
+                }
+            )
+        }) {
             return None;
         }
         let selection_after = SelectionId {
@@ -26724,6 +26734,15 @@ impl KetchupApp {
         ExactFeatureChainRequest::from_snapshot(&snapshot, definition_id)
             .ok()
             .map(|request| request.evaluator())
+            .or_else(|| {
+                ExactBRepGraph::from_snapshot(
+                    &snapshot,
+                    definition_id,
+                    exact_solid_tool_feature_id(&snapshot, definition_id)?,
+                )
+                .ok()
+                .map(|_| ketchup_core::exact_product::EXACT_BREP_GRAPH_EVALUATOR_V1)
+            })
     }
 
     #[must_use]

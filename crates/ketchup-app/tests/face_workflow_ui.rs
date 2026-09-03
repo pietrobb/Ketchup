@@ -6,9 +6,13 @@ use eframe::egui::{Key, Vec2, accesskit::Role};
 use harness::{Shell, alt};
 use ketchup_app::{AppCommand, HeadlessFaceWorkflowFailure, dialogs::ScriptedFileDialogs};
 use ketchup_core::document::{FeatureId, FeatureKind, InstancePath, OccurrenceId, ProfileSegment};
+use ketchup_core::exact_brep_graph::{
+    ExactBRepBooleanOperation, ExactBRepGraph, ExactBRepOperation, ExactBRepPlanarGeometry,
+    ExactBRepPlanarSegment,
+};
 use ketchup_core::exact_product::{
-    EXACT_ARC_PROFILE_EVALUATOR_V1, EXACT_CIRCLE_EVALUATOR_V1, EXACT_LINEAR_PROFILE_EVALUATOR_V1,
-    EXACT_POCKET_EVALUATOR_V1, EXACT_THROUGH_CUT_EVALUATOR_V1, ExactFeatureChainRequest,
+    EXACT_ARC_PROFILE_EVALUATOR_V1, EXACT_BREP_GRAPH_EVALUATOR_V1, EXACT_CIRCLE_EVALUATOR_V1,
+    EXACT_LINEAR_PROFILE_EVALUATOR_V1, EXACT_POCKET_EVALUATOR_V1, ExactFeatureChainRequest,
 };
 use ketchup_core::sketch::{PrincipalPlane, WorkplaneSupport};
 use ketchup_interaction::{SnapKind, Vec3};
@@ -18,6 +22,28 @@ fn open_face_workflow(shell: &mut Shell) {
     shell.click_command(AppCommand::Rectangle);
     let title = shell.catalog().text("face-workflow-title");
     shell.click_role_and_label(Role::Button, &title);
+}
+
+fn cut_tool_profile_geometry(graph: &ExactBRepGraph) -> Option<&ExactBRepPlanarGeometry> {
+    let tool = graph.nodes.iter().find_map(|node| match &node.operation {
+        ExactBRepOperation::Boolean {
+            operation: ExactBRepBooleanOperation::Cut,
+            tool,
+            ..
+        } => Some(*tool),
+        _ => None,
+    })?;
+    let ExactBRepOperation::RigidTransform { target, .. } =
+        &graph.nodes.get(tool.0 as usize)?.operation
+    else {
+        return None;
+    };
+    let ExactBRepOperation::Extrude { profile, .. } =
+        &graph.nodes.get(target.0 as usize)?.operation
+    else {
+        return None;
+    };
+    Some(&graph.profiles.get(profile.0 as usize)?.geometry)
 }
 
 #[test]
@@ -666,7 +692,7 @@ fn rectangular_line_profile_negative_push_pull_creates_exact_through_cut_atomica
     );
     assert_eq!(
         shell.app().push_pull_preview_exact_evaluator(),
-        Some(EXACT_THROUGH_CUT_EVALUATOR_V1)
+        Some(EXACT_BREP_GRAPH_EVALUATOR_V1)
     );
     assert_eq!(shell.app().document_revision(), before.0);
     shell.press_key(Key::Enter);
@@ -674,15 +700,24 @@ fn rectangular_line_profile_negative_push_pull_creates_exact_through_cut_atomica
     assert_eq!(shell.app().document_revision(), before.0 + 1);
     assert_eq!(shell.app().undo_step_count(), before.1 + 1);
     let result_definition = shell.app().selected_reference().unwrap().definition_id;
-    assert_eq!(
-        ExactFeatureChainRequest::from_snapshot(
-            &shell.app().document_snapshot(),
-            result_definition
-        )
+    let snapshot = shell.app().document_snapshot();
+    let producer = *snapshot
+        .definition(result_definition)
         .unwrap()
-        .evaluator(),
-        EXACT_THROUGH_CUT_EVALUATOR_V1
-    );
+        .feature_ids()
+        .last()
+        .unwrap();
+    let graph = ExactBRepGraph::from_snapshot(&snapshot, result_definition, producer).unwrap();
+    assert!(matches!(
+        cut_tool_profile_geometry(&graph),
+        Some(ExactBRepPlanarGeometry::Boundary {
+            closed: true,
+            segments,
+        }) if segments.len() == 4
+            && segments
+                .iter()
+                .all(|segment| matches!(segment, ExactBRepPlanarSegment::Line { .. }))
+    ));
     let cut_digest = shell.app().canonical_digest();
     shell.click_menu_command("menu-edit", AppCommand::Undo);
     assert_eq!(shell.app().canonical_digest(), profile_digest);
@@ -693,15 +728,26 @@ fn rectangular_line_profile_negative_push_pull_creates_exact_through_cut_atomica
     shell.click_menu_command("menu-file", AppCommand::New);
     shell.click_menu_command("menu-file", AppCommand::Open);
     assert_eq!(shell.app().canonical_digest(), cut_digest);
-    assert_eq!(
-        ExactFeatureChainRequest::from_snapshot(
-            &shell.app().document_snapshot(),
-            result_definition
-        )
+    let reopened_snapshot = shell.app().document_snapshot();
+    let reopened_producer = *reopened_snapshot
+        .definition(result_definition)
         .unwrap()
-        .evaluator(),
-        EXACT_THROUGH_CUT_EVALUATOR_V1
-    );
+        .feature_ids()
+        .last()
+        .unwrap();
+    let reopened_graph =
+        ExactBRepGraph::from_snapshot(&reopened_snapshot, result_definition, reopened_producer)
+            .unwrap();
+    assert!(matches!(
+        cut_tool_profile_geometry(&reopened_graph),
+        Some(ExactBRepPlanarGeometry::Boundary {
+            closed: true,
+            segments,
+        }) if segments.len() == 4
+            && segments
+                .iter()
+                .all(|segment| matches!(segment, ExactBRepPlanarSegment::Line { .. }))
+    ));
 }
 
 #[test]
@@ -760,7 +806,7 @@ fn triangular_line_profile_negative_push_pull_creates_exact_through_cut_atomical
         assert!(shell.app().has_occurrence_operation_preview());
         assert_eq!(
             shell.app().push_pull_preview_exact_evaluator(),
-            Some(EXACT_THROUGH_CUT_EVALUATOR_V1)
+            Some(EXACT_BREP_GRAPH_EVALUATOR_V1)
         );
     };
 
@@ -778,20 +824,24 @@ fn triangular_line_profile_negative_push_pull_creates_exact_through_cut_atomical
     assert_eq!(shell.app().document_revision(), before.0 + 1);
     assert_eq!(shell.app().undo_step_count(), before.1 + 1);
     let result_definition = shell.app().selected_reference().unwrap().definition_id;
-    let request = ExactFeatureChainRequest::from_snapshot(
-        &shell.app().document_snapshot(),
-        result_definition,
-    )
-    .unwrap();
-    assert_eq!(request.evaluator(), EXACT_THROUGH_CUT_EVALUATOR_V1);
-    assert_eq!(
-        request
-            .boolean
-            .as_ref()
-            .and_then(|boolean| boolean.profile.as_ref())
-            .map(|profile| profile.segments.len()),
-        Some(3)
-    );
+    let snapshot = shell.app().document_snapshot();
+    let producer = *snapshot
+        .definition(result_definition)
+        .unwrap()
+        .feature_ids()
+        .last()
+        .unwrap();
+    let graph = ExactBRepGraph::from_snapshot(&snapshot, result_definition, producer).unwrap();
+    assert!(matches!(
+        cut_tool_profile_geometry(&graph),
+        Some(ExactBRepPlanarGeometry::Boundary {
+            closed: true,
+            segments,
+        }) if segments.len() == 3
+            && segments
+                .iter()
+                .all(|segment| matches!(segment, ExactBRepPlanarSegment::Line { .. }))
+    ));
     let cut_digest = shell.app().canonical_digest();
     shell.click_menu_command("menu-edit", AppCommand::Undo);
     assert_eq!(shell.app().canonical_digest(), profile_digest);
@@ -802,20 +852,26 @@ fn triangular_line_profile_negative_push_pull_creates_exact_through_cut_atomical
     shell.click_menu_command("menu-file", AppCommand::New);
     shell.click_menu_command("menu-file", AppCommand::Open);
     assert_eq!(shell.app().canonical_digest(), cut_digest);
-    let reopened = ExactFeatureChainRequest::from_snapshot(
-        &shell.app().document_snapshot(),
-        result_definition,
-    )
-    .unwrap();
-    assert_eq!(reopened.evaluator(), EXACT_THROUGH_CUT_EVALUATOR_V1);
-    assert_eq!(
-        reopened
-            .boolean
-            .as_ref()
-            .and_then(|boolean| boolean.profile.as_ref())
-            .map(|profile| profile.segments.len()),
-        Some(3)
-    );
+    let reopened_snapshot = shell.app().document_snapshot();
+    let reopened_producer = *reopened_snapshot
+        .definition(result_definition)
+        .unwrap()
+        .feature_ids()
+        .last()
+        .unwrap();
+    let reopened_graph =
+        ExactBRepGraph::from_snapshot(&reopened_snapshot, result_definition, reopened_producer)
+            .unwrap();
+    assert!(matches!(
+        cut_tool_profile_geometry(&reopened_graph),
+        Some(ExactBRepPlanarGeometry::Boundary {
+            closed: true,
+            segments,
+        }) if segments.len() == 3
+            && segments
+                .iter()
+                .all(|segment| matches!(segment, ExactBRepPlanarSegment::Line { .. }))
+    ));
 }
 
 #[test]
@@ -871,7 +927,7 @@ fn semicircular_arc_profile_negative_push_pull_creates_exact_through_cut_atomica
         assert!(shell.app().has_occurrence_operation_preview());
         assert_eq!(
             shell.app().push_pull_preview_exact_evaluator(),
-            Some(EXACT_THROUGH_CUT_EVALUATOR_V1)
+            Some(EXACT_BREP_GRAPH_EVALUATOR_V1)
         );
     };
 
@@ -889,18 +945,30 @@ fn semicircular_arc_profile_negative_push_pull_creates_exact_through_cut_atomica
     assert_eq!(shell.app().document_revision(), before.0 + 1);
     assert_eq!(shell.app().undo_step_count(), before.1 + 1);
     let result_definition = shell.app().selected_reference().unwrap().definition_id;
-    let request = ExactFeatureChainRequest::from_snapshot(
-        &shell.app().document_snapshot(),
-        result_definition,
-    )
-    .unwrap();
-    assert_eq!(request.evaluator(), EXACT_THROUGH_CUT_EVALUATOR_V1);
-    let profile = request
-        .boolean
-        .as_ref()
-        .and_then(|boolean| boolean.profile.as_ref())
+    let snapshot = shell.app().document_snapshot();
+    let producer = *snapshot
+        .definition(result_definition)
+        .unwrap()
+        .feature_ids()
+        .last()
         .unwrap();
-    assert!(profile.is_line_arc_d_profile());
+    let graph = ExactBRepGraph::from_snapshot(&snapshot, result_definition, producer).unwrap();
+    assert!(matches!(
+        cut_tool_profile_geometry(&graph),
+        Some(ExactBRepPlanarGeometry::Boundary {
+            closed: true,
+            segments,
+        }) if matches!(
+            segments.as_slice(),
+            [
+                ExactBRepPlanarSegment::Line { .. },
+                ExactBRepPlanarSegment::CircularArc { .. }
+            ] | [
+                ExactBRepPlanarSegment::CircularArc { .. },
+                ExactBRepPlanarSegment::Line { .. }
+            ]
+        )
+    ));
     let cut_digest = shell.app().canonical_digest();
     shell.click_menu_command("menu-edit", AppCommand::Undo);
     assert_eq!(shell.app().canonical_digest(), profile_digest);
@@ -911,18 +979,32 @@ fn semicircular_arc_profile_negative_push_pull_creates_exact_through_cut_atomica
     shell.click_menu_command("menu-file", AppCommand::New);
     shell.click_menu_command("menu-file", AppCommand::Open);
     assert_eq!(shell.app().canonical_digest(), cut_digest);
-    let reopened = ExactFeatureChainRequest::from_snapshot(
-        &shell.app().document_snapshot(),
-        result_definition,
-    )
-    .unwrap();
-    assert!(
-        reopened
-            .boolean
-            .as_ref()
-            .and_then(|boolean| boolean.profile.as_ref())
-            .is_some_and(|profile| profile.is_line_arc_d_profile())
-    );
+    let reopened_snapshot = shell.app().document_snapshot();
+    let reopened_producer = *reopened_snapshot
+        .definition(result_definition)
+        .unwrap()
+        .feature_ids()
+        .last()
+        .unwrap();
+    let reopened_graph =
+        ExactBRepGraph::from_snapshot(&reopened_snapshot, result_definition, reopened_producer)
+            .unwrap();
+    assert!(matches!(
+        cut_tool_profile_geometry(&reopened_graph),
+        Some(ExactBRepPlanarGeometry::Boundary {
+            closed: true,
+            segments,
+        }) if matches!(
+            segments.as_slice(),
+            [
+                ExactBRepPlanarSegment::Line { .. },
+                ExactBRepPlanarSegment::CircularArc { .. }
+            ] | [
+                ExactBRepPlanarSegment::CircularArc { .. },
+                ExactBRepPlanarSegment::Line { .. }
+            ]
+        )
+    ));
 }
 
 #[test]

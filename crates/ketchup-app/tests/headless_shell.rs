@@ -23,13 +23,14 @@ use ketchup_core::document::{
     FeatureParameterTarget, InstancePath, NodeId, OccurrenceId, ParameterValueType, PortSpec,
     RuleOutput, SlotPath, SlotSegment, TagId, Transform,
 };
-use ketchup_core::exact_brep_graph::ExactBRepGraph;
+use ketchup_core::exact_brep_graph::{
+    ExactBRepBooleanOperation, ExactBRepGraph, ExactBRepOperation, ExactBRepPlanarGeometry,
+    ExactBRepPlanarSegment,
+};
 use ketchup_core::exact_product::{
-    EXACT_BOOLEAN_INTERSECT_EVALUATOR_V1, EXACT_BOOLEAN_SPLIT_EVALUATOR_V1,
-    EXACT_BOOLEAN_UNION_EVALUATOR_V1, EXACT_CIRCLE_EVALUATOR_V1, EXACT_CIRCULAR_CUT_EVALUATOR_V1,
-    EXACT_LOFT_EVALUATOR_V1, EXACT_PLANAR_OFFSET_EVALUATOR_V1, EXACT_SWEEP_EVALUATOR_V1,
-    ExactBRepGraphPackage, ExactBRepGraphWorkerEvidence, ExactBodyPackage, ExactFaceRole,
-    ExactFeatureChainRequest,
+    EXACT_BREP_GRAPH_EVALUATOR_V1, EXACT_CIRCLE_EVALUATOR_V1, EXACT_LOFT_EVALUATOR_V1,
+    EXACT_PLANAR_OFFSET_EVALUATOR_V1, EXACT_SWEEP_EVALUATOR_V1, ExactBRepGraphPackage,
+    ExactBRepGraphWorkerEvidence, ExactBodyPackage,
 };
 use ketchup_core::graph::{EvaluationStatus, EvaluatorNodeKind};
 use ketchup_core::import::{ImportFormat, StepImportMesh, StepMeshTriangle};
@@ -46,6 +47,49 @@ const PARAMETRIC_RULE: NodeId = NodeId(302);
 const PARAMETRIC_DEPENDENT: NodeId = NodeId(303);
 const PARAMETRIC_UNRELATED_SOURCE: NodeId = NodeId(305);
 const PARAMETRIC_UNRELATED: NodeId = NodeId(306);
+
+fn boolean_tool_profile(
+    graph: &ExactBRepGraph,
+    operation: ExactBRepBooleanOperation,
+) -> Option<(FeatureId, &ExactBRepPlanarGeometry)> {
+    let mut tool = graph.nodes.iter().find_map(|node| match &node.operation {
+        ExactBRepOperation::Boolean {
+            operation: candidate,
+            tool,
+            ..
+        } if *candidate == operation => Some(*tool),
+        _ => None,
+    })?;
+    loop {
+        match &graph.nodes.get(tool.0 as usize)?.operation {
+            ExactBRepOperation::RigidTransform { target, .. } => tool = *target,
+            ExactBRepOperation::Extrude { profile, .. } => {
+                let profile = graph.profiles.get(profile.0 as usize)?;
+                return Some((FeatureId(profile.source_feature_id), &profile.geometry));
+            }
+            _ => return None,
+        }
+    }
+}
+
+fn is_line_arc_profile(geometry: &ExactBRepPlanarGeometry) -> bool {
+    matches!(
+        geometry,
+        ExactBRepPlanarGeometry::Boundary {
+            closed: true,
+            segments,
+        } if matches!(
+            segments.as_slice(),
+            [
+                ExactBRepPlanarSegment::Line { .. },
+                ExactBRepPlanarSegment::CircularArc { .. }
+            ] | [
+                ExactBRepPlanarSegment::CircularArc { .. },
+                ExactBRepPlanarSegment::Line { .. }
+            ]
+        )
+    )
+}
 
 fn dimension(value: &str) -> Dimension {
     Dimension::from_decimal(value).unwrap()
@@ -9391,7 +9435,7 @@ fn circle_push_pull_creates_an_exact_cylinder_and_circular_hole_with_one_step_hi
     assert!(shell.app().has_occurrence_operation_preview());
     assert_eq!(
         shell.app().push_pull_preview_exact_evaluator(),
-        Some(EXACT_CIRCULAR_CUT_EVALUATOR_V1)
+        Some(EXACT_BREP_GRAPH_EVALUATOR_V1)
     );
     assert_eq!(shell.app().document_revision(), hole_profile_revision);
     assert_eq!(shell.app().canonical_digest(), hole_profile_digest);
@@ -11031,7 +11075,7 @@ fn solid_intersect_previews_exact_overlap_and_commits_in_one_undo_step() {
     );
     assert_eq!(
         shell.app().push_pull_preview_exact_evaluator(),
-        Some(EXACT_BOOLEAN_INTERSECT_EVALUATOR_V1)
+        Some(EXACT_BREP_GRAPH_EVALUATOR_V1)
     );
 
     shell.press_key(Key::Enter);
@@ -11110,7 +11154,7 @@ fn d_profile_solid_intersect_preserves_review_lifecycle_exact_mesh_and_arc_linea
         );
         assert_eq!(
             shell.app().push_pull_preview_exact_evaluator(),
-            Some(EXACT_BOOLEAN_INTERSECT_EVALUATOR_V1)
+            Some(EXACT_BREP_GRAPH_EVALUATOR_V1)
         );
         let (origin, size) = shell
             .app()
@@ -11145,30 +11189,31 @@ fn d_profile_solid_intersect_preserves_review_lifecycle_exact_mesh_and_arc_linea
     assert_eq!(shell.app().undo_step_count(), before_undo + 1);
     assert_eq!(shell.app().active_box_count(), 1);
     let result_definition = shell.app().selected_reference().unwrap().definition_id;
-    let request = ExactFeatureChainRequest::from_snapshot(
-        &shell.app().document_snapshot(),
-        result_definition,
-    )
-    .unwrap();
-    assert_eq!(request.evaluator(), EXACT_BOOLEAN_INTERSECT_EVALUATOR_V1);
-    let tool_profile = request.boolean.as_ref().unwrap().profile_feature_id;
-    assert_ne!(tool_profile, request.profile_feature_id);
+    let snapshot = shell.app().document_snapshot();
+    let producer = *snapshot
+        .definition(result_definition)
+        .unwrap()
+        .feature_ids()
+        .last()
+        .unwrap();
+    let graph = ExactBRepGraph::from_snapshot(&snapshot, result_definition, producer).unwrap();
+    let (tool_profile, tool_geometry) =
+        boolean_tool_profile(&graph, ExactBRepBooleanOperation::Intersect).unwrap();
+    assert!(is_line_arc_profile(tool_geometry));
     assert!(
-        request
-            .boolean
-            .as_ref()
-            .and_then(|boolean| boolean.profile.as_ref())
-            .is_some_and(|profile| profile.is_line_arc_d_profile())
+        graph
+            .profiles
+            .iter()
+            .any(|profile| FeatureId(profile.source_feature_id) != tool_profile)
     );
     let mut worker = ExactWorkerSupervisor::spawn(exact_worker_path()).unwrap();
-    let direct_package = worker.evaluate_rectangle(&request).unwrap();
+    let direct_package = worker.evaluate_exact_brep_graph(&graph).unwrap();
     assert!(direct_package.vertices.len() > 8);
-    assert_eq!(
+    assert!(
         direct_package
-            .reference(ExactFaceRole::ArcSide)
-            .unwrap()
-            .profile_feature_id,
-        tool_profile
+            .topological_references
+            .iter()
+            .any(|reference| reference.producer_feature_id == producer)
     );
     shell
         .app_mut()
@@ -11195,15 +11240,7 @@ fn d_profile_solid_intersect_preserves_review_lifecycle_exact_mesh_and_arc_linea
         shell.app().exact_render_triangle_count() > 12,
         "the accepted Intersect mesh must preserve the curved arc side"
     );
-    let arc_side = shell
-        .app()
-        .exact_reference_for_occurrence(
-            &InstancePath::root(OccurrenceId(1)),
-            ExactFaceRole::ArcSide,
-        )
-        .unwrap();
-    assert_eq!(arc_side.body.profile_feature_id, tool_profile);
-    assert_eq!(arc_side.body.role(), Some(ExactFaceRole::ArcSide));
+    assert!(shell.app().exact_current_producer_ids().contains(&producer));
 
     shell.key(Key::Z, ctrl());
     assert_eq!(shell.app().canonical_digest(), before_digest);
@@ -11216,33 +11253,31 @@ fn d_profile_solid_intersect_preserves_review_lifecycle_exact_mesh_and_arc_linea
     shell.click_menu_command("menu-file", AppCommand::New);
     shell.click_menu_command("menu-file", AppCommand::Open);
     assert_eq!(shell.app().canonical_digest(), intersect_digest);
-    let reopened = ExactFeatureChainRequest::from_snapshot(
-        &shell.app().document_snapshot(),
-        result_definition,
-    )
-    .unwrap();
-    assert_eq!(reopened.evaluator(), EXACT_BOOLEAN_INTERSECT_EVALUATOR_V1);
+    let reopened_snapshot = shell.app().document_snapshot();
+    let reopened_producer = *reopened_snapshot
+        .definition(result_definition)
+        .unwrap()
+        .feature_ids()
+        .last()
+        .unwrap();
+    let reopened_graph =
+        ExactBRepGraph::from_snapshot(&reopened_snapshot, result_definition, reopened_producer)
+            .unwrap();
     assert!(
-        reopened
-            .boolean
-            .as_ref()
-            .and_then(|boolean| boolean.profile.as_ref())
-            .is_some_and(|profile| profile.is_line_arc_d_profile())
+        boolean_tool_profile(&reopened_graph, ExactBRepBooleanOperation::Intersect)
+            .is_some_and(|(_, geometry)| is_line_arc_profile(geometry))
     );
     shell
         .app_mut()
         .connect_exact_worker(exact_worker_path())
         .unwrap();
     wait_for_intersect(&mut shell);
-    let reopened_arc_side = shell
-        .app()
-        .exact_reference_for_occurrence(
-            &InstancePath::root(OccurrenceId(1)),
-            ExactFaceRole::ArcSide,
-        )
-        .unwrap();
-    assert_eq!(reopened_arc_side.body.profile_feature_id, tool_profile);
-    assert_eq!(reopened_arc_side.body.role(), Some(ExactFaceRole::ArcSide));
+    assert!(
+        shell
+            .app()
+            .exact_current_producer_ids()
+            .contains(&reopened_producer)
+    );
 }
 
 #[test]
@@ -11323,7 +11358,7 @@ fn d_profile_solid_union_preserves_review_lifecycle_exact_mesh_and_arc_lineage()
         );
         assert_eq!(
             shell.app().push_pull_preview_exact_evaluator(),
-            Some(EXACT_BOOLEAN_UNION_EVALUATOR_V1)
+            Some(EXACT_BREP_GRAPH_EVALUATOR_V1)
         );
         let (origin, size) = shell
             .app()
@@ -11356,29 +11391,25 @@ fn d_profile_solid_union_preserves_review_lifecycle_exact_mesh_and_arc_lineage()
     assert_eq!(shell.app().undo_step_count(), before_undo + 1);
     assert_eq!(shell.app().active_box_count(), 1);
     let result_definition = shell.app().selected_reference().unwrap().definition_id;
-    let request = ExactFeatureChainRequest::from_snapshot(
-        &shell.app().document_snapshot(),
-        result_definition,
-    )
-    .unwrap();
-    assert_eq!(request.evaluator(), EXACT_BOOLEAN_UNION_EVALUATOR_V1);
-    let tool_profile = request.boolean.as_ref().unwrap().profile_feature_id;
-    assert!(
-        request
-            .boolean
-            .as_ref()
-            .and_then(|boolean| boolean.profile.as_ref())
-            .is_some_and(|profile| profile.is_line_arc_d_profile())
-    );
+    let snapshot = shell.app().document_snapshot();
+    let producer = *snapshot
+        .definition(result_definition)
+        .unwrap()
+        .feature_ids()
+        .last()
+        .unwrap();
+    let graph = ExactBRepGraph::from_snapshot(&snapshot, result_definition, producer).unwrap();
+    let (_, tool_geometry) =
+        boolean_tool_profile(&graph, ExactBRepBooleanOperation::Union).unwrap();
+    assert!(is_line_arc_profile(tool_geometry));
     let mut worker = ExactWorkerSupervisor::spawn(exact_worker_path()).unwrap();
-    let direct_package = worker.evaluate_rectangle(&request).unwrap();
+    let direct_package = worker.evaluate_exact_brep_graph(&graph).unwrap();
     assert!(direct_package.vertices.len() > 8);
-    assert_eq!(
+    assert!(
         direct_package
-            .reference(ExactFaceRole::ArcSide)
-            .unwrap()
-            .profile_feature_id,
-        tool_profile
+            .topological_references
+            .iter()
+            .any(|reference| reference.producer_feature_id == producer)
     );
     shell
         .app_mut()
@@ -11402,14 +11433,7 @@ fn d_profile_solid_union_preserves_review_lifecycle_exact_mesh_and_arc_lineage()
     };
     wait_for_union(&mut shell);
     assert!(shell.app().exact_render_triangle_count() > 12);
-    let arc_side = shell
-        .app()
-        .exact_reference_for_occurrence(
-            &InstancePath::root(OccurrenceId(1)),
-            ExactFaceRole::ArcSide,
-        )
-        .unwrap();
-    assert_eq!(arc_side.body.profile_feature_id, tool_profile);
+    assert!(shell.app().exact_current_producer_ids().contains(&producer));
 
     shell.key(Key::Z, ctrl());
     assert_eq!(shell.app().canonical_digest(), before_digest);
@@ -11422,25 +11446,31 @@ fn d_profile_solid_union_preserves_review_lifecycle_exact_mesh_and_arc_lineage()
     shell.click_menu_command("menu-file", AppCommand::New);
     shell.click_menu_command("menu-file", AppCommand::Open);
     assert_eq!(shell.app().canonical_digest(), union_digest);
-    let reopened = ExactFeatureChainRequest::from_snapshot(
-        &shell.app().document_snapshot(),
-        result_definition,
-    )
-    .unwrap();
-    assert_eq!(reopened.evaluator(), EXACT_BOOLEAN_UNION_EVALUATOR_V1);
+    let reopened_snapshot = shell.app().document_snapshot();
+    let reopened_producer = *reopened_snapshot
+        .definition(result_definition)
+        .unwrap()
+        .feature_ids()
+        .last()
+        .unwrap();
+    let reopened_graph =
+        ExactBRepGraph::from_snapshot(&reopened_snapshot, result_definition, reopened_producer)
+            .unwrap();
+    assert!(
+        boolean_tool_profile(&reopened_graph, ExactBRepBooleanOperation::Union)
+            .is_some_and(|(_, geometry)| is_line_arc_profile(geometry))
+    );
     shell
         .app_mut()
         .connect_exact_worker(exact_worker_path())
         .unwrap();
     wait_for_union(&mut shell);
-    let reopened_arc_side = shell
-        .app()
-        .exact_reference_for_occurrence(
-            &InstancePath::root(OccurrenceId(1)),
-            ExactFaceRole::ArcSide,
-        )
-        .unwrap();
-    assert_eq!(reopened_arc_side.body.profile_feature_id, tool_profile);
+    assert!(
+        shell
+            .app()
+            .exact_current_producer_ids()
+            .contains(&reopened_producer)
+    );
 }
 
 #[test]
@@ -11497,7 +11527,7 @@ fn d_profile_solid_split_preserves_review_lifecycle_partition_mesh_and_arc_linea
         );
         assert_eq!(
             shell.app().push_pull_preview_exact_evaluator(),
-            Some(EXACT_BOOLEAN_SPLIT_EVALUATOR_V1)
+            Some(EXACT_BREP_GRAPH_EVALUATOR_V1)
         );
         let (origin, size) = shell
             .app()
@@ -11525,44 +11555,37 @@ fn d_profile_solid_split_preserves_review_lifecycle_partition_mesh_and_arc_linea
     assert_eq!(shell.app().undo_step_count(), before_undo + 1);
     assert_eq!(shell.app().active_box_count(), 2);
     let result_definition = shell.app().selected_reference().unwrap().definition_id;
-    let request = ExactFeatureChainRequest::from_snapshot(
-        &shell.app().document_snapshot(),
-        result_definition,
-    )
-    .unwrap();
-    assert_eq!(request.evaluator(), EXACT_BOOLEAN_SPLIT_EVALUATOR_V1);
-    let tool_profile = request.boolean.as_ref().unwrap().profile_feature_id;
-    assert!(
-        request
-            .boolean
-            .as_ref()
-            .and_then(|boolean| boolean.profile.as_ref())
-            .is_some_and(|profile| profile.is_line_arc_d_profile())
-    );
+    let snapshot = shell.app().document_snapshot();
+    let producer = *snapshot
+        .definition(result_definition)
+        .unwrap()
+        .feature_ids()
+        .last()
+        .unwrap();
+    let graph = ExactBRepGraph::from_snapshot(&snapshot, result_definition, producer).unwrap();
+    let (_, tool_geometry) =
+        boolean_tool_profile(&graph, ExactBRepBooleanOperation::Split).unwrap();
+    assert!(is_line_arc_profile(tool_geometry));
     let mut worker = ExactWorkerSupervisor::spawn(exact_worker_path()).unwrap();
-    let direct_package = worker.evaluate_rectangle(&request).unwrap();
+    let direct_package = worker.evaluate_exact_brep_graph(&graph).unwrap();
     assert!(direct_package.vertices.len() > 16);
-    assert_eq!(
+    assert!(
         direct_package
-            .reference(ExactFaceRole::ArcSide)
-            .unwrap()
-            .profile_feature_id,
-        tool_profile
+            .topological_references
+            .iter()
+            .any(|reference| reference.producer_feature_id == producer)
     );
     shell
         .app_mut()
         .connect_exact_worker(exact_worker_path())
         .unwrap();
-    let wait_for_arc_side = |shell: &mut Shell| {
+    let wait_for_result = |shell: &mut Shell, expected_producer: FeatureId| {
         for _ in 0..100 {
             shell.settle();
             if shell
                 .app()
-                .exact_reference_for_occurrence(
-                    &InstancePath::root(OccurrenceId(1)),
-                    ExactFaceRole::ArcSide,
-                )
-                .is_some()
+                .exact_current_producer_ids()
+                .contains(&expected_producer)
             {
                 return;
             }
@@ -11573,7 +11596,7 @@ fn d_profile_solid_split_preserves_review_lifecycle_partition_mesh_and_arc_linea
             shell.app().action_digest()
         );
     };
-    wait_for_arc_side(&mut shell);
+    wait_for_result(&mut shell, producer);
     assert!(shell.app().exact_render_triangle_count() > 24);
 
     shell.key(Key::Z, ctrl());
@@ -11584,25 +11607,25 @@ fn d_profile_solid_split_preserves_review_lifecycle_partition_mesh_and_arc_linea
     shell.click_menu_command("menu-file", AppCommand::New);
     shell.click_menu_command("menu-file", AppCommand::Open);
     assert_eq!(shell.app().canonical_digest(), split_digest);
-    let reopened = ExactFeatureChainRequest::from_snapshot(
-        &shell.app().document_snapshot(),
-        result_definition,
-    )
-    .unwrap();
-    assert_eq!(reopened.evaluator(), EXACT_BOOLEAN_SPLIT_EVALUATOR_V1);
+    let reopened_snapshot = shell.app().document_snapshot();
+    let reopened_producer = *reopened_snapshot
+        .definition(result_definition)
+        .unwrap()
+        .feature_ids()
+        .last()
+        .unwrap();
+    let reopened_graph =
+        ExactBRepGraph::from_snapshot(&reopened_snapshot, result_definition, reopened_producer)
+            .unwrap();
+    assert!(
+        boolean_tool_profile(&reopened_graph, ExactBRepBooleanOperation::Split)
+            .is_some_and(|(_, geometry)| is_line_arc_profile(geometry))
+    );
     shell
         .app_mut()
         .connect_exact_worker(exact_worker_path())
         .unwrap();
-    wait_for_arc_side(&mut shell);
-    let reopened_arc_side = shell
-        .app()
-        .exact_reference_for_occurrence(
-            &InstancePath::root(OccurrenceId(1)),
-            ExactFaceRole::ArcSide,
-        )
-        .unwrap();
-    assert_eq!(reopened_arc_side.body.profile_feature_id, tool_profile);
+    wait_for_result(&mut shell, reopened_producer);
 }
 
 #[test]
@@ -11641,7 +11664,7 @@ fn solid_split_previews_target_partition_and_commits_from_localized_headless_she
     );
     assert_eq!(
         shell.app().push_pull_preview_exact_evaluator(),
-        Some(EXACT_BOOLEAN_SPLIT_EVALUATOR_V1)
+        Some(EXACT_BREP_GRAPH_EVALUATOR_V1)
     );
 
     shell.press_key(Key::Enter);
