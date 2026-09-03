@@ -59,6 +59,10 @@ std::unique_ptr<NativeOperationResult> extrude_circle_native(
     double center_x, double center_y, double radius, double height) noexcept;
 std::unique_ptr<NativeOperationResult> extrude_mixed_profile_native(
     rust::Slice<const double> segments, double height) noexcept;
+std::unique_ptr<NativeOperationResult> extrude_planar_region_native(
+    rust::Slice<const double> segments,
+    rust::Slice<const std::uint32_t> loop_segment_counts,
+    double height) noexcept;
 std::unique_ptr<NativeOperationResult> revolve_profile_native(
     rust::Slice<const double> points) noexcept;
 std::unique_ptr<NativeOperationResult> revolve_general_profile_native(

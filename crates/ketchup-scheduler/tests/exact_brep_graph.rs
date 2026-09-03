@@ -3,16 +3,20 @@ use ketchup_core::document::{
     EdgeFinishKind, FeatureId, FeatureKind, LoftSection, NodeId, ProfileSegment, SolidToolPlan,
     Transform,
 };
-use ketchup_core::exact_brep_graph::{ExactBRepGraph, MAX_EXACT_BREP_GRAPH_PROFILES};
+use ketchup_core::exact_brep_graph::{
+    ExactBRepGraph, ExactBRepPlanarGeometry, ExactBRepPlanarLoop, MAX_EXACT_BREP_GRAPH_PROFILES,
+};
 use ketchup_core::exact_product::{
-    ExactBodyPackage, ExactFeatureChainRequest, ExactProductError, ExactResultRegistry,
+    ExactBodyPackage, ExactFaceRole, ExactFeatureChainRequest, ExactProductError,
+    ExactResultRegistry,
 };
 use ketchup_core::graph::sha256_hex;
 use ketchup_core::import::plan_step_import;
 use ketchup_core::persistence;
 use ketchup_core::sketch::{
-    FeatureDirection, FeatureExtent, FeatureExtentEnd, PadSpec, PrincipalPlane, SketchEntity,
-    SketchEntityId, SketchSpec, WorkplaneSpec,
+    FeatureDirection, FeatureExtent, FeatureExtentEnd, PadSpec, PocketSpec, PrincipalPlane,
+    SketchEntity, SketchEntityId, SketchSpec, WorkplaneFrame, WorkplaneSpec, WorkplaneSupport,
+    WorkplaneSupportHealth,
 };
 use ketchup_core::topology::{
     TopologicalElementKind, TopologicalElementRef, TopologicalReferenceStability,
@@ -1894,4 +1898,294 @@ fn worker_applies_topology_selected_shell_fillet_and_chamfer_and_rejects_stale_i
         supervisor.evaluate_exact_brep_graph(&base_graph).unwrap(),
         base_package
     );
+}
+
+#[test]
+fn worker_preserves_compound_sketch_region_hole_volume_and_result_identity() {
+    let definition = DefinitionId(92);
+    let workplane = FeatureId(920);
+    let sketch_id = FeatureId(921);
+    let pad = FeatureId(922);
+    let sketch = SketchSpec {
+        workplane,
+        entities: vec![
+            SketchEntity::Line {
+                id: SketchEntityId(1),
+                start_mm: [-20.0, -15.0],
+                end_mm: [20.0, -15.0],
+            },
+            SketchEntity::Line {
+                id: SketchEntityId(2),
+                start_mm: [20.0, -15.0],
+                end_mm: [20.0, 15.0],
+            },
+            SketchEntity::Line {
+                id: SketchEntityId(3),
+                start_mm: [20.0, 15.0],
+                end_mm: [-20.0, 15.0],
+            },
+            SketchEntity::Line {
+                id: SketchEntityId(4),
+                start_mm: [-20.0, 15.0],
+                end_mm: [-20.0, -15.0],
+            },
+            SketchEntity::Circle {
+                id: SketchEntityId(5),
+                center_mm: [0.0, 0.0],
+                radius_mm: 5.0,
+            },
+        ],
+        constraints: Vec::new(),
+    };
+    let regions = sketch.solved_regions().unwrap();
+    assert_eq!(regions.len(), 1);
+    assert_eq!(regions[0].holes.len(), 1);
+    let region = regions[0].id;
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: definition,
+                name: "Worker compound region".into(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: workplane,
+                definition_id: definition,
+                name: "XY".into(),
+                kind: FeatureKind::Workplane(WorkplaneSpec::principal(PrincipalPlane::Xy)),
+            },
+            CanonicalCommand::CreateFeature {
+                id: sketch_id,
+                definition_id: definition,
+                name: "Rectangle with centered hole".into(),
+                kind: FeatureKind::Sketch(sketch),
+            },
+            CanonicalCommand::CreateFeature {
+                id: pad,
+                definition_id: definition,
+                name: "Compound Pad".into(),
+                kind: FeatureKind::Pad(PadSpec {
+                    sketch: sketch_id,
+                    region,
+                    direction: FeatureDirection::AlongNormal,
+                    extent: FeatureExtent::Blind(dimension(12.0)),
+                }),
+            },
+        ]))
+        .unwrap();
+    let snapshot = document.current();
+    let graph = ExactBRepGraph::from_snapshot(&snapshot, definition, pad).unwrap();
+    let ExactBRepPlanarGeometry::Region { outer, holes } = &graph.profiles[0].geometry else {
+        panic!("compound sketch must reach the worker as a planar region");
+    };
+    assert!(matches!(
+        outer,
+        ExactBRepPlanarLoop::Boundary { segments } if segments.len() == 4
+    ));
+    assert_eq!(holes.len(), 1);
+
+    let mut supervisor =
+        ExactWorkerSupervisor::spawn(env!("CARGO_BIN_EXE_ketchup-exact-worker")).unwrap();
+    let package = supervisor.evaluate_exact_brep_graph(&graph).unwrap();
+    assert_eq!(
+        supervisor.evaluate_exact_brep_graph(&graph).unwrap(),
+        package
+    );
+    assert!(package.is_current(&snapshot));
+    assert_eq!(package.identity.producer_feature_id.0, pad.0);
+    assert_eq!(package.topology_counts[4], 1);
+    assert_bounds_close(package.bounds_mm, [-20.0, -15.0, 0.0, 20.0, 15.0, 12.0]);
+    let expected_volume = (40.0 * 30.0 - std::f64::consts::PI * 5.0 * 5.0) * 12.0;
+    assert!(package.volume_mm3 < 40.0 * 30.0 * 12.0);
+    assert!(
+        (package.volume_mm3 - expected_volume).abs() <= 2.0e-7,
+        "worker volume {} differed from analytic compound-region volume {expected_volume}",
+        package.volume_mm3
+    );
+
+    let reopened = persistence::load(&persistence::save(&snapshot)).unwrap();
+    let reopened_snapshot = reopened.snapshot();
+    let reopened_graph =
+        ExactBRepGraph::from_snapshot(&reopened_snapshot, definition, pad).unwrap();
+    assert_eq!(reopened_graph, graph);
+    assert_eq!(
+        supervisor
+            .evaluate_exact_brep_graph(&reopened_graph)
+            .unwrap(),
+        package
+    );
+    assert!(package.is_current(&reopened_snapshot));
+}
+
+#[test]
+fn worker_cuts_a_compound_sketch_pocket_while_preserving_its_inner_island() {
+    let definition = DefinitionId(93);
+    let base_plane = FeatureId(929);
+    let base_sketch_id = FeatureId(930);
+    let base = FeatureId(931);
+    let face_plane = FeatureId(932);
+    let pocket_sketch_id = FeatureId(933);
+    let pocket = FeatureId(934);
+    let base_sketch = SketchSpec {
+        workplane: base_plane,
+        entities: vec![
+            SketchEntity::Line {
+                id: SketchEntityId(1),
+                start_mm: [0.0, 0.0],
+                end_mm: [50.0, 0.0],
+            },
+            SketchEntity::Line {
+                id: SketchEntityId(2),
+                start_mm: [50.0, 0.0],
+                end_mm: [50.0, 40.0],
+            },
+            SketchEntity::Line {
+                id: SketchEntityId(3),
+                start_mm: [50.0, 40.0],
+                end_mm: [0.0, 40.0],
+            },
+            SketchEntity::Line {
+                id: SketchEntityId(4),
+                start_mm: [0.0, 40.0],
+                end_mm: [0.0, 0.0],
+            },
+        ],
+        constraints: Vec::new(),
+    };
+    let base_region = base_sketch.solved_regions().unwrap()[0].id;
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: definition,
+                name: "Compound pocket".into(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: base_plane,
+                definition_id: definition,
+                name: "XY".into(),
+                kind: FeatureKind::Workplane(WorkplaneSpec::principal(PrincipalPlane::Xy)),
+            },
+            CanonicalCommand::CreateFeature {
+                id: base_sketch_id,
+                definition_id: definition,
+                name: "Base sketch".into(),
+                kind: FeatureKind::Sketch(base_sketch),
+            },
+            CanonicalCommand::CreateFeature {
+                id: base,
+                definition_id: definition,
+                name: "Base".into(),
+                kind: FeatureKind::Pad(PadSpec {
+                    sketch: base_sketch_id,
+                    region: base_region,
+                    direction: FeatureDirection::AlongNormal,
+                    extent: FeatureExtent::Blind(dimension(10.0)),
+                }),
+            },
+        ]))
+        .unwrap();
+    let mut supervisor =
+        ExactWorkerSupervisor::spawn(env!("CARGO_BIN_EXE_ketchup-exact-worker")).unwrap();
+    let base_request =
+        ExactFeatureChainRequest::from_snapshot_for_producer(&document.current(), definition, base)
+            .unwrap();
+    let base_package = supervisor.evaluate_rectangle(&base_request).unwrap();
+    let top = base_package.reference(ExactFaceRole::Top).unwrap().clone();
+    for reference in base_package.references {
+        document
+            .register_exact_reference_evidence(reference)
+            .unwrap();
+    }
+
+    let pocket_sketch = SketchSpec {
+        workplane: face_plane,
+        entities: vec![
+            SketchEntity::Line {
+                id: SketchEntityId(1),
+                start_mm: [5.0, 5.0],
+                end_mm: [45.0, 5.0],
+            },
+            SketchEntity::Line {
+                id: SketchEntityId(2),
+                start_mm: [45.0, 5.0],
+                end_mm: [45.0, 35.0],
+            },
+            SketchEntity::Line {
+                id: SketchEntityId(3),
+                start_mm: [45.0, 35.0],
+                end_mm: [5.0, 35.0],
+            },
+            SketchEntity::Line {
+                id: SketchEntityId(4),
+                start_mm: [5.0, 35.0],
+                end_mm: [5.0, 5.0],
+            },
+            SketchEntity::Circle {
+                id: SketchEntityId(5),
+                center_mm: [25.0, 20.0],
+                radius_mm: 5.0,
+            },
+        ],
+        constraints: Vec::new(),
+    };
+    let pocket_region = pocket_sketch.solved_regions().unwrap()[0].id;
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateFeature {
+                id: face_plane,
+                definition_id: definition,
+                name: "Base top".into(),
+                kind: FeatureKind::Workplane(WorkplaneSpec {
+                    support: WorkplaneSupport::PlanarFace {
+                        reference: Box::new(top.clone()),
+                        health: WorkplaneSupportHealth::Resolved,
+                    },
+                    frame: WorkplaneFrame {
+                        origin_mm: [0.0, 0.0, 10.0],
+                        x_axis: [1.0, 0.0, 0.0],
+                        y_axis: [0.0, 1.0, 0.0],
+                        normal: [0.0, 0.0, 1.0],
+                    },
+                }),
+            },
+            CanonicalCommand::CreateFeature {
+                id: pocket_sketch_id,
+                definition_id: definition,
+                name: "Pocket region".into(),
+                kind: FeatureKind::Sketch(pocket_sketch),
+            },
+            CanonicalCommand::CreateFeature {
+                id: pocket,
+                definition_id: definition,
+                name: "Compound Pocket".into(),
+                kind: FeatureKind::SketchPocket(PocketSpec {
+                    target: base,
+                    sketch: pocket_sketch_id,
+                    region: pocket_region,
+                    support: Box::new(top),
+                    direction: FeatureDirection::OppositeNormal,
+                    extent: FeatureExtent::Blind(dimension(4.0)),
+                }),
+            },
+        ]))
+        .unwrap();
+
+    let snapshot = document.current();
+    let graph = ExactBRepGraph::from_snapshot(&snapshot, definition, pocket).unwrap();
+    assert!(matches!(
+        graph.profiles.last().map(|profile| &profile.geometry),
+        Some(ExactBRepPlanarGeometry::Region { holes, .. }) if holes.len() == 1
+    ));
+    let result = supervisor.evaluate_exact_brep_graph(&graph).unwrap();
+    let removed_volume = (40.0 * 30.0 - std::f64::consts::PI * 5.0 * 5.0) * 4.0;
+    let expected_volume = 50.0 * 40.0 * 10.0 - removed_volume;
+    assert!(
+        (result.volume_mm3 - expected_volume).abs() <= 2.0e-7,
+        "compound pocket volume {} differed from {expected_volume}",
+        result.volume_mm3
+    );
+    assert_bounds_close(result.bounds_mm, [0.0, 0.0, 0.0, 50.0, 40.0, 10.0]);
+    assert_eq!(result.topology_counts[4], 1);
+    assert_eq!(result.identity.producer_feature_id.0, pocket.0);
 }

@@ -13,6 +13,7 @@
 #include <BRepBuilderAPI_MakeFace.hxx>
 #include <BRepBuilderAPI_MakeWire.hxx>
 #include <BRepBuilderAPI_GTransform.hxx>
+#include <BRepBuilderAPI_Transform.hxx>
 #include <BRepCheck_Analyzer.hxx>
 #include <BRep_Builder.hxx>
 #include <BRepGProp.hxx>
@@ -63,6 +64,7 @@
 #include <gp_Dir.hxx>
 #include <gp_GTrsf.hxx>
 #include <gp_Pln.hxx>
+#include <gp_Trsf.hxx>
 #include <gp_Pnt.hxx>
 #include <gp_Vec.hxx>
 
@@ -1149,6 +1151,137 @@ std::unique_ptr<NativeOperationResult> extrude_mixed_profile_native(
       }
     }
     history.push_back(std::move(side_history));
+    return success_result(result, std::move(history));
+  });
+}
+
+std::unique_ptr<NativeOperationResult> extrude_planar_region_native(
+    rust::Slice<const double> segments,
+    rust::Slice<const std::uint32_t> loop_segment_counts,
+    double height) noexcept {
+  return guarded([&] {
+    if (loop_segment_counts.size() < 2 || loop_segment_counts.size() > 65
+        || segments.empty() || segments.size() % 8 != 0
+        || !std::isfinite(height) || height <= 0.0) {
+      return error_result(STATUS_INVALID_PARAMETER, "Planar region payload is malformed");
+    }
+    std::size_t declared_segments = 0;
+    for (const std::uint32_t count : loop_segment_counts) {
+      declared_segments += count;
+    }
+    if (declared_segments != segments.size() / 8 || declared_segments > 4096) {
+      return error_result(STATUS_INVALID_PARAMETER, "Planar region segment counts do not match");
+    }
+
+    auto build_wire = [&](std::size_t first_segment, std::size_t segment_count) {
+      BRepBuilderAPI_MakeWire wire_builder;
+      for (std::size_t index = 0; index < segment_count; ++index) {
+        const std::size_t offset = (first_segment + index) * 8;
+        const double kind = segments[offset];
+        TopoDS_Edge edge;
+        if (kind == 0.0) {
+          const gp_Pnt start(segments[offset + 1], segments[offset + 2], 0.0);
+          const gp_Pnt end(segments[offset + 3], segments[offset + 4], 0.0);
+          if (start.Distance(end) <= Precision::Confusion()) {
+            return TopoDS_Wire{};
+          }
+          BRepBuilderAPI_MakeEdge edge_builder(start, end);
+          if (!edge_builder.IsDone()) {
+            return TopoDS_Wire{};
+          }
+          edge = edge_builder.Edge();
+        } else if (kind == 1.0) {
+          const gp_Pnt start(segments[offset + 1], segments[offset + 2], 0.0);
+          const gp_Pnt end(segments[offset + 3], segments[offset + 4], 0.0);
+          const double center_x = segments[offset + 5];
+          const double center_y = segments[offset + 6];
+          const bool clockwise = segments[offset + 7] != 0.0;
+          const double start_angle = std::atan2(start.Y() - center_y, start.X() - center_x);
+          const double end_angle = std::atan2(end.Y() - center_y, end.X() - center_x);
+          double sweep = end_angle - start_angle;
+          const double tau = 2.0 * std::acos(-1.0);
+          if (clockwise) {
+            while (sweep >= 0.0) sweep -= tau;
+          } else {
+            while (sweep <= 0.0) sweep += tau;
+          }
+          const double radius = start.Distance(gp_Pnt(center_x, center_y, 0.0));
+          const double middle_angle = start_angle + sweep / 2.0;
+          const gp_Pnt middle(
+              center_x + radius * std::cos(middle_angle),
+              center_y + radius * std::sin(middle_angle),
+              0.0);
+          GC_MakeArcOfCircle arc_builder(start, middle, end);
+          if (!arc_builder.IsDone()) {
+            return TopoDS_Wire{};
+          }
+          BRepBuilderAPI_MakeEdge edge_builder(arc_builder.Value());
+          if (!edge_builder.IsDone()) {
+            return TopoDS_Wire{};
+          }
+          edge = edge_builder.Edge();
+        } else if (kind == 2.0 && segment_count == 1) {
+          const double center_x = segments[offset + 1];
+          const double center_y = segments[offset + 2];
+          const double radius = segments[offset + 3];
+          if (!std::isfinite(center_x) || !std::isfinite(center_y)
+              || !std::isfinite(radius) || radius <= Precision::Confusion()) {
+            return TopoDS_Wire{};
+          }
+          BRepBuilderAPI_MakeEdge edge_builder(
+              gp_Circ(gp_Ax2(gp_Pnt(center_x, center_y, 0.0), gp_Dir(0.0, 0.0, 1.0)), radius));
+          if (!edge_builder.IsDone()) {
+            return TopoDS_Wire{};
+          }
+          edge = edge_builder.Edge();
+        } else {
+          return TopoDS_Wire{};
+        }
+        if (edge.IsNull()) {
+          return TopoDS_Wire{};
+        }
+        wire_builder.Add(edge);
+      }
+      if (!wire_builder.IsDone()) {
+        return TopoDS_Wire{};
+      }
+      return wire_builder.Wire();
+    };
+
+    std::size_t first_segment = 0;
+    TopoDS_Wire outer = build_wire(first_segment, loop_segment_counts[0]);
+    if (outer.IsNull()) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT planar region outer wire is invalid");
+    }
+    first_segment += loop_segment_counts[0];
+    BRepBuilderAPI_MakeFace face_builder(outer, true);
+    for (std::size_t index = 1; index < loop_segment_counts.size(); ++index) {
+      TopoDS_Wire hole = build_wire(first_segment, loop_segment_counts[index]);
+      if (hole.IsNull()) {
+        return error_result(STATUS_INVALID_SHAPE, "OCCT planar region hole wire is invalid");
+      }
+      hole.Reverse();
+      face_builder.Add(hole);
+      first_segment += loop_segment_counts[index];
+    }
+    face_builder.Build();
+    if (!face_builder.IsDone() || !BRepCheck_Analyzer(face_builder.Face()).IsValid()) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT planar region face is invalid");
+    }
+    const TopoDS_Face profile = face_builder.Face();
+    BRepPrimAPI_MakePrism operation(profile, gp_Vec(0.0, 0.0, height), true, false);
+    if (!operation.IsDone()) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT planar region prism builder did not complete");
+    }
+    const TopoDS_Shape result = operation.Shape();
+    if (result.IsNull() || !BRepCheck_Analyzer(result).IsValid()) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT planar region prism is invalid");
+    }
+    std::vector<HistoryRecord> history;
+    history.push_back(history_record(
+        "extrusion.bottom", "first_shape", "profile.face", result, operation.FirstShape()));
+    history.push_back(history_record(
+        "extrusion.top", "last_shape", "profile.face", result, operation.LastShape()));
     return success_result(result, std::move(history));
   });
 }
@@ -2920,19 +3053,51 @@ std::unique_ptr<NativeOperationResult> transform_body_native(
     if (!body.valid() || body.impl().shape.IsNull() || matrix.size() != 16) {
       return error_result(STATUS_INVALID_PARAMETER, "Exact body or affine transform is unavailable");
     }
-    gp_GTrsf transform;
-    for (Standard_Integer row = 1; row <= 3; ++row) {
-      for (Standard_Integer column = 1; column <= 4; ++column) {
-        transform.SetValue(row, column, matrix[static_cast<std::size_t>((row - 1) * 4 + column - 1)]);
+    for (const double value : matrix) {
+      if (!std::isfinite(value)) {
+        return error_result(STATUS_NON_FINITE_PARAMETER, "Exact body transform is non-finite");
       }
     }
-    BRepBuilderAPI_GTransform operation(body.impl().shape, transform, true);
-    operation.Build();
-    if (!operation.IsDone()) {
-      return error_result(STATUS_INVALID_SHAPE, "OCCT affine body transform did not complete");
+    const auto dot_column = [&](std::size_t left, std::size_t right) {
+      return matrix[left] * matrix[right]
+          + matrix[4 + left] * matrix[4 + right]
+          + matrix[8 + left] * matrix[8 + right];
+    };
+    const bool rigid =
+        std::abs(dot_column(0, 0) - 1.0) <= 1.0e-10
+        && std::abs(dot_column(1, 1) - 1.0) <= 1.0e-10
+        && std::abs(dot_column(2, 2) - 1.0) <= 1.0e-10
+        && std::abs(dot_column(0, 1)) <= 1.0e-10
+        && std::abs(dot_column(0, 2)) <= 1.0e-10
+        && std::abs(dot_column(1, 2)) <= 1.0e-10;
+    TopoDS_Shape result;
+    if (rigid) {
+      gp_Trsf transform;
+      transform.SetValues(
+          matrix[0], matrix[1], matrix[2], matrix[3],
+          matrix[4], matrix[5], matrix[6], matrix[7],
+          matrix[8], matrix[9], matrix[10], matrix[11]);
+      BRepBuilderAPI_Transform operation(body.impl().shape, transform, true);
+      operation.Build();
+      if (!operation.IsDone()) {
+        return error_result(STATUS_INVALID_SHAPE, "OCCT rigid body transform did not complete");
+      }
+      result = operation.Shape();
+    } else {
+      gp_GTrsf transform;
+      for (Standard_Integer row = 1; row <= 3; ++row) {
+        for (Standard_Integer column = 1; column <= 4; ++column) {
+          transform.SetValue(row, column, matrix[static_cast<std::size_t>((row - 1) * 4 + column - 1)]);
+        }
+      }
+      BRepBuilderAPI_GTransform operation(body.impl().shape, transform, true);
+      operation.Build();
+      if (!operation.IsDone()) {
+        return error_result(STATUS_INVALID_SHAPE, "OCCT affine body transform did not complete");
+      }
+      result = operation.Shape();
     }
-    return success_result(
-        operation.Shape(), {}, count_subshapes(body.impl().shape, TopAbs_SOLID) >= 2);
+    return success_result(result, {}, count_subshapes(body.impl().shape, TopAbs_SOLID) >= 2);
   });
 }
 

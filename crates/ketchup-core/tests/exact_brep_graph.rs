@@ -3,9 +3,9 @@ use ketchup_core::document::{
     Dimension, DocumentStore, EdgeFinishKind, FeatureId, FeatureKind, LoftSection, StableFaceRole,
 };
 use ketchup_core::exact_brep_graph::{
-    ExactBRepBooleanOperation, ExactBRepEdgeFinishKind, ExactBRepGraph, ExactBRepGraphError,
-    ExactBRepOperation, ExactBRepPlanarGeometry, ExactBRepTopologyKind, MAX_EXACT_BREP_GRAPH_BYTES,
-    MAX_EXACT_BREP_GRAPH_SEGMENTS,
+    EXACT_BREP_GRAPH_SCHEMA_V3, ExactBRepBooleanOperation, ExactBRepEdgeFinishKind, ExactBRepGraph,
+    ExactBRepGraphError, ExactBRepOperation, ExactBRepPlanarGeometry, ExactBRepPlanarLoop,
+    ExactBRepTopologyKind, MAX_EXACT_BREP_GRAPH_BYTES, MAX_EXACT_BREP_GRAPH_SEGMENTS,
 };
 use ketchup_core::exact_product::{
     ExactFaceRole, ExactFeatureChainRequest, ExactProductError, build_box_render_package,
@@ -1044,4 +1044,133 @@ fn generalized_extents_compile_to_bounded_signed_intervals_and_fail_closed() {
         ExactBRepGraph::from_snapshot(&document.current(), DEFINITION, pocket),
         Err(ExactBRepGraphError::UnresolvedExtent)
     );
+}
+
+#[test]
+fn compound_sketch_region_compiles_to_v3_and_is_deterministic() {
+    let definition = DefinitionId(6);
+    let workplane = FeatureId(500);
+    let sketch_id = FeatureId(501);
+    let pad = FeatureId(502);
+    let sketch = SketchSpec {
+        workplane,
+        entities: vec![
+            SketchEntity::Line {
+                id: SketchEntityId(1),
+                start_mm: [-20.0, -15.0],
+                end_mm: [20.0, -15.0],
+            },
+            SketchEntity::Line {
+                id: SketchEntityId(2),
+                start_mm: [20.0, -15.0],
+                end_mm: [20.0, 15.0],
+            },
+            SketchEntity::Line {
+                id: SketchEntityId(3),
+                start_mm: [20.0, 15.0],
+                end_mm: [-20.0, 15.0],
+            },
+            SketchEntity::Line {
+                id: SketchEntityId(4),
+                start_mm: [-20.0, 15.0],
+                end_mm: [-20.0, -15.0],
+            },
+            SketchEntity::Circle {
+                id: SketchEntityId(5),
+                center_mm: [0.0, 0.0],
+                radius_mm: 5.0,
+            },
+        ],
+        constraints: Vec::new(),
+    };
+    let regions = sketch.solved_regions().unwrap();
+    assert_eq!(regions.len(), 1);
+    assert_eq!(regions[0].holes.len(), 1);
+    let region = regions[0].id;
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: definition,
+                name: "Compound region graph".into(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: workplane,
+                definition_id: definition,
+                name: "XY".into(),
+                kind: FeatureKind::Workplane(WorkplaneSpec::principal(PrincipalPlane::Xy)),
+            },
+            CanonicalCommand::CreateFeature {
+                id: sketch_id,
+                definition_id: definition,
+                name: "Rectangle with centered hole".into(),
+                kind: FeatureKind::Sketch(sketch),
+            },
+            CanonicalCommand::CreateFeature {
+                id: pad,
+                definition_id: definition,
+                name: "Compound Pad".into(),
+                kind: FeatureKind::Pad(PadSpec {
+                    sketch: sketch_id,
+                    region,
+                    direction: FeatureDirection::AlongNormal,
+                    extent: FeatureExtent::Blind(dimension(12.0)),
+                }),
+            },
+        ]))
+        .unwrap();
+
+    let snapshot = document.current();
+    let initial = ExactBRepGraph::from_snapshot(&snapshot, definition, pad).unwrap();
+    assert_eq!(initial.schema, EXACT_BREP_GRAPH_SCHEMA_V3);
+    assert_eq!(initial.profiles.len(), 1);
+    assert_eq!(initial.nodes.len(), 1);
+    let ExactBRepPlanarGeometry::Region { outer, holes } = &initial.profiles[0].geometry else {
+        panic!("compound sketch must compile to a planar region");
+    };
+    assert!(matches!(
+        outer,
+        ExactBRepPlanarLoop::Boundary { segments } if segments.len() == 4
+    ));
+    assert!(matches!(
+        holes.as_slice(),
+        [ExactBRepPlanarLoop::Circle {
+            center_bits,
+            radius_bits,
+        }] if center_bits.map(f64::from_bits) == [0.0, 0.0]
+            && f64::from_bits(*radius_bits) == 5.0
+    ));
+
+    let initial_bytes = initial.to_bytes().unwrap();
+    let initial_digest = initial.graph_digest.clone();
+    assert_eq!(
+        ExactBRepGraph::from_snapshot(&snapshot, definition, pad)
+            .unwrap()
+            .to_bytes()
+            .unwrap(),
+        initial_bytes
+    );
+    let reopened = persistence::load(&persistence::save(&snapshot)).unwrap();
+    let reopened_graph =
+        ExactBRepGraph::from_snapshot(&reopened.snapshot(), definition, pad).unwrap();
+    assert_eq!(reopened_graph.graph_digest, initial_digest);
+    assert_eq!(reopened_graph.to_bytes().unwrap(), initial_bytes);
+
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetFeatureDimension {
+                id: pad,
+                dimension: dimension(15.0),
+            },
+        ]))
+        .unwrap();
+    let changed = ExactBRepGraph::from_snapshot(&document.current(), definition, pad).unwrap();
+    assert_ne!(changed.graph_digest, initial_digest);
+    assert_ne!(changed.to_bytes().unwrap(), initial_bytes);
+
+    let undone = ExactBRepGraph::from_snapshot(&document.undo().unwrap(), definition, pad).unwrap();
+    assert_eq!(undone.graph_digest, initial_digest);
+    assert_eq!(undone.to_bytes().unwrap(), initial_bytes);
+    let redone = ExactBRepGraph::from_snapshot(&document.redo().unwrap(), definition, pad).unwrap();
+    assert_eq!(redone, changed);
 }

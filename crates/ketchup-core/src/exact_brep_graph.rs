@@ -3,8 +3,8 @@ use crate::document::{
     ProfileSegment, Snapshot, Transform,
 };
 use crate::sketch::{
-    FeatureDirection, FeatureExtent, FeatureExtentEnd, SketchRegionId, SolvedSketchRegionEdge,
-    SolvedSketchRegionProfile, WorkplaneFrame,
+    FeatureDirection, FeatureExtent, FeatureExtentEnd, MAX_SKETCH_ENTITIES, SketchRegionId,
+    SolvedSketchRegion, SolvedSketchRegionEdge, SolvedSketchRegionProfile, WorkplaneFrame,
 };
 use crate::topology::{TopologicalElementKind, TopologicalElementRef};
 use serde::{Deserialize, Serialize};
@@ -12,7 +12,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
-pub const EXACT_BREP_GRAPH_SCHEMA_V2: &str = "ketchup.exact-brep-graph.v2";
+pub const EXACT_BREP_GRAPH_SCHEMA_V3: &str = "ketchup.exact-brep-graph.v3";
 pub const MAX_EXACT_BREP_GRAPH_PROFILES: usize = 1_024;
 pub const MAX_EXACT_BREP_GRAPH_NODES: usize = 1_024;
 pub const MAX_EXACT_BREP_GRAPH_SEGMENTS: usize = 16_384;
@@ -144,6 +144,18 @@ pub enum ExactBRepPlanarSegment {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ExactBRepPlanarLoop {
+    Boundary {
+        segments: Vec<ExactBRepPlanarSegment>,
+    },
+    Circle {
+        center_bits: [u64; 2],
+        radius_bits: u64,
+    },
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ExactBRepPlanarGeometry {
     Boundary {
         closed: bool,
@@ -155,6 +167,10 @@ pub enum ExactBRepPlanarGeometry {
     },
     Spline {
         control_point_bits: Vec<[u64; 2]>,
+    },
+    Region {
+        outer: ExactBRepPlanarLoop,
+        holes: Vec<ExactBRepPlanarLoop>,
     },
 }
 
@@ -320,7 +336,7 @@ impl ExactBRepGraph {
         compiler.compile_body(producer_feature_id)?;
         let source_digest = snapshot.canonical_digest();
         let mut graph = Self {
-            schema: EXACT_BREP_GRAPH_SCHEMA_V2.to_owned(),
+            schema: EXACT_BREP_GRAPH_SCHEMA_V3.to_owned(),
             document_id: snapshot.document_id().0,
             source_revision: snapshot.revision_id(),
             source_digest,
@@ -371,7 +387,7 @@ impl ExactBRepGraph {
     }
 
     pub fn validate(&self) -> Result<(), ExactBRepGraphError> {
-        if self.schema != EXACT_BREP_GRAPH_SCHEMA_V2
+        if self.schema != EXACT_BREP_GRAPH_SCHEMA_V3
             || self.document_id == 0
             || self.definition_id == 0
             || self.producer_feature_id == 0
@@ -898,7 +914,7 @@ impl<'a> GraphCompiler<'a> {
                     .into_iter()
                     .find(|region| region.id == region_id)
                     .ok_or(ExactBRepGraphError::UnsupportedProfile(feature_id))?;
-                solved_geometry(&region.profile)?
+                solved_geometry(&region)?
             }
             _ => return Err(ExactBRepGraphError::UnsupportedProfile(feature_id)),
         };
@@ -954,12 +970,46 @@ fn topology_selectors(
 }
 
 fn solved_geometry(
-    profile: &SolvedSketchRegionProfile,
+    region: &SolvedSketchRegion,
 ) -> Result<ExactBRepPlanarGeometry, ExactBRepGraphError> {
+    if region.holes.is_empty() {
+        return match solved_loop(&region.outer)? {
+            ExactBRepPlanarLoop::Boundary { segments } => Ok(ExactBRepPlanarGeometry::Boundary {
+                closed: true,
+                segments,
+            }),
+            ExactBRepPlanarLoop::Circle {
+                center_bits,
+                radius_bits,
+            } => Ok(ExactBRepPlanarGeometry::Circle {
+                center_bits,
+                radius_bits,
+            }),
+        };
+    }
+    Ok(ExactBRepPlanarGeometry::Region {
+        outer: solved_loop(&region.outer)?,
+        holes: region
+            .holes
+            .iter()
+            .map(solved_loop)
+            .collect::<Result<Vec<_>, _>>()?,
+    })
+}
+
+fn solved_loop(
+    profile: &SolvedSketchRegionProfile,
+) -> Result<ExactBRepPlanarLoop, ExactBRepGraphError> {
     match profile {
-        SolvedSketchRegionProfile::Polyline(points) => polygon_geometry(points),
-        SolvedSketchRegionProfile::Boundary(edges) => {
-            let segments = edges
+        SolvedSketchRegionProfile::Polyline(points) => {
+            let ExactBRepPlanarGeometry::Boundary { segments, .. } = polygon_geometry(points)?
+            else {
+                unreachable!()
+            };
+            Ok(ExactBRepPlanarLoop::Boundary { segments })
+        }
+        SolvedSketchRegionProfile::Boundary(edges) => Ok(ExactBRepPlanarLoop::Boundary {
+            segments: edges
                 .iter()
                 .map(|edge| match edge {
                     SolvedSketchRegionEdge::Line { start_mm, end_mm } => {
@@ -972,16 +1022,12 @@ fn solved_geometry(
                         clockwise,
                     } => profile_segment(*start_mm, *end_mm, Some(*center_mm), *clockwise),
                 })
-                .collect::<Result<Vec<_>, _>>()?;
-            Ok(ExactBRepPlanarGeometry::Boundary {
-                closed: true,
-                segments,
-            })
-        }
+                .collect::<Result<Vec<_>, _>>()?,
+        }),
         SolvedSketchRegionProfile::Circle {
             center_mm,
             radius_mm,
-        } => Ok(ExactBRepPlanarGeometry::Circle {
+        } => Ok(ExactBRepPlanarLoop::Circle {
             center_bits: valid_point(*center_mm)?.map(f64::to_bits),
             radius_bits: positive_distance(*radius_mm)?,
         }),
@@ -1319,6 +1365,11 @@ fn planar_geometry_bounds(
                 include(point.map(f64::from_bits));
             }
         }
+        ExactBRepPlanarGeometry::Region { outer, .. } => {
+            let loop_bounds = planar_geometry_bounds(&loop_geometry(outer))?;
+            include(loop_bounds[0]);
+            include(loop_bounds[1]);
+        }
     }
     if bounds.iter().flatten().all(|value| value.is_finite())
         && (0..2).all(|axis| bounds[0][axis] < bounds[1][axis])
@@ -1402,6 +1453,22 @@ fn valid_frame(bits: [u64; 12]) -> bool {
         .all(|value| value.is_finite() && value.abs() <= MAX_ABS_MM)
 }
 
+fn loop_geometry(planar_loop: &ExactBRepPlanarLoop) -> ExactBRepPlanarGeometry {
+    match planar_loop {
+        ExactBRepPlanarLoop::Boundary { segments } => ExactBRepPlanarGeometry::Boundary {
+            closed: true,
+            segments: segments.clone(),
+        },
+        ExactBRepPlanarLoop::Circle {
+            center_bits,
+            radius_bits,
+        } => ExactBRepPlanarGeometry::Circle {
+            center_bits: *center_bits,
+            radius_bits: *radius_bits,
+        },
+    }
+}
+
 fn validate_geometry(geometry: &ExactBRepPlanarGeometry) -> Result<usize, ExactBRepGraphError> {
     let valid_bits = |bits: [u64; 2]| {
         bits.map(f64::from_bits)
@@ -1480,6 +1547,19 @@ fn validate_geometry(geometry: &ExactBRepPlanarGeometry) -> Result<usize, ExactB
                 return Err(ExactBRepGraphError::InvalidGraph);
             }
             Ok(control_point_bits.len())
+        }
+        ExactBRepPlanarGeometry::Region { outer, holes } => {
+            if holes.is_empty() || holes.len() > MAX_SKETCH_ENTITIES {
+                return Err(ExactBRepGraphError::InvalidGraph);
+            }
+            holes.iter().try_fold(
+                validate_geometry(&loop_geometry(outer))?,
+                |segment_count, hole| {
+                    segment_count
+                        .checked_add(validate_geometry(&loop_geometry(hole))?)
+                        .ok_or(ExactBRepGraphError::ResourceLimit)
+                },
+            )
         }
     }
 }

@@ -1,12 +1,13 @@
 use ketchup_exact::{
     BottleEdgeFinish, BoxSpec, CircleExtrudeSpec, CutMode, CylinderToolSpec, ExactBackend,
-    ExactOpOutput, GeometryErrorCode, PlanarProfileSegment, Point3, RectangleExtrudeSpec,
-    RectangleOffsetSpec, RectangleSweepSpec, ReferenceResolution, Size3, SplineLoftSection,
-    SplineLoftSpec, capture_box_shell_references, capture_circle_extrusion_references,
-    capture_circular_through_cut_references, capture_general_revolve_references,
-    capture_mixed_profile_extrusion_references, capture_planar_offset_reference,
-    capture_rectangular_split_references, capture_rectangular_sweep_references,
-    capture_spline_loft_references, resolve_subshape_reference,
+    ExactOpOutput, GeometryErrorCode, PlanarProfileLoop, PlanarProfileSegment, Point3,
+    RectangleExtrudeSpec, RectangleOffsetSpec, RectangleSweepSpec, ReferenceResolution, Size3,
+    SplineLoftSection, SplineLoftSpec, capture_box_shell_references,
+    capture_circle_extrusion_references, capture_circular_through_cut_references,
+    capture_general_revolve_references, capture_mixed_profile_extrusion_references,
+    capture_planar_offset_reference, capture_rectangular_split_references,
+    capture_rectangular_sweep_references, capture_spline_loft_references,
+    resolve_subshape_reference,
 };
 
 const COORDINATE_LIMIT_MM: f64 = 1_000_000.0;
@@ -1116,4 +1117,51 @@ fn step_import_can_address_each_transferred_solid_independently() {
     assert_close(solid_0.body.topology.volume_mm3, 6_000.0);
     assert_close(solid_1.body.topology.volume_mm3, 120_000.0);
     assert_eq!(out_of_range.code, GeometryErrorCode::InvalidParameter);
+}
+
+#[test]
+fn planar_region_extrusion_preserves_a_circular_hole_and_analytic_volume() {
+    let outer = PlanarProfileLoop::Segments(vec![
+        PlanarProfileSegment::Line {
+            start_mm: [-20.0, -15.0],
+            end_mm: [20.0, -15.0],
+        },
+        PlanarProfileSegment::Line {
+            start_mm: [20.0, -15.0],
+            end_mm: [20.0, 15.0],
+        },
+        PlanarProfileSegment::Line {
+            start_mm: [20.0, 15.0],
+            end_mm: [-20.0, 15.0],
+        },
+        PlanarProfileSegment::Line {
+            start_mm: [-20.0, 15.0],
+            end_mm: [-20.0, -15.0],
+        },
+    ]);
+    let holes = [PlanarProfileLoop::Circle {
+        center_mm: [0.0, 0.0],
+        radius_mm: 5.0,
+    }];
+    let backend = ExactBackend::new();
+    let output = backend.extrude_planar_region(&outer, &holes, 12.0).unwrap();
+    let repeated = backend.extrude_planar_region(&outer, &holes, 12.0).unwrap();
+
+    assert_valid(&output);
+    assert_eq!(output.body.topology.solid_count, 1);
+    assert_close(
+        output.body.topology.volume_mm3,
+        (40.0 * 30.0 - std::f64::consts::PI * 5.0 * 5.0) * 12.0,
+    );
+    assert_close(output.body.topology.bounds_mm.min.x, -20.0);
+    assert_close(output.body.topology.bounds_mm.min.y, -15.0);
+    assert_close(output.body.topology.bounds_mm.min.z, 0.0);
+    assert_close(output.body.topology.bounds_mm.max.x, 20.0);
+    assert_close(output.body.topology.bounds_mm.max.y, 15.0);
+    assert_close(output.body.topology.bounds_mm.max.z, 12.0);
+    assert_eq!(output.input_digest, repeated.input_digest);
+    assert_eq!(
+        output.body.result_fingerprint,
+        repeated.body.result_fingerprint
+    );
 }

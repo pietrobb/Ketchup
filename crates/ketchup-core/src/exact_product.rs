@@ -6658,8 +6658,11 @@ impl ExactFeatureChainRequest {
                 return Err(ExactProductError::UnsupportedDefinition);
             }
             let pocket_region = selected_solved_region(pocket_sketch, pocket.region)?;
+            if !pocket_region.holes.is_empty() {
+                return Err(ExactProductError::UnsupportedProfile);
+            }
             let (min_x, min_y, max_x, max_y, pocket_circle, pocket_profile) = match &pocket_region
-                .profile
+                .outer
             {
                 SolvedSketchRegionProfile::Polyline(points)
                     if rectangle_bounds(points).is_some() =>
@@ -6669,7 +6672,7 @@ impl ExactFeatureChainRequest {
                     (min_x, min_y, max_x, max_y, None, None)
                 }
                 SolvedSketchRegionProfile::Polyline(_) | SolvedSketchRegionProfile::Boundary(_) => {
-                    let profile = exact_mixed_profile_from_solved(&pocket_region.profile)
+                    let profile = exact_mixed_profile_from_solved(&pocket_region.outer)
                         .ok_or(ExactProductError::UnsupportedProfile)?;
                     let [min_x, min_y, max_x, max_y] = profile.bounds_bits.map(f64::from_bits);
                     (min_x, min_y, max_x, max_y, None, Some(profile))
@@ -12884,6 +12887,9 @@ fn exact_region_profile(
     region: SolvedSketchRegion,
     workplane: &WorkplaneSpec,
 ) -> Result<ExactRegionProfile, ExactProductError> {
+    if !region.holes.is_empty() {
+        return Err(ExactProductError::UnsupportedProfile);
+    }
     let frame = workplane.frame;
     let mut transform = [
         frame.origin_mm[0],
@@ -12899,7 +12905,7 @@ fn exact_region_profile(
         frame.normal[1],
         frame.normal[2],
     ];
-    if let SolvedSketchRegionProfile::Polyline(points) = &region.profile
+    if let SolvedSketchRegionProfile::Polyline(points) = &region.outer
         && let Some([min_x, min_y, max_x, max_y]) = rectangle_bounds(points)
     {
         for (axis, coordinate) in transform.iter_mut().take(3).enumerate() {
@@ -12913,9 +12919,9 @@ fn exact_region_profile(
             frame: transform,
         });
     }
-    match &region.profile {
+    match &region.outer {
         SolvedSketchRegionProfile::Polyline(_) | SolvedSketchRegionProfile::Boundary(_) => {
-            let profile = exact_mixed_profile_from_solved(&region.profile)
+            let profile = exact_mixed_profile_from_solved(&region.outer)
                 .ok_or(ExactProductError::UnsupportedProfile)?;
             let [min_x, min_y, max_x, max_y] = profile.bounds_bits.map(f64::from_bits);
             Ok(ExactRegionProfile {

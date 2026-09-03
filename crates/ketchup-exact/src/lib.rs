@@ -132,6 +132,11 @@ mod ffi {
             segments: &[f64],
             height: f64,
         ) -> UniquePtr<NativeOperationResult>;
+        fn extrude_planar_region_native(
+            segments: &[f64],
+            loop_segment_counts: &[u32],
+            height: f64,
+        ) -> UniquePtr<NativeOperationResult>;
         fn revolve_profile_native(points: &[f64]) -> UniquePtr<NativeOperationResult>;
         fn revolve_general_profile_native(
             segments: &[f64],
@@ -398,6 +403,12 @@ pub enum PlanarProfileSegment {
         center_mm: [f64; 2],
         clockwise: bool,
     },
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum PlanarProfileLoop {
+    Segments(Vec<PlanarProfileSegment>),
+    Circle { center_mm: [f64; 2], radius_mm: f64 },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1007,6 +1018,104 @@ impl ExactBackend {
         collect_output(
             ffi::extrude_mixed_profile_native(&flattened, height_mm),
             "extrude_mixed_profile",
+            &input,
+            HistoryConfidence::Complete,
+        )
+    }
+
+    pub fn extrude_planar_region(
+        &self,
+        outer: &PlanarProfileLoop,
+        holes: &[PlanarProfileLoop],
+        height_mm: f64,
+    ) -> Result<ExactOpOutput, GeometryError> {
+        let input = format!(
+            "extrude_planar_region:{outer:?}:{holes:?}:{:016x}",
+            height_mm.to_bits()
+        );
+        if holes.is_empty() || holes.len() > 64 {
+            return Err(parameter_error(
+                GeometryErrorCode::InvalidProfile,
+                "extrude_planar_region",
+                &input,
+                "Planar region requires 1..=64 holes".to_owned(),
+            ));
+        }
+        validate_length(height_mm, "height_mm", "extrude_planar_region", &input)?;
+        let mut flattened = Vec::new();
+        let mut loop_segment_counts = Vec::with_capacity(holes.len() + 1);
+        for planar_loop in std::iter::once(outer).chain(holes) {
+            let before = flattened.len();
+            match planar_loop {
+                PlanarProfileLoop::Segments(segments) => {
+                    validate_mixed_profile(segments, &input)?;
+                    flattened.extend(segments.iter().flat_map(|segment| match segment {
+                        PlanarProfileSegment::Line { start_mm, end_mm } => [
+                            0.0,
+                            start_mm[0],
+                            start_mm[1],
+                            end_mm[0],
+                            end_mm[1],
+                            0.0,
+                            0.0,
+                            0.0,
+                        ],
+                        PlanarProfileSegment::CircularArc {
+                            start_mm,
+                            end_mm,
+                            center_mm,
+                            clockwise,
+                        } => [
+                            1.0,
+                            start_mm[0],
+                            start_mm[1],
+                            end_mm[0],
+                            end_mm[1],
+                            center_mm[0],
+                            center_mm[1],
+                            f64::from(*clockwise),
+                        ],
+                    }));
+                }
+                PlanarProfileLoop::Circle {
+                    center_mm,
+                    radius_mm,
+                } => {
+                    validate_circle(*center_mm, *radius_mm, "extrude_planar_region", &input)?;
+                    flattened.extend([
+                        2.0,
+                        center_mm[0],
+                        center_mm[1],
+                        *radius_mm,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                    ]);
+                }
+            }
+            loop_segment_counts.push(((flattened.len() - before) / 8).try_into().map_err(
+                |_| {
+                    parameter_error(
+                        GeometryErrorCode::InvalidProfile,
+                        "extrude_planar_region",
+                        &input,
+                        "Planar region exceeds the segment limit".to_owned(),
+                    )
+                },
+            )?);
+        }
+        if flattened.len() / 8 > 4_096 {
+            return Err(parameter_error(
+                GeometryErrorCode::InvalidProfile,
+                "extrude_planar_region",
+                &input,
+                "Planar region exceeds the segment limit".to_owned(),
+            ));
+        }
+        collect_output(
+            ffi::extrude_planar_region_native(&flattened, &loop_segment_counts, height_mm),
+            "extrude_planar_region",
             &input,
             HistoryConfidence::Complete,
         )

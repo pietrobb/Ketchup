@@ -2,8 +2,8 @@
 
 use ketchup_core::exact_brep_graph::{
     ExactBRepBooleanOperation, ExactBRepEdgeFinishKind, ExactBRepGraph, ExactBRepLinearInterval,
-    ExactBRepOperation, ExactBRepPlanarGeometry, ExactBRepPlanarSegment, ExactBRepProfile,
-    ExactBRepTopologyKind, ExactBRepTopologySelector,
+    ExactBRepOperation, ExactBRepPlanarGeometry, ExactBRepPlanarLoop, ExactBRepPlanarSegment,
+    ExactBRepProfile, ExactBRepTopologyKind, ExactBRepTopologySelector,
 };
 use ketchup_core::exact_product::{EXACT_BREP_GRAPH_EVALUATOR_V1, ExactCircleProfile};
 use ketchup_core::graph::sha256_hex;
@@ -12,9 +12,9 @@ use ketchup_core::import::{
 };
 use ketchup_exact::{
     BoxSpec, CircleExtrudeSpec, CutMode, CylinderToolSpec, EdgeFinish, ExactBackend,
-    ExactBodyBooleanOperation, ExactOpOutput, PlanarProfileSegment, Point3, RectangleExtrudeSpec,
-    RectangleOffsetSpec, RectangleSweepSpec, ReferenceResolution, Size3, SplineLoftSection,
-    SplineLoftSpec, StabilityClass, capture_bounded_pocket_references,
+    ExactBodyBooleanOperation, ExactOpOutput, PlanarProfileLoop, PlanarProfileSegment, Point3,
+    RectangleExtrudeSpec, RectangleOffsetSpec, RectangleSweepSpec, ReferenceResolution, Size3,
+    SplineLoftSection, SplineLoftSpec, StabilityClass, capture_bounded_pocket_references,
     capture_bounded_through_cut_references, capture_box_shell_references,
     capture_circle_extrusion_references, capture_circular_pocket_references,
     capture_circular_split_references, capture_circular_through_cut_references,
@@ -89,10 +89,10 @@ fn handle_request(backend: &ExactBackend, request: &str) -> Option<String> {
         (Some("CAPS"), Some("M21_STEP_MODEL_V1"), None) => {
             Some("CAPS M21_STEP_MODEL_V1".to_owned())
         }
-        (Some("CAPS"), Some("EXACT_BREP_GRAPH_V2"), None) => {
-            Some("CAPS EXACT_BREP_GRAPH_V2".to_owned())
+        (Some("CAPS"), Some("EXACT_BREP_GRAPH_V3"), None) => {
+            Some("CAPS EXACT_BREP_GRAPH_V3".to_owned())
         }
-        (Some("TESSELLATE_BREP_GRAPH_V2"), Some(graph_digest), Some(encoded_graph)) => {
+        (Some("TESSELLATE_BREP_GRAPH_V3"), Some(graph_digest), Some(encoded_graph)) => {
             let remaining = fields.collect::<Vec<_>>();
             Some(exact_brep_graph_mesh_response(
                 backend,
@@ -110,7 +110,7 @@ fn handle_request(backend: &ExactBackend, request: &str) -> Option<String> {
                 &remaining,
             ))
         }
-        (Some("EVAL_BREP_GRAPH_V2"), Some(graph_digest), Some(encoded_graph)) => {
+        (Some("EVAL_BREP_GRAPH_V3"), Some(graph_digest), Some(encoded_graph)) => {
             let remaining = fields.collect::<Vec<_>>();
             let Some(graph) = decode_exact_brep_graph(graph_digest, encoded_graph) else {
                 return Some("ERR invalid_request".to_owned());
@@ -1238,7 +1238,7 @@ fn exact_brep_graph_response(
     };
     let topology = &output.body.topology;
     format!(
-        "OK_BREP_GRAPH_V2 {} {} {} {} {} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {} {} {} {} {} {} {}",
+        "OK_BREP_GRAPH_V3 {} {} {} {} {} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {} {} {} {} {} {} {}",
         graph.canonical_input_digest,
         graph.graph_digest,
         graph.producer_feature_id,
@@ -1580,10 +1580,10 @@ fn exact_brep_revolve(
                 },
             ]
         }
-        ExactBRepPlanarGeometry::Spline { .. } => {
+        ExactBRepPlanarGeometry::Spline { .. } | ExactBRepPlanarGeometry::Region { .. } => {
             return Err(exact_brep_profile_error(
                 profile,
-                "exact revolve requires a closed line/arc/circle profile",
+                "exact revolve requires a simple closed line/arc/circle profile",
             ));
         }
     };
@@ -1695,6 +1695,43 @@ fn exact_brep_boundary_segments(
         .collect())
 }
 
+fn exact_brep_planar_loop(planar_loop: &ExactBRepPlanarLoop) -> PlanarProfileLoop {
+    match planar_loop {
+        ExactBRepPlanarLoop::Boundary { segments } => PlanarProfileLoop::Segments(
+            segments
+                .iter()
+                .map(|segment| match segment {
+                    ExactBRepPlanarSegment::Line {
+                        start_bits,
+                        end_bits,
+                    } => PlanarProfileSegment::Line {
+                        start_mm: start_bits.map(f64::from_bits),
+                        end_mm: end_bits.map(f64::from_bits),
+                    },
+                    ExactBRepPlanarSegment::CircularArc {
+                        start_bits,
+                        end_bits,
+                        center_bits,
+                        clockwise,
+                    } => PlanarProfileSegment::CircularArc {
+                        start_mm: start_bits.map(f64::from_bits),
+                        end_mm: end_bits.map(f64::from_bits),
+                        center_mm: center_bits.map(f64::from_bits),
+                        clockwise: *clockwise,
+                    },
+                })
+                .collect(),
+        ),
+        ExactBRepPlanarLoop::Circle {
+            center_bits,
+            radius_bits,
+        } => PlanarProfileLoop::Circle {
+            center_mm: center_bits.map(f64::from_bits),
+            radius_mm: f64::from_bits(*radius_bits),
+        },
+    }
+}
+
 fn exact_brep_profile_body(
     backend: &ExactBackend,
     profile: &ExactBRepProfile,
@@ -1739,6 +1776,11 @@ fn exact_brep_profile_body(
             radius_mm: f64::from_bits(*radius_bits),
             height_mm: distance_mm,
         })?,
+        ExactBRepPlanarGeometry::Region { outer, holes } => backend.extrude_planar_region(
+            &exact_brep_planar_loop(outer),
+            &holes.iter().map(exact_brep_planar_loop).collect::<Vec<_>>(),
+            distance_mm,
+        )?,
         ExactBRepPlanarGeometry::Boundary { closed: false, .. }
         | ExactBRepPlanarGeometry::Spline { .. } => {
             return Err(exact_brep_profile_error(
@@ -1755,27 +1797,33 @@ fn exact_brep_profile_body(
         frame[1] + direction[1] * start_mm,
         frame[2] + direction[2] * start_mm,
     ];
-    backend.transform_body(
-        &local.body,
-        &[
-            frame[3],
-            frame[6],
-            direction[0],
-            origin[0],
-            frame[4],
-            frame[7],
-            direction[1],
-            origin[1],
-            frame[5],
-            frame[8],
-            direction[2],
-            origin[2],
-            0.0,
-            0.0,
-            0.0,
-            1.0,
-        ],
-    )
+    let matrix = [
+        frame[3],
+        frame[6],
+        direction[0],
+        origin[0],
+        frame[4],
+        frame[7],
+        direction[1],
+        origin[1],
+        frame[5],
+        frame[8],
+        direction[2],
+        origin[2],
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+    ];
+    if matrix
+        == [
+            1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+        ]
+    {
+        Ok(local)
+    } else {
+        backend.transform_body(&local.body, &matrix)
+    }
 }
 
 fn exact_brep_graph_error(

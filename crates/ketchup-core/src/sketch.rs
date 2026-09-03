@@ -482,7 +482,28 @@ pub enum SolvedSketchRegionProfile {
 pub struct SolvedSketchRegion {
     pub id: SketchRegionId,
     pub entity_ids: Vec<SketchEntityId>,
-    pub profile: SolvedSketchRegionProfile,
+    pub outer: SolvedSketchRegionProfile,
+    pub holes: Vec<SolvedSketchRegionProfile>,
+}
+
+struct SolvedSketchLoop {
+    entity_ids: Vec<SketchEntityId>,
+    profile: SolvedSketchRegionProfile,
+    area: f64,
+}
+
+#[derive(Clone, Copy)]
+enum RegionCurve {
+    Line {
+        start: [f64; 2],
+        end: [f64; 2],
+    },
+    Arc {
+        start: [f64; 2],
+        end: [f64; 2],
+        center: [f64; 2],
+        clockwise: bool,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -786,7 +807,7 @@ impl SketchSpec {
 
     pub fn solved_regions(&self) -> Result<Vec<SolvedSketchRegion>, SketchError> {
         let solution = self.solve_geometry()?;
-        let mut regions = Vec::new();
+        let mut loops = Vec::new();
         let mut boundaries = BTreeMap::new();
         for entity in solution.entities {
             match entity {
@@ -794,13 +815,13 @@ impl SketchSpec {
                     id,
                     center_mm,
                     radius_mm,
-                } => regions.push(SolvedSketchRegion {
-                    id: stable_region_id(&[id]),
+                } => loops.push(SolvedSketchLoop {
                     entity_ids: vec![id],
                     profile: SolvedSketchRegionProfile::Circle {
                         center_mm,
                         radius_mm,
                     },
+                    area: std::f64::consts::PI * radius_mm * radius_mm,
                 }),
                 SketchEntity::Line {
                     id,
@@ -867,7 +888,8 @@ impl SketchSpec {
                     return Err(SketchError::ResourceLimit);
                 }
             }
-            if edges.len() < 2 || region_signed_area(&edges).abs() <= EPSILON_MM * EPSILON_MM {
+            let area = region_signed_area(&edges).abs();
+            if edges.len() < 2 || area <= EPSILON_MM * EPSILON_MM {
                 return Err(SketchError::OpenRegion);
             }
             entity_ids.sort_unstable();
@@ -881,14 +903,68 @@ impl SketchSpec {
             } else {
                 SolvedSketchRegionProfile::Boundary(edges)
             };
-            regions.push(SolvedSketchRegion {
-                id: stable_region_id(&entity_ids),
+            loops.push(SolvedSketchLoop {
                 entity_ids,
                 profile,
+                area,
+            });
+        }
+        if loops.is_empty() {
+            return Err(SketchError::InvalidRegionIdentity);
+        }
+        for left in 0..loops.len() {
+            for right in left + 1..loops.len() {
+                if profiles_intersect(&loops[left].profile, &loops[right].profile) {
+                    return Err(SketchError::InvalidRegionIdentity);
+                }
+            }
+        }
+        let mut parents = vec![None; loops.len()];
+        for child in 0..loops.len() {
+            let point = profile_point(&loops[child].profile);
+            parents[child] = (0..loops.len())
+                .filter(|parent| {
+                    *parent != child
+                        && loops[*parent].area > loops[child].area
+                        && point_in_profile(point, &loops[*parent].profile)
+                })
+                .min_by(|left, right| loops[*left].area.total_cmp(&loops[*right].area));
+        }
+        let mut depths = vec![0_usize; loops.len()];
+        for index in 0..loops.len() {
+            let mut cursor = parents[index];
+            while let Some(parent) = cursor {
+                depths[index] += 1;
+                if depths[index] > loops.len() {
+                    return Err(SketchError::InvalidRegionIdentity);
+                }
+                cursor = parents[parent];
+            }
+        }
+        let mut regions = Vec::new();
+        for outer_index in (0..loops.len()).filter(|index| depths[*index] % 2 == 0) {
+            let outer = &loops[outer_index];
+            let mut hole_indices = (0..loops.len())
+                .filter(|index| parents[*index] == Some(outer_index) && depths[*index] % 2 == 1)
+                .collect::<Vec<_>>();
+            hole_indices.sort_by_key(|index| stable_region_id(&loops[*index].entity_ids));
+            let mut entity_ids = outer.entity_ids.clone();
+            for index in &hole_indices {
+                entity_ids.extend_from_slice(&loops[*index].entity_ids);
+            }
+            entity_ids.sort_unstable();
+            regions.push(SolvedSketchRegion {
+                id: stable_region_id(&outer.entity_ids),
+                entity_ids,
+                outer: outer.profile.clone(),
+                holes: hole_indices
+                    .into_iter()
+                    .map(|index| loops[index].profile.clone())
+                    .collect(),
             });
         }
         regions.sort_by_key(|region| region.id);
-        if regions.is_empty() || regions.windows(2).any(|pair| pair[0].id == pair[1].id) {
+        if regions.windows(2).any(|pair| pair[0].id == pair[1].id) {
             return Err(SketchError::InvalidRegionIdentity);
         }
         Ok(regions)
@@ -925,6 +1001,298 @@ fn region_signed_area(edges: &[SolvedSketchRegionEdge]) -> f64 {
             }
         })
         .sum()
+}
+
+fn profile_curves(profile: &SolvedSketchRegionProfile) -> Vec<RegionCurve> {
+    match profile {
+        SolvedSketchRegionProfile::Polyline(points) => points
+            .iter()
+            .zip(points.iter().cycle().skip(1))
+            .take(points.len())
+            .map(|(start, end)| RegionCurve::Line {
+                start: *start,
+                end: *end,
+            })
+            .collect(),
+        SolvedSketchRegionProfile::Boundary(edges) => edges
+            .iter()
+            .map(|edge| match edge {
+                SolvedSketchRegionEdge::Line { start_mm, end_mm } => RegionCurve::Line {
+                    start: *start_mm,
+                    end: *end_mm,
+                },
+                SolvedSketchRegionEdge::Arc {
+                    start_mm,
+                    end_mm,
+                    center_mm,
+                    clockwise,
+                } => RegionCurve::Arc {
+                    start: *start_mm,
+                    end: *end_mm,
+                    center: *center_mm,
+                    clockwise: *clockwise,
+                },
+            })
+            .collect(),
+        SolvedSketchRegionProfile::Circle {
+            center_mm,
+            radius_mm,
+        } => {
+            let right = [center_mm[0] + radius_mm, center_mm[1]];
+            let left = [center_mm[0] - radius_mm, center_mm[1]];
+            vec![
+                RegionCurve::Arc {
+                    start: right,
+                    end: left,
+                    center: *center_mm,
+                    clockwise: false,
+                },
+                RegionCurve::Arc {
+                    start: left,
+                    end: right,
+                    center: *center_mm,
+                    clockwise: false,
+                },
+            ]
+        }
+    }
+}
+
+fn profile_point(profile: &SolvedSketchRegionProfile) -> [f64; 2] {
+    match profile {
+        SolvedSketchRegionProfile::Polyline(points) => points[0],
+        SolvedSketchRegionProfile::Boundary(edges) => edges[0].start_mm(),
+        SolvedSketchRegionProfile::Circle {
+            center_mm,
+            radius_mm,
+        } => [center_mm[0] + radius_mm, center_mm[1]],
+    }
+}
+
+fn profiles_intersect(left: &SolvedSketchRegionProfile, right: &SolvedSketchRegionProfile) -> bool {
+    let left = profile_curves(left);
+    let right = profile_curves(right);
+    left.iter()
+        .any(|left| right.iter().any(|right| curves_intersect(*left, *right)))
+}
+
+fn curves_intersect(left: RegionCurve, right: RegionCurve) -> bool {
+    match (left, right) {
+        (
+            RegionCurve::Line {
+                start: left_start,
+                end: left_end,
+            },
+            RegionCurve::Line {
+                start: right_start,
+                end: right_end,
+            },
+        ) => line_segments_intersect(left_start, left_end, right_start, right_end),
+        (RegionCurve::Line { start, end }, arc @ RegionCurve::Arc { .. })
+        | (arc @ RegionCurve::Arc { .. }, RegionCurve::Line { start, end }) => {
+            line_arc_intersects(start, end, arc)
+        }
+        (left @ RegionCurve::Arc { .. }, right @ RegionCurve::Arc { .. }) => {
+            arcs_intersect(left, right)
+        }
+    }
+}
+
+fn cross2(left: [f64; 2], right: [f64; 2]) -> f64 {
+    left[0] * right[1] - left[1] * right[0]
+}
+
+fn subtract2(left: [f64; 2], right: [f64; 2]) -> [f64; 2] {
+    [left[0] - right[0], left[1] - right[1]]
+}
+
+fn line_segments_intersect(
+    left_start: [f64; 2],
+    left_end: [f64; 2],
+    right_start: [f64; 2],
+    right_end: [f64; 2],
+) -> bool {
+    let left = subtract2(left_end, left_start);
+    let right = subtract2(right_end, right_start);
+    let offset = subtract2(right_start, left_start);
+    let denominator = cross2(left, right);
+    if denominator.abs() <= EPSILON_MM {
+        if cross2(offset, left).abs() > EPSILON_MM {
+            return false;
+        }
+        let axis = usize::from(left[1].abs() > left[0].abs());
+        let (left_min, left_max) = if left_start[axis] <= left_end[axis] {
+            (left_start[axis], left_end[axis])
+        } else {
+            (left_end[axis], left_start[axis])
+        };
+        let (right_min, right_max) = if right_start[axis] <= right_end[axis] {
+            (right_start[axis], right_end[axis])
+        } else {
+            (right_end[axis], right_start[axis])
+        };
+        return left_min <= right_max + EPSILON_MM && right_min <= left_max + EPSILON_MM;
+    }
+    let along_left = cross2(offset, right) / denominator;
+    let along_right = cross2(offset, left) / denominator;
+    (-EPSILON_MM..=1.0 + EPSILON_MM).contains(&along_left)
+        && (-EPSILON_MM..=1.0 + EPSILON_MM).contains(&along_right)
+}
+
+fn arc_parts(curve: RegionCurve) -> ([f64; 2], [f64; 2], [f64; 2], bool) {
+    let RegionCurve::Arc {
+        start,
+        end,
+        center,
+        clockwise,
+    } = curve
+    else {
+        unreachable!()
+    };
+    (start, end, center, clockwise)
+}
+
+fn point_on_arc(point: [f64; 2], curve: RegionCurve) -> bool {
+    let (start, end, center, clockwise) = arc_parts(curve);
+    let radius = distance2(start, center);
+    if (distance2(point, center) - radius).abs() > radius.max(1.0) * 1.0e-8 {
+        return false;
+    }
+    let start_angle = (start[1] - center[1]).atan2(start[0] - center[0]);
+    let end_angle = (end[1] - center[1]).atan2(end[0] - center[0]);
+    let point_angle = (point[1] - center[1]).atan2(point[0] - center[0]);
+    let total = if clockwise {
+        (start_angle - end_angle).rem_euclid(std::f64::consts::TAU)
+    } else {
+        (end_angle - start_angle).rem_euclid(std::f64::consts::TAU)
+    };
+    let offset = if clockwise {
+        (start_angle - point_angle).rem_euclid(std::f64::consts::TAU)
+    } else {
+        (point_angle - start_angle).rem_euclid(std::f64::consts::TAU)
+    };
+    offset <= total + 1.0e-10
+}
+
+fn line_arc_intersects(start: [f64; 2], end: [f64; 2], arc: RegionCurve) -> bool {
+    let (_, _, center, _) = arc_parts(arc);
+    let direction = subtract2(end, start);
+    let offset = subtract2(start, center);
+    let radius = distance2(arc_parts(arc).0, center);
+    let a = direction[0] * direction[0] + direction[1] * direction[1];
+    let b = 2.0 * (offset[0] * direction[0] + offset[1] * direction[1]);
+    let c = offset[0] * offset[0] + offset[1] * offset[1] - radius * radius;
+    let discriminant = b * b - 4.0 * a * c;
+    if discriminant < -EPSILON_MM {
+        return false;
+    }
+    let root = discriminant.max(0.0).sqrt();
+    [(-b - root) / (2.0 * a), (-b + root) / (2.0 * a)]
+        .into_iter()
+        .any(|parameter| {
+            (-EPSILON_MM..=1.0 + EPSILON_MM).contains(&parameter)
+                && point_on_arc(
+                    [
+                        start[0] + direction[0] * parameter,
+                        start[1] + direction[1] * parameter,
+                    ],
+                    arc,
+                )
+        })
+}
+
+fn arcs_intersect(left: RegionCurve, right: RegionCurve) -> bool {
+    let (left_start, _, left_center, _) = arc_parts(left);
+    let (right_start, _, right_center, _) = arc_parts(right);
+    let left_radius = distance2(left_start, left_center);
+    let right_radius = distance2(right_start, right_center);
+    let center_distance = distance2(left_center, right_center);
+    let tolerance = left_radius.max(right_radius).max(1.0) * 1.0e-8;
+    if center_distance <= tolerance && (left_radius - right_radius).abs() <= tolerance {
+        return true;
+    }
+    if center_distance > left_radius + right_radius + tolerance
+        || center_distance < (left_radius - right_radius).abs() - tolerance
+        || center_distance <= tolerance
+    {
+        return false;
+    }
+    let along = (left_radius * left_radius - right_radius * right_radius
+        + center_distance * center_distance)
+        / (2.0 * center_distance);
+    let height_squared = left_radius * left_radius - along * along;
+    if height_squared < -tolerance {
+        return false;
+    }
+    let direction = [
+        (right_center[0] - left_center[0]) / center_distance,
+        (right_center[1] - left_center[1]) / center_distance,
+    ];
+    let base = [
+        left_center[0] + along * direction[0],
+        left_center[1] + along * direction[1],
+    ];
+    let height = height_squared.max(0.0).sqrt();
+    let perpendicular = [-direction[1], direction[0]];
+    [
+        [
+            base[0] + height * perpendicular[0],
+            base[1] + height * perpendicular[1],
+        ],
+        [
+            base[0] - height * perpendicular[0],
+            base[1] - height * perpendicular[1],
+        ],
+    ]
+    .into_iter()
+    .any(|point| point_on_arc(point, left) && point_on_arc(point, right))
+}
+
+fn point_in_profile(point: [f64; 2], profile: &SolvedSketchRegionProfile) -> bool {
+    let mut winding = 0_i32;
+    for curve in profile_curves(profile) {
+        match curve {
+            RegionCurve::Line { start, end } => {
+                if start[1] <= point[1]
+                    && point[1] < end[1]
+                    && cross2(subtract2(end, start), subtract2(point, start)) > 0.0
+                {
+                    winding += 1;
+                } else if end[1] <= point[1]
+                    && point[1] < start[1]
+                    && cross2(subtract2(end, start), subtract2(point, start)) < 0.0
+                {
+                    winding -= 1;
+                }
+            }
+            arc @ RegionCurve::Arc {
+                center, clockwise, ..
+            } => {
+                let radius = distance2(arc_parts(arc).0, center);
+                let relative_y = (point[1] - center[1]) / radius;
+                if relative_y.abs() > 1.0 {
+                    continue;
+                }
+                let angle = relative_y.clamp(-1.0, 1.0).asin();
+                for candidate in [angle, std::f64::consts::PI - angle] {
+                    let crossing = [
+                        center[0] + radius * candidate.cos(),
+                        center[1] + radius * candidate.sin(),
+                    ];
+                    if crossing[0] <= point[0] + EPSILON_MM || !point_on_arc(crossing, arc) {
+                        continue;
+                    }
+                    let derivative = candidate.cos() * if clockwise { -1.0 } else { 1.0 };
+                    if derivative > EPSILON_MM {
+                        winding += 1;
+                    } else if derivative < -EPSILON_MM {
+                        winding -= 1;
+                    }
+                }
+            }
+        }
+    }
+    winding != 0
 }
 
 fn stable_region_id(entity_ids: &[SketchEntityId]) -> SketchRegionId {

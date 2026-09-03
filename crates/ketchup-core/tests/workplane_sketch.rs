@@ -200,6 +200,36 @@ fn line_arc_and_circle_keep_stable_ids_and_report_deterministic_remaining_dof() 
     assert_eq!(persistence::save(&reopened), bytes);
 }
 
+fn rectangle_with_circle(circle_center_mm: [f64; 2], reverse_outer_edges: bool) -> SketchSpec {
+    let line = |id: u64, start_mm: [f64; 2], end_mm: [f64; 2]| {
+        let (start_mm, end_mm) = if reverse_outer_edges {
+            (end_mm, start_mm)
+        } else {
+            (start_mm, end_mm)
+        };
+        SketchEntity::Line {
+            id: SketchEntityId(id),
+            start_mm,
+            end_mm,
+        }
+    };
+    SketchSpec {
+        workplane: XY,
+        entities: vec![
+            line(1, [0.0, 0.0], [20.0, 0.0]),
+            line(2, [20.0, 0.0], [20.0, 20.0]),
+            line(3, [20.0, 20.0], [0.0, 20.0]),
+            line(4, [0.0, 20.0], [0.0, 0.0]),
+            SketchEntity::Circle {
+                id: SketchEntityId(5),
+                center_mm: circle_center_mm,
+                radius_mm: 3.0,
+            },
+        ],
+        constraints: Vec::new(),
+    }
+}
+
 #[test]
 fn underconstrained_closed_geometry_produces_deterministic_regions() {
     let sketch = SketchSpec {
@@ -237,13 +267,109 @@ fn underconstrained_closed_geometry_produces_deterministic_regions() {
     assert_eq!(first, sketch.solved_regions().unwrap());
     assert_eq!(first.len(), 1);
     assert_eq!(
-        first[0].profile,
+        first[0].outer,
         SolvedSketchRegionProfile::Polyline(vec![
             [0.0, 0.0],
             [10.0, 0.0],
             [10.0, 10.0],
             [0.0, 10.0],
         ])
+    );
+}
+
+#[test]
+fn centered_circle_becomes_a_hole_with_direction_independent_region_identity() {
+    let forward = rectangle_with_circle([10.0, 10.0], false)
+        .solved_regions()
+        .unwrap();
+    let reversed = rectangle_with_circle([10.0, 10.0], true)
+        .solved_regions()
+        .unwrap();
+
+    assert_eq!(forward.len(), 1);
+    assert_eq!(reversed.len(), 1);
+    let region = &forward[0];
+    assert_eq!(
+        region.entity_ids,
+        vec![
+            SketchEntityId(1),
+            SketchEntityId(2),
+            SketchEntityId(3),
+            SketchEntityId(4),
+            SketchEntityId(5),
+        ]
+    );
+    assert_eq!(
+        region.outer,
+        SolvedSketchRegionProfile::Polyline(vec![
+            [0.0, 0.0],
+            [20.0, 0.0],
+            [20.0, 20.0],
+            [0.0, 20.0],
+        ])
+    );
+    assert_eq!(
+        region.holes,
+        vec![SolvedSketchRegionProfile::Circle {
+            center_mm: [10.0, 10.0],
+            radius_mm: 3.0,
+        }]
+    );
+    assert_eq!(region.id, reversed[0].id);
+    assert_eq!(region.entity_ids, reversed[0].entity_ids);
+}
+
+#[test]
+fn disjoint_circle_remains_a_separate_region() {
+    let regions = rectangle_with_circle([30.0, 10.0], false)
+        .solved_regions()
+        .unwrap();
+
+    assert_eq!(regions.len(), 2);
+    let rectangle_region = regions
+        .iter()
+        .find(|region| {
+            region.entity_ids.as_slice()
+                == &[
+                    SketchEntityId(1),
+                    SketchEntityId(2),
+                    SketchEntityId(3),
+                    SketchEntityId(4),
+                ]
+        })
+        .expect("expected the rectangle to remain a region");
+    assert_eq!(
+        rectangle_region.outer,
+        SolvedSketchRegionProfile::Polyline(vec![
+            [0.0, 0.0],
+            [20.0, 0.0],
+            [20.0, 20.0],
+            [0.0, 20.0],
+        ])
+    );
+    assert!(rectangle_region.holes.is_empty());
+
+    let circle_region = regions
+        .iter()
+        .find(|region| region.entity_ids == vec![SketchEntityId(5)])
+        .expect("expected the disjoint circle to remain a region");
+    assert_eq!(
+        circle_region.outer,
+        SolvedSketchRegionProfile::Circle {
+            center_mm: [30.0, 10.0],
+            radius_mm: 3.0,
+        }
+    );
+    assert!(circle_region.holes.is_empty());
+}
+
+#[test]
+fn circle_tangent_to_outer_boundary_fails_closed() {
+    let tangent = rectangle_with_circle([3.0, 10.0], false);
+
+    assert_eq!(
+        tangent.solved_regions(),
+        Err(SketchError::InvalidRegionIdentity)
     );
 }
 
@@ -292,7 +418,7 @@ fn region_identity_survives_edge_reversal_and_boundary_orientation_stays_contigu
     assert_eq!(regions[0].id, regions[1].id);
     assert_eq!(regions[0].entity_ids, regions[1].entity_ids);
     for region in regions {
-        let SolvedSketchRegionProfile::Boundary(edges) = region.profile else {
+        let SolvedSketchRegionProfile::Boundary(edges) = region.outer else {
             panic!("expected line/arc boundary");
         };
         assert_eq!(edges.len(), 2);
@@ -329,7 +455,7 @@ fn line_arc_boundary_is_oriented_and_open_or_branched_geometry_fails_closed() {
         vec![SketchEntityId(1), SketchEntityId(2)]
     );
     assert_eq!(
-        first[0].profile,
+        first[0].outer,
         SolvedSketchRegionProfile::Boundary(vec![
             SolvedSketchRegionEdge::Line {
                 start_mm: [-5.0, 0.0],
