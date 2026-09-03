@@ -10,7 +10,10 @@ use ketchup_core::document::{
     PortSpec, ProfileSegment, RuleOutput, SlotPath, SlotSegment, StableEdgeRole, StableFaceRole,
     Transform,
 };
-use ketchup_core::exact_brep_graph::MAX_EXACT_BREP_LOFT_CONTROL_POINTS;
+use ketchup_core::exact_brep_graph::{
+    MAX_EXACT_BREP_LOFT_CONTROL_POINTS, MAX_EXACT_BREP_SWEEP_PATH_LENGTH_MM,
+    MIN_EXACT_BREP_SWEEP_PATH_LENGTH_MM,
+};
 use ketchup_core::exact_product::{
     EXACT_ARC_PROFILE_EVALUATOR_V1, EXACT_BOOLEAN_INTERSECT_EVALUATOR_V1,
     EXACT_BOOLEAN_SPLIT_EVALUATOR_V1, EXACT_BOOLEAN_UNION_EVALUATOR_V1,
@@ -21571,7 +21574,7 @@ fn scheduler_evaluates_bounded_planar_offset_with_deterministic_exact_lineage() 
 }
 
 #[test]
-fn scheduler_evaluates_bounded_sweep_with_deterministic_exact_lineage() {
+fn scheduler_evaluates_bounded_sweep_and_rejects_path_length_parity() {
     const DEFINITION: DefinitionId = DefinitionId(711);
     const PROFILE: FeatureId = FeatureId(712);
     const PATH: FeatureId = FeatureId(713);
@@ -21625,10 +21628,67 @@ fn scheduler_evaluates_bounded_sweep_with_deterministic_exact_lineage() {
         request.expected_bounds_mm(),
         [[-4.0, -3.0, -10.0], [79.0, 103.0, 10.0]]
     );
+    assert_eq!(MIN_EXACT_BREP_SWEEP_PATH_LENGTH_MM, 0.01);
+    assert_eq!(MAX_EXACT_BREP_SWEEP_PATH_LENGTH_MM, 100_000.0);
+
+    for invalid_length in [0.009, 100_000.001] {
+        let mut invalid_document = DocumentStore::new();
+        let empty = invalid_document.current().canonical_digest();
+        let error = invalid_document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::CreateDefinition {
+                    id: DEFINITION,
+                    name: "Invalid Sweep definition".to_owned(),
+                },
+                CanonicalCommand::CreateFeature {
+                    id: PROFILE,
+                    definition_id: DEFINITION,
+                    name: "Rectangular section".to_owned(),
+                    kind: FeatureKind::Profile {
+                        points_mm: vec![[-5.0, -10.0], [5.0, -10.0], [5.0, 10.0], [-5.0, 10.0]],
+                    },
+                },
+                CanonicalCommand::CreateFeature {
+                    id: PATH,
+                    definition_id: DEFINITION,
+                    name: "Out-of-envelope path".to_owned(),
+                    kind: FeatureKind::SegmentProfile {
+                        segments: vec![ProfileSegment::Line {
+                            start_mm: [0.0, 0.0],
+                            end_mm: [invalid_length, 0.0],
+                        }],
+                        closed: false,
+                    },
+                },
+                CanonicalCommand::CreateFeature {
+                    id: SWEEP,
+                    definition_id: DEFINITION,
+                    name: "Invalid Sweep".to_owned(),
+                    kind: FeatureKind::Sweep {
+                        profile: PROFILE,
+                        path: PATH,
+                    },
+                },
+            ]))
+            .err()
+            .expect("canonical Sweep must reject an out-of-envelope path before worker evaluation");
+        assert_eq!(error, CanonicalError::InvalidSweep);
+        assert_eq!(invalid_document.current().canonical_digest(), empty);
+        assert_eq!(invalid_document.visible_undo_steps(), 0);
+    }
 
     let mut supervisor = ExactWorkerSupervisor::spawn(worker_path()).unwrap();
     let first = supervisor.evaluate_sweep(&request).unwrap();
     let repeated = supervisor.evaluate_sweep(&request).unwrap();
+    for invalid_length in [0.009, 100_000.001] {
+        let mut invalid_request = request.clone();
+        invalid_request.path_bits = [0.0, 0.0, invalid_length, 0.0].map(f64::to_bits);
+        assert!(matches!(
+            supervisor.evaluate_sweep(&invalid_request),
+            Err(M3EvaluationError::Worker(WorkerError::Geometry(code)))
+                if code == GeometryErrorCode::InvalidParameter.as_str()
+        ));
+    }
     assert!(first.is_current(&snapshot));
     assert_eq!(first.identity, repeated.identity);
     assert_eq!(first.references, repeated.references);

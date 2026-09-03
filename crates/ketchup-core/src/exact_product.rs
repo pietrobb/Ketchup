@@ -8,7 +8,10 @@ use crate::document::{
     FeatureDependencyGraph, FeatureId, FeatureKind, InstancePath, MESH_BODY_SCHEMA_V1,
     MeshAuthority, MeshBodySpec, ProfileSegment, Snapshot, Transform,
 };
-use crate::exact_brep_graph::{ExactBRepGraph, MAX_EXACT_BREP_LOFT_CONTROL_POINTS};
+use crate::exact_brep_graph::{
+    ExactBRepGraph, MAX_EXACT_BREP_LOFT_CONTROL_POINTS, MAX_EXACT_BREP_SWEEP_PATH_LENGTH_MM,
+    MIN_EXACT_BREP_SWEEP_PATH_LENGTH_MM,
+};
 use crate::graph::DerivedIdentity;
 use crate::import::StepImportMesh;
 use crate::sketch::{
@@ -4997,7 +5000,9 @@ impl ExactSweepRequest {
         let profile_bounds =
             rectangle_bounds(points_mm).ok_or(ExactProductError::UnsupportedProfile)?;
         let path_length = (end_mm[0] - start_mm[0]).hypot(end_mm[1] - start_mm[1]);
-        if !path_length.is_finite() || path_length <= 1.0e-6 {
+        if !(MIN_EXACT_BREP_SWEEP_PATH_LENGTH_MM..=MAX_EXACT_BREP_SWEEP_PATH_LENGTH_MM)
+            .contains(&path_length)
+        {
             return Err(ExactProductError::UnsupportedProfile);
         }
         let source_digest = snapshot.canonical_digest();

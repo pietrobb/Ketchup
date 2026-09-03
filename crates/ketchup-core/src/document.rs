@@ -11,7 +11,8 @@ use crate::assembly_joint::{
 use crate::drawing::{DrawingError, DrawingSheet, DrawingSheetId, DrawingSource};
 use crate::exact_brep_graph::{
     ExactBRepGraph, MAX_EXACT_BREP_GRAPH_NODES, MAX_EXACT_BREP_GRAPH_PROFILES,
-    MAX_EXACT_BREP_LOFT_CONTROL_POINTS,
+    MAX_EXACT_BREP_LOFT_CONTROL_POINTS, MAX_EXACT_BREP_SWEEP_PATH_LENGTH_MM,
+    MIN_EXACT_BREP_SWEEP_PATH_LENGTH_MM,
 };
 use crate::exact_product::{
     BodySubshapeRef, EXACT_MIN_LENGTH_MM, ExactFaceRole, ExactFeatureChainRequest,
@@ -12970,7 +12971,16 @@ fn validate_product(product: &ProductModel) -> Result<(), CanonicalError> {
                     FeatureKind::SegmentProfile {
                         segments,
                         closed: false,
-                    } if matches!(segments.as_slice(), [ProfileSegment::Line { .. }])
+                    } if matches!(
+                        segments.as_slice(),
+                        [ProfileSegment::Line { start_mm, end_mm }]
+                            if (MIN_EXACT_BREP_SWEEP_PATH_LENGTH_MM
+                                ..=MAX_EXACT_BREP_SWEEP_PATH_LENGTH_MM)
+                                .contains(
+                                    &(end_mm[0] - start_mm[0])
+                                        .hypot(end_mm[1] - start_mm[1]),
+                                )
+                    )
                 );
                 let feature_position = definition
                     .feature_ids
