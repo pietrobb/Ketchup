@@ -781,6 +781,64 @@ def test_cad_append_loft_matches_rust_boundaries_and_strict_fields():
             )
 
 
+def test_cad_append_topology_shell_matches_rust_boundaries_and_strict_fields():
+    reference_id = "a" * 64
+    feature = {
+        "type": "topology_shell",
+        "target_feature_id": 11,
+        "removed_face_reference_ids": [reference_id],
+        "thickness_mm": 1.5,
+    }
+    operation = {
+        "operation": "append_feature",
+        "definition_id": 2,
+        "name": "Exact shell",
+        "feature": feature,
+    }
+    assert assistant._validate_cad_edit_program({"operations": [operation]}) == {
+        "operations": [operation]
+    }
+    assert "Never invent topology reference IDs" in assistant.SYSTEM_PROMPT
+    assistant._validate_cad_edit_program(
+        {
+            "operations": [
+                {
+                    **operation,
+                    "feature": {
+                        **feature,
+                        "removed_face_reference_ids": [
+                            f"{index:064x}" for index in range(64)
+                        ],
+                        "thickness_mm": 100_000,
+                    },
+                }
+            ]
+        }
+    )
+
+    invalid_features = [
+        {**feature, "target_feature_id": 0},
+        {**feature, "target_feature_id": True},
+        {**feature, "target_feature_id": assistant.MAX_U64 + 1},
+        {**feature, "removed_face_reference_ids": []},
+        {**feature, "removed_face_reference_ids": [reference_id] * 2},
+        {**feature, "removed_face_reference_ids": ["short"]},
+        {**feature, "removed_face_reference_ids": ["z" * 64]},
+        {**feature, "removed_face_reference_ids": [reference_id] * 65},
+        {**feature, "thickness_mm": 0.009},
+        {**feature, "thickness_mm": 100_001},
+        {**feature, "thickness_mm": float("nan")},
+        {**feature, "thickness_mm": True},
+        {**feature, "face_ordinal": 3},
+        {"type": "topology_shell", "target_feature_id": 11, "thickness_mm": 1.5},
+    ]
+    for invalid_feature in invalid_features:
+        with pytest.raises(assistant.ProtocolError):
+            assistant._validate_cad_edit_program(
+                {"operations": [{**operation, "feature": invalid_feature}]}
+            )
+
+
 def test_public_sidecar_parses_bounded_model_intent_and_rejects_invalid_geometry():
     valid = json.dumps(
         {

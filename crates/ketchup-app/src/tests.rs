@@ -399,6 +399,131 @@ fn cad_edit_append_loft_is_host_id_assigned_exact_and_one_step() {
 }
 
 #[test]
+fn cad_edit_append_topology_shell_uses_host_face_reference_and_one_step() {
+    let mut app = KetchupApp::new();
+    let body_id = app
+        .document
+        .current()
+        .definition(INITIAL_BOX_DEFINITION)
+        .unwrap()
+        .bodies()
+        .next()
+        .unwrap()
+        .id();
+    app.document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetBodyVisibility {
+                definition_id: INITIAL_BOX_DEFINITION,
+                id: body_id,
+                visible: false,
+            },
+        ]))
+        .unwrap();
+    install_initial_graph_result(&mut app);
+    let context = app.assistant_context_for("Shell the exact body");
+    assert_eq!(context["topology_face_references_complete"], true);
+    let references = context["topology_face_references"].as_array().unwrap();
+    let expected_reference_ids = references
+        .iter()
+        .filter(|reference| reference["target_feature_id"] == 2)
+        .take(2)
+        .map(|reference| reference["reference_id"].as_str().unwrap().to_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(expected_reference_ids.len(), 2);
+    let mut requested_reference_ids = expected_reference_ids.clone();
+    requested_reference_ids.reverse();
+    let baseline = app.document.current().clone();
+    let baseline_undo = app.document.visible_undo_steps();
+    let program = AssistantCadEditProgram {
+        operations: vec![AssistantCadEditOperation::AppendFeature {
+            definition_id: INITIAL_BOX_DEFINITION.0,
+            name: "Assistant shell".to_owned(),
+            feature: AssistantCadBodyFeature::TopologyShell {
+                target_feature_id: 2,
+                removed_face_reference_ids: requested_reference_ids,
+                thickness_mm: 2.0,
+            },
+        }],
+    };
+
+    let batch = app.plan_assistant_cad_edit_program(&program).unwrap();
+    assert!(matches!(
+        batch.commands(),
+        [CanonicalCommand::CreateFeature {
+            id: FeatureId(3),
+            definition_id: INITIAL_BOX_DEFINITION,
+            kind: FeatureKind::TopologyShell {
+                target: FeatureId(2),
+                removed_faces,
+                thickness,
+            },
+            ..
+        }] if removed_faces.len() == 2
+            && removed_faces.iter().all(|reference| {
+                reference.producer_feature_id == FeatureId(2)
+                    && reference.kind == TopologicalElementKind::Face
+            })
+            && removed_faces
+                .iter()
+                .map(|reference| reference.lineage_digest.clone())
+                .collect::<Vec<_>>() == expected_reference_ids
+            && thickness.millimetres() == 2.0
+    ));
+
+    app.prepare_assistant_preview_source(AssistantPreviewSource::CadEdit(program))
+        .unwrap();
+    assert_eq!(app.document.current().revision_id(), baseline.revision_id());
+    assert_eq!(
+        app.document.current().canonical_digest(),
+        baseline.canonical_digest()
+    );
+    assert_eq!(app.document.visible_undo_steps(), baseline_undo);
+    assert!(app.confirm_assistant_proposal());
+    let committed = app.document.current();
+    assert_eq!(committed.revision_id(), baseline.revision_id() + 1);
+    assert_eq!(app.document.visible_undo_steps(), baseline_undo + 1);
+    let graph =
+        ExactBRepGraph::from_snapshot(&committed, INITIAL_BOX_DEFINITION, FeatureId(3)).unwrap();
+    assert!(
+        graph
+            .nodes
+            .iter()
+            .any(|node| matches!(node.operation, ExactBRepOperation::Shell { .. }))
+    );
+    assert!(app.undo());
+    assert_eq!(
+        app.document.current().canonical_digest(),
+        baseline.canonical_digest()
+    );
+}
+
+#[test]
+fn cad_edit_append_topology_shell_rejects_unpublished_reference_without_mutation() {
+    let mut app = KetchupApp::new();
+    install_initial_graph_result(&mut app);
+    let baseline_revision = app.document.current().revision_id();
+    let baseline_digest = app.document.current().canonical_digest();
+    let baseline_undo = app.document.visible_undo_steps();
+    let program = AssistantCadEditProgram {
+        operations: vec![AssistantCadEditOperation::AppendFeature {
+            definition_id: INITIAL_BOX_DEFINITION.0,
+            name: "Rejected shell".to_owned(),
+            feature: AssistantCadBodyFeature::TopologyShell {
+                target_feature_id: 2,
+                removed_face_reference_ids: vec!["f".repeat(64)],
+                thickness_mm: 2.0,
+            },
+        }],
+    };
+
+    let error = app.plan_assistant_cad_edit_program(&program).unwrap_err();
+    assert_eq!(error.code, "planning.cad_topology_reference_unavailable");
+    assert_eq!(app.document.current().revision_id(), baseline_revision);
+    assert_eq!(app.document.current().canonical_digest(), baseline_digest);
+    assert_eq!(app.document.visible_undo_steps(), baseline_undo);
+}
+
+#[test]
 fn cad_edit_append_pocket_rejects_invalid_inputs_without_mutation() {
     let mut app = KetchupApp::new();
     app.document
@@ -1578,6 +1703,15 @@ fn provider_context_remains_bounded_for_extreme_selection_and_history() {
     let issues = (0..100)
         .map(|id| serde_json::json!({ "code": "test", "evidence": long_text, "id": id }))
         .collect::<Vec<_>>();
+    let topology_face_references = (0..64)
+        .map(|id| {
+            serde_json::json!({
+                "definition_id": 1,
+                "target_feature_id": 2,
+                "reference_id": format!("{id:064x}"),
+            })
+        })
+        .collect::<Vec<_>>();
     let context = serde_json::json!({
         "document_id": 1,
         "revision": 1,
@@ -1609,6 +1743,8 @@ fn provider_context_remains_bounded_for_extreme_selection_and_history() {
         "selected_group_id": 1,
         "selected_profile_translation_target": null,
         "selected_parameter_edit_target": null,
+        "topology_face_references_complete": true,
+        "topology_face_references": topology_face_references,
         "occurrence_count": 100,
         "occurrences_complete": true,
         "occurrences": occurrences,
@@ -1622,6 +1758,13 @@ fn provider_context_remains_bounded_for_extreme_selection_and_history() {
     assert_eq!(bounded["occurrences_complete"], false);
     assert_eq!(bounded["validation"]["complete"], false);
     assert_eq!(bounded["validation"]["details_truncated"], true);
+    assert_eq!(bounded["topology_face_references_complete"], false);
+    assert!(
+        bounded["topology_face_references"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[test]

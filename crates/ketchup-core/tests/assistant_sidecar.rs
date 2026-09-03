@@ -875,6 +875,96 @@ fn cad_edit_append_loft_contract_is_strict_bounded_and_host_id_assigned() {
 }
 
 #[test]
+fn cad_edit_append_topology_shell_contract_is_strict_bounded_and_host_id_assigned() {
+    let reference_id = "a".repeat(64);
+    let program =
+        |target_feature_id, removed_face_reference_ids, thickness_mm| AssistantCadEditProgram {
+            operations: vec![AssistantCadEditOperation::AppendFeature {
+                definition_id: 7,
+                name: "Exact shell".to_owned(),
+                feature: AssistantCadBodyFeature::TopologyShell {
+                    target_feature_id,
+                    removed_face_reference_ids,
+                    thickness_mm,
+                },
+            }],
+        };
+    let valid = program(11, vec![reference_id.clone()], 1.5);
+
+    assert_eq!(valid.validate(), Ok(()));
+    let serialized = serde_json::to_value(&valid).unwrap();
+    assert_eq!(
+        serialized["operations"][0]["feature"]["type"],
+        "topology_shell"
+    );
+    assert!(
+        serialized["operations"][0]
+            .get("output_feature_id")
+            .is_none()
+    );
+    assert_eq!(
+        serde_json::from_value::<AssistantCadEditProgram>(serialized).unwrap(),
+        valid
+    );
+    assert_eq!(
+        program(
+            11,
+            (0..64).map(|index| format!("{index:064x}")).collect(),
+            100_000.0,
+        )
+        .validate(),
+        Ok(())
+    );
+
+    for invalid in [
+        program(0, vec![reference_id.clone()], 1.5),
+        program(11, Vec::new(), 1.5),
+        program(11, vec![reference_id.clone(); 2], 1.5),
+        program(11, vec!["short".to_owned()], 1.5),
+        program(11, vec!["z".repeat(64)], 1.5),
+        program(11, vec![reference_id.clone()], 0.009),
+        program(11, vec![reference_id.clone()], 100_000.1),
+        program(11, vec![reference_id.clone()], f64::NAN),
+    ] {
+        assert_eq!(
+            invalid.validate(),
+            Err("assistant CAD body feature is invalid".to_owned())
+        );
+    }
+
+    for invalid in [
+        serde_json::json!({
+            "operations": [{
+                "operation": "append_feature",
+                "definition_id": 7,
+                "name": "Injected shell",
+                "feature": {
+                    "type": "topology_shell",
+                    "target_feature_id": 11,
+                    "removed_face_reference_ids": [reference_id],
+                    "thickness_mm": 1.5,
+                    "face_ordinal": 3
+                }
+            }]
+        }),
+        serde_json::json!({
+            "operations": [{
+                "operation": "append_feature",
+                "definition_id": 7,
+                "name": "Missing references",
+                "feature": {
+                    "type": "topology_shell",
+                    "target_feature_id": 11,
+                    "thickness_mm": 1.5
+                }
+            }]
+        }),
+    ] {
+        assert!(serde_json::from_value::<AssistantCadEditProgram>(invalid).is_err());
+    }
+}
+
+#[test]
 fn cad_edit_program_contract_fails_closed_on_targets_geometry_and_resources() {
     let copy = |occurrence_ids| AssistantCadEditProgram {
         operations: vec![AssistantCadEditOperation::Copy {

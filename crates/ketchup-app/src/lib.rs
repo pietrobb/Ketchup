@@ -6478,6 +6478,26 @@ fn summarized_assistant_validation_context(validation: &serde_json::Value) -> se
     serde_json::Value::Object(summary)
 }
 
+fn assistant_topology_face_references<'a>(
+    snapshot: &'a Snapshot,
+    topology_results: &'a ExactResultRegistry,
+) -> Vec<&'a TopologicalElementRef> {
+    let mut references = topology_results
+        .body_values(snapshot)
+        .unwrap_or_default()
+        .into_values()
+        .flat_map(|package| package.topological_references())
+        .filter(|reference| {
+            reference.kind == TopologicalElementKind::Face
+                && reference.document_id == snapshot.document_id()
+                && reference.source_feature_id == reference.producer_feature_id
+                && reference.has_valid_lineage()
+        })
+        .collect::<Vec<_>>();
+    references.sort_unstable();
+    references
+}
+
 fn bounded_assistant_provider_context(mut context: serde_json::Value) -> serde_json::Value {
     if assistant_context_byte_length(&context) <= MAX_ASSISTANT_PROVIDER_CONTEXT_BYTES {
         return context;
@@ -6554,6 +6574,17 @@ fn bounded_assistant_provider_context(mut context: serde_json::Value) -> serde_j
 
     if let Some(validation) = context.get_mut("validation") {
         truncate_assistant_validation_arrays(validation, 8);
+    }
+    if assistant_context_byte_length(&context) <= MAX_ASSISTANT_PROVIDER_CONTEXT_BYTES {
+        return context;
+    }
+
+    if let Some(references) = context
+        .get_mut("topology_face_references")
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        references.clear();
+        context["topology_face_references_complete"] = serde_json::Value::Bool(false);
     }
     if assistant_context_byte_length(&context) <= MAX_ASSISTANT_PROVIDER_CONTEXT_BYTES {
         return context;
@@ -12243,6 +12274,20 @@ impl KetchupApp {
                 })
             },
         );
+        let mut topology_face_references =
+            assistant_topology_face_references(&snapshot, &self.topology_results);
+        let topology_face_references_complete = topology_face_references.len() <= 64;
+        topology_face_references.truncate(64);
+        let topology_face_references = topology_face_references
+            .into_iter()
+            .map(|reference| {
+                serde_json::json!({
+                    "definition_id": reference.definition_id.0,
+                    "target_feature_id": reference.producer_feature_id.0,
+                    "reference_id": reference.lineage_digest,
+                })
+            })
+            .collect::<Vec<_>>();
         let boxes = body_bounds
             .into_iter()
             .take(100)
@@ -12267,6 +12312,8 @@ impl KetchupApp {
             "selected_group_id": self.selection.selected_group.map(|id| id.0),
             "selected_profile_translation_target": selected_profile_translation_target,
             "selected_parameter_edit_target": selected_parameter_edit_target,
+            "topology_face_references_complete": topology_face_references_complete,
+            "topology_face_references": topology_face_references,
             "occurrence_count": occurrence_count,
             "occurrences_complete": occurrence_count <= 100,
             "occurrences": occurrences,
@@ -13295,6 +13342,81 @@ impl KetchupApp {
                             }
                             FeatureKind::Loft {
                                 sections: loft_sections,
+                            }
+                        }
+                        AssistantCadBodyFeature::TopologyShell {
+                            target_feature_id,
+                            removed_face_reference_ids,
+                            thickness_mm,
+                        } => {
+                            let target = FeatureId(*target_feature_id);
+                            let source = snapshot.feature(target).ok_or_else(|| {
+                                assistant_canonical_rejection(
+                                    CanonicalError::FeatureNotFound(target),
+                                    operation_name,
+                                    &format!("feature:{}", target.0),
+                                )
+                            })?;
+                            if source.definition_id() != definition_id {
+                                return Err(assistant_planning_rejection(
+                                    "planning.cad_feature_input_ownership_invalid",
+                                    operation_name,
+                                    &format!("feature:{}", target.0),
+                                    "The requested Shell target belongs to a different definition.",
+                                    "Target a supported exact body feature in the requested definition.",
+                                ));
+                            }
+                            if snapshot.feature_is_suppressed(target)
+                                || ExactBRepGraph::from_snapshot(&snapshot, definition_id, target)
+                                    .is_err()
+                            {
+                                return Err(assistant_planning_rejection(
+                                    "planning.cad_feature_input_unsupported",
+                                    operation_name,
+                                    &format!("feature:{}", target.0),
+                                    "The requested Shell target is not supported by exact evaluation.",
+                                    "Target an unsuppressed supported exact body feature with current host-issued face references.",
+                                ));
+                            }
+                            let available_faces = assistant_topology_face_references(
+                                &snapshot,
+                                &self.topology_results,
+                            );
+                            let mut removed_faces =
+                                Vec::with_capacity(removed_face_reference_ids.len());
+                            for reference_id in removed_face_reference_ids {
+                                let matches = available_faces
+                                    .iter()
+                                    .copied()
+                                    .filter(|reference| {
+                                        reference.definition_id == definition_id
+                                            && reference.producer_feature_id == target
+                                            && reference.lineage_digest == *reference_id
+                                    })
+                                    .collect::<Vec<_>>();
+                                let [reference] = matches.as_slice() else {
+                                    return Err(assistant_planning_rejection(
+                                        "planning.cad_topology_reference_unavailable",
+                                        operation_name,
+                                        &format!("feature:{}", target.0),
+                                        "A requested Shell face reference is not a unique current host-issued reference for the target.",
+                                        "Refresh the document context and use only listed topology_face_references for this target.",
+                                    ));
+                                };
+                                removed_faces.push((*reference).clone());
+                            }
+                            removed_faces.sort_unstable();
+                            FeatureKind::TopologyShell {
+                                target,
+                                removed_faces,
+                                thickness: Dimension::new(thickness_mm.to_string(), *thickness_mm)
+                                    .map_err(|error| {
+                                        assistant_canonical_rejection(
+                                            error,
+                                            operation_name,
+                                            "feature.thickness_mm",
+                                        )
+                                    })?,
                             }
                         }
                     };

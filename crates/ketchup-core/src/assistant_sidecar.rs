@@ -243,6 +243,11 @@ pub enum AssistantCadBodyFeature {
     Loft {
         sections: Vec<AssistantCadLoftSection>,
     },
+    TopologyShell {
+        target_feature_id: u64,
+        removed_face_reference_ids: Vec<String>,
+        thickness_mm: f64,
+    },
 }
 
 impl AssistantCadBodyFeature {
@@ -303,6 +308,27 @@ impl AssistantCadBodyFeature {
                 Ok(())
             }
             Self::Loft { .. } => Err("assistant CAD body feature is invalid".to_owned()),
+            Self::TopologyShell {
+                target_feature_id,
+                removed_face_reference_ids,
+                thickness_mm,
+            } if *target_feature_id != 0
+                && (1..=64).contains(&removed_face_reference_ids.len())
+                && removed_face_reference_ids.iter().all(|reference_id| {
+                    reference_id.len() == 64
+                        && reference_id.bytes().all(|byte| byte.is_ascii_hexdigit())
+                })
+                && removed_face_reference_ids
+                    .iter()
+                    .collect::<BTreeSet<_>>()
+                    .len()
+                    == removed_face_reference_ids.len()
+                && thickness_mm.is_finite()
+                && (0.01..=100_000.0).contains(thickness_mm) =>
+            {
+                Ok(())
+            }
+            Self::TopologyShell { .. } => Err("assistant CAD body feature is invalid".to_owned()),
         }
     }
 }

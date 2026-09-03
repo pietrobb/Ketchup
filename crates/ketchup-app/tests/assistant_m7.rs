@@ -28,6 +28,7 @@ use ketchup_core::document::{
     ProposalValue, TagId, Transform,
 };
 use ketchup_core::exact_brep_graph::{ExactBRepGraph, ExactBRepOperation};
+use ketchup_core::exact_product::ExactBodyPackage;
 use ketchup_core::intent::WorkflowIntent;
 use ketchup_core::persistence;
 use ketchup_core::sketch::{
@@ -2327,6 +2328,148 @@ fn scripted_append_loft_is_exact_persistent_and_one_step() {
     persistence::save_atomic(&saved_path, &committed).unwrap();
     let reopened = persistence::load_file(&saved_path).unwrap().snapshot();
     assert_eq!(reopened.canonical_digest(), committed_digest);
+    assert!(ExactBRepGraph::from_snapshot(&reopened, DefinitionId(1), FeatureId(3)).is_ok());
+
+    shell.click_menu_command("menu-edit", AppCommand::Undo);
+    assert_eq!(shell.app().canonical_digest(), baseline_digest);
+    assert_eq!(shell.app().undo_step_count(), baseline_undo);
+    assert_eq!(shell.app().redo_step_count(), baseline_redo + 1);
+    shell.click_menu_command("menu-edit", AppCommand::Redo);
+    assert_eq!(shell.app().canonical_digest(), committed_digest);
+    assert_eq!(shell.app().undo_step_count(), baseline_undo + 1);
+    assert_eq!(shell.app().redo_step_count(), baseline_redo);
+    assert_eq!(transport.remaining_responses(), 0);
+}
+
+#[test]
+fn scripted_append_topology_shell_is_exact_persistent_and_one_step() {
+    let request = "Shell the existing exact body";
+    let directory = tempfile::tempdir().unwrap();
+    let fixture_path = directory.path().join("assistant-shell-input.ketchup");
+    let fixture = ketchup_app::KetchupApp::new();
+    let fixture_snapshot = fixture.document_snapshot();
+    persistence::save_atomic(&fixture_path, &fixture_snapshot).unwrap();
+
+    let base_graph =
+        ExactBRepGraph::from_snapshot(&fixture_snapshot, DefinitionId(1), FeatureId(2)).unwrap();
+    let mut worker = ExactWorkerSupervisor::spawn(exact_worker_path()).unwrap();
+    let base_package = worker.evaluate_exact_brep_graph(&base_graph).unwrap();
+    let base_volume = base_package.volume_mm3;
+    let top_z = base_package.bounds_mm[1][2];
+    let top_face_ordinal = base_package
+        .triangles
+        .iter()
+        .zip(&base_package.triangle_face_ordinals)
+        .find_map(|(triangle, face_ordinal)| {
+            triangle
+                .vertex_indices
+                .iter()
+                .all(|index| {
+                    (base_package.vertices[*index as usize].position_mm[2] - top_z).abs() <= 1.0e-6
+                })
+                .then_some(*face_ordinal)
+        })
+        .unwrap();
+    let reference_id = base_package
+        .topological_references
+        .iter()
+        .find(|reference| {
+            reference.producer_element_id == format!("generated-result/face/{top_face_ordinal}")
+        })
+        .unwrap()
+        .lineage_digest
+        .clone();
+
+    let transport = Arc::new(ScriptedAssistantTransport::new([(
+        request.to_owned(),
+        AssistantChatResult {
+            message: "Review the exact shell.".to_owned(),
+            model_intent: None,
+        },
+    )]));
+    transport.queue_cad_edit_program(
+        request,
+        AssistantCadEditProgram {
+            operations: vec![AssistantCadEditOperation::AppendFeature {
+                definition_id: 1,
+                name: "Assistant shell".to_owned(),
+                feature: AssistantCadBodyFeature::TopologyShell {
+                    target_feature_id: 2,
+                    removed_face_reference_ids: vec![reference_id.clone()],
+                    thickness_mm: 2.0,
+                },
+            }],
+        },
+    );
+
+    let mut shell = Shell::with_assistant_transport(transport.clone());
+    assert!(shell.app_mut().open_document_path(&fixture_path));
+    shell.settle();
+    assert!(
+        shell
+            .app_mut()
+            .headless_install_exact_package(ExactBodyPackage::Graph(base_package))
+    );
+    let context = shell.app().assistant_context();
+    assert!(
+        context["topology_face_references"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|reference| reference["reference_id"] == reference_id)
+    );
+    let baseline_revision = shell.app().document_revision();
+    let baseline_digest = shell.app().canonical_digest();
+    let baseline_undo = shell.app().undo_step_count();
+    let baseline_redo = shell.app().redo_step_count();
+    let baseline_occurrences = shell.app().document_snapshot().occurrences().count();
+
+    let input = shell.catalog().text("assistant-input-hint");
+    shell.focus_text_input(&input);
+    shell.type_text(request);
+    shell.press_key(egui::Key::Enter);
+    wait_for_assistant_proposal(&mut shell);
+    assert_eq!(shell.app().document_revision(), baseline_revision);
+    assert_eq!(shell.app().canonical_digest(), baseline_digest);
+    assert_eq!(shell.app().undo_step_count(), baseline_undo);
+
+    shell.click_row(&shell.catalog().text("assistant-confirm"));
+    assert_eq!(shell.app().document_revision(), baseline_revision + 1);
+    assert_eq!(shell.app().undo_step_count(), baseline_undo + 1);
+    let committed = shell.app().document_snapshot();
+    assert!(matches!(
+        committed.feature(FeatureId(3)).unwrap().kind(),
+        FeatureKind::TopologyShell {
+            target: FeatureId(2),
+            removed_faces,
+            thickness,
+        } if removed_faces.len() == 1
+            && removed_faces[0].lineage_digest == reference_id
+            && thickness.millimetres() == 2.0
+    ));
+    let graph = ExactBRepGraph::from_snapshot(&committed, DefinitionId(1), FeatureId(3)).unwrap();
+    assert!(
+        graph
+            .nodes
+            .iter()
+            .any(|node| matches!(&node.operation, ExactBRepOperation::Shell { .. }))
+    );
+    let package = worker.evaluate_exact_brep_graph(&graph).unwrap();
+    assert!(package.volume_mm3 > 0.0);
+    assert!(package.volume_mm3 < base_volume);
+    assert_eq!(package.topology_counts[4], 1);
+    assert_eq!(committed.occurrences().count(), baseline_occurrences);
+
+    let committed_digest = committed.canonical_digest();
+    let saved_path = directory.path().join("assistant-shell-result.ketchup");
+    persistence::save_atomic(&saved_path, &committed).unwrap();
+    let reopened = persistence::load_file(&saved_path).unwrap().snapshot();
+    assert_eq!(reopened.canonical_digest(), committed_digest);
+    assert!(matches!(
+        reopened.feature(FeatureId(3)).unwrap().kind(),
+        FeatureKind::TopologyShell { removed_faces, .. }
+            if removed_faces.len() == 1 && removed_faces[0].lineage_digest == reference_id
+    ));
     assert!(ExactBRepGraph::from_snapshot(&reopened, DefinitionId(1), FeatureId(3)).is_ok());
 
     shell.click_menu_command("menu-edit", AppCommand::Undo);
