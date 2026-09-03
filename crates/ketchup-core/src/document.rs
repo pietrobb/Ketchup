@@ -12954,17 +12954,16 @@ fn validate_product(product: &ProductModel) -> Result<(), CanonicalError> {
                     .features
                     .get(&path)
                     .ok_or(CanonicalError::FeatureNotFound(path))?;
-                let valid_profile =
-                    matches!(
-                        &profile_source.kind,
-                        FeatureKind::Profile { points_mm } if points_mm.len() >= 3
-                    ) || matches!(
-                        &profile_source.kind,
-                        FeatureKind::SegmentProfile {
-                            segments,
-                            closed: true,
-                        } if segments.len() >= 2
-                    ) || matches!(profile_source.kind, FeatureKind::SplineProfile { .. });
+                let valid_profile = matches!(
+                    &profile_source.kind,
+                    FeatureKind::Profile { points_mm } if points_mm.len() >= 3
+                ) || matches!(
+                    &profile_source.kind,
+                    FeatureKind::SegmentProfile {
+                        segments,
+                        closed: true,
+                    } if segments.len() >= 2
+                );
                 let valid_path = matches!(
                     &path_source.kind,
                     FeatureKind::SegmentProfile {

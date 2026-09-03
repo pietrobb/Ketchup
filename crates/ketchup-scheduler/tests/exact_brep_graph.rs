@@ -1,7 +1,7 @@
 use ketchup_core::document::{
-    BooleanOperation, CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentStore,
-    EdgeFinishKind, FeatureId, FeatureKind, LoftSection, NodeId, ProfileSegment, SolidToolPlan,
-    Transform,
+    BooleanOperation, CanonicalCommand, CanonicalError, CommandBatch, DefinitionId, Dimension,
+    DocumentStore, EdgeFinishKind, FeatureId, FeatureKind, LoftSection, NodeId, ProfileSegment,
+    SolidToolPlan, Transform,
 };
 use ketchup_core::exact_brep_graph::{
     ExactBRepGraph, ExactBRepPlanarGeometry, ExactBRepPlanarLoop, ExactBRepPlanarSegment,
@@ -1314,7 +1314,8 @@ fn graph_results_are_stale_safe_and_resource_or_unsupported_inputs_fail_closed()
     let path = FeatureId(911);
     let sweep = FeatureId(912);
     let mut document = DocumentStore::new();
-    document
+    let before = document.current().canonical_digest();
+    let error = document
         .apply_batch(&CommandBatch::new(vec![
             CanonicalCommand::CreateDefinition {
                 id: definition,
@@ -1347,15 +1348,11 @@ fn graph_results_are_stale_safe_and_resource_or_unsupported_inputs_fail_closed()
                 kind: FeatureKind::Sweep { profile, path },
             },
         ]))
-        .unwrap();
-    let unsupported =
-        ExactBRepGraph::from_snapshot(&document.current(), definition, sweep).unwrap();
-    assert_geometry_error(
-        supervisor
-            .evaluate_exact_brep_graph(&unsupported)
-            .unwrap_err(),
-        "invalid_profile",
-    );
+        .err()
+        .expect("spline Sweep must fail before exact worker evaluation");
+    assert_eq!(error, CanonicalError::InvalidSweep);
+    assert_eq!(document.current().canonical_digest(), before);
+    assert_eq!(document.visible_undo_steps(), 0);
     assert_eq!(
         supervisor.evaluate_exact_brep_graph(&valid_graph).unwrap(),
         valid_result

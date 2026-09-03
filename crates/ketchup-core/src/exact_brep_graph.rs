@@ -1689,6 +1689,16 @@ fn valid_operation_profiles(operation: &ExactBRepOperation, profiles: &[ExactBRe
         ExactBRepOperation::Sweep { profile, path } => {
             profile != path
                 && matches!(
+                    profiles
+                        .get(profile.0 as usize)
+                        .map(|profile| &profile.geometry),
+                    Some(
+                        ExactBRepPlanarGeometry::Boundary { closed: true, .. }
+                            | ExactBRepPlanarGeometry::Circle { .. }
+                            | ExactBRepPlanarGeometry::Region { .. }
+                    )
+                )
+                && matches!(
                     profiles.get(path.0 as usize).map(|profile| &profile.geometry),
                     Some(ExactBRepPlanarGeometry::Boundary {
                         closed: false,
@@ -2078,6 +2088,20 @@ mod tests {
             path: ExactBRepProfileId(1),
         };
         assert!(valid_operation_profiles(&sweep, &profiles));
+
+        profiles[0].geometry = ExactBRepPlanarGeometry::Spline {
+            control_point_bits: vec![
+                [0.0f64.to_bits(), 0.0f64.to_bits()],
+                [1.0f64.to_bits(), 0.0f64.to_bits()],
+                [1.0f64.to_bits(), 1.0f64.to_bits()],
+                [0.0f64.to_bits(), 1.0f64.to_bits()],
+            ],
+        };
+        assert!(!valid_operation_profiles(&sweep, &profiles));
+        profiles[0].geometry = ExactBRepPlanarGeometry::Circle {
+            center_bits: [0.0f64.to_bits(), 0.0f64.to_bits()],
+            radius_bits: 2.0f64.to_bits(),
+        };
 
         profiles[1].geometry = ExactBRepPlanarGeometry::Circle {
             center_bits: [0.0f64.to_bits(), 0.0f64.to_bits()],

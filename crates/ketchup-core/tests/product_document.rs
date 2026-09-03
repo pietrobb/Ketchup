@@ -3471,6 +3471,50 @@ fn bounded_profile_sweep_is_validated_undoable_visible_and_persistent() {
     assert_eq!(error, CanonicalError::InvalidSweep);
     assert_eq!(invalid.current().canonical_digest(), before);
     assert_eq!(invalid.visible_undo_steps(), 0);
+
+    let mut invalid = DocumentStore::new();
+    let before = invalid.current().canonical_digest();
+    let error = invalid
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DEFINITION,
+                name: "Unsupported spline sweep".to_owned(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: PROFILE,
+                definition_id: DEFINITION,
+                name: "Spline section".to_owned(),
+                kind: FeatureKind::SplineProfile {
+                    control_points_mm: vec![[-5.0, -10.0], [5.0, -10.0], [5.0, 10.0], [-5.0, 10.0]],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: PATH,
+                definition_id: DEFINITION,
+                name: "Straight path".to_owned(),
+                kind: FeatureKind::SegmentProfile {
+                    segments: vec![ProfileSegment::Line {
+                        start_mm: [0.0, 0.0],
+                        end_mm: [0.0, 125.0],
+                    }],
+                    closed: false,
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: SWEEP,
+                definition_id: DEFINITION,
+                name: "Unsupported spline sweep".to_owned(),
+                kind: FeatureKind::Sweep {
+                    profile: PROFILE,
+                    path: PATH,
+                },
+            },
+        ]))
+        .err()
+        .expect("Sweep must reject a spline profile before exact evaluation");
+    assert_eq!(error, CanonicalError::InvalidSweep);
+    assert_eq!(invalid.current().canonical_digest(), before);
+    assert_eq!(invalid.visible_undo_steps(), 0);
 }
 
 #[test]
