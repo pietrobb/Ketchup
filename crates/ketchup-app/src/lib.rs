@@ -13527,6 +13527,82 @@ impl KetchupApp {
                                 )?,
                             }
                         }
+                        AssistantCadBodyFeature::TopologyChamfer {
+                            target_feature_id,
+                            edge_reference_ids,
+                            distance_mm,
+                        } => {
+                            let target = FeatureId(*target_feature_id);
+                            let source = snapshot.feature(target).ok_or_else(|| {
+                                assistant_canonical_rejection(
+                                    CanonicalError::FeatureNotFound(target),
+                                    operation_name,
+                                    &format!("feature:{}", target.0),
+                                )
+                            })?;
+                            if source.definition_id() != definition_id {
+                                return Err(assistant_planning_rejection(
+                                    "planning.cad_feature_input_ownership_invalid",
+                                    operation_name,
+                                    &format!("feature:{}", target.0),
+                                    "The requested Chamfer target belongs to a different definition.",
+                                    "Target a supported exact body feature in the requested definition.",
+                                ));
+                            }
+                            if snapshot.feature_is_suppressed(target)
+                                || ExactBRepGraph::from_snapshot(&snapshot, definition_id, target)
+                                    .is_err()
+                            {
+                                return Err(assistant_planning_rejection(
+                                    "planning.cad_feature_input_unsupported",
+                                    operation_name,
+                                    &format!("feature:{}", target.0),
+                                    "The requested Chamfer target is not supported by exact evaluation.",
+                                    "Target an unsuppressed supported exact body feature with current host-issued edge references.",
+                                ));
+                            }
+                            let available_edges = assistant_topology_references(
+                                &snapshot,
+                                &self.topology_results,
+                                TopologicalElementKind::Edge,
+                            );
+                            let mut edges = Vec::with_capacity(edge_reference_ids.len());
+                            for reference_id in edge_reference_ids {
+                                let matches = available_edges
+                                    .iter()
+                                    .copied()
+                                    .filter(|reference| {
+                                        reference.definition_id == definition_id
+                                            && reference.producer_feature_id == target
+                                            && reference.lineage_digest == *reference_id
+                                    })
+                                    .collect::<Vec<_>>();
+                                let [reference] = matches.as_slice() else {
+                                    return Err(assistant_planning_rejection(
+                                        "planning.cad_topology_reference_unavailable",
+                                        operation_name,
+                                        &format!("feature:{}", target.0),
+                                        "A requested Chamfer edge reference is not a unique current host-issued reference for the target.",
+                                        "Refresh the document context and use only listed topology_edge_references for this target.",
+                                    ));
+                                };
+                                edges.push((*reference).clone());
+                            }
+                            edges.sort_unstable();
+                            FeatureKind::TopologyEdgeFinish {
+                                target,
+                                edges,
+                                kind: EdgeFinishKind::Chamfer,
+                                amount: Dimension::new(distance_mm.to_string(), *distance_mm)
+                                    .map_err(|error| {
+                                        assistant_canonical_rejection(
+                                            error,
+                                            operation_name,
+                                            "feature.distance_mm",
+                                        )
+                                    })?,
+                            }
+                        }
                     };
                     let id = next_feature.map(FeatureId).ok_or_else(|| {
                         assistant_canonical_rejection(
