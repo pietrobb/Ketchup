@@ -16,6 +16,7 @@ pub const EXACT_BREP_GRAPH_SCHEMA_V4: &str = "ketchup.exact-brep-graph.v4";
 pub const MAX_EXACT_BREP_GRAPH_PROFILES: usize = 1_024;
 pub const MAX_EXACT_BREP_GRAPH_NODES: usize = 1_024;
 pub const MAX_EXACT_BREP_GRAPH_SEGMENTS: usize = 16_384;
+pub const MAX_EXACT_BREP_LOFT_SECTIONS: usize = 16;
 pub const MAX_EXACT_BREP_GRAPH_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_EXACT_BREP_TOPOLOGY_SELECTORS: usize = 64;
 const MAX_ABS_MM: f64 = 1_000_000.0;
@@ -738,7 +739,7 @@ impl<'a> GraphCompiler<'a> {
         &mut self,
         sections: &[LoftSection],
     ) -> Result<Vec<ExactBRepLoftSection>, ExactBRepGraphError> {
-        if !(2..=64).contains(&sections.len()) {
+        if !(2..=MAX_EXACT_BREP_LOFT_SECTIONS).contains(&sections.len()) {
             return Err(ExactBRepGraphError::InvalidParameter);
         }
         sections
@@ -1783,7 +1784,7 @@ fn valid_operation(
         }
         ExactBRepOperation::Sweep { profile, path } => profile != path,
         ExactBRepOperation::Loft { sections } => {
-            (2..=64).contains(&sections.len())
+            (2..=MAX_EXACT_BREP_LOFT_SECTIONS).contains(&sections.len())
                 && sections.windows(2).all(|pair| {
                     let lower = f64::from_bits(pair[0].elevation_bits);
                     let upper = f64::from_bits(pair[1].elevation_bits);
@@ -1885,3 +1886,36 @@ impl fmt::Display for ExactBRepGraphError {
 }
 
 impl std::error::Error for ExactBRepGraphError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn loft_operation(section_count: usize) -> ExactBRepOperation {
+        ExactBRepOperation::Loft {
+            sections: (0..section_count)
+                .map(|index| ExactBRepLoftSection {
+                    profile: ExactBRepProfileId(index as u32 + 1),
+                    elevation_bits: (index as f64).to_bits(),
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn loft_operation_limit_matches_the_exact_backend() {
+        assert_eq!(MAX_EXACT_BREP_LOFT_SECTIONS, 16);
+        assert!(valid_operation(
+            &loft_operation(MAX_EXACT_BREP_LOFT_SECTIONS),
+            1,
+            1,
+            &[],
+        ));
+        assert!(!valid_operation(
+            &loft_operation(MAX_EXACT_BREP_LOFT_SECTIONS + 1),
+            1,
+            1,
+            &[],
+        ));
+    }
+}
