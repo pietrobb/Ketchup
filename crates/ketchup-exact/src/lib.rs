@@ -124,6 +124,10 @@ mod ffi {
             max_y: f64,
             distance: f64,
         ) -> UniquePtr<NativeOperationResult>;
+        fn offset_planar_profile_native(
+            segments: &[f64],
+            distance: f64,
+        ) -> UniquePtr<NativeOperationResult>;
         fn sweep_rectangle_native(values: &[f64]) -> UniquePtr<NativeOperationResult>;
         fn loft_spline_native(values: &[f64]) -> UniquePtr<NativeOperationResult>;
         fn extrude_circle_native(
@@ -1081,6 +1085,146 @@ impl ExactBackend {
             &input,
             HistoryConfidence::Complete,
         )
+    }
+
+    pub fn offset_planar_profile(
+        &self,
+        profile: &PlanarProfileLoop,
+        distance_mm: f64,
+    ) -> Result<ExactOpOutput, GeometryError> {
+        let input = format!(
+            "offset_planar_profile:{profile:?}:{:016x}",
+            distance_mm.to_bits()
+        );
+        if !distance_mm.is_finite() {
+            return Err(parameter_error(
+                GeometryErrorCode::NonFiniteParameter,
+                "offset_planar_profile",
+                &input,
+                "Planar offset distance must be finite".to_owned(),
+            ));
+        }
+        if !(MIN_LENGTH_MM..=MAX_LENGTH_MM).contains(&distance_mm.abs()) {
+            return Err(parameter_error(
+                GeometryErrorCode::InvalidParameter,
+                "offset_planar_profile",
+                &input,
+                "Planar offset distance is outside the bounded envelope".to_owned(),
+            ));
+        }
+        let PlanarProfileLoop::Segments(segments) = profile else {
+            return Err(parameter_error(
+                GeometryErrorCode::InvalidProfile,
+                "offset_planar_profile",
+                &input,
+                "Planar offset currently requires one segmented loop".to_owned(),
+            ));
+        };
+        validate_mixed_profile(segments, "offset_planar_profile", &input)?;
+        if segments
+            .iter()
+            .any(|segment| matches!(segment, PlanarProfileSegment::CubicBezier { .. }))
+        {
+            return Err(parameter_error(
+                GeometryErrorCode::InvalidProfile,
+                "offset_planar_profile",
+                &input,
+                "Planar offset currently supports only line and circular-arc segments".to_owned(),
+            ));
+        }
+        for (index, segment) in segments.iter().enumerate() {
+            match segment {
+                PlanarProfileSegment::Line { start_mm, end_mm } => validate_length(
+                    (end_mm[0] - start_mm[0]).hypot(end_mm[1] - start_mm[1]),
+                    "line_length",
+                    "offset_planar_profile",
+                    &input,
+                )?,
+                PlanarProfileSegment::CircularArc {
+                    start_mm,
+                    center_mm,
+                    ..
+                } => {
+                    let radius = (start_mm[0] - center_mm[0]).hypot(start_mm[1] - center_mm[1]);
+                    validate_length(radius, "arc_radius", "offset_planar_profile", &input)?;
+                    for (name, coordinate) in [
+                        ("arc_min_x", center_mm[0] - radius),
+                        ("arc_min_y", center_mm[1] - radius),
+                        ("arc_max_x", center_mm[0] + radius),
+                        ("arc_max_y", center_mm[1] + radius),
+                    ] {
+                        validate_coordinate(coordinate, name, "offset_planar_profile", &input)?;
+                    }
+                }
+                PlanarProfileSegment::CubicBezier { .. } => {
+                    unreachable!("cubic segment {index} was rejected before bounded validation")
+                }
+            }
+        }
+        let origin = planar_segment_endpoints(&segments[0]).0;
+        let mut signed_area = 0.0;
+        let mut compensation = 0.0;
+        for segment in segments {
+            let adjusted = planar_segment_signed_area(segment, origin) - compensation;
+            let next = signed_area + adjusted;
+            compensation = (next - signed_area) - adjusted;
+            signed_area = next;
+        }
+        if !signed_area.is_finite() || signed_area.abs() <= MIN_LENGTH_MM * MIN_LENGTH_MM {
+            return Err(parameter_error(
+                GeometryErrorCode::InvalidProfile,
+                "offset_planar_profile",
+                &input,
+                "Planar offset loop has zero signed area".to_owned(),
+            ));
+        }
+        let mut segments = if signed_area < 0.0 {
+            reverse_planar_segments(segments)
+        } else {
+            segments.to_vec()
+        };
+        let encoded = flatten_planar_segments(&segments);
+        let canonical_start = (0..segments.len())
+            .min_by(|left, right| {
+                for offset in 0..segments.len() {
+                    for value in 0..PLANAR_SEGMENT_STRIDE {
+                        let left_value = encoded
+                            [((left + offset) % segments.len()) * PLANAR_SEGMENT_STRIDE + value];
+                        let right_value = encoded
+                            [((right + offset) % segments.len()) * PLANAR_SEGMENT_STRIDE + value];
+                        let ordering = left_value.total_cmp(&right_value);
+                        if !ordering.is_eq() {
+                            return ordering;
+                        }
+                    }
+                }
+                std::cmp::Ordering::Equal
+            })
+            .expect("validated planar offset profile is non-empty");
+        segments.rotate_left(canonical_start);
+        let input = format!(
+            "offset_planar_profile:{segments:?}:{:016x}",
+            distance_mm.to_bits()
+        );
+        let flattened = flatten_planar_segments(&segments);
+        let output = collect_output(
+            ffi::offset_planar_profile_native(&flattened, distance_mm),
+            "offset_planar_profile",
+            &input,
+            HistoryConfidence::Complete,
+        )?;
+        let bounds = output.body.topology.bounds_mm;
+        for (name, coordinate) in [
+            ("output_min_x", bounds.min.x),
+            ("output_min_y", bounds.min.y),
+            ("output_min_z", bounds.min.z),
+            ("output_max_x", bounds.max.x),
+            ("output_max_y", bounds.max.y),
+            ("output_max_z", bounds.max.z),
+        ] {
+            validate_coordinate(coordinate, name, "offset_planar_profile", &input)?;
+        }
+        Ok(output)
     }
 
     pub fn sweep_rectangle(
@@ -4781,31 +4925,59 @@ pub fn capture_planar_offset_reference(
             "Planar offset must produce exactly one face".to_owned(),
         ));
     };
-    if topology.vertex_count != 4
-        || topology.edge_count != 4
+    let bounds_are_valid = |bounds: Bounds3| {
+        [
+            bounds.min.x,
+            bounds.min.y,
+            bounds.min.z,
+            bounds.max.x,
+            bounds.max.y,
+            bounds.max.z,
+        ]
+        .into_iter()
+        .all(|coordinate| coordinate.is_finite() && coordinate.abs() <= MAX_COORDINATE_MM)
+            && bounds.min.x <= bounds.max.x
+            && bounds.min.y <= bounds.max.y
+            && bounds.min.z <= bounds.max.z
+    };
+    if topology.vertex_count == 0
+        || topology.vertex_count != topology.edge_count
+        || !bounds_are_valid(topology.bounds_mm)
+        || !bounds_are_valid(face.bounds_mm)
+        || topology.edge_count == 0
+        || topology.edges.len() != topology.edge_count as usize
         || topology.face_count != 1
         || topology.shell_count != 0
         || topology.solid_count != 0
+        || !topology.volume_mm3.is_finite()
         || topology.volume_mm3.abs() > 1.0e-12
+        || face.ordinal != 0
         || face.surface_kind != "plane"
-        || face.edge_count != 4
-        || topology
-            .edges
+        || !face.area_mm2.is_finite()
+        || face.area_mm2 <= 0.0
+        || face.edge_count != topology.edge_count
+        || face.edge_ordinals.len() != topology.edge_count as usize
+        || face
+            .edge_ordinals
             .iter()
-            .any(|edge| edge.adjacent_face_ordinals != [0])
+            .copied()
+            .ne(0..topology.edge_count)
+        || topology.edges.iter().enumerate().any(|(ordinal, edge)| {
+            edge.ordinal != ordinal as u32 || edge.adjacent_face_ordinals != [0]
+        })
     {
         return Err(parameter_error(
             GeometryErrorCode::InvalidShape,
             "capture_planar_offset_reference",
             &output.input_digest,
-            "Planar offset topology is not one bounded rectangular face".to_owned(),
+            "Planar offset topology is not one bounded planar face".to_owned(),
         ));
     }
     let face_ordinal = face.ordinal;
     let corroborating_geometry_fingerprint = face.geometric_fingerprint.clone();
     output.topology_history.push(HistoryEvidence {
         semantic_role: Some("planar_offset.face".to_owned()),
-        relation: "rectangular_offset_classification".to_owned(),
+        relation: "planar_offset_classification".to_owned(),
         source_element_id: "profile.face".to_owned(),
         output_face_ordinal: Some(face_ordinal),
         output_edge_ordinal: None,

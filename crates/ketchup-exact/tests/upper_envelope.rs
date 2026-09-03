@@ -346,6 +346,209 @@ fn rectangular_planar_offset_produces_one_exact_face_with_stable_lineage() {
 }
 
 #[test]
+fn mixed_line_arc_planar_offset_produces_one_stable_exact_face() {
+    let backend = ExactBackend::new();
+    let profile = PlanarProfileLoop::Segments(vec![
+        PlanarProfileSegment::Line {
+            start_mm: [0.0, 0.0],
+            end_mm: [20.0, 0.0],
+        },
+        PlanarProfileSegment::CircularArc {
+            start_mm: [20.0, 0.0],
+            end_mm: [0.0, 0.0],
+            center_mm: [10.0, 0.0],
+            clockwise: false,
+        },
+    ]);
+    let reversed = reverse_planar_loop(&profile);
+    let mut shifted = profile.clone();
+    let PlanarProfileLoop::Segments(shifted_segments) = &mut shifted else {
+        unreachable!("fixture is segmented");
+    };
+    shifted_segments.rotate_left(1);
+    for distance_mm in [2.0, -2.0] {
+        let mut output = backend
+            .offset_planar_profile(&profile, distance_mm)
+            .unwrap();
+        let repeated = backend
+            .offset_planar_profile(&reversed, distance_mm)
+            .unwrap();
+        let shifted_output = backend
+            .offset_planar_profile(&shifted, distance_mm)
+            .unwrap();
+
+        assert!(output.tolerance_report.shape_valid);
+        assert!(!output.tolerance_report.accepted_exact_solid);
+        assert_eq!(output.input_digest, repeated.input_digest);
+        assert_eq!(output.input_digest, shifted_output.input_digest);
+        assert_eq!(
+            output.body.result_fingerprint,
+            repeated.body.result_fingerprint
+        );
+        assert_eq!(
+            output.body.result_fingerprint,
+            shifted_output.body.result_fingerprint
+        );
+        assert_eq!(
+            output.body.topology.bounds_mm,
+            repeated.body.topology.bounds_mm
+        );
+        assert_eq!(
+            output.body.topology.bounds_mm,
+            shifted_output.body.topology.bounds_mm
+        );
+        assert_close(
+            output.body.topology.faces[0].area_mm2,
+            repeated.body.topology.faces[0].area_mm2,
+        );
+        assert_eq!(output.body.topology.face_count, 1);
+        assert_eq!(output.body.topology.shell_count, 0);
+        assert_eq!(output.body.topology.solid_count, 0);
+        assert!(output.body.topology.edge_count >= 2);
+        if distance_mm > 0.0 {
+            assert!(output.body.topology.faces[0].area_mm2 > 50.0 * std::f64::consts::PI);
+        } else {
+            assert!(output.body.topology.faces[0].area_mm2 < 50.0 * std::f64::consts::PI);
+        }
+        let reference = capture_planar_offset_reference(&mut output, "721", "723").unwrap();
+        assert_eq!(reference.semantic_role, "planar_offset.face");
+        assert_eq!(reference.source_element_id, "profile.face");
+        assert_eq!(
+            reference.stability_class,
+            ketchup_exact::StabilityClass::Guaranteed
+        );
+    }
+
+    let mut incomplete_topology = backend.offset_planar_profile(&profile, 2.0).unwrap();
+    incomplete_topology.body.topology.edges.clear();
+    assert_eq!(
+        capture_planar_offset_reference(&mut incomplete_topology, "721", "723")
+            .unwrap_err()
+            .code,
+        GeometryErrorCode::InvalidShape
+    );
+    for invalid_vertex_count in [0, 1] {
+        let mut incomplete_vertices = backend.offset_planar_profile(&profile, 2.0).unwrap();
+        incomplete_vertices.body.topology.vertex_count = invalid_vertex_count;
+        assert_eq!(
+            capture_planar_offset_reference(&mut incomplete_vertices, "721", "723")
+                .unwrap_err()
+                .code,
+            GeometryErrorCode::InvalidShape
+        );
+    }
+    let mut non_finite_bounds = backend.offset_planar_profile(&profile, 2.0).unwrap();
+    non_finite_bounds.body.topology.bounds_mm.min.x = f64::NAN;
+    assert_eq!(
+        capture_planar_offset_reference(&mut non_finite_bounds, "721", "723")
+            .unwrap_err()
+            .code,
+        GeometryErrorCode::InvalidShape
+    );
+    let mut non_finite_topology = backend.offset_planar_profile(&profile, 2.0).unwrap();
+    non_finite_topology.body.topology.volume_mm3 = f64::NAN;
+    assert_eq!(
+        capture_planar_offset_reference(&mut non_finite_topology, "721", "723")
+            .unwrap_err()
+            .code,
+        GeometryErrorCode::InvalidShape
+    );
+
+    let open = PlanarProfileLoop::Segments(vec![
+        PlanarProfileSegment::Line {
+            start_mm: [0.0, 0.0],
+            end_mm: [20.0, 0.0],
+        },
+        PlanarProfileSegment::CircularArc {
+            start_mm: [20.0, 0.0],
+            end_mm: [1.0, 0.0],
+            center_mm: [10.0, 0.0],
+            clockwise: false,
+        },
+    ]);
+    assert_eq!(
+        backend.offset_planar_profile(&open, 2.0).unwrap_err().code,
+        GeometryErrorCode::InvalidProfile
+    );
+    let zero_area = PlanarProfileLoop::Segments(vec![
+        PlanarProfileSegment::CircularArc {
+            start_mm: [0.0, 0.0],
+            end_mm: [20.0, 0.0],
+            center_mm: [10.0, 0.0],
+            clockwise: true,
+        },
+        PlanarProfileSegment::CircularArc {
+            start_mm: [20.0, 0.0],
+            end_mm: [0.0, 0.0],
+            center_mm: [10.0, 0.0],
+            clockwise: false,
+        },
+    ]);
+    assert_eq!(
+        backend
+            .offset_planar_profile(&zero_area, 2.0)
+            .unwrap_err()
+            .code,
+        GeometryErrorCode::InvalidProfile
+    );
+    let oversized_arc = PlanarProfileLoop::Segments(vec![
+        PlanarProfileSegment::CircularArc {
+            start_mm: [999_950.0, -100.0],
+            end_mm: [999_950.0, 100.0],
+            center_mm: [999_950.0, 0.0],
+            clockwise: false,
+        },
+        PlanarProfileSegment::CircularArc {
+            start_mm: [999_950.0, 100.0],
+            end_mm: [999_950.0, -100.0],
+            center_mm: [999_950.0, 0.0],
+            clockwise: false,
+        },
+    ]);
+    assert_eq!(
+        backend
+            .offset_planar_profile(&oversized_arc, 2.0)
+            .unwrap_err()
+            .code,
+        GeometryErrorCode::InvalidParameter
+    );
+    let self_intersecting = PlanarProfileLoop::Segments(vec![
+        PlanarProfileSegment::Line {
+            start_mm: [0.0, 0.0],
+            end_mm: [20.0, 20.0],
+        },
+        PlanarProfileSegment::Line {
+            start_mm: [20.0, 20.0],
+            end_mm: [0.0, 20.0],
+        },
+        PlanarProfileSegment::Line {
+            start_mm: [0.0, 20.0],
+            end_mm: [20.0, 0.0],
+        },
+        PlanarProfileSegment::CircularArc {
+            start_mm: [20.0, 0.0],
+            end_mm: [0.0, 0.0],
+            center_mm: [10.0, 0.0],
+            clockwise: true,
+        },
+    ]);
+    assert_eq!(
+        backend
+            .offset_planar_profile(&self_intersecting, 2.0)
+            .unwrap_err()
+            .code,
+        GeometryErrorCode::InvalidShape
+    );
+    assert_eq!(
+        backend
+            .offset_planar_profile(&profile, f64::NAN)
+            .unwrap_err()
+            .code,
+        GeometryErrorCode::NonFiniteParameter
+    );
+}
+
+#[test]
 fn rectangular_sweep_follows_selected_path_with_stable_exact_faces() {
     let backend = ExactBackend::new();
     let spec = RectangleSweepSpec {

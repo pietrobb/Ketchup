@@ -773,6 +773,132 @@ std::unique_ptr<NativeOperationResult> offset_rectangle_native(
   });
 }
 
+std::unique_ptr<NativeOperationResult> offset_planar_profile_native(
+    rust::Slice<const double> segments, double distance) noexcept {
+  return guarded([&] {
+    if (segments.size() < 20 || segments.size() % 10 != 0 || segments.size() > 640
+        || !std::isfinite(distance) || std::abs(distance) < 0.01
+        || std::abs(distance) > 100000.0) {
+      return error_result(STATUS_INVALID_PARAMETER, "Planar offset payload is malformed");
+    }
+    BRepBuilderAPI_MakeWire source_builder;
+    bool line_only = true;
+    for (std::size_t offset = 0; offset < segments.size(); offset += 10) {
+      for (std::size_t index = 0; index < 10; ++index) {
+        if (!std::isfinite(segments[offset + index])
+            || std::abs(segments[offset + index]) > 1000000.0) {
+          return error_result(STATUS_INVALID_PARAMETER, "Planar offset segment value is invalid");
+        }
+      }
+      const double kind = segments[offset];
+      const gp_Pnt start(segments[offset + 1], segments[offset + 2], 0.0);
+      const gp_Pnt end(segments[offset + 3], segments[offset + 4], 0.0);
+      const std::size_t next = (offset + 10) % segments.size();
+      if (segments[offset + 3] != segments[next + 1]
+          || segments[offset + 4] != segments[next + 2]) {
+        return error_result(STATUS_INVALID_PARAMETER, "Planar offset source wire is open");
+      }
+      TopoDS_Edge edge;
+      if (kind == 0.0) {
+        if (segments[offset + 5] != 0.0 || segments[offset + 6] != 0.0
+            || segments[offset + 7] != 0.0 || segments[offset + 8] != 0.0
+            || segments[offset + 9] != 0.0) {
+          return error_result(STATUS_INVALID_PARAMETER, "Planar offset line payload is malformed");
+        }
+        const double length = start.Distance(end);
+        if (!std::isfinite(length) || length < 0.01 || length > 100000.0) {
+          return error_result(STATUS_INVALID_PARAMETER, "Planar offset line length is invalid");
+        }
+        BRepBuilderAPI_MakeEdge edge_builder(start, end);
+        if (!edge_builder.IsDone()) {
+          return error_result(STATUS_INVALID_SHAPE, "OCCT planar offset line builder did not complete");
+        }
+        edge = edge_builder.Edge();
+      } else if (kind == 1.0) {
+        line_only = false;
+        if (segments[offset + 7] != 0.0 || segments[offset + 8] != 0.0
+            || (segments[offset + 9] != 0.0 && segments[offset + 9] != 1.0)) {
+          return error_result(STATUS_INVALID_PARAMETER, "Planar offset arc payload is malformed");
+        }
+        const double center_x = segments[offset + 5];
+        const double center_y = segments[offset + 6];
+        const bool clockwise = segments[offset + 9] != 0.0;
+        const gp_Pnt center(center_x, center_y, 0.0);
+        const double radius = start.Distance(center);
+        const double end_radius = end.Distance(center);
+        if (!std::isfinite(radius) || radius < 0.01 || radius > 100000.0
+            || std::abs(radius - end_radius) > 1.0e-9 * std::max({radius, end_radius, 1.0})
+            || std::abs(center_x) + radius > 1000000.0
+            || std::abs(center_y) + radius > 1000000.0) {
+          return error_result(STATUS_INVALID_PARAMETER, "Planar offset arc radius is invalid");
+        }
+        const double start_angle = std::atan2(start.Y() - center_y, start.X() - center_x);
+        const double end_angle = std::atan2(end.Y() - center_y, end.X() - center_x);
+        double sweep = end_angle - start_angle;
+        const double tau = 2.0 * std::acos(-1.0);
+        if (clockwise) {
+          while (sweep >= 0.0) sweep -= tau;
+        } else {
+          while (sweep <= 0.0) sweep += tau;
+        }
+        const double middle_angle = start_angle + sweep / 2.0;
+        const gp_Pnt middle(
+            center_x + radius * std::cos(middle_angle),
+            center_y + radius * std::sin(middle_angle),
+            0.0);
+        GC_MakeArcOfCircle arc_builder(start, middle, end);
+        if (!arc_builder.IsDone()) {
+          return error_result(STATUS_INVALID_SHAPE, "OCCT planar offset arc builder did not complete");
+        }
+        BRepBuilderAPI_MakeEdge edge_builder(arc_builder.Value());
+        if (!edge_builder.IsDone()) {
+          return error_result(STATUS_INVALID_SHAPE, "OCCT planar offset arc edge did not complete");
+        }
+        edge = edge_builder.Edge();
+      } else {
+        return error_result(STATUS_INVALID_PARAMETER, "Planar offset segment kind is unsupported");
+      }
+      if (edge.IsNull()) {
+        return error_result(STATUS_INVALID_SHAPE, "OCCT planar offset source edge is null");
+      }
+      source_builder.Add(edge);
+    }
+    if (!source_builder.IsDone() || (line_only && segments.size() < 30)) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT planar offset source wire did not complete");
+    }
+    BRepBuilderAPI_MakeFace source_face_builder(source_builder.Wire(), true);
+    if (!source_face_builder.IsDone()
+        || !BRepCheck_Analyzer(source_face_builder.Face()).IsValid()) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT planar offset source face is invalid");
+    }
+
+    BRepOffsetAPI_MakeOffset operation(source_builder.Wire(), GeomAbs_Intersection, false);
+    operation.Perform(distance);
+    if (!operation.IsDone()) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT planar offset did not complete");
+    }
+    TopoDS_Wire offset_wire;
+    for (TopExp_Explorer explorer(operation.Shape(), TopAbs_WIRE); explorer.More(); explorer.Next()) {
+      if (!offset_wire.IsNull()) {
+        return error_result(STATUS_INVALID_SHAPE, "OCCT planar offset produced multiple wires");
+      }
+      offset_wire = TopoDS::Wire(explorer.Current());
+    }
+    if (offset_wire.IsNull()) {
+      return error_result(STATUS_NULL_RESULT, "OCCT planar offset produced no wire");
+    }
+    BRepBuilderAPI_MakeFace face_builder(offset_wire, true);
+    if (!face_builder.IsDone() || !BRepCheck_Analyzer(face_builder.Face()).IsValid()) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT planar offset face is invalid");
+    }
+    const TopoDS_Face result = face_builder.Face();
+    std::vector<HistoryRecord> history;
+    history.push_back(history_record(
+        "planar_offset.face", "offset_generated", "profile.face", result, result));
+    return success_result(result, std::move(history), false, true);
+  });
+}
+
 std::unique_ptr<NativeOperationResult> sweep_rectangle_native(
     rust::Slice<const double> values) noexcept {
   return guarded([&] {

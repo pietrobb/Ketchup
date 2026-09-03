@@ -51,6 +51,8 @@ std::unique_ptr<NativeOperationResult> extrude_rectangle_native(
 std::unique_ptr<NativeOperationResult> offset_rectangle_native(
     double min_x, double min_y, double max_x, double max_y,
     double distance) noexcept;
+std::unique_ptr<NativeOperationResult> offset_planar_profile_native(
+    rust::Slice<const double> segments, double distance) noexcept;
 std::unique_ptr<NativeOperationResult> sweep_rectangle_native(
     rust::Slice<const double> values) noexcept;
 std::unique_ptr<NativeOperationResult> loft_spline_native(
