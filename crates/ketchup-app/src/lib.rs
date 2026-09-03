@@ -2629,6 +2629,20 @@ struct RenderBox {
     size_mm: Vec3,
 }
 
+fn imported_solid_tool_feature_id(
+    snapshot: &Snapshot,
+    definition_id: DefinitionId,
+) -> Option<FeatureId> {
+    let [feature_id] = snapshot.definition(definition_id)?.feature_ids() else {
+        return None;
+    };
+    matches!(
+        snapshot.feature(*feature_id)?.kind(),
+        FeatureKind::ImportedExactBody(_)
+    )
+    .then_some(*feature_id)
+}
+
 #[derive(Clone, Debug, PartialEq)]
 enum PushPullPlanningPlan {
     Append,
@@ -15511,7 +15525,11 @@ impl KetchupApp {
                     if definition_requires_evaluated_geometry(
                         &snapshot,
                         occurrence.body.definition_id,
-                    ) {
+                    ) && exact_packages
+                        .as_ref()
+                        .and_then(|packages| packages.get(&occurrence.body.definition_id))
+                        .is_none()
+                    {
                         return None;
                     }
                     let [minimum, maximum] = self.definition_local_bounds(
@@ -15530,22 +15548,28 @@ impl KetchupApp {
                                 )
                             }),
                     )?;
-                    let profile_feature_id = occurrence.body.profile_feature_id.or_else(|| {
-                        snapshot
-                            .definition(occurrence.body.definition_id)?
-                            .feature_ids()
-                            .iter()
-                            .find_map(|feature_id| {
-                                matches!(
-                                    snapshot.feature(*feature_id)?.kind(),
-                                    FeatureKind::Profile { .. }
-                                        | FeatureKind::SegmentProfile { .. }
-                                        | FeatureKind::SplineProfile { .. }
-                                        | FeatureKind::Sketch(_)
-                                )
-                                .then_some(*feature_id)
-                            })
-                    })?;
+                    let profile_feature_id = occurrence
+                        .body
+                        .profile_feature_id
+                        .or_else(|| {
+                            imported_solid_tool_feature_id(&snapshot, occurrence.body.definition_id)
+                        })
+                        .or_else(|| {
+                            snapshot
+                                .definition(occurrence.body.definition_id)?
+                                .feature_ids()
+                                .iter()
+                                .find_map(|feature_id| {
+                                    matches!(
+                                        snapshot.feature(*feature_id)?.kind(),
+                                        FeatureKind::Profile { .. }
+                                            | FeatureKind::SegmentProfile { .. }
+                                            | FeatureKind::SplineProfile { .. }
+                                            | FeatureKind::Sketch(_)
+                                    )
+                                    .then_some(*feature_id)
+                                })
+                        })?;
                     return Some(RenderBox {
                         definition_id: occurrence.body.definition_id,
                         profile_feature_id,
@@ -17997,6 +18021,7 @@ impl KetchupApp {
 
     fn command_enabled(&self, id: AppCommand) -> bool {
         let spec = CommandRegistry::spec(id);
+        let snapshot = self.document.current();
         spec.implemented
             && match id {
                 AppCommand::Undo => self.can_undo(),
@@ -18022,13 +18047,28 @@ impl KetchupApp {
                 | AppCommand::SolidUnion
                 | AppCommand::SolidIntersect
                 | AppCommand::SolidSplit => {
-                    self.active_boxes()
+                    let candidates = self
+                        .active_boxes()
                         .into_iter()
+                        .filter(|item| item.instance_path.is_root())
+                        .collect::<Vec<_>>();
+                    let extrusion_count = candidates
+                        .iter()
+                        .filter(|item| item.extrusion_feature_id.is_some())
+                        .count();
+                    let imported_count = candidates
+                        .iter()
                         .filter(|item| {
-                            item.instance_path.is_root() && item.extrusion_feature_id.is_some()
+                            imported_solid_tool_feature_id(&snapshot, item.definition_id).is_some()
+                                && snapshot
+                                    .world_transform_for_occurrence(
+                                        item.instance_path.root_occurrence(),
+                                    )
+                                    .and_then(Transform::rigid_inverse)
+                                    .is_some()
                         })
-                        .count()
-                        >= 2
+                        .count();
+                    extrusion_count >= 2 || imported_count >= 2
                 }
                 AppCommand::Group => self.group_selection_source_plan().is_some(),
                 AppCommand::Ungroup => self.ungroup_selection_source_plan().is_some(),
@@ -24475,17 +24515,18 @@ impl KetchupApp {
             .active_boxes()
             .into_iter()
             .find(|item| item.instance_path == selection.instance_path)?;
-        let extrusion_id = item.extrusion_feature_id?;
         let snapshot = self.document.current();
+        let body_feature_id = item
+            .extrusion_feature_id
+            .or_else(|| imported_solid_tool_feature_id(&snapshot, selection.definition_id))?;
         let occurrence = snapshot.occurrence(selection.instance_path.root_occurrence())?;
-        let feature = snapshot.feature(extrusion_id)?;
+        let feature = snapshot.feature(body_feature_id)?;
         if occurrence.definition_id() != selection.definition_id
             || feature.definition_id() != selection.definition_id
-            || !matches!(feature.kind(), FeatureKind::Extrusion { .. })
         {
             return None;
         }
-        Some((item, extrusion_id))
+        Some((item, body_feature_id))
     }
 
     fn solid_tool_source_plan(
@@ -27876,6 +27917,23 @@ impl KetchupApp {
             ]);
         }
         if let Some(definition) = snapshot.definition(definition_id) {
+            if let [feature_id] = definition.feature_ids()
+                && let Some(feature) = snapshot.feature(*feature_id)
+                && let FeatureKind::ImportedExactBody(spec) = feature.kind()
+            {
+                return Some([
+                    Vec3::new(
+                        spec.bounds_mm[0][0],
+                        spec.bounds_mm[0][1],
+                        spec.bounds_mm[0][2],
+                    ),
+                    Vec3::new(
+                        spec.bounds_mm[1][0],
+                        spec.bounds_mm[1][1],
+                        spec.bounds_mm[1][2],
+                    ),
+                ]);
+            }
             if let Some([minimum, maximum]) =
                 definition
                     .feature_ids()

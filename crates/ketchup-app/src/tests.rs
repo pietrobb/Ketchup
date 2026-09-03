@@ -7189,6 +7189,176 @@ fn contained_circle_subtract_intersect_split_and_containing_union_round_trip_ato
 }
 
 #[test]
+fn imported_exact_occurrences_route_through_solid_tool_preview_and_commit() {
+    let mut app = KetchupApp::new();
+    app.document = DocumentStore::new();
+    let sources = [
+        b"target imported exact body".as_slice(),
+        b"tool imported exact body".as_slice(),
+    ];
+    let evidences = [
+        StepImportEvidence {
+            source_unit: ImportLengthUnit::Millimetre,
+            result_fingerprint: "target-exact-result".into(),
+            solid_count: 1,
+            topology_counts: [8, 12, 6, 1, 1],
+            volume_mm3: 1_000.0,
+            bounds_mm: [[0.0, 0.0, 0.0], [10.0, 10.0, 10.0]],
+            backend: "headless-imported-solid-tool.v1".into(),
+            tolerance: "1e-7-mm".into(),
+        },
+        StepImportEvidence {
+            source_unit: ImportLengthUnit::Millimetre,
+            result_fingerprint: "tool-exact-result".into(),
+            solid_count: 1,
+            topology_counts: [8, 12, 6, 1, 1],
+            volume_mm3: 432.0,
+            bounds_mm: [[0.0, 0.0, 0.0], [6.0, 6.0, 12.0]],
+            backend: "headless-imported-solid-tool.v1".into(),
+            tolerance: "1e-7-mm".into(),
+        },
+    ];
+    for (index, (source, evidence)) in sources.iter().zip(&evidences).enumerate() {
+        app.document
+            .apply_batch(
+                &plan_step_import(
+                    &app.document.current(),
+                    source,
+                    &format!("imported-{index}.step"),
+                    evidence,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+    }
+    app.document.discard_history_before_current();
+    let snapshot = app.document.current();
+    let mut occurrences = snapshot.occurrences().map(|occurrence| occurrence.id());
+    let target_occurrence_id = occurrences.next().unwrap();
+    let tool_occurrence_id = occurrences.next().unwrap();
+    let target_definition_id = snapshot
+        .occurrence(target_occurrence_id)
+        .unwrap()
+        .definition_id();
+    let tool_definition_id = snapshot
+        .occurrence(tool_occurrence_id)
+        .unwrap()
+        .definition_id();
+    let target_feature_id =
+        imported_solid_tool_feature_id(&snapshot, target_definition_id).unwrap();
+    let tool_feature_id = imported_solid_tool_feature_id(&snapshot, tool_definition_id).unwrap();
+    let angle = 30.0_f64.to_radians();
+    app.document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetOccurrenceTransform {
+                id: target_occurrence_id,
+                transform: Transform::from_translation(2.0, -1.0, 0.5).unwrap(),
+            },
+            CanonicalCommand::SetOccurrenceTransform {
+                id: tool_occurrence_id,
+                transform: Transform::from_matrix([
+                    angle.cos(),
+                    -angle.sin(),
+                    0.0,
+                    4.0,
+                    angle.sin(),
+                    angle.cos(),
+                    0.0,
+                    1.0,
+                    0.0,
+                    0.0,
+                    1.0,
+                    2.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0,
+                ])
+                .unwrap(),
+            },
+        ]))
+        .unwrap();
+    app.document.discard_history_before_current();
+
+    let selection = |definition_id, occurrence_id| SelectionId {
+        definition_id,
+        instance_path: InstancePath::root(occurrence_id),
+        element: ElementId::Face {
+            axis: Axis::Z,
+            side: Side::Maximum,
+        },
+    };
+    app.active_tool = ActiveTool::SolidIntersect;
+    let imported_boxes = app.active_boxes();
+    assert_eq!(imported_boxes.len(), 2, "{imported_boxes:?}");
+    assert!(app.command_enabled(AppCommand::SolidIntersect));
+    let before_digest = app.canonical_digest();
+    let before_revision = app.document_revision();
+    let before_undo_steps = app.undo_step_count();
+    app.solid_tool_target = Some(selection(target_definition_id, target_occurrence_id));
+    assert!(
+        app.prepare_solid_tool_preview(selection(tool_definition_id, tool_occurrence_id), true,)
+    );
+    assert!(app.has_occurrence_operation_preview());
+    let source = &app
+        .occurrence_operation_preview
+        .as_ref()
+        .unwrap()
+        .solid_tool_plan
+        .as_ref()
+        .unwrap()
+        .source;
+    assert_eq!(source.target_feature_id, target_feature_id);
+    assert_eq!(source.tool_feature_id, tool_feature_id);
+    assert_eq!(app.canonical_digest(), before_digest);
+    assert_eq!(app.document_revision(), before_revision);
+    assert_eq!(app.undo_step_count(), before_undo_steps);
+
+    assert!(app.confirm_occurrence_operation_preview());
+    assert_eq!(app.undo_step_count(), before_undo_steps + 1);
+    let committed = app.document.current();
+    let result_definition_id = committed
+        .occurrence(target_occurrence_id)
+        .unwrap()
+        .definition_id();
+    let result_feature_id = *committed
+        .definition(result_definition_id)
+        .unwrap()
+        .feature_ids()
+        .last()
+        .unwrap();
+    let graph =
+        ExactBRepGraph::from_snapshot(&committed, result_definition_id, result_feature_id).unwrap();
+    assert!(graph.nodes.iter().any(|node| matches!(
+        node.operation,
+        ExactBRepOperation::Boolean {
+            operation: ketchup_core::exact_brep_graph::ExactBRepBooleanOperation::Intersect,
+            ..
+        }
+    )));
+    assert_eq!(
+        graph
+            .nodes
+            .iter()
+            .filter(|node| matches!(node.operation, ExactBRepOperation::ImportedExact { .. }))
+            .count(),
+        2
+    );
+    assert_eq!(
+        graph
+            .nodes
+            .iter()
+            .filter(|node| matches!(node.operation, ExactBRepOperation::RigidTransform { .. }))
+            .count(),
+        2
+    );
+    assert!(app.undo());
+    assert_eq!(app.canonical_digest(), before_digest);
+    assert!(app.redo());
+    assert_eq!(app.canonical_digest(), committed.canonical_digest());
+}
+
+#[test]
 fn solid_tool_preview_survives_accepted_exact_bounds_refresh_and_commits_once() {
     let mut app = KetchupApp::new();
     assert!(app.create_box());
