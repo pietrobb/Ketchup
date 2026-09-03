@@ -224,6 +224,11 @@ pub enum AssistantCadBodyFeature {
         target_feature_id: u64,
         tool_feature_id: u64,
     },
+    Pocket {
+        target_feature_id: u64,
+        profile_feature_id: u64,
+        depth_mm: f64,
+    },
 }
 
 impl AssistantCadBodyFeature {
@@ -240,6 +245,20 @@ impl AssistantCadBodyFeature {
                 Ok(())
             }
             Self::Boolean { .. } => Err("assistant CAD body feature is invalid".to_owned()),
+            Self::Pocket {
+                target_feature_id,
+                profile_feature_id,
+                depth_mm,
+            } if *target_feature_id != 0
+                && *profile_feature_id != 0
+                && target_feature_id != profile_feature_id
+                && depth_mm.is_finite()
+                && *depth_mm > 0.0
+                && *depth_mm <= MAX_ASSISTANT_ABS_MM =>
+            {
+                Ok(())
+            }
+            Self::Pocket { .. } => Err("assistant CAD body feature is invalid".to_owned()),
         }
     }
 }

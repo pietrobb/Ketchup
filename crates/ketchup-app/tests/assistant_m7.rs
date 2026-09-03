@@ -1945,6 +1945,92 @@ fn scripted_append_boolean_programs_are_exact_persistent_and_one_step() {
 }
 
 #[test]
+fn scripted_append_pocket_is_exact_persistent_and_one_step() {
+    let request = "Pocket the existing extrusion";
+    let transport = Arc::new(ScriptedAssistantTransport::new([(
+        request.to_owned(),
+        AssistantChatResult {
+            message: "Review the exact pocket.".to_owned(),
+            model_intent: None,
+        },
+    )]));
+    transport.queue_cad_edit_program(
+        request,
+        AssistantCadEditProgram {
+            operations: vec![AssistantCadEditOperation::AppendFeature {
+                definition_id: 1,
+                name: "Assistant pocket".to_owned(),
+                feature: AssistantCadBodyFeature::Pocket {
+                    target_feature_id: 2,
+                    profile_feature_id: 3,
+                    depth_mm: 8.0,
+                },
+            }],
+        },
+    );
+
+    let directory = tempfile::tempdir().unwrap();
+    let fixture_path = directory.path().join("assistant-pocket-inputs.ketchup");
+    write_assistant_boolean_fixture(&fixture_path);
+    let mut shell = Shell::with_assistant_transport(transport.clone());
+    assert!(shell.app_mut().open_document_path(&fixture_path));
+    shell.settle();
+    let baseline_revision = shell.app().document_revision();
+    let baseline_digest = shell.app().canonical_digest();
+    let baseline_undo = shell.app().undo_step_count();
+    let baseline_redo = shell.app().redo_step_count();
+    let baseline_occurrences = shell.app().document_snapshot().occurrences().count();
+
+    let input = shell.catalog().text("assistant-input-hint");
+    shell.focus_text_input(&input);
+    shell.type_text(request);
+    shell.press_key(egui::Key::Enter);
+    wait_for_assistant_proposal(&mut shell);
+    assert_eq!(shell.app().document_revision(), baseline_revision);
+    assert_eq!(shell.app().canonical_digest(), baseline_digest);
+    assert_eq!(shell.app().undo_step_count(), baseline_undo);
+
+    shell.click_row(&shell.catalog().text("assistant-confirm"));
+    assert_eq!(shell.app().document_revision(), baseline_revision + 1);
+    assert_eq!(shell.app().undo_step_count(), baseline_undo + 1);
+    let committed = shell.app().document_snapshot();
+    assert!(matches!(
+        committed.feature(FeatureId(5)).unwrap().kind(),
+        FeatureKind::Pocket {
+            target: FeatureId(2),
+            profile: FeatureId(3),
+            depth,
+        } if depth.millimetres() == 8.0
+    ));
+    let graph = ExactBRepGraph::from_snapshot(&committed, DefinitionId(1), FeatureId(5)).unwrap();
+    assert_eq!(graph.producer_feature_id, 5);
+    assert!(
+        graph
+            .nodes
+            .iter()
+            .any(|node| matches!(&node.operation, ExactBRepOperation::ProfileCut { .. }))
+    );
+    assert_eq!(committed.occurrences().count(), baseline_occurrences);
+
+    let committed_digest = committed.canonical_digest();
+    let saved_path = directory.path().join("assistant-pocket-result.ketchup");
+    persistence::save_atomic(&saved_path, &committed).unwrap();
+    let reopened = persistence::load_file(&saved_path).unwrap().snapshot();
+    assert_eq!(reopened.canonical_digest(), committed_digest);
+    assert!(ExactBRepGraph::from_snapshot(&reopened, DefinitionId(1), FeatureId(5)).is_ok());
+
+    shell.click_menu_command("menu-edit", AppCommand::Undo);
+    assert_eq!(shell.app().canonical_digest(), baseline_digest);
+    assert_eq!(shell.app().undo_step_count(), baseline_undo);
+    assert_eq!(shell.app().redo_step_count(), baseline_redo + 1);
+    shell.click_menu_command("menu-edit", AppCommand::Redo);
+    assert_eq!(shell.app().canonical_digest(), committed_digest);
+    assert_eq!(shell.app().undo_step_count(), baseline_undo + 1);
+    assert_eq!(shell.app().redo_step_count(), baseline_redo);
+    assert_eq!(transport.remaining_responses(), 0);
+}
+
+#[test]
 fn named_assistant_generators_are_editable_or_fail_closed_with_bounded_macro_inputs() {
     let empty_intent = || AssistantModelIntent {
         replace_scene: false,

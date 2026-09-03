@@ -71,7 +71,7 @@ SYSTEM_PROMPT = (
     "model_intent (null for discussion or CAD edits), and cad_edit_program (null unless proposing typed CAD operations). "
     "Never return both mutation fields. Use cad_edit_program for create_part, create_sketch, append_feature, set_dimension, delete, rigid transform, copy, linear pattern, or mirror. "
     "create_part atomically creates a host-ID-assigned definition, workplane, sketch, universal feature, and occurrence. It has name, workplane, entities, constraints, feature, translation_mm, and optional rotation; feature is either {type: extrusion, distance_mm: positive length} or {type: revolve, axis_start_mm: [x,y], axis_end_mm: [x,y], angle_degrees: >0 and <=360}. "
-    "append_feature adds one host-ID-assigned feature to an existing definition. It has definition_id, name, and feature {type: boolean, operation: cut|union|intersect, target_feature_id, tool_feature_id}; both inputs must be distinct supported exact body features in that definition. "
+    "append_feature adds one host-ID-assigned feature to an existing definition. It has definition_id, name, and either feature {type: boolean, operation: cut|union|intersect, target_feature_id, tool_feature_id}, whose inputs are distinct supported exact body features in that definition, or feature {type: pocket, target_feature_id, profile_feature_id, depth_mm}, whose distinct inputs are a supported exact extrusion target and closed profile in that definition with positive bounded depth below the target height. "
     "create_sketch has definition_id, name, workplane, entities, and constraints; workplane is principal with plane xy/yz/xz or offset with an existing base_feature_id and distance_mm. "
     "Entities are typed line/arc/circle records with positive stable IDs and 2D millimetre coordinates. Constraints are typed horizontal/vertical/coincident/distance/radius/fixed_point records with positive stable IDs and point refs {entity_id, point: start/end/center}. "
     "The host assigns create_part definition, feature, and occurrence IDs and create_sketch workplane and sketch feature IDs. set_dimension targets an existing feature_id, optional constraint_id, and positive value_mm. "
@@ -737,18 +737,40 @@ def _validate_cad_edit_program(program: object) -> dict:
                 or len(name.encode("utf-8")) > 128
                 or any(ord(character) < 32 or 127 <= ord(character) <= 159 for character in name)
                 or not isinstance(feature, dict)
-                or set(feature)
-                != {"type", "operation", "target_feature_id", "tool_feature_id"}
-                or feature.get("type") != "boolean"
-                or feature.get("operation") not in {"cut", "union", "intersect"}
-                or not isinstance(feature.get("target_feature_id"), int)
-                or isinstance(feature.get("target_feature_id"), bool)
-                or not 0 < feature["target_feature_id"] <= MAX_U64
-                or not isinstance(feature.get("tool_feature_id"), int)
-                or isinstance(feature.get("tool_feature_id"), bool)
-                or not 0 < feature["tool_feature_id"] <= MAX_U64
-                or feature["target_feature_id"] == feature["tool_feature_id"]
             ):
+                raise ProtocolError("provider CAD body feature is invalid")
+            target_feature_id = feature.get("target_feature_id")
+            if feature.get("type") == "boolean":
+                valid_feature = (
+                    set(feature) == {"type", "operation", "target_feature_id", "tool_feature_id"}
+                    and feature.get("operation") in {"cut", "union", "intersect"}
+                    and isinstance(target_feature_id, int)
+                    and not isinstance(target_feature_id, bool)
+                    and 0 < target_feature_id <= MAX_U64
+                    and isinstance(feature.get("tool_feature_id"), int)
+                    and not isinstance(feature.get("tool_feature_id"), bool)
+                    and 0 < feature["tool_feature_id"] <= MAX_U64
+                    and target_feature_id != feature["tool_feature_id"]
+                )
+            elif feature.get("type") == "pocket":
+                depth_mm = feature.get("depth_mm")
+                valid_feature = (
+                    set(feature) == {"type", "target_feature_id", "profile_feature_id", "depth_mm"}
+                    and isinstance(target_feature_id, int)
+                    and not isinstance(target_feature_id, bool)
+                    and 0 < target_feature_id <= MAX_U64
+                    and isinstance(feature.get("profile_feature_id"), int)
+                    and not isinstance(feature.get("profile_feature_id"), bool)
+                    and 0 < feature["profile_feature_id"] <= MAX_U64
+                    and target_feature_id != feature["profile_feature_id"]
+                    and isinstance(depth_mm, (int, float))
+                    and not isinstance(depth_mm, bool)
+                    and 0 < depth_mm <= 1_000_000
+                    and math.isfinite(depth_mm)
+                )
+            else:
+                valid_feature = False
+            if not valid_feature:
                 raise ProtocolError("provider CAD body feature is invalid")
         elif operation_type == "set_dimension":
             if set(operation) != {"operation", "feature_id", "constraint_id", "value_mm"}:

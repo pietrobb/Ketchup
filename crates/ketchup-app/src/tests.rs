@@ -163,6 +163,134 @@ fn cad_edit_append_boolean_is_host_id_assigned_exact_and_one_step() {
 }
 
 #[test]
+fn cad_edit_append_pocket_is_host_id_assigned_exact_and_one_step() {
+    let mut app = KetchupApp::new();
+    app.document
+        .apply_batch(&CommandBatch::new(vec![CanonicalCommand::CreateFeature {
+            id: FeatureId(3),
+            definition_id: INITIAL_BOX_DEFINITION,
+            name: "Pocket profile".to_owned(),
+            kind: FeatureKind::Profile {
+                points_mm: vec![[20.0, 15.0], [40.0, 15.0], [40.0, 35.0], [20.0, 35.0]],
+            },
+        }]))
+        .unwrap();
+    let baseline = app.document.current().clone();
+    let baseline_undo = app.document.visible_undo_steps();
+    let program = AssistantCadEditProgram {
+        operations: vec![AssistantCadEditOperation::AppendFeature {
+            definition_id: INITIAL_BOX_DEFINITION.0,
+            name: "Assistant pocket".to_owned(),
+            feature: AssistantCadBodyFeature::Pocket {
+                target_feature_id: 2,
+                profile_feature_id: 3,
+                depth_mm: 8.0,
+            },
+        }],
+    };
+
+    let batch = app.plan_assistant_cad_edit_program(&program).unwrap();
+    assert!(matches!(
+        batch.commands(),
+        [CanonicalCommand::CreateFeature {
+            id: FeatureId(4),
+            definition_id: INITIAL_BOX_DEFINITION,
+            kind: FeatureKind::Pocket {
+                target: FeatureId(2),
+                profile: FeatureId(3),
+                depth,
+            },
+            ..
+        }] if depth.millimetres() == 8.0
+    ));
+
+    app.prepare_assistant_preview_source(AssistantPreviewSource::CadEdit(program))
+        .unwrap();
+    assert_eq!(app.document.current().revision_id(), baseline.revision_id());
+    assert_eq!(
+        app.document.current().canonical_digest(),
+        baseline.canonical_digest()
+    );
+    assert_eq!(app.document.visible_undo_steps(), baseline_undo);
+    assert!(app.confirm_assistant_proposal());
+    let committed = app.document.current();
+    assert_eq!(committed.revision_id(), baseline.revision_id() + 1);
+    assert_eq!(app.document.visible_undo_steps(), baseline_undo + 1);
+    let graph =
+        ExactBRepGraph::from_snapshot(&committed, INITIAL_BOX_DEFINITION, FeatureId(4)).unwrap();
+    assert!(
+        graph
+            .nodes
+            .iter()
+            .any(|node| matches!(node.operation, ExactBRepOperation::ProfileCut { .. }))
+    );
+    assert!(app.undo());
+    assert_eq!(
+        app.document.current().canonical_digest(),
+        baseline.canonical_digest()
+    );
+}
+
+#[test]
+fn cad_edit_append_pocket_rejects_invalid_inputs_without_mutation() {
+    let mut app = KetchupApp::new();
+    app.document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(3),
+                definition_id: INITIAL_BOX_DEFINITION,
+                name: "Pocket profile".to_owned(),
+                kind: FeatureKind::Profile {
+                    points_mm: vec![[20.0, 15.0], [40.0, 15.0], [40.0, 35.0], [20.0, 35.0]],
+                },
+            },
+            CanonicalCommand::CreateDefinition {
+                id: DefinitionId(2),
+                name: "Other definition".to_owned(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(4),
+                definition_id: DefinitionId(2),
+                name: "Other profile".to_owned(),
+                kind: FeatureKind::Profile {
+                    points_mm: vec![[0.0, 0.0], [5.0, 0.0], [5.0, 5.0], [0.0, 5.0]],
+                },
+            },
+        ]))
+        .unwrap();
+    let baseline_revision = app.document.current().revision_id();
+    let baseline_digest = app.document.current().canonical_digest();
+    let baseline_undo = app.document.visible_undo_steps();
+    let program = |target_feature_id, profile_feature_id, depth_mm| AssistantCadEditProgram {
+        operations: vec![AssistantCadEditOperation::AppendFeature {
+            definition_id: INITIAL_BOX_DEFINITION.0,
+            name: "Rejected pocket".to_owned(),
+            feature: AssistantCadBodyFeature::Pocket {
+                target_feature_id,
+                profile_feature_id,
+                depth_mm,
+            },
+        }],
+    };
+
+    assert!(
+        app.plan_assistant_cad_edit_program(&program(2, 4, 8.0))
+            .is_err()
+    );
+    assert!(
+        app.plan_assistant_cad_edit_program(&program(2, 3, 20.0))
+            .is_err()
+    );
+    assert!(
+        app.plan_assistant_cad_edit_program(&program(3, 2, 8.0))
+            .is_err()
+    );
+    assert_eq!(app.document.current().revision_id(), baseline_revision);
+    assert_eq!(app.document.current().canonical_digest(), baseline_digest);
+    assert_eq!(app.document.visible_undo_steps(), baseline_undo);
+}
+
+#[test]
 fn cad_edit_append_boolean_rejects_invalid_exact_inputs_without_mutation() {
     let mut app = KetchupApp::new();
     app.document

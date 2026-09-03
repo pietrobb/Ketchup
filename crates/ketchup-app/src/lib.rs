@@ -13091,66 +13091,102 @@ impl KetchupApp {
                             &format!("definition:{}", definition_id.0),
                         ));
                     }
-                    let AssistantCadBodyFeature::Boolean {
-                        operation,
-                        target_feature_id,
-                        tool_feature_id,
-                    } = feature;
-                    let target = FeatureId(*target_feature_id);
-                    let tool = FeatureId(*tool_feature_id);
-                    let mut input_bounds = [None, None];
-                    for (index, input) in [target, tool].into_iter().enumerate() {
-                        let existing = snapshot.feature(input).ok_or_else(|| {
-                            assistant_canonical_rejection(
-                                CanonicalError::FeatureNotFound(input),
-                                operation_name,
-                                &format!("feature:{}", input.0),
-                            )
-                        })?;
-                        if existing.definition_id() != definition_id {
-                            return Err(assistant_planning_rejection(
-                                "planning.cad_feature_input_ownership_invalid",
-                                operation_name,
-                                &format!("feature:{}", input.0),
-                                "The requested body feature belongs to a different definition.",
-                                "Target two supported exact body features in the requested definition.",
-                            ));
-                        }
-                        let graph = ExactBRepGraph::from_snapshot(&snapshot, definition_id, input)
-                            .map_err(|error| {
-                                assistant_planning_rejection(
-                                    "planning.cad_feature_input_unsupported",
-                                    operation_name,
-                                    &format!("feature:{}", input.0),
-                                    error.to_string(),
-                                    "Target two supported exact body-producing features in the same definition.",
+                    let kind = match feature {
+                        AssistantCadBodyFeature::Boolean {
+                            operation,
+                            target_feature_id,
+                            tool_feature_id,
+                        } => {
+                            let target = FeatureId(*target_feature_id);
+                            let tool = FeatureId(*tool_feature_id);
+                            let mut input_bounds = [None, None];
+                            for (index, input) in [target, tool].into_iter().enumerate() {
+                                let existing = snapshot.feature(input).ok_or_else(|| {
+                                    assistant_canonical_rejection(
+                                        CanonicalError::FeatureNotFound(input),
+                                        operation_name,
+                                        &format!("feature:{}", input.0),
+                                    )
+                                })?;
+                                if existing.definition_id() != definition_id {
+                                    return Err(assistant_planning_rejection(
+                                        "planning.cad_feature_input_ownership_invalid",
+                                        operation_name,
+                                        &format!("feature:{}", input.0),
+                                        "The requested body feature belongs to a different definition.",
+                                        "Target two supported exact body features in the requested definition.",
+                                    ));
+                                }
+                                let graph = ExactBRepGraph::from_snapshot(
+                                    &snapshot,
+                                    definition_id,
+                                    input,
                                 )
-                            })?;
-                        input_bounds[index] = graph.producer_bounds_mm().map_err(|error| {
-                            assistant_planning_rejection(
-                                "planning.cad_feature_input_unsupported",
-                                operation_name,
-                                &format!("feature:{}", input.0),
-                                error.to_string(),
-                                "Target two supported exact body-producing features in the same definition.",
-                            )
-                        })?;
-                    }
-                    if matches!(operation, AssistantCadBooleanOperation::Intersect)
-                        && let [Some(target_bounds), Some(tool_bounds)] = input_bounds
-                        && (0..3).any(|axis| {
-                            target_bounds[0][axis].max(tool_bounds[0][axis])
-                                >= target_bounds[1][axis].min(tool_bounds[1][axis])
-                        })
-                    {
-                        return Err(assistant_planning_rejection(
-                            "planning.cad_feature_result_empty",
-                            operation_name,
-                            "feature_inputs",
-                            "The bounded Boolean operands do not have a positive-volume intersection.",
-                            "Choose two overlapping exact body features for Intersect.",
-                        ));
-                    }
+                                .map_err(|error| {
+                                    assistant_planning_rejection(
+                                        "planning.cad_feature_input_unsupported",
+                                        operation_name,
+                                        &format!("feature:{}", input.0),
+                                        error.to_string(),
+                                        "Target two supported exact body-producing features in the same definition.",
+                                    )
+                                })?;
+                                input_bounds[index] =
+                                    graph.producer_bounds_mm().map_err(|error| {
+                                        assistant_planning_rejection(
+                                            "planning.cad_feature_input_unsupported",
+                                            operation_name,
+                                            &format!("feature:{}", input.0),
+                                            error.to_string(),
+                                            "Target two supported exact body-producing features in the same definition.",
+                                        )
+                                    })?;
+                            }
+                            if matches!(operation, AssistantCadBooleanOperation::Intersect)
+                                && let [Some(target_bounds), Some(tool_bounds)] = input_bounds
+                                && (0..3).any(|axis| {
+                                    target_bounds[0][axis].max(tool_bounds[0][axis])
+                                        >= target_bounds[1][axis].min(tool_bounds[1][axis])
+                                })
+                            {
+                                return Err(assistant_planning_rejection(
+                                    "planning.cad_feature_result_empty",
+                                    operation_name,
+                                    "feature_inputs",
+                                    "The bounded Boolean operands do not have a positive-volume intersection.",
+                                    "Choose two overlapping exact body features for Intersect.",
+                                ));
+                            }
+                            FeatureKind::Boolean {
+                                operation: match operation {
+                                    AssistantCadBooleanOperation::Cut => BooleanOperation::Cut,
+                                    AssistantCadBooleanOperation::Union => BooleanOperation::Union,
+                                    AssistantCadBooleanOperation::Intersect => {
+                                        BooleanOperation::Intersect
+                                    }
+                                },
+                                target,
+                                tool,
+                            }
+                        }
+                        AssistantCadBodyFeature::Pocket {
+                            target_feature_id,
+                            profile_feature_id,
+                            depth_mm,
+                        } => FeatureKind::Pocket {
+                            target: FeatureId(*target_feature_id),
+                            profile: FeatureId(*profile_feature_id),
+                            depth: Dimension::new(depth_mm.to_string(), *depth_mm).map_err(
+                                |error| {
+                                    assistant_canonical_rejection(
+                                        error,
+                                        operation_name,
+                                        "feature.depth_mm",
+                                    )
+                                },
+                            )?,
+                        },
+                    };
                     let id = next_feature.map(FeatureId).ok_or_else(|| {
                         assistant_canonical_rejection(
                             CanonicalError::IdExhausted,
@@ -13163,17 +13199,7 @@ impl KetchupApp {
                         id,
                         definition_id,
                         name: name.clone(),
-                        kind: FeatureKind::Boolean {
-                            operation: match operation {
-                                AssistantCadBooleanOperation::Cut => BooleanOperation::Cut,
-                                AssistantCadBooleanOperation::Union => BooleanOperation::Union,
-                                AssistantCadBooleanOperation::Intersect => {
-                                    BooleanOperation::Intersect
-                                }
-                            },
-                            target,
-                            tool,
-                        },
+                        kind,
                     });
                     appended_exact_features.push((definition_id, id));
                 }
