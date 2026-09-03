@@ -3,8 +3,8 @@ use crate::document::{
     ProfileSegment, Snapshot, Transform,
 };
 use crate::sketch::{
-    FeatureDirection, FeatureExtent, FeatureExtentEnd, MAX_SKETCH_ENTITIES, SketchRegionId,
-    SolvedSketchRegion, SolvedSketchRegionEdge, SolvedSketchRegionProfile, WorkplaneFrame,
+    FeatureDirection, FeatureExtent, FeatureExtentEnd, SketchRegionId, SolvedSketchRegion,
+    SolvedSketchRegionEdge, SolvedSketchRegionProfile, WorkplaneFrame,
 };
 use crate::topology::{TopologicalElementKind, TopologicalElementRef};
 use serde::{Deserialize, Serialize};
@@ -17,6 +17,9 @@ pub const MAX_EXACT_BREP_GRAPH_PROFILES: usize = 1_024;
 pub const MAX_EXACT_BREP_GRAPH_NODES: usize = 1_024;
 pub const MAX_EXACT_BREP_GRAPH_SEGMENTS: usize = 16_384;
 pub const MAX_EXACT_BREP_LOFT_SECTIONS: usize = 16;
+pub const MAX_EXACT_BREP_PLANAR_LOOP_SEGMENTS: usize = 64;
+pub const MAX_EXACT_BREP_REGION_HOLES: usize = 64;
+pub const MAX_EXACT_BREP_REGION_SEGMENTS: usize = 4_096;
 pub const MAX_EXACT_BREP_GRAPH_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_EXACT_BREP_TOPOLOGY_SELECTORS: usize = 64;
 const MAX_ABS_MM: f64 = 1_000_000.0;
@@ -1520,6 +1523,9 @@ fn validate_geometry(geometry: &ExactBRepPlanarGeometry) -> Result<usize, ExactB
     };
     match geometry {
         ExactBRepPlanarGeometry::Boundary { closed, segments } => {
+            if segments.len() > MAX_EXACT_BREP_PLANAR_LOOP_SEGMENTS {
+                return Err(ExactBRepGraphError::ResourceLimit);
+            }
             if segments.is_empty() || *closed && segments.len() < 2 {
                 return Err(ExactBRepGraphError::InvalidGraph);
             }
@@ -1610,17 +1616,24 @@ fn validate_geometry(geometry: &ExactBRepPlanarGeometry) -> Result<usize, ExactB
             Ok(control_point_bits.len())
         }
         ExactBRepPlanarGeometry::Region { outer, holes } => {
-            if holes.is_empty() || holes.len() > MAX_SKETCH_ENTITIES {
+            if holes.is_empty() {
                 return Err(ExactBRepGraphError::InvalidGraph);
             }
-            holes.iter().try_fold(
+            if holes.len() > MAX_EXACT_BREP_REGION_HOLES {
+                return Err(ExactBRepGraphError::ResourceLimit);
+            }
+            let segment_count = holes.iter().try_fold(
                 validate_geometry(&loop_geometry(outer))?,
                 |segment_count, hole| {
                     segment_count
                         .checked_add(validate_geometry(&loop_geometry(hole))?)
                         .ok_or(ExactBRepGraphError::ResourceLimit)
                 },
-            )
+            )?;
+            if segment_count > MAX_EXACT_BREP_REGION_SEGMENTS {
+                return Err(ExactBRepGraphError::ResourceLimit);
+            }
+            Ok(segment_count)
         }
     }
 }
@@ -1917,5 +1930,100 @@ mod tests {
             1,
             &[],
         ));
+    }
+
+    fn circle_loop(center: [f64; 2], radius: f64) -> ExactBRepPlanarLoop {
+        ExactBRepPlanarLoop::Circle {
+            center_bits: center.map(f64::to_bits),
+            radius_bits: radius.to_bits(),
+        }
+    }
+
+    fn boundary_loop(center: [f64; 2], radius: f64, segment_count: usize) -> ExactBRepPlanarLoop {
+        let points = (0..segment_count)
+            .map(|index| {
+                let angle = std::f64::consts::TAU * index as f64 / segment_count as f64;
+                [
+                    (center[0] + radius * angle.cos()).to_bits(),
+                    (center[1] + radius * angle.sin()).to_bits(),
+                ]
+            })
+            .collect::<Vec<_>>();
+        ExactBRepPlanarLoop::Boundary {
+            segments: (0..segment_count)
+                .map(|index| ExactBRepPlanarSegment::Line {
+                    start_bits: points[index],
+                    end_bits: points[(index + 1) % segment_count],
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn planar_region_resource_limits_are_enforced() {
+        assert_eq!(MAX_EXACT_BREP_PLANAR_LOOP_SEGMENTS, 64);
+        assert_eq!(MAX_EXACT_BREP_REGION_HOLES, 64);
+        assert_eq!(MAX_EXACT_BREP_REGION_SEGMENTS, 4_096);
+
+        let hole_center = |index: usize| {
+            [
+                (index % 9) as f64 * 10.0 - 40.0,
+                (index / 9) as f64 * 10.0 - 40.0,
+            ]
+        };
+        let geometry_with_holes = |hole_count| ExactBRepPlanarGeometry::Region {
+            outer: circle_loop([0.0, 0.0], 100.0),
+            holes: (0..hole_count)
+                .map(|index| circle_loop(hole_center(index), 2.0))
+                .collect(),
+        };
+        assert_eq!(
+            validate_geometry(&geometry_with_holes(MAX_EXACT_BREP_REGION_HOLES)),
+            Ok(MAX_EXACT_BREP_REGION_HOLES + 1),
+        );
+        assert_eq!(
+            validate_geometry(&geometry_with_holes(MAX_EXACT_BREP_REGION_HOLES + 1)),
+            Err(ExactBRepGraphError::ResourceLimit),
+        );
+
+        assert_eq!(
+            validate_geometry(&loop_geometry(&boundary_loop(
+                [0.0, 0.0],
+                100.0,
+                MAX_EXACT_BREP_PLANAR_LOOP_SEGMENTS + 1,
+            ))),
+            Err(ExactBRepGraphError::ResourceLimit),
+        );
+
+        let outer = || boundary_loop([0.0, 0.0], 100.0, MAX_EXACT_BREP_PLANAR_LOOP_SEGMENTS);
+        let boundary_holes = || {
+            (0..63)
+                .map(|index| {
+                    let center = [
+                        (index % 9) as f64 * 10.0 - 40.0,
+                        (index / 9) as f64 * 10.0 - 30.0,
+                    ];
+                    boundary_loop(center, 2.0, MAX_EXACT_BREP_PLANAR_LOOP_SEGMENTS)
+                })
+                .collect::<Vec<_>>()
+        };
+        let accepted = ExactBRepPlanarGeometry::Region {
+            outer: outer(),
+            holes: boundary_holes(),
+        };
+        assert_eq!(
+            validate_geometry(&accepted),
+            Ok(MAX_EXACT_BREP_REGION_SEGMENTS),
+        );
+        let mut over_limit_holes = boundary_holes();
+        over_limit_holes.push(circle_loop([0.0, 45.0], 2.0));
+        let over_limit = ExactBRepPlanarGeometry::Region {
+            outer: outer(),
+            holes: over_limit_holes,
+        };
+        assert_eq!(
+            validate_geometry(&over_limit),
+            Err(ExactBRepGraphError::ResourceLimit),
+        );
     }
 }

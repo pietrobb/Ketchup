@@ -6,7 +6,8 @@ use ketchup_core::exact_brep_graph::{
     EXACT_BREP_GRAPH_SCHEMA_V4, ExactBRepBooleanOperation, ExactBRepEdgeFinishKind, ExactBRepGraph,
     ExactBRepGraphError, ExactBRepOperation, ExactBRepPlanarGeometry, ExactBRepPlanarLoop,
     ExactBRepPlanarSegment, ExactBRepTopologyKind, MAX_EXACT_BREP_GRAPH_BYTES,
-    MAX_EXACT_BREP_GRAPH_SEGMENTS,
+    MAX_EXACT_BREP_GRAPH_SEGMENTS, MAX_EXACT_BREP_PLANAR_LOOP_SEGMENTS,
+    MAX_EXACT_BREP_REGION_HOLES, MAX_EXACT_BREP_REGION_SEGMENTS,
 };
 use ketchup_core::exact_product::{
     ExactFaceRole, ExactFeatureChainRequest, ExactProductError, build_box_render_package,
@@ -20,6 +21,9 @@ use ketchup_core::sketch::{
 };
 use ketchup_core::topology::{
     TopologicalElementKind, TopologicalElementRef, TopologicalReferenceStability,
+};
+use ketchup_exact::{
+    MAX_PLANAR_LOOP_SEGMENTS, MAX_PLANAR_REGION_HOLES, MAX_PLANAR_REGION_SEGMENTS,
 };
 
 const DEFINITION: DefinitionId = DefinitionId(1);
@@ -731,18 +735,24 @@ fn canonical_cycle_is_rejected_without_changing_the_valid_graph() {
 #[test]
 fn byte_and_segment_resource_limits_fail_without_mutating_the_document() {
     assert_eq!(
+        MAX_EXACT_BREP_PLANAR_LOOP_SEGMENTS,
+        MAX_PLANAR_LOOP_SEGMENTS
+    );
+    assert_eq!(MAX_EXACT_BREP_REGION_HOLES, MAX_PLANAR_REGION_HOLES);
+    assert_eq!(MAX_EXACT_BREP_REGION_SEGMENTS, MAX_PLANAR_REGION_SEGMENTS);
+    assert_eq!(
         ExactBRepGraph::from_bytes(&vec![0; MAX_EXACT_BREP_GRAPH_BYTES + 1]),
         Err(ExactBRepGraphError::ResourceLimit)
     );
 
     let mut document = DocumentStore::new();
-    let segment_count_per_profile = 1_024;
+    let segment_count_per_profile = MAX_EXACT_BREP_PLANAR_LOOP_SEGMENTS;
     let profile_count = MAX_EXACT_BREP_GRAPH_SEGMENTS / segment_count_per_profile + 1;
     let mut commands = vec![CanonicalCommand::CreateDefinition {
         id: DEFINITION,
         name: "Resource bounded graph".into(),
     }];
-    let mut producer = FeatureId(0);
+    let mut producers = Vec::with_capacity(profile_count);
     for profile_index in 0..profile_count {
         let profile = FeatureId(600 + profile_index as u64 * 2);
         let extrusion = FeatureId(profile.0 + 1);
@@ -769,23 +779,33 @@ fn byte_and_segment_resource_limits_fail_without_mutating_the_document() {
                 height: dimension(2.0),
             },
         });
-        producer = if profile_index == 0 {
-            extrusion
-        } else {
-            let boolean = FeatureId(2_000 + profile_index as u64);
-            commands.push(CanonicalCommand::CreateFeature {
-                id: boolean,
-                definition_id: DEFINITION,
-                name: format!("Aggregate union {profile_index}"),
-                kind: FeatureKind::Boolean {
-                    operation: BooleanOperation::Union,
-                    target: producer,
-                    tool: extrusion,
-                },
-            });
-            boolean
-        };
+        producers.push(extrusion);
     }
+    let mut next_boolean_id = 10_000;
+    while producers.len() > 1 {
+        let mut next_level = Vec::with_capacity(producers.len().div_ceil(2));
+        for pair in producers.chunks(2) {
+            if let [target, tool] = pair {
+                let boolean = FeatureId(next_boolean_id);
+                next_boolean_id += 1;
+                commands.push(CanonicalCommand::CreateFeature {
+                    id: boolean,
+                    definition_id: DEFINITION,
+                    name: format!("Balanced aggregate union {}", boolean.0),
+                    kind: FeatureKind::Boolean {
+                        operation: BooleanOperation::Union,
+                        target: *target,
+                        tool: *tool,
+                    },
+                });
+                next_level.push(boolean);
+            } else {
+                next_level.push(pair[0]);
+            }
+        }
+        producers = next_level;
+    }
+    let producer = producers[0];
     document.apply_batch(&CommandBatch::new(commands)).unwrap();
     let before = document.current();
     let revision_count = document.revision_count();

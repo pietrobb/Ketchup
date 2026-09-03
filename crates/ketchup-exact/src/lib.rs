@@ -8,6 +8,9 @@ const MIN_LENGTH_MM: f64 = 0.01;
 const MAX_LENGTH_MM: f64 = 100_000.0;
 const MAX_COORDINATE_MM: f64 = 1_000_000.0;
 const PLANAR_SEGMENT_STRIDE: usize = 10;
+pub const MAX_PLANAR_LOOP_SEGMENTS: usize = 64;
+pub const MAX_PLANAR_REGION_HOLES: usize = 64;
+pub const MAX_PLANAR_REGION_SEGMENTS: usize = 4_096;
 
 #[must_use]
 pub const fn backend_fingerprint() -> &'static str {
@@ -600,7 +603,7 @@ fn flatten_planar_region(
     operation: &'static str,
     input: &str,
 ) -> Result<(Vec<f64>, Vec<u32>), GeometryError> {
-    if holes.is_empty() || holes.len() > 64 {
+    if holes.is_empty() || holes.len() > MAX_PLANAR_REGION_HOLES {
         return Err(parameter_error(
             GeometryErrorCode::InvalidProfile,
             operation,
@@ -671,7 +674,7 @@ fn flatten_planar_region(
                 })?,
         );
     }
-    if flattened.len() / PLANAR_SEGMENT_STRIDE > 4_096 {
+    if flattened.len() / PLANAR_SEGMENT_STRIDE > MAX_PLANAR_REGION_SEGMENTS {
         return Err(parameter_error(
             GeometryErrorCode::InvalidProfile,
             operation,
@@ -5834,7 +5837,7 @@ fn validate_general_revolve_profile(
             diagnostic,
         )
     };
-    if !(2..=64).contains(&segments.len()) {
+    if !(2..=MAX_PLANAR_LOOP_SEGMENTS).contains(&segments.len()) {
         return Err(invalid(
             "Revolve profile requires 2..=64 segments".to_owned(),
         ));
@@ -5913,7 +5916,9 @@ fn validate_mixed_profile(
     let line_only = segments
         .iter()
         .all(|segment| matches!(segment, PlanarProfileSegment::Line { .. }));
-    if !(2..=64).contains(&segments.len()) || (line_only && segments.len() < 3) {
+    if !(2..=MAX_PLANAR_LOOP_SEGMENTS).contains(&segments.len())
+        || (line_only && segments.len() < 3)
+    {
         return Err(invalid(
             "Segmented profile requires 2..=64 segments; line-only polygons require at least three lines".to_owned(),
         ));
