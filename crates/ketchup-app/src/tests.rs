@@ -7359,6 +7359,246 @@ fn imported_exact_occurrences_route_through_solid_tool_preview_and_commit() {
 }
 
 #[test]
+fn mixed_extrusion_and_imported_exact_occurrences_route_through_solid_tools() {
+    let mut app = KetchupApp::new();
+    let source = b"mixed imported exact body";
+    let evidence = StepImportEvidence {
+        source_unit: ImportLengthUnit::Millimetre,
+        result_fingerprint: "mixed-imported-exact-result".into(),
+        solid_count: 1,
+        topology_counts: [8, 12, 6, 1, 1],
+        volume_mm3: 12_000.0,
+        bounds_mm: [[0.0, 0.0, 0.0], [20.0, 30.0, 20.0]],
+        backend: "headless-mixed-solid-tool.v1".into(),
+        tolerance: "1e-7-mm".into(),
+    };
+    app.document
+        .apply_batch(
+            &plan_step_import(
+                &app.document.current(),
+                source,
+                "mixed-imported.step",
+                &evidence,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let snapshot = app.document.current();
+    let imported_occurrence = snapshot
+        .occurrences()
+        .find(|occurrence| occurrence.id() != OccurrenceId(1))
+        .unwrap();
+    let imported_occurrence_id = imported_occurrence.id();
+    let imported_definition_id = imported_occurrence.definition_id();
+    app.container_data
+        .insert_import_blob(source.to_vec())
+        .unwrap();
+    let target_angle = 15.0_f64.to_radians();
+    let target_transform = Transform::from_matrix([
+        target_angle.cos(),
+        -target_angle.sin(),
+        0.0,
+        5.0,
+        target_angle.sin(),
+        target_angle.cos(),
+        0.0,
+        -3.0,
+        0.0,
+        0.0,
+        1.0,
+        2.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+    ])
+    .unwrap();
+    let tool_angle = 30.0_f64.to_radians();
+    let tool_transform = Transform::from_matrix([
+        tool_angle.cos(),
+        -tool_angle.sin(),
+        0.0,
+        40.0,
+        tool_angle.sin(),
+        tool_angle.cos(),
+        0.0,
+        15.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+    ])
+    .unwrap();
+    app.document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetOccurrenceTransform {
+                id: OccurrenceId(1),
+                transform: target_transform,
+            },
+            CanonicalCommand::SetOccurrenceTransform {
+                id: imported_occurrence_id,
+                transform: tool_transform,
+            },
+        ]))
+        .unwrap();
+    app.document.discard_history_before_current();
+
+    let target = SelectionId {
+        definition_id: INITIAL_BOX_DEFINITION,
+        instance_path: InstancePath::root(OccurrenceId(1)),
+        element: ElementId::Face {
+            axis: Axis::Z,
+            side: Side::Maximum,
+        },
+    };
+    let tool = SelectionId {
+        definition_id: imported_definition_id,
+        instance_path: InstancePath::root(imported_occurrence_id),
+        element: ElementId::Face {
+            axis: Axis::Z,
+            side: Side::Maximum,
+        },
+    };
+    assert!(app.command_enabled(AppCommand::SolidSubtract));
+    assert!(app.command_enabled(AppCommand::SolidUnion));
+    assert!(app.command_enabled(AppCommand::SolidIntersect));
+    app.active_tool = ActiveTool::SolidUnion;
+    let before_digest = app.canonical_digest();
+    let before_undo = app.undo_step_count();
+    app.solid_tool_target = Some(target);
+    assert!(app.prepare_solid_tool_preview(tool, true));
+    assert_eq!(app.canonical_digest(), before_digest);
+    assert!(app.confirm_occurrence_operation_preview());
+    assert_eq!(app.undo_step_count(), before_undo + 1);
+
+    let committed = app.document.current();
+    let result_definition_id = committed
+        .occurrence(OccurrenceId(1))
+        .unwrap()
+        .definition_id();
+    let result_feature_id = *committed
+        .definition(result_definition_id)
+        .unwrap()
+        .feature_ids()
+        .last()
+        .unwrap();
+    let graph =
+        ExactBRepGraph::from_snapshot(&committed, result_definition_id, result_feature_id).unwrap();
+    assert!(
+        graph
+            .nodes
+            .iter()
+            .any(|node| matches!(node.operation, ExactBRepOperation::Extrude { .. }))
+    );
+    assert!(
+        graph
+            .nodes
+            .iter()
+            .any(|node| matches!(node.operation, ExactBRepOperation::ImportedExact { .. }))
+    );
+    let expected_relative_matrix = target_transform
+        .rigid_inverse()
+        .unwrap()
+        .compose(tool_transform)
+        .matrix()
+        .map(f64::to_bits);
+    assert!(graph.nodes.iter().any(|node| matches!(
+        node.operation,
+        ExactBRepOperation::RigidTransform { matrix_bits, .. }
+            if matrix_bits == expected_relative_matrix
+    )));
+    assert!(graph.nodes.iter().any(|node| matches!(
+        node.operation,
+        ExactBRepOperation::Boolean {
+            operation: ketchup_core::exact_brep_graph::ExactBRepBooleanOperation::Union,
+            ..
+        }
+    )));
+    let reopened = ketchup_core::persistence::load(
+        &ketchup_core::persistence::save_container(&committed, &app.container_data).unwrap(),
+    )
+    .unwrap()
+    .snapshot();
+    assert_eq!(reopened.canonical_digest(), committed.canonical_digest());
+    assert!(app.undo());
+    assert_eq!(app.canonical_digest(), before_digest);
+    assert!(app.redo());
+    assert_eq!(app.canonical_digest(), committed.canonical_digest());
+    assert!(app.undo());
+    assert_eq!(app.canonical_digest(), before_digest);
+
+    app.active_tool = ActiveTool::SolidIntersect;
+    app.solid_tool_target = Some(SelectionId {
+        definition_id: imported_definition_id,
+        instance_path: InstancePath::root(imported_occurrence_id),
+        element: ElementId::Face {
+            axis: Axis::Z,
+            side: Side::Maximum,
+        },
+    });
+    assert!(app.prepare_solid_tool_preview(
+        SelectionId {
+            definition_id: INITIAL_BOX_DEFINITION,
+            instance_path: InstancePath::root(OccurrenceId(1)),
+            element: ElementId::Face {
+                axis: Axis::Z,
+                side: Side::Maximum,
+            },
+        },
+        false,
+    ));
+    let reverse_preview = app
+        .occurrence_operation_preview
+        .as_ref()
+        .unwrap()
+        .solid_tool_plan
+        .as_ref()
+        .unwrap();
+    assert_eq!(
+        reverse_preview.preview_box.profile_feature_id,
+        reverse_preview.source.result_feature_ids[4]
+    );
+    assert!(reverse_preview.preview_box.extrusion_feature_id.is_none());
+    assert!(app.confirm_occurrence_operation_preview());
+    let reverse = app.document.current();
+    assert!(reverse.occurrence(OccurrenceId(1)).is_none());
+    let reverse_definition_id = reverse
+        .occurrence(imported_occurrence_id)
+        .unwrap()
+        .definition_id();
+    let reverse_feature_id = *reverse
+        .definition(reverse_definition_id)
+        .unwrap()
+        .feature_ids()
+        .last()
+        .unwrap();
+    let reverse_graph =
+        ExactBRepGraph::from_snapshot(&reverse, reverse_definition_id, reverse_feature_id).unwrap();
+    let reverse_relative_matrix = tool_transform
+        .rigid_inverse()
+        .unwrap()
+        .compose(target_transform)
+        .matrix()
+        .map(f64::to_bits);
+    assert!(reverse_graph.nodes.iter().any(|node| matches!(
+        node.operation,
+        ExactBRepOperation::RigidTransform { matrix_bits, .. }
+            if matrix_bits == reverse_relative_matrix
+    )));
+    assert!(reverse_graph.nodes.iter().any(|node| matches!(
+        node.operation,
+        ExactBRepOperation::Boolean {
+            operation: ketchup_core::exact_brep_graph::ExactBRepBooleanOperation::Intersect,
+            ..
+        }
+    )));
+}
+
+#[test]
 fn solid_tool_preview_survives_accepted_exact_bounds_refresh_and_commits_once() {
     let mut app = KetchupApp::new();
     assert!(app.create_box());

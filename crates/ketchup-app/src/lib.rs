@@ -18052,23 +18052,22 @@ impl KetchupApp {
                         .into_iter()
                         .filter(|item| item.instance_path.is_root())
                         .collect::<Vec<_>>();
-                    let extrusion_count = candidates
-                        .iter()
-                        .filter(|item| item.extrusion_feature_id.is_some())
-                        .count();
-                    let imported_count = candidates
+                    candidates
                         .iter()
                         .filter(|item| {
-                            imported_solid_tool_feature_id(&snapshot, item.definition_id).is_some()
-                                && snapshot
-                                    .world_transform_for_occurrence(
-                                        item.instance_path.root_occurrence(),
-                                    )
-                                    .and_then(Transform::rigid_inverse)
-                                    .is_some()
+                            item.extrusion_feature_id.is_some()
+                                || imported_solid_tool_feature_id(&snapshot, item.definition_id)
+                                    .is_some_and(|_| {
+                                        snapshot
+                                            .world_transform_for_occurrence(
+                                                item.instance_path.root_occurrence(),
+                                            )
+                                            .and_then(Transform::rigid_inverse)
+                                            .is_some()
+                                    })
                         })
-                        .count();
-                    extrusion_count >= 2 || imported_count >= 2
+                        .count()
+                        >= 2
                 }
                 AppCommand::Group => self.group_selection_source_plan().is_some(),
                 AppCommand::Ungroup => self.ungroup_selection_source_plan().is_some(),
@@ -24634,8 +24633,13 @@ impl KetchupApp {
 
         let mut preview_box = source.target_box.clone();
         preview_box.definition_id = source.result_definition_id;
-        preview_box.profile_feature_id = source.result_feature_ids[0];
-        preview_box.extrusion_feature_id = Some(source.result_feature_ids[1]);
+        if source.target_box.extrusion_feature_id.is_some() {
+            preview_box.profile_feature_id = source.result_feature_ids[0];
+            preview_box.extrusion_feature_id = Some(source.result_feature_ids[1]);
+        } else {
+            preview_box.profile_feature_id = source.result_feature_ids[4];
+            preview_box.extrusion_feature_id = None;
+        }
         if source.operation == BooleanOperation::Union {
             let minimum = Vec3::new(
                 source

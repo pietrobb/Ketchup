@@ -10515,6 +10515,27 @@ fn apply_solid_tool(
             tool_spec.clone(),
         );
     }
+    if matches!(
+        (&target_feature.kind, &tool_feature.kind),
+        (
+            FeatureKind::ImportedExactBody(_),
+            FeatureKind::Extrusion { .. }
+        ) | (
+            FeatureKind::Extrusion { .. },
+            FeatureKind::ImportedExactBody(_)
+        )
+    ) {
+        return apply_mixed_exact_solid_tool(
+            product,
+            plan,
+            target_occurrence,
+            tool_occurrence,
+            target_feature.name.clone(),
+            target_feature.kind.clone(),
+            tool_feature.name.clone(),
+            tool_feature.kind.clone(),
+        );
+    }
     let (target_profile_id, target_height) = match &target_feature.kind {
         FeatureKind::Extrusion { profile, height } => (*profile, height.clone()),
         _ => return Err(CanonicalError::InvalidSolidToolPlan),
@@ -10702,6 +10723,213 @@ fn apply_solid_tool(
     );
     if !plan.keep_tool {
         product.occurrences.remove(&plan.tool_occurrence_id);
+    }
+    Ok(())
+}
+
+fn apply_mixed_exact_solid_tool(
+    product: &mut ProductModel,
+    plan: &SolidToolPlan,
+    target_occurrence: Occurrence,
+    tool_occurrence: Occurrence,
+    target_name: String,
+    target_kind: FeatureKind,
+    tool_name: String,
+    tool_kind: FeatureKind,
+) -> Result<(), CanonicalError> {
+    let snapshot = Snapshot {
+        revision_id: 0,
+        product: Arc::new(product.clone()),
+    };
+    let target_inverse = snapshot
+        .world_transform_for_occurrence(plan.target_occurrence_id)
+        .and_then(Transform::rigid_inverse)
+        .ok_or(CanonicalError::UnsupportedSolidToolTransform)?;
+    let tool_transform = snapshot
+        .world_transform_for_occurrence(plan.tool_occurrence_id)
+        .ok_or(CanonicalError::UnsupportedSolidToolTransform)?;
+    let tool_relative_transform = target_inverse.compose(tool_transform);
+    if tool_relative_transform.rigid_inverse().is_none() {
+        return Err(CanonicalError::UnsupportedSolidToolTransform);
+    }
+
+    let [first, second, third, transformed_tool, result] = plan.result_feature_ids;
+    let (mut features, target_body, tool_body, binding_mappings) = match (target_kind, tool_kind) {
+        (
+            FeatureKind::ImportedExactBody(target_spec),
+            FeatureKind::Extrusion { profile, height },
+        ) => {
+            let source_profile = product
+                .features
+                .get(&profile)
+                .ok_or(CanonicalError::FeatureNotFound(profile))?;
+            let profile_kind = match source_profile.kind() {
+                FeatureKind::Profile { .. }
+                | FeatureKind::SegmentProfile { .. }
+                | FeatureKind::SplineProfile { .. } => source_profile.kind().clone(),
+                _ => return Err(CanonicalError::InvalidSolidToolPlan),
+            };
+            (
+                vec![
+                    Feature {
+                        id: first,
+                        definition_id: plan.result_definition_id,
+                        name: target_name,
+                        kind: FeatureKind::ImportedExactBody(target_spec),
+                    },
+                    Feature {
+                        id: second,
+                        definition_id: plan.result_definition_id,
+                        name: source_profile.name().to_owned(),
+                        kind: profile_kind,
+                    },
+                    Feature {
+                        id: third,
+                        definition_id: plan.result_definition_id,
+                        name: tool_name,
+                        kind: FeatureKind::Extrusion {
+                            profile: second,
+                            height,
+                        },
+                    },
+                ],
+                first,
+                third,
+                vec![(profile, second), (plan.tool_feature_id, third)],
+            )
+        }
+        (FeatureKind::Extrusion { profile, height }, FeatureKind::ImportedExactBody(tool_spec)) => {
+            let source_profile = product
+                .features
+                .get(&profile)
+                .ok_or(CanonicalError::FeatureNotFound(profile))?;
+            let profile_kind = match source_profile.kind() {
+                FeatureKind::Profile { .. }
+                | FeatureKind::SegmentProfile { .. }
+                | FeatureKind::SplineProfile { .. } => source_profile.kind().clone(),
+                _ => return Err(CanonicalError::InvalidSolidToolPlan),
+            };
+            (
+                vec![
+                    Feature {
+                        id: first,
+                        definition_id: plan.result_definition_id,
+                        name: source_profile.name().to_owned(),
+                        kind: profile_kind,
+                    },
+                    Feature {
+                        id: second,
+                        definition_id: plan.result_definition_id,
+                        name: target_name,
+                        kind: FeatureKind::Extrusion {
+                            profile: first,
+                            height,
+                        },
+                    },
+                    Feature {
+                        id: third,
+                        definition_id: plan.result_definition_id,
+                        name: tool_name,
+                        kind: FeatureKind::ImportedExactBody(tool_spec),
+                    },
+                ],
+                second,
+                third,
+                vec![(profile, first), (plan.target_feature_id, second)],
+            )
+        }
+        _ => return Err(CanonicalError::InvalidSolidToolPlan),
+    };
+    features.extend([
+        Feature {
+            id: transformed_tool,
+            definition_id: plan.result_definition_id,
+            name: "Transformed tool".to_owned(),
+            kind: FeatureKind::RigidTransform {
+                target: tool_body,
+                transform: tool_relative_transform,
+            },
+        },
+        Feature {
+            id: result,
+            definition_id: plan.result_definition_id,
+            name: plan.result_feature_name.clone(),
+            kind: FeatureKind::Boolean {
+                operation: plan.operation,
+                target: target_body,
+                tool: transformed_tool,
+            },
+        },
+    ]);
+
+    product.definitions.insert(
+        plan.result_definition_id,
+        Arc::new(Definition {
+            id: plan.result_definition_id,
+            name: plan.result_definition_name.clone(),
+            feature_ids: plan.result_feature_ids.to_vec(),
+            bodies: BTreeMap::from([(DEFAULT_BODY_ID, default_body())]),
+            active_body_id: DEFAULT_BODY_ID,
+            feature_body_ownership: BTreeMap::new(),
+            local_occurrence_ids: Vec::new(),
+            local_group_ids: Vec::new(),
+        }),
+    );
+    for feature in features {
+        validate_feature_kind(&feature.kind)?;
+        product.features.insert(feature.id, Arc::new(feature));
+    }
+    let mut result_definition = product.definitions[&plan.result_definition_id]
+        .as_ref()
+        .clone();
+    for feature_id in result_definition.feature_ids.clone() {
+        let feature = &product.features[&feature_id];
+        let ownership =
+            inferred_feature_body_ownership(product, &result_definition, &feature.kind)?;
+        result_definition
+            .feature_body_ownership
+            .insert(feature_id, ownership);
+    }
+    product
+        .definitions
+        .insert(plan.result_definition_id, Arc::new(result_definition));
+    let cloned_bindings = binding_mappings
+        .into_iter()
+        .flat_map(|(source_id, output_id)| {
+            product
+                .feature_parameter_bindings
+                .values()
+                .filter(move |binding| binding.target.feature_id == source_id)
+                .map(move |binding| {
+                    let target = FeatureParameterTarget {
+                        feature_id: output_id,
+                        path: binding.target.path.clone(),
+                        value_type: binding.target.value_type,
+                    };
+                    (
+                        target.clone(),
+                        Arc::new(FeatureParameterBinding {
+                            target,
+                            derived_from: binding.derived_from.clone(),
+                        }),
+                    )
+                })
+        })
+        .collect::<Vec<_>>();
+    product.feature_parameter_bindings.extend(cloned_bindings);
+    product.occurrences.insert(
+        plan.target_occurrence_id,
+        Arc::new(Occurrence {
+            definition_id: plan.result_definition_id,
+            ..target_occurrence
+        }),
+    );
+    if !plan.keep_tool {
+        product.occurrences.remove(&plan.tool_occurrence_id);
+    } else {
+        product
+            .occurrences
+            .insert(plan.tool_occurrence_id, Arc::new(tool_occurrence));
     }
     Ok(())
 }
