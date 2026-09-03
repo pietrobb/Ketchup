@@ -419,6 +419,7 @@ fn compiler_uses_one_contract_for_pad_revolve_sweep_and_loft() {
         .unwrap();
 
     let revolve_definition = DefinitionId(3);
+    let revolve_workplane = FeatureId(199);
     let revolve_profile = FeatureId(200);
     let revolve = FeatureId(201);
     document
@@ -428,12 +429,24 @@ fn compiler_uses_one_contract_for_pad_revolve_sweep_and_loft() {
                 name: "Revolve graph".into(),
             },
             CanonicalCommand::CreateFeature {
+                id: revolve_workplane,
+                definition_id: revolve_definition,
+                name: "XY".into(),
+                kind: FeatureKind::Workplane(WorkplaneSpec::principal(PrincipalPlane::Xy)),
+            },
+            CanonicalCommand::CreateFeature {
                 id: revolve_profile,
                 definition_id: revolve_definition,
-                name: "Revolve profile".into(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[2.0, 0.0], [7.0, 0.0], [8.0, 12.0], [2.0, 10.0]],
-                },
+                name: "Revolve sketch".into(),
+                kind: FeatureKind::Sketch(SketchSpec {
+                    workplane: revolve_workplane,
+                    entities: vec![SketchEntity::Circle {
+                        id: SketchEntityId(1),
+                        center_mm: [10.0, 0.0],
+                        radius_mm: 2.0,
+                    }],
+                    constraints: Vec::new(),
+                }),
             },
             CanonicalCommand::CreateFeature {
                 id: revolve,
@@ -551,6 +564,15 @@ fn compiler_uses_one_contract_for_pad_revolve_sweep_and_loft() {
     assert!(matches!(
         revolve_graph.nodes[0].operation,
         ExactBRepOperation::Revolve { .. }
+    ));
+    assert_eq!(
+        revolve_graph.profiles[0].source_feature_id,
+        revolve_profile.0
+    );
+    assert!(revolve_graph.profiles[0].region_id.is_some());
+    assert!(matches!(
+        revolve_graph.profiles[0].geometry,
+        ExactBRepPlanarGeometry::Circle { .. }
     ));
     assert!(matches!(
         sweep_graph.nodes[0].operation,

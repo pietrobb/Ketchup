@@ -1555,8 +1555,48 @@ fn exact_brep_revolve(
     axis_end_mm: [f64; 2],
     angle_degrees: f64,
 ) -> Result<ExactOpOutput, ketchup_exact::GeometryError> {
-    let segments = exact_brep_boundary_segments(profile, true)?;
-    backend.revolve_general_profile(&segments, axis_start_mm, axis_end_mm, angle_degrees)
+    let segments = match &profile.geometry {
+        ExactBRepPlanarGeometry::Boundary { .. } => exact_brep_boundary_segments(profile, true)?,
+        ExactBRepPlanarGeometry::Circle {
+            center_bits,
+            radius_bits,
+        } => {
+            let center = center_bits.map(f64::from_bits);
+            let radius = f64::from_bits(*radius_bits);
+            let positive = [center[0] + radius, center[1]];
+            let negative = [center[0] - radius, center[1]];
+            vec![
+                PlanarProfileSegment::CircularArc {
+                    start_mm: positive,
+                    end_mm: negative,
+                    center_mm: center,
+                    clockwise: false,
+                },
+                PlanarProfileSegment::CircularArc {
+                    start_mm: negative,
+                    end_mm: positive,
+                    center_mm: center,
+                    clockwise: false,
+                },
+            ]
+        }
+        ExactBRepPlanarGeometry::Spline { .. } => {
+            return Err(exact_brep_profile_error(
+                profile,
+                "exact revolve requires a closed line/arc/circle profile",
+            ));
+        }
+    };
+    let local =
+        backend.revolve_general_profile(&segments, axis_start_mm, axis_end_mm, angle_degrees)?;
+    let frame = profile.frame_bits.map(f64::from_bits);
+    backend.transform_body(
+        &local.body,
+        &[
+            frame[3], frame[6], frame[9], frame[0], frame[4], frame[7], frame[10], frame[1],
+            frame[5], frame[8], frame[11], frame[2], 0.0, 0.0, 0.0, 1.0,
+        ],
+    )
 }
 
 fn exact_brep_sweep(

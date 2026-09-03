@@ -642,12 +642,35 @@ impl<'a> GraphCompiler<'a> {
                 axis_start_mm,
                 axis_end_mm,
                 angle_degrees,
-            } => ExactBRepOperation::Revolve {
-                profile: self.compile_profile(*profile, None, identity_frame())?,
-                axis_start_bits: axis_start_mm.map(f64::to_bits),
-                axis_end_bits: axis_end_mm.map(f64::to_bits),
-                angle_degrees_bits: angle_degrees.to_bits(),
-            },
+            } => {
+                let compiled_profile = match self
+                    .snapshot
+                    .feature(*profile)
+                    .map(|feature| feature.kind())
+                {
+                    Some(FeatureKind::Sketch(sketch)) => {
+                        let regions = sketch
+                            .solved_regions()
+                            .map_err(|_| ExactBRepGraphError::UnsupportedProfile(*profile))?;
+                        let [region] = regions.as_slice() else {
+                            return Err(ExactBRepGraphError::UnsupportedProfile(*profile));
+                        };
+                        self.compile_sketch_profile(
+                            *profile,
+                            region.id,
+                            FeatureDirection::AlongNormal,
+                        )?
+                        .0
+                    }
+                    _ => self.compile_profile(*profile, None, identity_frame())?,
+                };
+                ExactBRepOperation::Revolve {
+                    profile: compiled_profile,
+                    axis_start_bits: axis_start_mm.map(f64::to_bits),
+                    axis_end_bits: axis_end_mm.map(f64::to_bits),
+                    angle_degrees_bits: angle_degrees.to_bits(),
+                }
+            }
             FeatureKind::Sweep { profile, path } => ExactBRepOperation::Sweep {
                 profile: self.compile_profile(*profile, None, identity_frame())?,
                 path: self.compile_profile(*path, None, identity_frame())?,

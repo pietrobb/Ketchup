@@ -17,7 +17,7 @@ SPEC.loader.exec_module(assistant)
 def hello(provider="anthropic-api", **extra):
     return {
         "type": "hello",
-        "protocol_version": 2,
+        "protocol_version": 3,
         "distribution": "public-api",
         "provider": provider,
         "model": "claude-sonnet-4-6" if provider == "anthropic-api" else "gpt-5.2",
@@ -428,6 +428,28 @@ def test_public_sidecar_parses_strict_bounded_cad_edit_program():
     assert result["model_intent"] is None
     assert "never invent IDs for host-generated features or occurrences" in assistant.SYSTEM_PROMPT
 
+    revolve_program = {
+        "operations": [
+            {
+                "operation": "create_part",
+                "name": "General revolve",
+                "workplane": {"type": "principal", "plane": "xy"},
+                "entities": [
+                    {"type": "circle", "id": 1, "center_mm": [10, 0], "radius_mm": 2}
+                ],
+                "constraints": [],
+                "feature": {
+                    "type": "revolve",
+                    "axis_start_mm": [0, 0],
+                    "axis_end_mm": [0, 1],
+                    "angle_degrees": 275,
+                },
+                "translation_mm": [0, 0, 0],
+            }
+        ]
+    }
+    assert assistant._validate_cad_edit_program(revolve_program) == revolve_program
+
     boundary = {
         "operations": [
             {
@@ -481,6 +503,26 @@ def test_public_sidecar_parses_strict_bounded_cad_edit_program():
                     ],
                     "constraints": [],
                     "feature": {"type": "extrusion", "distance_mm": 0},
+                    "translation_mm": [0, 0, 0],
+                }
+            ]
+        },
+        {
+            "operations": [
+                {
+                    "operation": "create_part",
+                    "name": "Rejected revolve",
+                    "workplane": {"type": "principal", "plane": "xy"},
+                    "entities": [
+                        {"type": "circle", "id": 1, "center_mm": [10, 0], "radius_mm": 1}
+                    ],
+                    "constraints": [],
+                    "feature": {
+                        "type": "revolve",
+                        "axis_start_mm": [0, 0],
+                        "axis_end_mm": [0, 0],
+                        "angle_degrees": 361,
+                    },
                     "translation_mm": [0, 0, 0],
                 }
             ]

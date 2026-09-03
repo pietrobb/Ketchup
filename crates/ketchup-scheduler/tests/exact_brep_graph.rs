@@ -1358,6 +1358,66 @@ fn graph_results_are_stale_safe_and_resource_or_unsupported_inputs_fail_closed()
 }
 
 #[test]
+fn worker_evaluates_circle_sketch_revolve_in_its_workplane_frame() {
+    let definition = DefinitionId(60);
+    let workplane = FeatureId(600);
+    let sketch = FeatureId(601);
+    let revolve = FeatureId(602);
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: definition,
+                name: "Framed sketch revolve".into(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: workplane,
+                definition_id: definition,
+                name: "YZ".into(),
+                kind: FeatureKind::Workplane(WorkplaneSpec::principal(PrincipalPlane::Yz)),
+            },
+            CanonicalCommand::CreateFeature {
+                id: sketch,
+                definition_id: definition,
+                name: "Circle sketch".into(),
+                kind: FeatureKind::Sketch(SketchSpec {
+                    workplane,
+                    entities: vec![SketchEntity::Circle {
+                        id: SketchEntityId(1),
+                        center_mm: [10.0, 0.0],
+                        radius_mm: 2.0,
+                    }],
+                    constraints: Vec::new(),
+                }),
+            },
+            CanonicalCommand::CreateFeature {
+                id: revolve,
+                definition_id: definition,
+                name: "Framed revolve".into(),
+                kind: FeatureKind::Revolve {
+                    profile: sketch,
+                    axis_start_mm: [0.0, 0.0],
+                    axis_end_mm: [0.0, 1.0],
+                    angle_degrees: 360.0,
+                },
+            },
+        ]))
+        .unwrap();
+    let snapshot = document.current();
+    let graph = ExactBRepGraph::from_snapshot(&snapshot, definition, revolve).unwrap();
+    assert_eq!(graph.profiles[0].source_feature_id, sketch.0);
+    assert!(graph.profiles[0].region_id.is_some());
+
+    let mut supervisor =
+        ExactWorkerSupervisor::spawn(env!("CARGO_BIN_EXE_ketchup-exact-worker")).unwrap();
+    let package = supervisor.evaluate_exact_brep_graph(&graph).unwrap();
+    assert!(package.is_current(&snapshot));
+    assert_eq!(package.identity.producer_feature_id.0, revolve.0);
+    assert!(package.volume_mm3 > 0.0);
+    assert_bounds_close(package.bounds_mm, [-12.0, -12.0, -2.0, 12.0, 12.0, 2.0]);
+}
+
+#[test]
 fn worker_evaluates_revolve_non_rectangular_sweep_and_loft_through_one_graph_identity() {
     let definition = DefinitionId(6);
     let revolve_profile = FeatureId(500);

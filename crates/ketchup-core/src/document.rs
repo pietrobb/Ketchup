@@ -12682,14 +12682,16 @@ fn validate_product(product: &ProductModel) -> Result<(), CanonicalError> {
                     .features
                     .get(&profile)
                     .ok_or(CanonicalError::FeatureNotFound(profile))?;
-                if profile_feature.definition_id != feature.definition_id
-                    || !matches!(
-                        profile_feature.kind,
-                        FeatureKind::Profile { .. }
-                            | FeatureKind::SegmentProfile { closed: true, .. }
-                            | FeatureKind::BottleProfileControl { .. }
-                    )
-                {
+                let supported_profile = match &profile_feature.kind {
+                    FeatureKind::Profile { .. }
+                    | FeatureKind::SegmentProfile { closed: true, .. }
+                    | FeatureKind::BottleProfileControl { .. } => true,
+                    FeatureKind::Sketch(sketch) => sketch
+                        .solved_regions()
+                        .is_ok_and(|regions| regions.len() == 1),
+                    _ => false,
+                };
+                if profile_feature.definition_id != feature.definition_id || !supported_profile {
                     return Err(CanonicalError::InvalidFeatureOwnership(feature.id));
                 }
             }

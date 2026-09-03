@@ -12979,6 +12979,16 @@ impl KetchupApp {
                                 extent: FeatureExtent::Blind(height),
                             })
                         }
+                        AssistantCadPartFeature::Revolve {
+                            axis_start_mm,
+                            axis_end_mm,
+                            angle_degrees,
+                        } => FeatureKind::Revolve {
+                            profile: sketch_id,
+                            axis_start_mm: *axis_start_mm,
+                            axis_end_mm: *axis_end_mm,
+                            angle_degrees: *angle_degrees,
+                        },
                     };
                     let translated = translated_transform(
                         Transform::identity(),

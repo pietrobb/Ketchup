@@ -12,7 +12,7 @@ use ketchup_core::assistant_sidecar::{
 };
 
 const PUBLIC_HANDSHAKE: &str = r#"{
-    "protocol_version": 2,
+    "protocol_version": 3,
     "distribution": "public-api",
     "provider": "anthropic-api",
     "model": "claude-sonnet-4-6",
@@ -66,10 +66,10 @@ fn handshake_rejects_unknown_providers_models_and_protocol_versions() {
             if model == "../untrusted model"
     ));
 
-    let version = PUBLIC_HANDSHAKE.replace("\"protocol_version\": 2", "\"protocol_version\": 3");
+    let version = PUBLIC_HANDSHAKE.replace("\"protocol_version\": 3", "\"protocol_version\": 4");
     assert!(matches!(
         AssistantHandshake::parse_and_validate(&version),
-        Err(AssistantHandshakeError::UnsupportedProtocolVersion(3))
+        Err(AssistantHandshakeError::UnsupportedProtocolVersion(4))
     ));
 }
 
@@ -405,6 +405,23 @@ fn cad_edit_part_contract_is_typed_bounded_and_round_trips() {
         program
     );
 
+    let mut revolve = program.clone();
+    let AssistantCadEditOperation::CreatePart { feature, .. } = &mut revolve.operations[0] else {
+        unreachable!()
+    };
+    *feature = AssistantCadPartFeature::Revolve {
+        axis_start_mm: [0.0, 0.0],
+        axis_end_mm: [0.0, 1.0],
+        angle_degrees: 275.0,
+    };
+    assert_eq!(revolve.validate(), Ok(()));
+    let serialized = serde_json::to_value(&revolve).unwrap();
+    assert_eq!(serialized["operations"][0]["feature"]["type"], "revolve");
+    assert_eq!(
+        serde_json::from_value::<AssistantCadEditProgram>(serialized).unwrap(),
+        revolve
+    );
+
     let mut invalid_feature = program.clone();
     let AssistantCadEditOperation::CreatePart { feature, .. } = &mut invalid_feature.operations[0]
     else {
@@ -413,6 +430,21 @@ fn cad_edit_part_contract_is_typed_bounded_and_round_trips() {
     *feature = AssistantCadPartFeature::Extrusion { distance_mm: 0.0 };
     assert_eq!(
         invalid_feature.validate(),
+        Err("assistant CAD part feature is invalid".to_owned())
+    );
+
+    let mut invalid_revolve = program;
+    let AssistantCadEditOperation::CreatePart { feature, .. } = &mut invalid_revolve.operations[0]
+    else {
+        unreachable!()
+    };
+    *feature = AssistantCadPartFeature::Revolve {
+        axis_start_mm: [1.0, 1.0],
+        axis_end_mm: [1.0, 1.0],
+        angle_degrees: 361.0,
+    };
+    assert_eq!(
+        invalid_revolve.validate(),
         Err("assistant CAD part feature is invalid".to_owned())
     );
 }

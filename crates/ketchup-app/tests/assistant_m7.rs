@@ -1609,6 +1609,133 @@ fn scripted_create_part_program_round_trips_state_view_and_one_step_undo_redo() 
 }
 
 #[test]
+fn scripted_create_revolved_part_round_trips_state_view_and_one_step_undo_redo() {
+    let request = "Create one editable revolved part";
+    let transport = Arc::new(ScriptedAssistantTransport::new([(
+        request.to_owned(),
+        AssistantChatResult {
+            message: "Review the editable revolved part.".to_owned(),
+            model_intent: None,
+        },
+    )]));
+    let program = AssistantCadEditProgram {
+        operations: vec![AssistantCadEditOperation::CreatePart {
+            name: "Editable revolve".to_owned(),
+            workplane: AssistantWorkplaneSpec::Principal {
+                plane: AssistantPrincipalPlane::Xy,
+            },
+            entities: vec![AssistantSketchEntity::Circle {
+                id: 1,
+                center_mm: [10.0, 0.0],
+                radius_mm: 2.0,
+            }],
+            constraints: vec![AssistantSketchConstraint::Radius {
+                id: 1,
+                entity_id: 1,
+                value_mm: 2.0,
+            }],
+            feature: AssistantCadPartFeature::Revolve {
+                axis_start_mm: [0.0, 0.0],
+                axis_end_mm: [0.0, 1.0],
+                angle_degrees: 275.0,
+            },
+            translation_mm: [10.0, 20.0, 30.0],
+            rotation: None,
+        }],
+    };
+    transport.queue_cad_edit_program(request, program);
+    let mut shell = Shell::with_assistant_transport(transport.clone());
+    let baseline_revision = shell.app().document_revision();
+    let baseline_digest = shell.app().canonical_digest();
+    let baseline_undo = shell.app().undo_step_count();
+    let baseline_redo = shell.app().redo_step_count();
+    let baseline_occurrences = shell.app().document_snapshot().occurrences().count();
+
+    let input = shell.catalog().text("assistant-input-hint");
+    shell.focus_text_input(&input);
+    shell.type_text(request);
+    shell.press_key(egui::Key::Enter);
+    wait_for_assistant_proposal(&mut shell);
+    assert_eq!(shell.app().document_revision(), baseline_revision);
+    assert_eq!(shell.app().canonical_digest(), baseline_digest);
+    assert_eq!(shell.app().undo_step_count(), baseline_undo);
+
+    shell.click_row(&shell.catalog().text("assistant-confirm"));
+    assert_eq!(shell.app().document_revision(), baseline_revision + 1);
+    assert_eq!(shell.app().undo_step_count(), baseline_undo + 1);
+    let committed = shell.app().document_snapshot();
+    assert_eq!(committed.occurrences().count(), baseline_occurrences + 1);
+    let definition = committed
+        .definitions()
+        .find(|definition| definition.name() == "Editable revolve")
+        .unwrap();
+    let revolve = definition
+        .feature_ids()
+        .iter()
+        .find_map(|id| {
+            let feature = committed.feature(*id).unwrap();
+            match feature.kind() {
+                FeatureKind::Revolve {
+                    profile,
+                    axis_start_mm,
+                    axis_end_mm,
+                    angle_degrees,
+                } => Some((*profile, *axis_start_mm, *axis_end_mm, *angle_degrees)),
+                _ => None,
+            }
+        })
+        .expect("Assistant must create a canonical revolve feature");
+    assert!(matches!(
+        committed.feature(revolve.0).unwrap().kind(),
+        FeatureKind::Sketch(_)
+    ));
+    assert_eq!(revolve.1, [0.0, 0.0]);
+    assert_eq!(revolve.2, [0.0, 1.0]);
+    assert_eq!(revolve.3, 275.0);
+    assert!(definition.feature_ids().iter().all(|id| !matches!(
+        committed.feature(*id).unwrap().kind(),
+        FeatureKind::MeshBody(_)
+    )));
+
+    let committed_digest = committed.canonical_digest();
+    let committed_state = encode_semantic_state(&committed);
+    let committed_complete_view = committed_state.complete_v1();
+    let committed_agent_view = committed_state.agent_v1();
+    assert!(committed_complete_view.contains(".kind=revolve"));
+    assert!(committed_agent_view.contains("kind:revolve"));
+
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("assistant-editable-revolve.ketchup");
+    persistence::save_atomic(&path, &committed).unwrap();
+    let outcome = persistence::load_file(&path).unwrap();
+    assert!(outcome.is_editable());
+    let reopened = outcome.snapshot();
+    assert_eq!(reopened.canonical_digest(), committed_digest);
+    let reopened_state = encode_semantic_state(&reopened);
+    assert_eq!(reopened_state.complete_v1(), committed_complete_view);
+    assert_eq!(reopened_state.agent_v1(), committed_agent_view);
+
+    shell.click_menu_command("menu-edit", AppCommand::Undo);
+    assert_eq!(shell.app().canonical_digest(), baseline_digest);
+    assert_eq!(shell.app().undo_step_count(), baseline_undo);
+    assert_eq!(shell.app().redo_step_count(), baseline_redo + 1);
+    assert_eq!(
+        shell.app().document_snapshot().occurrences().count(),
+        baseline_occurrences
+    );
+
+    shell.click_menu_command("menu-edit", AppCommand::Redo);
+    assert_eq!(shell.app().canonical_digest(), committed_digest);
+    assert_eq!(shell.app().undo_step_count(), baseline_undo + 1);
+    assert_eq!(shell.app().redo_step_count(), baseline_redo);
+    assert_eq!(
+        encode_semantic_state(&shell.app().document_snapshot()).complete_v1(),
+        committed_complete_view
+    );
+    assert_eq!(transport.remaining_responses(), 0);
+}
+
+#[test]
 fn named_assistant_generators_are_editable_or_fail_closed_with_bounded_macro_inputs() {
     let empty_intent = || AssistantModelIntent {
         replace_scene: false,

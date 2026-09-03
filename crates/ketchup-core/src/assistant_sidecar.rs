@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
-pub const ASSISTANT_PROTOCOL_VERSION: u16 = 2;
+pub const ASSISTANT_PROTOCOL_VERSION: u16 = 3;
 const MAX_ASSISTANT_MODEL_BYTES: usize = 128;
 const MAX_ASSISTANT_BOXES: usize = 64;
 const MAX_ASSISTANT_SUBTRACTIONS: usize = 64;
@@ -166,7 +166,14 @@ pub enum AssistantWorkplaneSpec {
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum AssistantCadPartFeature {
-    Extrusion { distance_mm: f64 },
+    Extrusion {
+        distance_mm: f64,
+    },
+    Revolve {
+        axis_start_mm: [f64; 2],
+        axis_end_mm: [f64; 2],
+        angle_degrees: f64,
+    },
 }
 
 impl AssistantCadPartFeature {
@@ -180,6 +187,23 @@ impl AssistantCadPartFeature {
                 Ok(())
             }
             Self::Extrusion { .. } => Err("assistant CAD part feature is invalid".to_owned()),
+            Self::Revolve {
+                axis_start_mm,
+                axis_end_mm,
+                angle_degrees,
+            } if axis_start_mm
+                .iter()
+                .chain(axis_end_mm)
+                .all(|value| value.is_finite() && value.abs() <= MAX_ASSISTANT_ABS_MM)
+                && (axis_end_mm[0] - axis_start_mm[0]).hypot(axis_end_mm[1] - axis_start_mm[1])
+                    > 1.0e-9
+                && angle_degrees.is_finite()
+                && *angle_degrees > 0.0
+                && *angle_degrees <= 360.0 =>
+            {
+                Ok(())
+            }
+            Self::Revolve { .. } => Err("assistant CAD part feature is invalid".to_owned()),
         }
     }
 }

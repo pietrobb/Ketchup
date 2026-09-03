@@ -11,7 +11,7 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Callable
 
-PROTOCOL_VERSION = 2
+PROTOCOL_VERSION = 3
 MAX_LINE_BYTES = 256 * 1024
 MAX_MESSAGE_CHARS = 32 * 1024
 PROJECT_MEMORY_SCHEMA = "ketchup.project-memory.v1"
@@ -69,7 +69,7 @@ SYSTEM_PROMPT = (
     "one JSON object with exactly three fields: message (a concise user-facing string), "
     "model_intent (null for discussion or CAD edits), and cad_edit_program (null unless proposing typed CAD operations). "
     "Never return both mutation fields. Use cad_edit_program for create_part, create_sketch, set_dimension, delete, rigid transform, copy, linear pattern, or mirror. "
-    "create_part atomically creates a host-ID-assigned definition, workplane, sketch, universal feature, and occurrence. It has name, workplane, entities, constraints, feature, translation_mm, and optional rotation; feature is currently {type: extrusion, distance_mm: positive length}. "
+    "create_part atomically creates a host-ID-assigned definition, workplane, sketch, universal feature, and occurrence. It has name, workplane, entities, constraints, feature, translation_mm, and optional rotation; feature is either {type: extrusion, distance_mm: positive length} or {type: revolve, axis_start_mm: [x,y], axis_end_mm: [x,y], angle_degrees: >0 and <=360}. "
     "create_sketch has definition_id, name, workplane, entities, and constraints; workplane is principal with plane xy/yz/xz or offset with an existing base_feature_id and distance_mm. "
     "Entities are typed line/arc/circle records with positive stable IDs and 2D millimetre coordinates. Constraints are typed horizontal/vertical/coincident/distance/radius/fixed_point records with positive stable IDs and point refs {entity_id, point: start/end/center}. "
     "The host assigns create_part definition, feature, and occurrence IDs and create_sketch workplane and sketch feature IDs. set_dimension targets an existing feature_id, optional constraint_id, and positive value_mm. "
@@ -638,15 +638,48 @@ def _validate_cad_edit_program(program: object) -> dict:
                 }:
                     raise ProtocolError("provider CAD part creation contains missing or unknown fields")
                 feature = operation["feature"]
-                if (
-                    not isinstance(feature, dict)
-                    or set(feature) != {"type", "distance_mm"}
-                    or feature["type"] != "extrusion"
-                    or not isinstance(feature["distance_mm"], (int, float))
-                    or isinstance(feature["distance_mm"], bool)
-                    or not math.isfinite(feature["distance_mm"])
-                    or not 0 < feature["distance_mm"] <= 1_000_000
-                ):
+                if not isinstance(feature, dict):
+                    raise ProtocolError("provider CAD part feature is invalid")
+                if feature.get("type") == "extrusion":
+                    distance = feature.get("distance_mm")
+                    feature_valid = (
+                        set(feature) == {"type", "distance_mm"}
+                        and isinstance(distance, (int, float))
+                        and not isinstance(distance, bool)
+                        and math.isfinite(distance)
+                        and 0 < distance <= 1_000_000
+                    )
+                elif feature.get("type") == "revolve":
+                    axis_start = feature.get("axis_start_mm")
+                    axis_end = feature.get("axis_end_mm")
+                    angle = feature.get("angle_degrees")
+                    feature_valid = (
+                        set(feature)
+                        == {"type", "axis_start_mm", "axis_end_mm", "angle_degrees"}
+                        and all(
+                            isinstance(axis, list)
+                            and len(axis) == 2
+                            and all(
+                                isinstance(value, (int, float))
+                                and not isinstance(value, bool)
+                                and math.isfinite(value)
+                                and abs(value) <= 1_000_000
+                                for value in axis
+                            )
+                            for axis in (axis_start, axis_end)
+                        )
+                        and math.hypot(
+                            axis_end[0] - axis_start[0], axis_end[1] - axis_start[1]
+                        )
+                        > 1.0e-9
+                        and isinstance(angle, (int, float))
+                        and not isinstance(angle, bool)
+                        and math.isfinite(angle)
+                        and 0 < angle <= 360
+                    )
+                else:
+                    feature_valid = False
+                if not feature_valid:
                     raise ProtocolError("provider CAD part feature is invalid")
                 _validate_vector(operation["translation_mm"], "provider CAD part translation_mm", positive=False)
                 rotation = operation.get("rotation")
