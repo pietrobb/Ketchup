@@ -89,10 +89,10 @@ fn handle_request(backend: &ExactBackend, request: &str) -> Option<String> {
         (Some("CAPS"), Some("M21_STEP_MODEL_V1"), None) => {
             Some("CAPS M21_STEP_MODEL_V1".to_owned())
         }
-        (Some("CAPS"), Some("EXACT_BREP_GRAPH_V3"), None) => {
-            Some("CAPS EXACT_BREP_GRAPH_V3".to_owned())
+        (Some("CAPS"), Some("EXACT_BREP_GRAPH_V4"), None) => {
+            Some("CAPS EXACT_BREP_GRAPH_V4".to_owned())
         }
-        (Some("TESSELLATE_BREP_GRAPH_V3"), Some(graph_digest), Some(encoded_graph)) => {
+        (Some("TESSELLATE_BREP_GRAPH_V4"), Some(graph_digest), Some(encoded_graph)) => {
             let remaining = fields.collect::<Vec<_>>();
             Some(exact_brep_graph_mesh_response(
                 backend,
@@ -110,7 +110,7 @@ fn handle_request(backend: &ExactBackend, request: &str) -> Option<String> {
                 &remaining,
             ))
         }
-        (Some("EVAL_BREP_GRAPH_V3"), Some(graph_digest), Some(encoded_graph)) => {
+        (Some("EVAL_BREP_GRAPH_V4"), Some(graph_digest), Some(encoded_graph)) => {
             let remaining = fields.collect::<Vec<_>>();
             let Some(graph) = decode_exact_brep_graph(graph_digest, encoded_graph) else {
                 return Some("ERR invalid_request".to_owned());
@@ -1691,6 +1691,17 @@ fn exact_brep_boundary_segments(
                 center_mm: center_bits.map(f64::from_bits),
                 clockwise: *clockwise,
             },
+            ExactBRepPlanarSegment::CubicBezier {
+                start_bits,
+                control_1_bits,
+                control_2_bits,
+                end_bits,
+            } => PlanarProfileSegment::CubicBezier {
+                start_mm: start_bits.map(f64::from_bits),
+                control_1_mm: control_1_bits.map(f64::from_bits),
+                control_2_mm: control_2_bits.map(f64::from_bits),
+                end_mm: end_bits.map(f64::from_bits),
+            },
         })
         .collect())
 }
@@ -1718,6 +1729,17 @@ fn exact_brep_planar_loop(planar_loop: &ExactBRepPlanarLoop) -> PlanarProfileLoo
                         end_mm: end_bits.map(f64::from_bits),
                         center_mm: center_bits.map(f64::from_bits),
                         clockwise: *clockwise,
+                    },
+                    ExactBRepPlanarSegment::CubicBezier {
+                        start_bits,
+                        control_1_bits,
+                        control_2_bits,
+                        end_bits,
+                    } => PlanarProfileSegment::CubicBezier {
+                        start_mm: start_bits.map(f64::from_bits),
+                        control_1_mm: control_1_bits.map(f64::from_bits),
+                        control_2_mm: control_2_bits.map(f64::from_bits),
+                        end_mm: end_bits.map(f64::from_bits),
                     },
                 })
                 .collect(),
@@ -1763,6 +1785,17 @@ fn exact_brep_profile_body(
                         end_mm: end_bits.map(f64::from_bits),
                         center_mm: center_bits.map(f64::from_bits),
                         clockwise: *clockwise,
+                    },
+                    ExactBRepPlanarSegment::CubicBezier {
+                        start_bits,
+                        control_1_bits,
+                        control_2_bits,
+                        end_bits,
+                    } => PlanarProfileSegment::CubicBezier {
+                        start_mm: start_bits.map(f64::from_bits),
+                        control_1_mm: control_1_bits.map(f64::from_bits),
+                        control_2_mm: control_2_bits.map(f64::from_bits),
+                        end_mm: end_bits.map(f64::from_bits),
                     },
                 })
                 .collect::<Vec<_>>();

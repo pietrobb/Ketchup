@@ -1901,7 +1901,7 @@ fn worker_applies_topology_selected_shell_fillet_and_chamfer_and_rejects_stale_i
 }
 
 #[test]
-fn worker_preserves_compound_sketch_region_hole_volume_and_result_identity() {
+fn worker_preserves_cubic_sketch_region_hole_volume_and_result_identity() {
     let definition = DefinitionId(92);
     let workplane = FeatureId(920);
     let sketch_id = FeatureId(921);
@@ -1919,9 +1919,11 @@ fn worker_preserves_compound_sketch_region_hole_volume_and_result_identity() {
                 start_mm: [20.0, -15.0],
                 end_mm: [20.0, 15.0],
             },
-            SketchEntity::Line {
+            SketchEntity::CubicBezier {
                 id: SketchEntityId(3),
                 start_mm: [20.0, 15.0],
+                control_1_mm: [10.0, 25.0],
+                control_2_mm: [-10.0, 25.0],
                 end_mm: [-20.0, 15.0],
             },
             SketchEntity::Line {
@@ -1957,7 +1959,7 @@ fn worker_preserves_compound_sketch_region_hole_volume_and_result_identity() {
             CanonicalCommand::CreateFeature {
                 id: sketch_id,
                 definition_id: definition,
-                name: "Rectangle with centered hole".into(),
+                name: "Line-cubic profile with centered hole".into(),
                 kind: FeatureKind::Sketch(sketch),
             },
             CanonicalCommand::CreateFeature {
@@ -1994,9 +1996,9 @@ fn worker_preserves_compound_sketch_region_hole_volume_and_result_identity() {
     assert!(package.is_current(&snapshot));
     assert_eq!(package.identity.producer_feature_id.0, pad.0);
     assert_eq!(package.topology_counts[4], 1);
-    assert_bounds_close(package.bounds_mm, [-20.0, -15.0, 0.0, 20.0, 15.0, 12.0]);
-    let expected_volume = (40.0 * 30.0 - std::f64::consts::PI * 5.0 * 5.0) * 12.0;
-    assert!(package.volume_mm3 < 40.0 * 30.0 * 12.0);
+    assert_bounds_close(package.bounds_mm, [-20.0, -15.0, 0.0, 20.0, 22.5, 12.0]);
+    let expected_volume = (1_410.0 - std::f64::consts::PI * 5.0 * 5.0) * 12.0;
+    assert!(package.volume_mm3 < 1_410.0 * 12.0);
     assert!(
         (package.volume_mm3 - expected_volume).abs() <= 2.0e-7,
         "worker volume {} differed from analytic compound-region volume {expected_volume}",

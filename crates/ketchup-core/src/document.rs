@@ -672,6 +672,17 @@ impl FeatureKind {
                                 ParameterValueType::Length,
                             );
                         }
+                        SketchEntity::CubicBezier { .. } => {
+                            for point in ["start", "control_1", "control_2", "end"] {
+                                for axis in ["x", "y"] {
+                                    push_parameter_descriptor(
+                                        &mut descriptors,
+                                        format!("entities.{id}.{point}.{axis}"),
+                                        ParameterValueType::Length,
+                                    );
+                                }
+                            }
+                        }
                     }
                 }
                 for constraint in &spec.constraints {
@@ -5103,6 +5114,18 @@ impl DocumentStore {
                                         translate(center_mm);
                                     }
                                     SketchEntity::Circle { center_mm, .. } => translate(center_mm),
+                                    SketchEntity::CubicBezier {
+                                        start_mm,
+                                        control_1_mm,
+                                        control_2_mm,
+                                        end_mm,
+                                        ..
+                                    } => {
+                                        translate(start_mm);
+                                        translate(control_1_mm);
+                                        translate(control_2_mm);
+                                        translate(end_mm);
+                                    }
                                 }
                             }
                             for constraint in &mut spec.constraints {
@@ -8514,11 +8537,22 @@ fn sketch_parameter_value(spec: &SketchSpec, parts: &[&str]) -> Option<f64> {
             let entity = spec.entities.iter().find(|entity| entity.id().0 == id)?;
             match (entity, *point) {
                 (
-                    SketchEntity::Line { start_mm, .. } | SketchEntity::Arc { start_mm, .. },
+                    SketchEntity::Line { start_mm, .. }
+                    | SketchEntity::Arc { start_mm, .. }
+                    | SketchEntity::CubicBezier { start_mm, .. },
                     "start",
                 ) => point_coordinate(*start_mm, axis),
-                (SketchEntity::Line { end_mm, .. } | SketchEntity::Arc { end_mm, .. }, "end") => {
-                    point_coordinate(*end_mm, axis)
+                (
+                    SketchEntity::Line { end_mm, .. }
+                    | SketchEntity::Arc { end_mm, .. }
+                    | SketchEntity::CubicBezier { end_mm, .. },
+                    "end",
+                ) => point_coordinate(*end_mm, axis),
+                (SketchEntity::CubicBezier { control_1_mm, .. }, "control_1") => {
+                    point_coordinate(*control_1_mm, axis)
+                }
+                (SketchEntity::CubicBezier { control_2_mm, .. }, "control_2") => {
+                    point_coordinate(*control_2_mm, axis)
                 }
                 (
                     SketchEntity::Arc { center_mm, .. } | SketchEntity::Circle { center_mm, .. },
@@ -8836,11 +8870,22 @@ fn set_sketch_parameter(spec: &mut SketchSpec, parts: &[&str], dimension: &Dimen
             };
             match (entity, *point) {
                 (
-                    SketchEntity::Line { start_mm, .. } | SketchEntity::Arc { start_mm, .. },
+                    SketchEntity::Line { start_mm, .. }
+                    | SketchEntity::Arc { start_mm, .. }
+                    | SketchEntity::CubicBezier { start_mm, .. },
                     "start",
                 ) => set_point_coordinate(start_mm, axis, value),
-                (SketchEntity::Line { end_mm, .. } | SketchEntity::Arc { end_mm, .. }, "end") => {
-                    set_point_coordinate(end_mm, axis, value)
+                (
+                    SketchEntity::Line { end_mm, .. }
+                    | SketchEntity::Arc { end_mm, .. }
+                    | SketchEntity::CubicBezier { end_mm, .. },
+                    "end",
+                ) => set_point_coordinate(end_mm, axis, value),
+                (SketchEntity::CubicBezier { control_1_mm, .. }, "control_1") => {
+                    set_point_coordinate(control_1_mm, axis, value)
+                }
+                (SketchEntity::CubicBezier { control_2_mm, .. }, "control_2") => {
+                    set_point_coordinate(control_2_mm, axis, value)
                 }
                 (
                     SketchEntity::Arc { center_mm, .. } | SketchEntity::Circle { center_mm, .. },

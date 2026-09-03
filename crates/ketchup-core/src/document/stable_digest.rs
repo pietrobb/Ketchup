@@ -487,6 +487,8 @@ impl StableDigest {
             SketchPointKind::Start => 1,
             SketchPointKind::End => 2,
             SketchPointKind::Center => 3,
+            SketchPointKind::Control1 => 4,
+            SketchPointKind::Control2 => 5,
         });
     }
 
@@ -646,6 +648,20 @@ impl StableDigest {
                             self.u64(center_mm[0].to_bits());
                             self.u64(center_mm[1].to_bits());
                             self.u64(radius_mm.to_bits());
+                        }
+                        SketchEntity::CubicBezier {
+                            id,
+                            start_mm,
+                            control_1_mm,
+                            control_2_mm,
+                            end_mm,
+                        } => {
+                            self.byte(4);
+                            self.u64(id.0);
+                            for point in [start_mm, control_1_mm, control_2_mm, end_mm] {
+                                self.u64(point[0].to_bits());
+                                self.u64(point[1].to_bits());
+                            }
                         }
                     }
                 }

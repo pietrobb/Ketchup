@@ -96,7 +96,8 @@ const ASSEMBLY_MOTION_COUPLING_SCHEMA: u16 = 43;
 const MECHANICAL_CONTRACT_SCHEMA: u16 = 44;
 const SKETCH_CONSTRAINT_VOCABULARY_SCHEMA: u16 = 45;
 const RIGID_TRANSFORM_FEATURE_SCHEMA: u16 = 46;
-pub const CURRENT_SCHEMA: u16 = RIGID_TRANSFORM_FEATURE_SCHEMA;
+const CUBIC_BEZIER_SKETCH_SCHEMA: u16 = 47;
+pub const CURRENT_SCHEMA: u16 = CUBIC_BEZIER_SKETCH_SCHEMA;
 const COLLECTION_SCHEMA: u16 = 15;
 const TAG_SCHEMA: u16 = 14;
 const PERSISTENT_DIMENSION_SCHEMA: u16 = 13;
@@ -158,6 +159,7 @@ struct ProductSchemaCapabilities {
     mechanical_contract: bool,
     sketch_constraint_vocabulary: bool,
     rigid_transform_feature: bool,
+    cubic_bezier_sketch: bool,
 }
 
 impl ProductSchemaCapabilities {
@@ -204,6 +206,7 @@ impl ProductSchemaCapabilities {
         mechanical_contract: false,
         sketch_constraint_vocabulary: false,
         rigid_transform_feature: false,
+        cubic_bezier_sketch: false,
     };
 
     const fn current(schema: u16) -> Self {
@@ -250,6 +253,7 @@ impl ProductSchemaCapabilities {
             mechanical_contract: schema >= MECHANICAL_CONTRACT_SCHEMA,
             sketch_constraint_vocabulary: schema >= SKETCH_CONSTRAINT_VOCABULARY_SCHEMA,
             rigid_transform_feature: schema >= RIGID_TRANSFORM_FEATURE_SCHEMA,
+            cubic_bezier_sketch: schema >= CUBIC_BEZIER_SKETCH_SCHEMA,
         }
     }
 }
@@ -1274,6 +1278,8 @@ fn write_sketch_point_ref(bytes: &mut Vec<u8>, reference: SketchPointRef) {
             SketchPointKind::Start => 1,
             SketchPointKind::End => 2,
             SketchPointKind::Center => 3,
+            SketchPointKind::Control1 => 4,
+            SketchPointKind::Control2 => 5,
         },
     );
 }
@@ -1320,6 +1326,20 @@ fn write_sketch(bytes: &mut Vec<u8>, spec: &SketchSpec) {
                 push_u64(bytes, center_mm[0].to_bits());
                 push_u64(bytes, center_mm[1].to_bits());
                 push_u64(bytes, radius_mm.to_bits());
+            }
+            SketchEntity::CubicBezier {
+                id,
+                start_mm,
+                control_1_mm,
+                control_2_mm,
+                end_mm,
+            } => {
+                push_u8(bytes, 4);
+                push_u64(bytes, id.0);
+                for point in [start_mm, control_1_mm, control_2_mm, end_mm] {
+                    push_u64(bytes, point[0].to_bits());
+                    push_u64(bytes, point[1].to_bits());
+                }
             }
         }
     }
@@ -2253,6 +2273,7 @@ fn load_document(
             | ASSEMBLY_MOTION_COUPLING_SCHEMA
             | MECHANICAL_CONTRACT_SCHEMA
             | SKETCH_CONSTRAINT_VOCABULARY_SCHEMA
+            | RIGID_TRANSFORM_FEATURE_SCHEMA
             | CURRENT_SCHEMA
     ) {
         return Err(PersistenceError::UnsupportedSchema(schema));
@@ -3124,13 +3145,18 @@ fn read_workplane(reader: &mut Reader<'_>) -> Result<WorkplaneSpec, PersistenceE
     })
 }
 
-fn read_sketch_point_ref(reader: &mut Reader<'_>) -> Result<SketchPointRef, PersistenceError> {
+fn read_sketch_point_ref(
+    reader: &mut Reader<'_>,
+    cubic_bezier_sketch: bool,
+) -> Result<SketchPointRef, PersistenceError> {
     Ok(SketchPointRef {
         entity: SketchEntityId(reader.u64()?),
         point: match reader.u8()? {
             1 => SketchPointKind::Start,
             2 => SketchPointKind::End,
             3 => SketchPointKind::Center,
+            4 if cubic_bezier_sketch => SketchPointKind::Control1,
+            5 if cubic_bezier_sketch => SketchPointKind::Control2,
             value => return Err(PersistenceError::InvalidFeatureKind(value)),
         },
     })
@@ -3139,6 +3165,7 @@ fn read_sketch_point_ref(reader: &mut Reader<'_>) -> Result<SketchPointRef, Pers
 fn read_sketch(
     reader: &mut Reader<'_>,
     full_constraint_vocabulary: bool,
+    cubic_bezier_sketch: bool,
 ) -> Result<SketchSpec, PersistenceError> {
     let workplane = FeatureId(reader.u64()?);
     let point = |reader: &mut Reader<'_>| -> Result<[f64; 2], PersistenceError> {
@@ -3164,6 +3191,13 @@ fn read_sketch(
                 center_mm: point(reader)?,
                 radius_mm: f64::from_bits(reader.u64()?),
             },
+            4 if cubic_bezier_sketch => SketchEntity::CubicBezier {
+                id: SketchEntityId(reader.u64()?),
+                start_mm: point(reader)?,
+                control_1_mm: point(reader)?,
+                control_2_mm: point(reader)?,
+                end_mm: point(reader)?,
+            },
             value => return Err(PersistenceError::InvalidFeatureKind(value)),
         });
     }
@@ -3178,12 +3212,12 @@ fn read_sketch(
                 entity: SketchEntityId(reader.u64()?),
             },
             3 => SketchConstraintKind::Coincident {
-                a: read_sketch_point_ref(reader)?,
-                b: read_sketch_point_ref(reader)?,
+                a: read_sketch_point_ref(reader, cubic_bezier_sketch)?,
+                b: read_sketch_point_ref(reader, cubic_bezier_sketch)?,
             },
             4 => SketchConstraintKind::Distance {
-                a: read_sketch_point_ref(reader)?,
-                b: read_sketch_point_ref(reader)?,
+                a: read_sketch_point_ref(reader, cubic_bezier_sketch)?,
+                b: read_sketch_point_ref(reader, cubic_bezier_sketch)?,
                 value: Dimension::new(reader.string()?, f64::from_bits(reader.u64()?))?,
             },
             5 => SketchConstraintKind::Radius {
@@ -3191,7 +3225,7 @@ fn read_sketch(
                 value: Dimension::new(reader.string()?, f64::from_bits(reader.u64()?))?,
             },
             6 => SketchConstraintKind::FixedPoint {
-                point: read_sketch_point_ref(reader)?,
+                point: read_sketch_point_ref(reader, cubic_bezier_sketch)?,
                 position_mm: point(reader)?,
             },
             7 if full_constraint_vocabulary => SketchConstraintKind::Parallel {
@@ -3216,8 +3250,8 @@ fn read_sketch(
                 b: SketchEntityId(reader.u64()?),
             },
             12 if full_constraint_vocabulary => SketchConstraintKind::Symmetric {
-                a: read_sketch_point_ref(reader)?,
-                b: read_sketch_point_ref(reader)?,
+                a: read_sketch_point_ref(reader, cubic_bezier_sketch)?,
+                b: read_sketch_point_ref(reader, cubic_bezier_sketch)?,
                 axis: SketchEntityId(reader.u64()?),
             },
             13 if full_constraint_vocabulary => SketchConstraintKind::Concentric {
@@ -3229,11 +3263,11 @@ fn read_sketch(
                 b: SketchEntityId(reader.u64()?),
             },
             15 if full_constraint_vocabulary => SketchConstraintKind::Midpoint {
-                point: read_sketch_point_ref(reader)?,
+                point: read_sketch_point_ref(reader, cubic_bezier_sketch)?,
                 line: SketchEntityId(reader.u64()?),
             },
             16 if full_constraint_vocabulary => SketchConstraintKind::PointOnCurve {
-                point: read_sketch_point_ref(reader)?,
+                point: read_sketch_point_ref(reader, cubic_bezier_sketch)?,
                 curve: SketchEntityId(reader.u64()?),
             },
             value => return Err(PersistenceError::InvalidFeatureKind(value)),
@@ -3645,6 +3679,7 @@ fn read_product(
             18 if capabilities.workplane_sketch => FeatureKind::Sketch(read_sketch(
                 reader,
                 capabilities.sketch_constraint_vocabulary,
+                capabilities.cubic_bezier_sketch,
             )?),
             1 => {
                 let mut points_mm = Vec::new();

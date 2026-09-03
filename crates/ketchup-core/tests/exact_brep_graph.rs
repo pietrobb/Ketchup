@@ -3,9 +3,10 @@ use ketchup_core::document::{
     Dimension, DocumentStore, EdgeFinishKind, FeatureId, FeatureKind, LoftSection, StableFaceRole,
 };
 use ketchup_core::exact_brep_graph::{
-    EXACT_BREP_GRAPH_SCHEMA_V3, ExactBRepBooleanOperation, ExactBRepEdgeFinishKind, ExactBRepGraph,
+    EXACT_BREP_GRAPH_SCHEMA_V4, ExactBRepBooleanOperation, ExactBRepEdgeFinishKind, ExactBRepGraph,
     ExactBRepGraphError, ExactBRepOperation, ExactBRepPlanarGeometry, ExactBRepPlanarLoop,
-    ExactBRepTopologyKind, MAX_EXACT_BREP_GRAPH_BYTES, MAX_EXACT_BREP_GRAPH_SEGMENTS,
+    ExactBRepPlanarSegment, ExactBRepTopologyKind, MAX_EXACT_BREP_GRAPH_BYTES,
+    MAX_EXACT_BREP_GRAPH_SEGMENTS,
 };
 use ketchup_core::exact_product::{
     ExactFaceRole, ExactFeatureChainRequest, ExactProductError, build_box_render_package,
@@ -1047,7 +1048,7 @@ fn generalized_extents_compile_to_bounded_signed_intervals_and_fail_closed() {
 }
 
 #[test]
-fn compound_sketch_region_compiles_to_v3_and_is_deterministic() {
+fn mixed_line_cubic_region_compiles_to_v4_and_is_deterministic() {
     let definition = DefinitionId(6);
     let workplane = FeatureId(500);
     let sketch_id = FeatureId(501);
@@ -1065,9 +1066,11 @@ fn compound_sketch_region_compiles_to_v3_and_is_deterministic() {
                 start_mm: [20.0, -15.0],
                 end_mm: [20.0, 15.0],
             },
-            SketchEntity::Line {
+            SketchEntity::CubicBezier {
                 id: SketchEntityId(3),
                 start_mm: [20.0, 15.0],
+                control_1_mm: [10.0, 25.0],
+                control_2_mm: [-10.0, 25.0],
                 end_mm: [-20.0, 15.0],
             },
             SketchEntity::Line {
@@ -1103,7 +1106,7 @@ fn compound_sketch_region_compiles_to_v3_and_is_deterministic() {
             CanonicalCommand::CreateFeature {
                 id: sketch_id,
                 definition_id: definition,
-                name: "Rectangle with centered hole".into(),
+                name: "Line-cubic profile with centered hole".into(),
                 kind: FeatureKind::Sketch(sketch),
             },
             CanonicalCommand::CreateFeature {
@@ -1122,15 +1125,27 @@ fn compound_sketch_region_compiles_to_v3_and_is_deterministic() {
 
     let snapshot = document.current();
     let initial = ExactBRepGraph::from_snapshot(&snapshot, definition, pad).unwrap();
-    assert_eq!(initial.schema, EXACT_BREP_GRAPH_SCHEMA_V3);
+    assert_eq!(initial.schema, EXACT_BREP_GRAPH_SCHEMA_V4);
     assert_eq!(initial.profiles.len(), 1);
     assert_eq!(initial.nodes.len(), 1);
     let ExactBRepPlanarGeometry::Region { outer, holes } = &initial.profiles[0].geometry else {
         panic!("compound sketch must compile to a planar region");
     };
+    let ExactBRepPlanarLoop::Boundary { segments } = outer else {
+        panic!("mixed outer loop must remain an exact segment boundary");
+    };
+    assert_eq!(segments.len(), 4);
     assert!(matches!(
-        outer,
-        ExactBRepPlanarLoop::Boundary { segments } if segments.len() == 4
+        segments.iter().find(|segment| matches!(segment, ExactBRepPlanarSegment::CubicBezier { .. })),
+        Some(ExactBRepPlanarSegment::CubicBezier {
+            start_bits,
+            control_1_bits,
+            control_2_bits,
+            end_bits,
+        }) if start_bits.map(f64::from_bits) == [20.0, 15.0]
+            && control_1_bits.map(f64::from_bits) == [10.0, 25.0]
+            && control_2_bits.map(f64::from_bits) == [-10.0, 25.0]
+            && end_bits.map(f64::from_bits) == [-20.0, 15.0]
     ));
     assert!(matches!(
         holes.as_slice(),

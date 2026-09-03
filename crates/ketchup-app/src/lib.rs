@@ -28382,6 +28382,28 @@ impl KetchupApp {
                         clockwise,
                         ..
                     } => arc(*start_mm, *end_mm, *center_mm, *clockwise),
+                    SketchEntity::CubicBezier {
+                        start_mm,
+                        control_1_mm,
+                        control_2_mm,
+                        end_mm,
+                        ..
+                    } => (0..=32)
+                        .map(|step| {
+                            let t = f64::from(step) / 32.0;
+                            let inverse = 1.0 - t;
+                            world([
+                                inverse.powi(3) * start_mm[0]
+                                    + 3.0 * inverse.powi(2) * t * control_1_mm[0]
+                                    + 3.0 * inverse * t.powi(2) * control_2_mm[0]
+                                    + t.powi(3) * end_mm[0],
+                                inverse.powi(3) * start_mm[1]
+                                    + 3.0 * inverse.powi(2) * t * control_1_mm[1]
+                                    + 3.0 * inverse * t.powi(2) * control_2_mm[1]
+                                    + t.powi(3) * end_mm[1],
+                            ])
+                        })
+                        .collect(),
                     SketchEntity::Circle {
                         center_mm,
                         radius_mm,

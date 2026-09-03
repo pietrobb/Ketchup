@@ -2299,3 +2299,229 @@ fn invalid_cycles_constraints_and_stale_face_support_fail_without_mutation() {
         ))
     );
 }
+
+fn line_cubic_region(reverse: bool, circle: Option<([f64; 2], f64)>) -> SketchSpec {
+    let (line_start, line_end, cubic_start, control_1, control_2, cubic_end) = if reverse {
+        (
+            [5.0, 0.0],
+            [-5.0, 0.0],
+            [-5.0, 0.0],
+            [-5.0, 8.0],
+            [5.0, 8.0],
+            [5.0, 0.0],
+        )
+    } else {
+        (
+            [-5.0, 0.0],
+            [5.0, 0.0],
+            [5.0, 0.0],
+            [5.0, 8.0],
+            [-5.0, 8.0],
+            [-5.0, 0.0],
+        )
+    };
+    let mut entities = vec![
+        SketchEntity::Line {
+            id: SketchEntityId(1),
+            start_mm: line_start,
+            end_mm: line_end,
+        },
+        SketchEntity::CubicBezier {
+            id: SketchEntityId(2),
+            start_mm: cubic_start,
+            control_1_mm: control_1,
+            control_2_mm: control_2,
+            end_mm: cubic_end,
+        },
+    ];
+    if let Some((center_mm, radius_mm)) = circle {
+        entities.push(SketchEntity::Circle {
+            id: SketchEntityId(3),
+            center_mm,
+            radius_mm,
+        });
+    }
+    SketchSpec {
+        workplane: XY,
+        entities,
+        constraints: Vec::new(),
+    }
+}
+
+#[test]
+fn cubic_and_adjacent_line_that_doubles_back_over_flattened_endpoint_fail_closed() {
+    let sketch = SketchSpec {
+        workplane: XY,
+        entities: vec![
+            SketchEntity::CubicBezier {
+                id: SketchEntityId(1),
+                start_mm: [0.0, 0.0],
+                control_1_mm: [3.0, 0.0],
+                control_2_mm: [7.0, 0.0],
+                end_mm: [10.0, 0.0],
+            },
+            SketchEntity::Line {
+                id: SketchEntityId(2),
+                start_mm: [10.0, 0.0],
+                end_mm: [5.0, 0.0],
+            },
+            SketchEntity::Line {
+                id: SketchEntityId(3),
+                start_mm: [5.0, 0.0],
+                end_mm: [5.0, 5.0],
+            },
+            SketchEntity::Line {
+                id: SketchEntityId(4),
+                start_mm: [5.0, 5.0],
+                end_mm: [0.0, 5.0],
+            },
+            SketchEntity::Line {
+                id: SketchEntityId(5),
+                start_mm: [0.0, 5.0],
+                end_mm: [0.0, 0.0],
+            },
+        ],
+        constraints: Vec::new(),
+    };
+
+    assert_eq!(
+        sketch.solved_regions(),
+        Err(SketchError::InvalidRegionIdentity)
+    );
+}
+
+#[test]
+fn mixed_line_cubic_region_is_deterministic_and_reversal_stable() {
+    let forward = line_cubic_region(false, None).solved_regions().unwrap();
+    let reversed = line_cubic_region(true, None).solved_regions().unwrap();
+    assert_eq!(forward.len(), 1);
+    assert_eq!(forward[0].id, reversed[0].id);
+    assert_eq!(forward[0].entity_ids, reversed[0].entity_ids);
+    let SolvedSketchRegionProfile::Boundary(edges) = &forward[0].outer else {
+        panic!("expected cubic boundary")
+    };
+    assert!(matches!(
+        edges[1],
+        SolvedSketchRegionEdge::CubicBezier { .. }
+    ));
+}
+
+#[test]
+fn cubic_region_accepts_circle_hole_and_fails_closed_on_degenerate_or_near_touch() {
+    let region = line_cubic_region(false, Some(([0.0, 3.0], 1.0)))
+        .solved_regions()
+        .unwrap();
+    assert_eq!(region.len(), 1);
+    assert_eq!(region[0].holes.len(), 1);
+
+    let degenerate = SketchSpec {
+        workplane: XY,
+        entities: vec![SketchEntity::CubicBezier {
+            id: SketchEntityId(1),
+            start_mm: [0.0, 0.0],
+            control_1_mm: [0.0, 0.0],
+            control_2_mm: [0.0, 0.0],
+            end_mm: [0.0, 0.0],
+        }],
+        constraints: Vec::new(),
+    };
+    assert_eq!(
+        degenerate.solve(),
+        Err(SketchError::InvalidEntity(SketchEntityId(1)))
+    );
+    assert_eq!(
+        line_cubic_region(false, Some(([0.0, 5.0], 1.0))).solved_regions(),
+        Err(SketchError::InvalidRegionIdentity)
+    );
+}
+
+#[test]
+fn cubic_control_points_solve_and_round_trip_with_undo_redo_and_digest() {
+    let expected_points = [[-6.0, 1.0], [-4.0, 9.0], [4.0, 9.0], [6.0, 1.0]];
+    let sketch = SketchSpec {
+        workplane: XY,
+        entities: vec![SketchEntity::CubicBezier {
+            id: SketchEntityId(1),
+            start_mm: [-5.0, 0.0],
+            control_1_mm: [-5.0, 8.0],
+            control_2_mm: [5.0, 8.0],
+            end_mm: [5.0, 0.0],
+        }],
+        constraints: [
+            SketchPointKind::Start,
+            SketchPointKind::Control1,
+            SketchPointKind::Control2,
+            SketchPointKind::End,
+        ]
+        .into_iter()
+        .zip(expected_points)
+        .enumerate()
+        .map(|(index, (point_kind, position_mm))| SketchConstraint {
+            id: SketchConstraintId(index as u64 + 1),
+            kind: SketchConstraintKind::FixedPoint {
+                point: point(1, point_kind),
+                position_mm,
+            },
+        })
+        .collect(),
+    };
+    let solved = sketch.solve_geometry().unwrap();
+    assert_eq!(solved.report.status, SketchSolveStatus::FullyConstrained);
+    assert_eq!(solved, sketch.solve_geometry().unwrap());
+    assert_eq!(
+        solved.entities,
+        vec![SketchEntity::CubicBezier {
+            id: SketchEntityId(1),
+            start_mm: expected_points[0],
+            control_1_mm: expected_points[1],
+            control_2_mm: expected_points[2],
+            end_mm: expected_points[3],
+        }]
+    );
+    let line_specific = SketchSpec {
+        constraints: vec![SketchConstraint {
+            id: SketchConstraintId(1),
+            kind: SketchConstraintKind::Horizontal {
+                entity: SketchEntityId(2),
+            },
+        }],
+        ..line_cubic_region(false, None)
+    };
+    assert_eq!(
+        line_specific.solve(),
+        Err(SketchError::InvalidConstraintReference(SketchConstraintId(
+            1
+        )))
+    );
+
+    let mut document = DocumentStore::new();
+    let before = document.current().canonical_digest();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DEFINITION,
+                name: "Cubic part".into(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: XY,
+                definition_id: DEFINITION,
+                name: "XY".into(),
+                kind: FeatureKind::Workplane(WorkplaneSpec::principal(PrincipalPlane::Xy)),
+            },
+            CanonicalCommand::CreateFeature {
+                id: SKETCH,
+                definition_id: DEFINITION,
+                name: "Cubic sketch".into(),
+                kind: FeatureKind::Sketch(sketch.clone()),
+            },
+        ]))
+        .unwrap();
+    let digest = document.current().canonical_digest();
+    let bytes = persistence::save(&document.current());
+    let reopened = persistence::load(&bytes).unwrap();
+    assert_eq!(reopened.source_schema(), 47);
+    assert_eq!(reopened.snapshot().canonical_digest(), digest);
+    assert_eq!(persistence::save(&reopened.snapshot()), bytes);
+    assert_eq!(document.undo().unwrap().canonical_digest(), before);
+    assert_eq!(document.redo().unwrap().canonical_digest(), digest);
+}

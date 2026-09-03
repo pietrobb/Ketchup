@@ -11,6 +11,9 @@ const EPSILON_MM: f64 = 1.0e-7;
 const FRAME_EPSILON: f64 = 1.0e-9;
 const MAX_SKETCH_SOLVER_ITERATIONS: u16 = 256;
 const MAX_SKETCH_NUMERICAL_EVALUATIONS: usize = 67_108_864;
+const MAX_CUBIC_FLATTEN_DEPTH: u8 = 16;
+const MAX_CUBIC_FLATTEN_SEGMENTS: usize = 16_384;
+const CUBIC_FLATTEN_TOLERANCE_MM: f64 = 1.0e-6;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct SketchEntityId(pub u64);
@@ -171,6 +174,8 @@ pub enum SketchPointKind {
     Start,
     End,
     Center,
+    Control1,
+    Control2,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -198,13 +203,23 @@ pub enum SketchEntity {
         center_mm: [f64; 2],
         radius_mm: f64,
     },
+    CubicBezier {
+        id: SketchEntityId,
+        start_mm: [f64; 2],
+        control_1_mm: [f64; 2],
+        control_2_mm: [f64; 2],
+        end_mm: [f64; 2],
+    },
 }
 
 impl SketchEntity {
     #[must_use]
     pub const fn id(&self) -> SketchEntityId {
         match self {
-            Self::Line { id, .. } | Self::Arc { id, .. } | Self::Circle { id, .. } => *id,
+            Self::Line { id, .. }
+            | Self::Arc { id, .. }
+            | Self::Circle { id, .. }
+            | Self::CubicBezier { id, .. } => *id,
         }
     }
 
@@ -213,21 +228,34 @@ impl SketchEntity {
             Self::Line { .. } => 4,
             Self::Arc { .. } => 5,
             Self::Circle { .. } => 3,
+            Self::CubicBezier { .. } => 8,
         }
     }
 
     fn point(&self, point: SketchPointKind) -> Option<[f64; 2]> {
         match (self, point) {
-            (Self::Line { start_mm, .. } | Self::Arc { start_mm, .. }, SketchPointKind::Start) => {
-                Some(*start_mm)
-            }
-            (Self::Line { end_mm, .. } | Self::Arc { end_mm, .. }, SketchPointKind::End) => {
-                Some(*end_mm)
-            }
+            (
+                Self::Line { start_mm, .. }
+                | Self::Arc { start_mm, .. }
+                | Self::CubicBezier { start_mm, .. },
+                SketchPointKind::Start,
+            ) => Some(*start_mm),
+            (
+                Self::Line { end_mm, .. }
+                | Self::Arc { end_mm, .. }
+                | Self::CubicBezier { end_mm, .. },
+                SketchPointKind::End,
+            ) => Some(*end_mm),
             (
                 Self::Arc { center_mm, .. } | Self::Circle { center_mm, .. },
                 SketchPointKind::Center,
             ) => Some(*center_mm),
+            (Self::CubicBezier { control_1_mm, .. }, SketchPointKind::Control1) => {
+                Some(*control_1_mm)
+            }
+            (Self::CubicBezier { control_2_mm, .. }, SketchPointKind::Control2) => {
+                Some(*control_2_mm)
+            }
             _ => None,
         }
     }
@@ -279,6 +307,28 @@ impl SketchEntity {
                     || !radius_mm.is_finite()
                     || *radius_mm <= EPSILON_MM
                     || *radius_mm > MAX_ABS_MM
+                {
+                    return Err(SketchError::InvalidEntity(self.id()));
+                }
+            }
+            Self::CubicBezier {
+                start_mm,
+                control_1_mm,
+                control_2_mm,
+                end_mm,
+                ..
+            } => {
+                if !valid_point(start_mm)
+                    || !valid_point(control_1_mm)
+                    || !valid_point(control_2_mm)
+                    || !valid_point(end_mm)
+                    || distance2(*start_mm, *end_mm) <= EPSILON_MM
+                    || cubic_control_polygon_length([
+                        *start_mm,
+                        *control_1_mm,
+                        *control_2_mm,
+                        *end_mm,
+                    ]) <= EPSILON_MM
                 {
                     return Err(SketchError::InvalidEntity(self.id()));
                 }
@@ -432,20 +482,30 @@ pub enum SolvedSketchRegionEdge {
         center_mm: [f64; 2],
         clockwise: bool,
     },
+    CubicBezier {
+        start_mm: [f64; 2],
+        control_1_mm: [f64; 2],
+        control_2_mm: [f64; 2],
+        end_mm: [f64; 2],
+    },
 }
 
 impl SolvedSketchRegionEdge {
     #[must_use]
     pub const fn start_mm(&self) -> [f64; 2] {
         match self {
-            Self::Line { start_mm, .. } | Self::Arc { start_mm, .. } => *start_mm,
+            Self::Line { start_mm, .. }
+            | Self::Arc { start_mm, .. }
+            | Self::CubicBezier { start_mm, .. } => *start_mm,
         }
     }
 
     #[must_use]
     pub const fn end_mm(&self) -> [f64; 2] {
         match self {
-            Self::Line { end_mm, .. } | Self::Arc { end_mm, .. } => *end_mm,
+            Self::Line { end_mm, .. }
+            | Self::Arc { end_mm, .. }
+            | Self::CubicBezier { end_mm, .. } => *end_mm,
         }
     }
 
@@ -466,6 +526,17 @@ impl SolvedSketchRegionEdge {
                 end_mm: *start_mm,
                 center_mm: *center_mm,
                 clockwise: !clockwise,
+            },
+            Self::CubicBezier {
+                start_mm,
+                control_1_mm,
+                control_2_mm,
+                end_mm,
+            } => Self::CubicBezier {
+                start_mm: *end_mm,
+                control_1_mm: *control_2_mm,
+                control_2_mm: *control_1_mm,
+                end_mm: *start_mm,
             },
         }
     }
@@ -847,6 +918,23 @@ impl SketchSpec {
                         },
                     );
                 }
+                SketchEntity::CubicBezier {
+                    id,
+                    start_mm,
+                    control_1_mm,
+                    control_2_mm,
+                    end_mm,
+                } => {
+                    boundaries.insert(
+                        id,
+                        SolvedSketchRegionEdge::CubicBezier {
+                            start_mm,
+                            control_1_mm,
+                            control_2_mm,
+                            end_mm,
+                        },
+                    );
+                }
             }
         }
 
@@ -888,7 +976,7 @@ impl SketchSpec {
                     return Err(SketchError::ResourceLimit);
                 }
             }
-            let area = region_signed_area(&edges).abs();
+            let area = region_signed_area(&edges)?.abs();
             if edges.len() < 2 || area <= EPSILON_MM * EPSILON_MM {
                 return Err(SketchError::OpenRegion);
             }
@@ -903,6 +991,7 @@ impl SketchSpec {
             } else {
                 SolvedSketchRegionProfile::Boundary(edges)
             };
+            validate_profile_topology(&profile)?;
             loops.push(SolvedSketchLoop {
                 entity_ids,
                 profile,
@@ -914,7 +1003,7 @@ impl SketchSpec {
         }
         for left in 0..loops.len() {
             for right in left + 1..loops.len() {
-                if profiles_intersect(&loops[left].profile, &loops[right].profile) {
+                if profiles_intersect(&loops[left].profile, &loops[right].profile)? {
                     return Err(SketchError::InvalidRegionIdentity);
                 }
             }
@@ -926,7 +1015,7 @@ impl SketchSpec {
                 .filter(|parent| {
                     *parent != child
                         && loops[*parent].area > loops[child].area
-                        && point_in_profile(point, &loops[*parent].profile)
+                        && point_in_profile(point, &loops[*parent].profile).unwrap_or(true)
                 })
                 .min_by(|left, right| loops[*left].area.total_cmp(&loops[*right].area));
         }
@@ -971,12 +1060,12 @@ impl SketchSpec {
     }
 }
 
-fn region_signed_area(edges: &[SolvedSketchRegionEdge]) -> f64 {
+fn region_signed_area(edges: &[SolvedSketchRegionEdge]) -> Result<f64, SketchError> {
     edges
         .iter()
         .map(|edge| match edge {
             SolvedSketchRegionEdge::Line { start_mm, end_mm } => {
-                0.5 * (start_mm[0] * end_mm[1] - end_mm[0] * start_mm[1])
+                Ok(0.5 * (start_mm[0] * end_mm[1] - end_mm[0] * start_mm[1]))
             }
             SolvedSketchRegionEdge::Arc {
                 start_mm,
@@ -995,52 +1084,82 @@ fn region_signed_area(edges: &[SolvedSketchRegionEdge]) -> f64 {
                 } else if sweep <= 0.0 {
                     sweep += std::f64::consts::TAU;
                 }
-                0.5 * (radius * center_mm[0] * (end_angle.sin() - start_angle.sin())
-                    - radius * center_mm[1] * (end_angle.cos() - start_angle.cos())
-                    + radius * radius * sweep)
+                Ok(0.5
+                    * (radius * center_mm[0] * (end_angle.sin() - start_angle.sin())
+                        - radius * center_mm[1] * (end_angle.cos() - start_angle.cos())
+                        + radius * radius * sweep))
             }
+            SolvedSketchRegionEdge::CubicBezier {
+                start_mm,
+                control_1_mm,
+                control_2_mm,
+                end_mm,
+            } => Ok(
+                flatten_cubic([*start_mm, *control_1_mm, *control_2_mm, *end_mm])?
+                    .windows(2)
+                    .map(|pair| 0.5 * (pair[0][0] * pair[1][1] - pair[1][0] * pair[0][1]))
+                    .sum(),
+            ),
         })
         .sum()
 }
 
-fn profile_curves(profile: &SolvedSketchRegionProfile) -> Vec<RegionCurve> {
+fn profile_curves(profile: &SolvedSketchRegionProfile) -> Result<Vec<RegionCurve>, SketchError> {
+    let mut curves = Vec::new();
     match profile {
-        SolvedSketchRegionProfile::Polyline(points) => points
-            .iter()
-            .zip(points.iter().cycle().skip(1))
-            .take(points.len())
-            .map(|(start, end)| RegionCurve::Line {
-                start: *start,
-                end: *end,
-            })
-            .collect(),
-        SolvedSketchRegionProfile::Boundary(edges) => edges
-            .iter()
-            .map(|edge| match edge {
-                SolvedSketchRegionEdge::Line { start_mm, end_mm } => RegionCurve::Line {
-                    start: *start_mm,
-                    end: *end_mm,
-                },
-                SolvedSketchRegionEdge::Arc {
-                    start_mm,
-                    end_mm,
-                    center_mm,
-                    clockwise,
-                } => RegionCurve::Arc {
-                    start: *start_mm,
-                    end: *end_mm,
-                    center: *center_mm,
-                    clockwise: *clockwise,
-                },
-            })
-            .collect(),
+        SolvedSketchRegionProfile::Polyline(points) => curves.extend(
+            points
+                .iter()
+                .zip(points.iter().cycle().skip(1))
+                .take(points.len())
+                .map(|(start, end)| RegionCurve::Line {
+                    start: *start,
+                    end: *end,
+                }),
+        ),
+        SolvedSketchRegionProfile::Boundary(edges) => {
+            for edge in edges {
+                match edge {
+                    SolvedSketchRegionEdge::Line { start_mm, end_mm } => {
+                        curves.push(RegionCurve::Line {
+                            start: *start_mm,
+                            end: *end_mm,
+                        })
+                    }
+                    SolvedSketchRegionEdge::Arc {
+                        start_mm,
+                        end_mm,
+                        center_mm,
+                        clockwise,
+                    } => curves.push(RegionCurve::Arc {
+                        start: *start_mm,
+                        end: *end_mm,
+                        center: *center_mm,
+                        clockwise: *clockwise,
+                    }),
+                    SolvedSketchRegionEdge::CubicBezier {
+                        start_mm,
+                        control_1_mm,
+                        control_2_mm,
+                        end_mm,
+                    } => curves.extend(
+                        flatten_cubic([*start_mm, *control_1_mm, *control_2_mm, *end_mm])?
+                            .windows(2)
+                            .map(|pair| RegionCurve::Line {
+                                start: pair[0],
+                                end: pair[1],
+                            }),
+                    ),
+                }
+            }
+        }
         SolvedSketchRegionProfile::Circle {
             center_mm,
             radius_mm,
         } => {
             let right = [center_mm[0] + radius_mm, center_mm[1]];
             let left = [center_mm[0] - radius_mm, center_mm[1]];
-            vec![
+            curves.extend([
                 RegionCurve::Arc {
                     start: right,
                     end: left,
@@ -1053,9 +1172,10 @@ fn profile_curves(profile: &SolvedSketchRegionProfile) -> Vec<RegionCurve> {
                     center: *center_mm,
                     clockwise: false,
                 },
-            ]
+            ]);
         }
     }
+    Ok(curves)
 }
 
 fn profile_point(profile: &SolvedSketchRegionProfile) -> [f64; 2] {
@@ -1069,11 +1189,15 @@ fn profile_point(profile: &SolvedSketchRegionProfile) -> [f64; 2] {
     }
 }
 
-fn profiles_intersect(left: &SolvedSketchRegionProfile, right: &SolvedSketchRegionProfile) -> bool {
-    let left = profile_curves(left);
-    let right = profile_curves(right);
-    left.iter()
-        .any(|left| right.iter().any(|right| curves_intersect(*left, *right)))
+fn profiles_intersect(
+    left: &SolvedSketchRegionProfile,
+    right: &SolvedSketchRegionProfile,
+) -> Result<bool, SketchError> {
+    let left = profile_curves(left)?;
+    let right = profile_curves(right)?;
+    Ok(left
+        .iter()
+        .any(|left| right.iter().any(|right| curves_intersect(*left, *right))))
 }
 
 fn curves_intersect(left: RegionCurve, right: RegionCurve) -> bool {
@@ -1116,9 +1240,13 @@ fn line_segments_intersect(
     let right = subtract2(right_end, right_start);
     let offset = subtract2(right_start, left_start);
     let denominator = cross2(left, right);
+    let near = 3.0 * CUBIC_FLATTEN_TOLERANCE_MM;
     if denominator.abs() <= EPSILON_MM {
         if cross2(offset, left).abs() > EPSILON_MM {
-            return false;
+            return point_segment_distance(left_start, right_start, right_end) <= near
+                || point_segment_distance(left_end, right_start, right_end) <= near
+                || point_segment_distance(right_start, left_start, left_end) <= near
+                || point_segment_distance(right_end, left_start, left_end) <= near;
         }
         let axis = usize::from(left[1].abs() > left[0].abs());
         let (left_min, left_max) = if left_start[axis] <= left_end[axis] {
@@ -1135,8 +1263,33 @@ fn line_segments_intersect(
     }
     let along_left = cross2(offset, right) / denominator;
     let along_right = cross2(offset, left) / denominator;
-    (-EPSILON_MM..=1.0 + EPSILON_MM).contains(&along_left)
+    if (-EPSILON_MM..=1.0 + EPSILON_MM).contains(&along_left)
         && (-EPSILON_MM..=1.0 + EPSILON_MM).contains(&along_right)
+    {
+        return true;
+    }
+    point_segment_distance(left_start, right_start, right_end) <= near
+        || point_segment_distance(left_end, right_start, right_end) <= near
+        || point_segment_distance(right_start, left_start, left_end) <= near
+        || point_segment_distance(right_end, left_start, left_end) <= near
+}
+
+fn point_segment_distance(point: [f64; 2], start: [f64; 2], end: [f64; 2]) -> f64 {
+    let direction = subtract2(end, start);
+    let length_squared = direction[0] * direction[0] + direction[1] * direction[1];
+    if length_squared <= EPSILON_MM * EPSILON_MM {
+        return distance2(point, start);
+    }
+    let parameter = ((point[0] - start[0]) * direction[0] + (point[1] - start[1]) * direction[1])
+        / length_squared;
+    let parameter = parameter.clamp(0.0, 1.0);
+    distance2(
+        point,
+        [
+            start[0] + parameter * direction[0],
+            start[1] + parameter * direction[1],
+        ],
+    )
 }
 
 fn arc_parts(curve: RegionCurve) -> ([f64; 2], [f64; 2], [f64; 2], bool) {
@@ -1248,9 +1401,12 @@ fn arcs_intersect(left: RegionCurve, right: RegionCurve) -> bool {
     .any(|point| point_on_arc(point, left) && point_on_arc(point, right))
 }
 
-fn point_in_profile(point: [f64; 2], profile: &SolvedSketchRegionProfile) -> bool {
+fn point_in_profile(
+    point: [f64; 2],
+    profile: &SolvedSketchRegionProfile,
+) -> Result<bool, SketchError> {
     let mut winding = 0_i32;
-    for curve in profile_curves(profile) {
+    for curve in profile_curves(profile)? {
         match curve {
             RegionCurve::Line { start, end } => {
                 if start[1] <= point[1]
@@ -1292,7 +1448,117 @@ fn point_in_profile(point: [f64; 2], profile: &SolvedSketchRegionProfile) -> boo
             }
         }
     }
-    winding != 0
+    Ok(winding != 0)
+}
+
+fn cubic_control_polygon_length(points: [[f64; 2]; 4]) -> f64 {
+    points
+        .windows(2)
+        .map(|pair| distance2(pair[0], pair[1]))
+        .sum()
+}
+
+fn midpoint2(a: [f64; 2], b: [f64; 2]) -> [f64; 2] {
+    [(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5]
+}
+
+fn point_line_distance(point: [f64; 2], start: [f64; 2], end: [f64; 2]) -> f64 {
+    let chord = subtract2(end, start);
+    let length = chord[0].hypot(chord[1]);
+    if length <= EPSILON_MM {
+        distance2(point, start)
+    } else {
+        cross2(chord, subtract2(point, start)).abs() / length
+    }
+}
+
+fn flatten_cubic(points: [[f64; 2]; 4]) -> Result<Vec<[f64; 2]>, SketchError> {
+    let tolerance = CUBIC_FLATTEN_TOLERANCE_MM;
+    let mut output = vec![points[0]];
+    let mut stack = vec![(points, 0_u8)];
+    while let Some((curve, depth)) = stack.pop() {
+        let flatness = point_line_distance(curve[1], curve[0], curve[3])
+            .max(point_line_distance(curve[2], curve[0], curve[3]));
+        let excess_length = cubic_control_polygon_length(curve) - distance2(curve[0], curve[3]);
+        if flatness <= tolerance && excess_length <= tolerance {
+            output.push(curve[3]);
+            if output.len() > MAX_CUBIC_FLATTEN_SEGMENTS + 1 {
+                return Err(SketchError::ResourceLimit);
+            }
+            continue;
+        }
+        if depth >= MAX_CUBIC_FLATTEN_DEPTH
+            || stack.len() + output.len() >= MAX_CUBIC_FLATTEN_SEGMENTS
+        {
+            return Err(SketchError::ResourceLimit);
+        }
+        let p01 = midpoint2(curve[0], curve[1]);
+        let p12 = midpoint2(curve[1], curve[2]);
+        let p23 = midpoint2(curve[2], curve[3]);
+        let p012 = midpoint2(p01, p12);
+        let p123 = midpoint2(p12, p23);
+        let middle = midpoint2(p012, p123);
+        stack.push(([middle, p123, p23, curve[3]], depth + 1));
+        stack.push(([curve[0], p01, p012, middle], depth + 1));
+    }
+    if output
+        .windows(2)
+        .any(|pair| distance2(pair[0], pair[1]) <= EPSILON_MM)
+    {
+        return Err(SketchError::InvalidRegionIdentity);
+    }
+    Ok(output)
+}
+
+fn adjacent_curves_overlap(previous: RegionCurve, next: RegionCurve) -> bool {
+    let (
+        RegionCurve::Line {
+            start: previous_start,
+            end: joint,
+        },
+        RegionCurve::Line {
+            start: next_start,
+            end: next_end,
+        },
+    ) = (previous, next)
+    else {
+        return false;
+    };
+    if distance2(joint, next_start) > EPSILON_MM {
+        return true;
+    }
+    let incoming = subtract2(previous_start, joint);
+    let outgoing = subtract2(next_end, joint);
+    let scale = distance2(previous_start, joint)
+        .max(distance2(next_end, joint))
+        .max(1.0);
+    cross2(incoming, outgoing).abs() <= EPSILON_MM * scale
+        && incoming[0] * outgoing[0] + incoming[1] * outgoing[1] > 0.0
+}
+
+fn validate_profile_topology(profile: &SolvedSketchRegionProfile) -> Result<(), SketchError> {
+    let curves = profile_curves(profile)?;
+    if curves.len() < 2 {
+        return Err(SketchError::OpenRegion);
+    }
+    for left in 0..curves.len() {
+        for right in left + 1..curves.len() {
+            let adjacent = right == left + 1 || (left == 0 && right + 1 == curves.len());
+            if adjacent {
+                let (previous, next) = if right == left + 1 {
+                    (curves[left], curves[right])
+                } else {
+                    (curves[right], curves[left])
+                };
+                if adjacent_curves_overlap(previous, next) {
+                    return Err(SketchError::InvalidRegionIdentity);
+                }
+            } else if curves_intersect(curves[left], curves[right]) {
+                return Err(SketchError::InvalidRegionIdentity);
+            }
+        }
+    }
+    Ok(())
 }
 
 fn stable_region_id(entity_ids: &[SketchEntityId]) -> SketchRegionId {
@@ -1719,6 +1985,7 @@ enum VariableLayout {
     Line { base: usize },
     Arc { base: usize },
     Circle { base: usize },
+    CubicBezier { base: usize },
 }
 
 fn variable_layouts(
@@ -1731,6 +1998,7 @@ fn variable_layouts(
             SketchEntity::Line { .. } => VariableLayout::Line { base: next },
             SketchEntity::Arc { .. } => VariableLayout::Arc { base: next },
             SketchEntity::Circle { .. } => VariableLayout::Circle { base: next },
+            SketchEntity::CubicBezier { .. } => VariableLayout::CubicBezier { base: next },
         };
         next = next
             .checked_add(entity.degrees_of_freedom())
@@ -1756,6 +2024,14 @@ fn constraint_variable_equations(
             (VariableLayout::Line { base }, SketchPointKind::Start, 1) => vec![base + 1],
             (VariableLayout::Line { base }, SketchPointKind::End, 0) => vec![base + 2],
             (VariableLayout::Line { base }, SketchPointKind::End, 1) => vec![base + 3],
+            (VariableLayout::CubicBezier { base }, SketchPointKind::Start, 0) => vec![base],
+            (VariableLayout::CubicBezier { base }, SketchPointKind::Start, 1) => vec![base + 1],
+            (VariableLayout::CubicBezier { base }, SketchPointKind::Control1, 0) => vec![base + 2],
+            (VariableLayout::CubicBezier { base }, SketchPointKind::Control1, 1) => vec![base + 3],
+            (VariableLayout::CubicBezier { base }, SketchPointKind::Control2, 0) => vec![base + 4],
+            (VariableLayout::CubicBezier { base }, SketchPointKind::Control2, 1) => vec![base + 5],
+            (VariableLayout::CubicBezier { base }, SketchPointKind::End, 0) => vec![base + 6],
+            (VariableLayout::CubicBezier { base }, SketchPointKind::End, 1) => vec![base + 7],
             (VariableLayout::Arc { base }, SketchPointKind::Center, 0)
             | (VariableLayout::Circle { base }, SketchPointKind::Center, 0) => vec![base],
             (VariableLayout::Arc { base }, SketchPointKind::Center, 1)
@@ -1784,6 +2060,7 @@ fn constraint_variable_equations(
             VariableLayout::Line { base } => (*base, 4),
             VariableLayout::Arc { base } => (*base, 5),
             VariableLayout::Circle { base } => (*base, 3),
+            VariableLayout::CubicBezier { base } => (*base, 8),
         };
         Ok((base..base + width).collect::<Vec<_>>())
     };
@@ -2106,6 +2383,22 @@ fn pack_solver_parameters(entities: &[SketchEntity]) -> Vec<f64> {
                 radius_mm,
                 ..
             } => parameters.extend([center_mm[0], center_mm[1], *radius_mm]),
+            SketchEntity::CubicBezier {
+                start_mm,
+                control_1_mm,
+                control_2_mm,
+                end_mm,
+                ..
+            } => parameters.extend([
+                start_mm[0],
+                start_mm[1],
+                control_1_mm[0],
+                control_1_mm[1],
+                control_2_mm[0],
+                control_2_mm[1],
+                end_mm[0],
+                end_mm[1],
+            ]),
         }
     }
     parameters
@@ -2166,6 +2459,18 @@ fn unpack_solver_parameters(
                     }
                     *center_mm = [values[0], values[1]];
                     *radius_mm = values[2];
+                }
+                SketchEntity::CubicBezier {
+                    start_mm,
+                    control_1_mm,
+                    control_2_mm,
+                    end_mm,
+                    ..
+                } => {
+                    *start_mm = [values[0], values[1]];
+                    *control_1_mm = [values[2], values[3]];
+                    *control_2_mm = [values[4], values[5]];
+                    *end_mm = [values[6], values[7]];
                 }
             }
         }
@@ -2498,7 +2803,7 @@ fn project_constraint(
                     *start_mm = point_at_radius(*start_mm, *center_mm, expected, [1.0, 0.0]);
                     *end_mm = point_at_radius(*end_mm, *center_mm, expected, [0.0, 1.0]);
                 }
-                SketchEntity::Line { .. } => {
+                SketchEntity::Line { .. } | SketchEntity::CubicBezier { .. } => {
                     return Err(SketchError::InvalidConstraintReference(constraint.id));
                 }
             }
@@ -2564,7 +2869,9 @@ fn circular_geometry(
             radius_mm,
             ..
         } => Ok((*center_mm, *radius_mm)),
-        SketchEntity::Line { .. } => Err(SketchError::InvalidConstraintReference(constraint_id)),
+        SketchEntity::Line { .. } | SketchEntity::CubicBezier { .. } => {
+            Err(SketchError::InvalidConstraintReference(constraint_id))
+        }
     }
 }
 
@@ -2710,7 +3017,9 @@ fn tangent_residual(
                     ));
             Ok(bounded_arc_residual(base, penalty))
         }
-        (SketchEntity::Line { .. }, SketchEntity::Line { .. }) => {
+        (SketchEntity::Line { .. }, SketchEntity::Line { .. })
+        | (SketchEntity::CubicBezier { .. }, _)
+        | (_, SketchEntity::CubicBezier { .. }) => {
             Err(SketchError::InvalidConstraintReference(constraint_id))
         }
     }
@@ -2732,6 +3041,9 @@ fn entity_measure(
             ..
         } => Ok(distance2(*start_mm, *center_mm)),
         SketchEntity::Circle { radius_mm, .. } => Ok(*radius_mm),
+        SketchEntity::CubicBezier { .. } => {
+            Err(SketchError::InvalidConstraintReference(constraint_id))
+        }
     }
 }
 
@@ -2753,6 +3065,9 @@ fn point_on_curve_residual(
                 distance2(point, center) - radius,
                 arc_endpoint_penalty(circular, point),
             ))
+        }
+        SketchEntity::CubicBezier { .. } => {
+            Err(SketchError::InvalidConstraintReference(constraint_id))
         }
     }
 }
@@ -2804,7 +3119,7 @@ fn constraint_residuals(
                         ..
                     } => distance2(*start_mm, *center_mm),
                     SketchEntity::Circle { radius_mm, .. } => *radius_mm,
-                    SketchEntity::Line { .. } => {
+                    SketchEntity::Line { .. } | SketchEntity::CubicBezier { .. } => {
                         return Err(SketchError::InvalidConstraintReference(constraint.id));
                     }
                 };
@@ -2952,7 +3267,7 @@ fn set_fixed_point(
         let opposite_point = match reference.point {
             SketchPointKind::Start => SketchPointKind::End,
             SketchPointKind::End => SketchPointKind::Start,
-            SketchPointKind::Center => unreachable!("center does not preserve an arc radius"),
+            _ => unreachable!("only arc endpoints preserve an arc radius"),
         };
         let opposite_position = constraints
             .iter()
@@ -2991,7 +3306,7 @@ fn set_fixed_point(
             let (start, end) = match reference.point {
                 SketchPointKind::Start => (position, opposite_position),
                 SketchPointKind::End => (opposite_position, position),
-                SketchPointKind::Center => unreachable!("center does not preserve an arc radius"),
+                _ => unreachable!("only arc endpoints preserve an arc radius"),
             };
             let chord = [end[0] - start[0], end[1] - start[1]];
             let chord_length = chord[0].hypot(chord[1]);
@@ -3026,7 +3341,7 @@ fn set_fixed_point(
         let current = match reference.point {
             SketchPointKind::Start => *start_mm,
             SketchPointKind::End => *end_mm,
-            SketchPointKind::Center => unreachable!("center does not preserve an arc radius"),
+            _ => unreachable!("only arc endpoints preserve an arc radius"),
         };
         let translation = [position[0] - current[0], position[1] - current[1]];
         for point in [start_mm, end_mm, center_mm] {
@@ -3049,8 +3364,20 @@ fn set_solved_point(
         entity_mut(entities, indices, reference.entity, constraint_id)?,
         reference.point,
     ) {
-        (SketchEntity::Line { start_mm, .. }, SketchPointKind::Start) => *start_mm = position,
-        (SketchEntity::Line { end_mm, .. }, SketchPointKind::End) => *end_mm = position,
+        (SketchEntity::Line { start_mm, .. }, SketchPointKind::Start)
+        | (SketchEntity::CubicBezier { start_mm, .. }, SketchPointKind::Start) => {
+            *start_mm = position;
+        }
+        (SketchEntity::Line { end_mm, .. }, SketchPointKind::End)
+        | (SketchEntity::CubicBezier { end_mm, .. }, SketchPointKind::End) => {
+            *end_mm = position;
+        }
+        (SketchEntity::CubicBezier { control_1_mm, .. }, SketchPointKind::Control1) => {
+            *control_1_mm = position;
+        }
+        (SketchEntity::CubicBezier { control_2_mm, .. }, SketchPointKind::Control2) => {
+            *control_2_mm = position;
+        }
         (SketchEntity::Circle { center_mm, .. }, SketchPointKind::Center) => {
             *center_mm = position;
         }
@@ -3227,6 +3554,8 @@ fn push_point_ref(bytes: &mut Vec<u8>, reference: SketchPointRef) {
         SketchPointKind::Start => 1,
         SketchPointKind::End => 2,
         SketchPointKind::Center => 3,
+        SketchPointKind::Control1 => 4,
+        SketchPointKind::Control2 => 5,
     });
 }
 

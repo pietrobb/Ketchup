@@ -7,6 +7,7 @@ const TOLERANCE_PROFILE: &str = "r0-v1:bbox=1e-6mm:volume_abs=1e-6mm3:volume_rel
 const MIN_LENGTH_MM: f64 = 0.01;
 const MAX_LENGTH_MM: f64 = 100_000.0;
 const MAX_COORDINATE_MM: f64 = 1_000_000.0;
+const PLANAR_SEGMENT_STRIDE: usize = 10;
 
 #[must_use]
 pub const fn backend_fingerprint() -> &'static str {
@@ -403,12 +404,84 @@ pub enum PlanarProfileSegment {
         center_mm: [f64; 2],
         clockwise: bool,
     },
+    CubicBezier {
+        start_mm: [f64; 2],
+        control_1_mm: [f64; 2],
+        control_2_mm: [f64; 2],
+        end_mm: [f64; 2],
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum PlanarProfileLoop {
     Segments(Vec<PlanarProfileSegment>),
     Circle { center_mm: [f64; 2], radius_mm: f64 },
+}
+
+fn planar_segment_endpoints(segment: &PlanarProfileSegment) -> ([f64; 2], [f64; 2]) {
+    match segment {
+        PlanarProfileSegment::Line { start_mm, end_mm }
+        | PlanarProfileSegment::CircularArc {
+            start_mm, end_mm, ..
+        }
+        | PlanarProfileSegment::CubicBezier {
+            start_mm, end_mm, ..
+        } => (*start_mm, *end_mm),
+    }
+}
+
+fn flatten_planar_segments(segments: &[PlanarProfileSegment]) -> Vec<f64> {
+    segments
+        .iter()
+        .flat_map(|segment| match segment {
+            PlanarProfileSegment::Line { start_mm, end_mm } => [
+                0.0,
+                start_mm[0],
+                start_mm[1],
+                end_mm[0],
+                end_mm[1],
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+            ],
+            PlanarProfileSegment::CircularArc {
+                start_mm,
+                end_mm,
+                center_mm,
+                clockwise,
+            } => [
+                1.0,
+                start_mm[0],
+                start_mm[1],
+                end_mm[0],
+                end_mm[1],
+                center_mm[0],
+                center_mm[1],
+                0.0,
+                0.0,
+                f64::from(*clockwise),
+            ],
+            PlanarProfileSegment::CubicBezier {
+                start_mm,
+                control_1_mm,
+                control_2_mm,
+                end_mm,
+            } => [
+                2.0,
+                start_mm[0],
+                start_mm[1],
+                end_mm[0],
+                end_mm[1],
+                control_1_mm[0],
+                control_1_mm[1],
+                control_2_mm[0],
+                control_2_mm[1],
+                0.0,
+            ],
+        })
+        .collect()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -985,36 +1058,7 @@ impl ExactBackend {
         );
         validate_mixed_profile(segments, &input)?;
         validate_length(height_mm, "height_mm", "extrude_mixed_profile", &input)?;
-        let flattened = segments
-            .iter()
-            .flat_map(|segment| match segment {
-                PlanarProfileSegment::Line { start_mm, end_mm } => [
-                    0.0,
-                    start_mm[0],
-                    start_mm[1],
-                    end_mm[0],
-                    end_mm[1],
-                    0.0,
-                    0.0,
-                    0.0,
-                ],
-                PlanarProfileSegment::CircularArc {
-                    start_mm,
-                    end_mm,
-                    center_mm,
-                    clockwise,
-                } => [
-                    1.0,
-                    start_mm[0],
-                    start_mm[1],
-                    end_mm[0],
-                    end_mm[1],
-                    center_mm[0],
-                    center_mm[1],
-                    f64::from(*clockwise),
-                ],
-            })
-            .collect::<Vec<_>>();
+        let flattened = flatten_planar_segments(segments);
         collect_output(
             ffi::extrude_mixed_profile_native(&flattened, height_mm),
             "extrude_mixed_profile",
@@ -1049,33 +1093,7 @@ impl ExactBackend {
             match planar_loop {
                 PlanarProfileLoop::Segments(segments) => {
                     validate_mixed_profile(segments, &input)?;
-                    flattened.extend(segments.iter().flat_map(|segment| match segment {
-                        PlanarProfileSegment::Line { start_mm, end_mm } => [
-                            0.0,
-                            start_mm[0],
-                            start_mm[1],
-                            end_mm[0],
-                            end_mm[1],
-                            0.0,
-                            0.0,
-                            0.0,
-                        ],
-                        PlanarProfileSegment::CircularArc {
-                            start_mm,
-                            end_mm,
-                            center_mm,
-                            clockwise,
-                        } => [
-                            1.0,
-                            start_mm[0],
-                            start_mm[1],
-                            end_mm[0],
-                            end_mm[1],
-                            center_mm[0],
-                            center_mm[1],
-                            f64::from(*clockwise),
-                        ],
-                    }));
+                    flattened.extend(flatten_planar_segments(segments));
                 }
                 PlanarProfileLoop::Circle {
                     center_mm,
@@ -1083,7 +1101,7 @@ impl ExactBackend {
                 } => {
                     validate_circle(*center_mm, *radius_mm, "extrude_planar_region", &input)?;
                     flattened.extend([
-                        2.0,
+                        3.0,
                         center_mm[0],
                         center_mm[1],
                         *radius_mm,
@@ -1091,21 +1109,25 @@ impl ExactBackend {
                         0.0,
                         0.0,
                         0.0,
+                        0.0,
+                        0.0,
                     ]);
                 }
             }
-            loop_segment_counts.push(((flattened.len() - before) / 8).try_into().map_err(
-                |_| {
-                    parameter_error(
-                        GeometryErrorCode::InvalidProfile,
-                        "extrude_planar_region",
-                        &input,
-                        "Planar region exceeds the segment limit".to_owned(),
-                    )
-                },
-            )?);
+            loop_segment_counts.push(
+                ((flattened.len() - before) / PLANAR_SEGMENT_STRIDE)
+                    .try_into()
+                    .map_err(|_| {
+                        parameter_error(
+                            GeometryErrorCode::InvalidProfile,
+                            "extrude_planar_region",
+                            &input,
+                            "Planar region exceeds the segment limit".to_owned(),
+                        )
+                    })?,
+            );
         }
-        if flattened.len() / 8 > 4_096 {
+        if flattened.len() / PLANAR_SEGMENT_STRIDE > 4_096 {
             return Err(parameter_error(
                 GeometryErrorCode::InvalidProfile,
                 "extrude_planar_region",
@@ -1155,36 +1177,7 @@ impl ExactBackend {
             angle_degrees,
             &input,
         )?;
-        let flattened = segments
-            .iter()
-            .flat_map(|segment| match segment {
-                PlanarProfileSegment::Line { start_mm, end_mm } => [
-                    0.0,
-                    start_mm[0],
-                    start_mm[1],
-                    end_mm[0],
-                    end_mm[1],
-                    0.0,
-                    0.0,
-                    0.0,
-                ],
-                PlanarProfileSegment::CircularArc {
-                    start_mm,
-                    end_mm,
-                    center_mm,
-                    clockwise,
-                } => [
-                    1.0,
-                    start_mm[0],
-                    start_mm[1],
-                    end_mm[0],
-                    end_mm[1],
-                    center_mm[0],
-                    center_mm[1],
-                    f64::from(*clockwise),
-                ],
-            })
-            .collect::<Vec<_>>();
+        let flattened = flatten_planar_segments(segments);
         collect_output(
             ffi::revolve_general_profile_native(
                 &flattened,
@@ -1792,36 +1785,7 @@ impl ExactBackend {
         }
         validate_coordinate(origin_z_mm, "origin_z_mm", "cut_mixed_profile", &input)?;
         validate_length(height_mm, "height_mm", "cut_mixed_profile", &input)?;
-        let flattened = segments
-            .iter()
-            .flat_map(|segment| match segment {
-                PlanarProfileSegment::Line { start_mm, end_mm } => [
-                    0.0,
-                    start_mm[0],
-                    start_mm[1],
-                    end_mm[0],
-                    end_mm[1],
-                    0.0,
-                    0.0,
-                    0.0,
-                ],
-                PlanarProfileSegment::CircularArc {
-                    start_mm,
-                    end_mm,
-                    center_mm,
-                    clockwise,
-                } => [
-                    1.0,
-                    start_mm[0],
-                    start_mm[1],
-                    end_mm[0],
-                    end_mm[1],
-                    center_mm[0],
-                    center_mm[1],
-                    f64::from(*clockwise),
-                ],
-            })
-            .collect::<Vec<_>>();
+        let flattened = flatten_planar_segments(segments);
         let native_base = base.native.as_ref().ok_or_else(|| GeometryError {
             code: GeometryErrorCode::NullResult,
             diagnostic: "Exact body lost its owned native shape".to_owned(),
@@ -1875,36 +1839,7 @@ impl ExactBackend {
         }
         validate_coordinate(origin_z_mm, "origin_z_mm", "fuse_mixed_profile", &input)?;
         validate_length(height_mm, "height_mm", "fuse_mixed_profile", &input)?;
-        let flattened = segments
-            .iter()
-            .flat_map(|segment| match segment {
-                PlanarProfileSegment::Line { start_mm, end_mm } => [
-                    0.0,
-                    start_mm[0],
-                    start_mm[1],
-                    end_mm[0],
-                    end_mm[1],
-                    0.0,
-                    0.0,
-                    0.0,
-                ],
-                PlanarProfileSegment::CircularArc {
-                    start_mm,
-                    end_mm,
-                    center_mm,
-                    clockwise,
-                } => [
-                    1.0,
-                    start_mm[0],
-                    start_mm[1],
-                    end_mm[0],
-                    end_mm[1],
-                    center_mm[0],
-                    center_mm[1],
-                    f64::from(*clockwise),
-                ],
-            })
-            .collect::<Vec<_>>();
+        let flattened = flatten_planar_segments(segments);
         let native_base = base.native.as_ref().ok_or_else(|| GeometryError {
             code: GeometryErrorCode::NullResult,
             diagnostic: "Exact body lost its owned native shape".to_owned(),
@@ -1958,36 +1893,7 @@ impl ExactBackend {
         }
         validate_coordinate(origin_z_mm, "origin_z_mm", "common_mixed_profile", &input)?;
         validate_length(height_mm, "height_mm", "common_mixed_profile", &input)?;
-        let flattened = segments
-            .iter()
-            .flat_map(|segment| match segment {
-                PlanarProfileSegment::Line { start_mm, end_mm } => [
-                    0.0,
-                    start_mm[0],
-                    start_mm[1],
-                    end_mm[0],
-                    end_mm[1],
-                    0.0,
-                    0.0,
-                    0.0,
-                ],
-                PlanarProfileSegment::CircularArc {
-                    start_mm,
-                    end_mm,
-                    center_mm,
-                    clockwise,
-                } => [
-                    1.0,
-                    start_mm[0],
-                    start_mm[1],
-                    end_mm[0],
-                    end_mm[1],
-                    center_mm[0],
-                    center_mm[1],
-                    f64::from(*clockwise),
-                ],
-            })
-            .collect::<Vec<_>>();
+        let flattened = flatten_planar_segments(segments);
         let native_base = base.native.as_ref().ok_or_else(|| GeometryError {
             code: GeometryErrorCode::NullResult,
             diagnostic: "Exact body lost its owned native shape".to_owned(),
@@ -2041,36 +1947,7 @@ impl ExactBackend {
         }
         validate_coordinate(origin_z_mm, "origin_z_mm", "split_mixed_profile", &input)?;
         validate_length(height_mm, "height_mm", "split_mixed_profile", &input)?;
-        let flattened = segments
-            .iter()
-            .flat_map(|segment| match segment {
-                PlanarProfileSegment::Line { start_mm, end_mm } => [
-                    0.0,
-                    start_mm[0],
-                    start_mm[1],
-                    end_mm[0],
-                    end_mm[1],
-                    0.0,
-                    0.0,
-                    0.0,
-                ],
-                PlanarProfileSegment::CircularArc {
-                    start_mm,
-                    end_mm,
-                    center_mm,
-                    clockwise,
-                } => [
-                    1.0,
-                    start_mm[0],
-                    start_mm[1],
-                    end_mm[0],
-                    end_mm[1],
-                    center_mm[0],
-                    center_mm[1],
-                    f64::from(*clockwise),
-                ],
-            })
-            .collect::<Vec<_>>();
+        let flattened = flatten_planar_segments(segments);
         let native_base = base.native.as_ref().ok_or_else(|| GeometryError {
             code: GeometryErrorCode::NullResult,
             diagnostic: "Exact body lost its owned native shape".to_owned(),
@@ -3071,7 +2948,9 @@ fn capture_contained_polygon_references(
                 start_mm[0].max(end_mm[0]),
                 start_mm[1].max(end_mm[1]),
             )),
-            PlanarProfileSegment::CircularArc { .. } => None,
+            PlanarProfileSegment::CircularArc { .. } | PlanarProfileSegment::CubicBezier { .. } => {
+                None
+            }
         })
         .collect::<Vec<_>>();
     if line_reference_bounds.is_empty() {
@@ -3092,7 +2971,7 @@ fn capture_contained_polygon_references(
                 center_mm,
                 ..
             } => Some([*start_mm, *end_mm, *center_mm]),
-            PlanarProfileSegment::Line { .. } => None,
+            PlanarProfileSegment::Line { .. } | PlanarProfileSegment::CubicBezier { .. } => None,
         })
         .find(|points| {
             output.body.topology.faces.iter().any(|face| {
@@ -3107,67 +2986,68 @@ fn capture_contained_polygon_references(
                     })
             })
         });
-    let clipped_arc_face_ordinal = (matches!(operation_name, "union" | "intersection")
-        && arc_reference_points.is_none())
-    .then(|| {
-        let arcs = profile
-            .iter()
-            .filter_map(|segment| match segment {
-                PlanarProfileSegment::CircularArc {
-                    start_mm,
-                    center_mm,
-                    ..
-                } => Some((
-                    *center_mm,
-                    (start_mm[0] - center_mm[0]).hypot(start_mm[1] - center_mm[1]),
-                )),
-                PlanarProfileSegment::Line { .. } => None,
+    let clipped_arc_face_ordinal =
+        (matches!(operation_name, "union" | "intersection") && arc_reference_points.is_none())
+            .then(|| {
+                let arcs = profile
+                    .iter()
+                    .filter_map(|segment| match segment {
+                        PlanarProfileSegment::CircularArc {
+                            start_mm,
+                            center_mm,
+                            ..
+                        } => Some((
+                            *center_mm,
+                            (start_mm[0] - center_mm[0]).hypot(start_mm[1] - center_mm[1]),
+                        )),
+                        PlanarProfileSegment::Line { .. }
+                        | PlanarProfileSegment::CubicBezier { .. } => None,
+                    })
+                    .collect::<Vec<_>>();
+                let candidates = output
+                    .body
+                    .topology
+                    .faces
+                    .iter()
+                    .filter(|face| {
+                        face.surface_kind == "other"
+                            && (face.bounds_mm.min.z - bounds.min.z).abs() <= 1.0e-6
+                            && (face.bounds_mm.max.z - bounds.max.z).abs() <= 1.0e-6
+                    })
+                    .collect::<Vec<_>>();
+                if let [(center, radius)] = arcs.as_slice() {
+                    candidates
+                        .into_iter()
+                        .filter(|face| {
+                            face.bounds_mm.min.x >= center[0] - radius - 1.0e-6
+                                && face.bounds_mm.max.x <= center[0] + radius + 1.0e-6
+                                && face.bounds_mm.min.y >= center[1] - radius - 1.0e-6
+                                && face.bounds_mm.max.y <= center[1] + radius + 1.0e-6
+                        })
+                        .min_by(|left, right| {
+                            left.geometric_fingerprint
+                                .cmp(&right.geometric_fingerprint)
+                                .then(left.ordinal.cmp(&right.ordinal))
+                        })
+                        .map(|face| face.ordinal)
+                } else {
+                    let [face] = candidates.as_slice() else {
+                        return None;
+                    };
+                    (arcs
+                        .iter()
+                        .filter(|(center, radius)| {
+                            face.bounds_mm.min.x >= center[0] - radius - 1.0e-6
+                                && face.bounds_mm.max.x <= center[0] + radius + 1.0e-6
+                                && face.bounds_mm.min.y >= center[1] - radius - 1.0e-6
+                                && face.bounds_mm.max.y <= center[1] + radius + 1.0e-6
+                        })
+                        .count()
+                        == 1)
+                        .then_some(face.ordinal)
+                }
             })
-            .collect::<Vec<_>>();
-        let candidates = output
-            .body
-            .topology
-            .faces
-            .iter()
-            .filter(|face| {
-                face.surface_kind == "other"
-                    && (face.bounds_mm.min.z - bounds.min.z).abs() <= 1.0e-6
-                    && (face.bounds_mm.max.z - bounds.max.z).abs() <= 1.0e-6
-            })
-            .collect::<Vec<_>>();
-        if let [(center, radius)] = arcs.as_slice() {
-            candidates
-                .into_iter()
-                .filter(|face| {
-                    face.bounds_mm.min.x >= center[0] - radius - 1.0e-6
-                        && face.bounds_mm.max.x <= center[0] + radius + 1.0e-6
-                        && face.bounds_mm.min.y >= center[1] - radius - 1.0e-6
-                        && face.bounds_mm.max.y <= center[1] + radius + 1.0e-6
-                })
-                .min_by(|left, right| {
-                    left.geometric_fingerprint
-                        .cmp(&right.geometric_fingerprint)
-                        .then(left.ordinal.cmp(&right.ordinal))
-                })
-                .map(|face| face.ordinal)
-        } else {
-            let [face] = candidates.as_slice() else {
-                return None;
-            };
-            (arcs
-                .iter()
-                .filter(|(center, radius)| {
-                    face.bounds_mm.min.x >= center[0] - radius - 1.0e-6
-                        && face.bounds_mm.max.x <= center[0] + radius + 1.0e-6
-                        && face.bounds_mm.min.y >= center[1] - radius - 1.0e-6
-                        && face.bounds_mm.max.y <= center[1] + radius + 1.0e-6
-                })
-                .count()
-                == 1)
-                .then_some(face.ordinal)
-        }
-    })
-    .flatten();
+            .flatten();
     let arc_side = arc_reference_points.is_some() || clipped_arc_face_ordinal.is_some();
     let first_line_survives = output.body.topology.faces.iter().any(|face| {
         let side_bounds = line_reference_bounds[0];
@@ -3337,7 +3217,7 @@ pub fn capture_polygon_through_cut_references(
                 center_mm,
                 ..
             } => Some((*start_mm, *center_mm)),
-            PlanarProfileSegment::Line { .. } => None,
+            PlanarProfileSegment::Line { .. } | PlanarProfileSegment::CubicBezier { .. } => None,
         })
         .collect::<Vec<_>>();
     let rounded_line_count = profile_segments
@@ -3516,7 +3396,7 @@ pub fn capture_polygon_through_cut_references(
                     .flatten()
                     .filter_map(|segment| match segment {
                         PlanarProfileSegment::Line { start_mm, end_mm } => Some((start_mm, end_mm)),
-                        PlanarProfileSegment::CircularArc { .. } => None,
+                        PlanarProfileSegment::CircularArc { .. } | PlanarProfileSegment::CubicBezier { .. } => None,
                     });
                 let lines = if pocket_floor_z.is_some() {
                     lines.next().into_iter().collect::<Vec<_>>()
@@ -5027,7 +4907,7 @@ pub fn capture_profile_split_references(
                 center_mm,
                 ..
             } => Some([*start_mm, *end_mm, *center_mm]),
-            PlanarProfileSegment::Line { .. } => None,
+            PlanarProfileSegment::Line { .. } | PlanarProfileSegment::CubicBezier { .. } => None,
         })
         .collect::<Vec<_>>();
     let surviving_arc_reference_points = arc_reference_points.iter().find(|points| {
@@ -5101,7 +4981,8 @@ pub fn capture_profile_split_references(
                         start_mm[0].max(end_mm[0]),
                         start_mm[1].max(end_mm[1]),
                     ]),
-                    PlanarProfileSegment::CircularArc { .. } => None,
+                    PlanarProfileSegment::CircularArc { .. }
+                    | PlanarProfileSegment::CubicBezier { .. } => None,
                 })
                 .collect::<Vec<_>>();
             let line_candidates = output
@@ -5768,12 +5649,7 @@ fn validate_general_revolve_profile(
             "Revolve angle must be within (0, 360] degrees".to_owned(),
         ));
     }
-    let endpoints = |segment: &PlanarProfileSegment| match segment {
-        PlanarProfileSegment::Line { start_mm, end_mm }
-        | PlanarProfileSegment::CircularArc {
-            start_mm, end_mm, ..
-        } => (*start_mm, *end_mm),
-    };
+    let endpoints = planar_segment_endpoints;
     for (index, segment) in segments.iter().enumerate() {
         let (start, end) = endpoints(segment);
         for (coordinate, name) in [
@@ -5786,6 +5662,21 @@ fn validate_general_revolve_profile(
         }
         if start == end {
             return Err(invalid(format!("Profile segment {index} is degenerate")));
+        }
+        if let PlanarProfileSegment::CubicBezier {
+            control_1_mm,
+            control_2_mm,
+            ..
+        } = segment
+        {
+            for (coordinate, name) in [
+                (control_1_mm[0], "control_1_x"),
+                (control_1_mm[1], "control_1_y"),
+                (control_2_mm[0], "control_2_x"),
+                (control_2_mm[1], "control_2_y"),
+            ] {
+                validate_coordinate(coordinate, name, operation, input)?;
+            }
         }
         if let PlanarProfileSegment::CircularArc { center_mm, .. } = segment {
             validate_coordinate(center_mm[0], "center_x", operation, input)?;
@@ -5824,22 +5715,12 @@ fn validate_mixed_profile(
     let line_only = segments
         .iter()
         .all(|segment| matches!(segment, PlanarProfileSegment::Line { .. }));
-    if !(2..=64).contains(&segments.len())
-        || !segments
-            .iter()
-            .any(|segment| matches!(segment, PlanarProfileSegment::Line { .. }))
-        || (line_only && segments.len() < 3)
-    {
+    if !(2..=64).contains(&segments.len()) || (line_only && segments.len() < 3) {
         return Err(invalid(
-            "Segmented profile requires 2..=64 segments, including at least one line; line-only polygons require at least three lines".to_owned(),
+            "Segmented profile requires 2..=64 segments; line-only polygons require at least three lines".to_owned(),
         ));
     }
-    let endpoints = |segment: &PlanarProfileSegment| match segment {
-        PlanarProfileSegment::Line { start_mm, end_mm }
-        | PlanarProfileSegment::CircularArc {
-            start_mm, end_mm, ..
-        } => (*start_mm, *end_mm),
-    };
+    let endpoints = planar_segment_endpoints;
     for (index, segment) in segments.iter().enumerate() {
         let (start, end) = endpoints(segment);
         for (coordinate, name) in [
@@ -5852,6 +5733,21 @@ fn validate_mixed_profile(
         }
         if start == end {
             return Err(invalid(format!("Profile segment {index} is degenerate")));
+        }
+        if let PlanarProfileSegment::CubicBezier {
+            control_1_mm,
+            control_2_mm,
+            ..
+        } = segment
+        {
+            for (coordinate, name) in [
+                (control_1_mm[0], "control_1_x"),
+                (control_1_mm[1], "control_1_y"),
+                (control_2_mm[0], "control_2_x"),
+                (control_2_mm[1], "control_2_y"),
+            ] {
+                validate_coordinate(coordinate, name, "extrude_mixed_profile", input)?;
+            }
         }
         if let PlanarProfileSegment::CircularArc { center_mm, .. } = segment {
             validate_coordinate(center_mm[0], "center_x", "extrude_mixed_profile", input)?;
@@ -5934,7 +5830,11 @@ fn is_capsule_mixed_profile(segments: &[PlanarProfileSegment]) -> bool {
 fn is_rounded_rectangle_mixed_profile(segments: &[PlanarProfileSegment]) -> bool {
     if segments.len() != 8
         || segments.iter().enumerate().any(|(index, segment)| {
-            matches!(segment, PlanarProfileSegment::Line { .. }) != index.is_multiple_of(2)
+            if index.is_multiple_of(2) {
+                !matches!(segment, PlanarProfileSegment::Line { .. })
+            } else {
+                !matches!(segment, PlanarProfileSegment::CircularArc { .. })
+            }
         })
     {
         return false;
@@ -5958,6 +5858,7 @@ fn is_rounded_rectangle_mixed_profile(segments: &[PlanarProfileSegment]) -> bool
                 center_mm[0],
                 center_mm[1],
             ],
+            PlanarProfileSegment::CubicBezier { .. } => [0.0; 6],
         })
         .map(f64::abs)
         .fold(1.0, f64::max);
@@ -5969,7 +5870,9 @@ fn is_rounded_rectangle_mixed_profile(segments: &[PlanarProfileSegment]) -> bool
             PlanarProfileSegment::Line { start_mm, end_mm } => {
                 [end_mm[0] - start_mm[0], end_mm[1] - start_mm[1]]
             }
-            PlanarProfileSegment::CircularArc { .. } => unreachable!(),
+            PlanarProfileSegment::CircularArc { .. } | PlanarProfileSegment::CubicBezier { .. } => {
+                [0.0; 2]
+            }
         })
         .collect::<Vec<_>>();
     let opposite = |left: [f64; 2], right: [f64; 2]| {
@@ -6041,7 +5944,7 @@ fn is_two_axis_arc_clipped_rounded_rectangle_overlap(
             center_mm,
             ..
         } => Some((start_mm[0] - center_mm[0]).hypot(start_mm[1] - center_mm[1])),
-        PlanarProfileSegment::Line { .. } => None,
+        PlanarProfileSegment::Line { .. } | PlanarProfileSegment::CubicBezier { .. } => None,
     }) else {
         return false;
     };
@@ -6050,6 +5953,9 @@ fn is_two_axis_arc_clipped_rounded_rectangle_overlap(
     for point in segments.iter().flat_map(|segment| match segment {
         PlanarProfileSegment::Line { start_mm, end_mm }
         | PlanarProfileSegment::CircularArc {
+            start_mm, end_mm, ..
+        }
+        | PlanarProfileSegment::CubicBezier {
             start_mm, end_mm, ..
         } => [*start_mm, *end_mm],
     }) {
@@ -6095,6 +6001,9 @@ fn is_strict_convex_mixed_profile(segments: &[PlanarProfileSegment]) -> bool {
         || !segments
             .iter()
             .any(|segment| matches!(segment, PlanarProfileSegment::CircularArc { .. }))
+        || segments
+            .iter()
+            .any(|segment| matches!(segment, PlanarProfileSegment::CubicBezier { .. }))
     {
         return false;
     }
@@ -6117,6 +6026,7 @@ fn is_strict_convex_mixed_profile(segments: &[PlanarProfileSegment]) -> bool {
                 center_mm[0],
                 center_mm[1],
             ],
+            PlanarProfileSegment::CubicBezier { .. } => [0.0; 6],
         })
         .map(f64::abs)
         .fold(1.0, f64::max);
@@ -6158,6 +6068,7 @@ fn is_strict_convex_mixed_profile(segments: &[PlanarProfileSegment]) -> bool {
                     ]);
                 }
             }
+            PlanarProfileSegment::CubicBezier { .. } => return false,
         }
     }
     if boundary.len() < 3 {
@@ -6202,6 +6113,7 @@ fn is_strict_convex_mixed_profile(segments: &[PlanarProfileSegment]) -> bool {
             PlanarProfileSegment::CircularArc { clockwise, .. } => {
                 (if *clockwise { -1 } else { 1 }) == orientation
             }
+            PlanarProfileSegment::CubicBezier { .. } => false,
         })
 }
 
@@ -6210,7 +6122,9 @@ fn is_simple_linear_planar_profile(segments: &[PlanarProfileSegment]) -> bool {
         .iter()
         .filter_map(|segment| match segment {
             PlanarProfileSegment::Line { start_mm, .. } => Some(*start_mm),
-            PlanarProfileSegment::CircularArc { .. } => None,
+            PlanarProfileSegment::CircularArc { .. } | PlanarProfileSegment::CubicBezier { .. } => {
+                None
+            }
         })
         .collect::<Vec<_>>();
     if points.len() != segments.len()

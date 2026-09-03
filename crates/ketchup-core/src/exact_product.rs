@@ -12966,23 +12966,24 @@ fn exact_mixed_profile_from_solved(
         SolvedSketchRegionProfile::Boundary(edges) => edges
             .iter()
             .map(|edge| match edge {
-                SolvedSketchRegionEdge::Line { start_mm, end_mm } => ProfileSegment::Line {
+                SolvedSketchRegionEdge::Line { start_mm, end_mm } => Some(ProfileSegment::Line {
                     start_mm: *start_mm,
                     end_mm: *end_mm,
-                },
+                }),
                 SolvedSketchRegionEdge::Arc {
                     start_mm,
                     end_mm,
                     center_mm,
                     clockwise,
-                } => ProfileSegment::CircularArc {
+                } => Some(ProfileSegment::CircularArc {
                     start_mm: *start_mm,
                     end_mm: *end_mm,
                     center_mm: *center_mm,
                     clockwise: *clockwise,
-                },
+                }),
+                SolvedSketchRegionEdge::CubicBezier { .. } => None,
             })
-            .collect(),
+            .collect::<Option<Vec<_>>>()?,
         SolvedSketchRegionProfile::Circle { .. } => return None,
     };
     exact_mixed_profile(&segments, true)

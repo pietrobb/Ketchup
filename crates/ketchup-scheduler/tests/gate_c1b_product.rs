@@ -23304,6 +23304,23 @@ fn translated_capsule_planar_segments(dx: f64) -> Vec<PlanarProfileSegment> {
                     clockwise,
                 }
             }
+            PlanarProfileSegment::CubicBezier {
+                mut start_mm,
+                mut control_1_mm,
+                mut control_2_mm,
+                mut end_mm,
+            } => {
+                start_mm[0] += dx;
+                control_1_mm[0] += dx;
+                control_2_mm[0] += dx;
+                end_mm[0] += dx;
+                PlanarProfileSegment::CubicBezier {
+                    start_mm,
+                    control_1_mm,
+                    control_2_mm,
+                    end_mm,
+                }
+            }
         })
         .collect()
 }

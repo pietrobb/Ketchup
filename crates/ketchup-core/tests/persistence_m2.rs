@@ -13,6 +13,16 @@ fn load_error(bytes: &[u8]) -> PersistenceError {
     }
 }
 
+fn rewrite_envelope_schema(bytes: &mut [u8], schema: u16) {
+    let manifest_length = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+    let payload_offset = 16 + manifest_length;
+    bytes[10..12].copy_from_slice(&schema.to_le_bytes());
+    let payload_length = (bytes.len() - payload_offset) as u64;
+    bytes[16..24].copy_from_slice(&payload_length.to_le_bytes());
+    let checksum = ketchup_core::graph::sha256_bytes(&bytes[payload_offset..]);
+    bytes[24..56].copy_from_slice(&checksum);
+}
+
 fn graph_document() -> DocumentStore {
     let segment = SlotSegment::new(NodeId(2), "items", "a").unwrap();
     let path = SlotPath::new(vec![segment.clone()]).unwrap();
@@ -240,6 +250,22 @@ fn classification_replacement_is_dimension_local_atomic_and_undoable() {
         )
     );
     assert_eq!(store.current().canonical_digest(), stamp);
+}
+
+#[test]
+fn schema_46_document_without_cubic_data_loads_losslessly_after_schema_47_bump() {
+    let snapshot = graph_document().current();
+    let expected_digest = snapshot.canonical_digest();
+    let schema_47 = persistence::save(&snapshot);
+    let mut schema_46 = schema_47.clone();
+    rewrite_envelope_schema(&mut schema_46, 46);
+
+    let loaded = persistence::load(&schema_46).unwrap();
+    assert_eq!(loaded.source_schema(), 46);
+    assert_eq!(loaded.disposition(), LoadDisposition::EditableLossless);
+    assert!(loaded.migration_losses().is_empty());
+    assert_eq!(loaded.snapshot().canonical_digest(), expected_digest);
+    assert_eq!(persistence::save(&loaded.snapshot()), schema_47);
 }
 
 #[test]

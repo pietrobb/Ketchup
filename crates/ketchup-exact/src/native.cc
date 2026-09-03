@@ -37,6 +37,7 @@
 #include <GeomAbs_JoinType.hxx>
 #include <GeomAbs_SurfaceType.hxx>
 #include <GeomAPI_Interpolate.hxx>
+#include <Geom_BezierCurve.hxx>
 #include <Geom_Plane.hxx>
 #include <Geom_TrimmedCurve.hxx>
 #include <Standard_Failure.hxx>
@@ -50,6 +51,7 @@
 #include <NCollection_List.hxx>
 #include <TopTools_IndexedDataMapOfShapeListOfShape.hxx>
 #include <TopTools_IndexedMapOfShape.hxx>
+#include <TColgp_Array1OfPnt.hxx>
 #include <TColgp_HArray1OfPnt.hxx>
 #include <TopoDS.hxx>
 #include <TopoDS_Compound.hxx>
@@ -1017,18 +1019,31 @@ std::unique_ptr<NativeOperationResult> extrude_circle_native(
   });
 }
 
+TopoDS_Edge cubic_bezier_edge(
+    rust::Slice<const double> segments, std::size_t offset, double z) {
+  TColgp_Array1OfPnt poles(1, 4);
+  poles.SetValue(1, gp_Pnt(segments[offset + 1], segments[offset + 2], z));
+  poles.SetValue(2, gp_Pnt(segments[offset + 5], segments[offset + 6], z));
+  poles.SetValue(3, gp_Pnt(segments[offset + 7], segments[offset + 8], z));
+  poles.SetValue(4, gp_Pnt(segments[offset + 3], segments[offset + 4], z));
+  occ::handle<Geom_BezierCurve> curve = new Geom_BezierCurve(poles);
+  BRepBuilderAPI_MakeEdge edge_builder(curve);
+  return edge_builder.IsDone() ? edge_builder.Edge() : TopoDS_Edge{};
+}
+
 std::unique_ptr<NativeOperationResult> extrude_mixed_profile_native(
     rust::Slice<const double> segments, double height) noexcept {
   return guarded([&] {
-    if (segments.size() < 16 || segments.size() % 8 != 0) {
+    if (segments.size() < 16 || segments.size() % 10 != 0) {
       return error_result(STATUS_INVALID_PARAMETER, "Mixed profile segment payload is malformed");
     }
     BRepBuilderAPI_MakeWire wire_builder;
     std::vector<TopoDS_Edge> profile_edges;
-    profile_edges.reserve(segments.size() / 8);
+    profile_edges.reserve(segments.size() / 10);
     std::size_t first_arc_index = profile_edges.capacity();
     std::size_t first_line_index = profile_edges.capacity();
-    for (std::size_t offset = 0; offset < segments.size(); offset += 8) {
+    std::size_t first_cubic_index = profile_edges.capacity();
+    for (std::size_t offset = 0; offset < segments.size(); offset += 10) {
       const double kind = segments[offset];
       const gp_Pnt start(segments[offset + 1], segments[offset + 2], 0.0);
       const gp_Pnt end(segments[offset + 3], segments[offset + 4], 0.0);
@@ -1041,7 +1056,7 @@ std::unique_ptr<NativeOperationResult> extrude_mixed_profile_native(
       } else if (kind == 1.0) {
         const double center_x = segments[offset + 5];
         const double center_y = segments[offset + 6];
-        const bool clockwise = segments[offset + 7] != 0.0;
+        const bool clockwise = segments[offset + 9] != 0.0;
         const double start_angle = std::atan2(start.Y() - center_y, start.X() - center_x);
         const double end_angle = std::atan2(end.Y() - center_y, end.X() - center_x);
         double sweep = end_angle - start_angle;
@@ -1065,6 +1080,11 @@ std::unique_ptr<NativeOperationResult> extrude_mixed_profile_native(
         if (first_arc_index == profile_edges.capacity()) {
           first_arc_index = profile_edges.size();
         }
+      } else if (kind == 2.0) {
+        edge = cubic_bezier_edge(segments, offset, 0.0);
+        if (first_cubic_index == profile_edges.capacity()) {
+          first_cubic_index = profile_edges.size();
+        }
       } else {
         return error_result(STATUS_INVALID_PARAMETER, "Mixed profile segment kind is invalid");
       }
@@ -1075,7 +1095,9 @@ std::unique_ptr<NativeOperationResult> extrude_mixed_profile_native(
       wire_builder.Add(edge);
     }
     if (!wire_builder.IsDone()
-        || (first_arc_index >= profile_edges.size() && first_line_index >= profile_edges.size())) {
+        || (first_arc_index >= profile_edges.size()
+            && first_line_index >= profile_edges.size()
+            && first_cubic_index >= profile_edges.size())) {
       return error_result(STATUS_INVALID_SHAPE, "OCCT segmented profile wire is incomplete");
     }
     BRepBuilderAPI_MakeFace face_builder(wire_builder.Wire(), true);
@@ -1084,37 +1106,44 @@ std::unique_ptr<NativeOperationResult> extrude_mixed_profile_native(
     }
     const TopoDS_Face profile = face_builder.Face();
     const bool reference_is_arc = first_arc_index < profile_edges.size();
-    const std::size_t reference_index = reference_is_arc ? first_arc_index : first_line_index;
+    const bool reference_is_line = first_line_index < profile_edges.size();
+    const std::size_t reference_index = reference_is_arc
+        ? first_arc_index
+        : (reference_is_line ? first_line_index : first_cubic_index);
     TopoDS_Edge profile_reference;
-    const std::size_t reference_offset = reference_index * 8;
-    const gp_Pnt expected_reference_start(
-        segments[reference_offset + 1], segments[reference_offset + 2], 0.0);
-    const gp_Pnt expected_reference_end(
-        segments[reference_offset + 3], segments[reference_offset + 4], 0.0);
-    for (TopExp_Explorer explorer(profile, TopAbs_EDGE); explorer.More(); explorer.Next()) {
-      const TopoDS_Edge candidate = TopoDS::Edge(explorer.Current());
-      const GeomAbs_CurveType expected_type = reference_is_arc ? GeomAbs_Circle : GeomAbs_Line;
-      if (BRepAdaptor_Curve(candidate).GetType() != expected_type) {
-        continue;
-      }
-      TopoDS_Vertex first;
-      TopoDS_Vertex last;
-      TopExp::Vertices(candidate, first, last);
-      if (first.IsNull() || last.IsNull()) {
-        continue;
-      }
-      const gp_Pnt first_point = BRep_Tool::Pnt(first);
-      const gp_Pnt last_point = BRep_Tool::Pnt(last);
-      const bool endpoints_match =
-          (first_point.Distance(expected_reference_start) <= 1.0e-9
-              && last_point.Distance(expected_reference_end) <= 1.0e-9)
-          || (first_point.Distance(expected_reference_end) <= 1.0e-9
-              && last_point.Distance(expected_reference_start) <= 1.0e-9);
-      if (endpoints_match) {
-        if (!profile_reference.IsNull()) {
-          return error_result(STATUS_INVALID_SHAPE, "OCCT segmented profile reference edge is ambiguous");
+    if (!reference_is_arc && !reference_is_line) {
+      profile_reference = profile_edges[reference_index];
+    } else {
+      const std::size_t reference_offset = reference_index * 10;
+      const gp_Pnt expected_reference_start(
+          segments[reference_offset + 1], segments[reference_offset + 2], 0.0);
+      const gp_Pnt expected_reference_end(
+          segments[reference_offset + 3], segments[reference_offset + 4], 0.0);
+      for (TopExp_Explorer explorer(profile, TopAbs_EDGE); explorer.More(); explorer.Next()) {
+        const TopoDS_Edge candidate = TopoDS::Edge(explorer.Current());
+        const GeomAbs_CurveType expected_type = reference_is_arc ? GeomAbs_Circle : GeomAbs_Line;
+        if (BRepAdaptor_Curve(candidate).GetType() != expected_type) {
+          continue;
         }
-        profile_reference = candidate;
+        TopoDS_Vertex first;
+        TopoDS_Vertex last;
+        TopExp::Vertices(candidate, first, last);
+        if (first.IsNull() || last.IsNull()) {
+          continue;
+        }
+        const gp_Pnt first_point = BRep_Tool::Pnt(first);
+        const gp_Pnt last_point = BRep_Tool::Pnt(last);
+        const bool endpoints_match =
+            (first_point.Distance(expected_reference_start) <= 1.0e-9
+                && last_point.Distance(expected_reference_end) <= 1.0e-9)
+            || (first_point.Distance(expected_reference_end) <= 1.0e-9
+                && last_point.Distance(expected_reference_start) <= 1.0e-9);
+        if (endpoints_match) {
+          if (!profile_reference.IsNull()) {
+            return error_result(STATUS_INVALID_SHAPE, "OCCT segmented profile reference edge is ambiguous");
+          }
+          profile_reference = candidate;
+        }
       }
     }
     if (profile_reference.IsNull()) {
@@ -1132,10 +1161,12 @@ std::unique_ptr<NativeOperationResult> extrude_mixed_profile_native(
         "extrusion.top", "last_shape", "profile.face", result, operation.LastShape()));
     const std::string side_role = reference_is_arc
         ? "extrusion.side(profile_edge=arc.0)"
-        : "extrusion.side(profile_edge=line.0)";
+        : (reference_is_line
+            ? "extrusion.side(profile_edge=line.0)"
+            : "extrusion.side(profile_edge=spline.0)");
     const std::string side_source = reference_is_arc
         ? "profile.edge.arc.0"
-        : "profile.edge.line.0";
+        : (reference_is_line ? "profile.edge.line.0" : "profile.edge.spline.0");
     HistoryRecord side_history{side_role, "generated", side_source, 0, false};
     const NCollection_List<TopoDS_Shape>& generated = operation.Generated(profile_reference);
     for (NCollection_List<TopoDS_Shape>::Iterator iterator(generated); iterator.More(); iterator.Next()) {
@@ -1161,7 +1192,7 @@ std::unique_ptr<NativeOperationResult> extrude_planar_region_native(
     double height) noexcept {
   return guarded([&] {
     if (loop_segment_counts.size() < 2 || loop_segment_counts.size() > 65
-        || segments.empty() || segments.size() % 8 != 0
+        || segments.empty() || segments.size() % 10 != 0
         || !std::isfinite(height) || height <= 0.0) {
       return error_result(STATUS_INVALID_PARAMETER, "Planar region payload is malformed");
     }
@@ -1169,14 +1200,14 @@ std::unique_ptr<NativeOperationResult> extrude_planar_region_native(
     for (const std::uint32_t count : loop_segment_counts) {
       declared_segments += count;
     }
-    if (declared_segments != segments.size() / 8 || declared_segments > 4096) {
+    if (declared_segments != segments.size() / 10 || declared_segments > 4096) {
       return error_result(STATUS_INVALID_PARAMETER, "Planar region segment counts do not match");
     }
 
     auto build_wire = [&](std::size_t first_segment, std::size_t segment_count) {
       BRepBuilderAPI_MakeWire wire_builder;
       for (std::size_t index = 0; index < segment_count; ++index) {
-        const std::size_t offset = (first_segment + index) * 8;
+        const std::size_t offset = (first_segment + index) * 10;
         const double kind = segments[offset];
         TopoDS_Edge edge;
         if (kind == 0.0) {
@@ -1195,7 +1226,7 @@ std::unique_ptr<NativeOperationResult> extrude_planar_region_native(
           const gp_Pnt end(segments[offset + 3], segments[offset + 4], 0.0);
           const double center_x = segments[offset + 5];
           const double center_y = segments[offset + 6];
-          const bool clockwise = segments[offset + 7] != 0.0;
+          const bool clockwise = segments[offset + 9] != 0.0;
           const double start_angle = std::atan2(start.Y() - center_y, start.X() - center_x);
           const double end_angle = std::atan2(end.Y() - center_y, end.X() - center_x);
           double sweep = end_angle - start_angle;
@@ -1220,7 +1251,9 @@ std::unique_ptr<NativeOperationResult> extrude_planar_region_native(
             return TopoDS_Wire{};
           }
           edge = edge_builder.Edge();
-        } else if (kind == 2.0 && segment_count == 1) {
+        } else if (kind == 2.0) {
+          edge = cubic_bezier_edge(segments, offset, 0.0);
+        } else if (kind == 3.0 && segment_count == 1) {
           const double center_x = segments[offset + 1];
           const double center_y = segments[offset + 2];
           const double radius = segments[offset + 3];
@@ -1292,7 +1325,7 @@ std::unique_ptr<NativeOperationResult> revolve_general_profile_native(
     double axis_end_x, double axis_end_y,
     double angle_degrees) noexcept {
   return guarded([&] {
-    if (segments.size() < 16 || segments.size() % 8 != 0
+    if (segments.size() < 16 || segments.size() % 10 != 0
         || !std::isfinite(axis_start_x) || !std::isfinite(axis_start_y)
         || !std::isfinite(axis_end_x) || !std::isfinite(axis_end_y)
         || !std::isfinite(angle_degrees) || angle_degrees <= 0.0 || angle_degrees > 360.0) {
@@ -1308,8 +1341,8 @@ std::unique_ptr<NativeOperationResult> revolve_general_profile_native(
 
     BRepBuilderAPI_MakeWire wire_builder;
     std::vector<TopoDS_Edge> profile_edges;
-    profile_edges.reserve(segments.size() / 8);
-    for (std::size_t offset = 0; offset < segments.size(); offset += 8) {
+    profile_edges.reserve(segments.size() / 10);
+    for (std::size_t offset = 0; offset < segments.size(); offset += 10) {
       const double kind = segments[offset];
       const gp_Pnt start(segments[offset + 1], segments[offset + 2], 0.0);
       const gp_Pnt end(segments[offset + 3], segments[offset + 4], 0.0);
@@ -1319,7 +1352,7 @@ std::unique_ptr<NativeOperationResult> revolve_general_profile_native(
       } else if (kind == 1.0) {
         const double center_x = segments[offset + 5];
         const double center_y = segments[offset + 6];
-        const bool clockwise = segments[offset + 7] != 0.0;
+        const bool clockwise = segments[offset + 9] != 0.0;
         const double start_angle = std::atan2(start.Y() - center_y, start.X() - center_x);
         const double end_angle = std::atan2(end.Y() - center_y, end.X() - center_x);
         double sweep = end_angle - start_angle;
@@ -1360,7 +1393,7 @@ std::unique_ptr<NativeOperationResult> revolve_general_profile_native(
     std::vector<TopoDS_Edge> operation_edges;
     operation_edges.reserve(2);
     for (std::size_t source_index = 0; source_index < 2; ++source_index) {
-      const std::size_t offset = source_index * 8;
+      const std::size_t offset = source_index * 10;
       const double kind = segments[offset];
       const gp_Pnt expected_start(segments[offset + 1], segments[offset + 2], 0.0);
       const gp_Pnt expected_end(segments[offset + 3], segments[offset + 4], 0.0);
@@ -1371,7 +1404,7 @@ std::unique_ptr<NativeOperationResult> revolve_general_profile_native(
       if (kind == 1.0) {
         const double center_x = segments[offset + 5];
         const double center_y = segments[offset + 6];
-        const bool clockwise = segments[offset + 7] != 0.0;
+        const bool clockwise = segments[offset + 9] != 0.0;
         const double start_angle = std::atan2(
             expected_start.Y() - center_y, expected_start.X() - center_x);
         const double end_angle = std::atan2(
@@ -2220,17 +2253,17 @@ std::unique_ptr<NativeOperationResult> cut_mixed_profile_native(
     const NativeOperationResult& base, rust::Slice<const double> segments,
     double origin_z, double height) noexcept {
   return guarded([&] {
-    if (!base.valid() || segments.size() < 16 || segments.size() % 8 != 0) {
+    if (!base.valid() || segments.size() < 16 || segments.size() % 10 != 0) {
       return error_result(STATUS_INVALID_PARAMETER, "Mixed cut payload is malformed");
     }
     BRepBuilderAPI_MakeWire wire_builder;
     std::vector<TopoDS_Edge> profile_edges;
-    profile_edges.reserve(segments.size() / 8);
+    profile_edges.reserve(segments.size() / 10);
     std::size_t first_line_index = profile_edges.capacity();
     std::size_t first_arc_index = profile_edges.capacity();
     std::size_t line_count = 0;
     std::size_t arc_count = 0;
-    for (std::size_t offset = 0; offset < segments.size(); offset += 8) {
+    for (std::size_t offset = 0; offset < segments.size(); offset += 10) {
       const double kind = segments[offset];
       const gp_Pnt start(segments[offset + 1], segments[offset + 2], origin_z);
       const gp_Pnt end(segments[offset + 3], segments[offset + 4], origin_z);
@@ -2244,7 +2277,7 @@ std::unique_ptr<NativeOperationResult> cut_mixed_profile_native(
       } else if (kind == 1.0) {
         const double center_x = segments[offset + 5];
         const double center_y = segments[offset + 6];
-        const bool clockwise = segments[offset + 7] != 0.0;
+        const bool clockwise = segments[offset + 9] != 0.0;
         const double start_angle = std::atan2(start.Y() - center_y, start.X() - center_x);
         const double end_angle = std::atan2(end.Y() - center_y, end.X() - center_x);
         double sweep = end_angle - start_angle;
@@ -2290,7 +2323,7 @@ std::unique_ptr<NativeOperationResult> cut_mixed_profile_native(
     }
     const TopoDS_Face profile = face_builder.Face();
     TopoDS_Edge profile_reference;
-    const std::size_t reference_offset = first_line_index * 8;
+    const std::size_t reference_offset = first_line_index * 10;
     const gp_Pnt expected_reference_start(
         segments[reference_offset + 1], segments[reference_offset + 2], origin_z);
     const gp_Pnt expected_reference_end(
@@ -2325,7 +2358,7 @@ std::unique_ptr<NativeOperationResult> cut_mixed_profile_native(
     }
     TopoDS_Edge profile_arc_reference;
     if (first_arc_index != profile_edges.capacity()) {
-      const std::size_t arc_offset = first_arc_index * 8;
+      const std::size_t arc_offset = first_arc_index * 10;
       const gp_Pnt expected_arc_start(
           segments[arc_offset + 1], segments[arc_offset + 2], origin_z);
       const gp_Pnt expected_arc_end(
@@ -2429,13 +2462,13 @@ std::unique_ptr<NativeOperationResult> fuse_mixed_profile_native(
     const NativeOperationResult& base, rust::Slice<const double> segments,
     double origin_z, double height) noexcept {
   return guarded([&] {
-    if (!base.valid() || segments.size() < 16 || segments.size() % 8 != 0) {
+    if (!base.valid() || segments.size() < 16 || segments.size() % 10 != 0) {
       return error_result(STATUS_INVALID_PARAMETER, "Polygon union payload is malformed");
     }
     BRepBuilderAPI_MakeWire wire_builder;
     std::size_t line_count = 0;
     std::size_t arc_count = 0;
-    for (std::size_t offset = 0; offset < segments.size(); offset += 8) {
+    for (std::size_t offset = 0; offset < segments.size(); offset += 10) {
       const double kind = segments[offset];
       const gp_Pnt start(segments[offset + 1], segments[offset + 2], origin_z);
       const gp_Pnt end(segments[offset + 3], segments[offset + 4], origin_z);
@@ -2446,7 +2479,7 @@ std::unique_ptr<NativeOperationResult> fuse_mixed_profile_native(
       } else if (kind == 1.0) {
         const double center_x = segments[offset + 5];
         const double center_y = segments[offset + 6];
-        const bool clockwise = segments[offset + 7] != 0.0;
+        const bool clockwise = segments[offset + 9] != 0.0;
         const double start_angle = std::atan2(start.Y() - center_y, start.X() - center_x);
         const double end_angle = std::atan2(end.Y() - center_y, end.X() - center_x);
         double sweep = end_angle - start_angle;
@@ -2516,13 +2549,13 @@ std::unique_ptr<NativeOperationResult> common_mixed_profile_native(
     const NativeOperationResult& base, rust::Slice<const double> segments,
     double origin_z, double height) noexcept {
   return guarded([&] {
-    if (!base.valid() || segments.size() < 16 || segments.size() % 8 != 0) {
+    if (!base.valid() || segments.size() < 16 || segments.size() % 10 != 0) {
       return error_result(STATUS_INVALID_PARAMETER, "Polygon intersection payload is malformed");
     }
     BRepBuilderAPI_MakeWire wire_builder;
     std::size_t line_count = 0;
     std::size_t arc_count = 0;
-    for (std::size_t offset = 0; offset < segments.size(); offset += 8) {
+    for (std::size_t offset = 0; offset < segments.size(); offset += 10) {
       const double kind = segments[offset];
       const gp_Pnt start(segments[offset + 1], segments[offset + 2], origin_z);
       const gp_Pnt end(segments[offset + 3], segments[offset + 4], origin_z);
@@ -2533,7 +2566,7 @@ std::unique_ptr<NativeOperationResult> common_mixed_profile_native(
       } else if (kind == 1.0) {
         const double center_x = segments[offset + 5];
         const double center_y = segments[offset + 6];
-        const bool clockwise = segments[offset + 7] != 0.0;
+        const bool clockwise = segments[offset + 9] != 0.0;
         const double start_angle = std::atan2(start.Y() - center_y, start.X() - center_x);
         const double end_angle = std::atan2(end.Y() - center_y, end.X() - center_x);
         double sweep = end_angle - start_angle;
@@ -2600,13 +2633,13 @@ std::unique_ptr<NativeOperationResult> split_mixed_profile_native(
     const NativeOperationResult& base, rust::Slice<const double> segments,
     double origin_z, double height) noexcept {
   return guarded([&] {
-    if (!base.valid() || segments.size() < 16 || segments.size() % 8 != 0) {
+    if (!base.valid() || segments.size() < 16 || segments.size() % 10 != 0) {
       return error_result(STATUS_INVALID_PARAMETER, "Polygon split payload is malformed");
     }
     BRepBuilderAPI_MakeWire wire_builder;
     std::size_t line_count = 0;
     std::size_t arc_count = 0;
-    for (std::size_t offset = 0; offset < segments.size(); offset += 8) {
+    for (std::size_t offset = 0; offset < segments.size(); offset += 10) {
       const double kind = segments[offset];
       const gp_Pnt start(segments[offset + 1], segments[offset + 2], origin_z);
       const gp_Pnt end(segments[offset + 3], segments[offset + 4], origin_z);
@@ -2617,7 +2650,7 @@ std::unique_ptr<NativeOperationResult> split_mixed_profile_native(
       } else if (kind == 1.0) {
         const double center_x = segments[offset + 5];
         const double center_y = segments[offset + 6];
-        const bool clockwise = segments[offset + 7] != 0.0;
+        const bool clockwise = segments[offset + 9] != 0.0;
         const double start_angle = std::atan2(start.Y() - center_y, start.X() - center_x);
         const double end_angle = std::atan2(end.Y() - center_y, end.X() - center_x);
         double sweep = end_angle - start_angle;

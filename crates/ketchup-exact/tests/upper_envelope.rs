@@ -578,6 +578,60 @@ fn exact_mixed_line_arc_profile_uses_analytic_arc_and_rejects_open_wire() {
 }
 
 #[test]
+fn all_cubic_oval_extrusion_is_valid_deterministic_and_bounded() {
+    let kappa = 4.0 * (2.0_f64.sqrt() - 1.0) / 3.0;
+    let x_handle = 20.0 * kappa;
+    let y_handle = 10.0 * kappa;
+    let profile = [
+        PlanarProfileSegment::CubicBezier {
+            start_mm: [20.0, 0.0],
+            control_1_mm: [20.0, y_handle],
+            control_2_mm: [x_handle, 10.0],
+            end_mm: [0.0, 10.0],
+        },
+        PlanarProfileSegment::CubicBezier {
+            start_mm: [0.0, 10.0],
+            control_1_mm: [-x_handle, 10.0],
+            control_2_mm: [-20.0, y_handle],
+            end_mm: [-20.0, 0.0],
+        },
+        PlanarProfileSegment::CubicBezier {
+            start_mm: [-20.0, 0.0],
+            control_1_mm: [-20.0, -y_handle],
+            control_2_mm: [-x_handle, -10.0],
+            end_mm: [0.0, -10.0],
+        },
+        PlanarProfileSegment::CubicBezier {
+            start_mm: [0.0, -10.0],
+            control_1_mm: [x_handle, -10.0],
+            control_2_mm: [20.0, -y_handle],
+            end_mm: [20.0, 0.0],
+        },
+    ];
+    let backend = ExactBackend::new();
+    let output = backend.extrude_mixed_profile(&profile, 12.0).unwrap();
+    let repeated = backend.extrude_mixed_profile(&profile, 12.0).unwrap();
+
+    assert_valid(&output);
+    assert_eq!(output.input_digest, repeated.input_digest);
+    assert_eq!(
+        output.body.result_fingerprint,
+        repeated.body.result_fingerprint
+    );
+    assert_close(output.body.topology.bounds_mm.min.x, -20.0);
+    assert_close(output.body.topology.bounds_mm.min.y, -10.0);
+    assert_close(output.body.topology.bounds_mm.min.z, 0.0);
+    assert_close(output.body.topology.bounds_mm.max.x, 20.0);
+    assert_close(output.body.topology.bounds_mm.max.y, 10.0);
+    assert_close(output.body.topology.bounds_mm.max.z, 12.0);
+    assert!(
+        (7_500.0..7_600.0).contains(&output.body.topology.volume_mm3),
+        "unexpected all-cubic oval volume: {}",
+        output.body.topology.volume_mm3
+    );
+}
+
+#[test]
 fn exact_line_arc_d_profile_cuts_and_intersects_a_rectangular_body_and_rejects_broader_curves() {
     let backend = ExactBackend::new();
     let base = backend
@@ -1120,7 +1174,7 @@ fn step_import_can_address_each_transferred_solid_independently() {
 }
 
 #[test]
-fn planar_region_extrusion_preserves_a_circular_hole_and_analytic_volume() {
+fn cubic_planar_region_extrusion_preserves_hole_bounds_volume_and_fingerprint() {
     let outer = PlanarProfileLoop::Segments(vec![
         PlanarProfileSegment::Line {
             start_mm: [-20.0, -15.0],
@@ -1130,8 +1184,10 @@ fn planar_region_extrusion_preserves_a_circular_hole_and_analytic_volume() {
             start_mm: [20.0, -15.0],
             end_mm: [20.0, 15.0],
         },
-        PlanarProfileSegment::Line {
+        PlanarProfileSegment::CubicBezier {
             start_mm: [20.0, 15.0],
+            control_1_mm: [10.0, 25.0],
+            control_2_mm: [-10.0, 25.0],
             end_mm: [-20.0, 15.0],
         },
         PlanarProfileSegment::Line {
@@ -1151,13 +1207,13 @@ fn planar_region_extrusion_preserves_a_circular_hole_and_analytic_volume() {
     assert_eq!(output.body.topology.solid_count, 1);
     assert_close(
         output.body.topology.volume_mm3,
-        (40.0 * 30.0 - std::f64::consts::PI * 5.0 * 5.0) * 12.0,
+        (1_410.0 - std::f64::consts::PI * 5.0 * 5.0) * 12.0,
     );
     assert_close(output.body.topology.bounds_mm.min.x, -20.0);
     assert_close(output.body.topology.bounds_mm.min.y, -15.0);
     assert_close(output.body.topology.bounds_mm.min.z, 0.0);
     assert_close(output.body.topology.bounds_mm.max.x, 20.0);
-    assert_close(output.body.topology.bounds_mm.max.y, 15.0);
+    assert_close(output.body.topology.bounds_mm.max.y, 22.5);
     assert_close(output.body.topology.bounds_mm.max.z, 12.0);
     assert_eq!(output.input_digest, repeated.input_digest);
     assert_eq!(

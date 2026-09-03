@@ -571,7 +571,7 @@ const M6_REVOLVE_CAPABILITY: &str = "M6_REVOLVE_V1";
 const M6_SHELL_CAPABILITY: &str = "M6_SHELL_V1";
 const M14_STEP_CAPABILITY: &str = "M14_STEP_V1";
 const M21_STEP_MODEL_CAPABILITY: &str = "M21_STEP_MODEL_V1";
-const EXACT_BREP_GRAPH_CAPABILITY: &str = "EXACT_BREP_GRAPH_V3";
+const EXACT_BREP_GRAPH_CAPABILITY: &str = "EXACT_BREP_GRAPH_V4";
 pub const MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCES: usize = 64;
 pub const MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCE_BYTES: u64 = 128 * 1024 * 1024;
 const DEFAULT_WORKER_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
@@ -1117,7 +1117,7 @@ impl ExactWorkerClient {
             .to_bytes()
             .map_err(|error| WorkerError::Protocol(error.to_string()))?;
         let mut request = format!(
-            "EVAL_BREP_GRAPH_V3 {} {}",
+            "EVAL_BREP_GRAPH_V4 {} {}",
             graph.graph_digest,
             hex_encode(&bytes)
         );
@@ -1142,7 +1142,7 @@ impl ExactWorkerClient {
             .to_bytes()
             .map_err(|error| WorkerError::Protocol(error.to_string()))?;
         let mut request = format!(
-            "TESSELLATE_BREP_GRAPH_V3 {} {} {} {}",
+            "TESSELLATE_BREP_GRAPH_V4 {} {} {} {}",
             graph.graph_digest,
             hex_encode(&bytes),
             result_fingerprint,

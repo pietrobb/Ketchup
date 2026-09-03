@@ -12,7 +12,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
-pub const EXACT_BREP_GRAPH_SCHEMA_V3: &str = "ketchup.exact-brep-graph.v3";
+pub const EXACT_BREP_GRAPH_SCHEMA_V4: &str = "ketchup.exact-brep-graph.v4";
 pub const MAX_EXACT_BREP_GRAPH_PROFILES: usize = 1_024;
 pub const MAX_EXACT_BREP_GRAPH_NODES: usize = 1_024;
 pub const MAX_EXACT_BREP_GRAPH_SEGMENTS: usize = 16_384;
@@ -139,6 +139,12 @@ pub enum ExactBRepPlanarSegment {
         end_bits: [u64; 2],
         center_bits: [u64; 2],
         clockwise: bool,
+    },
+    CubicBezier {
+        start_bits: [u64; 2],
+        control_1_bits: [u64; 2],
+        control_2_bits: [u64; 2],
+        end_bits: [u64; 2],
     },
 }
 
@@ -336,7 +342,7 @@ impl ExactBRepGraph {
         compiler.compile_body(producer_feature_id)?;
         let source_digest = snapshot.canonical_digest();
         let mut graph = Self {
-            schema: EXACT_BREP_GRAPH_SCHEMA_V3.to_owned(),
+            schema: EXACT_BREP_GRAPH_SCHEMA_V4.to_owned(),
             document_id: snapshot.document_id().0,
             source_revision: snapshot.revision_id(),
             source_digest,
@@ -387,7 +393,7 @@ impl ExactBRepGraph {
     }
 
     pub fn validate(&self) -> Result<(), ExactBRepGraphError> {
-        if self.schema != EXACT_BREP_GRAPH_SCHEMA_V3
+        if self.schema != EXACT_BREP_GRAPH_SCHEMA_V4
             || self.document_id == 0
             || self.definition_id == 0
             || self.producer_feature_id == 0
@@ -1021,6 +1027,12 @@ fn solved_loop(
                         center_mm,
                         clockwise,
                     } => profile_segment(*start_mm, *end_mm, Some(*center_mm), *clockwise),
+                    SolvedSketchRegionEdge::CubicBezier {
+                        start_mm,
+                        control_1_mm,
+                        control_2_mm,
+                        end_mm,
+                    } => cubic_bezier_segment(*start_mm, *control_1_mm, *control_2_mm, *end_mm),
                 })
                 .collect::<Result<Vec<_>, _>>()?,
         }),
@@ -1097,6 +1109,25 @@ fn profile_segment(
             start_bits,
             end_bits,
         }
+    })
+}
+
+fn cubic_bezier_segment(
+    start_mm: [f64; 2],
+    control_1_mm: [f64; 2],
+    control_2_mm: [f64; 2],
+    end_mm: [f64; 2],
+) -> Result<ExactBRepPlanarSegment, ExactBRepGraphError> {
+    let start = valid_point(start_mm)?;
+    let end = valid_point(end_mm)?;
+    if (start[0] - end[0]).hypot(start[1] - end[1]) <= MIN_LENGTH_MM {
+        return Err(ExactBRepGraphError::InvalidParameter);
+    }
+    Ok(ExactBRepPlanarSegment::CubicBezier {
+        start_bits: start.map(f64::to_bits),
+        control_1_bits: valid_point(control_1_mm)?.map(f64::to_bits),
+        control_2_bits: valid_point(control_2_mm)?.map(f64::to_bits),
+        end_bits: end.map(f64::to_bits),
     })
 }
 
@@ -1348,6 +1379,17 @@ fn planar_geometry_bounds(
                         include([center[0] - radius, center[1] - radius]);
                         include([center[0] + radius, center[1] + radius]);
                     }
+                    ExactBRepPlanarSegment::CubicBezier {
+                        start_bits,
+                        control_1_bits,
+                        control_2_bits,
+                        end_bits,
+                    } => {
+                        include(start_bits.map(f64::from_bits));
+                        include(control_1_bits.map(f64::from_bits));
+                        include(control_2_bits.map(f64::from_bits));
+                        include(end_bits.map(f64::from_bits));
+                    }
                 }
             }
         }
@@ -1511,6 +1553,24 @@ fn validate_geometry(geometry: &ExactBRepPlanarGeometry) -> Result<usize, ExactB
                         if start_radius <= MIN_LENGTH_MM
                             || (start_radius - end_radius).abs() > tolerance
                         {
+                            Err(ExactBRepGraphError::InvalidGraph)
+                        } else {
+                            Ok((*start_bits, *end_bits))
+                        }
+                    }
+                    ExactBRepPlanarSegment::CubicBezier {
+                        start_bits,
+                        control_1_bits,
+                        control_2_bits,
+                        end_bits,
+                    } if valid_bits(*start_bits)
+                        && valid_bits(*control_1_bits)
+                        && valid_bits(*control_2_bits)
+                        && valid_bits(*end_bits) =>
+                    {
+                        let start = start_bits.map(f64::from_bits);
+                        let end = end_bits.map(f64::from_bits);
+                        if (start[0] - end[0]).hypot(start[1] - end[1]) <= MIN_LENGTH_MM {
                             Err(ExactBRepGraphError::InvalidGraph)
                         } else {
                             Ok((*start_bits, *end_bits))
