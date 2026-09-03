@@ -13253,6 +13253,50 @@ impl KetchupApp {
                             }
                             FeatureKind::Sweep { profile, path }
                         }
+                        AssistantCadBodyFeature::Loft { sections } => {
+                            let mut loft_sections = Vec::with_capacity(sections.len());
+                            for section in sections {
+                                let profile = FeatureId(section.profile_feature_id);
+                                let source = snapshot.feature(profile).ok_or_else(|| {
+                                    assistant_canonical_rejection(
+                                        CanonicalError::FeatureNotFound(profile),
+                                        operation_name,
+                                        &format!("feature:{}", profile.0),
+                                    )
+                                })?;
+                                if source.definition_id() != definition_id {
+                                    return Err(assistant_planning_rejection(
+                                        "planning.cad_feature_input_ownership_invalid",
+                                        operation_name,
+                                        &format!("feature:{}", profile.0),
+                                        "The requested Loft profile belongs to a different definition.",
+                                        "Target supported spline profiles in the requested definition.",
+                                    ));
+                                }
+                                if snapshot.feature_is_suppressed(profile)
+                                    || !matches!(
+                                        source.kind(),
+                                        FeatureKind::SplineProfile { control_points_mm }
+                                            if (4..=64).contains(&control_points_mm.len())
+                                    )
+                                {
+                                    return Err(assistant_planning_rejection(
+                                        "planning.cad_feature_input_unsupported",
+                                        operation_name,
+                                        &format!("feature:{}", profile.0),
+                                        "The requested Loft profile is not supported by exact evaluation.",
+                                        "Use an unsuppressed spline profile with 4 to 64 control points.",
+                                    ));
+                                }
+                                loft_sections.push(LoftSection {
+                                    profile,
+                                    elevation_mm: section.elevation_mm,
+                                });
+                            }
+                            FeatureKind::Loft {
+                                sections: loft_sections,
+                            }
+                        }
                     };
                     let id = next_feature.map(FeatureId).ok_or_else(|| {
                         assistant_canonical_rejection(

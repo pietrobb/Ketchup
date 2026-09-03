@@ -216,6 +216,13 @@ pub enum AssistantCadBooleanOperation {
     Intersect,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AssistantCadLoftSection {
+    pub profile_feature_id: u64,
+    pub elevation_mm: f64,
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum AssistantCadBodyFeature {
@@ -232,6 +239,9 @@ pub enum AssistantCadBodyFeature {
     Sweep {
         profile_feature_id: u64,
         path_feature_id: u64,
+    },
+    Loft {
+        sections: Vec<AssistantCadLoftSection>,
     },
 }
 
@@ -273,6 +283,26 @@ impl AssistantCadBodyFeature {
                 Ok(())
             }
             Self::Sweep { .. } => Err("assistant CAD body feature is invalid".to_owned()),
+            Self::Loft { sections }
+                if (2..=16).contains(&sections.len())
+                    && sections.iter().all(|section| {
+                        section.profile_feature_id != 0
+                            && section.elevation_mm.is_finite()
+                            && section.elevation_mm.abs() <= MAX_ASSISTANT_ABS_MM
+                    })
+                    && sections
+                        .iter()
+                        .map(|section| section.profile_feature_id)
+                        .collect::<BTreeSet<_>>()
+                        .len()
+                        == sections.len()
+                    && sections
+                        .windows(2)
+                        .all(|pair| pair[0].elevation_mm < pair[1].elevation_mm) =>
+            {
+                Ok(())
+            }
+            Self::Loft { .. } => Err("assistant CAD body feature is invalid".to_owned()),
         }
     }
 }

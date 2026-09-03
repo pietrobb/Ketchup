@@ -12,19 +12,20 @@ use ketchup_core::assistant_sidecar::{
     AssistantBeamNotchIntent, AssistantBottleFinishKind, AssistantBottleIntent, AssistantBoxIntent,
     AssistantCadBodyFeature, AssistantCadBooleanOperation, AssistantCadDeletePolicy,
     AssistantCadEditOperation, AssistantCadEditProgram, AssistantCadEntitySelector,
-    AssistantCadPartFeature, AssistantCadRotation, AssistantChatResult, AssistantDistribution,
-    AssistantGableRoofIntent, AssistantKetchupBottleIntent, AssistantLinearArrayIntent,
-    AssistantModelIntent, AssistantOrientedBeamIntent, AssistantParameterEditIntent,
-    AssistantPrincipalPlane, AssistantProfileTranslationIntent, AssistantRotationIntent,
-    AssistantSketchConstraint, AssistantSketchEntity, AssistantSketchPointKind,
-    AssistantSketchPointRef, AssistantStaircaseIntent, AssistantSubtractionIntent,
-    AssistantTeapotIntent, AssistantTranslationIntent, AssistantWorkplaneSpec,
+    AssistantCadLoftSection, AssistantCadPartFeature, AssistantCadRotation, AssistantChatResult,
+    AssistantDistribution, AssistantGableRoofIntent, AssistantKetchupBottleIntent,
+    AssistantLinearArrayIntent, AssistantModelIntent, AssistantOrientedBeamIntent,
+    AssistantParameterEditIntent, AssistantPrincipalPlane, AssistantProfileTranslationIntent,
+    AssistantRotationIntent, AssistantSketchConstraint, AssistantSketchEntity,
+    AssistantSketchPointKind, AssistantSketchPointRef, AssistantStaircaseIntent,
+    AssistantSubtractionIntent, AssistantTeapotIntent, AssistantTranslationIntent,
+    AssistantWorkplaneSpec,
 };
 use ketchup_core::document::{
     BodyId, BooleanOperation, CanonicalCommand, ClassificationCategoryId,
     ClassificationDimensionId, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId,
-    FeatureKind, GroupId, NodeId, OccurrenceId, ProfileSegment, ProposalGoal, ProposalValue, TagId,
-    Transform,
+    FeatureKind, GroupId, LoftSection, NodeId, OccurrenceId, ProfileSegment, ProposalGoal,
+    ProposalValue, TagId, Transform,
 };
 use ketchup_core::exact_brep_graph::{ExactBRepGraph, ExactBRepOperation};
 use ketchup_core::intent::WorkflowIntent;
@@ -312,6 +313,45 @@ fn write_assistant_sweep_fixture(path: &std::path::Path) {
                 id: OccurrenceId(1),
                 definition_id: DefinitionId(1),
                 name: "Sweep inputs".to_owned(),
+                transform: Transform::identity(),
+                parent: None,
+                tag: None,
+                visible: true,
+            },
+        ]))
+        .unwrap();
+    document.discard_history_before_current();
+    persistence::save_atomic(path, &document.current()).unwrap();
+}
+
+fn write_assistant_loft_fixture(path: &std::path::Path) {
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DefinitionId(1),
+                name: "Loft inputs".to_owned(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(1),
+                definition_id: DefinitionId(1),
+                name: "Lower spline".to_owned(),
+                kind: FeatureKind::SplineProfile {
+                    control_points_mm: vec![[-8.0, -4.0], [9.0, -3.0], [7.0, 6.0], [-6.0, 5.0]],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(2),
+                definition_id: DefinitionId(1),
+                name: "Upper spline".to_owned(),
+                kind: FeatureKind::SplineProfile {
+                    control_points_mm: vec![[-4.0, -2.0], [5.0, -2.0], [4.0, 3.0], [-3.0, 4.0]],
+                },
+            },
+            CanonicalCommand::CreateOccurrence {
+                id: OccurrenceId(1),
+                definition_id: DefinitionId(1),
+                name: "Loft inputs".to_owned(),
                 transform: Transform::identity(),
                 parent: None,
                 tag: None,
@@ -2188,6 +2228,102 @@ fn scripted_append_sweep_is_exact_persistent_and_one_step() {
 
     let committed_digest = committed.canonical_digest();
     let saved_path = directory.path().join("assistant-sweep-result.ketchup");
+    persistence::save_atomic(&saved_path, &committed).unwrap();
+    let reopened = persistence::load_file(&saved_path).unwrap().snapshot();
+    assert_eq!(reopened.canonical_digest(), committed_digest);
+    assert!(ExactBRepGraph::from_snapshot(&reopened, DefinitionId(1), FeatureId(3)).is_ok());
+
+    shell.click_menu_command("menu-edit", AppCommand::Undo);
+    assert_eq!(shell.app().canonical_digest(), baseline_digest);
+    assert_eq!(shell.app().undo_step_count(), baseline_undo);
+    assert_eq!(shell.app().redo_step_count(), baseline_redo + 1);
+    shell.click_menu_command("menu-edit", AppCommand::Redo);
+    assert_eq!(shell.app().canonical_digest(), committed_digest);
+    assert_eq!(shell.app().undo_step_count(), baseline_undo + 1);
+    assert_eq!(shell.app().redo_step_count(), baseline_redo);
+    assert_eq!(transport.remaining_responses(), 0);
+}
+
+#[test]
+fn scripted_append_loft_is_exact_persistent_and_one_step() {
+    let request = "Loft the existing spline profiles";
+    let transport = Arc::new(ScriptedAssistantTransport::new([(
+        request.to_owned(),
+        AssistantChatResult {
+            message: "Review the exact loft.".to_owned(),
+            model_intent: None,
+        },
+    )]));
+    transport.queue_cad_edit_program(
+        request,
+        AssistantCadEditProgram {
+            operations: vec![AssistantCadEditOperation::AppendFeature {
+                definition_id: 1,
+                name: "Assistant loft".to_owned(),
+                feature: AssistantCadBodyFeature::Loft {
+                    sections: vec![
+                        AssistantCadLoftSection {
+                            profile_feature_id: 1,
+                            elevation_mm: 0.0,
+                        },
+                        AssistantCadLoftSection {
+                            profile_feature_id: 2,
+                            elevation_mm: 35.0,
+                        },
+                    ],
+                },
+            }],
+        },
+    );
+
+    let directory = tempfile::tempdir().unwrap();
+    let fixture_path = directory.path().join("assistant-loft-inputs.ketchup");
+    write_assistant_loft_fixture(&fixture_path);
+    let mut shell = Shell::with_assistant_transport(transport.clone());
+    assert!(shell.app_mut().open_document_path(&fixture_path));
+    shell.settle();
+    let baseline_revision = shell.app().document_revision();
+    let baseline_digest = shell.app().canonical_digest();
+    let baseline_undo = shell.app().undo_step_count();
+    let baseline_redo = shell.app().redo_step_count();
+    let baseline_occurrences = shell.app().document_snapshot().occurrences().count();
+
+    let input = shell.catalog().text("assistant-input-hint");
+    shell.focus_text_input(&input);
+    shell.type_text(request);
+    shell.press_key(egui::Key::Enter);
+    wait_for_assistant_proposal(&mut shell);
+    assert_eq!(shell.app().document_revision(), baseline_revision);
+    assert_eq!(shell.app().canonical_digest(), baseline_digest);
+    assert_eq!(shell.app().undo_step_count(), baseline_undo);
+
+    shell.click_row(&shell.catalog().text("assistant-confirm"));
+    assert_eq!(shell.app().document_revision(), baseline_revision + 1);
+    assert_eq!(shell.app().undo_step_count(), baseline_undo + 1);
+    let committed = shell.app().document_snapshot();
+    assert!(matches!(
+        committed.feature(FeatureId(3)).unwrap().kind(),
+        FeatureKind::Loft { sections } if sections == &vec![
+            LoftSection { profile: FeatureId(1), elevation_mm: 0.0 },
+            LoftSection { profile: FeatureId(2), elevation_mm: 35.0 },
+        ]
+    ));
+    let graph = ExactBRepGraph::from_snapshot(&committed, DefinitionId(1), FeatureId(3)).unwrap();
+    assert_eq!(graph.producer_feature_id, 3);
+    assert!(
+        graph
+            .nodes
+            .iter()
+            .any(|node| matches!(&node.operation, ExactBRepOperation::Loft { .. }))
+    );
+    let mut worker = ExactWorkerSupervisor::spawn(exact_worker_path()).unwrap();
+    let package = worker.evaluate_exact_brep_graph(&graph).unwrap();
+    assert!(package.volume_mm3 > 0.0);
+    assert_eq!(package.topology_counts[4], 1);
+    assert_eq!(committed.occurrences().count(), baseline_occurrences);
+
+    let committed_digest = committed.canonical_digest();
+    let saved_path = directory.path().join("assistant-loft-result.ketchup");
     persistence::save_atomic(&saved_path, &committed).unwrap();
     let reopened = persistence::load_file(&saved_path).unwrap().snapshot();
     assert_eq!(reopened.canonical_digest(), committed_digest);

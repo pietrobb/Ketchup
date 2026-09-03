@@ -71,7 +71,7 @@ SYSTEM_PROMPT = (
     "model_intent (null for discussion or CAD edits), and cad_edit_program (null unless proposing typed CAD operations). "
     "Never return both mutation fields. Use cad_edit_program for create_part, create_sketch, append_feature, set_dimension, delete, rigid transform, copy, linear pattern, or mirror. "
     "create_part atomically creates a host-ID-assigned definition, workplane, sketch, universal feature, and occurrence. It has name, workplane, entities, constraints, feature, translation_mm, and optional rotation; feature is either {type: extrusion, distance_mm: positive length} or {type: revolve, axis_start_mm: [x,y], axis_end_mm: [x,y], angle_degrees: >0 and <=360}. "
-    "append_feature adds one host-ID-assigned feature to an existing definition. It has definition_id, name, and either feature {type: boolean, operation: cut|union|intersect, target_feature_id, tool_feature_id}, whose inputs are distinct supported exact body features in that definition; feature {type: pocket, target_feature_id, profile_feature_id, depth_mm}, whose distinct inputs are a supported exact extrusion target and closed profile in that definition with positive bounded depth below the target height; or feature {type: sweep, profile_feature_id, path_feature_id}, whose distinct inputs are a supported closed polygon or line/arc profile and one open straight path in that definition. "
+    "append_feature adds one host-ID-assigned feature to an existing definition. It has definition_id, name, and either feature {type: boolean, operation: cut|union|intersect, target_feature_id, tool_feature_id}, whose inputs are distinct supported exact body features in that definition; feature {type: pocket, target_feature_id, profile_feature_id, depth_mm}, whose distinct inputs are a supported exact extrusion target and closed profile in that definition with positive bounded depth below the target height; feature {type: sweep, profile_feature_id, path_feature_id}, whose distinct inputs are a supported closed polygon or line/arc profile and one open straight path in that definition; or feature {type: loft, sections: [{profile_feature_id, elevation_mm}, ...]}, with 2 to 16 unique existing spline profiles in that definition and finite bounded elevations in strictly increasing order. "
     "create_sketch has definition_id, name, workplane, entities, and constraints; workplane is principal with plane xy/yz/xz or offset with an existing base_feature_id and distance_mm. "
     "Entities are typed line/arc/circle records with positive stable IDs and 2D millimetre coordinates. Constraints are typed horizontal/vertical/coincident/distance/radius/fixed_point records with positive stable IDs and point refs {entity_id, point: start/end/center}. "
     "The host assigns create_part definition, feature, and occurrence IDs and create_sketch workplane and sketch feature IDs. set_dimension targets an existing feature_id, optional constraint_id, and positive value_mm. "
@@ -781,6 +781,37 @@ def _validate_cad_edit_program(program: object) -> dict:
                     and 0 < path_feature_id <= MAX_U64
                     and profile_feature_id != path_feature_id
                 )
+            elif feature.get("type") == "loft":
+                sections = feature.get("sections")
+                valid_feature = set(feature) == {"type", "sections"} and isinstance(sections, list)
+                if valid_feature:
+                    valid_feature = 2 <= len(sections) <= 16
+                    profile_ids = []
+                    previous_elevation = None
+                    for section in sections:
+                        if not isinstance(section, dict) or set(section) != {
+                            "profile_feature_id", "elevation_mm"
+                        }:
+                            valid_feature = False
+                            break
+                        profile_feature_id = section["profile_feature_id"]
+                        elevation_mm = section["elevation_mm"]
+                        if (
+                            not isinstance(profile_feature_id, int)
+                            or isinstance(profile_feature_id, bool)
+                            or not 0 < profile_feature_id <= MAX_U64
+                            or not isinstance(elevation_mm, (int, float))
+                            or isinstance(elevation_mm, bool)
+                            or abs(elevation_mm) > 1_000_000
+                            or not math.isfinite(elevation_mm)
+                            or previous_elevation is not None
+                            and elevation_mm <= previous_elevation
+                        ):
+                            valid_feature = False
+                            break
+                        profile_ids.append(profile_feature_id)
+                        previous_elevation = elevation_mm
+                    valid_feature = valid_feature and len(set(profile_ids)) == len(profile_ids)
             else:
                 valid_feature = False
             if not valid_feature:

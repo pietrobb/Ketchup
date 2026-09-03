@@ -412,6 +412,18 @@ def test_public_sidecar_parses_strict_bounded_cad_edit_program():
                 },
             },
             {
+                "operation": "append_feature",
+                "definition_id": 2,
+                "name": "Exact loft",
+                "feature": {
+                    "type": "loft",
+                    "sections": [
+                        {"profile_feature_id": 15, "elevation_mm": -10},
+                        {"profile_feature_id": 16, "elevation_mm": 20},
+                    ],
+                },
+            },
+            {
                 "operation": "set_dimension",
                 "feature_id": 12,
                 "constraint_id": 2,
@@ -704,6 +716,65 @@ def test_cad_append_sweep_matches_rust_boundaries_and_strict_fields():
         {**feature, "output_feature_id": 99},
     ]
     for invalid_feature in invalid_features:
+        with pytest.raises(assistant.ProtocolError):
+            assistant._validate_cad_edit_program(
+                {"operations": [{**operation, "feature": invalid_feature}]}
+            )
+
+
+def test_cad_append_loft_matches_rust_boundaries_and_strict_fields():
+    sections = [
+        {"profile_feature_id": 11, "elevation_mm": -10},
+        {"profile_feature_id": 12, "elevation_mm": 20},
+    ]
+    feature = {"type": "loft", "sections": sections}
+    operation = {
+        "operation": "append_feature",
+        "definition_id": 2,
+        "name": "Exact loft",
+        "feature": feature,
+    }
+    assert assistant._validate_cad_edit_program({"operations": [operation]}) == {
+        "operations": [operation]
+    }
+    assert "2 to 16 unique existing spline profiles" in assistant.SYSTEM_PROMPT
+
+    sixteen = [
+        {"profile_feature_id": index + 1, "elevation_mm": index}
+        for index in range(16)
+    ]
+    assistant._validate_cad_edit_program(
+        {"operations": [{**operation, "feature": {"type": "loft", "sections": sixteen}}]}
+    )
+    invalid_sections = [
+        sections[:1],
+        sixteen + [{"profile_feature_id": 17, "elevation_mm": 16}],
+        [{"profile_feature_id": 0, "elevation_mm": 0}, sections[1]],
+        [{"profile_feature_id": True, "elevation_mm": 0}, sections[1]],
+        [{"profile_feature_id": assistant.MAX_U64 + 1, "elevation_mm": 0}, sections[1]],
+        [sections[0], {"profile_feature_id": 11, "elevation_mm": 20}],
+        [sections[0], {"profile_feature_id": 12, "elevation_mm": -10}],
+        [sections[0], {"profile_feature_id": 12, "elevation_mm": float("nan")}],
+        [sections[0], {"profile_feature_id": 12, "elevation_mm": float("inf")}],
+        [sections[0], {"profile_feature_id": 12, "elevation_mm": 1_000_001}],
+        [sections[0], {"profile_feature_id": 12, "elevation_mm": 10**1000}],
+        [sections[0], {"profile_feature_id": 12}],
+        [sections[0], {**sections[1], "unknown": True}],
+    ]
+    for invalid in invalid_sections:
+        with pytest.raises(assistant.ProtocolError):
+            assistant._validate_cad_edit_program(
+                {
+                    "operations": [
+                        {**operation, "feature": {"type": "loft", "sections": invalid}}
+                    ]
+                }
+            )
+
+    for invalid_feature in [
+        {"type": "loft"},
+        {"type": "loft", "sections": sections, "output_feature_id": 99},
+    ]:
         with pytest.raises(assistant.ProtocolError):
             assistant._validate_cad_edit_program(
                 {"operations": [{**operation, "feature": invalid_feature}]}

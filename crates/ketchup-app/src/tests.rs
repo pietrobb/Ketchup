@@ -1,6 +1,7 @@
 use super::*;
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable as _;
+use ketchup_core::assistant_sidecar::AssistantCadLoftSection;
 use ketchup_core::document::ProposalGoal;
 use ketchup_core::graph::{EvaluatorNodeKind, PortSpec};
 
@@ -313,6 +314,91 @@ fn cad_edit_append_sweep_is_host_id_assigned_exact_and_one_step() {
 }
 
 #[test]
+fn cad_edit_append_loft_is_host_id_assigned_exact_and_one_step() {
+    let mut app = KetchupApp::new();
+    app.document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(3),
+                definition_id: INITIAL_BOX_DEFINITION,
+                name: "Lower spline".to_owned(),
+                kind: FeatureKind::SplineProfile {
+                    control_points_mm: vec![[-8.0, -4.0], [9.0, -3.0], [7.0, 6.0], [-6.0, 5.0]],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(4),
+                definition_id: INITIAL_BOX_DEFINITION,
+                name: "Upper spline".to_owned(),
+                kind: FeatureKind::SplineProfile {
+                    control_points_mm: vec![[-4.0, -2.0], [5.0, -2.0], [4.0, 3.0], [-3.0, 4.0]],
+                },
+            },
+        ]))
+        .unwrap();
+    let baseline = app.document.current().clone();
+    let baseline_undo = app.document.visible_undo_steps();
+    let program = AssistantCadEditProgram {
+        operations: vec![AssistantCadEditOperation::AppendFeature {
+            definition_id: INITIAL_BOX_DEFINITION.0,
+            name: "Assistant loft".to_owned(),
+            feature: AssistantCadBodyFeature::Loft {
+                sections: vec![
+                    AssistantCadLoftSection {
+                        profile_feature_id: 3,
+                        elevation_mm: 0.0,
+                    },
+                    AssistantCadLoftSection {
+                        profile_feature_id: 4,
+                        elevation_mm: 35.0,
+                    },
+                ],
+            },
+        }],
+    };
+
+    let batch = app.plan_assistant_cad_edit_program(&program).unwrap();
+    assert!(matches!(
+        batch.commands(),
+        [CanonicalCommand::CreateFeature {
+            id: FeatureId(5),
+            definition_id: INITIAL_BOX_DEFINITION,
+            kind: FeatureKind::Loft { sections },
+            ..
+        }] if sections == &vec![
+            LoftSection { profile: FeatureId(3), elevation_mm: 0.0 },
+            LoftSection { profile: FeatureId(4), elevation_mm: 35.0 },
+        ]
+    ));
+
+    app.prepare_assistant_preview_source(AssistantPreviewSource::CadEdit(program))
+        .unwrap();
+    assert_eq!(app.document.current().revision_id(), baseline.revision_id());
+    assert_eq!(
+        app.document.current().canonical_digest(),
+        baseline.canonical_digest()
+    );
+    assert_eq!(app.document.visible_undo_steps(), baseline_undo);
+    assert!(app.confirm_assistant_proposal());
+    let committed = app.document.current();
+    assert_eq!(committed.revision_id(), baseline.revision_id() + 1);
+    assert_eq!(app.document.visible_undo_steps(), baseline_undo + 1);
+    let graph =
+        ExactBRepGraph::from_snapshot(&committed, INITIAL_BOX_DEFINITION, FeatureId(5)).unwrap();
+    assert!(
+        graph
+            .nodes
+            .iter()
+            .any(|node| matches!(node.operation, ExactBRepOperation::Loft { .. }))
+    );
+    assert!(app.undo());
+    assert_eq!(
+        app.document.current().canonical_digest(),
+        baseline.canonical_digest()
+    );
+}
+
+#[test]
 fn cad_edit_append_pocket_rejects_invalid_inputs_without_mutation() {
     let mut app = KetchupApp::new();
     app.document
@@ -512,6 +598,99 @@ fn cad_edit_append_sweep_rejects_unsupported_inputs_without_mutation() {
         sub_minimum_arc.code,
         "planning.cad_feature_input_unsupported"
     );
+    assert_eq!(app.document.current().revision_id(), baseline_revision);
+    assert_eq!(app.document.current().canonical_digest(), baseline_digest);
+    assert_eq!(app.document.visible_undo_steps(), baseline_undo);
+}
+
+#[test]
+fn cad_edit_append_loft_rejects_unsupported_inputs_without_mutation() {
+    let mut app = KetchupApp::new();
+    let overlong_spline = (0..65)
+        .map(|index| {
+            let angle = std::f64::consts::TAU * index as f64 / 65.0;
+            [10.0 * angle.cos(), 10.0 * angle.sin()]
+        })
+        .collect();
+    app.document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(3),
+                definition_id: INITIAL_BOX_DEFINITION,
+                name: "Valid spline".to_owned(),
+                kind: FeatureKind::SplineProfile {
+                    control_points_mm: vec![[-8.0, -4.0], [9.0, -3.0], [7.0, 6.0], [-6.0, 5.0]],
+                },
+            },
+            CanonicalCommand::CreateDefinition {
+                id: DefinitionId(2),
+                name: "Other definition".to_owned(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(4),
+                definition_id: DefinitionId(2),
+                name: "Other spline".to_owned(),
+                kind: FeatureKind::SplineProfile {
+                    control_points_mm: vec![[-4.0, -2.0], [5.0, -2.0], [4.0, 3.0], [-3.0, 4.0]],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(5),
+                definition_id: INITIAL_BOX_DEFINITION,
+                name: "Polygon profile".to_owned(),
+                kind: FeatureKind::Profile {
+                    points_mm: vec![[-4.0, -2.0], [5.0, -2.0], [4.0, 3.0], [-3.0, 4.0]],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(6),
+                definition_id: INITIAL_BOX_DEFINITION,
+                name: "Overlong spline".to_owned(),
+                kind: FeatureKind::SplineProfile {
+                    control_points_mm: overlong_spline,
+                },
+            },
+        ]))
+        .unwrap();
+    let baseline_revision = app.document.current().revision_id();
+    let baseline_digest = app.document.current().canonical_digest();
+    let baseline_undo = app.document.visible_undo_steps();
+    let program = |upper_profile_feature_id| AssistantCadEditProgram {
+        operations: vec![AssistantCadEditOperation::AppendFeature {
+            definition_id: INITIAL_BOX_DEFINITION.0,
+            name: "Rejected loft".to_owned(),
+            feature: AssistantCadBodyFeature::Loft {
+                sections: vec![
+                    AssistantCadLoftSection {
+                        profile_feature_id: 3,
+                        elevation_mm: 0.0,
+                    },
+                    AssistantCadLoftSection {
+                        profile_feature_id: upper_profile_feature_id,
+                        elevation_mm: 35.0,
+                    },
+                ],
+            },
+        }],
+    };
+
+    let missing = app
+        .plan_assistant_cad_edit_program(&program(99))
+        .unwrap_err();
+    assert_eq!(missing.code, "canonical.feature_not_found");
+    let cross_definition = app
+        .plan_assistant_cad_edit_program(&program(4))
+        .unwrap_err();
+    assert_eq!(
+        cross_definition.code,
+        "planning.cad_feature_input_ownership_invalid"
+    );
+    for unsupported in [5, 6] {
+        let rejection = app
+            .plan_assistant_cad_edit_program(&program(unsupported))
+            .unwrap_err();
+        assert_eq!(rejection.code, "planning.cad_feature_input_unsupported");
+    }
     assert_eq!(app.document.current().revision_id(), baseline_revision);
     assert_eq!(app.document.current().canonical_digest(), baseline_digest);
     assert_eq!(app.document.visible_undo_steps(), baseline_undo);

@@ -2,14 +2,14 @@ use ketchup_core::assistant_sidecar::{
     ASSISTANT_PROTOCOL_VERSION, AssistantBalloonTextIntent, AssistantBeamNotchIntent,
     AssistantBottleFinishKind, AssistantBottleIntent, AssistantCadBodyFeature,
     AssistantCadBooleanOperation, AssistantCadDeletePolicy, AssistantCadEditOperation,
-    AssistantCadEditProgram, AssistantCadEntitySelector, AssistantCadPartFeature,
-    AssistantCadRotation, AssistantDistribution, AssistantHandshake, AssistantHandshakeError,
-    AssistantKetchupBottleIntent, AssistantLinearArrayIntent, AssistantModelIntent,
-    AssistantOrientedBeamIntent, AssistantParameterEditIntent, AssistantPrincipalPlane,
-    AssistantProfileTranslationIntent, AssistantRejectionDiagnostic, AssistantRejectionPhase,
-    AssistantRotationIntent, AssistantSketchConstraint, AssistantSketchEntity,
-    AssistantSketchPointKind, AssistantSketchPointRef, AssistantTeapotIntent,
-    AssistantWorkplaneSpec, distribution_is_enabled,
+    AssistantCadEditProgram, AssistantCadEntitySelector, AssistantCadLoftSection,
+    AssistantCadPartFeature, AssistantCadRotation, AssistantDistribution, AssistantHandshake,
+    AssistantHandshakeError, AssistantKetchupBottleIntent, AssistantLinearArrayIntent,
+    AssistantModelIntent, AssistantOrientedBeamIntent, AssistantParameterEditIntent,
+    AssistantPrincipalPlane, AssistantProfileTranslationIntent, AssistantRejectionDiagnostic,
+    AssistantRejectionPhase, AssistantRotationIntent, AssistantSketchConstraint,
+    AssistantSketchEntity, AssistantSketchPointKind, AssistantSketchPointRef,
+    AssistantTeapotIntent, AssistantWorkplaneSpec, distribution_is_enabled,
 };
 
 const PUBLIC_HANDSHAKE: &str = r#"{
@@ -689,6 +689,189 @@ fn cad_edit_append_sweep_contract_is_strict_and_host_id_assigned() {
         }]
     });
     assert!(serde_json::from_value::<AssistantCadEditProgram>(missing_path).is_err());
+}
+
+#[test]
+fn cad_edit_append_loft_contract_is_strict_bounded_and_host_id_assigned() {
+    let program = |sections| AssistantCadEditProgram {
+        operations: vec![AssistantCadEditOperation::AppendFeature {
+            definition_id: 7,
+            name: "Exact loft".to_owned(),
+            feature: AssistantCadBodyFeature::Loft { sections },
+        }],
+    };
+    let valid = program(vec![
+        AssistantCadLoftSection {
+            profile_feature_id: 11,
+            elevation_mm: -10.0,
+        },
+        AssistantCadLoftSection {
+            profile_feature_id: 12,
+            elevation_mm: 20.0,
+        },
+    ]);
+
+    assert_eq!(valid.validate(), Ok(()));
+    let serialized = serde_json::to_value(&valid).unwrap();
+    assert_eq!(serialized["operations"][0]["feature"]["type"], "loft");
+    assert!(
+        serialized["operations"][0]
+            .get("output_feature_id")
+            .is_none()
+    );
+    assert_eq!(
+        serde_json::from_value::<AssistantCadEditProgram>(serialized).unwrap(),
+        valid
+    );
+    assert_eq!(
+        program(
+            (0..16)
+                .map(|index| AssistantCadLoftSection {
+                    profile_feature_id: index + 1,
+                    elevation_mm: index as f64,
+                })
+                .collect()
+        )
+        .validate(),
+        Ok(())
+    );
+
+    let invalid_sections = [
+        vec![AssistantCadLoftSection {
+            profile_feature_id: 11,
+            elevation_mm: 0.0,
+        }],
+        (0..17)
+            .map(|index| AssistantCadLoftSection {
+                profile_feature_id: index + 1,
+                elevation_mm: index as f64,
+            })
+            .collect(),
+        vec![
+            AssistantCadLoftSection {
+                profile_feature_id: 0,
+                elevation_mm: 0.0,
+            },
+            AssistantCadLoftSection {
+                profile_feature_id: 12,
+                elevation_mm: 10.0,
+            },
+        ],
+        vec![
+            AssistantCadLoftSection {
+                profile_feature_id: 11,
+                elevation_mm: 0.0,
+            },
+            AssistantCadLoftSection {
+                profile_feature_id: 11,
+                elevation_mm: 10.0,
+            },
+        ],
+        vec![
+            AssistantCadLoftSection {
+                profile_feature_id: 11,
+                elevation_mm: 10.0,
+            },
+            AssistantCadLoftSection {
+                profile_feature_id: 12,
+                elevation_mm: 10.0,
+            },
+        ],
+        vec![
+            AssistantCadLoftSection {
+                profile_feature_id: 11,
+                elevation_mm: 10.0,
+            },
+            AssistantCadLoftSection {
+                profile_feature_id: 12,
+                elevation_mm: 0.0,
+            },
+        ],
+        vec![
+            AssistantCadLoftSection {
+                profile_feature_id: 11,
+                elevation_mm: 0.0,
+            },
+            AssistantCadLoftSection {
+                profile_feature_id: 12,
+                elevation_mm: f64::NAN,
+            },
+        ],
+        vec![
+            AssistantCadLoftSection {
+                profile_feature_id: 11,
+                elevation_mm: 0.0,
+            },
+            AssistantCadLoftSection {
+                profile_feature_id: 12,
+                elevation_mm: f64::INFINITY,
+            },
+        ],
+        vec![
+            AssistantCadLoftSection {
+                profile_feature_id: 11,
+                elevation_mm: 0.0,
+            },
+            AssistantCadLoftSection {
+                profile_feature_id: 12,
+                elevation_mm: 1_000_001.0,
+            },
+        ],
+    ];
+    for sections in invalid_sections {
+        assert_eq!(
+            program(sections).validate(),
+            Err("assistant CAD body feature is invalid".to_owned())
+        );
+    }
+
+    for invalid in [
+        serde_json::json!({
+            "operations": [{
+                "operation": "append_feature",
+                "definition_id": 7,
+                "name": "Injected loft",
+                "feature": {
+                    "type": "loft",
+                    "sections": [
+                        {"profile_feature_id": 11, "elevation_mm": 0},
+                        {"profile_feature_id": 12, "elevation_mm": 10, "unknown": true}
+                    ]
+                }
+            }]
+        }),
+        serde_json::json!({
+            "operations": [{
+                "operation": "append_feature",
+                "definition_id": 7,
+                "name": "Missing elevation",
+                "feature": {
+                    "type": "loft",
+                    "sections": [
+                        {"profile_feature_id": 11, "elevation_mm": 0},
+                        {"profile_feature_id": 12}
+                    ]
+                }
+            }]
+        }),
+        serde_json::json!({
+            "operations": [{
+                "operation": "append_feature",
+                "definition_id": 7,
+                "name": "Injected ID",
+                "feature": {
+                    "type": "loft",
+                    "sections": [
+                        {"profile_feature_id": 11, "elevation_mm": 0},
+                        {"profile_feature_id": 12, "elevation_mm": 10}
+                    ],
+                    "output_feature_id": 99
+                }
+            }]
+        }),
+    ] {
+        assert!(serde_json::from_value::<AssistantCadEditProgram>(invalid).is_err());
+    }
 }
 
 #[test]
