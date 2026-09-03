@@ -16,7 +16,9 @@ use ketchup_core::document::{
 use ketchup_core::exact_brep_graph::{
     ExactBRepBooleanOperation, ExactBRepGraph, ExactBRepOperation,
 };
-use ketchup_core::exact_product::{EXACT_CIRCLE_EVALUATOR_V1, ExactFeatureChainRequest};
+use ketchup_core::exact_product::{
+    EXACT_CIRCLE_EVALUATOR_V1, ExactFeatureChainRequest, ExactPlanarOffsetRequest,
+};
 use ketchup_core::persistence;
 use ketchup_core::sketch::{
     PrincipalPlane, SketchConstraint, SketchConstraintId, SketchConstraintKind, SketchEntity,
@@ -3240,6 +3242,20 @@ fn bounded_planar_offset_is_dimensioned_validated_undoable_and_persistent() {
         .apply_batch(&CommandBatch::new(vec![
             CanonicalCommand::SetFeatureDimension {
                 id: OFFSET,
+                dimension: Dimension::new("100000.001", 100_000.001).unwrap(),
+            },
+        ]))
+        .unwrap();
+    let large_rectangle_request =
+        ExactPlanarOffsetRequest::from_snapshot(&document.current(), DEFINITION).unwrap();
+    assert!(large_rectangle_request.is_rectangle());
+    assert!(large_rectangle_request.has_valid_basic_inputs());
+    assert_eq!(document.undo().unwrap().canonical_digest(), outward);
+
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetFeatureDimension {
+                id: OFFSET,
                 dimension: Dimension::new("-7.5", -7.5).unwrap(),
             },
         ]))
@@ -3320,6 +3336,111 @@ fn bounded_planar_offset_is_dimensioned_validated_undoable_and_persistent() {
                 && distance.source_token() == "-7.5"
                 && distance.millimetres() == -7.5
     ));
+}
+
+#[test]
+fn circular_planar_offset_is_persistent_undoable_and_fail_closed() {
+    const DEFINITION: DefinitionId = DefinitionId(706);
+    const WORKPLANE: FeatureId = FeatureId(707);
+    const CIRCLE: FeatureId = FeatureId(708);
+    const OFFSET: FeatureId = FeatureId(709);
+
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DEFINITION,
+                name: "Circular offset".to_owned(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: WORKPLANE,
+                definition_id: DEFINITION,
+                name: "XY".to_owned(),
+                kind: FeatureKind::Workplane(WorkplaneSpec::principal(PrincipalPlane::Xy)),
+            },
+            CanonicalCommand::CreateFeature {
+                id: CIRCLE,
+                definition_id: DEFINITION,
+                name: "Circle sketch".to_owned(),
+                kind: FeatureKind::Sketch(SketchSpec {
+                    workplane: WORKPLANE,
+                    entities: vec![SketchEntity::Circle {
+                        id: SketchEntityId(1),
+                        center_mm: [12.0, -8.0],
+                        radius_mm: 20.0,
+                    }],
+                    constraints: Vec::new(),
+                }),
+            },
+            CanonicalCommand::CreateFeature {
+                id: OFFSET,
+                definition_id: DEFINITION,
+                name: "Planar offset".to_owned(),
+                kind: FeatureKind::PlanarOffset {
+                    profile: CIRCLE,
+                    distance: Dimension::new("3.000", 3.0).unwrap(),
+                },
+            },
+        ]))
+        .unwrap();
+    let outward = document.current().canonical_digest();
+    let outward_request =
+        ExactPlanarOffsetRequest::from_snapshot(&document.current(), DEFINITION).unwrap();
+    assert_eq!(
+        outward_request.source_bounds_mm(),
+        [-8.0, -28.0, 32.0, 12.0]
+    );
+    assert_eq!(outward_request.distance_mm(), 3.0);
+    assert_eq!(
+        f64::from_bits(outward_request.circle_profile().unwrap().radius_bits),
+        20.0
+    );
+
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetFeatureDimension {
+                id: OFFSET,
+                dimension: Dimension::new("-3", -3.0).unwrap(),
+            },
+        ]))
+        .unwrap();
+    let inward = document.current().canonical_digest();
+    let inward_request =
+        ExactPlanarOffsetRequest::from_snapshot(&document.current(), DEFINITION).unwrap();
+    assert_ne!(inward, outward);
+    assert_ne!(
+        inward_request.canonical_input_digest,
+        outward_request.canonical_input_digest
+    );
+    assert_eq!(document.undo().unwrap().canonical_digest(), outward);
+    assert_eq!(document.redo().unwrap().canonical_digest(), inward);
+
+    let before = document.current().canonical_digest();
+    let undo_steps = document.visible_undo_steps();
+    assert_eq!(
+        document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::SetFeatureDimension {
+                    id: OFFSET,
+                    dimension: Dimension::new("-20", -20.0).unwrap(),
+                },
+            ]))
+            .err()
+            .expect("collapsed circular offset must fail closed"),
+        CanonicalError::InvalidPlanarOffset
+    );
+    assert_eq!(document.current().canonical_digest(), before);
+    assert_eq!(document.visible_undo_steps(), undo_steps);
+
+    let bytes = persistence::save(&document.current());
+    let reopened = persistence::load(&bytes).unwrap();
+    assert_eq!(reopened.source_schema(), persistence::CURRENT_SCHEMA);
+    assert!(reopened.migration_losses().is_empty());
+    assert_eq!(reopened.snapshot().canonical_digest(), inward);
+    assert_eq!(persistence::save(&reopened.snapshot()), bytes);
+    let reopened_request =
+        ExactPlanarOffsetRequest::from_snapshot(&reopened.snapshot(), DEFINITION).unwrap();
+    assert_eq!(reopened_request, inward_request);
 }
 
 #[test]

@@ -26,6 +26,9 @@ use ketchup_core::exact_product::{
     PlanarOffsetWorkerEvidence, build_planar_offset_package, canonical_reference_lineage_digest,
     line_arc_d_arc_only_side_overlap,
 };
+use ketchup_core::sketch::{
+    PrincipalPlane, SketchEntity, SketchEntityId, SketchSpec, WorkplaneSpec,
+};
 use ketchup_exact::{
     CutMode, CylinderToolSpec, ExactBackend, GeometryErrorCode, PlanarProfileSegment,
     RectangleExtrudeSpec, ReferenceResolution, StabilityClass, capture_circle_extrusion_references,
@@ -21572,6 +21575,166 @@ fn scheduler_evaluates_bounded_planar_offset_with_deterministic_exact_lineage() 
         ),
         Err(ExactProductError::InvalidWorkerEvidence)
     ));
+}
+
+#[test]
+fn scheduler_evaluates_circular_planar_offset_with_bounded_worker_evidence() {
+    const DEFINITION: DefinitionId = DefinitionId(704);
+    const WORKPLANE: FeatureId = FeatureId(705);
+    const CIRCLE: FeatureId = FeatureId(706);
+    const OFFSET: FeatureId = FeatureId(707);
+
+    let mut supervisor = ExactWorkerSupervisor::spawn(worker_path()).unwrap();
+    let mut previous_fingerprint = None;
+    for (distance_mm, output_radius_mm) in [(3.0, 23.0), (-3.0, 17.0), (-19.99, 0.01)] {
+        let mut document = DocumentStore::new();
+        document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::CreateDefinition {
+                    id: DEFINITION,
+                    name: "Circular offset".to_owned(),
+                },
+                CanonicalCommand::CreateFeature {
+                    id: WORKPLANE,
+                    definition_id: DEFINITION,
+                    name: "XY".to_owned(),
+                    kind: FeatureKind::Workplane(WorkplaneSpec::principal(PrincipalPlane::Xy)),
+                },
+                CanonicalCommand::CreateFeature {
+                    id: CIRCLE,
+                    definition_id: DEFINITION,
+                    name: "Circle sketch".to_owned(),
+                    kind: FeatureKind::Sketch(SketchSpec {
+                        workplane: WORKPLANE,
+                        entities: vec![SketchEntity::Circle {
+                            id: SketchEntityId(1),
+                            center_mm: [12.0, -8.0],
+                            radius_mm: 20.0,
+                        }],
+                        constraints: Vec::new(),
+                    }),
+                },
+                CanonicalCommand::CreateFeature {
+                    id: OFFSET,
+                    definition_id: DEFINITION,
+                    name: "Planar offset".to_owned(),
+                    kind: FeatureKind::PlanarOffset {
+                        profile: CIRCLE,
+                        distance: Dimension::new(distance_mm.to_string(), distance_mm).unwrap(),
+                    },
+                },
+            ]))
+            .unwrap();
+        let snapshot = document.current();
+        let request = ExactPlanarOffsetRequest::from_snapshot(&snapshot, DEFINITION).unwrap();
+        let circle = request.circle_profile().unwrap();
+        assert!(!request.is_rectangle());
+        assert!(request.mixed_profile().is_none());
+        assert_eq!(f64::from_bits(circle.center_x_bits), 12.0);
+        assert_eq!(f64::from_bits(circle.center_y_bits), -8.0);
+        assert_eq!(f64::from_bits(circle.radius_bits), 20.0);
+
+        let first = supervisor.evaluate_planar_offset(&request).unwrap();
+        let repeated = supervisor.evaluate_planar_offset(&request).unwrap();
+        assert!(first.is_current(&snapshot));
+        assert_eq!(first.identity, repeated.identity);
+        assert_eq!(first.reference, repeated.reference);
+        assert_eq!(first.topology_counts, [1, 1, 1, 0, 0]);
+        assert!(first.vertices.is_empty());
+        assert!(first.triangles.is_empty());
+        let expected_bounds = [
+            [12.0 - output_radius_mm, -8.0 - output_radius_mm, 0.0],
+            [12.0 + output_radius_mm, -8.0 + output_radius_mm, 0.0],
+        ];
+        assert!(
+            first
+                .bounds_mm
+                .into_iter()
+                .flatten()
+                .zip(expected_bounds.into_iter().flatten())
+                .all(|(actual, expected)| (actual - expected).abs() <= 1.0e-6)
+        );
+        assert!(
+            (first.area_mm2 - std::f64::consts::PI * output_radius_mm * output_radius_mm).abs()
+                <= 1.0e-6 * first.area_mm2.max(1.0)
+        );
+        assert_eq!(
+            first.reference.role(),
+            Some(ExactFaceRole::PlanarOffsetFace)
+        );
+        assert!(first.reference.has_valid_lineage());
+        assert!(first.reference.matches_planar_offset_request(&request));
+
+        let evidence = PlanarOffsetWorkerEvidence {
+            exact_input_digest: first.identity.exact_input_digest.clone(),
+            result_fingerprint: first.identity.result_fingerprint.clone(),
+            backend: first.identity.backend.clone(),
+            tolerance: first.identity.tolerance.clone(),
+            bounds_mm: first.bounds_mm,
+            area_mm2: first.area_mm2,
+            topology_counts: first.topology_counts,
+            face_ordinal: 0,
+            lineage_digest: first.reference.lineage_digest.clone(),
+            corroborating_geometry_fingerprint: first
+                .reference
+                .corroborating_geometry_fingerprint
+                .clone(),
+        };
+        let mut tampered = request.clone();
+        tampered.circle.as_mut().unwrap().radius_bits = 21.0_f64.to_bits();
+        assert!(matches!(
+            build_planar_offset_package(&tampered, evidence),
+            Err(ExactProductError::InvalidWorkerEvidence)
+        ));
+        if let Some(previous_fingerprint) = previous_fingerprint {
+            assert_ne!(first.identity.result_fingerprint, previous_fingerprint);
+        }
+        previous_fingerprint = Some(first.identity.result_fingerprint);
+    }
+
+    for invalid_distance in [-20.0, -19.991] {
+        let mut invalid = DocumentStore::new();
+        assert!(matches!(
+            invalid.apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::CreateDefinition {
+                    id: DEFINITION,
+                    name: "Invalid circular offset".to_owned(),
+                },
+                CanonicalCommand::CreateFeature {
+                    id: WORKPLANE,
+                    definition_id: DEFINITION,
+                    name: "XY".to_owned(),
+                    kind: FeatureKind::Workplane(WorkplaneSpec::principal(PrincipalPlane::Xy)),
+                },
+                CanonicalCommand::CreateFeature {
+                    id: CIRCLE,
+                    definition_id: DEFINITION,
+                    name: "Circle sketch".to_owned(),
+                    kind: FeatureKind::Sketch(SketchSpec {
+                        workplane: WORKPLANE,
+                        entities: vec![SketchEntity::Circle {
+                            id: SketchEntityId(1),
+                            center_mm: [12.0, -8.0],
+                            radius_mm: 20.0,
+                        }],
+                        constraints: Vec::new(),
+                    }),
+                },
+                CanonicalCommand::CreateFeature {
+                    id: OFFSET,
+                    definition_id: DEFINITION,
+                    name: "Collapsed offset".to_owned(),
+                    kind: FeatureKind::PlanarOffset {
+                        profile: CIRCLE,
+                        distance: Dimension::new(invalid_distance.to_string(), invalid_distance,)
+                            .unwrap(),
+                    },
+                },
+            ])),
+            Err(CanonicalError::InvalidPlanarOffset)
+        ));
+        assert_eq!(invalid.visible_undo_steps(), 0);
+    }
 }
 
 #[test]

@@ -1243,6 +1243,17 @@ impl ExactWorkerClient {
                     request.offset_feature_id.0,
                     request.canonical_input_digest,
                 )
+            } else if let Some(circle) = request.circle_profile() {
+                format!(
+                    "OFFSET_CIRCLE_P6_V1 {} {} {} {:016x} {:016x} {:016x} {:016x}",
+                    request.document_id.0,
+                    request.offset_feature_id.0,
+                    request.canonical_input_digest,
+                    circle.center_x_bits,
+                    circle.center_y_bits,
+                    circle.radius_bits,
+                    request.distance_bits,
+                )
             } else {
                 let profile = request.mixed_profile().ok_or_else(|| {
                     WorkerError::Protocol("missing typed offset profile".to_owned())

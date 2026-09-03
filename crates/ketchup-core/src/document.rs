@@ -16,7 +16,8 @@ use crate::exact_brep_graph::{
 };
 use crate::exact_product::{
     BodySubshapeRef, EXACT_MIN_LENGTH_MM, ExactFaceRole, ExactFeatureChainRequest,
-    ExactReferenceResolution, ExactResultRegistry, exact_planar_offset_profile,
+    ExactReferenceResolution, ExactResultRegistry, MAX_EXACT_PLANAR_OFFSET_LENGTH_MM,
+    exact_planar_offset_profile,
 };
 use crate::exact_revolve::{ExactRevolveRequest, reference_matches_revolve_request};
 pub use crate::graph::{
@@ -44,7 +45,8 @@ use crate::prismatic::{CanonicalJoint, JointId, PrismaticError};
 use crate::sketch::{
     FeatureExtent, FeatureExtentEnd, PadPocketOperation, PadSpec, PocketSpec, PrincipalPlane,
     SketchConstraintId, SketchConstraintKind, SketchEntity, SketchError, SketchPointKind,
-    SketchSpec, WorkplaneFrame, WorkplaneSpec, WorkplaneSupport, WorkplaneSupportHealth,
+    SketchSpec, SolvedSketchRegionProfile, WorkplaneFrame, WorkplaneSpec, WorkplaneSupport,
+    WorkplaneSupportHealth,
 };
 use crate::space::{
     CanonicalClearanceVolume, CanonicalSpace, ClearanceCoordinateFrame, ClearanceOwner,
@@ -12939,29 +12941,67 @@ fn validate_product(product: &ProductModel) -> Result<(), CanonicalError> {
                             && output_bounds[3] - output_bounds[1] >= EXACT_MIN_LENGTH_MM
                     }
                     FeatureKind::SegmentProfile { segments, closed } => {
-                        exact_planar_offset_profile(segments, *closed).is_some_and(|profile| {
-                            let bounds = profile.bounds_bits.map(f64::from_bits);
-                            let Some(margin) = profile.max_planar_offset_displacement_mm(distance)
+                        distance.abs() <= MAX_EXACT_PLANAR_OFFSET_LENGTH_MM
+                            && exact_planar_offset_profile(segments, *closed).is_some_and(
+                                |profile| {
+                                    let bounds = profile.bounds_bits.map(f64::from_bits);
+                                    let Some(margin) =
+                                        profile.max_planar_offset_displacement_mm(distance)
+                                    else {
+                                        return false;
+                                    };
+                                    let output_envelope = if distance > 0.0 {
+                                        [
+                                            bounds[0] - margin,
+                                            bounds[1] - margin,
+                                            bounds[2] + margin,
+                                            bounds[3] + margin,
+                                        ]
+                                    } else {
+                                        bounds
+                                    };
+                                    let minimum_displacement = distance.abs();
+                                    let cannot_statically_collapse = distance > 0.0
+                                        || bounds[2] - bounds[0] > 2.0 * minimum_displacement
+                                            && bounds[3] - bounds[1] > 2.0 * minimum_displacement;
+                                    output_envelope.into_iter().all(|coordinate| {
+                                        coordinate.is_finite()
+                                            && coordinate.abs() <= MAX_CANONICAL_ABS_MM
+                                    }) && cannot_statically_collapse
+                                },
+                            )
+                    }
+                    FeatureKind::Sketch(spec) => {
+                        spec.solved_regions().ok().is_some_and(|regions| {
+                            let [region] = regions.as_slice() else {
+                                return false;
+                            };
+                            let SolvedSketchRegionProfile::Circle {
+                                center_mm,
+                                radius_mm,
+                            } = region.outer
                             else {
                                 return false;
                             };
-                            let output_envelope = if distance > 0.0 {
-                                [
-                                    bounds[0] - margin,
-                                    bounds[1] - margin,
-                                    bounds[2] + margin,
-                                    bounds[3] + margin,
-                                ]
-                            } else {
-                                bounds
-                            };
-                            let minimum_displacement = distance.abs();
-                            let cannot_statically_collapse = distance > 0.0
-                                || bounds[2] - bounds[0] > 2.0 * minimum_displacement
-                                    && bounds[3] - bounds[1] > 2.0 * minimum_displacement;
-                            output_envelope.into_iter().all(|coordinate| {
-                                coordinate.is_finite() && coordinate.abs() <= MAX_CANONICAL_ABS_MM
-                            }) && cannot_statically_collapse
+                            let output_radius = radius_mm + distance;
+                            region.holes.is_empty()
+                                && (EXACT_MIN_LENGTH_MM..=MAX_EXACT_PLANAR_OFFSET_LENGTH_MM)
+                                    .contains(&radius_mm)
+                                && (EXACT_MIN_LENGTH_MM..=MAX_EXACT_PLANAR_OFFSET_LENGTH_MM)
+                                    .contains(&output_radius)
+                                && [radius_mm, output_radius].into_iter().all(|radius| {
+                                    [
+                                        center_mm[0] - radius,
+                                        center_mm[1] - radius,
+                                        center_mm[0] + radius,
+                                        center_mm[1] + radius,
+                                    ]
+                                    .into_iter()
+                                    .all(|coordinate| {
+                                        coordinate.is_finite()
+                                            && coordinate.abs() <= MAX_CANONICAL_ABS_MM
+                                    })
+                                })
                         })
                     }
                     _ => false,

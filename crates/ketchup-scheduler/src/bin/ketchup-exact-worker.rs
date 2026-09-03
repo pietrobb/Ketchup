@@ -596,6 +596,59 @@ fn handle_request(backend: &ExactBackend, request: &str) -> Option<String> {
                 )
             })
         }
+        (Some("OFFSET_CIRCLE_P6_V1"), Some(document_id), Some(producer_feature_id)) => {
+            let remaining = fields.collect::<Vec<_>>();
+            let [
+                request_digest,
+                center_x_bits,
+                center_y_bits,
+                radius_bits,
+                distance_bits,
+            ] = remaining.as_slice()
+            else {
+                return Some("ERR invalid_request".to_owned());
+            };
+            let canonical_decimal = |value: &str| {
+                value
+                    .parse::<u64>()
+                    .ok()
+                    .is_some_and(|parsed| parsed.to_string() == value)
+            };
+            let parse_bits = |value: &str| {
+                (value.len() == 16
+                    && value
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f')))
+                .then(|| u64::from_str_radix(value, 16).ok())
+                .flatten()
+            };
+            let Some([center_x_bits, center_y_bits, radius_bits, distance_bits]) =
+                [center_x_bits, center_y_bits, radius_bits, distance_bits]
+                    .into_iter()
+                    .map(|value| parse_bits(value))
+                    .collect::<Option<Vec<_>>>()
+                    .and_then(|values| <[u64; 4]>::try_from(values).ok())
+            else {
+                return Some("ERR invalid_parameter".to_owned());
+            };
+            if !canonical_decimal(document_id)
+                || !canonical_decimal(producer_feature_id)
+                || !is_canonical_digest(request_digest)
+            {
+                return Some("ERR invalid_request".to_owned());
+            }
+            Some(p6_profile_offset_response(
+                backend,
+                PlanarProfileLoop::Circle {
+                    center_mm: [f64::from_bits(center_x_bits), f64::from_bits(center_y_bits)],
+                    radius_mm: f64::from_bits(radius_bits),
+                },
+                f64::from_bits(distance_bits),
+                document_id,
+                producer_feature_id,
+                request_digest,
+            ))
+        }
         (Some("OFFSET_PROFILE_P6_V1"), Some(document_id), Some(producer_feature_id)) => {
             let remaining = fields.collect::<Vec<_>>();
             let Some((request_digest, remaining)) = remaining.split_first() else {

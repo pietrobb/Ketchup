@@ -45,6 +45,7 @@ pub const EXACT_BOOLEAN_SPLIT_EVALUATOR_V1: &str = "ketchup.exact-boolean-split-
 pub const EXACT_PLANAR_OFFSET_SCHEMA_V1: &str = "ketchup.exact-planar-offset.v1";
 pub const EXACT_PLANAR_OFFSET_EVALUATOR_V1: &str = "ketchup.exact-planar-offset-evaluator.v1";
 pub const EXACT_MIN_LENGTH_MM: f64 = 0.01;
+pub const MAX_EXACT_PLANAR_OFFSET_LENGTH_MM: f64 = 100_000.0;
 pub const EXACT_SWEEP_SCHEMA_V1: &str = "ketchup.exact-sweep.v1";
 pub const EXACT_SWEEP_EVALUATOR_V1: &str = "ketchup.exact-sweep-evaluator.v1";
 pub const EXACT_LOFT_SCHEMA_V1: &str = "ketchup.exact-loft.v1";
@@ -4892,6 +4893,41 @@ pub(crate) fn accepts_planar_offset_geometry(
         && sign_relation
 }
 
+fn accepts_planar_circle_offset_geometry(
+    circle: ExactCircleProfile,
+    distance_mm: f64,
+    bounds_mm: [[f64; 3]; 2],
+    area_mm2: f64,
+    topology_counts: [u32; 5],
+) -> bool {
+    let center_x = f64::from_bits(circle.center_x_bits);
+    let center_y = f64::from_bits(circle.center_y_bits);
+    let radius = f64::from_bits(circle.radius_bits) + distance_mm;
+    let expected_bounds = [
+        [center_x - radius, center_y - radius, 0.0],
+        [center_x + radius, center_y + radius, 0.0],
+    ];
+    let expected_area = std::f64::consts::PI * radius * radius;
+    let area_tolerance = 1.0e-6 * expected_area.max(1.0);
+
+    !circle.clockwise
+        && [center_x, center_y, radius, distance_mm, area_mm2]
+            .into_iter()
+            .all(f64::is_finite)
+        && (EXACT_MIN_LENGTH_MM..=MAX_EXACT_PLANAR_OFFSET_LENGTH_MM).contains(&radius)
+        && bounds_mm
+            .into_iter()
+            .flatten()
+            .zip(expected_bounds.into_iter().flatten())
+            .all(|(actual, expected)| {
+                actual.is_finite()
+                    && actual.abs() <= MAX_EXACT_BREP_COORDINATE_MM
+                    && (actual - expected).abs() <= 1.0e-6
+            })
+        && (area_mm2 - expected_area).abs() <= area_tolerance
+        && topology_counts == [1, 1, 1, 0, 0]
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExactPlanarOffsetRequest {
     pub document_id: DocumentId,
@@ -4901,6 +4937,7 @@ pub struct ExactPlanarOffsetRequest {
     pub profile_feature_id: FeatureId,
     pub offset_feature_id: FeatureId,
     pub source_bounds_bits: [u64; 4],
+    pub circle: Option<ExactCircleProfile>,
     pub profile: Option<ExactMixedProfile>,
     pub distance_bits: u64,
     pub canonical_input_digest: String,
@@ -4914,34 +4951,77 @@ impl ExactPlanarOffsetRequest {
         let definition = snapshot
             .definition(definition_id)
             .ok_or(ExactProductError::DefinitionNotFound(definition_id))?;
-        let [profile_feature_id, offset_feature_id] = definition.feature_ids() else {
-            return Err(ExactProductError::UnsupportedDefinition);
-        };
-        let profile = snapshot
-            .feature(*profile_feature_id)
-            .ok_or(ExactProductError::ProfileNotFound(*profile_feature_id))?;
+        let offset_feature_id = *definition
+            .feature_ids()
+            .last()
+            .ok_or(ExactProductError::UnsupportedDefinition)?;
         let offset = snapshot
-            .feature(*offset_feature_id)
+            .feature(offset_feature_id)
             .ok_or(ExactProductError::UnsupportedDefinition)?;
         let FeatureKind::PlanarOffset {
-            profile: offset_profile_id,
+            profile: profile_feature_id,
             distance,
         } = offset.kind()
         else {
             return Err(ExactProductError::UnsupportedDefinition);
         };
-        if offset_profile_id != profile_feature_id {
+        let profile_feature_id = *profile_feature_id;
+        let profile = snapshot
+            .feature(profile_feature_id)
+            .ok_or(ExactProductError::ProfileNotFound(profile_feature_id))?;
+        let profile_position = definition
+            .feature_ids()
+            .iter()
+            .position(|candidate| *candidate == profile_feature_id)
+            .ok_or(ExactProductError::UnsupportedDefinition)?;
+        if profile.definition_id() != definition_id
+            || profile_position + 1 >= definition.feature_ids().len()
+        {
             return Err(ExactProductError::UnsupportedDefinition);
         }
-        let (source_bounds, profile) = match profile.kind() {
+        let (source_bounds, circle, profile) = match profile.kind() {
             FeatureKind::Profile { points_mm } => (
                 rectangle_bounds(points_mm).ok_or(ExactProductError::UnsupportedProfile)?,
+                None,
                 None,
             ),
             FeatureKind::SegmentProfile { segments, closed } => {
                 let profile = exact_planar_offset_profile(segments, *closed)
                     .ok_or(ExactProductError::UnsupportedProfile)?;
-                (profile.bounds_bits.map(f64::from_bits), Some(profile))
+                (profile.bounds_bits.map(f64::from_bits), None, Some(profile))
+            }
+            FeatureKind::Sketch(spec) => {
+                let regions = spec
+                    .solved_regions()
+                    .map_err(|_| ExactProductError::UnsupportedProfile)?;
+                let [region] = regions.as_slice() else {
+                    return Err(ExactProductError::UnsupportedProfile);
+                };
+                let SolvedSketchRegionProfile::Circle {
+                    center_mm,
+                    radius_mm,
+                } = &region.outer
+                else {
+                    return Err(ExactProductError::UnsupportedProfile);
+                };
+                if !region.holes.is_empty() {
+                    return Err(ExactProductError::UnsupportedProfile);
+                }
+                (
+                    [
+                        center_mm[0] - radius_mm,
+                        center_mm[1] - radius_mm,
+                        center_mm[0] + radius_mm,
+                        center_mm[1] + radius_mm,
+                    ],
+                    Some(ExactCircleProfile {
+                        center_x_bits: center_mm[0].to_bits(),
+                        center_y_bits: center_mm[1].to_bits(),
+                        radius_bits: radius_mm.to_bits(),
+                        clockwise: false,
+                    }),
+                    None,
+                )
             }
             _ => return Err(ExactProductError::UnsupportedProfile),
         };
@@ -4952,7 +5032,17 @@ impl ExactPlanarOffsetRequest {
                 .ok_or(ExactProductError::UnsupportedProfile)?,
             None => distance_mm,
         };
-        let output_bounds = if profile.is_some() && distance_mm < 0.0 {
+        let output_bounds = if let Some(circle) = circle {
+            let center_x = f64::from_bits(circle.center_x_bits);
+            let center_y = f64::from_bits(circle.center_y_bits);
+            let output_radius = f64::from_bits(circle.radius_bits) + distance_mm;
+            [
+                center_x - output_radius,
+                center_y - output_radius,
+                center_x + output_radius,
+                center_y + output_radius,
+            ]
+        } else if profile.is_some() && distance_mm < 0.0 {
             source_bounds
         } else {
             [
@@ -4966,13 +5056,26 @@ impl ExactPlanarOffsetRequest {
             && distance_mm < 0.0
             && (source_bounds[2] - source_bounds[0] <= 2.0 * distance_mm.abs()
                 || source_bounds[3] - source_bounds[1] <= 2.0 * distance_mm.abs());
+        let valid_circle = circle.is_none_or(|circle| {
+            let radius = f64::from_bits(circle.radius_bits);
+            let output_radius = radius + distance_mm;
+            !circle.clockwise
+                && (EXACT_MIN_LENGTH_MM..=MAX_EXACT_PLANAR_OFFSET_LENGTH_MM).contains(&radius)
+                && (EXACT_MIN_LENGTH_MM..=MAX_EXACT_PLANAR_OFFSET_LENGTH_MM)
+                    .contains(&output_radius)
+        });
         if !distance_mm.is_finite()
             || distance_mm.abs() < EXACT_MIN_LENGTH_MM
-            || output_bounds
+            || (circle.is_some() || profile.is_some())
+                && distance_mm.abs() > MAX_EXACT_PLANAR_OFFSET_LENGTH_MM
+            || source_bounds
                 .into_iter()
+                .chain(output_bounds)
                 .any(|value| !value.is_finite() || value.abs() > MAX_EXACT_BREP_COORDINATE_MM)
+            || !valid_circle
             || statically_collapsed
-            || profile.is_none()
+            || circle.is_none()
+                && profile.is_none()
                 && (output_bounds[2] - output_bounds[0] < EXACT_MIN_LENGTH_MM
                     || output_bounds[3] - output_bounds[1] < EXACT_MIN_LENGTH_MM)
         {
@@ -4981,7 +5084,23 @@ impl ExactPlanarOffsetRequest {
         let source_digest = snapshot.canonical_digest();
         let source_bounds_bits = source_bounds.map(f64::to_bits);
         let distance_bits = distance_mm.to_bits();
-        let canonical_input_digest = if let Some(profile) = &profile {
+        let canonical_input_digest = if let Some(circle) = circle {
+            digest(&format!(
+                "{}:{}:{}:{}:{}:{}:circle:{:016x}:{:016x}:{:016x}:{}:{:016x}:{}",
+                EXACT_PLANAR_OFFSET_SCHEMA_V1,
+                snapshot.document_id().0,
+                snapshot.revision_id(),
+                definition_id.0,
+                profile_feature_id.0,
+                offset_feature_id.0,
+                circle.center_x_bits,
+                circle.center_y_bits,
+                circle.radius_bits,
+                u8::from(circle.clockwise),
+                distance_bits,
+                source_digest,
+            ))
+        } else if let Some(profile) = &profile {
             let mut identity = format!(
                 "{}:{}:{}:{}:{}:{}:typed:{}:{:016x}:{:016x}:{:016x}:{:016x}:{:016x}:{:016x}:{}",
                 EXACT_PLANAR_OFFSET_SCHEMA_V1,
@@ -5052,9 +5171,10 @@ impl ExactPlanarOffsetRequest {
             source_revision: snapshot.revision_id(),
             source_digest,
             definition_id,
-            profile_feature_id: *profile_feature_id,
-            offset_feature_id: *offset_feature_id,
+            profile_feature_id,
+            offset_feature_id,
             source_bounds_bits,
+            circle,
             profile,
             distance_bits,
             canonical_input_digest,
@@ -5072,7 +5192,17 @@ impl ExactPlanarOffsetRequest {
             },
             None => distance_mm,
         };
-        let output_bounds = if self.profile.is_some() && distance_mm < 0.0 {
+        let output_bounds = if let Some(circle) = self.circle {
+            let center_x = f64::from_bits(circle.center_x_bits);
+            let center_y = f64::from_bits(circle.center_y_bits);
+            let output_radius = f64::from_bits(circle.radius_bits) + distance_mm;
+            [
+                center_x - output_radius,
+                center_y - output_radius,
+                center_x + output_radius,
+                center_y + output_radius,
+            ]
+        } else if self.profile.is_some() && distance_mm < 0.0 {
             source_bounds
         } else {
             [
@@ -5092,18 +5222,39 @@ impl ExactPlanarOffsetRequest {
             || !valid_lower_hex(&self.canonical_input_digest, 64)
             || !distance_mm.is_finite()
             || distance_mm.abs() < EXACT_MIN_LENGTH_MM
+            || (self.circle.is_some() || self.profile.is_some())
+                && distance_mm.abs() > MAX_EXACT_PLANAR_OFFSET_LENGTH_MM
+            || self.circle.is_some() && self.profile.is_some()
             || source_bounds
                 .into_iter()
+                .chain(output_bounds)
                 .any(|value| !value.is_finite() || value.abs() > MAX_EXACT_BREP_COORDINATE_MM)
             || source_bounds[0] >= source_bounds[2]
             || source_bounds[1] >= source_bounds[3]
-            || output_bounds
-                .into_iter()
-                .any(|value| !value.is_finite() || value.abs() > MAX_EXACT_BREP_COORDINATE_MM)
         {
             return false;
         }
-        if let Some(profile) = &self.profile {
+        if let Some(circle) = self.circle {
+            let center_x = f64::from_bits(circle.center_x_bits);
+            let center_y = f64::from_bits(circle.center_y_bits);
+            let radius = f64::from_bits(circle.radius_bits);
+            let output_radius = radius + distance_mm;
+            if circle.clockwise
+                || !(EXACT_MIN_LENGTH_MM..=MAX_EXACT_PLANAR_OFFSET_LENGTH_MM).contains(&radius)
+                || !(EXACT_MIN_LENGTH_MM..=MAX_EXACT_PLANAR_OFFSET_LENGTH_MM)
+                    .contains(&output_radius)
+                || self.source_bounds_bits
+                    != [
+                        center_x - radius,
+                        center_y - radius,
+                        center_x + radius,
+                        center_y + radius,
+                    ]
+                    .map(f64::to_bits)
+            {
+                return false;
+            }
+        } else if let Some(profile) = &self.profile {
             let segments = profile
                 .segments
                 .iter()
@@ -5145,7 +5296,23 @@ impl ExactPlanarOffsetRequest {
     }
 
     fn recomputed_canonical_input_digest(&self) -> String {
-        if let Some(profile) = &self.profile {
+        if let Some(circle) = self.circle {
+            digest(&format!(
+                "{}:{}:{}:{}:{}:{}:circle:{:016x}:{:016x}:{:016x}:{}:{:016x}:{}",
+                EXACT_PLANAR_OFFSET_SCHEMA_V1,
+                self.document_id.0,
+                self.source_revision,
+                self.definition_id.0,
+                self.profile_feature_id.0,
+                self.offset_feature_id.0,
+                circle.center_x_bits,
+                circle.center_y_bits,
+                circle.radius_bits,
+                u8::from(circle.clockwise),
+                self.distance_bits,
+                self.source_digest,
+            ))
+        } else if let Some(profile) = &self.profile {
             let mut identity = format!(
                 "{}:{}:{}:{}:{}:{}:typed:{}:{:016x}:{:016x}:{:016x}:{:016x}:{:016x}:{:016x}:{}",
                 EXACT_PLANAR_OFFSET_SCHEMA_V1,
@@ -5220,7 +5387,12 @@ impl ExactPlanarOffsetRequest {
 
     #[must_use]
     pub const fn is_rectangle(&self) -> bool {
-        self.profile.is_none()
+        self.circle.is_none() && self.profile.is_none()
+    }
+
+    #[must_use]
+    pub const fn circle_profile(&self) -> Option<ExactCircleProfile> {
+        self.circle
     }
 
     #[must_use]
@@ -5260,15 +5432,28 @@ impl ExactPlanarOffsetRequest {
         area_mm2: f64,
         topology_counts: [u32; 5],
     ) -> bool {
-        self.profile.as_ref().is_some_and(|profile| {
-            accepts_planar_offset_geometry(
-                profile,
-                self.distance_mm(),
-                bounds_mm,
-                area_mm2,
-                topology_counts,
-            )
-        })
+        self.circle.map_or_else(
+            || {
+                self.profile.as_ref().is_some_and(|profile| {
+                    accepts_planar_offset_geometry(
+                        profile,
+                        self.distance_mm(),
+                        bounds_mm,
+                        area_mm2,
+                        topology_counts,
+                    )
+                })
+            },
+            |circle| {
+                accepts_planar_circle_offset_geometry(
+                    circle,
+                    self.distance_mm(),
+                    bounds_mm,
+                    area_mm2,
+                    topology_counts,
+                )
+            },
+        )
     }
 
     #[must_use]
