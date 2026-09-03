@@ -3250,7 +3250,7 @@ fn bounded_planar_offset_is_dimensioned_validated_undoable_and_persistent() {
     assert_eq!(document.undo().unwrap().canonical_digest(), outward);
     assert_eq!(document.redo().unwrap().canonical_digest(), inward);
 
-    for invalid_distance in [0.0, -40.0, 1_000_000.0] {
+    for invalid_distance in [0.0, 0.009, -0.009, -40.0, 1_000_000.0] {
         let before = document.current().canonical_digest();
         let undo_steps = document.visible_undo_steps();
         let error = document
@@ -3267,6 +3267,30 @@ fn bounded_planar_offset_is_dimensioned_validated_undoable_and_persistent() {
         assert_eq!(document.current().canonical_digest(), before);
         assert_eq!(document.visible_undo_steps(), undo_steps);
     }
+
+    let before = document.current().canonical_digest();
+    let undo_steps = document.visible_undo_steps();
+    let error = document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetProfilePoints {
+                id: PROFILE,
+                points_mm: vec![
+                    [33_839.523_822_158_46, 20.0],
+                    [33_842.954_297_017_83, 20.0],
+                    [33_842.954_297_017_83, 100.0],
+                    [33_839.523_822_158_46, 100.0],
+                ],
+            },
+            CanonicalCommand::SetFeatureDimension {
+                id: OFFSET,
+                dimension: Dimension::new("-1.7102374296856577", -1.710_237_429_685_657_7).unwrap(),
+            },
+        ]))
+        .err()
+        .expect("floating-point boundary mismatch must fail closed");
+    assert_eq!(error, CanonicalError::InvalidPlanarOffset);
+    assert_eq!(document.current().canonical_digest(), before);
+    assert_eq!(document.visible_undo_steps(), undo_steps);
 
     document.make_unique(OCCURRENCE, "Unique offset").unwrap();
     let unique = document.current();

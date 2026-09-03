@@ -702,8 +702,8 @@ def test_cad_append_planar_offset_matches_rust_boundaries_and_strict_fields():
     assert assistant._validate_cad_edit_program({"operations": [operation]}) == {
         "operations": [operation]
     }
-    assert "non-collapsing result" in assistant.SYSTEM_PROMPT
-    for distance_mm in [1_000_000, -1_000_000]:
+    assert "result dimensions at least 0.01 mm" in assistant.SYSTEM_PROMPT
+    for distance_mm in [0.01, -0.01, 1_000_000, -1_000_000]:
         assistant._validate_cad_edit_program(
             {
                 "operations": [
@@ -717,8 +717,8 @@ def test_cad_append_planar_offset_matches_rust_boundaries_and_strict_fields():
         {**feature, "profile_feature_id": True},
         {**feature, "profile_feature_id": assistant.MAX_U64 + 1},
         {**feature, "distance_mm": 0},
-        {**feature, "distance_mm": 1.0e-6},
-        {**feature, "distance_mm": -1.0e-6},
+        {**feature, "distance_mm": 0.009},
+        {**feature, "distance_mm": -0.009},
         {**feature, "distance_mm": 1_000_001},
         {**feature, "distance_mm": -1_000_001},
         {**feature, "distance_mm": float("nan")},

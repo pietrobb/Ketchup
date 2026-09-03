@@ -13,8 +13,8 @@ use crate::exact_brep_graph::{
     ExactBRepGraph, MAX_EXACT_BREP_GRAPH_NODES, MAX_EXACT_BREP_GRAPH_PROFILES,
 };
 use crate::exact_product::{
-    BodySubshapeRef, ExactFaceRole, ExactFeatureChainRequest, ExactReferenceResolution,
-    ExactResultRegistry,
+    BodySubshapeRef, EXACT_MIN_LENGTH_MM, ExactFaceRole, ExactFeatureChainRequest,
+    ExactReferenceResolution, ExactResultRegistry,
 };
 use crate::exact_revolve::{ExactRevolveRequest, reference_matches_revolve_request};
 pub use crate::graph::{
@@ -9606,7 +9606,7 @@ fn validate_feature_kind(kind: &FeatureKind) -> Result<(), CanonicalError> {
         }
         FeatureKind::PlanarOffset { distance, .. } => {
             Dimension::new(distance.source_token.clone(), distance.millimetres).map(|_| ())?;
-            if distance.millimetres.abs() <= PROFILE_EPSILON_MM {
+            if distance.millimetres.abs() < EXACT_MIN_LENGTH_MM {
                 return Err(CanonicalError::InvalidPlanarOffset);
             }
             Ok(())
@@ -12926,19 +12926,18 @@ fn validate_product(product: &ProductModel) -> Result<(), CanonicalError> {
                     .position(|candidate| *candidate == profile)
                     .is_some_and(|position| position < feature_position);
                 let distance = distance.millimetres();
+                let output_bounds = [
+                    points_mm[0][0] - distance,
+                    points_mm[0][1] - distance,
+                    points_mm[2][0] + distance,
+                    points_mm[2][1] + distance,
+                ];
                 let valid_bounds = is_axis_aligned_rectangle(points_mm)
-                    && [
-                        points_mm[0][0] - distance,
-                        points_mm[0][1] - distance,
-                        points_mm[2][0] + distance,
-                        points_mm[2][1] + distance,
-                    ]
-                    .into_iter()
-                    .all(|coordinate| {
+                    && output_bounds.into_iter().all(|coordinate| {
                         coordinate.is_finite() && coordinate.abs() <= MAX_CANONICAL_ABS_MM
                     })
-                    && points_mm[1][0] - points_mm[0][0] + 2.0 * distance > PROFILE_EPSILON_MM
-                    && points_mm[3][1] - points_mm[0][1] + 2.0 * distance > PROFILE_EPSILON_MM;
+                    && output_bounds[2] - output_bounds[0] >= EXACT_MIN_LENGTH_MM
+                    && output_bounds[3] - output_bounds[1] >= EXACT_MIN_LENGTH_MM;
                 if source.definition_id != feature.definition_id
                     || !source_precedes_offset
                     || !valid_bounds

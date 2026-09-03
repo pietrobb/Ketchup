@@ -1,3 +1,4 @@
+use crate::exact_product::EXACT_MIN_LENGTH_MM;
 use crate::exact_revolve::{
     controlled_bottle_profile, finish_amount_is_conservative, inner_shell_profile,
 };
@@ -297,7 +298,7 @@ impl AssistantCadBodyFeature {
                 distance_mm,
             } if *profile_feature_id != 0
                 && distance_mm.is_finite()
-                && distance_mm.abs() > 1.0e-6
+                && distance_mm.abs() >= EXACT_MIN_LENGTH_MM
                 && distance_mm.abs() <= MAX_ASSISTANT_ABS_MM =>
             {
                 Ok(())

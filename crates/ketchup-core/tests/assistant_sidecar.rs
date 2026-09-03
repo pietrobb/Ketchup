@@ -635,14 +635,16 @@ fn cad_edit_append_planar_offset_contract_is_strict_bounded_and_host_id_assigned
         serde_json::from_value::<AssistantCadEditProgram>(serialized).unwrap(),
         valid
     );
+    assert_eq!(program(11, 0.01).validate(), Ok(()));
+    assert_eq!(program(11, -0.01).validate(), Ok(()));
     assert_eq!(program(11, 1_000_000.0).validate(), Ok(()));
     assert_eq!(program(11, -1_000_000.0).validate(), Ok(()));
 
     for invalid in [
         program(0, 8.0),
         program(11, 0.0),
-        program(11, 1.0e-6),
-        program(11, -1.0e-6),
+        program(11, 0.009),
+        program(11, -0.009),
         program(11, 1_000_000.1),
         program(11, -1_000_000.1),
         program(11, f64::NAN),

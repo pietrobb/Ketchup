@@ -19,7 +19,8 @@ use ketchup_core::exact_product::{
     EXACT_THROUGH_CUT_EVALUATOR_V1, ExactBodyPackage, ExactFaceRole, ExactFeatureChainRequest,
     ExactLoftRequest, ExactPlanarOffsetRequest, ExactProductError, ExactReferenceQuarantineReason,
     ExactReferenceResolution, ExactRenderPackage, ExactResultRegistry, ExactSweepRequest,
-    canonical_reference_lineage_digest, line_arc_d_arc_only_side_overlap,
+    PlanarOffsetWorkerEvidence, build_planar_offset_package, canonical_reference_lineage_digest,
+    line_arc_d_arc_only_side_overlap,
 };
 use ketchup_exact::{
     CutMode, CylinderToolSpec, ExactBackend, GeometryErrorCode, PlanarProfileSegment,
@@ -30,7 +31,7 @@ use ketchup_exact::{
 };
 use ketchup_interaction::exact_projection::ExactInteractionProjection;
 use ketchup_interaction::{Ray, Vec3};
-use ketchup_scheduler::ExactWorkerSupervisor;
+use ketchup_scheduler::{ExactWorkerSupervisor, M3EvaluationError, WorkerError};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -21465,7 +21466,9 @@ fn scheduler_evaluates_bounded_planar_offset_with_deterministic_exact_lineage() 
 
     let mut supervisor = ExactWorkerSupervisor::spawn(worker_path()).unwrap();
     let mut fingerprints = Vec::new();
-    for distance_mm in [5.0, -7.5] {
+    let mut boundary_request = None;
+    let mut boundary_package = None;
+    for distance_mm in [5.0, -7.5, 0.01] {
         let mut document = DocumentStore::new();
         document
             .apply_batch(&CommandBatch::new(vec![
@@ -21495,19 +21498,24 @@ fn scheduler_evaluates_bounded_planar_offset_with_deterministic_exact_lineage() 
         let snapshot = document.current();
         let request =
             ExactPlanarOffsetRequest::from_snapshot(&snapshot, OFFSET_DEFINITION).unwrap();
+        if distance_mm == 0.01 {
+            boundary_request = Some(request.clone());
+        }
         assert_eq!(request.producer_feature_id(), OFFSET_FEATURE);
         assert_eq!(request.evaluator(), EXACT_PLANAR_OFFSET_EVALUATOR_V1);
         assert_eq!(
             request.expected_bounds_mm(),
-            if distance_mm > 0.0 {
-                [[5.0, 15.0, 0.0], [115.0, 105.0, 0.0]]
-            } else {
-                [[17.5, 27.5, 0.0], [102.5, 92.5, 0.0]]
-            }
+            [
+                [10.0 - distance_mm, 20.0 - distance_mm, 0.0],
+                [110.0 + distance_mm, 100.0 + distance_mm, 0.0],
+            ]
         );
 
         let first = supervisor.evaluate_planar_offset(&request).unwrap();
         let repeated = supervisor.evaluate_planar_offset(&request).unwrap();
+        if distance_mm == 0.01 {
+            boundary_package = Some(first.clone());
+        }
         assert!(first.is_current(&snapshot));
         assert_eq!(first.identity, repeated.identity);
         assert_eq!(first.reference, repeated.reference);
@@ -21526,6 +21534,39 @@ fn scheduler_evaluates_bounded_planar_offset_with_deterministic_exact_lineage() 
         fingerprints.push(first.identity.result_fingerprint);
     }
     assert_ne!(fingerprints[0], fingerprints[1]);
+
+    let mut below_minimum = boundary_request
+        .clone()
+        .expect("minimum offset request was evaluated");
+    below_minimum.distance_bits = 0.009_f64.to_bits();
+    assert!(matches!(
+        supervisor.evaluate_planar_offset(&below_minimum),
+        Err(M3EvaluationError::Worker(WorkerError::Geometry(code)))
+            if code == GeometryErrorCode::InvalidParameter.as_str()
+    ));
+
+    let package = boundary_package.expect("minimum offset package was evaluated");
+    let mut non_finite_request = boundary_request.expect("minimum offset request was evaluated");
+    non_finite_request.distance_bits = f64::NAN.to_bits();
+    assert!(matches!(
+        build_planar_offset_package(
+            &non_finite_request,
+            PlanarOffsetWorkerEvidence {
+                exact_input_digest: package.identity.exact_input_digest,
+                result_fingerprint: package.identity.result_fingerprint,
+                backend: package.identity.backend,
+                tolerance: package.identity.tolerance,
+                bounds_mm: package.bounds_mm,
+                area_mm2: package.area_mm2,
+                face_ordinal: 0,
+                lineage_digest: package.reference.lineage_digest,
+                corroborating_geometry_fingerprint: package
+                    .reference
+                    .corroborating_geometry_fingerprint,
+            },
+        ),
+        Err(ExactProductError::InvalidWorkerEvidence)
+    ));
 }
 
 #[test]

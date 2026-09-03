@@ -41,6 +41,7 @@ pub const EXACT_BOOLEAN_INTERSECT_EVALUATOR_V1: &str =
 pub const EXACT_BOOLEAN_SPLIT_EVALUATOR_V1: &str = "ketchup.exact-boolean-split-evaluator.v1";
 pub const EXACT_PLANAR_OFFSET_SCHEMA_V1: &str = "ketchup.exact-planar-offset.v1";
 pub const EXACT_PLANAR_OFFSET_EVALUATOR_V1: &str = "ketchup.exact-planar-offset-evaluator.v1";
+pub const EXACT_MIN_LENGTH_MM: f64 = 0.01;
 pub const EXACT_SWEEP_SCHEMA_V1: &str = "ketchup.exact-sweep.v1";
 pub const EXACT_SWEEP_EVALUATOR_V1: &str = "ketchup.exact-sweep-evaluator.v1";
 pub const EXACT_LOFT_SCHEMA_V1: &str = "ketchup.exact-loft.v1";
@@ -4768,10 +4769,10 @@ impl ExactPlanarOffsetRequest {
             source_bounds[3] + distance_mm,
         ];
         if !distance_mm.is_finite()
-            || distance_mm.abs() <= 1.0e-6
+            || distance_mm.abs() < EXACT_MIN_LENGTH_MM
             || output_bounds.into_iter().any(|value| !value.is_finite())
-            || output_bounds[2] - output_bounds[0] <= 1.0e-6
-            || output_bounds[3] - output_bounds[1] <= 1.0e-6
+            || output_bounds[2] - output_bounds[0] < EXACT_MIN_LENGTH_MM
+            || output_bounds[3] - output_bounds[1] < EXACT_MIN_LENGTH_MM
         {
             return Err(ExactProductError::UnsupportedProfile);
         }
@@ -7456,6 +7457,7 @@ pub fn build_planar_offset_package(
         corroborating_geometry_fingerprint,
     } = evidence;
     let expected_bounds = request.expected_bounds_mm();
+    let expected_area_mm2 = request.expected_area_mm2();
     let expected_lineage = canonical_reference_lineage_digest(
         request.document_id,
         request.offset_feature_id,
@@ -7463,9 +7465,18 @@ pub fn build_planar_offset_package(
         ExactFaceRole::PlanarOffsetFace.source_element_id(),
         ExactFaceRole::PlanarOffsetFace.expected_type(),
     );
-    if worker_bounds_mm != expected_bounds
+    if expected_bounds
+        .iter()
+        .flatten()
+        .any(|value| !value.is_finite())
+        || !expected_area_mm2.is_finite()
+        || worker_bounds_mm
+            .iter()
+            .flatten()
+            .zip(expected_bounds.iter().flatten())
+            .any(|(actual, expected)| !actual.is_finite() || (actual - expected).abs() > 1.0e-6)
         || !worker_area_mm2.is_finite()
-        || (worker_area_mm2 - request.expected_area_mm2()).abs() > 1.0e-6
+        || (worker_area_mm2 - expected_area_mm2).abs() > 1.0e-6
         || face_ordinal != 0
         || lineage_digest != expected_lineage
         || exact_input_digest.is_empty()
