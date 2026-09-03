@@ -6,13 +6,14 @@
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, Stroke, Vec2};
 use ketchup_core::assistant_sidecar::{
     ASSISTANT_PROTOCOL_VERSION, AssistantApiDiagnostics, AssistantBalloonTextIntent,
-    AssistantBoxIntent, AssistantCadDeletePolicy, AssistantCadEditOperation,
-    AssistantCadEditProgram, AssistantCadEntitySelector, AssistantCadPartFeature,
-    AssistantCapability, AssistantChatResult, AssistantDistribution, AssistantGableRoofIntent,
-    AssistantHandshake, AssistantModelIntent, AssistantOrientedBeamIntent, AssistantPrincipalPlane,
-    AssistantRejectionDiagnostic, AssistantRejectionPhase, AssistantSketchConstraint,
-    AssistantSketchEntity, AssistantSketchPointKind, AssistantSketchPointRef,
-    AssistantStaircaseIntent, AssistantWorkplaneSpec,
+    AssistantBoxIntent, AssistantCadBodyFeature, AssistantCadBooleanOperation,
+    AssistantCadDeletePolicy, AssistantCadEditOperation, AssistantCadEditProgram,
+    AssistantCadEntitySelector, AssistantCadPartFeature, AssistantCapability, AssistantChatResult,
+    AssistantDistribution, AssistantGableRoofIntent, AssistantHandshake, AssistantModelIntent,
+    AssistantOrientedBeamIntent, AssistantPrincipalPlane, AssistantRejectionDiagnostic,
+    AssistantRejectionPhase, AssistantSketchConstraint, AssistantSketchEntity,
+    AssistantSketchPointKind, AssistantSketchPointRef, AssistantStaircaseIntent,
+    AssistantWorkplaneSpec,
 };
 #[cfg(feature = "named-product-fixtures")]
 use ketchup_core::assistant_sidecar::{AssistantBottleFinishKind, AssistantBottleIntent};
@@ -308,6 +309,7 @@ fn bind_assistant_cad_current_selection(
         let Some(selector) = (match operation {
             AssistantCadEditOperation::CreateSketch { .. }
             | AssistantCadEditOperation::CreatePart { .. }
+            | AssistantCadEditOperation::AppendFeature { .. }
             | AssistantCadEditOperation::SetDimension { .. } => None,
             AssistantCadEditOperation::Delete { selector, .. }
             | AssistantCadEditOperation::Transform { selector, .. }
@@ -12654,6 +12656,7 @@ impl KetchupApp {
         })?;
 
         let mut commands = Vec::new();
+        let mut appended_exact_features = Vec::new();
         let mut working_transforms = snapshot
             .occurrences()
             .map(|occurrence| (occurrence.id(), occurrence.transform()))
@@ -12702,6 +12705,7 @@ impl KetchupApp {
             let operation_name = match operation {
                 AssistantCadEditOperation::CreateSketch { .. } => "create_sketch",
                 AssistantCadEditOperation::CreatePart { .. } => "create_part",
+                AssistantCadEditOperation::AppendFeature { .. } => "append_feature",
                 AssistantCadEditOperation::SetDimension { .. } => "set_dimension",
                 AssistantCadEditOperation::Delete { .. } => "delete_occurrence",
                 AssistantCadEditOperation::Transform { .. } => "transform_occurrence",
@@ -12712,6 +12716,7 @@ impl KetchupApp {
             let selector = match operation {
                 AssistantCadEditOperation::CreateSketch { .. }
                 | AssistantCadEditOperation::CreatePart { .. }
+                | AssistantCadEditOperation::AppendFeature { .. }
                 | AssistantCadEditOperation::SetDimension { .. } => None,
                 AssistantCadEditOperation::Delete { selector, .. }
                 | AssistantCadEditOperation::Transform { selector, .. }
@@ -13073,6 +13078,105 @@ impl KetchupApp {
                         },
                     ]);
                 }
+                AssistantCadEditOperation::AppendFeature {
+                    definition_id,
+                    name,
+                    feature,
+                } => {
+                    let definition_id = DefinitionId(*definition_id);
+                    if snapshot.definition(definition_id).is_none() {
+                        return Err(assistant_canonical_rejection(
+                            CanonicalError::DefinitionNotFound(definition_id),
+                            operation_name,
+                            &format!("definition:{}", definition_id.0),
+                        ));
+                    }
+                    let AssistantCadBodyFeature::Boolean {
+                        operation,
+                        target_feature_id,
+                        tool_feature_id,
+                    } = feature;
+                    let target = FeatureId(*target_feature_id);
+                    let tool = FeatureId(*tool_feature_id);
+                    let mut input_bounds = [None, None];
+                    for (index, input) in [target, tool].into_iter().enumerate() {
+                        let existing = snapshot.feature(input).ok_or_else(|| {
+                            assistant_canonical_rejection(
+                                CanonicalError::FeatureNotFound(input),
+                                operation_name,
+                                &format!("feature:{}", input.0),
+                            )
+                        })?;
+                        if existing.definition_id() != definition_id {
+                            return Err(assistant_planning_rejection(
+                                "planning.cad_feature_input_ownership_invalid",
+                                operation_name,
+                                &format!("feature:{}", input.0),
+                                "The requested body feature belongs to a different definition.",
+                                "Target two supported exact body features in the requested definition.",
+                            ));
+                        }
+                        let graph = ExactBRepGraph::from_snapshot(&snapshot, definition_id, input)
+                            .map_err(|error| {
+                                assistant_planning_rejection(
+                                    "planning.cad_feature_input_unsupported",
+                                    operation_name,
+                                    &format!("feature:{}", input.0),
+                                    error.to_string(),
+                                    "Target two supported exact body-producing features in the same definition.",
+                                )
+                            })?;
+                        input_bounds[index] = graph.producer_bounds_mm().map_err(|error| {
+                            assistant_planning_rejection(
+                                "planning.cad_feature_input_unsupported",
+                                operation_name,
+                                &format!("feature:{}", input.0),
+                                error.to_string(),
+                                "Target two supported exact body-producing features in the same definition.",
+                            )
+                        })?;
+                    }
+                    if matches!(operation, AssistantCadBooleanOperation::Intersect)
+                        && let [Some(target_bounds), Some(tool_bounds)] = input_bounds
+                        && (0..3).any(|axis| {
+                            target_bounds[0][axis].max(tool_bounds[0][axis])
+                                >= target_bounds[1][axis].min(tool_bounds[1][axis])
+                        })
+                    {
+                        return Err(assistant_planning_rejection(
+                            "planning.cad_feature_result_empty",
+                            operation_name,
+                            "feature_inputs",
+                            "The bounded Boolean operands do not have a positive-volume intersection.",
+                            "Choose two overlapping exact body features for Intersect.",
+                        ));
+                    }
+                    let id = next_feature.map(FeatureId).ok_or_else(|| {
+                        assistant_canonical_rejection(
+                            CanonicalError::IdExhausted,
+                            operation_name,
+                            &document_target,
+                        )
+                    })?;
+                    next_feature = id.0.checked_add(1);
+                    commands.push(CanonicalCommand::CreateFeature {
+                        id,
+                        definition_id,
+                        name: name.clone(),
+                        kind: FeatureKind::Boolean {
+                            operation: match operation {
+                                AssistantCadBooleanOperation::Cut => BooleanOperation::Cut,
+                                AssistantCadBooleanOperation::Union => BooleanOperation::Union,
+                                AssistantCadBooleanOperation::Intersect => {
+                                    BooleanOperation::Intersect
+                                }
+                            },
+                            target,
+                            tool,
+                        },
+                    });
+                    appended_exact_features.push((definition_id, id));
+                }
                 AssistantCadEditOperation::SetDimension {
                     feature_id,
                     constraint_id,
@@ -13375,7 +13479,26 @@ impl KetchupApp {
                 }
             }
         }
-        Ok(CommandBatch::new(commands))
+        let batch = CommandBatch::new(commands);
+        if !appended_exact_features.is_empty() {
+            let candidate = self.document.preview_batch(&batch).map_err(|error| {
+                assistant_canonical_rejection(error, "append_feature", &document_target)
+            })?;
+            for (definition_id, feature_id) in appended_exact_features {
+                ExactBRepGraph::from_snapshot(&candidate, definition_id, feature_id).map_err(
+                    |error| {
+                        assistant_planning_rejection(
+                            "planning.cad_feature_result_unsupported",
+                            "append_feature",
+                            &format!("feature:{}", feature_id.0),
+                            error.to_string(),
+                            "Use operands and an operation that produce a supported exact body.",
+                        )
+                    },
+                )?;
+            }
+        }
+        Ok(batch)
     }
 
     fn derive_assistant_cad_edit_proposal(

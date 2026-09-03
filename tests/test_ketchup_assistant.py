@@ -380,6 +380,17 @@ def test_public_sidecar_parses_strict_bounded_cad_edit_program():
                 },
             },
             {
+                "operation": "append_feature",
+                "definition_id": 2,
+                "name": "Exact cut",
+                "feature": {
+                    "type": "boolean",
+                    "operation": "cut",
+                    "target_feature_id": 11,
+                    "tool_feature_id": 12,
+                },
+            },
+            {
                 "operation": "set_dimension",
                 "feature_id": 12,
                 "constraint_id": 2,
@@ -527,6 +538,33 @@ def test_public_sidecar_parses_strict_bounded_cad_edit_program():
                 }
             ]
         },
+        {
+            "operations": [{
+                "operation": "append_feature",
+                "definition_id": 2,
+                "name": "Rejected self Boolean",
+                "feature": {
+                    "type": "boolean",
+                    "operation": "union",
+                    "target_feature_id": 11,
+                    "tool_feature_id": 11,
+                },
+            }]
+        },
+        {
+            "operations": [{
+                "operation": "append_feature",
+                "definition_id": 2,
+                "name": "Injected ID",
+                "feature": {
+                    "type": "boolean",
+                    "operation": "split",
+                    "target_feature_id": 11,
+                    "tool_feature_id": 12,
+                },
+                "output_feature_id": 99,
+            }]
+        },
     ]
     for invalid_program in invalid_programs:
         with pytest.raises(assistant.ProtocolError):
@@ -542,6 +580,41 @@ def test_public_sidecar_parses_strict_bounded_cad_edit_program():
                 }
             )
         )
+
+
+def test_cad_append_feature_matches_rust_name_and_u64_boundaries():
+    feature = {
+        "type": "boolean",
+        "operation": "cut",
+        "target_feature_id": 11,
+        "tool_feature_id": 12,
+    }
+    invalid_operations = [
+        {
+            "operation": "append_feature",
+            "definition_id": 2,
+            "name": "bad\nname",
+            "feature": feature,
+        },
+        {
+            "operation": "append_feature",
+            "definition_id": assistant.MAX_U64 + 1,
+            "name": "Overflow definition",
+            "feature": feature,
+        },
+        {
+            "operation": "append_feature",
+            "definition_id": 2,
+            "name": "Overflow feature",
+            "feature": {
+                **feature,
+                "target_feature_id": assistant.MAX_U64 + 1,
+            },
+        },
+    ]
+    for operation in invalid_operations:
+        with pytest.raises(assistant.ProtocolError):
+            assistant._validate_cad_edit_program({"operations": [operation]})
 
 
 def test_public_sidecar_parses_bounded_model_intent_and_rejects_invalid_geometry():

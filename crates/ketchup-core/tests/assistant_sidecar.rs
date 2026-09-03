@@ -1,14 +1,15 @@
 use ketchup_core::assistant_sidecar::{
     ASSISTANT_PROTOCOL_VERSION, AssistantBalloonTextIntent, AssistantBeamNotchIntent,
-    AssistantBottleFinishKind, AssistantBottleIntent, AssistantCadDeletePolicy,
-    AssistantCadEditOperation, AssistantCadEditProgram, AssistantCadEntitySelector,
-    AssistantCadPartFeature, AssistantCadRotation, AssistantDistribution, AssistantHandshake,
-    AssistantHandshakeError, AssistantKetchupBottleIntent, AssistantLinearArrayIntent,
-    AssistantModelIntent, AssistantOrientedBeamIntent, AssistantParameterEditIntent,
-    AssistantPrincipalPlane, AssistantProfileTranslationIntent, AssistantRejectionDiagnostic,
-    AssistantRejectionPhase, AssistantRotationIntent, AssistantSketchConstraint,
-    AssistantSketchEntity, AssistantSketchPointKind, AssistantSketchPointRef,
-    AssistantTeapotIntent, AssistantWorkplaneSpec, distribution_is_enabled,
+    AssistantBottleFinishKind, AssistantBottleIntent, AssistantCadBodyFeature,
+    AssistantCadBooleanOperation, AssistantCadDeletePolicy, AssistantCadEditOperation,
+    AssistantCadEditProgram, AssistantCadEntitySelector, AssistantCadPartFeature,
+    AssistantCadRotation, AssistantDistribution, AssistantHandshake, AssistantHandshakeError,
+    AssistantKetchupBottleIntent, AssistantLinearArrayIntent, AssistantModelIntent,
+    AssistantOrientedBeamIntent, AssistantParameterEditIntent, AssistantPrincipalPlane,
+    AssistantProfileTranslationIntent, AssistantRejectionDiagnostic, AssistantRejectionPhase,
+    AssistantRotationIntent, AssistantSketchConstraint, AssistantSketchEntity,
+    AssistantSketchPointKind, AssistantSketchPointRef, AssistantTeapotIntent,
+    AssistantWorkplaneSpec, distribution_is_enabled,
 };
 
 const PUBLIC_HANDSHAKE: &str = r#"{
@@ -446,6 +447,84 @@ fn cad_edit_part_contract_is_typed_bounded_and_round_trips() {
     assert_eq!(
         invalid_revolve.validate(),
         Err("assistant CAD part feature is invalid".to_owned())
+    );
+}
+
+#[test]
+fn cad_edit_append_boolean_contract_is_strict_bounded_and_host_id_assigned() {
+    let program = AssistantCadEditProgram {
+        operations: vec![AssistantCadEditOperation::AppendFeature {
+            definition_id: 7,
+            name: "Exact union".to_owned(),
+            feature: AssistantCadBodyFeature::Boolean {
+                operation: AssistantCadBooleanOperation::Union,
+                target_feature_id: 11,
+                tool_feature_id: 12,
+            },
+        }],
+    };
+
+    assert_eq!(program.validate(), Ok(()));
+    let serialized = serde_json::to_value(&program).unwrap();
+    assert_eq!(serialized["operations"][0]["operation"], "append_feature");
+    assert_eq!(serialized["operations"][0]["feature"]["type"], "boolean");
+    assert_eq!(serialized["operations"][0]["feature"]["operation"], "union");
+    assert!(
+        serialized["operations"][0]
+            .get("output_feature_id")
+            .is_none()
+    );
+    assert_eq!(
+        serde_json::from_value::<AssistantCadEditProgram>(serialized).unwrap(),
+        program
+    );
+
+    for rejected in [
+        serde_json::json!({
+            "operations": [{
+                "operation": "append_feature",
+                "definition_id": 7,
+                "name": "Injected ID",
+                "feature": {
+                    "type": "boolean",
+                    "operation": "cut",
+                    "target_feature_id": 11,
+                    "tool_feature_id": 12
+                },
+                "output_feature_id": 99
+            }]
+        }),
+        serde_json::json!({
+            "operations": [{
+                "operation": "append_feature",
+                "definition_id": 7,
+                "name": "Unsupported split",
+                "feature": {
+                    "type": "boolean",
+                    "operation": "split",
+                    "target_feature_id": 11,
+                    "tool_feature_id": 12
+                }
+            }]
+        }),
+    ] {
+        assert!(serde_json::from_value::<AssistantCadEditProgram>(rejected).is_err());
+    }
+
+    let self_boolean = AssistantCadEditProgram {
+        operations: vec![AssistantCadEditOperation::AppendFeature {
+            definition_id: 7,
+            name: "Invalid".to_owned(),
+            feature: AssistantCadBodyFeature::Boolean {
+                operation: AssistantCadBooleanOperation::Intersect,
+                target_feature_id: 11,
+                tool_feature_id: 11,
+            },
+        }],
+    };
+    assert_eq!(
+        self_boolean.validate(),
+        Err("assistant CAD body feature is invalid".to_owned())
     );
 }
 

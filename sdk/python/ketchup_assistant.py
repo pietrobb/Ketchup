@@ -25,6 +25,7 @@ MAX_ARRAY_OCCURRENCES = 8
 MAX_CAD_EDIT_OPERATIONS = 64
 MAX_CAD_SELECTOR_TARGETS = 100
 MAX_CAD_GENERATED_OCCURRENCES = 512
+MAX_U64 = (1 << 64) - 1
 MAX_INSPECT_RESULT_BYTES = 64 * 1024
 MAX_INSPECT_ROUNDS = 2
 ALLOWED_CAPABILITIES = frozenset(
@@ -68,8 +69,9 @@ SYSTEM_PROMPT = (
     "unsupported or unavailable occurrences or say that the relevant check is incomplete or skipped. Return ONLY "
     "one JSON object with exactly three fields: message (a concise user-facing string), "
     "model_intent (null for discussion or CAD edits), and cad_edit_program (null unless proposing typed CAD operations). "
-    "Never return both mutation fields. Use cad_edit_program for create_part, create_sketch, set_dimension, delete, rigid transform, copy, linear pattern, or mirror. "
+    "Never return both mutation fields. Use cad_edit_program for create_part, create_sketch, append_feature, set_dimension, delete, rigid transform, copy, linear pattern, or mirror. "
     "create_part atomically creates a host-ID-assigned definition, workplane, sketch, universal feature, and occurrence. It has name, workplane, entities, constraints, feature, translation_mm, and optional rotation; feature is either {type: extrusion, distance_mm: positive length} or {type: revolve, axis_start_mm: [x,y], axis_end_mm: [x,y], angle_degrees: >0 and <=360}. "
+    "append_feature adds one host-ID-assigned feature to an existing definition. It has definition_id, name, and feature {type: boolean, operation: cut|union|intersect, target_feature_id, tool_feature_id}; both inputs must be distinct supported exact body features in that definition. "
     "create_sketch has definition_id, name, workplane, entities, and constraints; workplane is principal with plane xy/yz/xz or offset with an existing base_feature_id and distance_mm. "
     "Entities are typed line/arc/circle records with positive stable IDs and 2D millimetre coordinates. Constraints are typed horizontal/vertical/coincident/distance/radius/fixed_point records with positive stable IDs and point refs {entity_id, point: start/end/center}. "
     "The host assigns create_part definition, feature, and occurrence IDs and create_sketch workplane and sketch feature IDs. set_dimension targets an existing feature_id, optional constraint_id, and positive value_mm. "
@@ -720,6 +722,34 @@ def _validate_cad_edit_program(program: object) -> dict:
                 raise ProtocolError("provider CAD sketch entity count is invalid")
             if not isinstance(constraints, list) or len(constraints) > 8_192:
                 raise ProtocolError("provider CAD sketch constraint count is invalid")
+        elif operation_type == "append_feature":
+            if set(operation) != {"operation", "definition_id", "name", "feature"}:
+                raise ProtocolError("provider CAD feature append contains missing or unknown fields")
+            definition_id = operation["definition_id"]
+            name = operation["name"]
+            feature = operation["feature"]
+            if (
+                not isinstance(definition_id, int)
+                or isinstance(definition_id, bool)
+                or not 0 < definition_id <= MAX_U64
+                or not isinstance(name, str)
+                or not name.strip()
+                or len(name.encode("utf-8")) > 128
+                or any(ord(character) < 32 or 127 <= ord(character) <= 159 for character in name)
+                or not isinstance(feature, dict)
+                or set(feature)
+                != {"type", "operation", "target_feature_id", "tool_feature_id"}
+                or feature.get("type") != "boolean"
+                or feature.get("operation") not in {"cut", "union", "intersect"}
+                or not isinstance(feature.get("target_feature_id"), int)
+                or isinstance(feature.get("target_feature_id"), bool)
+                or not 0 < feature["target_feature_id"] <= MAX_U64
+                or not isinstance(feature.get("tool_feature_id"), int)
+                or isinstance(feature.get("tool_feature_id"), bool)
+                or not 0 < feature["tool_feature_id"] <= MAX_U64
+                or feature["target_feature_id"] == feature["tool_feature_id"]
+            ):
+                raise ProtocolError("provider CAD body feature is invalid")
         elif operation_type == "set_dimension":
             if set(operation) != {"operation", "feature_id", "constraint_id", "value_mm"}:
                 raise ProtocolError("provider CAD dimension edit contains missing or unknown fields")
@@ -745,7 +775,7 @@ def _validate_cad_edit_program(program: object) -> dict:
             if "selector" not in operation:
                 raise ProtocolError("provider CAD edit selector is missing")
             target_count = _validate_cad_selector(operation["selector"])
-        if operation_type in {"create_sketch", "create_part", "set_dimension"}:
+        if operation_type in {"create_sketch", "create_part", "append_feature", "set_dimension"}:
             pass
         elif operation_type == "delete":
             if set(operation) != {"operation", "selector", "dependency_policy"} or operation[

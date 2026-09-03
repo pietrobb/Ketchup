@@ -10,20 +10,20 @@ use ketchup_app::{
 use ketchup_core::assistant_sidecar::{
     ASSISTANT_PROTOCOL_VERSION, AssistantApiDiagnostics, AssistantBalloonTextIntent,
     AssistantBeamNotchIntent, AssistantBottleFinishKind, AssistantBottleIntent, AssistantBoxIntent,
-    AssistantCadDeletePolicy, AssistantCadEditOperation, AssistantCadEditProgram,
-    AssistantCadEntitySelector, AssistantCadPartFeature, AssistantCadRotation, AssistantChatResult,
-    AssistantDistribution, AssistantGableRoofIntent, AssistantKetchupBottleIntent,
-    AssistantLinearArrayIntent, AssistantModelIntent, AssistantOrientedBeamIntent,
-    AssistantParameterEditIntent, AssistantPrincipalPlane, AssistantProfileTranslationIntent,
-    AssistantRotationIntent, AssistantSketchConstraint, AssistantSketchEntity,
-    AssistantSketchPointKind, AssistantSketchPointRef, AssistantStaircaseIntent,
-    AssistantSubtractionIntent, AssistantTeapotIntent, AssistantTranslationIntent,
-    AssistantWorkplaneSpec,
+    AssistantCadBodyFeature, AssistantCadBooleanOperation, AssistantCadDeletePolicy,
+    AssistantCadEditOperation, AssistantCadEditProgram, AssistantCadEntitySelector,
+    AssistantCadPartFeature, AssistantCadRotation, AssistantChatResult, AssistantDistribution,
+    AssistantGableRoofIntent, AssistantKetchupBottleIntent, AssistantLinearArrayIntent,
+    AssistantModelIntent, AssistantOrientedBeamIntent, AssistantParameterEditIntent,
+    AssistantPrincipalPlane, AssistantProfileTranslationIntent, AssistantRotationIntent,
+    AssistantSketchConstraint, AssistantSketchEntity, AssistantSketchPointKind,
+    AssistantSketchPointRef, AssistantStaircaseIntent, AssistantSubtractionIntent,
+    AssistantTeapotIntent, AssistantTranslationIntent, AssistantWorkplaneSpec,
 };
 use ketchup_core::document::{
-    BodyId, CanonicalCommand, ClassificationCategoryId, ClassificationDimensionId, CommandBatch,
-    DefinitionId, Dimension, DocumentStore, FeatureId, FeatureKind, GroupId, NodeId, OccurrenceId,
-    ProposalGoal, ProposalValue, TagId, Transform,
+    BodyId, BooleanOperation, CanonicalCommand, ClassificationCategoryId,
+    ClassificationDimensionId, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId,
+    FeatureKind, GroupId, NodeId, OccurrenceId, ProposalGoal, ProposalValue, TagId, Transform,
 };
 use ketchup_core::exact_brep_graph::{ExactBRepGraph, ExactBRepOperation};
 use ketchup_core::intent::WorkflowIntent;
@@ -169,6 +169,63 @@ fn write_assistant_movable_pocket_fixture(path: &std::path::Path) {
                 id: OccurrenceId(1),
                 definition_id: DefinitionId(1),
                 name: "Furniture panel".to_owned(),
+                transform: Transform::identity(),
+                parent: None,
+                tag: None,
+                visible: true,
+            },
+        ]))
+        .unwrap();
+    document.discard_history_before_current();
+    persistence::save_atomic(path, &document.current()).unwrap();
+}
+
+fn write_assistant_boolean_fixture(path: &std::path::Path) {
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DefinitionId(1),
+                name: "Boolean inputs".to_owned(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(1),
+                definition_id: DefinitionId(1),
+                name: "Target profile".to_owned(),
+                kind: FeatureKind::Profile {
+                    points_mm: vec![[0.0, 0.0], [100.0, 0.0], [100.0, 60.0], [0.0, 60.0]],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(2),
+                definition_id: DefinitionId(1),
+                name: "Target extrusion".to_owned(),
+                kind: FeatureKind::Extrusion {
+                    profile: FeatureId(1),
+                    height: Dimension::from_decimal("20").unwrap(),
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(3),
+                definition_id: DefinitionId(1),
+                name: "Tool profile".to_owned(),
+                kind: FeatureKind::Profile {
+                    points_mm: vec![[40.0, 0.0], [120.0, 0.0], [120.0, 60.0], [40.0, 60.0]],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(4),
+                definition_id: DefinitionId(1),
+                name: "Tool extrusion".to_owned(),
+                kind: FeatureKind::Extrusion {
+                    profile: FeatureId(3),
+                    height: Dimension::from_decimal("20").unwrap(),
+                },
+            },
+            CanonicalCommand::CreateOccurrence {
+                id: OccurrenceId(1),
+                definition_id: DefinitionId(1),
+                name: "Boolean inputs".to_owned(),
                 transform: Transform::identity(),
                 parent: None,
                 tag: None,
@@ -1731,6 +1788,158 @@ fn scripted_create_revolved_part_round_trips_state_view_and_one_step_undo_redo()
     assert_eq!(
         encode_semantic_state(&shell.app().document_snapshot()).complete_v1(),
         committed_complete_view
+    );
+    assert_eq!(transport.remaining_responses(), 0);
+}
+
+#[test]
+fn scripted_append_boolean_programs_are_exact_persistent_and_one_step() {
+    let requests = [
+        "Append an exact cut",
+        "Append an exact union",
+        "Append an exact intersect",
+    ];
+    let transport = Arc::new(ScriptedAssistantTransport::new([
+        (
+            requests[0].to_owned(),
+            AssistantChatResult {
+                message: "Review the exact cut.".to_owned(),
+                model_intent: None,
+            },
+        ),
+        (
+            requests[1].to_owned(),
+            AssistantChatResult {
+                message: "Review the exact union.".to_owned(),
+                model_intent: None,
+            },
+        ),
+        (
+            requests[2].to_owned(),
+            AssistantChatResult {
+                message: "Review the exact intersect.".to_owned(),
+                model_intent: None,
+            },
+        ),
+    ]));
+    for (request, operation) in requests.iter().zip([
+        AssistantCadBooleanOperation::Cut,
+        AssistantCadBooleanOperation::Union,
+        AssistantCadBooleanOperation::Intersect,
+    ]) {
+        transport.queue_cad_edit_program(
+            *request,
+            AssistantCadEditProgram {
+                operations: vec![AssistantCadEditOperation::AppendFeature {
+                    definition_id: 1,
+                    name: format!("Assistant {operation:?}"),
+                    feature: AssistantCadBodyFeature::Boolean {
+                        operation,
+                        target_feature_id: 2,
+                        tool_feature_id: 4,
+                    },
+                }],
+            },
+        );
+    }
+
+    let directory = tempfile::tempdir().unwrap();
+    let fixture_path = directory.path().join("assistant-boolean-inputs.ketchup");
+    write_assistant_boolean_fixture(&fixture_path);
+    let mut shell = Shell::with_assistant_transport(transport.clone());
+    assert!(shell.app_mut().open_document_path(&fixture_path));
+    shell.settle();
+    let baseline_occurrences = shell.app().document_snapshot().occurrences().count();
+    let mut digest_before_last = String::new();
+
+    for (index, ((request, assistant_operation), canonical_operation)) in requests
+        .iter()
+        .zip([
+            AssistantCadBooleanOperation::Cut,
+            AssistantCadBooleanOperation::Union,
+            AssistantCadBooleanOperation::Intersect,
+        ])
+        .zip([
+            BooleanOperation::Cut,
+            BooleanOperation::Union,
+            BooleanOperation::Intersect,
+        ])
+        .enumerate()
+    {
+        let baseline_revision = shell.app().document_revision();
+        let baseline_digest = shell.app().canonical_digest();
+        let baseline_undo = shell.app().undo_step_count();
+        if index == 2 {
+            digest_before_last.clone_from(&baseline_digest);
+        }
+        let input = shell.catalog().text("assistant-input-hint");
+        shell.focus_text_input(&input);
+        shell.type_text(request);
+        shell.press_key(egui::Key::Enter);
+        wait_for_assistant_proposal(&mut shell);
+        assert_eq!(shell.app().document_revision(), baseline_revision);
+        assert_eq!(shell.app().canonical_digest(), baseline_digest);
+        assert_eq!(shell.app().undo_step_count(), baseline_undo);
+
+        shell.click_row(&shell.catalog().text("assistant-confirm"));
+        assert_eq!(shell.app().document_revision(), baseline_revision + 1);
+        assert_eq!(shell.app().undo_step_count(), baseline_undo + 1);
+        let committed = shell.app().document_snapshot();
+        let feature_id = FeatureId(5 + index as u64);
+        assert!(matches!(
+            committed.feature(feature_id).unwrap().kind(),
+            FeatureKind::Boolean {
+                operation,
+                target: FeatureId(2),
+                tool: FeatureId(4),
+            } if *operation == canonical_operation
+        ));
+        let graph = ExactBRepGraph::from_snapshot(&committed, DefinitionId(1), feature_id).unwrap();
+        assert_eq!(graph.producer_feature_id, feature_id.0);
+        assert!(graph.nodes.iter().any(|node| matches!(
+            &node.operation,
+            ExactBRepOperation::Boolean { operation, .. }
+                if *operation == canonical_operation.into()
+        )));
+        assert_eq!(committed.occurrences().count(), baseline_occurrences);
+        assert_eq!(
+            assistant_operation,
+            match canonical_operation {
+                BooleanOperation::Cut => AssistantCadBooleanOperation::Cut,
+                BooleanOperation::Union => AssistantCadBooleanOperation::Union,
+                BooleanOperation::Intersect => AssistantCadBooleanOperation::Intersect,
+                BooleanOperation::Split => unreachable!(),
+            }
+        );
+    }
+
+    let committed = shell.app().document_snapshot();
+    let committed_digest = committed.canonical_digest();
+    let saved_path = directory.path().join("assistant-boolean-results.ketchup");
+    persistence::save_atomic(&saved_path, &committed).unwrap();
+    let reopened = persistence::load_file(&saved_path).unwrap().snapshot();
+    assert_eq!(reopened.canonical_digest(), committed_digest);
+    for feature_id in [FeatureId(5), FeatureId(6), FeatureId(7)] {
+        assert!(ExactBRepGraph::from_snapshot(&reopened, DefinitionId(1), feature_id).is_ok());
+    }
+
+    shell.click_menu_command("menu-edit", AppCommand::Undo);
+    assert_eq!(shell.app().canonical_digest(), digest_before_last);
+    assert!(
+        shell
+            .app()
+            .document_snapshot()
+            .feature(FeatureId(7))
+            .is_none()
+    );
+    shell.click_menu_command("menu-edit", AppCommand::Redo);
+    assert_eq!(shell.app().canonical_digest(), committed_digest);
+    assert!(
+        shell
+            .app()
+            .document_snapshot()
+            .feature(FeatureId(7))
+            .is_some()
     );
     assert_eq!(transport.remaining_responses(), 0);
 }

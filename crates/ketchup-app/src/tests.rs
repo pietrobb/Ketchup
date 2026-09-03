@@ -79,6 +79,170 @@ fn cad_edit_program_compiles_selection_to_one_host_id_canonical_batch() {
 }
 
 #[test]
+fn cad_edit_append_boolean_is_host_id_assigned_exact_and_one_step() {
+    for (assistant_operation, canonical_operation) in [
+        (AssistantCadBooleanOperation::Cut, BooleanOperation::Cut),
+        (AssistantCadBooleanOperation::Union, BooleanOperation::Union),
+        (
+            AssistantCadBooleanOperation::Intersect,
+            BooleanOperation::Intersect,
+        ),
+    ] {
+        let mut app = KetchupApp::new();
+        app.document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::CreateFeature {
+                    id: FeatureId(3),
+                    definition_id: INITIAL_BOX_DEFINITION,
+                    name: "Tool profile".to_owned(),
+                    kind: FeatureKind::Profile {
+                        points_mm: vec![[40.0, 0.0], [120.0, 0.0], [120.0, 60.0], [40.0, 60.0]],
+                    },
+                },
+                CanonicalCommand::CreateFeature {
+                    id: FeatureId(4),
+                    definition_id: INITIAL_BOX_DEFINITION,
+                    name: "Tool extrusion".to_owned(),
+                    kind: FeatureKind::Extrusion {
+                        profile: FeatureId(3),
+                        height: Dimension::new("20", 20.0).unwrap(),
+                    },
+                },
+            ]))
+            .unwrap();
+        let baseline = app.document.current().clone();
+        let baseline_undo = app.document.visible_undo_steps();
+        let program = AssistantCadEditProgram {
+            operations: vec![AssistantCadEditOperation::AppendFeature {
+                definition_id: INITIAL_BOX_DEFINITION.0,
+                name: "Assistant Boolean".to_owned(),
+                feature: AssistantCadBodyFeature::Boolean {
+                    operation: assistant_operation,
+                    target_feature_id: 2,
+                    tool_feature_id: 4,
+                },
+            }],
+        };
+
+        let batch = app.plan_assistant_cad_edit_program(&program).unwrap();
+        assert!(matches!(
+            batch.commands(),
+            [CanonicalCommand::CreateFeature {
+                id: FeatureId(5),
+                definition_id: INITIAL_BOX_DEFINITION,
+                kind: FeatureKind::Boolean {
+                    operation,
+                    target: FeatureId(2),
+                    tool: FeatureId(4),
+                },
+                ..
+            }] if operation == &canonical_operation
+        ));
+
+        app.prepare_assistant_preview_source(AssistantPreviewSource::CadEdit(program))
+            .unwrap();
+        assert_eq!(app.document.current().revision_id(), baseline.revision_id());
+        assert_eq!(
+            app.document.current().canonical_digest(),
+            baseline.canonical_digest()
+        );
+        assert_eq!(app.document.visible_undo_steps(), baseline_undo);
+        assert!(app.confirm_assistant_proposal());
+        let committed = app.document.current();
+        assert_eq!(committed.revision_id(), baseline.revision_id() + 1);
+        assert_eq!(app.document.visible_undo_steps(), baseline_undo + 1);
+        assert!(
+            ExactBRepGraph::from_snapshot(&committed, INITIAL_BOX_DEFINITION, FeatureId(5)).is_ok()
+        );
+        assert!(app.undo());
+        assert_eq!(
+            app.document.current().canonical_digest(),
+            baseline.canonical_digest()
+        );
+    }
+}
+
+#[test]
+fn cad_edit_append_boolean_rejects_invalid_exact_inputs_without_mutation() {
+    let mut app = KetchupApp::new();
+    app.document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(3),
+                definition_id: INITIAL_BOX_DEFINITION,
+                name: "Disjoint profile".to_owned(),
+                kind: FeatureKind::Profile {
+                    points_mm: vec![[200.0, 0.0], [220.0, 0.0], [220.0, 20.0], [200.0, 20.0]],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(4),
+                definition_id: INITIAL_BOX_DEFINITION,
+                name: "Disjoint extrusion".to_owned(),
+                kind: FeatureKind::Extrusion {
+                    profile: FeatureId(3),
+                    height: Dimension::new("20", 20.0).unwrap(),
+                },
+            },
+            CanonicalCommand::CreateDefinition {
+                id: DefinitionId(2),
+                name: "Other definition".to_owned(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(5),
+                definition_id: DefinitionId(2),
+                name: "Other profile".to_owned(),
+                kind: FeatureKind::Profile {
+                    points_mm: vec![[0.0, 0.0], [5.0, 0.0], [5.0, 5.0], [0.0, 5.0]],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(6),
+                definition_id: DefinitionId(2),
+                name: "Other extrusion".to_owned(),
+                kind: FeatureKind::Extrusion {
+                    profile: FeatureId(5),
+                    height: Dimension::new("5", 5.0).unwrap(),
+                },
+            },
+        ]))
+        .unwrap();
+    let baseline_revision = app.document.current().revision_id();
+    let baseline_digest = app.document.current().canonical_digest();
+    let baseline_undo = app.document.visible_undo_steps();
+    let program = |operation, target_feature_id, tool_feature_id| AssistantCadEditProgram {
+        operations: vec![AssistantCadEditOperation::AppendFeature {
+            definition_id: INITIAL_BOX_DEFINITION.0,
+            name: "Rejected Boolean".to_owned(),
+            feature: AssistantCadBodyFeature::Boolean {
+                operation,
+                target_feature_id,
+                tool_feature_id,
+            },
+        }],
+    };
+
+    let cross_definition = app
+        .plan_assistant_cad_edit_program(&program(AssistantCadBooleanOperation::Cut, 2, 6))
+        .unwrap_err();
+    assert_eq!(
+        cross_definition.code,
+        "planning.cad_feature_input_ownership_invalid"
+    );
+    let non_body = app
+        .plan_assistant_cad_edit_program(&program(AssistantCadBooleanOperation::Union, 2, 1))
+        .unwrap_err();
+    assert_eq!(non_body.code, "planning.cad_feature_input_unsupported");
+    let disjoint_intersect = app
+        .plan_assistant_cad_edit_program(&program(AssistantCadBooleanOperation::Intersect, 2, 4))
+        .unwrap_err();
+    assert_eq!(disjoint_intersect.code, "planning.cad_feature_result_empty");
+    assert_eq!(app.document.current().revision_id(), baseline_revision);
+    assert_eq!(app.document.current().canonical_digest(), baseline_digest);
+    assert_eq!(app.document.visible_undo_steps(), baseline_undo);
+}
+
+#[test]
 fn cad_edit_current_selection_binds_to_request_time_occurrences() {
     let explicit = AssistantCadEntitySelector::Occurrences {
         occurrence_ids: vec![9],

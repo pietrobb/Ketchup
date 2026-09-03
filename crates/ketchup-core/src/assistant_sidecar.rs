@@ -210,6 +210,42 @@ impl AssistantCadPartFeature {
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
+pub enum AssistantCadBooleanOperation {
+    Cut,
+    Union,
+    Intersect,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum AssistantCadBodyFeature {
+    Boolean {
+        operation: AssistantCadBooleanOperation,
+        target_feature_id: u64,
+        tool_feature_id: u64,
+    },
+}
+
+impl AssistantCadBodyFeature {
+    fn validate(&self) -> Result<(), String> {
+        match self {
+            Self::Boolean {
+                target_feature_id,
+                tool_feature_id,
+                ..
+            } if *target_feature_id != 0
+                && *tool_feature_id != 0
+                && target_feature_id != tool_feature_id =>
+            {
+                Ok(())
+            }
+            Self::Boolean { .. } => Err("assistant CAD body feature is invalid".to_owned()),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum AssistantSketchPointKind {
     Start,
     End,
@@ -350,6 +386,11 @@ pub enum AssistantCadEditOperation {
         translation_mm: [f64; 3],
         #[serde(default, skip_serializing_if = "Option::is_none")]
         rotation: Option<AssistantCadRotation>,
+    },
+    AppendFeature {
+        definition_id: u64,
+        name: String,
+        feature: AssistantCadBodyFeature,
     },
     SetDimension {
         feature_id: u64,
@@ -787,6 +828,7 @@ impl AssistantCadEditProgram {
         for operation in &self.operations {
             let bounded_targets = match operation {
                 AssistantCadEditOperation::CreateSketch { .. }
+                | AssistantCadEditOperation::AppendFeature { .. }
                 | AssistantCadEditOperation::SetDimension { .. } => 0,
                 AssistantCadEditOperation::CreatePart { .. } => 1,
                 AssistantCadEditOperation::Delete { selector, .. }
@@ -829,6 +871,21 @@ impl AssistantCadEditProgram {
                         rotation.validate()?;
                     }
                     1
+                }
+                AssistantCadEditOperation::AppendFeature {
+                    definition_id,
+                    name,
+                    feature,
+                } => {
+                    if *definition_id == 0
+                        || name.trim().is_empty()
+                        || name.len() > MAX_ASSISTANT_NAME_BYTES
+                        || name.chars().any(char::is_control)
+                    {
+                        return Err("assistant CAD feature append is invalid".to_owned());
+                    }
+                    feature.validate()?;
+                    0
                 }
                 AssistantCadEditOperation::SetDimension {
                     feature_id,
