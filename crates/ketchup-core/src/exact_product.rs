@@ -8,7 +8,7 @@ use crate::document::{
     FeatureDependencyGraph, FeatureId, FeatureKind, InstancePath, MESH_BODY_SCHEMA_V1,
     MeshAuthority, MeshBodySpec, ProfileSegment, Snapshot, Transform,
 };
-use crate::exact_brep_graph::ExactBRepGraph;
+use crate::exact_brep_graph::{ExactBRepGraph, MAX_EXACT_BREP_LOFT_CONTROL_POINTS};
 use crate::graph::DerivedIdentity;
 use crate::import::StepImportMesh;
 use crate::sketch::{
@@ -5267,9 +5267,10 @@ impl ExactLoftRequest {
             })
             .collect::<Result<Vec<_>, ExactProductError>>()?;
         if !(2..=16).contains(&sections.len())
-            || sections
-                .iter()
-                .any(|section| !(4..=64).contains(&section.control_point_bits.len()))
+            || sections.iter().any(|section| {
+                !(4..=MAX_EXACT_BREP_LOFT_CONTROL_POINTS)
+                    .contains(&section.control_point_bits.len())
+            })
         {
             return Err(ExactProductError::UnsupportedProfile);
         }

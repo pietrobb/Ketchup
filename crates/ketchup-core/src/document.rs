@@ -11,6 +11,7 @@ use crate::assembly_joint::{
 use crate::drawing::{DrawingError, DrawingSheet, DrawingSheetId, DrawingSource};
 use crate::exact_brep_graph::{
     ExactBRepGraph, MAX_EXACT_BREP_GRAPH_NODES, MAX_EXACT_BREP_GRAPH_PROFILES,
+    MAX_EXACT_BREP_LOFT_CONTROL_POINTS,
 };
 use crate::exact_product::{
     BodySubshapeRef, EXACT_MIN_LENGTH_MM, ExactFaceRole, ExactFeatureChainRequest,
@@ -13009,7 +13010,11 @@ fn validate_product(product: &ProductModel) -> Result<(), CanonicalError> {
                         .position(|candidate| *candidate == section.profile)
                         .is_some_and(|position| position < feature_position);
                     if profile.definition_id != feature.definition_id
-                        || !matches!(profile.kind, FeatureKind::SplineProfile { .. })
+                        || !matches!(
+                            &profile.kind,
+                            FeatureKind::SplineProfile { control_points_mm }
+                                if control_points_mm.len() <= MAX_EXACT_BREP_LOFT_CONTROL_POINTS
+                        )
                         || !source_precedes_loft
                     {
                         return Err(CanonicalError::InvalidLoft);

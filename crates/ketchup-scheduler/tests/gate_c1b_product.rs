@@ -10,6 +10,7 @@ use ketchup_core::document::{
     PortSpec, ProfileSegment, RuleOutput, SlotPath, SlotSegment, StableEdgeRole, StableFaceRole,
     Transform,
 };
+use ketchup_core::exact_brep_graph::MAX_EXACT_BREP_LOFT_CONTROL_POINTS;
 use ketchup_core::exact_product::{
     EXACT_ARC_PROFILE_EVALUATOR_V1, EXACT_BOOLEAN_INTERSECT_EVALUATOR_V1,
     EXACT_BOOLEAN_SPLIT_EVALUATOR_V1, EXACT_BOOLEAN_UNION_EVALUATOR_V1,
@@ -21666,12 +21667,23 @@ fn scheduler_evaluates_bounded_sweep_with_deterministic_exact_lineage() {
 }
 
 #[test]
-fn scheduler_evaluates_bounded_spline_loft_with_deterministic_exact_lineage() {
+fn scheduler_evaluates_bounded_spline_loft_and_rejects_over_limit_parity() {
     const DEFINITION: DefinitionId = DefinitionId(721);
     const LOWER: FeatureId = FeatureId(722);
     const UPPER: FeatureId = FeatureId(723);
     const LOFT: FeatureId = FeatureId(724);
 
+    let boundary_points = |radius_x: f64, radius_y: f64| {
+        (0..MAX_EXACT_BREP_LOFT_CONTROL_POINTS)
+            .map(|index| {
+                let angle = std::f64::consts::TAU * index as f64
+                    / MAX_EXACT_BREP_LOFT_CONTROL_POINTS as f64;
+                [radius_x * angle.cos(), radius_y * angle.sin()]
+            })
+            .collect::<Vec<_>>()
+    };
+    let lower_points = boundary_points(20.0, 10.0);
+    let upper_points = boundary_points(10.0, 5.0);
     let mut document = DocumentStore::new();
     document
         .apply_batch(&CommandBatch::new(vec![
@@ -21684,12 +21696,7 @@ fn scheduler_evaluates_bounded_spline_loft_with_deterministic_exact_lineage() {
                 definition_id: DEFINITION,
                 name: "Lower spline".to_owned(),
                 kind: FeatureKind::SplineProfile {
-                    control_points_mm: vec![
-                        [-20.0, -10.0],
-                        [20.0, -10.0],
-                        [20.0, 10.0],
-                        [-20.0, 10.0],
-                    ],
+                    control_points_mm: lower_points.clone(),
                 },
             },
             CanonicalCommand::CreateFeature {
@@ -21697,7 +21704,7 @@ fn scheduler_evaluates_bounded_spline_loft_with_deterministic_exact_lineage() {
                 definition_id: DEFINITION,
                 name: "Upper spline".to_owned(),
                 kind: FeatureKind::SplineProfile {
-                    control_points_mm: vec![[-10.0, -5.0], [10.0, -5.0], [10.0, 5.0], [-10.0, 5.0]],
+                    control_points_mm: upper_points.clone(),
                 },
             },
             CanonicalCommand::CreateFeature {
@@ -21723,12 +21730,77 @@ fn scheduler_evaluates_bounded_spline_loft_with_deterministic_exact_lineage() {
     let request = ExactLoftRequest::from_snapshot(&snapshot, DEFINITION).unwrap();
     assert_eq!(request.producer_feature_id(), LOFT);
     assert_eq!(request.evaluator(), EXACT_LOFT_EVALUATOR_V1);
-    assert_eq!(request.control_point_count(), 8);
-    assert_eq!(request.protocol_values().len(), 21);
+    assert_eq!(request.control_point_count(), 128);
+    assert_eq!(request.protocol_values().len(), 261);
+
+    let over_limit_points = (0..=MAX_EXACT_BREP_LOFT_CONTROL_POINTS)
+        .map(|index| {
+            let angle = std::f64::consts::TAU * index as f64
+                / (MAX_EXACT_BREP_LOFT_CONTROL_POINTS + 1) as f64;
+            [20.0 * angle.cos(), 10.0 * angle.sin()]
+        })
+        .collect::<Vec<_>>();
+    let mut over_limit_document = DocumentStore::new();
+    let empty = over_limit_document.current().canonical_digest();
+    let error = over_limit_document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DEFINITION,
+                name: "Over-limit Loft definition".to_owned(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: LOWER,
+                definition_id: DEFINITION,
+                name: "Over-limit lower spline".to_owned(),
+                kind: FeatureKind::SplineProfile {
+                    control_points_mm: over_limit_points.clone(),
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: UPPER,
+                definition_id: DEFINITION,
+                name: "Upper spline".to_owned(),
+                kind: FeatureKind::SplineProfile {
+                    control_points_mm: vec![[-10.0, -5.0], [10.0, -5.0], [10.0, 5.0], [-10.0, 5.0]],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: LOFT,
+                definition_id: DEFINITION,
+                name: "Over-limit Loft".to_owned(),
+                kind: FeatureKind::Loft {
+                    sections: vec![
+                        LoftSection {
+                            profile: LOWER,
+                            elevation_mm: 0.0,
+                        },
+                        LoftSection {
+                            profile: UPPER,
+                            elevation_mm: 80.0,
+                        },
+                    ],
+                },
+            },
+        ]))
+        .err()
+        .expect("canonical Loft must reject a 65-point section before worker evaluation");
+    assert_eq!(error, CanonicalError::InvalidLoft);
+    assert_eq!(over_limit_document.current().canonical_digest(), empty);
+    assert_eq!(over_limit_document.visible_undo_steps(), 0);
 
     let mut supervisor = ExactWorkerSupervisor::spawn(worker_path()).unwrap();
     let first = supervisor.evaluate_loft(&request).unwrap();
     let repeated = supervisor.evaluate_loft(&request).unwrap();
+    let mut over_limit_request = request.clone();
+    over_limit_request.sections[0].control_point_bits = over_limit_points
+        .iter()
+        .map(|point| point.map(f64::to_bits))
+        .collect();
+    assert!(matches!(
+        supervisor.evaluate_loft(&over_limit_request),
+        Err(M3EvaluationError::Worker(WorkerError::Geometry(code)))
+            if code == GeometryErrorCode::InvalidParameter.as_str()
+    ));
     assert!(first.is_current(&snapshot));
     assert_eq!(first.identity, repeated.identity);
     assert_eq!(first.references, repeated.references);

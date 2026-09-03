@@ -17,6 +17,7 @@ pub const MAX_EXACT_BREP_GRAPH_PROFILES: usize = 1_024;
 pub const MAX_EXACT_BREP_GRAPH_NODES: usize = 1_024;
 pub const MAX_EXACT_BREP_GRAPH_SEGMENTS: usize = 16_384;
 pub const MAX_EXACT_BREP_LOFT_SECTIONS: usize = 16;
+pub const MAX_EXACT_BREP_LOFT_CONTROL_POINTS: usize = 64;
 pub const MAX_EXACT_BREP_PLANAR_LOOP_SEGMENTS: usize = 64;
 pub const MAX_EXACT_BREP_REGION_HOLES: usize = 64;
 pub const MAX_EXACT_BREP_REGION_SEGMENTS: usize = 4_096;
@@ -1686,6 +1687,16 @@ fn valid_topology_selectors(
 
 fn valid_operation_profiles(operation: &ExactBRepOperation, profiles: &[ExactBRepProfile]) -> bool {
     match operation {
+        ExactBRepOperation::Loft { sections } => sections.iter().all(|section| {
+            matches!(
+                profiles
+                    .get(section.profile.0 as usize)
+                    .map(|profile| &profile.geometry),
+                Some(ExactBRepPlanarGeometry::Spline { control_point_bits })
+                    if (4..=MAX_EXACT_BREP_LOFT_CONTROL_POINTS)
+                        .contains(&control_point_bits.len())
+            )
+        }),
         ExactBRepOperation::Sweep { profile, path } => {
             profile != path
                 && matches!(
@@ -1957,6 +1968,64 @@ mod tests {
             1,
             &[],
         ));
+    }
+
+    #[test]
+    fn loft_control_point_limit_matches_the_exact_backend() {
+        let profile = |id, point_count| ExactBRepProfile {
+            id: ExactBRepProfileId(id),
+            source_feature_id: id as u64 + 1,
+            region_id: None,
+            frame_bits: identity_frame(),
+            geometry: ExactBRepPlanarGeometry::Spline {
+                control_point_bits: (0..point_count)
+                    .map(|index| [index as f64, (index % 2) as f64].map(f64::to_bits))
+                    .collect(),
+            },
+        };
+        let operation = ExactBRepOperation::Loft {
+            sections: vec![
+                ExactBRepLoftSection {
+                    profile: ExactBRepProfileId(0),
+                    elevation_bits: 0.0_f64.to_bits(),
+                },
+                ExactBRepLoftSection {
+                    profile: ExactBRepProfileId(1),
+                    elevation_bits: 10.0_f64.to_bits(),
+                },
+            ],
+        };
+        let profiles = vec![
+            profile(0, MAX_EXACT_BREP_LOFT_CONTROL_POINTS),
+            profile(1, MAX_EXACT_BREP_LOFT_CONTROL_POINTS),
+        ];
+        let mut graph = ExactBRepGraph {
+            schema: EXACT_BREP_GRAPH_SCHEMA_V4.to_owned(),
+            document_id: 1,
+            source_revision: 1,
+            source_digest: "source".to_owned(),
+            definition_id: 1,
+            producer_feature_id: 3,
+            profiles,
+            nodes: vec![ExactBRepNode {
+                id: ExactBRepNodeId(0),
+                source_feature_id: 3,
+                operation,
+            }],
+            graph_digest: String::new(),
+            canonical_input_digest: String::new(),
+        };
+        graph.graph_digest = graph.compute_graph_digest().unwrap();
+        graph.canonical_input_digest = graph.compute_canonical_input_digest();
+        let boundary_bytes = graph.to_bytes().unwrap();
+        assert_eq!(ExactBRepGraph::from_bytes(&boundary_bytes).unwrap(), graph);
+
+        graph.profiles[1] = profile(1, MAX_EXACT_BREP_LOFT_CONTROL_POINTS + 1);
+        let over_limit_bytes = serde_json::to_vec(&graph).unwrap();
+        assert_eq!(
+            ExactBRepGraph::from_bytes(&over_limit_bytes),
+            Err(ExactBRepGraphError::InvalidGraph)
+        );
     }
 
     fn circle_loop(center: [f64; 2], radius: f64) -> ExactBRepPlanarLoop {
