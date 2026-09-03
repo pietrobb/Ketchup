@@ -6478,9 +6478,10 @@ fn summarized_assistant_validation_context(validation: &serde_json::Value) -> se
     serde_json::Value::Object(summary)
 }
 
-fn assistant_topology_face_references<'a>(
+fn assistant_topology_references<'a>(
     snapshot: &'a Snapshot,
     topology_results: &'a ExactResultRegistry,
+    kind: TopologicalElementKind,
 ) -> Vec<&'a TopologicalElementRef> {
     let mut references = topology_results
         .body_values(snapshot)
@@ -6488,7 +6489,7 @@ fn assistant_topology_face_references<'a>(
         .into_values()
         .flat_map(|package| package.topological_references())
         .filter(|reference| {
-            reference.kind == TopologicalElementKind::Face
+            reference.kind == kind
                 && reference.document_id == snapshot.document_id()
                 && reference.source_feature_id == reference.producer_feature_id
                 && reference.has_valid_lineage()
@@ -6585,6 +6586,13 @@ fn bounded_assistant_provider_context(mut context: serde_json::Value) -> serde_j
     {
         references.clear();
         context["topology_face_references_complete"] = serde_json::Value::Bool(false);
+    }
+    if let Some(references) = context
+        .get_mut("topology_edge_references")
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        references.clear();
+        context["topology_edge_references_complete"] = serde_json::Value::Bool(false);
     }
     if assistant_context_byte_length(&context) <= MAX_ASSISTANT_PROVIDER_CONTEXT_BYTES {
         return context;
@@ -12274,11 +12282,31 @@ impl KetchupApp {
                 })
             },
         );
-        let mut topology_face_references =
-            assistant_topology_face_references(&snapshot, &self.topology_results);
+        let mut topology_face_references = assistant_topology_references(
+            &snapshot,
+            &self.topology_results,
+            TopologicalElementKind::Face,
+        );
         let topology_face_references_complete = topology_face_references.len() <= 64;
         topology_face_references.truncate(64);
         let topology_face_references = topology_face_references
+            .into_iter()
+            .map(|reference| {
+                serde_json::json!({
+                    "definition_id": reference.definition_id.0,
+                    "target_feature_id": reference.producer_feature_id.0,
+                    "reference_id": reference.lineage_digest,
+                })
+            })
+            .collect::<Vec<_>>();
+        let mut topology_edge_references = assistant_topology_references(
+            &snapshot,
+            &self.topology_results,
+            TopologicalElementKind::Edge,
+        );
+        let topology_edge_references_complete = topology_edge_references.len() <= 64;
+        topology_edge_references.truncate(64);
+        let topology_edge_references = topology_edge_references
             .into_iter()
             .map(|reference| {
                 serde_json::json!({
@@ -12314,6 +12342,8 @@ impl KetchupApp {
             "selected_parameter_edit_target": selected_parameter_edit_target,
             "topology_face_references_complete": topology_face_references_complete,
             "topology_face_references": topology_face_references,
+            "topology_edge_references_complete": topology_edge_references_complete,
+            "topology_edge_references": topology_edge_references,
             "occurrence_count": occurrence_count,
             "occurrences_complete": occurrence_count <= 100,
             "occurrences": occurrences,
@@ -13378,9 +13408,10 @@ impl KetchupApp {
                                     "Target an unsuppressed supported exact body feature with current host-issued face references.",
                                 ));
                             }
-                            let available_faces = assistant_topology_face_references(
+                            let available_faces = assistant_topology_references(
                                 &snapshot,
                                 &self.topology_results,
+                                TopologicalElementKind::Face,
                             );
                             let mut removed_faces =
                                 Vec::with_capacity(removed_face_reference_ids.len());
@@ -13417,6 +13448,83 @@ impl KetchupApp {
                                             "feature.thickness_mm",
                                         )
                                     })?,
+                            }
+                        }
+                        AssistantCadBodyFeature::TopologyFillet {
+                            target_feature_id,
+                            edge_reference_ids,
+                            radius_mm,
+                        } => {
+                            let target = FeatureId(*target_feature_id);
+                            let source = snapshot.feature(target).ok_or_else(|| {
+                                assistant_canonical_rejection(
+                                    CanonicalError::FeatureNotFound(target),
+                                    operation_name,
+                                    &format!("feature:{}", target.0),
+                                )
+                            })?;
+                            if source.definition_id() != definition_id {
+                                return Err(assistant_planning_rejection(
+                                    "planning.cad_feature_input_ownership_invalid",
+                                    operation_name,
+                                    &format!("feature:{}", target.0),
+                                    "The requested Fillet target belongs to a different definition.",
+                                    "Target a supported exact body feature in the requested definition.",
+                                ));
+                            }
+                            if snapshot.feature_is_suppressed(target)
+                                || ExactBRepGraph::from_snapshot(&snapshot, definition_id, target)
+                                    .is_err()
+                            {
+                                return Err(assistant_planning_rejection(
+                                    "planning.cad_feature_input_unsupported",
+                                    operation_name,
+                                    &format!("feature:{}", target.0),
+                                    "The requested Fillet target is not supported by exact evaluation.",
+                                    "Target an unsuppressed supported exact body feature with current host-issued edge references.",
+                                ));
+                            }
+                            let available_edges = assistant_topology_references(
+                                &snapshot,
+                                &self.topology_results,
+                                TopologicalElementKind::Edge,
+                            );
+                            let mut edges = Vec::with_capacity(edge_reference_ids.len());
+                            for reference_id in edge_reference_ids {
+                                let matches = available_edges
+                                    .iter()
+                                    .copied()
+                                    .filter(|reference| {
+                                        reference.definition_id == definition_id
+                                            && reference.producer_feature_id == target
+                                            && reference.lineage_digest == *reference_id
+                                    })
+                                    .collect::<Vec<_>>();
+                                let [reference] = matches.as_slice() else {
+                                    return Err(assistant_planning_rejection(
+                                        "planning.cad_topology_reference_unavailable",
+                                        operation_name,
+                                        &format!("feature:{}", target.0),
+                                        "A requested Fillet edge reference is not a unique current host-issued reference for the target.",
+                                        "Refresh the document context and use only listed topology_edge_references for this target.",
+                                    ));
+                                };
+                                edges.push((*reference).clone());
+                            }
+                            edges.sort_unstable();
+                            FeatureKind::TopologyEdgeFinish {
+                                target,
+                                edges,
+                                kind: EdgeFinishKind::Fillet,
+                                amount: Dimension::new(radius_mm.to_string(), *radius_mm).map_err(
+                                    |error| {
+                                        assistant_canonical_rejection(
+                                            error,
+                                            operation_name,
+                                            "feature.radius_mm",
+                                        )
+                                    },
+                                )?,
                             }
                         }
                     };

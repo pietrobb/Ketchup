@@ -248,6 +248,11 @@ pub enum AssistantCadBodyFeature {
         removed_face_reference_ids: Vec<String>,
         thickness_mm: f64,
     },
+    TopologyFillet {
+        target_feature_id: u64,
+        edge_reference_ids: Vec<String>,
+        radius_mm: f64,
+    },
 }
 
 impl AssistantCadBodyFeature {
@@ -329,6 +334,24 @@ impl AssistantCadBodyFeature {
                 Ok(())
             }
             Self::TopologyShell { .. } => Err("assistant CAD body feature is invalid".to_owned()),
+            Self::TopologyFillet {
+                target_feature_id,
+                edge_reference_ids,
+                radius_mm,
+            } if *target_feature_id != 0
+                && (1..=64).contains(&edge_reference_ids.len())
+                && edge_reference_ids.iter().all(|reference_id| {
+                    reference_id.len() == 64
+                        && reference_id.bytes().all(|byte| byte.is_ascii_hexdigit())
+                })
+                && edge_reference_ids.iter().collect::<BTreeSet<_>>().len()
+                    == edge_reference_ids.len()
+                && radius_mm.is_finite()
+                && (0.01..=100_000.0).contains(radius_mm) =>
+            {
+                Ok(())
+            }
+            Self::TopologyFillet { .. } => Err("assistant CAD body feature is invalid".to_owned()),
         }
     }
 }

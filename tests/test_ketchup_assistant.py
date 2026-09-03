@@ -839,6 +839,63 @@ def test_cad_append_topology_shell_matches_rust_boundaries_and_strict_fields():
             )
 
 
+def test_cad_append_topology_fillet_matches_rust_boundaries_and_strict_fields():
+    reference_id = "a" * 64
+    feature = {
+        "type": "topology_fillet",
+        "target_feature_id": 11,
+        "edge_reference_ids": [reference_id],
+        "radius_mm": 1.5,
+    }
+    operation = {
+        "operation": "append_feature",
+        "definition_id": 2,
+        "name": "Exact fillet",
+        "feature": feature,
+    }
+    assert assistant._validate_cad_edit_program({"operations": [operation]}) == {
+        "operations": [operation]
+    }
+    assert "current topology_edge_references" in assistant.SYSTEM_PROMPT
+    assistant._validate_cad_edit_program(
+        {
+            "operations": [
+                {
+                    **operation,
+                    "feature": {
+                        **feature,
+                        "edge_reference_ids": [f"{index:064x}" for index in range(64)],
+                        "radius_mm": 100_000,
+                    },
+                }
+            ]
+        }
+    )
+
+    invalid_features = [
+        {**feature, "target_feature_id": 0},
+        {**feature, "target_feature_id": True},
+        {**feature, "target_feature_id": assistant.MAX_U64 + 1},
+        {**feature, "edge_reference_ids": []},
+        {**feature, "edge_reference_ids": [reference_id] * 2},
+        {**feature, "edge_reference_ids": [f"{index:064x}" for index in range(65)]},
+        {**feature, "edge_reference_ids": ["short"]},
+        {**feature, "edge_reference_ids": ["z" * 64]},
+        {**feature, "radius_mm": 0.009},
+        {**feature, "radius_mm": 100_001},
+        {**feature, "radius_mm": float("nan")},
+        {**feature, "radius_mm": True},
+        {**feature, "edge_ordinal": 3},
+        {**feature, "kind": "chamfer"},
+        {"type": "topology_fillet", "target_feature_id": 11, "radius_mm": 1.5},
+    ]
+    for invalid_feature in invalid_features:
+        with pytest.raises(assistant.ProtocolError):
+            assistant._validate_cad_edit_program(
+                {"operations": [{**operation, "feature": invalid_feature}]}
+            )
+
+
 def test_public_sidecar_parses_bounded_model_intent_and_rejects_invalid_geometry():
     valid = json.dumps(
         {

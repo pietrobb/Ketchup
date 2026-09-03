@@ -23,9 +23,9 @@ use ketchup_core::assistant_sidecar::{
 };
 use ketchup_core::document::{
     BodyId, BooleanOperation, CanonicalCommand, ClassificationCategoryId,
-    ClassificationDimensionId, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId,
-    FeatureKind, GroupId, LoftSection, NodeId, OccurrenceId, ProfileSegment, ProposalGoal,
-    ProposalValue, TagId, Transform,
+    ClassificationDimensionId, CommandBatch, DefinitionId, Dimension, DocumentStore,
+    EdgeFinishKind, FeatureId, FeatureKind, GroupId, LoftSection, NodeId, OccurrenceId,
+    ProfileSegment, ProposalGoal, ProposalValue, TagId, Transform,
 };
 use ketchup_core::exact_brep_graph::{ExactBRepGraph, ExactBRepOperation};
 use ketchup_core::exact_product::ExactBodyPackage;
@@ -2469,6 +2469,137 @@ fn scripted_append_topology_shell_is_exact_persistent_and_one_step() {
         reopened.feature(FeatureId(3)).unwrap().kind(),
         FeatureKind::TopologyShell { removed_faces, .. }
             if removed_faces.len() == 1 && removed_faces[0].lineage_digest == reference_id
+    ));
+    assert!(ExactBRepGraph::from_snapshot(&reopened, DefinitionId(1), FeatureId(3)).is_ok());
+
+    shell.click_menu_command("menu-edit", AppCommand::Undo);
+    assert_eq!(shell.app().canonical_digest(), baseline_digest);
+    assert_eq!(shell.app().undo_step_count(), baseline_undo);
+    assert_eq!(shell.app().redo_step_count(), baseline_redo + 1);
+    shell.click_menu_command("menu-edit", AppCommand::Redo);
+    assert_eq!(shell.app().canonical_digest(), committed_digest);
+    assert_eq!(shell.app().undo_step_count(), baseline_undo + 1);
+    assert_eq!(shell.app().redo_step_count(), baseline_redo);
+    assert_eq!(transport.remaining_responses(), 0);
+}
+
+#[test]
+fn scripted_append_topology_fillet_is_exact_persistent_and_one_step() {
+    let request = "Fillet an existing exact body edge";
+    let directory = tempfile::tempdir().unwrap();
+    let fixture_path = directory.path().join("assistant-fillet-input.ketchup");
+    let fixture = ketchup_app::KetchupApp::new();
+    let fixture_snapshot = fixture.document_snapshot();
+    persistence::save_atomic(&fixture_path, &fixture_snapshot).unwrap();
+
+    let base_graph =
+        ExactBRepGraph::from_snapshot(&fixture_snapshot, DefinitionId(1), FeatureId(2)).unwrap();
+    let mut worker = ExactWorkerSupervisor::spawn(exact_worker_path()).unwrap();
+    let base_package = worker.evaluate_exact_brep_graph(&base_graph).unwrap();
+    let reference_id = base_package
+        .topological_references
+        .iter()
+        .find(|reference| {
+            reference
+                .producer_element_id
+                .starts_with("generated-result/edge/")
+        })
+        .unwrap()
+        .lineage_digest
+        .clone();
+
+    let transport = Arc::new(ScriptedAssistantTransport::new([(
+        request.to_owned(),
+        AssistantChatResult {
+            message: "Review the exact fillet.".to_owned(),
+            model_intent: None,
+        },
+    )]));
+    transport.queue_cad_edit_program(
+        request,
+        AssistantCadEditProgram {
+            operations: vec![AssistantCadEditOperation::AppendFeature {
+                definition_id: 1,
+                name: "Assistant fillet".to_owned(),
+                feature: AssistantCadBodyFeature::TopologyFillet {
+                    target_feature_id: 2,
+                    edge_reference_ids: vec![reference_id.clone()],
+                    radius_mm: 2.0,
+                },
+            }],
+        },
+    );
+
+    let mut shell = Shell::with_assistant_transport(transport.clone());
+    assert!(shell.app_mut().open_document_path(&fixture_path));
+    shell.settle();
+    assert!(
+        shell
+            .app_mut()
+            .headless_install_exact_package(ExactBodyPackage::Graph(base_package))
+    );
+    let context = shell.app().assistant_context();
+    assert!(
+        context["topology_edge_references"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|reference| reference["reference_id"] == reference_id)
+    );
+    let baseline_revision = shell.app().document_revision();
+    let baseline_digest = shell.app().canonical_digest();
+    let baseline_undo = shell.app().undo_step_count();
+    let baseline_redo = shell.app().redo_step_count();
+    let baseline_occurrences = shell.app().document_snapshot().occurrences().count();
+
+    let input = shell.catalog().text("assistant-input-hint");
+    shell.focus_text_input(&input);
+    shell.type_text(request);
+    shell.press_key(egui::Key::Enter);
+    wait_for_assistant_proposal(&mut shell);
+    assert_eq!(shell.app().document_revision(), baseline_revision);
+    assert_eq!(shell.app().canonical_digest(), baseline_digest);
+    assert_eq!(shell.app().undo_step_count(), baseline_undo);
+
+    shell.click_row(&shell.catalog().text("assistant-confirm"));
+    assert_eq!(shell.app().document_revision(), baseline_revision + 1);
+    assert_eq!(shell.app().undo_step_count(), baseline_undo + 1);
+    let committed = shell.app().document_snapshot();
+    assert!(matches!(
+        committed.feature(FeatureId(3)).unwrap().kind(),
+        FeatureKind::TopologyEdgeFinish {
+            target: FeatureId(2),
+            edges,
+            kind: EdgeFinishKind::Fillet,
+            amount,
+        } if edges.len() == 1
+            && edges[0].lineage_digest == reference_id
+            && amount.millimetres() == 2.0
+    ));
+    let graph = ExactBRepGraph::from_snapshot(&committed, DefinitionId(1), FeatureId(3)).unwrap();
+    assert!(
+        graph
+            .nodes
+            .iter()
+            .any(|node| matches!(&node.operation, ExactBRepOperation::EdgeFinish { .. }))
+    );
+    let package = worker.evaluate_exact_brep_graph(&graph).unwrap();
+    assert!(package.volume_mm3 > 0.0);
+    assert_eq!(package.topology_counts[4], 1);
+    assert_eq!(committed.occurrences().count(), baseline_occurrences);
+
+    let committed_digest = committed.canonical_digest();
+    let saved_path = directory.path().join("assistant-fillet-result.ketchup");
+    persistence::save_atomic(&saved_path, &committed).unwrap();
+    let reopened = persistence::load_file(&saved_path).unwrap().snapshot();
+    assert_eq!(reopened.canonical_digest(), committed_digest);
+    assert!(matches!(
+        reopened.feature(FeatureId(3)).unwrap().kind(),
+        FeatureKind::TopologyEdgeFinish {
+            edges,
+            kind: EdgeFinishKind::Fillet,
+            ..
+        } if edges.len() == 1 && edges[0].lineage_digest == reference_id
     ));
     assert!(ExactBRepGraph::from_snapshot(&reopened, DefinitionId(1), FeatureId(3)).is_ok());
 
