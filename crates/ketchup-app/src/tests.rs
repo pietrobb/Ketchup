@@ -560,14 +560,24 @@ fn select_initial_top_face(app: &mut KetchupApp) {
     );
 }
 
-fn install_initial_graph_result(app: &mut KetchupApp) {
+fn install_graph_result(
+    app: &mut KetchupApp,
+    definition_id: DefinitionId,
+    producer_feature_id: FeatureId,
+    fallback_bounds_mm: Option<[[f64; 3]; 2]>,
+) {
     let snapshot = app.document.current();
     let graph =
-        ExactBRepGraph::from_snapshot(&snapshot, INITIAL_BOX_DEFINITION, FeatureId(2)).unwrap();
-    let item = app.active_boxes().into_iter().next().unwrap();
-    let minimum = item.origin_mm;
-    let maximum = item.origin_mm + item.size_mm;
-    let vertices_mm = box_corners(item.size_mm.x, item.size_mm.y, item.size_mm.z)
+        ExactBRepGraph::from_snapshot(&snapshot, definition_id, producer_feature_id).unwrap();
+    let [minimum_mm, maximum_mm] = graph
+        .producer_bounds_mm()
+        .unwrap()
+        .or(fallback_bounds_mm)
+        .unwrap();
+    let minimum = Vec3::new(minimum_mm[0], minimum_mm[1], minimum_mm[2]);
+    let maximum = Vec3::new(maximum_mm[0], maximum_mm[1], maximum_mm[2]);
+    let size = maximum - minimum;
+    let vertices_mm = box_corners(size.x, size.y, size.z)
         .map(|point| {
             let point = point + minimum;
             [point.x, point.y, point.z]
@@ -598,7 +608,7 @@ fn install_initial_graph_result(app: &mut KetchupApp) {
         ExactBRepGraphWorkerEvidence {
             exact_input_digest: "headless-topology-input".into(),
             result_fingerprint: "headless-topology-result".into(),
-            volume_mm3: item.size_mm.x * item.size_mm.y * item.size_mm.z,
+            volume_mm3: size.x * size.y * size.z,
             topology_counts: [8, 12, 6, 1, 1],
             bounds_mm: [
                 [minimum.x, minimum.y, minimum.z],
@@ -614,6 +624,10 @@ fn install_initial_graph_result(app: &mut KetchupApp) {
     )
     .unwrap();
     assert!(app.headless_install_exact_package(ExactBodyPackage::Graph(package)));
+}
+
+fn install_initial_graph_result(app: &mut KetchupApp) {
+    install_graph_result(app, INITIAL_BOX_DEFINITION, FeatureId(2), None);
 }
 
 fn select_initial_topological(app: &mut KetchupApp, kind: TopologicalElementKind, ordinal: u32) {
@@ -7244,9 +7258,8 @@ fn imported_exact_occurrences_route_through_solid_tool_preview_and_commit() {
         .occurrence(tool_occurrence_id)
         .unwrap()
         .definition_id();
-    let target_feature_id =
-        imported_solid_tool_feature_id(&snapshot, target_definition_id).unwrap();
-    let tool_feature_id = imported_solid_tool_feature_id(&snapshot, tool_definition_id).unwrap();
+    let target_feature_id = exact_solid_tool_feature_id(&snapshot, target_definition_id).unwrap();
+    let tool_feature_id = exact_solid_tool_feature_id(&snapshot, tool_definition_id).unwrap();
     let angle = 30.0_f64.to_radians();
     app.document
         .apply_batch(&CommandBatch::new(vec![
@@ -7470,7 +7483,7 @@ fn mixed_extrusion_and_imported_exact_occurrences_route_through_solid_tools() {
     let before_digest = app.canonical_digest();
     let before_undo = app.undo_step_count();
     app.solid_tool_target = Some(target);
-    assert!(app.prepare_solid_tool_preview(tool, true));
+    assert!(app.prepare_solid_tool_preview(tool.clone(), true));
     assert_eq!(app.canonical_digest(), before_digest);
     assert!(app.confirm_occurrence_operation_preview());
     assert_eq!(app.undo_step_count(), before_undo + 1);
@@ -7524,6 +7537,84 @@ fn mixed_extrusion_and_imported_exact_occurrences_route_through_solid_tools() {
     .unwrap()
     .snapshot();
     assert_eq!(reopened.canonical_digest(), committed.canonical_digest());
+
+    assert_eq!(
+        exact_solid_tool_feature_id(&committed, result_definition_id),
+        Some(result_feature_id)
+    );
+    assert!(
+        !app.active_boxes()
+            .iter()
+            .any(|item| item.definition_id == result_definition_id),
+        "graph-derived bodies without a current exact package must fail closed"
+    );
+    app.active_tool = ActiveTool::SolidSubtract;
+    app.solid_tool_target = Some(SelectionId {
+        definition_id: result_definition_id,
+        instance_path: InstancePath::root(OccurrenceId(1)),
+        element: ElementId::Face {
+            axis: Axis::Z,
+            side: Side::Maximum,
+        },
+    });
+    assert!(!app.prepare_solid_tool_preview(tool.clone(), true));
+    assert_eq!(app.canonical_digest(), committed.canonical_digest());
+
+    install_graph_result(
+        &mut app,
+        result_definition_id,
+        result_feature_id,
+        Some([[-100.0, -100.0, -100.0], [200.0, 200.0, 200.0]]),
+    );
+    assert!(
+        app.active_boxes()
+            .iter()
+            .any(|item| item.definition_id == result_definition_id),
+        "a graph-derived body with a current exact package must be selectable"
+    );
+    assert!(app.prepare_solid_tool_preview(tool.clone(), true));
+    let graph_preview = app
+        .occurrence_operation_preview
+        .as_ref()
+        .unwrap()
+        .solid_tool_plan
+        .as_ref()
+        .unwrap();
+    assert_eq!(graph_preview.source.result_feature_ids.len(), 9);
+    assert_eq!(app.canonical_digest(), committed.canonical_digest());
+    let graph_before_undo = app.undo_step_count();
+    assert!(app.confirm_occurrence_operation_preview());
+    assert_eq!(app.undo_step_count(), graph_before_undo + 1);
+    let nested = app.document.current();
+    let nested_definition_id = nested.occurrence(OccurrenceId(1)).unwrap().definition_id();
+    let nested_definition = nested.definition(nested_definition_id).unwrap();
+    assert_eq!(nested_definition.feature_ids().len(), 9);
+    let nested_result = *nested_definition.feature_ids().last().unwrap();
+    let nested_graph =
+        ExactBRepGraph::from_snapshot(&nested, nested_definition_id, nested_result).unwrap();
+    assert_eq!(
+        nested_graph
+            .nodes
+            .iter()
+            .filter(|node| matches!(node.operation, ExactBRepOperation::Boolean { .. }))
+            .count(),
+        2
+    );
+    assert!(matches!(
+        nested_graph.nodes.last().unwrap().operation,
+        ExactBRepOperation::Boolean {
+            operation: ketchup_core::exact_brep_graph::ExactBRepBooleanOperation::Cut,
+            ..
+        }
+    ));
+    let nested_digest = nested.canonical_digest();
+    assert!(app.undo());
+    assert_eq!(app.canonical_digest(), committed.canonical_digest());
+    assert!(app.redo());
+    assert_eq!(app.canonical_digest(), nested_digest);
+    assert!(app.undo());
+    assert_eq!(app.canonical_digest(), committed.canonical_digest());
+
     assert!(app.undo());
     assert_eq!(app.canonical_digest(), before_digest);
     assert!(app.redo());

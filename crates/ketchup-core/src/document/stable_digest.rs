@@ -2274,7 +2274,8 @@ impl StableDigest {
                 self.u64(plan.tool_occurrence_id.0);
                 self.u64(plan.tool_feature_id.0);
                 self.u64(plan.result_definition_id.0);
-                for id in plan.result_feature_ids {
+                self.u64(plan.result_feature_ids.len() as u64);
+                for id in &plan.result_feature_ids {
                     self.u64(id.0);
                 }
                 self.bytes(plan.result_definition_name.as_bytes());

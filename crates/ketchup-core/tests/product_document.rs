@@ -2725,7 +2725,7 @@ fn separate_solid_tool_plan(operation: BooleanOperation, keep_tool: bool) -> Sol
         tool_occurrence_id: OccurrenceId(302),
         tool_feature_id: FeatureId(203),
         result_definition_id: DefinitionId(401),
-        result_feature_ids: [
+        result_feature_ids: vec![
             FeatureId(402),
             FeatureId(403),
             FeatureId(404),

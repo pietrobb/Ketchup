@@ -9,6 +9,9 @@ use crate::assembly_joint::{
     transforms_equivalent,
 };
 use crate::drawing::{DrawingError, DrawingSheet, DrawingSheetId, DrawingSource};
+use crate::exact_brep_graph::{
+    ExactBRepGraph, MAX_EXACT_BREP_GRAPH_NODES, MAX_EXACT_BREP_GRAPH_PROFILES,
+};
 use crate::exact_product::{
     BodySubshapeRef, ExactFaceRole, ExactFeatureChainRequest, ExactReferenceResolution,
     ExactResultRegistry, is_line_arc_capsule_profile, line_arc_capsule_corner_overlap,
@@ -59,6 +62,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub const COMMAND_SCHEMA_V1: &str = "ketchup.command.v1";
 pub const TOLERANCE_PROFILE_V1: &str = "ketchup.tolerance.r0-v1";
 const MAX_CANONICAL_ABS_MM: f64 = 1_000_000.0;
+pub const MAX_SOLID_TOOL_RESULT_FEATURES: usize =
+    2 * (MAX_EXACT_BREP_GRAPH_NODES + 2 * MAX_EXACT_BREP_GRAPH_PROFILES) + 3;
 
 macro_rules! typed_id {
     ($name:ident) => {
@@ -2239,7 +2244,7 @@ pub struct SolidToolPlan {
     pub tool_occurrence_id: OccurrenceId,
     pub tool_feature_id: FeatureId,
     pub result_definition_id: DefinitionId,
-    pub result_feature_ids: [FeatureId; 5],
+    pub result_feature_ids: Vec<FeatureId>,
     pub result_definition_name: String,
     pub result_feature_name: String,
     pub keep_tool: bool,
@@ -3007,6 +3012,22 @@ impl Snapshot {
 
     pub fn feature_dependency_graph(&self) -> Result<FeatureDependencyGraph, CanonicalError> {
         FeatureDependencyGraph::from_product(&self.product)
+    }
+
+    pub fn solid_tool_feature_clone_count(
+        &self,
+        feature_id: FeatureId,
+    ) -> Result<usize, CanonicalError> {
+        exact_solid_tool_dependency_closure_for_snapshot(self, feature_id)
+            .map(|closure| closure.len())
+    }
+
+    pub fn solid_tool_result_feature_count(
+        &self,
+        target_feature_id: FeatureId,
+        tool_feature_id: FeatureId,
+    ) -> Result<usize, CanonicalError> {
+        solid_tool_result_feature_count(&self.product, target_feature_id, tool_feature_id)
     }
 
     #[must_use]
@@ -10441,6 +10462,422 @@ fn clone_definition_and_repoint(
     Ok(())
 }
 
+fn fixed_solid_tool_path(target: &FeatureKind, tool: &FeatureKind) -> bool {
+    matches!(
+        (target, tool),
+        (FeatureKind::Extrusion { .. }, FeatureKind::Extrusion { .. })
+            | (
+                FeatureKind::ImportedExactBody(_),
+                FeatureKind::ImportedExactBody(_)
+            )
+            | (
+                FeatureKind::ImportedExactBody(_),
+                FeatureKind::Extrusion { .. }
+            )
+            | (
+                FeatureKind::Extrusion { .. },
+                FeatureKind::ImportedExactBody(_)
+            )
+    )
+}
+
+fn exact_solid_tool_dependency_closure_for_snapshot(
+    snapshot: &Snapshot,
+    feature_id: FeatureId,
+) -> Result<Vec<FeatureId>, CanonicalError> {
+    let product = &snapshot.product;
+    let source = product
+        .features
+        .get(&feature_id)
+        .ok_or(CanonicalError::FeatureNotFound(feature_id))?;
+    ExactBRepGraph::from_snapshot(snapshot, source.definition_id, feature_id)
+        .map_err(|_| CanonicalError::InvalidSolidToolPlan)?;
+    let graph = snapshot.feature_dependency_graph()?;
+    let mut closure = BTreeSet::from([feature_id]);
+    let mut pending = vec![feature_id];
+    while let Some(current) = pending.pop() {
+        let dependencies = graph
+            .dependencies(current)
+            .ok_or(CanonicalError::InvalidSolidToolPlan)?;
+        for dependency in dependencies {
+            let dependency_feature = product
+                .features
+                .get(dependency)
+                .ok_or(CanonicalError::FeatureNotFound(*dependency))?;
+            if dependency_feature.definition_id != source.definition_id {
+                return Err(CanonicalError::InvalidSolidToolPlan);
+            }
+            if closure.insert(*dependency) {
+                pending.push(*dependency);
+            }
+        }
+    }
+    let ordered = graph
+        .topological_order()
+        .iter()
+        .copied()
+        .filter(|id| closure.contains(id))
+        .collect::<Vec<_>>();
+    if ordered.len() != closure.len() {
+        return Err(CanonicalError::InvalidSolidToolPlan);
+    }
+    let identity_mapping = ordered
+        .iter()
+        .copied()
+        .map(|id| (id, id))
+        .collect::<BTreeMap<_, _>>();
+    for id in &ordered {
+        let feature = product
+            .features
+            .get(id)
+            .ok_or(CanonicalError::FeatureNotFound(*id))?;
+        remap_exact_solid_tool_feature_kind(&feature.kind, &identity_mapping)?;
+    }
+    Ok(ordered)
+}
+
+fn exact_solid_tool_dependency_closure(
+    product: &ProductModel,
+    feature_id: FeatureId,
+) -> Result<Vec<FeatureId>, CanonicalError> {
+    exact_solid_tool_dependency_closure_for_snapshot(
+        &Snapshot {
+            revision_id: 0,
+            product: Arc::new(product.clone()),
+        },
+        feature_id,
+    )
+}
+
+fn solid_tool_result_feature_count(
+    product: &ProductModel,
+    target_feature_id: FeatureId,
+    tool_feature_id: FeatureId,
+) -> Result<usize, CanonicalError> {
+    let target = product
+        .features
+        .get(&target_feature_id)
+        .ok_or(CanonicalError::FeatureNotFound(target_feature_id))?;
+    let tool = product
+        .features
+        .get(&tool_feature_id)
+        .ok_or(CanonicalError::FeatureNotFound(tool_feature_id))?;
+    if fixed_solid_tool_path(&target.kind, &tool.kind) {
+        return Ok(5);
+    }
+    let target_count = exact_solid_tool_dependency_closure(product, target_feature_id)?.len();
+    let tool_count = exact_solid_tool_dependency_closure(product, tool_feature_id)?.len();
+    let count = target_count
+        .checked_add(tool_count)
+        .and_then(|count| count.checked_add(3))
+        .ok_or(CanonicalError::InvalidSolidToolPlan)?;
+    if count > MAX_SOLID_TOOL_RESULT_FEATURES {
+        return Err(CanonicalError::InvalidSolidToolPlan);
+    }
+    Ok(count)
+}
+
+fn remap_exact_solid_tool_feature_kind(
+    kind: &FeatureKind,
+    mapping: &BTreeMap<FeatureId, FeatureId>,
+) -> Result<FeatureKind, CanonicalError> {
+    let mapped = |id: &FeatureId| {
+        mapping
+            .get(id)
+            .copied()
+            .ok_or(CanonicalError::InvalidSolidToolPlan)
+    };
+    match kind {
+        FeatureKind::Workplane(spec) => {
+            let mut cloned = spec.clone();
+            match &mut cloned.support {
+                WorkplaneSupport::Principal(_) => {}
+                WorkplaneSupport::Offset { base, .. } => *base = mapped(base)?,
+                WorkplaneSupport::PlanarFace { .. } => {
+                    return Err(CanonicalError::InvalidSolidToolPlan);
+                }
+            }
+            Ok(FeatureKind::Workplane(cloned))
+        }
+        FeatureKind::Sketch(spec) => {
+            let mut cloned = spec.clone();
+            cloned.workplane = mapped(&spec.workplane)?;
+            Ok(FeatureKind::Sketch(cloned))
+        }
+        FeatureKind::Profile { points_mm } => Ok(FeatureKind::Profile {
+            points_mm: points_mm.clone(),
+        }),
+        FeatureKind::SegmentProfile { segments, closed } => Ok(FeatureKind::SegmentProfile {
+            segments: segments.clone(),
+            closed: *closed,
+        }),
+        FeatureKind::SplineProfile { control_points_mm } => Ok(FeatureKind::SplineProfile {
+            control_points_mm: control_points_mm.clone(),
+        }),
+        FeatureKind::Extrusion { profile, height } => Ok(FeatureKind::Extrusion {
+            profile: mapped(profile)?,
+            height: height.clone(),
+        }),
+        FeatureKind::Revolve {
+            profile,
+            axis_start_mm,
+            axis_end_mm,
+            angle_degrees,
+        } => Ok(FeatureKind::Revolve {
+            profile: mapped(profile)?,
+            axis_start_mm: *axis_start_mm,
+            axis_end_mm: *axis_end_mm,
+            angle_degrees: *angle_degrees,
+        }),
+        FeatureKind::ThroughCut { target, profile } => Ok(FeatureKind::ThroughCut {
+            target: mapped(target)?,
+            profile: mapped(profile)?,
+        }),
+        FeatureKind::Pocket {
+            target,
+            profile,
+            depth,
+        } => Ok(FeatureKind::Pocket {
+            target: mapped(target)?,
+            profile: mapped(profile)?,
+            depth: depth.clone(),
+        }),
+        FeatureKind::Boolean {
+            operation,
+            target,
+            tool,
+        } => Ok(FeatureKind::Boolean {
+            operation: *operation,
+            target: mapped(target)?,
+            tool: mapped(tool)?,
+        }),
+        FeatureKind::Sweep { profile, path } => Ok(FeatureKind::Sweep {
+            profile: mapped(profile)?,
+            path: mapped(path)?,
+        }),
+        FeatureKind::Loft { sections } => Ok(FeatureKind::Loft {
+            sections: sections
+                .iter()
+                .map(|section| {
+                    Ok(LoftSection {
+                        profile: mapped(&section.profile)?,
+                        elevation_mm: section.elevation_mm,
+                    })
+                })
+                .collect::<Result<Vec<_>, CanonicalError>>()?,
+        }),
+        FeatureKind::ImportedExactBody(spec) => Ok(FeatureKind::ImportedExactBody(spec.clone())),
+        FeatureKind::RigidTransform { target, transform } => Ok(FeatureKind::RigidTransform {
+            target: mapped(target)?,
+            transform: *transform,
+        }),
+        _ => Err(CanonicalError::InvalidSolidToolPlan),
+    }
+}
+
+fn clone_solid_tool_closure(
+    product: &ProductModel,
+    source_ids: &[FeatureId],
+    output_ids: &[FeatureId],
+    result_definition_id: DefinitionId,
+) -> Result<(Vec<Feature>, BTreeMap<FeatureId, FeatureId>), CanonicalError> {
+    if source_ids.len() != output_ids.len() {
+        return Err(CanonicalError::InvalidSolidToolPlan);
+    }
+    let mapping = source_ids
+        .iter()
+        .copied()
+        .zip(output_ids.iter().copied())
+        .collect::<BTreeMap<_, _>>();
+    let features = source_ids
+        .iter()
+        .zip(output_ids)
+        .map(|(source_id, output_id)| {
+            let source = product
+                .features
+                .get(source_id)
+                .ok_or(CanonicalError::FeatureNotFound(*source_id))?;
+            Ok(Feature {
+                id: *output_id,
+                definition_id: result_definition_id,
+                name: source.name.clone(),
+                kind: remap_exact_solid_tool_feature_kind(&source.kind, &mapping)?,
+            })
+        })
+        .collect::<Result<Vec<_>, CanonicalError>>()?;
+    Ok((features, mapping))
+}
+
+fn apply_graph_exact_solid_tool(
+    product: &mut ProductModel,
+    plan: &SolidToolPlan,
+    target_occurrence: Occurrence,
+    tool_occurrence: Occurrence,
+) -> Result<(), CanonicalError> {
+    let target_source_ids = exact_solid_tool_dependency_closure(product, plan.target_feature_id)?;
+    let tool_source_ids = exact_solid_tool_dependency_closure(product, plan.tool_feature_id)?;
+    let expected_count = target_source_ids
+        .len()
+        .checked_add(tool_source_ids.len())
+        .and_then(|count| count.checked_add(3))
+        .ok_or(CanonicalError::InvalidSolidToolPlan)?;
+    if expected_count > MAX_SOLID_TOOL_RESULT_FEATURES
+        || plan.result_feature_ids.len() != expected_count
+    {
+        return Err(CanonicalError::InvalidSolidToolPlan);
+    }
+    let target_end = target_source_ids.len();
+    let target_transform_id = plan.result_feature_ids[target_end];
+    let tool_start = target_end + 1;
+    let tool_end = tool_start + tool_source_ids.len();
+    let tool_transform_id = plan.result_feature_ids[tool_end];
+    let result_id = plan.result_feature_ids[tool_end + 1];
+    let (mut features, target_mapping) = clone_solid_tool_closure(
+        product,
+        &target_source_ids,
+        &plan.result_feature_ids[..target_end],
+        plan.result_definition_id,
+    )?;
+    let (tool_features, tool_mapping) = clone_solid_tool_closure(
+        product,
+        &tool_source_ids,
+        &plan.result_feature_ids[tool_start..tool_end],
+        plan.result_definition_id,
+    )?;
+    features.extend(tool_features);
+
+    let snapshot = Snapshot {
+        revision_id: 0,
+        product: Arc::new(product.clone()),
+    };
+    let target_inverse = snapshot
+        .world_transform_for_occurrence(plan.target_occurrence_id)
+        .and_then(Transform::rigid_inverse)
+        .ok_or(CanonicalError::UnsupportedSolidToolTransform)?;
+    let tool_transform = snapshot
+        .world_transform_for_occurrence(plan.tool_occurrence_id)
+        .ok_or(CanonicalError::UnsupportedSolidToolTransform)?;
+    let tool_relative_transform = target_inverse.compose(tool_transform);
+    if tool_relative_transform.rigid_inverse().is_none() {
+        return Err(CanonicalError::UnsupportedSolidToolTransform);
+    }
+    let target_body = *target_mapping
+        .get(&plan.target_feature_id)
+        .ok_or(CanonicalError::InvalidSolidToolPlan)?;
+    let tool_body = *tool_mapping
+        .get(&plan.tool_feature_id)
+        .ok_or(CanonicalError::InvalidSolidToolPlan)?;
+    features.extend([
+        Feature {
+            id: target_transform_id,
+            definition_id: plan.result_definition_id,
+            name: "Target body".to_owned(),
+            kind: FeatureKind::RigidTransform {
+                target: target_body,
+                transform: Transform::identity(),
+            },
+        },
+        Feature {
+            id: tool_transform_id,
+            definition_id: plan.result_definition_id,
+            name: "Transformed tool".to_owned(),
+            kind: FeatureKind::RigidTransform {
+                target: tool_body,
+                transform: tool_relative_transform,
+            },
+        },
+        Feature {
+            id: result_id,
+            definition_id: plan.result_definition_id,
+            name: plan.result_feature_name.clone(),
+            kind: FeatureKind::Boolean {
+                operation: plan.operation,
+                target: target_transform_id,
+                tool: tool_transform_id,
+            },
+        },
+    ]);
+
+    product.definitions.insert(
+        plan.result_definition_id,
+        Arc::new(Definition {
+            id: plan.result_definition_id,
+            name: plan.result_definition_name.clone(),
+            feature_ids: plan.result_feature_ids.clone(),
+            bodies: BTreeMap::from([(DEFAULT_BODY_ID, default_body())]),
+            active_body_id: DEFAULT_BODY_ID,
+            feature_body_ownership: BTreeMap::new(),
+            local_occurrence_ids: Vec::new(),
+            local_group_ids: Vec::new(),
+        }),
+    );
+    for feature in features {
+        validate_feature_kind(&feature.kind)?;
+        product.features.insert(feature.id, Arc::new(feature));
+    }
+    let mut result_definition = product.definitions[&plan.result_definition_id]
+        .as_ref()
+        .clone();
+    for feature_id in result_definition.feature_ids.clone() {
+        let feature = &product.features[&feature_id];
+        let ownership =
+            inferred_feature_body_ownership(product, &result_definition, &feature.kind)?;
+        result_definition
+            .feature_body_ownership
+            .insert(feature_id, ownership);
+    }
+    product
+        .definitions
+        .insert(plan.result_definition_id, Arc::new(result_definition));
+
+    let cloned_bindings = target_mapping
+        .iter()
+        .chain(tool_mapping.iter())
+        .flat_map(|(source_id, output_id)| {
+            product
+                .feature_parameter_bindings
+                .values()
+                .filter(move |binding| binding.target.feature_id == *source_id)
+                .map(move |binding| {
+                    let target = FeatureParameterTarget {
+                        feature_id: *output_id,
+                        path: binding.target.path.clone(),
+                        value_type: binding.target.value_type,
+                    };
+                    (
+                        target.clone(),
+                        Arc::new(FeatureParameterBinding {
+                            target,
+                            derived_from: binding.derived_from.clone(),
+                        }),
+                    )
+                })
+        })
+        .collect::<Vec<_>>();
+    product.feature_parameter_bindings.extend(cloned_bindings);
+    product.occurrences.insert(
+        plan.target_occurrence_id,
+        Arc::new(Occurrence {
+            definition_id: plan.result_definition_id,
+            ..target_occurrence
+        }),
+    );
+    if !plan.keep_tool {
+        product.occurrences.remove(&plan.tool_occurrence_id);
+    } else {
+        product
+            .occurrences
+            .insert(plan.tool_occurrence_id, Arc::new(tool_occurrence));
+    }
+    let result_snapshot = Snapshot {
+        revision_id: 0,
+        product: Arc::new(product.clone()),
+    };
+    ExactBRepGraph::from_snapshot(&result_snapshot, plan.result_definition_id, result_id)
+        .map_err(|_| CanonicalError::InvalidSolidToolPlan)?;
+    Ok(())
+}
+
 fn apply_solid_tool(
     product: &mut ProductModel,
     plan: &SolidToolPlan,
@@ -10454,10 +10891,13 @@ fn apply_solid_tool(
     {
         return Err(CanonicalError::InvalidSolidToolPlan);
     }
+    if plan.result_feature_ids.len() > MAX_SOLID_TOOL_RESULT_FEATURES {
+        return Err(CanonicalError::InvalidSolidToolPlan);
+    }
     let mut output_ids = BTreeSet::new();
-    for id in plan.result_feature_ids {
+    for id in &plan.result_feature_ids {
         ensure_product_id(id.0)?;
-        if !output_ids.insert(id) || product.features.contains_key(&id) {
+        if !output_ids.insert(*id) || product.features.contains_key(id) {
             return Err(CanonicalError::InvalidSolidToolPlan);
         }
     }
@@ -10498,6 +10938,14 @@ fn apply_solid_tool(
         || tool_feature.definition_id != tool_occurrence.definition_id
     {
         return Err(CanonicalError::OccurrenceDefinitionMismatch);
+    }
+    if plan.result_feature_ids.len()
+        != solid_tool_result_feature_count(product, plan.target_feature_id, plan.tool_feature_id)?
+    {
+        return Err(CanonicalError::InvalidSolidToolPlan);
+    }
+    if !fixed_solid_tool_path(&target_feature.kind, &tool_feature.kind) {
+        return apply_graph_exact_solid_tool(product, plan, target_occurrence, tool_occurrence);
     }
     if let (
         FeatureKind::ImportedExactBody(target_spec),
@@ -10609,7 +11057,23 @@ fn apply_solid_tool(
         tool_profile_output,
         tool_body_output,
         result_output,
-    ] = plan.result_feature_ids;
+    ] = plan.result_feature_ids.as_slice()
+    else {
+        return Err(CanonicalError::InvalidSolidToolPlan);
+    };
+    let (
+        target_profile_output,
+        target_body_output,
+        tool_profile_output,
+        tool_body_output,
+        result_output,
+    ) = (
+        *target_profile_output,
+        *target_body_output,
+        *tool_profile_output,
+        *tool_body_output,
+        *result_output,
+    );
     let features = [
         Feature {
             id: target_profile_output,
@@ -10753,7 +11217,12 @@ fn apply_mixed_exact_solid_tool(
         return Err(CanonicalError::UnsupportedSolidToolTransform);
     }
 
-    let [first, second, third, transformed_tool, result] = plan.result_feature_ids;
+    let [first, second, third, transformed_tool, result] = plan.result_feature_ids.as_slice()
+    else {
+        return Err(CanonicalError::InvalidSolidToolPlan);
+    };
+    let (first, second, third, transformed_tool, result) =
+        (*first, *second, *third, *transformed_tool, *result);
     let (mut features, target_body, tool_body, binding_mappings) = match (target_kind, tool_kind) {
         (
             FeatureKind::ImportedExactBody(target_spec),
@@ -10959,7 +11428,18 @@ fn apply_imported_exact_solid_tool(
     if tool_relative_transform.rigid_inverse().is_none() {
         return Err(CanonicalError::UnsupportedSolidToolTransform);
     }
-    let [target_source, target_body, tool_source, tool_body, result] = plan.result_feature_ids;
+    let [target_source, target_body, tool_source, tool_body, result] =
+        plan.result_feature_ids.as_slice()
+    else {
+        return Err(CanonicalError::InvalidSolidToolPlan);
+    };
+    let (target_source, target_body, tool_source, tool_body, result) = (
+        *target_source,
+        *target_body,
+        *tool_source,
+        *tool_body,
+        *result,
+    );
     let features = [
         Feature {
             id: target_source,

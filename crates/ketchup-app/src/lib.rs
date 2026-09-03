@@ -50,7 +50,7 @@ use ketchup_core::exact_product::{
     AssemblySelectionTarget, ExactBodyPackage, ExactBodyView, ExactFaceRole,
     ExactFeatureChainRequest, ExactLoftRequest, ExactMeshExport, ExactPlanarOffsetRequest,
     ExactResultRegistry, ExactStlExport, ExactSweepRequest, ImportedExactPackage,
-    exact_model_stl_export, is_line_arc_capsule_profile,
+    exact_body_terminal_features, exact_model_stl_export, is_line_arc_capsule_profile,
 };
 #[cfg(test)]
 use ketchup_core::exact_product::{ExactBRepGraphPackage, ExactBRepGraphWorkerEvidence};
@@ -2629,18 +2629,18 @@ struct RenderBox {
     size_mm: Vec3,
 }
 
-fn imported_solid_tool_feature_id(
+fn exact_solid_tool_feature_id(
     snapshot: &Snapshot,
     definition_id: DefinitionId,
 ) -> Option<FeatureId> {
-    let [feature_id] = snapshot.definition(definition_id)?.feature_ids() else {
+    let terminals = exact_body_terminal_features(snapshot, definition_id).ok()?;
+    let mut terminal_ids = terminals.values().copied();
+    let feature_id = terminal_ids.next()?;
+    if terminal_ids.next().is_some() {
         return None;
-    };
-    matches!(
-        snapshot.feature(*feature_id)?.kind(),
-        FeatureKind::ImportedExactBody(_)
-    )
-    .then_some(*feature_id)
+    }
+    snapshot.solid_tool_feature_clone_count(feature_id).ok()?;
+    Some(feature_id)
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -2929,7 +2929,7 @@ struct SolidToolSourcePlan {
     tool_box: RenderBox,
     tool_feature_id: FeatureId,
     result_definition_id: DefinitionId,
-    result_feature_ids: [FeatureId; 5],
+    result_feature_ids: Vec<FeatureId>,
 }
 
 impl SolidToolSourcePlan {
@@ -15516,6 +15516,7 @@ impl KetchupApp {
         let snapshot = self.document.current();
         let exact_packages =
             use_exact_bounds.then(|| self.exact_results.render_by_definition(&snapshot));
+        let mut exact_solid_tool_features = BTreeMap::new();
         projection
             .occurrences()
             .iter()
@@ -15552,7 +15553,14 @@ impl KetchupApp {
                         .body
                         .profile_feature_id
                         .or_else(|| {
-                            imported_solid_tool_feature_id(&snapshot, occurrence.body.definition_id)
+                            *exact_solid_tool_features
+                                .entry(occurrence.body.definition_id)
+                                .or_insert_with(|| {
+                                    exact_solid_tool_feature_id(
+                                        &snapshot,
+                                        occurrence.body.definition_id,
+                                    )
+                                })
                         })
                         .or_else(|| {
                             snapshot
@@ -18052,19 +18060,34 @@ impl KetchupApp {
                         .into_iter()
                         .filter(|item| item.instance_path.is_root())
                         .collect::<Vec<_>>();
+                    let mut exact_features = BTreeMap::new();
                     candidates
                         .iter()
                         .filter(|item| {
-                            item.extrusion_feature_id.is_some()
-                                || imported_solid_tool_feature_id(&snapshot, item.definition_id)
-                                    .is_some_and(|_| {
-                                        snapshot
-                                            .world_transform_for_occurrence(
-                                                item.instance_path.root_occurrence(),
-                                            )
-                                            .and_then(Transform::rigid_inverse)
-                                            .is_some()
-                                    })
+                            let Some(feature_id) =
+                                *exact_features.entry(item.definition_id).or_insert_with(|| {
+                                    exact_solid_tool_feature_id(&snapshot, item.definition_id)
+                                })
+                            else {
+                                return false;
+                            };
+                            let Some(feature) = snapshot.feature(feature_id) else {
+                                return false;
+                            };
+                            let has_current_geometry = matches!(
+                                feature.kind(),
+                                FeatureKind::Extrusion { .. } | FeatureKind::ImportedExactBody(_)
+                            ) || self
+                                .exact_results
+                                .get_render(&snapshot, item.definition_id)
+                                .is_some();
+                            has_current_geometry
+                                && snapshot
+                                    .world_transform_for_occurrence(
+                                        item.instance_path.root_occurrence(),
+                                    )
+                                    .and_then(Transform::rigid_inverse)
+                                    .is_some()
                         })
                         .count()
                         >= 2
@@ -24515,11 +24538,22 @@ impl KetchupApp {
             .into_iter()
             .find(|item| item.instance_path == selection.instance_path)?;
         let snapshot = self.document.current();
-        let body_feature_id = item
-            .extrusion_feature_id
-            .or_else(|| imported_solid_tool_feature_id(&snapshot, selection.definition_id))?;
+        let body_feature_id = exact_solid_tool_feature_id(&snapshot, selection.definition_id)?;
         let occurrence = snapshot.occurrence(selection.instance_path.root_occurrence())?;
+        snapshot
+            .world_transform_for_occurrence(occurrence.id())?
+            .rigid_inverse()?;
         let feature = snapshot.feature(body_feature_id)?;
+        if !matches!(
+            feature.kind(),
+            FeatureKind::Extrusion { .. } | FeatureKind::ImportedExactBody(_)
+        ) && self
+            .exact_results
+            .get_render(&snapshot, selection.definition_id)
+            .is_none()
+        {
+            return None;
+        }
         if occurrence.definition_id() != selection.definition_id
             || feature.definition_id() != selection.definition_id
         {
@@ -24558,10 +24592,17 @@ impl KetchupApp {
             .max()
             .unwrap_or(0)
             .checked_add(1)?;
-        let mut result_feature_ids = [FeatureId(0); 5];
-        for (offset, id) in result_feature_ids.iter_mut().enumerate() {
-            *id = FeatureId(first_feature_value.checked_add(offset as u64)?);
-        }
+        let result_feature_count = snapshot
+            .solid_tool_result_feature_count(target_feature_id, tool_feature_id)
+            .ok()?;
+        let result_feature_ids = (0..result_feature_count)
+            .map(|offset| {
+                u64::try_from(offset)
+                    .ok()
+                    .and_then(|offset| first_feature_value.checked_add(offset))
+                    .map(FeatureId)
+            })
+            .collect::<Option<Vec<_>>>()?;
         Some(SolidToolSourcePlan {
             source_document_id: snapshot.document_id(),
             source_revision: snapshot.revision_id(),
@@ -24617,7 +24658,7 @@ impl KetchupApp {
             tool_occurrence_id: source.tool_selection.instance_path.root_occurrence(),
             tool_feature_id: source.tool_feature_id,
             result_definition_id: source.result_definition_id,
-            result_feature_ids: source.result_feature_ids,
+            result_feature_ids: source.result_feature_ids.clone(),
             result_definition_name: self.catalog.format(
                 "solid-tool-result-definition",
                 &BTreeMap::from([("operation", operation_label.clone())]),
@@ -24633,11 +24674,12 @@ impl KetchupApp {
 
         let mut preview_box = source.target_box.clone();
         preview_box.definition_id = source.result_definition_id;
-        if source.target_box.extrusion_feature_id.is_some() {
+        if source.result_feature_ids.len() == 5 && source.target_box.extrusion_feature_id.is_some()
+        {
             preview_box.profile_feature_id = source.result_feature_ids[0];
             preview_box.extrusion_feature_id = Some(source.result_feature_ids[1]);
         } else {
-            preview_box.profile_feature_id = source.result_feature_ids[4];
+            preview_box.profile_feature_id = *source.result_feature_ids.last()?;
             preview_box.extrusion_feature_id = None;
         }
         if source.operation == BooleanOperation::Union {
@@ -25865,7 +25907,7 @@ impl KetchupApp {
                 tool_occurrence_id,
                 tool_feature_id,
                 result_definition_id,
-                result_feature_ids,
+                result_feature_ids: result_feature_ids.to_vec(),
                 result_definition_name: self.catalog.format(
                     "solid-tool-result-definition",
                     &BTreeMap::from([("operation", operation_label.clone())]),
