@@ -271,6 +271,12 @@ fn worker_binds_multiple_imported_sources_by_digest_for_boolean_and_mesh() {
         .find(|occurrence| occurrence.id() != target_occurrence)
         .unwrap()
         .id();
+    let mut container_data = persistence::ContainerData::default();
+    for source in &sources {
+        container_data.insert_import_blob(source.clone()).unwrap();
+    }
+    let imported_baseline =
+        persistence::save_container(&imported_document.current(), &container_data).unwrap();
     let result_definition = DefinitionId(3);
     let result_features = [
         FeatureId(3),
@@ -353,14 +359,74 @@ fn worker_binds_multiple_imported_sources_by_digest_for_boolean_and_mesh() {
     assert!(package.volume_mm3 >= source_volumes[0].max(source_volumes[1]));
     assert!(package.volume_mm3 <= source_volumes.iter().sum::<f64>());
     assert!(package.is_current(&imported_snapshot));
+
+    let mut imported_operation_packages = Vec::new();
+    for operation in [BooleanOperation::Cut, BooleanOperation::Intersect] {
+        let mut operation_document = persistence::load(&imported_baseline)
+            .unwrap()
+            .into_editable()
+            .ok()
+            .unwrap();
+        operation_document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::SetOccurrenceTransform {
+                    id: tool_occurrence,
+                    transform: tool_transform,
+                },
+                CanonicalCommand::ApplySolidTool(SolidToolPlan {
+                    operation,
+                    target_occurrence_id: target_occurrence,
+                    target_feature_id: target,
+                    tool_occurrence_id: tool_occurrence,
+                    tool_feature_id: tool,
+                    result_definition_id: result_definition,
+                    result_feature_ids: result_features,
+                    result_definition_name: format!("Imported source {operation:?}"),
+                    result_feature_name: format!("Rigid imported {operation:?}"),
+                    keep_tool: true,
+                }),
+            ]))
+            .unwrap();
+        let operation_snapshot = operation_document.current();
+        let operation_graph = ExactBRepGraph::from_snapshot(
+            &operation_snapshot,
+            result_definition,
+            result_features[4],
+        )
+        .unwrap();
+        assert!(operation_graph.nodes.iter().any(|node| matches!(
+            node.operation,
+            ketchup_core::exact_brep_graph::ExactBRepOperation::Boolean {
+                operation: graph_operation,
+                ..
+            } if graph_operation == operation.into()
+        )));
+        let operation_package = supervisor
+            .evaluate_exact_brep_graph_with_imported_sources(&operation_graph, &reversed_sources)
+            .unwrap();
+        assert_eq!(
+            supervisor
+                .evaluate_exact_brep_graph_with_imported_sources(
+                    &operation_graph,
+                    &reversed_sources,
+                )
+                .unwrap(),
+            operation_package
+        );
+        assert!(operation_package.is_current(&operation_snapshot));
+        imported_operation_packages.push(operation_package);
+    }
+    let cut_volume = imported_operation_packages[0].volume_mm3;
+    let intersection_volume = imported_operation_packages[1].volume_mm3;
+    assert!(cut_volume > 0.0);
+    assert!(intersection_volume > 0.0);
+    assert!(
+        (cut_volume + intersection_volume - source_volumes[0]).abs() <= source_volumes[0] * 1.0e-8
+    );
     let exact_body = ExactBodyPackage::Graph(package.clone());
     let result_key = exact_body.result_key();
     let registry = ExactResultRegistry::accept(&imported_snapshot, [Arc::new(exact_body)]).unwrap();
     assert!(registry.get_result(&result_key).is_some());
-    let mut container_data = persistence::ContainerData::default();
-    for source in &sources {
-        container_data.insert_import_blob(source.clone()).unwrap();
-    }
     let reopened = persistence::load(
         &persistence::save_container(&imported_snapshot, &container_data).unwrap(),
     )
@@ -423,6 +489,41 @@ fn worker_binds_multiple_imported_sources_by_digest_for_boolean_and_mesh() {
                 &[sources[0].as_slice(), sources[0].as_slice()],
             )
             .is_err()
+    );
+    let malformed_source = b"not a STEP payload";
+    let mut malformed_document = DocumentStore::new();
+    malformed_document
+        .apply_batch(
+            &plan_step_import(
+                &malformed_document.current(),
+                malformed_source,
+                "malformed.step",
+                &evidences[0],
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let malformed_snapshot = malformed_document.current();
+    let malformed_definition = malformed_snapshot.definitions().next().unwrap().id();
+    let malformed_producer = malformed_snapshot.features().next().unwrap().id();
+    let malformed_graph = ExactBRepGraph::from_snapshot(
+        &malformed_snapshot,
+        malformed_definition,
+        malformed_producer,
+    )
+    .unwrap();
+    assert!(matches!(
+        supervisor.evaluate_exact_brep_graph_with_imported_sources(
+            &malformed_graph,
+            &[malformed_source.as_slice()],
+        ),
+        Err(WorkerError::Geometry(_))
+    ));
+    assert_eq!(
+        supervisor
+            .evaluate_exact_brep_graph_with_imported_sources(&graph, &reversed_sources)
+            .unwrap(),
+        package
     );
     let undo_snapshot = imported_document.undo().unwrap();
     assert_eq!(undo_snapshot.canonical_digest(), before_solid_tool);
