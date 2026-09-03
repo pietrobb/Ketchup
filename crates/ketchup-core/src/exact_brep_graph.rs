@@ -25,7 +25,8 @@ pub const MAX_EXACT_BREP_REGION_HOLES: usize = 64;
 pub const MAX_EXACT_BREP_REGION_SEGMENTS: usize = 4_096;
 pub const MAX_EXACT_BREP_GRAPH_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_EXACT_BREP_TOPOLOGY_SELECTORS: usize = 64;
-const MAX_ABS_MM: f64 = 1_000_000.0;
+pub const MAX_EXACT_BREP_COORDINATE_MM: f64 = 1_000_000.0;
+const MAX_ABS_MM: f64 = MAX_EXACT_BREP_COORDINATE_MM;
 const MIN_LENGTH_MM: f64 = 1.0e-7;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -1288,8 +1289,11 @@ fn operation_bounds(
                     .and_then(|(target, tool)| bounds_intersection(target, tool).map(|_| target)),
             })
         }
+        ExactBRepOperation::Sweep { profile, path } => {
+            sweep_profile_bounds(&profiles[profile.0 as usize], &profiles[path.0 as usize])
+                .map(Some)
+        }
         ExactBRepOperation::Revolve { .. }
-        | ExactBRepOperation::Sweep { .. }
         | ExactBRepOperation::Loft { .. }
         | ExactBRepOperation::ImportedExact { .. } => Ok(None),
     }
@@ -1347,6 +1351,68 @@ fn swept_profile_bounds(
         }
     }
     valid_bounds(bounds)
+        .then_some(bounds)
+        .ok_or(ExactBRepGraphError::InvalidParameter)
+}
+
+fn sweep_profile_bounds(
+    profile: &ExactBRepProfile,
+    path: &ExactBRepProfile,
+) -> Result<[[f64; 3]; 2], ExactBRepGraphError> {
+    let [[min_u, min_v], [max_u, max_v]] = planar_geometry_bounds(&profile.geometry)?;
+    let ExactBRepPlanarGeometry::Boundary {
+        closed: false,
+        segments,
+    } = &path.geometry
+    else {
+        return Err(ExactBRepGraphError::InvalidParameter);
+    };
+    let [
+        ExactBRepPlanarSegment::Line {
+            start_bits,
+            end_bits,
+        },
+    ] = segments.as_slice()
+    else {
+        return Err(ExactBRepGraphError::InvalidParameter);
+    };
+    let start = start_bits.map(f64::from_bits);
+    let end = end_bits.map(f64::from_bits);
+    let direction = [end[0] - start[0], end[1] - start[1]];
+    let path_length = direction[0].hypot(direction[1]);
+    if !(MIN_EXACT_BREP_SWEEP_PATH_LENGTH_MM..=MAX_EXACT_BREP_SWEEP_PATH_LENGTH_MM)
+        .contains(&path_length)
+    {
+        return Err(ExactBRepGraphError::InvalidParameter);
+    }
+    let tangent = [direction[0] / path_length, direction[1] / path_length];
+    let section = [tangent[1], -tangent[0]];
+    let frame = profile.frame_bits.map(f64::from_bits);
+    let mut framed_bounds = [[f64::INFINITY; 3], [f64::NEG_INFINITY; 3]];
+    let mut bounds = [[f64::INFINITY; 3], [f64::NEG_INFINITY; 3]];
+    for u in [min_u, max_u] {
+        for v in [min_v, max_v] {
+            for along in [0.0, path_length] {
+                let profile_point = [
+                    frame[0] + frame[3] * u + frame[6] * v + frame[9] * along,
+                    frame[1] + frame[4] * u + frame[7] * v + frame[10] * along,
+                    frame[2] + frame[5] * u + frame[8] * v + frame[11] * along,
+                ];
+                let point = [
+                    start[0] + section[0] * profile_point[0] + tangent[0] * profile_point[2],
+                    start[1] + section[1] * profile_point[0] + tangent[1] * profile_point[2],
+                    profile_point[1],
+                ];
+                for axis in 0..3 {
+                    framed_bounds[0][axis] = framed_bounds[0][axis].min(profile_point[axis]);
+                    framed_bounds[1][axis] = framed_bounds[1][axis].max(profile_point[axis]);
+                    bounds[0][axis] = bounds[0][axis].min(point[axis]);
+                    bounds[1][axis] = bounds[1][axis].max(point[axis]);
+                }
+            }
+        }
+    }
+    (valid_bounds(framed_bounds) && valid_bounds(bounds))
         .then_some(bounds)
         .ok_or(ExactBRepGraphError::InvalidParameter)
 }
@@ -1730,6 +1796,10 @@ fn valid_operation_profiles(operation: &ExactBRepOperation, profiles: &[ExactBRe
                             }
                     )
                 )
+                && profiles
+                    .get(profile.0 as usize)
+                    .zip(profiles.get(path.0 as usize))
+                    .is_some_and(|(profile, path)| sweep_profile_bounds(profile, path).is_ok())
         }
         _ => true,
     }
@@ -2191,6 +2261,24 @@ mod tests {
             };
             assert!(!valid_operation_profiles(&sweep, &profiles));
         }
+        profiles[1].geometry = ExactBRepPlanarGeometry::Boundary {
+            closed: false,
+            segments: vec![line(
+                [MAX_EXACT_BREP_COORDINATE_MM, 0.0],
+                [MAX_EXACT_BREP_COORDINATE_MM, 100.0],
+            )],
+        };
+        assert!(!valid_operation_profiles(&sweep, &profiles));
+
+        profiles[1].geometry = ExactBRepPlanarGeometry::Boundary {
+            closed: false,
+            segments: vec![line([0.0, 0.0], [100.0, 0.0])],
+        };
+        profiles[0].frame_bits[0] = 10.0_f64.to_bits();
+        assert!(valid_operation_profiles(&sweep, &profiles));
+        profiles[0].frame_bits[0] = MAX_EXACT_BREP_COORDINATE_MM.to_bits();
+        assert!(!valid_operation_profiles(&sweep, &profiles));
+        profiles[0].frame_bits = identity_frame();
 
         profiles[0].geometry = ExactBRepPlanarGeometry::Spline {
             control_point_bits: vec![

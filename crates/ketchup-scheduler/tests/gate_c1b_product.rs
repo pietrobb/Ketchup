@@ -21677,6 +21677,49 @@ fn scheduler_evaluates_bounded_sweep_and_rejects_path_length_parity() {
         assert_eq!(invalid_document.visible_undo_steps(), 0);
     }
 
+    let mut output_limit_document = DocumentStore::new();
+    output_limit_document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DEFINITION,
+                name: "Sweep output envelope".to_owned(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: PROFILE,
+                definition_id: DEFINITION,
+                name: "Rectangular section".to_owned(),
+                kind: FeatureKind::Profile {
+                    points_mm: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: PATH,
+                definition_id: DEFINITION,
+                name: "Boundary path".to_owned(),
+                kind: FeatureKind::SegmentProfile {
+                    segments: vec![ProfileSegment::Line {
+                        start_mm: [1_000_000.0, 0.0],
+                        end_mm: [1_000_000.0, 100.0],
+                    }],
+                    closed: false,
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: SWEEP,
+                definition_id: DEFINITION,
+                name: "Out-of-envelope Sweep".to_owned(),
+                kind: FeatureKind::Sweep {
+                    profile: PROFILE,
+                    path: PATH,
+                },
+            },
+        ]))
+        .unwrap();
+    assert_eq!(
+        ExactSweepRequest::from_snapshot(&output_limit_document.current(), DEFINITION),
+        Err(ExactProductError::UnsupportedProfile)
+    );
+
     let mut supervisor = ExactWorkerSupervisor::spawn(worker_path()).unwrap();
     let first = supervisor.evaluate_sweep(&request).unwrap();
     let repeated = supervisor.evaluate_sweep(&request).unwrap();
@@ -21689,6 +21732,14 @@ fn scheduler_evaluates_bounded_sweep_and_rejects_path_length_parity() {
                 if code == GeometryErrorCode::InvalidParameter.as_str()
         ));
     }
+    let mut output_limit_request = request.clone();
+    output_limit_request.profile_bounds_bits = [0.0, 0.0, 10.0, 10.0].map(f64::to_bits);
+    output_limit_request.path_bits = [1_000_000.0, 0.0, 1_000_000.0, 100.0].map(f64::to_bits);
+    assert!(matches!(
+        supervisor.evaluate_sweep(&output_limit_request),
+        Err(M3EvaluationError::Worker(WorkerError::Geometry(code)))
+            if code == GeometryErrorCode::InvalidParameter.as_str()
+    ));
     assert!(first.is_current(&snapshot));
     assert_eq!(first.identity, repeated.identity);
     assert_eq!(first.references, repeated.references);

@@ -9,8 +9,8 @@ use crate::document::{
     MeshAuthority, MeshBodySpec, ProfileSegment, Snapshot, Transform,
 };
 use crate::exact_brep_graph::{
-    ExactBRepGraph, MAX_EXACT_BREP_LOFT_CONTROL_POINTS, MAX_EXACT_BREP_SWEEP_PATH_LENGTH_MM,
-    MIN_EXACT_BREP_SWEEP_PATH_LENGTH_MM,
+    ExactBRepGraph, MAX_EXACT_BREP_COORDINATE_MM, MAX_EXACT_BREP_LOFT_CONTROL_POINTS,
+    MAX_EXACT_BREP_SWEEP_PATH_LENGTH_MM, MIN_EXACT_BREP_SWEEP_PATH_LENGTH_MM,
 };
 use crate::graph::DerivedIdentity;
 use crate::import::StepImportMesh;
@@ -5003,6 +5003,24 @@ impl ExactSweepRequest {
         if !(MIN_EXACT_BREP_SWEEP_PATH_LENGTH_MM..=MAX_EXACT_BREP_SWEEP_PATH_LENGTH_MM)
             .contains(&path_length)
         {
+            return Err(ExactProductError::UnsupportedProfile);
+        }
+        let direction = [end_mm[0] - start_mm[0], end_mm[1] - start_mm[1]];
+        let section = [direction[1] / path_length, -direction[0] / path_length];
+        let output_within_envelope = [profile_bounds[0], profile_bounds[2]].into_iter().all(|u| {
+            [profile_bounds[1], profile_bounds[3]].into_iter().all(|v| {
+                [[0.0, 0.0], direction].into_iter().all(|along| {
+                    [
+                        start_mm[0] + section[0] * u + along[0],
+                        start_mm[1] + section[1] * u + along[1],
+                        v,
+                    ]
+                    .into_iter()
+                    .all(|value| value.is_finite() && value.abs() <= MAX_EXACT_BREP_COORDINATE_MM)
+                })
+            })
+        });
+        if !output_within_envelope {
             return Err(ExactProductError::UnsupportedProfile);
         }
         let source_digest = snapshot.canonical_digest();
