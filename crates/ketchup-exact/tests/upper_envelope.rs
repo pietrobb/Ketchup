@@ -454,6 +454,31 @@ fn bounded_spline_loft_is_deterministic_with_stable_exact_faces() {
 }
 
 #[test]
+fn spline_loft_rejects_elevation_beyond_coordinate_limit() {
+    let spec = |elevation_mm| SplineLoftSpec {
+        sections: vec![
+            SplineLoftSection {
+                elevation_mm: 0.0,
+                control_points_mm: vec![[-20.0, -10.0], [20.0, -10.0], [20.0, 10.0], [-20.0, 10.0]],
+            },
+            SplineLoftSection {
+                elevation_mm,
+                control_points_mm: vec![[-10.0, -5.0], [10.0, -5.0], [10.0, 5.0], [-10.0, 5.0]],
+            },
+        ],
+    };
+    let backend = ExactBackend::new();
+    let error = backend
+        .loft_spline(&spec(COORDINATE_LIMIT_MM + 0.001))
+        .expect_err("Loft elevation outside the exact coordinate envelope must fail closed");
+    assert_eq!(error.code, GeometryErrorCode::InvalidParameter);
+    let error = backend
+        .loft_spline(&spec(f64::NAN))
+        .expect_err("non-finite Loft elevation must fail closed");
+    assert_eq!(error.code, GeometryErrorCode::NonFiniteParameter);
+}
+
+#[test]
 fn overlapping_box_split_preserves_target_as_closed_exact_fragments() {
     let backend = ExactBackend::new();
     let base = backend

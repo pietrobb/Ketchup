@@ -1188,8 +1188,13 @@ impl ExactBackend {
         }
         let mut previous_elevation = f64::NEG_INFINITY;
         for (section_index, section) in spec.sections.iter().enumerate() {
+            validate_coordinate(
+                section.elevation_mm,
+                &format!("section_{section_index}_elevation"),
+                "loft_spline",
+                &input,
+            )?;
             if !(4..=64).contains(&section.control_points_mm.len())
-                || !section.elevation_mm.is_finite()
                 || section.elevation_mm <= previous_elevation
             {
                 return Err(parameter_error(

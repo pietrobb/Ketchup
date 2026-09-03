@@ -21786,6 +21786,35 @@ fn scheduler_evaluates_bounded_spline_loft_and_rejects_over_limit_parity() {
             },
         ]))
         .unwrap();
+    let before_invalid_elevation = document.current().canonical_digest();
+    let undo_steps = document.visible_undo_steps();
+    let error = document
+        .apply_batch(&CommandBatch::new(vec![CanonicalCommand::CreateFeature {
+            id: FeatureId(725),
+            definition_id: DEFINITION,
+            name: "Out-of-envelope Loft".to_owned(),
+            kind: FeatureKind::Loft {
+                sections: vec![
+                    LoftSection {
+                        profile: LOWER,
+                        elevation_mm: 0.0,
+                    },
+                    LoftSection {
+                        profile: UPPER,
+                        elevation_mm: 1_000_000.001,
+                    },
+                ],
+            },
+        }]))
+        .err()
+        .expect("canonical Loft must reject an out-of-envelope elevation");
+    assert_eq!(error, CanonicalError::InvalidLoft);
+    assert_eq!(
+        document.current().canonical_digest(),
+        before_invalid_elevation
+    );
+    assert_eq!(document.visible_undo_steps(), undo_steps);
+
     let snapshot = document.current();
     let request = ExactLoftRequest::from_snapshot(&snapshot, DEFINITION).unwrap();
     assert_eq!(request.producer_feature_id(), LOFT);
@@ -21856,6 +21885,13 @@ fn scheduler_evaluates_bounded_spline_loft_and_rejects_over_limit_parity() {
         .iter()
         .map(|point| point.map(f64::to_bits))
         .collect();
+    assert!(matches!(
+        supervisor.evaluate_loft(&over_limit_request),
+        Err(M3EvaluationError::Worker(WorkerError::Geometry(code)))
+            if code == GeometryErrorCode::InvalidParameter.as_str()
+    ));
+    let mut over_limit_request = request.clone();
+    over_limit_request.sections[1].elevation_bits = 1_000_000.001_f64.to_bits();
     assert!(matches!(
         supervisor.evaluate_loft(&over_limit_request),
         Err(M3EvaluationError::Worker(WorkerError::Geometry(code)))
