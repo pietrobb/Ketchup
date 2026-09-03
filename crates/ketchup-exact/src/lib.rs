@@ -147,6 +147,15 @@ mod ffi {
             axis_end_y: f64,
             angle_degrees: f64,
         ) -> UniquePtr<NativeOperationResult>;
+        fn revolve_planar_region_native(
+            segments: &[f64],
+            loop_segment_counts: &[u32],
+            axis_start_x: f64,
+            axis_start_y: f64,
+            axis_end_x: f64,
+            axis_end_y: f64,
+            angle_degrees: f64,
+        ) -> UniquePtr<NativeOperationResult>;
         fn shell_box_native(
             width: f64,
             depth: f64,
@@ -482,6 +491,195 @@ fn flatten_planar_segments(segments: &[PlanarProfileSegment]) -> Vec<f64> {
             ],
         })
         .collect()
+}
+
+fn planar_segment_signed_area(segment: &PlanarProfileSegment, origin: [f64; 2]) -> f64 {
+    let rebase = |point: [f64; 2]| [point[0] - origin[0], point[1] - origin[1]];
+    match segment {
+        PlanarProfileSegment::Line { start_mm, end_mm } => {
+            let start = rebase(*start_mm);
+            let end = rebase(*end_mm);
+            0.5 * (start[0] * end[1] - end[0] * start[1])
+        }
+        PlanarProfileSegment::CircularArc {
+            start_mm,
+            end_mm,
+            center_mm,
+            clockwise,
+        } => {
+            let start = rebase(*start_mm);
+            let end = rebase(*end_mm);
+            let center = rebase(*center_mm);
+            let radius = (start[0] - center[0]).hypot(start[1] - center[1]);
+            let start_angle = (start[1] - center[1]).atan2(start[0] - center[0]);
+            let end_angle = (end[1] - center[1]).atan2(end[0] - center[0]);
+            let mut sweep = end_angle - start_angle;
+            if *clockwise {
+                if sweep >= 0.0 {
+                    sweep -= std::f64::consts::TAU;
+                }
+            } else if sweep <= 0.0 {
+                sweep += std::f64::consts::TAU;
+            }
+            0.5 * (radius * center[0] * (end_angle.sin() - start_angle.sin())
+                - radius * center[1] * (end_angle.cos() - start_angle.cos())
+                + radius * radius * sweep)
+        }
+        PlanarProfileSegment::CubicBezier {
+            start_mm,
+            control_1_mm,
+            control_2_mm,
+            end_mm,
+        } => {
+            let start = rebase(*start_mm);
+            let control_1 = rebase(*control_1_mm);
+            let control_2 = rebase(*control_2_mm);
+            let end = rebase(*end_mm);
+            let coefficients = |axis: usize| {
+                [
+                    start[axis],
+                    3.0 * (control_1[axis] - start[axis]),
+                    3.0 * (start[axis] - 2.0 * control_1[axis] + control_2[axis]),
+                    -start[axis] + 3.0 * control_1[axis] - 3.0 * control_2[axis] + end[axis],
+                ]
+            };
+            let x = coefficients(0);
+            let y = coefficients(1);
+            let mut integral = 0.0;
+            for left_degree in 0..=3 {
+                for right_degree in 1..=3 {
+                    let denominator = (left_degree + right_degree) as f64;
+                    integral += (x[left_degree] * y[right_degree] * right_degree as f64
+                        - y[left_degree] * x[right_degree] * right_degree as f64)
+                        / denominator;
+                }
+            }
+            0.5 * integral
+        }
+    }
+}
+
+fn reverse_planar_segments(segments: &[PlanarProfileSegment]) -> Vec<PlanarProfileSegment> {
+    segments
+        .iter()
+        .rev()
+        .map(|segment| match *segment {
+            PlanarProfileSegment::Line { start_mm, end_mm } => PlanarProfileSegment::Line {
+                start_mm: end_mm,
+                end_mm: start_mm,
+            },
+            PlanarProfileSegment::CircularArc {
+                start_mm,
+                end_mm,
+                center_mm,
+                clockwise,
+            } => PlanarProfileSegment::CircularArc {
+                start_mm: end_mm,
+                end_mm: start_mm,
+                center_mm,
+                clockwise: !clockwise,
+            },
+            PlanarProfileSegment::CubicBezier {
+                start_mm,
+                control_1_mm,
+                control_2_mm,
+                end_mm,
+            } => PlanarProfileSegment::CubicBezier {
+                start_mm: end_mm,
+                control_1_mm: control_2_mm,
+                control_2_mm: control_1_mm,
+                end_mm: start_mm,
+            },
+        })
+        .collect()
+}
+
+fn flatten_planar_region(
+    outer: &PlanarProfileLoop,
+    holes: &[PlanarProfileLoop],
+    operation: &'static str,
+    input: &str,
+) -> Result<(Vec<f64>, Vec<u32>), GeometryError> {
+    if holes.is_empty() || holes.len() > 64 {
+        return Err(parameter_error(
+            GeometryErrorCode::InvalidProfile,
+            operation,
+            input,
+            "Planar region requires 1..=64 holes".to_owned(),
+        ));
+    }
+    let mut flattened = Vec::new();
+    let mut loop_segment_counts = Vec::with_capacity(holes.len() + 1);
+    for (loop_index, planar_loop) in std::iter::once(outer).chain(holes).enumerate() {
+        let before = flattened.len();
+        match planar_loop {
+            PlanarProfileLoop::Segments(segments) => {
+                validate_mixed_profile(segments, operation, input)?;
+                let origin = planar_segment_endpoints(&segments[0]).0;
+                let mut signed_area = 0.0;
+                let mut compensation = 0.0;
+                for segment in segments {
+                    let adjusted = planar_segment_signed_area(segment, origin) - compensation;
+                    let next = signed_area + adjusted;
+                    compensation = (next - signed_area) - adjusted;
+                    signed_area = next;
+                }
+                if !signed_area.is_finite() || signed_area.abs() <= MIN_LENGTH_MM * MIN_LENGTH_MM {
+                    return Err(parameter_error(
+                        GeometryErrorCode::InvalidProfile,
+                        operation,
+                        input,
+                        "Planar region loop has zero signed area".to_owned(),
+                    ));
+                }
+                let should_reverse = (loop_index == 0) != (signed_area > 0.0);
+                if should_reverse {
+                    flattened.extend(flatten_planar_segments(&reverse_planar_segments(segments)));
+                } else {
+                    flattened.extend(flatten_planar_segments(segments));
+                }
+            }
+            PlanarProfileLoop::Circle {
+                center_mm,
+                radius_mm,
+            } => {
+                validate_circle(*center_mm, *radius_mm, operation, input)?;
+                flattened.extend([
+                    3.0,
+                    center_mm[0],
+                    center_mm[1],
+                    *radius_mm,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    f64::from(loop_index != 0),
+                ]);
+            }
+        }
+        loop_segment_counts.push(
+            ((flattened.len() - before) / PLANAR_SEGMENT_STRIDE)
+                .try_into()
+                .map_err(|_| {
+                    parameter_error(
+                        GeometryErrorCode::InvalidProfile,
+                        operation,
+                        input,
+                        "Planar region exceeds the segment limit".to_owned(),
+                    )
+                })?,
+        );
+    }
+    if flattened.len() / PLANAR_SEGMENT_STRIDE > 4_096 {
+        return Err(parameter_error(
+            GeometryErrorCode::InvalidProfile,
+            operation,
+            input,
+            "Planar region exceeds the segment limit".to_owned(),
+        ));
+    }
+    Ok((flattened, loop_segment_counts))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1056,7 +1254,7 @@ impl ExactBackend {
             "extrude_mixed_profile:{segments:?}:{:016x}",
             height_mm.to_bits()
         );
-        validate_mixed_profile(segments, &input)?;
+        validate_mixed_profile(segments, "extrude_mixed_profile", &input)?;
         validate_length(height_mm, "height_mm", "extrude_mixed_profile", &input)?;
         let flattened = flatten_planar_segments(segments);
         collect_output(
@@ -1077,64 +1275,9 @@ impl ExactBackend {
             "extrude_planar_region:{outer:?}:{holes:?}:{:016x}",
             height_mm.to_bits()
         );
-        if holes.is_empty() || holes.len() > 64 {
-            return Err(parameter_error(
-                GeometryErrorCode::InvalidProfile,
-                "extrude_planar_region",
-                &input,
-                "Planar region requires 1..=64 holes".to_owned(),
-            ));
-        }
         validate_length(height_mm, "height_mm", "extrude_planar_region", &input)?;
-        let mut flattened = Vec::new();
-        let mut loop_segment_counts = Vec::with_capacity(holes.len() + 1);
-        for planar_loop in std::iter::once(outer).chain(holes) {
-            let before = flattened.len();
-            match planar_loop {
-                PlanarProfileLoop::Segments(segments) => {
-                    validate_mixed_profile(segments, &input)?;
-                    flattened.extend(flatten_planar_segments(segments));
-                }
-                PlanarProfileLoop::Circle {
-                    center_mm,
-                    radius_mm,
-                } => {
-                    validate_circle(*center_mm, *radius_mm, "extrude_planar_region", &input)?;
-                    flattened.extend([
-                        3.0,
-                        center_mm[0],
-                        center_mm[1],
-                        *radius_mm,
-                        0.0,
-                        0.0,
-                        0.0,
-                        0.0,
-                        0.0,
-                        0.0,
-                    ]);
-                }
-            }
-            loop_segment_counts.push(
-                ((flattened.len() - before) / PLANAR_SEGMENT_STRIDE)
-                    .try_into()
-                    .map_err(|_| {
-                        parameter_error(
-                            GeometryErrorCode::InvalidProfile,
-                            "extrude_planar_region",
-                            &input,
-                            "Planar region exceeds the segment limit".to_owned(),
-                        )
-                    })?,
-            );
-        }
-        if flattened.len() / PLANAR_SEGMENT_STRIDE > 4_096 {
-            return Err(parameter_error(
-                GeometryErrorCode::InvalidProfile,
-                "extrude_planar_region",
-                &input,
-                "Planar region exceeds the segment limit".to_owned(),
-            ));
-        }
+        let (flattened, loop_segment_counts) =
+            flatten_planar_region(outer, holes, "extrude_planar_region", &input)?;
         collect_output(
             ffi::extrude_planar_region_native(&flattened, &loop_segment_counts, height_mm),
             "extrude_planar_region",
@@ -1188,6 +1331,43 @@ impl ExactBackend {
                 angle_degrees,
             ),
             "revolve_general_profile",
+            &input,
+            HistoryConfidence::Complete,
+        )
+    }
+
+    pub fn revolve_planar_region(
+        &self,
+        outer: &PlanarProfileLoop,
+        holes: &[PlanarProfileLoop],
+        axis_start_mm: [f64; 2],
+        axis_end_mm: [f64; 2],
+        angle_degrees: f64,
+    ) -> Result<ExactOpOutput, GeometryError> {
+        let input = format!(
+            "revolve_planar_region:{outer:?}:{holes:?}:{axis_start_mm:?}:{axis_end_mm:?}:{:016x}",
+            angle_degrees.to_bits()
+        );
+        validate_general_revolve_axis_angle(
+            axis_start_mm,
+            axis_end_mm,
+            angle_degrees,
+            "revolve_planar_region",
+            &input,
+        )?;
+        let (flattened, loop_segment_counts) =
+            flatten_planar_region(outer, holes, "revolve_planar_region", &input)?;
+        collect_output(
+            ffi::revolve_planar_region_native(
+                &flattened,
+                &loop_segment_counts,
+                axis_start_mm[0],
+                axis_start_mm[1],
+                axis_end_mm[0],
+                axis_end_mm[1],
+                angle_degrees,
+            ),
+            "revolve_planar_region",
             &input,
             HistoryConfidence::Complete,
         )
@@ -1760,7 +1940,7 @@ impl ExactBackend {
             origin_z_mm.to_bits(),
             height_mm.to_bits()
         );
-        validate_mixed_profile(segments, &input)?;
+        validate_mixed_profile(segments, "extrude_mixed_profile", &input)?;
         let line_count = segments
             .iter()
             .filter(|segment| matches!(segment, PlanarProfileSegment::Line { .. }))
@@ -1814,7 +1994,7 @@ impl ExactBackend {
             origin_z_mm.to_bits(),
             height_mm.to_bits()
         );
-        validate_mixed_profile(segments, &input)?;
+        validate_mixed_profile(segments, "extrude_mixed_profile", &input)?;
         let line_count = segments
             .iter()
             .filter(|segment| matches!(segment, PlanarProfileSegment::Line { .. }))
@@ -1868,7 +2048,7 @@ impl ExactBackend {
             origin_z_mm.to_bits(),
             height_mm.to_bits()
         );
-        validate_mixed_profile(segments, &input)?;
+        validate_mixed_profile(segments, "extrude_mixed_profile", &input)?;
         let line_count = segments
             .iter()
             .filter(|segment| matches!(segment, PlanarProfileSegment::Line { .. }))
@@ -1922,7 +2102,7 @@ impl ExactBackend {
             origin_z_mm.to_bits(),
             height_mm.to_bits()
         );
-        validate_mixed_profile(segments, &input)?;
+        validate_mixed_profile(segments, "extrude_mixed_profile", &input)?;
         let line_count = segments
             .iter()
             .filter(|segment| matches!(segment, PlanarProfileSegment::Line { .. }))
@@ -5596,27 +5776,13 @@ fn validate_box(spec: BoxSpec, operation: &'static str, input: &str) -> Result<(
     Ok(())
 }
 
-fn validate_general_revolve_profile(
-    segments: &[PlanarProfileSegment],
+fn validate_general_revolve_axis_angle(
     axis_start_mm: [f64; 2],
     axis_end_mm: [f64; 2],
     angle_degrees: f64,
+    operation: &'static str,
     input: &str,
 ) -> Result<(), GeometryError> {
-    let operation = "revolve_general_profile";
-    let invalid = |diagnostic: String| {
-        parameter_error(
-            GeometryErrorCode::InvalidProfile,
-            operation,
-            input,
-            diagnostic,
-        )
-    };
-    if !(2..=64).contains(&segments.len()) {
-        return Err(invalid(
-            "Revolve profile requires 2..=64 segments".to_owned(),
-        ));
-    }
     for (value, name) in [
         (axis_start_mm[0], "axis_start_x"),
         (axis_start_mm[1], "axis_start_y"),
@@ -5649,6 +5815,37 @@ fn validate_general_revolve_profile(
             "Revolve angle must be within (0, 360] degrees".to_owned(),
         ));
     }
+    Ok(())
+}
+
+fn validate_general_revolve_profile(
+    segments: &[PlanarProfileSegment],
+    axis_start_mm: [f64; 2],
+    axis_end_mm: [f64; 2],
+    angle_degrees: f64,
+    input: &str,
+) -> Result<(), GeometryError> {
+    let operation = "revolve_general_profile";
+    let invalid = |diagnostic: String| {
+        parameter_error(
+            GeometryErrorCode::InvalidProfile,
+            operation,
+            input,
+            diagnostic,
+        )
+    };
+    if !(2..=64).contains(&segments.len()) {
+        return Err(invalid(
+            "Revolve profile requires 2..=64 segments".to_owned(),
+        ));
+    }
+    validate_general_revolve_axis_angle(
+        axis_start_mm,
+        axis_end_mm,
+        angle_degrees,
+        operation,
+        input,
+    )?;
     let endpoints = planar_segment_endpoints;
     for (index, segment) in segments.iter().enumerate() {
         let (start, end) = endpoints(segment);
@@ -5702,12 +5899,13 @@ fn validate_general_revolve_profile(
 
 fn validate_mixed_profile(
     segments: &[PlanarProfileSegment],
+    operation: &'static str,
     input: &str,
 ) -> Result<(), GeometryError> {
     let invalid = |diagnostic: String| {
         parameter_error(
             GeometryErrorCode::InvalidProfile,
-            "extrude_mixed_profile",
+            operation,
             input,
             diagnostic,
         )
@@ -5729,7 +5927,7 @@ fn validate_mixed_profile(
             (end[0], "end_x"),
             (end[1], "end_y"),
         ] {
-            validate_coordinate(coordinate, name, "extrude_mixed_profile", input)?;
+            validate_coordinate(coordinate, name, operation, input)?;
         }
         if start == end {
             return Err(invalid(format!("Profile segment {index} is degenerate")));
@@ -5746,12 +5944,12 @@ fn validate_mixed_profile(
                 (control_2_mm[0], "control_2_x"),
                 (control_2_mm[1], "control_2_y"),
             ] {
-                validate_coordinate(coordinate, name, "extrude_mixed_profile", input)?;
+                validate_coordinate(coordinate, name, operation, input)?;
             }
         }
         if let PlanarProfileSegment::CircularArc { center_mm, .. } = segment {
-            validate_coordinate(center_mm[0], "center_x", "extrude_mixed_profile", input)?;
-            validate_coordinate(center_mm[1], "center_y", "extrude_mixed_profile", input)?;
+            validate_coordinate(center_mm[0], "center_x", operation, input)?;
+            validate_coordinate(center_mm[1], "center_y", operation, input)?;
             let start_radius = (start[0] - center_mm[0]).hypot(start[1] - center_mm[1]);
             let end_radius = (end[0] - center_mm[0]).hypot(end[1] - center_mm[1]);
             if start_radius < MIN_LENGTH_MM

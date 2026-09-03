@@ -4,7 +4,8 @@ use ketchup_core::document::{
     Transform,
 };
 use ketchup_core::exact_brep_graph::{
-    ExactBRepGraph, ExactBRepPlanarGeometry, ExactBRepPlanarLoop, MAX_EXACT_BREP_GRAPH_PROFILES,
+    ExactBRepGraph, ExactBRepPlanarGeometry, ExactBRepPlanarLoop, ExactBRepPlanarSegment,
+    MAX_EXACT_BREP_GRAPH_PROFILES,
 };
 use ketchup_core::exact_product::{
     ExactBodyPackage, ExactFaceRole, ExactFeatureChainRequest, ExactProductError,
@@ -1419,6 +1420,167 @@ fn worker_evaluates_circle_sketch_revolve_in_its_workplane_frame() {
     assert_eq!(package.identity.producer_feature_id.0, revolve.0);
     assert!(package.volume_mm3 > 0.0);
     assert_bounds_close(package.bounds_mm, [-12.0, -12.0, -2.0, 12.0, 12.0, 2.0]);
+}
+
+#[test]
+fn worker_evaluates_compound_mixed_sketch_revolve_with_stable_persistence_and_undo() {
+    let definition = DefinitionId(61);
+    let workplane = FeatureId(610);
+    let sketch_id = FeatureId(611);
+    let revolve = FeatureId(612);
+    let sketch = SketchSpec {
+        workplane,
+        entities: vec![
+            SketchEntity::Line {
+                id: SketchEntityId(1),
+                start_mm: [10.0, -10.0],
+                end_mm: [30.0, -10.0],
+            },
+            SketchEntity::Line {
+                id: SketchEntityId(2),
+                start_mm: [30.0, -10.0],
+                end_mm: [30.0, 10.0],
+            },
+            SketchEntity::CubicBezier {
+                id: SketchEntityId(3),
+                start_mm: [30.0, 10.0],
+                control_1_mm: [26.0, 14.0],
+                control_2_mm: [22.0, 14.0],
+                end_mm: [18.0, 10.0],
+            },
+            SketchEntity::Arc {
+                id: SketchEntityId(4),
+                start_mm: [18.0, 10.0],
+                end_mm: [10.0, 2.0],
+                center_mm: [18.0, 2.0],
+                clockwise: false,
+            },
+            SketchEntity::Line {
+                id: SketchEntityId(5),
+                start_mm: [10.0, 2.0],
+                end_mm: [10.0, -10.0],
+            },
+            SketchEntity::Circle {
+                id: SketchEntityId(6),
+                center_mm: [20.0, 0.0],
+                radius_mm: 2.0,
+            },
+        ],
+        constraints: Vec::new(),
+    };
+    let regions = sketch.solved_regions().unwrap();
+    assert_eq!(regions.len(), 1);
+    assert_eq!(regions[0].holes.len(), 1);
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: definition,
+                name: "Compound mixed revolve".into(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: workplane,
+                definition_id: definition,
+                name: "XY".into(),
+                kind: FeatureKind::Workplane(WorkplaneSpec::principal(PrincipalPlane::Xy)),
+            },
+            CanonicalCommand::CreateFeature {
+                id: sketch_id,
+                definition_id: definition,
+                name: "Mixed outer loop and circle hole".into(),
+                kind: FeatureKind::Sketch(sketch),
+            },
+            CanonicalCommand::CreateFeature {
+                id: revolve,
+                definition_id: definition,
+                name: "Bounded compound revolve".into(),
+                kind: FeatureKind::Revolve {
+                    profile: sketch_id,
+                    axis_start_mm: [0.0, -20.0],
+                    axis_end_mm: [0.0, 20.0],
+                    angle_degrees: 270.0,
+                },
+            },
+        ]))
+        .unwrap();
+    let snapshot = document.current();
+    let graph = ExactBRepGraph::from_snapshot(&snapshot, definition, revolve).unwrap();
+    let ExactBRepPlanarGeometry::Region { outer, holes } = &graph.profiles[0].geometry else {
+        panic!("compound sketch must compile to a planar region");
+    };
+    let ExactBRepPlanarLoop::Boundary { segments } = outer else {
+        panic!("mixed outer loop must remain a boundary");
+    };
+    assert_eq!(segments.len(), 5);
+    assert!(
+        segments
+            .iter()
+            .any(|segment| matches!(segment, ExactBRepPlanarSegment::Line { .. }))
+    );
+    assert!(
+        segments
+            .iter()
+            .any(|segment| matches!(segment, ExactBRepPlanarSegment::CircularArc { .. }))
+    );
+    assert!(
+        segments
+            .iter()
+            .any(|segment| matches!(segment, ExactBRepPlanarSegment::CubicBezier { .. }))
+    );
+    assert_eq!(holes.len(), 1);
+    assert!(matches!(holes[0], ExactBRepPlanarLoop::Circle { .. }));
+
+    let mut supervisor =
+        ExactWorkerSupervisor::spawn(env!("CARGO_BIN_EXE_ketchup-exact-worker")).unwrap();
+    let package = supervisor.evaluate_exact_brep_graph(&graph).unwrap();
+    assert_eq!(
+        supervisor.evaluate_exact_brep_graph(&graph).unwrap(),
+        package
+    );
+    assert!(package.is_current(&snapshot));
+    assert_eq!(package.identity.producer_feature_id.0, revolve.0);
+    assert_eq!(package.topology_counts[4], 1);
+    assert!(package.volume_mm3 > 0.0);
+
+    let reopened = persistence::load(&persistence::save(&snapshot)).unwrap();
+    let reopened_snapshot = reopened.snapshot();
+    let reopened_graph =
+        ExactBRepGraph::from_snapshot(&reopened_snapshot, definition, revolve).unwrap();
+    assert_eq!(reopened_graph, graph);
+    assert_eq!(
+        supervisor
+            .evaluate_exact_brep_graph(&reopened_graph)
+            .unwrap(),
+        package
+    );
+
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::DeleteFeature { id: revolve },
+            CanonicalCommand::CreateFeature {
+                id: revolve,
+                definition_id: definition,
+                name: "Bounded compound revolve".into(),
+                kind: FeatureKind::Revolve {
+                    profile: sketch_id,
+                    axis_start_mm: [0.0, -20.0],
+                    axis_end_mm: [0.0, 20.0],
+                    angle_degrees: 180.0,
+                },
+            },
+        ]))
+        .unwrap();
+    let changed = ExactBRepGraph::from_snapshot(&document.current(), definition, revolve).unwrap();
+    assert_ne!(changed.graph_digest, graph.graph_digest);
+    assert!(!package.is_current(&document.current()));
+    assert_eq!(
+        ExactBRepGraph::from_snapshot(&document.undo().unwrap(), definition, revolve).unwrap(),
+        graph
+    );
+    assert_eq!(
+        ExactBRepGraph::from_snapshot(&document.redo().unwrap(), definition, revolve).unwrap(),
+        changed
+    );
 }
 
 #[test]

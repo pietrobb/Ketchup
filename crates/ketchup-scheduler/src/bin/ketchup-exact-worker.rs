@@ -1580,15 +1580,35 @@ fn exact_brep_revolve(
                 },
             ]
         }
-        ExactBRepPlanarGeometry::Spline { .. } | ExactBRepPlanarGeometry::Region { .. } => {
+        ExactBRepPlanarGeometry::Region { outer, holes } => {
+            let outer = exact_brep_planar_loop(outer);
+            let holes = holes.iter().map(exact_brep_planar_loop).collect::<Vec<_>>();
+            let local = backend.revolve_planar_region(
+                &outer,
+                &holes,
+                axis_start_mm,
+                axis_end_mm,
+                angle_degrees,
+            )?;
+            return transform_revolve_to_profile_frame(backend, profile, &local);
+        }
+        ExactBRepPlanarGeometry::Spline { .. } => {
             return Err(exact_brep_profile_error(
                 profile,
-                "exact revolve requires a simple closed line/arc/circle profile",
+                "exact revolve requires a closed line/arc/circle/cubic profile",
             ));
         }
     };
     let local =
         backend.revolve_general_profile(&segments, axis_start_mm, axis_end_mm, angle_degrees)?;
+    transform_revolve_to_profile_frame(backend, profile, &local)
+}
+
+fn transform_revolve_to_profile_frame(
+    backend: &ExactBackend,
+    profile: &ExactBRepProfile,
+    local: &ExactOpOutput,
+) -> Result<ExactOpOutput, ketchup_exact::GeometryError> {
     let frame = profile.frame_bits.map(f64::from_bits);
     backend.transform_body(
         &local.body,

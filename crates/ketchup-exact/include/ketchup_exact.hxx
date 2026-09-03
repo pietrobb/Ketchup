@@ -70,6 +70,12 @@ std::unique_ptr<NativeOperationResult> revolve_general_profile_native(
     double axis_start_x, double axis_start_y,
     double axis_end_x, double axis_end_y,
     double angle_degrees) noexcept;
+std::unique_ptr<NativeOperationResult> revolve_planar_region_native(
+    rust::Slice<const double> segments,
+    rust::Slice<const std::uint32_t> loop_segment_counts,
+    double axis_start_x, double axis_start_y,
+    double axis_end_x, double axis_end_y,
+    double angle_degrees) noexcept;
 std::unique_ptr<NativeOperationResult> shell_box_native(
     double width, double depth, double height, double thickness) noexcept;
 std::unique_ptr<NativeOperationResult> finish_shell_box_native(

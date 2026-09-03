@@ -28,6 +28,46 @@ fn assert_valid(output: &ExactOpOutput) {
     assert!(output.body.topology.volume_mm3 > 0.0);
 }
 
+fn reverse_planar_loop(planar_loop: &PlanarProfileLoop) -> PlanarProfileLoop {
+    let PlanarProfileLoop::Segments(segments) = planar_loop else {
+        return planar_loop.clone();
+    };
+    PlanarProfileLoop::Segments(
+        segments
+            .iter()
+            .rev()
+            .map(|segment| match *segment {
+                PlanarProfileSegment::Line { start_mm, end_mm } => PlanarProfileSegment::Line {
+                    start_mm: end_mm,
+                    end_mm: start_mm,
+                },
+                PlanarProfileSegment::CircularArc {
+                    start_mm,
+                    end_mm,
+                    center_mm,
+                    clockwise,
+                } => PlanarProfileSegment::CircularArc {
+                    start_mm: end_mm,
+                    end_mm: start_mm,
+                    center_mm,
+                    clockwise: !clockwise,
+                },
+                PlanarProfileSegment::CubicBezier {
+                    start_mm,
+                    control_1_mm,
+                    control_2_mm,
+                    end_mm,
+                } => PlanarProfileSegment::CubicBezier {
+                    start_mm: end_mm,
+                    control_1_mm: control_2_mm,
+                    control_2_mm: control_1_mm,
+                    end_mm: start_mm,
+                },
+            })
+            .collect(),
+    )
+}
+
 #[test]
 fn boxes_may_touch_positive_and_negative_coordinate_limits() {
     let backend = ExactBackend::new();
@@ -975,6 +1015,173 @@ fn general_segment_profile_revolve_preserves_analytic_arc_evidence() {
         capture_general_revolve_references(&output, "general-doc", "arc-revolve", true).unwrap();
     assert_eq!(references.len(), 4);
     assert_eq!(references[1].source_element_id, "profile.edge.1");
+}
+
+#[test]
+fn compound_region_revolve_preserves_mixed_boundaries_and_hole() {
+    let outer = PlanarProfileLoop::Segments(vec![
+        PlanarProfileSegment::Line {
+            start_mm: [10.0, -10.0],
+            end_mm: [30.0, -10.0],
+        },
+        PlanarProfileSegment::Line {
+            start_mm: [30.0, -10.0],
+            end_mm: [30.0, 10.0],
+        },
+        PlanarProfileSegment::CubicBezier {
+            start_mm: [30.0, 10.0],
+            control_1_mm: [26.0, 14.0],
+            control_2_mm: [22.0, 14.0],
+            end_mm: [18.0, 10.0],
+        },
+        PlanarProfileSegment::CircularArc {
+            start_mm: [18.0, 10.0],
+            end_mm: [10.0, 2.0],
+            center_mm: [18.0, 2.0],
+            clockwise: false,
+        },
+        PlanarProfileSegment::Line {
+            start_mm: [10.0, 2.0],
+            end_mm: [10.0, -10.0],
+        },
+    ]);
+    let holes = [PlanarProfileLoop::Circle {
+        center_mm: [20.0, 0.0],
+        radius_mm: 2.0,
+    }];
+    let backend = ExactBackend::new();
+    let first = backend
+        .revolve_planar_region(&outer, &holes, [0.0, -20.0], [0.0, 20.0], 270.0)
+        .unwrap();
+    let repeated = backend
+        .revolve_planar_region(&outer, &holes, [0.0, -20.0], [0.0, 20.0], 270.0)
+        .unwrap();
+
+    assert_valid(&first);
+    assert_eq!(first.input_digest, repeated.input_digest);
+    assert_eq!(
+        first.body.result_fingerprint,
+        repeated.body.result_fingerprint
+    );
+    assert_eq!(first.body.topology.solid_count, 1);
+    assert!(first.body.topology.volume_mm3 > 0.0);
+    assert!(first.topology_history.iter().any(|entry| {
+        entry.semantic_role.as_deref() == Some("revolve.start")
+            && entry.output_face_ordinal.is_some()
+    }));
+    assert!(first.topology_history.iter().any(|entry| {
+        entry.semantic_role.as_deref() == Some("revolve.end") && entry.output_face_ordinal.is_some()
+    }));
+
+    let reversed_outer = backend
+        .revolve_planar_region(
+            &reverse_planar_loop(&outer),
+            &holes,
+            [0.0, -20.0],
+            [0.0, 20.0],
+            270.0,
+        )
+        .unwrap();
+    assert_valid(&reversed_outer);
+    assert_close(
+        reversed_outer.body.topology.volume_mm3,
+        first.body.topology.volume_mm3,
+    );
+    assert_eq!(
+        reversed_outer.body.topology.face_count,
+        first.body.topology.face_count
+    );
+
+    let circle_outer = PlanarProfileLoop::Circle {
+        center_mm: [20.0, 0.0],
+        radius_mm: 10.0,
+    };
+    let boundary_hole = PlanarProfileLoop::Segments(vec![
+        PlanarProfileSegment::Line {
+            start_mm: [18.0, -2.0],
+            end_mm: [22.0, -2.0],
+        },
+        PlanarProfileSegment::Line {
+            start_mm: [22.0, -2.0],
+            end_mm: [22.0, 2.0],
+        },
+        PlanarProfileSegment::Line {
+            start_mm: [22.0, 2.0],
+            end_mm: [18.0, 2.0],
+        },
+        PlanarProfileSegment::Line {
+            start_mm: [18.0, 2.0],
+            end_mm: [18.0, -2.0],
+        },
+    ]);
+    let circle_with_hole = backend
+        .revolve_planar_region(
+            &circle_outer,
+            std::slice::from_ref(&boundary_hole),
+            [0.0, -20.0],
+            [0.0, 20.0],
+            180.0,
+        )
+        .unwrap();
+    let circle_with_reversed_hole = backend
+        .revolve_planar_region(
+            &circle_outer,
+            &[reverse_planar_loop(&boundary_hole)],
+            [0.0, -20.0],
+            [0.0, 20.0],
+            180.0,
+        )
+        .unwrap();
+    assert_valid(&circle_with_hole);
+    assert_valid(&circle_with_reversed_hole);
+    assert_close(
+        circle_with_hole.body.topology.volume_mm3,
+        20.0 * std::f64::consts::PI * (100.0 * std::f64::consts::PI - 16.0),
+    );
+    assert_close(
+        circle_with_hole.body.topology.volume_mm3,
+        circle_with_reversed_hole.body.topology.volume_mm3,
+    );
+    assert_eq!(
+        circle_with_hole.body.topology.face_count,
+        circle_with_reversed_hole.body.topology.face_count
+    );
+
+    let invalid_profile = backend
+        .revolve_planar_region(
+            &PlanarProfileLoop::Segments(vec![PlanarProfileSegment::Line {
+                start_mm: [10.0, 0.0],
+                end_mm: [20.0, 0.0],
+            }]),
+            &holes,
+            [0.0, -20.0],
+            [0.0, 20.0],
+            270.0,
+        )
+        .unwrap_err();
+    assert_eq!(invalid_profile.code, GeometryErrorCode::InvalidProfile);
+    assert_eq!(invalid_profile.operation, "revolve_planar_region");
+
+    let mut non_finite_outer = outer.clone();
+    let PlanarProfileLoop::Segments(segments) = &mut non_finite_outer else {
+        unreachable!();
+    };
+    let PlanarProfileSegment::Line { start_mm, .. } = &mut segments[0] else {
+        unreachable!();
+    };
+    start_mm[0] = f64::NAN;
+    let non_finite = backend
+        .revolve_planar_region(&non_finite_outer, &holes, [0.0, -20.0], [0.0, 20.0], 270.0)
+        .unwrap_err();
+    assert_eq!(non_finite.operation, "revolve_planar_region");
+
+    assert_eq!(
+        backend
+            .revolve_planar_region(&outer, &holes, [0.0, 0.0], [0.0, 0.0], 270.0)
+            .unwrap_err()
+            .code,
+        GeometryErrorCode::InvalidParameter
+    );
 }
 
 #[test]

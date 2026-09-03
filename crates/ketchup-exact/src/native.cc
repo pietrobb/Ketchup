@@ -1267,6 +1267,9 @@ std::unique_ptr<NativeOperationResult> extrude_planar_region_native(
             return TopoDS_Wire{};
           }
           edge = edge_builder.Edge();
+          if (segments[offset + 9] != 0.0) {
+            edge.Reverse();
+          }
         } else {
           return TopoDS_Wire{};
         }
@@ -1293,7 +1296,6 @@ std::unique_ptr<NativeOperationResult> extrude_planar_region_native(
       if (hole.IsNull()) {
         return error_result(STATUS_INVALID_SHAPE, "OCCT planar region hole wire is invalid");
       }
-      hole.Reverse();
       face_builder.Add(hole);
       first_segment += loop_segment_counts[index];
     }
@@ -1315,6 +1317,158 @@ std::unique_ptr<NativeOperationResult> extrude_planar_region_native(
         "extrusion.bottom", "first_shape", "profile.face", result, operation.FirstShape()));
     history.push_back(history_record(
         "extrusion.top", "last_shape", "profile.face", result, operation.LastShape()));
+    return success_result(result, std::move(history));
+  });
+}
+
+std::unique_ptr<NativeOperationResult> revolve_planar_region_native(
+    rust::Slice<const double> segments,
+    rust::Slice<const std::uint32_t> loop_segment_counts,
+    double axis_start_x, double axis_start_y,
+    double axis_end_x, double axis_end_y,
+    double angle_degrees) noexcept {
+  return guarded([&] {
+    if (loop_segment_counts.size() < 2 || loop_segment_counts.size() > 65
+        || segments.empty() || segments.size() % 10 != 0
+        || !std::isfinite(axis_start_x) || !std::isfinite(axis_start_y)
+        || !std::isfinite(axis_end_x) || !std::isfinite(axis_end_y)
+        || !std::isfinite(angle_degrees) || angle_degrees <= 0.0 || angle_degrees > 360.0) {
+      return error_result(STATUS_INVALID_PARAMETER, "Planar region revolve payload is malformed");
+    }
+    std::size_t declared_segments = 0;
+    for (const std::uint32_t count : loop_segment_counts) {
+      declared_segments += count;
+    }
+    if (declared_segments != segments.size() / 10 || declared_segments > 4096) {
+      return error_result(STATUS_INVALID_PARAMETER, "Planar region revolve segment counts do not match");
+    }
+    const gp_Vec axis_vector(
+        axis_end_x - axis_start_x,
+        axis_end_y - axis_start_y,
+        0.0);
+    if (axis_vector.Magnitude() <= 1.0e-12) {
+      return error_result(STATUS_INVALID_PARAMETER, "Planar region revolve axis is degenerate");
+    }
+
+    auto build_wire = [&](std::size_t first_segment, std::size_t segment_count) {
+      BRepBuilderAPI_MakeWire wire_builder;
+      for (std::size_t index = 0; index < segment_count; ++index) {
+        const std::size_t offset = (first_segment + index) * 10;
+        const double kind = segments[offset];
+        TopoDS_Edge edge;
+        if (kind == 0.0) {
+          const gp_Pnt start(segments[offset + 1], segments[offset + 2], 0.0);
+          const gp_Pnt end(segments[offset + 3], segments[offset + 4], 0.0);
+          if (start.Distance(end) <= Precision::Confusion()) {
+            return TopoDS_Wire{};
+          }
+          BRepBuilderAPI_MakeEdge edge_builder(start, end);
+          if (!edge_builder.IsDone()) {
+            return TopoDS_Wire{};
+          }
+          edge = edge_builder.Edge();
+        } else if (kind == 1.0) {
+          const gp_Pnt start(segments[offset + 1], segments[offset + 2], 0.0);
+          const gp_Pnt end(segments[offset + 3], segments[offset + 4], 0.0);
+          const double center_x = segments[offset + 5];
+          const double center_y = segments[offset + 6];
+          const bool clockwise = segments[offset + 9] != 0.0;
+          const double start_angle = std::atan2(start.Y() - center_y, start.X() - center_x);
+          const double end_angle = std::atan2(end.Y() - center_y, end.X() - center_x);
+          double sweep = end_angle - start_angle;
+          const double tau = 2.0 * std::acos(-1.0);
+          if (clockwise) {
+            while (sweep >= 0.0) sweep -= tau;
+          } else {
+            while (sweep <= 0.0) sweep += tau;
+          }
+          const double radius = start.Distance(gp_Pnt(center_x, center_y, 0.0));
+          const gp_Pnt middle(
+              center_x + radius * std::cos(start_angle + sweep / 2.0),
+              center_y + radius * std::sin(start_angle + sweep / 2.0),
+              0.0);
+          GC_MakeArcOfCircle arc_builder(start, middle, end);
+          if (!arc_builder.IsDone()) {
+            return TopoDS_Wire{};
+          }
+          BRepBuilderAPI_MakeEdge edge_builder(arc_builder.Value());
+          if (!edge_builder.IsDone()) {
+            return TopoDS_Wire{};
+          }
+          edge = edge_builder.Edge();
+        } else if (kind == 2.0) {
+          edge = cubic_bezier_edge(segments, offset, 0.0);
+        } else if (kind == 3.0 && segment_count == 1) {
+          const double center_x = segments[offset + 1];
+          const double center_y = segments[offset + 2];
+          const double radius = segments[offset + 3];
+          if (!std::isfinite(center_x) || !std::isfinite(center_y)
+              || !std::isfinite(radius) || radius <= Precision::Confusion()) {
+            return TopoDS_Wire{};
+          }
+          BRepBuilderAPI_MakeEdge edge_builder(
+              gp_Circ(gp_Ax2(gp_Pnt(center_x, center_y, 0.0), gp_Dir(0.0, 0.0, 1.0)), radius));
+          if (!edge_builder.IsDone()) {
+            return TopoDS_Wire{};
+          }
+          edge = edge_builder.Edge();
+          if (segments[offset + 9] != 0.0) {
+            edge.Reverse();
+          }
+        } else {
+          return TopoDS_Wire{};
+        }
+        if (edge.IsNull()) {
+          return TopoDS_Wire{};
+        }
+        wire_builder.Add(edge);
+      }
+      if (!wire_builder.IsDone()) {
+        return TopoDS_Wire{};
+      }
+      return wire_builder.Wire();
+    };
+
+    std::size_t first_segment = 0;
+    TopoDS_Wire outer = build_wire(first_segment, loop_segment_counts[0]);
+    if (outer.IsNull()) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT planar region revolve outer wire is invalid");
+    }
+    first_segment += loop_segment_counts[0];
+    BRepBuilderAPI_MakeFace face_builder(outer, true);
+    for (std::size_t index = 1; index < loop_segment_counts.size(); ++index) {
+      TopoDS_Wire hole = build_wire(first_segment, loop_segment_counts[index]);
+      if (hole.IsNull()) {
+        return error_result(STATUS_INVALID_SHAPE, "OCCT planar region revolve hole wire is invalid");
+      }
+      face_builder.Add(hole);
+      first_segment += loop_segment_counts[index];
+    }
+    face_builder.Build();
+    if (!face_builder.IsDone() || !BRepCheck_Analyzer(face_builder.Face()).IsValid()) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT planar region revolve face is invalid");
+    }
+    const TopoDS_Face profile = face_builder.Face();
+    const double angle_radians = angle_degrees * std::acos(-1.0) / 180.0;
+    BRepPrimAPI_MakeRevol operation(
+        profile,
+        gp_Ax1(gp_Pnt(axis_start_x, axis_start_y, 0.0), gp_Dir(axis_vector)),
+        angle_radians,
+        true);
+    if (!operation.IsDone()) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT planar region revolve builder did not complete");
+    }
+    const TopoDS_Shape result = operation.Shape();
+    if (result.IsNull() || !BRepCheck_Analyzer(result).IsValid()) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT planar region revolve is invalid");
+    }
+    std::vector<HistoryRecord> history;
+    if (angle_degrees < 360.0) {
+      history.push_back(history_record(
+          "revolve.start", "first_shape", "profile.face", result, operation.FirstShape()));
+      history.push_back(history_record(
+          "revolve.end", "last_shape", "profile.face", result, operation.LastShape()));
+    }
     return success_result(result, std::move(history));
   });
 }
