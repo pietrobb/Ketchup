@@ -128,6 +128,12 @@ mod ffi {
             segments: &[f64],
             distance: f64,
         ) -> UniquePtr<NativeOperationResult>;
+        fn offset_planar_circle_native(
+            center_x: f64,
+            center_y: f64,
+            radius: f64,
+            distance: f64,
+        ) -> UniquePtr<NativeOperationResult>;
         fn sweep_rectangle_native(values: &[f64]) -> UniquePtr<NativeOperationResult>;
         fn loft_spline_native(values: &[f64]) -> UniquePtr<NativeOperationResult>;
         fn extrude_circle_native(
@@ -1112,13 +1118,45 @@ impl ExactBackend {
                 "Planar offset distance is outside the bounded envelope".to_owned(),
             ));
         }
-        let PlanarProfileLoop::Segments(segments) = profile else {
-            return Err(parameter_error(
-                GeometryErrorCode::InvalidProfile,
+        if let PlanarProfileLoop::Circle {
+            center_mm,
+            radius_mm,
+        } = profile
+        {
+            validate_circle(*center_mm, *radius_mm, "offset_planar_profile", &input)?;
+            let output_radius_mm = *radius_mm + distance_mm;
+            validate_circle(
+                *center_mm,
+                output_radius_mm,
                 "offset_planar_profile",
                 &input,
-                "Planar offset currently requires one segmented loop".to_owned(),
-            ));
+            )?;
+            let output = collect_output(
+                ffi::offset_planar_circle_native(
+                    center_mm[0],
+                    center_mm[1],
+                    *radius_mm,
+                    distance_mm,
+                ),
+                "offset_planar_profile",
+                &input,
+                HistoryConfidence::Complete,
+            )?;
+            let bounds = output.body.topology.bounds_mm;
+            for (name, coordinate) in [
+                ("output_min_x", bounds.min.x),
+                ("output_min_y", bounds.min.y),
+                ("output_min_z", bounds.min.z),
+                ("output_max_x", bounds.max.x),
+                ("output_max_y", bounds.max.y),
+                ("output_max_z", bounds.max.z),
+            ] {
+                validate_coordinate(coordinate, name, "offset_planar_profile", &input)?;
+            }
+            return Ok(output);
+        }
+        let PlanarProfileLoop::Segments(segments) = profile else {
+            unreachable!("all planar profile loop variants were handled")
         };
         validate_mixed_profile(segments, "offset_planar_profile", &input)?;
         if segments

@@ -899,6 +899,63 @@ std::unique_ptr<NativeOperationResult> offset_planar_profile_native(
   });
 }
 
+std::unique_ptr<NativeOperationResult> offset_planar_circle_native(
+    double center_x, double center_y, double radius, double distance) noexcept {
+  return guarded([&] {
+    const double output_radius = radius + distance;
+    if (!std::isfinite(center_x) || !std::isfinite(center_y)
+        || !std::isfinite(radius) || !std::isfinite(distance)
+        || radius < 0.01 || radius > 100000.0
+        || std::abs(distance) < 0.01 || std::abs(distance) > 100000.0
+        || output_radius < 0.01 || output_radius > 100000.0
+        || std::abs(center_x) + radius > 1000000.0
+        || std::abs(center_y) + radius > 1000000.0
+        || std::abs(center_x) + output_radius > 1000000.0
+        || std::abs(center_y) + output_radius > 1000000.0) {
+      return error_result(STATUS_INVALID_PARAMETER, "Planar circle offset is outside the bounded envelope");
+    }
+    BRepBuilderAPI_MakeEdge edge_builder(
+        gp_Circ(gp_Ax2(gp_Pnt(center_x, center_y, 0.0), gp_Dir(0.0, 0.0, 1.0)), radius));
+    if (!edge_builder.IsDone()) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT planar circle edge did not complete");
+    }
+    BRepBuilderAPI_MakeWire source_builder(edge_builder.Edge());
+    if (!source_builder.IsDone()) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT planar circle wire did not complete");
+    }
+    BRepBuilderAPI_MakeFace source_face_builder(source_builder.Wire(), true);
+    if (!source_face_builder.IsDone()
+        || !BRepCheck_Analyzer(source_face_builder.Face()).IsValid()) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT planar circle source face is invalid");
+    }
+
+    BRepOffsetAPI_MakeOffset operation(source_builder.Wire(), GeomAbs_Intersection, false);
+    operation.Perform(distance);
+    if (!operation.IsDone()) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT planar circle offset did not complete");
+    }
+    TopoDS_Wire offset_wire;
+    for (TopExp_Explorer explorer(operation.Shape(), TopAbs_WIRE); explorer.More(); explorer.Next()) {
+      if (!offset_wire.IsNull()) {
+        return error_result(STATUS_INVALID_SHAPE, "OCCT planar circle offset produced multiple wires");
+      }
+      offset_wire = TopoDS::Wire(explorer.Current());
+    }
+    if (offset_wire.IsNull()) {
+      return error_result(STATUS_NULL_RESULT, "OCCT planar circle offset produced no wire");
+    }
+    BRepBuilderAPI_MakeFace face_builder(offset_wire, true);
+    if (!face_builder.IsDone() || !BRepCheck_Analyzer(face_builder.Face()).IsValid()) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT planar circle offset face is invalid");
+    }
+    const TopoDS_Face result = face_builder.Face();
+    std::vector<HistoryRecord> history;
+    history.push_back(history_record(
+        "planar_offset.face", "offset_generated", "profile.face", result, result));
+    return success_result(result, std::move(history), false, true);
+  });
+}
+
 std::unique_ptr<NativeOperationResult> sweep_rectangle_native(
     rust::Slice<const double> values) noexcept {
   return guarded([&] {

@@ -549,6 +549,96 @@ fn mixed_line_arc_planar_offset_produces_one_stable_exact_face() {
 }
 
 #[test]
+fn circular_planar_offset_preserves_signed_radius_and_stable_exact_face() {
+    let backend = ExactBackend::new();
+    let profile = PlanarProfileLoop::Circle {
+        center_mm: [12.0, -8.0],
+        radius_mm: 20.0,
+    };
+
+    for (distance_mm, expected_radius_mm) in [(3.0, 23.0), (-3.0, 17.0)] {
+        let mut output = backend
+            .offset_planar_profile(&profile, distance_mm)
+            .unwrap();
+        let repeated = backend
+            .offset_planar_profile(&profile, distance_mm)
+            .unwrap();
+        let bounds = output.body.topology.bounds_mm;
+
+        assert_eq!(output.input_digest, repeated.input_digest);
+        assert_eq!(
+            output.body.result_fingerprint,
+            repeated.body.result_fingerprint
+        );
+        assert_eq!(output.body.topology.face_count, 1);
+        assert_eq!(output.body.topology.shell_count, 0);
+        assert_eq!(output.body.topology.solid_count, 0);
+        assert_eq!(output.body.topology.edge_count, 1);
+        assert_eq!(output.body.topology.vertex_count, 1);
+        assert_close(bounds.min.x, 12.0 - expected_radius_mm);
+        assert_close(bounds.min.y, -8.0 - expected_radius_mm);
+        assert_close(bounds.max.x, 12.0 + expected_radius_mm);
+        assert_close(bounds.max.y, -8.0 + expected_radius_mm);
+        assert_close(
+            output.body.topology.faces[0].area_mm2,
+            std::f64::consts::PI * expected_radius_mm * expected_radius_mm,
+        );
+        let reference = capture_planar_offset_reference(&mut output, "721", "724").unwrap();
+        assert_eq!(reference.semantic_role, "planar_offset.face");
+        assert_eq!(reference.source_element_id, "profile.face");
+        assert_eq!(
+            reference.stability_class,
+            ketchup_exact::StabilityClass::Guaranteed
+        );
+    }
+
+    for (profile, distance_mm) in [
+        (
+            PlanarProfileLoop::Circle {
+                center_mm: [0.0, 0.0],
+                radius_mm: 2.0,
+            },
+            -2.0,
+        ),
+        (
+            PlanarProfileLoop::Circle {
+                center_mm: [0.0, 0.0],
+                radius_mm: 2.0,
+            },
+            -1.991,
+        ),
+        (
+            PlanarProfileLoop::Circle {
+                center_mm: [999_950.0, 0.0],
+                radius_mm: 50.0,
+            },
+            1.0,
+        ),
+    ] {
+        assert_eq!(
+            backend
+                .offset_planar_profile(&profile, distance_mm)
+                .unwrap_err()
+                .code,
+            GeometryErrorCode::InvalidParameter
+        );
+    }
+    assert_eq!(
+        backend
+            .offset_planar_profile(
+                &PlanarProfileLoop::Circle {
+                    center_mm: [f64::NAN, 0.0],
+                    radius_mm: 2.0,
+                },
+                1.0,
+            )
+            .unwrap_err()
+            .code,
+        GeometryErrorCode::NonFiniteParameter
+    );
+}
+
+#[test]
 fn rectangular_sweep_follows_selected_path_with_stable_exact_faces() {
     let backend = ExactBackend::new();
     let spec = RectangleSweepSpec {
