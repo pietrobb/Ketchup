@@ -16,7 +16,7 @@ use crate::exact_brep_graph::{
 };
 use crate::exact_product::{
     BodySubshapeRef, EXACT_MIN_LENGTH_MM, ExactFaceRole, ExactFeatureChainRequest,
-    ExactReferenceResolution, ExactResultRegistry,
+    ExactReferenceResolution, ExactResultRegistry, exact_planar_offset_profile,
 };
 use crate::exact_revolve::{ExactRevolveRequest, reference_matches_revolve_request};
 pub use crate::graph::{
@@ -12914,9 +12914,6 @@ fn validate_product(product: &ProductModel) -> Result<(), CanonicalError> {
                     .features
                     .get(&profile)
                     .ok_or(CanonicalError::FeatureNotFound(profile))?;
-                let FeatureKind::Profile { points_mm } = &source.kind else {
-                    return Err(CanonicalError::InvalidPlanarOffset);
-                };
                 let feature_position = definition
                     .feature_ids
                     .iter()
@@ -12928,18 +12925,43 @@ fn validate_product(product: &ProductModel) -> Result<(), CanonicalError> {
                     .position(|candidate| *candidate == profile)
                     .is_some_and(|position| position < feature_position);
                 let distance = distance.millimetres();
-                let output_bounds = [
-                    points_mm[0][0] - distance,
-                    points_mm[0][1] - distance,
-                    points_mm[2][0] + distance,
-                    points_mm[2][1] + distance,
-                ];
-                let valid_bounds = is_axis_aligned_rectangle(points_mm)
-                    && output_bounds.into_iter().all(|coordinate| {
-                        coordinate.is_finite() && coordinate.abs() <= MAX_CANONICAL_ABS_MM
-                    })
-                    && output_bounds[2] - output_bounds[0] >= EXACT_MIN_LENGTH_MM
-                    && output_bounds[3] - output_bounds[1] >= EXACT_MIN_LENGTH_MM;
+                let valid_bounds = match &source.kind {
+                    FeatureKind::Profile { points_mm } if is_axis_aligned_rectangle(points_mm) => {
+                        let output_bounds = [
+                            points_mm[0][0] - distance,
+                            points_mm[0][1] - distance,
+                            points_mm[2][0] + distance,
+                            points_mm[2][1] + distance,
+                        ];
+                        output_bounds.into_iter().all(|coordinate| {
+                            coordinate.is_finite() && coordinate.abs() <= MAX_CANONICAL_ABS_MM
+                        }) && output_bounds[2] - output_bounds[0] >= EXACT_MIN_LENGTH_MM
+                            && output_bounds[3] - output_bounds[1] >= EXACT_MIN_LENGTH_MM
+                    }
+                    FeatureKind::SegmentProfile { segments, closed } => {
+                        exact_planar_offset_profile(segments, *closed).is_some_and(|profile| {
+                            let bounds = profile.bounds_bits.map(f64::from_bits);
+                            let Some(margin) = profile.max_planar_offset_displacement_mm(distance)
+                            else {
+                                return false;
+                            };
+                            let output_envelope = [
+                                bounds[0] - margin,
+                                bounds[1] - margin,
+                                bounds[2] + margin,
+                                bounds[3] + margin,
+                            ];
+                            let minimum_displacement = distance.abs();
+                            let cannot_statically_collapse = distance > 0.0
+                                || bounds[2] - bounds[0] > 2.0 * minimum_displacement
+                                    && bounds[3] - bounds[1] > 2.0 * minimum_displacement;
+                            output_envelope.into_iter().all(|coordinate| {
+                                coordinate.is_finite() && coordinate.abs() <= MAX_CANONICAL_ABS_MM
+                            }) && cannot_statically_collapse
+                        })
+                    }
+                    _ => false,
+                };
                 if source.definition_id != feature.definition_id
                     || !source_precedes_offset
                     || !valid_bounds

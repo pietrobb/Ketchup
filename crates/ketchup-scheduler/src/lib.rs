@@ -1229,20 +1229,60 @@ impl ExactWorkerClient {
         cancelled: &AtomicBool,
     ) -> Result<WorkerPlanarOffsetResult, WorkerError> {
         self.verify_p6_offset_capability(cancelled)?;
-        let response = self.request_with_cancellation(
-            &format!(
-                "OFFSET_RECTANGLE_P6_V1 {:016x} {:016x} {:016x} {:016x} {:016x} {} {} {}",
-                request.source_bounds_bits[0],
-                request.source_bounds_bits[1],
-                request.source_bounds_bits[2],
-                request.source_bounds_bits[3],
-                request.distance_bits,
-                request.document_id.0,
-                request.offset_feature_id.0,
-                request.canonical_input_digest,
-            ),
-            cancelled,
-        )?;
+        let line =
+            if request.is_rectangle() {
+                format!(
+                    "OFFSET_RECTANGLE_P6_V1 {:016x} {:016x} {:016x} {:016x} {:016x} {} {} {}",
+                    request.source_bounds_bits[0],
+                    request.source_bounds_bits[1],
+                    request.source_bounds_bits[2],
+                    request.source_bounds_bits[3],
+                    request.distance_bits,
+                    request.document_id.0,
+                    request.offset_feature_id.0,
+                    request.canonical_input_digest,
+                )
+            } else {
+                let profile = request.mixed_profile().ok_or_else(|| {
+                    WorkerError::Protocol("missing typed offset profile".to_owned())
+                })?;
+                let mut line = format!(
+                    "OFFSET_PROFILE_P6_V1 {} {} {} {:016x} {}",
+                    request.document_id.0,
+                    request.offset_feature_id.0,
+                    request.canonical_input_digest,
+                    request.distance_bits,
+                    profile.segments.len(),
+                );
+                for segment in &profile.segments {
+                    match segment {
+                    ExactProfileSegment::Line { start_bits, end_bits } => write!(
+                        line,
+                        " L {:016x} {:016x} {:016x} {:016x} 0000000000000000 0000000000000000 0",
+                        start_bits[0], start_bits[1], end_bits[0], end_bits[1],
+                    ),
+                    ExactProfileSegment::CircularArc {
+                        start_bits,
+                        end_bits,
+                        center_bits,
+                        clockwise,
+                    } => write!(
+                        line,
+                        " A {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {}",
+                        start_bits[0],
+                        start_bits[1],
+                        end_bits[0],
+                        end_bits[1],
+                        center_bits[0],
+                        center_bits[1],
+                        u8::from(*clockwise),
+                    ),
+                }
+                .expect("writing to a string cannot fail");
+                }
+                line
+            };
+        let response = self.request_with_cancellation(&line, cancelled)?;
         match parse_p6_offset_result(&response) {
             Err(WorkerError::Protocol(response)) => self.fail_protocol(response),
             result => result,
@@ -2666,6 +2706,7 @@ impl ExactWorkerSupervisor {
                     ],
                 ],
                 area_mm2: result.area_mm2,
+                topology_counts: result.topology_counts,
                 face_ordinal: result.face.ordinal,
                 lineage_digest: result.face.lineage_digest,
                 corroborating_geometry_fingerprint: result.face.geometric_fingerprint,
@@ -3722,8 +3763,6 @@ fn validate_planar_offset_worker_result(
     request: &ExactPlanarOffsetRequest,
     result: &WorkerPlanarOffsetResult,
 ) -> Result<(), ExactProductError> {
-    let [min, max] = request.expected_bounds_mm();
-    let expected_bounds = [min[0], min[1], min[2], max[0], max[1], max[2]];
     let expected_lineage = canonical_reference_lineage_digest(
         request.document_id,
         request.offset_feature_id,
@@ -3731,24 +3770,49 @@ fn validate_planar_offset_worker_result(
         ExactFaceRole::PlanarOffsetFace.source_element_id(),
         ExactFaceRole::PlanarOffsetFace.expected_type(),
     );
-    if result.request_digest != request.canonical_input_digest
+    if !request.has_valid_basic_inputs()
+        || result.request_digest != request.canonical_input_digest
         || !is_sha256_digest(&result.request_digest)
         || !is_fnv1a64_digest(&result.exact_input_digest)
         || !is_fnv1a64_digest(&result.result_fingerprint)
         || result.backend != ketchup_exact::backend_fingerprint()
         || result.tolerance != ketchup_exact::tolerance_profile()
-        || !result.area_mm2.is_finite()
-        || (result.area_mm2 - request.expected_area_mm2()).abs() > 1.0e-6
-        || result
-            .bounds_mm
-            .into_iter()
-            .zip(expected_bounds)
-            .any(|(actual, expected)| !actual.is_finite() || (actual - expected).abs() > 1.0e-6)
-        || result.topology_counts != [4, 4, 1, 0, 0]
         || result.face.ordinal != 0
         || result.face.geometric_fingerprint.is_empty()
         || result.face.lineage_digest != expected_lineage
     {
+        return Err(ExactProductError::InvalidWorkerEvidence);
+    }
+    if request.is_rectangle() {
+        let [min, max] = request.expected_bounds_mm();
+        let expected_bounds = [min[0], min[1], min[2], max[0], max[1], max[2]];
+        if !result.area_mm2.is_finite()
+            || (result.area_mm2 - request.expected_area_mm2()).abs() > 1.0e-6
+            || result
+                .bounds_mm
+                .into_iter()
+                .zip(expected_bounds)
+                .any(|(actual, expected)| !actual.is_finite() || (actual - expected).abs() > 1.0e-6)
+            || result.topology_counts != [4, 4, 1, 0, 0]
+        {
+            return Err(ExactProductError::InvalidWorkerEvidence);
+        }
+    } else if !request.has_valid_typed_geometry(
+        [
+            [
+                result.bounds_mm[0],
+                result.bounds_mm[1],
+                result.bounds_mm[2],
+            ],
+            [
+                result.bounds_mm[3],
+                result.bounds_mm[4],
+                result.bounds_mm[5],
+            ],
+        ],
+        result.area_mm2,
+        result.topology_counts,
+    ) {
         return Err(ExactProductError::InvalidWorkerEvidence);
     }
     Ok(())

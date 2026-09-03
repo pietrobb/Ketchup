@@ -2780,12 +2780,89 @@ pub struct ExactMixedProfile {
     pub area_bits: u64,
 }
 
+fn exact_segment_tangents(segment: &ExactProfileSegment) -> Option<([f64; 2], [f64; 2])> {
+    let normalized = |vector: [f64; 2]| {
+        let length = vector[0].hypot(vector[1]);
+        (length.is_finite() && length >= EXACT_MIN_LENGTH_MM)
+            .then_some([vector[0] / length, vector[1] / length])
+    };
+    match segment {
+        ExactProfileSegment::Line {
+            start_bits,
+            end_bits,
+        } => {
+            let start = start_bits.map(f64::from_bits);
+            let end = end_bits.map(f64::from_bits);
+            let tangent = normalized([end[0] - start[0], end[1] - start[1]])?;
+            Some((tangent, tangent))
+        }
+        ExactProfileSegment::CircularArc {
+            start_bits,
+            end_bits,
+            center_bits,
+            clockwise,
+        } => {
+            let start = start_bits.map(f64::from_bits);
+            let end = end_bits.map(f64::from_bits);
+            let center = center_bits.map(f64::from_bits);
+            let tangent = |point: [f64; 2]| {
+                let radial = normalized([point[0] - center[0], point[1] - center[1]])?;
+                Some(if *clockwise {
+                    [radial[1], -radial[0]]
+                } else {
+                    [-radial[1], radial[0]]
+                })
+            };
+            Some((tangent(start)?, tangent(end)?))
+        }
+    }
+}
+
 impl ExactMixedProfile {
     #[must_use]
     pub fn has_only_line_segments(&self) -> bool {
         self.segments
             .iter()
             .all(|segment| matches!(segment, ExactProfileSegment::Line { .. }))
+    }
+
+    #[must_use]
+    pub fn max_planar_offset_displacement_mm(&self, distance_mm: f64) -> Option<f64> {
+        let distance = distance_mm.abs();
+        let mut max_factor = 1.0_f64;
+        let mut has_arc = false;
+        for segment in &self.segments {
+            if let ExactProfileSegment::CircularArc {
+                start_bits,
+                center_bits,
+                ..
+            } = segment
+            {
+                has_arc = true;
+                let start = start_bits.map(f64::from_bits);
+                let center = center_bits.map(f64::from_bits);
+                let radius = (start[0] - center[0]).hypot(start[1] - center[1]);
+                if distance_mm < 0.0 && 2.0 * distance >= radius {
+                    return None;
+                }
+            }
+        }
+        for index in 0..self.segments.len() {
+            let previous = &self.segments[(index + self.segments.len() - 1) % self.segments.len()];
+            let current = &self.segments[index];
+            let (_, previous_end) = exact_segment_tangents(previous)?;
+            let (current_start, _) = exact_segment_tangents(current)?;
+            let dot = (-previous_end[0] * current_start[0] - previous_end[1] * current_start[1])
+                .clamp(-1.0, 1.0);
+            let half_angle_sine = (0.5 * dot.acos()).sin();
+            if !half_angle_sine.is_finite() || half_angle_sine <= 1.0e-9 {
+                return None;
+            }
+            max_factor = max_factor.max(half_angle_sine.recip());
+        }
+        let curvature_allowance = if has_arc { distance } else { 0.0 };
+        let displacement = distance * max_factor + curvature_allowance;
+        displacement.is_finite().then_some(displacement)
     }
 
     #[must_use]
@@ -4728,6 +4805,7 @@ pub struct ExactPlanarOffsetRequest {
     pub profile_feature_id: FeatureId,
     pub offset_feature_id: FeatureId,
     pub source_bounds_bits: [u64; 4],
+    pub profile: Option<ExactMixedProfile>,
     pub distance_bits: u64,
     pub canonical_input_digest: String,
 }
@@ -4749,9 +4827,6 @@ impl ExactPlanarOffsetRequest {
         let offset = snapshot
             .feature(*offset_feature_id)
             .ok_or(ExactProductError::UnsupportedDefinition)?;
-        let FeatureKind::Profile { points_mm } = profile.kind() else {
-            return Err(ExactProductError::UnsupportedProfile);
-        };
         let FeatureKind::PlanarOffset {
             profile: offset_profile_id,
             distance,
@@ -4762,41 +4837,116 @@ impl ExactPlanarOffsetRequest {
         if offset_profile_id != profile_feature_id {
             return Err(ExactProductError::UnsupportedDefinition);
         }
-        let source_bounds =
-            rectangle_bounds(points_mm).ok_or(ExactProductError::UnsupportedProfile)?;
+        let (source_bounds, profile) = match profile.kind() {
+            FeatureKind::Profile { points_mm } => (
+                rectangle_bounds(points_mm).ok_or(ExactProductError::UnsupportedProfile)?,
+                None,
+            ),
+            FeatureKind::SegmentProfile { segments, closed } => {
+                let profile = exact_planar_offset_profile(segments, *closed)
+                    .ok_or(ExactProductError::UnsupportedProfile)?;
+                (profile.bounds_bits.map(f64::from_bits), Some(profile))
+            }
+            _ => return Err(ExactProductError::UnsupportedProfile),
+        };
         let distance_mm = distance.millimetres();
+        let margin = match &profile {
+            Some(profile) => profile
+                .max_planar_offset_displacement_mm(distance_mm)
+                .ok_or(ExactProductError::UnsupportedProfile)?,
+            None => distance_mm,
+        };
         let output_bounds = [
-            source_bounds[0] - distance_mm,
-            source_bounds[1] - distance_mm,
-            source_bounds[2] + distance_mm,
-            source_bounds[3] + distance_mm,
+            source_bounds[0] - margin,
+            source_bounds[1] - margin,
+            source_bounds[2] + margin,
+            source_bounds[3] + margin,
         ];
+        let statically_collapsed = profile.is_some()
+            && distance_mm < 0.0
+            && (source_bounds[2] - source_bounds[0] <= 2.0 * distance_mm.abs()
+                || source_bounds[3] - source_bounds[1] <= 2.0 * distance_mm.abs());
         if !distance_mm.is_finite()
             || distance_mm.abs() < EXACT_MIN_LENGTH_MM
-            || output_bounds.into_iter().any(|value| !value.is_finite())
-            || output_bounds[2] - output_bounds[0] < EXACT_MIN_LENGTH_MM
-            || output_bounds[3] - output_bounds[1] < EXACT_MIN_LENGTH_MM
+            || output_bounds
+                .into_iter()
+                .any(|value| !value.is_finite() || value.abs() > MAX_EXACT_BREP_COORDINATE_MM)
+            || statically_collapsed
+            || profile.is_none()
+                && (output_bounds[2] - output_bounds[0] < EXACT_MIN_LENGTH_MM
+                    || output_bounds[3] - output_bounds[1] < EXACT_MIN_LENGTH_MM)
         {
             return Err(ExactProductError::UnsupportedProfile);
         }
         let source_digest = snapshot.canonical_digest();
         let source_bounds_bits = source_bounds.map(f64::to_bits);
         let distance_bits = distance_mm.to_bits();
-        let canonical_input_digest = digest(&format!(
-            "{}:{}:{}:{}:{}:{}:{:016x}:{:016x}:{:016x}:{:016x}:{:016x}:{}",
-            EXACT_PLANAR_OFFSET_SCHEMA_V1,
-            snapshot.document_id().0,
-            snapshot.revision_id(),
-            definition_id.0,
-            profile_feature_id.0,
-            offset_feature_id.0,
-            source_bounds_bits[0],
-            source_bounds_bits[1],
-            source_bounds_bits[2],
-            source_bounds_bits[3],
-            distance_bits,
-            source_digest,
-        ));
+        let canonical_input_digest = if let Some(profile) = &profile {
+            let mut identity = format!(
+                "{}:{}:{}:{}:{}:{}:typed:{}:{:016x}:{:016x}:{:016x}:{:016x}:{:016x}:{:016x}:{}",
+                EXACT_PLANAR_OFFSET_SCHEMA_V1,
+                snapshot.document_id().0,
+                snapshot.revision_id(),
+                definition_id.0,
+                profile_feature_id.0,
+                offset_feature_id.0,
+                profile.segments.len(),
+                profile.bounds_bits[0],
+                profile.bounds_bits[1],
+                profile.bounds_bits[2],
+                profile.bounds_bits[3],
+                profile.area_bits,
+                distance_bits,
+                source_digest,
+            );
+            for segment in &profile.segments {
+                match segment {
+                    ExactProfileSegment::Line {
+                        start_bits,
+                        end_bits,
+                    } => write!(
+                        identity,
+                        ":L:{:016x}:{:016x}:{:016x}:{:016x}",
+                        start_bits[0], start_bits[1], end_bits[0], end_bits[1]
+                    )
+                    .expect("writing to a string cannot fail"),
+                    ExactProfileSegment::CircularArc {
+                        start_bits,
+                        end_bits,
+                        center_bits,
+                        clockwise,
+                    } => write!(
+                        identity,
+                        ":A:{:016x}:{:016x}:{:016x}:{:016x}:{:016x}:{:016x}:{}",
+                        start_bits[0],
+                        start_bits[1],
+                        end_bits[0],
+                        end_bits[1],
+                        center_bits[0],
+                        center_bits[1],
+                        u8::from(*clockwise),
+                    )
+                    .expect("writing to a string cannot fail"),
+                }
+            }
+            digest(&identity)
+        } else {
+            digest(&format!(
+                "{}:{}:{}:{}:{}:{}:{:016x}:{:016x}:{:016x}:{:016x}:{:016x}:{}",
+                EXACT_PLANAR_OFFSET_SCHEMA_V1,
+                snapshot.document_id().0,
+                snapshot.revision_id(),
+                definition_id.0,
+                profile_feature_id.0,
+                offset_feature_id.0,
+                source_bounds_bits[0],
+                source_bounds_bits[1],
+                source_bounds_bits[2],
+                source_bounds_bits[3],
+                distance_bits,
+                source_digest,
+            ))
+        };
         Ok(Self {
             document_id: snapshot.document_id(),
             source_revision: snapshot.revision_id(),
@@ -4805,14 +4955,173 @@ impl ExactPlanarOffsetRequest {
             profile_feature_id: *profile_feature_id,
             offset_feature_id: *offset_feature_id,
             source_bounds_bits,
+            profile,
             distance_bits,
             canonical_input_digest,
         })
     }
 
     #[must_use]
+    pub fn has_valid_basic_inputs(&self) -> bool {
+        let source_bounds = self.source_bounds_mm();
+        let distance_mm = self.distance_mm();
+        let margin = match &self.profile {
+            Some(profile) => match profile.max_planar_offset_displacement_mm(distance_mm) {
+                Some(margin) => margin,
+                None => return false,
+            },
+            None => distance_mm,
+        };
+        let output_bounds = [
+            source_bounds[0] - margin,
+            source_bounds[1] - margin,
+            source_bounds[2] + margin,
+            source_bounds[3] + margin,
+        ];
+        let valid_lower_hex = |value: &str, length| {
+            value.len() == length
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+        };
+        if !valid_lower_hex(&self.source_digest, 16)
+            || !valid_lower_hex(&self.canonical_input_digest, 64)
+            || !distance_mm.is_finite()
+            || distance_mm.abs() < EXACT_MIN_LENGTH_MM
+            || source_bounds
+                .into_iter()
+                .any(|value| !value.is_finite() || value.abs() > MAX_EXACT_BREP_COORDINATE_MM)
+            || source_bounds[0] >= source_bounds[2]
+            || source_bounds[1] >= source_bounds[3]
+            || output_bounds
+                .into_iter()
+                .any(|value| !value.is_finite() || value.abs() > MAX_EXACT_BREP_COORDINATE_MM)
+        {
+            return false;
+        }
+        if let Some(profile) = &self.profile {
+            let segments = profile
+                .segments
+                .iter()
+                .map(|segment| match segment {
+                    ExactProfileSegment::Line {
+                        start_bits,
+                        end_bits,
+                    } => ProfileSegment::Line {
+                        start_mm: start_bits.map(f64::from_bits),
+                        end_mm: end_bits.map(f64::from_bits),
+                    },
+                    ExactProfileSegment::CircularArc {
+                        start_bits,
+                        end_bits,
+                        center_bits,
+                        clockwise,
+                    } => ProfileSegment::CircularArc {
+                        start_mm: start_bits.map(f64::from_bits),
+                        end_mm: end_bits.map(f64::from_bits),
+                        center_mm: center_bits.map(f64::from_bits),
+                        clockwise: *clockwise,
+                    },
+                })
+                .collect::<Vec<_>>();
+            if exact_planar_offset_profile(&segments, true).as_ref() != Some(profile)
+                || self.source_bounds_bits != profile.bounds_bits
+                || distance_mm < 0.0
+                    && (source_bounds[2] - source_bounds[0] <= 2.0 * distance_mm.abs()
+                        || source_bounds[3] - source_bounds[1] <= 2.0 * distance_mm.abs())
+            {
+                return false;
+            }
+        } else if output_bounds[2] - output_bounds[0] < EXACT_MIN_LENGTH_MM
+            || output_bounds[3] - output_bounds[1] < EXACT_MIN_LENGTH_MM
+        {
+            return false;
+        }
+        self.canonical_input_digest == self.recomputed_canonical_input_digest()
+    }
+
+    fn recomputed_canonical_input_digest(&self) -> String {
+        if let Some(profile) = &self.profile {
+            let mut identity = format!(
+                "{}:{}:{}:{}:{}:{}:typed:{}:{:016x}:{:016x}:{:016x}:{:016x}:{:016x}:{:016x}:{}",
+                EXACT_PLANAR_OFFSET_SCHEMA_V1,
+                self.document_id.0,
+                self.source_revision,
+                self.definition_id.0,
+                self.profile_feature_id.0,
+                self.offset_feature_id.0,
+                profile.segments.len(),
+                profile.bounds_bits[0],
+                profile.bounds_bits[1],
+                profile.bounds_bits[2],
+                profile.bounds_bits[3],
+                profile.area_bits,
+                self.distance_bits,
+                self.source_digest,
+            );
+            for segment in &profile.segments {
+                match segment {
+                    ExactProfileSegment::Line {
+                        start_bits,
+                        end_bits,
+                    } => write!(
+                        identity,
+                        ":L:{:016x}:{:016x}:{:016x}:{:016x}",
+                        start_bits[0], start_bits[1], end_bits[0], end_bits[1]
+                    )
+                    .expect("writing to a string cannot fail"),
+                    ExactProfileSegment::CircularArc {
+                        start_bits,
+                        end_bits,
+                        center_bits,
+                        clockwise,
+                    } => write!(
+                        identity,
+                        ":A:{:016x}:{:016x}:{:016x}:{:016x}:{:016x}:{:016x}:{}",
+                        start_bits[0],
+                        start_bits[1],
+                        end_bits[0],
+                        end_bits[1],
+                        center_bits[0],
+                        center_bits[1],
+                        u8::from(*clockwise),
+                    )
+                    .expect("writing to a string cannot fail"),
+                }
+            }
+            digest(&identity)
+        } else {
+            digest(&format!(
+                "{}:{}:{}:{}:{}:{}:{:016x}:{:016x}:{:016x}:{:016x}:{:016x}:{}",
+                EXACT_PLANAR_OFFSET_SCHEMA_V1,
+                self.document_id.0,
+                self.source_revision,
+                self.definition_id.0,
+                self.profile_feature_id.0,
+                self.offset_feature_id.0,
+                self.source_bounds_bits[0],
+                self.source_bounds_bits[1],
+                self.source_bounds_bits[2],
+                self.source_bounds_bits[3],
+                self.distance_bits,
+                self.source_digest,
+            ))
+        }
+    }
+
+    #[must_use]
     pub fn source_bounds_mm(&self) -> [f64; 4] {
         self.source_bounds_bits.map(f64::from_bits)
+    }
+
+    #[must_use]
+    pub const fn is_rectangle(&self) -> bool {
+        self.profile.is_none()
+    }
+
+    #[must_use]
+    pub fn mixed_profile(&self) -> Option<&ExactMixedProfile> {
+        self.profile.as_ref()
     }
 
     #[must_use]
@@ -4822,6 +5131,10 @@ impl ExactPlanarOffsetRequest {
 
     #[must_use]
     pub fn expected_bounds_mm(&self) -> [[f64; 3]; 2] {
+        assert!(
+            self.is_rectangle(),
+            "typed offset bounds are worker evidence"
+        );
         let [min_x, min_y, max_x, max_y] = self.source_bounds_mm();
         let distance = self.distance_mm();
         [
@@ -4834,6 +5147,69 @@ impl ExactPlanarOffsetRequest {
     pub fn expected_area_mm2(&self) -> f64 {
         let [min, max] = self.expected_bounds_mm();
         (max[0] - min[0]) * (max[1] - min[1])
+    }
+
+    #[must_use]
+    pub fn has_valid_typed_geometry(
+        &self,
+        bounds_mm: [[f64; 3]; 2],
+        area_mm2: f64,
+        topology_counts: [u32; 5],
+    ) -> bool {
+        const TOLERANCE: f64 = 1.0e-6;
+
+        let Some(profile) = &self.profile else {
+            return false;
+        };
+        let [source_min_x, source_min_y, source_max_x, source_max_y] = self.source_bounds_mm();
+        let source_area_mm2 = f64::from_bits(profile.area_bits);
+        let distance_mm = self.distance_mm();
+        let minimum_displacement = distance_mm.abs();
+        let Some(maximum_displacement) = profile.max_planar_offset_displacement_mm(distance_mm)
+        else {
+            return false;
+        };
+        let [min, max] = bounds_mm;
+        let bounds_area = (max[0] - min[0]) * (max[1] - min[1]);
+        let within_displacement = |value: f64| {
+            value >= minimum_displacement - TOLERANCE && value <= maximum_displacement + TOLERANCE
+        };
+        let sign_relation = if distance_mm > 0.0 {
+            [
+                source_min_x - min[0],
+                source_min_y - min[1],
+                max[0] - source_max_x,
+                max[1] - source_max_y,
+            ]
+            .into_iter()
+            .all(within_displacement)
+                && area_mm2 > source_area_mm2 + TOLERANCE
+        } else {
+            [
+                min[0] - source_min_x,
+                min[1] - source_min_y,
+                source_max_x - max[0],
+                source_max_y - max[1],
+            ]
+            .into_iter()
+            .all(within_displacement)
+                && area_mm2 < source_area_mm2 - TOLERANCE
+        };
+
+        min.into_iter()
+            .chain(max)
+            .all(|value| value.is_finite() && value.abs() <= MAX_EXACT_BREP_COORDINATE_MM)
+            && min[0] < max[0]
+            && min[1] < max[1]
+            && min[2] == 0.0
+            && max[2] == 0.0
+            && area_mm2.is_finite()
+            && area_mm2 > 0.0
+            && area_mm2 <= bounds_area + TOLERANCE
+            && topology_counts[0] != 0
+            && topology_counts[0] == topology_counts[1]
+            && topology_counts[2..] == [1, 0, 0]
+            && sign_relation
     }
 
     #[must_use]
@@ -4869,6 +5245,7 @@ pub struct ExactPlanarOffsetPackage {
     pub identity: ExactPlanarOffsetIdentity,
     pub bounds_mm: [[f64; 3]; 2],
     pub area_mm2: f64,
+    pub topology_counts: [u32; 5],
     pub vertices: Vec<ExactVertex>,
     pub triangles: Vec<ExactTriangle>,
     pub reference: BodySubshapeRef,
@@ -4888,14 +5265,8 @@ impl ExactPlanarOffsetPackage {
         &self,
         request: &ExactPlanarOffsetRequest,
     ) -> Result<(), ExactProductError> {
-        let expected_bounds = request.expected_bounds_mm();
-        let expected_vertices = [
-            [expected_bounds[0][0], expected_bounds[0][1], 0.0],
-            [expected_bounds[1][0], expected_bounds[0][1], 0.0],
-            [expected_bounds[1][0], expected_bounds[1][1], 0.0],
-            [expected_bounds[0][0], expected_bounds[1][1], 0.0],
-        ];
-        if self.identity.schema != EXACT_PLANAR_OFFSET_SCHEMA_V1
+        if !request.has_valid_basic_inputs()
+            || self.identity.schema != EXACT_PLANAR_OFFSET_SCHEMA_V1
             || self.identity.document_id != request.document_id
             || self.identity.source_revision != request.source_revision
             || self.identity.source_digest != request.source_digest
@@ -4908,30 +5279,51 @@ impl ExactPlanarOffsetPackage {
             || self.identity.result_fingerprint.is_empty()
             || self.identity.backend.is_empty()
             || self.identity.tolerance.is_empty()
-            || self.bounds_mm != expected_bounds
-            || (self.area_mm2 - request.expected_area_mm2()).abs() > 1.0e-6
-            || self.vertices.len() != 4
-            || self
-                .vertices
-                .iter()
-                .zip(expected_vertices)
-                .any(|(actual, expected)| actual.position_mm != expected)
-            || self.triangles
-                != [
-                    ExactTriangle {
-                        vertex_indices: [0, 1, 2],
-                        face_role: Some(ExactFaceRole::PlanarOffsetFace),
-                    },
-                    ExactTriangle {
-                        vertex_indices: [0, 2, 3],
-                        face_role: Some(ExactFaceRole::PlanarOffsetFace),
-                    },
-                ]
             || !self.reference.matches_planar_offset_request(request)
             || self.reference.exact_input_digest != self.identity.exact_input_digest
             || self.reference.result_fingerprint != self.identity.result_fingerprint
             || self.reference.backend != self.identity.backend
             || self.reference.tolerance != self.identity.tolerance
+        {
+            return Err(ExactProductError::InvalidWorkerEvidence);
+        }
+        if request.is_rectangle() {
+            let expected_bounds = request.expected_bounds_mm();
+            let expected_vertices = [
+                [expected_bounds[0][0], expected_bounds[0][1], 0.0],
+                [expected_bounds[1][0], expected_bounds[0][1], 0.0],
+                [expected_bounds[1][0], expected_bounds[1][1], 0.0],
+                [expected_bounds[0][0], expected_bounds[1][1], 0.0],
+            ];
+            if self.bounds_mm != expected_bounds
+                || (self.area_mm2 - request.expected_area_mm2()).abs() > 1.0e-6
+                || self.topology_counts != [4, 4, 1, 0, 0]
+                || self.vertices.len() != 4
+                || self
+                    .vertices
+                    .iter()
+                    .zip(expected_vertices)
+                    .any(|(actual, expected)| actual.position_mm != expected)
+                || self.triangles
+                    != [
+                        ExactTriangle {
+                            vertex_indices: [0, 1, 2],
+                            face_role: Some(ExactFaceRole::PlanarOffsetFace),
+                        },
+                        ExactTriangle {
+                            vertex_indices: [0, 2, 3],
+                            face_role: Some(ExactFaceRole::PlanarOffsetFace),
+                        },
+                    ]
+            {
+                return Err(ExactProductError::InvalidWorkerEvidence);
+            }
+        } else if !request.has_valid_typed_geometry(
+            self.bounds_mm,
+            self.area_mm2,
+            self.topology_counts,
+        ) || !self.vertices.is_empty()
+            || !self.triangles.is_empty()
         {
             return Err(ExactProductError::InvalidWorkerEvidence);
         }
@@ -7460,6 +7852,7 @@ pub struct PlanarOffsetWorkerEvidence {
     pub tolerance: String,
     pub bounds_mm: [[f64; 3]; 2],
     pub area_mm2: f64,
+    pub topology_counts: [u32; 5],
     pub face_ordinal: u32,
     pub lineage_digest: String,
     pub corroborating_geometry_fingerprint: String,
@@ -7476,12 +7869,14 @@ pub fn build_planar_offset_package(
         tolerance,
         bounds_mm: worker_bounds_mm,
         area_mm2: worker_area_mm2,
+        topology_counts,
         face_ordinal,
         lineage_digest,
         corroborating_geometry_fingerprint,
     } = evidence;
-    let expected_bounds = request.expected_bounds_mm();
-    let expected_area_mm2 = request.expected_area_mm2();
+    if !request.has_valid_basic_inputs() {
+        return Err(ExactProductError::InvalidWorkerEvidence);
+    }
     let expected_lineage = canonical_reference_lineage_digest(
         request.document_id,
         request.offset_feature_id,
@@ -7489,19 +7884,7 @@ pub fn build_planar_offset_package(
         ExactFaceRole::PlanarOffsetFace.source_element_id(),
         ExactFaceRole::PlanarOffsetFace.expected_type(),
     );
-    if expected_bounds
-        .iter()
-        .flatten()
-        .any(|value| !value.is_finite())
-        || !expected_area_mm2.is_finite()
-        || worker_bounds_mm
-            .iter()
-            .flatten()
-            .zip(expected_bounds.iter().flatten())
-            .any(|(actual, expected)| !actual.is_finite() || (actual - expected).abs() > 1.0e-6)
-        || !worker_area_mm2.is_finite()
-        || (worker_area_mm2 - expected_area_mm2).abs() > 1.0e-6
-        || face_ordinal != 0
+    if face_ordinal != 0
         || lineage_digest != expected_lineage
         || exact_input_digest.is_empty()
         || result_fingerprint.is_empty()
@@ -7511,31 +7894,54 @@ pub fn build_planar_offset_package(
     {
         return Err(ExactProductError::InvalidWorkerEvidence);
     }
-    let [min, max] = expected_bounds;
-    let vertices = vec![
-        ExactVertex {
-            position_mm: [min[0], min[1], 0.0],
-        },
-        ExactVertex {
-            position_mm: [max[0], min[1], 0.0],
-        },
-        ExactVertex {
-            position_mm: [max[0], max[1], 0.0],
-        },
-        ExactVertex {
-            position_mm: [min[0], max[1], 0.0],
-        },
-    ];
-    let triangles = vec![
-        ExactTriangle {
-            vertex_indices: [0, 1, 2],
-            face_role: Some(ExactFaceRole::PlanarOffsetFace),
-        },
-        ExactTriangle {
-            vertex_indices: [0, 2, 3],
-            face_role: Some(ExactFaceRole::PlanarOffsetFace),
-        },
-    ];
+    let (bounds_mm, vertices, triangles) = if request.is_rectangle() {
+        let expected_bounds = request.expected_bounds_mm();
+        let expected_area_mm2 = request.expected_area_mm2();
+        if topology_counts != [4, 4, 1, 0, 0]
+            || worker_bounds_mm
+                .iter()
+                .flatten()
+                .zip(expected_bounds.iter().flatten())
+                .any(|(actual, expected)| !actual.is_finite() || (actual - expected).abs() > 1.0e-6)
+            || !worker_area_mm2.is_finite()
+            || (worker_area_mm2 - expected_area_mm2).abs() > 1.0e-6
+        {
+            return Err(ExactProductError::InvalidWorkerEvidence);
+        }
+        let [min, max] = expected_bounds;
+        (
+            expected_bounds,
+            vec![
+                ExactVertex {
+                    position_mm: [min[0], min[1], 0.0],
+                },
+                ExactVertex {
+                    position_mm: [max[0], min[1], 0.0],
+                },
+                ExactVertex {
+                    position_mm: [max[0], max[1], 0.0],
+                },
+                ExactVertex {
+                    position_mm: [min[0], max[1], 0.0],
+                },
+            ],
+            vec![
+                ExactTriangle {
+                    vertex_indices: [0, 1, 2],
+                    face_role: Some(ExactFaceRole::PlanarOffsetFace),
+                },
+                ExactTriangle {
+                    vertex_indices: [0, 2, 3],
+                    face_role: Some(ExactFaceRole::PlanarOffsetFace),
+                },
+            ],
+        )
+    } else {
+        if !request.has_valid_typed_geometry(worker_bounds_mm, worker_area_mm2, topology_counts) {
+            return Err(ExactProductError::InvalidWorkerEvidence);
+        }
+        (worker_bounds_mm, Vec::new(), Vec::new())
+    };
     let reference = BodySubshapeRef {
         schema: BODY_SUBSHAPE_REF_SCHEMA_V1.to_owned(),
         document_id: request.document_id,
@@ -7574,8 +7980,9 @@ pub fn build_planar_offset_package(
             backend,
             tolerance,
         },
-        bounds_mm: expected_bounds,
+        bounds_mm,
         area_mm2: worker_area_mm2,
+        topology_counts,
         vertices,
         triangles,
         reference,
@@ -12630,6 +13037,16 @@ pub fn line_arc_capsule_corner_overlap(
 }
 
 #[must_use]
+pub fn exact_planar_offset_profile(
+    segments: &[ProfileSegment],
+    closed: bool,
+) -> Option<ExactMixedProfile> {
+    let profile = exact_mixed_profile(segments, closed)?;
+    (profile.has_only_line_segments() || profile.is_strict_convex_line_arc_profile())
+        .then_some(profile)
+}
+
+#[must_use]
 pub fn line_arc_profile_bounds(segments: &[ProfileSegment], closed: bool) -> Option<[f64; 4]> {
     exact_mixed_profile(segments, closed).map(|profile| profile.bounds_bits.map(f64::from_bits))
 }
@@ -12639,7 +13056,10 @@ pub fn is_line_arc_capsule_profile(segments: &[ProfileSegment], closed: bool) ->
     line_arc_capsule_profile_bounds(segments, closed).is_some()
 }
 
-fn exact_mixed_profile(segments: &[ProfileSegment], closed: bool) -> Option<ExactMixedProfile> {
+pub(crate) fn exact_mixed_profile(
+    segments: &[ProfileSegment],
+    closed: bool,
+) -> Option<ExactMixedProfile> {
     let line_only = segments
         .iter()
         .all(|segment| matches!(segment, ProfileSegment::Line { .. }));

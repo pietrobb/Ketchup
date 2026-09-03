@@ -596,6 +596,79 @@ fn handle_request(backend: &ExactBackend, request: &str) -> Option<String> {
                 )
             })
         }
+        (Some("OFFSET_PROFILE_P6_V1"), Some(document_id), Some(producer_feature_id)) => {
+            let remaining = fields.collect::<Vec<_>>();
+            let Some((request_digest, remaining)) = remaining.split_first() else {
+                return Some("ERR invalid_request".to_owned());
+            };
+            let [distance_bits, segment_count, payload @ ..] = remaining else {
+                return Some("ERR invalid_request".to_owned());
+            };
+            let canonical_decimal = |value: &str| {
+                value
+                    .parse::<u64>()
+                    .ok()
+                    .is_some_and(|parsed| parsed.to_string() == value)
+            };
+            let parse_bits = |value: &str| {
+                (value.len() == 16
+                    && value
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f')))
+                .then(|| u64::from_str_radix(value, 16).ok())
+                .flatten()
+            };
+            let Some(count) = segment_count
+                .parse::<usize>()
+                .ok()
+                .filter(|count| count.to_string() == *segment_count && (2..=64).contains(count))
+            else {
+                return Some("ERR invalid_request".to_owned());
+            };
+            if !canonical_decimal(document_id)
+                || !canonical_decimal(producer_feature_id)
+                || !is_canonical_digest(request_digest)
+                || payload.len() != count * 8
+            {
+                return Some("ERR invalid_request".to_owned());
+            }
+            let Some(distance_bits) = parse_bits(distance_bits) else {
+                return Some("ERR invalid_parameter".to_owned());
+            };
+            let mut segments = Vec::with_capacity(count);
+            for record in payload.chunks_exact(8) {
+                let Some(bits) = record[1..7]
+                    .iter()
+                    .map(|value| parse_bits(value))
+                    .collect::<Option<Vec<_>>>()
+                    .and_then(|values| <[u64; 6]>::try_from(values).ok())
+                else {
+                    return Some("ERR invalid_parameter".to_owned());
+                };
+                let segment = match (record[0], record[7]) {
+                    ("L", "0") if bits[4..] == [0, 0] => PlanarProfileSegment::Line {
+                        start_mm: [f64::from_bits(bits[0]), f64::from_bits(bits[1])],
+                        end_mm: [f64::from_bits(bits[2]), f64::from_bits(bits[3])],
+                    },
+                    ("A", clockwise @ ("0" | "1")) => PlanarProfileSegment::CircularArc {
+                        start_mm: [f64::from_bits(bits[0]), f64::from_bits(bits[1])],
+                        end_mm: [f64::from_bits(bits[2]), f64::from_bits(bits[3])],
+                        center_mm: [f64::from_bits(bits[4]), f64::from_bits(bits[5])],
+                        clockwise: clockwise == "1",
+                    },
+                    _ => return Some("ERR invalid_request".to_owned()),
+                };
+                segments.push(segment);
+            }
+            Some(p6_profile_offset_response(
+                backend,
+                PlanarProfileLoop::Segments(segments),
+                f64::from_bits(distance_bits),
+                document_id,
+                producer_feature_id,
+                request_digest,
+            ))
+        }
         (Some("OFFSET_RECTANGLE_P6_V1"), Some(min_x_bits), Some(min_y_bits)) => {
             let remaining = fields.collect::<Vec<_>>();
             let [
@@ -3609,7 +3682,41 @@ fn p6_offset_response(
         max_mm: [f64::from_bits(bits[2]), f64::from_bits(bits[3])],
         distance_mm: f64::from_bits(bits[4]),
     });
-    let elapsed = started.elapsed().as_nanos();
+    format_p6_offset_response(
+        result,
+        started.elapsed().as_nanos(),
+        document_id,
+        producer_feature_id,
+        request_digest,
+    )
+}
+
+fn p6_profile_offset_response(
+    backend: &ExactBackend,
+    profile: PlanarProfileLoop,
+    distance_mm: f64,
+    document_id: &str,
+    producer_feature_id: &str,
+    request_digest: &str,
+) -> String {
+    let started = Instant::now();
+    let result = backend.offset_planar_profile(&profile, distance_mm);
+    format_p6_offset_response(
+        result,
+        started.elapsed().as_nanos(),
+        document_id,
+        producer_feature_id,
+        request_digest,
+    )
+}
+
+fn format_p6_offset_response(
+    result: Result<ExactOpOutput, ketchup_exact::GeometryError>,
+    elapsed: u128,
+    document_id: &str,
+    producer_feature_id: &str,
+    request_digest: &str,
+) -> String {
     match result {
         Ok(mut output) => {
             let reference = match capture_planar_offset_reference(

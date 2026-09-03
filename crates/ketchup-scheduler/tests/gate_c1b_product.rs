@@ -21562,6 +21562,7 @@ fn scheduler_evaluates_bounded_planar_offset_with_deterministic_exact_lineage() 
                 tolerance: package.identity.tolerance,
                 bounds_mm: package.bounds_mm,
                 area_mm2: package.area_mm2,
+                topology_counts: package.topology_counts,
                 face_ordinal: 0,
                 lineage_digest: package.reference.lineage_digest,
                 corroborating_geometry_fingerprint: package
@@ -21570,6 +21571,232 @@ fn scheduler_evaluates_bounded_planar_offset_with_deterministic_exact_lineage() 
             },
         ),
         Err(ExactProductError::InvalidWorkerEvidence)
+    ));
+}
+
+#[test]
+fn scheduler_evaluates_typed_line_arc_planar_offset_with_worker_evidence() {
+    const DEFINITION: DefinitionId = DefinitionId(704);
+    const PROFILE: FeatureId = FeatureId(705);
+    const OFFSET: FeatureId = FeatureId(706);
+
+    let segments = vec![
+        ProfileSegment::Line {
+            start_mm: [0.0, 0.0],
+            end_mm: [20.0, 0.0],
+        },
+        ProfileSegment::CircularArc {
+            start_mm: [20.0, 0.0],
+            end_mm: [0.0, 0.0],
+            center_mm: [10.0, 0.0],
+            clockwise: false,
+        },
+    ];
+    let mut supervisor = ExactWorkerSupervisor::spawn(worker_path()).unwrap();
+    let mut fingerprints = Vec::new();
+    for distance_mm in [2.0, -2.0, -4.9] {
+        let mut document = DocumentStore::new();
+        document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::CreateDefinition {
+                    id: DEFINITION,
+                    name: "Typed offset".to_owned(),
+                },
+                CanonicalCommand::CreateFeature {
+                    id: PROFILE,
+                    definition_id: DEFINITION,
+                    name: "Line arc profile".to_owned(),
+                    kind: FeatureKind::SegmentProfile {
+                        segments: segments.clone(),
+                        closed: true,
+                    },
+                },
+                CanonicalCommand::CreateFeature {
+                    id: OFFSET,
+                    definition_id: DEFINITION,
+                    name: "Planar offset".to_owned(),
+                    kind: FeatureKind::PlanarOffset {
+                        profile: PROFILE,
+                        distance: Dimension::new(distance_mm.to_string(), distance_mm).unwrap(),
+                    },
+                },
+            ]))
+            .unwrap();
+        let snapshot = document.current();
+        let request = ExactPlanarOffsetRequest::from_snapshot(&snapshot, DEFINITION).unwrap();
+        assert!(!request.is_rectangle());
+        assert_eq!(request.mixed_profile().unwrap().segments.len(), 2);
+
+        let first = supervisor.evaluate_planar_offset(&request).unwrap();
+        let repeated = supervisor.evaluate_planar_offset(&request).unwrap();
+        assert!(first.is_current(&snapshot));
+        assert_eq!(first.identity, repeated.identity);
+        assert_eq!(first.bounds_mm, repeated.bounds_mm);
+        assert_eq!(first.area_mm2, repeated.area_mm2);
+        assert_eq!(first.reference, repeated.reference);
+        assert_eq!(first.topology_counts[2..], [1, 0, 0]);
+        assert_eq!(first.topology_counts[0], first.topology_counts[1]);
+        assert!(first.vertices.is_empty());
+        assert!(first.triangles.is_empty());
+        assert_eq!(
+            first.reference.role(),
+            Some(ExactFaceRole::PlanarOffsetFace)
+        );
+        assert!(first.reference.has_valid_lineage());
+        assert!(first.reference.matches_planar_offset_request(&request));
+
+        let evidence = PlanarOffsetWorkerEvidence {
+            exact_input_digest: first.identity.exact_input_digest.clone(),
+            result_fingerprint: first.identity.result_fingerprint.clone(),
+            backend: first.identity.backend.clone(),
+            tolerance: first.identity.tolerance.clone(),
+            bounds_mm: first.bounds_mm,
+            area_mm2: first.area_mm2,
+            topology_counts: first.topology_counts,
+            face_ordinal: 0,
+            lineage_digest: first.reference.lineage_digest.clone(),
+            corroborating_geometry_fingerprint: first
+                .reference
+                .corroborating_geometry_fingerprint
+                .clone(),
+        };
+        let mut tampered_bounds = request.clone();
+        tampered_bounds.source_bounds_bits[0] = 1.0_f64.to_bits();
+        assert!(matches!(
+            build_planar_offset_package(&tampered_bounds, evidence.clone()),
+            Err(ExactProductError::InvalidWorkerEvidence)
+        ));
+        let mut unrelated_geometry = evidence;
+        unrelated_geometry.bounds_mm = [[100.0, 100.0, 0.0], [120.0, 120.0, 0.0]];
+        assert!(matches!(
+            build_planar_offset_package(&request, unrelated_geometry),
+            Err(ExactProductError::InvalidWorkerEvidence)
+        ));
+
+        fingerprints.push(first.identity.result_fingerprint);
+
+        let mut tampered = request.clone();
+        tampered.profile.as_mut().unwrap().segments.pop();
+        assert!(supervisor.evaluate_planar_offset(&tampered).is_err());
+    }
+    assert_ne!(fingerprints[0], fingerprints[1]);
+
+    let mut diamond = DocumentStore::new();
+    diamond
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DEFINITION,
+                name: "Mitered offset".to_owned(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: PROFILE,
+                definition_id: DEFINITION,
+                name: "Diamond profile".to_owned(),
+                kind: FeatureKind::SegmentProfile {
+                    segments: [[0.0, -10.0], [10.0, 0.0], [0.0, 10.0], [-10.0, 0.0]]
+                        .into_iter()
+                        .zip([[10.0, 0.0], [0.0, 10.0], [-10.0, 0.0], [0.0, -10.0]])
+                        .map(|(start_mm, end_mm)| ProfileSegment::Line { start_mm, end_mm })
+                        .collect(),
+                    closed: true,
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: OFFSET,
+                definition_id: DEFINITION,
+                name: "Mitered planar offset".to_owned(),
+                kind: FeatureKind::PlanarOffset {
+                    profile: PROFILE,
+                    distance: Dimension::new("2", 2.0).unwrap(),
+                },
+            },
+        ]))
+        .unwrap();
+    let diamond_snapshot = diamond.current();
+    let diamond_request =
+        ExactPlanarOffsetRequest::from_snapshot(&diamond_snapshot, DEFINITION).unwrap();
+    let diamond_result = supervisor.evaluate_planar_offset(&diamond_request).unwrap();
+    assert!(diamond_result.bounds_mm[0][0] < -12.0);
+    assert!(diamond_result.bounds_mm[0][1] < -12.0);
+    assert!(diamond_result.bounds_mm[1][0] > 12.0);
+    assert!(diamond_result.bounds_mm[1][1] > 12.0);
+
+    let mut invalid = DocumentStore::new();
+    assert!(matches!(
+        invalid.apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DEFINITION,
+                name: "Open typed offset".to_owned(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: PROFILE,
+                definition_id: DEFINITION,
+                name: "Open profile".to_owned(),
+                kind: FeatureKind::SegmentProfile {
+                    segments,
+                    closed: false,
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: OFFSET,
+                definition_id: DEFINITION,
+                name: "Invalid offset".to_owned(),
+                kind: FeatureKind::PlanarOffset {
+                    profile: PROFILE,
+                    distance: Dimension::new("2", 2.0).unwrap(),
+                },
+            },
+        ])),
+        Err(CanonicalError::InvalidPlanarOffset)
+    ));
+
+    let self_intersecting = vec![
+        ProfileSegment::Line {
+            start_mm: [0.0, 0.0],
+            end_mm: [20.0, 20.0],
+        },
+        ProfileSegment::Line {
+            start_mm: [20.0, 20.0],
+            end_mm: [0.0, 20.0],
+        },
+        ProfileSegment::CircularArc {
+            start_mm: [0.0, 20.0],
+            end_mm: [20.0, 0.0],
+            center_mm: [10.0, 10.0],
+            clockwise: false,
+        },
+        ProfileSegment::Line {
+            start_mm: [20.0, 0.0],
+            end_mm: [0.0, 0.0],
+        },
+    ];
+    let mut invalid = DocumentStore::new();
+    assert!(matches!(
+        invalid.apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DEFINITION,
+                name: "Self-intersecting typed offset".to_owned(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: PROFILE,
+                definition_id: DEFINITION,
+                name: "Self-intersecting profile".to_owned(),
+                kind: FeatureKind::SegmentProfile {
+                    segments: self_intersecting,
+                    closed: true,
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: OFFSET,
+                definition_id: DEFINITION,
+                name: "Invalid offset".to_owned(),
+                kind: FeatureKind::PlanarOffset {
+                    profile: PROFILE,
+                    distance: Dimension::new("2", 2.0).unwrap(),
+                },
+            },
+        ])),
+        Err(CanonicalError::InvalidPlanarOffset)
     ));
 }
 
