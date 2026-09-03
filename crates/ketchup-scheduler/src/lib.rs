@@ -486,6 +486,7 @@ pub struct WorkerExactBRepGraphResult {
     pub result_fingerprint: String,
     pub exact_input_digest: String,
     pub volume_mm3: f64,
+    pub area_mm2: f64,
     pub bounds_mm: [f64; 6],
     pub topology_counts: [u32; 5],
     pub backend: String,
@@ -571,7 +572,7 @@ const M6_REVOLVE_CAPABILITY: &str = "M6_REVOLVE_V1";
 const M6_SHELL_CAPABILITY: &str = "M6_SHELL_V1";
 const M14_STEP_CAPABILITY: &str = "M14_STEP_V1";
 const M21_STEP_MODEL_CAPABILITY: &str = "M21_STEP_MODEL_V1";
-const EXACT_BREP_GRAPH_CAPABILITY: &str = "EXACT_BREP_GRAPH_V4";
+const EXACT_BREP_GRAPH_CAPABILITY: &str = "EXACT_BREP_GRAPH_V5";
 pub const MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCES: usize = 64;
 pub const MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCE_BYTES: u64 = 128 * 1024 * 1024;
 const DEFAULT_WORKER_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
@@ -1117,7 +1118,7 @@ impl ExactWorkerClient {
             .to_bytes()
             .map_err(|error| WorkerError::Protocol(error.to_string()))?;
         let mut request = format!(
-            "EVAL_BREP_GRAPH_V4 {} {}",
+            "EVAL_BREP_GRAPH_V5 {} {}",
             graph.graph_digest,
             hex_encode(&bytes)
         );
@@ -1142,7 +1143,7 @@ impl ExactWorkerClient {
             .to_bytes()
             .map_err(|error| WorkerError::Protocol(error.to_string()))?;
         let mut request = format!(
-            "TESSELLATE_BREP_GRAPH_V4 {} {} {} {}",
+            "TESSELLATE_BREP_GRAPH_V5 {} {} {} {}",
             graph.graph_digest,
             hex_encode(&bytes),
             result_fingerprint,
@@ -2962,15 +2963,39 @@ impl ExactWorkerSupervisor {
             }
             Err(error) => return Err(error),
         };
+        let valid_terminal = if graph.terminal_is_planar_offset() {
+            result.volume_mm3.is_finite()
+                && result.volume_mm3 == 0.0
+                && graph.accepts_terminal_planar_offset_geometry(
+                    [
+                        [
+                            result.bounds_mm[0],
+                            result.bounds_mm[1],
+                            result.bounds_mm[2],
+                        ],
+                        [
+                            result.bounds_mm[3],
+                            result.bounds_mm[4],
+                            result.bounds_mm[5],
+                        ],
+                    ],
+                    result.area_mm2,
+                    result.topology_counts,
+                )
+        } else {
+            result.volume_mm3.is_finite()
+                && result.volume_mm3 > 0.0
+                && result.area_mm2.is_finite()
+                && result.area_mm2 == 0.0
+                && result.bounds_mm.iter().all(|value| value.is_finite())
+                && !result.topology_counts.contains(&0)
+        };
         if result.canonical_input_digest != graph.canonical_input_digest
             || result.graph_digest != graph.graph_digest
             || result.producer_feature_id != graph.producer_feature_id
             || result.result_fingerprint.is_empty()
             || result.exact_input_digest.is_empty()
-            || !result.volume_mm3.is_finite()
-            || result.volume_mm3 <= 0.0
-            || result.bounds_mm.iter().any(|value| !value.is_finite())
-            || result.topology_counts.contains(&0)
+            || !valid_terminal
             || result.backend.is_empty()
             || result.tolerance.is_empty()
         {
@@ -3009,6 +3034,7 @@ impl ExactWorkerSupervisor {
                 exact_input_digest: result.exact_input_digest,
                 result_fingerprint: result.result_fingerprint,
                 volume_mm3: result.volume_mm3,
+                area_mm2: result.area_mm2,
                 topology_counts: result.topology_counts,
                 bounds_mm: [
                     [
@@ -5644,8 +5670,8 @@ fn parse_exact_brep_graph_result(
     if matches!(fields.first(), Some(&"ERR") | Some(&"ERR_DETAIL")) {
         return Err(parse_error_response(response, &fields));
     }
-    if fields.len() != 20
-        || fields[0] != "OK_BREP_GRAPH_V3"
+    if fields.len() != 21
+        || fields[0] != "OK_BREP_GRAPH_V5"
         || !is_sha256_digest(fields[1])
         || !is_sha256_digest(fields[2])
         || !is_fnv1a64_digest(fields[4])
@@ -5672,24 +5698,25 @@ fn parse_exact_brep_graph_result(
         result_fingerprint: fields[4].to_owned(),
         exact_input_digest: fields[5].to_owned(),
         volume_mm3: parse_f64(6)?,
+        area_mm2: parse_f64(7)?,
         bounds_mm: [
-            parse_f64(7)?,
             parse_f64(8)?,
             parse_f64(9)?,
             parse_f64(10)?,
             parse_f64(11)?,
             parse_f64(12)?,
+            parse_f64(13)?,
         ],
         topology_counts: [
-            parse_u32(13)?,
             parse_u32(14)?,
             parse_u32(15)?,
             parse_u32(16)?,
             parse_u32(17)?,
+            parse_u32(18)?,
         ],
-        backend: hex_decode_utf8(fields[18])
+        backend: hex_decode_utf8(fields[19])
             .ok_or_else(|| WorkerError::Protocol(response.to_owned()))?,
-        tolerance: hex_decode_utf8(fields[19])
+        tolerance: hex_decode_utf8(fields[20])
             .ok_or_else(|| WorkerError::Protocol(response.to_owned()))?,
     })
 }

@@ -700,6 +700,7 @@ pub struct ExactBRepGraphPackage {
     pub identity: BodyResultIdentity,
     pub graph: ExactBRepGraph,
     pub volume_mm3: f64,
+    pub area_mm2: f64,
     pub topology_counts: [u32; 5],
     pub bounds_mm: [[f64; 3]; 2],
     pub vertices: Vec<ExactVertex>,
@@ -713,6 +714,7 @@ pub struct ExactBRepGraphWorkerEvidence {
     pub exact_input_digest: String,
     pub result_fingerprint: String,
     pub volume_mm3: f64,
+    pub area_mm2: f64,
     pub topology_counts: [u32; 5],
     pub bounds_mm: [[f64; 3]; 2],
     pub backend: String,
@@ -729,19 +731,32 @@ impl ExactBRepGraphPackage {
             .validate()
             .map_err(|_| ExactProductError::InvalidWorkerEvidence)?;
         let vertex_count = mesh.vertices_mm.len();
+        let valid_terminal = if graph.terminal_is_planar_offset() {
+            evidence.volume_mm3.is_finite()
+                && evidence.volume_mm3 == 0.0
+                && graph.accepts_terminal_planar_offset_geometry(
+                    evidence.bounds_mm,
+                    evidence.area_mm2,
+                    evidence.topology_counts,
+                )
+        } else {
+            evidence.volume_mm3.is_finite()
+                && evidence.volume_mm3 > 0.0
+                && evidence.area_mm2.is_finite()
+                && evidence.area_mm2 == 0.0
+                && !evidence.topology_counts.contains(&0)
+                && evidence
+                    .bounds_mm
+                    .iter()
+                    .flatten()
+                    .all(|value| value.is_finite())
+                && (0..3).all(|axis| evidence.bounds_mm[0][axis] < evidence.bounds_mm[1][axis])
+        };
         if evidence.exact_input_digest.is_empty()
             || evidence.result_fingerprint.is_empty()
             || evidence.backend.is_empty()
             || evidence.tolerance.is_empty()
-            || !evidence.volume_mm3.is_finite()
-            || evidence.volume_mm3 <= 0.0
-            || evidence.topology_counts.contains(&0)
-            || evidence
-                .bounds_mm
-                .iter()
-                .flatten()
-                .any(|value| !value.is_finite())
-            || (0..3).any(|axis| evidence.bounds_mm[0][axis] >= evidence.bounds_mm[1][axis])
+            || !valid_terminal
             || mesh.triangles.is_empty()
             || !mesh.is_within_bounds(evidence.bounds_mm, IMPORTED_MESH_BOUNDS_TOLERANCE_MM)
             || mesh.triangles.iter().any(|triangle| {
@@ -753,6 +768,27 @@ impl ExactBRepGraphPackage {
             })
         {
             return Err(ExactProductError::InvalidWorkerEvidence);
+        }
+        if graph.terminal_is_planar_offset() {
+            let mesh_area_mm2 = mesh.triangles.iter().fold(0.0, |area, triangle| {
+                let [a, b, c] = triangle
+                    .vertex_indices
+                    .map(|index| mesh.vertices_mm[index as usize]);
+                let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+                let ac = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+                let cross = [
+                    ab[1] * ac[2] - ab[2] * ac[1],
+                    ab[2] * ac[0] - ab[0] * ac[2],
+                    ab[0] * ac[1] - ab[1] * ac[0],
+                ];
+                area + 0.5 * cross[0].hypot(cross[1]).hypot(cross[2])
+            });
+            let area_tolerance_mm2 = evidence.area_mm2.max(mesh_area_mm2).max(1.0) * 0.01;
+            if !mesh_area_mm2.is_finite()
+                || (mesh_area_mm2 - evidence.area_mm2).abs() > area_tolerance_mm2
+            {
+                return Err(ExactProductError::InvalidWorkerEvidence);
+            }
         }
         let producer_feature_id = FeatureId(graph.producer_feature_id);
         let profile_feature_id = graph
@@ -784,6 +820,7 @@ impl ExactBRepGraphPackage {
             identity,
             graph: graph.clone(),
             volume_mm3: evidence.volume_mm3,
+            area_mm2: evidence.area_mm2,
             topology_counts: evidence.topology_counts,
             bounds_mm: evidence.bounds_mm,
             vertices: mesh
@@ -4796,6 +4833,65 @@ pub struct ExactBoxShellRequest {
     pub edge_finish_amount_bits: Option<u64>,
 }
 
+pub(crate) fn accepts_planar_offset_geometry(
+    profile: &ExactMixedProfile,
+    distance_mm: f64,
+    bounds_mm: [[f64; 3]; 2],
+    area_mm2: f64,
+    topology_counts: [u32; 5],
+) -> bool {
+    const TOLERANCE: f64 = 1.0e-6;
+
+    let [source_min_x, source_min_y, source_max_x, source_max_y] =
+        profile.bounds_bits.map(f64::from_bits);
+    let source_area_mm2 = f64::from_bits(profile.area_bits);
+    let minimum_displacement = distance_mm.abs();
+    let Some(maximum_displacement) = profile.max_planar_offset_displacement_mm(distance_mm) else {
+        return false;
+    };
+    let [min, max] = bounds_mm;
+    let bounds_area = (max[0] - min[0]) * (max[1] - min[1]);
+    let within_displacement = |value: f64| {
+        value >= minimum_displacement - TOLERANCE && value <= maximum_displacement + TOLERANCE
+    };
+    let sign_relation = if distance_mm > 0.0 {
+        [
+            source_min_x - min[0],
+            source_min_y - min[1],
+            max[0] - source_max_x,
+            max[1] - source_max_y,
+        ]
+        .into_iter()
+        .all(within_displacement)
+            && area_mm2 > source_area_mm2 + TOLERANCE
+    } else {
+        [
+            min[0] - source_min_x,
+            min[1] - source_min_y,
+            source_max_x - max[0],
+            source_max_y - max[1],
+        ]
+        .into_iter()
+        .all(within_displacement)
+            && area_mm2 < source_area_mm2 - TOLERANCE
+    };
+
+    min.into_iter()
+        .chain(max)
+        .all(|value| value.is_finite() && value.abs() <= MAX_EXACT_BREP_COORDINATE_MM)
+        && min[0] < max[0]
+        && min[1] < max[1]
+        && min[2] == 0.0
+        && max[2] == 0.0
+        && area_mm2.is_finite()
+        && area_mm2 > 0.0
+        && area_mm2 <= bounds_area + TOLERANCE
+        && topology_counts[0] != 0
+        && topology_counts[0] == topology_counts[1]
+        && topology_counts[2..] == [1, 0, 0]
+        && sign_relation
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExactPlanarOffsetRequest {
     pub document_id: DocumentId,
@@ -4856,12 +4952,16 @@ impl ExactPlanarOffsetRequest {
                 .ok_or(ExactProductError::UnsupportedProfile)?,
             None => distance_mm,
         };
-        let output_bounds = [
-            source_bounds[0] - margin,
-            source_bounds[1] - margin,
-            source_bounds[2] + margin,
-            source_bounds[3] + margin,
-        ];
+        let output_bounds = if profile.is_some() && distance_mm < 0.0 {
+            source_bounds
+        } else {
+            [
+                source_bounds[0] - margin,
+                source_bounds[1] - margin,
+                source_bounds[2] + margin,
+                source_bounds[3] + margin,
+            ]
+        };
         let statically_collapsed = profile.is_some()
             && distance_mm < 0.0
             && (source_bounds[2] - source_bounds[0] <= 2.0 * distance_mm.abs()
@@ -4972,12 +5072,16 @@ impl ExactPlanarOffsetRequest {
             },
             None => distance_mm,
         };
-        let output_bounds = [
-            source_bounds[0] - margin,
-            source_bounds[1] - margin,
-            source_bounds[2] + margin,
-            source_bounds[3] + margin,
-        ];
+        let output_bounds = if self.profile.is_some() && distance_mm < 0.0 {
+            source_bounds
+        } else {
+            [
+                source_bounds[0] - margin,
+                source_bounds[1] - margin,
+                source_bounds[2] + margin,
+                source_bounds[3] + margin,
+            ]
+        };
         let valid_lower_hex = |value: &str, length| {
             value.len() == length
                 && value
@@ -5156,60 +5260,15 @@ impl ExactPlanarOffsetRequest {
         area_mm2: f64,
         topology_counts: [u32; 5],
     ) -> bool {
-        const TOLERANCE: f64 = 1.0e-6;
-
-        let Some(profile) = &self.profile else {
-            return false;
-        };
-        let [source_min_x, source_min_y, source_max_x, source_max_y] = self.source_bounds_mm();
-        let source_area_mm2 = f64::from_bits(profile.area_bits);
-        let distance_mm = self.distance_mm();
-        let minimum_displacement = distance_mm.abs();
-        let Some(maximum_displacement) = profile.max_planar_offset_displacement_mm(distance_mm)
-        else {
-            return false;
-        };
-        let [min, max] = bounds_mm;
-        let bounds_area = (max[0] - min[0]) * (max[1] - min[1]);
-        let within_displacement = |value: f64| {
-            value >= minimum_displacement - TOLERANCE && value <= maximum_displacement + TOLERANCE
-        };
-        let sign_relation = if distance_mm > 0.0 {
-            [
-                source_min_x - min[0],
-                source_min_y - min[1],
-                max[0] - source_max_x,
-                max[1] - source_max_y,
-            ]
-            .into_iter()
-            .all(within_displacement)
-                && area_mm2 > source_area_mm2 + TOLERANCE
-        } else {
-            [
-                min[0] - source_min_x,
-                min[1] - source_min_y,
-                source_max_x - max[0],
-                source_max_y - max[1],
-            ]
-            .into_iter()
-            .all(within_displacement)
-                && area_mm2 < source_area_mm2 - TOLERANCE
-        };
-
-        min.into_iter()
-            .chain(max)
-            .all(|value| value.is_finite() && value.abs() <= MAX_EXACT_BREP_COORDINATE_MM)
-            && min[0] < max[0]
-            && min[1] < max[1]
-            && min[2] == 0.0
-            && max[2] == 0.0
-            && area_mm2.is_finite()
-            && area_mm2 > 0.0
-            && area_mm2 <= bounds_area + TOLERANCE
-            && topology_counts[0] != 0
-            && topology_counts[0] == topology_counts[1]
-            && topology_counts[2..] == [1, 0, 0]
-            && sign_relation
+        self.profile.as_ref().is_some_and(|profile| {
+            accepts_planar_offset_geometry(
+                profile,
+                self.distance_mm(),
+                bounds_mm,
+                area_mm2,
+                topology_counts,
+            )
+        })
     }
 
     #[must_use]

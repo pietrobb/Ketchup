@@ -89,10 +89,10 @@ fn handle_request(backend: &ExactBackend, request: &str) -> Option<String> {
         (Some("CAPS"), Some("M21_STEP_MODEL_V1"), None) => {
             Some("CAPS M21_STEP_MODEL_V1".to_owned())
         }
-        (Some("CAPS"), Some("EXACT_BREP_GRAPH_V4"), None) => {
-            Some("CAPS EXACT_BREP_GRAPH_V4".to_owned())
+        (Some("CAPS"), Some("EXACT_BREP_GRAPH_V5"), None) => {
+            Some("CAPS EXACT_BREP_GRAPH_V5".to_owned())
         }
-        (Some("TESSELLATE_BREP_GRAPH_V4"), Some(graph_digest), Some(encoded_graph)) => {
+        (Some("TESSELLATE_BREP_GRAPH_V5"), Some(graph_digest), Some(encoded_graph)) => {
             let remaining = fields.collect::<Vec<_>>();
             Some(exact_brep_graph_mesh_response(
                 backend,
@@ -110,7 +110,7 @@ fn handle_request(backend: &ExactBackend, request: &str) -> Option<String> {
                 &remaining,
             ))
         }
-        (Some("EVAL_BREP_GRAPH_V4"), Some(graph_digest), Some(encoded_graph)) => {
+        (Some("EVAL_BREP_GRAPH_V5"), Some(graph_digest), Some(encoded_graph)) => {
             let remaining = fields.collect::<Vec<_>>();
             let Some(graph) = decode_exact_brep_graph(graph_digest, encoded_graph) else {
                 return Some("ERR invalid_request".to_owned());
@@ -1310,14 +1310,23 @@ fn exact_brep_graph_response(
         Err(error) => return geometry_error_response(&error),
     };
     let topology = &output.body.topology;
+    let area_mm2 = if graph.terminal_is_planar_offset() {
+        if topology.face_count != 1 || topology.faces.len() != 1 {
+            return "ERR invalid_shape".to_owned();
+        }
+        topology.faces[0].area_mm2
+    } else {
+        0.0
+    };
     format!(
-        "OK_BREP_GRAPH_V3 {} {} {} {} {} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {} {} {} {} {} {} {}",
+        "OK_BREP_GRAPH_V5 {} {} {} {} {} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {} {} {} {} {} {} {}",
         graph.canonical_input_digest,
         graph.graph_digest,
         graph.producer_feature_id,
         output.body.result_fingerprint,
         output.input_digest,
         topology.volume_mm3.to_bits(),
+        area_mm2.to_bits(),
         topology.bounds_mm.min.x.to_bits(),
         topology.bounds_mm.min.y.to_bits(),
         topology.bounds_mm.min.z.to_bits(),
@@ -1400,6 +1409,16 @@ fn evaluate_exact_brep_graph(
                 axis_start_bits.map(f64::from_bits),
                 axis_end_bits.map(f64::from_bits),
                 f64::from_bits(*angle_degrees_bits),
+            )?,
+            ExactBRepOperation::PlanarOffset {
+                profile,
+                distance_bits,
+            } => backend.offset_planar_profile(
+                &PlanarProfileLoop::Segments(exact_brep_boundary_segments(
+                    &graph.profiles[profile.0 as usize],
+                    true,
+                )?),
+                f64::from_bits(*distance_bits),
             )?,
             ExactBRepOperation::Sweep { profile, path } => exact_brep_sweep(
                 backend,

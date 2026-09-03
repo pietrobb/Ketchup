@@ -1801,6 +1801,7 @@ fn install_graph_result(
             exact_input_digest: "headless-topology-input".into(),
             result_fingerprint: "headless-topology-result".into(),
             volume_mm3: size.x * size.y * size.z,
+            area_mm2: 0.0,
             topology_counts: [8, 12, 6, 1, 1],
             bounds_mm: [
                 [minimum.x, minimum.y, minimum.z],
@@ -9016,6 +9017,7 @@ fn solid_tool_preview_survives_accepted_exact_bounds_refresh_and_commits_once() 
             exact_input_digest: "solid-tool-refreshed-input".into(),
             result_fingerprint: "solid-tool-refreshed-result".into(),
             volume_mm3: size.x * size.y * size.z,
+            area_mm2: 0.0,
             topology_counts: [8, 12, 6, 1, 1],
             bounds_mm: [
                 [minimum.x, minimum.y, minimum.z],

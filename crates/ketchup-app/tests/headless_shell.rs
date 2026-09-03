@@ -9804,6 +9804,7 @@ fn install_general_finish_graph_result(shell: &mut Shell, producer_feature_id: F
             exact_input_digest: format!("headless-finish-input-{}", producer_feature_id.0),
             result_fingerprint: format!("headless-finish-result-{}", producer_feature_id.0),
             volume_mm3: 120_000.0,
+            area_mm2: 0.0,
             topology_counts: [8, 12, 6, 1, 1],
             bounds_mm: [[0.0, 0.0, 0.0], [100.0, 60.0, 20.0]],
             backend: "headless-finish-backend.v1".into(),

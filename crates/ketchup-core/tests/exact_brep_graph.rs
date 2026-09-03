@@ -1,9 +1,10 @@
 use ketchup_core::document::{
     BodyId, BooleanOperation, CanonicalCommand, CanonicalError, CommandBatch, DefinitionId,
-    Dimension, DocumentStore, EdgeFinishKind, FeatureId, FeatureKind, LoftSection, StableFaceRole,
+    Dimension, DocumentStore, EdgeFinishKind, FeatureId, FeatureKind, LoftSection, ProfileSegment,
+    StableFaceRole,
 };
 use ketchup_core::exact_brep_graph::{
-    EXACT_BREP_GRAPH_SCHEMA_V4, ExactBRepBooleanOperation, ExactBRepEdgeFinishKind, ExactBRepGraph,
+    EXACT_BREP_GRAPH_SCHEMA_V5, ExactBRepBooleanOperation, ExactBRepEdgeFinishKind, ExactBRepGraph,
     ExactBRepGraphError, ExactBRepOperation, ExactBRepPlanarGeometry, ExactBRepPlanarLoop,
     ExactBRepPlanarSegment, ExactBRepTopologyKind, MAX_EXACT_BREP_GRAPH_BYTES,
     MAX_EXACT_BREP_GRAPH_SEGMENTS, MAX_EXACT_BREP_PLANAR_LOOP_SEGMENTS,
@@ -1145,7 +1146,7 @@ fn mixed_line_cubic_region_compiles_to_v4_and_is_deterministic() {
 
     let snapshot = document.current();
     let initial = ExactBRepGraph::from_snapshot(&snapshot, definition, pad).unwrap();
-    assert_eq!(initial.schema, EXACT_BREP_GRAPH_SCHEMA_V4);
+    assert_eq!(initial.schema, EXACT_BREP_GRAPH_SCHEMA_V5);
     assert_eq!(initial.profiles.len(), 1);
     assert_eq!(initial.nodes.len(), 1);
     let ExactBRepPlanarGeometry::Region { outer, holes } = &initial.profiles[0].geometry else {
@@ -1208,4 +1209,157 @@ fn mixed_line_cubic_region_compiles_to_v4_and_is_deterministic() {
     assert_eq!(undone.to_bytes().unwrap(), initial_bytes);
     let redone = ExactBRepGraph::from_snapshot(&document.redo().unwrap(), definition, pad).unwrap();
     assert_eq!(redone, changed);
+}
+
+#[test]
+fn planar_offset_graph_compiles_serializes_and_rejects_tampering() {
+    let definition = DefinitionId(95);
+    let profile = FeatureId(950);
+    let offset = FeatureId(951);
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: definition,
+                name: "Planar offset graph".into(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: profile,
+                definition_id: definition,
+                name: "Line-arc capsule".into(),
+                kind: FeatureKind::SegmentProfile {
+                    segments: vec![
+                        ProfileSegment::Line {
+                            start_mm: [0.0, 0.0],
+                            end_mm: [20.0, 0.0],
+                        },
+                        ProfileSegment::CircularArc {
+                            start_mm: [20.0, 0.0],
+                            end_mm: [0.0, 0.0],
+                            center_mm: [10.0, 0.0],
+                            clockwise: false,
+                        },
+                    ],
+                    closed: true,
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: offset,
+                definition_id: definition,
+                name: "Offset face".into(),
+                kind: FeatureKind::PlanarOffset {
+                    profile,
+                    distance: dimension(2.0),
+                },
+            },
+        ]))
+        .unwrap();
+    let graph = ExactBRepGraph::from_snapshot(&document.current(), definition, offset).unwrap();
+    assert_eq!(graph.schema, EXACT_BREP_GRAPH_SCHEMA_V5);
+    assert!(graph.terminal_is_planar_offset());
+    assert!(graph.producer_bounds_mm().unwrap().is_some());
+    let bytes = graph.to_bytes().unwrap();
+    assert_eq!(ExactBRepGraph::from_bytes(&bytes).unwrap(), graph);
+
+    let mut open = graph.clone();
+    let ExactBRepPlanarGeometry::Boundary { closed, .. } = &mut open.profiles[0].geometry else {
+        panic!("fixture must compile as a boundary");
+    };
+    *closed = false;
+    assert_eq!(
+        ExactBRepGraph::from_bytes(&serde_json::to_vec(&open).unwrap()),
+        Err(ExactBRepGraphError::InvalidGraph)
+    );
+
+    let mut cubic = graph.clone();
+    let ExactBRepPlanarGeometry::Boundary { segments, .. } = &mut cubic.profiles[0].geometry else {
+        panic!("fixture must compile as a boundary");
+    };
+    let ExactBRepPlanarSegment::CircularArc {
+        start_bits,
+        end_bits,
+        ..
+    } = segments[1]
+    else {
+        panic!("fixture must contain an arc");
+    };
+    segments[1] = ExactBRepPlanarSegment::CubicBezier {
+        start_bits,
+        control_1_bits: [15.0, 5.0].map(f64::to_bits),
+        control_2_bits: [5.0, 5.0].map(f64::to_bits),
+        end_bits,
+    };
+    assert_eq!(
+        ExactBRepGraph::from_bytes(&serde_json::to_vec(&cubic).unwrap()),
+        Err(ExactBRepGraphError::InvalidGraph)
+    );
+
+    for distance in [0.0, f64::NAN, 1_000_001.0] {
+        let mut tampered = graph.clone();
+        let ExactBRepOperation::PlanarOffset { distance_bits, .. } =
+            &mut tampered.nodes[0].operation
+        else {
+            panic!("fixture must compile as a planar offset");
+        };
+        *distance_bits = distance.to_bits();
+        assert_eq!(
+            ExactBRepGraph::from_bytes(&serde_json::to_vec(&tampered).unwrap()),
+            Err(ExactBRepGraphError::InvalidGraph)
+        );
+    }
+
+    let edge_definition = DefinitionId(97);
+    let edge_profile = FeatureId(970);
+    let edge_offset = FeatureId(971);
+    let mut edge_document = DocumentStore::new();
+    edge_document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: edge_definition,
+                name: "Near-envelope inward offset".into(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: edge_profile,
+                definition_id: edge_definition,
+                name: "Near-envelope profile".into(),
+                kind: FeatureKind::SegmentProfile {
+                    segments: vec![
+                        ProfileSegment::Line {
+                            start_mm: [999_979.0, 0.0],
+                            end_mm: [999_999.0, 0.0],
+                        },
+                        ProfileSegment::Line {
+                            start_mm: [999_999.0, 0.0],
+                            end_mm: [999_999.0, 20.0],
+                        },
+                        ProfileSegment::Line {
+                            start_mm: [999_999.0, 20.0],
+                            end_mm: [999_979.0, 20.0],
+                        },
+                        ProfileSegment::Line {
+                            start_mm: [999_979.0, 20.0],
+                            end_mm: [999_979.0, 0.0],
+                        },
+                    ],
+                    closed: true,
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: edge_offset,
+                definition_id: edge_definition,
+                name: "Inward offset".into(),
+                kind: FeatureKind::PlanarOffset {
+                    profile: edge_profile,
+                    distance: dimension(-2.0),
+                },
+            },
+        ]))
+        .unwrap();
+    let inward =
+        ExactBRepGraph::from_snapshot(&edge_document.current(), edge_definition, edge_offset)
+            .unwrap();
+    assert_eq!(
+        inward.producer_bounds_mm().unwrap(),
+        Some([[999_979.0, 0.0, 0.0], [999_999.0, 20.0, 0.0]])
+    );
 }

@@ -12945,12 +12945,16 @@ fn validate_product(product: &ProductModel) -> Result<(), CanonicalError> {
                             else {
                                 return false;
                             };
-                            let output_envelope = [
-                                bounds[0] - margin,
-                                bounds[1] - margin,
-                                bounds[2] + margin,
-                                bounds[3] + margin,
-                            ];
+                            let output_envelope = if distance > 0.0 {
+                                [
+                                    bounds[0] - margin,
+                                    bounds[1] - margin,
+                                    bounds[2] + margin,
+                                    bounds[3] + margin,
+                                ]
+                            } else {
+                                bounds
+                            };
                             let minimum_displacement = distance.abs();
                             let cannot_statically_collapse = distance > 0.0
                                 || bounds[2] - bounds[0] > 2.0 * minimum_displacement

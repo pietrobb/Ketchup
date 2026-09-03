@@ -886,6 +886,7 @@ mod tests {
                     exact_input_digest: "generated-headless-input".into(),
                     result_fingerprint: "generated-headless-result".into(),
                     volume_mm3: 1_000.0,
+                    area_mm2: 0.0,
                     topology_counts: [4, 6, 4, 1, 1],
                     bounds_mm: [[0.0, 0.0, 0.0], [10.0, 10.0, 10.0]],
                     backend: "occt-generated-headless.v1".into(),

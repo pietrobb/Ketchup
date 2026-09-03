@@ -8,11 +8,11 @@ use ketchup_core::exact_brep_graph::{
     MAX_EXACT_BREP_GRAPH_PROFILES,
 };
 use ketchup_core::exact_product::{
-    ExactBodyPackage, ExactFaceRole, ExactFeatureChainRequest, ExactProductError,
-    ExactResultRegistry,
+    ExactBRepGraphPackage, ExactBRepGraphWorkerEvidence, ExactBodyPackage, ExactFaceRole,
+    ExactFeatureChainRequest, ExactPlanarOffsetRequest, ExactProductError, ExactResultRegistry,
 };
 use ketchup_core::graph::sha256_hex;
-use ketchup_core::import::plan_step_import;
+use ketchup_core::import::{StepImportMesh, StepMeshTriangle, plan_step_import};
 use ketchup_core::persistence;
 use ketchup_core::sketch::{
     FeatureDirection, FeatureExtent, FeatureExtentEnd, PadSpec, PocketSpec, PrincipalPlane,
@@ -936,6 +936,41 @@ fn worker_transforms_a_circle_pad_from_its_arbitrary_workplane_frame() {
     let mut supervisor =
         ExactWorkerSupervisor::spawn(env!("CARGO_BIN_EXE_ketchup-exact-worker")).unwrap();
     let result = supervisor.evaluate_exact_brep_graph(&graph).unwrap();
+    let mesh = StepImportMesh {
+        vertices_mm: result
+            .vertices
+            .iter()
+            .map(|vertex| vertex.position_mm)
+            .collect(),
+        triangles: result
+            .triangles
+            .iter()
+            .zip(&result.triangle_face_ordinals)
+            .map(|(triangle, face_ordinal)| StepMeshTriangle {
+                vertex_indices: triangle.vertex_indices,
+                face_ordinal: *face_ordinal,
+            })
+            .collect(),
+    };
+    for invalid_area in [1.0, f64::NAN] {
+        assert!(matches!(
+            ExactBRepGraphPackage::from_worker_evidence(
+                &graph,
+                ExactBRepGraphWorkerEvidence {
+                    exact_input_digest: result.identity.exact_input_digest.clone(),
+                    result_fingerprint: result.identity.result_fingerprint.clone(),
+                    volume_mm3: result.volume_mm3,
+                    area_mm2: invalid_area,
+                    topology_counts: result.topology_counts,
+                    bounds_mm: result.bounds_mm,
+                    backend: result.identity.backend.clone(),
+                    tolerance: result.identity.tolerance.clone(),
+                },
+                &mesh,
+            ),
+            Err(ExactProductError::InvalidWorkerEvidence)
+        ));
+    }
 
     assert_bounds_close(result.bounds_mm, [0.0, 5.0, 15.0, 25.0, 15.0, 25.0]);
     assert_eq!(result.identity.producer_feature_id.0, pad.0);
@@ -1720,6 +1755,124 @@ fn worker_evaluates_revolve_non_rectangular_sweep_and_loft_through_one_graph_ide
         assert!(first.volume_mm3 > 0.0);
         assert_eq!(first.topology_counts[4], 1);
     }
+}
+
+#[test]
+fn worker_evaluates_planar_offset_face_through_exact_brep_graph() {
+    let definition = DefinitionId(96);
+    let profile = FeatureId(960);
+    let offset = FeatureId(961);
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: definition,
+                name: "Graph planar offset".into(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: profile,
+                definition_id: definition,
+                name: "Line-arc capsule".into(),
+                kind: FeatureKind::SegmentProfile {
+                    segments: vec![
+                        ProfileSegment::Line {
+                            start_mm: [0.0, 0.0],
+                            end_mm: [20.0, 0.0],
+                        },
+                        ProfileSegment::CircularArc {
+                            start_mm: [20.0, 0.0],
+                            end_mm: [0.0, 0.0],
+                            center_mm: [10.0, 0.0],
+                            clockwise: false,
+                        },
+                    ],
+                    closed: true,
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: offset,
+                definition_id: definition,
+                name: "Offset face".into(),
+                kind: FeatureKind::PlanarOffset {
+                    profile,
+                    distance: dimension(2.0),
+                },
+            },
+        ]))
+        .unwrap();
+    let snapshot = document.current();
+    let graph = ExactBRepGraph::from_snapshot(&snapshot, definition, offset).unwrap();
+    assert!(graph.terminal_is_planar_offset());
+
+    let mut supervisor =
+        ExactWorkerSupervisor::spawn(env!("CARGO_BIN_EXE_ketchup-exact-worker")).unwrap();
+    let request = ExactPlanarOffsetRequest::from_snapshot(&snapshot, definition).unwrap();
+    let dedicated = supervisor.evaluate_planar_offset(&request).unwrap();
+    let package = supervisor.evaluate_exact_brep_graph(&graph).unwrap();
+    assert_eq!(
+        supervisor.evaluate_exact_brep_graph(&graph).unwrap(),
+        package
+    );
+    let mesh = StepImportMesh {
+        vertices_mm: package
+            .vertices
+            .iter()
+            .map(|vertex| vertex.position_mm)
+            .collect(),
+        triangles: package
+            .triangles
+            .iter()
+            .zip(&package.triangle_face_ordinals)
+            .map(|(triangle, face_ordinal)| StepMeshTriangle {
+                vertex_indices: triangle.vertex_indices,
+                face_ordinal: *face_ordinal,
+            })
+            .collect(),
+    };
+    let evidence = |area_mm2| ExactBRepGraphWorkerEvidence {
+        exact_input_digest: package.identity.exact_input_digest.clone(),
+        result_fingerprint: package.identity.result_fingerprint.clone(),
+        volume_mm3: package.volume_mm3,
+        area_mm2,
+        topology_counts: package.topology_counts,
+        bounds_mm: package.bounds_mm,
+        backend: package.identity.backend.clone(),
+        tolerance: package.identity.tolerance.clone(),
+    };
+    assert!(
+        ExactBRepGraphPackage::from_worker_evidence(&graph, evidence(package.area_mm2), &mesh,)
+            .is_ok()
+    );
+    for forged_area in [package.area_mm2 * 0.5, f64::NAN] {
+        assert!(matches!(
+            ExactBRepGraphPackage::from_worker_evidence(&graph, evidence(forged_area), &mesh,),
+            Err(ExactProductError::InvalidWorkerEvidence)
+        ));
+    }
+    assert!(package.is_current(&snapshot));
+    assert_eq!(package.volume_mm3, 0.0);
+    assert!(package.topology_counts[0] > 0);
+    assert_eq!(package.topology_counts[0], package.topology_counts[1]);
+    assert_eq!(package.topology_counts[2..], [1, 0, 0]);
+    assert_eq!(package.bounds_mm[0][2], 0.0);
+    assert_eq!(package.bounds_mm[1][2], 0.0);
+    assert!(!package.vertices.is_empty());
+    assert!(!package.triangles.is_empty());
+    assert_eq!(
+        package.triangles.len(),
+        package.triangle_face_ordinals.len()
+    );
+    assert!(
+        package
+            .triangle_face_ordinals
+            .iter()
+            .all(|ordinal| *ordinal == 0)
+    );
+    assert_eq!(
+        package.identity.result_fingerprint,
+        dedicated.identity.result_fingerprint
+    );
+    assert_eq!(package.bounds_mm, dedicated.bounds_mm);
 }
 
 #[test]
