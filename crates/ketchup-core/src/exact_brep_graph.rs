@@ -453,6 +453,7 @@ impl ExactBRepGraph {
                     .profile_ids()
                     .iter()
                     .any(|profile| profile.0 as usize >= self.profiles.len())
+                || !valid_operation_profiles(&node.operation, &self.profiles)
                 || !valid_operation(
                     &node.operation,
                     self.document_id,
@@ -1683,6 +1684,22 @@ fn valid_topology_selectors(
     })
 }
 
+fn valid_operation_profiles(operation: &ExactBRepOperation, profiles: &[ExactBRepProfile]) -> bool {
+    match operation {
+        ExactBRepOperation::Sweep { profile, path } => {
+            profile != path
+                && matches!(
+                    profiles.get(path.0 as usize).map(|profile| &profile.geometry),
+                    Some(ExactBRepPlanarGeometry::Boundary {
+                        closed: false,
+                        segments,
+                    }) if matches!(segments.as_slice(), [ExactBRepPlanarSegment::Line { .. }])
+                )
+        }
+        _ => true,
+    }
+}
+
 fn valid_operation(
     operation: &ExactBRepOperation,
     document_id: u64,
@@ -2025,5 +2042,52 @@ mod tests {
             validate_geometry(&over_limit),
             Err(ExactBRepGraphError::ResourceLimit),
         );
+    }
+
+    #[test]
+    fn sweep_path_contract_matches_the_current_worker() {
+        let profile = |id, geometry| ExactBRepProfile {
+            id: ExactBRepProfileId(id),
+            source_feature_id: id as u64 + 1,
+            region_id: None,
+            frame_bits: identity_frame(),
+            geometry,
+        };
+        let line = |start: [f64; 2], end: [f64; 2]| ExactBRepPlanarSegment::Line {
+            start_bits: start.map(f64::to_bits),
+            end_bits: end.map(f64::to_bits),
+        };
+        let mut profiles = vec![
+            profile(
+                0,
+                ExactBRepPlanarGeometry::Circle {
+                    center_bits: [0.0f64.to_bits(), 0.0f64.to_bits()],
+                    radius_bits: 2.0f64.to_bits(),
+                },
+            ),
+            profile(
+                1,
+                ExactBRepPlanarGeometry::Boundary {
+                    closed: false,
+                    segments: vec![line([0.0, 0.0], [10.0, 0.0])],
+                },
+            ),
+        ];
+        let sweep = ExactBRepOperation::Sweep {
+            profile: ExactBRepProfileId(0),
+            path: ExactBRepProfileId(1),
+        };
+        assert!(valid_operation_profiles(&sweep, &profiles));
+
+        profiles[1].geometry = ExactBRepPlanarGeometry::Circle {
+            center_bits: [0.0f64.to_bits(), 0.0f64.to_bits()],
+            radius_bits: 10.0f64.to_bits(),
+        };
+        assert!(!valid_operation_profiles(&sweep, &profiles));
+        profiles[1].geometry = ExactBRepPlanarGeometry::Boundary {
+            closed: false,
+            segments: vec![line([0.0, 0.0], [5.0, 0.0]), line([5.0, 0.0], [10.0, 0.0])],
+        };
+        assert!(!valid_operation_profiles(&sweep, &profiles));
     }
 }
