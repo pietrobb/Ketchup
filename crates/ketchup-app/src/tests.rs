@@ -10028,6 +10028,75 @@ fn loft_exact_plan_rejects_tamper_drift_stale_and_replay_atomically() {
 }
 
 #[test]
+fn manual_and_assistant_multi_edge_finish_share_the_canonical_plan() {
+    let mut app = KetchupApp::new();
+    install_initial_graph_result(&mut app);
+    let locator = |ordinal| TopologicalPickLocator {
+        instance_path: InstancePath::root(OccurrenceId(1)),
+        producer_feature_id: FeatureId(2),
+        kind: TopologicalElementKind::Edge,
+        ordinal,
+    };
+    assert!(app.select_topological_locator(locator(9)));
+    assert!(app.select_topological_locator_additive(locator(2), true));
+    app.dispatch_command(AppCommand::Fillet);
+    let manual_preview = app.general_finish_preview.as_ref().unwrap();
+    let CanonicalCommand::CreateFeature {
+        kind: manual_kind, ..
+    } = &manual_preview.plan.command
+    else {
+        panic!("manual finish preview must create one feature");
+    };
+    let mut reference_ids = app
+        .general_finish_preview_selection_parameters()
+        .unwrap()
+        .1
+        .into_iter()
+        .map(|reference| reference.lineage_digest)
+        .collect::<Vec<_>>();
+    reference_ids.reverse();
+    let program = AssistantCadEditProgram {
+        operations: vec![AssistantCadEditOperation::AppendFeature {
+            definition_id: INITIAL_BOX_DEFINITION.0,
+            name: "Assistant multi-edge fillet".to_owned(),
+            feature: AssistantCadBodyFeature::TopologyFillet {
+                target_feature_id: 2,
+                edge_reference_ids: reference_ids,
+                radius_mm: 1.0,
+            },
+        }],
+    };
+    let assistant_batch = app.plan_assistant_cad_edit_program(&program).unwrap();
+    let [
+        CanonicalCommand::CreateFeature {
+            kind: assistant_kind,
+            ..
+        },
+    ] = assistant_batch.commands()
+    else {
+        panic!("assistant finish plan must create one feature");
+    };
+    assert_eq!(manual_kind, assistant_kind);
+}
+
+#[test]
+fn removing_the_last_topological_selection_clears_the_occurrence_selection() {
+    let mut app = KetchupApp::new();
+    install_initial_graph_result(&mut app);
+    let locator = TopologicalPickLocator {
+        instance_path: InstancePath::root(OccurrenceId(1)),
+        producer_feature_id: FeatureId(2),
+        kind: TopologicalElementKind::Edge,
+        ordinal: 2,
+    };
+    assert!(app.select_topological_locator(locator.clone()));
+    assert_eq!(app.selected_occurrence_count(), 1);
+    assert!(app.select_topological_locator_additive(locator, true));
+    assert_eq!(app.selected_occurrence_count(), 0);
+    assert!(!app.command_is_enabled(AppCommand::Fillet));
+}
+
+#[test]
 fn general_finish_exact_plan_rejects_tamper_drift_stale_and_replay_atomically() {
     fn prepared_shell() -> KetchupApp {
         let mut app = KetchupApp::new();

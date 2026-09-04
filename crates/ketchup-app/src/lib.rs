@@ -3047,6 +3047,51 @@ pub enum GeneralFinishKind {
     Chamfer,
 }
 
+const MAX_TOPOLOGICAL_FINISH_REFERENCES: usize = 64;
+
+fn plan_topology_finish_kind(
+    kind: GeneralFinishKind,
+    target: FeatureId,
+    mut references: Vec<TopologicalElementRef>,
+    amount: Dimension,
+) -> Option<FeatureKind> {
+    if !(1..=MAX_TOPOLOGICAL_FINISH_REFERENCES).contains(&references.len()) {
+        return None;
+    }
+    let expected_kind = match kind {
+        GeneralFinishKind::Shell => TopologicalElementKind::Face,
+        GeneralFinishKind::Fillet | GeneralFinishKind::Chamfer => TopologicalElementKind::Edge,
+    };
+    if references.iter().any(|reference| {
+        reference.kind != expected_kind
+            || reference.producer_feature_id != target
+            || !reference.has_valid_lineage()
+    }) {
+        return None;
+    }
+    references.sort_unstable();
+    if references.windows(2).any(|pair| pair[0] == pair[1]) {
+        return None;
+    }
+    Some(match kind {
+        GeneralFinishKind::Shell => FeatureKind::TopologyShell {
+            target,
+            removed_faces: references,
+            thickness: amount,
+        },
+        GeneralFinishKind::Fillet | GeneralFinishKind::Chamfer => FeatureKind::TopologyEdgeFinish {
+            target,
+            edges: references,
+            kind: if kind == GeneralFinishKind::Fillet {
+                EdgeFinishKind::Fillet
+            } else {
+                EdgeFinishKind::Chamfer
+            },
+            amount,
+        },
+    })
+}
+
 #[derive(Clone, Debug, PartialEq)]
 struct PlanarOffsetSourcePlan {
     source_document_id: DocumentId,
@@ -3146,7 +3191,7 @@ struct GeneralFinishSourcePlan {
     definition_id: DefinitionId,
     target_feature_id: FeatureId,
     target_feature_kind: FeatureKind,
-    topological_selection: SnapshotBoundTopologicalSelection,
+    topological_selections: Vec<SnapshotBoundTopologicalSelection>,
     kind: GeneralFinishKind,
     world_transform: Transform,
     exact_graph: ExactBRepGraph,
@@ -5958,7 +6003,7 @@ struct InteractionProjectionCache {
 struct SelectionState {
     occurrences: BTreeSet<InstancePath>,
     primary: Option<SelectionId>,
-    topological: Option<SnapshotBoundTopologicalSelection>,
+    topological: Vec<(SelectionId, SnapshotBoundTopologicalSelection)>,
     selected_group: Option<GroupId>,
     edit_context: Vec<EditContext>,
 }
@@ -5967,7 +6012,7 @@ impl SelectionState {
     fn clear(&mut self) {
         self.occurrences.clear();
         self.primary = None;
-        self.topological = None;
+        self.topological.clear();
         self.selected_group = None;
     }
 
@@ -5976,7 +6021,7 @@ impl SelectionState {
     }
 
     fn select_exact(&mut self, selection: SelectionId, additive: bool) {
-        self.topological = None;
+        self.topological.clear();
         let instance_path = selection.instance_path.clone();
         if additive && self.occurrences.contains(&instance_path) {
             self.occurrences.remove(&instance_path);
@@ -6001,9 +6046,54 @@ impl SelectionState {
         &mut self,
         selection: SelectionId,
         topological: SnapshotBoundTopologicalSelection,
-    ) {
-        self.select_exact(selection, false);
-        self.topological = Some(topological);
+        additive: bool,
+    ) -> bool {
+        let target = topological.target();
+        if additive {
+            if self.topological.is_empty() {
+                self.select_exact(selection.clone(), false);
+                self.topological.push((selection, topological));
+                return true;
+            }
+            if self.primary.as_ref().is_none_or(|primary| {
+                primary.definition_id != selection.definition_id
+                    || primary.instance_path != selection.instance_path
+            }) || self.topological.first().is_some_and(|(_, existing)| {
+                existing.target().reference.kind != target.reference.kind
+                    || existing.target().reference.producer_feature_id
+                        != target.reference.producer_feature_id
+            }) {
+                return false;
+            }
+            if let Some(index) = self
+                .topological
+                .iter()
+                .position(|(_, existing)| existing.target() == target)
+            {
+                self.topological.remove(index);
+                if self.topological.is_empty() {
+                    self.occurrences.clear();
+                    self.primary = None;
+                    self.selected_group = None;
+                } else {
+                    self.primary = Some(self.topological[0].0.clone());
+                }
+                return true;
+            }
+            if self.topological.len() == MAX_TOPOLOGICAL_FINISH_REFERENCES {
+                return false;
+            }
+            self.topological.push((selection, topological));
+            self.topological.sort_by(|(_, left), (_, right)| {
+                left.target().reference.cmp(&right.target().reference)
+            });
+            self.primary = Some(self.topological[0].0.clone());
+            return true;
+        }
+
+        self.select_exact(selection.clone(), false);
+        self.topological.push((selection, topological));
+        true
     }
 
     fn select_path(&mut self, instance_path: InstancePath, additive: bool) {
@@ -6016,7 +6106,7 @@ impl SelectionState {
             self.occurrences.insert(instance_path);
         }
         self.primary = None;
-        self.topological = None;
+        self.topological.clear();
         self.selected_group = None;
     }
 
@@ -13482,19 +13572,29 @@ impl KetchupApp {
                                 };
                                 removed_faces.push((*reference).clone());
                             }
-                            removed_faces.sort_unstable();
-                            FeatureKind::TopologyShell {
+                            let thickness = Dimension::new(thickness_mm.to_string(), *thickness_mm)
+                                .map_err(|error| {
+                                    assistant_canonical_rejection(
+                                        error,
+                                        operation_name,
+                                        "feature.thickness_mm",
+                                    )
+                                })?;
+                            plan_topology_finish_kind(
+                                GeneralFinishKind::Shell,
                                 target,
                                 removed_faces,
-                                thickness: Dimension::new(thickness_mm.to_string(), *thickness_mm)
-                                    .map_err(|error| {
-                                        assistant_canonical_rejection(
-                                            error,
-                                            operation_name,
-                                            "feature.thickness_mm",
-                                        )
-                                    })?,
-                            }
+                                thickness,
+                            )
+                            .ok_or_else(|| {
+                                assistant_planning_rejection(
+                                    "planning.cad_topology_reference_set_invalid",
+                                    operation_name,
+                                    &format!("feature:{}", target.0),
+                                    "The requested Shell face reference set is not canonical.",
+                                    "Use 1 to 64 unique current host-issued face references for one target.",
+                                )
+                            })?
                         }
                         AssistantCadBodyFeature::TopologyFillet {
                             target_feature_id,
@@ -13557,21 +13657,29 @@ impl KetchupApp {
                                 };
                                 edges.push((*reference).clone());
                             }
-                            edges.sort_unstable();
-                            FeatureKind::TopologyEdgeFinish {
+                            let radius = Dimension::new(radius_mm.to_string(), *radius_mm)
+                                .map_err(|error| {
+                                    assistant_canonical_rejection(
+                                        error,
+                                        operation_name,
+                                        "feature.radius_mm",
+                                    )
+                                })?;
+                            plan_topology_finish_kind(
+                                GeneralFinishKind::Fillet,
                                 target,
                                 edges,
-                                kind: EdgeFinishKind::Fillet,
-                                amount: Dimension::new(radius_mm.to_string(), *radius_mm).map_err(
-                                    |error| {
-                                        assistant_canonical_rejection(
-                                            error,
-                                            operation_name,
-                                            "feature.radius_mm",
-                                        )
-                                    },
-                                )?,
-                            }
+                                radius,
+                            )
+                            .ok_or_else(|| {
+                                assistant_planning_rejection(
+                                    "planning.cad_topology_reference_set_invalid",
+                                    operation_name,
+                                    &format!("feature:{}", target.0),
+                                    "The requested Fillet edge reference set is not canonical.",
+                                    "Use 1 to 64 unique current host-issued edge references for one target.",
+                                )
+                            })?
                         }
                         AssistantCadBodyFeature::TopologyChamfer {
                             target_feature_id,
@@ -13634,20 +13742,29 @@ impl KetchupApp {
                                 };
                                 edges.push((*reference).clone());
                             }
-                            edges.sort_unstable();
-                            FeatureKind::TopologyEdgeFinish {
+                            let distance = Dimension::new(distance_mm.to_string(), *distance_mm)
+                                .map_err(|error| {
+                                    assistant_canonical_rejection(
+                                        error,
+                                        operation_name,
+                                        "feature.distance_mm",
+                                    )
+                                })?;
+                            plan_topology_finish_kind(
+                                GeneralFinishKind::Chamfer,
                                 target,
                                 edges,
-                                kind: EdgeFinishKind::Chamfer,
-                                amount: Dimension::new(distance_mm.to_string(), *distance_mm)
-                                    .map_err(|error| {
-                                        assistant_canonical_rejection(
-                                            error,
-                                            operation_name,
-                                            "feature.distance_mm",
-                                        )
-                                    })?,
-                            }
+                                distance,
+                            )
+                            .ok_or_else(|| {
+                                assistant_planning_rejection(
+                                    "planning.cad_topology_reference_set_invalid",
+                                    operation_name,
+                                    &format!("feature:{}", target.0),
+                                    "The requested Chamfer edge reference set is not canonical.",
+                                    "Use 1 to 64 unique current host-issued edge references for one target.",
+                                )
+                            })?
                         }
                     };
                     let id = next_feature.map(FeatureId).ok_or_else(|| {
@@ -16984,6 +17101,15 @@ impl KetchupApp {
 
     #[doc(hidden)]
     pub fn select_topological_locator(&mut self, locator: TopologicalPickLocator) -> bool {
+        self.select_topological_locator_additive(locator, false)
+    }
+
+    #[doc(hidden)]
+    pub fn select_topological_locator_additive(
+        &mut self,
+        locator: TopologicalPickLocator,
+        additive: bool,
+    ) -> bool {
         let Some(topological) = self.bind_topological_selection(&locator) else {
             return false;
         };
@@ -17015,8 +17141,8 @@ impl KetchupApp {
                 element,
             },
             topological,
-        );
-        true
+            additive,
+        )
     }
 
     fn select_from_viewport(&mut self, target: Option<SelectionId>, additive: bool) {
@@ -18278,22 +18404,28 @@ impl KetchupApp {
     ) -> Option<(
         DefinitionId,
         FeatureId,
-        SnapshotBoundTopologicalSelection,
-        TopologicalElementRef,
+        Vec<SnapshotBoundTopologicalSelection>,
+        Vec<TopologicalElementRef>,
     )> {
         let selection = self.selection.primary.as_ref()?;
-        let topological = self.selection.topological.as_ref()?;
-        let snapshot = self.document.current();
-        let resolved = topological
-            .resolve_current(&snapshot, &self.topology_results)
-            .ok()?;
-        if resolved.instance_path != selection.instance_path
-            || resolved.reference.definition_id != selection.definition_id
-            || resolved.reference.kind != kind
-        {
+        if !(1..=MAX_TOPOLOGICAL_FINISH_REFERENCES).contains(&self.selection.topological.len()) {
             return None;
         }
-        let target_feature_id = resolved.reference.producer_feature_id;
+        let snapshot = self.document.current();
+        let mut references = Vec::with_capacity(self.selection.topological.len());
+        for (_, topological) in &self.selection.topological {
+            let resolved = topological
+                .resolve_current(&snapshot, &self.topology_results)
+                .ok()?;
+            if resolved.instance_path != selection.instance_path
+                || resolved.reference.definition_id != selection.definition_id
+                || resolved.reference.kind != kind
+            {
+                return None;
+            }
+            references.push(resolved.reference);
+        }
+        let target_feature_id = references.first()?.producer_feature_id;
         let target = snapshot.feature(target_feature_id)?;
         if target.definition_id() != selection.definition_id || !target.kind().produces_body() {
             return None;
@@ -18306,34 +18438,36 @@ impl KetchupApp {
         }
         ExactBRepGraph::from_snapshot(&snapshot, selection.definition_id, target_feature_id)
             .ok()?;
+        references = match kind {
+            TopologicalElementKind::Face => plan_topology_finish_kind(
+                GeneralFinishKind::Shell,
+                target_feature_id,
+                references,
+                Dimension::new("1".to_owned(), 1.0).ok()?,
+            ),
+            TopologicalElementKind::Edge => plan_topology_finish_kind(
+                GeneralFinishKind::Fillet,
+                target_feature_id,
+                references,
+                Dimension::new("1".to_owned(), 1.0).ok()?,
+            ),
+            TopologicalElementKind::Vertex => None,
+        }
+        .and_then(|feature| match feature {
+            FeatureKind::TopologyShell { removed_faces, .. } => Some(removed_faces),
+            FeatureKind::TopologyEdgeFinish { edges, .. } => Some(edges),
+            _ => None,
+        })?;
         Some((
             selection.definition_id,
             target_feature_id,
-            topological.clone(),
-            resolved.reference,
+            self.selection
+                .topological
+                .iter()
+                .map(|(_, topological)| topological.clone())
+                .collect(),
+            references,
         ))
-    }
-
-    fn selected_general_shell_target(
-        &self,
-    ) -> Option<(
-        DefinitionId,
-        FeatureId,
-        SnapshotBoundTopologicalSelection,
-        TopologicalElementRef,
-    )> {
-        self.selected_general_finish_target(TopologicalElementKind::Face)
-    }
-
-    fn selected_general_edge_finish_target(
-        &self,
-    ) -> Option<(
-        DefinitionId,
-        FeatureId,
-        SnapshotBoundTopologicalSelection,
-        TopologicalElementRef,
-    )> {
-        self.selected_general_finish_target(TopologicalElementKind::Edge)
     }
 
     fn general_finish_source_plan(
@@ -18341,12 +18475,13 @@ impl KetchupApp {
         kind: GeneralFinishKind,
     ) -> Option<GeneralFinishSourcePlan> {
         let selection = self.selection.primary.as_ref()?;
-        let (definition_id, target_feature_id, topological_selection, reference) = match kind {
-            GeneralFinishKind::Shell => self.selected_general_shell_target()?,
-            GeneralFinishKind::Fillet | GeneralFinishKind::Chamfer => {
-                self.selected_general_edge_finish_target()?
-            }
+        let expected_kind = if kind == GeneralFinishKind::Shell {
+            TopologicalElementKind::Face
+        } else {
+            TopologicalElementKind::Edge
         };
+        let (definition_id, target_feature_id, topological_selections, references) =
+            self.selected_general_finish_target(expected_kind)?;
         let snapshot = self.document.current();
         let target_feature_kind = snapshot.feature(target_feature_id)?.kind().clone();
         let world_transform = snapshot
@@ -18355,7 +18490,11 @@ impl KetchupApp {
             .world_transform;
         let exact_graph =
             ExactBRepGraph::from_snapshot(&snapshot, definition_id, target_feature_id).ok()?;
-        debug_assert_eq!(reference.producer_feature_id, target_feature_id);
+        debug_assert!(
+            references
+                .iter()
+                .all(|reference| reference.producer_feature_id == target_feature_id)
+        );
         Some(GeneralFinishSourcePlan {
             source_document_id: snapshot.document_id(),
             source_revision: snapshot.revision_id(),
@@ -18366,7 +18505,7 @@ impl KetchupApp {
             definition_id,
             target_feature_id,
             target_feature_kind,
-            topological_selection,
+            topological_selections,
             kind,
             world_transform,
             exact_graph,
@@ -18399,40 +18538,26 @@ impl KetchupApp {
             .unwrap_or(0)
             .checked_add(1)
             .map(FeatureId)?;
-        let resolved = source
-            .topological_selection
-            .resolve_current(&snapshot, &self.topology_results)
-            .ok()?;
-        if resolved.reference.producer_feature_id != source.target_feature_id {
-            return None;
-        }
-        let reference = resolved.reference;
-        let (feature_kind, name_key) = match source.kind {
-            GeneralFinishKind::Shell => (
-                FeatureKind::TopologyShell {
-                    target: source.target_feature_id,
-                    removed_faces: vec![reference],
-                    thickness: dimension,
-                },
-                "model-shell-feature",
-            ),
-            GeneralFinishKind::Fillet | GeneralFinishKind::Chamfer => (
-                FeatureKind::TopologyEdgeFinish {
-                    target: source.target_feature_id,
-                    edges: vec![reference],
-                    kind: if source.kind == GeneralFinishKind::Fillet {
-                        EdgeFinishKind::Fillet
-                    } else {
-                        EdgeFinishKind::Chamfer
-                    },
-                    amount: dimension,
-                },
-                if source.kind == GeneralFinishKind::Fillet {
-                    "model-fillet-feature"
-                } else {
-                    "model-chamfer-feature"
-                },
-            ),
+        let references = source
+            .topological_selections
+            .iter()
+            .map(|selection| {
+                selection
+                    .resolve_current(&snapshot, &self.topology_results)
+                    .ok()
+                    .map(|resolved| resolved.reference)
+            })
+            .collect::<Option<Vec<_>>>()?;
+        let feature_kind = plan_topology_finish_kind(
+            source.kind,
+            source.target_feature_id,
+            references,
+            dimension,
+        )?;
+        let name_key = match source.kind {
+            GeneralFinishKind::Shell => "model-shell-feature",
+            GeneralFinishKind::Fillet => "model-fillet-feature",
+            GeneralFinishKind::Chamfer => "model-chamfer-feature",
         };
         let command = CanonicalCommand::CreateFeature {
             id: generated_feature_id,
@@ -18514,6 +18639,20 @@ impl KetchupApp {
     pub fn general_finish_preview_parameters(
         &self,
     ) -> Option<(FeatureId, TopologicalElementRef, GeneralFinishKind, f64)> {
+        let (target, references, kind, amount) =
+            self.general_finish_preview_selection_parameters()?;
+        Some((target, references.into_iter().next()?, kind, amount))
+    }
+
+    #[must_use]
+    pub fn general_finish_preview_selection_parameters(
+        &self,
+    ) -> Option<(
+        FeatureId,
+        Vec<TopologicalElementRef>,
+        GeneralFinishKind,
+        f64,
+    )> {
         let preview = self.general_finish_preview.as_ref()?;
         self.general_finish_preview_is_current().then(|| {
             (
@@ -18521,10 +18660,10 @@ impl KetchupApp {
                 preview
                     .plan
                     .source
-                    .topological_selection
-                    .target()
-                    .reference
-                    .clone(),
+                    .topological_selections
+                    .iter()
+                    .map(|selection| selection.target().reference.clone())
+                    .collect(),
                 preview.plan.source.kind,
                 f64::from_bits(preview.plan.amount_mm_bits),
             )
@@ -18594,6 +18733,14 @@ impl KetchupApp {
     pub fn latest_topology_shell_parameters(
         &self,
     ) -> Option<(FeatureId, TopologicalElementRef, f64)> {
+        let (feature, references, thickness) = self.latest_topology_shell_set_parameters()?;
+        Some((feature, references.into_iter().next()?, thickness))
+    }
+
+    #[must_use]
+    pub fn latest_topology_shell_set_parameters(
+        &self,
+    ) -> Option<(FeatureId, Vec<TopologicalElementRef>, f64)> {
         self.document
             .current()
             .features()
@@ -18606,11 +18753,7 @@ impl KetchupApp {
                 else {
                     return None;
                 };
-                Some((
-                    feature.id(),
-                    removed_faces.first()?.clone(),
-                    thickness.millimetres(),
-                ))
+                Some((feature.id(), removed_faces.clone(), thickness.millimetres()))
             })
             .last()
     }
@@ -18619,6 +18762,15 @@ impl KetchupApp {
     pub fn latest_topology_edge_finish_parameters(
         &self,
     ) -> Option<(FeatureId, TopologicalElementRef, EdgeFinishKind, f64)> {
+        let (feature, references, kind, amount) =
+            self.latest_topology_edge_finish_set_parameters()?;
+        Some((feature, references.into_iter().next()?, kind, amount))
+    }
+
+    #[must_use]
+    pub fn latest_topology_edge_finish_set_parameters(
+        &self,
+    ) -> Option<(FeatureId, Vec<TopologicalElementRef>, EdgeFinishKind, f64)> {
         self.document
             .current()
             .features()
@@ -18632,12 +18784,7 @@ impl KetchupApp {
                 else {
                     return None;
                 };
-                Some((
-                    feature.id(),
-                    edges.first()?.clone(),
-                    *kind,
-                    amount.millimetres(),
-                ))
+                Some((feature.id(), edges.clone(), *kind, amount.millimetres()))
             })
             .last()
     }
@@ -18689,10 +18836,12 @@ impl KetchupApp {
                 AppCommand::Sweep => self.sweep_preview_candidate().is_some(),
                 AppCommand::Loft => self.loft_preview_candidate().is_some(),
                 AppCommand::Revolve => self.selected_revolve_profile().is_some(),
-                AppCommand::Shell => self.selected_general_shell_target().is_some(),
-                AppCommand::Fillet | AppCommand::Chamfer => {
-                    self.selected_general_edge_finish_target().is_some()
-                }
+                AppCommand::Shell => self
+                    .selected_general_finish_target(TopologicalElementKind::Face)
+                    .is_some(),
+                AppCommand::Fillet | AppCommand::Chamfer => self
+                    .selected_general_finish_target(TopologicalElementKind::Edge)
+                    .is_some(),
                 AppCommand::SolidSubtract
                 | AppCommand::SolidUnion
                 | AppCommand::SolidIntersect
@@ -27155,9 +27304,9 @@ impl KetchupApp {
         let snapshot = self.document.current();
         let planning_snapshot = self.push_pull_planning_snapshot();
         let (topological_selection, topological_reference) =
-            match self.selection.topological.as_ref() {
-                None => (None, None),
-                Some(topological) => {
+            match self.selection.topological.as_slice() {
+                [] => (None, None),
+                [(_, topological)] => {
                     let resolved = topological
                         .resolve_current(&snapshot, &self.topology_results)
                         .ok()?;
@@ -27172,6 +27321,7 @@ impl KetchupApp {
                     }
                     (Some(topological.clone()), Some(resolved.reference))
                 }
+                _ => return None,
             };
         let target_box = self
             .active_boxes_for_snapshot(&planning_snapshot)
@@ -27682,10 +27832,10 @@ impl KetchupApp {
             || self
                 .selection
                 .topological
-                .as_ref()
-                .is_some_and(|selection| !selection.is_current(&snapshot))
+                .iter()
+                .any(|(_, selection)| !selection.is_current(&snapshot))
         {
-            self.selection.topological = None;
+            self.selection.topological.clear();
         }
         if self
             .last_move
@@ -31060,9 +31210,29 @@ impl KetchupApp {
                 let topological = target.as_ref().and_then(|selection| {
                     self.topological_selection_at_screen(pointer, response.rect, selection)
                 });
-                self.select_from_viewport(target.clone(), additive);
-                if !additive && self.selection.primary == target {
-                    self.selection.topological = topological;
+                match (target, topological) {
+                    (Some(target), Some(topological))
+                        if !additive
+                            || self.selection.occurrences.is_empty()
+                            || !self.selection.topological.is_empty() =>
+                    {
+                        let same_topological_scope = self
+                            .selection
+                            .topological
+                            .first()
+                            .is_some_and(|(current, _)| {
+                                current.definition_id == target.definition_id
+                                    && current.instance_path == target.instance_path
+                            });
+                        if !self
+                            .selection
+                            .select_topological(target.clone(), topological, additive)
+                            && !same_topological_scope
+                        {
+                            self.select_from_viewport(Some(target), additive);
+                        }
+                    }
+                    (target, _) => self.select_from_viewport(target, additive),
                 }
             } else if matches!(
                 self.active_tool,

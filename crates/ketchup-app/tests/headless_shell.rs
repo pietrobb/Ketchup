@@ -10121,6 +10121,103 @@ fn imported_exact_finishes_and_face_push_pull_recompute_through_headless_ui() {
 }
 
 #[test]
+fn multi_edge_fillet_is_canonical_stale_safe_atomic_and_persistent() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("multi-edge-fillet.ketchup");
+    let dialogs = ScriptedFileDialogs::new()
+        .queue_save(&path)
+        .queue_open(&path);
+    let mut shell = Shell::with_dialogs(dialogs);
+    install_general_finish_graph_result(&mut shell, FeatureId(2));
+    let locator = |ordinal| TopologicalPickLocator {
+        instance_path: InstancePath::root(OccurrenceId(1)),
+        producer_feature_id: FeatureId(2),
+        kind: TopologicalElementKind::Edge,
+        ordinal,
+    };
+    assert!(shell.app_mut().select_topological_locator(locator(9)));
+    assert!(
+        shell
+            .app_mut()
+            .select_topological_locator_additive(locator(2), true)
+    );
+    assert!(!shell.app_mut().select_topological_locator_additive(
+        TopologicalPickLocator {
+            instance_path: InstancePath::root(OccurrenceId(1)),
+            producer_feature_id: FeatureId(2),
+            kind: TopologicalElementKind::Face,
+            ordinal: 3,
+        },
+        true,
+    ));
+
+    let before_revision = shell.app().document_revision();
+    let before_digest = shell.app().canonical_digest();
+    let before_undo_steps = shell.app().undo_step_count();
+    shell.click_menu_command("menu-model", AppCommand::Fillet);
+    let preview = shell
+        .app()
+        .general_finish_preview_selection_parameters()
+        .unwrap();
+    assert_eq!(preview.0, FeatureId(2));
+    assert_eq!(preview.2, GeneralFinishKind::Fillet);
+    assert_eq!(preview.1.len(), 2);
+    assert_eq!(preview.1[0].producer_element_id, "generated-result/edge/2");
+    assert_eq!(preview.1[1].producer_element_id, "generated-result/edge/9");
+    assert_eq!(shell.app().document_revision(), before_revision);
+    assert_eq!(shell.app().canonical_digest(), before_digest);
+
+    assert!(
+        shell
+            .app_mut()
+            .select_topological_locator_additive(locator(5), true)
+    );
+    assert!(!shell.app_mut().confirm_assistant_general_finish());
+    assert_eq!(shell.app().document_revision(), before_revision);
+    assert_eq!(shell.app().canonical_digest(), before_digest);
+    assert_eq!(shell.app().undo_step_count(), before_undo_steps);
+    assert!(
+        shell
+            .app_mut()
+            .select_topological_locator_additive(locator(5), true)
+    );
+
+    shell.click_menu_command("menu-model", AppCommand::Fillet);
+    shell.type_text("1.25");
+    shell.press_key(Key::Enter);
+    let committed = shell
+        .app()
+        .latest_topology_edge_finish_set_parameters()
+        .unwrap();
+    assert_eq!(committed.1, preview.1);
+    assert_eq!(committed.2, EdgeFinishKind::Fillet);
+    assert_eq!(committed.3, 1.25);
+    assert_eq!(shell.app().document_revision(), before_revision + 1);
+    assert_eq!(shell.app().undo_step_count(), before_undo_steps + 1);
+    let committed_digest = shell.app().canonical_digest();
+
+    shell.key(Key::Z, ctrl());
+    assert_eq!(shell.app().canonical_digest(), before_digest);
+    shell.key(Key::Y, ctrl());
+    assert_eq!(shell.app().canonical_digest(), committed_digest);
+    shell.click_menu_command("menu-file", AppCommand::SaveAs);
+    assert!(path.is_file());
+    shell.click_menu_command("menu-file", AppCommand::New);
+    assert!(
+        shell
+            .app()
+            .latest_topology_edge_finish_set_parameters()
+            .is_none()
+    );
+    shell.click_menu_command("menu-file", AppCommand::Open);
+    assert_eq!(shell.app().canonical_digest(), committed_digest);
+    assert_eq!(
+        shell.app().latest_topology_edge_finish_set_parameters(),
+        Some(committed)
+    );
+}
+
+#[test]
 fn general_shell_fillet_and_chamfer_preview_exact_stable_selections_and_persist() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("general-shell-finish.ketchup");
