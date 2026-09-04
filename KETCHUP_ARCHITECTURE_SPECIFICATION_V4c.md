@@ -1,13 +1,13 @@
-# Ketchup Architecture Specification V4
+# Ketchup Architecture Specification V4c
 
-## Current system, target architecture, and migration contract
+## Consolidated architecture review and migration contract
 
-- **Status:** Proposed for external architecture review
-- **Snapshot date:** 2026-08-08 (as-built scope includes the immutable Appendix G baseline plus the explicitly bounded M11–M14 working-tree implementation described here; this is not a new certification freeze)
+- **Status:** Retained latest architecture review; not a current capability inventory
+- **Snapshot date:** 2026-08-08 (the as-built evidence baseline is historical; use the current code, tests, and README for present implementation claims)
 - **Language:** English, per ADR 0001
-- **Supersedes for current architectural review:** `KETCHUP_ARCHITECTURE_PROPOSAL_V3.md`
-- **Does not erase:** V3, frozen gate evidence, accepted ADRs, or historical reports
-- **Normative baseline:** `docs/design/EXECUTION_CONTRACT.md`
+- **Repository architecture source:** This specification supersedes earlier root-level drafts, which remain available in Git history
+- **Does not erase:** frozen gate evidence, accepted ADRs, or historical reports
+- **Normative baseline:** `docs/architecture/EXECUTION_CONTRACT.md`
 - **Initial platform:** Windows
 - **Project license:** Apache-2.0
 
@@ -42,7 +42,7 @@ The words **MUST**, **MUST NOT**, **SHOULD**, **SHOULD NOT**, and **MAY** are no
 When sources disagree, use this order:
 
 1. accepted ADRs for the decision they own;
-2. `docs/design/EXECUTION_CONTRACT.md` for frozen product and architectural invariants;
+2. `docs/architecture/EXECUTION_CONTRACT.md` for frozen product and architectural invariants;
 3. this V4 specification only after ratification under §§3.5 and 14.3;
 4. `docs/design/README.md` for interaction, layout, states, and copy;
 5. `docs/design/IMPLEMENTATION_PLAN.md` for workflow order;
@@ -2270,8 +2270,8 @@ This maintained log records every material external-review finding and its dispo
 
 Primary normative and historical sources used for this draft:
 
-- `KETCHUP_ARCHITECTURE_PROPOSAL_V3.md`
-- `docs/design/EXECUTION_CONTRACT.md`
+- earlier root-level architecture drafts, retained in Git history
+- `docs/architecture/EXECUTION_CONTRACT.md`
 - `docs/design/README.md`
 - `docs/design/IMPLEMENTATION_PLAN.md`
 - `docs/adr/0001-project-language-and-localization.md`

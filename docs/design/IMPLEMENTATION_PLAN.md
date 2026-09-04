@@ -15,7 +15,7 @@ The correction is not to finish an isolated engine before building the interface
 
 Use this precedence when requirements disagree:
 
-1. `docs/design/EXECUTION_CONTRACT.md` — product and architecture invariants.
+1. `docs/architecture/EXECUTION_CONTRACT.md` — product and architecture invariants.
 2. `docs/design/README.md` — interaction behavior, layout, states, copy, and visual tokens.
 3. This document — implementation order, boundaries, and acceptance workflows.
 4. `Ketchup Modeler.dc.html` — visual and behavioral reference, not production geometry code.

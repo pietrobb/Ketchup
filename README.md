@@ -4,45 +4,125 @@
   <img src="pic/splash.png" alt="Ketchup — AI-native 2D/3D parametric modeler" width="100%">
 </p>
 
-Ketchup is an open-source, AI-native 2D/3D parametric modeler focused first on architecture, interiors, and furniture. It combines fast direct interaction, exact geometry, deterministic canonical commands, and a constrained AI assistant that cannot bypass validation or undo history.
-
-## Current status
-
-Ketchup is a **working development prototype**, not yet a general-purpose CAD release. The application now has a coherent desktop modeling shell, versioned documents, exact and mesh geometry, interactive editing workflows, and an optional conversational assistant. The current tree is substantially beyond an architectural concept, while broad CAD coverage, installers, compatibility guarantees, and release certification remain in progress.
-
 <p align="center">
-  <img src="pic/ketchup-modeler.png" alt="Current Ketchup desktop prototype with a 480-part timber assembly" width="100%">
+  <strong>Open-source 2D/3D parametric modeling with exact geometry and safe, undoable AI.</strong>
 </p>
 
-### What works today
+<p align="center">
+  Windows x86-64 · Rust · Open CASCADE Technology · wgpu · Apache-2.0
+</p>
 
-- A GPU-rendered 3D viewport with orbit, pan, zoom, projection controls, hover, selection, snapping, and large instanced scenes.
-- Canonical rectangle, circle, arc, extrusion/push-pull, move/copy, grouping, components, Make Unique, visibility, measurement, and Undo/Redo workflows.
-- Exact-worker integration for profile, extrusion, boolean, sweep, loft, revolve, shell, fillet, chamfer, planar offset, and bounded product workflows.
-- Definitions, occurrences, groups, features, transforms, stable references, immutable revisions, and atomic command batches.
-- Versioned `.ketchup` documents with New/Open/Save/Save As and failure-safe persistence.
-- English, Slovak, and pseudo-locale UI resources, keyboard access, multiple visual themes, and an offscreen AccessKit test harness.
-- A conversational AI sidecar with bounded document context, CAD-only tools, protocol limits, cancellation, validation, and undoable canonical changes. Public builds use explicit API-key providers; private OAuth support remains a separate build feature.
-- A constrained external Python SDK/plugin path and fail-closed validator hosting.
+Ketchup is an AI-native desktop modeler for creating, editing, assembling, validating, and exporting real geometry. Manual tools and the Assistant share the same canonical command path: every accepted model change is validated, revision-bound, atomic, and undoable.
 
-These are tested vertical slices, not a promise that every CAD operation or imported file will work.
+> **Development status:** Ketchup is a working prototype, not yet a stable general-purpose CAD release. The repository contains substantial end-to-end modeling workflows, but broad format compatibility, installers, production polish, and a stable public API are still in progress.
 
-## Try the sample scene
+<p align="center">
+  <img src="pic/ketchup-modeler.png" alt="Ketchup desktop prototype showing a 480-occurrence timber scene" width="100%">
+</p>
 
-[`examples/grooved-beam-array.ketchup`](examples/grooved-beam-array.ketchup) is the 480-occurrence timber assembly shown above. It contains both exact-worker bodies and canonical mesh bodies and is useful for trying viewport navigation, hover, selection, Outliner behavior, and large-scene responsiveness.
+## What you can do today
 
-Open it with **File → Open** after launching Ketchup.
+| Model | Organize and edit | Deliver |
+|---|---|---|
+| Draw line, arc, circle, and rectangle geometry; evaluate represented cubic Bézier sketch curves | Reuse definitions through occurrences and components | Save checksummed `.ketchup` documents with recovery support |
+| Extract bounded regions, including profiles with holes | Move, copy, rotate, align, distribute, group, and Make Unique | Import reviewed STEP, STL, DXF, and `.kscene` subsets |
+| Push/Pull, pocket, revolve, sweep, loft, shell, fillet, chamfer, and offset | Build linear, rectangular, and circular patterns | Export current exact geometry to STEP and tessellation to STL |
+| Run exact cut, union, intersect, and split operations | Edit ordered feature history, dimensions, visibility, and active bodies | Persist drawing sheets that generate Front/Top/Right assembly views |
+| Constrain sketches with dimensional and geometric relationships | Assemble rigid occurrences with stable-reference mates | Inspect validation, loss, reference-health, and failure diagnostics |
+
+Advanced operations are intentionally bounded and fail closed when geometry, identity, resource, or worker guarantees cannot be met. This table describes tested product paths, not unrestricted support for every shape or imported model.
+
+## A real example: an articulated drawer assembly
+
+Open [`examples/hettich-quadro-v6-drawer.ketchup`](examples/hettich-quadro-v6-drawer.ketchup) with **File → Open**.
+
+The document combines an editable assembly with embedded exact STEP components, reusable occurrences, stable mechanical references, joints, travel limits, a coordinated motion study, and a persisted mounting/mechanical contract. It is a compact example of what Ketchup is becoming: not just a shape viewer, but a model whose geometry and engineering intent stay connected.
+
+Other included scenes:
+
+| Example | Try it for |
+|---|---|
+| [`grooved-beam-array.ketchup`](examples/grooved-beam-array.ketchup) | A 480-occurrence timber stress scene with 24 shared definitions; useful for viewport, selection, Outliner, and instancing behavior. |
+| [`assistant-ketchup-squeeze-bottle.ketchup`](examples/assistant-ketchup-squeeze-bottle.ketchup) | A saved Assistant-authored squeeze-bottle showcase. |
+| [`assistant-rounded-teapot.ketchup`](examples/assistant-rounded-teapot.ketchup) | A rounded multi-part teapot showcase. |
+| [`assistant-balloon-letters.ketchup`](examples/assistant-balloon-letters.ketchup) | Inflated balloon-style lettering and organic mesh presentation. |
+
+The three visual showcase files contain authored mesh geometry; they demonstrate document, Assistant, viewport, framing, and persistence workflows rather than unrestricted exact freeform modeling.
+
+## One path from intent to geometry
+
+```mermaid
+flowchart LR
+    UI[Manual tools] --> CMD[Canonical command batch]
+    AI[AI Assistant] --> PLAN[Bounded proposal]
+    SDK[Plugin / script] --> PLAN
+    PLAN --> CMD
+    CMD --> CHECK[Validate identity, limits, and revision]
+    CHECK --> DOC[Immutable document revision]
+    DOC --> GRAPH[ExactBRepGraph]
+    GRAPH --> WORKER[Isolated OCCT worker]
+    WORKER --> RESULT[Verified exact result]
+    DOC --> VIEW[Viewport and Outliner]
+    RESULT --> VIEW
+    RESULT --> EXPORT[STEP / STL]
+    DOC --> UNDO[Undo / Redo]
+```
+
+Assistant model proposals cannot write around validation, persistence, or Undo/Redo. Stale, invalid, oversized, timed-out, or disconnected proposals are rejected without replacing the last valid model.
+
+## Modeling capabilities
+
+### Sketching and parametric history
+
+- Principal, offset, and planar-face workplanes.
+- Line, arc, circle, and cubic Bézier entities with deterministic region extraction and holes.
+- Bounded geometric solving for horizontal, vertical, coincident, distance, radius, fixed-point, parallel, perpendicular, tangent, angle, equal, symmetric, concentric, collinear, midpoint, and point-on-curve constraints.
+- Ordered body/feature history, dimensional edits, hole/slot repositioning, feature suppression/resume, and multi-body activation.
+
+### Exact geometry
+
+Exact bodies are evaluated through a supervised, versioned worker backed by Open CASCADE Technology. Current bounded operation families include extrusion, pocket, Boolean cut/union/intersect/split, revolve, sweep, loft, shell, fillet, chamfer, and signed planar offset. Accepted results carry freshness and topology evidence before they can drive rendering, picking, or export.
+
+### Assemblies and drawings
+
+Ketchup supports reusable occurrences, grounding, stable-reference planar/axial mates, rigid solve diagnostics, fixed/revolute/prismatic joint data, limits, motion studies, collision/clearance checks, and persisted drawing sheets that generate Front/Top/Right visible-line views. This is an evolving assembly path, not yet a complete mechanical simulation or drafting suite.
+
+### Imports and exports
+
+- **STEP:** exact B-Rep import with preserved source bytes and explicit flattening diagnostics.
+- **STL:** binary/ASCII import with declared units and strict closed-manifold validation; no silent repair.
+- **DXF:** reviewed bounded 2D geometry subset with a loss report.
+- **SketchUp bridge:** open `.kscene` interchange subset rather than native `.skp` parsing.
+- **Export:** current visible exact model to STEP and current tessellation to STL, both with fail-closed freshness/loss checks.
+
+## AI Assistant
+
+The docked Assistant receives bounded document and selection context and can inspect a model, explain a plan, create supported sketches and parts, append exact features, edit dimensions, transform or copy occurrences, build patterns, and submit reviewed changes. Conversations and searchable project memory can be stored with the document.
+
+The normal application build includes the private OAuth provider surface and defaults to Codex OAuth with GPT-5.6. That OAuth path requires a separate external adapter that is not distributed in this public repository. A repository-complete public build can instead use the API-key providers:
+
+```powershell
+cargo run -p ketchup-app --no-default-features
+```
+
+Set `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`, then choose the matching provider in the Assistant. Cloud AI is optional; ordinary modeling remains available without it.
 
 ## Build and run
 
-The current supported development platform is Windows x86-64 with the pinned Rust toolchain and native dependencies described in the [Windows toolchain guide](docs/toolchain/WINDOWS.md).
+The supported development platform is **Windows x86-64** with Rust 1.97.0 and OCCT 8.0.1. See the [Windows toolchain guide](docs/toolchain/WINDOWS.md) for the pinned native environment.
 
 ```powershell
 cargo build -p ketchup-scheduler --bin ketchup-exact-worker
 cargo run -p ketchup-app
 ```
 
-For the full locked validation suite:
+Run the public API-key build without the private OAuth adapter:
+
+```powershell
+cargo run -p ketchup-app --no-default-features
+```
+
+Validate the workspace:
 
 ```powershell
 cargo test --locked --workspace --all-targets -- --test-threads=1
@@ -50,40 +130,25 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo fmt --all -- --check
 ```
 
-No stable public API or native file-format compatibility is promised at this stage.
+No stable public API or long-term native file-format compatibility is promised yet. Undo/Redo history is currently session-local; saved documents preserve the validated snapshot, not the in-memory history stack.
 
-## AI safety model
+## Architecture
 
-The Assistant does not mutate the document through a privileged back door. UI actions, plugins, scripts, and AI proposals converge on the same versioned command and validation path. Changes are revision-bound, bounded by protocol limits, applied atomically, and remain undoable. A stale, invalid, timed-out, or disconnected assistant response fails closed.
+Ketchup has one canonical, revisioned document and one validated mutation gateway. Geometry workers, rendering, picking, drawings, validation, imports, exports, UI, plugins, and AI are projections or clients of that authority rather than parallel model stores.
 
-The current Assistant is intentionally narrow. Improving its conversation design, compact controls, document understanding, and useful CAD tool coverage is active work.
+Read project authority in this order:
 
-## Near-term direction
+1. [Accepted ADRs](docs/adr) for the decisions they own.
+2. The frozen [execution contract](docs/architecture/EXECUTION_CONTRACT.md) for binding invariants.
+3. The retained consolidated [Architecture Specification V4c](KETCHUP_ARCHITECTURE_SPECIFICATION_V4c.md) for the latest architecture review snapshot. Its evidence baseline is historical; current capability claims come from the present code and tests, and proposed post-contract decisions remain non-binding until accepted by ADR.
+4. The [interaction specification](docs/design/README.md) and [workflow-led implementation plan](docs/design/IMPLEMENTATION_PLAN.md) for UI behavior and delivery order.
 
-1. Refine the Assistant experience and expand bounded CAD operations without weakening the shared command path.
-2. Complete release packaging, native dependency provenance, file-dialog evidence, accessibility, and canonical workflow certification.
-3. Broaden exact modeling coverage and interoperability only after the existing deterministic paths remain stable.
+Earlier root-level architecture drafts were removed from the current tree to avoid competing definitions; their history remains available in Git. Historical gate evidence and the original [R0 baseline](R0_LICENSE_AND_TOOLCHAIN_BASELINE.md) remain unchanged for provenance.
 
-## Project baselines
+## Direction
 
-- License: Apache-2.0
-- Initial platform: Windows x86-64
-- Core: Rust with Open CASCADE Technology behind a narrow C++ facade
-- Rendering: `wgpu`
-- Privacy: local-first; cloud AI only after explicit operation or workspace opt-in
-- Capacity: project owner plus AI agents, with no guaranteed additional human FTE
+Current development is focused on turning bounded vertical slices into reusable, role-neutral CAD operation families: broader typed profiles and paths, stronger stable-reference behavior, more general multi-selection, richer exact fabrication projections, and fewer legacy named-product branches. UI polish and additional platform packaging follow functional correctness and deterministic failure behavior.
 
-## Language and localization
+## License
 
-Technical documentation, code, identifiers, schemas, tests, and commit messages are English. The initial UI is English, but all user-facing copy uses localization resources; see [ADR 0001](docs/adr/0001-project-language-and-localization.md).
-
-## Architecture and execution authority
-
-Use the project documents in this order:
-
-1. [Accepted ADRs](docs/adr) for the decisions they own. The latest accepted implementation consequences are [ADR 0004](docs/adr/0004-v4-p15-sequence-and-a0-disposition.md), [ADR 0005](docs/adr/0005-no-go-diagnostic-hold.md), [ADR 0006](docs/adr/0006-canonical-and-derived-result-write-paths.md), and [ADR 0007](docs/adr/0007-windows-x86-64-first-release.md).
-2. The frozen [Architecture V3 Execution Contract](docs/architecture/EXECUTION_CONTRACT.md) for binding product scope, invariants, gate order, and metrics.
-3. [Architecture Specification V4c](KETCHUP_ARCHITECTURE_SPECIFICATION_V4c.md) as the latest consolidated as-built/target review document. Its post-V3 proposals remain non-binding until ratified by ADR.
-4. The [interaction specification](docs/design/README.md) and accepted [workflow-led implementation plan](docs/design/IMPLEMENTATION_PLAN.md) for UI behavior and implementation order.
-
-Historical gate evidence remains historical and is never rewritten by later implementation. The original [R0-to-FLP mission manifest](docs/missions/ketchup-r0-to-flp_manifest.md), [R0 baseline](R0_LICENSE_AND_TOOLCHAIN_BASELINE.md), and [Windows toolchain guide](docs/toolchain/WINDOWS.md) remain available for provenance and reproduction.
+Ketchup is licensed under the [Apache License 2.0](LICENSE).
