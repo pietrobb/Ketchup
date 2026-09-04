@@ -65,6 +65,7 @@
 #include <gp_Ax1.hxx>
 #include <gp_Ax2.hxx>
 #include <gp_Circ.hxx>
+#include <gp_Cylinder.hxx>
 #include <gp_Dir.hxx>
 #include <gp_GTrsf.hxx>
 #include <gp_Pln.hxx>
@@ -225,6 +226,13 @@ NativeFaceEvidence inspect_face(const TopoDS_Face& face, std::uint32_t ordinal) 
   double normal_x = 0.0;
   double normal_y = 0.0;
   double normal_z = 0.0;
+  bool has_axis = false;
+  double axis_origin_x = 0.0;
+  double axis_origin_y = 0.0;
+  double axis_origin_z = 0.0;
+  double axis_direction_x = 0.0;
+  double axis_direction_y = 0.0;
+  double axis_direction_z = 0.0;
   BRepBuilderAPI_FindPlane plane_finder(face);
   if (plane_finder.Found()) {
     surface_kind = "plane";
@@ -235,8 +243,21 @@ NativeFaceEvidence inspect_face(const TopoDS_Face& face, std::uint32_t ordinal) 
     normal_x = normal.X();
     normal_y = normal.Y();
     normal_z = normal.Z();
-  } else if (BRepAdaptor_Surface(face).GetType() == GeomAbs_Cylinder) {
-    surface_kind = "cylinder";
+  } else {
+    BRepAdaptor_Surface surface(face);
+    if (surface.GetType() == GeomAbs_Cylinder) {
+      surface_kind = "cylinder";
+      const gp_Ax1 axis = surface.Cylinder().Axis();
+      const gp_Pnt origin = axis.Location();
+      const gp_Dir direction = axis.Direction();
+      has_axis = true;
+      axis_origin_x = origin.X();
+      axis_origin_y = origin.Y();
+      axis_origin_z = origin.Z();
+      axis_direction_x = direction.X();
+      axis_direction_y = direction.Y();
+      axis_direction_z = direction.Z();
+    }
   }
 
   return NativeFaceEvidence{
@@ -249,6 +270,13 @@ NativeFaceEvidence inspect_face(const TopoDS_Face& face, std::uint32_t ordinal) 
       normal_x,
       normal_y,
       normal_z,
+      has_axis,
+      axis_origin_x,
+      axis_origin_y,
+      axis_origin_z,
+      axis_direction_x,
+      axis_direction_y,
+      axis_direction_z,
       min_x,
       min_y,
       min_z,

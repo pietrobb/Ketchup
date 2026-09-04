@@ -101,6 +101,7 @@ fn handle_request(backend: &ExactBackend, request: &str) -> Option<String> {
         (Some("CAPS"), Some("P6_SWEEP_V1"), None) => Some("CAPS P6_SWEEP_V1".to_owned()),
         (Some("CAPS"), Some("P6_LOFT_V1"), None) => Some("CAPS P6_LOFT_V1".to_owned()),
         (Some("CAPS"), Some("P3_CIRCLE_V1"), None) => Some("CAPS P3_CIRCLE_V1".to_owned()),
+        (Some("CAPS"), Some("P3_CIRCLE_V2"), None) => Some("CAPS P3_CIRCLE_V2".to_owned()),
         (Some("CAPS"), Some("P3_ARC_V1"), None) => Some("CAPS P3_ARC_V1".to_owned()),
         (Some("CAPS"), Some("P3_POLYGON_CUT_V1"), None) => {
             Some("CAPS P3_POLYGON_CUT_V1".to_owned())
@@ -508,7 +509,11 @@ fn handle_request(backend: &ExactBackend, request: &str) -> Option<String> {
                 request_digest,
             ))
         }
-        (Some("EXTRUDE_CIRCLE_P3_V1"), Some(center_x_bits), Some(center_y_bits)) => {
+        (
+            Some(protocol @ ("EXTRUDE_CIRCLE_P3_V1" | "EXTRUDE_CIRCLE_P3_V2")),
+            Some(center_x_bits),
+            Some(center_y_bits),
+        ) => {
             let remaining = fields.collect::<Vec<_>>();
             let [
                 radius_bits,
@@ -538,6 +543,7 @@ fn handle_request(backend: &ExactBackend, request: &str) -> Option<String> {
             }
             Some(p3_circle_extrude_response(
                 backend,
+                protocol,
                 bits,
                 document_id,
                 producer_feature_id,
@@ -2693,6 +2699,7 @@ fn p3_mixed_extrude_response(
 
 fn p3_circle_extrude_response(
     backend: &ExactBackend,
+    protocol: &str,
     bits: [u64; 4],
     document_id: &str,
     producer_feature_id: &str,
@@ -2745,6 +2752,73 @@ fn p3_circle_extrude_response(
                 evidence.push((face_ordinal, reference));
             }
             let topology = &output.body.topology;
+            if protocol == "EXTRUDE_CIRCLE_P3_V2" {
+                let resolved_face = |index: usize| {
+                    let (ordinal, reference) = evidence[index];
+                    let mut matches = topology.faces.iter().filter(|face| {
+                        face.ordinal == ordinal
+                            && face.geometric_fingerprint
+                                == reference.corroborating_geometry_fingerprint
+                    });
+                    matches.next().filter(|_| matches.next().is_none())
+                };
+                let (Some(top), Some(bottom), Some(side)) =
+                    (resolved_face(0), resolved_face(1), resolved_face(2))
+                else {
+                    return "ERR incomplete_history".to_owned();
+                };
+                let (Some(axis_origin), Some(axis_direction)) =
+                    (side.axis_origin_mm, side.axis_direction)
+                else {
+                    return "ERR incomplete_history".to_owned();
+                };
+                return format!(
+                    "OK_P3_CIRCLE_V2 {elapsed} {} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {} {} {} {} {} {request_digest} {} {} {} {} {} {} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {} {} {} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {} {} {} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x}",
+                    output.body.result_fingerprint,
+                    topology.volume_mm3.to_bits(),
+                    topology.bounds_mm.min.x.to_bits(),
+                    topology.bounds_mm.min.y.to_bits(),
+                    topology.bounds_mm.min.z.to_bits(),
+                    topology.bounds_mm.max.x.to_bits(),
+                    topology.bounds_mm.max.y.to_bits(),
+                    topology.bounds_mm.max.z.to_bits(),
+                    topology.vertex_count,
+                    topology.edge_count,
+                    topology.face_count,
+                    topology.shell_count,
+                    topology.solid_count,
+                    output.input_digest,
+                    output.backend_fingerprint,
+                    output.tolerance_report.profile,
+                    evidence[0].0,
+                    evidence[0].1.corroborating_geometry_fingerprint,
+                    evidence[0].1.lineage_digest,
+                    top.centroid_mm.x.to_bits(),
+                    top.centroid_mm.y.to_bits(),
+                    top.centroid_mm.z.to_bits(),
+                    top.normal.x.to_bits(),
+                    top.normal.y.to_bits(),
+                    top.normal.z.to_bits(),
+                    evidence[1].0,
+                    evidence[1].1.corroborating_geometry_fingerprint,
+                    evidence[1].1.lineage_digest,
+                    bottom.centroid_mm.x.to_bits(),
+                    bottom.centroid_mm.y.to_bits(),
+                    bottom.centroid_mm.z.to_bits(),
+                    bottom.normal.x.to_bits(),
+                    bottom.normal.y.to_bits(),
+                    bottom.normal.z.to_bits(),
+                    evidence[2].0,
+                    evidence[2].1.corroborating_geometry_fingerprint,
+                    evidence[2].1.lineage_digest,
+                    axis_origin.x.to_bits(),
+                    axis_origin.y.to_bits(),
+                    axis_origin.z.to_bits(),
+                    axis_direction.x.to_bits(),
+                    axis_direction.y.to_bits(),
+                    axis_direction.z.to_bits(),
+                );
+            }
             format!(
                 "OK_M3_V1 {elapsed} {} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {} {} {} {} {} {request_digest} {} {} {} {} {} {} {} {} {} {} {} {}",
                 output.body.result_fingerprint,

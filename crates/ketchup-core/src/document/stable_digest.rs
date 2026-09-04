@@ -1143,6 +1143,20 @@ impl StableDigest {
                         self.u64(value.to_bits());
                     }
                 }
+                crate::assembly::AssemblyMateAttachment::Axial(attachment) => {
+                    self.byte(3);
+                    self.byte(match attachment.kind() {
+                        crate::assembly::AxialAttachmentKind::Axis => 1,
+                        crate::assembly::AxialAttachmentKind::CylindricalFace => 2,
+                    });
+                    for value in attachment
+                        .local_origin_mm()
+                        .into_iter()
+                        .chain(attachment.local_unit_direction())
+                    {
+                        self.u64(value.to_bits());
+                    }
+                }
             }
             match endpoint.health() {
                 AssemblyReferenceHealth::Resolved => self.byte(1),

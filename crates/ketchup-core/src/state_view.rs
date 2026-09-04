@@ -2130,6 +2130,30 @@ pub fn encode_semantic_state_with_results(
                     )
                     .unwrap();
                 }
+                crate::assembly::AssemblyMateAttachment::Axial(attachment) => {
+                    writeln!(
+                        complete,
+                        "assembly_mate.{}.endpoint_{label}.attachment=axial,kind={}",
+                        mate.id().0,
+                        match attachment.kind() {
+                            crate::assembly::AxialAttachmentKind::Axis => "axis",
+                            crate::assembly::AxialAttachmentKind::CylindricalFace =>
+                                "cylindrical_face",
+                        }
+                    )
+                    .unwrap();
+                    writeln!(
+                        complete,
+                        "assembly_mate.{}.endpoint_{label}.origin_f64_bits={:016x},{:016x},{:016x}",
+                        mate.id().0,
+                        attachment.local_origin_mm()[0].to_bits(),
+                        attachment.local_origin_mm()[1].to_bits(),
+                        attachment.local_origin_mm()[2].to_bits()
+                    )
+                    .unwrap();
+                    writeln!(complete, "assembly_mate.{}.endpoint_{label}.direction_f64_bits={:016x},{:016x},{:016x}", mate.id().0,
+                        attachment.local_unit_direction()[0].to_bits(), attachment.local_unit_direction()[1].to_bits(), attachment.local_unit_direction()[2].to_bits()).unwrap();
+                }
             }
             writeln!(
                 complete,

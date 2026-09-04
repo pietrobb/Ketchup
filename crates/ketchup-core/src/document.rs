@@ -12615,6 +12615,7 @@ fn validate_assembly_mate(
         let attachment_is_valid = match endpoint.attachment() {
             AssemblyMateAttachment::ReferenceOnly(_) => true,
             AssemblyMateAttachment::PlanarFace(attachment) => attachment.has_valid_geometry(),
+            AssemblyMateAttachment::Axial(attachment) => attachment.has_valid_geometry(),
         };
         if !health_is_valid
             || !attachment_is_valid
@@ -12640,23 +12641,23 @@ fn validate_assembly_mate(
             [mate.endpoint_a(), mate.endpoint_b()]
                 .iter()
                 .all(|endpoint| {
-                    endpoint.reference().expected_type == "planar_face"
-                        && matches!(
-                            endpoint.attachment(),
-                            AssemblyMateAttachment::PlanarFace(_)
-                                | AssemblyMateAttachment::ReferenceOnly(_)
-                        )
+                    matches!(endpoint.attachment(), AssemblyMateAttachment::PlanarFace(_))
+                        || (!require_resolved
+                            && matches!(
+                                endpoint.attachment(),
+                                AssemblyMateAttachment::ReferenceOnly(_)
+                            ))
                 })
         }
         AssemblyMateKind::ConcentricAxial { .. } => [mate.endpoint_a(), mate.endpoint_b()]
             .iter()
             .all(|endpoint| {
-                matches!(
-                    endpoint.attachment(),
-                    AssemblyMateAttachment::ReferenceOnly(_)
-                ) && (endpoint.reference().expected_type.ends_with("_face")
-                    || endpoint.reference().expected_type.ends_with("_edge")
-                    || matches!(endpoint.reference().expected_type.as_str(), "face" | "edge"))
+                matches!(endpoint.attachment(), AssemblyMateAttachment::Axial(_))
+                    || (!require_resolved
+                        && matches!(
+                            endpoint.attachment(),
+                            AssemblyMateAttachment::ReferenceOnly(_)
+                        ))
             }),
     };
     if !type_is_valid {

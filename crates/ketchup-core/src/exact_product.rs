@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 
-use crate::assembly::PlanarFaceAttachment;
+use crate::assembly::{AxialAttachment, AxialAttachmentKind, PlanarFaceAttachment};
 #[cfg(feature = "named-product-fixtures")]
 use crate::beam_m5::{BeamExactPiecePackage, BeamExactResultKey};
 use crate::document::{
@@ -682,6 +682,14 @@ pub struct ExactPlanarFaceAttachmentInput {
     pub local_unit_normal: [f64; 3],
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ExactAxialAttachmentInput {
+    pub role: ExactFaceRole,
+    pub kind: AxialAttachmentKind,
+    pub local_origin_mm: [f64; 3],
+    pub local_unit_direction: [f64; 3],
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct ExactRenderPackage {
     pub identity: BodyResultIdentity,
@@ -690,6 +698,7 @@ pub struct ExactRenderPackage {
     pub triangles: Vec<ExactTriangle>,
     pub references: Vec<BodySubshapeRef>,
     pub planar_face_attachments: Vec<PlanarFaceAttachment>,
+    pub axial_attachments: Vec<AxialAttachment>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -2157,6 +2166,34 @@ impl ExactResultRegistry {
     }
 
     #[must_use]
+    pub fn axial_attachment<'a>(
+        &'a self,
+        snapshot: &Snapshot,
+        reference: &BodySubshapeRef,
+    ) -> Option<&'a AxialAttachment> {
+        let key = ExactResultKey {
+            document_id: snapshot.document_id(),
+            source_revision: snapshot.revision_id(),
+            source_digest: snapshot.canonical_digest(),
+            definition_id: reference.definition_id,
+            producer_feature_id: reference.producer_feature_id,
+            canonical_input_digest: reference.canonical_input_digest.clone(),
+            exact_input_digest: reference.exact_input_digest.clone(),
+            evaluator: reference.evaluator.clone(),
+            backend: reference.backend.clone(),
+            tolerance: reference.tolerance.clone(),
+            schema: EXACT_PRODUCT_SCHEMA_V1.to_owned(),
+            result_fingerprint: reference.result_fingerprint.clone(),
+        };
+        match self.packages.get(&key)?.as_ref() {
+            ExactBodyPackage::Rectangle(package) => package.axial_attachment(reference),
+            ExactBodyPackage::Revolve(_)
+            | ExactBodyPackage::Graph(_)
+            | ExactBodyPackage::Imported(_) => None,
+        }
+    }
+
+    #[must_use]
     pub fn resolve_reference(
         &self,
         snapshot: &Snapshot,
@@ -2290,6 +2327,13 @@ impl ExactRenderPackage {
     }
 
     #[must_use]
+    pub fn axial_attachment(&self, reference: &BodySubshapeRef) -> Option<&AxialAttachment> {
+        self.axial_attachments
+            .iter()
+            .find(|attachment| attachment.reference() == reference)
+    }
+
+    #[must_use]
     pub fn is_current(&self, snapshot: &Snapshot) -> bool {
         self.identity.document_id == snapshot.document_id()
             && self.identity.source_revision == snapshot.revision_id()
@@ -2413,6 +2457,17 @@ impl ExactRenderPackage {
                             .iter()
                             .any(|other| other.reference() == attachment.reference())
                 });
+        let axial_attachments_are_valid =
+            self.axial_attachments
+                .iter()
+                .enumerate()
+                .all(|(index, attachment)| {
+                    attachment.has_valid_geometry()
+                        && self.references.contains(attachment.reference())
+                        && !self.axial_attachments[index + 1..]
+                            .iter()
+                            .any(|other| other.reference() == attachment.reference())
+                });
         let expected_triangle_roles = expected_roles.iter().all(|role| {
             let actual = self
                 .triangles
@@ -2480,6 +2535,7 @@ impl ExactRenderPackage {
             || actual_roles != sorted_expected
             || !expected_triangle_roles
             || !attachments_are_valid
+            || !axial_attachments_are_valid
             || self.references.iter().any(|reference| {
                 !reference.matches_request(request)
                     || reference.exact_input_digest != self.identity.exact_input_digest
@@ -10114,6 +10170,53 @@ pub fn build_box_render_package_with_attachments<const N: usize>(
     face_evidence: [(ExactFaceRole, String, String); N],
     planar_face_inputs: &[ExactPlanarFaceAttachmentInput],
 ) -> Result<ExactRenderPackage, ExactProductError> {
+    build_box_render_package_with_typed_attachments(
+        request,
+        exact_input_digest,
+        result_fingerprint,
+        backend,
+        tolerance,
+        worker_bounds_mm,
+        face_evidence,
+        planar_face_inputs,
+        &[],
+    )
+}
+
+pub fn build_box_render_package_with_axial_attachments<const N: usize>(
+    request: &ExactFeatureChainRequest,
+    exact_input_digest: String,
+    result_fingerprint: String,
+    backend: String,
+    tolerance: String,
+    worker_bounds_mm: [[f64; 3]; 2],
+    face_evidence: [(ExactFaceRole, String, String); N],
+    axial_inputs: &[ExactAxialAttachmentInput],
+) -> Result<ExactRenderPackage, ExactProductError> {
+    build_box_render_package_with_typed_attachments(
+        request,
+        exact_input_digest,
+        result_fingerprint,
+        backend,
+        tolerance,
+        worker_bounds_mm,
+        face_evidence,
+        &[],
+        axial_inputs,
+    )
+}
+
+pub fn build_box_render_package_with_typed_attachments<const N: usize>(
+    request: &ExactFeatureChainRequest,
+    exact_input_digest: String,
+    result_fingerprint: String,
+    backend: String,
+    tolerance: String,
+    worker_bounds_mm: [[f64; 3]; 2],
+    face_evidence: [(ExactFaceRole, String, String); N],
+    planar_face_inputs: &[ExactPlanarFaceAttachmentInput],
+    axial_inputs: &[ExactAxialAttachmentInput],
+) -> Result<ExactRenderPackage, ExactProductError> {
     let [worker_min, worker_max] = worker_bounds_mm;
     let [expected_min, expected_max] = request.expected_bounds_mm();
     if worker_min
@@ -10242,6 +10345,52 @@ pub fn build_box_render_package_with_attachments<const N: usize>(
             .ok_or(ExactProductError::InvalidWorkerEvidence)
         })
         .collect::<Result<Vec<_>, _>>()?;
+    let mut measured_axial_roles = BTreeSet::new();
+    let axial_attachments = axial_inputs
+        .iter()
+        .map(|input| {
+            if !measured_axial_roles.insert(input.role) {
+                return Err(ExactProductError::InvalidWorkerEvidence);
+            }
+            let mut matches = references
+                .iter()
+                .filter(|reference| reference.role() == Some(input.role));
+            let reference = matches
+                .next()
+                .filter(|_| matches.next().is_none())
+                .ok_or(ExactProductError::InvalidWorkerEvidence)?;
+            let measured = AxialAttachment::new(
+                reference.clone(),
+                input.kind,
+                input.local_origin_mm,
+                input.local_unit_direction,
+            )
+            .ok_or(ExactProductError::InvalidWorkerEvidence)?;
+            let Some(frame) = request
+                .workplane_frame_bits
+                .map(|bits| bits.map(f64::from_bits))
+            else {
+                return Ok(measured);
+            };
+            let origin = transform_workplane_point(frame, measured.local_origin_mm());
+            let direction = transform_workplane_vector(frame, measured.local_unit_direction());
+            let length = direction
+                .into_iter()
+                .map(|value| value * value)
+                .sum::<f64>()
+                .sqrt();
+            if !length.is_finite() || length <= f64::EPSILON {
+                return Err(ExactProductError::InvalidWorkerEvidence);
+            }
+            AxialAttachment::new(
+                reference.clone(),
+                measured.kind(),
+                origin,
+                direction.map(|value| value / length),
+            )
+            .ok_or(ExactProductError::InvalidWorkerEvidence)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     Ok(ExactRenderPackage {
         identity: BodyResultIdentity {
             schema: EXACT_PRODUCT_SCHEMA_V1.to_owned(),
@@ -10264,6 +10413,7 @@ pub fn build_box_render_package_with_attachments<const N: usize>(
         triangles,
         references,
         planar_face_attachments,
+        axial_attachments,
     })
 }
 

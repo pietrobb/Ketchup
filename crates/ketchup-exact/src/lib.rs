@@ -54,6 +54,13 @@ mod ffi {
         normal_x: f64,
         normal_y: f64,
         normal_z: f64,
+        has_axis: bool,
+        axis_origin_x: f64,
+        axis_origin_y: f64,
+        axis_origin_z: f64,
+        axis_direction_x: f64,
+        axis_direction_y: f64,
+        axis_direction_z: f64,
         min_x: f64,
         min_y: f64,
         min_z: f64,
@@ -1427,6 +1434,8 @@ pub struct FaceEvidence {
     pub area_mm2: f64,
     pub centroid_mm: Point3,
     pub normal: Point3,
+    pub axis_origin_mm: Option<Point3>,
+    pub axis_direction: Option<Point3>,
     pub bounds_mm: Bounds3,
     pub edge_count: u32,
     pub edge_ordinals: Vec<u32>,
@@ -3634,18 +3643,50 @@ fn collect_output(
         .face_evidence()
         .into_iter()
         .map(|face| {
-            let signature = format!(
-                "{}:{}:{:016x}:{:016x}:{:016x}:{:016x}:{:016x}:{:016x}:{}",
-                face.ordinal,
-                face.surface_kind,
-                face.area_mm2.to_bits(),
-                face.centroid_x.to_bits(),
-                face.centroid_y.to_bits(),
-                face.centroid_z.to_bits(),
-                face.normal_x.to_bits(),
-                face.normal_y.to_bits(),
-                face.edge_count
-            );
+            let axis_origin_mm = face.has_axis.then_some(Point3 {
+                x: face.axis_origin_x,
+                y: face.axis_origin_y,
+                z: face.axis_origin_z,
+            });
+            let axis_direction = face.has_axis.then_some(Point3 {
+                x: face.axis_direction_x,
+                y: face.axis_direction_y,
+                z: face.axis_direction_z,
+            });
+            let signature = if face.has_axis {
+                format!(
+                    "axis-v2:{}:{}:{:016x}:{:016x}:{:016x}:{:016x}:{:016x}:{:016x}:{:016x}:{:016x}:{:016x}:{:016x}:{:016x}:{:016x}:{:016x}:{}",
+                    face.ordinal,
+                    face.surface_kind,
+                    face.area_mm2.to_bits(),
+                    face.centroid_x.to_bits(),
+                    face.centroid_y.to_bits(),
+                    face.centroid_z.to_bits(),
+                    face.normal_x.to_bits(),
+                    face.normal_y.to_bits(),
+                    face.normal_z.to_bits(),
+                    face.axis_origin_x.to_bits(),
+                    face.axis_origin_y.to_bits(),
+                    face.axis_origin_z.to_bits(),
+                    face.axis_direction_x.to_bits(),
+                    face.axis_direction_y.to_bits(),
+                    face.axis_direction_z.to_bits(),
+                    face.edge_count
+                )
+            } else {
+                format!(
+                    "{}:{}:{:016x}:{:016x}:{:016x}:{:016x}:{:016x}:{:016x}:{}",
+                    face.ordinal,
+                    face.surface_kind,
+                    face.area_mm2.to_bits(),
+                    face.centroid_x.to_bits(),
+                    face.centroid_y.to_bits(),
+                    face.centroid_z.to_bits(),
+                    face.normal_x.to_bits(),
+                    face.normal_y.to_bits(),
+                    face.edge_count
+                )
+            };
             FaceEvidence {
                 ordinal: face.ordinal,
                 surface_kind: face.surface_kind,
@@ -3660,6 +3701,8 @@ fn collect_output(
                     y: face.normal_y,
                     z: face.normal_z,
                 },
+                axis_origin_mm,
+                axis_direction,
                 bounds_mm: Bounds3 {
                     min: Point3 {
                         x: face.min_x,

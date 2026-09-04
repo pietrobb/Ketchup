@@ -249,21 +249,34 @@ fn seed() -> DocumentStore {
             )),
             CanonicalCommand::CreateAssemblyMate(AssemblyMate::new(
                 AXIAL_MATE,
-                AssemblyMateEndpoint::resolved(
+                AssemblyMateEndpoint::resolved_planar_face(
                     SELECTED,
-                    source_package
-                        .reference(ExactFaceRole::East)
-                        .unwrap()
-                        .clone(),
+                    PlanarFaceAttachment::new(
+                        source_package
+                            .reference(ExactFaceRole::East)
+                            .unwrap()
+                            .clone(),
+                        [0.0; 3],
+                        [1.0, 0.0, 0.0],
+                    )
+                    .unwrap(),
                 ),
-                AssemblyMateEndpoint::resolved(
+                AssemblyMateEndpoint::resolved_planar_face(
                     TARGET_OCCURRENCE,
-                    target_package
-                        .reference(ExactFaceRole::East)
-                        .unwrap()
-                        .clone(),
+                    PlanarFaceAttachment::new(
+                        target_package
+                            .reference(ExactFaceRole::East)
+                            .unwrap()
+                            .clone(),
+                        [0.0; 3],
+                        [1.0, 0.0, 0.0],
+                    )
+                    .unwrap(),
                 ),
-                AssemblyMateKind::ConcentricAxial { reversed: false },
+                AssemblyMateKind::CoincidentPlanar {
+                    offset_mm: 29.0,
+                    reversed: true,
+                },
             )),
             CanonicalCommand::SetOccurrenceGrounded {
                 id: SELECTED,
@@ -731,7 +744,7 @@ fn confirm_cancel_undo_redo_save_open_and_manual_ai_paths_share_one_atomic_contr
 }
 
 #[test]
-fn planar_axial_rebind_replays_drawing_export_undo_redo_and_save_open_atomically() {
+fn planar_rebind_replays_drawing_export_undo_redo_and_save_open_atomically() {
     let mut document = seed();
     let source = document.current();
     let source_definition = source.definition(SOURCE).unwrap().clone();

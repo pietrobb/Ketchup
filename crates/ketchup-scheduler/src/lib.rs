@@ -5,6 +5,7 @@ pub mod general;
 pub mod plugin;
 pub mod validator_runtime;
 
+use ketchup_core::assembly::AxialAttachmentKind;
 #[cfg(feature = "named-product-fixtures")]
 use ketchup_core::beam_m5::{
     BeamExactPiecePackage, BeamExactPieceRequest, BeamM5Error, BeamNotchFaceRole,
@@ -21,12 +22,13 @@ use ketchup_core::exact_brep_graph::{
     ExactBRepPlanarSegment,
 };
 use ketchup_core::exact_product::{
-    ExactBRepGraphPackage, ExactBRepGraphWorkerEvidence, ExactBodyPackage, ExactFaceRole,
-    ExactFeatureChainRequest, ExactLoftPackage, ExactLoftRequest, ExactPlanarFaceAttachmentInput,
-    ExactPlanarOffsetPackage, ExactPlanarOffsetRequest, ExactProductError, ExactProfileSegment,
-    ExactRenderPackage, ExactSweepPackage, ExactSweepRequest, LoftWorkerEvidence,
-    PlanarOffsetWorkerEvidence, SweepWorkerEvidence, SweepWorkerFaceEvidence,
-    build_box_render_package, build_box_render_package_with_attachments, build_loft_package,
+    ExactAxialAttachmentInput, ExactBRepGraphPackage, ExactBRepGraphWorkerEvidence,
+    ExactBodyPackage, ExactFaceRole, ExactFeatureChainRequest, ExactLoftPackage, ExactLoftRequest,
+    ExactPlanarFaceAttachmentInput, ExactPlanarOffsetPackage, ExactPlanarOffsetRequest,
+    ExactProductError, ExactProfileSegment, ExactRenderPackage, ExactSweepPackage,
+    ExactSweepRequest, LoftWorkerEvidence, PlanarOffsetWorkerEvidence, SweepWorkerEvidence,
+    SweepWorkerFaceEvidence, build_box_render_package, build_box_render_package_with_attachments,
+    build_box_render_package_with_typed_attachments, build_loft_package,
     build_planar_offset_package, build_sweep_package, canonical_reference_lineage_digest,
 };
 use ketchup_core::exact_revolve::{
@@ -410,21 +412,40 @@ pub struct WorkerFaceEvidence {
     pub lineage_digest: String,
     pub centroid_mm: Option<[f64; 3]>,
     pub unit_normal: Option<[f64; 3]>,
+    pub axis_origin_mm: Option<[f64; 3]>,
+    pub unit_axis_direction: Option<[f64; 3]>,
 }
 
 impl WorkerFaceEvidence {
-    fn has_valid_planar_geometry(&self) -> bool {
-        let (Some(centroid_mm), Some(unit_normal)) = (self.centroid_mm, self.unit_normal) else {
-            return false;
-        };
-        let normal_length_squared = unit_normal
-            .into_iter()
-            .map(|value| value * value)
-            .sum::<f64>();
-        centroid_mm.into_iter().all(f64::is_finite)
-            && unit_normal.into_iter().all(f64::is_finite)
-            && (normal_length_squared - 1.0).abs() <= 1.0e-12
+    fn has_coherent_geometry(&self) -> bool {
+        let planar_is_coherent = self.centroid_mm.is_some() == self.unit_normal.is_some();
+        let axial_is_coherent = self.axis_origin_mm.is_some() == self.unit_axis_direction.is_some();
+        planar_is_coherent
+            && axial_is_coherent
+            && self
+                .centroid_mm
+                .is_none_or(|point| point.into_iter().all(f64::is_finite))
+            && self.unit_normal.is_none_or(is_finite_unit_vector)
+            && self
+                .axis_origin_mm
+                .is_none_or(|point| point.into_iter().all(f64::is_finite))
+            && self.unit_axis_direction.is_none_or(is_finite_unit_vector)
     }
+
+    fn has_valid_planar_geometry(&self) -> bool {
+        self.has_coherent_geometry() && self.centroid_mm.is_some() && self.unit_normal.is_some()
+    }
+
+    fn has_valid_axial_geometry(&self) -> bool {
+        self.has_coherent_geometry()
+            && self.axis_origin_mm.is_some()
+            && self.unit_axis_direction.is_some()
+    }
+}
+
+fn is_finite_unit_vector(vector: [f64; 3]) -> bool {
+    vector.into_iter().all(f64::is_finite)
+        && (vector.into_iter().map(|value| value * value).sum::<f64>() - 1.0).abs() <= 1.0e-12
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -592,6 +613,7 @@ const P6_OFFSET_REGION_CAPABILITY: &str = "P6_OFFSET_V3";
 const P6_SWEEP_CAPABILITY: &str = "P6_SWEEP_V1";
 const P6_LOFT_CAPABILITY: &str = "P6_LOFT_V1";
 const P3_CIRCLE_CAPABILITY: &str = "P3_CIRCLE_V1";
+const P3_CIRCLE_AXIAL_CAPABILITY: &str = "P3_CIRCLE_V2";
 const P3_ARC_CAPABILITY: &str = "P3_ARC_V1";
 const P3_POLYGON_CUT_CAPABILITY: &str = "P3_POLYGON_CUT_V1";
 #[cfg(feature = "named-product-fixtures")]
@@ -957,6 +979,21 @@ impl ExactWorkerClient {
             self.terminate_worker();
             Err(WorkerError::MissingCapability(
                 P3_CIRCLE_CAPABILITY.to_owned(),
+            ))
+        }
+    }
+
+    fn verify_p3_circle_axial_capability(
+        &mut self,
+        cancelled: &AtomicBool,
+    ) -> Result<(), WorkerError> {
+        let response = self.request_with_cancellation("CAPS P3_CIRCLE_V2", cancelled)?;
+        if response == "CAPS P3_CIRCLE_V2" {
+            Ok(())
+        } else {
+            self.terminate_worker();
+            Err(WorkerError::MissingCapability(
+                P3_CIRCLE_AXIAL_CAPABILITY.to_owned(),
             ))
         }
     }
@@ -1882,11 +1919,11 @@ impl ExactWorkerClient {
             }
             (self.request_with_cancellation(&line, cancelled)?, 5)
         } else if let Some(circle) = request.circle {
-            self.verify_p3_circle_capability(cancelled)?;
+            self.verify_p3_circle_axial_capability(cancelled)?;
             (
                 self.request_with_cancellation(
                     &format!(
-                        "EXTRUDE_CIRCLE_P3_V1 {:016x} {:016x} {:016x} {:016x} {} {} {}",
+                        "EXTRUDE_CIRCLE_P3_V2 {:016x} {:016x} {:016x} {:016x} {} {} {}",
                         circle.center_x_bits,
                         circle.center_y_bits,
                         circle.radius_bits,
@@ -1897,7 +1934,7 @@ impl ExactWorkerClient {
                     ),
                     cancelled,
                 )?,
-                3,
+                10,
             )
         } else if let Some(cut) = request
             .boolean
@@ -2045,6 +2082,7 @@ impl ExactWorkerClient {
             1 => parse_m3_cut_exact_result(&response),
             2 => parse_m3_pocket_exact_result(&response),
             9 => parse_m3_planar_face_exact_result(&response),
+            10 => parse_p3_circle_axial_exact_result(&response),
             4 => {
                 let [width, depth, _] = request.dimensions_mm();
                 let circular_boundary_pocket = request.pocket_depth_bits.is_some()
@@ -5196,6 +5234,11 @@ fn validate_m3_worker_result(
         && request.pocket_depth_bits.is_none()
         && request.boolean.is_none()
         && request.shell.is_none();
+    let plain_circle = request.circle.is_some()
+        && request.mixed_profile.is_none()
+        && request.pocket_depth_bits.is_none()
+        && request.boolean.is_none()
+        && request.shell.is_none();
     if result.request_digest != request.canonical_input_digest
         || !is_sha256_digest(&result.request_digest)
         || !is_fnv1a64_digest(&result.exact_input_digest)
@@ -5210,6 +5253,10 @@ fn validate_m3_worker_result(
             && !role_evidence
                 .iter()
                 .all(|(_, evidence)| evidence.has_valid_planar_geometry())
+        || plain_circle
+            && (!result.top.has_valid_planar_geometry()
+                || !result.bottom.has_valid_planar_geometry()
+                || !result.east.has_valid_axial_geometry())
         || !result.volume_mm3.is_finite()
         || result.volume_mm3 <= 0.0
         || (result.volume_mm3 - expected_volume).abs() > volume_tolerance
@@ -5532,11 +5579,47 @@ fn build_m3_render_package(
             }
         }
     } else if request.circle.is_some() {
-        build_box_render_package(
+        let planar_attachments = [
+            ExactPlanarFaceAttachmentInput {
+                role: ExactFaceRole::Top,
+                local_origin_mm: result
+                    .top
+                    .centroid_mm
+                    .ok_or(ExactProductError::InvalidWorkerEvidence)?,
+                local_unit_normal: result
+                    .top
+                    .unit_normal
+                    .ok_or(ExactProductError::InvalidWorkerEvidence)?,
+            },
+            ExactPlanarFaceAttachmentInput {
+                role: ExactFaceRole::Bottom,
+                local_origin_mm: result
+                    .bottom
+                    .centroid_mm
+                    .ok_or(ExactProductError::InvalidWorkerEvidence)?,
+                local_unit_normal: result
+                    .bottom
+                    .unit_normal
+                    .ok_or(ExactProductError::InvalidWorkerEvidence)?,
+            },
+        ];
+        let axial_attachments = [ExactAxialAttachmentInput {
+            role: ExactFaceRole::CircleSide,
+            kind: AxialAttachmentKind::CylindricalFace,
+            local_origin_mm: result
+                .east
+                .axis_origin_mm
+                .ok_or(ExactProductError::InvalidWorkerEvidence)?,
+            local_unit_direction: result
+                .east
+                .unit_axis_direction
+                .ok_or(ExactProductError::InvalidWorkerEvidence)?,
+        }];
+        build_box_render_package_with_typed_attachments(
             request,
             result.exact_input_digest.clone(),
             result.result_fingerprint.clone(),
-            result.backend.clone(),
+            format!("{}:p3-circle-v2", result.backend),
             result.tolerance.clone(),
             bounds,
             [
@@ -5544,6 +5627,8 @@ fn build_m3_render_package(
                 evidence(ExactFaceRole::Bottom, &result.bottom),
                 evidence(ExactFaceRole::CircleSide, &result.east),
             ],
+            &planar_attachments,
+            &axial_attachments,
         )
     } else if let Some(profile) = &request.mixed_profile {
         let side_role = if profile.has_only_line_segments() {
@@ -6093,6 +6178,8 @@ fn parse_p6_loft_result(response: &str) -> Result<WorkerLoftResult, WorkerError>
             lineage_digest: fields[offset + 2].to_owned(),
             centroid_mm: None,
             unit_normal: None,
+            axis_origin_mm: None,
+            unit_axis_direction: None,
         });
     }
     Ok(WorkerLoftResult {
@@ -6158,6 +6245,8 @@ fn parse_p6_sweep_result(response: &str) -> Result<WorkerSweepResult, WorkerErro
             lineage_digest: fields[offset + 2].to_owned(),
             centroid_mm: None,
             unit_normal: None,
+            axis_origin_mm: None,
+            unit_axis_direction: None,
         });
     }
     Ok(WorkerSweepResult {
@@ -6256,6 +6345,8 @@ fn parse_p6_offset_result(response: &str) -> Result<WorkerPlanarOffsetResult, Wo
             lineage_digest: fields[face_index + 2].to_owned(),
             centroid_mm: None,
             unit_normal: None,
+            axis_origin_mm: None,
+            unit_axis_direction: None,
         },
     })
 }
@@ -6314,6 +6405,8 @@ fn parse_m6_revolve_result(response: &str) -> Result<WorkerRevolveResult, Worker
             lineage_digest: fields[offset + 2].to_owned(),
             centroid_mm: None,
             unit_normal: None,
+            axis_origin_mm: None,
+            unit_axis_direction: None,
         });
     }
     Ok(WorkerRevolveResult {
@@ -6505,6 +6598,8 @@ fn parse_legacy_exact_result(response: &str) -> Result<WorkerExactResult, Worker
             lineage_digest: String::new(),
             centroid_mm: None,
             unit_normal: None,
+            axis_origin_mm: None,
+            unit_axis_direction: None,
         },
         bottom: WorkerFaceEvidence {
             ordinal: 0,
@@ -6512,6 +6607,8 @@ fn parse_legacy_exact_result(response: &str) -> Result<WorkerExactResult, Worker
             lineage_digest: String::new(),
             centroid_mm: None,
             unit_normal: None,
+            axis_origin_mm: None,
+            unit_axis_direction: None,
         },
         east: WorkerFaceEvidence {
             ordinal: 0,
@@ -6519,6 +6616,8 @@ fn parse_legacy_exact_result(response: &str) -> Result<WorkerExactResult, Worker
             lineage_digest: String::new(),
             centroid_mm: None,
             unit_normal: None,
+            axis_origin_mm: None,
+            unit_axis_direction: None,
         },
         cut_west: None,
         cut_east: None,
@@ -6586,6 +6685,8 @@ fn parse_m3_planar_face_exact_result(response: &str) -> Result<WorkerExactResult
                 parse_f64(index + 7)?,
                 parse_f64(index + 8)?,
             ]),
+            axis_origin_mm: None,
+            unit_axis_direction: None,
         };
         if !value.has_valid_planar_geometry() {
             return Err(WorkerError::Protocol(response.to_owned()));
@@ -6611,6 +6712,120 @@ fn parse_m3_planar_face_exact_result(response: &str) -> Result<WorkerExactResult
         top: evidence(19)?,
         bottom: evidence(28)?,
         east: evidence(37)?,
+        cut_west: None,
+        cut_east: None,
+        cut_south: None,
+        cut_north: None,
+        pocket_floor: None,
+    })
+}
+
+fn parse_p3_circle_axial_exact_result(response: &str) -> Result<WorkerExactResult, WorkerError> {
+    let fields: Vec<_> = response.split_whitespace().collect();
+    if fields.first() == Some(&"ERR") {
+        return Err(parse_error_response(response, &fields));
+    }
+    if fields.len() != 46
+        || fields[0] != "OK_P3_CIRCLE_V2"
+        || fields[17].is_empty()
+        || fields[18].is_empty()
+        || !is_sha256_digest(fields[15])
+        || [2, 16, 20, 21, 29, 30, 38, 39]
+            .into_iter()
+            .any(|index| !is_fnv1a64_digest(fields[index]))
+    {
+        return Err(WorkerError::Protocol(response.to_owned()));
+    }
+    let protocol_error = || WorkerError::Protocol(response.to_owned());
+    let parse_u64 = |index: usize| fields[index].parse::<u64>().map_err(|_| protocol_error());
+    let parse_u32 = |index: usize| fields[index].parse::<u32>().map_err(|_| protocol_error());
+    let parse_f64 = |index: usize| {
+        let token = fields[index];
+        if token.len() != 16
+            || !token
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+        {
+            return Err(protocol_error());
+        }
+        u64::from_str_radix(token, 16)
+            .map(f64::from_bits)
+            .map_err(|_| protocol_error())
+    };
+    let volume_mm3 = parse_f64(3)?;
+    let bounds_mm = [4, 5, 6, 7, 8, 9].map(parse_f64);
+    let bounds_mm: [f64; 6] = bounds_mm
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()?
+        .try_into()
+        .map_err(|_| protocol_error())?;
+    if !volume_mm3.is_finite() || !bounds_mm.into_iter().all(f64::is_finite) {
+        return Err(protocol_error());
+    }
+    let planar = |index: usize| {
+        let evidence = WorkerFaceEvidence {
+            ordinal: parse_u32(index)?,
+            geometric_fingerprint: fields[index + 1].to_owned(),
+            lineage_digest: fields[index + 2].to_owned(),
+            centroid_mm: Some([
+                parse_f64(index + 3)?,
+                parse_f64(index + 4)?,
+                parse_f64(index + 5)?,
+            ]),
+            unit_normal: Some([
+                parse_f64(index + 6)?,
+                parse_f64(index + 7)?,
+                parse_f64(index + 8)?,
+            ]),
+            axis_origin_mm: None,
+            unit_axis_direction: None,
+        };
+        evidence
+            .has_valid_planar_geometry()
+            .then_some(evidence)
+            .ok_or_else(protocol_error)
+    };
+    let axial = |index: usize| {
+        let evidence = WorkerFaceEvidence {
+            ordinal: parse_u32(index)?,
+            geometric_fingerprint: fields[index + 1].to_owned(),
+            lineage_digest: fields[index + 2].to_owned(),
+            centroid_mm: None,
+            unit_normal: None,
+            axis_origin_mm: Some([
+                parse_f64(index + 3)?,
+                parse_f64(index + 4)?,
+                parse_f64(index + 5)?,
+            ]),
+            unit_axis_direction: Some([
+                parse_f64(index + 6)?,
+                parse_f64(index + 7)?,
+                parse_f64(index + 8)?,
+            ]),
+        };
+        evidence
+            .has_valid_axial_geometry()
+            .then_some(evidence)
+            .ok_or_else(protocol_error)
+    };
+    Ok(WorkerExactResult {
+        backend_duration: Duration::from_nanos(parse_u64(1)?),
+        result_fingerprint: fields[2].to_owned(),
+        volume_mm3,
+        bounds_mm,
+        topology_counts: [10, 11, 12, 13, 14]
+            .map(parse_u32)
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()?
+            .try_into()
+            .map_err(|_| protocol_error())?,
+        request_digest: fields[15].to_owned(),
+        exact_input_digest: fields[16].to_owned(),
+        backend: fields[17].to_owned(),
+        tolerance: fields[18].to_owned(),
+        top: planar(19)?,
+        bottom: planar(28)?,
+        east: axial(37)?,
         cut_west: None,
         cut_east: None,
         cut_south: None,
@@ -6679,6 +6894,8 @@ fn parse_m3_exact_result(response: &str) -> Result<WorkerExactResult, WorkerErro
             lineage_digest: fields[21].to_owned(),
             centroid_mm: None,
             unit_normal: None,
+            axis_origin_mm: None,
+            unit_axis_direction: None,
         },
         bottom: WorkerFaceEvidence {
             ordinal: parse_u32(22)?,
@@ -6686,6 +6903,8 @@ fn parse_m3_exact_result(response: &str) -> Result<WorkerExactResult, WorkerErro
             lineage_digest: fields[24].to_owned(),
             centroid_mm: None,
             unit_normal: None,
+            axis_origin_mm: None,
+            unit_axis_direction: None,
         },
         east: WorkerFaceEvidence {
             ordinal: parse_u32(25)?,
@@ -6693,6 +6912,8 @@ fn parse_m3_exact_result(response: &str) -> Result<WorkerExactResult, WorkerErro
             lineage_digest: fields[27].to_owned(),
             centroid_mm: None,
             unit_normal: None,
+            axis_origin_mm: None,
+            unit_axis_direction: None,
         },
         cut_west: None,
         cut_east: None,
@@ -6734,6 +6955,8 @@ fn parse_p3_circular_cut_result(
             lineage_digest: fields[index + 2].to_owned(),
             centroid_mm: None,
             unit_normal: None,
+            axis_origin_mm: None,
+            unit_axis_direction: None,
         })
     };
     Ok(WorkerExactResult {
@@ -6817,6 +7040,8 @@ fn parse_p3_polygon_cut_result(
             lineage_digest: fields[index + 2].to_owned(),
             centroid_mm: None,
             unit_normal: None,
+            axis_origin_mm: None,
+            unit_axis_direction: None,
         })
     };
     Ok(WorkerExactResult {
@@ -6890,6 +7115,8 @@ fn parse_m3_cut_exact_result(response: &str) -> Result<WorkerExactResult, Worker
             lineage_digest: fields[ordinal_index + 2].to_owned(),
             centroid_mm: None,
             unit_normal: None,
+            axis_origin_mm: None,
+            unit_axis_direction: None,
         })
     };
     Ok(WorkerExactResult {
@@ -6966,6 +7193,8 @@ fn parse_m3_pocket_exact_result(response: &str) -> Result<WorkerExactResult, Wor
             lineage_digest: fields[ordinal_index + 2].to_owned(),
             centroid_mm: None,
             unit_normal: None,
+            axis_origin_mm: None,
+            unit_axis_direction: None,
         })
     };
     Ok(WorkerExactResult {
@@ -7105,6 +7334,75 @@ mod tests {
             parse_m3_planar_face_exact_result(&non_unit),
             Err(WorkerError::Protocol(rejected)) if rejected == non_unit
         ));
+    }
+
+    fn valid_p3_circle_axial_response() -> String {
+        let bits = |value: f64| format!("{:016x}", value.to_bits());
+        let mut fields = vec![
+            "OK_P3_CIRCLE_V2".to_owned(),
+            "1".to_owned(),
+            "fnv1a64:0123456789abcdef".to_owned(),
+            bits(1.0),
+            bits(0.0),
+            bits(0.0),
+            bits(0.0),
+            bits(1.0),
+            bits(1.0),
+            bits(1.0),
+            "2".to_owned(),
+            "3".to_owned(),
+            "3".to_owned(),
+            "1".to_owned(),
+            "1".to_owned(),
+            "a".repeat(64),
+            "fnv1a64:fedcba9876543210".to_owned(),
+            "occt".to_owned(),
+            "r0".to_owned(),
+        ];
+        for (ordinal, point, direction) in [
+            (2, [0.5, 0.5, 1.0], [0.0, 0.0, 1.0]),
+            (0, [0.5, 0.5, 0.0], [0.0, 0.0, -1.0]),
+            (1, [0.5, 0.5, 0.0], [0.0, 0.0, 1.0]),
+        ] {
+            fields.extend([
+                ordinal.to_string(),
+                "fnv1a64:1111111111111111".to_owned(),
+                "fnv1a64:2222222222222222".to_owned(),
+                bits(point[0]),
+                bits(point[1]),
+                bits(point[2]),
+                bits(direction[0]),
+                bits(direction[1]),
+                bits(direction[2]),
+            ]);
+        }
+        fields.join(" ")
+    }
+
+    #[test]
+    fn p3_circle_axial_parser_rejects_malformed_nonfinite_and_nonunit_evidence() {
+        let valid = valid_p3_circle_axial_response();
+        let parsed = parse_p3_circle_axial_exact_result(&valid).unwrap();
+        assert!(parsed.top.has_valid_planar_geometry());
+        assert!(parsed.bottom.has_valid_planar_geometry());
+        assert!(parsed.east.has_valid_axial_geometry());
+
+        for (index, replacement) in [
+            (40, "not-hex".to_owned()),
+            (41, format!("{:016x}", f64::INFINITY.to_bits())),
+            (45, format!("{:016x}", 2.0_f64.to_bits())),
+        ] {
+            let mut fields = valid
+                .split_whitespace()
+                .map(str::to_owned)
+                .collect::<Vec<_>>();
+            fields[index] = replacement;
+            let rejected = fields.join(" ");
+            assert!(matches!(
+                parse_p3_circle_axial_exact_result(&rejected),
+                Err(WorkerError::Protocol(value)) if value == rejected
+            ));
+        }
     }
 
     #[test]

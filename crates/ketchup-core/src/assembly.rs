@@ -129,10 +129,131 @@ impl PlanarFaceAttachment {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AxialAttachmentKind {
+    Axis,
+    CylindricalFace,
+}
+
+#[derive(Clone, Debug)]
+pub struct AxialAttachment {
+    reference: BodySubshapeRef,
+    kind: AxialAttachmentKind,
+    local_origin_mm: [f64; 3],
+    local_unit_direction: [f64; 3],
+}
+
+impl PartialEq for AxialAttachment {
+    fn eq(&self, other: &Self) -> bool {
+        self.reference == other.reference
+            && self.kind == other.kind
+            && self
+                .local_origin_mm
+                .into_iter()
+                .chain(self.local_unit_direction)
+                .zip(
+                    other
+                        .local_origin_mm
+                        .into_iter()
+                        .chain(other.local_unit_direction),
+                )
+                .all(|(left, right)| left.to_bits() == right.to_bits())
+    }
+}
+
+impl Eq for AxialAttachment {}
+
+impl AxialAttachment {
+    #[must_use]
+    pub fn new(
+        reference: BodySubshapeRef,
+        kind: AxialAttachmentKind,
+        local_origin_mm: [f64; 3],
+        local_unit_direction: [f64; 3],
+    ) -> Option<Self> {
+        let direction_length_squared = dot(local_unit_direction, local_unit_direction);
+        let expected_type_matches = match kind {
+            AxialAttachmentKind::Axis => reference.expected_type == "axis",
+            AxialAttachmentKind::CylindricalFace => reference.expected_type == "cylindrical_face",
+        };
+        (reference.has_valid_lineage()
+            && expected_type_matches
+            && local_origin_mm.into_iter().all(f64::is_finite)
+            && local_unit_direction.into_iter().all(f64::is_finite)
+            && (direction_length_squared - 1.0).abs() <= 1.0e-12)
+            .then_some(Self {
+                reference,
+                kind,
+                local_origin_mm,
+                local_unit_direction,
+            })
+    }
+
+    #[must_use]
+    pub fn axis(
+        reference: BodySubshapeRef,
+        local_origin_mm: [f64; 3],
+        local_unit_direction: [f64; 3],
+    ) -> Option<Self> {
+        Self::new(
+            reference,
+            AxialAttachmentKind::Axis,
+            local_origin_mm,
+            local_unit_direction,
+        )
+    }
+
+    #[must_use]
+    pub fn cylindrical_face(
+        reference: BodySubshapeRef,
+        local_origin_mm: [f64; 3],
+        local_unit_direction: [f64; 3],
+    ) -> Option<Self> {
+        Self::new(
+            reference,
+            AxialAttachmentKind::CylindricalFace,
+            local_origin_mm,
+            local_unit_direction,
+        )
+    }
+
+    #[must_use]
+    pub const fn reference(&self) -> &BodySubshapeRef {
+        &self.reference
+    }
+
+    #[must_use]
+    pub const fn kind(&self) -> AxialAttachmentKind {
+        self.kind
+    }
+
+    #[must_use]
+    pub const fn local_origin_mm(&self) -> [f64; 3] {
+        self.local_origin_mm
+    }
+
+    #[must_use]
+    pub const fn local_unit_direction(&self) -> [f64; 3] {
+        self.local_unit_direction
+    }
+
+    #[must_use]
+    pub fn has_valid_geometry(&self) -> bool {
+        Self::new(
+            self.reference.clone(),
+            self.kind,
+            self.local_origin_mm,
+            self.local_unit_direction,
+        )
+        .is_some()
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum AssemblyMateAttachment {
     ReferenceOnly(BodySubshapeRef),
     PlanarFace(PlanarFaceAttachment),
+    Axial(AxialAttachment),
 }
 
 impl AssemblyMateAttachment {
@@ -141,6 +262,7 @@ impl AssemblyMateAttachment {
         match self {
             Self::ReferenceOnly(reference) => reference,
             Self::PlanarFace(attachment) => attachment.reference(),
+            Self::Axial(attachment) => attachment.reference(),
         }
     }
 }
@@ -170,6 +292,15 @@ impl AssemblyMateEndpoint {
         Self {
             occurrence_id,
             attachment: AssemblyMateAttachment::PlanarFace(attachment),
+            health: AssemblyReferenceHealth::Resolved,
+        }
+    }
+
+    #[must_use]
+    pub fn resolved_axial(occurrence_id: OccurrenceId, attachment: AxialAttachment) -> Self {
+        Self {
+            occurrence_id,
+            attachment: AssemblyMateAttachment::Axial(attachment),
             health: AssemblyReferenceHealth::Resolved,
         }
     }
@@ -224,7 +355,17 @@ impl AssemblyMateEndpoint {
     pub const fn planar_face_attachment(&self) -> Option<&PlanarFaceAttachment> {
         match &self.attachment {
             AssemblyMateAttachment::PlanarFace(attachment) => Some(attachment),
-            AssemblyMateAttachment::ReferenceOnly(_) => None,
+            AssemblyMateAttachment::ReferenceOnly(_) | AssemblyMateAttachment::Axial(_) => None,
+        }
+    }
+
+    #[must_use]
+    pub const fn axial_attachment(&self) -> Option<&AxialAttachment> {
+        match &self.attachment {
+            AssemblyMateAttachment::Axial(attachment) => Some(attachment),
+            AssemblyMateAttachment::ReferenceOnly(_) | AssemblyMateAttachment::PlanarFace(_) => {
+                None
+            }
         }
     }
 
@@ -807,9 +948,16 @@ fn recompute_rigid_assembly_selection(
                 .resolve_reference(source, value.reference())
             {
                 ExactReferenceResolution::Resolved { reference } => match mate.kind() {
-                    AssemblyMateKind::ConcentricAxial { .. } => {
-                        AssemblyMateEndpoint::resolved(value.occurrence_id(), *reference)
-                    }
+                    AssemblyMateKind::ConcentricAxial { .. } => exact_results
+                        .axial_attachment(source, &reference)
+                        .cloned()
+                        .map(|attachment| {
+                            AssemblyMateEndpoint::resolved_axial(value.occurrence_id(), attachment)
+                        })
+                        .unwrap_or_else(|| {
+                            status = AssemblyRecomputeStatus::Broken;
+                            AssemblyMateEndpoint::broken(value.occurrence_id(), *reference)
+                        }),
                     AssemblyMateKind::CoincidentPlanar { .. }
                     | AssemblyMateKind::Distance { .. }
                     | AssemblyMateKind::Angle { .. } => exact_results
@@ -1190,50 +1338,28 @@ fn mate_sort_key(mate: &AssemblyMate) -> (u64, u64, u8, u64, u64, String, String
     )
 }
 
-// Compatibility-only fallback for schema <= 49 endpoints and axial references that do not yet
-// carry an authoritative typed frame. Typed planar attachments never consult semantic-role text.
-fn legacy_reference_axis_from_semantic_role(reference: &BodySubshapeRef) -> Option<[f64; 3]> {
-    let role = reference.semantic_role.as_str();
-    if role.contains("west") {
-        Some([-1.0, 0.0, 0.0])
-    } else if role.contains("east") {
-        Some([1.0, 0.0, 0.0])
-    } else if role.contains("south") {
-        Some([0.0, -1.0, 0.0])
-    } else if role.contains("north") {
-        Some([0.0, 1.0, 0.0])
-    } else if role.contains("bottom") || role.contains("floor") || role.ends_with("start") {
-        Some([0.0, 0.0, -1.0])
-    } else if role.contains("top")
-        || role.contains("rim")
-        || role.ends_with("end")
-        || reference.expected_type.ends_with("_face")
-        || reference.expected_type.ends_with("_edge")
-        || matches!(reference.expected_type.as_str(), "face" | "edge")
-    {
-        Some([0.0, 0.0, 1.0])
-    } else {
-        None
-    }
-}
-
 fn endpoint_local_frame(
     endpoint: &AssemblyMateEndpoint,
     kind: AssemblyMateKind,
 ) -> Option<([f64; 3], [f64; 3])> {
-    if matches!(kind, AssemblyMateKind::ConcentricAxial { .. }) {
-        return match endpoint.attachment() {
-            AssemblyMateAttachment::ReferenceOnly(reference) => {
-                legacy_reference_axis_from_semantic_role(reference).map(|axis| ([0.0; 3], axis))
-            }
-            AssemblyMateAttachment::PlanarFace(_) => None,
-        };
-    }
-    match endpoint.attachment() {
-        AssemblyMateAttachment::PlanarFace(attachment) => attachment
+    match (kind, endpoint.attachment()) {
+        (AssemblyMateKind::ConcentricAxial { .. }, AssemblyMateAttachment::Axial(attachment)) => {
+            attachment.has_valid_geometry().then(|| {
+                (
+                    attachment.local_origin_mm(),
+                    attachment.local_unit_direction(),
+                )
+            })
+        }
+        (
+            AssemblyMateKind::CoincidentPlanar { .. }
+            | AssemblyMateKind::Distance { .. }
+            | AssemblyMateKind::Angle { .. },
+            AssemblyMateAttachment::PlanarFace(attachment),
+        ) => attachment
             .has_valid_geometry()
             .then(|| (attachment.local_origin_mm(), attachment.local_unit_normal())),
-        AssemblyMateAttachment::ReferenceOnly(_) => None,
+        _ => None,
     }
 }
 
@@ -1451,21 +1577,24 @@ fn occurrence_has_bounded_axial_symmetry(
         if redundant_mate_ids.contains(&mate.id()) {
             continue;
         }
-        let reference = if mate.endpoint_a().occurrence_id() == occurrence_id {
-            Some(mate.endpoint_a().reference())
+        let endpoint = if mate.endpoint_a().occurrence_id() == occurrence_id {
+            Some(mate.endpoint_a())
         } else if mate.endpoint_b().occurrence_id() == occurrence_id {
-            Some(mate.endpoint_b().reference())
+            Some(mate.endpoint_b())
         } else {
             None
         };
-        let Some(reference) = reference else {
+        let Some(endpoint) = endpoint else {
             continue;
         };
-        match mate.kind() {
-            AssemblyMateKind::CoincidentPlanar { .. } => has_planar_seat = true,
-            AssemblyMateKind::ConcentricAxial { .. }
-                if reference.expected_type == "cylindrical_face" =>
-            {
+        match (mate.kind(), endpoint.attachment()) {
+            (AssemblyMateKind::CoincidentPlanar { .. }, AssemblyMateAttachment::PlanarFace(_)) => {
+                has_planar_seat = true
+            }
+            (
+                AssemblyMateKind::ConcentricAxial { .. },
+                AssemblyMateAttachment::Axial(attachment),
+            ) if attachment.kind() == AxialAttachmentKind::CylindricalFace => {
                 has_cylindrical_axis = true;
             }
             _ => {}

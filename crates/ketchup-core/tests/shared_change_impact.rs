@@ -287,9 +287,18 @@ fn seed_rigid_dependencies() -> DocumentStore {
             },
             CanonicalCommand::CreateAssemblyMate(AssemblyMate::new(
                 AXIAL_MATE,
-                AssemblyMateEndpoint::resolved(FIRST, east.clone()),
-                AssemblyMateEndpoint::resolved(SECOND, east),
-                AssemblyMateKind::ConcentricAxial { reversed: false },
+                AssemblyMateEndpoint::resolved_planar_face(
+                    FIRST,
+                    PlanarFaceAttachment::new(east.clone(), [0.0; 3], [1.0, 0.0, 0.0]).unwrap(),
+                ),
+                AssemblyMateEndpoint::resolved_planar_face(
+                    SECOND,
+                    PlanarFaceAttachment::new(east, [0.0; 3], [1.0, 0.0, 0.0]).unwrap(),
+                ),
+                AssemblyMateKind::CoincidentPlanar {
+                    offset_mm: 20.0,
+                    reversed: true,
+                },
             )),
             CanonicalCommand::UpdateDrawingSheet(
                 DrawingSheet::new(
@@ -2080,7 +2089,7 @@ fn duplicate_invalid_and_stale_propagation_requests_preserve_history_and_outputs
 }
 
 #[test]
-fn dependent_rebind_verifier_covers_planar_axial_drawing_exports_undo_and_save_open() {
+fn dependent_rebind_verifier_covers_planar_mates_drawing_exports_undo_and_save_open() {
     let mut document = seed_rigid_dependencies();
     let source = document.current();
     let source_stamp = stamp(&document);

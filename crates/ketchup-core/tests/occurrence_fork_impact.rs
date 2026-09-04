@@ -918,7 +918,7 @@ fn reviewed_occurrence_fork_commits_once_and_refreshes_only_the_selected_branch(
 }
 
 #[test]
-fn occurrence_fork_refreshes_only_selected_planar_axial_dependencies_and_outputs() {
+fn occurrence_fork_refreshes_only_selected_planar_dependencies_and_outputs() {
     let mut document = seed(false);
     document
         .apply_batch(&CommandBatch::new(vec![
@@ -943,21 +943,34 @@ fn occurrence_fork_refreshes_only_selected_planar_axial_dependencies_and_outputs
         .apply_batch(&CommandBatch::new(vec![
             CanonicalCommand::CreateAssemblyMate(AssemblyMate::new(
                 AXIAL_MATE,
-                AssemblyMateEndpoint::resolved(
+                AssemblyMateEndpoint::resolved_planar_face(
                     FIRST,
-                    axial_evidence
-                        .reference(ExactFaceRole::East)
-                        .unwrap()
-                        .clone(),
+                    PlanarFaceAttachment::new(
+                        axial_evidence
+                            .reference(ExactFaceRole::East)
+                            .unwrap()
+                            .clone(),
+                        [0.0; 3],
+                        [1.0, 0.0, 0.0],
+                    )
+                    .unwrap(),
                 ),
-                AssemblyMateEndpoint::resolved(
+                AssemblyMateEndpoint::resolved_planar_face(
                     SECOND,
-                    axial_evidence
-                        .reference(ExactFaceRole::East)
-                        .unwrap()
-                        .clone(),
+                    PlanarFaceAttachment::new(
+                        axial_evidence
+                            .reference(ExactFaceRole::East)
+                            .unwrap()
+                            .clone(),
+                        [0.0; 3],
+                        [1.0, 0.0, 0.0],
+                    )
+                    .unwrap(),
                 ),
-                AssemblyMateKind::ConcentricAxial { reversed: false },
+                AssemblyMateKind::CoincidentPlanar {
+                    offset_mm: 20.0,
+                    reversed: true,
+                },
             )),
         ]))
         .unwrap();

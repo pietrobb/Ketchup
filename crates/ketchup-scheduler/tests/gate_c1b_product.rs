@@ -403,6 +403,109 @@ fn m3_v2_planar_face_attachments_use_definition_local_workplane_coordinates() {
 }
 
 #[test]
+fn p3_circle_v2_axial_attachment_uses_point_and_vector_workplane_transforms() {
+    const WORKPLANE: FeatureId = FeatureId(21);
+    const SKETCH: FeatureId = FeatureId(22);
+    const PAD: FeatureId = FeatureId(23);
+
+    let center = [12.0, -8.0];
+    let radius = 6.0;
+    let height = 14.0;
+    let sketch = SketchSpec {
+        workplane: WORKPLANE,
+        entities: vec![SketchEntity::Circle {
+            id: SketchEntityId(1),
+            center_mm: center,
+            radius_mm: radius,
+        }],
+        constraints: Vec::new(),
+    };
+    let region = sketch.solved_regions().unwrap()[0].id;
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DEFINITION,
+                name: "YZ circle pad".to_owned(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: WORKPLANE,
+                definition_id: DEFINITION,
+                name: "YZ workplane".to_owned(),
+                kind: FeatureKind::Workplane(WorkplaneSpec::principal(PrincipalPlane::Yz)),
+            },
+            CanonicalCommand::CreateFeature {
+                id: SKETCH,
+                definition_id: DEFINITION,
+                name: "Workplane circle".to_owned(),
+                kind: FeatureKind::Sketch(sketch),
+            },
+            CanonicalCommand::CreateFeature {
+                id: PAD,
+                definition_id: DEFINITION,
+                name: "Circle pad".to_owned(),
+                kind: FeatureKind::Pad(PadSpec {
+                    sketch: SKETCH,
+                    region,
+                    direction: FeatureDirection::AlongNormal,
+                    extent: FeatureExtent::Blind(
+                        Dimension::new(height.to_string(), height).unwrap(),
+                    ),
+                }),
+            },
+        ]))
+        .unwrap();
+
+    let snapshot = document.current();
+    let request = ExactFeatureChainRequest::from_snapshot(&snapshot, DEFINITION).unwrap();
+    let frame = request
+        .workplane_frame_bits
+        .expect("circle pad request must retain its workplane frame")
+        .map(f64::from_bits);
+    let circle = request
+        .circle
+        .expect("circle pad must use the circle evaluator");
+    let local_origin = [
+        f64::from_bits(circle.center_x_bits),
+        f64::from_bits(circle.center_y_bits),
+        0.0,
+    ];
+    let rotate = |vector: [f64; 3]| {
+        [
+            frame[3] * vector[0] + frame[6] * vector[1] + frame[9] * vector[2],
+            frame[4] * vector[0] + frame[7] * vector[1] + frame[10] * vector[2],
+            frame[5] * vector[0] + frame[8] * vector[1] + frame[11] * vector[2],
+        ]
+    };
+    let rotated_origin = rotate(local_origin);
+    let expected_origin = [
+        frame[0] + rotated_origin[0],
+        frame[1] + rotated_origin[1],
+        frame[2] + rotated_origin[2],
+    ];
+    let expected_direction = rotate([0.0, 0.0, 1.0]);
+
+    let mut supervisor = ExactWorkerSupervisor::spawn(worker_path()).unwrap();
+    let package = supervisor.evaluate_rectangle(&request).unwrap();
+    let repeated = supervisor.evaluate_rectangle(&request).unwrap();
+    assert_eq!(package, repeated);
+    let reference = package.reference(ExactFaceRole::CircleSide).unwrap();
+    let attachment = package.axial_attachment(reference).unwrap();
+    assert_eq!(attachment.reference(), reference);
+    for axis in 0..3 {
+        assert!(
+            (attachment.local_origin_mm()[axis] - expected_origin[axis]).abs() <= 1.0e-9,
+            "axis origin must use the workplane point transform"
+        );
+        assert!(
+            (attachment.local_unit_direction()[axis] - expected_direction[axis]).abs() <= 1.0e-12,
+            "axis direction must use workplane rotation without translation"
+        );
+    }
+    assert_ne!(attachment.local_origin_mm(), expected_direction);
+}
+
+#[test]
 fn generated_rectangle_properties_have_stable_identities_and_survive_save_open() {
     let mut supervisor = ExactWorkerSupervisor::spawn(worker_path()).unwrap();
     let samples = generated_rectangle_dimension_samples();
@@ -21227,7 +21330,22 @@ fn scheduler_evaluates_exact_circle_extrusion_and_circular_cut_with_typed_stable
         [[20.0, 10.0, 0.0], [40.0, 30.0, 18.0]]
     );
     let circle_package = supervisor.evaluate_rectangle(&circle_request).unwrap();
+    let repeated_circle = supervisor.evaluate_rectangle(&circle_request).unwrap();
+    assert_eq!(circle_package, repeated_circle);
+    assert!(circle_package.identity.backend.ends_with(":p3-circle-v2"));
     assert!(circle_package.is_current(&circle_snapshot));
+    assert_eq!(circle_package.planar_face_attachments.len(), 2);
+    assert_eq!(circle_package.axial_attachments.len(), 1);
+    let circle_side = circle_package.reference(ExactFaceRole::CircleSide).unwrap();
+    let axis = circle_package.axial_attachment(circle_side).unwrap();
+    assert_eq!(
+        axis.local_origin_mm().map(f64::to_bits),
+        [30.0, 20.0, 0.0].map(f64::to_bits)
+    );
+    assert_eq!(
+        axis.local_unit_direction().map(f64::to_bits),
+        [0.0, 0.0, 1.0].map(f64::to_bits)
+    );
     assert_eq!(circle_package.vertices.len(), 66);
     assert_eq!(circle_package.triangles.len(), 128);
     assert_closed_manifold(&circle_package);

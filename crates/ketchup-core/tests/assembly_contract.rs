@@ -1,17 +1,18 @@
 use ketchup_core::assembly::{
     AssemblyDofStatus, AssemblyMate, AssemblyMateEndpoint, AssemblyMateId, AssemblyMateKind,
     AssemblyRecomputePublishError, AssemblyRecomputeStatus, AssemblyReferenceHealth,
-    AssemblySolvePublishError, AssemblySolveStatus, AssemblySolverPolicy, PlanarFaceAttachment,
-    recompute_rigid_assembly, solve_rigid_assembly,
+    AssemblySolvePublishError, AssemblySolveStatus, AssemblySolverPolicy, AxialAttachment,
+    AxialAttachmentKind, PlanarFaceAttachment, recompute_rigid_assembly, solve_rigid_assembly,
 };
 use ketchup_core::document::{
     CanonicalCommand, CanonicalError, CommandBatch, DefinitionId, Dimension, DocumentId,
-    DocumentStore, FeatureId, FeatureKind, GroupId, OccurrenceId, ProposalCommitError,
-    ProposalPrepareError, TagId, Transform,
+    DocumentStore, FeatureId, FeatureKind, GroupId, OccurrenceId, ProfileSegment,
+    ProposalCommitError, ProposalPrepareError, TagId, Transform,
 };
 use ketchup_core::exact_product::{
-    ExactBodyPackage, ExactFaceRole, ExactFeatureChainRequest, ExactPlanarFaceAttachmentInput,
-    ExactResultRegistry, build_box_render_package, build_box_render_package_with_attachments,
+    ExactAxialAttachmentInput, ExactBodyPackage, ExactFaceRole, ExactFeatureChainRequest,
+    ExactPlanarFaceAttachmentInput, ExactResultRegistry, build_box_render_package,
+    build_box_render_package_with_attachments, build_box_render_package_with_typed_attachments,
     canonical_reference_lineage_digest,
 };
 use ketchup_core::persistence;
@@ -121,6 +122,128 @@ fn current_exact_package_with_attachments(
     )
 }
 
+fn current_exact_package_with_axial_attachment(
+    snapshot: &ketchup_core::document::Snapshot,
+    fingerprint: &str,
+    attachment: Option<ExactAxialAttachmentInput>,
+) -> Arc<ExactBodyPackage> {
+    let request = ExactFeatureChainRequest::from_snapshot(snapshot, DEFINITION).unwrap();
+    let evidence = [
+        ExactFaceRole::Top,
+        ExactFaceRole::Bottom,
+        ExactFaceRole::CircleSide,
+    ]
+    .map(|role| {
+        (
+            role,
+            canonical_reference_lineage_digest(
+                snapshot.document_id(),
+                EXTRUSION,
+                role.semantic_role(),
+                role.source_element_id(),
+                role.expected_type(),
+            ),
+            format!("geometry:{role:?}:{fingerprint}"),
+        )
+    });
+    Arc::new(
+        build_box_render_package_with_typed_attachments(
+            &request,
+            format!("exact-input:{fingerprint}"),
+            fingerprint.to_owned(),
+            "occt".into(),
+            "r0".into(),
+            request.expected_bounds_mm(),
+            evidence,
+            &[],
+            attachment.as_slice(),
+        )
+        .unwrap()
+        .into(),
+    )
+}
+
+fn seeded_circle_document() -> (DocumentStore, ketchup_core::exact_product::BodySubshapeRef) {
+    let center = [5.0, 5.0];
+    let radius = 5.0;
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DEFINITION,
+                name: "Assembly cylinder".into(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: PROFILE,
+                definition_id: DEFINITION,
+                name: "Circle profile".into(),
+                kind: FeatureKind::SegmentProfile {
+                    segments: vec![
+                        ProfileSegment::CircularArc {
+                            start_mm: [center[0] + radius, center[1]],
+                            end_mm: [center[0] - radius, center[1]],
+                            center_mm: center,
+                            clockwise: false,
+                        },
+                        ProfileSegment::CircularArc {
+                            start_mm: [center[0] - radius, center[1]],
+                            end_mm: [center[0] + radius, center[1]],
+                            center_mm: center,
+                            clockwise: false,
+                        },
+                    ],
+                    closed: true,
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: EXTRUSION,
+                definition_id: DEFINITION,
+                name: "Cylinder".into(),
+                kind: FeatureKind::Extrusion {
+                    profile: PROFILE,
+                    height: Dimension::from_decimal("10").unwrap(),
+                },
+            },
+            CanonicalCommand::CreateOccurrence {
+                id: FIRST,
+                definition_id: DEFINITION,
+                name: "Cylinder A".into(),
+                transform: Transform::identity(),
+                parent: None,
+                tag: None,
+                visible: true,
+            },
+            CanonicalCommand::CreateOccurrence {
+                id: SECOND,
+                definition_id: DEFINITION,
+                name: "Cylinder B".into(),
+                transform: Transform::from_translation(20.0, 0.0, 0.0).unwrap(),
+                parent: None,
+                tag: None,
+                visible: true,
+            },
+        ]))
+        .unwrap();
+    let snapshot = document.current();
+    let package = current_exact_package_with_axial_attachment(
+        &snapshot,
+        "initial-axis",
+        Some(ExactAxialAttachmentInput {
+            role: ExactFaceRole::CircleSide,
+            kind: AxialAttachmentKind::CylindricalFace,
+            local_origin_mm: [center[0], center[1], 0.0],
+            local_unit_direction: [0.0, 0.0, 1.0],
+        }),
+    );
+    (
+        document,
+        package
+            .reference(ExactFaceRole::CircleSide)
+            .unwrap()
+            .clone(),
+    )
+}
+
 fn seeded_document() -> (
     DocumentStore,
     ketchup_core::exact_product::BodySubshapeRef,
@@ -227,6 +350,23 @@ fn canonical_planar_endpoint(
     }
 }
 
+fn cylindrical_reference(
+    mut reference: ketchup_core::exact_product::BodySubshapeRef,
+) -> ketchup_core::exact_product::BodySubshapeRef {
+    let role = ExactFaceRole::CircleSide;
+    reference.semantic_role = role.semantic_role().to_owned();
+    reference.source_element_id = role.source_element_id().to_owned();
+    reference.expected_type = role.expected_type().to_owned();
+    reference.lineage_digest = canonical_reference_lineage_digest(
+        reference.document_id,
+        reference.producer_feature_id,
+        &reference.semantic_role,
+        &reference.source_element_id,
+        &reference.expected_type,
+    );
+    reference
+}
+
 fn coincident_mate(
     id: AssemblyMateId,
     a: AssemblyMateEndpoint,
@@ -257,7 +397,7 @@ fn planar_endpoint(
 
 #[test]
 fn typed_planar_face_endpoints_are_bit_exact_schema_50_state_and_history() {
-    assert_eq!(persistence::CURRENT_SCHEMA, 50);
+    assert_eq!(persistence::CURRENT_SCHEMA, 51);
     let (mut document, top, bottom, _east) = seeded_document();
     let before_digest = document.current().canonical_digest();
     let origin_a = [1.25, -0.0, 3.5];
@@ -325,7 +465,7 @@ fn typed_planar_face_endpoints_are_bit_exact_schema_50_state_and_history() {
     ));
 
     let reopened = persistence::load(&persistence::save(&committed)).unwrap();
-    assert_eq!(reopened.source_schema(), 50);
+    assert_eq!(reopened.source_schema(), 51);
     assert_eq!(reopened.snapshot().canonical_digest(), committed_digest);
     assert_eq!(
         encode_semantic_state(&reopened.snapshot()).complete_v1(),
@@ -344,6 +484,102 @@ fn typed_planar_face_endpoints_are_bit_exact_schema_50_state_and_history() {
         encode_semantic_state(&document.current()).complete_v1(),
         state
     );
+}
+
+#[test]
+fn typed_axial_endpoints_are_bit_exact_ignore_labels_transform_origins_and_round_trip() {
+    let (mut document, top, bottom, _east) = seeded_document();
+    let top = cylindrical_reference(top);
+    let bottom = cylindrical_reference(bottom);
+    let origin_a = [2.0, -0.0, 4.0];
+    let origin_b = [1.0, 2.0, 5.0];
+    let direction_a = [1.0, 0.0, 0.0];
+    let direction_b = [0.0, 1.0, 0.0];
+    let mate = AssemblyMate::new(
+        MATE,
+        AssemblyMateEndpoint::resolved_axial(
+            FIRST,
+            AxialAttachment::new(
+                top,
+                AxialAttachmentKind::CylindricalFace,
+                origin_a,
+                direction_a,
+            )
+            .unwrap(),
+        ),
+        AssemblyMateEndpoint::resolved_axial(
+            SECOND,
+            AxialAttachment::new(
+                bottom,
+                AxialAttachmentKind::CylindricalFace,
+                origin_b,
+                direction_b,
+            )
+            .unwrap(),
+        ),
+        AssemblyMateKind::ConcentricAxial { reversed: true },
+    );
+    let before = document.current().canonical_digest();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetOccurrenceTransform {
+                id: SECOND,
+                transform: Transform::from_matrix([
+                    0.0, -1.0, 0.0, 20.0, 1.0, 0.0, 0.0, 5.0, 0.0, 0.0, 1.0, 7.0, 0.0, 0.0, 0.0,
+                    1.0,
+                ])
+                .unwrap(),
+            },
+            CanonicalCommand::SetOccurrenceGrounded {
+                id: FIRST,
+                grounded: true,
+            },
+            CanonicalCommand::CreateAssemblyMate(mate.clone()),
+        ]))
+        .unwrap();
+    let committed = document.current();
+    let digest = committed.canonical_digest();
+    assert_ne!(digest, before);
+    let state = encode_semantic_state(&committed).complete_v1().to_owned();
+    assert!(state.contains("endpoint_a.attachment=axial,kind=cylindrical_face"));
+    assert!(
+        state.contains(
+            "endpoint_a.origin_f64_bits=4000000000000000,8000000000000000,4010000000000000"
+        )
+    );
+    assert!(state.contains(
+        "endpoint_b.direction_f64_bits=0000000000000000,3ff0000000000000,0000000000000000"
+    ));
+    let solved = solve_rigid_assembly(&committed, AssemblySolverPolicy::default()).unwrap();
+    let solved_transform = solved.occurrence(SECOND).unwrap().transform();
+    let m = solved_transform.matrix();
+    let world_b_origin = [
+        m[0] * origin_b[0] + m[1] * origin_b[1] + m[2] * origin_b[2] + m[3],
+        m[4] * origin_b[0] + m[5] * origin_b[1] + m[6] * origin_b[2] + m[7],
+        m[8] * origin_b[0] + m[9] * origin_b[1] + m[10] * origin_b[2] + m[11],
+    ];
+    let world_b_direction = [
+        m[0] * direction_b[0] + m[1] * direction_b[1] + m[2] * direction_b[2],
+        m[4] * direction_b[0] + m[5] * direction_b[1] + m[6] * direction_b[2],
+        m[8] * direction_b[0] + m[9] * direction_b[1] + m[10] * direction_b[2],
+    ];
+    assert_near(world_b_origin[1], origin_a[1]);
+    assert_near(world_b_origin[2], origin_a[2]);
+    for axis in 0..3 {
+        assert_near(world_b_direction[axis], -direction_a[axis]);
+    }
+    let reopened = persistence::load(&persistence::save(&committed)).unwrap();
+    assert_eq!(reopened.source_schema(), 51);
+    assert_eq!(reopened.snapshot().canonical_digest(), digest);
+    assert_eq!(reopened.snapshot().assembly_mate(MATE), Some(&mate));
+    assert_eq!(
+        encode_semantic_state(&reopened.snapshot()).complete_v1(),
+        state
+    );
+    document.undo().unwrap();
+    assert_eq!(document.current().canonical_digest(), before);
+    document.redo().unwrap();
+    assert_eq!(document.current().canonical_digest(), digest);
 }
 
 #[test]
@@ -534,6 +770,115 @@ fn recompute_refreshes_identity_bound_typed_attachments_and_fails_closed_without
             .planar_face_attachment()
             .is_none()
     );
+}
+
+#[test]
+fn recompute_refreshes_typed_axial_geometry_and_breaks_without_axis_evidence() {
+    let (mut document, circle_side) = seeded_circle_document();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetOccurrenceGrounded {
+                id: FIRST,
+                grounded: true,
+            },
+            CanonicalCommand::CreateAssemblyMate(AssemblyMate::new(
+                MATE,
+                AssemblyMateEndpoint::resolved_axial(
+                    FIRST,
+                    AxialAttachment::cylindrical_face(
+                        circle_side.clone(),
+                        [1.0, 2.0, 3.0],
+                        [0.0, 0.0, 1.0],
+                    )
+                    .unwrap(),
+                ),
+                AssemblyMateEndpoint::resolved_axial(
+                    SECOND,
+                    AxialAttachment::cylindrical_face(
+                        circle_side,
+                        [4.0, 5.0, 6.0],
+                        [0.0, 1.0, 0.0],
+                    )
+                    .unwrap(),
+                ),
+                AssemblyMateKind::ConcentricAxial { reversed: false },
+            )),
+        ]))
+        .unwrap();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetFeatureDimension {
+                id: EXTRUSION,
+                dimension: Dimension::from_decimal("12").unwrap(),
+            },
+        ]))
+        .unwrap();
+
+    let source = document.current();
+    let refreshed = ExactAxialAttachmentInput {
+        role: ExactFaceRole::CircleSide,
+        kind: AxialAttachmentKind::CylindricalFace,
+        local_origin_mm: [6.25, 4.5, 0.0],
+        local_unit_direction: [1.0, 0.0, 0.0],
+    };
+    let registry = ExactResultRegistry::accept(
+        &source,
+        [current_exact_package_with_axial_attachment(
+            &source,
+            "axial-attachment-refresh",
+            Some(refreshed),
+        )],
+    )
+    .unwrap();
+    let recomputed =
+        recompute_rigid_assembly(&document, &registry, AssemblySolverPolicy::default()).unwrap();
+    assert_eq!(recomputed.status(), AssemblyRecomputeStatus::Solved);
+    for endpoint in [
+        recomputed.mates()[0].endpoint_a(),
+        recomputed.mates()[0].endpoint_b(),
+    ] {
+        let attachment = endpoint.axial_attachment().unwrap();
+        assert_eq!(
+            attachment.local_origin_mm().map(f64::to_bits),
+            refreshed.local_origin_mm.map(f64::to_bits)
+        );
+        assert_eq!(
+            attachment.local_unit_direction().map(f64::to_bits),
+            refreshed.local_unit_direction.map(f64::to_bits)
+        );
+    }
+
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetFeatureDimension {
+                id: EXTRUSION,
+                dimension: Dimension::from_decimal("14").unwrap(),
+            },
+        ]))
+        .unwrap();
+    let current = document.current();
+    let registry_without_axis = ExactResultRegistry::accept(
+        &current,
+        [current_exact_package_with_axial_attachment(
+            &current,
+            "axial-attachment-missing",
+            None,
+        )],
+    )
+    .unwrap();
+    let broken = recompute_rigid_assembly(
+        &document,
+        &registry_without_axis,
+        AssemblySolverPolicy::default(),
+    )
+    .unwrap();
+    assert_eq!(broken.status(), AssemblyRecomputeStatus::Broken);
+    assert!(broken.solve().is_none());
+    assert_eq!(
+        broken.mates()[0].endpoint_a().health(),
+        AssemblyReferenceHealth::Broken
+    );
+    assert!(broken.mates()[0].endpoint_a().axial_attachment().is_none());
 }
 
 #[test]
@@ -797,8 +1142,26 @@ fn rigid_solver_covers_supported_mates_with_fixed_policy_and_explicit_dof() {
         };
         let (endpoint_a, endpoint_b) = if case == 1 {
             (
-                AssemblyMateEndpoint::resolved(FIRST, top),
-                AssemblyMateEndpoint::resolved(SECOND, endpoint_b_reference),
+                AssemblyMateEndpoint::resolved_axial(
+                    FIRST,
+                    AxialAttachment::new(
+                        cylindrical_reference(top),
+                        AxialAttachmentKind::CylindricalFace,
+                        [0.0; 3],
+                        [0.0, 0.0, 1.0],
+                    )
+                    .unwrap(),
+                ),
+                AssemblyMateEndpoint::resolved_axial(
+                    SECOND,
+                    AxialAttachment::new(
+                        cylindrical_reference(endpoint_b_reference),
+                        AxialAttachmentKind::CylindricalFace,
+                        [0.0; 3],
+                        [0.0, 0.0, 1.0],
+                    )
+                    .unwrap(),
+                ),
             )
         } else {
             (

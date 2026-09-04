@@ -1615,13 +1615,14 @@ fn disjoint_box_union_fails_closed() {
 
 #[test]
 fn exact_circle_extrusion_has_analytic_volume_and_stable_cylindrical_side() {
-    let output = ExactBackend::new()
-        .extrude_circle(CircleExtrudeSpec {
-            center_mm: [25.0, -15.0],
-            radius_mm: 10.0,
-            height_mm: 20.0,
-        })
-        .unwrap();
+    let backend = ExactBackend::new();
+    let spec = CircleExtrudeSpec {
+        center_mm: [25.0, -15.0],
+        radius_mm: 10.0,
+        height_mm: 20.0,
+    };
+    let output = backend.extrude_circle(spec).unwrap();
+    let repeated = backend.extrude_circle(spec).unwrap();
 
     assert_valid(&output);
     assert_close(
@@ -1630,6 +1631,51 @@ fn exact_circle_extrusion_has_analytic_volume_and_stable_cylindrical_side() {
     );
     assert_close(output.body.topology.bounds_mm.min.x, 15.0);
     assert_close(output.body.topology.bounds_mm.max.y, -5.0);
+    let side = output
+        .body
+        .topology
+        .faces
+        .iter()
+        .find(|face| face.surface_kind == "cylinder")
+        .expect("circle extrusion must expose its cylindrical side");
+    let repeated_side = repeated
+        .body
+        .topology
+        .faces
+        .iter()
+        .find(|face| face.surface_kind == "cylinder")
+        .expect("repeated circle extrusion must expose its cylindrical side");
+    let axis_origin = side
+        .axis_origin_mm
+        .expect("cylindrical face must expose its OCCT axis origin");
+    let axis_direction = side
+        .axis_direction
+        .expect("cylindrical face must expose its OCCT axis direction");
+    assert!(
+        [axis_origin.x, axis_origin.y, axis_origin.z]
+            .into_iter()
+            .all(f64::is_finite)
+    );
+    assert!(
+        [axis_direction.x, axis_direction.y, axis_direction.z]
+            .into_iter()
+            .all(f64::is_finite)
+    );
+    assert_close(axis_origin.x, 25.0);
+    assert_close(axis_origin.y, -15.0);
+    assert_close(axis_origin.z, 0.0);
+    assert_close(
+        axis_direction.x * axis_direction.x
+            + axis_direction.y * axis_direction.y
+            + axis_direction.z * axis_direction.z,
+        1.0,
+    );
+    assert_eq!(side.axis_origin_mm, repeated_side.axis_origin_mm);
+    assert_eq!(side.axis_direction, repeated_side.axis_direction);
+    assert_eq!(
+        side.geometric_fingerprint,
+        repeated_side.geometric_fingerprint
+    );
     let references =
         capture_circle_extrusion_references(&output, "circle-doc", "circle-extrude").unwrap();
     assert_eq!(references.len(), 3);

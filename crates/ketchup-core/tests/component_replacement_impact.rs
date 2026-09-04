@@ -244,18 +244,31 @@ fn seed(reverse_occurrences: bool) -> DocumentStore {
             )),
             CanonicalCommand::CreateAssemblyMate(AssemblyMate::new(
                 AXIAL_MATE,
-                AssemblyMateEndpoint::resolved(
+                AssemblyMateEndpoint::resolved_planar_face(
                     SELECTED,
-                    evidence.reference(ExactFaceRole::East).unwrap().clone(),
+                    PlanarFaceAttachment::new(
+                        evidence.reference(ExactFaceRole::East).unwrap().clone(),
+                        [0.0; 3],
+                        [1.0, 0.0, 0.0],
+                    )
+                    .unwrap(),
                 ),
-                AssemblyMateEndpoint::resolved(
+                AssemblyMateEndpoint::resolved_planar_face(
                     TARGET_OCCURRENCE,
-                    target_evidence
-                        .reference(ExactFaceRole::East)
-                        .unwrap()
-                        .clone(),
+                    PlanarFaceAttachment::new(
+                        target_evidence
+                            .reference(ExactFaceRole::East)
+                            .unwrap()
+                            .clone(),
+                        [0.0; 3],
+                        [1.0, 0.0, 0.0],
+                    )
+                    .unwrap(),
                 ),
-                AssemblyMateKind::ConcentricAxial { reversed: false },
+                AssemblyMateKind::CoincidentPlanar {
+                    offset_mm: 45.0,
+                    reversed: true,
+                },
             )),
             CanonicalCommand::SetOccurrenceGrounded {
                 id: SELECTED,
