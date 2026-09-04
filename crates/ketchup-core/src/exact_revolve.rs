@@ -375,14 +375,7 @@ impl ExactRevolveRequest {
         else {
             return Ok(None);
         };
-        if revolve_profile_id != profile_feature_id
-            || !(2..=64).contains(&points_mm.len())
-            || segments.is_none()
-                && axis_start_mm == [0.0, 0.0]
-                && axis_end_mm == [0.0, 1.0]
-                && angle == 360.0
-                && is_bounded_bottle_profile(&points_mm)
-        {
+        if revolve_profile_id != profile_feature_id || !(2..=64).contains(&points_mm.len()) {
             return Ok(None);
         }
         let points_bits = points_mm

@@ -17,6 +17,7 @@ use ketchup_core::exact_product::{
     ExactFaceRole, ExactFeatureChainRequest, ExactProductError, build_box_render_package,
     canonical_reference_lineage_digest,
 };
+use ketchup_core::exact_revolve::ExactRevolveRequest;
 use ketchup_core::persistence;
 use ketchup_core::sketch::{
     FeatureDirection, FeatureExtent, FeatureExtentEnd, PadSpec, PocketSpec, PrincipalPlane,
@@ -126,6 +127,63 @@ fn arbitrary_boolean_document() -> DocumentStore {
         ]))
         .unwrap();
     document
+}
+
+#[test]
+fn bottle_like_profile_remains_an_ordinary_graph_revolve() {
+    let definition = DefinitionId(6);
+    let profile = FeatureId(500);
+    let revolve = FeatureId(501);
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: definition,
+                name: "Axisymmetric part".into(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: profile,
+                definition_id: definition,
+                name: "Stepped profile".into(),
+                kind: FeatureKind::Profile {
+                    points_mm: vec![
+                        [0.0, 0.0],
+                        [30.0, 0.0],
+                        [30.0, 110.0],
+                        [12.0, 130.0],
+                        [12.0, 145.0],
+                        [0.0, 145.0],
+                    ],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: revolve,
+                definition_id: definition,
+                name: "Full revolve".into(),
+                kind: FeatureKind::full_revolve(profile),
+            },
+        ]))
+        .unwrap();
+
+    let snapshot = document.current();
+    let legacy_request = ExactRevolveRequest::from_snapshot(&snapshot, definition).unwrap();
+    assert!(
+        legacy_request.general,
+        "profile geometry must not select named-product semantics"
+    );
+    assert!(legacy_request.control_feature_id.is_none());
+
+    let graph = ExactBRepGraph::from_snapshot(&snapshot, definition, revolve).unwrap();
+    assert_eq!(graph.nodes.len(), 1);
+    assert!(matches!(
+        graph.nodes[0].operation,
+        ExactBRepOperation::Revolve {
+            profile: ExactBRepProfileId(0),
+            angle_degrees_bits,
+            ..
+        } if f64::from_bits(angle_degrees_bits) == 360.0
+    ));
+    assert_eq!(graph.profiles[0].source_feature_id, profile.0);
 }
 
 #[test]

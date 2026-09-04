@@ -6171,6 +6171,7 @@ enum ExactEvaluationRequest {
         request: Box<ExactFeatureChainRequest>,
         topology: Option<Box<ExactBRepGraph>>,
     },
+    #[cfg(feature = "named-product-fixtures")]
     Revolve(Box<ExactRevolveRequest>),
     Imported(DefinitionId, Vec<u8>),
 }
@@ -15579,6 +15580,7 @@ impl KetchupApp {
                         },
                     )));
                 }
+                #[cfg(feature = "named-product-fixtures")]
                 if let Ok(request) = ExactRevolveRequest::from_snapshot(&snapshot, definition_id)
                     && request.producer_feature_id() == feature_id
                 {
@@ -15773,6 +15775,7 @@ impl KetchupApp {
                                     });
                                     (package, topology_package)
                                 }
+                                #[cfg(feature = "named-product-fixtures")]
                                 ExactEvaluationRequest::Revolve(request) => (
                                     worker
                                         .evaluate_revolve_with_cancellation(
