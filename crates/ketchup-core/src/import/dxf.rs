@@ -299,6 +299,12 @@ enum UndirectedSegmentKey {
         center: [i64; 2],
         clockwise: bool,
     },
+    CubicBezier {
+        start: [i64; 2],
+        control_1: [i64; 2],
+        control_2: [i64; 2],
+        end: [i64; 2],
+    },
 }
 
 /// Inspect a bounded ASCII DXF without mutating a document.
@@ -1993,6 +1999,9 @@ fn parse_hatch_edge_path(
                     point_key(*center_mm),
                     if reversed { !*clockwise } else { *clockwise },
                 ),
+                ProfileSegment::CubicBezier { .. } => {
+                    return Err(DxfImportError::AmbiguousGeometry);
+                }
             };
             if !unique.insert(key) {
                 return Err(DxfImportError::AmbiguousGeometry);
@@ -3042,6 +3051,17 @@ fn transform_segment(
                 clockwise: transformed_clockwise,
             })
         }
+        ProfileSegment::CubicBezier {
+            start_mm,
+            control_1_mm,
+            control_2_mm,
+            end_mm,
+        } => Ok(ProfileSegment::CubicBezier {
+            start_mm: transform(*start_mm)?,
+            control_1_mm: transform(*control_1_mm)?,
+            control_2_mm: transform(*control_2_mm)?,
+            end_mm: transform(*end_mm)?,
+        }),
     }
 }
 
@@ -4229,6 +4249,27 @@ fn undirected_segment_key(segment: &ProfileSegment) -> UndirectedSegmentKey {
                 }
             }
         }
+        ProfileSegment::CubicBezier {
+            control_1_mm,
+            control_2_mm,
+            ..
+        } => {
+            if start <= end {
+                UndirectedSegmentKey::CubicBezier {
+                    start,
+                    control_1: duplicate_point_key(*control_1_mm),
+                    control_2: duplicate_point_key(*control_2_mm),
+                    end,
+                }
+            } else {
+                UndirectedSegmentKey::CubicBezier {
+                    start: end,
+                    control_1: duplicate_point_key(*control_2_mm),
+                    control_2: duplicate_point_key(*control_1_mm),
+                    end: start,
+                }
+            }
+        }
     }
 }
 
@@ -4289,6 +4330,17 @@ fn reverse_segment(segment: &ProfileSegment) -> ProfileSegment {
             end_mm: *start_mm,
             center_mm: *center_mm,
             clockwise: !clockwise,
+        },
+        ProfileSegment::CubicBezier {
+            start_mm,
+            control_1_mm,
+            control_2_mm,
+            end_mm,
+        } => ProfileSegment::CubicBezier {
+            start_mm: *end_mm,
+            control_1_mm: *control_2_mm,
+            control_2_mm: *control_1_mm,
+            end_mm: *start_mm,
         },
     }
 }

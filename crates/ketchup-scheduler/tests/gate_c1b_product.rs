@@ -5551,6 +5551,17 @@ fn scheduler_evaluates_mirrored_asymmetric_strict_convex_corner_cut_and_pocket_e
                 center_mm: mirror(center_mm),
                 clockwise: !clockwise,
             },
+            ProfileSegment::CubicBezier {
+                start_mm,
+                control_1_mm,
+                control_2_mm,
+                end_mm,
+            } => ProfileSegment::CubicBezier {
+                start_mm: mirror(start_mm),
+                control_1_mm: mirror(control_1_mm),
+                control_2_mm: mirror(control_2_mm),
+                end_mm: mirror(end_mm),
+            },
         })
         .collect::<Vec<_>>();
     let document =
@@ -5804,6 +5815,17 @@ fn scheduler_evaluates_mirrored_asymmetric_strict_convex_corner_cut_and_pocket_e
                 end_mm[1] += 40.0;
                 center_mm[1] += 40.0;
             }
+            ProfileSegment::CubicBezier {
+                start_mm,
+                control_1_mm,
+                control_2_mm,
+                end_mm,
+            } => {
+                start_mm[1] += 40.0;
+                control_1_mm[1] += 40.0;
+                control_2_mm[1] += 40.0;
+                end_mm[1] += 40.0;
+            }
         }
     }
     let rejected = mixed_profile_pocket_document(north_west, 18.0, 8.0);
@@ -5835,6 +5857,17 @@ fn scheduler_evaluates_north_east_mirrored_corner_cut_and_pocket_end_to_end() {
                 end_mm: mirror(end_mm),
                 center_mm: mirror(center_mm),
                 clockwise: !clockwise,
+            },
+            ProfileSegment::CubicBezier {
+                start_mm,
+                control_1_mm,
+                control_2_mm,
+                end_mm,
+            } => ProfileSegment::CubicBezier {
+                start_mm: mirror(start_mm),
+                control_1_mm: mirror(control_1_mm),
+                control_2_mm: mirror(control_2_mm),
+                end_mm: mirror(end_mm),
             },
         })
         .collect::<Vec<_>>();
@@ -6109,6 +6142,17 @@ fn scheduler_evaluates_north_west_mirrored_corner_cut_and_pocket_end_to_end() {
                 end_mm: mirror(end_mm),
                 center_mm: mirror(center_mm),
                 clockwise,
+            },
+            ProfileSegment::CubicBezier {
+                start_mm,
+                control_1_mm,
+                control_2_mm,
+                end_mm,
+            } => ProfileSegment::CubicBezier {
+                start_mm: mirror(start_mm),
+                control_1_mm: mirror(control_1_mm),
+                control_2_mm: mirror(control_2_mm),
+                end_mm: mirror(end_mm),
             },
         })
         .collect::<Vec<_>>();
@@ -6399,6 +6443,17 @@ fn scheduler_evaluates_four_asymmetric_strict_convex_corner_intersections_end_to
                             *clockwise
                         },
                     },
+                    ProfileSegment::CubicBezier {
+                        start_mm,
+                        control_1_mm,
+                        control_2_mm,
+                        end_mm,
+                    } => ProfileSegment::CubicBezier {
+                        start_mm: mirror(*start_mm),
+                        control_1_mm: mirror(*control_1_mm),
+                        control_2_mm: mirror(*control_2_mm),
+                        end_mm: mirror(*end_mm),
+                    },
                 }
             })
             .collect::<Vec<_>>()
@@ -6634,6 +6689,17 @@ fn scheduler_evaluates_four_asymmetric_strict_convex_corner_splits_end_to_end() 
                             *clockwise
                         },
                     },
+                    ProfileSegment::CubicBezier {
+                        start_mm,
+                        control_1_mm,
+                        control_2_mm,
+                        end_mm,
+                    } => ProfileSegment::CubicBezier {
+                        start_mm: mirror(*start_mm),
+                        control_1_mm: mirror(*control_1_mm),
+                        control_2_mm: mirror(*control_2_mm),
+                        end_mm: mirror(*end_mm),
+                    },
                 }
             })
             .collect::<Vec<_>>()
@@ -6866,6 +6932,17 @@ fn scheduler_evaluates_four_asymmetric_strict_convex_corner_unions_end_to_end() 
                         } else {
                             *clockwise
                         },
+                    },
+                    ProfileSegment::CubicBezier {
+                        start_mm,
+                        control_1_mm,
+                        control_2_mm,
+                        end_mm,
+                    } => ProfileSegment::CubicBezier {
+                        start_mm: mirror(*start_mm),
+                        control_1_mm: mirror(*control_1_mm),
+                        control_2_mm: mirror(*control_2_mm),
+                        end_mm: mirror(*end_mm),
                     },
                 }
             })
@@ -12744,6 +12821,23 @@ fn scheduler_evaluates_containing_capsule_union_and_step_round_trip() {
                     clockwise,
                 }
             }
+            ProfileSegment::CubicBezier {
+                mut start_mm,
+                mut control_1_mm,
+                mut control_2_mm,
+                mut end_mm,
+            } => {
+                start_mm[0] += 80.0;
+                control_1_mm[0] += 80.0;
+                control_2_mm[0] += 80.0;
+                end_mm[0] += 80.0;
+                ProfileSegment::CubicBezier {
+                    start_mm,
+                    control_1_mm,
+                    control_2_mm,
+                    end_mm,
+                }
+            }
         })
         .collect();
     let partial =
@@ -13618,6 +13712,23 @@ fn scheduler_evaluates_contained_rounded_rectangle_intersection_and_step_round_t
                     clockwise,
                 }
             }
+            ProfileSegment::CubicBezier {
+                mut start_mm,
+                mut control_1_mm,
+                mut control_2_mm,
+                mut end_mm,
+            } => {
+                start_mm[0] -= 25.0;
+                control_1_mm[0] -= 25.0;
+                control_2_mm[0] -= 25.0;
+                end_mm[0] -= 25.0;
+                ProfileSegment::CubicBezier {
+                    start_mm,
+                    control_1_mm,
+                    control_2_mm,
+                    end_mm,
+                }
+            }
         })
         .collect();
     let partial =
@@ -13766,6 +13877,23 @@ fn scheduler_evaluates_contained_capsule_intersection_and_step_round_trip() {
                     end_mm,
                     center_mm,
                     clockwise,
+                }
+            }
+            ProfileSegment::CubicBezier {
+                mut start_mm,
+                mut control_1_mm,
+                mut control_2_mm,
+                mut end_mm,
+            } => {
+                start_mm[0] -= 25.0;
+                control_1_mm[0] -= 25.0;
+                control_2_mm[0] -= 25.0;
+                end_mm[0] -= 25.0;
+                ProfileSegment::CubicBezier {
+                    start_mm,
+                    control_1_mm,
+                    control_2_mm,
+                    end_mm,
                 }
             }
         })
@@ -14568,6 +14696,23 @@ fn scheduler_evaluates_contained_rounded_rectangle_split_and_step_round_trip() {
                     clockwise,
                 }
             }
+            ProfileSegment::CubicBezier {
+                mut start_mm,
+                mut control_1_mm,
+                mut control_2_mm,
+                mut end_mm,
+            } => {
+                start_mm[0] -= 25.0;
+                control_1_mm[0] -= 25.0;
+                control_2_mm[0] -= 25.0;
+                end_mm[0] -= 25.0;
+                ProfileSegment::CubicBezier {
+                    start_mm,
+                    control_1_mm,
+                    control_2_mm,
+                    end_mm,
+                }
+            }
         })
         .collect();
     let partial =
@@ -14718,6 +14863,23 @@ fn scheduler_evaluates_contained_capsule_split_and_step_round_trip() {
                     end_mm,
                     center_mm,
                     clockwise,
+                }
+            }
+            ProfileSegment::CubicBezier {
+                mut start_mm,
+                mut control_1_mm,
+                mut control_2_mm,
+                mut end_mm,
+            } => {
+                start_mm[0] -= 25.0;
+                control_1_mm[0] -= 25.0;
+                control_2_mm[0] -= 25.0;
+                end_mm[0] -= 25.0;
+                ProfileSegment::CubicBezier {
+                    start_mm,
+                    control_1_mm,
+                    control_2_mm,
+                    end_mm,
                 }
             }
         })
@@ -24201,6 +24363,27 @@ fn translated_capsule_segments(dx: f64, dy: f64) -> Vec<ProfileSegment> {
                     clockwise,
                 }
             }
+            ProfileSegment::CubicBezier {
+                mut start_mm,
+                mut control_1_mm,
+                mut control_2_mm,
+                mut end_mm,
+            } => {
+                start_mm[0] += dx;
+                start_mm[1] += dy;
+                control_1_mm[0] += dx;
+                control_1_mm[1] += dy;
+                control_2_mm[0] += dx;
+                control_2_mm[1] += dy;
+                end_mm[0] += dx;
+                end_mm[1] += dy;
+                ProfileSegment::CubicBezier {
+                    start_mm,
+                    control_1_mm,
+                    control_2_mm,
+                    end_mm,
+                }
+            }
         })
         .collect()
 }
@@ -24223,6 +24406,17 @@ fn rotated_capsule_segments(dx: f64, dy: f64) -> Vec<ProfileSegment> {
                 end_mm: [-end_mm[1] + dx, end_mm[0] + dy],
                 center_mm: [-center_mm[1] + dx, center_mm[0] + dy],
                 clockwise,
+            },
+            ProfileSegment::CubicBezier {
+                start_mm,
+                control_1_mm,
+                control_2_mm,
+                end_mm,
+            } => ProfileSegment::CubicBezier {
+                start_mm: [-start_mm[1] + dx, start_mm[0] + dy],
+                control_1_mm: [-control_1_mm[1] + dx, control_1_mm[0] + dy],
+                control_2_mm: [-control_2_mm[1] + dx, control_2_mm[0] + dy],
+                end_mm: [-end_mm[1] + dx, end_mm[0] + dy],
             },
         })
         .collect()
@@ -24459,6 +24653,17 @@ fn planar_segments(segments: Vec<ProfileSegment>) -> Vec<PlanarProfileSegment> {
                 center_mm,
                 clockwise,
             },
+            ProfileSegment::CubicBezier {
+                start_mm,
+                control_1_mm,
+                control_2_mm,
+                end_mm,
+            } => PlanarProfileSegment::CubicBezier {
+                start_mm,
+                control_1_mm,
+                control_2_mm,
+                end_mm,
+            },
         })
         .collect()
 }
@@ -24526,6 +24731,17 @@ fn rounded_rectangle_planar_segments() -> Vec<PlanarProfileSegment> {
                 center_mm,
                 clockwise,
             },
+            ProfileSegment::CubicBezier {
+                start_mm,
+                control_1_mm,
+                control_2_mm,
+                end_mm,
+            } => PlanarProfileSegment::CubicBezier {
+                start_mm,
+                control_1_mm,
+                control_2_mm,
+                end_mm,
+            },
         })
         .collect()
 }
@@ -24563,6 +24779,27 @@ fn translated_rounded_rectangle_segments(dx: f64, dy: f64) -> Vec<ProfileSegment
                     clockwise,
                 }
             }
+            ProfileSegment::CubicBezier {
+                mut start_mm,
+                mut control_1_mm,
+                mut control_2_mm,
+                mut end_mm,
+            } => {
+                start_mm[0] += dx;
+                start_mm[1] += dy;
+                control_1_mm[0] += dx;
+                control_1_mm[1] += dy;
+                control_2_mm[0] += dx;
+                control_2_mm[1] += dy;
+                end_mm[0] += dx;
+                end_mm[1] += dy;
+                ProfileSegment::CubicBezier {
+                    start_mm,
+                    control_1_mm,
+                    control_2_mm,
+                    end_mm,
+                }
+            }
         })
         .collect()
 }
@@ -24584,6 +24821,17 @@ fn translated_rounded_rectangle_planar_segments(dx: f64, dy: f64) -> Vec<PlanarP
                 end_mm,
                 center_mm,
                 clockwise,
+            },
+            ProfileSegment::CubicBezier {
+                start_mm,
+                control_1_mm,
+                control_2_mm,
+                end_mm,
+            } => PlanarProfileSegment::CubicBezier {
+                start_mm,
+                control_1_mm,
+                control_2_mm,
+                end_mm,
             },
         })
         .collect()
@@ -24652,6 +24900,17 @@ fn containing_rounded_rectangle_planar_segments() -> Vec<PlanarProfileSegment> {
                 center_mm,
                 clockwise,
             },
+            ProfileSegment::CubicBezier {
+                start_mm,
+                control_1_mm,
+                control_2_mm,
+                end_mm,
+            } => PlanarProfileSegment::CubicBezier {
+                start_mm,
+                control_1_mm,
+                control_2_mm,
+                end_mm,
+            },
         })
         .collect()
 }
@@ -24689,6 +24948,27 @@ fn translated_containing_rounded_rectangle_segments(dx: f64, dy: f64) -> Vec<Pro
                     clockwise,
                 }
             }
+            ProfileSegment::CubicBezier {
+                mut start_mm,
+                mut control_1_mm,
+                mut control_2_mm,
+                mut end_mm,
+            } => {
+                start_mm[0] += dx;
+                start_mm[1] += dy;
+                control_1_mm[0] += dx;
+                control_1_mm[1] += dy;
+                control_2_mm[0] += dx;
+                control_2_mm[1] += dy;
+                end_mm[0] += dx;
+                end_mm[1] += dy;
+                ProfileSegment::CubicBezier {
+                    start_mm,
+                    control_1_mm,
+                    control_2_mm,
+                    end_mm,
+                }
+            }
         })
         .collect()
 }
@@ -24713,6 +24993,17 @@ fn translated_containing_rounded_rectangle_planar_segments(
                 end_mm,
                 center_mm,
                 clockwise,
+            },
+            ProfileSegment::CubicBezier {
+                start_mm,
+                control_1_mm,
+                control_2_mm,
+                end_mm,
+            } => PlanarProfileSegment::CubicBezier {
+                start_mm,
+                control_1_mm,
+                control_2_mm,
+                end_mm,
             },
         })
         .collect()

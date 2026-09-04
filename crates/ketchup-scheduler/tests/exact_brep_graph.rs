@@ -5,8 +5,9 @@ use ketchup_core::document::{
 };
 use ketchup_core::exact_brep_graph::{
     EXACT_BREP_GRAPH_SCHEMA_V8, EXACT_BREP_GRAPH_SCHEMA_V9, EXACT_BREP_GRAPH_SCHEMA_V10,
-    ExactBRepGraph, ExactBRepGraphError, ExactBRepOperation, ExactBRepPlanarGeometry,
-    ExactBRepPlanarLoop, ExactBRepPlanarSegment, MAX_EXACT_BREP_GRAPH_PROFILES,
+    EXACT_BREP_GRAPH_SCHEMA_V11, ExactBRepGraph, ExactBRepGraphError, ExactBRepOperation,
+    ExactBRepPlanarGeometry, ExactBRepPlanarLoop, ExactBRepPlanarSegment,
+    MAX_EXACT_BREP_GRAPH_PROFILES,
 };
 use ketchup_core::exact_product::{
     ExactBRepGraphPackage, ExactBRepGraphWorkerEvidence, ExactBodyPackage, ExactFaceRole,
@@ -2927,4 +2928,101 @@ fn worker_cuts_a_compound_sketch_pocket_while_preserving_its_inner_island() {
     assert_bounds_close(result.bounds_mm, [0.0, 0.0, 0.0, 50.0, 40.0, 10.0]);
     assert_eq!(result.topology_counts[4], 1);
     assert_eq!(result.identity.producer_feature_id.0, pocket.0);
+}
+
+#[test]
+fn worker_evaluates_v11_cubic_sweep_with_mesh_and_step_round_trip() {
+    let definition = DefinitionId(800);
+    let profile = FeatureId(801);
+    let path = FeatureId(802);
+    let sweep = FeatureId(803);
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: definition,
+                name: "V11 cubic sweep".into(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: profile,
+                definition_id: definition,
+                name: "Small rectangle".into(),
+                kind: FeatureKind::Profile {
+                    points_mm: vec![[-1.0, -1.0], [1.0, -1.0], [1.0, 1.0], [-1.0, 1.0]],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: path,
+                definition_id: definition,
+                name: "Line-cubic-line C1 path".into(),
+                kind: FeatureKind::SegmentProfile {
+                    segments: vec![
+                        ProfileSegment::Line {
+                            start_mm: [0.0, 0.0],
+                            end_mm: [25.0, 0.0],
+                        },
+                        ProfileSegment::CubicBezier {
+                            start_mm: [25.0, 0.0],
+                            control_1_mm: [35.0, 0.0],
+                            control_2_mm: [45.0, 10.0],
+                            end_mm: [45.0, 20.0],
+                        },
+                        ProfileSegment::Line {
+                            start_mm: [45.0, 20.0],
+                            end_mm: [45.0, 45.0],
+                        },
+                    ],
+                    closed: false,
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: sweep,
+                definition_id: definition,
+                name: "V11 sweep".into(),
+                kind: FeatureKind::Sweep { profile, path },
+            },
+        ]))
+        .unwrap();
+    let snapshot = document.current();
+    let graph = ExactBRepGraph::from_snapshot(&snapshot, definition, sweep).unwrap();
+    assert_eq!(graph.schema, EXACT_BREP_GRAPH_SCHEMA_V11);
+    let mut downgraded = graph.clone();
+    downgraded.schema = EXACT_BREP_GRAPH_SCHEMA_V10.to_owned();
+    assert_eq!(
+        downgraded.to_bytes(),
+        Err(ExactBRepGraphError::InvalidGraph)
+    );
+
+    let mut supervisor =
+        ExactWorkerSupervisor::spawn(env!("CARGO_BIN_EXE_ketchup-exact-worker")).unwrap();
+    let package = supervisor.evaluate_exact_brep_graph(&graph).unwrap();
+    assert_eq!(
+        supervisor.evaluate_exact_brep_graph(&graph).unwrap(),
+        package
+    );
+    assert_eq!(package.graph, graph);
+    assert_eq!(package.topology_counts[4], 1);
+    assert!(package.topology_counts.iter().all(|count| *count > 0));
+    assert!(!package.vertices.is_empty());
+    assert!(!package.triangles.is_empty());
+    assert_eq!(
+        package.triangles.len(),
+        package.triangle_face_ordinals.len()
+    );
+
+    let directory = tempfile::tempdir().unwrap();
+    let step_path = directory.path().join("v11-cubic-sweep.step");
+    supervisor
+        .export_exact_brep_graph_step(&snapshot, &package, &step_path)
+        .unwrap();
+    let source = std::fs::read(&step_path).unwrap();
+    let evidence = supervisor
+        .inspect_step_import_with_cancellation(
+            &step_path,
+            &sha256_hex(&source),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+    assert_eq!(evidence.solid_count, 1);
+    assert!((evidence.volume_mm3 - package.volume_mm3).abs() <= package.volume_mm3 * 1.0e-9);
 }

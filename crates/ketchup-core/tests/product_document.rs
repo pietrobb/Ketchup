@@ -4473,3 +4473,126 @@ fn segment_profile_rejects_discontinuity_and_radius_mismatch_atomically() {
         assert_eq!(document.visible_undo_steps(), 0);
     }
 }
+
+#[test]
+fn v11_cubic_sweep_is_canonical_visible_persistent_and_fail_closed() {
+    const DEFINITION: DefinitionId = DefinitionId(800);
+    const PROFILE: FeatureId = FeatureId(801);
+    const PATH: FeatureId = FeatureId(802);
+    const SWEEP: FeatureId = FeatureId(803);
+
+    let path_segments = vec![
+        ProfileSegment::Line {
+            start_mm: [0.0, 0.0],
+            end_mm: [25.0, 0.0],
+        },
+        ProfileSegment::CubicBezier {
+            start_mm: [25.0, 0.0],
+            control_1_mm: [35.0, 0.0],
+            control_2_mm: [45.0, 10.0],
+            end_mm: [45.0, 20.0],
+        },
+        ProfileSegment::Line {
+            start_mm: [45.0, 20.0],
+            end_mm: [45.0, 45.0],
+        },
+    ];
+    let commands = |segments| {
+        CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DEFINITION,
+                name: "V11 cubic sweep".to_owned(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: PROFILE,
+                definition_id: DEFINITION,
+                name: "Small rectangle".to_owned(),
+                kind: FeatureKind::Profile {
+                    points_mm: vec![[-1.0, -1.0], [1.0, -1.0], [1.0, 1.0], [-1.0, 1.0]],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: PATH,
+                definition_id: DEFINITION,
+                name: "Line-cubic-line C1 path".to_owned(),
+                kind: FeatureKind::SegmentProfile {
+                    segments,
+                    closed: false,
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: SWEEP,
+                definition_id: DEFINITION,
+                name: "V11 sweep".to_owned(),
+                kind: FeatureKind::Sweep {
+                    profile: PROFILE,
+                    path: PATH,
+                },
+            },
+        ])
+    };
+
+    let mut document = DocumentStore::new();
+    let empty_digest = document.current().canonical_digest();
+    document
+        .apply_batch(&commands(path_segments.clone()))
+        .unwrap();
+    let swept_digest = document.current().canonical_digest();
+    assert_ne!(swept_digest, empty_digest);
+    assert_eq!(document.visible_undo_steps(), 1);
+    assert_eq!(document.undo().unwrap().canonical_digest(), empty_digest);
+    assert_eq!(document.redo().unwrap().canonical_digest(), swept_digest);
+    assert!(
+        encode_semantic_state(&document.current())
+            .complete_v1()
+            .contains("feature.802.segment.1=cubic_bezier")
+    );
+
+    let bytes = persistence::save(&document.current());
+    assert_eq!(u16::from_le_bytes([bytes[10], bytes[11]]), 48);
+    let reopened = persistence::load(&bytes).unwrap();
+    assert_eq!(reopened.source_schema(), 48);
+    assert_eq!(reopened.snapshot().canonical_digest(), swept_digest);
+    assert_eq!(persistence::save(&reopened.snapshot()), bytes);
+    assert!(matches!(
+        reopened.snapshot().feature(PATH).unwrap().kind(),
+        FeatureKind::SegmentProfile { segments, closed: false } if segments == &path_segments
+    ));
+
+    let mut invalid_segments = path_segments;
+    invalid_segments[1] = ProfileSegment::CubicBezier {
+        start_mm: [25.0, 0.0],
+        control_1_mm: [25.0, 0.0],
+        control_2_mm: [45.0, 10.0],
+        end_mm: [45.0, 20.0],
+    };
+    let mut invalid = DocumentStore::new();
+    let before = invalid.current().canonical_digest();
+    assert!(matches!(
+        invalid.apply_batch(&commands(invalid_segments)),
+        Err(CanonicalError::InvalidSweep)
+    ));
+    assert_eq!(invalid.current().canonical_digest(), before);
+    assert_eq!(invalid.visible_undo_steps(), 0);
+
+    let adjacent_self_intersection = vec![
+        ProfileSegment::CubicBezier {
+            start_mm: [0.0, 0.0],
+            control_1_mm: [10.0, -5.0],
+            control_2_mm: [9.0, 10.0],
+            end_mm: [10.0, 10.0],
+        },
+        ProfileSegment::CubicBezier {
+            start_mm: [10.0, 10.0],
+            control_1_mm: [11.0, 10.0],
+            control_2_mm: [-10.0, -20.0],
+            end_mm: [20.0, 0.0],
+        },
+    ];
+    assert!(matches!(
+        invalid.apply_batch(&commands(adjacent_self_intersection)),
+        Err(CanonicalError::InvalidSweep)
+    ));
+    assert_eq!(invalid.current().canonical_digest(), before);
+    assert_eq!(invalid.visible_undo_steps(), 0);
+}

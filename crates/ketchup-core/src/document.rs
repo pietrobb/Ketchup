@@ -507,20 +507,30 @@ pub enum ProfileSegment {
         center_mm: [f64; 2],
         clockwise: bool,
     },
+    CubicBezier {
+        start_mm: [f64; 2],
+        control_1_mm: [f64; 2],
+        control_2_mm: [f64; 2],
+        end_mm: [f64; 2],
+    },
 }
 
 impl ProfileSegment {
     #[must_use]
     pub const fn start_mm(&self) -> [f64; 2] {
         match self {
-            Self::Line { start_mm, .. } | Self::CircularArc { start_mm, .. } => *start_mm,
+            Self::Line { start_mm, .. }
+            | Self::CircularArc { start_mm, .. }
+            | Self::CubicBezier { start_mm, .. } => *start_mm,
         }
     }
 
     #[must_use]
     pub const fn end_mm(&self) -> [f64; 2] {
         match self {
-            Self::Line { end_mm, .. } | Self::CircularArc { end_mm, .. } => *end_mm,
+            Self::Line { end_mm, .. }
+            | Self::CircularArc { end_mm, .. }
+            | Self::CubicBezier { end_mm, .. } => *end_mm,
         }
     }
 }
@@ -5091,6 +5101,17 @@ impl DocumentStore {
                                         translate(start_mm);
                                         translate(end_mm);
                                         translate(center_mm);
+                                    }
+                                    ProfileSegment::CubicBezier {
+                                        start_mm,
+                                        control_1_mm,
+                                        control_2_mm,
+                                        end_mm,
+                                    } => {
+                                        translate(start_mm);
+                                        translate(control_1_mm);
+                                        translate(control_2_mm);
+                                        translate(end_mm);
                                     }
                                 }
                             }
@@ -9931,6 +9952,7 @@ fn sweep_path_segment_metrics(segment: &ProfileSegment) -> Option<(f64, [f64; 2]
             let start_radius = [start_mm[0] - center_mm[0], start_mm[1] - center_mm[1]];
             let end_radius = [end_mm[0] - center_mm[0], end_mm[1] - center_mm[1]];
             let radius = start_radius[0].hypot(start_radius[1]);
+            let end_radius_length = end_radius[0].hypot(end_radius[1]);
             let start_angle = start_radius[1].atan2(start_radius[0]);
             let end_angle = end_radius[1].atan2(end_radius[0]);
             let sweep_angle = if *clockwise {
@@ -9940,25 +9962,197 @@ fn sweep_path_segment_metrics(segment: &ProfileSegment) -> Option<(f64, [f64; 2]
             };
             if !radius.is_finite()
                 || radius <= MIN_EXACT_BREP_SWEEP_PATH_SEGMENT_LENGTH_MM
+                || (radius - end_radius_length).abs() > PROFILE_EPSILON_MM
+                || start_mm == end_mm
                 || !sweep_angle.is_finite()
                 || radius * sweep_angle <= MIN_EXACT_BREP_SWEEP_PATH_SEGMENT_LENGTH_MM
             {
                 return None;
             }
-            let tangent = |radial: [f64; 2]| {
+            let tangent = |radial: [f64; 2], radial_length: f64| {
                 if *clockwise {
-                    [radial[1] / radius, -radial[0] / radius]
+                    [radial[1] / radial_length, -radial[0] / radial_length]
                 } else {
-                    [-radial[1] / radius, radial[0] / radius]
+                    [-radial[1] / radial_length, radial[0] / radial_length]
                 }
             };
             Some((
                 radius * sweep_angle,
-                tangent(start_radius),
-                tangent(end_radius),
+                tangent(start_radius, radius),
+                tangent(end_radius, end_radius_length),
+            ))
+        }
+        ProfileSegment::CubicBezier {
+            start_mm,
+            control_1_mm,
+            control_2_mm,
+            end_mm,
+        } => {
+            let chord = [end_mm[0] - start_mm[0], end_mm[1] - start_mm[1]];
+            let start_handle = [control_1_mm[0] - start_mm[0], control_1_mm[1] - start_mm[1]];
+            let end_handle = [end_mm[0] - control_2_mm[0], end_mm[1] - control_2_mm[1]];
+            let middle = [
+                control_2_mm[0] - control_1_mm[0],
+                control_2_mm[1] - control_1_mm[1],
+            ];
+            let chord_squared = chord[0] * chord[0] + chord[1] * chord[1];
+            let start_length = start_handle[0].hypot(start_handle[1]);
+            let end_length = end_handle[0].hypot(end_handle[1]);
+            let control_length = start_length + middle[0].hypot(middle[1]) + end_length;
+            let projection_1 = start_handle[0] * chord[0] + start_handle[1] * chord[1];
+            let control_2_from_start =
+                [control_2_mm[0] - start_mm[0], control_2_mm[1] - start_mm[1]];
+            let projection_2 =
+                control_2_from_start[0] * chord[0] + control_2_from_start[1] * chord[1];
+            if !control_length.is_finite()
+                || start_length <= MIN_EXACT_BREP_SWEEP_PATH_SEGMENT_LENGTH_MM
+                || end_length <= MIN_EXACT_BREP_SWEEP_PATH_SEGMENT_LENGTH_MM
+                || projection_1 <= 0.0
+                || projection_2 < projection_1
+                || projection_2 >= chord_squared
+            {
+                return None;
+            }
+            Some((
+                control_length,
+                [
+                    start_handle[0] / start_length,
+                    start_handle[1] / start_length,
+                ],
+                [end_handle[0] / end_length, end_handle[1] / end_length],
             ))
         }
     }
+}
+
+fn sweep_path_segment_bounds(segment: &ProfileSegment) -> [[f64; 2]; 2] {
+    let points = match segment {
+        ProfileSegment::Line { start_mm, end_mm } => vec![*start_mm, *end_mm],
+        ProfileSegment::CircularArc {
+            start_mm,
+            center_mm,
+            ..
+        } => {
+            let start_radius = (start_mm[0] - center_mm[0]).hypot(start_mm[1] - center_mm[1]);
+            let end_mm = segment.end_mm();
+            let end_radius = (end_mm[0] - center_mm[0]).hypot(end_mm[1] - center_mm[1]);
+            let radius = start_radius.max(end_radius);
+            return [
+                [center_mm[0] - radius, center_mm[1] - radius],
+                [center_mm[0] + radius, center_mm[1] + radius],
+            ];
+        }
+        ProfileSegment::CubicBezier {
+            start_mm,
+            control_1_mm,
+            control_2_mm,
+            end_mm,
+        } => vec![*start_mm, *control_1_mm, *control_2_mm, *end_mm],
+    };
+    [0, 1].map(|bound| {
+        [0, 1].map(|axis| {
+            points.iter().fold(
+                if bound == 0 {
+                    f64::INFINITY
+                } else {
+                    f64::NEG_INFINITY
+                },
+                |value, point| {
+                    if bound == 0 {
+                        value.min(point[axis])
+                    } else {
+                        value.max(point[axis])
+                    }
+                },
+            )
+        })
+    })
+}
+
+fn sweep_path_arc_angle(segment: &ProfileSegment) -> Option<f64> {
+    let ProfileSegment::CircularArc {
+        start_mm,
+        end_mm,
+        center_mm,
+        clockwise,
+    } = segment
+    else {
+        return None;
+    };
+    let start_angle = (start_mm[1] - center_mm[1]).atan2(start_mm[0] - center_mm[0]);
+    let end_angle = (end_mm[1] - center_mm[1]).atan2(end_mm[0] - center_mm[0]);
+    Some(if *clockwise {
+        (start_angle - end_angle).rem_euclid(std::f64::consts::TAU)
+    } else {
+        (end_angle - start_angle).rem_euclid(std::f64::consts::TAU)
+    })
+}
+
+fn sweep_path_join_is_separated(
+    left: &ProfileSegment,
+    right: &ProfileSegment,
+    tangent: [f64; 2],
+) -> bool {
+    let join = left.end_mm();
+    let projection =
+        |point: [f64; 2]| (point[0] - join[0]) * tangent[0] + (point[1] - join[1]) * tangent[1];
+    let left_is_behind = match left {
+        ProfileSegment::Line { start_mm, .. } => projection(*start_mm) < -PROFILE_EPSILON_MM,
+        ProfileSegment::CircularArc { .. } => sweep_path_arc_angle(left)
+            .is_some_and(|angle| angle < std::f64::consts::PI - PROFILE_EPSILON_MM),
+        ProfileSegment::CubicBezier {
+            start_mm,
+            control_1_mm,
+            control_2_mm,
+            ..
+        } => [*start_mm, *control_1_mm, *control_2_mm]
+            .into_iter()
+            .all(|point| projection(point) < -PROFILE_EPSILON_MM),
+    };
+    let right_is_ahead = match right {
+        ProfileSegment::Line { end_mm, .. } => projection(*end_mm) > PROFILE_EPSILON_MM,
+        ProfileSegment::CircularArc { .. } => sweep_path_arc_angle(right)
+            .is_some_and(|angle| angle < std::f64::consts::PI - PROFILE_EPSILON_MM),
+        ProfileSegment::CubicBezier {
+            control_1_mm,
+            control_2_mm,
+            end_mm,
+            ..
+        } => [*control_1_mm, *control_2_mm, *end_mm]
+            .into_iter()
+            .all(|point| projection(point) > PROFILE_EPSILON_MM),
+    };
+    left_is_behind && right_is_ahead
+}
+
+fn sweep_path_self_intersects(
+    segments: &[ProfileSegment],
+    metrics: &[(f64, [f64; 2], [f64; 2])],
+) -> bool {
+    if segments
+        .windows(2)
+        .zip(metrics.windows(2))
+        .any(|(segments, metrics)| {
+            !sweep_path_join_is_separated(&segments[0], &segments[1], metrics[0].2)
+        })
+    {
+        return true;
+    }
+    let bounds = segments
+        .iter()
+        .map(sweep_path_segment_bounds)
+        .collect::<Vec<_>>();
+    for left in 0..bounds.len() {
+        for right in left + 2..bounds.len() {
+            if [0, 1].into_iter().all(|axis| {
+                bounds[left][0][axis] <= bounds[right][1][axis] + PROFILE_EPSILON_MM
+                    && bounds[right][0][axis] <= bounds[left][1][axis] + PROFILE_EPSILON_MM
+            }) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 fn is_valid_sweep_path(segments: &[ProfileSegment]) -> bool {
@@ -9977,6 +10171,7 @@ fn is_valid_sweep_path(segments: &[ProfileSegment]) -> bool {
     let total_length = metrics.iter().map(|metrics| metrics.0).sum::<f64>();
     if !(MIN_EXACT_BREP_SWEEP_PATH_LENGTH_MM..=MAX_EXACT_BREP_SWEEP_PATH_LENGTH_MM)
         .contains(&total_length)
+        || sweep_path_self_intersects(segments, &metrics)
     {
         return false;
     }
@@ -10017,6 +10212,16 @@ fn is_valid_segment_profile(segments: &[ProfileSegment], closed: bool) -> bool {
             if start_radius <= PROFILE_EPSILON_MM
                 || (start_radius - end_radius).abs() > radius_tolerance
             {
+                return false;
+            }
+        }
+        if let ProfileSegment::CubicBezier {
+            control_1_mm,
+            control_2_mm,
+            ..
+        } = segment
+        {
+            if !valid_point(*control_1_mm) || !valid_point(*control_2_mm) {
                 return false;
             }
         }

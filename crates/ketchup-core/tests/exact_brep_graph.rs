@@ -5,11 +5,12 @@ use ketchup_core::document::{
 };
 use ketchup_core::exact_brep_graph::{
     EXACT_BREP_GRAPH_SCHEMA_V6, EXACT_BREP_GRAPH_SCHEMA_V7, EXACT_BREP_GRAPH_SCHEMA_V8,
-    EXACT_BREP_GRAPH_SCHEMA_V9, ExactBRepBooleanOperation, ExactBRepEdgeFinishKind, ExactBRepGraph,
-    ExactBRepGraphError, ExactBRepOperation, ExactBRepPlanarGeometry, ExactBRepPlanarLoop,
-    ExactBRepPlanarSegment, ExactBRepTopologyKind, MAX_EXACT_BREP_GRAPH_BYTES,
-    MAX_EXACT_BREP_GRAPH_SEGMENTS, MAX_EXACT_BREP_PLANAR_LOOP_SEGMENTS,
-    MAX_EXACT_BREP_REGION_HOLES, MAX_EXACT_BREP_REGION_SEGMENTS,
+    EXACT_BREP_GRAPH_SCHEMA_V9, EXACT_BREP_GRAPH_SCHEMA_V10, EXACT_BREP_GRAPH_SCHEMA_V11,
+    ExactBRepBooleanOperation, ExactBRepEdgeFinishKind, ExactBRepGraph, ExactBRepGraphError,
+    ExactBRepOperation, ExactBRepPlanarGeometry, ExactBRepPlanarLoop, ExactBRepPlanarSegment,
+    ExactBRepTopologyKind, MAX_EXACT_BREP_GRAPH_BYTES, MAX_EXACT_BREP_GRAPH_SEGMENTS,
+    MAX_EXACT_BREP_PLANAR_LOOP_SEGMENTS, MAX_EXACT_BREP_REGION_HOLES,
+    MAX_EXACT_BREP_REGION_SEGMENTS,
 };
 use ketchup_core::exact_product::{
     ExactFaceRole, ExactFeatureChainRequest, ExactProductError, build_box_render_package,
@@ -1540,6 +1541,106 @@ fn compound_planar_offset_graph_rejects_collision_and_schema_downgrade() {
     downgraded.schema = EXACT_BREP_GRAPH_SCHEMA_V7.to_owned();
     assert_eq!(
         ExactBRepGraph::from_bytes(&serde_json::to_vec(&downgraded).unwrap()),
+        Err(ExactBRepGraphError::InvalidGraph)
+    );
+}
+
+#[test]
+fn cubic_sweep_selects_v11_round_trips_and_rejects_v10_downgrade() {
+    let definition = DefinitionId(800);
+    let profile = FeatureId(801);
+    let path = FeatureId(802);
+    let sweep = FeatureId(803);
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: definition,
+                name: "V11 cubic sweep graph".into(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: profile,
+                definition_id: definition,
+                name: "Small rectangle".into(),
+                kind: FeatureKind::Profile {
+                    points_mm: vec![[-1.0, -1.0], [1.0, -1.0], [1.0, 1.0], [-1.0, 1.0]],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: path,
+                definition_id: definition,
+                name: "Line-cubic-line C1 path".into(),
+                kind: FeatureKind::SegmentProfile {
+                    segments: vec![
+                        ProfileSegment::Line {
+                            start_mm: [0.0, 0.0],
+                            end_mm: [25.0, 0.0],
+                        },
+                        ProfileSegment::CubicBezier {
+                            start_mm: [25.0, 0.0],
+                            control_1_mm: [35.0, 0.0],
+                            control_2_mm: [45.0, 10.0],
+                            end_mm: [45.0, 20.0],
+                        },
+                        ProfileSegment::Line {
+                            start_mm: [45.0, 20.0],
+                            end_mm: [45.0, 45.0],
+                        },
+                    ],
+                    closed: false,
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: sweep,
+                definition_id: definition,
+                name: "V11 sweep".into(),
+                kind: FeatureKind::Sweep { profile, path },
+            },
+        ]))
+        .unwrap();
+
+    let graph = ExactBRepGraph::from_snapshot(&document.current(), definition, sweep).unwrap();
+    assert_eq!(graph.schema, EXACT_BREP_GRAPH_SCHEMA_V11);
+    assert_eq!(
+        graph.producer_bounds_mm().unwrap(),
+        Some([[-1.0, -1.0, -1.0], [46.0, 46.0, 1.0]])
+    );
+    let bytes = graph.to_bytes().unwrap();
+    assert_eq!(ExactBRepGraph::from_bytes(&bytes).unwrap(), graph);
+    assert_eq!(graph.to_bytes().unwrap(), bytes);
+
+    let mut self_intersecting = graph.clone();
+    self_intersecting
+        .profiles
+        .iter_mut()
+        .find(|profile| profile.source_feature_id == path.0)
+        .unwrap()
+        .geometry = ExactBRepPlanarGeometry::Boundary {
+        closed: false,
+        segments: vec![
+            ExactBRepPlanarSegment::CubicBezier {
+                start_bits: [0.0_f64.to_bits(), 0.0_f64.to_bits()],
+                control_1_bits: [10.0_f64.to_bits(), (-5.0_f64).to_bits()],
+                control_2_bits: [9.0_f64.to_bits(), 10.0_f64.to_bits()],
+                end_bits: [10.0_f64.to_bits(), 10.0_f64.to_bits()],
+            },
+            ExactBRepPlanarSegment::CubicBezier {
+                start_bits: [10.0_f64.to_bits(), 10.0_f64.to_bits()],
+                control_1_bits: [11.0_f64.to_bits(), 10.0_f64.to_bits()],
+                control_2_bits: [(-10.0_f64).to_bits(), (-20.0_f64).to_bits()],
+                end_bits: [20.0_f64.to_bits(), 0.0_f64.to_bits()],
+            },
+        ],
+    };
+    assert_eq!(
+        self_intersecting.to_bytes(),
+        Err(ExactBRepGraphError::InvalidGraph)
+    );
+
+    let mut downgraded = graph;
+    downgraded.schema = EXACT_BREP_GRAPH_SCHEMA_V10.to_owned();
+    assert_eq!(
+        downgraded.to_bytes(),
         Err(ExactBRepGraphError::InvalidGraph)
     );
 }

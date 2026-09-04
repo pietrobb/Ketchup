@@ -1396,6 +1396,31 @@ std::unique_ptr<NativeOperationResult> sweep_planar_profile_native(
         end_tangent = start_tangent;
         return true;
       }
+      if (kind == 2.0) {
+        const double control_1_x = path_segments[offset + 5];
+        const double control_1_y = path_segments[offset + 6];
+        const double control_2_x = path_segments[offset + 7];
+        const double control_2_y = path_segments[offset + 8];
+        const gp_Vec chord(end_x - start_x, end_y - start_y, 0.0);
+        const gp_Vec start_handle(control_1_x - start_x, control_1_y - start_y, 0.0);
+        const gp_Vec middle(control_2_x - control_1_x, control_2_y - control_1_y, 0.0);
+        const gp_Vec end_handle(end_x - control_2_x, end_y - control_2_y, 0.0);
+        const double chord_squared = chord.SquareMagnitude();
+        const double start_length = start_handle.Magnitude();
+        const double end_length = end_handle.Magnitude();
+        const gp_Vec control_2_from_start(control_2_x - start_x, control_2_y - start_y, 0.0);
+        const double projection_1 = start_handle.Dot(chord);
+        const double projection_2 = control_2_from_start.Dot(chord);
+        length = start_length + middle.Magnitude() + end_length;
+        if (start_length <= 1.0e-7 || end_length <= 1.0e-7
+            || projection_1 <= 0.0 || projection_2 < projection_1
+            || projection_2 >= chord_squared) {
+          return false;
+        }
+        start_tangent = start_handle.Normalized();
+        end_tangent = end_handle.Normalized();
+        return true;
+      }
       if (kind != 1.0) return false;
       const double center_x = path_segments[offset + 5];
       const double center_y = path_segments[offset + 6];
@@ -1405,9 +1430,8 @@ std::unique_ptr<NativeOperationResult> sweep_planar_profile_native(
       const double end_dy = end_y - center_y;
       const double radius = std::hypot(start_dx, start_dy);
       const double end_radius = std::hypot(end_dx, end_dy);
-      if (radius <= 1.0e-7
-          || std::abs(radius - end_radius)
-              > 1.0e-9 * std::max({radius, end_radius, 1.0})) {
+      if (radius <= 1.0e-7 || std::abs(radius - end_radius) > 1.0e-9
+          || std::hypot(end_x - start_x, end_y - start_y) <= 1.0e-7) {
         return false;
       }
       const bool clockwise = path_segments[offset + 9] != 0.0;
@@ -1424,7 +1448,7 @@ std::unique_ptr<NativeOperationResult> sweep_planar_profile_native(
       if (length <= 1.0e-7) return false;
       const double sign = clockwise ? -1.0 : 1.0;
       start_tangent = gp_Vec(sign * -start_dy / radius, sign * start_dx / radius, 0.0);
-      end_tangent = gp_Vec(sign * -end_dy / radius, sign * end_dx / radius, 0.0);
+      end_tangent = gp_Vec(sign * -end_dy / end_radius, sign * end_dx / end_radius, 0.0);
       return true;
     };
 
@@ -1470,23 +1494,22 @@ std::unique_ptr<NativeOperationResult> sweep_planar_profile_native(
         BRepBuilderAPI_MakeEdge builder(start, end);
         return builder.IsDone() ? builder.Edge() : TopoDS_Edge{};
       }
+      if (path_segments[offset] == 2.0) {
+        return cubic_bezier_edge(path_segments, offset, 0.0);
+      }
       const double center_x = path_segments[offset + 5];
       const double center_y = path_segments[offset + 6];
       const double start_angle = std::atan2(start.Y() - center_y, start.X() - center_x);
       const double end_angle = std::atan2(end.Y() - center_y, end.X() - center_x);
-      double sweep = end_angle - start_angle;
-      const double tau = 2.0 * std::acos(-1.0);
-      if (path_segments[offset + 9] != 0.0) {
-        if (sweep >= 0.0) sweep -= tau;
-      } else if (sweep <= 0.0) {
-        sweep += tau;
-      }
       const double radius = start.Distance(gp_Pnt(center_x, center_y, 0.0));
-      const double middle_angle = start_angle + sweep / 2.0;
-      const gp_Pnt middle(
-          center_x + radius * std::cos(middle_angle),
-          center_y + radius * std::sin(middle_angle), 0.0);
-      GC_MakeArcOfCircle arc_builder(start, middle, end);
+      const bool counterclockwise = path_segments[offset + 9] == 0.0;
+      GC_MakeArcOfCircle arc_builder(
+          gp_Circ(
+              gp_Ax2(gp_Pnt(center_x, center_y, 0.0), gp_Dir(0.0, 0.0, 1.0)),
+              radius),
+          start_angle,
+          end_angle,
+          counterclockwise);
       if (!arc_builder.IsDone()) return TopoDS_Edge{};
       BRepBuilderAPI_MakeEdge edge_builder(arc_builder.Value());
       return edge_builder.IsDone() ? edge_builder.Edge() : TopoDS_Edge{};
@@ -1494,21 +1517,45 @@ std::unique_ptr<NativeOperationResult> sweep_planar_profile_native(
 
     BRepBuilderAPI_MakeWire spine_builder;
     std::vector<TopoDS_Edge> path_edges;
+    std::vector<Bnd_Box> path_edge_bounds;
     path_edges.reserve(path_segment_count);
+    path_edge_bounds.reserve(path_segment_count);
     for (std::size_t offset = 0; offset < path_segments.size(); offset += 10) {
       const TopoDS_Edge edge = path_edge(offset);
       if (edge.IsNull()) {
         return error_result(STATUS_INVALID_SHAPE, "OCCT curved Sweep path edge is null");
       }
       path_edges.push_back(edge);
+      Bnd_Box edge_bounds;
+      BRepBndLib::AddOptimal(edge, edge_bounds, false, false);
+      path_edge_bounds.push_back(edge_bounds);
       spine_builder.Add(edge);
     }
     for (std::size_t left = 0; left < path_edges.size(); ++left) {
-      for (std::size_t right = left + 2; right < path_edges.size(); ++right) {
+      for (std::size_t right = left + 1; right < path_edges.size(); ++right) {
+        if (path_edge_bounds[left].IsOut(path_edge_bounds[right])) continue;
         BRepExtrema_DistShapeShape distance(path_edges[left], path_edges[right]);
         distance.Perform();
-        if (!distance.IsDone() || distance.Value() <= 1.0e-7) {
-          return error_result(STATUS_INVALID_SHAPE, "OCCT curved Sweep path self-intersects");
+        if (!distance.IsDone()) {
+          return error_result(STATUS_INVALID_SHAPE, "OCCT curved Sweep path intersection check failed");
+        }
+        if (distance.Value() <= 1.0e-7) {
+          bool shared_endpoint_only = false;
+          if (right == left + 1 && distance.NbSolution() > 0) {
+            const gp_Pnt shared(
+                path_segments[right * 10 + 1], path_segments[right * 10 + 2], 0.0);
+            shared_endpoint_only = true;
+            for (Standard_Integer solution = 1; solution <= distance.NbSolution(); ++solution) {
+              if (distance.PointOnShape1(solution).Distance(shared) > 1.0e-7
+                  || distance.PointOnShape2(solution).Distance(shared) > 1.0e-7) {
+                shared_endpoint_only = false;
+                break;
+              }
+            }
+          }
+          if (!shared_endpoint_only) {
+            return error_result(STATUS_INVALID_SHAPE, "OCCT curved Sweep path self-intersects");
+          }
         }
       }
     }

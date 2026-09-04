@@ -794,6 +794,18 @@ impl StableDigest {
                             }
                             self.byte(u8::from(*clockwise));
                         }
+                        ProfileSegment::CubicBezier {
+                            start_mm,
+                            control_1_mm,
+                            control_2_mm,
+                            end_mm,
+                        } => {
+                            self.byte(3);
+                            for point in [start_mm, control_1_mm, control_2_mm, end_mm] {
+                                self.u64(point[0].to_bits());
+                                self.u64(point[1].to_bits());
+                            }
+                        }
                     }
                 }
             }

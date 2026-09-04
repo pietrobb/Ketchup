@@ -22,6 +22,7 @@ pub const EXACT_BREP_GRAPH_SCHEMA_V7: &str = "ketchup.exact-brep-graph.v7";
 pub const EXACT_BREP_GRAPH_SCHEMA_V8: &str = "ketchup.exact-brep-graph.v8";
 pub const EXACT_BREP_GRAPH_SCHEMA_V9: &str = "ketchup.exact-brep-graph.v9";
 pub const EXACT_BREP_GRAPH_SCHEMA_V10: &str = "ketchup.exact-brep-graph.v10";
+pub const EXACT_BREP_GRAPH_SCHEMA_V11: &str = "ketchup.exact-brep-graph.v11";
 pub const MAX_EXACT_BREP_GRAPH_PROFILES: usize = 1_024;
 pub const MAX_EXACT_BREP_GRAPH_NODES: usize = 1_024;
 pub const MAX_EXACT_BREP_GRAPH_SEGMENTS: usize = 16_384;
@@ -369,6 +370,12 @@ impl ExactBRepGraph {
         let schema = if compiler
             .nodes
             .iter()
+            .any(|node| operation_requires_v11(&node.operation, &compiler.profiles))
+        {
+            EXACT_BREP_GRAPH_SCHEMA_V11
+        } else if compiler
+            .nodes
+            .iter()
             .any(|node| operation_requires_v10(&node.operation, &compiler.profiles))
         {
             EXACT_BREP_GRAPH_SCHEMA_V10
@@ -521,6 +528,7 @@ impl ExactBRepGraph {
                 | EXACT_BREP_GRAPH_SCHEMA_V8
                 | EXACT_BREP_GRAPH_SCHEMA_V9
                 | EXACT_BREP_GRAPH_SCHEMA_V10
+                | EXACT_BREP_GRAPH_SCHEMA_V11
         ) || self.document_id == 0
             || self.definition_id == 0
             || self.producer_feature_id == 0
@@ -585,10 +593,16 @@ impl ExactBRepGraph {
                 ) && operation_requires_v8(&node.operation, &self.profiles))
                 || (!matches!(
                     self.schema.as_str(),
-                    EXACT_BREP_GRAPH_SCHEMA_V9 | EXACT_BREP_GRAPH_SCHEMA_V10
+                    EXACT_BREP_GRAPH_SCHEMA_V9
+                        | EXACT_BREP_GRAPH_SCHEMA_V10
+                        | EXACT_BREP_GRAPH_SCHEMA_V11
                 ) && operation_requires_v9(&node.operation, &self.profiles))
-                || (self.schema != EXACT_BREP_GRAPH_SCHEMA_V10
-                    && operation_requires_v10(&node.operation, &self.profiles))
+                || (!matches!(
+                    self.schema.as_str(),
+                    EXACT_BREP_GRAPH_SCHEMA_V10 | EXACT_BREP_GRAPH_SCHEMA_V11
+                ) && operation_requires_v10(&node.operation, &self.profiles))
+                || (self.schema != EXACT_BREP_GRAPH_SCHEMA_V11
+                    && operation_requires_v11(&node.operation, &self.profiles))
                 || !valid_operation(
                     &node.operation,
                     self.document_id,
@@ -1248,6 +1262,12 @@ fn boundary_geometry(
                 center_mm,
                 clockwise,
             } => profile_segment(*start_mm, *end_mm, Some(*center_mm), *clockwise),
+            ProfileSegment::CubicBezier {
+                start_mm,
+                control_1_mm,
+                control_2_mm,
+                end_mm,
+            } => cubic_bezier_segment(*start_mm, *control_1_mm, *control_2_mm, *end_mm),
         })
         .collect::<Result<Vec<_>, _>>()?;
     Ok(ExactBRepPlanarGeometry::Boundary { closed, segments })
@@ -1710,6 +1730,7 @@ fn sweep_path_segment_metrics(
             let start_radius = [start[0] - center[0], start[1] - center[1]];
             let end_radius = [end[0] - center[0], end[1] - center[1]];
             let radius = start_radius[0].hypot(start_radius[1]);
+            let end_radius_length = end_radius[0].hypot(end_radius[1]);
             let start_angle = start_radius[1].atan2(start_radius[0]);
             let end_angle = end_radius[1].atan2(end_radius[0]);
             let sweep_angle = if *clockwise {
@@ -1719,25 +1740,66 @@ fn sweep_path_segment_metrics(
             };
             if !radius.is_finite()
                 || radius <= MIN_EXACT_BREP_SWEEP_PATH_SEGMENT_LENGTH_MM
+                || (radius - end_radius_length).abs() > SWEEP_PATH_INTERSECTION_EPSILON_MM
+                || start == end
                 || !sweep_angle.is_finite()
                 || radius * sweep_angle <= MIN_EXACT_BREP_SWEEP_PATH_SEGMENT_LENGTH_MM
             {
                 return None;
             }
-            let tangent = |radial: [f64; 2]| {
+            let tangent = |radial: [f64; 2], radial_length: f64| {
                 if *clockwise {
-                    [radial[1] / radius, -radial[0] / radius]
+                    [radial[1] / radial_length, -radial[0] / radial_length]
                 } else {
-                    [-radial[1] / radius, radial[0] / radius]
+                    [-radial[1] / radial_length, radial[0] / radial_length]
                 }
             };
             Some((
                 radius * sweep_angle,
-                tangent(start_radius),
-                tangent(end_radius),
+                tangent(start_radius, radius),
+                tangent(end_radius, end_radius_length),
             ))
         }
-        ExactBRepPlanarSegment::CubicBezier { .. } => None,
+        ExactBRepPlanarSegment::CubicBezier {
+            start_bits,
+            control_1_bits,
+            control_2_bits,
+            end_bits,
+        } => {
+            let start = start_bits.map(f64::from_bits);
+            let control_1 = control_1_bits.map(f64::from_bits);
+            let control_2 = control_2_bits.map(f64::from_bits);
+            let end = end_bits.map(f64::from_bits);
+            let chord = [end[0] - start[0], end[1] - start[1]];
+            let start_handle = [control_1[0] - start[0], control_1[1] - start[1]];
+            let end_handle = [end[0] - control_2[0], end[1] - control_2[1]];
+            let middle = [control_2[0] - control_1[0], control_2[1] - control_1[1]];
+            let chord_squared = chord[0] * chord[0] + chord[1] * chord[1];
+            let start_length = start_handle[0].hypot(start_handle[1]);
+            let end_length = end_handle[0].hypot(end_handle[1]);
+            let control_length = start_length + middle[0].hypot(middle[1]) + end_length;
+            let projection_1 = start_handle[0] * chord[0] + start_handle[1] * chord[1];
+            let control_2_from_start = [control_2[0] - start[0], control_2[1] - start[1]];
+            let projection_2 =
+                control_2_from_start[0] * chord[0] + control_2_from_start[1] * chord[1];
+            if !control_length.is_finite()
+                || start_length <= MIN_EXACT_BREP_SWEEP_PATH_SEGMENT_LENGTH_MM
+                || end_length <= MIN_EXACT_BREP_SWEEP_PATH_SEGMENT_LENGTH_MM
+                || projection_1 <= 0.0
+                || projection_2 < projection_1
+                || projection_2 >= chord_squared
+            {
+                return None;
+            }
+            Some((
+                control_length,
+                [
+                    start_handle[0] / start_length,
+                    start_handle[1] / start_length,
+                ],
+                [end_handle[0] / end_length, end_handle[1] / end_length],
+            ))
+        }
     }
 }
 
@@ -1761,15 +1823,29 @@ fn sweep_path_planar_bounds(segments: &[ExactBRepPlanarSegment]) -> Option<[[f64
             ExactBRepPlanarSegment::CircularArc {
                 center_bits,
                 start_bits,
+                end_bits,
                 ..
             } => {
                 let center = center_bits.map(f64::from_bits);
                 let start = start_bits.map(f64::from_bits);
-                let radius = (start[0] - center[0]).hypot(start[1] - center[1]);
+                let end = end_bits.map(f64::from_bits);
+                let start_radius = (start[0] - center[0]).hypot(start[1] - center[1]);
+                let end_radius = (end[0] - center[0]).hypot(end[1] - center[1]);
+                let radius = start_radius.max(end_radius);
                 include([center[0] - radius, center[1] - radius]);
                 include([center[0] + radius, center[1] + radius]);
             }
-            ExactBRepPlanarSegment::CubicBezier { .. } => return None,
+            ExactBRepPlanarSegment::CubicBezier {
+                start_bits,
+                control_1_bits,
+                control_2_bits,
+                end_bits,
+            } => {
+                include(start_bits.map(f64::from_bits));
+                include(control_1_bits.map(f64::from_bits));
+                include(control_2_bits.map(f64::from_bits));
+                include(end_bits.map(f64::from_bits));
+            }
         }
     }
     bounds
@@ -1777,6 +1853,178 @@ fn sweep_path_planar_bounds(segments: &[ExactBRepPlanarSegment]) -> Option<[[f64
         .flatten()
         .all(|value| value.is_finite() && value.abs() <= MAX_ABS_MM)
         .then_some(bounds)
+}
+
+const SWEEP_PATH_INTERSECTION_EPSILON_MM: f64 = 1.0e-9;
+
+fn sweep_path_segment_endpoints(segment: &ExactBRepPlanarSegment) -> ([f64; 2], [f64; 2]) {
+    match segment {
+        ExactBRepPlanarSegment::Line {
+            start_bits,
+            end_bits,
+        }
+        | ExactBRepPlanarSegment::CircularArc {
+            start_bits,
+            end_bits,
+            ..
+        }
+        | ExactBRepPlanarSegment::CubicBezier {
+            start_bits,
+            end_bits,
+            ..
+        } => (start_bits.map(f64::from_bits), end_bits.map(f64::from_bits)),
+    }
+}
+
+fn sweep_path_segment_bounds(segment: &ExactBRepPlanarSegment) -> [[f64; 2]; 2] {
+    let points = match segment {
+        ExactBRepPlanarSegment::Line {
+            start_bits,
+            end_bits,
+        } => vec![start_bits.map(f64::from_bits), end_bits.map(f64::from_bits)],
+        ExactBRepPlanarSegment::CircularArc {
+            start_bits,
+            end_bits,
+            center_bits,
+            ..
+        } => {
+            let start = start_bits.map(f64::from_bits);
+            let end = end_bits.map(f64::from_bits);
+            let center = center_bits.map(f64::from_bits);
+            let start_radius = (start[0] - center[0]).hypot(start[1] - center[1]);
+            let end_radius = (end[0] - center[0]).hypot(end[1] - center[1]);
+            let radius = start_radius.max(end_radius);
+            return [
+                [center[0] - radius, center[1] - radius],
+                [center[0] + radius, center[1] + radius],
+            ];
+        }
+        ExactBRepPlanarSegment::CubicBezier {
+            start_bits,
+            control_1_bits,
+            control_2_bits,
+            end_bits,
+        } => vec![
+            start_bits.map(f64::from_bits),
+            control_1_bits.map(f64::from_bits),
+            control_2_bits.map(f64::from_bits),
+            end_bits.map(f64::from_bits),
+        ],
+    };
+    [0, 1].map(|bound| {
+        [0, 1].map(|axis| {
+            points.iter().fold(
+                if bound == 0 {
+                    f64::INFINITY
+                } else {
+                    f64::NEG_INFINITY
+                },
+                |value, point| {
+                    if bound == 0 {
+                        value.min(point[axis])
+                    } else {
+                        value.max(point[axis])
+                    }
+                },
+            )
+        })
+    })
+}
+
+fn sweep_path_arc_angle(segment: &ExactBRepPlanarSegment) -> Option<f64> {
+    let ExactBRepPlanarSegment::CircularArc {
+        start_bits,
+        end_bits,
+        center_bits,
+        clockwise,
+    } = segment
+    else {
+        return None;
+    };
+    let start = start_bits.map(f64::from_bits);
+    let end = end_bits.map(f64::from_bits);
+    let center = center_bits.map(f64::from_bits);
+    let start_angle = (start[1] - center[1]).atan2(start[0] - center[0]);
+    let end_angle = (end[1] - center[1]).atan2(end[0] - center[0]);
+    Some(if *clockwise {
+        (start_angle - end_angle).rem_euclid(std::f64::consts::TAU)
+    } else {
+        (end_angle - start_angle).rem_euclid(std::f64::consts::TAU)
+    })
+}
+
+fn sweep_path_join_is_separated(
+    left: &ExactBRepPlanarSegment,
+    right: &ExactBRepPlanarSegment,
+    tangent: [f64; 2],
+) -> bool {
+    let join = sweep_path_segment_endpoints(left).1;
+    let projection =
+        |point: [f64; 2]| (point[0] - join[0]) * tangent[0] + (point[1] - join[1]) * tangent[1];
+    let left_is_behind = match left {
+        ExactBRepPlanarSegment::Line { start_bits, .. } => {
+            projection(start_bits.map(f64::from_bits)) < -SWEEP_PATH_INTERSECTION_EPSILON_MM
+        }
+        ExactBRepPlanarSegment::CircularArc { .. } => sweep_path_arc_angle(left)
+            .is_some_and(|angle| angle < std::f64::consts::PI - SWEEP_PATH_INTERSECTION_EPSILON_MM),
+        ExactBRepPlanarSegment::CubicBezier {
+            start_bits,
+            control_1_bits,
+            control_2_bits,
+            ..
+        } => [*start_bits, *control_1_bits, *control_2_bits]
+            .map(|point| point.map(f64::from_bits))
+            .into_iter()
+            .all(|point| projection(point) < -SWEEP_PATH_INTERSECTION_EPSILON_MM),
+    };
+    let right_is_ahead = match right {
+        ExactBRepPlanarSegment::Line { end_bits, .. } => {
+            projection(end_bits.map(f64::from_bits)) > SWEEP_PATH_INTERSECTION_EPSILON_MM
+        }
+        ExactBRepPlanarSegment::CircularArc { .. } => sweep_path_arc_angle(right)
+            .is_some_and(|angle| angle < std::f64::consts::PI - SWEEP_PATH_INTERSECTION_EPSILON_MM),
+        ExactBRepPlanarSegment::CubicBezier {
+            control_1_bits,
+            control_2_bits,
+            end_bits,
+            ..
+        } => [*control_1_bits, *control_2_bits, *end_bits]
+            .map(|point| point.map(f64::from_bits))
+            .into_iter()
+            .all(|point| projection(point) > SWEEP_PATH_INTERSECTION_EPSILON_MM),
+    };
+    left_is_behind && right_is_ahead
+}
+
+fn sweep_path_self_intersects(
+    segments: &[ExactBRepPlanarSegment],
+    metrics: &[(f64, [f64; 2], [f64; 2])],
+) -> bool {
+    if segments
+        .windows(2)
+        .zip(metrics.windows(2))
+        .any(|(segments, metrics)| {
+            !sweep_path_join_is_separated(&segments[0], &segments[1], metrics[0].2)
+        })
+    {
+        return true;
+    }
+    let bounds = segments
+        .iter()
+        .map(sweep_path_segment_bounds)
+        .collect::<Vec<_>>();
+    for left in 0..bounds.len() {
+        for right in left + 2..bounds.len() {
+            if [0, 1].into_iter().all(|axis| {
+                bounds[left][0][axis] <= bounds[right][1][axis] + SWEEP_PATH_INTERSECTION_EPSILON_MM
+                    && bounds[right][0][axis]
+                        <= bounds[left][1][axis] + SWEEP_PATH_INTERSECTION_EPSILON_MM
+            }) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 fn sweep_path_length(segments: &[ExactBRepPlanarSegment]) -> Option<f64> {
@@ -1799,6 +2047,7 @@ fn sweep_path_length(segments: &[ExactBRepPlanarSegment]) -> Option<f64> {
             let cross = outgoing[0] * incoming[1] - outgoing[1] * incoming[0];
             dot < 1.0 - 1.0e-9 || cross.abs() > 1.0e-9
         })
+        || sweep_path_self_intersects(segments, &metrics)
     {
         return None;
     }
@@ -2267,6 +2516,17 @@ fn operation_requires_v10(operation: &ExactBRepOperation, profiles: &[ExactBRepP
     matches!(
         profiles.get(path.0 as usize).map(|profile| &profile.geometry),
         Some(ExactBRepPlanarGeometry::Boundary { segments, .. }) if segments.len() > 2
+    )
+}
+
+fn operation_requires_v11(operation: &ExactBRepOperation, profiles: &[ExactBRepProfile]) -> bool {
+    let ExactBRepOperation::Sweep { path, .. } = operation else {
+        return false;
+    };
+    matches!(
+        profiles.get(path.0 as usize).map(|profile| &profile.geometry),
+        Some(ExactBRepPlanarGeometry::Boundary { segments, .. })
+            if segments.iter().any(|segment| matches!(segment, ExactBRepPlanarSegment::CubicBezier { .. }))
     )
 }
 
@@ -2784,6 +3044,12 @@ mod tests {
                 clockwise: false,
             }
         };
+        let cubic = |start: f64| ExactBRepPlanarSegment::CubicBezier {
+            start_bits: [start.to_bits(), 0.0_f64.to_bits()],
+            control_1_bits: [(start + 0.5).to_bits(), 0.0_f64.to_bits()],
+            control_2_bits: [(start + 1.5).to_bits(), 0.0_f64.to_bits()],
+            end_bits: [(start + 2.0).to_bits(), 0.0_f64.to_bits()],
+        };
         let mut profiles = vec![
             profile(
                 0,
@@ -2923,6 +3189,13 @@ mod tests {
             closed: false,
             segments: (0..MAX_EXACT_BREP_SWEEP_PATH_SEGMENTS)
                 .map(|index| line([index as f64, 0.0], [index as f64 + 1.0, 0.0]))
+                .collect(),
+        };
+        assert!(valid_operation_profiles(&sweep, &profiles));
+        profiles[1].geometry = ExactBRepPlanarGeometry::Boundary {
+            closed: false,
+            segments: (0..MAX_EXACT_BREP_SWEEP_PATH_SEGMENTS)
+                .map(|index| cubic(index as f64 * 2.0))
                 .collect(),
         };
         assert!(valid_operation_profiles(&sweep, &profiles));

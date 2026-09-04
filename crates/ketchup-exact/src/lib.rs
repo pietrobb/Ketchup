@@ -464,6 +464,143 @@ fn planar_segment_endpoints(segment: &PlanarProfileSegment) -> ([f64; 2], [f64; 
     }
 }
 
+const SWEEP_PATH_INTERSECTION_EPSILON_MM: f64 = 1.0e-9;
+
+fn sweep_path_segment_bounds(segment: &PlanarProfileSegment) -> [[f64; 2]; 2] {
+    let points = match segment {
+        PlanarProfileSegment::Line { start_mm, end_mm } => vec![*start_mm, *end_mm],
+        PlanarProfileSegment::CircularArc {
+            start_mm,
+            end_mm,
+            center_mm,
+            ..
+        } => {
+            let start_radius = (start_mm[0] - center_mm[0]).hypot(start_mm[1] - center_mm[1]);
+            let end_radius = (end_mm[0] - center_mm[0]).hypot(end_mm[1] - center_mm[1]);
+            let radius = start_radius.max(end_radius);
+            return [
+                [center_mm[0] - radius, center_mm[1] - radius],
+                [center_mm[0] + radius, center_mm[1] + radius],
+            ];
+        }
+        PlanarProfileSegment::CubicBezier {
+            start_mm,
+            control_1_mm,
+            control_2_mm,
+            end_mm,
+        } => vec![*start_mm, *control_1_mm, *control_2_mm, *end_mm],
+    };
+    [0, 1].map(|bound| {
+        [0, 1].map(|axis| {
+            points.iter().fold(
+                if bound == 0 {
+                    f64::INFINITY
+                } else {
+                    f64::NEG_INFINITY
+                },
+                |value, point| {
+                    if bound == 0 {
+                        value.min(point[axis])
+                    } else {
+                        value.max(point[axis])
+                    }
+                },
+            )
+        })
+    })
+}
+
+fn sweep_path_arc_angle(segment: &PlanarProfileSegment) -> Option<f64> {
+    let PlanarProfileSegment::CircularArc {
+        start_mm,
+        end_mm,
+        center_mm,
+        clockwise,
+    } = segment
+    else {
+        return None;
+    };
+    let start_angle = (start_mm[1] - center_mm[1]).atan2(start_mm[0] - center_mm[0]);
+    let end_angle = (end_mm[1] - center_mm[1]).atan2(end_mm[0] - center_mm[0]);
+    Some(if *clockwise {
+        (start_angle - end_angle).rem_euclid(std::f64::consts::TAU)
+    } else {
+        (end_angle - start_angle).rem_euclid(std::f64::consts::TAU)
+    })
+}
+
+fn sweep_path_join_is_separated(
+    left: &PlanarProfileSegment,
+    right: &PlanarProfileSegment,
+    tangent: [f64; 2],
+) -> bool {
+    let join = planar_segment_endpoints(left).1;
+    let projection =
+        |point: [f64; 2]| (point[0] - join[0]) * tangent[0] + (point[1] - join[1]) * tangent[1];
+    let left_is_behind = match left {
+        PlanarProfileSegment::Line { start_mm, .. } => {
+            projection(*start_mm) < -SWEEP_PATH_INTERSECTION_EPSILON_MM
+        }
+        PlanarProfileSegment::CircularArc { .. } => sweep_path_arc_angle(left)
+            .is_some_and(|angle| angle < std::f64::consts::PI - SWEEP_PATH_INTERSECTION_EPSILON_MM),
+        PlanarProfileSegment::CubicBezier {
+            start_mm,
+            control_1_mm,
+            control_2_mm,
+            ..
+        } => [*start_mm, *control_1_mm, *control_2_mm]
+            .into_iter()
+            .all(|point| projection(point) < -SWEEP_PATH_INTERSECTION_EPSILON_MM),
+    };
+    let right_is_ahead = match right {
+        PlanarProfileSegment::Line { end_mm, .. } => {
+            projection(*end_mm) > SWEEP_PATH_INTERSECTION_EPSILON_MM
+        }
+        PlanarProfileSegment::CircularArc { .. } => sweep_path_arc_angle(right)
+            .is_some_and(|angle| angle < std::f64::consts::PI - SWEEP_PATH_INTERSECTION_EPSILON_MM),
+        PlanarProfileSegment::CubicBezier {
+            control_1_mm,
+            control_2_mm,
+            end_mm,
+            ..
+        } => [*control_1_mm, *control_2_mm, *end_mm]
+            .into_iter()
+            .all(|point| projection(point) > SWEEP_PATH_INTERSECTION_EPSILON_MM),
+    };
+    left_is_behind && right_is_ahead
+}
+
+fn sweep_path_self_intersects(
+    segments: &[PlanarProfileSegment],
+    metrics: &[(f64, [f64; 2], [f64; 2])],
+) -> bool {
+    if segments
+        .windows(2)
+        .zip(metrics.windows(2))
+        .any(|(segments, metrics)| {
+            !sweep_path_join_is_separated(&segments[0], &segments[1], metrics[0].2)
+        })
+    {
+        return true;
+    }
+    let bounds = segments
+        .iter()
+        .map(sweep_path_segment_bounds)
+        .collect::<Vec<_>>();
+    for left in 0..bounds.len() {
+        for right in left + 2..bounds.len() {
+            if [0, 1].into_iter().all(|axis| {
+                bounds[left][0][axis] <= bounds[right][1][axis] + SWEEP_PATH_INTERSECTION_EPSILON_MM
+                    && bounds[right][0][axis]
+                        <= bounds[left][1][axis] + SWEEP_PATH_INTERSECTION_EPSILON_MM
+            }) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 fn flatten_planar_segments(segments: &[PlanarProfileSegment]) -> Vec<f64> {
     segments
         .iter()
@@ -1548,7 +1685,7 @@ impl ExactBackend {
                     GeometryErrorCode::InvalidProfile,
                     operation,
                     &input,
-                    "Sweep path must contain only non-degenerate lines and circular arcs"
+                    "Sweep path must contain only bounded non-degenerate lines, circular arcs, and cubic Bezier segments"
                         .to_owned(),
                 )
             };
@@ -1583,8 +1720,8 @@ impl ExactBackend {
                     let radius = start_radius[0].hypot(start_radius[1]);
                     let end_radius_length = end_radius[0].hypot(end_radius[1]);
                     if radius <= MIN_SWEEP_PATH_SEGMENT_LENGTH_MM
-                        || (radius - end_radius_length).abs()
-                            > 1.0e-9 * radius.max(end_radius_length).max(1.0)
+                        || (radius - end_radius_length).abs() > SWEEP_PATH_INTERSECTION_EPSILON_MM
+                        || start == end
                     {
                         return Err(invalid());
                     }
@@ -1602,13 +1739,65 @@ impl ExactBackend {
                     if length <= MIN_SWEEP_PATH_SEGMENT_LENGTH_MM {
                         return Err(invalid());
                     }
-                    let tangent = |radial: [f64; 2]| {
+                    let tangent = |radial: [f64; 2], radial_length: f64| {
                         let sign = if *clockwise { -1.0 } else { 1.0 };
-                        [sign * -radial[1] / radius, sign * radial[0] / radius]
+                        [
+                            sign * -radial[1] / radial_length,
+                            sign * radial[0] / radial_length,
+                        ]
                     };
-                    Ok((length, tangent(start_radius), tangent(end_radius)))
+                    Ok((
+                        length,
+                        tangent(start_radius, radius),
+                        tangent(end_radius, end_radius_length),
+                    ))
                 }
-                PlanarProfileSegment::CubicBezier { .. } => Err(invalid()),
+                PlanarProfileSegment::CubicBezier {
+                    control_1_mm,
+                    control_2_mm,
+                    ..
+                } => {
+                    for (coordinate, name) in [
+                        (control_1_mm[0], "path_control_1_x"),
+                        (control_1_mm[1], "path_control_1_y"),
+                        (control_2_mm[0], "path_control_2_x"),
+                        (control_2_mm[1], "path_control_2_y"),
+                    ] {
+                        validate_coordinate(coordinate, name, operation, &input)?;
+                    }
+                    let chord = [end[0] - start[0], end[1] - start[1]];
+                    let start_handle = [control_1_mm[0] - start[0], control_1_mm[1] - start[1]];
+                    let end_handle = [end[0] - control_2_mm[0], end[1] - control_2_mm[1]];
+                    let middle = [
+                        control_2_mm[0] - control_1_mm[0],
+                        control_2_mm[1] - control_1_mm[1],
+                    ];
+                    let chord_squared = chord[0] * chord[0] + chord[1] * chord[1];
+                    let start_length = start_handle[0].hypot(start_handle[1]);
+                    let end_length = end_handle[0].hypot(end_handle[1]);
+                    let length = start_length + middle[0].hypot(middle[1]) + end_length;
+                    let projection_1 = start_handle[0] * chord[0] + start_handle[1] * chord[1];
+                    let control_2_from_start =
+                        [control_2_mm[0] - start[0], control_2_mm[1] - start[1]];
+                    let projection_2 =
+                        control_2_from_start[0] * chord[0] + control_2_from_start[1] * chord[1];
+                    if start_length <= MIN_SWEEP_PATH_SEGMENT_LENGTH_MM
+                        || end_length <= MIN_SWEEP_PATH_SEGMENT_LENGTH_MM
+                        || projection_1 <= 0.0
+                        || projection_2 < projection_1
+                        || projection_2 >= chord_squared
+                    {
+                        return Err(invalid());
+                    }
+                    Ok((
+                        length,
+                        [
+                            start_handle[0] / start_length,
+                            start_handle[1] / start_length,
+                        ],
+                        [end_handle[0] / end_length, end_handle[1] / end_length],
+                    ))
+                }
             }
         };
         let metrics = path
@@ -1635,6 +1824,14 @@ impl ExactBackend {
                     "Sweep path segments must be C1 tangent-continuous".to_owned(),
                 ));
             }
+        }
+        if sweep_path_self_intersects(path, &metrics) {
+            return Err(parameter_error(
+                GeometryErrorCode::InvalidProfile,
+                operation,
+                &input,
+                "Sweep path must not self-intersect".to_owned(),
+            ));
         }
         validate_length(
             metrics.iter().map(|metrics| metrics.0).sum(),

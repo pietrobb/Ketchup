@@ -97,7 +97,8 @@ const MECHANICAL_CONTRACT_SCHEMA: u16 = 44;
 const SKETCH_CONSTRAINT_VOCABULARY_SCHEMA: u16 = 45;
 const RIGID_TRANSFORM_FEATURE_SCHEMA: u16 = 46;
 const CUBIC_BEZIER_SKETCH_SCHEMA: u16 = 47;
-pub const CURRENT_SCHEMA: u16 = CUBIC_BEZIER_SKETCH_SCHEMA;
+const CUBIC_BEZIER_SEGMENT_PROFILE_SCHEMA: u16 = 48;
+pub const CURRENT_SCHEMA: u16 = CUBIC_BEZIER_SEGMENT_PROFILE_SCHEMA;
 const COLLECTION_SCHEMA: u16 = 15;
 const TAG_SCHEMA: u16 = 14;
 const PERSISTENT_DIMENSION_SCHEMA: u16 = 13;
@@ -160,6 +161,7 @@ struct ProductSchemaCapabilities {
     sketch_constraint_vocabulary: bool,
     rigid_transform_feature: bool,
     cubic_bezier_sketch: bool,
+    cubic_bezier_segment_profile: bool,
 }
 
 impl ProductSchemaCapabilities {
@@ -207,6 +209,7 @@ impl ProductSchemaCapabilities {
         sketch_constraint_vocabulary: false,
         rigid_transform_feature: false,
         cubic_bezier_sketch: false,
+        cubic_bezier_segment_profile: false,
     };
 
     const fn current(schema: u16) -> Self {
@@ -254,6 +257,7 @@ impl ProductSchemaCapabilities {
             sketch_constraint_vocabulary: schema >= SKETCH_CONSTRAINT_VOCABULARY_SCHEMA,
             rigid_transform_feature: schema >= RIGID_TRANSFORM_FEATURE_SCHEMA,
             cubic_bezier_sketch: schema >= CUBIC_BEZIER_SKETCH_SCHEMA,
+            cubic_bezier_segment_profile: schema >= CUBIC_BEZIER_SEGMENT_PROFILE_SCHEMA,
         }
     }
 }
@@ -1488,6 +1492,18 @@ fn write_features(bytes: &mut Vec<u8>, product: &ProductModel) {
                             }
                             push_u8(bytes, u8::from(*clockwise));
                         }
+                        ProfileSegment::CubicBezier {
+                            start_mm,
+                            control_1_mm,
+                            control_2_mm,
+                            end_mm,
+                        } => {
+                            push_u8(bytes, 3);
+                            for point in [start_mm, control_1_mm, control_2_mm, end_mm] {
+                                push_u64(bytes, point[0].to_bits());
+                                push_u64(bytes, point[1].to_bits());
+                            }
+                        }
                     }
                 }
             }
@@ -2274,6 +2290,7 @@ fn load_document(
             | MECHANICAL_CONTRACT_SCHEMA
             | SKETCH_CONSTRAINT_VOCABULARY_SCHEMA
             | RIGID_TRANSFORM_FEATURE_SCHEMA
+            | CUBIC_BEZIER_SKETCH_SCHEMA
             | CURRENT_SCHEMA
     ) {
         return Err(PersistenceError::UnsupportedSchema(schema));
@@ -3716,6 +3733,14 @@ fn read_product(
                                 }
                             },
                         },
+                        3 if capabilities.cubic_bezier_segment_profile => {
+                            ProfileSegment::CubicBezier {
+                                start_mm: point(reader)?,
+                                control_1_mm: point(reader)?,
+                                control_2_mm: point(reader)?,
+                                end_mm: point(reader)?,
+                            }
+                        }
                         value => return Err(PersistenceError::InvalidFeatureKind(value)),
                     });
                 }

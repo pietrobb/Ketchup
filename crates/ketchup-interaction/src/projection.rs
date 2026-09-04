@@ -339,6 +339,14 @@ fn segment_profile_bounds(segments: &[ProfileSegment]) -> Option<(f64, f64, f64,
                     [center_mm[0] + radius, center_mm[1] + radius],
                 ]);
             }
+            ProfileSegment::CubicBezier {
+                start_mm,
+                control_1_mm,
+                control_2_mm,
+                end_mm,
+            } => {
+                points.extend([*start_mm, *control_1_mm, *control_2_mm, *end_mm]);
+            }
         }
     }
     if let Some(bounds) = profile_bounds(&points) {

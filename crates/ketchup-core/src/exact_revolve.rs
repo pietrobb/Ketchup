@@ -314,6 +314,12 @@ impl ExactRevolveRequest {
                     profile = Some((*feature_id, points_mm.to_vec(), None));
                 }
                 FeatureKind::SegmentProfile { segments, closed } if *closed => {
+                    if segments
+                        .iter()
+                        .any(|segment| matches!(segment, ProfileSegment::CubicBezier { .. }))
+                    {
+                        return Err(ExactProductError::UnsupportedDefinition);
+                    }
                     let exact_segments = segments
                         .iter()
                         .map(|segment| match segment {
@@ -334,6 +340,7 @@ impl ExactRevolveRequest {
                                 center_bits: center_mm.map(f64::to_bits),
                                 clockwise: *clockwise,
                             },
+                            ProfileSegment::CubicBezier { .. } => unreachable!(),
                         })
                         .collect::<Vec<_>>();
                     let points = segments

@@ -14895,6 +14895,7 @@ pub(crate) fn exact_mixed_profile(
                     clockwise: *clockwise,
                 });
             }
+            ProfileSegment::CubicBezier { .. } => return None,
         }
     }
     let area = signed_area.abs();

@@ -1063,6 +1063,27 @@ pub fn encode_semantic_state_with_results(
                             )
                             .unwrap();
                         }
+                        crate::document::ProfileSegment::CubicBezier {
+                            start_mm,
+                            control_1_mm,
+                            control_2_mm,
+                            end_mm,
+                        } => {
+                            writeln!(
+                                complete,
+                                "feature.{}.segment.{index}=cubic_bezier,{:016x},{:016x},{:016x},{:016x},{:016x},{:016x},{:016x},{:016x}",
+                                feature.id().0,
+                                start_mm[0].to_bits(),
+                                start_mm[1].to_bits(),
+                                control_1_mm[0].to_bits(),
+                                control_1_mm[1].to_bits(),
+                                control_2_mm[0].to_bits(),
+                                control_2_mm[1].to_bits(),
+                                end_mm[0].to_bits(),
+                                end_mm[1].to_bits()
+                            )
+                            .unwrap();
+                        }
                     }
                 }
                 writeln!(

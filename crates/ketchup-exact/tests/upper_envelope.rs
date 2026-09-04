@@ -1077,7 +1077,7 @@ fn curved_planar_sweep_is_deterministic_and_fails_closed() {
             .sweep_planar_profile(&profile, &closed_loop)
             .unwrap_err()
             .code,
-        GeometryErrorCode::InvalidShape
+        GeometryErrorCode::InvalidProfile
     );
 
     let overlapping_arcs = vec![
@@ -1099,7 +1099,7 @@ fn curved_planar_sweep_is_deterministic_and_fails_closed() {
             .sweep_planar_profile(&profile, &overlapping_arcs)
             .unwrap_err()
             .code,
-        GeometryErrorCode::InvalidShape
+        GeometryErrorCode::InvalidProfile
     );
 
     let over_limit = (0..65)
@@ -2223,5 +2223,147 @@ fn cubic_planar_region_extrusion_preserves_hole_bounds_volume_and_fingerprint() 
     assert_eq!(
         output.body.result_fingerprint,
         repeated.body.result_fingerprint
+    );
+}
+
+#[test]
+fn cubic_sweep_is_deterministic_and_rejects_degenerate_or_backtracking_handles() {
+    let profile = [
+        PlanarProfileSegment::Line {
+            start_mm: [-1.0, -1.0],
+            end_mm: [1.0, -1.0],
+        },
+        PlanarProfileSegment::Line {
+            start_mm: [1.0, -1.0],
+            end_mm: [1.0, 1.0],
+        },
+        PlanarProfileSegment::Line {
+            start_mm: [1.0, 1.0],
+            end_mm: [-1.0, 1.0],
+        },
+        PlanarProfileSegment::Line {
+            start_mm: [-1.0, 1.0],
+            end_mm: [-1.0, -1.0],
+        },
+    ];
+    let path = [
+        PlanarProfileSegment::Line {
+            start_mm: [0.0, 0.0],
+            end_mm: [25.0, 0.0],
+        },
+        PlanarProfileSegment::CubicBezier {
+            start_mm: [25.0, 0.0],
+            control_1_mm: [35.0, 0.0],
+            control_2_mm: [45.0, 10.0],
+            end_mm: [45.0, 20.0],
+        },
+        PlanarProfileSegment::Line {
+            start_mm: [45.0, 20.0],
+            end_mm: [45.0, 45.0],
+        },
+    ];
+    let backend = ExactBackend::new();
+    let output = backend.sweep_planar_profile(&profile, &path).unwrap();
+    let repeated = backend.sweep_planar_profile(&profile, &path).unwrap();
+    assert_valid(&output);
+    assert_eq!(output.input_digest, repeated.input_digest);
+    assert_eq!(
+        output.body.result_fingerprint,
+        repeated.body.result_fingerprint
+    );
+    assert_eq!(output.body.topology.solid_count, 1);
+    assert!(output.body.topology.volume_mm3 > 0.0);
+    assert!(!output.topology_history.is_empty());
+
+    for invalid_cubic in [
+        PlanarProfileSegment::CubicBezier {
+            start_mm: [25.0, 0.0],
+            control_1_mm: [25.0, 0.0],
+            control_2_mm: [45.0, 10.0],
+            end_mm: [45.0, 20.0],
+        },
+        PlanarProfileSegment::CubicBezier {
+            start_mm: [25.0, 0.0],
+            control_1_mm: [20.0, 0.0],
+            control_2_mm: [45.0, 10.0],
+            end_mm: [45.0, 20.0],
+        },
+    ] {
+        let invalid_path = [path[0].clone(), invalid_cubic, path[2].clone()];
+        assert_eq!(
+            backend
+                .sweep_planar_profile(&profile, &invalid_path)
+                .unwrap_err()
+                .code,
+            GeometryErrorCode::InvalidProfile
+        );
+    }
+
+    let adjacent_self_intersection = [
+        PlanarProfileSegment::CubicBezier {
+            start_mm: [0.0, 0.0],
+            control_1_mm: [10.0, -5.0],
+            control_2_mm: [9.0, 10.0],
+            end_mm: [10.0, 10.0],
+        },
+        PlanarProfileSegment::CubicBezier {
+            start_mm: [10.0, 10.0],
+            control_1_mm: [11.0, 10.0],
+            control_2_mm: [-10.0, -20.0],
+            end_mm: [20.0, 0.0],
+        },
+    ];
+    assert_eq!(
+        backend
+            .sweep_planar_profile(&profile, &adjacent_self_intersection)
+            .unwrap_err()
+            .code,
+        GeometryErrorCode::InvalidProfile
+    );
+
+    for invalid_arc_path in [
+        vec![
+            path[0].clone(),
+            PlanarProfileSegment::CircularArc {
+                start_mm: [25.0, 0.0],
+                end_mm: [25.0, 0.0],
+                center_mm: [25.0, 10.0],
+                clockwise: false,
+            },
+        ],
+        vec![
+            path[0].clone(),
+            PlanarProfileSegment::CircularArc {
+                start_mm: [25.0, 0.0],
+                end_mm: [35.000_000_002, 10.0],
+                center_mm: [25.0, 10.0],
+                clockwise: false,
+            },
+        ],
+    ] {
+        assert_eq!(
+            backend
+                .sweep_planar_profile(&profile, &invalid_arc_path)
+                .unwrap_err()
+                .code,
+            GeometryErrorCode::InvalidProfile
+        );
+    }
+
+    let maximum_cubic_path = (0..64)
+        .map(|index| {
+            let start = index as f64 * 2.0;
+            PlanarProfileSegment::CubicBezier {
+                start_mm: [start, 0.0],
+                control_1_mm: [start + 0.5, 0.0],
+                control_2_mm: [start + 1.5, 0.0],
+                end_mm: [start + 2.0, 0.0],
+            }
+        })
+        .collect::<Vec<_>>();
+    assert_valid(
+        &backend
+            .sweep_planar_profile(&profile, &maximum_cubic_path)
+            .unwrap(),
     );
 }
