@@ -1,5 +1,5 @@
 use ketchup_core::assembly::{
-    AssemblyMate, AssemblyMateEndpoint, AssemblyMateId, AssemblyMateKind,
+    AssemblyMate, AssemblyMateEndpoint, AssemblyMateId, AssemblyMateKind, PlanarFaceAttachment,
 };
 use ketchup_core::document::{
     BodyId, CanonicalCommand, CollectionId, CommandBatch, DefinitionId, Dimension, DocumentId,
@@ -9,8 +9,9 @@ use ketchup_core::drawing::{
     DrawingSheet, DrawingSheetId, DrawingSource, OrthographicViewKind, project_orthographic_drawing,
 };
 use ketchup_core::exact_product::{
-    ExactBodyPackage, ExactFaceRole, ExactFeatureChainRequest, ExactRenderPackage,
-    ExactResultRegistry, build_box_render_package, canonical_reference_lineage_digest,
+    ExactBodyPackage, ExactFaceRole, ExactFeatureChainRequest, ExactPlanarFaceAttachmentInput,
+    ExactRenderPackage, ExactResultRegistry, build_box_render_package_with_attachments,
+    canonical_reference_lineage_digest,
 };
 use ketchup_core::persistence;
 use ketchup_core::shared_change::{
@@ -76,7 +77,7 @@ fn exact_package(
             format!("geometry:{definition_id:?}:{role:?}:{fingerprint}"),
         )
     };
-    build_box_render_package(
+    build_box_render_package_with_attachments(
         &request,
         format!("exact-input:{definition_id:?}:{fingerprint}"),
         fingerprint.to_owned(),
@@ -89,6 +90,23 @@ fn exact_package(
             ExactFaceRole::East,
         ]
         .map(evidence),
+        &[
+            ExactPlanarFaceAttachmentInput {
+                role: ExactFaceRole::Top,
+                local_origin_mm: [0.0; 3],
+                local_unit_normal: [0.0, 0.0, 1.0],
+            },
+            ExactPlanarFaceAttachmentInput {
+                role: ExactFaceRole::Bottom,
+                local_origin_mm: [0.0; 3],
+                local_unit_normal: [0.0, 0.0, -1.0],
+            },
+            ExactPlanarFaceAttachmentInput {
+                role: ExactFaceRole::East,
+                local_origin_mm: [0.0; 3],
+                local_unit_normal: [1.0, 0.0, 0.0],
+            },
+        ],
     )
     .unwrap()
 }
@@ -198,16 +216,26 @@ fn seed(reverse_occurrences: bool) -> DocumentStore {
         .apply_batch(&CommandBatch::new(vec![
             CanonicalCommand::CreateAssemblyMate(AssemblyMate::new(
                 MATE,
-                AssemblyMateEndpoint::resolved(
+                AssemblyMateEndpoint::resolved_planar_face(
                     SELECTED,
-                    evidence.reference(ExactFaceRole::Top).unwrap().clone(),
+                    PlanarFaceAttachment::new(
+                        evidence.reference(ExactFaceRole::Top).unwrap().clone(),
+                        [0.0; 3],
+                        [0.0, 0.0, 1.0],
+                    )
+                    .unwrap(),
                 ),
-                AssemblyMateEndpoint::resolved(
+                AssemblyMateEndpoint::resolved_planar_face(
                     TARGET_OCCURRENCE,
-                    target_evidence
-                        .reference(ExactFaceRole::Bottom)
-                        .unwrap()
-                        .clone(),
+                    PlanarFaceAttachment::new(
+                        target_evidence
+                            .reference(ExactFaceRole::Bottom)
+                            .unwrap()
+                            .clone(),
+                        [0.0; 3],
+                        [0.0, 0.0, -1.0],
+                    )
+                    .unwrap(),
                 ),
                 AssemblyMateKind::CoincidentPlanar {
                     offset_mm: 0.0,

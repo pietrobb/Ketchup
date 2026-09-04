@@ -1,5 +1,5 @@
 use ketchup_core::assembly::{
-    AssemblyMate, AssemblyMateEndpoint, AssemblyMateId, AssemblyMateKind,
+    AssemblyMate, AssemblyMateEndpoint, AssemblyMateId, AssemblyMateKind, PlanarFaceAttachment,
 };
 use ketchup_core::document::{
     BodyId, CanonicalCommand, CanonicalError, CollectionId, CommandBatch, DefinitionId, Dimension,
@@ -11,9 +11,10 @@ use ketchup_core::drawing::{
     project_orthographic_drawing,
 };
 use ketchup_core::exact_product::{
-    ExactBodyPackage, ExactFaceRole, ExactFeatureChainRequest, ExactRenderPackage,
-    ExactResultRegistry, ExactStlExport, build_box_render_package,
-    canonical_reference_lineage_digest, exact_model_stl_export,
+    ExactBodyPackage, ExactFaceRole, ExactFeatureChainRequest, ExactPlanarFaceAttachmentInput,
+    ExactRenderPackage, ExactResultRegistry, ExactStlExport,
+    build_box_render_package_with_attachments, canonical_reference_lineage_digest,
+    exact_model_stl_export,
 };
 use ketchup_core::feature_history::{
     BodyHistoryMutation, BodyHistoryMutationRequest, BodyParameterEditRequest, ExactParameterEdit,
@@ -121,12 +122,7 @@ fn exact_package(
 ) -> ExactRenderPackage {
     let request =
         ExactFeatureChainRequest::from_snapshot_for_body(snapshot, DEFINITION, BodyId(1)).unwrap();
-    let evidence = [
-        ExactFaceRole::Top,
-        ExactFaceRole::Bottom,
-        ExactFaceRole::East,
-    ]
-    .map(|role| {
+    let evidence = |role: ExactFaceRole| {
         (
             role,
             canonical_reference_lineage_digest(
@@ -138,17 +134,52 @@ fn exact_package(
             ),
             format!("geometry:{role:?}:{fingerprint}"),
         )
-    });
-    build_box_render_package(
+    };
+    let attachments = [
+        ExactPlanarFaceAttachmentInput {
+            role: ExactFaceRole::Top,
+            local_origin_mm: [0.0; 3],
+            local_unit_normal: [0.0, 0.0, 1.0],
+        },
+        ExactPlanarFaceAttachmentInput {
+            role: ExactFaceRole::Bottom,
+            local_origin_mm: [0.0; 3],
+            local_unit_normal: [0.0, 0.0, -1.0],
+        },
+        ExactPlanarFaceAttachmentInput {
+            role: ExactFaceRole::East,
+            local_origin_mm: [0.0; 3],
+            local_unit_normal: [1.0, 0.0, 0.0],
+        },
+    ];
+    build_box_render_package_with_attachments(
         &request,
         format!("exact-input:{fingerprint}"),
         fingerprint.to_owned(),
         "occt".into(),
         "r0".into(),
         [[0.0, 0.0, 0.0], [10.0, 10.0, 10.0]],
-        evidence,
+        [
+            ExactFaceRole::Top,
+            ExactFaceRole::Bottom,
+            ExactFaceRole::East,
+        ]
+        .map(evidence),
+        &attachments,
     )
     .unwrap()
+}
+
+fn planar_endpoint(
+    package: &ExactRenderPackage,
+    occurrence_id: OccurrenceId,
+    role: ExactFaceRole,
+) -> AssemblyMateEndpoint {
+    let reference = package.reference(role).unwrap();
+    AssemblyMateEndpoint::resolved_planar_face(
+        occurrence_id,
+        package.planar_face_attachment(reference).unwrap().clone(),
+    )
 }
 
 fn seed(reverse_occurrences: bool) -> DocumentStore {
@@ -216,14 +247,12 @@ fn seed(reverse_occurrences: bool) -> DocumentStore {
     document.apply_batch(&CommandBatch::new(commands)).unwrap();
 
     let evidence = exact_package(&document.current(), "reference");
-    let top = evidence.reference(ExactFaceRole::Top).unwrap().clone();
-    let bottom = evidence.reference(ExactFaceRole::Bottom).unwrap().clone();
     document
         .apply_batch(&CommandBatch::new(vec![
             CanonicalCommand::CreateAssemblyMate(AssemblyMate::new(
                 MATE,
-                AssemblyMateEndpoint::resolved(FIRST, top),
-                AssemblyMateEndpoint::resolved(SECOND, bottom),
+                planar_endpoint(&evidence, FIRST, ExactFaceRole::Top),
+                planar_endpoint(&evidence, SECOND, ExactFaceRole::Bottom),
                 AssemblyMateKind::CoincidentPlanar {
                     offset_mm: 0.0,
                     reversed: false,
@@ -898,8 +927,25 @@ fn history_package(
             format!("geometry:{role:?}:{fingerprint}"),
         )
     };
+    let attachments = [
+        ExactPlanarFaceAttachmentInput {
+            role: ExactFaceRole::Top,
+            local_origin_mm: [0.0; 3],
+            local_unit_normal: [0.0, 0.0, 1.0],
+        },
+        ExactPlanarFaceAttachmentInput {
+            role: ExactFaceRole::Bottom,
+            local_origin_mm: [0.0; 3],
+            local_unit_normal: [0.0, 0.0, -1.0],
+        },
+        ExactPlanarFaceAttachmentInput {
+            role: ExactFaceRole::East,
+            local_origin_mm: [0.0; 3],
+            local_unit_normal: [1.0, 0.0, 0.0],
+        },
+    ];
     let package = if request.pocket_depth_bits.is_some() {
-        build_box_render_package(
+        build_box_render_package_with_attachments(
             &request,
             format!("exact-input:{fingerprint}"),
             fingerprint.to_owned(),
@@ -917,9 +963,10 @@ fn history_package(
                 ExactFaceRole::PocketNorth,
             ]
             .map(evidence),
+            &attachments,
         )
     } else {
-        build_box_render_package(
+        build_box_render_package_with_attachments(
             &request,
             format!("exact-input:{fingerprint}"),
             fingerprint.to_owned(),
@@ -932,6 +979,7 @@ fn history_package(
                 ExactFaceRole::East,
             ]
             .map(evidence),
+            &attachments,
         )
     };
     package.unwrap()
@@ -1115,6 +1163,24 @@ fn stale_failed_ambiguous_and_unsupported_inputs_fail_without_mutation() {
     for reference in &mut alternate.references {
         reference.backend = alternate.identity.backend.clone();
     }
+    alternate.planar_face_attachments = alternate
+        .planar_face_attachments
+        .iter()
+        .map(|attachment| {
+            let reference = alternate
+                .references
+                .iter()
+                .find(|reference| reference.lineage_digest == attachment.reference().lineage_digest)
+                .unwrap()
+                .clone();
+            PlanarFaceAttachment::new(
+                reference,
+                attachment.local_origin_mm(),
+                attachment.local_unit_normal(),
+            )
+            .unwrap()
+        })
+        .collect();
     let ambiguous = ExactResultRegistry::accept(
         &snapshot,
         [
@@ -1312,13 +1378,12 @@ fn hidden_lost_and_ambiguous_mate_inputs_are_observational() {
     let mut invalid = seed(false);
     let references = exact_package(&invalid.current(), "mate-health");
     let top = references.reference(ExactFaceRole::Top).unwrap().clone();
-    let bottom = references.reference(ExactFaceRole::Bottom).unwrap().clone();
     invalid
         .apply_batch(&CommandBatch::new(vec![
             CanonicalCommand::RebindAssemblyMate(AssemblyMate::new(
                 MATE,
                 AssemblyMateEndpoint::lost(FIRST, top.clone()),
-                AssemblyMateEndpoint::resolved(SECOND, bottom.clone()),
+                planar_endpoint(&references, SECOND, ExactFaceRole::Bottom),
                 AssemblyMateKind::CoincidentPlanar {
                     offset_mm: 0.0,
                     reversed: false,
@@ -1352,7 +1417,7 @@ fn hidden_lost_and_ambiguous_mate_inputs_are_observational() {
             CanonicalCommand::RebindAssemblyMate(AssemblyMate::new(
                 MATE,
                 AssemblyMateEndpoint::ambiguous(FIRST, top, 2),
-                AssemblyMateEndpoint::resolved(SECOND, bottom),
+                planar_endpoint(&references, SECOND, ExactFaceRole::Bottom),
                 AssemblyMateKind::CoincidentPlanar {
                     offset_mm: 0.0,
                     reversed: false,
@@ -1738,7 +1803,6 @@ fn shared_definition_evaluation_and_publication_fail_atomically() {
 fn over_constrained_dependency_refuses_the_whole_shared_change() {
     let mut document = seed(false);
     let evidence = exact_package(&document.current(), "conflicting-mates");
-    let top = evidence.reference(ExactFaceRole::Top).unwrap().clone();
     document
         .apply_batch(&CommandBatch::new(vec![
             CanonicalCommand::SetOccurrenceGrounded {
@@ -1747,14 +1811,14 @@ fn over_constrained_dependency_refuses_the_whole_shared_change() {
             },
             CanonicalCommand::CreateAssemblyMate(AssemblyMate::new(
                 AssemblyMateId(41),
-                AssemblyMateEndpoint::resolved(FIRST, top.clone()),
-                AssemblyMateEndpoint::resolved(SECOND, top.clone()),
+                planar_endpoint(&evidence, FIRST, ExactFaceRole::Top),
+                planar_endpoint(&evidence, SECOND, ExactFaceRole::Top),
                 AssemblyMateKind::Distance { distance_mm: 5.0 },
             )),
             CanonicalCommand::CreateAssemblyMate(AssemblyMate::new(
                 AssemblyMateId(42),
-                AssemblyMateEndpoint::resolved(FIRST, top.clone()),
-                AssemblyMateEndpoint::resolved(SECOND, top),
+                planar_endpoint(&evidence, FIRST, ExactFaceRole::Top),
+                planar_endpoint(&evidence, SECOND, ExactFaceRole::Top),
                 AssemblyMateKind::Distance { distance_mm: 10.0 },
             )),
         ]))

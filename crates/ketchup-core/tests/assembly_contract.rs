@@ -1,8 +1,8 @@
 use ketchup_core::assembly::{
     AssemblyDofStatus, AssemblyMate, AssemblyMateEndpoint, AssemblyMateId, AssemblyMateKind,
     AssemblyRecomputePublishError, AssemblyRecomputeStatus, AssemblyReferenceHealth,
-    AssemblySolvePublishError, AssemblySolveStatus, AssemblySolverPolicy, recompute_rigid_assembly,
-    solve_rigid_assembly,
+    AssemblySolvePublishError, AssemblySolveStatus, AssemblySolverPolicy, PlanarFaceAttachment,
+    recompute_rigid_assembly, solve_rigid_assembly,
 };
 use ketchup_core::document::{
     CanonicalCommand, CanonicalError, CommandBatch, DefinitionId, Dimension, DocumentId,
@@ -10,8 +10,9 @@ use ketchup_core::document::{
     ProposalPrepareError, TagId, Transform,
 };
 use ketchup_core::exact_product::{
-    ExactBodyPackage, ExactFaceRole, ExactFeatureChainRequest, ExactResultRegistry,
-    build_box_render_package, canonical_reference_lineage_digest,
+    ExactBodyPackage, ExactFaceRole, ExactFeatureChainRequest, ExactPlanarFaceAttachmentInput,
+    ExactResultRegistry, build_box_render_package, build_box_render_package_with_attachments,
+    canonical_reference_lineage_digest,
 };
 use ketchup_core::persistence;
 use ketchup_core::state_view::encode_semantic_state;
@@ -47,6 +48,41 @@ fn current_exact_package(
     snapshot: &ketchup_core::document::Snapshot,
     fingerprint: &str,
 ) -> Arc<ExactBodyPackage> {
+    current_exact_package_with_attachments(
+        snapshot,
+        fingerprint,
+        &[
+            ExactPlanarFaceAttachmentInput {
+                role: ExactFaceRole::Top,
+                local_origin_mm: [0.0; 3],
+                local_unit_normal: [0.0, 0.0, 1.0],
+            },
+            ExactPlanarFaceAttachmentInput {
+                role: ExactFaceRole::Bottom,
+                local_origin_mm: [0.0; 3],
+                local_unit_normal: [0.0, 0.0, -1.0],
+            },
+            ExactPlanarFaceAttachmentInput {
+                role: ExactFaceRole::East,
+                local_origin_mm: [0.0; 3],
+                local_unit_normal: [1.0, 0.0, 0.0],
+            },
+        ],
+    )
+}
+
+fn current_exact_package_without_attachments(
+    snapshot: &ketchup_core::document::Snapshot,
+    fingerprint: &str,
+) -> Arc<ExactBodyPackage> {
+    current_exact_package_with_attachments(snapshot, fingerprint, &[])
+}
+
+fn current_exact_package_with_attachments(
+    snapshot: &ketchup_core::document::Snapshot,
+    fingerprint: &str,
+    attachments: &[ExactPlanarFaceAttachmentInput],
+) -> Arc<ExactBodyPackage> {
     let request = ExactFeatureChainRequest::from_snapshot(snapshot, DEFINITION).unwrap();
     let FeatureKind::Extrusion { height, .. } = snapshot.feature(EXTRUSION).unwrap().kind() else {
         panic!("expected extrusion");
@@ -70,7 +106,7 @@ fn current_exact_package(
         )
     });
     Arc::new(
-        build_box_render_package(
+        build_box_render_package_with_attachments(
             &request,
             format!("exact-input:{fingerprint}"),
             fingerprint.to_owned(),
@@ -78,6 +114,7 @@ fn current_exact_package(
             "r0".into(),
             [[0.0, 0.0, 0.0], [10.0, 10.0, height.millimetres()]],
             evidence,
+            attachments,
         )
         .unwrap()
         .into(),
@@ -172,6 +209,24 @@ fn seeded_document() -> (
     )
 }
 
+fn canonical_planar_endpoint(
+    occurrence_id: OccurrenceId,
+    reference: ketchup_core::exact_product::BodySubshapeRef,
+) -> AssemblyMateEndpoint {
+    let geometry = match reference.role() {
+        Some(ExactFaceRole::Top) => Some(([0.0; 3], [0.0, 0.0, 1.0])),
+        Some(ExactFaceRole::Bottom) => Some(([0.0; 3], [0.0, 0.0, -1.0])),
+        Some(ExactFaceRole::East) => Some(([0.0; 3], [1.0, 0.0, 0.0])),
+        _ => None,
+    };
+    match geometry
+        .and_then(|(origin, normal)| PlanarFaceAttachment::new(reference.clone(), origin, normal))
+    {
+        Some(attachment) => AssemblyMateEndpoint::resolved_planar_face(occurrence_id, attachment),
+        None => AssemblyMateEndpoint::resolved(occurrence_id, reference),
+    }
+}
+
 fn coincident_mate(
     id: AssemblyMateId,
     a: AssemblyMateEndpoint,
@@ -188,6 +243,299 @@ fn coincident_mate(
     )
 }
 
+fn planar_endpoint(
+    occurrence_id: OccurrenceId,
+    reference: ketchup_core::exact_product::BodySubshapeRef,
+    local_origin_mm: [f64; 3],
+    local_unit_normal: [f64; 3],
+) -> AssemblyMateEndpoint {
+    AssemblyMateEndpoint::resolved_planar_face(
+        occurrence_id,
+        PlanarFaceAttachment::new(reference, local_origin_mm, local_unit_normal).unwrap(),
+    )
+}
+
+#[test]
+fn typed_planar_face_endpoints_are_bit_exact_schema_50_state_and_history() {
+    assert_eq!(persistence::CURRENT_SCHEMA, 50);
+    let (mut document, top, bottom, _east) = seeded_document();
+    let before_digest = document.current().canonical_digest();
+    let origin_a = [1.25, -0.0, 3.5];
+    let normal_a = [0.0, -1.0, 0.0];
+    let origin_b = [-2.5, 4.0, 10.0];
+    let normal_b = [0.0, 1.0, 0.0];
+    let mate = coincident_mate(
+        MATE,
+        planar_endpoint(FIRST, top, origin_a, normal_a),
+        planar_endpoint(SECOND, bottom, origin_b, normal_b),
+    );
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetOccurrenceGrounded {
+                id: FIRST,
+                grounded: true,
+            },
+            CanonicalCommand::CreateAssemblyMate(mate.clone()),
+        ]))
+        .unwrap();
+
+    let committed = document.current();
+    let committed_digest = committed.canonical_digest();
+    assert_ne!(committed_digest, before_digest);
+    let committed_mate = committed.assembly_mate(MATE).unwrap();
+    let attachment_a = committed_mate
+        .endpoint_a()
+        .planar_face_attachment()
+        .unwrap();
+    let attachment_b = committed_mate
+        .endpoint_b()
+        .planar_face_attachment()
+        .unwrap();
+    assert_eq!(
+        attachment_a.local_origin_mm().map(f64::to_bits),
+        origin_a.map(f64::to_bits)
+    );
+    assert_eq!(
+        attachment_a.local_unit_normal().map(f64::to_bits),
+        normal_a.map(f64::to_bits)
+    );
+    assert_eq!(
+        attachment_b.local_origin_mm().map(f64::to_bits),
+        origin_b.map(f64::to_bits)
+    );
+    assert_eq!(
+        attachment_b.local_unit_normal().map(f64::to_bits),
+        normal_b.map(f64::to_bits)
+    );
+
+    let state = encode_semantic_state(&committed).complete_v1().to_owned();
+    assert!(state.contains("assembly_mate.20.endpoint_a.attachment=planar_face"));
+    assert!(state.contains(
+        "assembly_mate.20.endpoint_a.origin_f64_bits=3ff4000000000000,8000000000000000,400c000000000000"
+    ));
+    assert!(state.contains(
+        "assembly_mate.20.endpoint_a.normal_f64_bits=0000000000000000,bff0000000000000,0000000000000000"
+    ));
+    assert!(state.contains("assembly_mate.20.endpoint_b.attachment=planar_face"));
+    assert!(state.contains(
+        "assembly_mate.20.endpoint_b.origin_f64_bits=c004000000000000,4010000000000000,4024000000000000"
+    ));
+    assert!(state.contains(
+        "assembly_mate.20.endpoint_b.normal_f64_bits=0000000000000000,3ff0000000000000,0000000000000000"
+    ));
+
+    let reopened = persistence::load(&persistence::save(&committed)).unwrap();
+    assert_eq!(reopened.source_schema(), 50);
+    assert_eq!(reopened.snapshot().canonical_digest(), committed_digest);
+    assert_eq!(
+        encode_semantic_state(&reopened.snapshot()).complete_v1(),
+        state
+    );
+    assert_eq!(reopened.snapshot().assembly_mate(MATE), Some(&mate));
+
+    assert_eq!(document.undo().unwrap().canonical_digest(), before_digest);
+    assert!(document.current().assembly_mate(MATE).is_none());
+    assert_eq!(
+        document.redo().unwrap().canonical_digest(),
+        committed_digest
+    );
+    assert_eq!(document.current().assembly_mate(MATE), Some(&mate));
+    assert_eq!(
+        encode_semantic_state(&document.current()).complete_v1(),
+        state
+    );
+}
+
+#[test]
+fn typed_planar_solver_transforms_local_frames_and_ignores_semantic_role_text() {
+    let (mut document, mut top, mut bottom, _east) = seeded_document();
+    top.semantic_role = ExactFaceRole::Bottom.semantic_role().to_owned();
+    top.lineage_digest = canonical_reference_lineage_digest(
+        top.document_id,
+        top.producer_feature_id,
+        &top.semantic_role,
+        &top.source_element_id,
+        &top.expected_type,
+    );
+    bottom.semantic_role = ExactFaceRole::Top.semantic_role().to_owned();
+    bottom.lineage_digest = canonical_reference_lineage_digest(
+        bottom.document_id,
+        bottom.producer_feature_id,
+        &bottom.semantic_role,
+        &bottom.source_element_id,
+        &bottom.expected_type,
+    );
+    let quarter_turn = Transform::from_matrix([
+        0.0, -1.0, 0.0, 20.0, 1.0, 0.0, 0.0, 5.0, 0.0, 0.0, 1.0, 7.0, 0.0, 0.0, 0.0, 1.0,
+    ])
+    .unwrap();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetOccurrenceTransform {
+                id: SECOND,
+                transform: quarter_turn,
+            },
+            CanonicalCommand::SetOccurrenceGrounded {
+                id: FIRST,
+                grounded: true,
+            },
+            CanonicalCommand::CreateAssemblyMate(coincident_mate(
+                MATE,
+                planar_endpoint(FIRST, top, [2.0, 3.0, 4.0], [1.0, 0.0, 0.0]),
+                planar_endpoint(SECOND, bottom, [0.0, 1.0, 2.0], [0.0, 1.0, 0.0]),
+            )),
+        ]))
+        .unwrap();
+
+    let solved =
+        solve_rigid_assembly(&document.current(), AssemblySolverPolicy::default()).unwrap();
+    assert_eq!(solved.status(), AssemblySolveStatus::UnderConstrained);
+    assert!(solved.maximum_residual() <= AssemblySolverPolicy::default().linear_tolerance_mm);
+    let solved_transform = solved.occurrence(SECOND).unwrap().transform();
+    let matrix = solved_transform.matrix();
+    for (actual, expected) in matrix.iter().copied().zip([
+        0.0, -1.0, 0.0, 3.0, 1.0, 0.0, 0.0, 5.0, 0.0, 0.0, 1.0, 7.0, 0.0, 0.0, 0.0, 1.0,
+    ]) {
+        assert_near(actual, expected);
+    }
+    let world_origin_a = [2.0, 3.0, 4.0];
+    let world_origin_b = [matrix[3] - 1.0, matrix[7], matrix[11] + 2.0];
+    assert_near(world_origin_b[0], world_origin_a[0]);
+    let world_normal_a = [1.0, 0.0, 0.0];
+    let world_normal_b = [-1.0, 0.0, 0.0];
+    for axis in 0..3 {
+        assert_near(world_normal_b[axis], -world_normal_a[axis]);
+    }
+}
+
+#[test]
+fn recompute_refreshes_identity_bound_typed_attachments_and_fails_closed_without_evidence() {
+    let (mut document, top, bottom, _east) = seeded_document();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetOccurrenceGrounded {
+                id: FIRST,
+                grounded: true,
+            },
+            CanonicalCommand::CreateAssemblyMate(coincident_mate(
+                MATE,
+                planar_endpoint(FIRST, top, [5.0, 5.0, 10.0], [0.0, 0.0, 1.0]),
+                planar_endpoint(SECOND, bottom, [5.0, 5.0, 0.0], [0.0, 0.0, -1.0]),
+            )),
+        ]))
+        .unwrap();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetFeatureDimension {
+                id: EXTRUSION,
+                dimension: Dimension::from_decimal("12").unwrap(),
+            },
+        ]))
+        .unwrap();
+
+    let source = document.current();
+    let refreshed_inputs = [
+        ExactPlanarFaceAttachmentInput {
+            role: ExactFaceRole::Top,
+            local_origin_mm: [6.25, 4.5, 12.0],
+            local_unit_normal: [0.0, 0.0, 1.0],
+        },
+        ExactPlanarFaceAttachmentInput {
+            role: ExactFaceRole::Bottom,
+            local_origin_mm: [6.25, 4.5, 0.0],
+            local_unit_normal: [0.0, 0.0, -1.0],
+        },
+    ];
+    let registry = ExactResultRegistry::accept(
+        &source,
+        [current_exact_package_with_attachments(
+            &source,
+            "attachment-refresh",
+            &refreshed_inputs,
+        )],
+    )
+    .unwrap();
+    let recomputed =
+        recompute_rigid_assembly(&document, &registry, AssemblySolverPolicy::default()).unwrap();
+    assert_eq!(recomputed.status(), AssemblyRecomputeStatus::Solved);
+    let refreshed_mate = &recomputed.mates()[0];
+    let refreshed_a = refreshed_mate
+        .endpoint_a()
+        .planar_face_attachment()
+        .unwrap();
+    let refreshed_b = refreshed_mate
+        .endpoint_b()
+        .planar_face_attachment()
+        .unwrap();
+    assert_eq!(
+        refreshed_a.local_origin_mm().map(f64::to_bits),
+        refreshed_inputs[0].local_origin_mm.map(f64::to_bits)
+    );
+    assert_eq!(
+        refreshed_a.local_unit_normal().map(f64::to_bits),
+        refreshed_inputs[0].local_unit_normal.map(f64::to_bits)
+    );
+    assert_eq!(
+        refreshed_b.local_origin_mm().map(f64::to_bits),
+        refreshed_inputs[1].local_origin_mm.map(f64::to_bits)
+    );
+    assert_eq!(
+        refreshed_b.local_unit_normal().map(f64::to_bits),
+        refreshed_inputs[1].local_unit_normal.map(f64::to_bits)
+    );
+    document
+        .commit_proposal(&recomputed.prepare_publication(&document).unwrap())
+        .unwrap();
+    assert_eq!(
+        document
+            .current()
+            .assembly_mate(MATE)
+            .unwrap()
+            .endpoint_a()
+            .planar_face_attachment()
+            .unwrap()
+            .local_origin_mm()
+            .map(f64::to_bits),
+        refreshed_inputs[0].local_origin_mm.map(f64::to_bits)
+    );
+
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetFeatureDimension {
+                id: EXTRUSION,
+                dimension: Dimension::from_decimal("14").unwrap(),
+            },
+        ]))
+        .unwrap();
+    let current = document.current();
+    let registry_without_attachments = ExactResultRegistry::accept(
+        &current,
+        [current_exact_package_without_attachments(
+            &current,
+            "attachment-evidence-missing",
+        )],
+    )
+    .unwrap();
+    let broken = recompute_rigid_assembly(
+        &document,
+        &registry_without_attachments,
+        AssemblySolverPolicy::default(),
+    )
+    .unwrap();
+    assert_eq!(broken.status(), AssemblyRecomputeStatus::Broken);
+    assert!(broken.solve().is_none());
+    assert_eq!(
+        broken.mates()[0].endpoint_a().health(),
+        AssemblyReferenceHealth::Broken
+    );
+    assert!(
+        broken.mates()[0]
+            .endpoint_a()
+            .planar_face_attachment()
+            .is_none()
+    );
+}
+
 #[test]
 fn assembly_contract_is_reviewed_atomic_undoable_and_losslessly_persistent() {
     let (mut document, top, bottom, _east) = seeded_document();
@@ -196,8 +544,8 @@ fn assembly_contract_is_reviewed_atomic_undoable_and_losslessly_persistent() {
     let before_undo = document.visible_undo_steps();
     let mate = coincident_mate(
         MATE,
-        AssemblyMateEndpoint::resolved(FIRST, top),
-        AssemblyMateEndpoint::resolved(SECOND, bottom),
+        canonical_planar_endpoint(FIRST, top),
+        canonical_planar_endpoint(SECOND, bottom),
     );
     let proposal = document
         .prepare_proposal(CommandBatch::new(vec![
@@ -264,8 +612,8 @@ fn stale_unresolved_duplicate_and_in_use_requests_fail_without_partial_state() {
     let (mut document, top, bottom, _east) = seeded_document();
     let mate = coincident_mate(
         MATE,
-        AssemblyMateEndpoint::resolved(FIRST, top.clone()),
-        AssemblyMateEndpoint::resolved(SECOND, bottom.clone()),
+        canonical_planar_endpoint(FIRST, top.clone()),
+        canonical_planar_endpoint(SECOND, bottom.clone()),
     );
     let stale_delete = document
         .prepare_proposal(CommandBatch::new(vec![
@@ -331,22 +679,22 @@ fn stale_unresolved_duplicate_and_in_use_requests_fail_without_partial_state() {
         coincident_mate(
             AssemblyMateId(21),
             AssemblyMateEndpoint::lost(FIRST, top.clone()),
-            AssemblyMateEndpoint::resolved(SECOND, bottom.clone()),
+            canonical_planar_endpoint(SECOND, bottom.clone()),
         ),
         coincident_mate(
             AssemblyMateId(22),
             AssemblyMateEndpoint::ambiguous(FIRST, top.clone(), 2),
-            AssemblyMateEndpoint::resolved(SECOND, bottom.clone()),
+            canonical_planar_endpoint(SECOND, bottom.clone()),
         ),
         coincident_mate(
             AssemblyMateId(23),
-            AssemblyMateEndpoint::resolved(FIRST, wrong_owner),
-            AssemblyMateEndpoint::resolved(SECOND, bottom.clone()),
+            canonical_planar_endpoint(FIRST, wrong_owner),
+            canonical_planar_endpoint(SECOND, bottom.clone()),
         ),
         coincident_mate(
             AssemblyMateId(24),
-            AssemblyMateEndpoint::resolved(FIRST, wrong_document),
-            AssemblyMateEndpoint::resolved(SECOND, bottom.clone()),
+            canonical_planar_endpoint(FIRST, wrong_document),
+            canonical_planar_endpoint(SECOND, bottom.clone()),
         ),
     ];
     for candidate in invalid {
@@ -442,10 +790,21 @@ fn rigid_solver_covers_supported_mates_with_fixed_policy_and_explicit_dof() {
 
     for (kind, initial, case) in cases {
         let (mut document, top, bottom, east) = seeded_document();
-        let endpoint_b = match case {
+        let endpoint_b_reference = match case {
             0 => bottom,
             3 => east,
             _ => top.clone(),
+        };
+        let (endpoint_a, endpoint_b) = if case == 1 {
+            (
+                AssemblyMateEndpoint::resolved(FIRST, top),
+                AssemblyMateEndpoint::resolved(SECOND, endpoint_b_reference),
+            )
+        } else {
+            (
+                canonical_planar_endpoint(FIRST, top),
+                canonical_planar_endpoint(SECOND, endpoint_b_reference),
+            )
         };
         document
             .apply_batch(&CommandBatch::new(vec![
@@ -458,10 +817,7 @@ fn rigid_solver_covers_supported_mates_with_fixed_policy_and_explicit_dof() {
                     grounded: true,
                 },
                 CanonicalCommand::CreateAssemblyMate(AssemblyMate::new(
-                    MATE,
-                    AssemblyMateEndpoint::resolved(FIRST, top),
-                    AssemblyMateEndpoint::resolved(SECOND, endpoint_b),
-                    kind,
+                    MATE, endpoint_a, endpoint_b, kind,
                 )),
             ]))
             .unwrap();
@@ -514,18 +870,18 @@ fn rigid_solver_is_fully_constrained_and_publication_is_reviewed_and_stale_safe(
             },
             CanonicalCommand::CreateAssemblyMate(coincident_mate(
                 AssemblyMateId(20),
-                AssemblyMateEndpoint::resolved(FIRST, top.clone()),
-                AssemblyMateEndpoint::resolved(SECOND, bottom),
+                canonical_planar_endpoint(FIRST, top.clone()),
+                canonical_planar_endpoint(SECOND, bottom),
             )),
             CanonicalCommand::CreateAssemblyMate(coincident_mate(
                 AssemblyMateId(21),
-                AssemblyMateEndpoint::resolved(FIRST, east.clone()),
-                AssemblyMateEndpoint::resolved(SECOND, east),
+                canonical_planar_endpoint(FIRST, east.clone()),
+                canonical_planar_endpoint(SECOND, east),
             )),
             CanonicalCommand::CreateAssemblyMate(AssemblyMate::new(
                 AssemblyMateId(22),
-                AssemblyMateEndpoint::resolved(FIRST, top.clone()),
-                AssemblyMateEndpoint::resolved(SECOND, top),
+                canonical_planar_endpoint(FIRST, top.clone()),
+                canonical_planar_endpoint(SECOND, top),
                 AssemblyMateKind::Distance { distance_mm: 5.0 },
             )),
         ]))
@@ -575,14 +931,14 @@ fn conflicting_and_redundant_mates_are_deterministic_and_never_publish_failure()
             },
             CanonicalCommand::CreateAssemblyMate(AssemblyMate::new(
                 AssemblyMateId(20),
-                AssemblyMateEndpoint::resolved(FIRST, top.clone()),
-                AssemblyMateEndpoint::resolved(SECOND, top.clone()),
+                canonical_planar_endpoint(FIRST, top.clone()),
+                canonical_planar_endpoint(SECOND, top.clone()),
                 AssemblyMateKind::Distance { distance_mm: 5.0 },
             )),
             CanonicalCommand::CreateAssemblyMate(AssemblyMate::new(
                 AssemblyMateId(21),
-                AssemblyMateEndpoint::resolved(FIRST, top.clone()),
-                AssemblyMateEndpoint::resolved(SECOND, top),
+                canonical_planar_endpoint(FIRST, top.clone()),
+                canonical_planar_endpoint(SECOND, top),
                 AssemblyMateKind::Distance { distance_mm: 10.0 },
             )),
         ]))
@@ -647,14 +1003,14 @@ fn three_occurrence_chain_is_permutation_deterministic_bounded_and_branch_safe()
         let mut mates = [
             AssemblyMate::new(
                 AssemblyMateId(20),
-                AssemblyMateEndpoint::resolved(FIRST, top.clone()),
-                AssemblyMateEndpoint::resolved(SECOND, top.clone()),
+                canonical_planar_endpoint(FIRST, top.clone()),
+                canonical_planar_endpoint(SECOND, top.clone()),
                 AssemblyMateKind::Distance { distance_mm: 5.0 },
             ),
             AssemblyMate::new(
                 AssemblyMateId(21),
-                AssemblyMateEndpoint::resolved(SECOND, top.clone()),
-                AssemblyMateEndpoint::resolved(third, top),
+                canonical_planar_endpoint(SECOND, top.clone()),
+                canonical_planar_endpoint(third, top),
                 AssemblyMateKind::Distance { distance_mm: 7.0 },
             ),
         ];
@@ -798,8 +1154,8 @@ fn assembly_recompute_rebinds_current_topology_and_persists_fail_closed_diagnost
             },
             CanonicalCommand::CreateAssemblyMate(AssemblyMate::new(
                 MATE,
-                AssemblyMateEndpoint::resolved(FIRST, top.clone()),
-                AssemblyMateEndpoint::resolved(SECOND, top),
+                canonical_planar_endpoint(FIRST, top.clone()),
+                canonical_planar_endpoint(SECOND, top),
                 AssemblyMateKind::Distance { distance_mm: 5.0 },
             )),
         ]))
@@ -933,7 +1289,7 @@ fn assembly_recompute_rebinds_current_topology_and_persists_fail_closed_diagnost
     incompatible.evaluator = "incompatible-evaluator".into();
     let broken_anchor = AssemblyMate::new(
         MATE,
-        AssemblyMateEndpoint::resolved(FIRST, incompatible),
+        canonical_planar_endpoint(FIRST, incompatible),
         current_mate.endpoint_b().clone(),
         current_mate.kind(),
     );
@@ -1048,8 +1404,8 @@ fn assembly_recompute_round_trips_rebind_and_controlled_topology_loss() {
             },
             CanonicalCommand::CreateAssemblyMate(AssemblyMate::new(
                 MATE,
-                AssemblyMateEndpoint::resolved(FIRST, top.clone()),
-                AssemblyMateEndpoint::resolved(SECOND, top),
+                canonical_planar_endpoint(FIRST, top.clone()),
+                canonical_planar_endpoint(SECOND, top),
                 AssemblyMateKind::Distance { distance_mm: 5.0 },
             )),
         ]))
@@ -1185,7 +1541,7 @@ fn assembly_recompute_round_trips_rebind_and_controlled_topology_loss() {
         .prepare_proposal(CommandBatch::new(vec![
             CanonicalCommand::RebindAssemblyMate(AssemblyMate::new(
                 MATE,
-                AssemblyMateEndpoint::resolved(FIRST, removed_reference),
+                canonical_planar_endpoint(FIRST, removed_reference),
                 current_mate.endpoint_b().clone(),
                 current_mate.kind(),
             )),

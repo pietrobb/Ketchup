@@ -1,6 +1,6 @@
 use crate::assembly::{
     ASSEMBLY_MATE_SCHEMA_V1, AssemblyDofDiagnostic, AssemblyDofStatus, AssemblyMate,
-    AssemblyMateId, AssemblyMateKind, AssemblyReferenceHealth,
+    AssemblyMateAttachment, AssemblyMateId, AssemblyMateKind, AssemblyReferenceHealth,
 };
 use crate::assembly_joint::{
     ASSEMBLY_JOINT_SCHEMA_V1, ASSEMBLY_MOTION_STUDY_SCHEMA_V1, AssemblyJoint, AssemblyJointId,
@@ -12612,7 +12612,12 @@ fn validate_assembly_mate(
                 !require_resolved && candidate_count > 1
             }
         };
+        let attachment_is_valid = match endpoint.attachment() {
+            AssemblyMateAttachment::ReferenceOnly(_) => true,
+            AssemblyMateAttachment::PlanarFace(attachment) => attachment.has_valid_geometry(),
+        };
         if !health_is_valid
+            || !attachment_is_valid
             || !reference.has_valid_lineage()
             || reference.document_id != product.document_id
             || reference.definition_id != occurrence.definition_id
@@ -12631,15 +12636,27 @@ fn validate_assembly_mate(
     let type_is_valid = match mate.kind() {
         AssemblyMateKind::CoincidentPlanar { .. }
         | AssemblyMateKind::Distance { .. }
-        | AssemblyMateKind::Angle { .. } => [mate.endpoint_a(), mate.endpoint_b()]
-            .iter()
-            .all(|endpoint| endpoint.reference().expected_type == "planar_face"),
+        | AssemblyMateKind::Angle { .. } => {
+            [mate.endpoint_a(), mate.endpoint_b()]
+                .iter()
+                .all(|endpoint| {
+                    endpoint.reference().expected_type == "planar_face"
+                        && matches!(
+                            endpoint.attachment(),
+                            AssemblyMateAttachment::PlanarFace(_)
+                                | AssemblyMateAttachment::ReferenceOnly(_)
+                        )
+                })
+        }
         AssemblyMateKind::ConcentricAxial { .. } => [mate.endpoint_a(), mate.endpoint_b()]
             .iter()
             .all(|endpoint| {
-                endpoint.reference().expected_type.ends_with("_face")
+                matches!(
+                    endpoint.attachment(),
+                    AssemblyMateAttachment::ReferenceOnly(_)
+                ) && (endpoint.reference().expected_type.ends_with("_face")
                     || endpoint.reference().expected_type.ends_with("_edge")
-                    || matches!(endpoint.reference().expected_type.as_str(), "face" | "edge")
+                    || matches!(endpoint.reference().expected_type.as_str(), "face" | "edge"))
             }),
     };
     if !type_is_valid {

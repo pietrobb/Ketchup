@@ -57,10 +57,98 @@ impl AssemblyDofDiagnostic {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
+pub struct PlanarFaceAttachment {
+    reference: BodySubshapeRef,
+    local_origin_mm: [f64; 3],
+    local_unit_normal: [f64; 3],
+}
+
+impl PartialEq for PlanarFaceAttachment {
+    fn eq(&self, other: &Self) -> bool {
+        self.reference == other.reference
+            && self
+                .local_origin_mm
+                .into_iter()
+                .chain(self.local_unit_normal)
+                .zip(
+                    other
+                        .local_origin_mm
+                        .into_iter()
+                        .chain(other.local_unit_normal),
+                )
+                .all(|(left, right)| left.to_bits() == right.to_bits())
+    }
+}
+
+impl Eq for PlanarFaceAttachment {}
+
+impl PlanarFaceAttachment {
+    #[must_use]
+    pub fn new(
+        reference: BodySubshapeRef,
+        local_origin_mm: [f64; 3],
+        local_unit_normal: [f64; 3],
+    ) -> Option<Self> {
+        let normal_length_squared = dot(local_unit_normal, local_unit_normal);
+        (reference.has_valid_lineage()
+            && reference.expected_type == "planar_face"
+            && local_origin_mm.into_iter().all(f64::is_finite)
+            && local_unit_normal.into_iter().all(f64::is_finite)
+            && (normal_length_squared - 1.0).abs() <= 1.0e-12)
+            .then_some(Self {
+                reference,
+                local_origin_mm,
+                local_unit_normal,
+            })
+    }
+
+    #[must_use]
+    pub const fn reference(&self) -> &BodySubshapeRef {
+        &self.reference
+    }
+
+    #[must_use]
+    pub const fn local_origin_mm(&self) -> [f64; 3] {
+        self.local_origin_mm
+    }
+
+    #[must_use]
+    pub const fn local_unit_normal(&self) -> [f64; 3] {
+        self.local_unit_normal
+    }
+
+    #[must_use]
+    pub fn has_valid_geometry(&self) -> bool {
+        Self::new(
+            self.reference.clone(),
+            self.local_origin_mm,
+            self.local_unit_normal,
+        )
+        .is_some()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum AssemblyMateAttachment {
+    ReferenceOnly(BodySubshapeRef),
+    PlanarFace(PlanarFaceAttachment),
+}
+
+impl AssemblyMateAttachment {
+    #[must_use]
+    pub const fn reference(&self) -> &BodySubshapeRef {
+        match self {
+            Self::ReferenceOnly(reference) => reference,
+            Self::PlanarFace(attachment) => attachment.reference(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct AssemblyMateEndpoint {
     pub(crate) occurrence_id: OccurrenceId,
-    pub(crate) reference: BodySubshapeRef,
+    pub(crate) attachment: AssemblyMateAttachment,
     pub(crate) health: AssemblyReferenceHealth,
 }
 
@@ -69,7 +157,19 @@ impl AssemblyMateEndpoint {
     pub fn resolved(occurrence_id: OccurrenceId, reference: BodySubshapeRef) -> Self {
         Self {
             occurrence_id,
-            reference,
+            attachment: AssemblyMateAttachment::ReferenceOnly(reference),
+            health: AssemblyReferenceHealth::Resolved,
+        }
+    }
+
+    #[must_use]
+    pub fn resolved_planar_face(
+        occurrence_id: OccurrenceId,
+        attachment: PlanarFaceAttachment,
+    ) -> Self {
+        Self {
+            occurrence_id,
+            attachment: AssemblyMateAttachment::PlanarFace(attachment),
             health: AssemblyReferenceHealth::Resolved,
         }
     }
@@ -78,7 +178,7 @@ impl AssemblyMateEndpoint {
     pub fn broken(occurrence_id: OccurrenceId, reference: BodySubshapeRef) -> Self {
         Self {
             occurrence_id,
-            reference,
+            attachment: AssemblyMateAttachment::ReferenceOnly(reference),
             health: AssemblyReferenceHealth::Broken,
         }
     }
@@ -91,7 +191,7 @@ impl AssemblyMateEndpoint {
     ) -> Self {
         Self {
             occurrence_id,
-            reference,
+            attachment: AssemblyMateAttachment::ReferenceOnly(reference),
             health: AssemblyReferenceHealth::Ambiguous { candidate_count },
         }
     }
@@ -100,7 +200,7 @@ impl AssemblyMateEndpoint {
     pub fn lost(occurrence_id: OccurrenceId, reference: BodySubshapeRef) -> Self {
         Self {
             occurrence_id,
-            reference,
+            attachment: AssemblyMateAttachment::ReferenceOnly(reference),
             health: AssemblyReferenceHealth::Lost,
         }
     }
@@ -111,8 +211,21 @@ impl AssemblyMateEndpoint {
     }
 
     #[must_use]
+    pub const fn attachment(&self) -> &AssemblyMateAttachment {
+        &self.attachment
+    }
+
+    #[must_use]
     pub const fn reference(&self) -> &BodySubshapeRef {
-        &self.reference
+        self.attachment.reference()
+    }
+
+    #[must_use]
+    pub const fn planar_face_attachment(&self) -> Option<&PlanarFaceAttachment> {
+        match &self.attachment {
+            AssemblyMateAttachment::PlanarFace(attachment) => Some(attachment),
+            AssemblyMateAttachment::ReferenceOnly(_) => None,
+        }
     }
 
     #[must_use]
@@ -693,9 +806,26 @@ fn recompute_rigid_assembly_selection(
             let mut endpoint = |value: &AssemblyMateEndpoint| match exact_results
                 .resolve_reference(source, value.reference())
             {
-                ExactReferenceResolution::Resolved { reference } => {
-                    AssemblyMateEndpoint::resolved(value.occurrence_id(), *reference)
-                }
+                ExactReferenceResolution::Resolved { reference } => match mate.kind() {
+                    AssemblyMateKind::ConcentricAxial { .. } => {
+                        AssemblyMateEndpoint::resolved(value.occurrence_id(), *reference)
+                    }
+                    AssemblyMateKind::CoincidentPlanar { .. }
+                    | AssemblyMateKind::Distance { .. }
+                    | AssemblyMateKind::Angle { .. } => exact_results
+                        .planar_face_attachment(source, &reference)
+                        .cloned()
+                        .map(|attachment| {
+                            AssemblyMateEndpoint::resolved_planar_face(
+                                value.occurrence_id(),
+                                attachment,
+                            )
+                        })
+                        .unwrap_or_else(|| {
+                            status = AssemblyRecomputeStatus::Broken;
+                            AssemblyMateEndpoint::broken(value.occurrence_id(), *reference)
+                        }),
+                },
                 ExactReferenceResolution::Ambiguous { candidate_count } => {
                     if status != AssemblyRecomputeStatus::Broken {
                         status = AssemblyRecomputeStatus::Ambiguous;
@@ -849,6 +979,10 @@ impl RigidPose {
         ]
     }
 
+    fn transform_point(self, point: [f64; 3]) -> [f64; 3] {
+        add(self.rotate(point), self.translation)
+    }
+
     fn compose(self, local: Self) -> Self {
         Self {
             rotation: multiply_rotation(self.rotation, local.rotation),
@@ -920,8 +1054,8 @@ pub fn solve_rigid_assembly(
         {
             return Err(AssemblySolveError::UnresolvedReference(mate.id()));
         }
-        reference_axis(mate.endpoint_a().reference())
-            .zip(reference_axis(mate.endpoint_b().reference()))
+        endpoint_local_frame(mate.endpoint_a(), mate.kind())
+            .zip(endpoint_local_frame(mate.endpoint_b(), mate.kind()))
             .ok_or(AssemblySolveError::UnsupportedReference(mate.id()))?;
     }
     let variables = snapshot
@@ -1056,7 +1190,9 @@ fn mate_sort_key(mate: &AssemblyMate) -> (u64, u64, u8, u64, u64, String, String
     )
 }
 
-fn reference_axis(reference: &BodySubshapeRef) -> Option<[f64; 3]> {
+// Compatibility-only fallback for schema <= 49 endpoints and axial references that do not yet
+// carry an authoritative typed frame. Typed planar attachments never consult semantic-role text.
+fn legacy_reference_axis_from_semantic_role(reference: &BodySubshapeRef) -> Option<[f64; 3]> {
     let role = reference.semantic_role.as_str();
     if role.contains("west") {
         Some([-1.0, 0.0, 0.0])
@@ -1081,6 +1217,38 @@ fn reference_axis(reference: &BodySubshapeRef) -> Option<[f64; 3]> {
     }
 }
 
+fn endpoint_local_frame(
+    endpoint: &AssemblyMateEndpoint,
+    kind: AssemblyMateKind,
+) -> Option<([f64; 3], [f64; 3])> {
+    if matches!(kind, AssemblyMateKind::ConcentricAxial { .. }) {
+        return match endpoint.attachment() {
+            AssemblyMateAttachment::ReferenceOnly(reference) => {
+                legacy_reference_axis_from_semantic_role(reference).map(|axis| ([0.0; 3], axis))
+            }
+            AssemblyMateAttachment::PlanarFace(_) => None,
+        };
+    }
+    match endpoint.attachment() {
+        AssemblyMateAttachment::PlanarFace(attachment) => attachment
+            .has_valid_geometry()
+            .then(|| (attachment.local_origin_mm(), attachment.local_unit_normal())),
+        AssemblyMateAttachment::ReferenceOnly(_) => None,
+    }
+}
+
+fn endpoint_world_frame(
+    pose: RigidPose,
+    endpoint: &AssemblyMateEndpoint,
+    kind: AssemblyMateKind,
+) -> Option<([f64; 3], [f64; 3])> {
+    let (local_origin, local_axis) = endpoint_local_frame(endpoint, kind)?;
+    Some((
+        pose.transform_point(local_origin),
+        normalize(pose.rotate(local_axis))?,
+    ))
+}
+
 fn residuals(state: &SolverState, mates: &[&AssemblyMate]) -> Result<Vec<f64>, AssemblySolveError> {
     let mut result = Vec::new();
     for mate in mates {
@@ -1092,21 +1260,11 @@ fn residuals(state: &SolverState, mates: &[&AssemblyMate]) -> Result<Vec<f64>, A
 fn mate_residual(state: &SolverState, mate: &AssemblyMate) -> Result<Vec<f64>, AssemblySolveError> {
     let a_pose = state.world_pose(mate.endpoint_a().occurrence_id());
     let b_pose = state.world_pose(mate.endpoint_b().occurrence_id());
-    let a_axis = normalize(
-        a_pose.rotate(
-            reference_axis(mate.endpoint_a().reference())
-                .ok_or(AssemblySolveError::UnsupportedReference(mate.id()))?,
-        ),
-    )
-    .ok_or(AssemblySolveError::NumericalFailure)?;
-    let b_axis = normalize(
-        b_pose.rotate(
-            reference_axis(mate.endpoint_b().reference())
-                .ok_or(AssemblySolveError::UnsupportedReference(mate.id()))?,
-        ),
-    )
-    .ok_or(AssemblySolveError::NumericalFailure)?;
-    let delta = subtract(b_pose.translation, a_pose.translation);
+    let (a_origin, a_axis) = endpoint_world_frame(a_pose, mate.endpoint_a(), mate.kind())
+        .ok_or(AssemblySolveError::UnsupportedReference(mate.id()))?;
+    let (b_origin, b_axis) = endpoint_world_frame(b_pose, mate.endpoint_b(), mate.kind())
+        .ok_or(AssemblySolveError::UnsupportedReference(mate.id()))?;
+    let delta = subtract(b_origin, a_origin);
     Ok(match mate.kind() {
         AssemblyMateKind::CoincidentPlanar {
             offset_mm,

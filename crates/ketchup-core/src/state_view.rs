@@ -2097,6 +2097,40 @@ pub fn encode_semantic_state_with_results(
                 endpoint.reference().lineage_digest
             )
             .unwrap();
+            match endpoint.attachment() {
+                crate::assembly::AssemblyMateAttachment::ReferenceOnly(_) => writeln!(
+                    complete,
+                    "assembly_mate.{}.endpoint_{label}.attachment=reference_only",
+                    mate.id().0
+                )
+                .unwrap(),
+                crate::assembly::AssemblyMateAttachment::PlanarFace(attachment) => {
+                    writeln!(
+                        complete,
+                        "assembly_mate.{}.endpoint_{label}.attachment=planar_face",
+                        mate.id().0
+                    )
+                    .unwrap();
+                    writeln!(
+                        complete,
+                        "assembly_mate.{}.endpoint_{label}.origin_f64_bits={:016x},{:016x},{:016x}",
+                        mate.id().0,
+                        attachment.local_origin_mm()[0].to_bits(),
+                        attachment.local_origin_mm()[1].to_bits(),
+                        attachment.local_origin_mm()[2].to_bits()
+                    )
+                    .unwrap();
+                    writeln!(
+                        complete,
+                        "assembly_mate.{}.endpoint_{label}.normal_f64_bits={:016x},{:016x},{:016x}",
+                        mate.id().0,
+                        attachment.local_unit_normal()[0].to_bits(),
+                        attachment.local_unit_normal()[1].to_bits(),
+                        attachment.local_unit_normal()[2].to_bits()
+                    )
+                    .unwrap();
+                }
+            }
             writeln!(
                 complete,
                 "assembly_mate.{}.endpoint_{label}.health={}",

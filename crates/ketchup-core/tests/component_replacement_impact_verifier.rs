@@ -1,6 +1,6 @@
 use ketchup_core::assembly::{
     AssemblyMate, AssemblyMateEndpoint, AssemblyMateId, AssemblyMateKind, AssemblySolveStatus,
-    AssemblySolverPolicy, solve_rigid_assembly,
+    AssemblySolverPolicy, PlanarFaceAttachment, recompute_rigid_assembly,
 };
 use ketchup_core::document::{
     BodyId, CanonicalCommand, CanonicalError, CollectionId, CommandBatch, DefinitionId, Dimension,
@@ -11,9 +11,9 @@ use ketchup_core::drawing::{
     DrawingSheet, DrawingSheetId, DrawingSource, OrthographicViewKind, project_orthographic_drawing,
 };
 use ketchup_core::exact_product::{
-    ExactBodyPackage, ExactFaceRole, ExactFeatureChainRequest, ExactRenderPackage,
-    ExactResultRegistry, build_box_render_package, canonical_reference_lineage_digest,
-    exact_model_stl_export,
+    ExactBodyPackage, ExactFaceRole, ExactFeatureChainRequest, ExactPlanarFaceAttachmentInput,
+    ExactRenderPackage, ExactResultRegistry, build_box_render_package_with_attachments,
+    canonical_reference_lineage_digest, exact_model_stl_export,
 };
 use ketchup_core::persistence;
 use ketchup_core::shared_change::{
@@ -86,7 +86,7 @@ fn package<const N: usize>(
             format!("geometry:{definition_id:?}:{role:?}:{fingerprint}"),
         )
     });
-    build_box_render_package(
+    build_box_render_package_with_attachments(
         &request,
         format!("exact-input:{definition_id:?}:{fingerprint}"),
         fingerprint.to_owned(),
@@ -94,6 +94,23 @@ fn package<const N: usize>(
         "r0".into(),
         request.expected_bounds_mm(),
         evidence,
+        &[
+            ExactPlanarFaceAttachmentInput {
+                role: ExactFaceRole::Top,
+                local_origin_mm: [0.0; 3],
+                local_unit_normal: [0.0, 0.0, 1.0],
+            },
+            ExactPlanarFaceAttachmentInput {
+                role: ExactFaceRole::Bottom,
+                local_origin_mm: [0.0; 3],
+                local_unit_normal: [0.0, 0.0, -1.0],
+            },
+            ExactPlanarFaceAttachmentInput {
+                role: ExactFaceRole::East,
+                local_origin_mm: [0.0; 3],
+                local_unit_normal: [1.0, 0.0, 0.0],
+            },
+        ],
     )
     .unwrap()
 }
@@ -201,19 +218,29 @@ fn seed() -> DocumentStore {
         .apply_batch(&CommandBatch::new(vec![
             CanonicalCommand::CreateAssemblyMate(AssemblyMate::new(
                 MATE,
-                AssemblyMateEndpoint::resolved(
+                AssemblyMateEndpoint::resolved_planar_face(
                     SELECTED,
-                    source_package
-                        .reference(ExactFaceRole::Top)
-                        .unwrap()
-                        .clone(),
+                    PlanarFaceAttachment::new(
+                        source_package
+                            .reference(ExactFaceRole::Top)
+                            .unwrap()
+                            .clone(),
+                        [0.0; 3],
+                        [0.0, 0.0, 1.0],
+                    )
+                    .unwrap(),
                 ),
-                AssemblyMateEndpoint::resolved(
+                AssemblyMateEndpoint::resolved_planar_face(
                     TARGET_OCCURRENCE,
-                    target_package
-                        .reference(ExactFaceRole::Bottom)
-                        .unwrap()
-                        .clone(),
+                    PlanarFaceAttachment::new(
+                        target_package
+                            .reference(ExactFaceRole::Bottom)
+                            .unwrap()
+                            .clone(),
+                        [0.0; 3],
+                        [0.0, 0.0, -1.0],
+                    )
+                    .unwrap(),
                 ),
                 AssemblyMateKind::CoincidentPlanar {
                     offset_mm: 0.0,
@@ -336,6 +363,24 @@ fn ambiguity_topology_identity_and_unsupported_inputs_have_explicit_diagnostics(
     for reference in &mut alternate.references {
         reference.backend = alternate.identity.backend.clone();
     }
+    alternate.planar_face_attachments = alternate
+        .planar_face_attachments
+        .iter()
+        .map(|attachment| {
+            let reference = alternate
+                .references
+                .iter()
+                .find(|reference| reference.lineage_digest == attachment.reference().lineage_digest)
+                .unwrap()
+                .clone();
+            PlanarFaceAttachment::new(
+                reference,
+                attachment.local_origin_mm(),
+                attachment.local_unit_normal(),
+            )
+            .unwrap()
+        })
+        .collect();
     let ambiguous = ExactResultRegistry::accept(
         &snapshot,
         [
@@ -777,7 +822,9 @@ fn planar_axial_rebind_replays_drawing_export_undo_redo_and_save_open_atomically
                     == rebound.endpoint_a().reference().lineage_digest
         }));
     }
-    let solved = solve_rigid_assembly(&committed, AssemblySolverPolicy::default()).unwrap();
+    let recomputed =
+        recompute_rigid_assembly(&document, &results, AssemblySolverPolicy::default()).unwrap();
+    let solved = recomputed.solve().unwrap();
     assert_eq!(solved.status(), AssemblySolveStatus::FullyConstrained);
     assert!(solved.conflicting_mate_ids().is_empty());
     assert!(solved.maximum_residual().is_finite());

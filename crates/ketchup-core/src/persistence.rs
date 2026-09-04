@@ -6,8 +6,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::assembly::{
-    ASSEMBLY_MATE_SCHEMA_V1, AssemblyMate, AssemblyMateEndpoint, AssemblyMateId, AssemblyMateKind,
-    AssemblyReferenceHealth,
+    ASSEMBLY_MATE_SCHEMA_V1, AssemblyMate, AssemblyMateAttachment, AssemblyMateEndpoint,
+    AssemblyMateId, AssemblyMateKind, AssemblyReferenceHealth, PlanarFaceAttachment,
 };
 use crate::assembly_joint::{
     ASSEMBLY_JOINT_SCHEMA_V1, ASSEMBLY_MOTION_STUDY_SCHEMA_V1, AssemblyJoint, AssemblyJointAxis,
@@ -99,7 +99,8 @@ const RIGID_TRANSFORM_FEATURE_SCHEMA: u16 = 46;
 const CUBIC_BEZIER_SKETCH_SCHEMA: u16 = 47;
 const CUBIC_BEZIER_SEGMENT_PROFILE_SCHEMA: u16 = 48;
 const SPATIAL_SWEEP_PATH_SCHEMA: u16 = 49;
-pub const CURRENT_SCHEMA: u16 = SPATIAL_SWEEP_PATH_SCHEMA;
+const PLANAR_FACE_ATTACHMENT_SCHEMA: u16 = 50;
+pub const CURRENT_SCHEMA: u16 = PLANAR_FACE_ATTACHMENT_SCHEMA;
 const COLLECTION_SCHEMA: u16 = 15;
 const TAG_SCHEMA: u16 = 14;
 const PERSISTENT_DIMENSION_SCHEMA: u16 = 13;
@@ -164,6 +165,7 @@ struct ProductSchemaCapabilities {
     cubic_bezier_sketch: bool,
     cubic_bezier_segment_profile: bool,
     spatial_sweep_path: bool,
+    planar_face_attachments: bool,
 }
 
 impl ProductSchemaCapabilities {
@@ -213,6 +215,7 @@ impl ProductSchemaCapabilities {
         cubic_bezier_sketch: false,
         cubic_bezier_segment_profile: false,
         spatial_sweep_path: false,
+        planar_face_attachments: false,
     };
 
     const fn current(schema: u16) -> Self {
@@ -262,6 +265,7 @@ impl ProductSchemaCapabilities {
             cubic_bezier_sketch: schema >= CUBIC_BEZIER_SKETCH_SCHEMA,
             cubic_bezier_segment_profile: schema >= CUBIC_BEZIER_SEGMENT_PROFILE_SCHEMA,
             spatial_sweep_path: schema >= SPATIAL_SWEEP_PATH_SCHEMA,
+            planar_face_attachments: schema >= PLANAR_FACE_ATTACHMENT_SCHEMA,
         }
     }
 }
@@ -1850,7 +1854,23 @@ fn write_assembly_mate(bytes: &mut Vec<u8>, mate: &AssemblyMate) {
     push_u64(bytes, mate.id().0);
     for endpoint in [mate.endpoint_a(), mate.endpoint_b()] {
         push_u64(bytes, endpoint.occurrence_id().0);
-        write_exact_reference(bytes, endpoint.reference());
+        match endpoint.attachment() {
+            AssemblyMateAttachment::ReferenceOnly(reference) => {
+                push_u8(bytes, 1);
+                write_exact_reference(bytes, reference);
+            }
+            AssemblyMateAttachment::PlanarFace(attachment) => {
+                push_u8(bytes, 2);
+                write_exact_reference(bytes, attachment.reference());
+                for value in attachment
+                    .local_origin_mm()
+                    .into_iter()
+                    .chain(attachment.local_unit_normal())
+                {
+                    push_u64(bytes, value.to_bits());
+                }
+            }
+        }
         match endpoint.health() {
             AssemblyReferenceHealth::Resolved => push_u8(bytes, 1),
             AssemblyReferenceHealth::Ambiguous { candidate_count } => {
@@ -2340,6 +2360,7 @@ fn load_document(
             | RIGID_TRANSFORM_FEATURE_SCHEMA
             | CUBIC_BEZIER_SKETCH_SCHEMA
             | CUBIC_BEZIER_SEGMENT_PROFILE_SCHEMA
+            | SPATIAL_SWEEP_PATH_SCHEMA
             | CURRENT_SCHEMA
     ) {
         return Err(PersistenceError::UnsupportedSchema(schema));
@@ -3347,7 +3368,10 @@ fn read_sketch(
     })
 }
 
-fn read_assembly_mate(reader: &mut Reader<'_>) -> Result<AssemblyMate, PersistenceError> {
+fn read_assembly_mate(
+    reader: &mut Reader<'_>,
+    typed_attachments: bool,
+) -> Result<AssemblyMate, PersistenceError> {
     let schema = reader.string()?;
     if schema != ASSEMBLY_MATE_SCHEMA_V1 {
         return Err(PersistenceError::InvalidAssemblyMate);
@@ -3355,7 +3379,29 @@ fn read_assembly_mate(reader: &mut Reader<'_>) -> Result<AssemblyMate, Persisten
     let id = AssemblyMateId(reader.u64()?);
     let mut endpoint = || -> Result<AssemblyMateEndpoint, PersistenceError> {
         let occurrence_id = OccurrenceId(reader.u64()?);
-        let reference = read_exact_reference(reader)?;
+        let attachment = if typed_attachments {
+            match reader.u8()? {
+                1 => AssemblyMateAttachment::ReferenceOnly(read_exact_reference(reader)?),
+                2 => {
+                    let reference = read_exact_reference(reader)?;
+                    let mut origin = [0.0; 3];
+                    let mut normal = [0.0; 3];
+                    for value in &mut origin {
+                        *value = f64::from_bits(reader.u64()?);
+                    }
+                    for value in &mut normal {
+                        *value = f64::from_bits(reader.u64()?);
+                    }
+                    AssemblyMateAttachment::PlanarFace(
+                        PlanarFaceAttachment::new(reference, origin, normal)
+                            .ok_or(PersistenceError::InvalidAssemblyMate)?,
+                    )
+                }
+                _ => return Err(PersistenceError::InvalidAssemblyMate),
+            }
+        } else {
+            AssemblyMateAttachment::ReferenceOnly(read_exact_reference(reader)?)
+        };
         let health = match reader.u8()? {
             1 => AssemblyReferenceHealth::Resolved,
             2 => AssemblyReferenceHealth::Ambiguous {
@@ -3367,7 +3413,7 @@ fn read_assembly_mate(reader: &mut Reader<'_>) -> Result<AssemblyMate, Persisten
         };
         Ok(AssemblyMateEndpoint {
             occurrence_id,
-            reference,
+            attachment,
             health,
         })
     };
@@ -4357,7 +4403,7 @@ fn read_product(
                 }
             }
             for _ in 0..reader.count()? {
-                let mate = read_assembly_mate(reader)?;
+                let mate = read_assembly_mate(reader, capabilities.planar_face_attachments)?;
                 if product
                     .assembly_mates
                     .insert(mate.id(), Arc::new(mate))

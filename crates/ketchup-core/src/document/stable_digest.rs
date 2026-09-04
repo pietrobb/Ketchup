@@ -1131,6 +1131,19 @@ impl StableDigest {
         for endpoint in [mate.endpoint_a(), mate.endpoint_b()] {
             self.u64(endpoint.occurrence_id().0);
             self.body_subshape_reference(endpoint.reference());
+            match endpoint.attachment() {
+                crate::assembly::AssemblyMateAttachment::ReferenceOnly(_) => self.byte(1),
+                crate::assembly::AssemblyMateAttachment::PlanarFace(attachment) => {
+                    self.byte(2);
+                    for value in attachment
+                        .local_origin_mm()
+                        .into_iter()
+                        .chain(attachment.local_unit_normal())
+                    {
+                        self.u64(value.to_bits());
+                    }
+                }
+            }
             match endpoint.health() {
                 AssemblyReferenceHealth::Resolved => self.byte(1),
                 AssemblyReferenceHealth::Ambiguous { candidate_count } => {

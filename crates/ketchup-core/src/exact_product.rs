@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+use crate::assembly::PlanarFaceAttachment;
 #[cfg(feature = "named-product-fixtures")]
 use crate::beam_m5::{BeamExactPiecePackage, BeamExactResultKey};
 use crate::document::{
@@ -674,6 +675,13 @@ pub struct ExactTriangle {
     pub face_role: Option<ExactFaceRole>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ExactPlanarFaceAttachmentInput {
+    pub role: ExactFaceRole,
+    pub local_origin_mm: [f64; 3],
+    pub local_unit_normal: [f64; 3],
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct ExactRenderPackage {
     pub identity: BodyResultIdentity,
@@ -681,6 +689,7 @@ pub struct ExactRenderPackage {
     pub vertices: Vec<ExactVertex>,
     pub triangles: Vec<ExactTriangle>,
     pub references: Vec<BodySubshapeRef>,
+    pub planar_face_attachments: Vec<PlanarFaceAttachment>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -2120,6 +2129,34 @@ impl ExactResultRegistry {
     }
 
     #[must_use]
+    pub fn planar_face_attachment<'a>(
+        &'a self,
+        snapshot: &Snapshot,
+        reference: &BodySubshapeRef,
+    ) -> Option<&'a PlanarFaceAttachment> {
+        let key = ExactResultKey {
+            document_id: snapshot.document_id(),
+            source_revision: snapshot.revision_id(),
+            source_digest: snapshot.canonical_digest(),
+            definition_id: reference.definition_id,
+            producer_feature_id: reference.producer_feature_id,
+            canonical_input_digest: reference.canonical_input_digest.clone(),
+            exact_input_digest: reference.exact_input_digest.clone(),
+            evaluator: reference.evaluator.clone(),
+            backend: reference.backend.clone(),
+            tolerance: reference.tolerance.clone(),
+            schema: EXACT_PRODUCT_SCHEMA_V1.to_owned(),
+            result_fingerprint: reference.result_fingerprint.clone(),
+        };
+        match self.packages.get(&key)?.as_ref() {
+            ExactBodyPackage::Rectangle(package) => package.planar_face_attachment(reference),
+            ExactBodyPackage::Revolve(_)
+            | ExactBodyPackage::Graph(_)
+            | ExactBodyPackage::Imported(_) => None,
+        }
+    }
+
+    #[must_use]
     pub fn resolve_reference(
         &self,
         snapshot: &Snapshot,
@@ -2243,6 +2280,16 @@ impl ExactRenderPackage {
     }
 
     #[must_use]
+    pub fn planar_face_attachment(
+        &self,
+        reference: &BodySubshapeRef,
+    ) -> Option<&PlanarFaceAttachment> {
+        self.planar_face_attachments
+            .iter()
+            .find(|attachment| attachment.reference() == reference)
+    }
+
+    #[must_use]
     pub fn is_current(&self, snapshot: &Snapshot) -> bool {
         self.identity.document_id == snapshot.document_id()
             && self.identity.source_revision == snapshot.revision_id()
@@ -2355,6 +2402,17 @@ impl ExactRenderPackage {
         } else {
             (8, 12)
         };
+        let attachments_are_valid =
+            self.planar_face_attachments
+                .iter()
+                .enumerate()
+                .all(|(index, attachment)| {
+                    attachment.has_valid_geometry()
+                        && self.references.contains(attachment.reference())
+                        && !self.planar_face_attachments[index + 1..]
+                            .iter()
+                            .any(|other| other.reference() == attachment.reference())
+                });
         let expected_triangle_roles = expected_roles.iter().all(|role| {
             let actual = self
                 .triangles
@@ -2421,6 +2479,7 @@ impl ExactRenderPackage {
             || self.references.len() != expected_roles.len()
             || actual_roles != sorted_expected
             || !expected_triangle_roles
+            || !attachments_are_valid
             || self.references.iter().any(|reference| {
                 !reference.matches_request(request)
                     || reference.exact_input_digest != self.identity.exact_input_digest
@@ -10008,10 +10067,19 @@ pub fn build_loft_package(
 }
 
 fn transform_workplane_point(frame: [f64; 12], point: [f64; 3]) -> [f64; 3] {
+    let vector = transform_workplane_vector(frame, point);
     [
-        frame[0] + frame[3] * point[0] + frame[6] * point[1] + frame[9] * point[2],
-        frame[1] + frame[4] * point[0] + frame[7] * point[1] + frame[10] * point[2],
-        frame[2] + frame[5] * point[0] + frame[8] * point[1] + frame[11] * point[2],
+        frame[0] + vector[0],
+        frame[1] + vector[1],
+        frame[2] + vector[2],
+    ]
+}
+
+fn transform_workplane_vector(frame: [f64; 12], vector: [f64; 3]) -> [f64; 3] {
+    [
+        frame[3] * vector[0] + frame[6] * vector[1] + frame[9] * vector[2],
+        frame[4] * vector[0] + frame[7] * vector[1] + frame[10] * vector[2],
+        frame[5] * vector[0] + frame[8] * vector[1] + frame[11] * vector[2],
     ]
 }
 
@@ -10023,6 +10091,28 @@ pub fn build_box_render_package<const N: usize>(
     tolerance: String,
     worker_bounds_mm: [[f64; 3]; 2],
     face_evidence: [(ExactFaceRole, String, String); N],
+) -> Result<ExactRenderPackage, ExactProductError> {
+    build_box_render_package_with_attachments(
+        request,
+        exact_input_digest,
+        result_fingerprint,
+        backend,
+        tolerance,
+        worker_bounds_mm,
+        face_evidence,
+        &[],
+    )
+}
+
+pub fn build_box_render_package_with_attachments<const N: usize>(
+    request: &ExactFeatureChainRequest,
+    exact_input_digest: String,
+    result_fingerprint: String,
+    backend: String,
+    tolerance: String,
+    worker_bounds_mm: [[f64; 3]; 2],
+    face_evidence: [(ExactFaceRole, String, String); N],
+    planar_face_inputs: &[ExactPlanarFaceAttachmentInput],
 ) -> Result<ExactRenderPackage, ExactProductError> {
     let [worker_min, worker_max] = worker_bounds_mm;
     let [expected_min, expected_max] = request.expected_bounds_mm();
@@ -10108,6 +10198,50 @@ pub fn build_box_render_package<const N: usize>(
     {
         return Err(ExactProductError::InvalidWorkerEvidence);
     }
+    let mut measured_roles = BTreeSet::new();
+    let planar_face_attachments = planar_face_inputs
+        .iter()
+        .map(|input| {
+            if !measured_roles.insert(input.role) {
+                return Err(ExactProductError::InvalidWorkerEvidence);
+            }
+            let mut matches = references
+                .iter()
+                .filter(|reference| reference.role() == Some(input.role));
+            let reference = matches
+                .next()
+                .filter(|_| matches.next().is_none())
+                .ok_or(ExactProductError::InvalidWorkerEvidence)?;
+            let measured = PlanarFaceAttachment::new(
+                reference.clone(),
+                input.local_origin_mm,
+                input.local_unit_normal,
+            )
+            .ok_or(ExactProductError::InvalidWorkerEvidence)?;
+            let Some(frame) = request
+                .workplane_frame_bits
+                .map(|bits| bits.map(f64::from_bits))
+            else {
+                return Ok(measured);
+            };
+            let origin = transform_workplane_point(frame, measured.local_origin_mm());
+            let normal = transform_workplane_vector(frame, measured.local_unit_normal());
+            let length = normal
+                .into_iter()
+                .map(|value| value * value)
+                .sum::<f64>()
+                .sqrt();
+            if !length.is_finite() || length <= f64::EPSILON {
+                return Err(ExactProductError::InvalidWorkerEvidence);
+            }
+            PlanarFaceAttachment::new(
+                reference.clone(),
+                origin,
+                normal.map(|value| value / length),
+            )
+            .ok_or(ExactProductError::InvalidWorkerEvidence)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     Ok(ExactRenderPackage {
         identity: BodyResultIdentity {
             schema: EXACT_PRODUCT_SCHEMA_V1.to_owned(),
@@ -10129,6 +10263,7 @@ pub fn build_box_render_package<const N: usize>(
         vertices,
         triangles,
         references,
+        planar_face_attachments,
     })
 }
 

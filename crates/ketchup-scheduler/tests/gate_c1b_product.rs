@@ -1,3 +1,4 @@
+use ketchup_core::assembly::PlanarFaceAttachment;
 use ketchup_core::bottle_m6::ExactRevolveRequest;
 use ketchup_core::document::{
     BOTTLE_SHELL_OPENING_FACE_ROLE, BOTTLE_SHOULDER_EDGE_ROLE, BooleanOperation,
@@ -30,7 +31,8 @@ use ketchup_core::exact_product::{
 };
 use ketchup_core::import::{StepImportMesh, StepMeshTriangle};
 use ketchup_core::sketch::{
-    PrincipalPlane, SketchEntity, SketchEntityId, SketchSpec, WorkplaneSpec,
+    FeatureDirection, FeatureExtent, PadSpec, PrincipalPlane, SketchEntity, SketchEntityId,
+    SketchSpec, WorkplaneSpec,
 };
 use ketchup_exact::{
     CutMode, CylinderToolSpec, ExactBackend, GeometryErrorCode, PlanarProfileSegment,
@@ -165,6 +167,239 @@ fn generated_rectangle_samples_are_reproducible_bounded_and_round_trip_metamorph
             "sample {sample_index}: exact volume did not scale cubically"
         );
     }
+}
+
+#[test]
+fn plain_rectangle_attachments_match_occt_face_evidence_and_are_deterministic() {
+    let [width, depth, height] = [37.25, 23.5, 11.75];
+    let document = rectangle_document(width, depth, height);
+    let snapshot = document.current();
+    let request = ExactFeatureChainRequest::from_snapshot(&snapshot, DEFINITION).unwrap();
+    let mut supervisor = ExactWorkerSupervisor::spawn(worker_path()).unwrap();
+
+    let package = supervisor.evaluate_rectangle(&request).unwrap();
+    let repeated = supervisor.evaluate_rectangle(&request).unwrap();
+    assert_eq!(package, repeated);
+    assert_eq!(package.planar_face_attachments.len(), 3);
+
+    let direct = ExactBackend::new()
+        .extrude_rectangle(RectangleExtrudeSpec {
+            width_mm: width,
+            depth_mm: depth,
+            height_mm: height,
+        })
+        .unwrap();
+    let direct_references = capture_guaranteed_references(
+        &direct,
+        &snapshot.document_id().0.to_string(),
+        &EXTRUSION.0.to_string(),
+    )
+    .unwrap();
+    for role in [
+        ExactFaceRole::Top,
+        ExactFaceRole::Bottom,
+        ExactFaceRole::East,
+    ] {
+        let reference = package.reference(role).unwrap();
+        let attachment = package.planar_face_attachment(reference).unwrap();
+        assert_eq!(attachment.reference(), reference);
+        let direct_reference = direct_references
+            .iter()
+            .find(|candidate| candidate.semantic_role == role.semantic_role())
+            .unwrap();
+        let ReferenceResolution::Resolved { face_ordinal, .. } =
+            resolve_subshape_reference(direct_reference, &direct)
+        else {
+            panic!("direct OCCT reference did not resolve {role:?}");
+        };
+        let face = direct
+            .body
+            .topology
+            .faces
+            .iter()
+            .find(|face| face.ordinal == face_ordinal)
+            .unwrap();
+        let direct_centroid = [face.centroid_mm.x, face.centroid_mm.y, face.centroid_mm.z];
+        let direct_normal = [face.normal.x, face.normal.y, face.normal.z];
+        assert_eq!(
+            attachment.local_origin_mm().map(f64::to_bits),
+            direct_centroid.map(f64::to_bits),
+            "worker attachment origin differs from direct OCCT FaceEvidence for {role:?}"
+        );
+        assert_eq!(
+            attachment.local_unit_normal().map(f64::to_bits),
+            direct_normal.map(f64::to_bits),
+            "worker attachment normal differs from direct OCCT FaceEvidence for {role:?}"
+        );
+    }
+}
+
+#[test]
+fn m3_v2_planar_face_attachments_use_definition_local_workplane_coordinates() {
+    const WORKPLANE: FeatureId = FeatureId(18);
+    const SKETCH: FeatureId = FeatureId(19);
+    const PAD: FeatureId = FeatureId(20);
+
+    let [width, depth, height] = [37.25, 23.5, 11.75];
+    let [min_x, min_y] = [10.0, 20.0];
+    let corners = [
+        [min_x, min_y],
+        [min_x + width, min_y],
+        [min_x + width, min_y + depth],
+        [min_x, min_y + depth],
+    ];
+    let mut document = DocumentStore::new();
+    let mut supervisor = ExactWorkerSupervisor::spawn(worker_path()).unwrap();
+    let sketch = SketchSpec {
+        workplane: WORKPLANE,
+        entities: (0..4)
+            .map(|index| SketchEntity::Line {
+                id: SketchEntityId(index as u64 + 1),
+                start_mm: corners[index],
+                end_mm: corners[(index + 1) % corners.len()],
+            })
+            .collect(),
+        constraints: Vec::new(),
+    };
+    let region = sketch.solved_regions().unwrap()[0].id;
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DEFINITION,
+                name: "Translated YZ rectangle pad".to_owned(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: WORKPLANE,
+                definition_id: DEFINITION,
+                name: "YZ workplane".to_owned(),
+                kind: FeatureKind::Workplane(WorkplaneSpec::principal(PrincipalPlane::Yz)),
+            },
+            CanonicalCommand::CreateFeature {
+                id: SKETCH,
+                definition_id: DEFINITION,
+                name: "Workplane rectangle".to_owned(),
+                kind: FeatureKind::Sketch(sketch),
+            },
+            CanonicalCommand::CreateFeature {
+                id: PAD,
+                definition_id: DEFINITION,
+                name: "Workplane pad".to_owned(),
+                kind: FeatureKind::Pad(PadSpec {
+                    sketch: SKETCH,
+                    region,
+                    direction: FeatureDirection::AlongNormal,
+                    extent: FeatureExtent::Blind(
+                        Dimension::new(height.to_string(), height).unwrap(),
+                    ),
+                }),
+            },
+        ]))
+        .unwrap();
+
+    let snapshot = document.current();
+    let request = ExactFeatureChainRequest::from_snapshot(&snapshot, DEFINITION).unwrap();
+    assert_eq!(request.producer_feature_id(), PAD);
+    let frame = request
+        .workplane_frame_bits
+        .expect("pad request must retain its workplane frame")
+        .map(f64::from_bits);
+    assert_eq!(
+        frame,
+        [0.0, 10.0, 20.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0,]
+    );
+
+    let package = supervisor.evaluate_rectangle(&request).unwrap();
+    assert_eq!(package.planar_face_attachments.len(), 3);
+    let direct = ExactBackend::new()
+        .extrude_rectangle(RectangleExtrudeSpec {
+            width_mm: width,
+            depth_mm: depth,
+            height_mm: height,
+        })
+        .unwrap();
+    let direct_references = capture_guaranteed_references(
+        &direct,
+        &snapshot.document_id().0.to_string(),
+        &PAD.0.to_string(),
+    )
+    .unwrap();
+    let rotate = |vector: [f64; 3]| {
+        [
+            frame[3] * vector[0] + frame[6] * vector[1] + frame[9] * vector[2],
+            frame[4] * vector[0] + frame[7] * vector[1] + frame[10] * vector[2],
+            frame[5] * vector[0] + frame[8] * vector[1] + frame[11] * vector[2],
+        ]
+    };
+    let transform_point = |point: [f64; 3]| {
+        let rotated = rotate(point);
+        [
+            frame[0] + rotated[0],
+            frame[1] + rotated[1],
+            frame[2] + rotated[2],
+        ]
+    };
+
+    for role in [
+        ExactFaceRole::Top,
+        ExactFaceRole::Bottom,
+        ExactFaceRole::East,
+    ] {
+        let reference = package.reference(role).unwrap();
+        let attachment = package.planar_face_attachment(reference).unwrap();
+        assert_eq!(attachment.reference(), reference);
+        assert_eq!(attachment.reference().role(), Some(role));
+
+        let direct_reference = direct_references
+            .iter()
+            .find(|candidate| candidate.semantic_role == role.semantic_role())
+            .unwrap();
+        let ReferenceResolution::Resolved { face_ordinal, .. } =
+            resolve_subshape_reference(direct_reference, &direct)
+        else {
+            panic!("direct OCCT reference did not resolve {role:?}");
+        };
+        let face = direct
+            .body
+            .topology
+            .faces
+            .iter()
+            .find(|face| face.ordinal == face_ordinal)
+            .unwrap();
+        let local_origin = [face.centroid_mm.x, face.centroid_mm.y, face.centroid_mm.z];
+        let local_normal = [face.normal.x, face.normal.y, face.normal.z];
+        let expected_origin = transform_point(local_origin);
+        let expected_normal = rotate(local_normal);
+
+        for axis in 0..3 {
+            assert!(
+                (attachment.local_origin_mm()[axis] - expected_origin[axis]).abs() <= 1.0e-9,
+                "{role:?} attachment origin must use the workplane point transform"
+            );
+            assert!(
+                (attachment.local_unit_normal()[axis] - expected_normal[axis]).abs() <= 1.0e-12,
+                "{role:?} attachment normal must use workplane rotation without translation"
+            );
+        }
+        let normal_length = attachment
+            .local_unit_normal()
+            .into_iter()
+            .map(|value| value * value)
+            .sum::<f64>()
+            .sqrt();
+        assert!(
+            (normal_length - 1.0).abs() <= 1.0e-12,
+            "{role:?} attachment normal must remain unit length"
+        );
+    }
+
+    assert_eq!(
+        package
+            .planar_face_attachment(package.reference(ExactFaceRole::East).unwrap())
+            .unwrap()
+            .local_unit_normal(),
+        [0.0, -1.0, 0.0],
+        "the rotated East attachment must not retain its OCCT-local normal"
+    );
 }
 
 #[test]
@@ -463,6 +698,27 @@ fn exact_reference_health_is_explicit_across_transform_mutation_conflict_and_qua
     for reference in &mut incompatible_package.references {
         reference.backend = incompatible_package.identity.backend.clone();
     }
+    incompatible_package.planar_face_attachments = incompatible_package
+        .planar_face_attachments
+        .iter()
+        .map(|attachment| {
+            let reference = incompatible_package
+                .references
+                .iter()
+                .find(|reference| {
+                    reference.semantic_role == attachment.reference().semantic_role
+                        && reference.source_element_id == attachment.reference().source_element_id
+                })
+                .unwrap()
+                .clone();
+            PlanarFaceAttachment::new(
+                reference,
+                attachment.local_origin_mm(),
+                attachment.local_unit_normal(),
+            )
+            .unwrap()
+        })
+        .collect();
     let incompatible_registry = ExactResultRegistry::accept(
         &transformed,
         [Arc::new(incompatible_package.clone().into())],
