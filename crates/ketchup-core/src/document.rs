@@ -5038,12 +5038,32 @@ impl DocumentStore {
                             removed_faces: removed_faces.clone(),
                             thickness: dimension.clone(),
                         },
+                        FeatureKind::TopologyShell {
+                            target,
+                            ref removed_faces,
+                            ..
+                        } => FeatureKind::TopologyShell {
+                            target,
+                            removed_faces: removed_faces.clone(),
+                            thickness: dimension.clone(),
+                        },
                         FeatureKind::BottleEdgeFinish {
                             target,
                             ref edges,
                             kind,
                             ..
                         } => FeatureKind::BottleEdgeFinish {
+                            target,
+                            edges: edges.clone(),
+                            kind,
+                            amount: dimension.clone(),
+                        },
+                        FeatureKind::TopologyEdgeFinish {
+                            target,
+                            ref edges,
+                            kind,
+                            ..
+                        } => FeatureKind::TopologyEdgeFinish {
                             target,
                             edges: edges.clone(),
                             kind,

@@ -2473,6 +2473,9 @@ fn worker_applies_topology_selected_shell_fillet_and_chamfer_and_rejects_stale_i
     let fillet = FeatureId(703);
     let chamfer = FeatureId(704);
     let stale_finish = FeatureId(705);
+    let noncanonical_shell = FeatureId(706);
+    let duplicate_chamfer = FeatureId(707);
+    let mixed_chamfer = FeatureId(708);
     let mut document = DocumentStore::new();
     document
         .apply_batch(&CommandBatch::new(vec![
@@ -2519,7 +2522,7 @@ fn worker_applies_topology_selected_shell_fillet_and_chamfer_and_rejects_stale_i
                 .then_some(*face_ordinal)
         })
         .unwrap();
-    let face = base_package
+    let top_face = base_package
         .topological_references
         .iter()
         .find(|reference| {
@@ -2529,12 +2532,43 @@ fn worker_applies_topology_selected_shell_fillet_and_chamfer_and_rejects_stale_i
         })
         .unwrap()
         .clone();
-    let edge = base_package
+    let max_x = base_package.bounds_mm[1][0];
+    let side_face_ordinal = base_package
+        .triangles
+        .iter()
+        .zip(&base_package.triangle_face_ordinals)
+        .find_map(|(triangle, face_ordinal)| {
+            triangle
+                .vertex_indices
+                .iter()
+                .all(|index| {
+                    (base_package.vertices[*index as usize].position_mm[0] - max_x).abs() <= 1.0e-6
+                })
+                .then_some(*face_ordinal)
+        })
+        .unwrap();
+    let side_face = base_package
         .topological_references
         .iter()
-        .find(|reference| reference.kind == TopologicalElementKind::Edge)
+        .find(|reference| {
+            reference.kind == TopologicalElementKind::Face
+                && reference.producer_element_id
+                    == format!("generated-result/face/{side_face_ordinal}")
+        })
         .unwrap()
         .clone();
+    let mut faces = vec![top_face, side_face];
+    faces.sort_unstable();
+    let mut edges = base_package
+        .topological_references
+        .iter()
+        .filter(|reference| reference.kind == TopologicalElementKind::Edge)
+        .take(2)
+        .cloned()
+        .collect::<Vec<_>>();
+    edges.sort_unstable();
+    assert_eq!(faces.len(), 2);
+    assert_eq!(edges.len(), 2);
 
     document
         .apply_batch(&CommandBatch::new(vec![
@@ -2544,7 +2578,7 @@ fn worker_applies_topology_selected_shell_fillet_and_chamfer_and_rejects_stale_i
                 name: "Selected-face shell".into(),
                 kind: FeatureKind::TopologyShell {
                     target: base,
-                    removed_faces: vec![face],
+                    removed_faces: faces.clone(),
                     thickness: dimension(1.5),
                 },
             },
@@ -2554,7 +2588,7 @@ fn worker_applies_topology_selected_shell_fillet_and_chamfer_and_rejects_stale_i
                 name: "Selected-edge fillet".into(),
                 kind: FeatureKind::TopologyEdgeFinish {
                     target: base,
-                    edges: vec![edge.clone()],
+                    edges: vec![edges[0].clone()],
                     kind: EdgeFinishKind::Fillet,
                     amount: dimension(0.75),
                 },
@@ -2565,7 +2599,7 @@ fn worker_applies_topology_selected_shell_fillet_and_chamfer_and_rejects_stale_i
                 name: "Selected-edge chamfer".into(),
                 kind: FeatureKind::TopologyEdgeFinish {
                     target: base,
-                    edges: vec![edge.clone()],
+                    edges: edges.clone(),
                     kind: EdgeFinishKind::Chamfer,
                     amount: dimension(0.75),
                 },
@@ -2594,21 +2628,185 @@ fn worker_applies_topology_selected_shell_fillet_and_chamfer_and_rejects_stale_i
         fillet_package.identity.result_fingerprint,
         chamfer_package.identity.result_fingerprint
     );
+    let (shell_selectors, shell_thickness_bits) = shell_graph
+        .nodes
+        .iter()
+        .find_map(|node| match &node.operation {
+            ExactBRepOperation::Shell {
+                removed_faces,
+                thickness_bits,
+                ..
+            } => Some((removed_faces.clone(), *thickness_bits)),
+            _ => None,
+        })
+        .unwrap();
+    let (chamfer_selectors, chamfer_kind, chamfer_amount_bits) = chamfer_graph
+        .nodes
+        .iter()
+        .find_map(|node| match &node.operation {
+            ExactBRepOperation::EdgeFinish {
+                edges,
+                kind,
+                amount_bits,
+                ..
+            } => Some((edges.clone(), *kind, *amount_bits)),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(shell_selectors.len(), 2);
+    assert_eq!(shell_thickness_bits, 1.5_f64.to_bits());
+    assert_eq!(chamfer_selectors.len(), 2);
+    assert_eq!(chamfer_amount_bits, 0.75_f64.to_bits());
 
+    let registry = ExactResultRegistry::accept(
+        &snapshot,
+        [Arc::new(ExactBodyPackage::Graph(shell_package.clone()))],
+    )
+    .unwrap();
+    let shell_result_key = ExactBodyPackage::Graph(shell_package.clone()).result_key();
+    assert!(registry.get_result(&shell_result_key).is_some());
+
+    let accepted_revision = snapshot.revision_id();
+    let accepted_digest = snapshot.canonical_digest();
+    let mut reversed_faces = faces.clone();
+    reversed_faces.reverse();
+    assert_ne!(reversed_faces, faces);
+    assert!(matches!(
+        document.apply_batch(&CommandBatch::new(vec![CanonicalCommand::CreateFeature {
+            id: noncanonical_shell,
+            definition_id: definition,
+            name: "Noncanonical selected-face shell".into(),
+            kind: FeatureKind::TopologyShell {
+                target: base,
+                removed_faces: reversed_faces,
+                thickness: dimension(1.5),
+            },
+        }])),
+        Err(CanonicalError::InvalidTopologicalFeatureReference)
+    ));
+    assert!(matches!(
+        document.apply_batch(&CommandBatch::new(vec![CanonicalCommand::CreateFeature {
+            id: duplicate_chamfer,
+            definition_id: definition,
+            name: "Duplicate selected-edge chamfer".into(),
+            kind: FeatureKind::TopologyEdgeFinish {
+                target: base,
+                edges: vec![edges[0].clone(), edges[0].clone()],
+                kind: EdgeFinishKind::Chamfer,
+                amount: dimension(0.75),
+            },
+        }])),
+        Err(CanonicalError::InvalidTopologicalFeatureReference)
+    ));
+    assert!(matches!(
+        document.apply_batch(&CommandBatch::new(vec![CanonicalCommand::CreateFeature {
+            id: mixed_chamfer,
+            definition_id: definition,
+            name: "Mixed selected-edge chamfer".into(),
+            kind: FeatureKind::TopologyEdgeFinish {
+                target: base,
+                edges: vec![faces[0].clone(), edges[0].clone()],
+                kind: EdgeFinishKind::Chamfer,
+                amount: dimension(0.75),
+            },
+        }])),
+        Err(CanonicalError::InvalidTopologicalFeatureReference)
+    ));
+    let refused_snapshot = document.current();
+    assert_eq!(refused_snapshot.revision_id(), accepted_revision);
+    assert_eq!(refused_snapshot.canonical_digest(), accepted_digest);
+    let retained_registry = ExactResultRegistry::carried_forward(&refused_snapshot, &registry);
+    assert!(retained_registry.get_result(&shell_result_key).is_some());
+    assert_eq!(retained_registry.len(), 1);
+
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetFeatureDimension {
+                id: shell,
+                dimension: dimension(1.25),
+            },
+            CanonicalCommand::SetFeatureDimension {
+                id: chamfer,
+                dimension: dimension(0.5),
+            },
+        ]))
+        .unwrap();
+    let recomputed_snapshot = document.current();
+    assert!(!shell_package.is_current(&recomputed_snapshot));
+    assert!(!chamfer_package.is_current(&recomputed_snapshot));
+    let recomputed_shell_graph =
+        ExactBRepGraph::from_snapshot(&recomputed_snapshot, definition, shell).unwrap();
+    let recomputed_chamfer_graph =
+        ExactBRepGraph::from_snapshot(&recomputed_snapshot, definition, chamfer).unwrap();
+    assert!(recomputed_shell_graph.nodes.iter().any(|node| matches!(
+        &node.operation,
+        ExactBRepOperation::Shell { removed_faces, thickness_bits, .. }
+            if removed_faces == &shell_selectors && *thickness_bits == 1.25_f64.to_bits()
+    )));
+    assert!(recomputed_chamfer_graph.nodes.iter().any(|node| matches!(
+        &node.operation,
+        ExactBRepOperation::EdgeFinish { edges, kind, amount_bits, .. }
+            if edges == &chamfer_selectors
+                && *kind == chamfer_kind
+                && *amount_bits == 0.5_f64.to_bits()
+    )));
+    assert_ne!(
+        recomputed_shell_graph.graph_digest,
+        shell_graph.graph_digest
+    );
+    assert_ne!(
+        recomputed_chamfer_graph.graph_digest,
+        chamfer_graph.graph_digest
+    );
+    let recomputed_shell_package = supervisor
+        .evaluate_exact_brep_graph(&recomputed_shell_graph)
+        .unwrap();
+    let recomputed_chamfer_package = supervisor
+        .evaluate_exact_brep_graph(&recomputed_chamfer_graph)
+        .unwrap();
+    assert_eq!(
+        supervisor
+            .evaluate_exact_brep_graph(&recomputed_shell_graph)
+            .unwrap(),
+        recomputed_shell_package
+    );
+    assert_eq!(
+        supervisor
+            .evaluate_exact_brep_graph(&recomputed_chamfer_graph)
+            .unwrap(),
+        recomputed_chamfer_package
+    );
+    assert_ne!(
+        recomputed_shell_package.identity.result_fingerprint,
+        shell_package.identity.result_fingerprint
+    );
+    assert_ne!(
+        recomputed_chamfer_package.identity.result_fingerprint,
+        chamfer_package.identity.result_fingerprint
+    );
+    ExactResultRegistry::accept(
+        &recomputed_snapshot,
+        [recomputed_shell_package, recomputed_chamfer_package]
+            .map(ExactBodyPackage::Graph)
+            .map(Arc::new),
+    )
+    .unwrap();
+
+    let edge = &edges[0];
     let stale_edge = TopologicalElementRef::new(
         edge.document_id,
         edge.definition_id,
         edge.source_feature_id,
         edge.producer_feature_id,
         edge.kind,
-        edge.source_element_id,
-        edge.producer_element_id,
+        edge.source_element_id.clone(),
+        edge.producer_element_id.clone(),
         edge.stability,
-        edge.evaluator,
-        edge.backend,
-        edge.tolerance,
+        edge.evaluator.clone(),
+        edge.backend.clone(),
+        edge.tolerance.clone(),
         "stale-result-fingerprint",
-        edge.corroborating_geometry_fingerprint,
+        edge.corroborating_geometry_fingerprint.clone(),
     )
     .unwrap();
     document

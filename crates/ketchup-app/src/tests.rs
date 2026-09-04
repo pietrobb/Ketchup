@@ -10080,6 +10080,70 @@ fn manual_and_assistant_multi_edge_finish_share_the_canonical_plan() {
 }
 
 #[test]
+fn topology_finish_planner_canonicalizes_shell_and_chamfer_permutations() {
+    let mut app = KetchupApp::new();
+    install_initial_graph_result(&mut app);
+    let locator = |kind, ordinal| TopologicalPickLocator {
+        instance_path: InstancePath::root(OccurrenceId(1)),
+        producer_feature_id: FeatureId(2),
+        kind,
+        ordinal,
+    };
+
+    assert!(app.select_topological_locator(locator(TopologicalElementKind::Face, 5)));
+    assert!(
+        app.select_topological_locator_additive(locator(TopologicalElementKind::Face, 1), true)
+    );
+    app.dispatch_command(AppCommand::Shell);
+    let (_, faces, _, _) = app
+        .general_finish_preview_selection_parameters()
+        .expect("two selected faces must plan a shell");
+    let mut reversed_faces = faces.clone();
+    reversed_faces.reverse();
+    assert_eq!(
+        plan_topology_finish_kind(
+            GeneralFinishKind::Shell,
+            FeatureId(2),
+            faces,
+            Dimension::from_decimal("1").unwrap(),
+        ),
+        plan_topology_finish_kind(
+            GeneralFinishKind::Shell,
+            FeatureId(2),
+            reversed_faces,
+            Dimension::from_decimal("1").unwrap(),
+        )
+    );
+
+    let mut app = KetchupApp::new();
+    install_initial_graph_result(&mut app);
+    assert!(app.select_topological_locator(locator(TopologicalElementKind::Edge, 9)));
+    assert!(
+        app.select_topological_locator_additive(locator(TopologicalElementKind::Edge, 2), true)
+    );
+    app.dispatch_command(AppCommand::Chamfer);
+    let (_, edges, _, _) = app
+        .general_finish_preview_selection_parameters()
+        .expect("two selected edges must plan a chamfer");
+    let mut reversed_edges = edges.clone();
+    reversed_edges.reverse();
+    assert_eq!(
+        plan_topology_finish_kind(
+            GeneralFinishKind::Chamfer,
+            FeatureId(2),
+            edges,
+            Dimension::from_decimal("1").unwrap(),
+        ),
+        plan_topology_finish_kind(
+            GeneralFinishKind::Chamfer,
+            FeatureId(2),
+            reversed_edges,
+            Dimension::from_decimal("1").unwrap(),
+        )
+    );
+}
+
+#[test]
 fn removing_the_last_topological_selection_clears_the_occurrence_selection() {
     let mut app = KetchupApp::new();
     install_initial_graph_result(&mut app);
