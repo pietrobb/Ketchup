@@ -21,6 +21,7 @@ pub const EXACT_BREP_GRAPH_SCHEMA_V6: &str = "ketchup.exact-brep-graph.v6";
 pub const EXACT_BREP_GRAPH_SCHEMA_V7: &str = "ketchup.exact-brep-graph.v7";
 pub const EXACT_BREP_GRAPH_SCHEMA_V8: &str = "ketchup.exact-brep-graph.v8";
 pub const EXACT_BREP_GRAPH_SCHEMA_V9: &str = "ketchup.exact-brep-graph.v9";
+pub const EXACT_BREP_GRAPH_SCHEMA_V10: &str = "ketchup.exact-brep-graph.v10";
 pub const MAX_EXACT_BREP_GRAPH_PROFILES: usize = 1_024;
 pub const MAX_EXACT_BREP_GRAPH_NODES: usize = 1_024;
 pub const MAX_EXACT_BREP_GRAPH_SEGMENTS: usize = 16_384;
@@ -29,6 +30,7 @@ pub const MAX_EXACT_BREP_LOFT_CONTROL_POINTS: usize = 64;
 pub const MIN_EXACT_BREP_SWEEP_PATH_SEGMENT_LENGTH_MM: f64 = 1.0e-7;
 pub const MIN_EXACT_BREP_SWEEP_PATH_LENGTH_MM: f64 = 0.01;
 pub const MAX_EXACT_BREP_SWEEP_PATH_LENGTH_MM: f64 = 100_000.0;
+pub const MAX_EXACT_BREP_SWEEP_PATH_SEGMENTS: usize = 64;
 pub const MAX_EXACT_BREP_PLANAR_LOOP_SEGMENTS: usize = 64;
 pub const MAX_EXACT_BREP_REGION_HOLES: usize = 64;
 pub const MAX_EXACT_BREP_REGION_SEGMENTS: usize = 4_096;
@@ -367,6 +369,12 @@ impl ExactBRepGraph {
         let schema = if compiler
             .nodes
             .iter()
+            .any(|node| operation_requires_v10(&node.operation, &compiler.profiles))
+        {
+            EXACT_BREP_GRAPH_SCHEMA_V10
+        } else if compiler
+            .nodes
+            .iter()
             .any(|node| operation_requires_v9(&node.operation, &compiler.profiles))
         {
             EXACT_BREP_GRAPH_SCHEMA_V9
@@ -512,6 +520,7 @@ impl ExactBRepGraph {
                 | EXACT_BREP_GRAPH_SCHEMA_V7
                 | EXACT_BREP_GRAPH_SCHEMA_V8
                 | EXACT_BREP_GRAPH_SCHEMA_V9
+                | EXACT_BREP_GRAPH_SCHEMA_V10
         ) || self.document_id == 0
             || self.definition_id == 0
             || self.producer_feature_id == 0
@@ -574,8 +583,12 @@ impl ExactBRepGraph {
                     self.schema.as_str(),
                     EXACT_BREP_GRAPH_SCHEMA_V6 | EXACT_BREP_GRAPH_SCHEMA_V7
                 ) && operation_requires_v8(&node.operation, &self.profiles))
-                || (self.schema != EXACT_BREP_GRAPH_SCHEMA_V9
-                    && operation_requires_v9(&node.operation, &self.profiles))
+                || (!matches!(
+                    self.schema.as_str(),
+                    EXACT_BREP_GRAPH_SCHEMA_V9 | EXACT_BREP_GRAPH_SCHEMA_V10
+                ) && operation_requires_v9(&node.operation, &self.profiles))
+                || (self.schema != EXACT_BREP_GRAPH_SCHEMA_V10
+                    && operation_requires_v10(&node.operation, &self.profiles))
                 || !valid_operation(
                     &node.operation,
                     self.document_id,
@@ -1767,7 +1780,7 @@ fn sweep_path_planar_bounds(segments: &[ExactBRepPlanarSegment]) -> Option<[[f64
 }
 
 fn sweep_path_length(segments: &[ExactBRepPlanarSegment]) -> Option<f64> {
-    if !matches!(segments.len(), 1 | 2)
+    if !(1..=MAX_EXACT_BREP_SWEEP_PATH_SEGMENTS).contains(&segments.len())
         || segments.len() == 1 && !matches!(segments[0], ExactBRepPlanarSegment::Line { .. })
     {
         return None;
@@ -1805,7 +1818,7 @@ fn sweep_profile_bounds(
         return Err(ExactBRepGraphError::InvalidParameter);
     };
     let path_length = sweep_path_length(segments).ok_or(ExactBRepGraphError::InvalidParameter)?;
-    if segments.len() == 2 {
+    if segments.len() > 1 {
         if profile.frame_bits != identity_frame()
             || path.frame_bits != identity_frame()
             || !matches!(
@@ -2244,6 +2257,16 @@ fn operation_requires_v9(operation: &ExactBRepOperation, profiles: &[ExactBRepPr
     matches!(
         profiles.get(path.0 as usize).map(|profile| &profile.geometry),
         Some(ExactBRepPlanarGeometry::Boundary { segments, .. }) if segments.len() > 1
+    )
+}
+
+fn operation_requires_v10(operation: &ExactBRepOperation, profiles: &[ExactBRepProfile]) -> bool {
+    let ExactBRepOperation::Sweep { path, .. } = operation else {
+        return false;
+    };
+    matches!(
+        profiles.get(path.0 as usize).map(|profile| &profile.geometry),
+        Some(ExactBRepPlanarGeometry::Boundary { segments, .. }) if segments.len() > 2
     )
 }
 
@@ -2894,6 +2917,20 @@ mod tests {
                 line([5.0, 0.0], [10.0, 0.0]),
                 line([10.0, 0.0], [15.0, 0.0]),
             ],
+        };
+        assert!(valid_operation_profiles(&sweep, &profiles));
+        profiles[1].geometry = ExactBRepPlanarGeometry::Boundary {
+            closed: false,
+            segments: (0..MAX_EXACT_BREP_SWEEP_PATH_SEGMENTS)
+                .map(|index| line([index as f64, 0.0], [index as f64 + 1.0, 0.0]))
+                .collect(),
+        };
+        assert!(valid_operation_profiles(&sweep, &profiles));
+        profiles[1].geometry = ExactBRepPlanarGeometry::Boundary {
+            closed: false,
+            segments: (0..=MAX_EXACT_BREP_SWEEP_PATH_SEGMENTS)
+                .map(|index| line([index as f64, 0.0], [index as f64 + 1.0, 0.0]))
+                .collect(),
         };
         assert!(!valid_operation_profiles(&sweep, &profiles));
         profiles[1].geometry = ExactBRepPlanarGeometry::Boundary {

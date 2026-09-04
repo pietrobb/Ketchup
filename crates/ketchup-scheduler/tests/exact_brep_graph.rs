@@ -4,9 +4,9 @@ use ketchup_core::document::{
     SolidToolPlan, Transform,
 };
 use ketchup_core::exact_brep_graph::{
-    EXACT_BREP_GRAPH_SCHEMA_V8, EXACT_BREP_GRAPH_SCHEMA_V9, ExactBRepGraph, ExactBRepGraphError,
-    ExactBRepOperation, ExactBRepPlanarGeometry, ExactBRepPlanarLoop, ExactBRepPlanarSegment,
-    MAX_EXACT_BREP_GRAPH_PROFILES,
+    EXACT_BREP_GRAPH_SCHEMA_V8, EXACT_BREP_GRAPH_SCHEMA_V9, EXACT_BREP_GRAPH_SCHEMA_V10,
+    ExactBRepGraph, ExactBRepGraphError, ExactBRepOperation, ExactBRepPlanarGeometry,
+    ExactBRepPlanarLoop, ExactBRepPlanarSegment, MAX_EXACT_BREP_GRAPH_PROFILES,
 };
 use ketchup_core::exact_product::{
     ExactBRepGraphPackage, ExactBRepGraphWorkerEvidence, ExactBodyPackage, ExactFaceRole,
@@ -280,6 +280,99 @@ fn worker_evaluates_v9_curved_sweep_with_deterministic_topology_and_mesh() {
     );
     let directory = tempfile::tempdir().unwrap();
     let step_path = directory.path().join("v9-curved-sweep.step");
+    supervisor
+        .export_exact_brep_graph_step(&document.current(), &package, &step_path)
+        .unwrap();
+    let source = std::fs::read(&step_path).unwrap();
+    let evidence = supervisor
+        .inspect_step_import_with_cancellation(
+            &step_path,
+            &sha256_hex(&source),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+    assert_eq!(evidence.solid_count, 1);
+    assert!((evidence.volume_mm3 - package.volume_mm3).abs() <= package.volume_mm3 * 1.0e-9);
+}
+
+#[test]
+fn worker_evaluates_v10_multisegment_sweep_with_step_round_trip() {
+    let definition = DefinitionId(90);
+    let profile = FeatureId(900);
+    let path = FeatureId(901);
+    let sweep = FeatureId(902);
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: definition,
+                name: "V10 multisegment sweep".into(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: profile,
+                definition_id: definition,
+                name: "Section".into(),
+                kind: FeatureKind::Profile {
+                    points_mm: vec![[-2.0, -1.0], [2.0, -1.0], [2.0, 1.0], [-2.0, 1.0]],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: path,
+                definition_id: definition,
+                name: "Line-arc-line path".into(),
+                kind: FeatureKind::SegmentProfile {
+                    segments: vec![
+                        ProfileSegment::Line {
+                            start_mm: [0.0, 0.0],
+                            end_mm: [50.0, 0.0],
+                        },
+                        ProfileSegment::CircularArc {
+                            start_mm: [50.0, 0.0],
+                            end_mm: [75.0, 25.0],
+                            center_mm: [50.0, 25.0],
+                            clockwise: false,
+                        },
+                        ProfileSegment::Line {
+                            start_mm: [75.0, 25.0],
+                            end_mm: [75.0, 50.0],
+                        },
+                    ],
+                    closed: false,
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: sweep,
+                definition_id: definition,
+                name: "Multisegment sweep".into(),
+                kind: FeatureKind::Sweep { profile, path },
+            },
+        ]))
+        .unwrap();
+    let graph = ExactBRepGraph::from_snapshot(&document.current(), definition, sweep).unwrap();
+    assert_eq!(graph.schema, EXACT_BREP_GRAPH_SCHEMA_V10);
+    let mut downgraded = graph.clone();
+    downgraded.schema = EXACT_BREP_GRAPH_SCHEMA_V9.into();
+    assert_eq!(
+        downgraded.to_bytes(),
+        Err(ExactBRepGraphError::InvalidGraph)
+    );
+
+    let mut supervisor =
+        ExactWorkerSupervisor::spawn(env!("CARGO_BIN_EXE_ketchup-exact-worker")).unwrap();
+    let package = supervisor.evaluate_exact_brep_graph(&graph).unwrap();
+    assert_eq!(
+        supervisor.evaluate_exact_brep_graph(&graph).unwrap(),
+        package
+    );
+    assert_eq!(package.graph, graph);
+    assert_eq!(package.topology_counts[4], 1);
+    assert!(!package.vertices.is_empty());
+    assert!(!package.triangles.is_empty());
+    let expected_volume = 8.0 * (75.0 + 25.0 * std::f64::consts::FRAC_PI_2);
+    assert!((package.volume_mm3 - expected_volume).abs() <= expected_volume * 1.0e-9);
+
+    let directory = tempfile::tempdir().unwrap();
+    let step_path = directory.path().join("v10-multisegment-sweep.step");
     supervisor
         .export_exact_brep_graph_step(&document.current(), &package, &step_path)
         .unwrap();

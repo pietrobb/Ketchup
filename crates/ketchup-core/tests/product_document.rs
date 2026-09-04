@@ -3822,7 +3822,7 @@ fn compound_planar_offset_rejects_inter_loop_collision_before_history() {
 }
 
 #[test]
-fn bounded_profile_sweep_is_validated_undoable_visible_and_persistent() {
+fn bounded_multisegment_profile_sweep_is_validated_undoable_visible_and_persistent() {
     const DEFINITION: DefinitionId = DefinitionId(711);
     const PROFILE: FeatureId = FeatureId(712);
     const PATH: FeatureId = FeatureId(713);
@@ -3860,6 +3860,10 @@ fn bounded_profile_sweep_is_validated_undoable_visible_and_persistent() {
                             end_mm: [75.0, 25.0],
                             center_mm: [50.0, 25.0],
                             clockwise: false,
+                        },
+                        ProfileSegment::Line {
+                            start_mm: [75.0, 25.0],
+                            end_mm: [75.0, 50.0],
                         },
                     ],
                     closed: false,

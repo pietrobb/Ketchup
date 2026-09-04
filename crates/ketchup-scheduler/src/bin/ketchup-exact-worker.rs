@@ -2,10 +2,11 @@
 
 use ketchup_core::exact_brep_graph::{
     EXACT_BREP_GRAPH_SCHEMA_V6, EXACT_BREP_GRAPH_SCHEMA_V7, EXACT_BREP_GRAPH_SCHEMA_V8,
-    EXACT_BREP_GRAPH_SCHEMA_V9, ExactBRepBooleanOperation, ExactBRepEdgeFinishKind, ExactBRepGraph,
-    ExactBRepLinearInterval, ExactBRepOperation, ExactBRepPlanarGeometry, ExactBRepPlanarLoop,
-    ExactBRepPlanarSegment, ExactBRepProfile, ExactBRepTopologyKind, ExactBRepTopologySelector,
-    MAX_EXACT_BREP_GRAPH_BYTES, MAX_EXACT_BREP_PLANAR_LOOP_SEGMENTS, MAX_EXACT_BREP_REGION_HOLES,
+    EXACT_BREP_GRAPH_SCHEMA_V9, EXACT_BREP_GRAPH_SCHEMA_V10, ExactBRepBooleanOperation,
+    ExactBRepEdgeFinishKind, ExactBRepGraph, ExactBRepLinearInterval, ExactBRepOperation,
+    ExactBRepPlanarGeometry, ExactBRepPlanarLoop, ExactBRepPlanarSegment, ExactBRepProfile,
+    ExactBRepTopologyKind, ExactBRepTopologySelector, MAX_EXACT_BREP_GRAPH_BYTES,
+    MAX_EXACT_BREP_PLANAR_LOOP_SEGMENTS, MAX_EXACT_BREP_REGION_HOLES,
     MAX_EXACT_BREP_REGION_SEGMENTS, exact_brep_planar_rectangle_bounds,
 };
 use ketchup_core::exact_product::{EXACT_BREP_GRAPH_EVALUATOR_V1, ExactCircleProfile};
@@ -126,12 +127,16 @@ fn handle_request(backend: &ExactBackend, request: &str) -> Option<String> {
         (Some("CAPS"), Some("EXACT_BREP_GRAPH_V9"), None) => {
             Some("CAPS EXACT_BREP_GRAPH_V9".to_owned())
         }
+        (Some("CAPS"), Some("EXACT_BREP_GRAPH_V10"), None) => {
+            Some("CAPS EXACT_BREP_GRAPH_V10".to_owned())
+        }
         (
             Some(
                 operation @ ("TESSELLATE_BREP_GRAPH_V6"
                 | "TESSELLATE_BREP_GRAPH_V7"
                 | "TESSELLATE_BREP_GRAPH_V8"
-                | "TESSELLATE_BREP_GRAPH_V9"),
+                | "TESSELLATE_BREP_GRAPH_V9"
+                | "TESSELLATE_BREP_GRAPH_V10"),
             ),
             Some(graph_digest),
             Some(encoded_graph),
@@ -156,8 +161,11 @@ fn handle_request(backend: &ExactBackend, request: &str) -> Option<String> {
         }
         (
             Some(
-                operation @ ("EVAL_BREP_GRAPH_V6" | "EVAL_BREP_GRAPH_V7" | "EVAL_BREP_GRAPH_V8"
-                | "EVAL_BREP_GRAPH_V9"),
+                operation @ ("EVAL_BREP_GRAPH_V6"
+                | "EVAL_BREP_GRAPH_V7"
+                | "EVAL_BREP_GRAPH_V8"
+                | "EVAL_BREP_GRAPH_V9"
+                | "EVAL_BREP_GRAPH_V10"),
             ),
             Some(graph_digest),
             Some(encoded_graph),
@@ -1382,12 +1390,16 @@ fn exact_brep_graph_schema_matches_operation(operation: &str, schema: &str) -> b
         "EVAL_BREP_GRAPH_V7" | "TESSELLATE_BREP_GRAPH_V7" => schema == EXACT_BREP_GRAPH_SCHEMA_V7,
         "EVAL_BREP_GRAPH_V8" | "TESSELLATE_BREP_GRAPH_V8" => schema == EXACT_BREP_GRAPH_SCHEMA_V8,
         "EVAL_BREP_GRAPH_V9" | "TESSELLATE_BREP_GRAPH_V9" => schema == EXACT_BREP_GRAPH_SCHEMA_V9,
+        "EVAL_BREP_GRAPH_V10" | "TESSELLATE_BREP_GRAPH_V10" => {
+            schema == EXACT_BREP_GRAPH_SCHEMA_V10
+        }
         "EXPORT_BREP_GRAPH_STEP_V2" => matches!(
             schema,
             EXACT_BREP_GRAPH_SCHEMA_V6
                 | EXACT_BREP_GRAPH_SCHEMA_V7
                 | EXACT_BREP_GRAPH_SCHEMA_V8
                 | EXACT_BREP_GRAPH_SCHEMA_V9
+                | EXACT_BREP_GRAPH_SCHEMA_V10
         ),
         _ => false,
     }
@@ -1622,13 +1634,13 @@ fn exact_brep_graph_response(
     };
     let (protocol, topology_evidence) = if matches!(
         graph.schema.as_str(),
-        EXACT_BREP_GRAPH_SCHEMA_V8 | EXACT_BREP_GRAPH_SCHEMA_V9
+        EXACT_BREP_GRAPH_SCHEMA_V8 | EXACT_BREP_GRAPH_SCHEMA_V9 | EXACT_BREP_GRAPH_SCHEMA_V10
     ) {
         (
-            if graph.schema == EXACT_BREP_GRAPH_SCHEMA_V9 {
-                "OK_BREP_GRAPH_V9"
-            } else {
-                "OK_BREP_GRAPH_V8"
+            match graph.schema.as_str() {
+                EXACT_BREP_GRAPH_SCHEMA_V10 => "OK_BREP_GRAPH_V10",
+                EXACT_BREP_GRAPH_SCHEMA_V9 => "OK_BREP_GRAPH_V9",
+                _ => "OK_BREP_GRAPH_V8",
             },
             format!(
                 "{} {} {} {} {} {}",
@@ -2054,7 +2066,7 @@ fn exact_brep_sweep(
             "exact sweep requires an open planar path",
         ));
     };
-    if segments.len() == 2 {
+    if segments.len() > 1 {
         let profile_segments = exact_brep_boundary_segments(profile, true)?;
         let path_segments = exact_brep_boundary_segments(path, false)?;
         return backend.sweep_planar_profile(&profile_segments, &path_segments);
@@ -5784,6 +5796,10 @@ mod tests {
             handle_request(&backend, "CAPS EXACT_BREP_GRAPH_V9").as_deref(),
             Some("CAPS EXACT_BREP_GRAPH_V9")
         );
+        assert_eq!(
+            handle_request(&backend, "CAPS EXACT_BREP_GRAPH_V10").as_deref(),
+            Some("CAPS EXACT_BREP_GRAPH_V10")
+        );
         for (operation, schema) in [
             ("EVAL_BREP_GRAPH_V6", EXACT_BREP_GRAPH_SCHEMA_V6),
             ("TESSELLATE_BREP_GRAPH_V6", EXACT_BREP_GRAPH_SCHEMA_V6),
@@ -5793,10 +5809,13 @@ mod tests {
             ("TESSELLATE_BREP_GRAPH_V8", EXACT_BREP_GRAPH_SCHEMA_V8),
             ("EVAL_BREP_GRAPH_V9", EXACT_BREP_GRAPH_SCHEMA_V9),
             ("TESSELLATE_BREP_GRAPH_V9", EXACT_BREP_GRAPH_SCHEMA_V9),
+            ("EVAL_BREP_GRAPH_V10", EXACT_BREP_GRAPH_SCHEMA_V10),
+            ("TESSELLATE_BREP_GRAPH_V10", EXACT_BREP_GRAPH_SCHEMA_V10),
             ("EXPORT_BREP_GRAPH_STEP_V2", EXACT_BREP_GRAPH_SCHEMA_V6),
             ("EXPORT_BREP_GRAPH_STEP_V2", EXACT_BREP_GRAPH_SCHEMA_V7),
             ("EXPORT_BREP_GRAPH_STEP_V2", EXACT_BREP_GRAPH_SCHEMA_V8),
             ("EXPORT_BREP_GRAPH_STEP_V2", EXACT_BREP_GRAPH_SCHEMA_V9),
+            ("EXPORT_BREP_GRAPH_STEP_V2", EXACT_BREP_GRAPH_SCHEMA_V10),
         ] {
             assert!(exact_brep_graph_schema_matches_operation(operation, schema));
         }
@@ -5809,6 +5828,10 @@ mod tests {
             ("TESSELLATE_BREP_GRAPH_V8", EXACT_BREP_GRAPH_SCHEMA_V9),
             ("EVAL_BREP_GRAPH_V9", EXACT_BREP_GRAPH_SCHEMA_V8),
             ("TESSELLATE_BREP_GRAPH_V9", EXACT_BREP_GRAPH_SCHEMA_V8),
+            ("EVAL_BREP_GRAPH_V9", EXACT_BREP_GRAPH_SCHEMA_V10),
+            ("TESSELLATE_BREP_GRAPH_V9", EXACT_BREP_GRAPH_SCHEMA_V10),
+            ("EVAL_BREP_GRAPH_V10", EXACT_BREP_GRAPH_SCHEMA_V9),
+            ("TESSELLATE_BREP_GRAPH_V10", EXACT_BREP_GRAPH_SCHEMA_V9),
         ] {
             assert!(!exact_brep_graph_schema_matches_operation(
                 operation, schema

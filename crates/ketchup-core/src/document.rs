@@ -12,7 +12,8 @@ use crate::drawing::{DrawingError, DrawingSheet, DrawingSheetId, DrawingSource};
 use crate::exact_brep_graph::{
     ExactBRepGraph, MAX_EXACT_BREP_GRAPH_NODES, MAX_EXACT_BREP_GRAPH_PROFILES,
     MAX_EXACT_BREP_LOFT_CONTROL_POINTS, MAX_EXACT_BREP_SWEEP_PATH_LENGTH_MM,
-    MIN_EXACT_BREP_SWEEP_PATH_LENGTH_MM, MIN_EXACT_BREP_SWEEP_PATH_SEGMENT_LENGTH_MM,
+    MAX_EXACT_BREP_SWEEP_PATH_SEGMENTS, MIN_EXACT_BREP_SWEEP_PATH_LENGTH_MM,
+    MIN_EXACT_BREP_SWEEP_PATH_SEGMENT_LENGTH_MM,
 };
 use crate::exact_product::{
     BodySubshapeRef, EXACT_MIN_LENGTH_MM, ExactFaceRole, ExactFeatureChainRequest,
@@ -9961,7 +9962,7 @@ fn sweep_path_segment_metrics(segment: &ProfileSegment) -> Option<(f64, [f64; 2]
 }
 
 fn is_valid_sweep_path(segments: &[ProfileSegment]) -> bool {
-    if !matches!(segments.len(), 1 | 2)
+    if !(1..=MAX_EXACT_BREP_SWEEP_PATH_SEGMENTS).contains(&segments.len())
         || segments.len() == 1 && !matches!(segments[0], ProfileSegment::Line { .. })
     {
         return false;

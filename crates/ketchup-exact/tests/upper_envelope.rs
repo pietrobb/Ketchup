@@ -1000,6 +1000,10 @@ fn curved_planar_sweep_is_deterministic_and_fails_closed() {
             center_mm: [50.0, 25.0],
             clockwise: false,
         },
+        PlanarProfileSegment::Line {
+            start_mm: [75.0, 25.0],
+            end_mm: [75.0, 50.0],
+        },
     ];
     let output = backend.sweep_planar_profile(&profile, &path).unwrap();
     let repeated = backend.sweep_planar_profile(&profile, &path).unwrap();
@@ -1011,7 +1015,7 @@ fn curved_planar_sweep_is_deterministic_and_fails_closed() {
     );
     assert_close(
         output.body.topology.volume_mm3,
-        8.0 * (50.0 + 25.0 * std::f64::consts::FRAC_PI_2),
+        8.0 * (75.0 + 25.0 * std::f64::consts::FRAC_PI_2),
     );
     assert!(output.body.topology.face_count >= 6);
     assert_eq!(output.body.topology.solid_count, 1);
@@ -1049,6 +1053,64 @@ fn curved_planar_sweep_is_deterministic_and_fails_closed() {
     assert_eq!(
         backend
             .sweep_planar_profile(&profile, &disconnected_path)
+            .unwrap_err()
+            .code,
+        GeometryErrorCode::InvalidProfile
+    );
+
+    let closed_loop = vec![
+        PlanarProfileSegment::CircularArc {
+            start_mm: [25.0, 0.0],
+            end_mm: [-25.0, 0.0],
+            center_mm: [0.0, 0.0],
+            clockwise: false,
+        },
+        PlanarProfileSegment::CircularArc {
+            start_mm: [-25.0, 0.0],
+            end_mm: [25.0, 0.0],
+            center_mm: [0.0, 0.0],
+            clockwise: false,
+        },
+    ];
+    assert_eq!(
+        backend
+            .sweep_planar_profile(&profile, &closed_loop)
+            .unwrap_err()
+            .code,
+        GeometryErrorCode::InvalidShape
+    );
+
+    let overlapping_arcs = vec![
+        PlanarProfileSegment::CircularArc {
+            start_mm: [25.0, 0.0],
+            end_mm: [0.0, -25.0],
+            center_mm: [0.0, 0.0],
+            clockwise: false,
+        },
+        PlanarProfileSegment::CircularArc {
+            start_mm: [0.0, -25.0],
+            end_mm: [-25.0, 0.0],
+            center_mm: [0.0, 0.0],
+            clockwise: false,
+        },
+    ];
+    assert_eq!(
+        backend
+            .sweep_planar_profile(&profile, &overlapping_arcs)
+            .unwrap_err()
+            .code,
+        GeometryErrorCode::InvalidShape
+    );
+
+    let over_limit = (0..65)
+        .map(|index| PlanarProfileSegment::Line {
+            start_mm: [index as f64, 0.0],
+            end_mm: [index as f64 + 1.0, 0.0],
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        backend
+            .sweep_planar_profile(&profile, &over_limit)
             .unwrap_err()
             .code,
         GeometryErrorCode::InvalidProfile

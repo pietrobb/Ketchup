@@ -15,6 +15,7 @@
 #include <BRepBuilderAPI_GTransform.hxx>
 #include <BRepBuilderAPI_Transform.hxx>
 #include <BRepCheck_Analyzer.hxx>
+#include <BRepExtrema_DistShapeShape.hxx>
 #include <BRep_Builder.hxx>
 #include <BRepGProp.hxx>
 #include <BRepMesh_IncrementalMesh.hxx>
@@ -1354,7 +1355,8 @@ std::unique_ptr<NativeOperationResult> sweep_planar_profile_native(
     rust::Slice<const double> path_segments) noexcept {
   return guarded([&] {
     if (profile_segments.size() < 20 || profile_segments.size() % 10 != 0
-        || path_segments.size() != 20) {
+        || path_segments.size() < 20 || path_segments.size() % 10 != 0
+        || path_segments.size() > 640) {
       return error_result(STATUS_INVALID_PARAMETER, "OCCT curved Sweep payload is malformed");
     }
     for (double value : profile_segments) {
@@ -1367,9 +1369,16 @@ std::unique_ptr<NativeOperationResult> sweep_planar_profile_native(
         return error_result(STATUS_NON_FINITE_PARAMETER, "OCCT curved Sweep path is non-finite");
       }
     }
-    if (path_segments[3] != path_segments[11]
-        || path_segments[4] != path_segments[12]) {
-      return error_result(STATUS_INVALID_PARAMETER, "OCCT curved Sweep path is disconnected");
+    for (std::size_t offset = 0; offset + 10 < path_segments.size(); offset += 10) {
+      if (path_segments[offset + 3] != path_segments[offset + 11]
+          || path_segments[offset + 4] != path_segments[offset + 12]) {
+        return error_result(STATUS_INVALID_PARAMETER, "OCCT curved Sweep path is disconnected");
+      }
+    }
+    const std::size_t last_path_offset = path_segments.size() - 10;
+    if (path_segments[1] == path_segments[last_path_offset + 3]
+        && path_segments[2] == path_segments[last_path_offset + 4]) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT curved Sweep path must remain geometrically open");
     }
 
     const auto path_metrics = [&](std::size_t offset, double& length,
@@ -1419,19 +1428,39 @@ std::unique_ptr<NativeOperationResult> sweep_planar_profile_native(
       return true;
     };
 
-    double first_length = 0.0;
-    double second_length = 0.0;
-    gp_Vec first_start_tangent;
-    gp_Vec first_end_tangent;
-    gp_Vec second_start_tangent;
-    gp_Vec second_end_tangent;
-    if (!path_metrics(0, first_length, first_start_tangent, first_end_tangent)
-        || !path_metrics(10, second_length, second_start_tangent, second_end_tangent)
-        || first_length + second_length < 0.01
-        || first_length + second_length > 100000.0
-        || first_end_tangent.Dot(second_start_tangent) < 1.0 - 1.0e-9
-        || first_end_tangent.Crossed(second_start_tangent).Magnitude() > 1.0e-9) {
-      return error_result(STATUS_INVALID_PARAMETER, "OCCT curved Sweep path violates its bounded C1 contract");
+    const std::size_t path_segment_count = path_segments.size() / 10;
+    std::vector<gp_Vec> start_tangents(path_segment_count);
+    std::vector<gp_Vec> end_tangents(path_segment_count);
+    std::vector<double> segment_lengths(path_segment_count);
+    double path_length = 0.0;
+    for (std::size_t index = 0; index < path_segment_count; ++index) {
+      if (!path_metrics(
+              index * 10, segment_lengths[index], start_tangents[index], end_tangents[index])) {
+        return error_result(STATUS_INVALID_PARAMETER, "OCCT curved Sweep path violates its bounded segment contract");
+      }
+      path_length += segment_lengths[index];
+      if (index > 0
+          && (end_tangents[index - 1].Dot(start_tangents[index]) < 1.0 - 1.0e-9
+              || end_tangents[index - 1].Crossed(start_tangents[index]).Magnitude()
+                  > 1.0e-9)) {
+        return error_result(STATUS_INVALID_PARAMETER, "OCCT curved Sweep path violates its bounded C1 contract");
+      }
+      const std::size_t offset = index * 10;
+      const std::size_t previous = offset - 10;
+      if (index > 0 && path_segments[previous] == 1.0 && path_segments[offset] == 1.0
+          && path_segments[previous + 5] == path_segments[offset + 5]
+          && path_segments[previous + 6] == path_segments[offset + 6]) {
+        const double radius = std::hypot(
+            path_segments[offset + 1] - path_segments[offset + 5],
+            path_segments[offset + 2] - path_segments[offset + 6]);
+        if (segment_lengths[index - 1] + segment_lengths[index]
+            >= 2.0 * std::acos(-1.0) * radius - 1.0e-7) {
+          return error_result(STATUS_INVALID_SHAPE, "OCCT curved Sweep adjacent arcs overlap");
+        }
+      }
+    }
+    if (path_length < 0.01 || path_length > 100000.0) {
+      return error_result(STATUS_INVALID_PARAMETER, "OCCT curved Sweep path length is outside its bounded contract");
     }
 
     const auto path_edge = [&](std::size_t offset) {
@@ -1464,22 +1493,37 @@ std::unique_ptr<NativeOperationResult> sweep_planar_profile_native(
     };
 
     BRepBuilderAPI_MakeWire spine_builder;
-    const TopoDS_Edge first_path_edge = path_edge(0);
-    const TopoDS_Edge second_path_edge = path_edge(10);
-    if (first_path_edge.IsNull() || second_path_edge.IsNull()) {
-      return error_result(STATUS_INVALID_SHAPE, "OCCT curved Sweep path edge is null");
+    std::vector<TopoDS_Edge> path_edges;
+    path_edges.reserve(path_segment_count);
+    for (std::size_t offset = 0; offset < path_segments.size(); offset += 10) {
+      const TopoDS_Edge edge = path_edge(offset);
+      if (edge.IsNull()) {
+        return error_result(STATUS_INVALID_SHAPE, "OCCT curved Sweep path edge is null");
+      }
+      path_edges.push_back(edge);
+      spine_builder.Add(edge);
     }
-    spine_builder.Add(first_path_edge);
-    spine_builder.Add(second_path_edge);
+    for (std::size_t left = 0; left < path_edges.size(); ++left) {
+      for (std::size_t right = left + 2; right < path_edges.size(); ++right) {
+        BRepExtrema_DistShapeShape distance(path_edges[left], path_edges[right]);
+        distance.Perform();
+        if (!distance.IsDone() || distance.Value() <= 1.0e-7) {
+          return error_result(STATUS_INVALID_SHAPE, "OCCT curved Sweep path self-intersects");
+        }
+      }
+    }
     if (!spine_builder.IsDone()) {
       return error_result(STATUS_INVALID_SHAPE, "OCCT curved Sweep spine wire did not complete");
     }
     const TopoDS_Wire spine = spine_builder.Wire();
+    if (!BRepCheck_Analyzer(spine).IsValid()) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT curved Sweep spine wire is invalid");
+    }
 
     const double path_start_x = path_segments[1];
     const double path_start_y = path_segments[2];
-    const double section_x = first_start_tangent.Y();
-    const double section_y = -first_start_tangent.X();
+    const double section_x = start_tangents.front().Y();
+    const double section_y = -start_tangents.front().X();
     const auto section_point = [&](double u, double v) {
       return gp_Pnt(
           path_start_x + section_x * u,

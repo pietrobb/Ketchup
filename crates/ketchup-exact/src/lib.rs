@@ -9,6 +9,7 @@ const MAX_LENGTH_MM: f64 = 100_000.0;
 const MAX_COORDINATE_MM: f64 = 1_000_000.0;
 const PLANAR_SEGMENT_STRIDE: usize = 10;
 const MIN_SWEEP_PATH_SEGMENT_LENGTH_MM: f64 = 1.0e-7;
+const MAX_SWEEP_PATH_SEGMENTS: usize = 64;
 pub const MAX_PLANAR_LOOP_SEGMENTS: usize = 64;
 pub const MAX_PLANAR_REGION_HOLES: usize = 64;
 pub const MAX_PLANAR_REGION_SEGMENTS: usize = 4_096;
@@ -1533,12 +1534,12 @@ impl ExactBackend {
                 .collect::<Vec<_>>()
         );
         validate_mixed_profile(profile, operation, &input)?;
-        if path.len() != 2 {
+        if !(2..=MAX_SWEEP_PATH_SEGMENTS).contains(&path.len()) {
             return Err(parameter_error(
                 GeometryErrorCode::InvalidProfile,
                 operation,
                 &input,
-                "Curved Sweep requires exactly two path segments".to_owned(),
+                "Curved Sweep requires between two and 64 path segments".to_owned(),
             ));
         }
         let path_metrics = |segment: &PlanarProfileSegment| {
@@ -1610,27 +1611,37 @@ impl ExactBackend {
                 PlanarProfileSegment::CubicBezier { .. } => Err(invalid()),
             }
         };
-        let first = path_metrics(&path[0])?;
-        let second = path_metrics(&path[1])?;
-        if planar_segment_endpoints(&path[0]).1 != planar_segment_endpoints(&path[1]).0 {
-            return Err(parameter_error(
-                GeometryErrorCode::InvalidProfile,
-                operation,
-                &input,
-                "Sweep path segments are disconnected".to_owned(),
-            ));
+        let metrics = path
+            .iter()
+            .map(path_metrics)
+            .collect::<Result<Vec<_>, _>>()?;
+        for (segments, metrics) in path.windows(2).zip(metrics.windows(2)) {
+            if planar_segment_endpoints(&segments[0]).1 != planar_segment_endpoints(&segments[1]).0
+            {
+                return Err(parameter_error(
+                    GeometryErrorCode::InvalidProfile,
+                    operation,
+                    &input,
+                    "Sweep path segments are disconnected".to_owned(),
+                ));
+            }
+            let dot = metrics[0].2[0] * metrics[1].1[0] + metrics[0].2[1] * metrics[1].1[1];
+            let cross = metrics[0].2[0] * metrics[1].1[1] - metrics[0].2[1] * metrics[1].1[0];
+            if dot < 1.0 - 1.0e-9 || cross.abs() > 1.0e-9 {
+                return Err(parameter_error(
+                    GeometryErrorCode::InvalidProfile,
+                    operation,
+                    &input,
+                    "Sweep path segments must be C1 tangent-continuous".to_owned(),
+                ));
+            }
         }
-        let dot = first.2[0] * second.1[0] + first.2[1] * second.1[1];
-        let cross = first.2[0] * second.1[1] - first.2[1] * second.1[0];
-        if dot < 1.0 - 1.0e-9 || cross.abs() > 1.0e-9 {
-            return Err(parameter_error(
-                GeometryErrorCode::InvalidProfile,
-                operation,
-                &input,
-                "Sweep path segments must be C1 tangent-continuous".to_owned(),
-            ));
-        }
-        validate_length(first.0 + second.0, "path_length", operation, &input)?;
+        validate_length(
+            metrics.iter().map(|metrics| metrics.0).sum(),
+            "path_length",
+            operation,
+            &input,
+        )?;
         let output = collect_output(
             ffi::sweep_planar_profile_native(&profile_values, &path_values),
             operation,
