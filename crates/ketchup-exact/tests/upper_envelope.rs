@@ -1118,6 +1118,286 @@ fn curved_planar_sweep_is_deterministic_and_fails_closed() {
 }
 
 #[test]
+fn non_coplanar_mixed_spatial_sweep_is_exact_deterministic_and_fails_closed() {
+    use ketchup_exact::{ExactKernel, SpatialProfileSegment};
+
+    let kernel = ExactKernel::new();
+    let profile = [
+        PlanarProfileSegment::Line {
+            start_mm: [-2.0, -1.0],
+            end_mm: [2.0, -1.0],
+        },
+        PlanarProfileSegment::Line {
+            start_mm: [2.0, -1.0],
+            end_mm: [2.0, 1.0],
+        },
+        PlanarProfileSegment::Line {
+            start_mm: [2.0, 1.0],
+            end_mm: [-2.0, 1.0],
+        },
+        PlanarProfileSegment::Line {
+            start_mm: [-2.0, 1.0],
+            end_mm: [-2.0, -1.0],
+        },
+    ];
+    let path = [
+        SpatialProfileSegment::Line {
+            start_mm: [0.0, 0.0, 0.0],
+            end_mm: [30.0, 0.0, 0.0],
+        },
+        SpatialProfileSegment::CircularArc {
+            start_mm: [30.0, 0.0, 0.0],
+            end_mm: [40.0, 10.0, 0.0],
+            center_mm: [30.0, 10.0, 0.0],
+            normal: [0.0, 0.0, 1.0],
+            clockwise: false,
+        },
+        SpatialProfileSegment::CubicBezier {
+            start_mm: [40.0, 10.0, 0.0],
+            control_1_mm: [40.0, 20.0, 0.0],
+            control_2_mm: [40.0, 30.0, 10.0],
+            end_mm: [40.0, 40.0, 20.0],
+        },
+    ];
+
+    let output = kernel.sweep_spatial_profile(&profile, &path).unwrap();
+    let repeated = kernel.sweep_spatial_profile(&profile, &path).unwrap();
+    assert_valid(&output);
+    assert_eq!(output.input_digest, repeated.input_digest);
+    assert_eq!(
+        output.body.result_fingerprint,
+        repeated.body.result_fingerprint
+    );
+    assert!(output.body.topology.bounds_mm.max.z > 19.0);
+    assert!(output.body.topology.bounds_mm.max.y > 39.0);
+    assert_eq!(
+        output.history_confidence,
+        ketchup_exact::HistoryConfidence::Partial
+    );
+    assert_eq!(output.topology_history.len(), 2);
+
+    let one_segment = kernel
+        .sweep_spatial_profile(&profile, &path[..1])
+        .expect("one spatial line segment must produce an exact sweep");
+    assert_valid(&one_segment);
+    let mut non_finite = path;
+    non_finite[2] = SpatialProfileSegment::CubicBezier {
+        start_mm: [40.0, 10.0, 0.0],
+        control_1_mm: [40.0, 20.0, f64::NAN],
+        control_2_mm: [40.0, 30.0, 10.0],
+        end_mm: [40.0, 40.0, 20.0],
+    };
+    assert_eq!(
+        kernel
+            .sweep_spatial_profile(&profile, &non_finite)
+            .unwrap_err()
+            .code,
+        GeometryErrorCode::NonFiniteParameter
+    );
+    let mut bad_normal = path;
+    bad_normal[1] = SpatialProfileSegment::CircularArc {
+        start_mm: [30.0, 0.0, 0.0],
+        end_mm: [40.0, 10.0, 0.0],
+        center_mm: [30.0, 10.0, 0.0],
+        normal: [0.0, 0.0, 2.0],
+        clockwise: false,
+    };
+    assert_eq!(
+        kernel
+            .sweep_spatial_profile(&profile, &bad_normal)
+            .unwrap_err()
+            .code,
+        GeometryErrorCode::InvalidProfile
+    );
+    let mut off_plane = path;
+    off_plane[1] = SpatialProfileSegment::CircularArc {
+        start_mm: [30.0, 0.0, 0.0],
+        end_mm: [40.0, 10.0, 0.001],
+        center_mm: [30.0, 10.0, 0.0],
+        normal: [0.0, 0.0, 1.0],
+        clockwise: false,
+    };
+    assert_eq!(
+        kernel
+            .sweep_spatial_profile(&profile, &off_plane)
+            .unwrap_err()
+            .code,
+        GeometryErrorCode::InvalidProfile
+    );
+    let mut disconnected = path;
+    disconnected[2] = SpatialProfileSegment::Line {
+        start_mm: [40.0, 11.0, 0.0],
+        end_mm: [40.0, 40.0, 0.0],
+    };
+    assert_eq!(
+        kernel
+            .sweep_spatial_profile(&profile, &disconnected)
+            .unwrap_err()
+            .code,
+        GeometryErrorCode::InvalidProfile
+    );
+    let mut not_c1 = path;
+    not_c1[2] = SpatialProfileSegment::Line {
+        start_mm: [40.0, 10.0, 0.0],
+        end_mm: [50.0, 10.0, 0.0],
+    };
+    assert_eq!(
+        kernel
+            .sweep_spatial_profile(&profile, &not_c1)
+            .unwrap_err()
+            .code,
+        GeometryErrorCode::InvalidProfile
+    );
+}
+
+#[test]
+fn xy_spatial_sweep_preserves_legacy_planar_profile_placement() {
+    use ketchup_exact::SpatialProfileSegment;
+
+    let backend = ExactBackend::new();
+    let profile = [
+        PlanarProfileSegment::Line {
+            start_mm: [-2.0, -1.0],
+            end_mm: [5.0, -1.0],
+        },
+        PlanarProfileSegment::Line {
+            start_mm: [5.0, -1.0],
+            end_mm: [5.0, 3.0],
+        },
+        PlanarProfileSegment::Line {
+            start_mm: [5.0, 3.0],
+            end_mm: [-2.0, 3.0],
+        },
+        PlanarProfileSegment::Line {
+            start_mm: [-2.0, 3.0],
+            end_mm: [-2.0, -1.0],
+        },
+    ];
+    let planar_path = [
+        PlanarProfileSegment::Line {
+            start_mm: [10.0, 20.0],
+            end_mm: [25.0, 20.0],
+        },
+        PlanarProfileSegment::Line {
+            start_mm: [25.0, 20.0],
+            end_mm: [40.0, 20.0],
+        },
+    ];
+    let spatial_path = [
+        SpatialProfileSegment::Line {
+            start_mm: [10.0, 20.0, 0.0],
+            end_mm: [25.0, 20.0, 0.0],
+        },
+        SpatialProfileSegment::Line {
+            start_mm: [25.0, 20.0, 0.0],
+            end_mm: [40.0, 20.0, 0.0],
+        },
+    ];
+
+    let planar = backend
+        .sweep_planar_profile(&profile, &planar_path)
+        .unwrap();
+    let spatial = backend
+        .sweep_spatial_profile(&profile, &spatial_path)
+        .unwrap();
+    assert_valid(&planar);
+    assert_valid(&spatial);
+
+    let planar_topology = &planar.body.topology;
+    let spatial_topology = &spatial.body.topology;
+    assert_eq!(
+        [
+            spatial_topology.vertex_count,
+            spatial_topology.edge_count,
+            spatial_topology.wire_count,
+            spatial_topology.face_count,
+            spatial_topology.shell_count,
+            spatial_topology.solid_count,
+        ],
+        [
+            planar_topology.vertex_count,
+            planar_topology.edge_count,
+            planar_topology.wire_count,
+            planar_topology.face_count,
+            planar_topology.shell_count,
+            planar_topology.solid_count,
+        ]
+    );
+    assert_close(spatial_topology.volume_mm3, planar_topology.volume_mm3);
+    for (actual, expected) in [
+        (
+            spatial_topology.bounds_mm.min.x,
+            planar_topology.bounds_mm.min.x,
+        ),
+        (
+            spatial_topology.bounds_mm.min.y,
+            planar_topology.bounds_mm.min.y,
+        ),
+        (
+            spatial_topology.bounds_mm.min.z,
+            planar_topology.bounds_mm.min.z,
+        ),
+        (
+            spatial_topology.bounds_mm.max.x,
+            planar_topology.bounds_mm.max.x,
+        ),
+        (
+            spatial_topology.bounds_mm.max.y,
+            planar_topology.bounds_mm.max.y,
+        ),
+        (
+            spatial_topology.bounds_mm.max.z,
+            planar_topology.bounds_mm.max.z,
+        ),
+    ] {
+        assert_close(actual, expected);
+    }
+    assert_close(spatial_topology.bounds_mm.min.x, 10.0);
+    assert_close(spatial_topology.bounds_mm.min.y, 15.0);
+    assert_close(spatial_topology.bounds_mm.min.z, -1.0);
+    assert_close(spatial_topology.bounds_mm.max.x, 40.0);
+    assert_close(spatial_topology.bounds_mm.max.y, 22.0);
+    assert_close(spatial_topology.bounds_mm.max.z, 3.0);
+
+    let ordered_faces = |output: &ExactOpOutput| {
+        let mut faces = output.body.topology.faces.clone();
+        faces.sort_by(|left, right| {
+            left.centroid_mm
+                .x
+                .total_cmp(&right.centroid_mm.x)
+                .then(left.centroid_mm.y.total_cmp(&right.centroid_mm.y))
+                .then(left.centroid_mm.z.total_cmp(&right.centroid_mm.z))
+                .then(left.area_mm2.total_cmp(&right.area_mm2))
+        });
+        faces
+    };
+    for (spatial_face, planar_face) in ordered_faces(&spatial)
+        .iter()
+        .zip(ordered_faces(&planar).iter())
+    {
+        assert_eq!(spatial_face.surface_kind, planar_face.surface_kind);
+        assert_eq!(spatial_face.edge_count, planar_face.edge_count);
+        assert_close(spatial_face.area_mm2, planar_face.area_mm2);
+        for (actual, expected) in [
+            (spatial_face.centroid_mm.x, planar_face.centroid_mm.x),
+            (spatial_face.centroid_mm.y, planar_face.centroid_mm.y),
+            (spatial_face.centroid_mm.z, planar_face.centroid_mm.z),
+            (spatial_face.bounds_mm.min.x, planar_face.bounds_mm.min.x),
+            (spatial_face.bounds_mm.min.y, planar_face.bounds_mm.min.y),
+            (spatial_face.bounds_mm.min.z, planar_face.bounds_mm.min.z),
+            (spatial_face.bounds_mm.max.x, planar_face.bounds_mm.max.x),
+            (spatial_face.bounds_mm.max.y, planar_face.bounds_mm.max.y),
+            (spatial_face.bounds_mm.max.z, planar_face.bounds_mm.max.z),
+            (spatial_face.normal.x, planar_face.normal.x),
+            (spatial_face.normal.y, planar_face.normal.y),
+            (spatial_face.normal.z, planar_face.normal.z),
+        ] {
+            assert_close(actual, expected);
+        }
+    }
+}
+
+#[test]
 fn rectangular_sweep_follows_selected_path_with_stable_exact_faces() {
     let backend = ExactBackend::new();
     let spec = RectangleSweepSpec {

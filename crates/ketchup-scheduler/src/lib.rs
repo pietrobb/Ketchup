@@ -17,7 +17,8 @@ use ketchup_core::document::{
 use ketchup_core::exact_brep_graph::{
     EXACT_BREP_GRAPH_SCHEMA_V6, EXACT_BREP_GRAPH_SCHEMA_V7, EXACT_BREP_GRAPH_SCHEMA_V8,
     EXACT_BREP_GRAPH_SCHEMA_V9, EXACT_BREP_GRAPH_SCHEMA_V10, EXACT_BREP_GRAPH_SCHEMA_V11,
-    ExactBRepGraph, ExactBRepOperation, ExactBRepPlanarLoop, ExactBRepPlanarSegment,
+    EXACT_BREP_GRAPH_SCHEMA_V12, ExactBRepGraph, ExactBRepOperation, ExactBRepPlanarLoop,
+    ExactBRepPlanarSegment,
 };
 use ketchup_core::exact_product::{
     ExactBRepGraphPackage, ExactBRepGraphWorkerEvidence, ExactBodyPackage, ExactFaceRole,
@@ -586,6 +587,7 @@ const EXACT_BREP_GRAPH_CAPABILITY_V8: &str = "EXACT_BREP_GRAPH_V8";
 const EXACT_BREP_GRAPH_CAPABILITY_V9: &str = "EXACT_BREP_GRAPH_V9";
 const EXACT_BREP_GRAPH_CAPABILITY_V10: &str = "EXACT_BREP_GRAPH_V10";
 const EXACT_BREP_GRAPH_CAPABILITY_V11: &str = "EXACT_BREP_GRAPH_V11";
+const EXACT_BREP_GRAPH_CAPABILITY_V12: &str = "EXACT_BREP_GRAPH_V12";
 pub const MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCES: usize = 64;
 pub const MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCE_BYTES: u64 = 128 * 1024 * 1024;
 const DEFAULT_WORKER_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
@@ -1118,6 +1120,7 @@ impl ExactWorkerClient {
             EXACT_BREP_GRAPH_SCHEMA_V9 => EXACT_BREP_GRAPH_CAPABILITY_V9,
             EXACT_BREP_GRAPH_SCHEMA_V10 => EXACT_BREP_GRAPH_CAPABILITY_V10,
             EXACT_BREP_GRAPH_SCHEMA_V11 => EXACT_BREP_GRAPH_CAPABILITY_V11,
+            EXACT_BREP_GRAPH_SCHEMA_V12 => EXACT_BREP_GRAPH_CAPABILITY_V12,
             schema => {
                 return Err(WorkerError::Protocol(format!(
                     "unsupported graph schema {schema}"
@@ -1151,6 +1154,7 @@ impl ExactWorkerClient {
             EXACT_BREP_GRAPH_SCHEMA_V9 => "EVAL_BREP_GRAPH_V9",
             EXACT_BREP_GRAPH_SCHEMA_V10 => "EVAL_BREP_GRAPH_V10",
             EXACT_BREP_GRAPH_SCHEMA_V11 => "EVAL_BREP_GRAPH_V11",
+            EXACT_BREP_GRAPH_SCHEMA_V12 => "EVAL_BREP_GRAPH_V12",
             _ => unreachable!("capability validation rejects unsupported graph schemas"),
         };
         let mut request = format!("{operation} {} {}", graph.graph_digest, hex_encode(&bytes));
@@ -1162,6 +1166,7 @@ impl ExactWorkerClient {
             EXACT_BREP_GRAPH_SCHEMA_V9 => "OK_BREP_GRAPH_V9",
             EXACT_BREP_GRAPH_SCHEMA_V10 => "OK_BREP_GRAPH_V10",
             EXACT_BREP_GRAPH_SCHEMA_V11 => "OK_BREP_GRAPH_V11",
+            EXACT_BREP_GRAPH_SCHEMA_V12 => "OK_BREP_GRAPH_V12",
             _ => unreachable!("capability validation rejects unsupported graph schemas"),
         };
         match parse_exact_brep_graph_result(&response, expected_protocol) {
@@ -1189,6 +1194,7 @@ impl ExactWorkerClient {
             EXACT_BREP_GRAPH_SCHEMA_V9 => "TESSELLATE_BREP_GRAPH_V9",
             EXACT_BREP_GRAPH_SCHEMA_V10 => "TESSELLATE_BREP_GRAPH_V10",
             EXACT_BREP_GRAPH_SCHEMA_V11 => "TESSELLATE_BREP_GRAPH_V11",
+            EXACT_BREP_GRAPH_SCHEMA_V12 => "TESSELLATE_BREP_GRAPH_V12",
             _ => unreachable!("capability validation rejects unsupported graph schemas"),
         };
         let mut request = format!(
@@ -1248,8 +1254,18 @@ impl ExactWorkerClient {
         let bytes = graph
             .to_bytes()
             .map_err(|error| WorkerError::Protocol(error.to_string()))?;
+        let (operation, expected_protocol) = match graph.schema.as_str() {
+            EXACT_BREP_GRAPH_SCHEMA_V6
+            | EXACT_BREP_GRAPH_SCHEMA_V7
+            | EXACT_BREP_GRAPH_SCHEMA_V8
+            | EXACT_BREP_GRAPH_SCHEMA_V9
+            | EXACT_BREP_GRAPH_SCHEMA_V10
+            | EXACT_BREP_GRAPH_SCHEMA_V11 => ("EXPORT_BREP_GRAPH_STEP_V2", "OK_BREP_GRAPH_STEP_V2"),
+            EXACT_BREP_GRAPH_SCHEMA_V12 => ("EXPORT_BREP_GRAPH_STEP_V3", "OK_BREP_GRAPH_STEP_V3"),
+            _ => unreachable!("capability validation rejects unsupported graph schemas"),
+        };
         let mut request = format!(
-            "EXPORT_BREP_GRAPH_STEP_V2 {} {} {} {}",
+            "{operation} {} {} {} {}",
             graph.graph_digest,
             hex_encode(&bytes),
             result_fingerprint,
@@ -1257,20 +1273,15 @@ impl ExactWorkerClient {
         );
         append_exact_brep_graph_sources(&mut request, imported_sources);
         let response = self.request_with_cancellation(&request, cancelled)?;
-        let fields = response.split_whitespace().collect::<Vec<_>>();
-        if matches!(fields.first(), Some(&"ERR") | Some(&"ERR_DETAIL")) {
-            return Err(parse_error_response(&response, &fields));
+        match parse_exact_brep_graph_step_acknowledgment(
+            &response,
+            expected_protocol,
+            &graph.graph_digest,
+            result_fingerprint,
+        ) {
+            Err(WorkerError::Protocol(response)) => self.fail_protocol(response),
+            result => result,
         }
-        if fields
-            != [
-                "OK_BREP_GRAPH_STEP_V2",
-                graph.graph_digest.as_str(),
-                result_fingerprint,
-            ]
-        {
-            return self.fail_protocol(response);
-        }
-        Ok(())
     }
 
     fn evaluate_planar_offset_request_with_cancellation(
@@ -5857,6 +5868,22 @@ fn push_aabb_request(line: &mut String, bounds: Aabb) {
     }
 }
 
+fn parse_exact_brep_graph_step_acknowledgment(
+    response: &str,
+    expected_protocol: &str,
+    graph_digest: &str,
+    result_fingerprint: &str,
+) -> Result<(), WorkerError> {
+    let fields = response.split_whitespace().collect::<Vec<_>>();
+    if matches!(fields.first(), Some(&"ERR") | Some(&"ERR_DETAIL")) {
+        return Err(parse_error_response(response, &fields));
+    }
+    if fields != [expected_protocol, graph_digest, result_fingerprint] {
+        return Err(WorkerError::Protocol(response.to_owned()));
+    }
+    Ok(())
+}
+
 fn parse_exact_brep_graph_result(
     response: &str,
     expected_protocol: &str,
@@ -5877,6 +5904,7 @@ fn parse_exact_brep_graph_result(
                         | "OK_BREP_GRAPH_V9"
                         | "OK_BREP_GRAPH_V10"
                         | "OK_BREP_GRAPH_V11"
+                        | "OK_BREP_GRAPH_V12"
                 ) =>
         {
             (Some(16), 1)
@@ -6773,4 +6801,59 @@ fn is_fnv1a64_digest(value: &str) -> bool {
         && value[8..]
             .bytes()
             .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn valid_exact_brep_graph_response(protocol: &str) -> String {
+        let mut fields = vec![
+            protocol.to_owned(),
+            "a".repeat(64),
+            "b".repeat(64),
+            "1".to_owned(),
+            "fnv1a64:0123456789abcdef".to_owned(),
+            "fnv1a64:fedcba9876543210".to_owned(),
+        ];
+        fields.extend((0..8).map(|_| "0000000000000000".to_owned()));
+        fields.extend((0..6).map(|_| "1".to_owned()));
+        fields.extend(["62".to_owned(), "74".to_owned()]);
+        fields.join(" ")
+    }
+
+    #[test]
+    fn v12_graph_client_rejects_otherwise_valid_v11_result_token() {
+        let response = valid_exact_brep_graph_response("OK_BREP_GRAPH_V11");
+        assert!(parse_exact_brep_graph_result(&response, "OK_BREP_GRAPH_V11").is_ok());
+        assert!(matches!(
+            parse_exact_brep_graph_result(&response, "OK_BREP_GRAPH_V12"),
+            Err(WorkerError::Protocol(rejected)) if rejected == response
+        ));
+    }
+
+    #[test]
+    fn step_v3_client_rejects_otherwise_valid_v2_acknowledgment() {
+        let graph_digest = "a".repeat(64);
+        let result_fingerprint = "fnv1a64:0123456789abcdef";
+        let response = format!("OK_BREP_GRAPH_STEP_V2 {graph_digest} {result_fingerprint}");
+        assert!(
+            parse_exact_brep_graph_step_acknowledgment(
+                &response,
+                "OK_BREP_GRAPH_STEP_V2",
+                &graph_digest,
+                result_fingerprint,
+            )
+            .is_ok()
+        );
+        assert!(matches!(
+            parse_exact_brep_graph_step_acknowledgment(
+                &response,
+                "OK_BREP_GRAPH_STEP_V3",
+                &graph_digest,
+                result_fingerprint,
+            ),
+            Err(WorkerError::Protocol(rejected)) if rejected == response
+        ));
+    }
 }

@@ -13,7 +13,7 @@ use crate::exact_brep_graph::{
     ExactBRepGraph, MAX_EXACT_BREP_GRAPH_NODES, MAX_EXACT_BREP_GRAPH_PROFILES,
     MAX_EXACT_BREP_LOFT_CONTROL_POINTS, MAX_EXACT_BREP_SWEEP_PATH_LENGTH_MM,
     MAX_EXACT_BREP_SWEEP_PATH_SEGMENTS, MIN_EXACT_BREP_SWEEP_PATH_LENGTH_MM,
-    MIN_EXACT_BREP_SWEEP_PATH_SEGMENT_LENGTH_MM,
+    MIN_EXACT_BREP_SWEEP_PATH_SEGMENT_LENGTH_MM, spatial_sweep_bounds_are_valid,
 };
 use crate::exact_product::{
     BodySubshapeRef, EXACT_MIN_LENGTH_MM, ExactFaceRole, ExactFeatureChainRequest,
@@ -10258,6 +10258,65 @@ pub fn is_valid_spatial_sweep_path(segments: &[SpatialPathSegment]) -> bool {
         (magnitude.is_finite() && magnitude > MIN_EXACT_BREP_SWEEP_PATH_SEGMENT_LENGTH_MM)
             .then(|| vector.map(|value| value / magnitude))
     }
+    fn arc_angle(segment: &SpatialPathSegment) -> Option<f64> {
+        let SpatialPathSegment::CircularArc {
+            start_mm,
+            end_mm,
+            center_mm,
+            normal,
+            clockwise,
+        } = segment
+        else {
+            return None;
+        };
+        let normal = unit(*normal)?;
+        let start_radius = sub(*start_mm, *center_mm);
+        let end_radius = sub(*end_mm, *center_mm);
+        let signed =
+            dot(normal, cross(start_radius, end_radius)).atan2(dot(start_radius, end_radius));
+        Some(if *clockwise {
+            (-signed).rem_euclid(std::f64::consts::TAU)
+        } else {
+            signed.rem_euclid(std::f64::consts::TAU)
+        })
+    }
+    fn join_is_separated(
+        left: &SpatialPathSegment,
+        right: &SpatialPathSegment,
+        tangent: [f64; 3],
+    ) -> bool {
+        let join = left.end_mm();
+        let projection = |point: [f64; 3]| dot(sub(point, join), tangent);
+        let left_is_behind = match left {
+            SpatialPathSegment::Line { start_mm, .. } => {
+                projection(*start_mm) < -PROFILE_EPSILON_MM
+            }
+            SpatialPathSegment::CircularArc { .. } => arc_angle(left)
+                .is_some_and(|angle| angle < std::f64::consts::PI - PROFILE_EPSILON_MM),
+            SpatialPathSegment::CubicBezier {
+                start_mm,
+                control_1_mm,
+                control_2_mm,
+                ..
+            } => [*start_mm, *control_1_mm, *control_2_mm]
+                .into_iter()
+                .all(|point| projection(point) < -PROFILE_EPSILON_MM),
+        };
+        let right_is_ahead = match right {
+            SpatialPathSegment::Line { end_mm, .. } => projection(*end_mm) > PROFILE_EPSILON_MM,
+            SpatialPathSegment::CircularArc { .. } => arc_angle(right)
+                .is_some_and(|angle| angle < std::f64::consts::PI - PROFILE_EPSILON_MM),
+            SpatialPathSegment::CubicBezier {
+                control_1_mm,
+                control_2_mm,
+                end_mm,
+                ..
+            } => [*control_1_mm, *control_2_mm, *end_mm]
+                .into_iter()
+                .all(|point| projection(point) > PROFILE_EPSILON_MM),
+        };
+        left_is_behind && right_is_ahead
+    }
     fn metrics(segment: &SpatialPathSegment) -> Option<(f64, [f64; 3], [f64; 3])> {
         let start = segment.start_mm();
         let end = segment.end_mm();
@@ -10401,7 +10460,9 @@ pub fn is_valid_spatial_sweep_path(segments: &[SpatialPathSegment]) -> bool {
             }
             let outgoing = metrics[0].2;
             let incoming = metrics[1].1;
-            dot(outgoing, incoming) < 1.0 - 1.0e-9 || length(cross(outgoing, incoming)) > 1.0e-9
+            !join_is_separated(&segments[0], &segments[1], outgoing)
+                || dot(outgoing, incoming) < 1.0 - 1.0e-9
+                || length(cross(outgoing, incoming)) > 1.0e-9
         })
     {
         return false;
@@ -13573,6 +13634,11 @@ fn validate_product(product: &ProductModel) -> Result<(), CanonicalError> {
                         segments,
                         closed: false,
                     } if is_valid_sweep_path(segments)
+                ) || matches!(
+                    &path_source.kind,
+                    FeatureKind::SpatialPath { segments }
+                        if is_valid_spatial_sweep_path(segments)
+                            && spatial_sweep_bounds_are_valid(&profile_source.kind, segments)
                 );
                 let feature_position = definition
                     .feature_ids

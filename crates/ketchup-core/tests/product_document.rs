@@ -4664,3 +4664,118 @@ fn spatial_sweep_path_is_canonical_visible_persistent_and_bounded() {
     assert_eq!(invalid.current().canonical_digest(), before);
     assert_eq!(invalid.visible_undo_steps(), 0);
 }
+
+#[test]
+fn v12_spatial_sweep_is_canonical_persistent_and_rejects_uncompilable_bounds() {
+    const DEFINITION: DefinitionId = DefinitionId(910);
+    const PROFILE: FeatureId = FeatureId(911);
+    const PATH: FeatureId = FeatureId(912);
+    const SWEEP: FeatureId = FeatureId(913);
+    let commands = |segments| {
+        CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DEFINITION,
+                name: "V12 spatial sweep".to_owned(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: PROFILE,
+                definition_id: DEFINITION,
+                name: "Small rectangle".to_owned(),
+                kind: FeatureKind::Profile {
+                    points_mm: vec![[-1.0, -1.0], [1.0, -1.0], [1.0, 1.0], [-1.0, 1.0]],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: PATH,
+                definition_id: DEFINITION,
+                name: "Spatial path".to_owned(),
+                kind: FeatureKind::SpatialPath { segments },
+            },
+            CanonicalCommand::CreateFeature {
+                id: SWEEP,
+                definition_id: DEFINITION,
+                name: "Spatial sweep".to_owned(),
+                kind: FeatureKind::Sweep {
+                    profile: PROFILE,
+                    path: PATH,
+                },
+            },
+        ])
+    };
+    let path = vec![
+        SpatialPathSegment::Line {
+            start_mm: [0.0, 0.0, 0.0],
+            end_mm: [10.0, 0.0, 0.0],
+        },
+        SpatialPathSegment::CircularArc {
+            start_mm: [10.0, 0.0, 0.0],
+            end_mm: [20.0, 10.0, 0.0],
+            center_mm: [10.0, 10.0, 0.0],
+            normal: [0.0, 0.0, 1.0],
+            clockwise: false,
+        },
+        SpatialPathSegment::CubicBezier {
+            start_mm: [20.0, 10.0, 0.0],
+            control_1_mm: [20.0, 15.0, 0.0],
+            control_2_mm: [20.0, 20.0, 5.0],
+            end_mm: [20.0, 20.0, 10.0],
+        },
+    ];
+
+    let mut document = DocumentStore::new();
+    let empty_digest = document.current().canonical_digest();
+    document.apply_batch(&commands(path.clone())).unwrap();
+    let sweep_digest = document.current().canonical_digest();
+    assert_eq!(document.undo().unwrap().canonical_digest(), empty_digest);
+    assert_eq!(document.redo().unwrap().canonical_digest(), sweep_digest);
+
+    let bytes = persistence::save(&document.current());
+    let reopened = persistence::load(&bytes).unwrap();
+    assert_eq!(reopened.snapshot().canonical_digest(), sweep_digest);
+    assert_eq!(persistence::save(&reopened.snapshot()), bytes);
+    assert!(matches!(
+        reopened.snapshot().feature(PATH).unwrap().kind(),
+        FeatureKind::SpatialPath { segments } if segments == &path
+    ));
+    assert!(matches!(
+        reopened.snapshot().feature(SWEEP).unwrap().kind(),
+        FeatureKind::Sweep {
+            profile: PROFILE,
+            path: PATH
+        }
+    ));
+
+    let mut invalid = DocumentStore::new();
+    let before = invalid.current().canonical_digest();
+    let outside_compilable_envelope = vec![SpatialPathSegment::Line {
+        start_mm: [999_999.5, 0.0, 0.0],
+        end_mm: [999_999.5, 0.0, 10.0],
+    }];
+    assert!(matches!(
+        invalid.apply_batch(&commands(outside_compilable_envelope)),
+        Err(CanonicalError::InvalidSweep)
+    ));
+    assert_eq!(invalid.current().canonical_digest(), before);
+    assert_eq!(invalid.visible_undo_steps(), 0);
+
+    let adjacent_self_intersection = vec![
+        SpatialPathSegment::CubicBezier {
+            start_mm: [0.0, 0.0, 0.0],
+            control_1_mm: [10.0, -5.0, 0.0],
+            control_2_mm: [9.0, 10.0, 0.0],
+            end_mm: [10.0, 10.0, 0.0],
+        },
+        SpatialPathSegment::CubicBezier {
+            start_mm: [10.0, 10.0, 0.0],
+            control_1_mm: [11.0, 10.0, 0.0],
+            control_2_mm: [-10.0, -20.0, 0.0],
+            end_mm: [20.0, 0.0, 0.0],
+        },
+    ];
+    assert!(matches!(
+        invalid.apply_batch(&commands(adjacent_self_intersection)),
+        Err(CanonicalError::InvalidSweep)
+    ));
+    assert_eq!(invalid.current().canonical_digest(), before);
+    assert_eq!(invalid.visible_undo_steps(), 0);
+}

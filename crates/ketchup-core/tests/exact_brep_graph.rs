@@ -1,16 +1,17 @@
 use ketchup_core::document::{
     BodyId, BooleanOperation, CanonicalCommand, CanonicalError, CommandBatch, DefinitionId,
     Dimension, DocumentStore, EdgeFinishKind, FeatureId, FeatureKind, LoftSection, ProfileSegment,
-    StableFaceRole,
+    SpatialPathSegment, StableFaceRole,
 };
 use ketchup_core::exact_brep_graph::{
     EXACT_BREP_GRAPH_SCHEMA_V6, EXACT_BREP_GRAPH_SCHEMA_V7, EXACT_BREP_GRAPH_SCHEMA_V8,
     EXACT_BREP_GRAPH_SCHEMA_V9, EXACT_BREP_GRAPH_SCHEMA_V10, EXACT_BREP_GRAPH_SCHEMA_V11,
-    ExactBRepBooleanOperation, ExactBRepEdgeFinishKind, ExactBRepGraph, ExactBRepGraphError,
-    ExactBRepOperation, ExactBRepPlanarGeometry, ExactBRepPlanarLoop, ExactBRepPlanarSegment,
-    ExactBRepTopologyKind, MAX_EXACT_BREP_GRAPH_BYTES, MAX_EXACT_BREP_GRAPH_SEGMENTS,
-    MAX_EXACT_BREP_PLANAR_LOOP_SEGMENTS, MAX_EXACT_BREP_REGION_HOLES,
-    MAX_EXACT_BREP_REGION_SEGMENTS,
+    EXACT_BREP_GRAPH_SCHEMA_V12, ExactBRepBooleanOperation, ExactBRepEdgeFinishKind,
+    ExactBRepGraph, ExactBRepGraphError, ExactBRepNodeId, ExactBRepOperation,
+    ExactBRepPlanarGeometry, ExactBRepPlanarLoop, ExactBRepPlanarSegment, ExactBRepProfileId,
+    ExactBRepSpatialPathSegment, ExactBRepTopologyKind, MAX_EXACT_BREP_GRAPH_BYTES,
+    MAX_EXACT_BREP_GRAPH_SEGMENTS, MAX_EXACT_BREP_PLANAR_LOOP_SEGMENTS,
+    MAX_EXACT_BREP_REGION_HOLES, MAX_EXACT_BREP_REGION_SEGMENTS,
 };
 use ketchup_core::exact_product::{
     ExactFaceRole, ExactFeatureChainRequest, ExactProductError, build_box_render_package,
@@ -1643,4 +1644,153 @@ fn cubic_sweep_selects_v11_round_trips_and_rejects_v10_downgrade() {
         downgraded.to_bytes(),
         Err(ExactBRepGraphError::InvalidGraph)
     );
+}
+
+fn spatial_sweep_v12_graph() -> ExactBRepGraph {
+    let definition = DefinitionId(900);
+    let profile = FeatureId(901);
+    let path = FeatureId(902);
+    let sweep = FeatureId(903);
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: definition,
+                name: "V12 spatial sweep graph".into(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: profile,
+                definition_id: definition,
+                name: "Small rectangle".into(),
+                kind: FeatureKind::Profile {
+                    points_mm: vec![[-1.0, -1.0], [1.0, -1.0], [1.0, 1.0], [-1.0, 1.0]],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: path,
+                definition_id: definition,
+                name: "Non-coplanar line-arc-cubic path".into(),
+                kind: FeatureKind::SpatialPath {
+                    segments: vec![
+                        SpatialPathSegment::Line {
+                            start_mm: [0.0, 0.0, 0.0],
+                            end_mm: [10.0, 0.0, 0.0],
+                        },
+                        SpatialPathSegment::CircularArc {
+                            start_mm: [10.0, 0.0, 0.0],
+                            end_mm: [20.0, 10.0, 0.0],
+                            center_mm: [10.0, 10.0, 0.0],
+                            normal: [0.0, 0.0, 1.0],
+                            clockwise: false,
+                        },
+                        SpatialPathSegment::CubicBezier {
+                            start_mm: [20.0, 10.0, 0.0],
+                            control_1_mm: [20.0, 15.0, 0.0],
+                            control_2_mm: [20.0, 20.0, 5.0],
+                            end_mm: [20.0, 20.0, 10.0],
+                        },
+                    ],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: sweep,
+                definition_id: definition,
+                name: "V12 spatial sweep".into(),
+                kind: FeatureKind::Sweep { profile, path },
+            },
+        ]))
+        .unwrap();
+    ExactBRepGraph::from_snapshot(&document.current(), definition, sweep).unwrap()
+}
+
+#[test]
+fn non_coplanar_mixed_spatial_sweep_selects_v12_with_exact_stable_payload() {
+    let graph = spatial_sweep_v12_graph();
+    assert_eq!(graph.schema, EXACT_BREP_GRAPH_SCHEMA_V12);
+    assert_eq!(
+        graph.profiles.len(),
+        1,
+        "the spatial path is embedded in the operation"
+    );
+    let ExactBRepOperation::SpatialSweep { profile, path } = &graph.nodes[0].operation else {
+        panic!("fixture must compile as a V12 spatial sweep");
+    };
+    assert_eq!(*profile, ExactBRepProfileId(0));
+    assert_eq!(path.source_feature_id, 902);
+    assert_eq!(
+        path.segments,
+        vec![
+            ExactBRepSpatialPathSegment::Line {
+                start_bits: [0.0, 0.0, 0.0].map(f64::to_bits),
+                end_bits: [10.0, 0.0, 0.0].map(f64::to_bits),
+            },
+            ExactBRepSpatialPathSegment::CircularArc {
+                start_bits: [10.0, 0.0, 0.0].map(f64::to_bits),
+                end_bits: [20.0, 10.0, 0.0].map(f64::to_bits),
+                center_bits: [10.0, 10.0, 0.0].map(f64::to_bits),
+                normal_bits: [0.0, 0.0, 1.0].map(f64::to_bits),
+                clockwise: false,
+            },
+            ExactBRepSpatialPathSegment::CubicBezier {
+                start_bits: [20.0, 10.0, 0.0].map(f64::to_bits),
+                control_1_bits: [20.0, 15.0, 0.0].map(f64::to_bits),
+                control_2_bits: [20.0, 20.0, 5.0].map(f64::to_bits),
+                end_bits: [20.0, 20.0, 10.0].map(f64::to_bits),
+            },
+        ]
+    );
+
+    let section_radius = 2.0_f64.sqrt();
+    let bounds = graph.producer_bounds_mm().unwrap().unwrap();
+    assert_eq!(
+        bounds,
+        [
+            [-section_radius, -section_radius, -10.0 - section_radius],
+            [
+                20.0 + section_radius,
+                20.0 + section_radius,
+                10.0 + section_radius
+            ],
+        ]
+    );
+    assert!(bounds.into_iter().flatten().all(f64::is_finite));
+    let bytes = graph.to_bytes().unwrap();
+    assert_eq!(ExactBRepGraph::from_bytes(&bytes).unwrap(), graph);
+    assert_eq!(graph.to_bytes().unwrap(), bytes);
+
+    let mut downgraded = graph;
+    downgraded.schema = EXACT_BREP_GRAPH_SCHEMA_V11.to_owned();
+    assert_eq!(
+        downgraded.to_bytes(),
+        Err(ExactBRepGraphError::InvalidGraph)
+    );
+}
+
+#[test]
+fn spatial_sweep_paths_count_toward_the_graph_wide_segment_limit() {
+    let mut graph = spatial_sweep_v12_graph();
+    let path_segments = (0..64)
+        .map(|index| ExactBRepSpatialPathSegment::Line {
+            start_bits: [index as f64, 0.0, 0.0].map(f64::to_bits),
+            end_bits: [index as f64 + 1.0, 0.0, 0.0].map(f64::to_bits),
+        })
+        .collect::<Vec<_>>();
+    let template = graph.nodes[0].clone();
+    let node_count = MAX_EXACT_BREP_GRAPH_SEGMENTS / path_segments.len() + 1;
+    graph.nodes = (0..node_count)
+        .map(|index| {
+            let mut node = template.clone();
+            node.id = ExactBRepNodeId(index as u32);
+            node.source_feature_id = 10_000 + index as u64;
+            let ExactBRepOperation::SpatialSweep { path, .. } = &mut node.operation else {
+                unreachable!();
+            };
+            path.source_feature_id = 20_000 + index as u64;
+            path.segments.clone_from(&path_segments);
+            node
+        })
+        .collect();
+    graph.producer_feature_id = graph.nodes.last().unwrap().source_feature_id;
+
+    assert_eq!(graph.to_bytes(), Err(ExactBRepGraphError::ResourceLimit));
 }

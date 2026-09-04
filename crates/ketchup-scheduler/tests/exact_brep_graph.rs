@@ -1,12 +1,12 @@
 use ketchup_core::document::{
     BooleanOperation, CanonicalCommand, CanonicalError, CommandBatch, DefinitionId, Dimension,
     DocumentStore, EdgeFinishKind, FeatureId, FeatureKind, LoftSection, NodeId, ProfileSegment,
-    SolidToolPlan, Transform,
+    SolidToolPlan, SpatialPathSegment, Transform,
 };
 use ketchup_core::exact_brep_graph::{
     EXACT_BREP_GRAPH_SCHEMA_V8, EXACT_BREP_GRAPH_SCHEMA_V9, EXACT_BREP_GRAPH_SCHEMA_V10,
-    EXACT_BREP_GRAPH_SCHEMA_V11, ExactBRepGraph, ExactBRepGraphError, ExactBRepOperation,
-    ExactBRepPlanarGeometry, ExactBRepPlanarLoop, ExactBRepPlanarSegment,
+    EXACT_BREP_GRAPH_SCHEMA_V11, EXACT_BREP_GRAPH_SCHEMA_V12, ExactBRepGraph, ExactBRepGraphError,
+    ExactBRepOperation, ExactBRepPlanarGeometry, ExactBRepPlanarLoop, ExactBRepPlanarSegment,
     MAX_EXACT_BREP_GRAPH_PROFILES,
 };
 use ketchup_core::exact_product::{
@@ -3012,6 +3012,106 @@ fn worker_evaluates_v11_cubic_sweep_with_mesh_and_step_round_trip() {
 
     let directory = tempfile::tempdir().unwrap();
     let step_path = directory.path().join("v11-cubic-sweep.step");
+    supervisor
+        .export_exact_brep_graph_step(&snapshot, &package, &step_path)
+        .unwrap();
+    let source = std::fs::read(&step_path).unwrap();
+    let evidence = supervisor
+        .inspect_step_import_with_cancellation(
+            &step_path,
+            &sha256_hex(&source),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+    assert_eq!(evidence.solid_count, 1);
+    assert!((evidence.volume_mm3 - package.volume_mm3).abs() <= package.volume_mm3 * 1.0e-9);
+}
+
+#[test]
+fn worker_evaluates_v12_spatial_sweep_with_mesh_and_step_v3_round_trip() {
+    let definition = DefinitionId(810);
+    let profile = FeatureId(811);
+    let path = FeatureId(812);
+    let sweep = FeatureId(813);
+    let spatial_segments = vec![
+        SpatialPathSegment::Line {
+            start_mm: [0.0, 0.0, 0.0],
+            end_mm: [30.0, 0.0, 0.0],
+        },
+        SpatialPathSegment::CircularArc {
+            start_mm: [30.0, 0.0, 0.0],
+            end_mm: [40.0, 10.0, 0.0],
+            center_mm: [30.0, 10.0, 0.0],
+            normal: [0.0, 0.0, 1.0],
+            clockwise: false,
+        },
+        SpatialPathSegment::CubicBezier {
+            start_mm: [40.0, 10.0, 0.0],
+            control_1_mm: [40.0, 20.0, 0.0],
+            control_2_mm: [40.0, 30.0, 10.0],
+            end_mm: [40.0, 40.0, 20.0],
+        },
+    ];
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: definition,
+                name: "V12 spatial sweep".into(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: profile,
+                definition_id: definition,
+                name: "Spatial section".into(),
+                kind: FeatureKind::Profile {
+                    points_mm: vec![[-2.0, -1.0], [2.0, -1.0], [2.0, 1.0], [-2.0, 1.0]],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: path,
+                definition_id: definition,
+                name: "Non-coplanar path".into(),
+                kind: FeatureKind::SpatialPath {
+                    segments: spatial_segments.clone(),
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: sweep,
+                definition_id: definition,
+                name: "Spatial sweep".into(),
+                kind: FeatureKind::Sweep { profile, path },
+            },
+        ]))
+        .unwrap();
+    let snapshot = document.current();
+    let graph = ExactBRepGraph::from_snapshot(&snapshot, definition, sweep).unwrap();
+    assert_eq!(graph.schema, EXACT_BREP_GRAPH_SCHEMA_V12);
+    assert!(matches!(
+        &graph.nodes.last().unwrap().operation,
+        ExactBRepOperation::SpatialSweep { path, .. } if path.segments.len() == spatial_segments.len()
+    ));
+    let mut downgraded = graph.clone();
+    downgraded.schema = EXACT_BREP_GRAPH_SCHEMA_V11.to_owned();
+    assert_eq!(
+        downgraded.to_bytes(),
+        Err(ExactBRepGraphError::InvalidGraph)
+    );
+
+    let mut supervisor =
+        ExactWorkerSupervisor::spawn(env!("CARGO_BIN_EXE_ketchup-exact-worker")).unwrap();
+    let package = supervisor.evaluate_exact_brep_graph(&graph).unwrap();
+    assert_eq!(
+        supervisor.evaluate_exact_brep_graph(&graph).unwrap(),
+        package
+    );
+    assert_eq!(package.graph, graph);
+    assert_eq!(package.topology_counts[4], 1);
+    assert!(package.bounds_mm[1][2] > package.bounds_mm[0][2]);
+    assert!(!package.vertices.is_empty());
+    assert!(!package.triangles.is_empty());
+
+    let directory = tempfile::tempdir().unwrap();
+    let step_path = directory.path().join("v12-spatial-sweep.step");
     supervisor
         .export_exact_brep_graph_step(&snapshot, &package, &step_path)
         .unwrap();

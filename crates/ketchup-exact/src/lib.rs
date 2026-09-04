@@ -8,6 +8,7 @@ const MIN_LENGTH_MM: f64 = 0.01;
 const MAX_LENGTH_MM: f64 = 100_000.0;
 const MAX_COORDINATE_MM: f64 = 1_000_000.0;
 const PLANAR_SEGMENT_STRIDE: usize = 10;
+const SPATIAL_SEGMENT_STRIDE: usize = 14;
 const MIN_SWEEP_PATH_SEGMENT_LENGTH_MM: f64 = 1.0e-7;
 const MAX_SWEEP_PATH_SEGMENTS: usize = 64;
 pub const MAX_PLANAR_LOOP_SEGMENTS: usize = 64;
@@ -446,6 +447,28 @@ pub enum PlanarProfileSegment {
     },
 }
 
+/// One exact three-dimensional segment of an open spatial sweep path.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SpatialProfileSegment {
+    Line {
+        start_mm: [f64; 3],
+        end_mm: [f64; 3],
+    },
+    CircularArc {
+        start_mm: [f64; 3],
+        end_mm: [f64; 3],
+        center_mm: [f64; 3],
+        normal: [f64; 3],
+        clockwise: bool,
+    },
+    CubicBezier {
+        start_mm: [f64; 3],
+        control_1_mm: [f64; 3],
+        control_2_mm: [f64; 3],
+        end_mm: [f64; 3],
+    },
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum PlanarProfileLoop {
     Segments(Vec<PlanarProfileSegment>),
@@ -653,6 +676,434 @@ fn flatten_planar_segments(segments: &[PlanarProfileSegment]) -> Vec<f64> {
             ],
         })
         .collect()
+}
+
+fn spatial_segment_endpoints(segment: &SpatialProfileSegment) -> ([f64; 3], [f64; 3]) {
+    match segment {
+        SpatialProfileSegment::Line { start_mm, end_mm }
+        | SpatialProfileSegment::CircularArc {
+            start_mm, end_mm, ..
+        }
+        | SpatialProfileSegment::CubicBezier {
+            start_mm, end_mm, ..
+        } => (*start_mm, *end_mm),
+    }
+}
+
+fn spatial_sub(left: [f64; 3], right: [f64; 3]) -> [f64; 3] {
+    [left[0] - right[0], left[1] - right[1], left[2] - right[2]]
+}
+
+fn spatial_dot(left: [f64; 3], right: [f64; 3]) -> f64 {
+    left[0] * right[0] + left[1] * right[1] + left[2] * right[2]
+}
+
+fn spatial_cross(left: [f64; 3], right: [f64; 3]) -> [f64; 3] {
+    [
+        left[1] * right[2] - left[2] * right[1],
+        left[2] * right[0] - left[0] * right[2],
+        left[0] * right[1] - left[1] * right[0],
+    ]
+}
+
+fn spatial_length(vector: [f64; 3]) -> f64 {
+    spatial_dot(vector, vector).sqrt()
+}
+
+fn spatial_unit(vector: [f64; 3]) -> Option<[f64; 3]> {
+    let length = spatial_length(vector);
+    (length.is_finite() && length > MIN_SWEEP_PATH_SEGMENT_LENGTH_MM)
+        .then(|| vector.map(|coordinate| coordinate / length))
+}
+
+fn spatial_sweep_path_arc_angle(segment: &SpatialProfileSegment) -> Option<f64> {
+    let SpatialProfileSegment::CircularArc {
+        start_mm,
+        end_mm,
+        center_mm,
+        normal,
+        clockwise,
+    } = segment
+    else {
+        return None;
+    };
+    let normal = spatial_unit(*normal)?;
+    let start_radius = spatial_sub(*start_mm, *center_mm);
+    let end_radius = spatial_sub(*end_mm, *center_mm);
+    let signed = spatial_dot(normal, spatial_cross(start_radius, end_radius))
+        .atan2(spatial_dot(start_radius, end_radius));
+    Some(if *clockwise {
+        (-signed).rem_euclid(std::f64::consts::TAU)
+    } else {
+        signed.rem_euclid(std::f64::consts::TAU)
+    })
+}
+
+fn spatial_sweep_path_join_is_separated(
+    left: &SpatialProfileSegment,
+    right: &SpatialProfileSegment,
+    tangent: [f64; 3],
+) -> bool {
+    let join = spatial_segment_endpoints(left).1;
+    let projection = |point: [f64; 3]| spatial_dot(spatial_sub(point, join), tangent);
+    let left_is_behind = match left {
+        SpatialProfileSegment::Line { start_mm, .. } => {
+            projection(*start_mm) < -SWEEP_PATH_INTERSECTION_EPSILON_MM
+        }
+        SpatialProfileSegment::CircularArc { .. } => spatial_sweep_path_arc_angle(left)
+            .is_some_and(|angle| angle < std::f64::consts::PI - SWEEP_PATH_INTERSECTION_EPSILON_MM),
+        SpatialProfileSegment::CubicBezier {
+            start_mm,
+            control_1_mm,
+            control_2_mm,
+            ..
+        } => [*start_mm, *control_1_mm, *control_2_mm]
+            .into_iter()
+            .all(|point| projection(point) < -SWEEP_PATH_INTERSECTION_EPSILON_MM),
+    };
+    let right_is_ahead = match right {
+        SpatialProfileSegment::Line { end_mm, .. } => {
+            projection(*end_mm) > SWEEP_PATH_INTERSECTION_EPSILON_MM
+        }
+        SpatialProfileSegment::CircularArc { .. } => spatial_sweep_path_arc_angle(right)
+            .is_some_and(|angle| angle < std::f64::consts::PI - SWEEP_PATH_INTERSECTION_EPSILON_MM),
+        SpatialProfileSegment::CubicBezier {
+            control_1_mm,
+            control_2_mm,
+            end_mm,
+            ..
+        } => [*control_1_mm, *control_2_mm, *end_mm]
+            .into_iter()
+            .all(|point| projection(point) > SWEEP_PATH_INTERSECTION_EPSILON_MM),
+    };
+    left_is_behind && right_is_ahead
+}
+
+fn flatten_spatial_segments(segments: &[SpatialProfileSegment]) -> Vec<f64> {
+    segments
+        .iter()
+        .flat_map(|segment| match segment {
+            SpatialProfileSegment::Line { start_mm, end_mm } => [
+                10.0,
+                start_mm[0],
+                start_mm[1],
+                start_mm[2],
+                end_mm[0],
+                end_mm[1],
+                end_mm[2],
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+            ],
+            SpatialProfileSegment::CircularArc {
+                start_mm,
+                end_mm,
+                center_mm,
+                normal,
+                clockwise,
+            } => [
+                11.0,
+                start_mm[0],
+                start_mm[1],
+                start_mm[2],
+                end_mm[0],
+                end_mm[1],
+                end_mm[2],
+                center_mm[0],
+                center_mm[1],
+                center_mm[2],
+                normal[0],
+                normal[1],
+                normal[2],
+                f64::from(*clockwise),
+            ],
+            SpatialProfileSegment::CubicBezier {
+                start_mm,
+                control_1_mm,
+                control_2_mm,
+                end_mm,
+            } => [
+                12.0,
+                start_mm[0],
+                start_mm[1],
+                start_mm[2],
+                end_mm[0],
+                end_mm[1],
+                end_mm[2],
+                control_1_mm[0],
+                control_1_mm[1],
+                control_1_mm[2],
+                control_2_mm[0],
+                control_2_mm[1],
+                control_2_mm[2],
+                0.0,
+            ],
+        })
+        .collect()
+}
+
+fn spatial_sweep_path_metrics(
+    segment: &SpatialProfileSegment,
+    operation: &'static str,
+    input: &str,
+) -> Result<(f64, [f64; 3], [f64; 3]), GeometryError> {
+    let invalid = || {
+        parameter_error(
+            GeometryErrorCode::InvalidProfile,
+            operation,
+            input,
+            "Spatial Sweep path must contain only bounded non-degenerate lines, circular arcs, and cubic Bezier segments"
+                .to_owned(),
+        )
+    };
+    let (start, end) = spatial_segment_endpoints(segment);
+    for (point_name, point) in [("start", start), ("end", end)] {
+        for (axis, coordinate) in point.into_iter().enumerate() {
+            validate_coordinate(
+                coordinate,
+                &format!("path_{point_name}_axis_{axis}"),
+                operation,
+                input,
+            )?;
+        }
+    }
+    match segment {
+        SpatialProfileSegment::Line { .. } => {
+            let direction = spatial_sub(end, start);
+            let tangent = spatial_unit(direction).ok_or_else(invalid)?;
+            Ok((spatial_length(direction), tangent, tangent))
+        }
+        SpatialProfileSegment::CircularArc {
+            center_mm,
+            normal,
+            clockwise,
+            ..
+        } => {
+            for (point_name, point) in [("center", *center_mm), ("normal", *normal)] {
+                for (axis, coordinate) in point.into_iter().enumerate() {
+                    validate_coordinate(
+                        coordinate,
+                        &format!("path_{point_name}_axis_{axis}"),
+                        operation,
+                        input,
+                    )?;
+                }
+            }
+            let normal_length = spatial_length(*normal);
+            if (normal_length - 1.0).abs() > SWEEP_PATH_INTERSECTION_EPSILON_MM {
+                return Err(invalid());
+            }
+            let normal = spatial_unit(*normal).ok_or_else(invalid)?;
+            let start_radius = spatial_sub(start, *center_mm);
+            let end_radius = spatial_sub(end, *center_mm);
+            let radius = spatial_length(start_radius);
+            let end_radius_length = spatial_length(end_radius);
+            if radius <= MIN_SWEEP_PATH_SEGMENT_LENGTH_MM
+                || (radius - end_radius_length).abs() > SWEEP_PATH_INTERSECTION_EPSILON_MM
+                || spatial_dot(start_radius, normal).abs() > SWEEP_PATH_INTERSECTION_EPSILON_MM
+                || spatial_dot(end_radius, normal).abs() > SWEEP_PATH_INTERSECTION_EPSILON_MM
+                || start == end
+            {
+                return Err(invalid());
+            }
+            let signed_angle = spatial_dot(normal, spatial_cross(start_radius, end_radius))
+                .atan2(spatial_dot(start_radius, end_radius));
+            let angle = if *clockwise {
+                (-signed_angle).rem_euclid(std::f64::consts::TAU)
+            } else {
+                signed_angle.rem_euclid(std::f64::consts::TAU)
+            };
+            let length = radius * angle;
+            if length <= MIN_SWEEP_PATH_SEGMENT_LENGTH_MM {
+                return Err(invalid());
+            }
+            let sign = if *clockwise { -1.0 } else { 1.0 };
+            let start_tangent = spatial_unit(spatial_cross(normal, start_radius).map(|v| sign * v))
+                .ok_or_else(invalid)?;
+            let end_tangent = spatial_unit(spatial_cross(normal, end_radius).map(|v| sign * v))
+                .ok_or_else(invalid)?;
+            Ok((length, start_tangent, end_tangent))
+        }
+        SpatialProfileSegment::CubicBezier {
+            control_1_mm,
+            control_2_mm,
+            ..
+        } => {
+            for (point_name, point) in [("control_1", *control_1_mm), ("control_2", *control_2_mm)]
+            {
+                for (axis, coordinate) in point.into_iter().enumerate() {
+                    validate_coordinate(
+                        coordinate,
+                        &format!("path_{point_name}_axis_{axis}"),
+                        operation,
+                        input,
+                    )?;
+                }
+            }
+            let chord = spatial_sub(end, start);
+            let first = spatial_sub(*control_1_mm, start);
+            let middle = spatial_sub(*control_2_mm, *control_1_mm);
+            let last = spatial_sub(end, *control_2_mm);
+            let chord_squared = spatial_dot(chord, chord);
+            let projection_1 = spatial_dot(first, chord);
+            let projection_2 = spatial_dot(spatial_sub(*control_2_mm, start), chord);
+            if start == end
+                || projection_1 <= 0.0
+                || projection_2 < projection_1
+                || projection_2 >= chord_squared
+            {
+                return Err(invalid());
+            }
+            let start_tangent = spatial_unit(first).ok_or_else(invalid)?;
+            let end_tangent = spatial_unit(last).ok_or_else(invalid)?;
+            Ok((
+                spatial_length(first) + spatial_length(middle) + spatial_length(last),
+                start_tangent,
+                end_tangent,
+            ))
+        }
+    }
+}
+
+fn spatial_sweep_path_self_intersects(
+    segments: &[SpatialProfileSegment],
+    metrics: &[(f64, [f64; 3], [f64; 3])],
+) -> bool {
+    if segments
+        .windows(2)
+        .zip(metrics.windows(2))
+        .any(|(segments, metrics)| {
+            !spatial_sweep_path_join_is_separated(&segments[0], &segments[1], metrics[0].2)
+        })
+    {
+        return true;
+    }
+    if segments.windows(2).zip(metrics.windows(2)).any(
+        |(segments, metrics)| {
+            matches!(
+                (&segments[0], &segments[1]),
+                (
+                    SpatialProfileSegment::CircularArc {
+                        start_mm,
+                        center_mm: left_center,
+                        ..
+                    },
+                    SpatialProfileSegment::CircularArc {
+                        center_mm: right_center,
+                        ..
+                    }
+                ) if left_center == right_center
+                    && metrics[0].0 + metrics[1].0
+                        >= std::f64::consts::TAU * spatial_length(spatial_sub(*start_mm, *left_center))
+                            - SWEEP_PATH_INTERSECTION_EPSILON_MM
+            )
+        },
+    ) {
+        return true;
+    }
+    let bounds = segments
+        .iter()
+        .map(|segment| {
+            let points = match segment {
+                SpatialProfileSegment::Line { start_mm, end_mm } => vec![*start_mm, *end_mm],
+                SpatialProfileSegment::CircularArc {
+                    start_mm,
+                    end_mm,
+                    center_mm,
+                    ..
+                } => {
+                    let radius = spatial_length(spatial_sub(*start_mm, *center_mm))
+                        .max(spatial_length(spatial_sub(*end_mm, *center_mm)));
+                    return [
+                        center_mm.map(|coordinate| coordinate - radius),
+                        center_mm.map(|coordinate| coordinate + radius),
+                    ];
+                }
+                SpatialProfileSegment::CubicBezier {
+                    start_mm,
+                    control_1_mm,
+                    control_2_mm,
+                    end_mm,
+                } => vec![*start_mm, *control_1_mm, *control_2_mm, *end_mm],
+            };
+            [0, 1].map(|bound| {
+                [0, 1, 2].map(|axis| {
+                    points.iter().map(|point| point[axis]).fold(
+                        if bound == 0 {
+                            f64::INFINITY
+                        } else {
+                            f64::NEG_INFINITY
+                        },
+                        if bound == 0 { f64::min } else { f64::max },
+                    )
+                })
+            })
+        })
+        .collect::<Vec<_>>();
+    (0..bounds.len()).any(|left| {
+        (left + 2..bounds.len()).any(|right| {
+            [0, 1, 2].into_iter().all(|axis| {
+                bounds[left][0][axis] <= bounds[right][1][axis] + SWEEP_PATH_INTERSECTION_EPSILON_MM
+                    && bounds[right][0][axis]
+                        <= bounds[left][1][axis] + SWEEP_PATH_INTERSECTION_EPSILON_MM
+            })
+        })
+    })
+}
+
+fn validate_spatial_sweep_path(
+    segments: &[SpatialProfileSegment],
+    operation: &'static str,
+    input: &str,
+) -> Result<Vec<(f64, [f64; 3], [f64; 3])>, GeometryError> {
+    let invalid = |diagnostic: &str| {
+        parameter_error(
+            GeometryErrorCode::InvalidProfile,
+            operation,
+            input,
+            diagnostic.to_owned(),
+        )
+    };
+    if !(1..=MAX_SWEEP_PATH_SEGMENTS).contains(&segments.len()) {
+        return Err(invalid(
+            "Spatial Sweep requires between one and 64 path segments",
+        ));
+    }
+    let metrics = segments
+        .iter()
+        .map(|segment| spatial_sweep_path_metrics(segment, operation, input))
+        .collect::<Result<Vec<_>, _>>()?;
+    if segments.first().map(spatial_segment_endpoints).unwrap().0
+        == segments.last().map(spatial_segment_endpoints).unwrap().1
+    {
+        return Err(invalid("Spatial Sweep path must remain geometrically open"));
+    }
+    for (segments, metrics) in segments.windows(2).zip(metrics.windows(2)) {
+        if spatial_segment_endpoints(&segments[0]).1 != spatial_segment_endpoints(&segments[1]).0 {
+            return Err(invalid("Spatial Sweep path segments are disconnected"));
+        }
+        if spatial_dot(metrics[0].2, metrics[1].1) < 1.0 - 1.0e-9
+            || spatial_length(spatial_cross(metrics[0].2, metrics[1].1)) > 1.0e-9
+        {
+            return Err(invalid(
+                "Spatial Sweep path segments must be C1 tangent-continuous",
+            ));
+        }
+    }
+    if spatial_sweep_path_self_intersects(segments, &metrics) {
+        return Err(invalid("Spatial Sweep path must not self-intersect"));
+    }
+    validate_length(
+        metrics.iter().map(|metric| metric.0).sum(),
+        "path_length",
+        operation,
+        input,
+    )?;
+    Ok(metrics)
 }
 
 fn planar_segment_signed_area(segment: &PlanarProfileSegment, origin: [f64; 2]) -> f64 {
@@ -1187,6 +1638,9 @@ pub enum ExactBodyBooleanOperation {
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ExactBackend;
+
+/// Public exact-kernel name used by canonical geometry integrations.
+pub type ExactKernel = ExactBackend;
 
 impl ExactBackend {
     #[must_use]
@@ -1839,6 +2293,48 @@ impl ExactBackend {
             operation,
             &input,
         )?;
+        let output = collect_output(
+            ffi::sweep_planar_profile_native(&profile_values, &path_values),
+            operation,
+            &input,
+            HistoryConfidence::Partial,
+        )?;
+        let bounds = output.body.topology.bounds_mm;
+        for (name, coordinate) in [
+            ("output_min_x", bounds.min.x),
+            ("output_min_y", bounds.min.y),
+            ("output_min_z", bounds.min.z),
+            ("output_max_x", bounds.max.x),
+            ("output_max_y", bounds.max.y),
+            ("output_max_z", bounds.max.z),
+        ] {
+            validate_coordinate(coordinate, name, operation, &input)?;
+        }
+        Ok(output)
+    }
+
+    pub fn sweep_spatial_profile(
+        &self,
+        profile: &[PlanarProfileSegment],
+        path: &[SpatialProfileSegment],
+    ) -> Result<ExactOpOutput, GeometryError> {
+        let operation = "sweep_spatial_profile";
+        let profile_values = flatten_planar_segments(profile);
+        let path_values = flatten_spatial_segments(path);
+        debug_assert_eq!(path_values.len(), path.len() * SPATIAL_SEGMENT_STRIDE);
+        let input = format!(
+            "{operation}:{:?}:{:?}",
+            profile_values
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>(),
+            path_values
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>()
+        );
+        validate_mixed_profile(profile, operation, &input)?;
+        validate_spatial_sweep_path(path, operation, &input)?;
         let output = collect_output(
             ffi::sweep_planar_profile_native(&profile_values, &path_values),
             operation,
@@ -7485,6 +7981,153 @@ mod tests {
             (actual - expected).abs() <= 1.0e-6,
             "{actual} != {expected}"
         );
+    }
+
+    #[test]
+    fn spatial_sweep_validation_accepts_canonical_segment_count_bounds() {
+        let path = |count: usize| {
+            (0..count)
+                .map(|index| SpatialProfileSegment::Line {
+                    start_mm: [index as f64, 0.0, 0.0],
+                    end_mm: [index as f64 + 1.0, 0.0, 0.0],
+                })
+                .collect::<Vec<_>>()
+        };
+
+        assert!(validate_spatial_sweep_path(&path(1), "sweep_spatial_profile", "unit").is_ok());
+        assert!(validate_spatial_sweep_path(&path(64), "sweep_spatial_profile", "unit").is_ok());
+        assert_eq!(
+            validate_spatial_sweep_path(&[], "sweep_spatial_profile", "unit")
+                .unwrap_err()
+                .code,
+            GeometryErrorCode::InvalidProfile
+        );
+        assert_eq!(
+            validate_spatial_sweep_path(&path(65), "sweep_spatial_profile", "unit")
+                .unwrap_err()
+                .code,
+            GeometryErrorCode::InvalidProfile
+        );
+    }
+
+    #[test]
+    fn spatial_sweep_validation_separates_adjacent_segments_at_the_join_tangent() {
+        let straight = [
+            SpatialProfileSegment::Line {
+                start_mm: [0.0, 0.0, 0.0],
+                end_mm: [10.0, 0.0, 0.0],
+            },
+            SpatialProfileSegment::Line {
+                start_mm: [10.0, 0.0, 0.0],
+                end_mm: [20.0, 0.0, 0.0],
+            },
+        ];
+        let circular = [
+            SpatialProfileSegment::CircularArc {
+                start_mm: [10.0, 0.0, 0.0],
+                end_mm: [0.0, 10.0, 0.0],
+                center_mm: [0.0, 0.0, 0.0],
+                normal: [0.0, 0.0, 1.0],
+                clockwise: false,
+            },
+            SpatialProfileSegment::CircularArc {
+                start_mm: [0.0, 10.0, 0.0],
+                end_mm: [-10.0, 0.0, 0.0],
+                center_mm: [0.0, 0.0, 0.0],
+                normal: [0.0, 0.0, 1.0],
+                clockwise: false,
+            },
+        ];
+        let non_coplanar_mixed = [
+            SpatialProfileSegment::Line {
+                start_mm: [0.0, 0.0, 0.0],
+                end_mm: [10.0, 0.0, 0.0],
+            },
+            SpatialProfileSegment::CircularArc {
+                start_mm: [10.0, 0.0, 0.0],
+                end_mm: [20.0, 10.0, 0.0],
+                center_mm: [10.0, 10.0, 0.0],
+                normal: [0.0, 0.0, 1.0],
+                clockwise: false,
+            },
+            SpatialProfileSegment::CubicBezier {
+                start_mm: [20.0, 10.0, 0.0],
+                control_1_mm: [20.0, 15.0, 0.0],
+                control_2_mm: [20.0, 20.0, 5.0],
+                end_mm: [20.0, 20.0, 10.0],
+            },
+        ];
+        for path in [&straight[..], &circular[..], &non_coplanar_mixed[..]] {
+            validate_spatial_sweep_path(path, "sweep_spatial_profile", "unit")
+                .expect("strictly separated C1 joins must remain valid");
+        }
+
+        let adjacent_self_intersection = [
+            SpatialProfileSegment::CubicBezier {
+                start_mm: [0.0, 0.0, 0.0],
+                control_1_mm: [10.0, -5.0, 0.0],
+                control_2_mm: [9.0, 10.0, 0.0],
+                end_mm: [10.0, 10.0, 0.0],
+            },
+            SpatialProfileSegment::CubicBezier {
+                start_mm: [10.0, 10.0, 0.0],
+                control_1_mm: [11.0, 10.0, 0.0],
+                control_2_mm: [-10.0, -20.0, 0.0],
+                end_mm: [20.0, 0.0, 0.0],
+            },
+        ];
+        let error = validate_spatial_sweep_path(
+            &adjacent_self_intersection,
+            "sweep_spatial_profile",
+            "unit",
+        )
+        .expect_err("C1 cubics that cross again must fail exact preflight");
+        assert_eq!(error.code, GeometryErrorCode::InvalidProfile);
+        assert!(error.diagnostic.contains("self-intersect"));
+    }
+
+    #[test]
+    fn spatial_sweep_validation_accepts_distinct_near_full_circle_endpoints() {
+        let angle = -5.0e-9_f64;
+        let path = [SpatialProfileSegment::CircularArc {
+            start_mm: [10.0, 0.0, 0.0],
+            end_mm: [10.0 * angle.cos(), 10.0 * angle.sin(), 0.0],
+            center_mm: [0.0, 0.0, 0.0],
+            normal: [0.0, 0.0, 1.0],
+            clockwise: false,
+        }];
+
+        let metrics = validate_spatial_sweep_path(&path, "sweep_spatial_profile", "unit")
+            .expect("distinct endpoints and a bounded near-full arc length must be accepted");
+        assert!(metrics[0].0 > 60.0);
+    }
+
+    #[test]
+    fn spatial_sweep_validation_rejects_conservative_nonadjacent_overlap() {
+        let path = [
+            SpatialProfileSegment::Line {
+                start_mm: [0.0, 0.0, 0.0],
+                end_mm: [30.0, 0.0, 0.0],
+            },
+            SpatialProfileSegment::CircularArc {
+                start_mm: [30.0, 0.0, 0.0],
+                end_mm: [40.0, 10.0, 0.0],
+                center_mm: [30.0, 10.0, 0.0],
+                normal: [0.0, 0.0, 1.0],
+                clockwise: false,
+            },
+            SpatialProfileSegment::CircularArc {
+                start_mm: [40.0, 10.0, 0.0],
+                end_mm: [30.0, 20.0, 0.0],
+                center_mm: [30.0, 10.0, 0.0],
+                normal: [0.0, 0.0, 1.0],
+                clockwise: false,
+            },
+        ];
+        let error = validate_spatial_sweep_path(&path, "sweep_spatial_profile", "unit")
+            .expect_err("overlapping conservative bounds must fail closed");
+        assert_eq!(error.code, GeometryErrorCode::InvalidProfile);
+        assert!(error.diagnostic.contains("self-intersect"));
     }
 
     #[test]
