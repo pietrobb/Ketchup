@@ -4,7 +4,8 @@ use ketchup_core::document::{
     SolidToolPlan, Transform,
 };
 use ketchup_core::exact_brep_graph::{
-    ExactBRepGraph, ExactBRepPlanarGeometry, ExactBRepPlanarLoop, ExactBRepPlanarSegment,
+    EXACT_BREP_GRAPH_SCHEMA_V6, ExactBRepGraph, ExactBRepGraphError, ExactBRepOperation,
+    ExactBRepPlanarGeometry, ExactBRepPlanarLoop, ExactBRepPlanarSegment,
     MAX_EXACT_BREP_GRAPH_PROFILES,
 };
 use ketchup_core::exact_product::{
@@ -1873,6 +1874,243 @@ fn worker_evaluates_planar_offset_face_through_exact_brep_graph() {
         dedicated.identity.result_fingerprint
     );
     assert_eq!(package.bounds_mm, dedicated.bounds_mm);
+}
+
+#[test]
+fn worker_evaluates_signed_circle_offset_through_exact_brep_graph_v6() {
+    const DEFINITION: DefinitionId = DefinitionId(98);
+    const WORKPLANE: FeatureId = FeatureId(980);
+    const CIRCLE: FeatureId = FeatureId(981);
+    const OFFSET: FeatureId = FeatureId(982);
+
+    let mut supervisor =
+        ExactWorkerSupervisor::spawn(env!("CARGO_BIN_EXE_ketchup-exact-worker")).unwrap();
+    let mut result_fingerprints = Vec::new();
+    for (distance_mm, output_radius_mm) in [(3.0, 23.0), (-3.0, 17.0), (-19.99, 0.01)] {
+        let mut document = DocumentStore::new();
+        document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::CreateDefinition {
+                    id: DEFINITION,
+                    name: "Graph circular offset".into(),
+                },
+                CanonicalCommand::CreateFeature {
+                    id: WORKPLANE,
+                    definition_id: DEFINITION,
+                    name: "XY".into(),
+                    kind: FeatureKind::Workplane(WorkplaneSpec::principal(PrincipalPlane::Xy)),
+                },
+                CanonicalCommand::CreateFeature {
+                    id: CIRCLE,
+                    definition_id: DEFINITION,
+                    name: "Circle sketch".into(),
+                    kind: FeatureKind::Sketch(SketchSpec {
+                        workplane: WORKPLANE,
+                        entities: vec![SketchEntity::Circle {
+                            id: SketchEntityId(1),
+                            center_mm: [12.0, -8.0],
+                            radius_mm: 20.0,
+                        }],
+                        constraints: Vec::new(),
+                    }),
+                },
+                CanonicalCommand::CreateFeature {
+                    id: OFFSET,
+                    definition_id: DEFINITION,
+                    name: "Circular offset face".into(),
+                    kind: FeatureKind::PlanarOffset {
+                        profile: CIRCLE,
+                        distance: dimension(distance_mm),
+                    },
+                },
+            ]))
+            .unwrap();
+        let snapshot = document.current();
+        let graph = ExactBRepGraph::from_snapshot(&snapshot, DEFINITION, OFFSET).unwrap();
+        assert_eq!(graph.schema, EXACT_BREP_GRAPH_SCHEMA_V6);
+        assert_eq!(graph.profiles.len(), 1);
+        assert!(matches!(
+            graph.profiles[0].geometry,
+            ExactBRepPlanarGeometry::Circle { .. }
+        ));
+        assert_bounds_close(
+            graph.producer_bounds_mm().unwrap().unwrap(),
+            [
+                12.0 - output_radius_mm,
+                -8.0 - output_radius_mm,
+                0.0,
+                12.0 + output_radius_mm,
+                -8.0 + output_radius_mm,
+                0.0,
+            ],
+        );
+
+        let dedicated_request =
+            ExactPlanarOffsetRequest::from_snapshot(&snapshot, DEFINITION).unwrap();
+        let dedicated = supervisor
+            .evaluate_planar_offset(&dedicated_request)
+            .unwrap();
+        let package = supervisor.evaluate_exact_brep_graph(&graph).unwrap();
+        assert!(package.is_current(&snapshot));
+        assert_eq!(package.identity.producer_feature_id.0, OFFSET.0);
+        assert_eq!(
+            package.identity.result_fingerprint,
+            dedicated.identity.result_fingerprint
+        );
+        assert_eq!(package.bounds_mm, dedicated.bounds_mm);
+        assert_eq!(package.area_mm2, dedicated.area_mm2);
+        assert_eq!(package.topology_counts, [1, 1, 1, 0, 0]);
+        assert!(!package.vertices.is_empty());
+        assert!(!package.triangles.is_empty());
+        assert_eq!(
+            package.triangles.len(),
+            package.triangle_face_ordinals.len()
+        );
+
+        let mesh = StepImportMesh {
+            vertices_mm: package
+                .vertices
+                .iter()
+                .map(|vertex| vertex.position_mm)
+                .collect(),
+            triangles: package
+                .triangles
+                .iter()
+                .zip(&package.triangle_face_ordinals)
+                .map(|(triangle, face_ordinal)| StepMeshTriangle {
+                    vertex_indices: triangle.vertex_indices,
+                    face_ordinal: *face_ordinal,
+                })
+                .collect(),
+        };
+        let evidence = ExactBRepGraphWorkerEvidence {
+            exact_input_digest: package.identity.exact_input_digest.clone(),
+            result_fingerprint: package.identity.result_fingerprint.clone(),
+            volume_mm3: package.volume_mm3,
+            area_mm2: package.area_mm2,
+            topology_counts: package.topology_counts,
+            bounds_mm: package.bounds_mm,
+            backend: package.identity.backend.clone(),
+            tolerance: package.identity.tolerance.clone(),
+        };
+        assert!(
+            ExactBRepGraphPackage::from_worker_evidence(&graph, evidence.clone(), &mesh).is_ok()
+        );
+        assert!(matches!(
+            ExactBRepGraphPackage::from_worker_evidence(
+                &graph,
+                ExactBRepGraphWorkerEvidence {
+                    area_mm2: package.area_mm2 * 0.5,
+                    ..evidence
+                },
+                &mesh,
+            ),
+            Err(ExactProductError::InvalidWorkerEvidence)
+        ));
+        result_fingerprints.push(package.identity.result_fingerprint);
+
+        let mut collapsed = graph;
+        let ExactBRepOperation::PlanarOffset { distance_bits, .. } =
+            &mut collapsed.nodes[0].operation
+        else {
+            panic!("fixture must compile as a planar offset");
+        };
+        *distance_bits = (-20.0_f64).to_bits();
+        assert_eq!(collapsed.validate(), Err(ExactBRepGraphError::InvalidGraph));
+        if distance_mm == 3.0 {
+            use std::io::{BufRead as _, Write as _};
+
+            let encoded = serde_json::to_vec(&collapsed)
+                .unwrap()
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>();
+            let mut worker = std::process::Command::new(env!("CARGO_BIN_EXE_ketchup-exact-worker"))
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .spawn()
+                .unwrap();
+            let mut stdin = worker.stdin.take().unwrap();
+            writeln!(
+                stdin,
+                "EVAL_BREP_GRAPH_V6 {} {}",
+                collapsed.graph_digest, encoded
+            )
+            .unwrap();
+            drop(stdin);
+            let mut response = String::new();
+            std::io::BufReader::new(worker.stdout.take().unwrap())
+                .read_line(&mut response)
+                .unwrap();
+            assert_eq!(response.trim(), "ERR invalid_request");
+            assert!(worker.wait().unwrap().success());
+        }
+    }
+    assert!(
+        result_fingerprints
+            .windows(2)
+            .all(|pair| pair[0] != pair[1])
+    );
+}
+
+#[test]
+fn worker_preserves_large_bounded_rectangle_offset_through_graph_v6() {
+    let definition = DefinitionId(99);
+    let profile = FeatureId(990);
+    let offset = FeatureId(991);
+    let distance_mm = 800_000.0;
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: definition,
+                name: "Large bounded rectangle offset".into(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: profile,
+                definition_id: definition,
+                name: "Rectangle".into(),
+                kind: FeatureKind::Profile {
+                    points_mm: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 8.0], [0.0, 8.0]],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: offset,
+                definition_id: definition,
+                name: "Large offset".into(),
+                kind: FeatureKind::PlanarOffset {
+                    profile,
+                    distance: dimension(distance_mm),
+                },
+            },
+        ]))
+        .unwrap();
+    let snapshot = document.current();
+    let graph = ExactBRepGraph::from_snapshot(&snapshot, definition, offset).unwrap();
+    assert_eq!(graph.schema, EXACT_BREP_GRAPH_SCHEMA_V6);
+    let graph_bounds = graph.producer_bounds_mm().unwrap().unwrap();
+    assert!(graph_bounds[0][0] <= -distance_mm);
+    assert!(graph_bounds[0][1] <= -distance_mm);
+    assert!(graph_bounds[1][0] >= 10.0 + distance_mm);
+    assert!(graph_bounds[1][1] >= 8.0 + distance_mm);
+
+    let mut supervisor =
+        ExactWorkerSupervisor::spawn(env!("CARGO_BIN_EXE_ketchup-exact-worker")).unwrap();
+    let package = supervisor.evaluate_exact_brep_graph(&graph).unwrap();
+    assert!(package.is_current(&snapshot));
+    assert_eq!(package.volume_mm3, 0.0);
+    assert_eq!(package.topology_counts[2..], [1, 0, 0]);
+    assert_bounds_close(
+        package.bounds_mm,
+        [
+            -distance_mm,
+            -distance_mm,
+            0.0,
+            10.0 + distance_mm,
+            8.0 + distance_mm,
+            0.0,
+        ],
+    );
 }
 
 #[test]

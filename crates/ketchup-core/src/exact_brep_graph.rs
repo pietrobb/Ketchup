@@ -3,7 +3,9 @@ use crate::document::{
     ProfileSegment, Snapshot, Transform,
 };
 use crate::exact_product::{
-    EXACT_MIN_LENGTH_MM, accepts_planar_offset_geometry, exact_planar_offset_profile,
+    EXACT_MIN_LENGTH_MM, ExactCircleProfile, MAX_EXACT_PLANAR_OFFSET_LENGTH_MM,
+    accepts_planar_circle_offset_geometry, accepts_planar_offset_geometry,
+    exact_planar_offset_profile,
 };
 use crate::sketch::{
     FeatureDirection, FeatureExtent, FeatureExtentEnd, SketchRegionId, SolvedSketchRegion,
@@ -15,7 +17,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
-pub const EXACT_BREP_GRAPH_SCHEMA_V5: &str = "ketchup.exact-brep-graph.v5";
+pub const EXACT_BREP_GRAPH_SCHEMA_V6: &str = "ketchup.exact-brep-graph.v6";
 pub const MAX_EXACT_BREP_GRAPH_PROFILES: usize = 1_024;
 pub const MAX_EXACT_BREP_GRAPH_NODES: usize = 1_024;
 pub const MAX_EXACT_BREP_GRAPH_SEGMENTS: usize = 16_384;
@@ -359,7 +361,7 @@ impl ExactBRepGraph {
         compiler.compile_body(producer_feature_id)?;
         let source_digest = snapshot.canonical_digest();
         let mut graph = Self {
-            schema: EXACT_BREP_GRAPH_SCHEMA_V5.to_owned(),
+            schema: EXACT_BREP_GRAPH_SCHEMA_V6.to_owned(),
             document_id: snapshot.document_id().0,
             source_revision: snapshot.revision_id(),
             source_digest,
@@ -407,50 +409,67 @@ impl ExactBRepGraph {
         if profile.frame_bits != identity_frame() {
             return false;
         }
-        let ExactBRepPlanarGeometry::Boundary {
-            closed: true,
-            segments,
-        } = &profile.geometry
-        else {
-            return false;
-        };
-        let segments = segments
-            .iter()
-            .map(|segment| match segment {
-                ExactBRepPlanarSegment::Line {
-                    start_bits,
-                    end_bits,
-                } => Some(ProfileSegment::Line {
-                    start_mm: start_bits.map(f64::from_bits),
-                    end_mm: end_bits.map(f64::from_bits),
-                }),
-                ExactBRepPlanarSegment::CircularArc {
-                    start_bits,
-                    end_bits,
-                    center_bits,
-                    clockwise,
-                } => Some(ProfileSegment::CircularArc {
-                    start_mm: start_bits.map(f64::from_bits),
-                    end_mm: end_bits.map(f64::from_bits),
-                    center_mm: center_bits.map(f64::from_bits),
-                    clockwise: *clockwise,
-                }),
-                ExactBRepPlanarSegment::CubicBezier { .. } => None,
-            })
-            .collect::<Option<Vec<_>>>();
-        let Some(exact) = segments
-            .as_deref()
-            .and_then(|segments| exact_planar_offset_profile(segments, true))
-        else {
-            return false;
-        };
-        accepts_planar_offset_geometry(
-            &exact,
-            f64::from_bits(*distance_bits),
-            bounds_mm,
-            area_mm2,
-            topology_counts,
-        )
+        let distance_mm = f64::from_bits(*distance_bits);
+        match &profile.geometry {
+            ExactBRepPlanarGeometry::Circle {
+                center_bits,
+                radius_bits,
+            } => accepts_planar_circle_offset_geometry(
+                ExactCircleProfile {
+                    center_x_bits: center_bits[0],
+                    center_y_bits: center_bits[1],
+                    radius_bits: *radius_bits,
+                    clockwise: false,
+                },
+                distance_mm,
+                bounds_mm,
+                area_mm2,
+                topology_counts,
+            ),
+            ExactBRepPlanarGeometry::Boundary {
+                closed: true,
+                segments,
+            } => {
+                let segments = segments
+                    .iter()
+                    .map(|segment| match segment {
+                        ExactBRepPlanarSegment::Line {
+                            start_bits,
+                            end_bits,
+                        } => Some(ProfileSegment::Line {
+                            start_mm: start_bits.map(f64::from_bits),
+                            end_mm: end_bits.map(f64::from_bits),
+                        }),
+                        ExactBRepPlanarSegment::CircularArc {
+                            start_bits,
+                            end_bits,
+                            center_bits,
+                            clockwise,
+                        } => Some(ProfileSegment::CircularArc {
+                            start_mm: start_bits.map(f64::from_bits),
+                            end_mm: end_bits.map(f64::from_bits),
+                            center_mm: center_bits.map(f64::from_bits),
+                            clockwise: *clockwise,
+                        }),
+                        ExactBRepPlanarSegment::CubicBezier { .. } => None,
+                    })
+                    .collect::<Option<Vec<_>>>();
+                let Some(exact) = segments
+                    .as_deref()
+                    .and_then(|segments| exact_planar_offset_profile(segments, true))
+                else {
+                    return false;
+                };
+                accepts_planar_offset_geometry(
+                    &exact,
+                    distance_mm,
+                    bounds_mm,
+                    area_mm2,
+                    topology_counts,
+                )
+            }
+            _ => false,
+        }
     }
 
     pub fn producer_bounds_mm(&self) -> Result<Option<[[f64; 3]; 2]>, ExactBRepGraphError> {
@@ -487,7 +506,7 @@ impl ExactBRepGraph {
     }
 
     pub fn validate(&self) -> Result<(), ExactBRepGraphError> {
-        if self.schema != EXACT_BREP_GRAPH_SCHEMA_V5
+        if self.schema != EXACT_BREP_GRAPH_SCHEMA_V6
             || self.document_id == 0
             || self.definition_id == 0
             || self.producer_feature_id == 0
@@ -788,10 +807,36 @@ impl<'a> GraphCompiler<'a> {
                     angle_degrees_bits: angle_degrees.to_bits(),
                 }
             }
-            FeatureKind::PlanarOffset { profile, distance } => ExactBRepOperation::PlanarOffset {
-                profile: self.compile_profile(*profile, None, identity_frame())?,
-                distance_bits: planar_offset_distance(distance.millimetres())?,
-            },
+            FeatureKind::PlanarOffset { profile, distance } => {
+                let compiled_profile = match self
+                    .snapshot
+                    .feature(*profile)
+                    .map(|feature| feature.kind())
+                {
+                    Some(FeatureKind::Sketch(sketch)) => {
+                        let regions = sketch
+                            .solved_regions()
+                            .map_err(|_| ExactBRepGraphError::UnsupportedProfile(*profile))?;
+                        let [region] = regions.as_slice() else {
+                            return Err(ExactBRepGraphError::UnsupportedProfile(*profile));
+                        };
+                        if !region.holes.is_empty() {
+                            return Err(ExactBRepGraphError::UnsupportedProfile(*profile));
+                        }
+                        self.compile_sketch_profile(
+                            *profile,
+                            region.id,
+                            FeatureDirection::AlongNormal,
+                        )?
+                        .0
+                    }
+                    _ => self.compile_profile(*profile, None, identity_frame())?,
+                };
+                ExactBRepOperation::PlanarOffset {
+                    profile: compiled_profile,
+                    distance_bits: planar_offset_distance(distance.millimetres())?,
+                }
+            }
             FeatureKind::Sweep { profile, path } => ExactBRepOperation::Sweep {
                 profile: self.compile_profile(*profile, None, identity_frame())?,
                 path: self.compile_profile(*path, None, identity_frame())?,
@@ -1453,68 +1498,164 @@ fn swept_profile_bounds(
         .ok_or(ExactBRepGraphError::InvalidParameter)
 }
 
-fn planar_offset_profile_bounds(
-    profile: &ExactBRepProfile,
-    distance_mm: f64,
-) -> Result<[[f64; 3]; 2], ExactBRepGraphError> {
-    if profile.frame_bits != identity_frame()
-        || !distance_mm.is_finite()
-        || distance_mm.abs() < EXACT_MIN_LENGTH_MM
-        || distance_mm.abs() > MAX_ABS_MM
-    {
-        return Err(ExactBRepGraphError::InvalidParameter);
+pub fn exact_brep_planar_rectangle_bounds(profile: &ExactBRepProfile) -> Option<[f64; 4]> {
+    if profile.frame_bits != identity_frame() {
+        return None;
     }
     let ExactBRepPlanarGeometry::Boundary {
         closed: true,
         segments,
     } = &profile.geometry
     else {
-        return Err(ExactBRepGraphError::InvalidParameter);
+        return None;
     };
-    let segments = segments
-        .iter()
-        .map(|segment| match segment {
-            ExactBRepPlanarSegment::Line {
-                start_bits,
-                end_bits,
-            } => Ok(ProfileSegment::Line {
-                start_mm: start_bits.map(f64::from_bits),
-                end_mm: end_bits.map(f64::from_bits),
-            }),
-            ExactBRepPlanarSegment::CircularArc {
-                start_bits,
-                end_bits,
-                center_bits,
-                clockwise,
-            } => Ok(ProfileSegment::CircularArc {
-                start_mm: start_bits.map(f64::from_bits),
-                end_mm: end_bits.map(f64::from_bits),
-                center_mm: center_bits.map(f64::from_bits),
-                clockwise: *clockwise,
-            }),
-            ExactBRepPlanarSegment::CubicBezier { .. } => {
-                Err(ExactBRepGraphError::InvalidParameter)
-            }
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    let exact = exact_planar_offset_profile(&segments, true)
-        .ok_or(ExactBRepGraphError::InvalidParameter)?;
-    let [min_x, min_y, max_x, max_y] = exact.bounds_bits.map(f64::from_bits);
-    if distance_mm < 0.0
-        && (max_x - min_x <= 2.0 * distance_mm.abs() || max_y - min_y <= 2.0 * distance_mm.abs())
+    if segments.len() != 4 {
+        return None;
+    }
+    let mut points = Vec::with_capacity(4);
+    for segment in segments {
+        let ExactBRepPlanarSegment::Line {
+            start_bits,
+            end_bits,
+        } = segment
+        else {
+            return None;
+        };
+        let start = start_bits.map(f64::from_bits);
+        let end = end_bits.map(f64::from_bits);
+        let delta = [end[0] - start[0], end[1] - start[1]];
+        if start.into_iter().chain(end).any(|value| !value.is_finite())
+            || (delta[0] != 0.0 && delta[1] != 0.0)
+        {
+            return None;
+        }
+        points.push(start);
+    }
+    let min_x = points.iter().map(|point| point[0]).reduce(f64::min)?;
+    let min_y = points.iter().map(|point| point[1]).reduce(f64::min)?;
+    let max_x = points.iter().map(|point| point[0]).reduce(f64::max)?;
+    let max_y = points.iter().map(|point| point[1]).reduce(f64::max)?;
+    let corners = [
+        [min_x, min_y],
+        [min_x, max_y],
+        [max_x, min_y],
+        [max_x, max_y],
+    ];
+    (min_x < max_x
+        && min_y < max_y
+        && corners
+            .iter()
+            .all(|corner| points.iter().any(|point| point == corner)))
+    .then_some([min_x, min_y, max_x, max_y])
+}
+
+fn planar_offset_profile_bounds(
+    profile: &ExactBRepProfile,
+    distance_mm: f64,
+) -> Result<[[f64; 3]; 2], ExactBRepGraphError> {
+    if profile.frame_bits != identity_frame()
+        || !distance_mm.is_finite()
+        || !(EXACT_MIN_LENGTH_MM..=MAX_ABS_MM).contains(&distance_mm.abs())
     {
         return Err(ExactBRepGraphError::InvalidParameter);
     }
-    let margin = exact
-        .max_planar_offset_displacement_mm(distance_mm)
-        .ok_or(ExactBRepGraphError::InvalidParameter)?;
-    let bounds = if distance_mm > 0.0 {
-        [
-            [min_x - margin, min_y - margin, 0.0],
-            [max_x + margin, max_y + margin, 0.0],
-        ]
-    } else {
-        [[min_x, min_y, 0.0], [max_x, max_y, 0.0]]
+    let bounds = match &profile.geometry {
+        ExactBRepPlanarGeometry::Circle {
+            center_bits,
+            radius_bits,
+        } => {
+            let center = center_bits.map(f64::from_bits);
+            let radius = f64::from_bits(*radius_bits);
+            let output_radius = radius + distance_mm;
+            if distance_mm.abs() > MAX_EXACT_PLANAR_OFFSET_LENGTH_MM
+                || !(EXACT_MIN_LENGTH_MM..=MAX_EXACT_PLANAR_OFFSET_LENGTH_MM).contains(&radius)
+                || !(EXACT_MIN_LENGTH_MM..=MAX_EXACT_PLANAR_OFFSET_LENGTH_MM)
+                    .contains(&output_radius)
+                || [
+                    center[0] - radius,
+                    center[1] - radius,
+                    center[0] + radius,
+                    center[1] + radius,
+                ]
+                .into_iter()
+                .any(|value| !value.is_finite() || value.abs() > MAX_ABS_MM)
+            {
+                return Err(ExactBRepGraphError::InvalidParameter);
+            }
+            [
+                [center[0] - output_radius, center[1] - output_radius, 0.0],
+                [center[0] + output_radius, center[1] + output_radius, 0.0],
+            ]
+        }
+        ExactBRepPlanarGeometry::Boundary {
+            closed: true,
+            segments,
+        } => {
+            if let Some([min_x, min_y, max_x, max_y]) = exact_brep_planar_rectangle_bounds(profile)
+            {
+                let bounds = [
+                    [min_x - distance_mm, min_y - distance_mm, 0.0],
+                    [max_x + distance_mm, max_y + distance_mm, 0.0],
+                ];
+                if bounds[1][0] - bounds[0][0] < EXACT_MIN_LENGTH_MM
+                    || bounds[1][1] - bounds[0][1] < EXACT_MIN_LENGTH_MM
+                {
+                    return Err(ExactBRepGraphError::InvalidParameter);
+                }
+                bounds
+            } else {
+                if distance_mm.abs() > MAX_EXACT_PLANAR_OFFSET_LENGTH_MM {
+                    return Err(ExactBRepGraphError::InvalidParameter);
+                }
+                let segments = segments
+                    .iter()
+                    .map(|segment| match segment {
+                        ExactBRepPlanarSegment::Line {
+                            start_bits,
+                            end_bits,
+                        } => Ok(ProfileSegment::Line {
+                            start_mm: start_bits.map(f64::from_bits),
+                            end_mm: end_bits.map(f64::from_bits),
+                        }),
+                        ExactBRepPlanarSegment::CircularArc {
+                            start_bits,
+                            end_bits,
+                            center_bits,
+                            clockwise,
+                        } => Ok(ProfileSegment::CircularArc {
+                            start_mm: start_bits.map(f64::from_bits),
+                            end_mm: end_bits.map(f64::from_bits),
+                            center_mm: center_bits.map(f64::from_bits),
+                            clockwise: *clockwise,
+                        }),
+                        ExactBRepPlanarSegment::CubicBezier { .. } => {
+                            Err(ExactBRepGraphError::InvalidParameter)
+                        }
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                let exact = exact_planar_offset_profile(&segments, true)
+                    .ok_or(ExactBRepGraphError::InvalidParameter)?;
+                let [min_x, min_y, max_x, max_y] = exact.bounds_bits.map(f64::from_bits);
+                if distance_mm < 0.0
+                    && (max_x - min_x <= 2.0 * distance_mm.abs()
+                        || max_y - min_y <= 2.0 * distance_mm.abs())
+                {
+                    return Err(ExactBRepGraphError::InvalidParameter);
+                }
+                let margin = exact
+                    .max_planar_offset_displacement_mm(distance_mm)
+                    .ok_or(ExactBRepGraphError::InvalidParameter)?;
+                if distance_mm > 0.0 {
+                    [
+                        [min_x - margin, min_y - margin, 0.0],
+                        [max_x + margin, max_y + margin, 0.0],
+                    ]
+                } else {
+                    [[min_x, min_y, 0.0], [max_x, max_y, 0.0]]
+                }
+            }
+        }
+        _ => return Err(ExactBRepGraphError::InvalidParameter),
     };
     bounds
         .iter()
@@ -2224,6 +2365,55 @@ mod tests {
     }
 
     #[test]
+    fn inward_circle_offset_rejects_source_outside_coordinate_envelope() {
+        let profile = ExactBRepProfile {
+            id: ExactBRepProfileId(0),
+            source_feature_id: 1,
+            region_id: Some(1),
+            frame_bits: identity_frame(),
+            geometry: ExactBRepPlanarGeometry::Circle {
+                center_bits: [MAX_ABS_MM - 5.0, 0.0].map(f64::to_bits),
+                radius_bits: 10.0_f64.to_bits(),
+            },
+        };
+        assert_eq!(
+            planar_offset_profile_bounds(&profile, -5.0),
+            Err(ExactBRepGraphError::InvalidParameter)
+        );
+    }
+
+    #[test]
+    fn rectangle_offset_exception_requires_exact_axis_alignment() {
+        let profile = |points: [[f64; 2]; 4]| ExactBRepProfile {
+            id: ExactBRepProfileId(0),
+            source_feature_id: 1,
+            region_id: None,
+            frame_bits: identity_frame(),
+            geometry: ExactBRepPlanarGeometry::Boundary {
+                closed: true,
+                segments: (0..4)
+                    .map(|index| ExactBRepPlanarSegment::Line {
+                        start_bits: points[index].map(f64::to_bits),
+                        end_bits: points[(index + 1) % 4].map(f64::to_bits),
+                    })
+                    .collect(),
+            },
+        };
+        let rectangle = profile([[0.0, 0.0], [10.0, 0.0], [10.0, 8.0], [0.0, 8.0]]);
+        assert_eq!(
+            planar_offset_profile_bounds(&rectangle, 800_000.0),
+            Ok([[-800_000.0, -800_000.0, 0.0], [800_010.0, 800_008.0, 0.0],])
+        );
+
+        let skewed = profile([[0.0, 0.0], [10.0, 0.000_001_5], [10.0, 8.0], [0.0, 8.0]]);
+        assert!(exact_brep_planar_rectangle_bounds(&skewed).is_none());
+        assert_eq!(
+            planar_offset_profile_bounds(&skewed, 100_000.001),
+            Err(ExactBRepGraphError::InvalidParameter)
+        );
+    }
+
+    #[test]
     fn loft_operation_limit_matches_the_exact_backend() {
         assert_eq!(MAX_EXACT_BREP_LOFT_SECTIONS, 16);
         assert!(valid_operation(
@@ -2270,7 +2460,7 @@ mod tests {
             profile(1, MAX_EXACT_BREP_LOFT_CONTROL_POINTS),
         ];
         let mut graph = ExactBRepGraph {
-            schema: EXACT_BREP_GRAPH_SCHEMA_V5.to_owned(),
+            schema: EXACT_BREP_GRAPH_SCHEMA_V6.to_owned(),
             document_id: 1,
             source_revision: 1,
             source_digest: "source".to_owned(),

@@ -4,7 +4,7 @@ use ketchup_core::document::{
     StableFaceRole,
 };
 use ketchup_core::exact_brep_graph::{
-    EXACT_BREP_GRAPH_SCHEMA_V5, ExactBRepBooleanOperation, ExactBRepEdgeFinishKind, ExactBRepGraph,
+    EXACT_BREP_GRAPH_SCHEMA_V6, ExactBRepBooleanOperation, ExactBRepEdgeFinishKind, ExactBRepGraph,
     ExactBRepGraphError, ExactBRepOperation, ExactBRepPlanarGeometry, ExactBRepPlanarLoop,
     ExactBRepPlanarSegment, ExactBRepTopologyKind, MAX_EXACT_BREP_GRAPH_BYTES,
     MAX_EXACT_BREP_GRAPH_SEGMENTS, MAX_EXACT_BREP_PLANAR_LOOP_SEGMENTS,
@@ -1146,7 +1146,7 @@ fn mixed_line_cubic_region_compiles_to_v4_and_is_deterministic() {
 
     let snapshot = document.current();
     let initial = ExactBRepGraph::from_snapshot(&snapshot, definition, pad).unwrap();
-    assert_eq!(initial.schema, EXACT_BREP_GRAPH_SCHEMA_V5);
+    assert_eq!(initial.schema, EXACT_BREP_GRAPH_SCHEMA_V6);
     assert_eq!(initial.profiles.len(), 1);
     assert_eq!(initial.nodes.len(), 1);
     let ExactBRepPlanarGeometry::Region { outer, holes } = &initial.profiles[0].geometry else {
@@ -1255,7 +1255,7 @@ fn planar_offset_graph_compiles_serializes_and_rejects_tampering() {
         ]))
         .unwrap();
     let graph = ExactBRepGraph::from_snapshot(&document.current(), definition, offset).unwrap();
-    assert_eq!(graph.schema, EXACT_BREP_GRAPH_SCHEMA_V5);
+    assert_eq!(graph.schema, EXACT_BREP_GRAPH_SCHEMA_V6);
     assert!(graph.terminal_is_planar_offset());
     assert!(graph.producer_bounds_mm().unwrap().is_some());
     let bytes = graph.to_bytes().unwrap();
@@ -1360,6 +1360,6 @@ fn planar_offset_graph_compiles_serializes_and_rejects_tampering() {
             .unwrap();
     assert_eq!(
         inward.producer_bounds_mm().unwrap(),
-        Some([[999_979.0, 0.0, 0.0], [999_999.0, 20.0, 0.0]])
+        Some([[999_981.0, 2.0, 0.0], [999_997.0, 18.0, 0.0]])
     );
 }

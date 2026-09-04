@@ -4893,7 +4893,7 @@ pub(crate) fn accepts_planar_offset_geometry(
         && sign_relation
 }
 
-fn accepts_planar_circle_offset_geometry(
+pub(crate) fn accepts_planar_circle_offset_geometry(
     circle: ExactCircleProfile,
     distance_mm: f64,
     bounds_mm: [[f64; 3]; 2],

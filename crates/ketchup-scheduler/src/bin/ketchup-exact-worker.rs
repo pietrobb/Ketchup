@@ -4,6 +4,7 @@ use ketchup_core::exact_brep_graph::{
     ExactBRepBooleanOperation, ExactBRepEdgeFinishKind, ExactBRepGraph, ExactBRepLinearInterval,
     ExactBRepOperation, ExactBRepPlanarGeometry, ExactBRepPlanarLoop, ExactBRepPlanarSegment,
     ExactBRepProfile, ExactBRepTopologyKind, ExactBRepTopologySelector,
+    exact_brep_planar_rectangle_bounds,
 };
 use ketchup_core::exact_product::{EXACT_BREP_GRAPH_EVALUATOR_V1, ExactCircleProfile};
 use ketchup_core::graph::sha256_hex;
@@ -89,10 +90,10 @@ fn handle_request(backend: &ExactBackend, request: &str) -> Option<String> {
         (Some("CAPS"), Some("M21_STEP_MODEL_V1"), None) => {
             Some("CAPS M21_STEP_MODEL_V1".to_owned())
         }
-        (Some("CAPS"), Some("EXACT_BREP_GRAPH_V5"), None) => {
-            Some("CAPS EXACT_BREP_GRAPH_V5".to_owned())
+        (Some("CAPS"), Some("EXACT_BREP_GRAPH_V6"), None) => {
+            Some("CAPS EXACT_BREP_GRAPH_V6".to_owned())
         }
-        (Some("TESSELLATE_BREP_GRAPH_V5"), Some(graph_digest), Some(encoded_graph)) => {
+        (Some("TESSELLATE_BREP_GRAPH_V6"), Some(graph_digest), Some(encoded_graph)) => {
             let remaining = fields.collect::<Vec<_>>();
             Some(exact_brep_graph_mesh_response(
                 backend,
@@ -110,7 +111,7 @@ fn handle_request(backend: &ExactBackend, request: &str) -> Option<String> {
                 &remaining,
             ))
         }
-        (Some("EVAL_BREP_GRAPH_V5"), Some(graph_digest), Some(encoded_graph)) => {
+        (Some("EVAL_BREP_GRAPH_V6"), Some(graph_digest), Some(encoded_graph)) => {
             let remaining = fields.collect::<Vec<_>>();
             let Some(graph) = decode_exact_brep_graph(graph_digest, encoded_graph) else {
                 return Some("ERR invalid_request".to_owned());
@@ -1372,7 +1373,7 @@ fn exact_brep_graph_response(
         0.0
     };
     format!(
-        "OK_BREP_GRAPH_V5 {} {} {} {} {} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {} {} {} {} {} {} {}",
+        "OK_BREP_GRAPH_V6 {} {} {} {} {} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {} {} {} {} {} {} {}",
         graph.canonical_input_digest,
         graph.graph_digest,
         graph.producer_feature_id,
@@ -1466,11 +1467,9 @@ fn evaluate_exact_brep_graph(
             ExactBRepOperation::PlanarOffset {
                 profile,
                 distance_bits,
-            } => backend.offset_planar_profile(
-                &PlanarProfileLoop::Segments(exact_brep_boundary_segments(
-                    &graph.profiles[profile.0 as usize],
-                    true,
-                )?),
+            } => exact_brep_planar_offset(
+                backend,
+                &graph.profiles[profile.0 as usize],
                 f64::from_bits(*distance_bits),
             )?,
             ExactBRepOperation::Sweep { profile, path } => exact_brep_sweep(
@@ -1817,6 +1816,43 @@ fn exact_brep_sweep(
             0.0, 0.0, 0.0, 0.0, 0.0, 1.0,
         ],
     )
+}
+
+fn exact_brep_planar_offset(
+    backend: &ExactBackend,
+    profile: &ExactBRepProfile,
+    distance_mm: f64,
+) -> Result<ExactOpOutput, ketchup_exact::GeometryError> {
+    if let Some([min_x, min_y, max_x, max_y]) = exact_brep_planar_rectangle_bounds(profile) {
+        backend.offset_rectangle(RectangleOffsetSpec {
+            min_mm: [min_x, min_y],
+            max_mm: [max_x, max_y],
+            distance_mm,
+        })
+    } else {
+        backend.offset_planar_profile(&exact_brep_planar_offset_loop(profile)?, distance_mm)
+    }
+}
+
+fn exact_brep_planar_offset_loop(
+    profile: &ExactBRepProfile,
+) -> Result<PlanarProfileLoop, ketchup_exact::GeometryError> {
+    match &profile.geometry {
+        ExactBRepPlanarGeometry::Circle {
+            center_bits,
+            radius_bits,
+        } => Ok(PlanarProfileLoop::Circle {
+            center_mm: center_bits.map(f64::from_bits),
+            radius_mm: f64::from_bits(*radius_bits),
+        }),
+        ExactBRepPlanarGeometry::Boundary { .. } => Ok(PlanarProfileLoop::Segments(
+            exact_brep_boundary_segments(profile, true)?,
+        )),
+        _ => Err(exact_brep_profile_error(
+            profile,
+            "exact planar offset requires a line/arc boundary or circle",
+        )),
+    }
 }
 
 fn exact_brep_boundary_segments(
