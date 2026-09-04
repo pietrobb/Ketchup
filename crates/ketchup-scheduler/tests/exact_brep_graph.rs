@@ -205,7 +205,7 @@ fn generated_boolean_document(
 }
 
 #[test]
-fn v9_curved_sweep_is_rejected_before_worker_dispatch_until_capability_exists() {
+fn worker_evaluates_v9_curved_sweep_with_deterministic_topology_and_mesh() {
     let definition = DefinitionId(89);
     let profile = FeatureId(890);
     let path = FeatureId(891);
@@ -258,12 +258,41 @@ fn v9_curved_sweep_is_rejected_before_worker_dispatch_until_capability_exists() 
 
     let mut supervisor =
         ExactWorkerSupervisor::spawn(env!("CARGO_BIN_EXE_ketchup-exact-worker")).unwrap();
+    let package = supervisor.evaluate_exact_brep_graph(&graph).unwrap();
     assert_eq!(
-        supervisor.evaluate_exact_brep_graph(&graph),
-        Err(WorkerError::Protocol(format!(
-            "unsupported graph schema {EXACT_BREP_GRAPH_SCHEMA_V9}"
-        )))
+        supervisor.evaluate_exact_brep_graph(&graph).unwrap(),
+        package
     );
+    assert_eq!(package.graph, graph);
+    assert!(package.volume_mm3.is_finite() && package.volume_mm3 > 0.0);
+    assert_eq!(package.topology_counts[4], 1);
+    assert!(!package.vertices.is_empty());
+    assert!(!package.triangles.is_empty());
+    assert_eq!(
+        package.triangles.len(),
+        package.triangle_face_ordinals.len()
+    );
+    assert!(
+        package
+            .triangle_face_ordinals
+            .iter()
+            .all(|ordinal| *ordinal < package.topology_counts[2])
+    );
+    let directory = tempfile::tempdir().unwrap();
+    let step_path = directory.path().join("v9-curved-sweep.step");
+    supervisor
+        .export_exact_brep_graph_step(&document.current(), &package, &step_path)
+        .unwrap();
+    let source = std::fs::read(&step_path).unwrap();
+    let evidence = supervisor
+        .inspect_step_import_with_cancellation(
+            &step_path,
+            &sha256_hex(&source),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+    assert_eq!(evidence.solid_count, 1);
+    assert!((evidence.volume_mm3 - package.volume_mm3).abs() <= package.volume_mm3 * 1.0e-9);
 }
 
 #[test]

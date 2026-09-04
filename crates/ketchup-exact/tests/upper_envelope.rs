@@ -969,6 +969,93 @@ fn circular_planar_offset_preserves_signed_radius_and_stable_exact_face() {
 }
 
 #[test]
+fn curved_planar_sweep_is_deterministic_and_fails_closed() {
+    let backend = ExactBackend::new();
+    let profile = vec![
+        PlanarProfileSegment::Line {
+            start_mm: [-2.0, -1.0],
+            end_mm: [2.0, -1.0],
+        },
+        PlanarProfileSegment::Line {
+            start_mm: [2.0, -1.0],
+            end_mm: [2.0, 1.0],
+        },
+        PlanarProfileSegment::Line {
+            start_mm: [2.0, 1.0],
+            end_mm: [-2.0, 1.0],
+        },
+        PlanarProfileSegment::Line {
+            start_mm: [-2.0, 1.0],
+            end_mm: [-2.0, -1.0],
+        },
+    ];
+    let path = vec![
+        PlanarProfileSegment::Line {
+            start_mm: [0.0, 0.0],
+            end_mm: [50.0, 0.0],
+        },
+        PlanarProfileSegment::CircularArc {
+            start_mm: [50.0, 0.0],
+            end_mm: [75.0, 25.0],
+            center_mm: [50.0, 25.0],
+            clockwise: false,
+        },
+    ];
+    let output = backend.sweep_planar_profile(&profile, &path).unwrap();
+    let repeated = backend.sweep_planar_profile(&profile, &path).unwrap();
+    assert_valid(&output);
+    assert_eq!(output.input_digest, repeated.input_digest);
+    assert_eq!(
+        output.body.result_fingerprint,
+        repeated.body.result_fingerprint
+    );
+    assert_close(
+        output.body.topology.volume_mm3,
+        8.0 * (50.0 + 25.0 * std::f64::consts::FRAC_PI_2),
+    );
+    assert!(output.body.topology.face_count >= 6);
+    assert_eq!(output.body.topology.solid_count, 1);
+    assert_eq!(
+        output.history_confidence,
+        ketchup_exact::HistoryConfidence::Partial
+    );
+    assert_eq!(output.topology_history.len(), 2);
+    assert!(
+        output
+            .topology_history
+            .iter()
+            .all(|history| history.output_face_ordinal.is_some())
+    );
+
+    let mut sharp_path = path.clone();
+    sharp_path[1] = PlanarProfileSegment::Line {
+        start_mm: [50.0, 0.0],
+        end_mm: [50.0, 25.0],
+    };
+    assert_eq!(
+        backend
+            .sweep_planar_profile(&profile, &sharp_path)
+            .unwrap_err()
+            .code,
+        GeometryErrorCode::InvalidProfile
+    );
+    let mut disconnected_path = path;
+    disconnected_path[1] = PlanarProfileSegment::CircularArc {
+        start_mm: [51.0, 0.0],
+        end_mm: [76.0, 25.0],
+        center_mm: [51.0, 25.0],
+        clockwise: false,
+    };
+    assert_eq!(
+        backend
+            .sweep_planar_profile(&profile, &disconnected_path)
+            .unwrap_err()
+            .code,
+        GeometryErrorCode::InvalidProfile
+    );
+}
+
+#[test]
 fn rectangular_sweep_follows_selected_path_with_stable_exact_faces() {
     let backend = ExactBackend::new();
     let spec = RectangleSweepSpec {

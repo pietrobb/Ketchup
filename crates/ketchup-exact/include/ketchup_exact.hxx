@@ -61,6 +61,9 @@ std::unique_ptr<NativeOperationResult> offset_planar_circle_native(
     double center_x, double center_y, double radius, double distance) noexcept;
 std::unique_ptr<NativeOperationResult> sweep_rectangle_native(
     rust::Slice<const double> values) noexcept;
+std::unique_ptr<NativeOperationResult> sweep_planar_profile_native(
+    rust::Slice<const double> profile_segments,
+    rust::Slice<const double> path_segments) noexcept;
 std::unique_ptr<NativeOperationResult> loft_spline_native(
     rust::Slice<const double> values) noexcept;
 std::unique_ptr<NativeOperationResult> extrude_circle_native(

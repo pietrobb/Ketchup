@@ -1806,7 +1806,13 @@ fn sweep_profile_bounds(
     };
     let path_length = sweep_path_length(segments).ok_or(ExactBRepGraphError::InvalidParameter)?;
     if segments.len() == 2 {
-        if profile.frame_bits != identity_frame() {
+        if profile.frame_bits != identity_frame()
+            || path.frame_bits != identity_frame()
+            || !matches!(
+                profile.geometry,
+                ExactBRepPlanarGeometry::Boundary { closed: true, .. }
+            )
+        {
             return Err(ExactBRepGraphError::InvalidParameter);
         }
         let [[min_x, min_y], [max_x, max_y]] =
@@ -2841,7 +2847,20 @@ mod tests {
                 arc([50.0, 0.0], [75.0, 25.0], [50.0, 25.0]),
             ],
         };
+        assert!(!valid_operation_profiles(&sweep, &profiles));
+        profiles[0].geometry = ExactBRepPlanarGeometry::Boundary {
+            closed: true,
+            segments: vec![
+                line([-2.0, -1.0], [2.0, -1.0]),
+                line([2.0, -1.0], [2.0, 1.0]),
+                line([2.0, 1.0], [-2.0, 1.0]),
+                line([-2.0, 1.0], [-2.0, -1.0]),
+            ],
+        };
         assert!(valid_operation_profiles(&sweep, &profiles));
+        profiles[1].frame_bits[0] = 1.0_f64.to_bits();
+        assert!(!valid_operation_profiles(&sweep, &profiles));
+        profiles[1].frame_bits = identity_frame();
 
         profiles[1].geometry = ExactBRepPlanarGeometry::Boundary {
             closed: false,

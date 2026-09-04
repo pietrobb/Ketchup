@@ -8,6 +8,7 @@ const MIN_LENGTH_MM: f64 = 0.01;
 const MAX_LENGTH_MM: f64 = 100_000.0;
 const MAX_COORDINATE_MM: f64 = 1_000_000.0;
 const PLANAR_SEGMENT_STRIDE: usize = 10;
+const MIN_SWEEP_PATH_SEGMENT_LENGTH_MM: f64 = 1.0e-7;
 pub const MAX_PLANAR_LOOP_SEGMENTS: usize = 64;
 pub const MAX_PLANAR_REGION_HOLES: usize = 64;
 pub const MAX_PLANAR_REGION_SEGMENTS: usize = 4_096;
@@ -141,6 +142,10 @@ mod ffi {
             distance: f64,
         ) -> UniquePtr<NativeOperationResult>;
         fn sweep_rectangle_native(values: &[f64]) -> UniquePtr<NativeOperationResult>;
+        fn sweep_planar_profile_native(
+            profile_segments: &[f64],
+            path_segments: &[f64],
+        ) -> UniquePtr<NativeOperationResult>;
         fn loft_spline_native(values: &[f64]) -> UniquePtr<NativeOperationResult>;
         fn extrude_circle_native(
             center_x: f64,
@@ -1506,6 +1511,144 @@ impl ExactBackend {
             &input,
             HistoryConfidence::Complete,
         )
+    }
+
+    pub fn sweep_planar_profile(
+        &self,
+        profile: &[PlanarProfileSegment],
+        path: &[PlanarProfileSegment],
+    ) -> Result<ExactOpOutput, GeometryError> {
+        let operation = "sweep_planar_profile";
+        let profile_values = flatten_planar_segments(profile);
+        let path_values = flatten_planar_segments(path);
+        let input = format!(
+            "{operation}:{:?}:{:?}",
+            profile_values
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>(),
+            path_values
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>()
+        );
+        validate_mixed_profile(profile, operation, &input)?;
+        if path.len() != 2 {
+            return Err(parameter_error(
+                GeometryErrorCode::InvalidProfile,
+                operation,
+                &input,
+                "Curved Sweep requires exactly two path segments".to_owned(),
+            ));
+        }
+        let path_metrics = |segment: &PlanarProfileSegment| {
+            let invalid = || {
+                parameter_error(
+                    GeometryErrorCode::InvalidProfile,
+                    operation,
+                    &input,
+                    "Sweep path must contain only non-degenerate lines and circular arcs"
+                        .to_owned(),
+                )
+            };
+            let (start, end) = planar_segment_endpoints(segment);
+            for (coordinate, name) in [
+                (start[0], "path_start_x"),
+                (start[1], "path_start_y"),
+                (end[0], "path_end_x"),
+                (end[1], "path_end_y"),
+            ] {
+                validate_coordinate(coordinate, name, operation, &input)?;
+            }
+            match segment {
+                PlanarProfileSegment::Line { .. } => {
+                    let direction = [end[0] - start[0], end[1] - start[1]];
+                    let length = direction[0].hypot(direction[1]);
+                    if length <= MIN_SWEEP_PATH_SEGMENT_LENGTH_MM {
+                        return Err(invalid());
+                    }
+                    let tangent = [direction[0] / length, direction[1] / length];
+                    Ok((length, tangent, tangent))
+                }
+                PlanarProfileSegment::CircularArc {
+                    center_mm,
+                    clockwise,
+                    ..
+                } => {
+                    validate_coordinate(center_mm[0], "path_center_x", operation, &input)?;
+                    validate_coordinate(center_mm[1], "path_center_y", operation, &input)?;
+                    let start_radius = [start[0] - center_mm[0], start[1] - center_mm[1]];
+                    let end_radius = [end[0] - center_mm[0], end[1] - center_mm[1]];
+                    let radius = start_radius[0].hypot(start_radius[1]);
+                    let end_radius_length = end_radius[0].hypot(end_radius[1]);
+                    if radius <= MIN_SWEEP_PATH_SEGMENT_LENGTH_MM
+                        || (radius - end_radius_length).abs()
+                            > 1.0e-9 * radius.max(end_radius_length).max(1.0)
+                    {
+                        return Err(invalid());
+                    }
+                    let start_angle = start_radius[1].atan2(start_radius[0]);
+                    let end_angle = end_radius[1].atan2(end_radius[0]);
+                    let mut sweep = end_angle - start_angle;
+                    if *clockwise {
+                        if sweep >= 0.0 {
+                            sweep -= std::f64::consts::TAU;
+                        }
+                    } else if sweep <= 0.0 {
+                        sweep += std::f64::consts::TAU;
+                    }
+                    let length = radius * sweep.abs();
+                    if length <= MIN_SWEEP_PATH_SEGMENT_LENGTH_MM {
+                        return Err(invalid());
+                    }
+                    let tangent = |radial: [f64; 2]| {
+                        let sign = if *clockwise { -1.0 } else { 1.0 };
+                        [sign * -radial[1] / radius, sign * radial[0] / radius]
+                    };
+                    Ok((length, tangent(start_radius), tangent(end_radius)))
+                }
+                PlanarProfileSegment::CubicBezier { .. } => Err(invalid()),
+            }
+        };
+        let first = path_metrics(&path[0])?;
+        let second = path_metrics(&path[1])?;
+        if planar_segment_endpoints(&path[0]).1 != planar_segment_endpoints(&path[1]).0 {
+            return Err(parameter_error(
+                GeometryErrorCode::InvalidProfile,
+                operation,
+                &input,
+                "Sweep path segments are disconnected".to_owned(),
+            ));
+        }
+        let dot = first.2[0] * second.1[0] + first.2[1] * second.1[1];
+        let cross = first.2[0] * second.1[1] - first.2[1] * second.1[0];
+        if dot < 1.0 - 1.0e-9 || cross.abs() > 1.0e-9 {
+            return Err(parameter_error(
+                GeometryErrorCode::InvalidProfile,
+                operation,
+                &input,
+                "Sweep path segments must be C1 tangent-continuous".to_owned(),
+            ));
+        }
+        validate_length(first.0 + second.0, "path_length", operation, &input)?;
+        let output = collect_output(
+            ffi::sweep_planar_profile_native(&profile_values, &path_values),
+            operation,
+            &input,
+            HistoryConfidence::Partial,
+        )?;
+        let bounds = output.body.topology.bounds_mm;
+        for (name, coordinate) in [
+            ("output_min_x", bounds.min.x),
+            ("output_min_y", bounds.min.y),
+            ("output_min_z", bounds.min.z),
+            ("output_max_x", bounds.max.x),
+            ("output_max_y", bounds.max.y),
+            ("output_max_z", bounds.max.z),
+        ] {
+            validate_coordinate(coordinate, name, operation, &input)?;
+        }
+        Ok(output)
     }
 
     pub fn loft_spline(&self, spec: &SplineLoftSpec) -> Result<ExactOpOutput, GeometryError> {
