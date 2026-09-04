@@ -34,7 +34,8 @@ use ketchup_core::document::{
     Proposal, ProposalCommitError, ProposalContext, ProposalGoal, ProposalPrepareError,
     ProposalPrincipal, ProposalValue, SceneOccurrence, SceneQueryContext,
     SideEffectAuthorizationReceipt, SlotPath, Snapshot, SolidToolPlan, TagId, TipReplacementParent,
-    TipReplacementProposal, Transform, TrustedConfirmationSurface,
+    TipReplacementProposal, Transform, TrustedConfirmationSurface, is_valid_spatial_sweep_path,
+    is_valid_sweep_path,
 };
 #[cfg(feature = "named-product-fixtures")]
 use ketchup_core::document::{
@@ -13354,27 +13355,23 @@ impl KetchupApp {
                                     closed: true,
                                 } if line_arc_profile_bounds(segments, true).is_some()
                             );
-                            let valid_path = matches!(
-                                path_source.kind(),
+                            let valid_path = match path_source.kind() {
                                 FeatureKind::SegmentProfile {
                                     segments,
                                     closed: false,
-                                } if matches!(
-                                    segments.as_slice(),
-                                    [ProfileSegment::Line { start_mm, end_mm }]
-                                        if (0.01..=100_000.0).contains(
-                                            &(end_mm[0] - start_mm[0])
-                                                .hypot(end_mm[1] - start_mm[1])
-                                        )
-                                )
-                            );
+                                } => is_valid_sweep_path(segments),
+                                FeatureKind::SpatialPath { segments } => {
+                                    is_valid_spatial_sweep_path(segments)
+                                }
+                                _ => false,
+                            };
                             if !valid_profile || !valid_path {
                                 return Err(assistant_planning_rejection(
                                     "planning.cad_feature_input_unsupported",
                                     operation_name,
                                     "feature_inputs",
                                     "The requested Sweep profile or path is not supported by exact evaluation.",
-                                    "Use a closed polygon or line/arc profile and one open straight path in the same definition.",
+                                    "Use a closed polygon or line/arc profile and a bounded open line/arc/cubic path in the same definition.",
                                 ));
                             }
                             FeatureKind::Sweep { profile, path }

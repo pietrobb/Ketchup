@@ -2,7 +2,8 @@ use super::*;
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable as _;
 use ketchup_core::assistant_sidecar::AssistantCadLoftSection;
-use ketchup_core::document::ProposalGoal;
+use ketchup_core::document::{ProposalGoal, SpatialPathSegment};
+use ketchup_core::exact_brep_graph::EXACT_BREP_GRAPH_SCHEMA_V12;
 use ketchup_core::graph::{EvaluatorNodeKind, PortSpec};
 
 #[test]
@@ -380,6 +381,274 @@ fn cad_edit_append_sweep_is_host_id_assigned_exact_and_one_step() {
     assert_eq!(
         app.document.current().canonical_digest(),
         baseline.canonical_digest()
+    );
+}
+
+#[test]
+fn cad_edit_append_spatial_sweep_preflights_v12_without_mutation_and_is_one_step() {
+    let mut app = KetchupApp::new();
+    app.document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(3),
+                definition_id: INITIAL_BOX_DEFINITION,
+                name: "Spatial sweep profile".to_owned(),
+                kind: FeatureKind::Profile {
+                    points_mm: vec![[-2.0, -1.0], [2.0, -1.0], [2.0, 1.0], [-2.0, 1.0]],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(4),
+                definition_id: INITIAL_BOX_DEFINITION,
+                name: "Non-coplanar mixed path".to_owned(),
+                kind: FeatureKind::SpatialPath {
+                    segments: vec![
+                        SpatialPathSegment::Line {
+                            start_mm: [0.0, 0.0, 0.0],
+                            end_mm: [30.0, 0.0, 0.0],
+                        },
+                        SpatialPathSegment::CircularArc {
+                            start_mm: [30.0, 0.0, 0.0],
+                            end_mm: [40.0, 10.0, 0.0],
+                            center_mm: [30.0, 10.0, 0.0],
+                            normal: [0.0, 0.0, 1.0],
+                            clockwise: false,
+                        },
+                        SpatialPathSegment::CubicBezier {
+                            start_mm: [40.0, 10.0, 0.0],
+                            control_1_mm: [40.0, 20.0, 0.0],
+                            control_2_mm: [40.0, 30.0, 10.0],
+                            end_mm: [40.0, 40.0, 20.0],
+                        },
+                    ],
+                },
+            },
+        ]))
+        .unwrap();
+    let baseline = app.document.current().clone();
+    let baseline_undo = app.document.visible_undo_steps();
+    let program = AssistantCadEditProgram {
+        operations: vec![AssistantCadEditOperation::AppendFeature {
+            definition_id: INITIAL_BOX_DEFINITION.0,
+            name: "Assistant spatial sweep".to_owned(),
+            feature: AssistantCadBodyFeature::Sweep {
+                profile_feature_id: 3,
+                path_feature_id: 4,
+            },
+        }],
+    };
+
+    let batch = app.plan_assistant_cad_edit_program(&program).unwrap();
+    assert!(matches!(
+        batch.commands(),
+        [CanonicalCommand::CreateFeature {
+            id: FeatureId(5),
+            definition_id: INITIAL_BOX_DEFINITION,
+            kind: FeatureKind::Sweep {
+                profile: FeatureId(3),
+                path: FeatureId(4),
+            },
+            ..
+        }]
+    ));
+    assert_eq!(app.document.current().revision_id(), baseline.revision_id());
+    assert_eq!(
+        app.document.current().canonical_digest(),
+        baseline.canonical_digest()
+    );
+    assert_eq!(app.document.visible_undo_steps(), baseline_undo);
+
+    app.prepare_assistant_preview_source(AssistantPreviewSource::CadEdit(program))
+        .unwrap();
+    assert_eq!(app.document.current().revision_id(), baseline.revision_id());
+    assert_eq!(
+        app.document.current().canonical_digest(),
+        baseline.canonical_digest()
+    );
+    assert_eq!(app.document.visible_undo_steps(), baseline_undo);
+
+    assert!(app.confirm_assistant_proposal());
+    let committed = app.document.current();
+    let committed_digest = committed.canonical_digest();
+    assert_eq!(committed.revision_id(), baseline.revision_id() + 1);
+    assert_eq!(app.document.visible_undo_steps(), baseline_undo + 1);
+    let graph =
+        ExactBRepGraph::from_snapshot(&committed, INITIAL_BOX_DEFINITION, FeatureId(5)).unwrap();
+    assert_eq!(graph.schema, EXACT_BREP_GRAPH_SCHEMA_V12);
+    assert!(matches!(
+        graph.nodes.last().unwrap().operation,
+        ExactBRepOperation::SpatialSweep { .. }
+    ));
+
+    assert!(app.undo());
+    assert_eq!(
+        app.document.current().canonical_digest(),
+        baseline.canonical_digest()
+    );
+    assert_eq!(app.document.visible_undo_steps(), baseline_undo);
+    assert!(app.redo());
+    assert_eq!(app.document.current().canonical_digest(), committed_digest);
+    assert_eq!(app.document.visible_undo_steps(), baseline_undo + 1);
+}
+
+#[test]
+fn cad_edit_append_spatial_sweep_rejects_combined_envelope_without_mutation() {
+    let mut app = KetchupApp::new();
+    app.document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(3),
+                definition_id: INITIAL_BOX_DEFINITION,
+                name: "Bounded sweep profile".to_owned(),
+                kind: FeatureKind::Profile {
+                    points_mm: vec![[-2.0, -2.0], [2.0, -2.0], [2.0, 2.0], [-2.0, 2.0]],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(4),
+                definition_id: INITIAL_BOX_DEFINITION,
+                name: "Individually bounded spatial path".to_owned(),
+                kind: FeatureKind::SpatialPath {
+                    segments: vec![SpatialPathSegment::Line {
+                        start_mm: [999_999.5, 0.0, 0.0],
+                        end_mm: [999_999.5, 0.0, 10.0],
+                    }],
+                },
+            },
+        ]))
+        .unwrap();
+    let baseline_revision = app.document.current().revision_id();
+    let baseline_digest = app.document.current().canonical_digest();
+    let baseline_undo = app.document.visible_undo_steps();
+    let program = AssistantCadEditProgram {
+        operations: vec![AssistantCadEditOperation::AppendFeature {
+            definition_id: INITIAL_BOX_DEFINITION.0,
+            name: "Rejected spatial sweep".to_owned(),
+            feature: AssistantCadBodyFeature::Sweep {
+                profile_feature_id: 3,
+                path_feature_id: 4,
+            },
+        }],
+    };
+
+    let error = app.plan_assistant_cad_edit_program(&program).unwrap_err();
+    assert_eq!(error.code, "canonical.invalid_sweep");
+    assert_eq!(app.document.current().revision_id(), baseline_revision);
+    assert_eq!(app.document.current().canonical_digest(), baseline_digest);
+    assert_eq!(app.document.visible_undo_steps(), baseline_undo);
+}
+
+#[test]
+fn cad_edit_append_spatial_sweep_rejects_suppressed_and_cross_definition_paths_atomically() {
+    let mut app = KetchupApp::new();
+    app.document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DefinitionId(2),
+                name: "Spatial sweep definition".to_owned(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(3),
+                definition_id: DefinitionId(2),
+                name: "Spatial sweep profile".to_owned(),
+                kind: FeatureKind::Profile {
+                    points_mm: vec![[-2.0, -1.0], [2.0, -1.0], [2.0, 1.0], [-2.0, 1.0]],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(4),
+                definition_id: DefinitionId(2),
+                name: "Valid spatial path".to_owned(),
+                kind: FeatureKind::SpatialPath {
+                    segments: vec![SpatialPathSegment::Line {
+                        start_mm: [0.0, 0.0, 0.0],
+                        end_mm: [0.0, 0.0, 20.0],
+                    }],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(5),
+                definition_id: DefinitionId(2),
+                name: "Existing spatial sweep".to_owned(),
+                kind: FeatureKind::Sweep {
+                    profile: FeatureId(3),
+                    path: FeatureId(4),
+                },
+            },
+            CanonicalCommand::CreateDefinition {
+                id: DefinitionId(3),
+                name: "Other spatial path definition".to_owned(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(6),
+                definition_id: DefinitionId(3),
+                name: "Valid cross-definition spatial path".to_owned(),
+                kind: FeatureKind::SpatialPath {
+                    segments: vec![SpatialPathSegment::Line {
+                        start_mm: [0.0, 0.0, 0.0],
+                        end_mm: [20.0, 0.0, 0.0],
+                    }],
+                },
+            },
+        ]))
+        .unwrap();
+    app.document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetBodyFeatureSuppression {
+                definition_id: DefinitionId(2),
+                body_id: BodyId(1),
+                suppressed_feature_ids: vec![FeatureId(4), FeatureId(5)],
+            },
+        ]))
+        .unwrap();
+    assert!(app.document.current().feature_is_suppressed(FeatureId(4)));
+
+    let baseline = (
+        app.document.current().revision_id(),
+        app.document.current().canonical_digest(),
+        app.document.visible_undo_steps(),
+        app.document.visible_redo_steps(),
+    );
+    let program = |path_feature_id| AssistantCadEditProgram {
+        operations: vec![AssistantCadEditOperation::AppendFeature {
+            definition_id: 2,
+            name: "Rejected spatial sweep".to_owned(),
+            feature: AssistantCadBodyFeature::Sweep {
+                profile_feature_id: 3,
+                path_feature_id,
+            },
+        }],
+    };
+
+    let suppressed = app
+        .plan_assistant_cad_edit_program(&program(4))
+        .unwrap_err();
+    assert_eq!(suppressed.code, "canonical.invalid_feature_suppression");
+    assert_eq!(
+        (
+            app.document.current().revision_id(),
+            app.document.current().canonical_digest(),
+            app.document.visible_undo_steps(),
+            app.document.visible_redo_steps(),
+        ),
+        baseline
+    );
+
+    let cross_definition = app
+        .plan_assistant_cad_edit_program(&program(6))
+        .unwrap_err();
+    assert_eq!(
+        cross_definition.code,
+        "planning.cad_feature_input_ownership_invalid"
+    );
+    assert_eq!(
+        (
+            app.document.current().revision_id(),
+            app.document.current().canonical_digest(),
+            app.document.visible_undo_steps(),
+            app.document.visible_redo_steps(),
+        ),
+        baseline
     );
 }
 

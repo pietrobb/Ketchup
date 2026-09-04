@@ -25,9 +25,11 @@ use ketchup_core::document::{
     BodyId, BooleanOperation, CanonicalCommand, ClassificationCategoryId,
     ClassificationDimensionId, CommandBatch, DefinitionId, Dimension, DocumentStore,
     EdgeFinishKind, FeatureId, FeatureKind, GroupId, LoftSection, NodeId, OccurrenceId,
-    ProfileSegment, ProposalGoal, ProposalValue, TagId, Transform,
+    ProfileSegment, ProposalGoal, ProposalValue, SpatialPathSegment, TagId, Transform,
 };
-use ketchup_core::exact_brep_graph::{ExactBRepGraph, ExactBRepOperation};
+use ketchup_core::exact_brep_graph::{
+    EXACT_BREP_GRAPH_SCHEMA_V12, ExactBRepGraph, ExactBRepOperation,
+};
 use ketchup_core::exact_product::{ExactBodyPackage, ExactFaceRole, ExactPlanarOffsetRequest};
 use ketchup_core::intent::WorkflowIntent;
 use ketchup_core::persistence;
@@ -332,13 +334,27 @@ fn write_assistant_sweep_fixture(path: &std::path::Path) {
             CanonicalCommand::CreateFeature {
                 id: FeatureId(2),
                 definition_id: DefinitionId(1),
-                name: "Oblique sweep path".to_owned(),
-                kind: FeatureKind::SegmentProfile {
-                    segments: vec![ProfileSegment::Line {
-                        start_mm: [10.0, -5.0],
-                        end_mm: [24.0, 17.0],
-                    }],
-                    closed: false,
+                name: "Non-coplanar mixed sweep path".to_owned(),
+                kind: FeatureKind::SpatialPath {
+                    segments: vec![
+                        SpatialPathSegment::Line {
+                            start_mm: [0.0, 0.0, 0.0],
+                            end_mm: [30.0, 0.0, 0.0],
+                        },
+                        SpatialPathSegment::CircularArc {
+                            start_mm: [30.0, 0.0, 0.0],
+                            end_mm: [40.0, 10.0, 0.0],
+                            center_mm: [30.0, 10.0, 0.0],
+                            normal: [0.0, 0.0, 1.0],
+                            clockwise: false,
+                        },
+                        SpatialPathSegment::CubicBezier {
+                            start_mm: [40.0, 10.0, 0.0],
+                            control_1_mm: [40.0, 20.0, 0.0],
+                            control_2_mm: [40.0, 30.0, 10.0],
+                            end_mm: [40.0, 40.0, 20.0],
+                        },
+                    ],
                 },
             },
             CanonicalCommand::CreateOccurrence {
@@ -2356,12 +2372,11 @@ fn scripted_append_sweep_is_exact_persistent_and_one_step() {
     ));
     let graph = ExactBRepGraph::from_snapshot(&committed, DefinitionId(1), FeatureId(3)).unwrap();
     assert_eq!(graph.producer_feature_id, 3);
-    assert!(
-        graph
-            .nodes
-            .iter()
-            .any(|node| matches!(&node.operation, ExactBRepOperation::Sweep { .. }))
-    );
+    assert_eq!(graph.schema, EXACT_BREP_GRAPH_SCHEMA_V12);
+    assert!(graph.nodes.iter().any(|node| matches!(
+        &node.operation,
+        ExactBRepOperation::SpatialSweep { path, .. } if path.segments.len() == 3
+    )));
     let mut worker = ExactWorkerSupervisor::spawn(exact_worker_path()).unwrap();
     let package = worker.evaluate_exact_brep_graph(&graph).unwrap();
     assert!(package.volume_mm3 > 0.0);

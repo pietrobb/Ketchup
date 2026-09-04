@@ -10207,7 +10207,7 @@ fn sweep_path_self_intersects(
     false
 }
 
-fn is_valid_sweep_path(segments: &[ProfileSegment]) -> bool {
+pub fn is_valid_sweep_path(segments: &[ProfileSegment]) -> bool {
     if !(1..=MAX_EXACT_BREP_SWEEP_PATH_SEGMENTS).contains(&segments.len())
         || segments.len() == 1 && !matches!(segments[0], ProfileSegment::Line { .. })
     {
