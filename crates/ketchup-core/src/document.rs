@@ -536,6 +536,47 @@ impl ProfileSegment {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub enum SpatialPathSegment {
+    Line {
+        start_mm: [f64; 3],
+        end_mm: [f64; 3],
+    },
+    CircularArc {
+        start_mm: [f64; 3],
+        end_mm: [f64; 3],
+        center_mm: [f64; 3],
+        normal: [f64; 3],
+        clockwise: bool,
+    },
+    CubicBezier {
+        start_mm: [f64; 3],
+        control_1_mm: [f64; 3],
+        control_2_mm: [f64; 3],
+        end_mm: [f64; 3],
+    },
+}
+
+impl SpatialPathSegment {
+    #[must_use]
+    pub const fn start_mm(&self) -> [f64; 3] {
+        match self {
+            Self::Line { start_mm, .. }
+            | Self::CircularArc { start_mm, .. }
+            | Self::CubicBezier { start_mm, .. } => *start_mm,
+        }
+    }
+
+    #[must_use]
+    pub const fn end_mm(&self) -> [f64; 3] {
+        match self {
+            Self::Line { end_mm, .. }
+            | Self::CircularArc { end_mm, .. }
+            | Self::CubicBezier { end_mm, .. } => *end_mm,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct LoftSection {
     pub profile: FeatureId,
     pub elevation_mm: f64,
@@ -551,6 +592,9 @@ pub enum FeatureKind {
     SegmentProfile {
         segments: Vec<ProfileSegment>,
         closed: bool,
+    },
+    SpatialPath {
+        segments: Vec<SpatialPathSegment>,
     },
     SplineProfile {
         control_points_mm: Vec<[f64; 2]>,
@@ -841,6 +885,7 @@ impl FeatureKind {
             Self::ThroughCut { .. }
             | Self::Boolean { .. }
             | Self::Sweep { .. }
+            | Self::SpatialPath { .. }
             | Self::ImportedExactBody(_)
             | Self::RigidTransform { .. }
             | Self::MeshBody(_)
@@ -864,6 +909,7 @@ impl FeatureKind {
             Self::Sketch(spec) => [spec.workplane].into_iter().collect(),
             Self::Profile { .. }
             | Self::SegmentProfile { .. }
+            | Self::SpatialPath { .. }
             | Self::SplineProfile { .. }
             | Self::ImportedExactBody(_)
             | Self::MeshBody(_) => BTreeSet::new(),
@@ -9495,6 +9541,12 @@ fn validate_feature_kind(kind: &FeatureKind) -> Result<(), CanonicalError> {
             }
             Ok(())
         }
+        FeatureKind::SpatialPath { segments } => {
+            if !is_valid_spatial_sweep_path(segments) {
+                return Err(CanonicalError::InvalidSweep);
+            }
+            Ok(())
+        }
         FeatureKind::SplineProfile { control_points_mm } => {
             if !is_valid_profile(control_points_mm) || control_points_mm.len() < 4 {
                 return Err(CanonicalError::InvalidSplineProfile);
@@ -10184,6 +10236,225 @@ fn is_valid_sweep_path(segments: &[ProfileSegment]) -> bool {
     })
 }
 
+pub fn is_valid_spatial_sweep_path(segments: &[SpatialPathSegment]) -> bool {
+    fn sub(left: [f64; 3], right: [f64; 3]) -> [f64; 3] {
+        [left[0] - right[0], left[1] - right[1], left[2] - right[2]]
+    }
+    fn dot(left: [f64; 3], right: [f64; 3]) -> f64 {
+        left[0] * right[0] + left[1] * right[1] + left[2] * right[2]
+    }
+    fn cross(left: [f64; 3], right: [f64; 3]) -> [f64; 3] {
+        [
+            left[1] * right[2] - left[2] * right[1],
+            left[2] * right[0] - left[0] * right[2],
+            left[0] * right[1] - left[1] * right[0],
+        ]
+    }
+    fn length(vector: [f64; 3]) -> f64 {
+        dot(vector, vector).sqrt()
+    }
+    fn unit(vector: [f64; 3]) -> Option<[f64; 3]> {
+        let magnitude = length(vector);
+        (magnitude.is_finite() && magnitude > MIN_EXACT_BREP_SWEEP_PATH_SEGMENT_LENGTH_MM)
+            .then(|| vector.map(|value| value / magnitude))
+    }
+    fn metrics(segment: &SpatialPathSegment) -> Option<(f64, [f64; 3], [f64; 3])> {
+        let start = segment.start_mm();
+        let end = segment.end_mm();
+        if [start, end]
+            .into_iter()
+            .flatten()
+            .any(|coordinate| !coordinate.is_finite() || coordinate.abs() > MAX_CANONICAL_ABS_MM)
+        {
+            return None;
+        }
+        match segment {
+            SpatialPathSegment::Line { .. } => {
+                let direction = sub(end, start);
+                let tangent = unit(direction)?;
+                Some((length(direction), tangent, tangent))
+            }
+            SpatialPathSegment::CircularArc {
+                center_mm,
+                normal,
+                clockwise,
+                ..
+            } => {
+                if [*center_mm, *normal]
+                    .into_iter()
+                    .flatten()
+                    .any(|coordinate| {
+                        !coordinate.is_finite() || coordinate.abs() > MAX_CANONICAL_ABS_MM
+                    })
+                {
+                    return None;
+                }
+                let normal_length = length(*normal);
+                if (normal_length - 1.0).abs() > PROFILE_EPSILON_MM {
+                    return None;
+                }
+                let normal = unit(*normal)?;
+                let start_radius = sub(start, *center_mm);
+                let end_radius = sub(end, *center_mm);
+                let radius = length(start_radius);
+                let end_radius_length = length(end_radius);
+                if radius <= MIN_EXACT_BREP_SWEEP_PATH_SEGMENT_LENGTH_MM
+                    || (radius - end_radius_length).abs() > PROFILE_EPSILON_MM
+                    || dot(start_radius, normal).abs() > PROFILE_EPSILON_MM
+                    || dot(end_radius, normal).abs() > PROFILE_EPSILON_MM
+                    || start == end
+                {
+                    return None;
+                }
+                let signed = dot(normal, cross(start_radius, end_radius))
+                    .atan2(dot(start_radius, end_radius));
+                let angle = if *clockwise {
+                    (-signed).rem_euclid(std::f64::consts::TAU)
+                } else {
+                    signed.rem_euclid(std::f64::consts::TAU)
+                };
+                if radius * angle <= MIN_EXACT_BREP_SWEEP_PATH_SEGMENT_LENGTH_MM {
+                    return None;
+                }
+                let sign = if *clockwise { -1.0 } else { 1.0 };
+                let start_tangent = unit(cross(normal, start_radius).map(|v| sign * v))?;
+                let end_tangent = unit(cross(normal, end_radius).map(|v| sign * v))?;
+                Some((radius * angle, start_tangent, end_tangent))
+            }
+            SpatialPathSegment::CubicBezier {
+                control_1_mm,
+                control_2_mm,
+                ..
+            } => {
+                if [*control_1_mm, *control_2_mm]
+                    .into_iter()
+                    .flatten()
+                    .any(|coordinate| {
+                        !coordinate.is_finite() || coordinate.abs() > MAX_CANONICAL_ABS_MM
+                    })
+                {
+                    return None;
+                }
+                let chord = sub(end, start);
+                let first = sub(*control_1_mm, start);
+                let middle = sub(*control_2_mm, *control_1_mm);
+                let last = sub(end, *control_2_mm);
+                let chord_squared = dot(chord, chord);
+                let first_length = length(first);
+                let last_length = length(last);
+                let projection_1 = dot(first, chord);
+                let projection_2 = dot(sub(*control_2_mm, start), chord);
+                if projection_1 <= 0.0
+                    || projection_2 < projection_1
+                    || projection_2 >= chord_squared
+                {
+                    return None;
+                }
+                Some((
+                    first_length + length(middle) + last_length,
+                    unit(first)?,
+                    unit(last)?,
+                ))
+            }
+        }
+    }
+
+    if !(1..=MAX_EXACT_BREP_SWEEP_PATH_SEGMENTS).contains(&segments.len()) {
+        return false;
+    }
+    let Some(metrics) = segments.iter().map(metrics).collect::<Option<Vec<_>>>() else {
+        return false;
+    };
+    let total_length = metrics.iter().map(|metric| metric.0).sum::<f64>();
+    if !(MIN_EXACT_BREP_SWEEP_PATH_LENGTH_MM..=MAX_EXACT_BREP_SWEEP_PATH_LENGTH_MM)
+        .contains(&total_length)
+        || segments.first().unwrap().start_mm() == segments.last().unwrap().end_mm()
+    {
+        return false;
+    }
+    if segments
+        .windows(2)
+        .zip(metrics.windows(2))
+        .any(|(segments, metrics)| {
+            if segments[0].end_mm() != segments[1].start_mm() {
+                return true;
+            }
+            if let (
+                SpatialPathSegment::CircularArc {
+                    start_mm,
+                    center_mm: left_center,
+                    ..
+                },
+                SpatialPathSegment::CircularArc {
+                    center_mm: right_center,
+                    ..
+                },
+            ) = (&segments[0], &segments[1])
+                && left_center == right_center
+            {
+                let radius = length(sub(*start_mm, *left_center));
+                if metrics[0].0 + metrics[1].0
+                    >= std::f64::consts::TAU * radius - PROFILE_EPSILON_MM
+                {
+                    return true;
+                }
+            }
+            let outgoing = metrics[0].2;
+            let incoming = metrics[1].1;
+            dot(outgoing, incoming) < 1.0 - 1.0e-9 || length(cross(outgoing, incoming)) > 1.0e-9
+        })
+    {
+        return false;
+    }
+    let bounds = segments
+        .iter()
+        .map(|segment| {
+            let points = match segment {
+                SpatialPathSegment::Line { start_mm, end_mm } => vec![*start_mm, *end_mm],
+                SpatialPathSegment::CircularArc {
+                    start_mm,
+                    end_mm,
+                    center_mm,
+                    ..
+                } => {
+                    let radius =
+                        length(sub(*start_mm, *center_mm)).max(length(sub(*end_mm, *center_mm)));
+                    return [
+                        center_mm.map(|coordinate| coordinate - radius),
+                        center_mm.map(|coordinate| coordinate + radius),
+                    ];
+                }
+                SpatialPathSegment::CubicBezier {
+                    start_mm,
+                    control_1_mm,
+                    control_2_mm,
+                    end_mm,
+                } => vec![*start_mm, *control_1_mm, *control_2_mm, *end_mm],
+            };
+            [0, 1].map(|bound| {
+                [0, 1, 2].map(|axis| {
+                    points.iter().map(|point| point[axis]).fold(
+                        if bound == 0 {
+                            f64::INFINITY
+                        } else {
+                            f64::NEG_INFINITY
+                        },
+                        if bound == 0 { f64::min } else { f64::max },
+                    )
+                })
+            })
+        })
+        .collect::<Vec<_>>();
+    !(0..bounds.len()).any(|left| {
+        (left + 2..bounds.len()).any(|right| {
+            [0, 1, 2].into_iter().all(|axis| {
+                bounds[left][0][axis] <= bounds[right][1][axis] + PROFILE_EPSILON_MM
+                    && bounds[right][0][axis] <= bounds[left][1][axis] + PROFILE_EPSILON_MM
+            })
+        })
+    })
+}
+
 fn is_valid_segment_profile(segments: &[ProfileSegment], closed: bool) -> bool {
     if segments.is_empty() || segments.len() > MAX_PROFILE_POINTS {
         return false;
@@ -10494,6 +10765,9 @@ fn clone_definition_and_repoint(
             FeatureKind::SegmentProfile { segments, closed } => FeatureKind::SegmentProfile {
                 segments: segments.clone(),
                 closed: *closed,
+            },
+            FeatureKind::SpatialPath { segments } => FeatureKind::SpatialPath {
+                segments: segments.clone(),
             },
             FeatureKind::SplineProfile { control_points_mm } => FeatureKind::SplineProfile {
                 control_points_mm: control_points_mm.clone(),
@@ -10937,6 +11211,9 @@ fn remap_exact_solid_tool_feature_kind(
         FeatureKind::SegmentProfile { segments, closed } => Ok(FeatureKind::SegmentProfile {
             segments: segments.clone(),
             closed: *closed,
+        }),
+        FeatureKind::SpatialPath { segments } => Ok(FeatureKind::SpatialPath {
+            segments: segments.clone(),
         }),
         FeatureKind::SplineProfile { control_points_mm } => Ok(FeatureKind::SplineProfile {
             control_points_mm: control_points_mm.clone(),
@@ -13543,6 +13820,7 @@ fn validate_product(product: &ProductModel) -> Result<(), CanonicalError> {
             }
             FeatureKind::Profile { .. }
             | FeatureKind::SegmentProfile { .. }
+            | FeatureKind::SpatialPath { .. }
             | FeatureKind::SplineProfile { .. } => {}
         }
     }
@@ -14702,6 +14980,7 @@ fn authoritative_dependencies(
                     }
                     FeatureKind::Profile { .. }
                     | FeatureKind::SegmentProfile { .. }
+                    | FeatureKind::SpatialPath { .. }
                     | FeatureKind::SplineProfile { .. }
                     | FeatureKind::ImportedExactBody(_)
                     | FeatureKind::MeshBody(_) => {}
@@ -15384,6 +15663,7 @@ fn add_feature_dependency_closure(
             }
             FeatureKind::Profile { .. }
             | FeatureKind::SegmentProfile { .. }
+            | FeatureKind::SpatialPath { .. }
             | FeatureKind::SplineProfile { .. }
             | FeatureKind::ImportedExactBody(_)
             | FeatureKind::MeshBody(_) => {}

@@ -809,6 +809,50 @@ impl StableDigest {
                     }
                 }
             }
+            FeatureKind::SpatialPath { segments } => {
+                self.byte(25);
+                self.u64(segments.len() as u64);
+                for segment in segments {
+                    match segment {
+                        SpatialPathSegment::Line { start_mm, end_mm } => {
+                            self.byte(1);
+                            for point in [start_mm, end_mm] {
+                                for coordinate in point {
+                                    self.u64(coordinate.to_bits());
+                                }
+                            }
+                        }
+                        SpatialPathSegment::CircularArc {
+                            start_mm,
+                            end_mm,
+                            center_mm,
+                            normal,
+                            clockwise,
+                        } => {
+                            self.byte(2);
+                            for point in [start_mm, end_mm, center_mm, normal] {
+                                for coordinate in point {
+                                    self.u64(coordinate.to_bits());
+                                }
+                            }
+                            self.byte(u8::from(*clockwise));
+                        }
+                        SpatialPathSegment::CubicBezier {
+                            start_mm,
+                            control_1_mm,
+                            control_2_mm,
+                            end_mm,
+                        } => {
+                            self.byte(3);
+                            for point in [start_mm, control_1_mm, control_2_mm, end_mm] {
+                                for coordinate in point {
+                                    self.u64(coordinate.to_bits());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             FeatureKind::SplineProfile { control_points_mm } => {
                 self.byte(14);
                 self.u64(control_points_mm.len() as u64);

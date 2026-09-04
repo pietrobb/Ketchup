@@ -162,6 +162,7 @@ impl ExactRevolveRequest {
                 FeatureKind::Workplane(_)
                 | FeatureKind::Sketch(_)
                 | FeatureKind::SegmentProfile { .. }
+                | FeatureKind::SpatialPath { .. }
                 | FeatureKind::SplineProfile { .. }
                 | FeatureKind::Extrusion { .. }
                 | FeatureKind::Pad(_)

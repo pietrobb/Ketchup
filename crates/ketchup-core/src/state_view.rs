@@ -1097,6 +1097,64 @@ pub fn encode_semantic_state_with_results(
                 )
                 .unwrap();
             }
+            crate::document::FeatureKind::SpatialPath { segments } => {
+                writeln!(complete, "feature.{}.kind=spatial_path", feature.id().0).unwrap();
+                let bits = |point: &[f64; 3]| {
+                    point
+                        .iter()
+                        .map(|value| format!("{:016x}", value.to_bits()))
+                        .collect::<Vec<_>>()
+                        .join(",")
+                };
+                for (index, segment) in segments.iter().enumerate() {
+                    let value = match segment {
+                        crate::document::SpatialPathSegment::Line { start_mm, end_mm } => {
+                            format!("line,{},{}", bits(start_mm), bits(end_mm))
+                        }
+                        crate::document::SpatialPathSegment::CircularArc {
+                            start_mm,
+                            end_mm,
+                            center_mm,
+                            normal,
+                            clockwise,
+                        } => format!(
+                            "circular_arc,{},{},{},{},clockwise:{}",
+                            bits(start_mm),
+                            bits(end_mm),
+                            bits(center_mm),
+                            bits(normal),
+                            clockwise
+                        ),
+                        crate::document::SpatialPathSegment::CubicBezier {
+                            start_mm,
+                            control_1_mm,
+                            control_2_mm,
+                            end_mm,
+                        } => format!(
+                            "cubic_bezier,{},{},{},{}",
+                            bits(start_mm),
+                            bits(control_1_mm),
+                            bits(control_2_mm),
+                            bits(end_mm)
+                        ),
+                    };
+                    writeln!(
+                        complete,
+                        "feature.{}.segment.{index}={value}",
+                        feature.id().0
+                    )
+                    .unwrap();
+                }
+                writeln!(
+                    agent,
+                    "feature.{}=name:{:?},kind:spatial_path,definition:{},segments:{}",
+                    feature.id().0,
+                    feature.name(),
+                    feature.definition_id().0,
+                    segments.len()
+                )
+                .unwrap();
+            }
             crate::document::FeatureKind::SplineProfile { control_points_mm } => {
                 writeln!(complete, "feature.{}.kind=spline_profile", feature.id().0).unwrap();
                 for (index, point) in control_points_mm.iter().enumerate() {

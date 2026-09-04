@@ -27,7 +27,7 @@ use crate::document::{
     LocalOccurrenceId, LocalOccurrenceKey, LoftSection, MeshAuthority, MeshBodySpec, NodeId,
     Occurrence, OccurrenceId, ParameterPath, ParameterValueType, PersistentDimension,
     PersistentDimensionId, PersistentDimensionTarget, ProductModel, ProfileSegment, Snapshot,
-    StableEdgeRole, StableFaceRole, Tag, TagId, Transform, UnitSystem,
+    SpatialPathSegment, StableEdgeRole, StableFaceRole, Tag, TagId, Transform, UnitSystem,
 };
 use crate::drawing::{DrawingSheet, DrawingSheetId, DrawingSource, ORTHOGRAPHIC_DRAWING_SCHEMA_V1};
 use crate::exact_product::{BODY_SUBSHAPE_REF_SCHEMA_V1, BodySubshapeRef, ReferenceStability};
@@ -98,7 +98,8 @@ const SKETCH_CONSTRAINT_VOCABULARY_SCHEMA: u16 = 45;
 const RIGID_TRANSFORM_FEATURE_SCHEMA: u16 = 46;
 const CUBIC_BEZIER_SKETCH_SCHEMA: u16 = 47;
 const CUBIC_BEZIER_SEGMENT_PROFILE_SCHEMA: u16 = 48;
-pub const CURRENT_SCHEMA: u16 = CUBIC_BEZIER_SEGMENT_PROFILE_SCHEMA;
+const SPATIAL_SWEEP_PATH_SCHEMA: u16 = 49;
+pub const CURRENT_SCHEMA: u16 = SPATIAL_SWEEP_PATH_SCHEMA;
 const COLLECTION_SCHEMA: u16 = 15;
 const TAG_SCHEMA: u16 = 14;
 const PERSISTENT_DIMENSION_SCHEMA: u16 = 13;
@@ -162,6 +163,7 @@ struct ProductSchemaCapabilities {
     rigid_transform_feature: bool,
     cubic_bezier_sketch: bool,
     cubic_bezier_segment_profile: bool,
+    spatial_sweep_path: bool,
 }
 
 impl ProductSchemaCapabilities {
@@ -210,6 +212,7 @@ impl ProductSchemaCapabilities {
         rigid_transform_feature: false,
         cubic_bezier_sketch: false,
         cubic_bezier_segment_profile: false,
+        spatial_sweep_path: false,
     };
 
     const fn current(schema: u16) -> Self {
@@ -258,6 +261,7 @@ impl ProductSchemaCapabilities {
             rigid_transform_feature: schema >= RIGID_TRANSFORM_FEATURE_SCHEMA,
             cubic_bezier_sketch: schema >= CUBIC_BEZIER_SKETCH_SCHEMA,
             cubic_bezier_segment_profile: schema >= CUBIC_BEZIER_SEGMENT_PROFILE_SCHEMA,
+            spatial_sweep_path: schema >= SPATIAL_SWEEP_PATH_SCHEMA,
         }
     }
 }
@@ -1507,6 +1511,50 @@ fn write_features(bytes: &mut Vec<u8>, product: &ProductModel) {
                     }
                 }
             }
+            FeatureKind::SpatialPath { segments } => {
+                push_u8(bytes, 25);
+                push_u32(bytes, segments.len() as u32);
+                for segment in segments {
+                    match segment {
+                        SpatialPathSegment::Line { start_mm, end_mm } => {
+                            push_u8(bytes, 1);
+                            for point in [start_mm, end_mm] {
+                                for coordinate in point {
+                                    push_u64(bytes, coordinate.to_bits());
+                                }
+                            }
+                        }
+                        SpatialPathSegment::CircularArc {
+                            start_mm,
+                            end_mm,
+                            center_mm,
+                            normal,
+                            clockwise,
+                        } => {
+                            push_u8(bytes, 2);
+                            for point in [start_mm, end_mm, center_mm, normal] {
+                                for coordinate in point {
+                                    push_u64(bytes, coordinate.to_bits());
+                                }
+                            }
+                            push_u8(bytes, u8::from(*clockwise));
+                        }
+                        SpatialPathSegment::CubicBezier {
+                            start_mm,
+                            control_1_mm,
+                            control_2_mm,
+                            end_mm,
+                        } => {
+                            push_u8(bytes, 3);
+                            for point in [start_mm, control_1_mm, control_2_mm, end_mm] {
+                                for coordinate in point {
+                                    push_u64(bytes, coordinate.to_bits());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             FeatureKind::SplineProfile { control_points_mm } => {
                 push_u8(bytes, 14);
                 push_u32(bytes, control_points_mm.len() as u32);
@@ -2291,6 +2339,7 @@ fn load_document(
             | SKETCH_CONSTRAINT_VOCABULARY_SCHEMA
             | RIGID_TRANSFORM_FEATURE_SCHEMA
             | CUBIC_BEZIER_SKETCH_SCHEMA
+            | CUBIC_BEZIER_SEGMENT_PROFILE_SCHEMA
             | CURRENT_SCHEMA
     ) {
         return Err(PersistenceError::UnsupportedSchema(schema));
@@ -3745,6 +3794,43 @@ fn read_product(
                     });
                 }
                 FeatureKind::SegmentProfile { segments, closed }
+            }
+            25 if capabilities.spatial_sweep_path => {
+                let point = |reader: &mut Reader<'_>| -> Result<[f64; 3], PersistenceError> {
+                    Ok([
+                        f64::from_bits(reader.u64()?),
+                        f64::from_bits(reader.u64()?),
+                        f64::from_bits(reader.u64()?),
+                    ])
+                };
+                let mut segments = Vec::new();
+                for _ in 0..reader.count_with_limit(64)? {
+                    segments.push(match reader.u8()? {
+                        1 => SpatialPathSegment::Line {
+                            start_mm: point(reader)?,
+                            end_mm: point(reader)?,
+                        },
+                        2 => SpatialPathSegment::CircularArc {
+                            start_mm: point(reader)?,
+                            end_mm: point(reader)?,
+                            center_mm: point(reader)?,
+                            normal: point(reader)?,
+                            clockwise: match reader.u8()? {
+                                0 => false,
+                                1 => true,
+                                value => return Err(PersistenceError::InvalidFeatureKind(value)),
+                            },
+                        },
+                        3 => SpatialPathSegment::CubicBezier {
+                            start_mm: point(reader)?,
+                            control_1_mm: point(reader)?,
+                            control_2_mm: point(reader)?,
+                            end_mm: point(reader)?,
+                        },
+                        value => return Err(PersistenceError::InvalidFeatureKind(value)),
+                    });
+                }
+                FeatureKind::SpatialPath { segments }
             }
             14 if capabilities.loft_spline => {
                 let mut control_points_mm = Vec::new();

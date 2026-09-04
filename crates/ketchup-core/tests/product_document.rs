@@ -10,7 +10,7 @@ use ketchup_core::document::{
     MappingResolution, NodeId, OccurrenceId, ParameterPath, ParameterPathError, ParameterValueType,
     PersistentDimension, PersistentDimensionId, PersistentDimensionTarget, PortSpec,
     ProfileSegment, RuleOutput, SceneQueryContext, SceneQueryError, SlotPath, SlotSegment,
-    Snapshot, SolidToolPlan, StableEdgeRole, StableFaceRole, TagId, Transform,
+    Snapshot, SolidToolPlan, SpatialPathSegment, StableEdgeRole, StableFaceRole, TagId, Transform,
     UnresolvedMappingReason, WorldEntityPath,
 };
 use ketchup_core::exact_brep_graph::{
@@ -4549,9 +4549,12 @@ fn v11_cubic_sweep_is_canonical_visible_persistent_and_fail_closed() {
     );
 
     let bytes = persistence::save(&document.current());
-    assert_eq!(u16::from_le_bytes([bytes[10], bytes[11]]), 48);
+    assert_eq!(
+        u16::from_le_bytes([bytes[10], bytes[11]]),
+        persistence::CURRENT_SCHEMA
+    );
     let reopened = persistence::load(&bytes).unwrap();
-    assert_eq!(reopened.source_schema(), 48);
+    assert_eq!(reopened.source_schema(), persistence::CURRENT_SCHEMA);
     assert_eq!(reopened.snapshot().canonical_digest(), swept_digest);
     assert_eq!(persistence::save(&reopened.snapshot()), bytes);
     assert!(matches!(
@@ -4591,6 +4594,71 @@ fn v11_cubic_sweep_is_canonical_visible_persistent_and_fail_closed() {
     ];
     assert!(matches!(
         invalid.apply_batch(&commands(adjacent_self_intersection)),
+        Err(CanonicalError::InvalidSweep)
+    ));
+    assert_eq!(invalid.current().canonical_digest(), before);
+    assert_eq!(invalid.visible_undo_steps(), 0);
+}
+
+#[test]
+fn spatial_sweep_path_is_canonical_visible_persistent_and_bounded() {
+    const DEFINITION: DefinitionId = DefinitionId(900);
+    const PATH: FeatureId = FeatureId(902);
+    let commands = |segments| {
+        CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DEFINITION,
+                name: "Spatial sweep".to_owned(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: PATH,
+                definition_id: DEFINITION,
+                name: "Spatial path".to_owned(),
+                kind: FeatureKind::SpatialPath { segments },
+            },
+        ])
+    };
+    let path = vec![SpatialPathSegment::Line {
+        start_mm: [2.0, 3.0, 4.0],
+        end_mm: [2.0, 3.0, 24.0],
+    }];
+    let mut document = DocumentStore::new();
+    let empty_digest = document.current().canonical_digest();
+    document.apply_batch(&commands(path.clone())).unwrap();
+    let digest = document.current().canonical_digest();
+    assert_ne!(digest, empty_digest);
+    assert_eq!(document.undo().unwrap().canonical_digest(), empty_digest);
+    assert_eq!(document.redo().unwrap().canonical_digest(), digest);
+    assert!(
+        encode_semantic_state(&document.current())
+            .complete_v1()
+            .contains("feature.902.segment.0=line")
+    );
+
+    let bytes = persistence::save(&document.current());
+    assert_eq!(
+        u16::from_le_bytes([bytes[10], bytes[11]]),
+        persistence::CURRENT_SCHEMA
+    );
+    let reopened = persistence::load(&bytes).unwrap();
+    assert_eq!(reopened.source_schema(), persistence::CURRENT_SCHEMA);
+    assert_eq!(reopened.snapshot().canonical_digest(), digest);
+    assert_eq!(persistence::save(&reopened.snapshot()), bytes);
+    assert!(matches!(
+        reopened.snapshot().feature(PATH).unwrap().kind(),
+        FeatureKind::SpatialPath { segments } if segments == &path
+    ));
+
+    let mut invalid = DocumentStore::new();
+    let before = invalid.current().canonical_digest();
+    let segments = (0..65)
+        .map(|index| SpatialPathSegment::Line {
+            start_mm: [f64::from(index), 0.0, 0.0],
+            end_mm: [f64::from(index + 1), 0.0, 0.0],
+        })
+        .collect();
+    assert!(matches!(
+        invalid.apply_batch(&commands(segments)),
         Err(CanonicalError::InvalidSweep)
     ));
     assert_eq!(invalid.current().canonical_digest(), before);
