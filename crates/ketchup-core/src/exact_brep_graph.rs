@@ -20,11 +20,13 @@ use std::fmt;
 pub const EXACT_BREP_GRAPH_SCHEMA_V6: &str = "ketchup.exact-brep-graph.v6";
 pub const EXACT_BREP_GRAPH_SCHEMA_V7: &str = "ketchup.exact-brep-graph.v7";
 pub const EXACT_BREP_GRAPH_SCHEMA_V8: &str = "ketchup.exact-brep-graph.v8";
+pub const EXACT_BREP_GRAPH_SCHEMA_V9: &str = "ketchup.exact-brep-graph.v9";
 pub const MAX_EXACT_BREP_GRAPH_PROFILES: usize = 1_024;
 pub const MAX_EXACT_BREP_GRAPH_NODES: usize = 1_024;
 pub const MAX_EXACT_BREP_GRAPH_SEGMENTS: usize = 16_384;
 pub const MAX_EXACT_BREP_LOFT_SECTIONS: usize = 16;
 pub const MAX_EXACT_BREP_LOFT_CONTROL_POINTS: usize = 64;
+pub const MIN_EXACT_BREP_SWEEP_PATH_SEGMENT_LENGTH_MM: f64 = 1.0e-7;
 pub const MIN_EXACT_BREP_SWEEP_PATH_LENGTH_MM: f64 = 0.01;
 pub const MAX_EXACT_BREP_SWEEP_PATH_LENGTH_MM: f64 = 100_000.0;
 pub const MAX_EXACT_BREP_PLANAR_LOOP_SEGMENTS: usize = 64;
@@ -362,8 +364,17 @@ impl ExactBRepGraph {
         let mut compiler = GraphCompiler::new(snapshot, definition_id);
         compiler.compile_body(producer_feature_id)?;
         let source_digest = snapshot.canonical_digest();
+        let schema = if compiler
+            .nodes
+            .iter()
+            .any(|node| operation_requires_v9(&node.operation, &compiler.profiles))
+        {
+            EXACT_BREP_GRAPH_SCHEMA_V9
+        } else {
+            EXACT_BREP_GRAPH_SCHEMA_V8
+        };
         let mut graph = Self {
-            schema: EXACT_BREP_GRAPH_SCHEMA_V8.to_owned(),
+            schema: schema.to_owned(),
             document_id: snapshot.document_id().0,
             source_revision: snapshot.revision_id(),
             source_digest,
@@ -497,7 +508,10 @@ impl ExactBRepGraph {
     pub fn validate(&self) -> Result<(), ExactBRepGraphError> {
         if !matches!(
             self.schema.as_str(),
-            EXACT_BREP_GRAPH_SCHEMA_V6 | EXACT_BREP_GRAPH_SCHEMA_V7 | EXACT_BREP_GRAPH_SCHEMA_V8
+            EXACT_BREP_GRAPH_SCHEMA_V6
+                | EXACT_BREP_GRAPH_SCHEMA_V7
+                | EXACT_BREP_GRAPH_SCHEMA_V8
+                | EXACT_BREP_GRAPH_SCHEMA_V9
         ) || self.document_id == 0
             || self.definition_id == 0
             || self.producer_feature_id == 0
@@ -556,8 +570,12 @@ impl ExactBRepGraph {
                 || !valid_operation_profiles(&node.operation, &self.profiles)
                 || (self.schema == EXACT_BREP_GRAPH_SCHEMA_V6
                     && operation_requires_v7(&node.operation, &self.profiles))
-                || (self.schema != EXACT_BREP_GRAPH_SCHEMA_V8
-                    && operation_requires_v8(&node.operation, &self.profiles))
+                || (matches!(
+                    self.schema.as_str(),
+                    EXACT_BREP_GRAPH_SCHEMA_V6 | EXACT_BREP_GRAPH_SCHEMA_V7
+                ) && operation_requires_v8(&node.operation, &self.profiles))
+                || (self.schema != EXACT_BREP_GRAPH_SCHEMA_V9
+                    && operation_requires_v9(&node.operation, &self.profiles))
                 || !valid_operation(
                     &node.operation,
                     self.document_id,
@@ -1649,6 +1667,131 @@ fn planar_offset_profile_bounds(
         .ok_or(ExactBRepGraphError::InvalidParameter)
 }
 
+fn sweep_path_segment_metrics(
+    segment: &ExactBRepPlanarSegment,
+) -> Option<(f64, [f64; 2], [f64; 2])> {
+    match segment {
+        ExactBRepPlanarSegment::Line {
+            start_bits,
+            end_bits,
+        } => {
+            let start = start_bits.map(f64::from_bits);
+            let end = end_bits.map(f64::from_bits);
+            let direction = [end[0] - start[0], end[1] - start[1]];
+            let length = direction[0].hypot(direction[1]);
+            if !length.is_finite() || length <= MIN_EXACT_BREP_SWEEP_PATH_SEGMENT_LENGTH_MM {
+                return None;
+            }
+            let tangent = [direction[0] / length, direction[1] / length];
+            Some((length, tangent, tangent))
+        }
+        ExactBRepPlanarSegment::CircularArc {
+            start_bits,
+            end_bits,
+            center_bits,
+            clockwise,
+        } => {
+            let start = start_bits.map(f64::from_bits);
+            let end = end_bits.map(f64::from_bits);
+            let center = center_bits.map(f64::from_bits);
+            let start_radius = [start[0] - center[0], start[1] - center[1]];
+            let end_radius = [end[0] - center[0], end[1] - center[1]];
+            let radius = start_radius[0].hypot(start_radius[1]);
+            let start_angle = start_radius[1].atan2(start_radius[0]);
+            let end_angle = end_radius[1].atan2(end_radius[0]);
+            let sweep_angle = if *clockwise {
+                (start_angle - end_angle).rem_euclid(std::f64::consts::TAU)
+            } else {
+                (end_angle - start_angle).rem_euclid(std::f64::consts::TAU)
+            };
+            if !radius.is_finite()
+                || radius <= MIN_EXACT_BREP_SWEEP_PATH_SEGMENT_LENGTH_MM
+                || !sweep_angle.is_finite()
+                || radius * sweep_angle <= MIN_EXACT_BREP_SWEEP_PATH_SEGMENT_LENGTH_MM
+            {
+                return None;
+            }
+            let tangent = |radial: [f64; 2]| {
+                if *clockwise {
+                    [radial[1] / radius, -radial[0] / radius]
+                } else {
+                    [-radial[1] / radius, radial[0] / radius]
+                }
+            };
+            Some((
+                radius * sweep_angle,
+                tangent(start_radius),
+                tangent(end_radius),
+            ))
+        }
+        ExactBRepPlanarSegment::CubicBezier { .. } => None,
+    }
+}
+
+fn sweep_path_planar_bounds(segments: &[ExactBRepPlanarSegment]) -> Option<[[f64; 2]; 2]> {
+    let mut bounds = [[f64::INFINITY; 2], [f64::NEG_INFINITY; 2]];
+    let mut include = |point: [f64; 2]| {
+        for axis in 0..2 {
+            bounds[0][axis] = bounds[0][axis].min(point[axis]);
+            bounds[1][axis] = bounds[1][axis].max(point[axis]);
+        }
+    };
+    for segment in segments {
+        match segment {
+            ExactBRepPlanarSegment::Line {
+                start_bits,
+                end_bits,
+            } => {
+                include(start_bits.map(f64::from_bits));
+                include(end_bits.map(f64::from_bits));
+            }
+            ExactBRepPlanarSegment::CircularArc {
+                center_bits,
+                start_bits,
+                ..
+            } => {
+                let center = center_bits.map(f64::from_bits);
+                let start = start_bits.map(f64::from_bits);
+                let radius = (start[0] - center[0]).hypot(start[1] - center[1]);
+                include([center[0] - radius, center[1] - radius]);
+                include([center[0] + radius, center[1] + radius]);
+            }
+            ExactBRepPlanarSegment::CubicBezier { .. } => return None,
+        }
+    }
+    bounds
+        .iter()
+        .flatten()
+        .all(|value| value.is_finite() && value.abs() <= MAX_ABS_MM)
+        .then_some(bounds)
+}
+
+fn sweep_path_length(segments: &[ExactBRepPlanarSegment]) -> Option<f64> {
+    if !matches!(segments.len(), 1 | 2)
+        || segments.len() == 1 && !matches!(segments[0], ExactBRepPlanarSegment::Line { .. })
+    {
+        return None;
+    }
+    let metrics = segments
+        .iter()
+        .map(sweep_path_segment_metrics)
+        .collect::<Option<Vec<_>>>()?;
+    let total_length = metrics.iter().map(|metrics| metrics.0).sum::<f64>();
+    if !(MIN_EXACT_BREP_SWEEP_PATH_LENGTH_MM..=MAX_EXACT_BREP_SWEEP_PATH_LENGTH_MM)
+        .contains(&total_length)
+        || metrics.windows(2).any(|pair| {
+            let outgoing = pair[0].2;
+            let incoming = pair[1].1;
+            let dot = outgoing[0] * incoming[0] + outgoing[1] * incoming[1];
+            let cross = outgoing[0] * incoming[1] - outgoing[1] * incoming[0];
+            dot < 1.0 - 1.0e-9 || cross.abs() > 1.0e-9
+        })
+    {
+        return None;
+    }
+    Some(total_length)
+}
+
 fn sweep_profile_bounds(
     profile: &ExactBRepProfile,
     path: &ExactBRepProfile,
@@ -1661,6 +1804,22 @@ fn sweep_profile_bounds(
     else {
         return Err(ExactBRepGraphError::InvalidParameter);
     };
+    let path_length = sweep_path_length(segments).ok_or(ExactBRepGraphError::InvalidParameter)?;
+    if segments.len() == 2 {
+        if profile.frame_bits != identity_frame() {
+            return Err(ExactBRepGraphError::InvalidParameter);
+        }
+        let [[min_x, min_y], [max_x, max_y]] =
+            sweep_path_planar_bounds(segments).ok_or(ExactBRepGraphError::InvalidParameter)?;
+        let radial_extent = min_u.abs().max(max_u.abs());
+        let bounds = [
+            [min_x - radial_extent, min_y - radial_extent, min_v],
+            [max_x + radial_extent, max_y + radial_extent, max_v],
+        ];
+        return valid_bounds(bounds)
+            .then_some(bounds)
+            .ok_or(ExactBRepGraphError::InvalidParameter);
+    }
     let [
         ExactBRepPlanarSegment::Line {
             start_bits,
@@ -1673,12 +1832,6 @@ fn sweep_profile_bounds(
     let start = start_bits.map(f64::from_bits);
     let end = end_bits.map(f64::from_bits);
     let direction = [end[0] - start[0], end[1] - start[1]];
-    let path_length = direction[0].hypot(direction[1]);
-    if !(MIN_EXACT_BREP_SWEEP_PATH_LENGTH_MM..=MAX_EXACT_BREP_SWEEP_PATH_LENGTH_MM)
-        .contains(&path_length)
-    {
-        return Err(ExactBRepGraphError::InvalidParameter);
-    }
     let tangent = [direction[0] / path_length, direction[1] / path_length];
     let section = [tangent[1], -tangent[0]];
     let frame = profile.frame_bits.map(f64::from_bits);
@@ -2078,6 +2231,16 @@ fn operation_requires_v8(operation: &ExactBRepOperation, profiles: &[ExactBRepPr
     )
 }
 
+fn operation_requires_v9(operation: &ExactBRepOperation, profiles: &[ExactBRepProfile]) -> bool {
+    let ExactBRepOperation::Sweep { path, .. } = operation else {
+        return false;
+    };
+    matches!(
+        profiles.get(path.0 as usize).map(|profile| &profile.geometry),
+        Some(ExactBRepPlanarGeometry::Boundary { segments, .. }) if segments.len() > 1
+    )
+}
+
 fn valid_operation_profiles(operation: &ExactBRepOperation, profiles: &[ExactBRepProfile]) -> bool {
     match operation {
         ExactBRepOperation::Loft { sections } => sections.iter().all(|section| {
@@ -2106,25 +2269,6 @@ fn valid_operation_profiles(operation: &ExactBRepOperation, profiles: &[ExactBRe
                         ExactBRepPlanarGeometry::Boundary { closed: true, .. }
                             | ExactBRepPlanarGeometry::Circle { .. }
                             | ExactBRepPlanarGeometry::Region { .. }
-                    )
-                )
-                && matches!(
-                    profiles.get(path.0 as usize).map(|profile| &profile.geometry),
-                    Some(ExactBRepPlanarGeometry::Boundary {
-                        closed: false,
-                        segments,
-                    }) if matches!(
-                        segments.as_slice(),
-                        [ExactBRepPlanarSegment::Line { start_bits, end_bits }]
-                            if {
-                                let start = start_bits.map(f64::from_bits);
-                                let end = end_bits.map(f64::from_bits);
-                                (MIN_EXACT_BREP_SWEEP_PATH_LENGTH_MM
-                                    ..=MAX_EXACT_BREP_SWEEP_PATH_LENGTH_MM)
-                                    .contains(
-                                        &(end[0] - start[0]).hypot(end[1] - start[1]),
-                                    )
-                            }
                     )
                 )
                 && profiles
@@ -2603,6 +2747,14 @@ mod tests {
             start_bits: start.map(f64::to_bits),
             end_bits: end.map(f64::to_bits),
         };
+        let arc = |start: [f64; 2], end: [f64; 2], center: [f64; 2]| {
+            ExactBRepPlanarSegment::CircularArc {
+                start_bits: start.map(f64::to_bits),
+                end_bits: end.map(f64::to_bits),
+                center_bits: center.map(f64::to_bits),
+                clockwise: false,
+            }
+        };
         let mut profiles = vec![
             profile(
                 0,
@@ -2684,7 +2836,56 @@ mod tests {
         assert!(!valid_operation_profiles(&sweep, &profiles));
         profiles[1].geometry = ExactBRepPlanarGeometry::Boundary {
             closed: false,
+            segments: vec![
+                line([0.0, 0.0], [50.0, 0.0]),
+                arc([50.0, 0.0], [75.0, 25.0], [50.0, 25.0]),
+            ],
+        };
+        assert!(valid_operation_profiles(&sweep, &profiles));
+
+        profiles[1].geometry = ExactBRepPlanarGeometry::Boundary {
+            closed: false,
             segments: vec![line([0.0, 0.0], [5.0, 0.0]), line([5.0, 0.0], [10.0, 0.0])],
+        };
+        assert!(valid_operation_profiles(&sweep, &profiles));
+        profiles[1].geometry = ExactBRepPlanarGeometry::Boundary {
+            closed: false,
+            segments: vec![
+                line(
+                    [0.0, 0.0],
+                    [MIN_EXACT_BREP_SWEEP_PATH_SEGMENT_LENGTH_MM / 2.0, 0.0],
+                ),
+                line(
+                    [MIN_EXACT_BREP_SWEEP_PATH_SEGMENT_LENGTH_MM / 2.0, 0.0],
+                    [10.0, 0.0],
+                ),
+            ],
+        };
+        assert!(!valid_operation_profiles(&sweep, &profiles));
+
+        profiles[1].geometry = ExactBRepPlanarGeometry::Boundary {
+            closed: false,
+            segments: vec![line([0.0, 0.0], [5.0, 0.0]), line([5.0, 0.0], [5.0, 5.0])],
+        };
+        assert!(!valid_operation_profiles(&sweep, &profiles));
+        profiles[1].geometry = ExactBRepPlanarGeometry::Boundary {
+            closed: false,
+            segments: vec![
+                line([0.0, 0.0], [5.0, 0.0]),
+                line([5.0, 0.0], [10.0, 0.0]),
+                line([10.0, 0.0], [15.0, 0.0]),
+            ],
+        };
+        assert!(!valid_operation_profiles(&sweep, &profiles));
+        profiles[1].geometry = ExactBRepPlanarGeometry::Boundary {
+            closed: false,
+            segments: vec![
+                line([0.0, 0.0], [MAX_EXACT_BREP_SWEEP_PATH_LENGTH_MM, 0.0]),
+                line(
+                    [MAX_EXACT_BREP_SWEEP_PATH_LENGTH_MM, 0.0],
+                    [MAX_EXACT_BREP_SWEEP_PATH_LENGTH_MM + 1.0, 0.0],
+                ),
+            ],
         };
         assert!(!valid_operation_profiles(&sweep, &profiles));
     }

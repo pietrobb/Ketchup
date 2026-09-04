@@ -5,11 +5,11 @@ use ketchup_core::document::{
 };
 use ketchup_core::exact_brep_graph::{
     EXACT_BREP_GRAPH_SCHEMA_V6, EXACT_BREP_GRAPH_SCHEMA_V7, EXACT_BREP_GRAPH_SCHEMA_V8,
-    ExactBRepBooleanOperation, ExactBRepEdgeFinishKind, ExactBRepGraph, ExactBRepGraphError,
-    ExactBRepOperation, ExactBRepPlanarGeometry, ExactBRepPlanarLoop, ExactBRepPlanarSegment,
-    ExactBRepTopologyKind, MAX_EXACT_BREP_GRAPH_BYTES, MAX_EXACT_BREP_GRAPH_SEGMENTS,
-    MAX_EXACT_BREP_PLANAR_LOOP_SEGMENTS, MAX_EXACT_BREP_REGION_HOLES,
-    MAX_EXACT_BREP_REGION_SEGMENTS,
+    EXACT_BREP_GRAPH_SCHEMA_V9, ExactBRepBooleanOperation, ExactBRepEdgeFinishKind, ExactBRepGraph,
+    ExactBRepGraphError, ExactBRepOperation, ExactBRepPlanarGeometry, ExactBRepPlanarLoop,
+    ExactBRepPlanarSegment, ExactBRepTopologyKind, MAX_EXACT_BREP_GRAPH_BYTES,
+    MAX_EXACT_BREP_GRAPH_SEGMENTS, MAX_EXACT_BREP_PLANAR_LOOP_SEGMENTS,
+    MAX_EXACT_BREP_REGION_HOLES, MAX_EXACT_BREP_REGION_SEGMENTS,
 };
 use ketchup_core::exact_product::{
     ExactFaceRole, ExactFeatureChainRequest, ExactProductError, build_box_render_package,
@@ -564,6 +564,7 @@ fn compiler_uses_one_contract_for_pad_revolve_sweep_and_loft() {
     let sweep_graph = ExactBRepGraph::from_snapshot(&snapshot, sweep_definition, sweep).unwrap();
     let loft_graph = ExactBRepGraph::from_snapshot(&snapshot, loft_definition, loft).unwrap();
 
+    assert_eq!(sweep_graph.schema, EXACT_BREP_GRAPH_SCHEMA_V8);
     assert!(matches!(
         pad_graph.nodes[0].operation,
         ExactBRepOperation::Extrude { .. }
@@ -607,6 +608,77 @@ fn compiler_uses_one_contract_for_pad_revolve_sweep_and_loft() {
         let bytes = graph.to_bytes().unwrap();
         assert_eq!(ExactBRepGraph::from_bytes(&bytes).unwrap(), graph);
     }
+}
+
+#[test]
+fn tangent_line_arc_sweep_uses_v9_and_round_trips() {
+    let definition = DefinitionId(6);
+    let profile = FeatureId(500);
+    let path = FeatureId(501);
+    let sweep = FeatureId(502);
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: definition,
+                name: "Curved sweep graph".into(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: profile,
+                definition_id: definition,
+                name: "Sweep section".into(),
+                kind: FeatureKind::Profile {
+                    points_mm: vec![[-2.0, -1.0], [3.0, -1.0], [3.0, 4.0], [-2.0, 4.0]],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: path,
+                definition_id: definition,
+                name: "Tangent line-arc path".into(),
+                kind: FeatureKind::SegmentProfile {
+                    segments: vec![
+                        ProfileSegment::Line {
+                            start_mm: [0.0, 0.0],
+                            end_mm: [50.0, 0.0],
+                        },
+                        ProfileSegment::CircularArc {
+                            start_mm: [50.0, 0.0],
+                            end_mm: [75.0, 25.0],
+                            center_mm: [50.0, 25.0],
+                            clockwise: false,
+                        },
+                    ],
+                    closed: false,
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: sweep,
+                definition_id: definition,
+                name: "Curved sweep".into(),
+                kind: FeatureKind::Sweep { profile, path },
+            },
+        ]))
+        .unwrap();
+
+    let graph = ExactBRepGraph::from_snapshot(&document.current(), definition, sweep).unwrap();
+    assert_eq!(graph.schema, EXACT_BREP_GRAPH_SCHEMA_V9);
+    assert!(matches!(
+        &graph.profiles[1].geometry,
+        ExactBRepPlanarGeometry::Boundary {
+            closed: false,
+            segments
+        } if segments.len() == 2
+    ));
+    assert!(graph.producer_bounds_mm().unwrap().is_some());
+    let bytes = graph.to_bytes().unwrap();
+    assert_eq!(ExactBRepGraph::from_bytes(&bytes).unwrap(), graph);
+
+    let mut downgraded = graph;
+    downgraded.schema = EXACT_BREP_GRAPH_SCHEMA_V8.into();
+    assert_eq!(
+        downgraded.to_bytes(),
+        Err(ExactBRepGraphError::InvalidGraph)
+    );
 }
 
 #[test]

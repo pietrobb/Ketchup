@@ -4,8 +4,8 @@ use ketchup_core::document::{
     SolidToolPlan, Transform,
 };
 use ketchup_core::exact_brep_graph::{
-    EXACT_BREP_GRAPH_SCHEMA_V8, ExactBRepGraph, ExactBRepGraphError, ExactBRepOperation,
-    ExactBRepPlanarGeometry, ExactBRepPlanarLoop, ExactBRepPlanarSegment,
+    EXACT_BREP_GRAPH_SCHEMA_V8, EXACT_BREP_GRAPH_SCHEMA_V9, ExactBRepGraph, ExactBRepGraphError,
+    ExactBRepOperation, ExactBRepPlanarGeometry, ExactBRepPlanarLoop, ExactBRepPlanarSegment,
     MAX_EXACT_BREP_GRAPH_PROFILES,
 };
 use ketchup_core::exact_product::{
@@ -202,6 +202,68 @@ fn generated_boolean_document(
     let mut document = DocumentStore::new();
     document.apply_batch(&CommandBatch::new(commands)).unwrap();
     (document, definition, base, tool, operations)
+}
+
+#[test]
+fn v9_curved_sweep_is_rejected_before_worker_dispatch_until_capability_exists() {
+    let definition = DefinitionId(89);
+    let profile = FeatureId(890);
+    let path = FeatureId(891);
+    let sweep = FeatureId(892);
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: definition,
+                name: "V9 curved sweep".into(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: profile,
+                definition_id: definition,
+                name: "Section".into(),
+                kind: FeatureKind::Profile {
+                    points_mm: vec![[-2.0, -1.0], [2.0, -1.0], [2.0, 1.0], [-2.0, 1.0]],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: path,
+                definition_id: definition,
+                name: "Line-arc path".into(),
+                kind: FeatureKind::SegmentProfile {
+                    segments: vec![
+                        ProfileSegment::Line {
+                            start_mm: [0.0, 0.0],
+                            end_mm: [50.0, 0.0],
+                        },
+                        ProfileSegment::CircularArc {
+                            start_mm: [50.0, 0.0],
+                            end_mm: [75.0, 25.0],
+                            center_mm: [50.0, 25.0],
+                            clockwise: false,
+                        },
+                    ],
+                    closed: false,
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: sweep,
+                definition_id: definition,
+                name: "Curved sweep".into(),
+                kind: FeatureKind::Sweep { profile, path },
+            },
+        ]))
+        .unwrap();
+    let graph = ExactBRepGraph::from_snapshot(&document.current(), definition, sweep).unwrap();
+    assert_eq!(graph.schema, EXACT_BREP_GRAPH_SCHEMA_V9);
+
+    let mut supervisor =
+        ExactWorkerSupervisor::spawn(env!("CARGO_BIN_EXE_ketchup-exact-worker")).unwrap();
+    assert_eq!(
+        supervisor.evaluate_exact_brep_graph(&graph),
+        Err(WorkerError::Protocol(format!(
+            "unsupported graph schema {EXACT_BREP_GRAPH_SCHEMA_V9}"
+        )))
+    );
 }
 
 #[test]

@@ -12,7 +12,7 @@ use crate::drawing::{DrawingError, DrawingSheet, DrawingSheetId, DrawingSource};
 use crate::exact_brep_graph::{
     ExactBRepGraph, MAX_EXACT_BREP_GRAPH_NODES, MAX_EXACT_BREP_GRAPH_PROFILES,
     MAX_EXACT_BREP_LOFT_CONTROL_POINTS, MAX_EXACT_BREP_SWEEP_PATH_LENGTH_MM,
-    MIN_EXACT_BREP_SWEEP_PATH_LENGTH_MM,
+    MIN_EXACT_BREP_SWEEP_PATH_LENGTH_MM, MIN_EXACT_BREP_SWEEP_PATH_SEGMENT_LENGTH_MM,
 };
 use crate::exact_product::{
     BodySubshapeRef, EXACT_MIN_LENGTH_MM, ExactFaceRole, ExactFeatureChainRequest,
@@ -9910,6 +9910,84 @@ fn resize_axis_aligned_rectangle(
     Ok(resized)
 }
 
+fn sweep_path_segment_metrics(segment: &ProfileSegment) -> Option<(f64, [f64; 2], [f64; 2])> {
+    match segment {
+        ProfileSegment::Line { start_mm, end_mm } => {
+            let direction = [end_mm[0] - start_mm[0], end_mm[1] - start_mm[1]];
+            let length = direction[0].hypot(direction[1]);
+            if !length.is_finite() || length <= MIN_EXACT_BREP_SWEEP_PATH_SEGMENT_LENGTH_MM {
+                return None;
+            }
+            let tangent = [direction[0] / length, direction[1] / length];
+            Some((length, tangent, tangent))
+        }
+        ProfileSegment::CircularArc {
+            start_mm,
+            end_mm,
+            center_mm,
+            clockwise,
+        } => {
+            let start_radius = [start_mm[0] - center_mm[0], start_mm[1] - center_mm[1]];
+            let end_radius = [end_mm[0] - center_mm[0], end_mm[1] - center_mm[1]];
+            let radius = start_radius[0].hypot(start_radius[1]);
+            let start_angle = start_radius[1].atan2(start_radius[0]);
+            let end_angle = end_radius[1].atan2(end_radius[0]);
+            let sweep_angle = if *clockwise {
+                (start_angle - end_angle).rem_euclid(std::f64::consts::TAU)
+            } else {
+                (end_angle - start_angle).rem_euclid(std::f64::consts::TAU)
+            };
+            if !radius.is_finite()
+                || radius <= MIN_EXACT_BREP_SWEEP_PATH_SEGMENT_LENGTH_MM
+                || !sweep_angle.is_finite()
+                || radius * sweep_angle <= MIN_EXACT_BREP_SWEEP_PATH_SEGMENT_LENGTH_MM
+            {
+                return None;
+            }
+            let tangent = |radial: [f64; 2]| {
+                if *clockwise {
+                    [radial[1] / radius, -radial[0] / radius]
+                } else {
+                    [-radial[1] / radius, radial[0] / radius]
+                }
+            };
+            Some((
+                radius * sweep_angle,
+                tangent(start_radius),
+                tangent(end_radius),
+            ))
+        }
+    }
+}
+
+fn is_valid_sweep_path(segments: &[ProfileSegment]) -> bool {
+    if !matches!(segments.len(), 1 | 2)
+        || segments.len() == 1 && !matches!(segments[0], ProfileSegment::Line { .. })
+    {
+        return false;
+    }
+    let metrics = segments
+        .iter()
+        .map(sweep_path_segment_metrics)
+        .collect::<Option<Vec<_>>>();
+    let Some(metrics) = metrics else {
+        return false;
+    };
+    let total_length = metrics.iter().map(|metrics| metrics.0).sum::<f64>();
+    if !(MIN_EXACT_BREP_SWEEP_PATH_LENGTH_MM..=MAX_EXACT_BREP_SWEEP_PATH_LENGTH_MM)
+        .contains(&total_length)
+    {
+        return false;
+    }
+    metrics.windows(2).all(|pair| {
+        let outgoing = pair[0].2;
+        let incoming = pair[1].1;
+        let dot = outgoing[0] * incoming[0] + outgoing[1] * incoming[1];
+        let cross = outgoing[0] * incoming[1] - outgoing[1] * incoming[0];
+        dot >= 1.0 - 1.0e-9 && cross.abs() <= 1.0e-9
+    })
+}
+
 fn is_valid_segment_profile(segments: &[ProfileSegment], closed: bool) -> bool {
     if segments.is_empty() || segments.len() > MAX_PROFILE_POINTS {
         return false;
@@ -13011,16 +13089,7 @@ fn validate_product(product: &ProductModel) -> Result<(), CanonicalError> {
                     FeatureKind::SegmentProfile {
                         segments,
                         closed: false,
-                    } if matches!(
-                        segments.as_slice(),
-                        [ProfileSegment::Line { start_mm, end_mm }]
-                            if (MIN_EXACT_BREP_SWEEP_PATH_LENGTH_MM
-                                ..=MAX_EXACT_BREP_SWEEP_PATH_LENGTH_MM)
-                                .contains(
-                                    &(end_mm[0] - start_mm[0])
-                                        .hypot(end_mm[1] - start_mm[1]),
-                                )
-                    )
+                    } if is_valid_sweep_path(segments)
                 );
                 let feature_position = definition
                     .feature_ids
