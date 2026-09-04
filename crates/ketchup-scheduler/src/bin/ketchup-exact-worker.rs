@@ -1,10 +1,10 @@
 #![forbid(unsafe_code)]
 
 use ketchup_core::exact_brep_graph::{
-    ExactBRepBooleanOperation, ExactBRepEdgeFinishKind, ExactBRepGraph, ExactBRepLinearInterval,
-    ExactBRepOperation, ExactBRepPlanarGeometry, ExactBRepPlanarLoop, ExactBRepPlanarSegment,
-    ExactBRepProfile, ExactBRepTopologyKind, ExactBRepTopologySelector,
-    exact_brep_planar_rectangle_bounds,
+    EXACT_BREP_GRAPH_SCHEMA_V6, EXACT_BREP_GRAPH_SCHEMA_V7, ExactBRepBooleanOperation,
+    ExactBRepEdgeFinishKind, ExactBRepGraph, ExactBRepLinearInterval, ExactBRepOperation,
+    ExactBRepPlanarGeometry, ExactBRepPlanarLoop, ExactBRepPlanarSegment, ExactBRepProfile,
+    ExactBRepTopologyKind, ExactBRepTopologySelector, exact_brep_planar_rectangle_bounds,
 };
 use ketchup_core::exact_product::{EXACT_BREP_GRAPH_EVALUATOR_V1, ExactCircleProfile};
 use ketchup_core::graph::sha256_hex;
@@ -71,6 +71,7 @@ fn handle_request(backend: &ExactBackend, request: &str) -> Option<String> {
         (Some("CAPS"), Some("P6_INTERSECT_V1"), None) => Some("CAPS P6_INTERSECT_V1".to_owned()),
         (Some("CAPS"), Some("P6_SPLIT_V1"), None) => Some("CAPS P6_SPLIT_V1".to_owned()),
         (Some("CAPS"), Some("P6_OFFSET_V1"), None) => Some("CAPS P6_OFFSET_V1".to_owned()),
+        (Some("CAPS"), Some("P6_OFFSET_V2"), None) => Some("CAPS P6_OFFSET_V2".to_owned()),
         (Some("CAPS"), Some("P6_SWEEP_V1"), None) => Some("CAPS P6_SWEEP_V1".to_owned()),
         (Some("CAPS"), Some("P6_LOFT_V1"), None) => Some("CAPS P6_LOFT_V1".to_owned()),
         (Some("CAPS"), Some("P3_CIRCLE_V1"), None) => Some("CAPS P3_CIRCLE_V1".to_owned()),
@@ -93,10 +94,18 @@ fn handle_request(backend: &ExactBackend, request: &str) -> Option<String> {
         (Some("CAPS"), Some("EXACT_BREP_GRAPH_V6"), None) => {
             Some("CAPS EXACT_BREP_GRAPH_V6".to_owned())
         }
-        (Some("TESSELLATE_BREP_GRAPH_V6"), Some(graph_digest), Some(encoded_graph)) => {
+        (Some("CAPS"), Some("EXACT_BREP_GRAPH_V7"), None) => {
+            Some("CAPS EXACT_BREP_GRAPH_V7".to_owned())
+        }
+        (
+            Some(operation @ ("TESSELLATE_BREP_GRAPH_V6" | "TESSELLATE_BREP_GRAPH_V7")),
+            Some(graph_digest),
+            Some(encoded_graph),
+        ) => {
             let remaining = fields.collect::<Vec<_>>();
             Some(exact_brep_graph_mesh_response(
                 backend,
+                operation,
                 graph_digest,
                 encoded_graph,
                 &remaining,
@@ -111,9 +120,14 @@ fn handle_request(backend: &ExactBackend, request: &str) -> Option<String> {
                 &remaining,
             ))
         }
-        (Some("EVAL_BREP_GRAPH_V6"), Some(graph_digest), Some(encoded_graph)) => {
+        (
+            Some(operation @ ("EVAL_BREP_GRAPH_V6" | "EVAL_BREP_GRAPH_V7")),
+            Some(graph_digest),
+            Some(encoded_graph),
+        ) => {
             let remaining = fields.collect::<Vec<_>>();
-            let Some(graph) = decode_exact_brep_graph(graph_digest, encoded_graph) else {
+            let Some(graph) = decode_exact_brep_graph(operation, graph_digest, encoded_graph)
+            else {
                 return Some("ERR invalid_request".to_owned());
             };
             Some(exact_brep_graph_response(backend, &graph, &remaining))
@@ -650,7 +664,11 @@ fn handle_request(backend: &ExactBackend, request: &str) -> Option<String> {
                 request_digest,
             ))
         }
-        (Some("OFFSET_PROFILE_P6_V1"), Some(document_id), Some(producer_feature_id)) => {
+        (
+            Some(protocol @ ("OFFSET_PROFILE_P6_V1" | "OFFSET_PROFILE_P6_V2")),
+            Some(document_id),
+            Some(producer_feature_id),
+        ) => {
             let remaining = fields.collect::<Vec<_>>();
             let Some((request_digest, remaining)) = remaining.split_first() else {
                 return Some("ERR invalid_request".to_owned());
@@ -679,10 +697,15 @@ fn handle_request(backend: &ExactBackend, request: &str) -> Option<String> {
             else {
                 return Some("ERR invalid_request".to_owned());
             };
+            let record_width = if protocol == "OFFSET_PROFILE_P6_V2" {
+                10
+            } else {
+                8
+            };
             if !canonical_decimal(document_id)
                 || !canonical_decimal(producer_feature_id)
                 || !is_canonical_digest(request_digest)
-                || payload.len() != count * 8
+                || payload.len() != count * record_width
             {
                 return Some("ERR invalid_request".to_owned());
             }
@@ -690,27 +713,59 @@ fn handle_request(backend: &ExactBackend, request: &str) -> Option<String> {
                 return Some("ERR invalid_parameter".to_owned());
             };
             let mut segments = Vec::with_capacity(count);
-            for record in payload.chunks_exact(8) {
-                let Some(bits) = record[1..7]
-                    .iter()
-                    .map(|value| parse_bits(value))
-                    .collect::<Option<Vec<_>>>()
-                    .and_then(|values| <[u64; 6]>::try_from(values).ok())
-                else {
-                    return Some("ERR invalid_parameter".to_owned());
-                };
-                let segment = match (record[0], record[7]) {
-                    ("L", "0") if bits[4..] == [0, 0] => PlanarProfileSegment::Line {
-                        start_mm: [f64::from_bits(bits[0]), f64::from_bits(bits[1])],
-                        end_mm: [f64::from_bits(bits[2]), f64::from_bits(bits[3])],
-                    },
-                    ("A", clockwise @ ("0" | "1")) => PlanarProfileSegment::CircularArc {
-                        start_mm: [f64::from_bits(bits[0]), f64::from_bits(bits[1])],
-                        end_mm: [f64::from_bits(bits[2]), f64::from_bits(bits[3])],
-                        center_mm: [f64::from_bits(bits[4]), f64::from_bits(bits[5])],
-                        clockwise: clockwise == "1",
-                    },
-                    _ => return Some("ERR invalid_request".to_owned()),
+            for record in payload.chunks_exact(record_width) {
+                let segment = if record_width == 8 {
+                    let Some(bits) = record[1..7]
+                        .iter()
+                        .map(|value| parse_bits(value))
+                        .collect::<Option<Vec<_>>>()
+                        .and_then(|values| <[u64; 6]>::try_from(values).ok())
+                    else {
+                        return Some("ERR invalid_parameter".to_owned());
+                    };
+                    match (record[0], record[7]) {
+                        ("L", "0") if bits[4..] == [0, 0] => PlanarProfileSegment::Line {
+                            start_mm: [f64::from_bits(bits[0]), f64::from_bits(bits[1])],
+                            end_mm: [f64::from_bits(bits[2]), f64::from_bits(bits[3])],
+                        },
+                        ("A", clockwise @ ("0" | "1")) => PlanarProfileSegment::CircularArc {
+                            start_mm: [f64::from_bits(bits[0]), f64::from_bits(bits[1])],
+                            end_mm: [f64::from_bits(bits[2]), f64::from_bits(bits[3])],
+                            center_mm: [f64::from_bits(bits[4]), f64::from_bits(bits[5])],
+                            clockwise: clockwise == "1",
+                        },
+                        _ => return Some("ERR invalid_request".to_owned()),
+                    }
+                } else {
+                    let Some(bits) = record[1..9]
+                        .iter()
+                        .map(|value| parse_bits(value))
+                        .collect::<Option<Vec<_>>>()
+                        .and_then(|values| <[u64; 8]>::try_from(values).ok())
+                    else {
+                        return Some("ERR invalid_parameter".to_owned());
+                    };
+                    match (record[0], record[9]) {
+                        ("L", "0") if bits[4..] == [0, 0, 0, 0] => PlanarProfileSegment::Line {
+                            start_mm: [f64::from_bits(bits[0]), f64::from_bits(bits[1])],
+                            end_mm: [f64::from_bits(bits[2]), f64::from_bits(bits[3])],
+                        },
+                        ("A", clockwise @ ("0" | "1")) if bits[6..] == [0, 0] => {
+                            PlanarProfileSegment::CircularArc {
+                                start_mm: [f64::from_bits(bits[0]), f64::from_bits(bits[1])],
+                                end_mm: [f64::from_bits(bits[2]), f64::from_bits(bits[3])],
+                                center_mm: [f64::from_bits(bits[4]), f64::from_bits(bits[5])],
+                                clockwise: clockwise == "1",
+                            }
+                        }
+                        ("C", "0") => PlanarProfileSegment::CubicBezier {
+                            start_mm: [f64::from_bits(bits[0]), f64::from_bits(bits[1])],
+                            end_mm: [f64::from_bits(bits[2]), f64::from_bits(bits[3])],
+                            control_1_mm: [f64::from_bits(bits[4]), f64::from_bits(bits[5])],
+                            control_2_mm: [f64::from_bits(bits[6]), f64::from_bits(bits[7])],
+                        },
+                        _ => return Some("ERR invalid_request".to_owned()),
+                    }
                 };
                 segments.push(segment);
             }
@@ -1154,13 +1209,31 @@ fn handle_request(backend: &ExactBackend, request: &str) -> Option<String> {
 
 const MAX_EXACT_BREP_GRAPH_MESH_TRIANGLES: u32 = 200_000;
 
-fn decode_exact_brep_graph(graph_digest: &str, encoded_graph: &str) -> Option<ExactBRepGraph> {
+fn exact_brep_graph_schema_matches_operation(operation: &str, schema: &str) -> bool {
+    match operation {
+        "EVAL_BREP_GRAPH_V6" | "TESSELLATE_BREP_GRAPH_V6" => schema == EXACT_BREP_GRAPH_SCHEMA_V6,
+        "EVAL_BREP_GRAPH_V7" | "TESSELLATE_BREP_GRAPH_V7" => schema == EXACT_BREP_GRAPH_SCHEMA_V7,
+        "EXPORT_BREP_GRAPH_STEP_V2" => matches!(
+            schema,
+            EXACT_BREP_GRAPH_SCHEMA_V6 | EXACT_BREP_GRAPH_SCHEMA_V7
+        ),
+        _ => false,
+    }
+}
+
+fn decode_exact_brep_graph(
+    operation: &str,
+    graph_digest: &str,
+    encoded_graph: &str,
+) -> Option<ExactBRepGraph> {
     if !is_canonical_digest(graph_digest) {
         return None;
     }
     let bytes = decode_hex_bytes(encoded_graph)?;
     let graph = ExactBRepGraph::from_bytes(&bytes).ok()?;
-    (graph.graph_digest == graph_digest).then_some(graph)
+    (exact_brep_graph_schema_matches_operation(operation, &graph.schema)
+        && graph.graph_digest == graph_digest)
+        .then_some(graph)
 }
 
 fn verified_exact_brep_graph_sources(
@@ -1253,6 +1326,7 @@ fn verified_exact_brep_graph_sources(
 
 fn exact_brep_graph_mesh_response(
     backend: &ExactBackend,
+    operation: &str,
     graph_digest: &str,
     encoded_graph: &str,
     fields: &[&str],
@@ -1260,7 +1334,7 @@ fn exact_brep_graph_mesh_response(
     if fields.len() < 2 || !is_result_fingerprint(fields[0]) {
         return "ERR invalid_request".to_owned();
     }
-    let Some(graph) = decode_exact_brep_graph(graph_digest, encoded_graph) else {
+    let Some(graph) = decode_exact_brep_graph(operation, graph_digest, encoded_graph) else {
         return "ERR invalid_request".to_owned();
     };
     let Some(output_path) = decode_hex_utf8(fields[1]) else {
@@ -1326,7 +1400,9 @@ fn exact_brep_graph_step_response(
     if fields.len() < 2 || !is_result_fingerprint(fields[0]) {
         return "ERR invalid_request".to_owned();
     }
-    let Some(graph) = decode_exact_brep_graph(graph_digest, encoded_graph) else {
+    let Some(graph) =
+        decode_exact_brep_graph("EXPORT_BREP_GRAPH_STEP_V2", graph_digest, encoded_graph)
+    else {
         return "ERR invalid_request".to_owned();
     };
     let Some(output_path) = decode_hex_utf8(fields[1]) else {
@@ -5426,4 +5502,66 @@ fn is_canonical_digest(value: &str) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exact_brep_graph_commands_require_matching_schema() {
+        for (operation, schema) in [
+            ("EVAL_BREP_GRAPH_V6", EXACT_BREP_GRAPH_SCHEMA_V6),
+            ("TESSELLATE_BREP_GRAPH_V6", EXACT_BREP_GRAPH_SCHEMA_V6),
+            ("EVAL_BREP_GRAPH_V7", EXACT_BREP_GRAPH_SCHEMA_V7),
+            ("TESSELLATE_BREP_GRAPH_V7", EXACT_BREP_GRAPH_SCHEMA_V7),
+            ("EXPORT_BREP_GRAPH_STEP_V2", EXACT_BREP_GRAPH_SCHEMA_V6),
+            ("EXPORT_BREP_GRAPH_STEP_V2", EXACT_BREP_GRAPH_SCHEMA_V7),
+        ] {
+            assert!(exact_brep_graph_schema_matches_operation(operation, schema));
+        }
+        for (operation, schema) in [
+            ("EVAL_BREP_GRAPH_V6", EXACT_BREP_GRAPH_SCHEMA_V7),
+            ("TESSELLATE_BREP_GRAPH_V6", EXACT_BREP_GRAPH_SCHEMA_V7),
+            ("EVAL_BREP_GRAPH_V7", EXACT_BREP_GRAPH_SCHEMA_V6),
+            ("TESSELLATE_BREP_GRAPH_V7", EXACT_BREP_GRAPH_SCHEMA_V6),
+        ] {
+            assert!(!exact_brep_graph_schema_matches_operation(
+                operation, schema
+            ));
+        }
+    }
+
+    #[test]
+    fn planar_offset_v2_rejects_malformed_fixed_width_records() {
+        let backend = ExactBackend::new();
+        assert_eq!(
+            handle_request(&backend, "CAPS P6_OFFSET_V2").as_deref(),
+            Some("CAPS P6_OFFSET_V2")
+        );
+        let digest = "0".repeat(64);
+        let zero = "0000000000000000";
+        let one = "3ff0000000000000";
+        let line = format!("L {zero} {zero} {one} {zero} {zero} {zero} {zero} {zero} 0");
+        let header = format!("OFFSET_PROFILE_P6_V2 1 2 {digest} {one} 2");
+
+        for request in [
+            format!("{header} {line}"),
+            format!("{header} {line} {line} extra"),
+            format!("{header} L {zero} {zero} {one} {zero} {one} {zero} {zero} {zero} 0 {line}"),
+            format!("{header} C {zero} {zero} {one} {zero} {zero} {one} {one} {one} 1 {line}"),
+        ] {
+            assert_eq!(
+                handle_request(&backend, &request).as_deref(),
+                Some("ERR invalid_request")
+            );
+        }
+
+        let malformed =
+            format!("{header} C {zero} {zero} {one} {zero} not_hex {one} {one} {one} 0 {line}");
+        assert_eq!(
+            handle_request(&backend, &malformed).as_deref(),
+            Some("ERR invalid_parameter")
+        );
+    }
 }

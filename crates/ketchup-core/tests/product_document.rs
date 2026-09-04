@@ -14,7 +14,7 @@ use ketchup_core::document::{
     UnresolvedMappingReason, WorldEntityPath,
 };
 use ketchup_core::exact_brep_graph::{
-    ExactBRepBooleanOperation, ExactBRepGraph, ExactBRepOperation,
+    ExactBRepBooleanOperation, ExactBRepGraph, ExactBRepOperation, ExactBRepPlanarSegment,
 };
 use ketchup_core::exact_product::{
     EXACT_CIRCLE_EVALUATOR_V1, ExactFeatureChainRequest, ExactPlanarOffsetRequest,
@@ -3441,6 +3441,141 @@ fn circular_planar_offset_is_persistent_undoable_and_fail_closed() {
     let reopened_request =
         ExactPlanarOffsetRequest::from_snapshot(&reopened.snapshot(), DEFINITION).unwrap();
     assert_eq!(reopened_request, inward_request);
+}
+
+#[test]
+fn cubic_planar_offset_request_is_persistent_undoable_and_forgery_resistant() {
+    const DEFINITION: DefinitionId = DefinitionId(710);
+    const WORKPLANE: FeatureId = FeatureId(711);
+    const SKETCH: FeatureId = FeatureId(712);
+    const OFFSET: FeatureId = FeatureId(713);
+
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DEFINITION,
+                name: "Cubic planar offset".to_owned(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: WORKPLANE,
+                definition_id: DEFINITION,
+                name: "XY".to_owned(),
+                kind: FeatureKind::Workplane(WorkplaneSpec::principal(PrincipalPlane::Xy)),
+            },
+            CanonicalCommand::CreateFeature {
+                id: SKETCH,
+                definition_id: DEFINITION,
+                name: "Line cubic sketch".to_owned(),
+                kind: FeatureKind::Sketch(SketchSpec {
+                    workplane: WORKPLANE,
+                    entities: vec![
+                        SketchEntity::Line {
+                            id: SketchEntityId(1),
+                            start_mm: [-20.0, -15.0],
+                            end_mm: [20.0, -15.0],
+                        },
+                        SketchEntity::Line {
+                            id: SketchEntityId(2),
+                            start_mm: [20.0, -15.0],
+                            end_mm: [20.0, 15.0],
+                        },
+                        SketchEntity::CubicBezier {
+                            id: SketchEntityId(3),
+                            start_mm: [20.0, 15.0],
+                            control_1_mm: [10.0, 25.0],
+                            control_2_mm: [-10.0, 25.0],
+                            end_mm: [-20.0, 15.0],
+                        },
+                        SketchEntity::Line {
+                            id: SketchEntityId(4),
+                            start_mm: [-20.0, 15.0],
+                            end_mm: [-20.0, -15.0],
+                        },
+                    ],
+                    constraints: Vec::new(),
+                }),
+            },
+            CanonicalCommand::CreateFeature {
+                id: OFFSET,
+                definition_id: DEFINITION,
+                name: "Cubic offset".to_owned(),
+                kind: FeatureKind::PlanarOffset {
+                    profile: SKETCH,
+                    distance: Dimension::new("2.000", 2.0).unwrap(),
+                },
+            },
+        ]))
+        .unwrap();
+
+    let outward = document.current().canonical_digest();
+    let outward_request =
+        ExactPlanarOffsetRequest::from_snapshot(&document.current(), DEFINITION).unwrap();
+    assert!(outward_request.has_valid_basic_inputs());
+    assert_eq!(
+        outward_request.source_bounds_mm(),
+        [-20.0, -15.0, 20.0, 22.5]
+    );
+    assert!(matches!(
+        outward_request.mixed_profile().unwrap().segments.as_slice(),
+        [
+            ExactBRepPlanarSegment::Line { .. },
+            ExactBRepPlanarSegment::Line { .. },
+            ExactBRepPlanarSegment::CubicBezier { .. },
+            ExactBRepPlanarSegment::Line { .. }
+        ]
+    ));
+    let undo_steps = document.visible_undo_steps();
+    assert!(matches!(
+        document.apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetFeatureDimension {
+                id: OFFSET,
+                dimension: Dimension::new("0", 0.0).unwrap(),
+            },
+        ])),
+        Err(CanonicalError::InvalidPlanarOffset)
+    ));
+    assert_eq!(document.current().canonical_digest(), outward);
+    assert_eq!(document.visible_undo_steps(), undo_steps);
+
+    let mut forged = outward_request.clone();
+    let ExactBRepPlanarSegment::CubicBezier { control_1_bits, .. } =
+        &mut forged.profile.as_mut().unwrap().segments[2]
+    else {
+        panic!("fixture must preserve its cubic segment");
+    };
+    control_1_bits[1] = 24.0_f64.to_bits();
+    assert!(!forged.has_valid_basic_inputs());
+
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetFeatureDimension {
+                id: OFFSET,
+                dimension: Dimension::new("-2", -2.0).unwrap(),
+            },
+        ]))
+        .unwrap();
+    let inward = document.current().canonical_digest();
+    let inward_request =
+        ExactPlanarOffsetRequest::from_snapshot(&document.current(), DEFINITION).unwrap();
+    assert_ne!(inward, outward);
+    assert_ne!(
+        inward_request.canonical_input_digest,
+        outward_request.canonical_input_digest
+    );
+    assert_eq!(document.undo().unwrap().canonical_digest(), outward);
+    assert_eq!(document.redo().unwrap().canonical_digest(), inward);
+
+    let bytes = persistence::save(&document.current());
+    let reopened = persistence::load(&bytes).unwrap();
+    assert_eq!(reopened.source_schema(), persistence::CURRENT_SCHEMA);
+    assert!(reopened.migration_losses().is_empty());
+    assert_eq!(reopened.snapshot().canonical_digest(), inward);
+    assert_eq!(persistence::save(&reopened.snapshot()), bytes);
+    assert_eq!(
+        ExactPlanarOffsetRequest::from_snapshot(&reopened.snapshot(), DEFINITION).unwrap(),
+        inward_request
+    );
 }
 
 #[test]

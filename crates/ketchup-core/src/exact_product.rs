@@ -9,8 +9,9 @@ use crate::document::{
     MeshAuthority, MeshBodySpec, ProfileSegment, Snapshot, Transform,
 };
 use crate::exact_brep_graph::{
-    ExactBRepGraph, MAX_EXACT_BREP_COORDINATE_MM, MAX_EXACT_BREP_LOFT_CONTROL_POINTS,
-    MAX_EXACT_BREP_SWEEP_PATH_LENGTH_MM, MIN_EXACT_BREP_SWEEP_PATH_LENGTH_MM,
+    ExactBRepGraph, ExactBRepPlanarSegment, MAX_EXACT_BREP_COORDINATE_MM,
+    MAX_EXACT_BREP_LOFT_CONTROL_POINTS, MAX_EXACT_BREP_SWEEP_PATH_LENGTH_MM,
+    MIN_EXACT_BREP_SWEEP_PATH_LENGTH_MM,
 };
 use crate::graph::DerivedIdentity;
 use crate::import::StepImportMesh;
@@ -4834,8 +4835,28 @@ pub struct ExactBoxShellRequest {
     pub edge_finish_amount_bits: Option<u64>,
 }
 
+pub(crate) trait PlanarOffsetEvidence {
+    fn bounds_bits(&self) -> [u64; 4];
+    fn area_bits(&self) -> u64;
+    fn max_displacement_mm(&self, distance_mm: f64) -> Option<f64>;
+}
+
+impl PlanarOffsetEvidence for ExactMixedProfile {
+    fn bounds_bits(&self) -> [u64; 4] {
+        self.bounds_bits
+    }
+
+    fn area_bits(&self) -> u64 {
+        self.area_bits
+    }
+
+    fn max_displacement_mm(&self, distance_mm: f64) -> Option<f64> {
+        self.max_planar_offset_displacement_mm(distance_mm)
+    }
+}
+
 pub(crate) fn accepts_planar_offset_geometry(
-    profile: &ExactMixedProfile,
+    profile: &impl PlanarOffsetEvidence,
     distance_mm: f64,
     bounds_mm: [[f64; 3]; 2],
     area_mm2: f64,
@@ -4844,10 +4865,10 @@ pub(crate) fn accepts_planar_offset_geometry(
     const TOLERANCE: f64 = 1.0e-6;
 
     let [source_min_x, source_min_y, source_max_x, source_max_y] =
-        profile.bounds_bits.map(f64::from_bits);
-    let source_area_mm2 = f64::from_bits(profile.area_bits);
+        profile.bounds_bits().map(f64::from_bits);
+    let source_area_mm2 = f64::from_bits(profile.area_bits());
     let minimum_displacement = distance_mm.abs();
-    let Some(maximum_displacement) = profile.max_planar_offset_displacement_mm(distance_mm) else {
+    let Some(maximum_displacement) = profile.max_displacement_mm(distance_mm) else {
         return false;
     };
     let [min, max] = bounds_mm;
@@ -4882,8 +4903,8 @@ pub(crate) fn accepts_planar_offset_geometry(
         .all(|value| value.is_finite() && value.abs() <= MAX_EXACT_BREP_COORDINATE_MM)
         && min[0] < max[0]
         && min[1] < max[1]
-        && min[2] == 0.0
-        && max[2] == 0.0
+        && min[2].abs() <= TOLERANCE
+        && max[2].abs() <= TOLERANCE
         && area_mm2.is_finite()
         && area_mm2 > 0.0
         && area_mm2 <= bounds_area + TOLERANCE
@@ -4929,6 +4950,547 @@ pub(crate) fn accepts_planar_circle_offset_geometry(
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExactPlanarOffsetProfile {
+    pub segments: Vec<ExactBRepPlanarSegment>,
+    pub bounds_bits: [u64; 4],
+    pub area_bits: u64,
+}
+
+impl ExactPlanarOffsetProfile {
+    fn from_mixed(profile: ExactMixedProfile) -> Option<Self> {
+        let segments = profile
+            .segments
+            .into_iter()
+            .map(|segment| match segment {
+                ExactProfileSegment::Line {
+                    start_bits,
+                    end_bits,
+                } => ExactBRepPlanarSegment::Line {
+                    start_bits,
+                    end_bits,
+                },
+                ExactProfileSegment::CircularArc {
+                    start_bits,
+                    end_bits,
+                    center_bits,
+                    clockwise,
+                } => ExactBRepPlanarSegment::CircularArc {
+                    start_bits,
+                    end_bits,
+                    center_bits,
+                    clockwise,
+                },
+            })
+            .collect();
+        exact_planar_offset_profile_from_segments(segments)
+    }
+
+    fn has_valid_encoding(&self) -> bool {
+        exact_planar_offset_profile_from_segments(self.segments.clone()).as_ref() == Some(self)
+    }
+
+    #[must_use]
+    pub fn max_planar_offset_displacement_mm(&self, distance_mm: f64) -> Option<f64> {
+        let distance = distance_mm.abs();
+        let mut max_factor = 1.0_f64;
+        let mut has_arc = false;
+        for segment in &self.segments {
+            if let ExactBRepPlanarSegment::CircularArc {
+                start_bits,
+                center_bits,
+                ..
+            } = segment
+            {
+                has_arc = true;
+                let start = start_bits.map(f64::from_bits);
+                let center = center_bits.map(f64::from_bits);
+                let radius = (start[0] - center[0]).hypot(start[1] - center[1]);
+                if distance_mm < 0.0 && 2.0 * distance >= radius {
+                    return None;
+                }
+            }
+        }
+        for index in 0..self.segments.len() {
+            let previous = &self.segments[(index + self.segments.len() - 1) % self.segments.len()];
+            let current = &self.segments[index];
+            let (_, previous_end) = planar_offset_segment_tangents(previous)?;
+            let (current_start, _) = planar_offset_segment_tangents(current)?;
+            let dot = (-previous_end[0] * current_start[0] - previous_end[1] * current_start[1])
+                .clamp(-1.0, 1.0);
+            let half_angle_sine = (0.5 * dot.acos()).sin();
+            if !half_angle_sine.is_finite() || half_angle_sine <= 1.0e-9 {
+                return None;
+            }
+            max_factor = max_factor.max(half_angle_sine.recip());
+        }
+        let displacement = distance * max_factor + if has_arc { distance } else { 0.0 };
+        displacement.is_finite().then_some(displacement)
+    }
+}
+
+impl PlanarOffsetEvidence for ExactPlanarOffsetProfile {
+    fn bounds_bits(&self) -> [u64; 4] {
+        self.bounds_bits
+    }
+
+    fn area_bits(&self) -> u64 {
+        self.area_bits
+    }
+
+    fn max_displacement_mm(&self, distance_mm: f64) -> Option<f64> {
+        self.max_planar_offset_displacement_mm(distance_mm)
+    }
+}
+
+fn planar_offset_segment_endpoints(segment: &ExactBRepPlanarSegment) -> ([u64; 2], [u64; 2]) {
+    match segment {
+        ExactBRepPlanarSegment::Line {
+            start_bits,
+            end_bits,
+        }
+        | ExactBRepPlanarSegment::CircularArc {
+            start_bits,
+            end_bits,
+            ..
+        }
+        | ExactBRepPlanarSegment::CubicBezier {
+            start_bits,
+            end_bits,
+            ..
+        } => (*start_bits, *end_bits),
+    }
+}
+
+fn planar_offset_segment_tangents(
+    segment: &ExactBRepPlanarSegment,
+) -> Option<([f64; 2], [f64; 2])> {
+    let normalized = |vectors: [[f64; 2]; 3]| {
+        vectors.into_iter().find_map(|vector| {
+            let length = vector[0].hypot(vector[1]);
+            (length.is_finite() && length >= EXACT_MIN_LENGTH_MM)
+                .then_some([vector[0] / length, vector[1] / length])
+        })
+    };
+    match segment {
+        ExactBRepPlanarSegment::Line {
+            start_bits,
+            end_bits,
+        } => {
+            let start = start_bits.map(f64::from_bits);
+            let end = end_bits.map(f64::from_bits);
+            let tangent = normalized([[end[0] - start[0], end[1] - start[1]]; 3])?;
+            Some((tangent, tangent))
+        }
+        ExactBRepPlanarSegment::CircularArc {
+            start_bits,
+            end_bits,
+            center_bits,
+            clockwise,
+        } => {
+            let start = start_bits.map(f64::from_bits);
+            let end = end_bits.map(f64::from_bits);
+            let center = center_bits.map(f64::from_bits);
+            let tangent = |point: [f64; 2]| {
+                let radial = normalized([[point[0] - center[0], point[1] - center[1]]; 3])?;
+                Some(if *clockwise {
+                    [radial[1], -radial[0]]
+                } else {
+                    [-radial[1], radial[0]]
+                })
+            };
+            Some((tangent(start)?, tangent(end)?))
+        }
+        ExactBRepPlanarSegment::CubicBezier {
+            start_bits,
+            control_1_bits,
+            control_2_bits,
+            end_bits,
+        } => {
+            let start = start_bits.map(f64::from_bits);
+            let control_1 = control_1_bits.map(f64::from_bits);
+            let control_2 = control_2_bits.map(f64::from_bits);
+            let end = end_bits.map(f64::from_bits);
+            Some((
+                normalized([
+                    [control_1[0] - start[0], control_1[1] - start[1]],
+                    [control_2[0] - start[0], control_2[1] - start[1]],
+                    [end[0] - start[0], end[1] - start[1]],
+                ])?,
+                normalized([
+                    [end[0] - control_2[0], end[1] - control_2[1]],
+                    [end[0] - control_1[0], end[1] - control_1[1]],
+                    [end[0] - start[0], end[1] - start[1]],
+                ])?,
+            ))
+        }
+    }
+}
+
+fn planar_offset_segment_signed_area(
+    segment: &ExactBRepPlanarSegment,
+    origin: [f64; 2],
+) -> Option<f64> {
+    let rebase = |point: [f64; 2]| [point[0] - origin[0], point[1] - origin[1]];
+    match segment {
+        ExactBRepPlanarSegment::Line {
+            start_bits,
+            end_bits,
+        } => {
+            let start = rebase(start_bits.map(f64::from_bits));
+            let end = rebase(end_bits.map(f64::from_bits));
+            Some(0.5 * (start[0] * end[1] - end[0] * start[1]))
+        }
+        ExactBRepPlanarSegment::CircularArc {
+            start_bits,
+            end_bits,
+            center_bits,
+            clockwise,
+        } => {
+            let start = rebase(start_bits.map(f64::from_bits));
+            let end = rebase(end_bits.map(f64::from_bits));
+            let center = rebase(center_bits.map(f64::from_bits));
+            let radius = (start[0] - center[0]).hypot(start[1] - center[1]);
+            let start_angle = (start[1] - center[1]).atan2(start[0] - center[0]);
+            let end_angle = (end[1] - center[1]).atan2(end[0] - center[0]);
+            let sweep = directed_arc_sweep(start_angle, end_angle, *clockwise)?;
+            Some(
+                0.5 * (radius * radius * sweep + center[0] * (end[1] - start[1])
+                    - center[1] * (end[0] - start[0])),
+            )
+        }
+        ExactBRepPlanarSegment::CubicBezier {
+            start_bits,
+            control_1_bits,
+            control_2_bits,
+            end_bits,
+        } => {
+            let cubic = [
+                rebase(start_bits.map(f64::from_bits)),
+                rebase(control_1_bits.map(f64::from_bits)),
+                rebase(control_2_bits.map(f64::from_bits)),
+                rebase(end_bits.map(f64::from_bits)),
+            ];
+            let coefficients = |axis: usize| {
+                [
+                    cubic[0][axis],
+                    3.0 * (cubic[1][axis] - cubic[0][axis]),
+                    3.0 * (cubic[0][axis] - 2.0 * cubic[1][axis] + cubic[2][axis]),
+                    -cubic[0][axis] + 3.0 * cubic[1][axis] - 3.0 * cubic[2][axis] + cubic[3][axis],
+                ]
+            };
+            let x = coefficients(0);
+            let y = coefficients(1);
+            let mut integral = 0.0;
+            for left_degree in 0..=3 {
+                for right_degree in 1..=3 {
+                    let denominator = (left_degree + right_degree) as f64;
+                    integral += (x[left_degree] * y[right_degree] * right_degree as f64
+                        - y[left_degree] * x[right_degree] * right_degree as f64)
+                        / denominator;
+                }
+            }
+            Some(0.5 * integral)
+        }
+    }
+}
+
+pub(crate) fn exact_planar_offset_profile_from_segments(
+    segments: Vec<ExactBRepPlanarSegment>,
+) -> Option<ExactPlanarOffsetProfile> {
+    if !(2..=64).contains(&segments.len()) {
+        return None;
+    }
+    let endpoints = segments
+        .iter()
+        .map(planar_offset_segment_endpoints)
+        .collect::<Vec<_>>();
+    if endpoints.windows(2).any(|pair| pair[0].1 != pair[1].0)
+        || endpoints.last()?.1 != endpoints[0].0
+    {
+        return None;
+    }
+    let valid_point = |point: [f64; 2]| {
+        point
+            .into_iter()
+            .all(|value| value.is_finite() && value.abs() <= MAX_EXACT_BREP_COORDINATE_MM)
+    };
+    let mut points = Vec::new();
+    let mut signed_area = 0.0;
+    for segment in &segments {
+        match segment {
+            ExactBRepPlanarSegment::Line {
+                start_bits,
+                end_bits,
+            } => {
+                let start = start_bits.map(f64::from_bits);
+                let end = end_bits.map(f64::from_bits);
+                let length = (end[0] - start[0]).hypot(end[1] - start[1]);
+                if !valid_point(start)
+                    || !valid_point(end)
+                    || !(EXACT_MIN_LENGTH_MM..=MAX_EXACT_PLANAR_OFFSET_LENGTH_MM).contains(&length)
+                {
+                    return None;
+                }
+                points.extend([start, end]);
+            }
+            ExactBRepPlanarSegment::CircularArc {
+                start_bits,
+                end_bits,
+                center_bits,
+                clockwise,
+            } => {
+                let start = start_bits.map(f64::from_bits);
+                let end = end_bits.map(f64::from_bits);
+                let center = center_bits.map(f64::from_bits);
+                if !valid_point(start) || !valid_point(end) || !valid_point(center) {
+                    return None;
+                }
+                let radius = (start[0] - center[0]).hypot(start[1] - center[1]);
+                let end_radius = (end[0] - center[0]).hypot(end[1] - center[1]);
+                let start_angle = (start[1] - center[1]).atan2(start[0] - center[0]);
+                let end_angle = (end[1] - center[1]).atan2(end[0] - center[0]);
+                let sweep = directed_arc_sweep(start_angle, end_angle, *clockwise)?;
+                if !(EXACT_MIN_LENGTH_MM..=MAX_EXACT_PLANAR_OFFSET_LENGTH_MM).contains(&radius)
+                    || (radius - end_radius).abs() > 1.0e-9 * radius.max(end_radius).max(1.0)
+                {
+                    return None;
+                }
+                points.extend([start, end]);
+                for angle in [
+                    0.0,
+                    std::f64::consts::FRAC_PI_2,
+                    std::f64::consts::PI,
+                    3.0 * std::f64::consts::FRAC_PI_2,
+                ] {
+                    if angle_on_directed_arc(start_angle, sweep, angle) {
+                        points.push([
+                            center[0] + radius * angle.cos(),
+                            center[1] + radius * angle.sin(),
+                        ]);
+                    }
+                }
+            }
+            ExactBRepPlanarSegment::CubicBezier {
+                start_bits,
+                control_1_bits,
+                control_2_bits,
+                end_bits,
+            } => {
+                let cubic = [
+                    start_bits.map(f64::from_bits),
+                    control_1_bits.map(f64::from_bits),
+                    control_2_bits.map(f64::from_bits),
+                    end_bits.map(f64::from_bits),
+                ];
+                if cubic.into_iter().any(|point| !valid_point(point)) {
+                    return None;
+                }
+                let control_polygon_length = (cubic[1][0] - cubic[0][0])
+                    .hypot(cubic[1][1] - cubic[0][1])
+                    + (cubic[2][0] - cubic[1][0]).hypot(cubic[2][1] - cubic[1][1])
+                    + (cubic[3][0] - cubic[2][0]).hypot(cubic[3][1] - cubic[2][1]);
+                if !(EXACT_MIN_LENGTH_MM..=MAX_EXACT_PLANAR_OFFSET_LENGTH_MM)
+                    .contains(&control_polygon_length)
+                {
+                    return None;
+                }
+                points.extend([cubic[0], cubic[3]]);
+                let evaluate = |t: f64| {
+                    let one_minus_t = 1.0 - t;
+                    [0, 1].map(|axis| {
+                        one_minus_t.powi(3) * cubic[0][axis]
+                            + 3.0 * one_minus_t.powi(2) * t * cubic[1][axis]
+                            + 3.0 * one_minus_t * t * t * cubic[2][axis]
+                            + t.powi(3) * cubic[3][axis]
+                    })
+                };
+                for axis in 0..2 {
+                    let a = 3.0 * x_or_y_cubic_coefficient(cubic, axis, 3);
+                    let b = 2.0 * x_or_y_cubic_coefficient(cubic, axis, 2);
+                    let c = x_or_y_cubic_coefficient(cubic, axis, 1);
+                    if a.abs() <= f64::EPSILON {
+                        if b.abs() > f64::EPSILON {
+                            let t = -c / b;
+                            if 0.0 < t && t < 1.0 {
+                                points.push(evaluate(t));
+                            }
+                        }
+                    } else {
+                        let discriminant = b * b - 4.0 * a * c;
+                        if discriminant >= 0.0 {
+                            for t in [
+                                (-b - discriminant.sqrt()) / (2.0 * a),
+                                (-b + discriminant.sqrt()) / (2.0 * a),
+                            ] {
+                                if 0.0 < t && t < 1.0 {
+                                    points.push(evaluate(t));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let origin = endpoints[0].0.map(f64::from_bits);
+    let mut compensation = 0.0;
+    for segment in &segments {
+        let adjusted = planar_offset_segment_signed_area(segment, origin)? - compensation;
+        let next = signed_area + adjusted;
+        compensation = (next - signed_area) - adjusted;
+        signed_area = next;
+    }
+    let area = signed_area.abs();
+    let bounds = points.iter().fold(
+        [
+            f64::INFINITY,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NEG_INFINITY,
+        ],
+        |mut bounds, point| {
+            bounds[0] = bounds[0].min(point[0]);
+            bounds[1] = bounds[1].min(point[1]);
+            bounds[2] = bounds[2].max(point[0]);
+            bounds[3] = bounds[3].max(point[1]);
+            bounds
+        },
+    );
+    if !area.is_finite()
+        || area <= 1.0e-9
+        || bounds.into_iter().any(|value| !value.is_finite())
+        || bounds[0] >= bounds[2]
+        || bounds[1] >= bounds[3]
+    {
+        return None;
+    }
+    Some(ExactPlanarOffsetProfile {
+        segments,
+        bounds_bits: bounds.map(f64::to_bits),
+        area_bits: area.to_bits(),
+    })
+}
+
+fn exact_planar_offset_profile_from_solved(
+    profile: &SolvedSketchRegionProfile,
+) -> Option<ExactPlanarOffsetProfile> {
+    let segments = match profile {
+        SolvedSketchRegionProfile::Polyline(points) => points
+            .iter()
+            .zip(points.iter().cycle().skip(1))
+            .take(points.len())
+            .map(|(start_mm, end_mm)| ExactBRepPlanarSegment::Line {
+                start_bits: start_mm.map(f64::to_bits),
+                end_bits: end_mm.map(f64::to_bits),
+            })
+            .collect(),
+        SolvedSketchRegionProfile::Boundary(edges) => edges
+            .iter()
+            .map(|edge| match edge {
+                SolvedSketchRegionEdge::Line { start_mm, end_mm } => ExactBRepPlanarSegment::Line {
+                    start_bits: start_mm.map(f64::to_bits),
+                    end_bits: end_mm.map(f64::to_bits),
+                },
+                SolvedSketchRegionEdge::Arc {
+                    start_mm,
+                    end_mm,
+                    center_mm,
+                    clockwise,
+                } => ExactBRepPlanarSegment::CircularArc {
+                    start_bits: start_mm.map(f64::to_bits),
+                    end_bits: end_mm.map(f64::to_bits),
+                    center_bits: center_mm.map(f64::to_bits),
+                    clockwise: *clockwise,
+                },
+                SolvedSketchRegionEdge::CubicBezier {
+                    start_mm,
+                    control_1_mm,
+                    control_2_mm,
+                    end_mm,
+                } => ExactBRepPlanarSegment::CubicBezier {
+                    start_bits: start_mm.map(f64::to_bits),
+                    control_1_bits: control_1_mm.map(f64::to_bits),
+                    control_2_bits: control_2_mm.map(f64::to_bits),
+                    end_bits: end_mm.map(f64::to_bits),
+                },
+            })
+            .collect(),
+        SolvedSketchRegionProfile::Circle { .. } => return None,
+    };
+    exact_planar_offset_profile_from_segments(segments)
+}
+
+pub(crate) fn accepts_planar_offset_solved_profile(
+    profile: &SolvedSketchRegionProfile,
+    distance_mm: f64,
+) -> bool {
+    if !distance_mm.is_finite() || distance_mm.abs() < EXACT_MIN_LENGTH_MM {
+        return false;
+    }
+    match profile {
+        SolvedSketchRegionProfile::Circle {
+            center_mm,
+            radius_mm,
+        } => {
+            let output_radius = radius_mm + distance_mm;
+            (EXACT_MIN_LENGTH_MM..=MAX_EXACT_PLANAR_OFFSET_LENGTH_MM).contains(radius_mm)
+                && (EXACT_MIN_LENGTH_MM..=MAX_EXACT_PLANAR_OFFSET_LENGTH_MM)
+                    .contains(&output_radius)
+                && [*radius_mm, output_radius].into_iter().all(|radius| {
+                    [
+                        center_mm[0] - radius,
+                        center_mm[1] - radius,
+                        center_mm[0] + radius,
+                        center_mm[1] + radius,
+                    ]
+                    .into_iter()
+                    .all(|coordinate| {
+                        coordinate.is_finite() && coordinate.abs() <= MAX_EXACT_BREP_COORDINATE_MM
+                    })
+                })
+        }
+        profile => {
+            let Some(profile) = exact_planar_offset_profile_from_solved(profile) else {
+                return false;
+            };
+            if distance_mm.abs() > MAX_EXACT_PLANAR_OFFSET_LENGTH_MM {
+                return false;
+            }
+            let bounds = profile.bounds_bits.map(f64::from_bits);
+            let Some(margin) = profile.max_planar_offset_displacement_mm(distance_mm) else {
+                return false;
+            };
+            let output_envelope = if distance_mm > 0.0 {
+                [
+                    bounds[0] - margin,
+                    bounds[1] - margin,
+                    bounds[2] + margin,
+                    bounds[3] + margin,
+                ]
+            } else {
+                bounds
+            };
+            let minimum_displacement = distance_mm.abs();
+            let cannot_statically_collapse = distance_mm > 0.0
+                || bounds[2] - bounds[0] > 2.0 * minimum_displacement
+                    && bounds[3] - bounds[1] > 2.0 * minimum_displacement;
+            output_envelope.into_iter().all(|coordinate| {
+                coordinate.is_finite() && coordinate.abs() <= MAX_EXACT_BREP_COORDINATE_MM
+            }) && cannot_statically_collapse
+        }
+    }
+}
+
+fn x_or_y_cubic_coefficient(cubic: [[f64; 2]; 4], axis: usize, degree: usize) -> f64 {
+    match degree {
+        1 => 3.0 * (cubic[1][axis] - cubic[0][axis]),
+        2 => 3.0 * (cubic[0][axis] - 2.0 * cubic[1][axis] + cubic[2][axis]),
+        3 => -cubic[0][axis] + 3.0 * cubic[1][axis] - 3.0 * cubic[2][axis] + cubic[3][axis],
+        _ => unreachable!("cubic coefficient degree is bounded"),
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExactPlanarOffsetRequest {
     pub document_id: DocumentId,
     pub source_revision: u64,
@@ -4938,7 +5500,7 @@ pub struct ExactPlanarOffsetRequest {
     pub offset_feature_id: FeatureId,
     pub source_bounds_bits: [u64; 4],
     pub circle: Option<ExactCircleProfile>,
-    pub profile: Option<ExactMixedProfile>,
+    pub profile: Option<ExactPlanarOffsetProfile>,
     pub distance_bits: u64,
     pub canonical_input_digest: String,
 }
@@ -4986,8 +5548,11 @@ impl ExactPlanarOffsetRequest {
                 None,
             ),
             FeatureKind::SegmentProfile { segments, closed } => {
-                let profile = exact_planar_offset_profile(segments, *closed)
-                    .ok_or(ExactProductError::UnsupportedProfile)?;
+                let profile = ExactPlanarOffsetProfile::from_mixed(
+                    exact_planar_offset_profile(segments, *closed)
+                        .ok_or(ExactProductError::UnsupportedProfile)?,
+                )
+                .ok_or(ExactProductError::UnsupportedProfile)?;
                 (profile.bounds_bits.map(f64::from_bits), None, Some(profile))
             }
             FeatureKind::Sketch(spec) => {
@@ -4997,31 +5562,34 @@ impl ExactPlanarOffsetRequest {
                 let [region] = regions.as_slice() else {
                     return Err(ExactProductError::UnsupportedProfile);
                 };
-                let SolvedSketchRegionProfile::Circle {
-                    center_mm,
-                    radius_mm,
-                } = &region.outer
-                else {
-                    return Err(ExactProductError::UnsupportedProfile);
-                };
                 if !region.holes.is_empty() {
                     return Err(ExactProductError::UnsupportedProfile);
                 }
-                (
-                    [
-                        center_mm[0] - radius_mm,
-                        center_mm[1] - radius_mm,
-                        center_mm[0] + radius_mm,
-                        center_mm[1] + radius_mm,
-                    ],
-                    Some(ExactCircleProfile {
-                        center_x_bits: center_mm[0].to_bits(),
-                        center_y_bits: center_mm[1].to_bits(),
-                        radius_bits: radius_mm.to_bits(),
-                        clockwise: false,
-                    }),
-                    None,
-                )
+                match &region.outer {
+                    SolvedSketchRegionProfile::Circle {
+                        center_mm,
+                        radius_mm,
+                    } => (
+                        [
+                            center_mm[0] - radius_mm,
+                            center_mm[1] - radius_mm,
+                            center_mm[0] + radius_mm,
+                            center_mm[1] + radius_mm,
+                        ],
+                        Some(ExactCircleProfile {
+                            center_x_bits: center_mm[0].to_bits(),
+                            center_y_bits: center_mm[1].to_bits(),
+                            radius_bits: radius_mm.to_bits(),
+                            clockwise: false,
+                        }),
+                        None,
+                    ),
+                    profile => {
+                        let profile = exact_planar_offset_profile_from_solved(profile)
+                            .ok_or(ExactProductError::UnsupportedProfile)?;
+                        (profile.bounds_bits.map(f64::from_bits), None, Some(profile))
+                    }
+                }
             }
             _ => return Err(ExactProductError::UnsupportedProfile),
         };
@@ -5120,7 +5688,7 @@ impl ExactPlanarOffsetRequest {
             );
             for segment in &profile.segments {
                 match segment {
-                    ExactProfileSegment::Line {
+                    ExactBRepPlanarSegment::Line {
                         start_bits,
                         end_bits,
                     } => write!(
@@ -5129,7 +5697,7 @@ impl ExactPlanarOffsetRequest {
                         start_bits[0], start_bits[1], end_bits[0], end_bits[1]
                     )
                     .expect("writing to a string cannot fail"),
-                    ExactProfileSegment::CircularArc {
+                    ExactBRepPlanarSegment::CircularArc {
                         start_bits,
                         end_bits,
                         center_bits,
@@ -5144,6 +5712,24 @@ impl ExactPlanarOffsetRequest {
                         center_bits[0],
                         center_bits[1],
                         u8::from(*clockwise),
+                    )
+                    .expect("writing to a string cannot fail"),
+                    ExactBRepPlanarSegment::CubicBezier {
+                        start_bits,
+                        control_1_bits,
+                        control_2_bits,
+                        end_bits,
+                    } => write!(
+                        identity,
+                        ":C:{:016x}:{:016x}:{:016x}:{:016x}:{:016x}:{:016x}:{:016x}:{:016x}",
+                        start_bits[0],
+                        start_bits[1],
+                        end_bits[0],
+                        end_bits[1],
+                        control_1_bits[0],
+                        control_1_bits[1],
+                        control_2_bits[0],
+                        control_2_bits[1],
                     )
                     .expect("writing to a string cannot fail"),
                 }
@@ -5255,31 +5841,7 @@ impl ExactPlanarOffsetRequest {
                 return false;
             }
         } else if let Some(profile) = &self.profile {
-            let segments = profile
-                .segments
-                .iter()
-                .map(|segment| match segment {
-                    ExactProfileSegment::Line {
-                        start_bits,
-                        end_bits,
-                    } => ProfileSegment::Line {
-                        start_mm: start_bits.map(f64::from_bits),
-                        end_mm: end_bits.map(f64::from_bits),
-                    },
-                    ExactProfileSegment::CircularArc {
-                        start_bits,
-                        end_bits,
-                        center_bits,
-                        clockwise,
-                    } => ProfileSegment::CircularArc {
-                        start_mm: start_bits.map(f64::from_bits),
-                        end_mm: end_bits.map(f64::from_bits),
-                        center_mm: center_bits.map(f64::from_bits),
-                        clockwise: *clockwise,
-                    },
-                })
-                .collect::<Vec<_>>();
-            if exact_planar_offset_profile(&segments, true).as_ref() != Some(profile)
+            if !profile.has_valid_encoding()
                 || self.source_bounds_bits != profile.bounds_bits
                 || distance_mm < 0.0
                     && (source_bounds[2] - source_bounds[0] <= 2.0 * distance_mm.abs()
@@ -5332,7 +5894,7 @@ impl ExactPlanarOffsetRequest {
             );
             for segment in &profile.segments {
                 match segment {
-                    ExactProfileSegment::Line {
+                    ExactBRepPlanarSegment::Line {
                         start_bits,
                         end_bits,
                     } => write!(
@@ -5341,7 +5903,7 @@ impl ExactPlanarOffsetRequest {
                         start_bits[0], start_bits[1], end_bits[0], end_bits[1]
                     )
                     .expect("writing to a string cannot fail"),
-                    ExactProfileSegment::CircularArc {
+                    ExactBRepPlanarSegment::CircularArc {
                         start_bits,
                         end_bits,
                         center_bits,
@@ -5356,6 +5918,24 @@ impl ExactPlanarOffsetRequest {
                         center_bits[0],
                         center_bits[1],
                         u8::from(*clockwise),
+                    )
+                    .expect("writing to a string cannot fail"),
+                    ExactBRepPlanarSegment::CubicBezier {
+                        start_bits,
+                        control_1_bits,
+                        control_2_bits,
+                        end_bits,
+                    } => write!(
+                        identity,
+                        ":C:{:016x}:{:016x}:{:016x}:{:016x}:{:016x}:{:016x}:{:016x}:{:016x}",
+                        start_bits[0],
+                        start_bits[1],
+                        end_bits[0],
+                        end_bits[1],
+                        control_1_bits[0],
+                        control_1_bits[1],
+                        control_2_bits[0],
+                        control_2_bits[1],
                     )
                     .expect("writing to a string cannot fail"),
                 }
@@ -5396,7 +5976,7 @@ impl ExactPlanarOffsetRequest {
     }
 
     #[must_use]
-    pub fn mixed_profile(&self) -> Option<&ExactMixedProfile> {
+    pub fn mixed_profile(&self) -> Option<&ExactPlanarOffsetProfile> {
         self.profile.as_ref()
     }
 

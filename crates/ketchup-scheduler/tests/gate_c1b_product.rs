@@ -11,6 +11,7 @@ use ketchup_core::document::{
     Transform,
 };
 use ketchup_core::exact_brep_graph::{
+    EXACT_BREP_GRAPH_SCHEMA_V7, ExactBRepGraph, ExactBRepPlanarSegment,
     MAX_EXACT_BREP_LOFT_CONTROL_POINTS, MAX_EXACT_BREP_SWEEP_PATH_LENGTH_MM,
     MIN_EXACT_BREP_SWEEP_PATH_LENGTH_MM,
 };
@@ -21961,6 +21962,133 @@ fn scheduler_evaluates_typed_line_arc_planar_offset_with_worker_evidence() {
         ])),
         Err(CanonicalError::InvalidPlanarOffset)
     ));
+}
+
+#[test]
+fn scheduler_evaluates_signed_mixed_cubic_planar_offset_over_v2() {
+    const DEFINITION: DefinitionId = DefinitionId(707);
+    const WORKPLANE: FeatureId = FeatureId(708);
+    const SKETCH: FeatureId = FeatureId(709);
+    const OFFSET: FeatureId = FeatureId(710);
+
+    let mut supervisor = ExactWorkerSupervisor::spawn(worker_path()).unwrap();
+    let mut fingerprints = Vec::new();
+    for distance_mm in [2.0, -1.0] {
+        let mut document = DocumentStore::new();
+        document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::CreateDefinition {
+                    id: DEFINITION,
+                    name: "Mixed cubic offset".to_owned(),
+                },
+                CanonicalCommand::CreateFeature {
+                    id: WORKPLANE,
+                    definition_id: DEFINITION,
+                    name: "XY".to_owned(),
+                    kind: FeatureKind::Workplane(WorkplaneSpec::principal(PrincipalPlane::Xy)),
+                },
+                CanonicalCommand::CreateFeature {
+                    id: SKETCH,
+                    definition_id: DEFINITION,
+                    name: "Line arc cubic profile".to_owned(),
+                    kind: FeatureKind::Sketch(SketchSpec {
+                        workplane: WORKPLANE,
+                        entities: vec![
+                            SketchEntity::Line {
+                                id: SketchEntityId(1),
+                                start_mm: [0.0, 0.0],
+                                end_mm: [40.0, 0.0],
+                            },
+                            SketchEntity::Arc {
+                                id: SketchEntityId(2),
+                                start_mm: [40.0, 0.0],
+                                end_mm: [50.0, 10.0],
+                                center_mm: [40.0, 10.0],
+                                clockwise: false,
+                            },
+                            SketchEntity::CubicBezier {
+                                id: SketchEntityId(3),
+                                start_mm: [50.0, 10.0],
+                                control_1_mm: [50.0, 20.0],
+                                control_2_mm: [0.0, 20.0],
+                                end_mm: [0.0, 10.0],
+                            },
+                            SketchEntity::Line {
+                                id: SketchEntityId(4),
+                                start_mm: [0.0, 10.0],
+                                end_mm: [0.0, 0.0],
+                            },
+                        ],
+                        constraints: Vec::new(),
+                    }),
+                },
+                CanonicalCommand::CreateFeature {
+                    id: OFFSET,
+                    definition_id: DEFINITION,
+                    name: "Signed mixed offset".to_owned(),
+                    kind: FeatureKind::PlanarOffset {
+                        profile: SKETCH,
+                        distance: Dimension::new(distance_mm.to_string(), distance_mm).unwrap(),
+                    },
+                },
+            ]))
+            .unwrap();
+        let snapshot = document.current();
+        let request = ExactPlanarOffsetRequest::from_snapshot(&snapshot, DEFINITION).unwrap();
+        let segments = &request.mixed_profile().unwrap().segments;
+        assert!(
+            segments
+                .iter()
+                .any(|segment| matches!(segment, ExactBRepPlanarSegment::Line { .. }))
+        );
+        assert!(
+            segments
+                .iter()
+                .any(|segment| matches!(segment, ExactBRepPlanarSegment::CircularArc { .. }))
+        );
+        assert!(
+            segments
+                .iter()
+                .any(|segment| matches!(segment, ExactBRepPlanarSegment::CubicBezier { .. }))
+        );
+
+        let first = supervisor.evaluate_planar_offset(&request).unwrap();
+        let graph = ExactBRepGraph::from_snapshot(&snapshot, DEFINITION, OFFSET).unwrap();
+        assert_eq!(graph.schema, EXACT_BREP_GRAPH_SCHEMA_V7);
+        let graph_result = supervisor.evaluate_exact_brep_graph(&graph).unwrap();
+        assert_eq!(
+            graph_result.identity.result_fingerprint,
+            first.identity.result_fingerprint
+        );
+        assert_eq!(graph_result.bounds_mm, first.bounds_mm);
+        assert_eq!(graph_result.area_mm2, first.area_mm2);
+        assert!(!graph_result.vertices.is_empty());
+        assert!(!graph_result.triangles.is_empty());
+        let repeated = supervisor.evaluate_planar_offset(&request).unwrap();
+        assert_eq!(first, repeated);
+        assert!(first.is_current(&snapshot));
+        assert_eq!(first.topology_counts[2..], [1, 0, 0]);
+        assert_eq!(first.topology_counts[0], first.topology_counts[1]);
+        assert!(first.reference.has_valid_lineage());
+        assert!(first.reference.matches_planar_offset_request(&request));
+        fingerprints.push(first.identity.result_fingerprint);
+
+        let mut forged = request.clone();
+        let cubic = forged
+            .profile
+            .as_mut()
+            .unwrap()
+            .segments
+            .iter_mut()
+            .find(|segment| matches!(segment, ExactBRepPlanarSegment::CubicBezier { .. }))
+            .unwrap();
+        let ExactBRepPlanarSegment::CubicBezier { control_2_bits, .. } = cubic else {
+            unreachable!();
+        };
+        control_2_bits[0] = 21.0_f64.to_bits();
+        assert!(supervisor.evaluate_planar_offset(&forged).is_err());
+    }
+    assert_ne!(fingerprints[0], fingerprints[1]);
 }
 
 #[test]

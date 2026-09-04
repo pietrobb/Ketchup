@@ -17,7 +17,7 @@ use crate::exact_brep_graph::{
 use crate::exact_product::{
     BodySubshapeRef, EXACT_MIN_LENGTH_MM, ExactFaceRole, ExactFeatureChainRequest,
     ExactReferenceResolution, ExactResultRegistry, MAX_EXACT_PLANAR_OFFSET_LENGTH_MM,
-    exact_planar_offset_profile,
+    accepts_planar_offset_solved_profile, exact_planar_offset_profile,
 };
 use crate::exact_revolve::{ExactRevolveRequest, reference_matches_revolve_request};
 pub use crate::graph::{
@@ -45,8 +45,7 @@ use crate::prismatic::{CanonicalJoint, JointId, PrismaticError};
 use crate::sketch::{
     FeatureExtent, FeatureExtentEnd, PadPocketOperation, PadSpec, PocketSpec, PrincipalPlane,
     SketchConstraintId, SketchConstraintKind, SketchEntity, SketchError, SketchPointKind,
-    SketchSpec, SolvedSketchRegionProfile, WorkplaneFrame, WorkplaneSpec, WorkplaneSupport,
-    WorkplaneSupportHealth,
+    SketchSpec, WorkplaneFrame, WorkplaneSpec, WorkplaneSupport, WorkplaneSupportHealth,
 };
 use crate::space::{
     CanonicalClearanceVolume, CanonicalSpace, ClearanceCoordinateFrame, ClearanceOwner,
@@ -12976,32 +12975,8 @@ fn validate_product(product: &ProductModel) -> Result<(), CanonicalError> {
                             let [region] = regions.as_slice() else {
                                 return false;
                             };
-                            let SolvedSketchRegionProfile::Circle {
-                                center_mm,
-                                radius_mm,
-                            } = region.outer
-                            else {
-                                return false;
-                            };
-                            let output_radius = radius_mm + distance;
                             region.holes.is_empty()
-                                && (EXACT_MIN_LENGTH_MM..=MAX_EXACT_PLANAR_OFFSET_LENGTH_MM)
-                                    .contains(&radius_mm)
-                                && (EXACT_MIN_LENGTH_MM..=MAX_EXACT_PLANAR_OFFSET_LENGTH_MM)
-                                    .contains(&output_radius)
-                                && [radius_mm, output_radius].into_iter().all(|radius| {
-                                    [
-                                        center_mm[0] - radius,
-                                        center_mm[1] - radius,
-                                        center_mm[0] + radius,
-                                        center_mm[1] + radius,
-                                    ]
-                                    .into_iter()
-                                    .all(|coordinate| {
-                                        coordinate.is_finite()
-                                            && coordinate.abs() <= MAX_CANONICAL_ABS_MM
-                                    })
-                                })
+                                && accepts_planar_offset_solved_profile(&region.outer, distance)
                         })
                     }
                     _ => false,

@@ -14,7 +14,10 @@ use ketchup_core::document::{
     BooleanOperation, DerivedIdentity, EdgeFinishKind, NodeId, SlotPath, SlotSegment, Snapshot,
     Transform,
 };
-use ketchup_core::exact_brep_graph::{ExactBRepGraph, ExactBRepOperation};
+use ketchup_core::exact_brep_graph::{
+    EXACT_BREP_GRAPH_SCHEMA_V6, EXACT_BREP_GRAPH_SCHEMA_V7, ExactBRepGraph, ExactBRepOperation,
+    ExactBRepPlanarSegment,
+};
 use ketchup_core::exact_product::{
     ExactBRepGraphPackage, ExactBRepGraphWorkerEvidence, ExactBodyPackage, ExactFaceRole,
     ExactFeatureChainRequest, ExactLoftPackage, ExactLoftRequest, ExactPlanarOffsetPackage,
@@ -561,6 +564,7 @@ const M3_UNION_CAPABILITY: &str = "M3_UNION_V1";
 const P6_INTERSECT_CAPABILITY: &str = "P6_INTERSECT_V1";
 const P6_SPLIT_CAPABILITY: &str = "P6_SPLIT_V1";
 const P6_OFFSET_CAPABILITY: &str = "P6_OFFSET_V1";
+const P6_OFFSET_CUBIC_CAPABILITY: &str = "P6_OFFSET_V2";
 const P6_SWEEP_CAPABILITY: &str = "P6_SWEEP_V1";
 const P6_LOFT_CAPABILITY: &str = "P6_LOFT_V1";
 const P3_CIRCLE_CAPABILITY: &str = "P3_CIRCLE_V1";
@@ -572,7 +576,8 @@ const M6_REVOLVE_CAPABILITY: &str = "M6_REVOLVE_V1";
 const M6_SHELL_CAPABILITY: &str = "M6_SHELL_V1";
 const M14_STEP_CAPABILITY: &str = "M14_STEP_V1";
 const M21_STEP_MODEL_CAPABILITY: &str = "M21_STEP_MODEL_V1";
-const EXACT_BREP_GRAPH_CAPABILITY: &str = "EXACT_BREP_GRAPH_V6";
+const EXACT_BREP_GRAPH_CAPABILITY_V6: &str = "EXACT_BREP_GRAPH_V6";
+const EXACT_BREP_GRAPH_CAPABILITY_V7: &str = "EXACT_BREP_GRAPH_V7";
 pub const MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCES: usize = 64;
 pub const MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCE_BYTES: u64 = 128 * 1024 * 1024;
 const DEFAULT_WORKER_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
@@ -976,15 +981,17 @@ impl ExactWorkerClient {
         }
     }
 
-    fn verify_p6_offset_capability(&mut self, cancelled: &AtomicBool) -> Result<(), WorkerError> {
-        let response = self.request_with_cancellation("CAPS P6_OFFSET_V1", cancelled)?;
-        if response == "CAPS P6_OFFSET_V1" {
+    fn verify_p6_offset_capability(
+        &mut self,
+        capability: &str,
+        cancelled: &AtomicBool,
+    ) -> Result<(), WorkerError> {
+        let response = self.request_with_cancellation(&format!("CAPS {capability}"), cancelled)?;
+        if response == format!("CAPS {capability}") {
             Ok(())
         } else {
             self.terminate_worker();
-            Err(WorkerError::MissingCapability(
-                P6_OFFSET_CAPABILITY.to_owned(),
-            ))
+            Err(WorkerError::MissingCapability(capability.to_owned()))
         }
     }
 
@@ -1093,17 +1100,25 @@ impl ExactWorkerClient {
 
     fn verify_exact_brep_graph_capability(
         &mut self,
+        graph: &ExactBRepGraph,
         cancelled: &AtomicBool,
     ) -> Result<(), WorkerError> {
-        let request = format!("CAPS {EXACT_BREP_GRAPH_CAPABILITY}");
+        let capability = match graph.schema.as_str() {
+            EXACT_BREP_GRAPH_SCHEMA_V6 => EXACT_BREP_GRAPH_CAPABILITY_V6,
+            EXACT_BREP_GRAPH_SCHEMA_V7 => EXACT_BREP_GRAPH_CAPABILITY_V7,
+            schema => {
+                return Err(WorkerError::Protocol(format!(
+                    "unsupported graph schema {schema}"
+                )));
+            }
+        };
+        let request = format!("CAPS {capability}");
         let response = self.request_with_cancellation(&request, cancelled)?;
         if response == request {
             Ok(())
         } else {
             self.terminate_worker();
-            Err(WorkerError::MissingCapability(
-                EXACT_BREP_GRAPH_CAPABILITY.to_owned(),
-            ))
+            Err(WorkerError::MissingCapability(capability.to_owned()))
         }
     }
 
@@ -1113,15 +1128,16 @@ impl ExactWorkerClient {
         imported_sources: &[(&str, &Path)],
         cancelled: &AtomicBool,
     ) -> Result<WorkerExactBRepGraphResult, WorkerError> {
-        self.verify_exact_brep_graph_capability(cancelled)?;
+        self.verify_exact_brep_graph_capability(graph, cancelled)?;
         let bytes = graph
             .to_bytes()
             .map_err(|error| WorkerError::Protocol(error.to_string()))?;
-        let mut request = format!(
-            "EVAL_BREP_GRAPH_V6 {} {}",
-            graph.graph_digest,
-            hex_encode(&bytes)
-        );
+        let operation = match graph.schema.as_str() {
+            EXACT_BREP_GRAPH_SCHEMA_V6 => "EVAL_BREP_GRAPH_V6",
+            EXACT_BREP_GRAPH_SCHEMA_V7 => "EVAL_BREP_GRAPH_V7",
+            _ => unreachable!("capability validation rejects unsupported graph schemas"),
+        };
+        let mut request = format!("{operation} {} {}", graph.graph_digest, hex_encode(&bytes));
         append_exact_brep_graph_sources(&mut request, imported_sources);
         let response = self.request_with_cancellation(&request, cancelled)?;
         match parse_exact_brep_graph_result(&response) {
@@ -1138,12 +1154,17 @@ impl ExactWorkerClient {
         imported_sources: &[(&str, &Path)],
         cancelled: &AtomicBool,
     ) -> Result<StepImportMesh, WorkerError> {
-        self.verify_exact_brep_graph_capability(cancelled)?;
+        self.verify_exact_brep_graph_capability(graph, cancelled)?;
         let bytes = graph
             .to_bytes()
             .map_err(|error| WorkerError::Protocol(error.to_string()))?;
+        let operation = match graph.schema.as_str() {
+            EXACT_BREP_GRAPH_SCHEMA_V6 => "TESSELLATE_BREP_GRAPH_V6",
+            EXACT_BREP_GRAPH_SCHEMA_V7 => "TESSELLATE_BREP_GRAPH_V7",
+            _ => unreachable!("capability validation rejects unsupported graph schemas"),
+        };
         let mut request = format!(
-            "TESSELLATE_BREP_GRAPH_V6 {} {} {} {}",
+            "{operation} {} {} {} {}",
             graph.graph_digest,
             hex_encode(&bytes),
             result_fingerprint,
@@ -1195,7 +1216,7 @@ impl ExactWorkerClient {
         imported_sources: &[(&str, &Path)],
         cancelled: &AtomicBool,
     ) -> Result<(), WorkerError> {
-        self.verify_exact_brep_graph_capability(cancelled)?;
+        self.verify_exact_brep_graph_capability(graph, cancelled)?;
         let bytes = graph
             .to_bytes()
             .map_err(|error| WorkerError::Protocol(error.to_string()))?;
@@ -1229,71 +1250,127 @@ impl ExactWorkerClient {
         request: &ExactPlanarOffsetRequest,
         cancelled: &AtomicBool,
     ) -> Result<WorkerPlanarOffsetResult, WorkerError> {
-        self.verify_p6_offset_capability(cancelled)?;
-        let line =
-            if request.is_rectangle() {
-                format!(
-                    "OFFSET_RECTANGLE_P6_V1 {:016x} {:016x} {:016x} {:016x} {:016x} {} {} {}",
-                    request.source_bounds_bits[0],
-                    request.source_bounds_bits[1],
-                    request.source_bounds_bits[2],
-                    request.source_bounds_bits[3],
-                    request.distance_bits,
-                    request.document_id.0,
-                    request.offset_feature_id.0,
-                    request.canonical_input_digest,
-                )
-            } else if let Some(circle) = request.circle_profile() {
-                format!(
-                    "OFFSET_CIRCLE_P6_V1 {} {} {} {:016x} {:016x} {:016x} {:016x}",
-                    request.document_id.0,
-                    request.offset_feature_id.0,
-                    request.canonical_input_digest,
-                    circle.center_x_bits,
-                    circle.center_y_bits,
-                    circle.radius_bits,
-                    request.distance_bits,
-                )
+        let cubic_protocol = request.mixed_profile().is_some_and(|profile| {
+            profile
+                .segments
+                .iter()
+                .any(|segment| matches!(segment, ExactBRepPlanarSegment::CubicBezier { .. }))
+        });
+        self.verify_p6_offset_capability(
+            if cubic_protocol {
+                P6_OFFSET_CUBIC_CAPABILITY
             } else {
-                let profile = request.mixed_profile().ok_or_else(|| {
-                    WorkerError::Protocol("missing typed offset profile".to_owned())
-                })?;
-                let mut line = format!(
-                    "OFFSET_PROFILE_P6_V1 {} {} {} {:016x} {}",
-                    request.document_id.0,
-                    request.offset_feature_id.0,
-                    request.canonical_input_digest,
-                    request.distance_bits,
-                    profile.segments.len(),
-                );
-                for segment in &profile.segments {
-                    match segment {
-                    ExactProfileSegment::Line { start_bits, end_bits } => write!(
-                        line,
-                        " L {:016x} {:016x} {:016x} {:016x} 0000000000000000 0000000000000000 0",
-                        start_bits[0], start_bits[1], end_bits[0], end_bits[1],
-                    ),
-                    ExactProfileSegment::CircularArc {
+                P6_OFFSET_CAPABILITY
+            },
+            cancelled,
+        )?;
+        let line = if request.is_rectangle() {
+            format!(
+                "OFFSET_RECTANGLE_P6_V1 {:016x} {:016x} {:016x} {:016x} {:016x} {} {} {}",
+                request.source_bounds_bits[0],
+                request.source_bounds_bits[1],
+                request.source_bounds_bits[2],
+                request.source_bounds_bits[3],
+                request.distance_bits,
+                request.document_id.0,
+                request.offset_feature_id.0,
+                request.canonical_input_digest,
+            )
+        } else if let Some(circle) = request.circle_profile() {
+            format!(
+                "OFFSET_CIRCLE_P6_V1 {} {} {} {:016x} {:016x} {:016x} {:016x}",
+                request.document_id.0,
+                request.offset_feature_id.0,
+                request.canonical_input_digest,
+                circle.center_x_bits,
+                circle.center_y_bits,
+                circle.radius_bits,
+                request.distance_bits,
+            )
+        } else {
+            let profile = request
+                .mixed_profile()
+                .ok_or_else(|| WorkerError::Protocol("missing typed offset profile".to_owned()))?;
+            let protocol = if cubic_protocol {
+                "OFFSET_PROFILE_P6_V2"
+            } else {
+                "OFFSET_PROFILE_P6_V1"
+            };
+            let mut line = format!(
+                "{protocol} {} {} {} {:016x} {}",
+                request.document_id.0,
+                request.offset_feature_id.0,
+                request.canonical_input_digest,
+                request.distance_bits,
+                profile.segments.len(),
+            );
+            for segment in &profile.segments {
+                match segment {
+                    ExactBRepPlanarSegment::Line { start_bits, end_bits } => if cubic_protocol {
+                        write!(
+                            line,
+                            " L {:016x} {:016x} {:016x} {:016x} 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0",
+                            start_bits[0], start_bits[1], end_bits[0], end_bits[1],
+                        )
+                    } else {
+                        write!(
+                            line,
+                            " L {:016x} {:016x} {:016x} {:016x} 0000000000000000 0000000000000000 0",
+                            start_bits[0], start_bits[1], end_bits[0], end_bits[1],
+                        )
+                    },
+                    ExactBRepPlanarSegment::CircularArc {
                         start_bits,
                         end_bits,
                         center_bits,
                         clockwise,
+                    } => if cubic_protocol {
+                        write!(
+                            line,
+                            " A {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} 0000000000000000 0000000000000000 {}",
+                            start_bits[0],
+                            start_bits[1],
+                            end_bits[0],
+                            end_bits[1],
+                            center_bits[0],
+                            center_bits[1],
+                            u8::from(*clockwise),
+                        )
+                    } else {
+                        write!(
+                            line,
+                            " A {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {}",
+                            start_bits[0],
+                            start_bits[1],
+                            end_bits[0],
+                            end_bits[1],
+                            center_bits[0],
+                            center_bits[1],
+                            u8::from(*clockwise),
+                        )
+                    },
+                    ExactBRepPlanarSegment::CubicBezier {
+                        start_bits,
+                        control_1_bits,
+                        control_2_bits,
+                        end_bits,
                     } => write!(
                         line,
-                        " A {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {}",
+                        " C {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} 0",
                         start_bits[0],
                         start_bits[1],
                         end_bits[0],
                         end_bits[1],
-                        center_bits[0],
-                        center_bits[1],
-                        u8::from(*clockwise),
+                        control_1_bits[0],
+                        control_1_bits[1],
+                        control_2_bits[0],
+                        control_2_bits[1],
                     ),
                 }
                 .expect("writing to a string cannot fail");
-                }
-                line
-            };
+            }
+            line
+        };
         let response = self.request_with_cancellation(&line, cancelled)?;
         match parse_p6_offset_result(&response) {
             Err(WorkerError::Protocol(response)) => self.fail_protocol(response),
