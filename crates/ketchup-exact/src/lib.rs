@@ -128,6 +128,11 @@ mod ffi {
             segments: &[f64],
             distance: f64,
         ) -> UniquePtr<NativeOperationResult>;
+        fn offset_planar_region_native(
+            segments: &[f64],
+            loop_segment_counts: &[u32],
+            distance: f64,
+        ) -> UniquePtr<NativeOperationResult>;
         fn offset_planar_circle_native(
             center_x: f64,
             center_y: f64,
@@ -693,6 +698,58 @@ fn flatten_planar_region(
         ));
     }
     Ok((flattened, loop_segment_counts))
+}
+
+fn compare_planar_encoding(left: &[f64], right: &[f64]) -> std::cmp::Ordering {
+    left.iter()
+        .zip(right)
+        .map(|(left, right)| left.total_cmp(right))
+        .find(|ordering| !ordering.is_eq())
+        .unwrap_or_else(|| left.len().cmp(&right.len()))
+}
+
+fn canonicalize_planar_region_encoding(
+    mut flattened: Vec<f64>,
+    loop_segment_counts: Vec<u32>,
+) -> (Vec<f64>, Vec<u32>) {
+    for value in &mut flattened {
+        if *value == 0.0 {
+            *value = 0.0;
+        }
+    }
+    let mut offset = 0;
+    let mut loops = loop_segment_counts
+        .into_iter()
+        .map(|segment_count| {
+            let value_count = segment_count as usize * PLANAR_SEGMENT_STRIDE;
+            let mut values = flattened[offset..offset + value_count].to_vec();
+            offset += value_count;
+            let canonical_start = (0..segment_count as usize)
+                .min_by(|left, right| {
+                    let left = left * PLANAR_SEGMENT_STRIDE;
+                    let right = right * PLANAR_SEGMENT_STRIDE;
+                    compare_planar_encoding(
+                        &values[left..]
+                            .iter()
+                            .chain(&values[..left])
+                            .copied()
+                            .collect::<Vec<_>>(),
+                        &values[right..]
+                            .iter()
+                            .chain(&values[..right])
+                            .copied()
+                            .collect::<Vec<_>>(),
+                    )
+                })
+                .expect("validated planar region loop is non-empty");
+            values.rotate_left(canonical_start * PLANAR_SEGMENT_STRIDE);
+            (segment_count, values)
+        })
+        .collect::<Vec<_>>();
+    loops[1..].sort_by(|left, right| compare_planar_encoding(&left.1, &right.1));
+    let counts = loops.iter().map(|(count, _)| *count).collect();
+    let flattened = loops.into_iter().flat_map(|(_, values)| values).collect();
+    (flattened, counts)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1261,6 +1318,98 @@ impl ExactBackend {
             ("output_max_z", bounds.max.z),
         ] {
             validate_coordinate(coordinate, name, "offset_planar_profile", &input)?;
+        }
+        Ok(output)
+    }
+
+    pub fn offset_planar_region(
+        &self,
+        outer: &PlanarProfileLoop,
+        holes: &[PlanarProfileLoop],
+        distance_mm: f64,
+    ) -> Result<ExactOpOutput, GeometryError> {
+        let operation = "offset_planar_region";
+        let bounded_input = format!(
+            "{operation}:loop_count={}:distance={:016x}",
+            holes.len().saturating_add(1),
+            distance_mm.to_bits()
+        );
+        if !distance_mm.is_finite() {
+            return Err(parameter_error(
+                GeometryErrorCode::NonFiniteParameter,
+                operation,
+                &bounded_input,
+                "Planar region offset distance must be finite".to_owned(),
+            ));
+        }
+        if !(MIN_LENGTH_MM..=MAX_LENGTH_MM).contains(&distance_mm.abs()) {
+            return Err(parameter_error(
+                GeometryErrorCode::InvalidParameter,
+                operation,
+                &bounded_input,
+                "Planar region offset distance is outside the bounded envelope".to_owned(),
+            ));
+        }
+        if holes.is_empty() || holes.len() > MAX_PLANAR_REGION_HOLES {
+            return Err(parameter_error(
+                GeometryErrorCode::InvalidProfile,
+                operation,
+                &bounded_input,
+                "Planar region requires 1..=64 holes".to_owned(),
+            ));
+        }
+        let mut segment_count = 0_usize;
+        for planar_loop in std::iter::once(outer).chain(holes) {
+            let loop_segment_count = match planar_loop {
+                PlanarProfileLoop::Segments(segments) => segments.len(),
+                PlanarProfileLoop::Circle { .. } => 1,
+            };
+            if loop_segment_count == 0 || loop_segment_count > MAX_PLANAR_LOOP_SEGMENTS {
+                return Err(parameter_error(
+                    GeometryErrorCode::InvalidProfile,
+                    operation,
+                    &bounded_input,
+                    "Planar region loop exceeds the segment limit".to_owned(),
+                ));
+            }
+            segment_count = segment_count.saturating_add(loop_segment_count);
+            if segment_count > MAX_PLANAR_REGION_SEGMENTS {
+                return Err(parameter_error(
+                    GeometryErrorCode::InvalidProfile,
+                    operation,
+                    &bounded_input,
+                    "Planar region exceeds the total segment limit".to_owned(),
+                ));
+            }
+        }
+        let (flattened, loop_segment_counts) =
+            flatten_planar_region(outer, holes, operation, &bounded_input)?;
+        let (flattened, loop_segment_counts) =
+            canonicalize_planar_region_encoding(flattened, loop_segment_counts);
+        let encoded_bits = flattened
+            .iter()
+            .map(|value| value.to_bits())
+            .collect::<Vec<_>>();
+        let input = format!(
+            "{operation}:{loop_segment_counts:?}:{encoded_bits:?}:{:016x}",
+            distance_mm.to_bits()
+        );
+        let output = collect_output(
+            ffi::offset_planar_region_native(&flattened, &loop_segment_counts, distance_mm),
+            operation,
+            &input,
+            HistoryConfidence::Complete,
+        )?;
+        let bounds = output.body.topology.bounds_mm;
+        for (name, coordinate) in [
+            ("output_min_x", bounds.min.x),
+            ("output_min_y", bounds.min.y),
+            ("output_min_z", bounds.min.z),
+            ("output_max_x", bounds.max.x),
+            ("output_max_y", bounds.max.y),
+            ("output_max_z", bounds.max.z),
+        ] {
+            validate_coordinate(coordinate, name, operation, &input)?;
         }
         Ok(output)
     }

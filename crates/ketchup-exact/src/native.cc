@@ -916,6 +916,273 @@ std::unique_ptr<NativeOperationResult> offset_planar_profile_native(
   });
 }
 
+std::unique_ptr<NativeOperationResult> offset_planar_region_native(
+    rust::Slice<const double> segments,
+    rust::Slice<const std::uint32_t> loop_segment_counts,
+    double distance) noexcept {
+  return guarded([&] {
+    if (loop_segment_counts.size() < 2 || loop_segment_counts.size() > 65
+        || segments.empty() || segments.size() % 10 != 0
+        || !std::isfinite(distance) || std::abs(distance) < 0.01
+        || std::abs(distance) > 100000.0) {
+      return error_result(STATUS_INVALID_PARAMETER, "Planar region offset payload is malformed");
+    }
+    std::size_t declared_segments = 0;
+    for (const std::uint32_t count : loop_segment_counts) {
+      if (count == 0 || count > 64) {
+        return error_result(STATUS_INVALID_PARAMETER, "Planar region offset loop count is invalid");
+      }
+      declared_segments += count;
+    }
+    if (declared_segments != segments.size() / 10 || declared_segments > 4096) {
+      return error_result(STATUS_INVALID_PARAMETER, "Planar region offset segment counts do not match");
+    }
+
+    auto build_wire = [&](std::size_t first_segment, std::size_t segment_count) {
+      BRepBuilderAPI_MakeWire wire_builder;
+      bool line_only = true;
+      for (std::size_t index = 0; index < segment_count; ++index) {
+        const std::size_t offset = (first_segment + index) * 10;
+        for (std::size_t value = 0; value < 10; ++value) {
+          if (!std::isfinite(segments[offset + value])
+              || std::abs(segments[offset + value]) > 1000000.0) {
+            return TopoDS_Wire{};
+          }
+        }
+        const double kind = segments[offset];
+        TopoDS_Edge edge;
+        if (kind == 0.0) {
+          const gp_Pnt start(segments[offset + 1], segments[offset + 2], 0.0);
+          const gp_Pnt end(segments[offset + 3], segments[offset + 4], 0.0);
+          if (segments[offset + 5] != 0.0 || segments[offset + 6] != 0.0
+              || segments[offset + 7] != 0.0 || segments[offset + 8] != 0.0
+              || segments[offset + 9] != 0.0
+              || start.Distance(end) < 0.01 || start.Distance(end) > 100000.0) {
+            return TopoDS_Wire{};
+          }
+          BRepBuilderAPI_MakeEdge edge_builder(start, end);
+          if (!edge_builder.IsDone()) {
+            return TopoDS_Wire{};
+          }
+          edge = edge_builder.Edge();
+        } else if (kind == 1.0) {
+          line_only = false;
+          const gp_Pnt start(segments[offset + 1], segments[offset + 2], 0.0);
+          const gp_Pnt end(segments[offset + 3], segments[offset + 4], 0.0);
+          const double center_x = segments[offset + 5];
+          const double center_y = segments[offset + 6];
+          const bool clockwise = segments[offset + 9] != 0.0;
+          const gp_Pnt center(center_x, center_y, 0.0);
+          const double radius = start.Distance(center);
+          const double end_radius = end.Distance(center);
+          if (segments[offset + 7] != 0.0 || segments[offset + 8] != 0.0
+              || (segments[offset + 9] != 0.0 && segments[offset + 9] != 1.0)
+              || radius < 0.01 || radius > 100000.0
+              || std::abs(radius - end_radius) > 1.0e-9 * std::max({radius, end_radius, 1.0})
+              || std::abs(center_x) + radius > 1000000.0
+              || std::abs(center_y) + radius > 1000000.0) {
+            return TopoDS_Wire{};
+          }
+          const double start_angle = std::atan2(start.Y() - center_y, start.X() - center_x);
+          const double end_angle = std::atan2(end.Y() - center_y, end.X() - center_x);
+          double sweep = end_angle - start_angle;
+          const double tau = 2.0 * std::acos(-1.0);
+          if (clockwise) {
+            while (sweep >= 0.0) sweep -= tau;
+          } else {
+            while (sweep <= 0.0) sweep += tau;
+          }
+          const gp_Pnt middle(
+              center_x + radius * std::cos(start_angle + sweep / 2.0),
+              center_y + radius * std::sin(start_angle + sweep / 2.0),
+              0.0);
+          GC_MakeArcOfCircle arc_builder(start, middle, end);
+          if (!arc_builder.IsDone()) {
+            return TopoDS_Wire{};
+          }
+          BRepBuilderAPI_MakeEdge edge_builder(arc_builder.Value());
+          if (!edge_builder.IsDone()) {
+            return TopoDS_Wire{};
+          }
+          edge = edge_builder.Edge();
+        } else if (kind == 2.0) {
+          line_only = false;
+          const gp_Pnt start(segments[offset + 1], segments[offset + 2], 0.0);
+          const gp_Pnt end(segments[offset + 3], segments[offset + 4], 0.0);
+          const gp_Pnt control_1(segments[offset + 5], segments[offset + 6], 0.0);
+          const gp_Pnt control_2(segments[offset + 7], segments[offset + 8], 0.0);
+          const double control_polygon_length =
+              start.Distance(control_1) + control_1.Distance(control_2) + control_2.Distance(end);
+          if (segments[offset + 9] != 0.0 || control_polygon_length < 0.01
+              || control_polygon_length > 100000.0) {
+            return TopoDS_Wire{};
+          }
+          edge = cubic_bezier_edge(segments, offset, 0.0);
+        } else if (kind == 3.0 && segment_count == 1) {
+          line_only = false;
+          const double center_x = segments[offset + 1];
+          const double center_y = segments[offset + 2];
+          const double radius = segments[offset + 3];
+          if (radius < 0.01 || radius > 100000.0
+              || std::abs(center_x) + radius > 1000000.0
+              || std::abs(center_y) + radius > 1000000.0
+              || segments[offset + 4] != 0.0 || segments[offset + 5] != 0.0
+              || segments[offset + 6] != 0.0 || segments[offset + 7] != 0.0
+              || segments[offset + 8] != 0.0
+              || (segments[offset + 9] != 0.0 && segments[offset + 9] != 1.0)) {
+            return TopoDS_Wire{};
+          }
+          BRepBuilderAPI_MakeEdge edge_builder(
+              gp_Circ(gp_Ax2(gp_Pnt(center_x, center_y, 0.0), gp_Dir(0.0, 0.0, 1.0)), radius));
+          if (!edge_builder.IsDone()) {
+            return TopoDS_Wire{};
+          }
+          edge = edge_builder.Edge();
+          if (segments[offset + 9] != 0.0) {
+            edge.Reverse();
+          }
+        } else {
+          return TopoDS_Wire{};
+        }
+        if (edge.IsNull()) {
+          return TopoDS_Wire{};
+        }
+        if (kind != 3.0) {
+          const std::size_t next = (first_segment + (index + 1) % segment_count) * 10;
+          if (segments[offset + 3] != segments[next + 1]
+              || segments[offset + 4] != segments[next + 2]) {
+            return TopoDS_Wire{};
+          }
+        }
+        wire_builder.Add(edge);
+      }
+      if (!wire_builder.IsDone() || (line_only && segment_count < 3)) {
+        return TopoDS_Wire{};
+      }
+      return wire_builder.Wire();
+    };
+
+    std::vector<TopoDS_Wire> source_wires;
+    source_wires.reserve(loop_segment_counts.size());
+    std::size_t first_segment = 0;
+    for (const std::uint32_t count : loop_segment_counts) {
+      TopoDS_Wire wire = build_wire(first_segment, count);
+      if (wire.IsNull()) {
+        return error_result(STATUS_INVALID_SHAPE, "OCCT planar region offset source wire is invalid");
+      }
+      source_wires.push_back(wire);
+      first_segment += count;
+    }
+    BRepBuilderAPI_MakeFace source_face_builder(source_wires[0], true);
+    for (std::size_t index = 1; index < source_wires.size(); ++index) {
+      source_face_builder.Add(source_wires[index]);
+    }
+    source_face_builder.Build();
+    if (!source_face_builder.IsDone()
+        || !BRepCheck_Analyzer(source_face_builder.Face()).IsValid()) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT planar region offset source face is invalid");
+    }
+    const TopoDS_Face source_face = source_face_builder.Face();
+
+    std::vector<TopoDS_Wire> offset_wires;
+    offset_wires.reserve(source_wires.size());
+    std::size_t source_segment = 0;
+    for (std::size_t index = 0; index < source_wires.size(); ++index) {
+      const bool circle_hole = index != 0
+          && loop_segment_counts[index] == 1
+          && segments[source_segment * 10] == 3.0;
+      TopoDS_Wire operation_wire = source_wires[index];
+      if (circle_hole) {
+        const std::size_t offset = source_segment * 10;
+        BRepBuilderAPI_MakeEdge edge_builder(gp_Circ(gp_Ax2(
+            gp_Pnt(segments[offset + 1], segments[offset + 2], 0.0),
+            gp_Dir(0.0, 0.0, 1.0)), segments[offset + 3]));
+        if (!edge_builder.IsDone()) {
+          return error_result(STATUS_INVALID_SHAPE, "OCCT planar region circle hole is invalid");
+        }
+        BRepBuilderAPI_MakeWire wire_builder(edge_builder.Edge());
+        if (!wire_builder.IsDone()) {
+          return error_result(STATUS_INVALID_SHAPE, "OCCT planar region circle hole is invalid");
+        }
+        operation_wire = wire_builder.Wire();
+      }
+      BRepOffsetAPI_MakeOffset operation(operation_wire, GeomAbs_Intersection, false);
+      operation.Perform(index == 0 ? distance : -distance);
+      if (!operation.IsDone()) {
+        return error_result(STATUS_INVALID_SHAPE, "OCCT planar region offset did not complete");
+      }
+      TopoDS_Wire offset_wire;
+      for (TopExp_Explorer explorer(operation.Shape(), TopAbs_WIRE); explorer.More(); explorer.Next()) {
+        if (!offset_wire.IsNull()) {
+          return error_result(STATUS_INVALID_SHAPE, "OCCT planar region offset split a loop");
+        }
+        offset_wire = TopoDS::Wire(explorer.Current());
+      }
+      if (offset_wire.IsNull()) {
+        return error_result(STATUS_INVALID_SHAPE, "OCCT planar region offset collapsed a loop");
+      }
+      if (circle_hole) {
+        offset_wire.Reverse();
+      }
+      source_segment += loop_segment_counts[index];
+      BRepBuilderAPI_MakeFace source_loop_face(source_wires[index], true);
+      BRepBuilderAPI_MakeFace offset_loop_face(offset_wire, true);
+      if (!source_loop_face.IsDone() || !offset_loop_face.IsDone()
+          || !BRepCheck_Analyzer(offset_loop_face.Face()).IsValid()) {
+        return error_result(STATUS_INVALID_SHAPE, "OCCT planar region offset loop face is invalid");
+      }
+      GProp_GProps source_loop_properties;
+      GProp_GProps offset_loop_properties;
+      BRepGProp::SurfaceProperties(source_loop_face.Face(), source_loop_properties);
+      BRepGProp::SurfaceProperties(offset_loop_face.Face(), offset_loop_properties);
+      const double source_loop_area = source_loop_properties.Mass();
+      const double offset_loop_area = offset_loop_properties.Mass();
+      const double loop_area_tolerance =
+          1.0e-9 * std::max({source_loop_area, offset_loop_area, 1.0});
+      const double loop_distance = index == 0 ? distance : -distance;
+      if (!std::isfinite(source_loop_area) || !std::isfinite(offset_loop_area)
+          || source_loop_area <= 0.0001 || offset_loop_area <= 0.0001
+          || (loop_distance > 0.0 && offset_loop_area <= source_loop_area + loop_area_tolerance)
+          || (loop_distance < 0.0 && offset_loop_area >= source_loop_area - loop_area_tolerance)) {
+        return error_result(STATUS_INVALID_SHAPE, "OCCT planar region offset loop violates signed semantics");
+      }
+      offset_wires.push_back(offset_wire);
+    }
+
+    BRepBuilderAPI_MakeFace result_builder(offset_wires[0], true);
+    for (std::size_t index = 1; index < offset_wires.size(); ++index) {
+      result_builder.Add(offset_wires[index]);
+    }
+    result_builder.Build();
+    if (!result_builder.IsDone() || !BRepCheck_Analyzer(result_builder.Face()).IsValid()) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT planar region offset face is invalid");
+    }
+    const TopoDS_Face result = result_builder.Face();
+    TopTools_IndexedMapOfShape result_wires;
+    TopExp::MapShapes(result, TopAbs_WIRE, result_wires);
+    if (result_wires.Extent() != static_cast<Standard_Integer>(source_wires.size())) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT planar region offset changed loop topology");
+    }
+    GProp_GProps source_properties;
+    GProp_GProps result_properties;
+    BRepGProp::SurfaceProperties(source_face, source_properties);
+    BRepGProp::SurfaceProperties(result, result_properties);
+    const double source_area = source_properties.Mass();
+    const double result_area = result_properties.Mass();
+    const double area_tolerance = 1.0e-9 * std::max({source_area, result_area, 1.0});
+    if (!std::isfinite(source_area) || !std::isfinite(result_area)
+        || source_area <= 0.0001 || result_area <= 0.0001
+        || (distance > 0.0 && result_area <= source_area + area_tolerance)
+        || (distance < 0.0 && result_area >= source_area - area_tolerance)) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT planar region offset area violates signed semantics");
+    }
+    std::vector<HistoryRecord> history;
+    history.push_back(history_record(
+        "planar_offset.face", "offset_generated", "profile.face", result, result));
+    return success_result(result, std::move(history), false, true);
+  });
+}
+
 std::unique_ptr<NativeOperationResult> offset_planar_circle_native(
     double center_x, double center_y, double radius, double distance) noexcept {
   return guarded([&] {

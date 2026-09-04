@@ -1,8 +1,8 @@
 use ketchup_exact::{
     BottleEdgeFinish, BoxSpec, CircleExtrudeSpec, CutMode, CylinderToolSpec, ExactBackend,
-    ExactOpOutput, GeometryErrorCode, PlanarProfileLoop, PlanarProfileSegment, Point3,
-    RectangleExtrudeSpec, RectangleOffsetSpec, RectangleSweepSpec, ReferenceResolution, Size3,
-    SplineLoftSection, SplineLoftSpec, capture_box_shell_references,
+    ExactOpOutput, GeometryErrorCode, MAX_PLANAR_REGION_HOLES, PlanarProfileLoop,
+    PlanarProfileSegment, Point3, RectangleExtrudeSpec, RectangleOffsetSpec, RectangleSweepSpec,
+    ReferenceResolution, Size3, SplineLoftSection, SplineLoftSpec, capture_box_shell_references,
     capture_circle_extrusion_references, capture_circular_through_cut_references,
     capture_general_revolve_references, capture_mixed_profile_extrusion_references,
     capture_planar_offset_reference, capture_rectangular_split_references,
@@ -692,6 +692,189 @@ fn cubic_and_mixed_planar_offsets_are_signed_stable_and_fail_closed() {
             .unwrap_err()
             .code,
         GeometryErrorCode::InvalidShape
+    );
+}
+
+#[test]
+fn compound_planar_offset_preserves_signed_holes_and_fails_closed() {
+    let rectangle = |min: [f64; 2], max: [f64; 2]| {
+        PlanarProfileLoop::Segments(vec![
+            PlanarProfileSegment::Line {
+                start_mm: min,
+                end_mm: [max[0], min[1]],
+            },
+            PlanarProfileSegment::Line {
+                start_mm: [max[0], min[1]],
+                end_mm: max,
+            },
+            PlanarProfileSegment::Line {
+                start_mm: max,
+                end_mm: [min[0], max[1]],
+            },
+            PlanarProfileSegment::Line {
+                start_mm: [min[0], max[1]],
+                end_mm: min,
+            },
+        ])
+    };
+    let outer = rectangle([-20.0, -15.0], [20.0, 15.0]);
+    let holes = vec![
+        rectangle([-11.0, -3.0], [-5.0, 3.0]),
+        rectangle([5.0, -3.0], [11.0, 3.0]),
+    ];
+    let backend = ExactBackend::new();
+
+    for (distance_mm, expected_bounds, expected_area) in [
+        (2.0, [[-22.0, -17.0], [22.0, 17.0]], 1_488.0),
+        (-2.0, [[-18.0, -13.0], [18.0, 13.0]], 736.0),
+    ] {
+        let mut output = backend
+            .offset_planar_region(&outer, &holes, distance_mm)
+            .unwrap();
+        let repeated = backend
+            .offset_planar_region(&outer, &holes, distance_mm)
+            .unwrap();
+        let reversed_outer = reverse_planar_loop(&outer);
+        let reversed_holes = holes
+            .iter()
+            .rev()
+            .map(reverse_planar_loop)
+            .collect::<Vec<_>>();
+        let equivalent = backend
+            .offset_planar_region(&reversed_outer, &reversed_holes, distance_mm)
+            .unwrap();
+
+        assert!(output.tolerance_report.shape_valid);
+        assert!(!output.tolerance_report.accepted_exact_solid);
+        assert_eq!(output.input_digest, repeated.input_digest);
+        assert_eq!(output.input_digest, equivalent.input_digest);
+        assert_eq!(
+            output.body.result_fingerprint,
+            repeated.body.result_fingerprint
+        );
+        assert_eq!(
+            output.body.result_fingerprint,
+            equivalent.body.result_fingerprint
+        );
+        assert_eq!(output.body.topology.face_count, 1);
+        assert_eq!(output.body.topology.shell_count, 0);
+        assert_eq!(output.body.topology.solid_count, 0);
+        assert_eq!(output.body.topology.edge_count, 12);
+        assert_close(output.body.topology.bounds_mm.min.x, expected_bounds[0][0]);
+        assert_close(output.body.topology.bounds_mm.min.y, expected_bounds[0][1]);
+        assert_close(output.body.topology.bounds_mm.max.x, expected_bounds[1][0]);
+        assert_close(output.body.topology.bounds_mm.max.y, expected_bounds[1][1]);
+        assert_close(output.body.topology.faces[0].area_mm2, expected_area);
+        let reference = capture_planar_offset_reference(&mut output, "731", "733").unwrap();
+        assert_eq!(reference.semantic_role, "planar_offset.face");
+        assert_eq!(reference.source_element_id, "profile.face");
+        assert_eq!(
+            reference.stability_class,
+            ketchup_exact::StabilityClass::Guaranteed
+        );
+    }
+
+    let positive_zero = backend
+        .offset_planar_region(
+            &outer,
+            &[PlanarProfileLoop::Circle {
+                center_mm: [0.0, 0.0],
+                radius_mm: 4.0,
+            }],
+            1.0,
+        )
+        .unwrap();
+    let negative_zero = backend
+        .offset_planar_region(
+            &outer,
+            &[PlanarProfileLoop::Circle {
+                center_mm: [-0.0, -0.0],
+                radius_mm: 4.0,
+            }],
+            1.0,
+        )
+        .unwrap();
+    assert_eq!(positive_zero.input_digest, negative_zero.input_digest);
+    assert_eq!(
+        positive_zero.body.result_fingerprint,
+        negative_zero.body.result_fingerprint
+    );
+
+    assert_eq!(
+        backend
+            .offset_planar_region(&outer, &[], 2.0)
+            .unwrap_err()
+            .code,
+        GeometryErrorCode::InvalidProfile
+    );
+    assert_eq!(
+        backend
+            .offset_planar_region(&outer, &holes, f64::NAN)
+            .unwrap_err()
+            .code,
+        GeometryErrorCode::NonFiniteParameter
+    );
+    assert!(
+        backend
+            .offset_planar_region(
+                &outer,
+                &[PlanarProfileLoop::Circle {
+                    center_mm: [0.0, 0.0],
+                    radius_mm: 2.0,
+                }],
+                2.0,
+            )
+            .is_err(),
+        "collapsed hole must fail closed"
+    );
+    assert!(
+        backend.offset_planar_region(&outer, &holes, -7.0).is_err(),
+        "expanded holes crossing the contracted outer loop must fail closed"
+    );
+    assert!(
+        backend
+            .offset_planar_region(
+                &outer,
+                &[PlanarProfileLoop::Circle {
+                    center_mm: [30.0, 0.0],
+                    radius_mm: 2.0,
+                }],
+                1.0,
+            )
+            .is_err(),
+        "a hole outside the outer loop must fail closed"
+    );
+    assert!(
+        backend
+            .offset_planar_region(
+                &outer,
+                &[
+                    PlanarProfileLoop::Circle {
+                        center_mm: [-1.0, 0.0],
+                        radius_mm: 3.0,
+                    },
+                    PlanarProfileLoop::Circle {
+                        center_mm: [1.0, 0.0],
+                        radius_mm: 3.0,
+                    },
+                ],
+                1.0,
+            )
+            .is_err(),
+        "overlapping source holes must fail closed"
+    );
+    let too_many_holes = (0..=MAX_PLANAR_REGION_HOLES)
+        .map(|index| PlanarProfileLoop::Circle {
+            center_mm: [index as f64, 0.0],
+            radius_mm: 0.1,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        backend
+            .offset_planar_region(&outer, &too_many_holes, 1.0)
+            .unwrap_err()
+            .code,
+        GeometryErrorCode::InvalidProfile
     );
 }
 
