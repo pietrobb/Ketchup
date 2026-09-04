@@ -530,16 +530,32 @@ impl ExactBRepGraph {
     }
 
     pub fn producer_bounds_mm(&self) -> Result<Option<[[f64; 3]; 2]>, ExactBRepGraphError> {
+        let terminal_index = self
+            .nodes
+            .len()
+            .checked_sub(1)
+            .ok_or(ExactBRepGraphError::InvalidGraph)?;
+        self.node_bounds_mm(ExactBRepNodeId(terminal_index as u32))
+    }
+
+    pub fn node_bounds_mm(
+        &self,
+        node_id: ExactBRepNodeId,
+    ) -> Result<Option<[[f64; 3]; 2]>, ExactBRepGraphError> {
         self.validate()?;
-        let mut node_bounds = Vec::with_capacity(self.nodes.len());
-        for node in &self.nodes {
+        let target_index = node_id.0 as usize;
+        if target_index >= self.nodes.len() {
+            return Err(ExactBRepGraphError::InvalidGraph);
+        }
+        let mut node_bounds = Vec::with_capacity(target_index + 1);
+        for node in self.nodes.iter().take(target_index + 1) {
             node_bounds.push(operation_bounds(
                 &node.operation,
                 &self.profiles,
                 &node_bounds,
             )?);
         }
-        Ok(node_bounds.last().copied().flatten())
+        Ok(node_bounds[target_index])
     }
 
     pub fn to_bytes(&self) -> Result<Vec<u8>, ExactBRepGraphError> {

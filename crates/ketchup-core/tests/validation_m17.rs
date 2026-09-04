@@ -1,11 +1,13 @@
 use ketchup_core::document::{
-    CanonicalCommand, ClassificationCategoryId, ClassificationDimensionId, CommandBatch,
-    DefinitionId, Dimension, DocumentStore, FeatureId, FeatureKind, InstancePath,
-    MESH_BODY_SCHEMA_V1, MeshAuthority, MeshBodySpec, NodeId, OccurrenceId, Transform,
+    BooleanOperation, CanonicalCommand, ClassificationCategoryId, ClassificationDimensionId,
+    CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId, FeatureKind, InstancePath,
+    MESH_BODY_SCHEMA_V1, MeshAuthority, MeshBodySpec, NodeId, OccurrenceId, Snapshot, Transform,
 };
+use ketchup_core::exact_brep_graph::ExactBRepGraph;
 use ketchup_core::exact_product::{
-    ExactBodyPackage, ExactFaceRole, ExactFeatureChainRequest, ExactResultRegistry,
-    build_box_render_package, canonical_reference_lineage_digest,
+    ExactBRepGraphPackage, ExactBRepGraphWorkerEvidence, ExactBodyPackage, ExactFaceRole,
+    ExactFeatureChainRequest, ExactResultRegistry, build_box_render_package,
+    canonical_reference_lineage_digest,
 };
 use ketchup_core::exact_validation::{
     BuiltinGeneralBodyValidator, GeneralBodyParticipant, GeneralBodySource,
@@ -13,10 +15,11 @@ use ketchup_core::exact_validation::{
     general_body_validation_policy,
 };
 use ketchup_core::fabrication::{
-    GeneralFabricationError, GeneralManufacturingKind, ProjectionStatus,
-    project_general_fabrication,
+    GeneralFabricationError, GeneralFabricationProjection, GeneralManufacturingKind,
+    ProjectionStatus, project_general_fabrication,
 };
 use ketchup_core::graph::{DerivedIdentity, PortSpec, RuleOutput, SlotPath, SlotSegment};
+use ketchup_core::import::{StepImportMesh, StepMeshTriangle};
 use ketchup_core::persistence;
 use ketchup_core::prismatic::{Aabb, TolerancePolicy};
 use ketchup_core::space::{
@@ -39,6 +42,14 @@ const MESH_DEFINITION: DefinitionId = DefinitionId(20);
 const MESH_BODY: FeatureId = FeatureId(21);
 const MESH_CLEAR: OccurrenceId = OccurrenceId(22);
 const MESH_COLLIDING: OccurrenceId = OccurrenceId(23);
+const GRAPH_DEFINITION: DefinitionId = DefinitionId(40);
+const GRAPH_BASE_PROFILE: FeatureId = FeatureId(41);
+const GRAPH_BASE_BODY: FeatureId = FeatureId(42);
+const GRAPH_TOOL_PROFILE: FeatureId = FeatureId(43);
+const GRAPH_TOOL_BODY: FeatureId = FeatureId(44);
+const GRAPH_BOOLEAN: FeatureId = FeatureId(45);
+const GRAPH_LEFT: OccurrenceId = OccurrenceId(46);
+const GRAPH_RIGHT: OccurrenceId = OccurrenceId(47);
 const SPACE_LEFT: SpaceId = SpaceId(30);
 const SPACE_RIGHT: SpaceId = SpaceId(31);
 const CLEARANCE: ClearanceVolumeId = ClearanceVolumeId(32);
@@ -455,6 +466,122 @@ fn general_fabrication_regenerates_deterministically_and_exports_fail_closed() {
 }
 
 #[test]
+fn exact_brep_graph_boolean_cut_emits_host_neutral_manufacturing_evidence() {
+    let (snapshot, projection) =
+        graph_fabrication_projection(BooleanOperation::Cut, true, "m17-graph-result");
+    assert_eq!(projection.bom.rows.len(), 1);
+    assert_eq!(projection.bom.rows[0].quantity, 2);
+    assert_eq!(projection.drawings.drawings.len(), 1);
+    assert_eq!(
+        projection.manufacturing.envelope.status,
+        ProjectionStatus::Complete
+    );
+    assert!(projection.manufacturing.unresolved_sources.is_empty());
+    assert_eq!(projection.manufacturing.operations.len(), 2);
+    assert_eq!(
+        projection
+            .manufacturing
+            .operations
+            .iter()
+            .map(|operation| operation.kind)
+            .collect::<Vec<_>>(),
+        vec![
+            GeneralManufacturingKind::Stock,
+            GeneralManufacturingKind::BooleanCut,
+        ]
+    );
+    let stock = projection
+        .manufacturing
+        .operations
+        .iter()
+        .find(|operation| operation.kind == GeneralManufacturingKind::Stock)
+        .unwrap();
+    assert_eq!(stock.producer_feature_id, GRAPH_BASE_BODY);
+    assert!(stock.semantic_inputs.is_empty());
+    assert_eq!(stock.bounds.length_mm, 10.0);
+    let cut = projection
+        .manufacturing
+        .operations
+        .iter()
+        .find(|operation| operation.kind == GeneralManufacturingKind::BooleanCut)
+        .unwrap();
+    assert_eq!(cut.producer_feature_id, GRAPH_BOOLEAN);
+    assert_eq!(cut.semantic_inputs, vec![GRAPH_BASE_BODY, GRAPH_TOOL_BODY]);
+    assert_eq!(cut.bounds.length_mm, 8.0);
+    assert!(
+        projection
+            .manufacturing
+            .operations
+            .iter()
+            .all(|operation| operation.frame == "definition-local"
+                && operation.source.result_fingerprint == "m17-graph-result")
+    );
+    let export = String::from_utf8(projection.manufacturing_export(&snapshot).unwrap()).unwrap();
+    let stock_position = export
+        .find("producer=42;kind=stock;frame=definition-local;inputs=")
+        .unwrap();
+    let cut_position = export
+        .find("producer=45;kind=boolean-cut;frame=definition-local;inputs=42,44")
+        .unwrap();
+    assert!(stock_position < cut_position);
+}
+
+#[test]
+fn unsupported_or_unverified_exact_graph_manufacturing_fails_closed_atomically() {
+    for operation in [
+        BooleanOperation::Union,
+        BooleanOperation::Intersect,
+        BooleanOperation::Split,
+    ] {
+        let (snapshot, projection) =
+            graph_fabrication_projection(operation, true, "m17-graph-result");
+        assert_eq!(projection.bom.rows.len(), 1);
+        assert_eq!(projection.drawings.drawings.len(), 1);
+        assert!(projection.bom_export(&snapshot).is_ok());
+        assert!(projection.drawing_svg(&snapshot).is_ok());
+        assert_eq!(
+            projection.manufacturing.envelope.status,
+            ProjectionStatus::Incomplete
+        );
+        assert!(projection.manufacturing.operations.is_empty());
+        assert_eq!(projection.manufacturing.unresolved_sources.len(), 1);
+        assert_eq!(
+            projection.manufacturing_export(&snapshot),
+            Err(GeneralFabricationError::ExportBlocked)
+        );
+    }
+
+    let (snapshot, projection) =
+        graph_fabrication_projection(BooleanOperation::Cut, false, "m17-graph-result");
+    assert!(matches!(
+        projection.bom.rows[0].source,
+        GeneralBodySource::CanonicalExactGraph { .. }
+    ));
+    assert!(projection.manufacturing.operations.is_empty());
+    assert_eq!(projection.manufacturing.unresolved_sources.len(), 1);
+    assert_eq!(
+        projection.manufacturing_export(&snapshot),
+        Err(GeneralFabricationError::ExportBlocked)
+    );
+
+    let (snapshot, projection) = graph_fabrication_projection(
+        BooleanOperation::Cut,
+        true,
+        "safe\noperation=forged;kind=stock",
+    );
+    assert_eq!(
+        projection.manufacturing.envelope.status,
+        ProjectionStatus::Incomplete
+    );
+    assert!(projection.manufacturing.operations.is_empty());
+    assert_eq!(projection.manufacturing.unresolved_sources.len(), 1);
+    assert_eq!(
+        projection.manufacturing_export(&snapshot),
+        Err(GeneralFabricationError::ExportBlocked)
+    );
+}
+
+#[test]
 fn canonical_mesh_keeps_bom_and_drawings_but_blocks_manufacturing_export() {
     let document = mixed_document();
     let snapshot = document.current();
@@ -676,6 +803,163 @@ fn general_report(
         policy: &policy,
         input: cases,
     })
+}
+
+fn graph_fabrication_projection(
+    operation: BooleanOperation,
+    verified: bool,
+    result_fingerprint: &str,
+) -> (Snapshot, GeneralFabricationProjection) {
+    let document = graph_boolean_document(operation);
+    let snapshot = document.current();
+    let registry = if verified {
+        ExactResultRegistry::accept(
+            &snapshot,
+            [Arc::new(ExactBodyPackage::from(graph_package(
+                &snapshot,
+                result_fingerprint,
+            )))],
+        )
+        .unwrap()
+    } else {
+        ExactResultRegistry::default()
+    };
+    let tolerance = TolerancePolicy::default();
+    let left = GeneralBodyParticipant::accept(
+        &snapshot,
+        &registry,
+        InstancePath::root(GRAPH_LEFT),
+        tolerance,
+    )
+    .unwrap();
+    let right = GeneralBodyParticipant::accept(
+        &snapshot,
+        &registry,
+        InstancePath::root(GRAPH_RIGHT),
+        tolerance,
+    )
+    .unwrap();
+    let cases = vec![GeneralClearanceCase::new(left, right, 5.0).unwrap()];
+    let report = general_report(&snapshot, &cases, tolerance);
+    assert_eq!(report.state, ValidationState::Passed);
+    let projection =
+        project_general_fabrication(&snapshot, &registry, &cases, &report, tolerance).unwrap();
+    assert_eq!(
+        projection,
+        project_general_fabrication(&snapshot, &registry, &cases, &report, tolerance).unwrap()
+    );
+    (snapshot, projection)
+}
+
+fn graph_boolean_document(operation: BooleanOperation) -> DocumentStore {
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: GRAPH_DEFINITION,
+                name: "Graph fabrication".to_owned(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: GRAPH_BASE_PROFILE,
+                definition_id: GRAPH_DEFINITION,
+                name: "Base profile".to_owned(),
+                kind: FeatureKind::Profile {
+                    points_mm: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: GRAPH_BASE_BODY,
+                definition_id: GRAPH_DEFINITION,
+                name: "Base extrusion".to_owned(),
+                kind: FeatureKind::Extrusion {
+                    profile: GRAPH_BASE_PROFILE,
+                    height: Dimension::from_decimal("10").unwrap(),
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: GRAPH_TOOL_PROFILE,
+                definition_id: GRAPH_DEFINITION,
+                name: "Tool profile".to_owned(),
+                kind: FeatureKind::Profile {
+                    points_mm: vec![[8.0, 0.0], [10.0, 0.0], [10.0, 10.0], [8.0, 10.0]],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: GRAPH_TOOL_BODY,
+                definition_id: GRAPH_DEFINITION,
+                name: "Tool extrusion".to_owned(),
+                kind: FeatureKind::Extrusion {
+                    profile: GRAPH_TOOL_PROFILE,
+                    height: Dimension::from_decimal("10").unwrap(),
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: GRAPH_BOOLEAN,
+                definition_id: GRAPH_DEFINITION,
+                name: "Boolean result".to_owned(),
+                kind: FeatureKind::Boolean {
+                    operation,
+                    target: GRAPH_BASE_BODY,
+                    tool: GRAPH_TOOL_BODY,
+                },
+            },
+            occurrence(GRAPH_LEFT, GRAPH_DEFINITION, 0.0),
+            occurrence(GRAPH_RIGHT, GRAPH_DEFINITION, 20.0),
+        ]))
+        .unwrap();
+    document.discard_history_before_current();
+    document
+}
+
+fn graph_package(snapshot: &Snapshot, result_fingerprint: &str) -> ExactBRepGraphPackage {
+    let graph = ExactBRepGraph::from_snapshot(snapshot, GRAPH_DEFINITION, GRAPH_BOOLEAN).unwrap();
+    let mut bounds_mm = graph.producer_bounds_mm().unwrap().unwrap();
+    if matches!(
+        snapshot
+            .feature(GRAPH_BOOLEAN)
+            .map(|feature| feature.kind()),
+        Some(FeatureKind::Boolean {
+            operation: BooleanOperation::Cut,
+            ..
+        })
+    ) {
+        bounds_mm[1][0] = 8.0;
+    }
+    let [minimum, maximum] = bounds_mm;
+    let mesh = StepImportMesh {
+        vertices_mm: vec![
+            [minimum[0], minimum[1], minimum[2]],
+            [maximum[0], minimum[1], minimum[2]],
+            [maximum[0], maximum[1], minimum[2]],
+            [minimum[0], maximum[1], minimum[2]],
+            [minimum[0], minimum[1], maximum[2]],
+            [maximum[0], minimum[1], maximum[2]],
+            [maximum[0], maximum[1], maximum[2]],
+            [minimum[0], maximum[1], maximum[2]],
+        ],
+        triangles: vec![StepMeshTriangle {
+            vertex_indices: [0, 1, 2],
+            face_ordinal: 0,
+        }],
+    };
+    ExactBRepGraphPackage::from_worker_evidence(
+        &graph,
+        ExactBRepGraphWorkerEvidence {
+            exact_input_digest: "m17-graph-input".to_owned(),
+            result_fingerprint: result_fingerprint.to_owned(),
+            volume_mm3: (maximum[0] - minimum[0])
+                * (maximum[1] - minimum[1])
+                * (maximum[2] - minimum[2]),
+            area_mm2: 0.0,
+            topology_counts: [8, 12, 6, 1, 1],
+            wire_count: None,
+            bounds_mm,
+            backend: "m17-graph-backend".to_owned(),
+            tolerance: "m17-graph-tolerance".to_owned(),
+        },
+        &mesh,
+    )
+    .unwrap()
 }
 
 fn exact_only_document() -> DocumentStore {

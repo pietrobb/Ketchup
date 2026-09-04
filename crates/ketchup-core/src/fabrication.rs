@@ -2,7 +2,7 @@ use crate::document::{
     BooleanOperation, DefinitionId, DocumentId, FeatureId, FeatureKind, InstancePath,
     InstancePathStep, Snapshot, Transform,
 };
-use crate::exact_brep_graph::ExactBRepGraph;
+use crate::exact_brep_graph::{ExactBRepBooleanOperation, ExactBRepGraph, ExactBRepOperation};
 use crate::exact_product::{
     BodyResultIdentity, BodySubshapeRef, ExactBodyPackage, ExactResultRegistry,
 };
@@ -739,64 +739,24 @@ pub fn project_general_fabrication(
                     .get_result(source)
                     .filter(|package| package.is_current(snapshot))
                     .ok_or(GeneralFabricationError::UnsupportedOrUnavailableGeometry)?;
-                let definition = snapshot
-                    .definition(row.definition_id)
-                    .ok_or(GeneralFabricationError::UnsupportedOrUnavailableGeometry)?;
-                let has_union = definition.feature_ids().iter().any(|feature_id| {
-                    matches!(
-                        snapshot.feature(*feature_id).map(|feature| feature.kind()),
-                        Some(FeatureKind::Boolean {
-                            operation: BooleanOperation::Union,
-                            ..
-                        })
-                    )
-                });
-                if !matches!(package.as_ref(), ExactBodyPackage::Rectangle(_)) || has_union {
+                if !manufacturing_export_token_is_safe(&source.result_fingerprint) {
                     unresolved_sources.push(row.source.clone());
                     continue;
                 }
-                operations.push(GeneralManufacturingOperation {
-                    stable_operation_id: format!("definition-{}/stock", row.definition_id.0),
-                    definition_id: row.definition_id,
-                    producer_feature_id: source.producer_feature_id,
-                    kind: GeneralManufacturingKind::Stock,
-                    semantic_inputs: Vec::new(),
-                    frame: "definition-local",
-                    bounds: row.dimensions,
-                    source: source.clone(),
-                });
-                for feature_id in definition.feature_ids() {
-                    let feature = snapshot
-                        .feature(*feature_id)
-                        .ok_or(GeneralFabricationError::UnsupportedOrUnavailableGeometry)?;
-                    let (kind, semantic_inputs) = match feature.kind() {
-                        FeatureKind::ThroughCut { target, profile } => (
-                            GeneralManufacturingKind::ThroughCut,
-                            vec![*target, *profile],
-                        ),
-                        FeatureKind::Boolean {
-                            operation: BooleanOperation::Cut,
-                            target,
-                            tool,
-                        } => (GeneralManufacturingKind::BooleanCut, vec![*target, *tool]),
-                        _ => continue,
-                    };
-                    operations.push(GeneralManufacturingOperation {
-                        stable_operation_id: format!(
-                            "definition-{}/feature-{}/{}",
-                            row.definition_id.0,
-                            feature_id.0,
-                            kind.token()
-                        ),
-                        definition_id: row.definition_id,
-                        producer_feature_id: *feature_id,
-                        kind,
-                        semantic_inputs,
-                        frame: "definition-local",
-                        bounds: row.dimensions,
-                        source: source.clone(),
-                    });
-                }
+                let row_operations = match package.as_ref() {
+                    ExactBodyPackage::Rectangle(_) => {
+                        rectangle_manufacturing_operations(snapshot, row, source)?
+                    }
+                    ExactBodyPackage::Graph(package) => {
+                        graph_manufacturing_operations(row, source, &package.graph)
+                    }
+                    ExactBodyPackage::Revolve(_) | ExactBodyPackage::Imported(_) => None,
+                };
+                let Some(row_operations) = row_operations else {
+                    unresolved_sources.push(row.source.clone());
+                    continue;
+                };
+                operations.extend(row_operations);
             }
             GeneralBodySource::CanonicalMesh { .. }
             | GeneralBodySource::CanonicalExtrusion { .. }
@@ -805,7 +765,15 @@ pub fn project_general_fabrication(
             }
         }
     }
-    operations.sort_by(|left, right| left.stable_operation_id.cmp(&right.stable_operation_id));
+    operations.sort_by(|left, right| {
+        left.source
+            .cmp(&right.source)
+            .then_with(|| {
+                manufacturing_operation_phase(left.kind)
+                    .cmp(&manufacturing_operation_phase(right.kind))
+            })
+            .then_with(|| left.stable_operation_id.cmp(&right.stable_operation_id))
+    });
     unresolved_sources.sort();
     unresolved_sources.dedup();
     let manufacturing_status =
@@ -832,6 +800,178 @@ pub fn project_general_fabrication(
         drawings,
         manufacturing,
     })
+}
+
+fn rectangle_manufacturing_operations(
+    snapshot: &Snapshot,
+    row: &GeneralBomRow,
+    source: &crate::exact_product::ExactResultKey,
+) -> Result<Option<Vec<GeneralManufacturingOperation>>, GeneralFabricationError> {
+    let definition = snapshot
+        .definition(row.definition_id)
+        .ok_or(GeneralFabricationError::UnsupportedOrUnavailableGeometry)?;
+    if definition.feature_ids().iter().any(|feature_id| {
+        matches!(
+            snapshot.feature(*feature_id).map(|feature| feature.kind()),
+            Some(FeatureKind::Boolean {
+                operation: BooleanOperation::Union,
+                ..
+            })
+        )
+    }) {
+        return Ok(None);
+    }
+    let mut operations = vec![GeneralManufacturingOperation {
+        stable_operation_id: format!("definition-{}/stock", row.definition_id.0),
+        definition_id: row.definition_id,
+        producer_feature_id: source.producer_feature_id,
+        kind: GeneralManufacturingKind::Stock,
+        semantic_inputs: Vec::new(),
+        frame: "definition-local",
+        bounds: row.dimensions,
+        source: source.clone(),
+    }];
+    for feature_id in definition.feature_ids() {
+        let feature = snapshot
+            .feature(*feature_id)
+            .ok_or(GeneralFabricationError::UnsupportedOrUnavailableGeometry)?;
+        let (kind, semantic_inputs) = match feature.kind() {
+            FeatureKind::ThroughCut { target, profile } => (
+                GeneralManufacturingKind::ThroughCut,
+                vec![*target, *profile],
+            ),
+            FeatureKind::Boolean {
+                operation: BooleanOperation::Cut,
+                target,
+                tool,
+            } => (GeneralManufacturingKind::BooleanCut, vec![*target, *tool]),
+            _ => continue,
+        };
+        operations.push(GeneralManufacturingOperation {
+            stable_operation_id: format!(
+                "definition-{}/feature-{}/{}",
+                row.definition_id.0,
+                feature_id.0,
+                kind.token()
+            ),
+            definition_id: row.definition_id,
+            producer_feature_id: *feature_id,
+            kind,
+            semantic_inputs,
+            frame: "definition-local",
+            bounds: row.dimensions,
+            source: source.clone(),
+        });
+    }
+    Ok(Some(operations))
+}
+
+fn graph_manufacturing_operations(
+    row: &GeneralBomRow,
+    source: &crate::exact_product::ExactResultKey,
+    graph: &ExactBRepGraph,
+) -> Option<Vec<GeneralManufacturingOperation>> {
+    let (stock_feature_id, stock_bounds) = match graph.nodes.as_slice() {
+        [stock] if matches!(stock.operation, ExactBRepOperation::Extrude { .. }) => (
+            FeatureId(stock.source_feature_id),
+            piece_dimensions_from_bounds(graph.node_bounds_mm(stock.id).ok().flatten()?)?,
+        ),
+        [first, second, terminal]
+            if matches!(first.operation, ExactBRepOperation::Extrude { .. })
+                && matches!(second.operation, ExactBRepOperation::Extrude { .. }) =>
+        {
+            let ExactBRepOperation::Boolean {
+                operation: ExactBRepBooleanOperation::Cut,
+                target,
+                tool,
+            } = &terminal.operation
+            else {
+                return None;
+            };
+            let target = graph.nodes.get(target.0 as usize)?;
+            let tool = graph.nodes.get(tool.0 as usize)?;
+            if target.id == tool.id
+                || !matches!(target.operation, ExactBRepOperation::Extrude { .. })
+                || !matches!(tool.operation, ExactBRepOperation::Extrude { .. })
+            {
+                return None;
+            }
+            let stock_feature_id = FeatureId(target.source_feature_id);
+            let stock_bounds =
+                piece_dimensions_from_bounds(graph.node_bounds_mm(target.id).ok().flatten()?)?;
+            return Some(vec![
+                GeneralManufacturingOperation {
+                    stable_operation_id: format!("definition-{}/stock", row.definition_id.0),
+                    definition_id: row.definition_id,
+                    producer_feature_id: stock_feature_id,
+                    kind: GeneralManufacturingKind::Stock,
+                    semantic_inputs: Vec::new(),
+                    frame: "definition-local",
+                    bounds: stock_bounds,
+                    source: source.clone(),
+                },
+                GeneralManufacturingOperation {
+                    stable_operation_id: format!(
+                        "definition-{}/feature-{}/{}",
+                        row.definition_id.0,
+                        terminal.source_feature_id,
+                        GeneralManufacturingKind::BooleanCut.token()
+                    ),
+                    definition_id: row.definition_id,
+                    producer_feature_id: FeatureId(terminal.source_feature_id),
+                    kind: GeneralManufacturingKind::BooleanCut,
+                    semantic_inputs: vec![
+                        FeatureId(target.source_feature_id),
+                        FeatureId(tool.source_feature_id),
+                    ],
+                    frame: "definition-local",
+                    bounds: row.dimensions,
+                    source: source.clone(),
+                },
+            ]);
+        }
+        _ => return None,
+    };
+    Some(vec![GeneralManufacturingOperation {
+        stable_operation_id: format!("definition-{}/stock", row.definition_id.0),
+        definition_id: row.definition_id,
+        producer_feature_id: stock_feature_id,
+        kind: GeneralManufacturingKind::Stock,
+        semantic_inputs: Vec::new(),
+        frame: "definition-local",
+        bounds: stock_bounds,
+        source: source.clone(),
+    }])
+}
+
+fn manufacturing_export_token_is_safe(token: &str) -> bool {
+    !token.is_empty()
+        && token
+            .chars()
+            .all(|character| !character.is_control() && character != ';' && character != '=')
+}
+
+const fn manufacturing_operation_phase(kind: GeneralManufacturingKind) -> u8 {
+    match kind {
+        GeneralManufacturingKind::Stock => 0,
+        GeneralManufacturingKind::ThroughCut | GeneralManufacturingKind::BooleanCut => 1,
+    }
+}
+
+fn piece_dimensions_from_bounds(bounds: [[f64; 3]; 2]) -> Option<PieceDimensions> {
+    let dimensions = PieceDimensions {
+        length_mm: bounds[1][0] - bounds[0][0],
+        width_mm: bounds[1][1] - bounds[0][1],
+        height_mm: bounds[1][2] - bounds[0][2],
+    };
+    [
+        dimensions.length_mm,
+        dimensions.width_mm,
+        dimensions.height_mm,
+    ]
+    .into_iter()
+    .all(|value| value.is_finite() && value > 0.0)
+    .then_some(dimensions)
 }
 
 fn general_envelope_is_current(
