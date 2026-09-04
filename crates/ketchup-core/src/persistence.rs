@@ -415,6 +415,13 @@ pub enum LoadDisposition {
     ReviewOnly,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LegacyFeatureKind {
+    BottleProfileControl,
+    RoleStringShell,
+    BottleEdgeFinish,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OverrideHealthAudit {
     pub override_id: u64,
@@ -2219,6 +2226,9 @@ pub fn load_file(path: impl AsRef<Path>) -> Result<LoadOutcome, FilePersistenceE
     match fs::read(path) {
         Ok(bytes) => match load(&bytes) {
             Ok(outcome) => Ok(outcome),
+            Err(primary_error @ PersistenceError::LegacyFeatureRequiresMigration { .. }) => {
+                Err(FilePersistenceError::Format(primary_error))
+            }
             Err(primary_error) => {
                 try_load_recovery(path).ok_or(FilePersistenceError::Format(primary_error))
             }
@@ -2549,6 +2559,8 @@ fn load_document(
             return Err(PersistenceError::InvalidExactReference);
         }
     }
+    #[cfg(not(feature = "named-product-fixtures"))]
+    reject_legacy_feature_authority(&loaded_snapshot)?;
     if review_required || container_data.requires_unknown_extension() {
         Ok(LoadOutcome::ReviewOnly(ReviewCandidate {
             snapshot: document.current(),
@@ -2562,6 +2574,23 @@ fn load_document(
             container_data,
         })
     }
+}
+
+#[cfg(not(feature = "named-product-fixtures"))]
+fn reject_legacy_feature_authority(snapshot: &Snapshot) -> Result<(), PersistenceError> {
+    for feature in snapshot.features() {
+        let kind = match feature.kind() {
+            FeatureKind::BottleProfileControl { .. } => LegacyFeatureKind::BottleProfileControl,
+            FeatureKind::Shell { .. } => LegacyFeatureKind::RoleStringShell,
+            FeatureKind::BottleEdgeFinish { .. } => LegacyFeatureKind::BottleEdgeFinish,
+            _ => continue,
+        };
+        return Err(PersistenceError::LegacyFeatureRequiresMigration {
+            feature_id: feature.id(),
+            kind,
+        });
+    }
+    Ok(())
 }
 
 fn read_nodes(
@@ -4814,6 +4843,10 @@ pub enum PersistenceError {
     DuplicateGroup(GroupId),
     DuplicateLocalGroup(LocalGroupKey),
     DuplicateLocalOccurrence(LocalOccurrenceKey),
+    LegacyFeatureRequiresMigration {
+        feature_id: FeatureId,
+        kind: LegacyFeatureKind,
+    },
     MigrationNotConfirmable(&'static str),
     InvalidCanonicalData(CanonicalError),
 }
@@ -4992,6 +5025,18 @@ impl fmt::Display for PersistenceError {
                 "document repeats local occurrence {}:{}",
                 key.definition_id.0, key.local_id.0
             ),
+            Self::LegacyFeatureRequiresMigration { feature_id, kind } => {
+                let kind = match kind {
+                    LegacyFeatureKind::BottleProfileControl => "BottleProfileControl",
+                    LegacyFeatureKind::RoleStringShell => "role-string Shell",
+                    LegacyFeatureKind::BottleEdgeFinish => "BottleEdgeFinish",
+                };
+                write!(
+                    formatter,
+                    "legacy feature {} ({kind}) requires explicit migration",
+                    feature_id.0
+                )
+            }
             Self::MigrationNotConfirmable(reason) => {
                 write!(
                     formatter,

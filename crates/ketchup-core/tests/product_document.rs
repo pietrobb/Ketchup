@@ -1,17 +1,19 @@
 use ketchup_core::bottle_m6::ExactRevolveRequest;
 use ketchup_core::document::{
-    BOTTLE_SHELL_OPENING_FACE_ROLE, BOTTLE_SHOULDER_EDGE_ROLE, BooleanOperation,
-    BottleControlDimension, BottleEdgeFinishKind, CanonicalCommand, CanonicalError, CollectionId,
-    CommandBatch, ConvertedEntityId, DefinitionId, DerivedIdentity, Dimension,
-    DimensionDisplayUnit, DimensionPresentation, DimensionReferenceHealth, DocumentStore,
-    EvaluationIdentity, FeatureId, FeatureKind, FeatureParameterBinding, FeatureParameterFreshness,
-    FeatureParameterStaleReason, FeatureParameterTarget, GroupId, InstancePath, InstancePathStep,
-    LocalGroupId, LocalGroupKey, LocalOccurrenceId, LocalOccurrenceKey, LoftSection,
-    MappingResolution, NodeId, OccurrenceId, ParameterPath, ParameterPathError, ParameterValueType,
-    PersistentDimension, PersistentDimensionId, PersistentDimensionTarget, PortSpec,
-    ProfileSegment, RuleOutput, SceneQueryContext, SceneQueryError, SlotPath, SlotSegment,
-    Snapshot, SolidToolPlan, SpatialPathSegment, StableEdgeRole, StableFaceRole, TagId, Transform,
-    UnresolvedMappingReason, WorldEntityPath,
+    BOTTLE_SHELL_OPENING_FACE_ROLE, BOTTLE_SHOULDER_EDGE_ROLE, BottleControlDimension,
+    BottleEdgeFinishKind, StableEdgeRole, StableFaceRole,
+};
+use ketchup_core::document::{
+    BooleanOperation, CanonicalCommand, CanonicalError, CollectionId, CommandBatch,
+    ConvertedEntityId, DefinitionId, DerivedIdentity, Dimension, DimensionDisplayUnit,
+    DimensionPresentation, DimensionReferenceHealth, DocumentStore, EvaluationIdentity, FeatureId,
+    FeatureKind, FeatureParameterBinding, FeatureParameterFreshness, FeatureParameterStaleReason,
+    FeatureParameterTarget, GroupId, InstancePath, InstancePathStep, LocalGroupId, LocalGroupKey,
+    LocalOccurrenceId, LocalOccurrenceKey, LoftSection, MappingResolution, NodeId, OccurrenceId,
+    ParameterPath, ParameterPathError, ParameterValueType, PersistentDimension,
+    PersistentDimensionId, PersistentDimensionTarget, PortSpec, ProfileSegment, RuleOutput,
+    SceneQueryContext, SceneQueryError, SlotPath, SlotSegment, Snapshot, SolidToolPlan,
+    SpatialPathSegment, TagId, Transform, UnresolvedMappingReason, WorldEntityPath,
 };
 use ketchup_core::exact_brep_graph::{
     ExactBRepBooleanOperation, ExactBRepGraph, ExactBRepOperation, ExactBRepPlanarLoop,
@@ -21,6 +23,8 @@ use ketchup_core::exact_product::{
     EXACT_CIRCLE_EVALUATOR_V1, ExactFeatureChainRequest, ExactPlanarOffsetRequest,
 };
 use ketchup_core::persistence;
+#[cfg(not(feature = "named-product-fixtures"))]
+use ketchup_core::persistence::{LegacyFeatureKind, PersistenceError};
 use ketchup_core::sketch::{
     PrincipalPlane, SketchConstraint, SketchConstraintId, SketchConstraintKind, SketchEntity,
     SketchEntityId, SketchPointKind, SketchPointRef, SketchSpec, WorkplaneSpec,
@@ -898,21 +902,33 @@ fn general_shell_and_edge_finish_roles_are_canonical_undoable_unique_and_persist
         FeatureKind::BottleEdgeFinish { edges, .. } if edges == &[edge]
     ));
 
-    let unique_digest = unique.canonical_digest();
-    let loaded = persistence::load(&persistence::save(&unique)).unwrap();
-    assert_eq!(loaded.source_schema(), persistence::CURRENT_SCHEMA);
-    assert!(loaded.migration_losses().is_empty());
-    assert_eq!(loaded.snapshot().canonical_digest(), unique_digest);
+    let loaded = persistence::load(&persistence::save(&unique));
+    #[cfg(not(feature = "named-product-fixtures"))]
     assert!(matches!(
-        loaded.snapshot().feature(unique_shell).unwrap().kind(),
-        FeatureKind::Shell { removed_faces, .. }
-            if removed_faces[0].as_str() == "extrusion.top"
+        loaded,
+        Err(PersistenceError::LegacyFeatureRequiresMigration {
+            feature_id,
+            kind: LegacyFeatureKind::RoleStringShell,
+        }) if feature_id == SHELL
     ));
-    assert!(matches!(
-        loaded.snapshot().feature(unique_finish).unwrap().kind(),
-        FeatureKind::BottleEdgeFinish { edges, .. }
-            if edges[0].as_str() == "shell.edge.top-east"
-    ));
+    #[cfg(feature = "named-product-fixtures")]
+    {
+        let unique_digest = unique.canonical_digest();
+        let loaded = loaded.unwrap();
+        assert_eq!(loaded.source_schema(), persistence::CURRENT_SCHEMA);
+        assert!(loaded.migration_losses().is_empty());
+        assert_eq!(loaded.snapshot().canonical_digest(), unique_digest);
+        assert!(matches!(
+            loaded.snapshot().feature(unique_shell).unwrap().kind(),
+            FeatureKind::Shell { removed_faces, .. }
+                if removed_faces[0].as_str() == "extrusion.top"
+        ));
+        assert!(matches!(
+            loaded.snapshot().feature(unique_finish).unwrap().kind(),
+            FeatureKind::BottleEdgeFinish { edges, .. }
+                if edges[0].as_str() == "shell.edge.top-east"
+        ));
+    }
 }
 
 #[test]
@@ -984,10 +1000,22 @@ fn m6_shell_thickness_is_canonical_undoable_persisted_and_fail_closed() {
     assert_eq!(document.undo().unwrap().canonical_digest(), initial_digest);
     assert_eq!(document.redo().unwrap().canonical_digest(), changed_digest);
 
-    let reopened = persistence::load(&persistence::save(&document.current())).unwrap();
-    assert_eq!(reopened.source_schema(), persistence::CURRENT_SCHEMA);
-    assert!(reopened.migration_losses().is_empty());
-    assert_eq!(reopened.snapshot().canonical_digest(), changed_digest);
+    let reopened = persistence::load(&persistence::save(&document.current()));
+    #[cfg(not(feature = "named-product-fixtures"))]
+    assert!(matches!(
+        reopened,
+        Err(PersistenceError::LegacyFeatureRequiresMigration {
+            feature_id: SHELL,
+            kind: LegacyFeatureKind::RoleStringShell,
+        })
+    ));
+    #[cfg(feature = "named-product-fixtures")]
+    {
+        let reopened = reopened.unwrap();
+        assert_eq!(reopened.source_schema(), persistence::CURRENT_SCHEMA);
+        assert!(reopened.migration_losses().is_empty());
+        assert_eq!(reopened.snapshot().canonical_digest(), changed_digest);
+    }
 
     let before_invalid = document.current().canonical_digest();
     let undo_before_invalid = document.visible_undo_steps();
@@ -1132,18 +1160,30 @@ fn m6_controlled_profile_and_edge_finish_are_atomic_persisted_and_fail_closed() 
     assert_eq!(document.undo().unwrap().canonical_digest(), initial_digest);
     assert_eq!(document.redo().unwrap().canonical_digest(), changed_digest);
 
-    let reopened = persistence::load(&persistence::save(&document.current())).unwrap();
-    assert_eq!(reopened.source_schema(), persistence::CURRENT_SCHEMA);
-    assert!(reopened.migration_losses().is_empty());
-    assert_eq!(reopened.snapshot().canonical_digest(), changed_digest);
+    let reopened = persistence::load(&persistence::save(&document.current()));
+    #[cfg(not(feature = "named-product-fixtures"))]
     assert!(matches!(
-        reopened.snapshot().feature(FINISH).unwrap().kind(),
-        FeatureKind::BottleEdgeFinish {
-            kind: BottleEdgeFinishKind::Chamfer,
-            amount,
-            ..
-        } if amount.millimetres() == 1.5
+        reopened,
+        Err(PersistenceError::LegacyFeatureRequiresMigration {
+            feature_id: CONTROL,
+            kind: LegacyFeatureKind::BottleProfileControl,
+        })
     ));
+    #[cfg(feature = "named-product-fixtures")]
+    {
+        let reopened = reopened.unwrap();
+        assert_eq!(reopened.source_schema(), persistence::CURRENT_SCHEMA);
+        assert!(reopened.migration_losses().is_empty());
+        assert_eq!(reopened.snapshot().canonical_digest(), changed_digest);
+        assert!(matches!(
+            reopened.snapshot().feature(FINISH).unwrap().kind(),
+            FeatureKind::BottleEdgeFinish {
+                kind: BottleEdgeFinishKind::Chamfer,
+                amount,
+                ..
+            } if amount.millimetres() == 1.5
+        ));
+    }
 
     for (command, invalid_feature) in [
         (
