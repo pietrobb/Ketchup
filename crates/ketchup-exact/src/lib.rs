@@ -1159,18 +1159,7 @@ impl ExactBackend {
             unreachable!("all planar profile loop variants were handled")
         };
         validate_mixed_profile(segments, "offset_planar_profile", &input)?;
-        if segments
-            .iter()
-            .any(|segment| matches!(segment, PlanarProfileSegment::CubicBezier { .. }))
-        {
-            return Err(parameter_error(
-                GeometryErrorCode::InvalidProfile,
-                "offset_planar_profile",
-                &input,
-                "Planar offset currently supports only line and circular-arc segments".to_owned(),
-            ));
-        }
-        for (index, segment) in segments.iter().enumerate() {
+        for segment in segments {
             match segment {
                 PlanarProfileSegment::Line { start_mm, end_mm } => validate_length(
                     (end_mm[0] - start_mm[0]).hypot(end_mm[1] - start_mm[1]),
@@ -1194,9 +1183,20 @@ impl ExactBackend {
                         validate_coordinate(coordinate, name, "offset_planar_profile", &input)?;
                     }
                 }
-                PlanarProfileSegment::CubicBezier { .. } => {
-                    unreachable!("cubic segment {index} was rejected before bounded validation")
-                }
+                PlanarProfileSegment::CubicBezier {
+                    start_mm,
+                    control_1_mm,
+                    control_2_mm,
+                    end_mm,
+                } => validate_length(
+                    (control_1_mm[0] - start_mm[0]).hypot(control_1_mm[1] - start_mm[1])
+                        + (control_2_mm[0] - control_1_mm[0])
+                            .hypot(control_2_mm[1] - control_1_mm[1])
+                        + (end_mm[0] - control_2_mm[0]).hypot(end_mm[1] - control_2_mm[1]),
+                    "cubic_control_polygon_length",
+                    "offset_planar_profile",
+                    &input,
+                )?,
             }
         }
         let origin = planar_segment_endpoints(&segments[0]).0;

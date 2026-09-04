@@ -549,6 +549,153 @@ fn mixed_line_arc_planar_offset_produces_one_stable_exact_face() {
 }
 
 #[test]
+fn cubic_and_mixed_planar_offsets_are_signed_stable_and_fail_closed() {
+    let backend = ExactBackend::new();
+    let kappa = 4.0 * (2.0_f64.sqrt() - 1.0) / 3.0;
+    let cubic = PlanarProfileLoop::Segments(vec![
+        PlanarProfileSegment::CubicBezier {
+            start_mm: [20.0, 0.0],
+            control_1_mm: [20.0, 10.0 * kappa],
+            control_2_mm: [20.0 * kappa, 10.0],
+            end_mm: [0.0, 10.0],
+        },
+        PlanarProfileSegment::CubicBezier {
+            start_mm: [0.0, 10.0],
+            control_1_mm: [-20.0 * kappa, 10.0],
+            control_2_mm: [-20.0, 10.0 * kappa],
+            end_mm: [-20.0, 0.0],
+        },
+        PlanarProfileSegment::CubicBezier {
+            start_mm: [-20.0, 0.0],
+            control_1_mm: [-20.0, -10.0 * kappa],
+            control_2_mm: [-20.0 * kappa, -10.0],
+            end_mm: [0.0, -10.0],
+        },
+        PlanarProfileSegment::CubicBezier {
+            start_mm: [0.0, -10.0],
+            control_1_mm: [20.0 * kappa, -10.0],
+            control_2_mm: [20.0, -10.0 * kappa],
+            end_mm: [20.0, 0.0],
+        },
+    ]);
+    let mixed = PlanarProfileLoop::Segments(vec![
+        PlanarProfileSegment::Line {
+            start_mm: [0.0, 0.0],
+            end_mm: [40.0, 0.0],
+        },
+        PlanarProfileSegment::CircularArc {
+            start_mm: [40.0, 0.0],
+            end_mm: [50.0, 10.0],
+            center_mm: [40.0, 10.0],
+            clockwise: false,
+        },
+        PlanarProfileSegment::CubicBezier {
+            start_mm: [50.0, 10.0],
+            control_1_mm: [50.0, 20.0],
+            control_2_mm: [0.0, 20.0],
+            end_mm: [0.0, 10.0],
+        },
+        PlanarProfileSegment::Line {
+            start_mm: [0.0, 10.0],
+            end_mm: [0.0, 0.0],
+        },
+    ]);
+
+    for profile in [&cubic, &mixed] {
+        let mut outward = backend.offset_planar_profile(profile, 2.0).unwrap();
+        let inward = backend.offset_planar_profile(profile, -2.0).unwrap();
+        assert_eq!(outward.body.topology.face_count, 1);
+        assert_eq!(outward.body.topology.shell_count, 0);
+        assert_eq!(outward.body.topology.solid_count, 0);
+        assert!(outward.body.topology.faces[0].area_mm2 > inward.body.topology.faces[0].area_mm2);
+        assert!(outward.tolerance_report.shape_valid);
+        assert!(inward.tolerance_report.shape_valid);
+        let reference = capture_planar_offset_reference(&mut outward, "721", "725").unwrap();
+        assert_eq!(
+            reference.stability_class,
+            ketchup_exact::StabilityClass::Guaranteed
+        );
+    }
+
+    assert!(
+        backend.offset_planar_profile(&mixed, -10.0).is_err(),
+        "collapsed mixed cubic offset must fail closed"
+    );
+
+    for profile in [&cubic, &mixed] {
+        let reversed = reverse_planar_loop(profile);
+        let mut shifted = profile.clone();
+        let PlanarProfileLoop::Segments(shifted_segments) = &mut shifted else {
+            unreachable!("fixture is segmented");
+        };
+        shifted_segments.rotate_left(1);
+        let canonical = backend.offset_planar_profile(profile, 2.0).unwrap();
+        for equivalent in [&reversed, &shifted] {
+            let equivalent = backend.offset_planar_profile(equivalent, 2.0).unwrap();
+            assert_eq!(canonical.input_digest, equivalent.input_digest);
+            assert_eq!(
+                canonical.body.result_fingerprint,
+                equivalent.body.result_fingerprint
+            );
+            assert_eq!(
+                canonical.body.topology.bounds_mm,
+                equivalent.body.topology.bounds_mm
+            );
+            assert_close(
+                canonical.body.topology.faces[0].area_mm2,
+                equivalent.body.topology.faces[0].area_mm2,
+            );
+        }
+    }
+
+    let oversized = PlanarProfileLoop::Segments(vec![
+        PlanarProfileSegment::CubicBezier {
+            start_mm: [0.0, 0.0],
+            control_1_mm: [100_000.0, 0.0],
+            control_2_mm: [100_000.0, 1.0],
+            end_mm: [0.0, 1.0],
+        },
+        PlanarProfileSegment::CubicBezier {
+            start_mm: [0.0, 1.0],
+            control_1_mm: [1.0, 1.0],
+            control_2_mm: [1.0, 0.0],
+            end_mm: [0.0, 0.0],
+        },
+    ]);
+    assert_eq!(
+        backend
+            .offset_planar_profile(&oversized, 2.0)
+            .unwrap_err()
+            .code,
+        GeometryErrorCode::InvalidParameter
+    );
+
+    let self_intersecting = PlanarProfileLoop::Segments(vec![
+        PlanarProfileSegment::Line {
+            start_mm: [0.0, 0.0],
+            end_mm: [30.0, 0.0],
+        },
+        PlanarProfileSegment::CubicBezier {
+            start_mm: [30.0, 0.0],
+            control_1_mm: [25.0, 20.0],
+            control_2_mm: [5.0, -30.0],
+            end_mm: [0.0, 20.0],
+        },
+        PlanarProfileSegment::Line {
+            start_mm: [0.0, 20.0],
+            end_mm: [0.0, 0.0],
+        },
+    ]);
+    assert_eq!(
+        backend
+            .offset_planar_profile(&self_intersecting, 2.0)
+            .unwrap_err()
+            .code,
+        GeometryErrorCode::InvalidShape
+    );
+}
+
+#[test]
 fn circular_planar_offset_preserves_signed_radius_and_stable_exact_face() {
     let backend = ExactBackend::new();
     let profile = PlanarProfileLoop::Circle {

@@ -773,6 +773,9 @@ std::unique_ptr<NativeOperationResult> offset_rectangle_native(
   });
 }
 
+TopoDS_Edge cubic_bezier_edge(
+    rust::Slice<const double> segments, std::size_t offset, double z);
+
 std::unique_ptr<NativeOperationResult> offset_planar_profile_native(
     rust::Slice<const double> segments, double distance) noexcept {
   return guarded([&] {
@@ -855,6 +858,20 @@ std::unique_ptr<NativeOperationResult> offset_planar_profile_native(
           return error_result(STATUS_INVALID_SHAPE, "OCCT planar offset arc edge did not complete");
         }
         edge = edge_builder.Edge();
+      } else if (kind == 2.0) {
+        line_only = false;
+        if (segments[offset + 9] != 0.0) {
+          return error_result(STATUS_INVALID_PARAMETER, "Planar offset cubic payload is malformed");
+        }
+        const gp_Pnt control_1(segments[offset + 5], segments[offset + 6], 0.0);
+        const gp_Pnt control_2(segments[offset + 7], segments[offset + 8], 0.0);
+        const double control_polygon_length =
+            start.Distance(control_1) + control_1.Distance(control_2) + control_2.Distance(end);
+        if (!std::isfinite(control_polygon_length) || control_polygon_length < 0.01
+            || control_polygon_length > 100000.0) {
+          return error_result(STATUS_INVALID_PARAMETER, "Planar offset cubic length is invalid");
+        }
+        edge = cubic_bezier_edge(segments, offset, 0.0);
       } else {
         return error_result(STATUS_INVALID_PARAMETER, "Planar offset segment kind is unsupported");
       }
