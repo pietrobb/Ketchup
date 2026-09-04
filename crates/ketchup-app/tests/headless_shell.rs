@@ -9806,6 +9806,7 @@ fn install_general_finish_graph_result(shell: &mut Shell, producer_feature_id: F
             volume_mm3: 120_000.0,
             area_mm2: 0.0,
             topology_counts: [8, 12, 6, 1, 1],
+            wire_count: None,
             bounds_mm: [[0.0, 0.0, 0.0], [100.0, 60.0, 20.0]],
             backend: "headless-finish-backend.v1".into(),
             tolerance: "1e-7-mm".into(),

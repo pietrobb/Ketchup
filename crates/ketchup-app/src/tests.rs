@@ -1803,6 +1803,7 @@ fn install_graph_result(
             volume_mm3: size.x * size.y * size.z,
             area_mm2: 0.0,
             topology_counts: [8, 12, 6, 1, 1],
+            wire_count: None,
             bounds_mm: [
                 [minimum.x, minimum.y, minimum.z],
                 [maximum.x, maximum.y, maximum.z],
@@ -9019,6 +9020,7 @@ fn solid_tool_preview_survives_accepted_exact_bounds_refresh_and_commits_once() 
             volume_mm3: size.x * size.y * size.z,
             area_mm2: 0.0,
             topology_counts: [8, 12, 6, 1, 1],
+            wire_count: None,
             bounds_mm: [
                 [minimum.x, minimum.y, minimum.z],
                 [maximum.x, maximum.y, maximum.z],

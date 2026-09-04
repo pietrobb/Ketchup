@@ -17,7 +17,7 @@ use crate::exact_brep_graph::{
 use crate::exact_product::{
     BodySubshapeRef, EXACT_MIN_LENGTH_MM, ExactFaceRole, ExactFeatureChainRequest,
     ExactReferenceResolution, ExactResultRegistry, MAX_EXACT_PLANAR_OFFSET_LENGTH_MM,
-    accepts_planar_offset_solved_profile, exact_planar_offset_profile,
+    accepts_planar_offset_solved_region, exact_planar_offset_profile,
 };
 use crate::exact_revolve::{ExactRevolveRequest, reference_matches_revolve_request};
 pub use crate::graph::{
@@ -12975,8 +12975,7 @@ fn validate_product(product: &ProductModel) -> Result<(), CanonicalError> {
                             let [region] = regions.as_slice() else {
                                 return false;
                             };
-                            region.holes.is_empty()
-                                && accepts_planar_offset_solved_profile(&region.outer, distance)
+                            accepts_planar_offset_solved_region(region, distance)
                         })
                     }
                     _ => false,

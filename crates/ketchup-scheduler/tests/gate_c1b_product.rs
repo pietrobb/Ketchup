@@ -11,7 +11,7 @@ use ketchup_core::document::{
     Transform,
 };
 use ketchup_core::exact_brep_graph::{
-    EXACT_BREP_GRAPH_SCHEMA_V7, ExactBRepGraph, ExactBRepPlanarSegment,
+    EXACT_BREP_GRAPH_SCHEMA_V8, ExactBRepGraph, ExactBRepPlanarLoop, ExactBRepPlanarSegment,
     MAX_EXACT_BREP_LOFT_CONTROL_POINTS, MAX_EXACT_BREP_SWEEP_PATH_LENGTH_MM,
     MIN_EXACT_BREP_SWEEP_PATH_LENGTH_MM,
 };
@@ -21,12 +21,14 @@ use ketchup_core::exact_product::{
     EXACT_BOX_FINISH_EVALUATOR_V1, EXACT_BOX_SHELL_EVALUATOR_V1, EXACT_CIRCLE_EVALUATOR_V1,
     EXACT_CIRCULAR_CUT_EVALUATOR_V1, EXACT_LINEAR_PROFILE_EVALUATOR_V1, EXACT_LOFT_EVALUATOR_V1,
     EXACT_PLANAR_OFFSET_EVALUATOR_V1, EXACT_POCKET_EVALUATOR_V1, EXACT_SWEEP_EVALUATOR_V1,
-    EXACT_THROUGH_CUT_EVALUATOR_V1, ExactBodyPackage, ExactFaceRole, ExactFeatureChainRequest,
-    ExactLoftRequest, ExactPlanarOffsetRequest, ExactProductError, ExactReferenceQuarantineReason,
+    EXACT_THROUGH_CUT_EVALUATOR_V1, ExactBRepGraphPackage, ExactBRepGraphWorkerEvidence,
+    ExactBodyPackage, ExactFaceRole, ExactFeatureChainRequest, ExactLoftRequest,
+    ExactPlanarOffsetRequest, ExactProductError, ExactReferenceQuarantineReason,
     ExactReferenceResolution, ExactRenderPackage, ExactResultRegistry, ExactSweepRequest,
     PlanarOffsetWorkerEvidence, build_planar_offset_package, canonical_reference_lineage_digest,
     line_arc_d_arc_only_side_overlap,
 };
+use ketchup_core::import::{StepImportMesh, StepMeshTriangle};
 use ketchup_core::sketch::{
     PrincipalPlane, SketchEntity, SketchEntityId, SketchSpec, WorkplaneSpec,
 };
@@ -21567,6 +21569,7 @@ fn scheduler_evaluates_bounded_planar_offset_with_deterministic_exact_lineage() 
                 bounds_mm: package.bounds_mm,
                 area_mm2: package.area_mm2,
                 topology_counts: package.topology_counts,
+                wire_count: None,
                 face_ordinal: 0,
                 lineage_digest: package.reference.lineage_digest,
                 corroborating_geometry_fingerprint: package
@@ -21674,6 +21677,7 @@ fn scheduler_evaluates_circular_planar_offset_with_bounded_worker_evidence() {
             bounds_mm: first.bounds_mm,
             area_mm2: first.area_mm2,
             topology_counts: first.topology_counts,
+            wire_count: None,
             face_ordinal: 0,
             lineage_digest: first.reference.lineage_digest.clone(),
             corroborating_geometry_fingerprint: first
@@ -21817,6 +21821,7 @@ fn scheduler_evaluates_typed_line_arc_planar_offset_with_worker_evidence() {
             bounds_mm: first.bounds_mm,
             area_mm2: first.area_mm2,
             topology_counts: first.topology_counts,
+            wire_count: None,
             face_ordinal: 0,
             lineage_digest: first.reference.lineage_digest.clone(),
             corroborating_geometry_fingerprint: first
@@ -22054,7 +22059,7 @@ fn scheduler_evaluates_signed_mixed_cubic_planar_offset_over_v2() {
 
         let first = supervisor.evaluate_planar_offset(&request).unwrap();
         let graph = ExactBRepGraph::from_snapshot(&snapshot, DEFINITION, OFFSET).unwrap();
-        assert_eq!(graph.schema, EXACT_BREP_GRAPH_SCHEMA_V7);
+        assert_eq!(graph.schema, EXACT_BREP_GRAPH_SCHEMA_V8);
         let graph_result = supervisor.evaluate_exact_brep_graph(&graph).unwrap();
         assert_eq!(
             graph_result.identity.result_fingerprint,
@@ -22087,6 +22092,175 @@ fn scheduler_evaluates_signed_mixed_cubic_planar_offset_over_v2() {
         };
         control_2_bits[0] = 21.0_f64.to_bits();
         assert!(supervisor.evaluate_planar_offset(&forged).is_err());
+    }
+    assert_ne!(fingerprints[0], fingerprints[1]);
+}
+
+#[test]
+fn scheduler_evaluates_compound_planar_offset_over_v3_and_v8() {
+    const DEFINITION: DefinitionId = DefinitionId(718);
+    const WORKPLANE: FeatureId = FeatureId(719);
+    const SKETCH: FeatureId = FeatureId(720);
+    const OFFSET: FeatureId = FeatureId(721);
+
+    let mut supervisor = ExactWorkerSupervisor::spawn(worker_path()).unwrap();
+    let mut fingerprints = Vec::new();
+    for distance_mm in [1.0, -0.25] {
+        let mut document = DocumentStore::new();
+        document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::CreateDefinition {
+                    id: DEFINITION,
+                    name: "Compound mixed offset".to_owned(),
+                },
+                CanonicalCommand::CreateFeature {
+                    id: WORKPLANE,
+                    definition_id: DEFINITION,
+                    name: "XY".to_owned(),
+                    kind: FeatureKind::Workplane(WorkplaneSpec::principal(PrincipalPlane::Xy)),
+                },
+                CanonicalCommand::CreateFeature {
+                    id: SKETCH,
+                    definition_id: DEFINITION,
+                    name: "Line arc cubic region with hole".to_owned(),
+                    kind: FeatureKind::Sketch(SketchSpec {
+                        workplane: WORKPLANE,
+                        entities: vec![
+                            SketchEntity::Line {
+                                id: SketchEntityId(1),
+                                start_mm: [0.0, 0.0],
+                                end_mm: [40.0, 0.0],
+                            },
+                            SketchEntity::Arc {
+                                id: SketchEntityId(2),
+                                start_mm: [40.0, 0.0],
+                                end_mm: [50.0, 10.0],
+                                center_mm: [40.0, 10.0],
+                                clockwise: false,
+                            },
+                            SketchEntity::CubicBezier {
+                                id: SketchEntityId(3),
+                                start_mm: [50.0, 10.0],
+                                control_1_mm: [50.0, 20.0],
+                                control_2_mm: [0.0, 20.0],
+                                end_mm: [0.0, 10.0],
+                            },
+                            SketchEntity::Line {
+                                id: SketchEntityId(4),
+                                start_mm: [0.0, 10.0],
+                                end_mm: [0.0, 0.0],
+                            },
+                            SketchEntity::Circle {
+                                id: SketchEntityId(5),
+                                center_mm: [20.0, 5.0],
+                                radius_mm: 2.0,
+                            },
+                        ],
+                        constraints: Vec::new(),
+                    }),
+                },
+                CanonicalCommand::CreateFeature {
+                    id: OFFSET,
+                    definition_id: DEFINITION,
+                    name: "Signed compound offset".to_owned(),
+                    kind: FeatureKind::PlanarOffset {
+                        profile: SKETCH,
+                        distance: Dimension::new(distance_mm.to_string(), distance_mm).unwrap(),
+                    },
+                },
+            ]))
+            .unwrap();
+        let snapshot = document.current();
+        let request = ExactPlanarOffsetRequest::from_snapshot(&snapshot, DEFINITION).unwrap();
+        let region = request.region_profile().unwrap();
+        assert_eq!(region.holes.len(), 1);
+        assert!(matches!(
+            region.holes[0],
+            ExactBRepPlanarLoop::Circle { .. }
+        ));
+        let ExactBRepPlanarLoop::Boundary { segments } = &region.outer else {
+            panic!("fixture must preserve a mixed outer boundary");
+        };
+        assert!(
+            segments
+                .iter()
+                .any(|segment| matches!(segment, ExactBRepPlanarSegment::CircularArc { .. }))
+        );
+        assert!(
+            segments
+                .iter()
+                .any(|segment| matches!(segment, ExactBRepPlanarSegment::CubicBezier { .. }))
+        );
+
+        let direct = supervisor.evaluate_planar_offset(&request).unwrap();
+        let repeated = supervisor.evaluate_planar_offset(&request).unwrap();
+        assert_eq!(direct, repeated);
+        assert_eq!(direct.topology_counts[0], direct.topology_counts[1]);
+        assert_eq!(direct.topology_counts[2..], [1, 0, 0]);
+        assert_eq!(direct.wire_count, Some(2));
+        assert!(direct.is_current(&snapshot));
+        assert!(direct.reference.matches_planar_offset_request(&request));
+
+        let graph = ExactBRepGraph::from_snapshot(&snapshot, DEFINITION, OFFSET).unwrap();
+        assert_eq!(graph.schema, EXACT_BREP_GRAPH_SCHEMA_V8);
+        let graph_result = supervisor.evaluate_exact_brep_graph(&graph).unwrap();
+        assert_eq!(
+            graph_result.identity.result_fingerprint,
+            direct.identity.result_fingerprint
+        );
+        assert_eq!(graph_result.bounds_mm, direct.bounds_mm);
+        assert_eq!(graph_result.area_mm2, direct.area_mm2);
+        assert_eq!(graph_result.topology_counts, direct.topology_counts);
+        let graph_mesh = StepImportMesh {
+            vertices_mm: graph_result
+                .vertices
+                .iter()
+                .map(|vertex| vertex.position_mm)
+                .collect(),
+            triangles: graph_result
+                .triangles
+                .iter()
+                .zip(&graph_result.triangle_face_ordinals)
+                .map(|(triangle, face_ordinal)| StepMeshTriangle {
+                    vertex_indices: triangle.vertex_indices,
+                    face_ordinal: *face_ordinal,
+                })
+                .collect(),
+        };
+        assert!(matches!(
+            ExactBRepGraphPackage::from_worker_evidence(
+                &graph,
+                ExactBRepGraphWorkerEvidence {
+                    exact_input_digest: graph_result.identity.exact_input_digest.clone(),
+                    result_fingerprint: graph_result.identity.result_fingerprint.clone(),
+                    volume_mm3: graph_result.volume_mm3,
+                    area_mm2: graph_result.area_mm2,
+                    topology_counts: graph_result.topology_counts,
+                    wire_count: Some(1),
+                    bounds_mm: graph_result.bounds_mm,
+                    backend: graph_result.identity.backend.clone(),
+                    tolerance: graph_result.identity.tolerance.clone(),
+                },
+                &graph_mesh,
+            ),
+            Err(ExactProductError::InvalidWorkerEvidence)
+        ));
+
+        let mut omitted_hole = direct.clone();
+        omitted_hole.wire_count = Some(1);
+        assert_eq!(
+            omitted_hole.validate_for_request(&request),
+            Err(ExactProductError::InvalidWorkerEvidence)
+        );
+        let mut forged = request.clone();
+        let ExactBRepPlanarLoop::Circle { radius_bits, .. } =
+            &mut forged.region.as_mut().unwrap().holes[0]
+        else {
+            unreachable!();
+        };
+        *radius_bits = 1.5_f64.to_bits();
+        assert!(supervisor.evaluate_planar_offset(&forged).is_err());
+        fingerprints.push(direct.identity.result_fingerprint);
     }
     assert_ne!(fingerprints[0], fingerprints[1]);
 }

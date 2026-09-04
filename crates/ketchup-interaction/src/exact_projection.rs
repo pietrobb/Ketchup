@@ -888,6 +888,7 @@ mod tests {
                     volume_mm3: 1_000.0,
                     area_mm2: 0.0,
                     topology_counts: [4, 6, 4, 1, 1],
+                    wire_count: None,
                     bounds_mm: [[0.0, 0.0, 0.0], [10.0, 10.0, 10.0]],
                     backend: "occt-generated-headless.v1".into(),
                     tolerance: "1e-7-mm".into(),

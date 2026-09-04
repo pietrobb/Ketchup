@@ -15,8 +15,8 @@ use ketchup_core::document::{
     Transform,
 };
 use ketchup_core::exact_brep_graph::{
-    EXACT_BREP_GRAPH_SCHEMA_V6, EXACT_BREP_GRAPH_SCHEMA_V7, ExactBRepGraph, ExactBRepOperation,
-    ExactBRepPlanarSegment,
+    EXACT_BREP_GRAPH_SCHEMA_V6, EXACT_BREP_GRAPH_SCHEMA_V7, EXACT_BREP_GRAPH_SCHEMA_V8,
+    ExactBRepGraph, ExactBRepOperation, ExactBRepPlanarLoop, ExactBRepPlanarSegment,
 };
 use ketchup_core::exact_product::{
     ExactBRepGraphPackage, ExactBRepGraphWorkerEvidence, ExactBodyPackage, ExactFaceRole,
@@ -435,6 +435,7 @@ pub struct WorkerPlanarOffsetResult {
     pub area_mm2: f64,
     pub bounds_mm: [f64; 6],
     pub topology_counts: [u32; 5],
+    pub wire_count: Option<u32>,
     pub request_digest: String,
     pub exact_input_digest: String,
     pub backend: String,
@@ -492,6 +493,7 @@ pub struct WorkerExactBRepGraphResult {
     pub area_mm2: f64,
     pub bounds_mm: [f64; 6],
     pub topology_counts: [u32; 5],
+    pub wire_count: Option<u32>,
     pub backend: String,
     pub tolerance: String,
 }
@@ -565,6 +567,7 @@ const P6_INTERSECT_CAPABILITY: &str = "P6_INTERSECT_V1";
 const P6_SPLIT_CAPABILITY: &str = "P6_SPLIT_V1";
 const P6_OFFSET_CAPABILITY: &str = "P6_OFFSET_V1";
 const P6_OFFSET_CUBIC_CAPABILITY: &str = "P6_OFFSET_V2";
+const P6_OFFSET_REGION_CAPABILITY: &str = "P6_OFFSET_V3";
 const P6_SWEEP_CAPABILITY: &str = "P6_SWEEP_V1";
 const P6_LOFT_CAPABILITY: &str = "P6_LOFT_V1";
 const P3_CIRCLE_CAPABILITY: &str = "P3_CIRCLE_V1";
@@ -578,6 +581,7 @@ const M14_STEP_CAPABILITY: &str = "M14_STEP_V1";
 const M21_STEP_MODEL_CAPABILITY: &str = "M21_STEP_MODEL_V1";
 const EXACT_BREP_GRAPH_CAPABILITY_V6: &str = "EXACT_BREP_GRAPH_V6";
 const EXACT_BREP_GRAPH_CAPABILITY_V7: &str = "EXACT_BREP_GRAPH_V7";
+const EXACT_BREP_GRAPH_CAPABILITY_V8: &str = "EXACT_BREP_GRAPH_V8";
 pub const MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCES: usize = 64;
 pub const MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCE_BYTES: u64 = 128 * 1024 * 1024;
 const DEFAULT_WORKER_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
@@ -1106,6 +1110,7 @@ impl ExactWorkerClient {
         let capability = match graph.schema.as_str() {
             EXACT_BREP_GRAPH_SCHEMA_V6 => EXACT_BREP_GRAPH_CAPABILITY_V6,
             EXACT_BREP_GRAPH_SCHEMA_V7 => EXACT_BREP_GRAPH_CAPABILITY_V7,
+            EXACT_BREP_GRAPH_SCHEMA_V8 => EXACT_BREP_GRAPH_CAPABILITY_V8,
             schema => {
                 return Err(WorkerError::Protocol(format!(
                     "unsupported graph schema {schema}"
@@ -1135,6 +1140,7 @@ impl ExactWorkerClient {
         let operation = match graph.schema.as_str() {
             EXACT_BREP_GRAPH_SCHEMA_V6 => "EVAL_BREP_GRAPH_V6",
             EXACT_BREP_GRAPH_SCHEMA_V7 => "EVAL_BREP_GRAPH_V7",
+            EXACT_BREP_GRAPH_SCHEMA_V8 => "EVAL_BREP_GRAPH_V8",
             _ => unreachable!("capability validation rejects unsupported graph schemas"),
         };
         let mut request = format!("{operation} {} {}", graph.graph_digest, hex_encode(&bytes));
@@ -1161,6 +1167,7 @@ impl ExactWorkerClient {
         let operation = match graph.schema.as_str() {
             EXACT_BREP_GRAPH_SCHEMA_V6 => "TESSELLATE_BREP_GRAPH_V6",
             EXACT_BREP_GRAPH_SCHEMA_V7 => "TESSELLATE_BREP_GRAPH_V7",
+            EXACT_BREP_GRAPH_SCHEMA_V8 => "TESSELLATE_BREP_GRAPH_V8",
             _ => unreachable!("capability validation rejects unsupported graph schemas"),
         };
         let mut request = format!(
@@ -1257,7 +1264,9 @@ impl ExactWorkerClient {
                 .any(|segment| matches!(segment, ExactBRepPlanarSegment::CubicBezier { .. }))
         });
         self.verify_p6_offset_capability(
-            if cubic_protocol {
+            if request.region_profile().is_some() {
+                P6_OFFSET_REGION_CAPABILITY
+            } else if cubic_protocol {
                 P6_OFFSET_CUBIC_CAPABILITY
             } else {
                 P6_OFFSET_CAPABILITY
@@ -1287,6 +1296,79 @@ impl ExactWorkerClient {
                 circle.radius_bits,
                 request.distance_bits,
             )
+        } else if let Some(region) = request.region_profile() {
+            let mut line = format!(
+                "OFFSET_REGION_P6_V3 {} {} {} {:016x} {}",
+                request.document_id.0,
+                request.offset_feature_id.0,
+                request.canonical_input_digest,
+                request.distance_bits,
+                region.holes.len() + 1,
+            );
+            for planar_loop in std::iter::once(&region.outer).chain(&region.holes) {
+                match planar_loop {
+                    ExactBRepPlanarLoop::Circle {
+                        center_bits,
+                        radius_bits,
+                    } => write!(
+                        line,
+                        " 1 R {:016x} {:016x} {:016x} 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0",
+                        center_bits[0], center_bits[1], radius_bits,
+                    )
+                    .expect("writing to a string cannot fail"),
+                    ExactBRepPlanarLoop::Boundary { segments } => {
+                        write!(line, " {}", segments.len())
+                            .expect("writing to a string cannot fail");
+                        for segment in segments {
+                            match segment {
+                                ExactBRepPlanarSegment::Line {
+                                    start_bits,
+                                    end_bits,
+                                } => write!(
+                                    line,
+                                    " L {:016x} {:016x} {:016x} {:016x} 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0",
+                                    start_bits[0], start_bits[1], end_bits[0], end_bits[1],
+                                ),
+                                ExactBRepPlanarSegment::CircularArc {
+                                    start_bits,
+                                    end_bits,
+                                    center_bits,
+                                    clockwise,
+                                } => write!(
+                                    line,
+                                    " A {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} 0000000000000000 0000000000000000 {}",
+                                    start_bits[0],
+                                    start_bits[1],
+                                    end_bits[0],
+                                    end_bits[1],
+                                    center_bits[0],
+                                    center_bits[1],
+                                    u8::from(*clockwise),
+                                ),
+                                ExactBRepPlanarSegment::CubicBezier {
+                                    start_bits,
+                                    control_1_bits,
+                                    control_2_bits,
+                                    end_bits,
+                                } => write!(
+                                    line,
+                                    " C {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} 0",
+                                    start_bits[0],
+                                    start_bits[1],
+                                    end_bits[0],
+                                    end_bits[1],
+                                    control_1_bits[0],
+                                    control_1_bits[1],
+                                    control_2_bits[0],
+                                    control_2_bits[1],
+                                ),
+                            }
+                            .expect("writing to a string cannot fail");
+                        }
+                    }
+                }
+            }
+            line
         } else {
             let profile = request
                 .mixed_profile()
@@ -2796,6 +2878,7 @@ impl ExactWorkerSupervisor {
                 ],
                 area_mm2: result.area_mm2,
                 topology_counts: result.topology_counts,
+                wire_count: result.wire_count,
                 face_ordinal: result.face.ordinal,
                 lineage_digest: result.face.lineage_digest,
                 corroborating_geometry_fingerprint: result.face.geometric_fingerprint,
@@ -3069,6 +3152,7 @@ impl ExactWorkerSupervisor {
                     ],
                     result.area_mm2,
                     result.topology_counts,
+                    result.wire_count,
                 )
         } else {
             result.volume_mm3.is_finite()
@@ -3124,6 +3208,7 @@ impl ExactWorkerSupervisor {
                 volume_mm3: result.volume_mm3,
                 area_mm2: result.area_mm2,
                 topology_counts: result.topology_counts,
+                wire_count: result.wire_count,
                 bounds_mm: [
                     [
                         result.bounds_mm[0],
@@ -5758,9 +5843,12 @@ fn parse_exact_brep_graph_result(
     if matches!(fields.first(), Some(&"ERR") | Some(&"ERR_DETAIL")) {
         return Err(parse_error_response(response, &fields));
     }
-    if fields.len() != 21
-        || fields[0] != "OK_BREP_GRAPH_V6"
-        || !is_sha256_digest(fields[1])
+    let (wire_count_index, topology_offset) = match (fields.first().copied(), fields.len()) {
+        (Some("OK_BREP_GRAPH_V6"), 21) => (None, 0),
+        (Some("OK_BREP_GRAPH_V8"), 22) => (Some(16), 1),
+        _ => return Err(WorkerError::Protocol(response.to_owned())),
+    };
+    if !is_sha256_digest(fields[1])
         || !is_sha256_digest(fields[2])
         || !is_fnv1a64_digest(fields[4])
         || !is_fnv1a64_digest(fields[5])
@@ -5798,13 +5886,14 @@ fn parse_exact_brep_graph_result(
         topology_counts: [
             parse_u32(14)?,
             parse_u32(15)?,
-            parse_u32(16)?,
-            parse_u32(17)?,
-            parse_u32(18)?,
+            parse_u32(16 + topology_offset)?,
+            parse_u32(17 + topology_offset)?,
+            parse_u32(18 + topology_offset)?,
         ],
-        backend: hex_decode_utf8(fields[19])
+        wire_count: wire_count_index.map(parse_u32).transpose()?,
+        backend: hex_decode_utf8(fields[19 + topology_offset])
             .ok_or_else(|| WorkerError::Protocol(response.to_owned()))?,
-        tolerance: hex_decode_utf8(fields[20])
+        tolerance: hex_decode_utf8(fields[20 + topology_offset])
             .ok_or_else(|| WorkerError::Protocol(response.to_owned()))?,
     })
 }
@@ -5940,16 +6029,24 @@ fn parse_p6_offset_result(response: &str) -> Result<WorkerPlanarOffsetResult, Wo
     if fields.first() == Some(&"ERR") {
         return Err(parse_error_response(response, &fields));
     }
-    if fields.len() != 22
-        || fields[0] != "OK_P6_OFFSET_V1"
-        || fields[1].parse::<u128>().is_err()
+    let (wire_count_index, topology_offset) = match (fields.first().copied(), fields.len()) {
+        (Some("OK_P6_OFFSET_V1"), 22) => (None, 0),
+        (Some("OK_P6_OFFSET_V3"), 23) => (Some(12), 1),
+        _ => return Err(WorkerError::Protocol(response.to_owned())),
+    };
+    let request_digest_index = 15 + topology_offset;
+    let exact_input_digest_index = 16 + topology_offset;
+    let backend_index = 17 + topology_offset;
+    let tolerance_index = 18 + topology_offset;
+    let face_index = 19 + topology_offset;
+    if fields[1].parse::<u128>().is_err()
         || !is_fnv1a64_digest(fields[2])
-        || !is_sha256_digest(fields[15])
-        || !is_fnv1a64_digest(fields[16])
-        || fields[17].is_empty()
-        || fields[18].is_empty()
-        || !is_fnv1a64_digest(fields[20])
-        || !is_fnv1a64_digest(fields[21])
+        || !is_sha256_digest(fields[request_digest_index])
+        || !is_fnv1a64_digest(fields[exact_input_digest_index])
+        || fields[backend_index].is_empty()
+        || fields[tolerance_index].is_empty()
+        || !is_fnv1a64_digest(fields[face_index + 1])
+        || !is_fnv1a64_digest(fields[face_index + 2])
     {
         return Err(WorkerError::Protocol(response.to_owned()));
     }
@@ -5982,18 +6079,19 @@ fn parse_p6_offset_result(response: &str) -> Result<WorkerPlanarOffsetResult, Wo
         topology_counts: [
             parse_u32(10)?,
             parse_u32(11)?,
-            parse_u32(12)?,
-            parse_u32(13)?,
-            parse_u32(14)?,
+            parse_u32(12 + topology_offset)?,
+            parse_u32(13 + topology_offset)?,
+            parse_u32(14 + topology_offset)?,
         ],
-        request_digest: fields[15].to_owned(),
-        exact_input_digest: fields[16].to_owned(),
-        backend: fields[17].to_owned(),
-        tolerance: fields[18].to_owned(),
+        wire_count: wire_count_index.map(parse_u32).transpose()?,
+        request_digest: fields[request_digest_index].to_owned(),
+        exact_input_digest: fields[exact_input_digest_index].to_owned(),
+        backend: fields[backend_index].to_owned(),
+        tolerance: fields[tolerance_index].to_owned(),
         face: WorkerFaceEvidence {
-            ordinal: parse_u32(19)?,
-            geometric_fingerprint: fields[20].to_owned(),
-            lineage_digest: fields[21].to_owned(),
+            ordinal: parse_u32(face_index)?,
+            geometric_fingerprint: fields[face_index + 1].to_owned(),
+            lineage_digest: fields[face_index + 2].to_owned(),
         },
     })
 }

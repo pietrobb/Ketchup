@@ -14,7 +14,8 @@ use ketchup_core::document::{
     UnresolvedMappingReason, WorldEntityPath,
 };
 use ketchup_core::exact_brep_graph::{
-    ExactBRepBooleanOperation, ExactBRepGraph, ExactBRepOperation, ExactBRepPlanarSegment,
+    ExactBRepBooleanOperation, ExactBRepGraph, ExactBRepOperation, ExactBRepPlanarLoop,
+    ExactBRepPlanarSegment,
 };
 use ketchup_core::exact_product::{
     EXACT_CIRCLE_EVALUATOR_V1, ExactFeatureChainRequest, ExactPlanarOffsetRequest,
@@ -3576,6 +3577,248 @@ fn cubic_planar_offset_request_is_persistent_undoable_and_forgery_resistant() {
         ExactPlanarOffsetRequest::from_snapshot(&reopened.snapshot(), DEFINITION).unwrap(),
         inward_request
     );
+}
+
+#[test]
+fn compound_planar_offset_request_is_persistent_undoable_and_forgery_resistant() {
+    const DEFINITION: DefinitionId = DefinitionId(714);
+    const WORKPLANE: FeatureId = FeatureId(715);
+    const SKETCH: FeatureId = FeatureId(716);
+    const OFFSET: FeatureId = FeatureId(717);
+
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DEFINITION,
+                name: "Compound planar offset".to_owned(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: WORKPLANE,
+                definition_id: DEFINITION,
+                name: "XY".to_owned(),
+                kind: FeatureKind::Workplane(WorkplaneSpec::principal(PrincipalPlane::Xy)),
+            },
+            CanonicalCommand::CreateFeature {
+                id: SKETCH,
+                definition_id: DEFINITION,
+                name: "Line-cubic region with hole".to_owned(),
+                kind: FeatureKind::Sketch(SketchSpec {
+                    workplane: WORKPLANE,
+                    entities: vec![
+                        SketchEntity::Line {
+                            id: SketchEntityId(1),
+                            start_mm: [-20.0, -15.0],
+                            end_mm: [20.0, -15.0],
+                        },
+                        SketchEntity::Line {
+                            id: SketchEntityId(2),
+                            start_mm: [20.0, -15.0],
+                            end_mm: [20.0, 15.0],
+                        },
+                        SketchEntity::CubicBezier {
+                            id: SketchEntityId(3),
+                            start_mm: [20.0, 15.0],
+                            control_1_mm: [10.0, 25.0],
+                            control_2_mm: [-10.0, 25.0],
+                            end_mm: [-20.0, 15.0],
+                        },
+                        SketchEntity::Line {
+                            id: SketchEntityId(4),
+                            start_mm: [-20.0, 15.0],
+                            end_mm: [-20.0, -15.0],
+                        },
+                        SketchEntity::Circle {
+                            id: SketchEntityId(5),
+                            center_mm: [0.0, 0.0],
+                            radius_mm: 5.0,
+                        },
+                    ],
+                    constraints: Vec::new(),
+                }),
+            },
+            CanonicalCommand::CreateFeature {
+                id: OFFSET,
+                definition_id: DEFINITION,
+                name: "Compound offset".to_owned(),
+                kind: FeatureKind::PlanarOffset {
+                    profile: SKETCH,
+                    distance: Dimension::new("2.000", 2.0).unwrap(),
+                },
+            },
+        ]))
+        .unwrap();
+
+    let outward = document.current().canonical_digest();
+    let outward_request =
+        ExactPlanarOffsetRequest::from_snapshot(&document.current(), DEFINITION).unwrap();
+    assert!(outward_request.has_valid_basic_inputs());
+    assert_eq!(
+        outward_request.source_bounds_mm(),
+        [-20.0, -15.0, 20.0, 22.5]
+    );
+    let region = outward_request.region_profile().unwrap();
+    assert!(matches!(
+        &region.outer,
+        ExactBRepPlanarLoop::Boundary { segments }
+            if segments.iter().any(|segment| matches!(
+                segment,
+                ExactBRepPlanarSegment::CubicBezier { .. }
+            ))
+    ));
+    assert!(matches!(
+        region.holes.as_slice(),
+        [ExactBRepPlanarLoop::Circle {
+            center_bits,
+            radius_bits,
+        }] if center_bits.map(f64::from_bits) == [0.0, 0.0]
+            && f64::from_bits(*radius_bits) == 5.0
+    ));
+
+    let mut forged = outward_request.clone();
+    let ExactBRepPlanarLoop::Circle { radius_bits, .. } =
+        &mut forged.region.as_mut().unwrap().holes[0]
+    else {
+        panic!("fixture must preserve its circular hole");
+    };
+    *radius_bits = 4.0_f64.to_bits();
+    assert!(!forged.has_valid_basic_inputs());
+
+    let undo_steps = document.visible_undo_steps();
+    assert_eq!(
+        document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::SetFeatureDimension {
+                    id: OFFSET,
+                    dimension: Dimension::new("5", 5.0).unwrap(),
+                },
+            ]))
+            .err()
+            .expect("collapsed hole must fail closed"),
+        CanonicalError::InvalidPlanarOffset
+    );
+    assert_eq!(document.current().canonical_digest(), outward);
+    assert_eq!(document.visible_undo_steps(), undo_steps);
+
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetFeatureDimension {
+                id: OFFSET,
+                dimension: Dimension::new("-2", -2.0).unwrap(),
+            },
+        ]))
+        .unwrap();
+    let inward = document.current().canonical_digest();
+    let inward_request =
+        ExactPlanarOffsetRequest::from_snapshot(&document.current(), DEFINITION).unwrap();
+    assert_ne!(inward, outward);
+    assert_ne!(
+        inward_request.canonical_input_digest,
+        outward_request.canonical_input_digest
+    );
+    assert_eq!(document.undo().unwrap().canonical_digest(), outward);
+    assert_eq!(document.redo().unwrap().canonical_digest(), inward);
+
+    let bytes = persistence::save(&document.current());
+    let reopened = persistence::load(&bytes).unwrap();
+    assert_eq!(reopened.source_schema(), persistence::CURRENT_SCHEMA);
+    assert!(reopened.migration_losses().is_empty());
+    assert_eq!(reopened.snapshot().canonical_digest(), inward);
+    assert_eq!(persistence::save(&reopened.snapshot()), bytes);
+    assert_eq!(
+        ExactPlanarOffsetRequest::from_snapshot(&reopened.snapshot(), DEFINITION).unwrap(),
+        inward_request
+    );
+}
+
+#[test]
+fn compound_planar_offset_rejects_inter_loop_collision_before_history() {
+    const DEFINITION: DefinitionId = DefinitionId(718);
+    const WORKPLANE: FeatureId = FeatureId(719);
+    const SKETCH: FeatureId = FeatureId(720);
+    const OFFSET: FeatureId = FeatureId(721);
+
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DEFINITION,
+                name: "Close-hole compound offset".to_owned(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: WORKPLANE,
+                definition_id: DEFINITION,
+                name: "XY".to_owned(),
+                kind: FeatureKind::Workplane(WorkplaneSpec::principal(PrincipalPlane::Xy)),
+            },
+            CanonicalCommand::CreateFeature {
+                id: SKETCH,
+                definition_id: DEFINITION,
+                name: "Region with close holes".to_owned(),
+                kind: FeatureKind::Sketch(SketchSpec {
+                    workplane: WORKPLANE,
+                    entities: vec![
+                        SketchEntity::Line {
+                            id: SketchEntityId(1),
+                            start_mm: [-20.0, -20.0],
+                            end_mm: [20.0, -20.0],
+                        },
+                        SketchEntity::Line {
+                            id: SketchEntityId(2),
+                            start_mm: [20.0, -20.0],
+                            end_mm: [20.0, 20.0],
+                        },
+                        SketchEntity::Line {
+                            id: SketchEntityId(3),
+                            start_mm: [20.0, 20.0],
+                            end_mm: [-20.0, 20.0],
+                        },
+                        SketchEntity::Line {
+                            id: SketchEntityId(4),
+                            start_mm: [-20.0, 20.0],
+                            end_mm: [-20.0, -20.0],
+                        },
+                        SketchEntity::Circle {
+                            id: SketchEntityId(5),
+                            center_mm: [-3.0, 0.0],
+                            radius_mm: 2.0,
+                        },
+                        SketchEntity::Circle {
+                            id: SketchEntityId(6),
+                            center_mm: [3.0, 0.0],
+                            radius_mm: 2.0,
+                        },
+                    ],
+                    constraints: Vec::new(),
+                }),
+            },
+            CanonicalCommand::CreateFeature {
+                id: OFFSET,
+                definition_id: DEFINITION,
+                name: "Safe outward material offset".to_owned(),
+                kind: FeatureKind::PlanarOffset {
+                    profile: SKETCH,
+                    distance: Dimension::new("1", 1.0).unwrap(),
+                },
+            },
+        ]))
+        .unwrap();
+
+    let before = document.current().canonical_digest();
+    let undo_steps = document.visible_undo_steps();
+    assert_eq!(
+        document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::SetFeatureDimension {
+                    id: OFFSET,
+                    dimension: Dimension::new("-1", -1.0).unwrap(),
+                },
+            ]))
+            .err(),
+        Some(CanonicalError::InvalidPlanarOffset)
+    );
+    assert_eq!(document.current().canonical_digest(), before);
+    assert_eq!(document.visible_undo_steps(), undo_steps);
 }
 
 #[test]

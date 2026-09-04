@@ -4,7 +4,7 @@ use ketchup_core::document::{
     SolidToolPlan, Transform,
 };
 use ketchup_core::exact_brep_graph::{
-    EXACT_BREP_GRAPH_SCHEMA_V7, ExactBRepGraph, ExactBRepGraphError, ExactBRepOperation,
+    EXACT_BREP_GRAPH_SCHEMA_V8, ExactBRepGraph, ExactBRepGraphError, ExactBRepOperation,
     ExactBRepPlanarGeometry, ExactBRepPlanarLoop, ExactBRepPlanarSegment,
     MAX_EXACT_BREP_GRAPH_PROFILES,
 };
@@ -963,6 +963,7 @@ fn worker_transforms_a_circle_pad_from_its_arbitrary_workplane_frame() {
                     volume_mm3: result.volume_mm3,
                     area_mm2: invalid_area,
                     topology_counts: result.topology_counts,
+                    wire_count: None,
                     bounds_mm: result.bounds_mm,
                     backend: result.identity.backend.clone(),
                     tolerance: result.identity.tolerance.clone(),
@@ -1836,6 +1837,7 @@ fn worker_evaluates_planar_offset_face_through_exact_brep_graph() {
         volume_mm3: package.volume_mm3,
         area_mm2,
         topology_counts: package.topology_counts,
+        wire_count: None,
         bounds_mm: package.bounds_mm,
         backend: package.identity.backend.clone(),
         tolerance: package.identity.tolerance.clone(),
@@ -1927,7 +1929,7 @@ fn worker_evaluates_signed_circle_offset_through_exact_brep_graph_v6() {
             .unwrap();
         let snapshot = document.current();
         let graph = ExactBRepGraph::from_snapshot(&snapshot, DEFINITION, OFFSET).unwrap();
-        assert_eq!(graph.schema, EXACT_BREP_GRAPH_SCHEMA_V7);
+        assert_eq!(graph.schema, EXACT_BREP_GRAPH_SCHEMA_V8);
         assert_eq!(graph.profiles.len(), 1);
         assert!(matches!(
             graph.profiles[0].geometry,
@@ -1989,6 +1991,7 @@ fn worker_evaluates_signed_circle_offset_through_exact_brep_graph_v6() {
             volume_mm3: package.volume_mm3,
             area_mm2: package.area_mm2,
             topology_counts: package.topology_counts,
+            wire_count: None,
             bounds_mm: package.bounds_mm,
             backend: package.identity.backend.clone(),
             tolerance: package.identity.tolerance.clone(),
@@ -2087,7 +2090,7 @@ fn worker_preserves_large_bounded_rectangle_offset_through_graph_v6() {
         .unwrap();
     let snapshot = document.current();
     let graph = ExactBRepGraph::from_snapshot(&snapshot, definition, offset).unwrap();
-    assert_eq!(graph.schema, EXACT_BREP_GRAPH_SCHEMA_V7);
+    assert_eq!(graph.schema, EXACT_BREP_GRAPH_SCHEMA_V8);
     let graph_bounds = graph.producer_bounds_mm().unwrap().unwrap();
     assert!(graph_bounds[0][0] <= -distance_mm);
     assert!(graph_bounds[0][1] <= -distance_mm);

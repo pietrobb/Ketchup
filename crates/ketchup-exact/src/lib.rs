@@ -28,6 +28,7 @@ mod ffi {
     struct NativeTopologySummary {
         vertex_count: u32,
         edge_count: u32,
+        wire_count: u32,
         face_count: u32,
         shell_count: u32,
         solid_count: u32,
@@ -848,6 +849,7 @@ pub struct EdgeEvidence {
 pub struct TopologyEvidence {
     pub vertex_count: u32,
     pub edge_count: u32,
+    pub wire_count: u32,
     pub face_count: u32,
     pub shell_count: u32,
     pub solid_count: u32,
@@ -2840,6 +2842,7 @@ fn collect_output(
     let topology = TopologyEvidence {
         vertex_count: summary.vertex_count,
         edge_count: summary.edge_count,
+        wire_count: summary.wire_count,
         face_count: summary.face_count,
         shell_count: summary.shell_count,
         solid_count: summary.solid_count,

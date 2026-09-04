@@ -9,8 +9,9 @@ use crate::document::{
     MeshAuthority, MeshBodySpec, ProfileSegment, Snapshot, Transform,
 };
 use crate::exact_brep_graph::{
-    ExactBRepGraph, ExactBRepPlanarSegment, MAX_EXACT_BREP_COORDINATE_MM,
-    MAX_EXACT_BREP_LOFT_CONTROL_POINTS, MAX_EXACT_BREP_SWEEP_PATH_LENGTH_MM,
+    ExactBRepGraph, ExactBRepPlanarLoop, ExactBRepPlanarSegment, MAX_EXACT_BREP_COORDINATE_MM,
+    MAX_EXACT_BREP_LOFT_CONTROL_POINTS, MAX_EXACT_BREP_REGION_HOLES,
+    MAX_EXACT_BREP_REGION_SEGMENTS, MAX_EXACT_BREP_SWEEP_PATH_LENGTH_MM,
     MIN_EXACT_BREP_SWEEP_PATH_LENGTH_MM,
 };
 use crate::graph::DerivedIdentity;
@@ -718,6 +719,7 @@ pub struct ExactBRepGraphWorkerEvidence {
     pub volume_mm3: f64,
     pub area_mm2: f64,
     pub topology_counts: [u32; 5],
+    pub wire_count: Option<u32>,
     pub bounds_mm: [[f64; 3]; 2],
     pub backend: String,
     pub tolerance: String,
@@ -740,6 +742,7 @@ impl ExactBRepGraphPackage {
                     evidence.bounds_mm,
                     evidence.area_mm2,
                     evidence.topology_counts,
+                    evidence.wire_count,
                 )
         } else {
             evidence.volume_mm3.is_finite()
@@ -5420,6 +5423,771 @@ fn exact_planar_offset_profile_from_solved(
     exact_planar_offset_profile_from_segments(segments)
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExactPlanarOffsetRegion {
+    pub outer: ExactBRepPlanarLoop,
+    pub holes: Vec<ExactBRepPlanarLoop>,
+}
+
+impl ExactPlanarOffsetRegion {
+    fn from_solved(region: &SolvedSketchRegion) -> Option<Self> {
+        if region.holes.is_empty() || region.holes.len() > MAX_EXACT_BREP_REGION_HOLES {
+            return None;
+        }
+        let outer = exact_planar_offset_loop_from_solved(&region.outer)?;
+        let holes = region
+            .holes
+            .iter()
+            .map(exact_planar_offset_loop_from_solved)
+            .collect::<Option<Vec<_>>>()?;
+        let segment_count = std::iter::once(&outer)
+            .chain(&holes)
+            .map(planar_offset_loop_segment_count)
+            .sum::<usize>();
+        (segment_count <= MAX_EXACT_BREP_REGION_SEGMENTS).then_some(Self { outer, holes })
+    }
+
+    pub(crate) fn has_valid_encoding(&self, distance_mm: f64) -> bool {
+        !self.holes.is_empty()
+            && self.holes.len() <= MAX_EXACT_BREP_REGION_HOLES
+            && std::iter::once(&self.outer)
+                .chain(&self.holes)
+                .map(planar_offset_loop_segment_count)
+                .sum::<usize>()
+                <= MAX_EXACT_BREP_REGION_SEGMENTS
+            && planar_offset_loop_is_valid(&self.outer, distance_mm)
+            && self
+                .holes
+                .iter()
+                .all(|hole| planar_offset_loop_is_valid(hole, -distance_mm))
+            && self.has_valid_inter_loop_clearance(distance_mm)
+    }
+
+    fn has_valid_inter_loop_clearance(&self, distance_mm: f64) -> bool {
+        let loops = std::iter::once(&self.outer)
+            .chain(&self.holes)
+            .collect::<Vec<_>>();
+        let Some(curves) = loops
+            .iter()
+            .map(|planar_loop| planar_offset_loop_clearance_curves(planar_loop))
+            .collect::<Option<Vec<_>>>()
+        else {
+            return false;
+        };
+        if curves.iter().map(Vec::len).sum::<usize>() > MAX_PLANAR_OFFSET_CLEARANCE_CURVES {
+            return false;
+        }
+        let displacements = if distance_mm < 0.0 {
+            let Some(displacements) = loops
+                .iter()
+                .enumerate()
+                .map(|(index, planar_loop)| {
+                    planar_offset_loop_displacement_mm(
+                        planar_loop,
+                        if index == 0 {
+                            distance_mm
+                        } else {
+                            -distance_mm
+                        },
+                    )
+                })
+                .collect::<Option<Vec<_>>>()
+            else {
+                return false;
+            };
+            displacements
+        } else {
+            vec![0.0; loops.len()]
+        };
+        let mut comparison_count = 0_usize;
+        for right in 1..loops.len() {
+            let right_point = planar_offset_clearance_curve_start(curves[right][0]);
+            if !point_in_planar_offset_clearance_curves(right_point, &curves[0]) {
+                return false;
+            }
+            for left in 0..right {
+                let Some(pair_count) = curves[left].len().checked_mul(curves[right].len()) else {
+                    return false;
+                };
+                let Some(next_count) = comparison_count.checked_add(pair_count) else {
+                    return false;
+                };
+                if next_count > MAX_PLANAR_OFFSET_CLEARANCE_COMPARISONS {
+                    return false;
+                }
+                comparison_count = next_count;
+                let Some(clearance) =
+                    planar_offset_clearance_curves_mm(&curves[left], &curves[right])
+                else {
+                    return false;
+                };
+                if clearance <= PLANAR_OFFSET_CLEARANCE_TOLERANCE_MM
+                    || (distance_mm < 0.0
+                        && clearance <= displacements[left] + displacements[right])
+                {
+                    return false;
+                }
+                if left > 0 {
+                    let left_point = planar_offset_clearance_curve_start(curves[left][0]);
+                    if point_in_planar_offset_clearance_curves(right_point, &curves[left])
+                        || point_in_planar_offset_clearance_curves(left_point, &curves[right])
+                    {
+                        return false;
+                    }
+                }
+            }
+        }
+        true
+    }
+
+    fn source_bounds_bits(&self) -> Option<[u64; 4]> {
+        planar_offset_loop_bounds_bits(&self.outer)
+    }
+
+    fn max_outer_displacement_mm(&self, distance_mm: f64) -> Option<f64> {
+        match &self.outer {
+            ExactBRepPlanarLoop::Boundary { segments } => {
+                exact_planar_offset_profile_from_segments(segments.clone())?
+                    .max_planar_offset_displacement_mm(distance_mm)
+            }
+            ExactBRepPlanarLoop::Circle { .. } => Some(distance_mm.abs()),
+        }
+    }
+
+    fn source_area_bits(&self) -> Option<u64> {
+        let outer_area = planar_offset_loop_area_mm2(&self.outer)?;
+        let hole_area = self.holes.iter().try_fold(0.0, |area, hole| {
+            Some(area + planar_offset_loop_area_mm2(hole)?)
+        })?;
+        let area = outer_area - hole_area;
+        (area.is_finite() && area > 0.0).then(|| area.to_bits())
+    }
+}
+
+impl PlanarOffsetEvidence for ExactPlanarOffsetRegion {
+    fn bounds_bits(&self) -> [u64; 4] {
+        self.source_bounds_bits().unwrap_or([f64::NAN.to_bits(); 4])
+    }
+
+    fn area_bits(&self) -> u64 {
+        self.source_area_bits().unwrap_or(f64::NAN.to_bits())
+    }
+
+    fn max_displacement_mm(&self, distance_mm: f64) -> Option<f64> {
+        self.max_outer_displacement_mm(distance_mm)
+    }
+}
+
+fn exact_planar_offset_loop_from_solved(
+    profile: &SolvedSketchRegionProfile,
+) -> Option<ExactBRepPlanarLoop> {
+    match profile {
+        SolvedSketchRegionProfile::Circle {
+            center_mm,
+            radius_mm,
+        } => Some(ExactBRepPlanarLoop::Circle {
+            center_bits: center_mm.map(f64::to_bits),
+            radius_bits: radius_mm.to_bits(),
+        }),
+        profile => Some(ExactBRepPlanarLoop::Boundary {
+            segments: exact_planar_offset_profile_from_solved(profile)?.segments,
+        }),
+    }
+}
+
+fn planar_offset_loop_segment_count(planar_loop: &ExactBRepPlanarLoop) -> usize {
+    match planar_loop {
+        ExactBRepPlanarLoop::Boundary { segments } => segments.len(),
+        ExactBRepPlanarLoop::Circle { .. } => 1,
+    }
+}
+
+fn planar_offset_loop_bounds_bits(planar_loop: &ExactBRepPlanarLoop) -> Option<[u64; 4]> {
+    match planar_loop {
+        ExactBRepPlanarLoop::Boundary { segments } => {
+            Some(exact_planar_offset_profile_from_segments(segments.clone())?.bounds_bits)
+        }
+        ExactBRepPlanarLoop::Circle {
+            center_bits,
+            radius_bits,
+        } => {
+            let center = center_bits.map(f64::from_bits);
+            let radius = f64::from_bits(*radius_bits);
+            Some(
+                [
+                    center[0] - radius,
+                    center[1] - radius,
+                    center[0] + radius,
+                    center[1] + radius,
+                ]
+                .map(f64::to_bits),
+            )
+        }
+    }
+}
+
+fn planar_offset_loop_area_mm2(planar_loop: &ExactBRepPlanarLoop) -> Option<f64> {
+    match planar_loop {
+        ExactBRepPlanarLoop::Boundary { segments } => Some(f64::from_bits(
+            exact_planar_offset_profile_from_segments(segments.clone())?.area_bits,
+        )),
+        ExactBRepPlanarLoop::Circle { radius_bits, .. } => {
+            let radius = f64::from_bits(*radius_bits);
+            Some(std::f64::consts::PI * radius * radius)
+        }
+    }
+}
+
+const PLANAR_OFFSET_CLEARANCE_TOLERANCE_MM: f64 = 1.0e-6;
+const MAX_PLANAR_OFFSET_CLEARANCE_CURVES: usize = 16_384;
+const MAX_PLANAR_OFFSET_CLEARANCE_COMPARISONS: usize = 16_777_216;
+
+#[derive(Clone, Copy)]
+enum PlanarOffsetClearanceCurve {
+    Line {
+        start: [f64; 2],
+        end: [f64; 2],
+    },
+    Arc {
+        start: [f64; 2],
+        end: [f64; 2],
+        center: [f64; 2],
+        clockwise: bool,
+    },
+}
+
+fn planar_offset_loop_displacement_mm(
+    planar_loop: &ExactBRepPlanarLoop,
+    distance_mm: f64,
+) -> Option<f64> {
+    match planar_loop {
+        ExactBRepPlanarLoop::Boundary { segments } => {
+            exact_planar_offset_profile_from_segments(segments.clone())?
+                .max_planar_offset_displacement_mm(distance_mm)
+        }
+        ExactBRepPlanarLoop::Circle { .. } => Some(distance_mm.abs()),
+    }
+}
+
+fn planar_offset_loop_clearance_curves(
+    planar_loop: &ExactBRepPlanarLoop,
+) -> Option<Vec<PlanarOffsetClearanceCurve>> {
+    let mut curves = Vec::new();
+    match planar_loop {
+        ExactBRepPlanarLoop::Circle {
+            center_bits,
+            radius_bits,
+        } => {
+            let center = center_bits.map(f64::from_bits);
+            let radius = f64::from_bits(*radius_bits);
+            let right = [center[0] + radius, center[1]];
+            let left = [center[0] - radius, center[1]];
+            curves.extend([
+                PlanarOffsetClearanceCurve::Arc {
+                    start: right,
+                    end: left,
+                    center,
+                    clockwise: false,
+                },
+                PlanarOffsetClearanceCurve::Arc {
+                    start: left,
+                    end: right,
+                    center,
+                    clockwise: false,
+                },
+            ]);
+        }
+        ExactBRepPlanarLoop::Boundary { segments } => {
+            for segment in segments {
+                match segment {
+                    ExactBRepPlanarSegment::Line {
+                        start_bits,
+                        end_bits,
+                    } => curves.push(PlanarOffsetClearanceCurve::Line {
+                        start: start_bits.map(f64::from_bits),
+                        end: end_bits.map(f64::from_bits),
+                    }),
+                    ExactBRepPlanarSegment::CircularArc {
+                        start_bits,
+                        end_bits,
+                        center_bits,
+                        clockwise,
+                    } => curves.push(PlanarOffsetClearanceCurve::Arc {
+                        start: start_bits.map(f64::from_bits),
+                        end: end_bits.map(f64::from_bits),
+                        center: center_bits.map(f64::from_bits),
+                        clockwise: *clockwise,
+                    }),
+                    ExactBRepPlanarSegment::CubicBezier {
+                        start_bits,
+                        control_1_bits,
+                        control_2_bits,
+                        end_bits,
+                    } => {
+                        let mut stack = vec![(
+                            [
+                                start_bits.map(f64::from_bits),
+                                control_1_bits.map(f64::from_bits),
+                                control_2_bits.map(f64::from_bits),
+                                end_bits.map(f64::from_bits),
+                            ],
+                            0_u8,
+                        )];
+                        while let Some((cubic, depth)) = stack.pop() {
+                            let flatness = point_to_segment_distance(cubic[1], cubic[0], cubic[3])
+                                .max(point_to_segment_distance(cubic[2], cubic[0], cubic[3]));
+                            if flatness <= PLANAR_OFFSET_CLEARANCE_TOLERANCE_MM {
+                                curves.push(PlanarOffsetClearanceCurve::Line {
+                                    start: cubic[0],
+                                    end: cubic[3],
+                                });
+                                if curves.len() > MAX_PLANAR_OFFSET_CLEARANCE_CURVES {
+                                    return None;
+                                }
+                                continue;
+                            }
+                            if depth >= 16
+                                || curves.len() + stack.len() >= MAX_PLANAR_OFFSET_CLEARANCE_CURVES
+                            {
+                                return None;
+                            }
+                            let midpoint = |left: [f64; 2], right: [f64; 2]| {
+                                [(left[0] + right[0]) * 0.5, (left[1] + right[1]) * 0.5]
+                            };
+                            let p01 = midpoint(cubic[0], cubic[1]);
+                            let p12 = midpoint(cubic[1], cubic[2]);
+                            let p23 = midpoint(cubic[2], cubic[3]);
+                            let p012 = midpoint(p01, p12);
+                            let p123 = midpoint(p12, p23);
+                            let split = midpoint(p012, p123);
+                            stack.push(([split, p123, p23, cubic[3]], depth + 1));
+                            stack.push(([cubic[0], p01, p012, split], depth + 1));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Some(curves)
+}
+
+fn planar_offset_clearance_curve_start(curve: PlanarOffsetClearanceCurve) -> [f64; 2] {
+    match curve {
+        PlanarOffsetClearanceCurve::Line { start, .. }
+        | PlanarOffsetClearanceCurve::Arc { start, .. } => start,
+    }
+}
+
+fn point_in_planar_offset_clearance_curves(
+    point: [f64; 2],
+    curves: &[PlanarOffsetClearanceCurve],
+) -> bool {
+    let cross = |left: [f64; 2], right: [f64; 2]| left[0] * right[1] - left[1] * right[0];
+    let subtract = |left: [f64; 2], right: [f64; 2]| [left[0] - right[0], left[1] - right[1]];
+    let mut winding = 0_i32;
+    for curve in curves {
+        match *curve {
+            PlanarOffsetClearanceCurve::Line { start, end } => {
+                if start[1] <= point[1]
+                    && point[1] < end[1]
+                    && cross(subtract(end, start), subtract(point, start)) > 0.0
+                {
+                    winding += 1;
+                } else if end[1] <= point[1]
+                    && point[1] < start[1]
+                    && cross(subtract(end, start), subtract(point, start)) < 0.0
+                {
+                    winding -= 1;
+                }
+            }
+            arc @ PlanarOffsetClearanceCurve::Arc {
+                start,
+                center,
+                clockwise,
+                ..
+            } => {
+                let radius = (start[0] - center[0]).hypot(start[1] - center[1]);
+                let relative_y = (point[1] - center[1]) / radius;
+                if relative_y.abs() > 1.0 {
+                    continue;
+                }
+                let angle = relative_y.clamp(-1.0, 1.0).asin();
+                for candidate in [angle, std::f64::consts::PI - angle] {
+                    let crossing = [
+                        center[0] + radius * candidate.cos(),
+                        center[1] + radius * candidate.sin(),
+                    ];
+                    if crossing[0] <= point[0] + PLANAR_OFFSET_CLEARANCE_TOLERANCE_MM
+                        || !point_is_on_clearance_arc(crossing, arc)
+                    {
+                        continue;
+                    }
+                    let derivative = candidate.cos() * if clockwise { -1.0 } else { 1.0 };
+                    if derivative > PLANAR_OFFSET_CLEARANCE_TOLERANCE_MM {
+                        winding += 1;
+                    } else if derivative < -PLANAR_OFFSET_CLEARANCE_TOLERANCE_MM {
+                        winding -= 1;
+                    }
+                }
+            }
+        }
+    }
+    winding != 0
+}
+
+fn point_to_segment_distance(point: [f64; 2], start: [f64; 2], end: [f64; 2]) -> f64 {
+    let direction = [end[0] - start[0], end[1] - start[1]];
+    let length_squared = direction[0] * direction[0] + direction[1] * direction[1];
+    if length_squared <= f64::EPSILON {
+        return (point[0] - start[0]).hypot(point[1] - start[1]);
+    }
+    let parameter = (((point[0] - start[0]) * direction[0] + (point[1] - start[1]) * direction[1])
+        / length_squared)
+        .clamp(0.0, 1.0);
+    (point[0] - start[0] - parameter * direction[0])
+        .hypot(point[1] - start[1] - parameter * direction[1])
+}
+
+fn point_is_on_clearance_arc(point: [f64; 2], arc: PlanarOffsetClearanceCurve) -> bool {
+    let PlanarOffsetClearanceCurve::Arc {
+        start,
+        end,
+        center,
+        clockwise,
+    } = arc
+    else {
+        return false;
+    };
+    let start_angle = (start[1] - center[1]).atan2(start[0] - center[0]);
+    let end_angle = (end[1] - center[1]).atan2(end[0] - center[0]);
+    let candidate = (point[1] - center[1]).atan2(point[0] - center[0]);
+    directed_arc_sweep(start_angle, end_angle, clockwise)
+        .is_some_and(|sweep| angle_on_directed_arc(start_angle, sweep, candidate))
+}
+
+fn point_to_clearance_arc_distance(point: [f64; 2], arc: PlanarOffsetClearanceCurve) -> f64 {
+    let PlanarOffsetClearanceCurve::Arc {
+        start, end, center, ..
+    } = arc
+    else {
+        unreachable!()
+    };
+    let radius = (start[0] - center[0]).hypot(start[1] - center[1]);
+    let center_distance = (point[0] - center[0]).hypot(point[1] - center[1]);
+    let mut distance = (point[0] - start[0])
+        .hypot(point[1] - start[1])
+        .min((point[0] - end[0]).hypot(point[1] - end[1]));
+    if center_distance > f64::EPSILON {
+        let radial = [
+            center[0] + radius * (point[0] - center[0]) / center_distance,
+            center[1] + radius * (point[1] - center[1]) / center_distance,
+        ];
+        if point_is_on_clearance_arc(radial, arc) {
+            distance = distance.min((center_distance - radius).abs());
+        }
+    }
+    distance
+}
+
+fn line_to_line_clearance(
+    left_start: [f64; 2],
+    left_end: [f64; 2],
+    right_start: [f64; 2],
+    right_end: [f64; 2],
+) -> f64 {
+    let left = [left_end[0] - left_start[0], left_end[1] - left_start[1]];
+    let right = [right_end[0] - right_start[0], right_end[1] - right_start[1]];
+    let offset = [
+        right_start[0] - left_start[0],
+        right_start[1] - left_start[1],
+    ];
+    let cross = |first: [f64; 2], second: [f64; 2]| first[0] * second[1] - first[1] * second[0];
+    let denominator = cross(left, right);
+    if denominator.abs() > f64::EPSILON {
+        let along_left = cross(offset, right) / denominator;
+        let along_right = cross(offset, left) / denominator;
+        if (0.0..=1.0).contains(&along_left) && (0.0..=1.0).contains(&along_right) {
+            return 0.0;
+        }
+    }
+    point_to_segment_distance(left_start, right_start, right_end)
+        .min(point_to_segment_distance(left_end, right_start, right_end))
+        .min(point_to_segment_distance(right_start, left_start, left_end))
+        .min(point_to_segment_distance(right_end, left_start, left_end))
+}
+
+fn line_to_arc_clearance(
+    line_start: [f64; 2],
+    line_end: [f64; 2],
+    arc: PlanarOffsetClearanceCurve,
+) -> f64 {
+    let PlanarOffsetClearanceCurve::Arc {
+        start, end, center, ..
+    } = arc
+    else {
+        unreachable!()
+    };
+    let direction = [line_end[0] - line_start[0], line_end[1] - line_start[1]];
+    let offset = [line_start[0] - center[0], line_start[1] - center[1]];
+    let radius = (start[0] - center[0]).hypot(start[1] - center[1]);
+    let a = direction[0] * direction[0] + direction[1] * direction[1];
+    let b = 2.0 * (offset[0] * direction[0] + offset[1] * direction[1]);
+    let c = offset[0] * offset[0] + offset[1] * offset[1] - radius * radius;
+    let discriminant = b * b - 4.0 * a * c;
+    if discriminant >= 0.0 {
+        let root = discriminant.sqrt();
+        if [(-b - root) / (2.0 * a), (-b + root) / (2.0 * a)]
+            .into_iter()
+            .any(|parameter| {
+                (0.0..=1.0).contains(&parameter)
+                    && point_is_on_clearance_arc(
+                        [
+                            line_start[0] + parameter * direction[0],
+                            line_start[1] + parameter * direction[1],
+                        ],
+                        arc,
+                    )
+            })
+        {
+            return 0.0;
+        }
+    }
+    let projection = if a > f64::EPSILON {
+        ((center[0] - line_start[0]) * direction[0] + (center[1] - line_start[1]) * direction[1])
+            / a
+    } else {
+        0.0
+    }
+    .clamp(0.0, 1.0);
+    point_to_clearance_arc_distance(line_start, arc)
+        .min(point_to_clearance_arc_distance(line_end, arc))
+        .min(point_to_segment_distance(start, line_start, line_end))
+        .min(point_to_segment_distance(end, line_start, line_end))
+        .min(point_to_clearance_arc_distance(
+            [
+                line_start[0] + projection * direction[0],
+                line_start[1] + projection * direction[1],
+            ],
+            arc,
+        ))
+}
+
+fn arc_to_arc_clearance(
+    left: PlanarOffsetClearanceCurve,
+    right: PlanarOffsetClearanceCurve,
+) -> f64 {
+    let PlanarOffsetClearanceCurve::Arc {
+        start: left_start,
+        end: left_end,
+        center: left_center,
+        ..
+    } = left
+    else {
+        unreachable!()
+    };
+    let PlanarOffsetClearanceCurve::Arc {
+        start: right_start,
+        end: right_end,
+        center: right_center,
+        ..
+    } = right
+    else {
+        unreachable!()
+    };
+    let left_radius = (left_start[0] - left_center[0]).hypot(left_start[1] - left_center[1]);
+    let right_radius = (right_start[0] - right_center[0]).hypot(right_start[1] - right_center[1]);
+    let center_delta = [
+        right_center[0] - left_center[0],
+        right_center[1] - left_center[1],
+    ];
+    let center_distance = center_delta[0].hypot(center_delta[1]);
+    if center_distance > f64::EPSILON
+        && center_distance <= left_radius + right_radius
+        && center_distance >= (left_radius - right_radius).abs()
+    {
+        let along = (left_radius * left_radius - right_radius * right_radius
+            + center_distance * center_distance)
+            / (2.0 * center_distance);
+        let height = (left_radius * left_radius - along * along).max(0.0).sqrt();
+        let direction = [
+            center_delta[0] / center_distance,
+            center_delta[1] / center_distance,
+        ];
+        let base = [
+            left_center[0] + along * direction[0],
+            left_center[1] + along * direction[1],
+        ];
+        let perpendicular = [-direction[1], direction[0]];
+        if [
+            [
+                base[0] + height * perpendicular[0],
+                base[1] + height * perpendicular[1],
+            ],
+            [
+                base[0] - height * perpendicular[0],
+                base[1] - height * perpendicular[1],
+            ],
+        ]
+        .into_iter()
+        .any(|point| {
+            point_is_on_clearance_arc(point, left) && point_is_on_clearance_arc(point, right)
+        }) {
+            return 0.0;
+        }
+    }
+    let mut distance = point_to_clearance_arc_distance(left_start, right)
+        .min(point_to_clearance_arc_distance(left_end, right))
+        .min(point_to_clearance_arc_distance(right_start, left))
+        .min(point_to_clearance_arc_distance(right_end, left));
+    if center_distance > f64::EPSILON {
+        let direction = [
+            center_delta[0] / center_distance,
+            center_delta[1] / center_distance,
+        ];
+        for left_sign in [-1.0, 1.0] {
+            let left_point = [
+                left_center[0] + left_sign * left_radius * direction[0],
+                left_center[1] + left_sign * left_radius * direction[1],
+            ];
+            if !point_is_on_clearance_arc(left_point, left) {
+                continue;
+            }
+            for right_sign in [-1.0, 1.0] {
+                let right_point = [
+                    right_center[0] + right_sign * right_radius * direction[0],
+                    right_center[1] + right_sign * right_radius * direction[1],
+                ];
+                if point_is_on_clearance_arc(right_point, right) {
+                    distance = distance.min(
+                        (left_point[0] - right_point[0]).hypot(left_point[1] - right_point[1]),
+                    );
+                }
+            }
+        }
+    }
+    distance
+}
+
+fn planar_offset_curves_clearance(
+    left: PlanarOffsetClearanceCurve,
+    right: PlanarOffsetClearanceCurve,
+) -> f64 {
+    match (left, right) {
+        (
+            PlanarOffsetClearanceCurve::Line {
+                start: left_start,
+                end: left_end,
+            },
+            PlanarOffsetClearanceCurve::Line {
+                start: right_start,
+                end: right_end,
+            },
+        ) => line_to_line_clearance(left_start, left_end, right_start, right_end),
+        (
+            PlanarOffsetClearanceCurve::Line { start, end },
+            arc @ PlanarOffsetClearanceCurve::Arc { .. },
+        )
+        | (
+            arc @ PlanarOffsetClearanceCurve::Arc { .. },
+            PlanarOffsetClearanceCurve::Line { start, end },
+        ) => line_to_arc_clearance(start, end, arc),
+        (
+            left @ PlanarOffsetClearanceCurve::Arc { .. },
+            right @ PlanarOffsetClearanceCurve::Arc { .. },
+        ) => arc_to_arc_clearance(left, right),
+    }
+}
+
+fn planar_offset_clearance_curves_mm(
+    left: &[PlanarOffsetClearanceCurve],
+    right: &[PlanarOffsetClearanceCurve],
+) -> Option<f64> {
+    let clearance = left
+        .iter()
+        .flat_map(|left| {
+            right
+                .iter()
+                .map(move |right| planar_offset_curves_clearance(*left, *right))
+        })
+        .reduce(f64::min)?
+        - 2.0 * PLANAR_OFFSET_CLEARANCE_TOLERANCE_MM;
+    clearance.is_finite().then_some(clearance.max(0.0))
+}
+
+fn planar_offset_loop_is_valid(planar_loop: &ExactBRepPlanarLoop, distance_mm: f64) -> bool {
+    match planar_loop {
+        ExactBRepPlanarLoop::Boundary { segments } => {
+            let Some(profile) = exact_planar_offset_profile_from_segments(segments.clone()) else {
+                return false;
+            };
+            let bounds = profile.bounds_bits.map(f64::from_bits);
+            let Some(margin) = profile.max_planar_offset_displacement_mm(distance_mm) else {
+                return false;
+            };
+            let output_envelope = if distance_mm > 0.0 {
+                [
+                    bounds[0] - margin,
+                    bounds[1] - margin,
+                    bounds[2] + margin,
+                    bounds[3] + margin,
+                ]
+            } else {
+                bounds
+            };
+            let cannot_statically_collapse = distance_mm > 0.0
+                || bounds[2] - bounds[0] > 2.0 * distance_mm.abs()
+                    && bounds[3] - bounds[1] > 2.0 * distance_mm.abs();
+            output_envelope.into_iter().all(|coordinate| {
+                coordinate.is_finite() && coordinate.abs() <= MAX_EXACT_BREP_COORDINATE_MM
+            }) && cannot_statically_collapse
+        }
+        ExactBRepPlanarLoop::Circle {
+            center_bits,
+            radius_bits,
+        } => {
+            let center = center_bits.map(f64::from_bits);
+            let radius = f64::from_bits(*radius_bits);
+            let output_radius = radius + distance_mm;
+            (EXACT_MIN_LENGTH_MM..=MAX_EXACT_PLANAR_OFFSET_LENGTH_MM).contains(&radius)
+                && (EXACT_MIN_LENGTH_MM..=MAX_EXACT_PLANAR_OFFSET_LENGTH_MM)
+                    .contains(&output_radius)
+                && [radius, output_radius].into_iter().all(f64::is_finite)
+                && [
+                    center[0] - radius,
+                    center[1] - radius,
+                    center[0] + radius,
+                    center[1] + radius,
+                    center[0] - output_radius,
+                    center[1] - output_radius,
+                    center[0] + output_radius,
+                    center[1] + output_radius,
+                ]
+                .into_iter()
+                .all(|coordinate| {
+                    coordinate.is_finite() && coordinate.abs() <= MAX_EXACT_BREP_COORDINATE_MM
+                })
+        }
+    }
+}
+
+pub(crate) fn accepts_planar_offset_solved_region(
+    region: &SolvedSketchRegion,
+    distance_mm: f64,
+) -> bool {
+    if !distance_mm.is_finite()
+        || distance_mm.abs() < EXACT_MIN_LENGTH_MM
+        || distance_mm.abs() > MAX_EXACT_PLANAR_OFFSET_LENGTH_MM
+    {
+        return false;
+    }
+    if region.holes.is_empty() {
+        accepts_planar_offset_solved_profile(&region.outer, distance_mm)
+    } else {
+        ExactPlanarOffsetRegion::from_solved(region)
+            .is_some_and(|region| region.has_valid_encoding(distance_mm))
+    }
+}
+
 pub(crate) fn accepts_planar_offset_solved_profile(
     profile: &SolvedSketchRegionProfile,
     distance_mm: f64,
@@ -5490,6 +6258,70 @@ fn x_or_y_cubic_coefficient(cubic: [[f64; 2]; 4], axis: usize, degree: usize) ->
     }
 }
 
+fn append_planar_offset_loop_identity(identity: &mut String, planar_loop: &ExactBRepPlanarLoop) {
+    match planar_loop {
+        ExactBRepPlanarLoop::Circle {
+            center_bits,
+            radius_bits,
+        } => write!(
+            identity,
+            ":circle:{:016x}:{:016x}:{:016x}",
+            center_bits[0], center_bits[1], radius_bits,
+        )
+        .expect("writing to a string cannot fail"),
+        ExactBRepPlanarLoop::Boundary { segments } => {
+            write!(identity, ":boundary:{}", segments.len())
+                .expect("writing to a string cannot fail");
+            for segment in segments {
+                match segment {
+                    ExactBRepPlanarSegment::Line {
+                        start_bits,
+                        end_bits,
+                    } => write!(
+                        identity,
+                        ":L:{:016x}:{:016x}:{:016x}:{:016x}",
+                        start_bits[0], start_bits[1], end_bits[0], end_bits[1]
+                    ),
+                    ExactBRepPlanarSegment::CircularArc {
+                        start_bits,
+                        end_bits,
+                        center_bits,
+                        clockwise,
+                    } => write!(
+                        identity,
+                        ":A:{:016x}:{:016x}:{:016x}:{:016x}:{:016x}:{:016x}:{}",
+                        start_bits[0],
+                        start_bits[1],
+                        end_bits[0],
+                        end_bits[1],
+                        center_bits[0],
+                        center_bits[1],
+                        u8::from(*clockwise),
+                    ),
+                    ExactBRepPlanarSegment::CubicBezier {
+                        start_bits,
+                        control_1_bits,
+                        control_2_bits,
+                        end_bits,
+                    } => write!(
+                        identity,
+                        ":C:{:016x}:{:016x}:{:016x}:{:016x}:{:016x}:{:016x}:{:016x}:{:016x}",
+                        start_bits[0],
+                        start_bits[1],
+                        end_bits[0],
+                        end_bits[1],
+                        control_1_bits[0],
+                        control_1_bits[1],
+                        control_2_bits[0],
+                        control_2_bits[1],
+                    ),
+                }
+                .expect("writing to a string cannot fail");
+            }
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExactPlanarOffsetRequest {
     pub document_id: DocumentId,
@@ -5501,6 +6333,7 @@ pub struct ExactPlanarOffsetRequest {
     pub source_bounds_bits: [u64; 4],
     pub circle: Option<ExactCircleProfile>,
     pub profile: Option<ExactPlanarOffsetProfile>,
+    pub region: Option<ExactPlanarOffsetRegion>,
     pub distance_bits: u64,
     pub canonical_input_digest: String,
 }
@@ -5541,9 +6374,10 @@ impl ExactPlanarOffsetRequest {
         {
             return Err(ExactProductError::UnsupportedDefinition);
         }
-        let (source_bounds, circle, profile) = match profile.kind() {
+        let (source_bounds, circle, profile, region) = match profile.kind() {
             FeatureKind::Profile { points_mm } => (
                 rectangle_bounds(points_mm).ok_or(ExactProductError::UnsupportedProfile)?,
+                None,
                 None,
                 None,
             ),
@@ -5553,7 +6387,12 @@ impl ExactPlanarOffsetRequest {
                         .ok_or(ExactProductError::UnsupportedProfile)?,
                 )
                 .ok_or(ExactProductError::UnsupportedProfile)?;
-                (profile.bounds_bits.map(f64::from_bits), None, Some(profile))
+                (
+                    profile.bounds_bits.map(f64::from_bits),
+                    None,
+                    Some(profile),
+                    None,
+                )
             }
             FeatureKind::Sketch(spec) => {
                 let regions = spec
@@ -5563,42 +6402,60 @@ impl ExactPlanarOffsetRequest {
                     return Err(ExactProductError::UnsupportedProfile);
                 };
                 if !region.holes.is_empty() {
-                    return Err(ExactProductError::UnsupportedProfile);
-                }
-                match &region.outer {
-                    SolvedSketchRegionProfile::Circle {
-                        center_mm,
-                        radius_mm,
-                    } => (
-                        [
-                            center_mm[0] - radius_mm,
-                            center_mm[1] - radius_mm,
-                            center_mm[0] + radius_mm,
-                            center_mm[1] + radius_mm,
-                        ],
-                        Some(ExactCircleProfile {
-                            center_x_bits: center_mm[0].to_bits(),
-                            center_y_bits: center_mm[1].to_bits(),
-                            radius_bits: radius_mm.to_bits(),
-                            clockwise: false,
-                        }),
-                        None,
-                    ),
-                    profile => {
-                        let profile = exact_planar_offset_profile_from_solved(profile)
-                            .ok_or(ExactProductError::UnsupportedProfile)?;
-                        (profile.bounds_bits.map(f64::from_bits), None, Some(profile))
+                    let region = ExactPlanarOffsetRegion::from_solved(region)
+                        .ok_or(ExactProductError::UnsupportedProfile)?;
+                    let source_bounds = region
+                        .source_bounds_bits()
+                        .ok_or(ExactProductError::UnsupportedProfile)?
+                        .map(f64::from_bits);
+                    (source_bounds, None, None, Some(region))
+                } else {
+                    match &region.outer {
+                        SolvedSketchRegionProfile::Circle {
+                            center_mm,
+                            radius_mm,
+                        } => (
+                            [
+                                center_mm[0] - radius_mm,
+                                center_mm[1] - radius_mm,
+                                center_mm[0] + radius_mm,
+                                center_mm[1] + radius_mm,
+                            ],
+                            Some(ExactCircleProfile {
+                                center_x_bits: center_mm[0].to_bits(),
+                                center_y_bits: center_mm[1].to_bits(),
+                                radius_bits: radius_mm.to_bits(),
+                                clockwise: false,
+                            }),
+                            None,
+                            None,
+                        ),
+                        profile => {
+                            let profile = exact_planar_offset_profile_from_solved(profile)
+                                .ok_or(ExactProductError::UnsupportedProfile)?;
+                            (
+                                profile.bounds_bits.map(f64::from_bits),
+                                None,
+                                Some(profile),
+                                None,
+                            )
+                        }
                     }
                 }
             }
             _ => return Err(ExactProductError::UnsupportedProfile),
         };
         let distance_mm = distance.millimetres();
-        let margin = match &profile {
-            Some(profile) => profile
+        let margin = if let Some(profile) = &profile {
+            profile
                 .max_planar_offset_displacement_mm(distance_mm)
-                .ok_or(ExactProductError::UnsupportedProfile)?,
-            None => distance_mm,
+                .ok_or(ExactProductError::UnsupportedProfile)?
+        } else if let Some(region) = &region {
+            region
+                .max_outer_displacement_mm(distance_mm)
+                .ok_or(ExactProductError::UnsupportedProfile)?
+        } else {
+            distance_mm
         };
         let output_bounds = if let Some(circle) = circle {
             let center_x = f64::from_bits(circle.center_x_bits);
@@ -5610,7 +6467,7 @@ impl ExactPlanarOffsetRequest {
                 center_x + output_radius,
                 center_y + output_radius,
             ]
-        } else if profile.is_some() && distance_mm < 0.0 {
+        } else if (profile.is_some() || region.is_some()) && distance_mm < 0.0 {
             source_bounds
         } else {
             [
@@ -5620,7 +6477,7 @@ impl ExactPlanarOffsetRequest {
                 source_bounds[3] + margin,
             ]
         };
-        let statically_collapsed = profile.is_some()
+        let statically_collapsed = (profile.is_some() || region.is_some())
             && distance_mm < 0.0
             && (source_bounds[2] - source_bounds[0] <= 2.0 * distance_mm.abs()
                 || source_bounds[3] - source_bounds[1] <= 2.0 * distance_mm.abs());
@@ -5634,16 +6491,20 @@ impl ExactPlanarOffsetRequest {
         });
         if !distance_mm.is_finite()
             || distance_mm.abs() < EXACT_MIN_LENGTH_MM
-            || (circle.is_some() || profile.is_some())
+            || (circle.is_some() || profile.is_some() || region.is_some())
                 && distance_mm.abs() > MAX_EXACT_PLANAR_OFFSET_LENGTH_MM
             || source_bounds
                 .into_iter()
                 .chain(output_bounds)
                 .any(|value| !value.is_finite() || value.abs() > MAX_EXACT_BREP_COORDINATE_MM)
             || !valid_circle
+            || region
+                .as_ref()
+                .is_some_and(|region| !region.has_valid_encoding(distance_mm))
             || statically_collapsed
             || circle.is_none()
                 && profile.is_none()
+                && region.is_none()
                 && (output_bounds[2] - output_bounds[0] < EXACT_MIN_LENGTH_MM
                     || output_bounds[3] - output_bounds[1] < EXACT_MIN_LENGTH_MM)
         {
@@ -5668,6 +6529,28 @@ impl ExactPlanarOffsetRequest {
                 distance_bits,
                 source_digest,
             ))
+        } else if let Some(region) = &region {
+            let mut identity = format!(
+                "{}:{}:{}:{}:{}:{}:region:{}:{:016x}:{:016x}:{:016x}:{:016x}:{:016x}:{}",
+                EXACT_PLANAR_OFFSET_SCHEMA_V1,
+                snapshot.document_id().0,
+                snapshot.revision_id(),
+                definition_id.0,
+                profile_feature_id.0,
+                offset_feature_id.0,
+                region.holes.len(),
+                source_bounds_bits[0],
+                source_bounds_bits[1],
+                source_bounds_bits[2],
+                source_bounds_bits[3],
+                distance_bits,
+                source_digest,
+            );
+            append_planar_offset_loop_identity(&mut identity, &region.outer);
+            for hole in &region.holes {
+                append_planar_offset_loop_identity(&mut identity, hole);
+            }
+            digest(&identity)
         } else if let Some(profile) = &profile {
             let mut identity = format!(
                 "{}:{}:{}:{}:{}:{}:typed:{}:{:016x}:{:016x}:{:016x}:{:016x}:{:016x}:{:016x}:{}",
@@ -5762,6 +6645,7 @@ impl ExactPlanarOffsetRequest {
             source_bounds_bits,
             circle,
             profile,
+            region,
             distance_bits,
             canonical_input_digest,
         })
@@ -5771,12 +6655,18 @@ impl ExactPlanarOffsetRequest {
     pub fn has_valid_basic_inputs(&self) -> bool {
         let source_bounds = self.source_bounds_mm();
         let distance_mm = self.distance_mm();
-        let margin = match &self.profile {
-            Some(profile) => match profile.max_planar_offset_displacement_mm(distance_mm) {
+        let margin = if let Some(profile) = &self.profile {
+            match profile.max_planar_offset_displacement_mm(distance_mm) {
                 Some(margin) => margin,
                 None => return false,
-            },
-            None => distance_mm,
+            }
+        } else if let Some(region) = &self.region {
+            match region.max_outer_displacement_mm(distance_mm) {
+                Some(margin) => margin,
+                None => return false,
+            }
+        } else {
+            distance_mm
         };
         let output_bounds = if let Some(circle) = self.circle {
             let center_x = f64::from_bits(circle.center_x_bits);
@@ -5788,7 +6678,7 @@ impl ExactPlanarOffsetRequest {
                 center_x + output_radius,
                 center_y + output_radius,
             ]
-        } else if self.profile.is_some() && distance_mm < 0.0 {
+        } else if (self.profile.is_some() || self.region.is_some()) && distance_mm < 0.0 {
             source_bounds
         } else {
             [
@@ -5804,13 +6694,15 @@ impl ExactPlanarOffsetRequest {
                     .bytes()
                     .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
         };
+        let typed_profile_count = usize::from(self.circle.is_some())
+            + usize::from(self.profile.is_some())
+            + usize::from(self.region.is_some());
         if !valid_lower_hex(&self.source_digest, 16)
             || !valid_lower_hex(&self.canonical_input_digest, 64)
             || !distance_mm.is_finite()
             || distance_mm.abs() < EXACT_MIN_LENGTH_MM
-            || (self.circle.is_some() || self.profile.is_some())
-                && distance_mm.abs() > MAX_EXACT_PLANAR_OFFSET_LENGTH_MM
-            || self.circle.is_some() && self.profile.is_some()
+            || typed_profile_count != 0 && distance_mm.abs() > MAX_EXACT_PLANAR_OFFSET_LENGTH_MM
+            || typed_profile_count > 1
             || source_bounds
                 .into_iter()
                 .chain(output_bounds)
@@ -5837,6 +6729,15 @@ impl ExactPlanarOffsetRequest {
                         center_y + radius,
                     ]
                     .map(f64::to_bits)
+            {
+                return false;
+            }
+        } else if let Some(region) = &self.region {
+            if !region.has_valid_encoding(distance_mm)
+                || region.source_bounds_bits() != Some(self.source_bounds_bits)
+                || distance_mm < 0.0
+                    && (source_bounds[2] - source_bounds[0] <= 2.0 * distance_mm.abs()
+                        || source_bounds[3] - source_bounds[1] <= 2.0 * distance_mm.abs())
             {
                 return false;
             }
@@ -5874,6 +6775,28 @@ impl ExactPlanarOffsetRequest {
                 self.distance_bits,
                 self.source_digest,
             ))
+        } else if let Some(region) = &self.region {
+            let mut identity = format!(
+                "{}:{}:{}:{}:{}:{}:region:{}:{:016x}:{:016x}:{:016x}:{:016x}:{:016x}:{}",
+                EXACT_PLANAR_OFFSET_SCHEMA_V1,
+                self.document_id.0,
+                self.source_revision,
+                self.definition_id.0,
+                self.profile_feature_id.0,
+                self.offset_feature_id.0,
+                region.holes.len(),
+                self.source_bounds_bits[0],
+                self.source_bounds_bits[1],
+                self.source_bounds_bits[2],
+                self.source_bounds_bits[3],
+                self.distance_bits,
+                self.source_digest,
+            );
+            append_planar_offset_loop_identity(&mut identity, &region.outer);
+            for hole in &region.holes {
+                append_planar_offset_loop_identity(&mut identity, hole);
+            }
+            digest(&identity)
         } else if let Some(profile) = &self.profile {
             let mut identity = format!(
                 "{}:{}:{}:{}:{}:{}:typed:{}:{:016x}:{:016x}:{:016x}:{:016x}:{:016x}:{:016x}:{}",
@@ -5967,7 +6890,7 @@ impl ExactPlanarOffsetRequest {
 
     #[must_use]
     pub const fn is_rectangle(&self) -> bool {
-        self.circle.is_none() && self.profile.is_none()
+        self.circle.is_none() && self.profile.is_none() && self.region.is_none()
     }
 
     #[must_use]
@@ -5978,6 +6901,11 @@ impl ExactPlanarOffsetRequest {
     #[must_use]
     pub fn mixed_profile(&self) -> Option<&ExactPlanarOffsetProfile> {
         self.profile.as_ref()
+    }
+
+    #[must_use]
+    pub fn region_profile(&self) -> Option<&ExactPlanarOffsetRegion> {
+        self.region.as_ref()
     }
 
     #[must_use]
@@ -6012,28 +6940,34 @@ impl ExactPlanarOffsetRequest {
         area_mm2: f64,
         topology_counts: [u32; 5],
     ) -> bool {
-        self.circle.map_or_else(
-            || {
-                self.profile.as_ref().is_some_and(|profile| {
-                    accepts_planar_offset_geometry(
-                        profile,
+        if let Some(circle) = self.circle {
+            accepts_planar_circle_offset_geometry(
+                circle,
+                self.distance_mm(),
+                bounds_mm,
+                area_mm2,
+                topology_counts,
+            )
+        } else if let Some(profile) = &self.profile {
+            accepts_planar_offset_geometry(
+                profile,
+                self.distance_mm(),
+                bounds_mm,
+                area_mm2,
+                topology_counts,
+            )
+        } else {
+            self.region.as_ref().is_some_and(|region| {
+                region.has_valid_encoding(self.distance_mm())
+                    && accepts_planar_offset_geometry(
+                        region,
                         self.distance_mm(),
                         bounds_mm,
                         area_mm2,
                         topology_counts,
                     )
-                })
-            },
-            |circle| {
-                accepts_planar_circle_offset_geometry(
-                    circle,
-                    self.distance_mm(),
-                    bounds_mm,
-                    area_mm2,
-                    topology_counts,
-                )
-            },
-        )
+            })
+        }
     }
 
     #[must_use]
@@ -6070,6 +7004,7 @@ pub struct ExactPlanarOffsetPackage {
     pub bounds_mm: [[f64; 3]; 2],
     pub area_mm2: f64,
     pub topology_counts: [u32; 5],
+    pub wire_count: Option<u32>,
     pub vertices: Vec<ExactVertex>,
     pub triangles: Vec<ExactTriangle>,
     pub reference: BodySubshapeRef,
@@ -6103,6 +7038,9 @@ impl ExactPlanarOffsetPackage {
             || self.identity.result_fingerprint.is_empty()
             || self.identity.backend.is_empty()
             || self.identity.tolerance.is_empty()
+            || request
+                .region_profile()
+                .is_some_and(|region| self.wire_count != u32::try_from(region.holes.len() + 1).ok())
             || !self.reference.matches_planar_offset_request(request)
             || self.reference.exact_input_digest != self.identity.exact_input_digest
             || self.reference.result_fingerprint != self.identity.result_fingerprint
@@ -8677,6 +9615,7 @@ pub struct PlanarOffsetWorkerEvidence {
     pub bounds_mm: [[f64; 3]; 2],
     pub area_mm2: f64,
     pub topology_counts: [u32; 5],
+    pub wire_count: Option<u32>,
     pub face_ordinal: u32,
     pub lineage_digest: String,
     pub corroborating_geometry_fingerprint: String,
@@ -8694,6 +9633,7 @@ pub fn build_planar_offset_package(
         bounds_mm: worker_bounds_mm,
         area_mm2: worker_area_mm2,
         topology_counts,
+        wire_count,
         face_ordinal,
         lineage_digest,
         corroborating_geometry_fingerprint,
@@ -8807,6 +9747,7 @@ pub fn build_planar_offset_package(
         bounds_mm,
         area_mm2: worker_area_mm2,
         topology_counts,
+        wire_count,
         vertices,
         triangles,
         reference,
@@ -14444,4 +15385,61 @@ fn digest(value: &str) -> String {
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn line(start: [f64; 2], end: [f64; 2]) -> ExactBRepPlanarSegment {
+        ExactBRepPlanarSegment::Line {
+            start_bits: start.map(f64::to_bits),
+            end_bits: end.map(f64::to_bits),
+        }
+    }
+
+    fn circle(center: [f64; 2], radius: f64) -> ExactBRepPlanarLoop {
+        ExactBRepPlanarLoop::Circle {
+            center_bits: center.map(f64::to_bits),
+            radius_bits: radius.to_bits(),
+        }
+    }
+
+    fn rectangle(min: [f64; 2], max: [f64; 2]) -> ExactBRepPlanarLoop {
+        ExactBRepPlanarLoop::Boundary {
+            segments: vec![
+                line(min, [max[0], min[1]]),
+                line([max[0], min[1]], max),
+                line(max, [min[0], max[1]]),
+                line([min[0], max[1]], min),
+            ],
+        }
+    }
+
+    #[test]
+    fn compound_offset_region_requires_contained_disjoint_non_nested_holes() {
+        let valid = ExactPlanarOffsetRegion {
+            outer: rectangle([-10.0, -10.0], [10.0, 10.0]),
+            holes: vec![circle([-3.0, 0.0], 1.0), circle([3.0, 0.0], 1.0)],
+        };
+        assert!(valid.has_valid_encoding(0.25));
+        assert!(valid.has_valid_encoding(-0.25));
+
+        let outside = ExactPlanarOffsetRegion {
+            outer: valid.outer.clone(),
+            holes: vec![circle([12.0, 0.0], 1.0)],
+        };
+        let overlapping = ExactPlanarOffsetRegion {
+            outer: valid.outer.clone(),
+            holes: vec![circle([0.0, 0.0], 2.0), circle([3.0, 0.0], 2.0)],
+        };
+        let nested = ExactPlanarOffsetRegion {
+            outer: valid.outer,
+            holes: vec![circle([0.0, 0.0], 2.0), circle([0.0, 0.0], 1.0)],
+        };
+        for invalid in [outside, overlapping, nested] {
+            assert!(!invalid.has_valid_encoding(0.25));
+            assert!(!invalid.has_valid_encoding(-0.25));
+        }
+    }
 }

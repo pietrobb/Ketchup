@@ -303,6 +303,7 @@ std::unique_ptr<NativeOperationResult> success_result(
   impl->summary = NativeTopologySummary{
       static_cast<std::uint32_t>(vertices.Extent()),
       static_cast<std::uint32_t>(edges.Extent()),
+      count_subshapes(impl->shape, TopAbs_WIRE),
       static_cast<std::uint32_t>(faces.Extent()),
       count_subshapes(impl->shape, TopAbs_SHELL),
       solids,

@@ -3,9 +3,9 @@ use crate::document::{
     ProfileSegment, Snapshot, Transform,
 };
 use crate::exact_product::{
-    EXACT_MIN_LENGTH_MM, ExactCircleProfile, MAX_EXACT_PLANAR_OFFSET_LENGTH_MM,
-    accepts_planar_circle_offset_geometry, accepts_planar_offset_geometry,
-    exact_planar_offset_profile_from_segments,
+    EXACT_MIN_LENGTH_MM, ExactCircleProfile, ExactPlanarOffsetRegion,
+    MAX_EXACT_PLANAR_OFFSET_LENGTH_MM, accepts_planar_circle_offset_geometry,
+    accepts_planar_offset_geometry, exact_planar_offset_profile_from_segments,
 };
 use crate::sketch::{
     FeatureDirection, FeatureExtent, FeatureExtentEnd, SketchRegionId, SolvedSketchRegion,
@@ -19,6 +19,7 @@ use std::fmt;
 
 pub const EXACT_BREP_GRAPH_SCHEMA_V6: &str = "ketchup.exact-brep-graph.v6";
 pub const EXACT_BREP_GRAPH_SCHEMA_V7: &str = "ketchup.exact-brep-graph.v7";
+pub const EXACT_BREP_GRAPH_SCHEMA_V8: &str = "ketchup.exact-brep-graph.v8";
 pub const MAX_EXACT_BREP_GRAPH_PROFILES: usize = 1_024;
 pub const MAX_EXACT_BREP_GRAPH_NODES: usize = 1_024;
 pub const MAX_EXACT_BREP_GRAPH_SEGMENTS: usize = 16_384;
@@ -362,7 +363,7 @@ impl ExactBRepGraph {
         compiler.compile_body(producer_feature_id)?;
         let source_digest = snapshot.canonical_digest();
         let mut graph = Self {
-            schema: EXACT_BREP_GRAPH_SCHEMA_V7.to_owned(),
+            schema: EXACT_BREP_GRAPH_SCHEMA_V8.to_owned(),
             document_id: snapshot.document_id().0,
             source_revision: snapshot.revision_id(),
             source_digest,
@@ -393,6 +394,7 @@ impl ExactBRepGraph {
         bounds_mm: [[f64; 3]; 2],
         area_mm2: f64,
         topology_counts: [u32; 5],
+        wire_count: Option<u32>,
     ) -> bool {
         if self.validate().is_err() {
             return false;
@@ -439,6 +441,22 @@ impl ExactBRepGraph {
                     topology_counts,
                 )
             }),
+            ExactBRepPlanarGeometry::Region { outer, holes } => {
+                if wire_count != u32::try_from(holes.len() + 1).ok() {
+                    return false;
+                }
+                let region = ExactPlanarOffsetRegion {
+                    outer: outer.clone(),
+                    holes: holes.clone(),
+                };
+                accepts_planar_offset_geometry(
+                    &region,
+                    distance_mm,
+                    bounds_mm,
+                    area_mm2,
+                    topology_counts,
+                )
+            }
             _ => false,
         }
     }
@@ -479,7 +497,7 @@ impl ExactBRepGraph {
     pub fn validate(&self) -> Result<(), ExactBRepGraphError> {
         if !matches!(
             self.schema.as_str(),
-            EXACT_BREP_GRAPH_SCHEMA_V6 | EXACT_BREP_GRAPH_SCHEMA_V7
+            EXACT_BREP_GRAPH_SCHEMA_V6 | EXACT_BREP_GRAPH_SCHEMA_V7 | EXACT_BREP_GRAPH_SCHEMA_V8
         ) || self.document_id == 0
             || self.definition_id == 0
             || self.producer_feature_id == 0
@@ -538,6 +556,8 @@ impl ExactBRepGraph {
                 || !valid_operation_profiles(&node.operation, &self.profiles)
                 || (self.schema == EXACT_BREP_GRAPH_SCHEMA_V6
                     && operation_requires_v7(&node.operation, &self.profiles))
+                || (self.schema != EXACT_BREP_GRAPH_SCHEMA_V8
+                    && operation_requires_v8(&node.operation, &self.profiles))
                 || !valid_operation(
                     &node.operation,
                     self.document_id,
@@ -795,9 +815,6 @@ impl<'a> GraphCompiler<'a> {
                         let [region] = regions.as_slice() else {
                             return Err(ExactBRepGraphError::UnsupportedProfile(*profile));
                         };
-                        if !region.holes.is_empty() {
-                            return Err(ExactBRepGraphError::UnsupportedProfile(*profile));
-                        }
                         self.compile_sketch_profile(
                             *profile,
                             region.id,
@@ -1604,6 +1621,24 @@ fn planar_offset_profile_bounds(
                 }
             }
         }
+        ExactBRepPlanarGeometry::Region { outer, holes } => {
+            if !(ExactPlanarOffsetRegion {
+                outer: outer.clone(),
+                holes: holes.clone(),
+            })
+            .has_valid_encoding(distance_mm)
+            {
+                return Err(ExactBRepGraphError::InvalidParameter);
+            }
+            let mut loop_profile = profile.clone();
+            loop_profile.geometry = loop_geometry(outer);
+            let bounds = planar_offset_profile_bounds(&loop_profile, distance_mm)?;
+            for hole in holes {
+                loop_profile.geometry = loop_geometry(hole);
+                planar_offset_profile_bounds(&loop_profile, -distance_mm)?;
+            }
+            bounds
+        }
         _ => return Err(ExactBRepGraphError::InvalidParameter),
     };
     bounds
@@ -2028,6 +2063,18 @@ fn operation_requires_v7(operation: &ExactBRepOperation, profiles: &[ExactBRepPr
         profiles.get(profile.0 as usize).map(|profile| &profile.geometry),
         Some(ExactBRepPlanarGeometry::Boundary { segments, .. })
             if segments.iter().any(|segment| matches!(segment, ExactBRepPlanarSegment::CubicBezier { .. }))
+    )
+}
+
+fn operation_requires_v8(operation: &ExactBRepOperation, profiles: &[ExactBRepProfile]) -> bool {
+    let ExactBRepOperation::PlanarOffset { profile, .. } = operation else {
+        return false;
+    };
+    matches!(
+        profiles
+            .get(profile.0 as usize)
+            .map(|profile| &profile.geometry),
+        Some(ExactBRepPlanarGeometry::Region { .. })
     )
 }
 

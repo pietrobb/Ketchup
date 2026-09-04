@@ -4,11 +4,12 @@ use ketchup_core::document::{
     StableFaceRole,
 };
 use ketchup_core::exact_brep_graph::{
-    EXACT_BREP_GRAPH_SCHEMA_V6, EXACT_BREP_GRAPH_SCHEMA_V7, ExactBRepBooleanOperation,
-    ExactBRepEdgeFinishKind, ExactBRepGraph, ExactBRepGraphError, ExactBRepOperation,
-    ExactBRepPlanarGeometry, ExactBRepPlanarLoop, ExactBRepPlanarSegment, ExactBRepTopologyKind,
-    MAX_EXACT_BREP_GRAPH_BYTES, MAX_EXACT_BREP_GRAPH_SEGMENTS, MAX_EXACT_BREP_PLANAR_LOOP_SEGMENTS,
-    MAX_EXACT_BREP_REGION_HOLES, MAX_EXACT_BREP_REGION_SEGMENTS,
+    EXACT_BREP_GRAPH_SCHEMA_V6, EXACT_BREP_GRAPH_SCHEMA_V7, EXACT_BREP_GRAPH_SCHEMA_V8,
+    ExactBRepBooleanOperation, ExactBRepEdgeFinishKind, ExactBRepGraph, ExactBRepGraphError,
+    ExactBRepOperation, ExactBRepPlanarGeometry, ExactBRepPlanarLoop, ExactBRepPlanarSegment,
+    ExactBRepTopologyKind, MAX_EXACT_BREP_GRAPH_BYTES, MAX_EXACT_BREP_GRAPH_SEGMENTS,
+    MAX_EXACT_BREP_PLANAR_LOOP_SEGMENTS, MAX_EXACT_BREP_REGION_HOLES,
+    MAX_EXACT_BREP_REGION_SEGMENTS,
 };
 use ketchup_core::exact_product::{
     ExactFaceRole, ExactFeatureChainRequest, ExactProductError, build_box_render_package,
@@ -1146,7 +1147,7 @@ fn mixed_line_cubic_region_compiles_to_v4_and_is_deterministic() {
 
     let snapshot = document.current();
     let initial = ExactBRepGraph::from_snapshot(&snapshot, definition, pad).unwrap();
-    assert_eq!(initial.schema, EXACT_BREP_GRAPH_SCHEMA_V7);
+    assert_eq!(initial.schema, EXACT_BREP_GRAPH_SCHEMA_V8);
     assert_eq!(initial.profiles.len(), 1);
     assert_eq!(initial.nodes.len(), 1);
     let ExactBRepPlanarGeometry::Region { outer, holes } = &initial.profiles[0].geometry else {
@@ -1255,7 +1256,7 @@ fn planar_offset_graph_compiles_serializes_and_rejects_tampering() {
         ]))
         .unwrap();
     let graph = ExactBRepGraph::from_snapshot(&document.current(), definition, offset).unwrap();
-    assert_eq!(graph.schema, EXACT_BREP_GRAPH_SCHEMA_V7);
+    assert_eq!(graph.schema, EXACT_BREP_GRAPH_SCHEMA_V8);
     assert!(graph.terminal_is_planar_offset());
     assert!(graph.producer_bounds_mm().unwrap().is_some());
     let bytes = graph.to_bytes().unwrap();
@@ -1366,5 +1367,107 @@ fn planar_offset_graph_compiles_serializes_and_rejects_tampering() {
     assert_eq!(
         inward.producer_bounds_mm().unwrap(),
         Some([[999_981.0, 2.0, 0.0], [999_997.0, 18.0, 0.0]])
+    );
+}
+
+#[test]
+fn compound_planar_offset_graph_rejects_collision_and_schema_downgrade() {
+    let definition = DefinitionId(98);
+    let workplane = FeatureId(980);
+    let sketch = FeatureId(981);
+    let offset = FeatureId(982);
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: definition,
+                name: "Compound offset graph".into(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: workplane,
+                definition_id: definition,
+                name: "XY".into(),
+                kind: FeatureKind::Workplane(WorkplaneSpec::principal(PrincipalPlane::Xy)),
+            },
+            CanonicalCommand::CreateFeature {
+                id: sketch,
+                definition_id: definition,
+                name: "Region with close holes".into(),
+                kind: FeatureKind::Sketch(SketchSpec {
+                    workplane,
+                    entities: vec![
+                        SketchEntity::Line {
+                            id: SketchEntityId(1),
+                            start_mm: [-20.0, -20.0],
+                            end_mm: [20.0, -20.0],
+                        },
+                        SketchEntity::Line {
+                            id: SketchEntityId(2),
+                            start_mm: [20.0, -20.0],
+                            end_mm: [20.0, 20.0],
+                        },
+                        SketchEntity::Line {
+                            id: SketchEntityId(3),
+                            start_mm: [20.0, 20.0],
+                            end_mm: [-20.0, 20.0],
+                        },
+                        SketchEntity::Line {
+                            id: SketchEntityId(4),
+                            start_mm: [-20.0, 20.0],
+                            end_mm: [-20.0, -20.0],
+                        },
+                        SketchEntity::Circle {
+                            id: SketchEntityId(5),
+                            center_mm: [-3.0, 0.0],
+                            radius_mm: 2.0,
+                        },
+                        SketchEntity::Circle {
+                            id: SketchEntityId(6),
+                            center_mm: [3.0, 0.0],
+                            radius_mm: 2.0,
+                        },
+                    ],
+                    constraints: Vec::new(),
+                }),
+            },
+            CanonicalCommand::CreateFeature {
+                id: offset,
+                definition_id: definition,
+                name: "Compound offset".into(),
+                kind: FeatureKind::PlanarOffset {
+                    profile: sketch,
+                    distance: dimension(1.0),
+                },
+            },
+        ]))
+        .unwrap();
+
+    let graph = ExactBRepGraph::from_snapshot(&document.current(), definition, offset).unwrap();
+    assert_eq!(graph.schema, EXACT_BREP_GRAPH_SCHEMA_V8);
+    assert!(matches!(
+        graph.profiles[0].geometry,
+        ExactBRepPlanarGeometry::Region { .. }
+    ));
+    assert_eq!(
+        ExactBRepGraph::from_bytes(&graph.to_bytes().unwrap()).unwrap(),
+        graph
+    );
+
+    let mut colliding = graph.clone();
+    let ExactBRepOperation::PlanarOffset { distance_bits, .. } = &mut colliding.nodes[0].operation
+    else {
+        panic!("fixture must compile as a planar offset");
+    };
+    *distance_bits = (-1.0_f64).to_bits();
+    assert_eq!(
+        ExactBRepGraph::from_bytes(&serde_json::to_vec(&colliding).unwrap()),
+        Err(ExactBRepGraphError::InvalidGraph)
+    );
+
+    let mut downgraded = graph;
+    downgraded.schema = EXACT_BREP_GRAPH_SCHEMA_V7.to_owned();
+    assert_eq!(
+        ExactBRepGraph::from_bytes(&serde_json::to_vec(&downgraded).unwrap()),
+        Err(ExactBRepGraphError::InvalidGraph)
     );
 }
