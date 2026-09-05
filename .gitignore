@@ -4,9 +4,14 @@ skills/
 ClaudeSupervisor_*.exe
 models.yaml
 *.log
+*.log.[0-9]
+*.recovery
 
 # Rust and native builds
 /target/
+/target-*/
+/.worktrees/
+/work/
 /build/
 cmake-build-*/
 /third_party/occt-src/
