@@ -4092,6 +4092,7 @@ struct InteractionProjectionCache {
     mesh: MeshInteractionProjection,
     boxes: ketchup_interaction::InteractionScene,
     proxies: ketchup_interaction::InteractionScene,
+    render_boxes: std::cell::OnceCell<Vec<RenderBox>>,
 }
 
 #[derive(Default)]
@@ -11759,6 +11760,7 @@ impl KetchupApp {
                     mesh,
                     boxes,
                     proxies,
+                    render_boxes: std::cell::OnceCell::new(),
                 });
             }
         }
@@ -11859,13 +11861,20 @@ impl KetchupApp {
         let snapshot = self.document.current();
         self.refresh_interaction_projection_cache(&snapshot);
         let cache = self.interaction_projection_cache.borrow();
-        self.render_boxes_from_projection(
-            &cache
-                .as_ref()
-                .expect("interaction cache was built")
-                .canonical,
-            true,
-        )
+        cache
+            .as_ref()
+            .expect("interaction cache was built")
+            .render_boxes
+            .get_or_init(|| {
+                self.render_boxes_from_projection(
+                    &cache
+                        .as_ref()
+                        .expect("interaction cache was built")
+                        .canonical,
+                    true,
+                )
+            })
+            .clone()
     }
 
     fn active_boxes_for_snapshot(&self, snapshot: &Snapshot) -> Vec<RenderBox> {

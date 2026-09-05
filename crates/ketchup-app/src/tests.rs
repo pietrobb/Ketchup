@@ -1951,6 +1951,92 @@ fn export_rollback_replaces_only_its_own_published_artifact() {
 }
 
 #[test]
+fn active_boxes_cache_invalidates_on_transform_visibility_and_undo_redo() {
+    let mut app = KetchupApp::new();
+    let initial = app.active_boxes(); // Warm the render-box cache before canonical mutation.
+    assert_eq!(initial.len(), 1);
+    assert_eq!(initial[0].origin_mm, Vec3::ZERO);
+    assert_eq!(initial[0].size_mm, Vec3::new(100.0, 60.0, 20.0));
+    let mut moved = initial.clone();
+    moved[0].origin_mm = Vec3::new(10.0, -5.0, 3.0);
+
+    // Go through the canonical store, without presentation helpers clearing caches.
+    app.document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetOccurrenceTransform {
+                id: OccurrenceId(1),
+                transform: Transform::from_translation(10.0, -5.0, 3.0).unwrap(),
+            },
+        ]))
+        .unwrap();
+    assert_eq!(app.active_boxes(), moved);
+    app.document.undo().unwrap();
+    assert_eq!(app.active_boxes(), initial);
+    app.document.redo().unwrap();
+    assert_eq!(app.active_boxes(), moved);
+
+    for visible in [false, true] {
+        let before = app.active_boxes();
+        app.document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::SetOccurrenceVisibility {
+                    id: OccurrenceId(1),
+                    visible,
+                },
+            ]))
+            .unwrap();
+        let expected = if visible { moved.clone() } else { Vec::new() };
+        assert_eq!(app.active_boxes(), expected);
+        app.document.undo().unwrap();
+        assert_eq!(app.active_boxes(), before);
+        app.document.redo().unwrap();
+        assert_eq!(app.active_boxes(), expected);
+    }
+}
+
+#[test]
+fn active_boxes_cache_invalidates_on_same_revision_exact_results_and_registry_replacement() {
+    let mut app = KetchupApp::new();
+    let snapshot = app.document.current();
+    let canonical = app.active_boxes();
+    assert_eq!(canonical.len(), 1);
+    assert_eq!(canonical[0].origin_mm, Vec3::ZERO);
+    assert_eq!(canonical[0].size_mm, Vec3::new(100.0, 60.0, 20.0));
+
+    for (replace_registry, minimum, maximum) in [
+        (false, [-2.0, -3.0, -4.0], [110.0, 70.0, 30.0]),
+        (true, [-5.0, -6.0, -7.0], [120.0, 80.0, 40.0]),
+    ] {
+        // Synthetic exact bounds distinguish evaluated results from the canonical proxy.
+        let mut package = (*current_box_package(&app)).clone();
+        package.bounds_mm = [minimum, maximum];
+        let stamp = app.exact_results.contents_stamp();
+        if replace_registry {
+            let mut replacement = ExactResultRegistry::default();
+            replacement
+                .insert_current(&snapshot, Arc::new(package.into()))
+                .unwrap();
+            assert_eq!(replacement.len(), app.exact_results.len());
+            app.exact_results = replacement;
+        } else {
+            app.exact_results
+                .insert_current(&snapshot, Arc::new(package.into()))
+                .unwrap();
+        }
+        assert_ne!(app.exact_results.contents_stamp(), stamp);
+        assert_eq!(app.document.current().revision_id(), snapshot.revision_id());
+        let mut expected = canonical.clone();
+        expected[0].origin_mm = Vec3::new(minimum[0], minimum[1], minimum[2]);
+        expected[0].size_mm = Vec3::new(maximum[0], maximum[1], maximum[2]) - expected[0].origin_mm;
+        assert_eq!(app.active_boxes(), expected); // Also warm before the next replacement.
+    }
+
+    app.exact_results = ExactResultRegistry::default();
+    assert_eq!(app.document.current().revision_id(), snapshot.revision_id());
+    assert_eq!(app.active_boxes(), canonical);
+}
+
+#[test]
 fn interaction_projection_refresh_defers_while_the_current_frame_reads_the_cache() {
     let app = KetchupApp::new();
     let snapshot = app.document.current();

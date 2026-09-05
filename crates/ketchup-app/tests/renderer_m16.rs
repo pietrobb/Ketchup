@@ -302,3 +302,356 @@ fn real_ten_thousand_occurrence_product_uses_one_scheduled_mesh_one_bvh_and_one_
         gpu_stats.instances_drawn,
     );
 }
+
+/// Real offscreen DX12 work, not egui_kittest or a GPU timestamp benchmark.
+/// Timings include camera/prepare/encode, queue submission and GPU completion;
+/// document evaluation, pipeline warmup and readback are deliberately separate.
+#[test]
+fn garden_studio_hardware_gpu_camera_frames() {
+    use ketchup_application::{DocumentSession, SessionSettings};
+    use std::time::Duration;
+
+    const BODIES: usize = 93;
+    const FRAMES: usize = 20;
+    const WARMUP: usize = 3;
+    const WIDTH: u32 = 1600;
+    const HEIGHT: u32 = 1000;
+    let setup_started = Instant::now();
+    let fixture = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../examples/garden-studio.ketchup");
+    let mut session = DocumentSession::open(&fixture, SessionSettings::default()).unwrap();
+    session
+        .evaluate()
+        .expect("garden studio needs real exact evaluation");
+    let snapshot = session.snapshot();
+    assert_eq!(snapshot.occurrences().count(), BODIES);
+    assert_eq!(
+        session.exact_results().render_values(&snapshot).count(),
+        BODIES
+    );
+    let mut cache = DerivedRenderCache::default();
+    let plan = InstancedRenderPlan::from_snapshot(&snapshot, session.exact_results(), &mut cache);
+    assert!(plan.matches_exact_results(&snapshot, session.exact_results()));
+    assert_eq!(plan.instance_count(), BODIES);
+    let triangles: usize = plan
+        .batches()
+        .iter()
+        .map(|batch| {
+            assert!(batch.geometry.vertex_count() > 0);
+            assert!(batch.geometry.index_count() > 0);
+            assert_eq!(batch.geometry.index_count() % 3, 0);
+            batch.geometry.index_count() / 3 * batch.instances.len()
+        })
+        .sum();
+    assert_eq!(
+        triangles, 1100,
+        "the actual exact house must reach the GPU plan"
+    );
+
+    // Fit the evaluated vertices after each plan instance's row-major transform.
+    // A bounding sphere keeps the entire ~8 m house (in mm) inside every orbit,
+    // with correct 1600:1000 aspect and wgpu's [0, 1] clip-depth range.
+    let exact = session.exact_results().render_by_definition(&snapshot);
+    let mut points = Vec::<[f32; 3]>::new();
+    for batch in plan.batches() {
+        let package = exact
+            .get(&batch.definition_id)
+            .expect("no box/mesh fallback");
+        assert_eq!(batch.geometry.index_count(), package.triangles().len() * 3);
+        for instance in &batch.instances {
+            let m = instance.transform;
+            for vertex in package.vertices() {
+                let p = vertex.position_mm.map(|v| v as f32);
+                points.push(std::array::from_fn(|row| {
+                    m[row * 4] * p[0]
+                        + m[row * 4 + 1] * p[1]
+                        + m[row * 4 + 2] * p[2]
+                        + m[row * 4 + 3]
+                }));
+            }
+        }
+    }
+    let mut min = [f32::INFINITY; 3];
+    let mut max = [f32::NEG_INFINITY; 3];
+    for p in &points {
+        for axis in 0..3 {
+            assert!(p[axis].is_finite());
+            min[axis] = min[axis].min(p[axis]);
+            max[axis] = max[axis].max(p[axis]);
+        }
+    }
+    let center: [f32; 3] = std::array::from_fn(|i| (min[i] + max[i]) * 0.5);
+    let radius = (0..3)
+        .map(|i| ((max[i] - min[i]) * 0.5).powi(2))
+        .sum::<f32>()
+        .sqrt();
+    assert!(
+        radius > 1000.0 && radius < 20_000.0,
+        "unexpected mm bounds: {min:?}..{max:?}"
+    );
+    let dot = |a: [f32; 3], b: [f32; 3]| a.into_iter().zip(b).map(|(x, y)| x * y).sum::<f32>();
+    let camera = |frame: usize| {
+        let angle = 0.6 + frame as f32 * 0.025;
+        let (sin, cos) = angle.sin_cos();
+        let (se, ce) = 0.55_f32.sin_cos();
+        let right = [-sin, cos, 0.0];
+        let up = [-se * cos, -se * sin, ce];
+        let forward = [-ce * cos, -ce * sin, -se];
+        let x = right.map(|v| v / (radius * 1.15 * WIDTH as f32 / HEIGHT as f32));
+        let y = up.map(|v| v / (radius * 1.15));
+        let z = forward.map(|v| v / (radius * 4.0));
+        GpuFrameDescriptor {
+            // Column-major for WGSL, unlike the row-major instance transforms.
+            world_to_clip: [
+                x[0],
+                y[0],
+                z[0],
+                0.0,
+                x[1],
+                y[1],
+                z[1],
+                0.0,
+                x[2],
+                y[2],
+                z[2],
+                0.0,
+                -dot(x, center),
+                -dot(y, center),
+                0.5 - dot(z, center),
+                1.0,
+            ],
+            view_depth: [
+                forward[0],
+                forward[1],
+                forward[2],
+                radius * 2.0 - dot(forward, center),
+            ],
+            framebuffer_size: [WIDTH, HEIGHT],
+            viewport: [0, 0, WIDTH, HEIGHT],
+        }
+    };
+    for frame in 0..WARMUP + FRAMES {
+        let m = camera(frame).world_to_clip;
+        if frame > 0 {
+            assert_ne!(m, camera(frame - 1).world_to_clip);
+        }
+        for p in &points {
+            let clip: [f32; 3] = std::array::from_fn(|row| {
+                m[row] * p[0] + m[4 + row] * p[1] + m[8 + row] * p[2] + m[12 + row]
+            });
+            assert!(
+                clip[0].abs() < 1.0 && clip[1].abs() < 1.0 && clip[2] > 0.0 && clip[2] < 1.0,
+                "house clipped: {clip:?}"
+            );
+        }
+    }
+
+    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+        backends: wgpu::Backends::DX12,
+        ..Default::default()
+    });
+    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+        power_preference: wgpu::PowerPreference::HighPerformance,
+        compatible_surface: None,
+        force_fallback_adapter: false,
+    }))
+    .expect("garden regression requires a physical DX12 GPU, never software fallback");
+    let adapter_info = adapter.get_info();
+    assert_eq!(adapter_info.backend, wgpu::Backend::Dx12);
+    assert!(matches!(
+        adapter_info.device_type,
+        wgpu::DeviceType::DiscreteGpu | wgpu::DeviceType::IntegratedGpu
+    ));
+    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        label: Some("Garden studio hardware regression"),
+        ..Default::default()
+    }))
+    .unwrap();
+    device.on_uncaptured_error(Box::new(|error| panic!("uncaptured wgpu error: {error}")));
+    for filter in [
+        wgpu::ErrorFilter::OutOfMemory,
+        wgpu::ErrorFilter::Internal,
+        wgpu::ErrorFilter::Validation,
+    ] {
+        device.push_error_scope(filter);
+    }
+    let format = wgpu::TextureFormat::Bgra8UnormSrgb;
+    let extent = wgpu::Extent3d {
+        width: WIDTH,
+        height: HEIGHT,
+        depth_or_array_layers: 1,
+    };
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("Garden studio 1600x1000 offscreen target"),
+        size: extent,
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let mut renderer = GpuInstancedRenderer::new(&device, format);
+    // One synchronous frame at a time: no enqueue-only or CPU-only substitute.
+    let render_frame = |renderer: &mut GpuInstancedRenderer, frame: usize| {
+        let started = Instant::now();
+        assert!(plan.is_same_revision(&snapshot));
+        let descriptor = camera(frame);
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("Garden studio camera frame"),
+        });
+        renderer.prepare(&device, &queue, &mut encoder, &plan, descriptor);
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Garden studio color pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            renderer.paint(&mut pass);
+        }
+        let command = encoder.finish();
+        let cpu = started.elapsed();
+        let submit_started = Instant::now();
+        let submission = queue.submit([command]);
+        let submit = submit_started.elapsed();
+        let wait_started = Instant::now();
+        device
+            .poll(wgpu::PollType::WaitForSubmissionIndex(submission))
+            .unwrap();
+        let wait = wait_started.elapsed();
+        [cpu, submit, wait, started.elapsed()].map(|d| d.as_secs_f64() * 1000.0)
+    };
+    for frame in 0..WARMUP {
+        render_frame(&mut renderer, frame);
+    }
+    let warm = renderer.stats();
+    assert!(warm.geometry_uploads > 0);
+    assert_eq!(warm.instances_drawn, (WARMUP * BODIES) as u64);
+    let setup_ms = setup_started.elapsed().as_secs_f64() * 1000.0;
+    let mut samples = Vec::with_capacity(FRAMES);
+    let measured_started = Instant::now();
+    for frame in 0..FRAMES {
+        let before = renderer.stats();
+        samples.push(render_frame(&mut renderer, WARMUP + frame));
+        let after = renderer.stats();
+        assert_eq!(
+            after.geometry_uploads, warm.geometry_uploads,
+            "camera-only geometry reupload"
+        );
+        assert_eq!(after.gpu_geometry_entries, warm.gpu_geometry_entries);
+        assert_eq!(
+            after.instances_drawn - before.instances_drawn,
+            BODIES as u64
+        );
+        assert_eq!(
+            after.draw_calls - before.draw_calls,
+            plan.batches().len() as u64
+        );
+    }
+    let measured = measured_started.elapsed();
+    let stats = renderer.stats();
+    assert_eq!(
+        stats.instances_drawn - warm.instances_drawn,
+        (FRAMES * BODIES) as u64
+    );
+
+    // Outside the timing: prove that submitted geometry actually shaded pixels.
+    // 1600 * 4 = 6400 is already a multiple of COPY_BYTES_PER_ROW_ALIGNMENT.
+    let readback = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("Garden studio pixel proof"),
+        size: u64::from(WIDTH * HEIGHT * 4),
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+    encoder.copy_texture_to_buffer(
+        texture.as_image_copy(),
+        wgpu::TexelCopyBufferInfo {
+            buffer: &readback,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(WIDTH * 4),
+                rows_per_image: Some(HEIGHT),
+            },
+        },
+        extent,
+    );
+    let submission = queue.submit([encoder.finish()]);
+    let (sender, receiver) = std::sync::mpsc::channel();
+    readback
+        .slice(..)
+        .map_async(wgpu::MapMode::Read, move |result| {
+            sender.send(result).unwrap()
+        });
+    device
+        .poll(wgpu::PollType::WaitForSubmissionIndex(submission))
+        .unwrap();
+    receiver
+        .recv_timeout(Duration::from_secs(5))
+        .unwrap()
+        .unwrap();
+    let pixels = readback.slice(..).get_mapped_range();
+    let shaded_pixels = pixels
+        .chunks_exact(4)
+        .filter(|p| p[..3] != [0, 0, 0])
+        .count();
+    assert!(
+        shaded_pixels > 10_000,
+        "blank or implausibly tiny house: {shaded_pixels} pixels"
+    );
+    drop(pixels);
+    readback.unmap();
+    for _ in 0..3 {
+        let error = pollster::block_on(device.pop_error_scope());
+        assert!(
+            error.is_none(),
+            "wgpu rejected garden studio work: {error:?}"
+        );
+    }
+    eprintln!(
+        "GARDEN_GPU adapter={adapter_info:?} debug={} size={WIDTH}x{HEIGHT} bodies={BODIES} triangles={triangles} bounds_mm={min:?}..{max:?} setup_including_warmup_ms={setup_ms:.3}",
+        cfg!(debug_assertions)
+    );
+    for (frame, sample) in samples.iter().enumerate() {
+        eprintln!(
+            "GARDEN_GPU frame={frame:02} cpu_ms={:.3} submit_ms={:.3} wait_ms={:.3} total_ms={:.3}",
+            sample[0], sample[1], sample[2], sample[3]
+        );
+    }
+    for (column, name) in ["cpu", "submit", "wait", "cpu_submit_wait"]
+        .into_iter()
+        .enumerate()
+    {
+        let mut sorted: Vec<f64> = samples.iter().map(|s| s[column]).collect();
+        sorted.sort_by(f64::total_cmp);
+        let total: f64 = sorted.iter().sum();
+        // Nearest-rank p95: the 19th ordered sample out of 20.
+        let p95 = sorted[(FRAMES * 95).div_ceil(100) - 1];
+        eprintln!(
+            "GARDEN_GPU {name} total_ms={total:.3} mean_ms={:.3} p95_ms={p95:.3}",
+            total / FRAMES as f64
+        );
+    }
+    eprintln!(
+        "GARDEN_GPU warmed_frames={FRAMES} wall_ms={:.3} geometry_uploads_before={} after={} instances_drawn={} color_draw_calls={} shaded_pixels={shaded_pixels} wgpu_errors=0",
+        measured.as_secs_f64() * 1000.0,
+        warm.geometry_uploads,
+        stats.geometry_uploads,
+        stats.instances_drawn - warm.instances_drawn,
+        stats.draw_calls - warm.draw_calls
+    );
+    assert!(
+        measured < Duration::from_secs(2),
+        "20 warmed hardware frames exceeded the generous 2s regression budget: {measured:?}"
+    );
+}
