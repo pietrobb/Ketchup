@@ -38398,7 +38398,7 @@ fn persistent_user_environment_path(_name: &str) -> Option<PathBuf> {
     None
 }
 
-fn assistant_sidecar_command(
+pub fn assistant_sidecar_command(
     distribution: AssistantDistribution,
 ) -> Result<(PathBuf, Vec<std::ffi::OsString>), String> {
     match distribution {
