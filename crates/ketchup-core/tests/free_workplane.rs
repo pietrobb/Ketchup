@@ -50,7 +50,7 @@ fn free_frame_is_dependency_free_lossless_and_digest_authoritative() {
     let snapshot = document.current();
     let bytes = persistence::save(&snapshot);
     let reopened = persistence::load(&bytes).unwrap();
-    assert_eq!(reopened.source_schema(), 52);
+    assert_eq!(reopened.source_schema(), persistence::CURRENT_SCHEMA);
     assert!(reopened.migration_losses().is_empty());
     assert_eq!(
         reopened.snapshot().canonical_digest(),

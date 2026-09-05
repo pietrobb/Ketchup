@@ -79,6 +79,7 @@ impl Generator {
                     "f64" => json!({"type":"number"}),
                     "u64" => json!({"type":"integer","minimum":0,"maximum":u64::MAX}),
                     "u32" => json!({"type":"integer","minimum":0,"maximum":u32::MAX}),
+                    "u8" => json!({"type":"integer","minimum":0,"maximum":u8::MAX}),
                     "Vec" | "Option" => {
                         let PathArguments::AngleBracketed(args) = &segment.arguments else {
                             panic!("missing generic")

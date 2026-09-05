@@ -12721,15 +12721,11 @@ fn xray_projected_faces_use_translucent_fill() {
         app.paint_projected_faces(&painter, &faces);
     });
 
-    let egui::Shape::Mesh(underlay) = &output.shapes[0].shape else {
-        panic!("x-ray projected faces must start with a mesh underlay");
+    assert_eq!(output.shapes.len(), 1, "Xray must not double-blend a face");
+    let egui::Shape::Path(fill) = &output.shapes[0].shape else {
+        panic!("x-ray projected faces must have one antialiased fill");
     };
-    assert!(
-        underlay
-            .vertices
-            .iter()
-            .all(|vertex| vertex.color.a() == 72)
-    );
+    assert_eq!(fill.fill.a(), 72);
 }
 
 #[test]

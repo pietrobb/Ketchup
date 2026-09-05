@@ -81,3 +81,27 @@ fn live_protocol_honors_nondefault_deadline_and_rejects_out_of_range() {
         responses[4]["result"]["state"]
     );
 }
+
+#[test]
+fn advertised_color_schema_is_nullable_bounded_rgb() {
+    let responses = exchange(&[request(1, "capabilities", json!({}))]);
+    fn locate(value: &Value) -> Option<&Value> {
+        if value.pointer("/properties/operation/const") == Some(&json!("set_color")) {
+            return Some(value);
+        }
+        match value {
+            Value::Object(map) => map.values().find_map(locate),
+            Value::Array(items) => items.iter().find_map(locate),
+            _ => None,
+        }
+    }
+    let operation = locate(&responses[0]).expect("advertised set_color operation");
+    let color = &operation["properties"]["color"]["anyOf"];
+    assert_eq!(color[0]["minItems"], 3);
+    assert_eq!(color[0]["maxItems"], 3);
+    assert_eq!(
+        color[0]["items"],
+        json!({"type":"integer","minimum":0,"maximum":255})
+    );
+    assert_eq!(color[1], json!({"type":"null"}));
+}

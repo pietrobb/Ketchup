@@ -69,6 +69,104 @@ fn product_document() -> DocumentStore {
     store
 }
 
+#[test]
+fn component_render_instances_preserve_child_colors_and_reset_root_override() {
+    use ketchup_core::document::GroupId;
+    let mut store = product_document();
+    let group = GroupId(1);
+    store
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateGroup {
+                id: group,
+                name: "Colored pair".to_owned(),
+                transform: Transform::identity(),
+                parent: None,
+            },
+            CanonicalCommand::SetOccurrenceParent {
+                id: OccurrenceId(1),
+                parent: Some(group),
+            },
+            CanonicalCommand::SetOccurrenceParent {
+                id: OccurrenceId(2),
+                parent: Some(group),
+            },
+            CanonicalCommand::SetOccurrenceColor {
+                id: OccurrenceId(1),
+                color: Some([210, 30, 20]),
+            },
+            CanonicalCommand::SetOccurrenceColor {
+                id: OccurrenceId(2),
+                color: Some([20, 40, 210]),
+            },
+        ]))
+        .unwrap();
+    let mut cache = DerivedRenderCache::default();
+    let colors = |plan: &InstancedRenderPlan| {
+        let mut result = plan
+            .batches()
+            .iter()
+            .flat_map(|batch| batch.instances.iter())
+            .filter_map(|instance| instance.color)
+            .collect::<Vec<_>>();
+        result.sort();
+        result
+    };
+    let before = InstancedRenderPlan::from_snapshot(
+        &store.current(),
+        &ExactResultRegistry::default(),
+        &mut cache,
+    );
+    let expected = vec![[20, 40, 210], [210, 30, 20]];
+    assert_eq!(colors(&before), expected);
+    let root = store
+        .convert_group_to_component(group, "Colored component")
+        .unwrap()
+        .component_occurrence_id;
+    let converted = InstancedRenderPlan::from_snapshot(
+        &store.current(),
+        &ExactResultRegistry::default(),
+        &mut cache,
+    );
+    assert_eq!(converted.instance_count(), OCCURRENCES);
+    assert_eq!(colors(&converted), expected);
+    assert!(std::sync::Arc::ptr_eq(
+        &before.batches()[0].geometry,
+        &converted.batches()[0].geometry
+    ));
+    store
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetOccurrenceColor {
+                id: root,
+                color: Some([40, 200, 60]),
+            },
+        ]))
+        .unwrap();
+    let overridden = InstancedRenderPlan::from_snapshot(
+        &store.current(),
+        &ExactResultRegistry::default(),
+        &mut cache,
+    );
+    assert_eq!(colors(&overridden), vec![[40, 200, 60]; 2]);
+    store
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetOccurrenceColor {
+                id: root,
+                color: None,
+            },
+        ]))
+        .unwrap();
+    let reset = InstancedRenderPlan::from_snapshot(
+        &store.current(),
+        &ExactResultRegistry::default(),
+        &mut cache,
+    );
+    assert_eq!(colors(&reset), expected);
+    assert!(std::sync::Arc::ptr_eq(
+        &before.batches()[0].geometry,
+        &reset.batches()[0].geometry
+    ));
+}
+
 fn mesh_acceptance(snapshot: &ketchup_core::document::Snapshot) -> AcceptanceIdentity {
     let node_id = NodeId(BODY.0);
     let slot_path = SlotPath::new(vec![
@@ -145,6 +243,56 @@ fn real_ten_thousand_occurrence_product_uses_one_scheduled_mesh_one_bvh_and_one_
     );
     assert_eq!(rebuilt.instance_count(), OCCURRENCES);
     assert_eq!(render_cache.stats().geometry_hits, 1);
+    store
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetOccurrenceColor {
+                id: OccurrenceId(1),
+                color: Some([200, 50, 20]),
+            },
+            CanonicalCommand::SetOccurrenceColor {
+                id: OccurrenceId(2),
+                color: Some([20, 80, 210]),
+            },
+        ]))
+        .unwrap();
+    let colored = InstancedRenderPlan::from_snapshot(
+        &store.current(),
+        &ExactResultRegistry::default(),
+        &mut render_cache,
+    );
+    assert_eq!(colored.geometry_count(), 1);
+    assert_eq!(colored.batches()[0].instances[0].color, Some([200, 50, 20]));
+    assert_eq!(colored.batches()[0].instances[1].color, Some([20, 80, 210]));
+    assert!(
+        colored.batches()[0].instances[2..]
+            .iter()
+            .all(|instance| instance.color.is_none())
+    );
+    assert_eq!(render_cache.stats().geometry_misses, 1);
+    assert!(std::sync::Arc::ptr_eq(
+        &plan.batches()[0].geometry,
+        &colored.batches()[0].geometry
+    ));
+    assert_eq!(
+        plan.batches()[0].instances[0].transform,
+        colored.batches()[0].instances[0].transform
+    );
+    assert!(store.undo().is_some());
+    let reset = InstancedRenderPlan::from_snapshot(
+        &store.current(),
+        &ExactResultRegistry::default(),
+        &mut render_cache,
+    );
+    assert!(
+        reset.batches()[0]
+            .instances
+            .iter()
+            .all(|instance| instance.color.is_none())
+    );
+    assert!(std::sync::Arc::ptr_eq(
+        &colored.batches()[0].geometry,
+        &reset.batches()[0].geometry
+    ));
     let cached_plan = std::sync::Arc::new(rebuilt.clone());
     let orbit_started = Instant::now();
     for _ in 0..10_000 {
@@ -234,7 +382,7 @@ fn real_ten_thousand_occurrence_product_uses_one_scheduled_mesh_one_bvh_and_one_
         viewport: [0, 0, 64, 64],
     };
     renderer.prepare(&device, &queue, &mut encoder, &plan, frame);
-    renderer.prepare(&device, &queue, &mut encoder, &rebuilt, frame);
+    renderer.prepare(&device, &queue, &mut encoder, &colored, frame);
     {
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Ketchup M16 instanced render pass"),

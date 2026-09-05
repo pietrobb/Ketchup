@@ -28,6 +28,13 @@ pub const fn tolerance_profile() -> &'static str {
 #[allow(dead_code, unsafe_code)]
 #[cxx::bridge(namespace = "ketchup::exact")]
 mod ffi {
+    struct NativePairQuery {
+        status: u8,
+        diagnostic: String,
+        common_volume_mm3: f64,
+        distance_mm: f64,
+    }
+
     struct NativeTopologySummary {
         vertex_count: u32,
         edge_count: u32,
@@ -336,6 +343,10 @@ mod ffi {
             base: &NativeOperationResult,
             added: &NativeOperationResult,
         ) -> UniquePtr<NativeOperationResult>;
+        fn query_body_pair_native(
+            left: &NativeOperationResult,
+            right: &NativeOperationResult,
+        ) -> NativePairQuery;
         fn boolean_bodies_native(
             target: &NativeOperationResult,
             tool: &NativeOperationResult,
@@ -1594,6 +1605,25 @@ pub struct ExactMeshTriangle {
 pub struct ExactTessellation {
     pub vertices_mm: Vec<[f64; 3]>,
     pub triangles: Vec<ExactMeshTriangle>,
+}
+
+/// Solid-set relation computed from OCCT BRep common volume and distance.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExactPairRelation {
+    /// Strictly positive common solid volume, including full containment.
+    Penetrating,
+    /// No common volume and distance at most the requested contact tolerance.
+    Touching,
+    /// No common volume and distance greater than the contact tolerance.
+    Separated,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ExactPairQueryResult {
+    pub relation: ExactPairRelation,
+    pub common_volume_mm3: f64,
+    /// Minimum solid-set distance; zero for penetrating/contained bodies.
+    pub distance_mm: f64,
 }
 
 pub struct ExactBody {
@@ -2935,6 +2965,71 @@ impl ExactBackend {
             &input,
             HistoryConfidence::None,
         )
+    }
+
+    /// Read-only narrow phase. Empty common results are valid; backend failures
+    /// are always errors. Contact tolerance is in mm and never suppresses positive volume.
+    pub fn query_body_pair(
+        &self,
+        left: &ExactBody,
+        right: &ExactBody,
+        contact_tolerance_mm: f64,
+    ) -> Result<ExactPairQueryResult, GeometryError> {
+        let input = format!(
+            "pair:{}:{}:{contact_tolerance_mm:?}",
+            left.result_fingerprint, right.result_fingerprint
+        );
+        let error = |code, diagnostic| parameter_error(code, "query_body_pair", &input, diagnostic);
+        if !contact_tolerance_mm.is_finite() || contact_tolerance_mm < 0.0 {
+            return Err(error(
+                GeometryErrorCode::InvalidParameter,
+                "Contact tolerance must be finite and nonnegative".to_owned(),
+            ));
+        }
+        let left = left.native.as_ref().ok_or_else(|| {
+            error(
+                GeometryErrorCode::NullResult,
+                "Left native body unavailable".to_owned(),
+            )
+        })?;
+        let right = right.native.as_ref().ok_or_else(|| {
+            error(
+                GeometryErrorCode::NullResult,
+                "Right native body unavailable".to_owned(),
+            )
+        })?;
+        let result = ffi::query_body_pair_native(left, right);
+        if result.status != 0 {
+            return Err(error(
+                if result.status == 6 {
+                    GeometryErrorCode::BackendException
+                } else {
+                    GeometryErrorCode::InvalidShape
+                },
+                result.diagnostic,
+            ));
+        }
+        if !result.common_volume_mm3.is_finite()
+            || result.common_volume_mm3 < 0.0
+            || !result.distance_mm.is_finite()
+            || result.distance_mm < 0.0
+        {
+            return Err(error(
+                GeometryErrorCode::InvalidShape,
+                "Invalid native pair measurements".to_owned(),
+            ));
+        }
+        Ok(ExactPairQueryResult {
+            relation: if result.common_volume_mm3 > 0.0 {
+                ExactPairRelation::Penetrating
+            } else if result.distance_mm <= contact_tolerance_mm {
+                ExactPairRelation::Touching
+            } else {
+                ExactPairRelation::Separated
+            },
+            common_volume_mm3: result.common_volume_mm3,
+            distance_mm: result.distance_mm,
+        })
     }
 
     pub fn boolean_bodies(

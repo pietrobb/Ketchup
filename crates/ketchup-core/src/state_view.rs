@@ -1994,6 +1994,20 @@ pub fn encode_semantic_state_with_results(
     for occurrence in snapshot.occurrences() {
         writeln!(
             complete,
+            "occurrence.{}.color={:?}",
+            occurrence.id().0,
+            occurrence.color()
+        )
+        .unwrap();
+        writeln!(
+            agent,
+            "occurrence.{}.color={:?}",
+            occurrence.id().0,
+            occurrence.color()
+        )
+        .unwrap();
+        writeln!(
+            complete,
             "occurrence.{}.definition={}",
             occurrence.id().0,
             occurrence.definition_id().0
@@ -2440,6 +2454,22 @@ pub fn encode_semantic_state_with_results(
         .unwrap();
     }
     for occurrence in snapshot.local_occurrences() {
+        writeln!(
+            complete,
+            "local_occurrence.{}:{}.color={:?}",
+            occurrence.key().definition_id.0,
+            occurrence.key().local_id.0,
+            occurrence.color()
+        )
+        .unwrap();
+        writeln!(
+            agent,
+            "local_occurrence.{}:{}.color={:?}",
+            occurrence.key().definition_id.0,
+            occurrence.key().local_id.0,
+            occurrence.color()
+        )
+        .unwrap();
         writeln!(
             complete,
             "local_occurrence.{}:{}.definition={}",

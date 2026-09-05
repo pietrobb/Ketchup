@@ -1,15 +1,20 @@
 """Translate the trusted Blender garden-studio generator's complete geometry.
 
 Run with sdk/python on PYTHONPATH. --source must be the operator's trusted Python
-script, not untrusted input: its dimension assignments and build functions execute.
-Presentation code is not executed. Metres become millimetres, with no rounding.
-The optional --reference-only mode runs inside background Blender and independently
-measures the original builders, including Blender's applied Boolean openings.
+script, not untrusted input: geometry generation executes its dimension assignments
+and build functions, never top-level delete/save/render or presentation commands.
+Metres become millimetres, with no rounding. --reference-only runs inside Blender.
+--colors adds base colors during generation. --color-existing reads the original
+.validation.json sidecar and colors an existing exact model without executing any
+source code or generating geometry. Both require a new --output filename.
+Material calls are parsed as AST literals only; scene-linear RGB becomes sRGB bytes.
+Glass remains opaque: transparency, physical materials and Blender lighting/view
+transforms are not reproduced.
 """
 import argparse
 import ast
 import hashlib
-import itertools
+from copy import deepcopy
 import json
 import math
 from pathlib import Path
@@ -18,6 +23,56 @@ import sys
 BUILDERS = ('build_site', 'build_shell', 'build_openings', 'build_deck',
             'build_cladding', 'build_interior')
 PARTS = []
+COLOR_LIMITS = ('Base color only: Blender scene-linear RGB converted to rounded 8-bit sRGB. '
+                'Glass remains opaque; alpha, transmission, metallic and roughness are not applied. '
+                'No textures, lights, shadows, reflections, cameras, Filmic/view transform or exposure '
+                'are transferred; this is not Blender render parity.')
+
+
+def linear_to_srgb_bytes(color):
+    """IEC 61966-2-1 transfer, nearest byte (half up); reject unsupported HDR."""
+    if not isinstance(color, (tuple, list)) or len(color) != 3:
+        raise ValueError('Material color must contain three scene-linear RGB channels.')
+    result = []
+    for value in color:
+        if type(value) not in (int, float) or not math.isfinite(value) or not 0 <= value <= 1:
+            raise ValueError('Material RGB channels must be finite numbers in [0, 1].')
+        encoded = 12.92 * value if value <= 0.0031308 else 1.055 * value ** (1 / 2.4) - 0.055
+        result.append(int(math.floor(encoded * 255 + 0.5)))
+    return result
+
+
+def material_colors(source):
+    """Read top-level MAT_* = material(...) literals, never execute material/source."""
+    text = Path(source).read_text(encoding='utf-8')
+    tree = ast.parse(text, filename=str(source))
+    palette = {}
+    parameters = ('name', 'color', 'metallic', 'roughness', 'transmission', 'alpha')
+    for node in tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        targets = [t.id for t in node.targets if isinstance(t, ast.Name) and t.id.startswith('MAT_')]
+        if not targets:
+            continue
+        call = node.value
+        if (len(targets) != 1 or len(node.targets) != 1 or targets[0] in palette
+                or not isinstance(call, ast.Call) or not isinstance(call.func, ast.Name)
+                or call.func.id != 'material' or len(call.args) > len(parameters)):
+            raise ValueError('Expected a unique MAT_* = material(...) literal assignment.')
+        values = dict(zip(parameters, (ast.literal_eval(arg) for arg in call.args)))
+        for keyword in call.keywords:
+            if keyword.arg not in parameters or keyword.arg in values:
+                raise ValueError('Unsupported or duplicate material argument.')
+            values[keyword.arg] = ast.literal_eval(keyword.value)
+        if not isinstance(values.get('name'), str) or 'color' not in values:
+            raise ValueError('Material requires literal name and RGB color.')
+        palette[targets[0]] = {'name': values['name'], 'linear_rgb': values['color'],
+                               'color': linear_to_srgb_bytes(values['color']),
+                               'ignored_parameters': {k: v for k, v in values.items()
+                                                      if k not in ('name', 'color')}}
+    if not palette:
+        raise ValueError('No literal material assignments found.')
+    return hashlib.sha256(text.encode()).hexdigest(), palette
 
 
 def load_source(path, overrides=None):
@@ -218,6 +273,81 @@ def verify(doc, ids, reference):
     return evaluation, comparisons
 
 
+def geometry_signatures(evaluation):
+    if not evaluation['complete']:
+        raise ValueError('Incomplete geometry evaluation.')
+    return sorted((g['definition_id'], g['feature_id'], g['result_fingerprint'])
+                  for g in evaluation['geometry'])
+
+
+def geometry_state(state):
+    """Snapshot identity/structure/transforms, excluding only occurrence color."""
+    return deepcopy({'document_id': state['document_id'], 'definitions': state['definitions'],
+                     'features': state['features'],
+                     'occurrences': [{k: v for k, v in o.items() if k != 'color'}
+                                     for o in state['occurrences']]})
+
+
+def load_existing_evidence(model, source_hash):
+    """The operator's original exact sidecar supplies source-bound name/material IDs."""
+    path = Path(model).with_suffix('.validation.json')
+    proof = json.loads(path.read_text(encoding='utf-8'))
+    parts = proof['parts']
+    names = {p['name'] for p in parts}
+    if proof['source']['sha256'] != source_hash:
+        raise ValueError('Existing geometry evidence does not match the exact source SHA256.')
+    if proof['part_count'] != 140 or len(parts) != 140 or len(names) != 140 or set(proof['ids']) != names:
+        raise ValueError('Existing exact evidence must map all 140 unique part names.')
+    geometry_signatures(proof['evaluation'])
+    return proof, {'model': str(Path(model).resolve()),
+                   'model_sha256': hashlib.sha256(Path(model).read_bytes()).hexdigest(),
+                   'evidence': str(path.resolve()),
+                   'evidence_sha256': hashlib.sha256(path.read_bytes()).hexdigest(),
+                   'source_sha256_verified': True}
+
+
+def color_plan(state, ids, palette):
+    """Resolve every source name one-to-one before making any color mutation."""
+    occurrences = state['occurrences']
+    by_name = {o['name']: o for o in occurrences}
+    names = {p['name'] for p in PARTS}
+    if (len(names) != len(PARTS) or len(by_name) != len(occurrences)
+            or set(by_name) != names or set(ids) != names
+            or len({o['id'] for o in occurrences}) != len(occurrences)):
+        raise ValueError('Color transfer requires a one-to-one mapping of all source part names.')
+    plan = {}
+    for part in PARTS:
+        name, material = part['name'], part['source_material']
+        occurrence, identity = by_name[name], ids[name]
+        if (occurrence['id'] != identity['occurrence_id']
+                or occurrence['definition_id'] != identity['definition_id']):
+            raise ValueError(f'Occurrence identity mismatch: {name}')
+        if material not in palette:
+            raise ValueError(f'No literal source color for {name}: {material}')
+        plan[name] = {'occurrence_id': occurrence['id'], 'source_material': material,
+                      'color': palette[material]['color']}
+    return plan
+
+
+def verify_colors(state, plan):
+    actual = {o['name']: {'occurrence_id': o['id'], 'color': o.get('color')}
+              for o in state['occurrences']}
+    expected = {name: {k: item[k] for k in ('occurrence_id', 'color')} for name, item in plan.items()}
+    if len(state['occurrences']) != len(plan) or actual != expected:
+        raise ValueError('Occurrence colors differ from the source sRGB mapping.')
+    return actual
+
+
+def apply_colors(doc, plan):
+    # Group by byte color, not guessed material names; no geometry operations.
+    groups = {}
+    for item in plan.values():
+        groups.setdefault(tuple(item['color']), []).append(item['occurrence_id'])
+    for color, occurrences in groups.items():
+        doc.set_color(occurrences, list(color))
+    return verify_colors(doc.state, plan)
+
+
 def blender_reference(source, output):
     import bpy
     bpy.ops.object.select_all(action='SELECT')
@@ -249,49 +379,107 @@ def main():
     parser.add_argument('--worker')
     parser.add_argument('--reference')
     parser.add_argument('--reference-only', action='store_true')
+    parser.add_argument('--colors', action='store_true', help='Transfer literal Blender base colors.')
+    parser.add_argument('--color-existing', metavar='PATH',
+                        help='Color an exact .ketchup using its original .validation.json; implies --colors.')
     argv = sys.argv[sys.argv.index('--') + 1:] if '--' in sys.argv else None
     args = parser.parse_args(argv)
     output = Path(args.output).resolve()
     report_path = output.with_suffix('.validation.json')
+    existing = Path(args.color_existing).resolve() if args.color_existing else None
+    colored = args.colors or existing is not None
+    if args.reference_only and colored:
+        parser.error('--reference-only cannot be combined with color options.')
+    if existing is not None and (existing.suffix.lower() != '.ketchup' or not existing.is_file()):
+        parser.error('--color-existing must name an existing .ketchup file.')
+    if existing is not None and output == existing:
+        parser.error('--output must be a distinct new filename, never the existing model.')
+    if colored and output.suffix.lower() != '.ketchup':
+        parser.error('Colored --output must have a .ketchup extension.')
     if output.exists() or (not args.reference_only and report_path.exists()):
         raise SystemExit('Output already exists; choose a new filename.')
     if args.reference_only:
         blender_reference(args.source, output)
         return
-    from ketchup import Session
-    info = design(args.source)
+    palette = None
+    if colored:
+        source_hash, palette = material_colors(args.source)
+    original = provenance = None
+    if existing is not None:
+        original, provenance = load_existing_evidence(existing, source_hash)
+        PARTS[:] = original['parts']
+        info = dict(original['source'], path=str(Path(args.source).resolve()))
+        ids = original['ids']
+    else:
+        info = design(args.source)
+        ids = {}
+    if colored and info['sha256'] != source_hash:
+        raise ValueError('Source changed while preparing color transfer.')
     reference = json.loads(Path(args.reference).read_text(encoding='utf-8')) if args.reference else None
     if reference:
         assert reference['source']['sha256'] == info['sha256']
         assert set(reference['objects']) == {p['name'] for p in PARTS}
+    from ketchup import Session
     config = dict(executable=args.executable, worker=args.worker, timeout=360)
     print(f'Design: {len(PARTS)} source objects; no geometric omissions', flush=True)
-    ids = {}
     with Session(**config) as session:
-        doc = session.new_document()
-        for i, part in enumerate(PARTS):
-            ids[part['name']] = create(doc, part)
-            print(f'Created {i + 1}/{len(PARTS)} {part["name"]}', flush=True)
-        doc.set_grounded([ids['Terrain']['occurrence_id']])
+        if existing is not None:
+            doc = session.open_document(str(existing))
+        else:
+            doc = session.new_document()
+            for i, part in enumerate(PARTS):
+                ids[part['name']] = create(doc, part)
+                print(f'Created {i + 1}/{len(PARTS)} {part["name"]}', flush=True)
+            doc.set_grounded([ids['Terrain']['occurrence_id']])
         evaluation, comparisons = verify(doc, ids, reference)
+        baseline = geometry_signatures(evaluation)
+        if original is not None and baseline != geometry_signatures(original['evaluation']):
+            raise ValueError('Existing model geometry differs from its original exact evidence.')
+        if colored:
+            before_state = geometry_state(doc.state)
+            plan = color_plan(doc.state, ids, palette)
+            colors_before_save = apply_colors(doc, plan)
+            evaluation, comparisons = verify(doc, ids, reference)
+            if geometry_state(doc.state) != before_state or geometry_signatures(evaluation) != baseline:
+                raise ValueError('Color transfer changed geometry, transforms or identity.')
         native = doc.validators.run('collision')
         saved = doc.save(str(output))
     with Session(**config) as session:
         doc = session.open_document(str(output))
         assert doc.state['canonical_digest'] == saved['state']['canonical_digest']
         reopened, _ = verify(doc, ids, reference)
-        signatures = lambda e: sorted((g['definition_id'], g['feature_id'], g['result_fingerprint']) for g in e['geometry'])
-        assert signatures(evaluation) == signatures(reopened)
+        if baseline != geometry_signatures(reopened):
+            raise ValueError('Save/Open changed evaluated geometry fingerprints.')
+        if colored:
+            if geometry_state(doc.state) != before_state or verify_colors(doc.state, plan) != colors_before_save:
+                raise ValueError('Save/Open changed colors, geometry structure or identity.')
         assert native['collision'] == doc.validators.run('collision')['collision']
     proof = {'source': info, 'model': str(output), 'part_count': len(PARTS),
              'canonical_digest': saved['state']['canonical_digest'], 'parts': PARTS, 'ids': ids,
              'comparisons': comparisons, 'evaluation': evaluation, 'native_validator': native,
              'blender_reference_verified': bool(reference), 'fresh_process_reopen_verified': True,
              'collision_scope': 'Native conservative envelopes; coverage and issue caps retained verbatim. Not an exact collision certificate.',
-             'presentation': 'Materials, transparency, lighting and cameras intentionally deferred.'}
-    report_path.write_text(json.dumps(proof, indent=2, allow_nan=False), encoding='utf-8')
+             'presentation': COLOR_LIMITS if colored else 'Materials, transparency, lighting and cameras intentionally deferred.'}
+    if colored:
+        proof['color_transfer'] = {'source_sha256': source_hash, 'materials': palette, 'by_name': plan,
+                                   'colored_occurrence_count': len(plan), 'limits': COLOR_LIMITS,
+                                   'extraction': 'AST literal material assignments; no material/presentation execution.',
+                                   'mapping': 'Exact source builder names' if original is None else
+                                              'Original trusted exact evidence names/IDs/materials, bound to source SHA256.',
+                                   'geometry_regenerated': existing is None,
+                                   'geometry_fingerprints_before': baseline,
+                                   'geometry_fingerprints_after': geometry_signatures(evaluation),
+                                   'geometry_fingerprints_reopened': geometry_signatures(reopened),
+                                   'geometry_unchanged_verified': True, 'save_open_color_equality_verified': True}
+    if provenance is not None:
+        if (hashlib.sha256(existing.read_bytes()).hexdigest() != provenance['model_sha256']
+                or hashlib.sha256(Path(provenance['evidence']).read_bytes()).hexdigest() != provenance['evidence_sha256']):
+            raise ValueError('Original geometry model or evidence changed during transfer.')
+        proof['original_exact'] = dict(provenance, files_unchanged_verified=True)
+    with report_path.open('x', encoding='utf-8') as handle:
+        json.dump(proof, handle, indent=2, allow_nan=False)
     print(json.dumps({'model': str(output), 'report': str(report_path), 'objects': len(PARTS),
-                      'blender_reference_verified': bool(reference), 'reopen': 'passed'}), flush=True)
+                      'blender_reference_verified': bool(reference), 'colors': bool(colored), 'reopen': 'passed'}), flush=True)
 
 
 if __name__ == '__main__':

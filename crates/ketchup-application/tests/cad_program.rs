@@ -427,3 +427,99 @@ fn missing_topology_evidence_cannot_authorize_a_finish() {
         baseline.canonical_digest()
     );
 }
+
+#[test]
+fn color_program_is_atomic_and_copy_pattern_mirror_preserve_accumulated_color() {
+    let mut document = seeded();
+    let registry = ExactResultRegistry::default();
+    let color = Some([12, 128, 255]);
+    let input = program(vec![
+        AssistantCadEditOperation::SetColor {
+            selector: explicit(1),
+            color,
+        },
+        AssistantCadEditOperation::Copy {
+            selector: explicit(1),
+            translation_mm: [30.0, 0.0, 0.0],
+        },
+        AssistantCadEditOperation::LinearPattern {
+            selector: explicit(1),
+            instances: 3,
+            step_mm: [0.0, 30.0, 0.0],
+        },
+        AssistantCadEditOperation::Mirror {
+            selector: explicit(1),
+            plane_origin_mm: [0.0; 3],
+            plane_normal: [1.0, 0.0, 0.0],
+        },
+    ]);
+    let before = document.current();
+    let batch = plan(&document, &BTreeSet::new(), &registry, &input).unwrap();
+    document.apply_batch(&batch).unwrap();
+    assert_eq!(document.current().occurrences().count(), 5);
+    assert!(document.current().occurrences().all(|o| o.color() == color));
+    let colored = document.current().canonical_digest();
+    document.undo().unwrap();
+    assert_eq!(
+        document.current().canonical_digest(),
+        before.canonical_digest()
+    );
+    document.redo().unwrap();
+    assert_eq!(document.current().canonical_digest(), colored);
+    let selection = BTreeSet::from([OccurrenceId(1)]);
+    let reset = program(vec![AssistantCadEditOperation::SetColor {
+        selector: AssistantCadEntitySelector::CurrentSelection {},
+        color: None,
+    }]);
+    document
+        .apply_batch(&plan(&document, &selection, &registry, &reset).unwrap())
+        .unwrap();
+    assert_eq!(
+        document
+            .current()
+            .occurrence(OccurrenceId(1))
+            .unwrap()
+            .color(),
+        None
+    );
+    assert_eq!(
+        document
+            .current()
+            .occurrence(OccurrenceId(2))
+            .unwrap()
+            .color(),
+        color
+    );
+    let baseline = document.current().canonical_digest();
+    for ids in [vec![], vec![1, 1], vec![1, 999]] {
+        let invalid = program(vec![AssistantCadEditOperation::SetColor {
+            selector: AssistantCadEntitySelector::Occurrences {
+                occurrence_ids: ids,
+            },
+            color,
+        }]);
+        assert!(plan(&document, &selection, &registry, &invalid).is_err());
+        assert_eq!(document.current().canonical_digest(), baseline);
+    }
+}
+
+#[test]
+fn color_wire_rejects_non_rgb_bytes() {
+    for color in [
+        "[-1,0,0]",
+        "[256,0,0]",
+        "[1.5,0,0]",
+        "[true,0,0]",
+        "[1,2]",
+        "[1,2,3,4]",
+        "\"red\"",
+    ] {
+        let json = format!(
+            r#"{{"operations":[{{"operation":"set_color","selector":{{"type":"occurrences","occurrence_ids":[1]}},"color":{color}}}]}}"#
+        );
+        assert!(
+            serde_json::from_str::<AssistantCadEditProgram>(&json).is_err(),
+            "{json}"
+        );
+    }
+}

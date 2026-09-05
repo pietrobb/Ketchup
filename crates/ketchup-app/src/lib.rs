@@ -143,8 +143,10 @@ pub mod dialogs;
 mod face_workflow_ui;
 mod feature_history_ui;
 mod native_document_inspection;
+mod occurrence_color_ui;
 #[cfg(feature = "named-product-fixtures")]
 mod part_authoring_ui;
+mod validator_ui;
 #[cfg(debug_assertions)]
 #[doc(hidden)]
 pub use face_workflow_ui::HeadlessFaceWorkflowFailure;
@@ -355,8 +357,13 @@ fn validator_panel_report(validation: &serde_json::Value) -> ValidatorPanelRepor
                     detail: issue["rule"]
                         .as_str()
                         .or_else(|| issue["evidence"].as_str())
-                        .unwrap_or_default()
-                        .to_owned(),
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| {
+                            issue
+                                .get("evidence")
+                                .map(ToString::to_string)
+                                .unwrap_or_default()
+                        }),
                 })
         })
         .collect::<Vec<_>>();
@@ -408,6 +415,7 @@ fn bind_assistant_cad_current_selection(
             | AssistantCadEditOperation::AppendFeature { .. }
             | AssistantCadEditOperation::SetDimension { .. } => None,
             AssistantCadEditOperation::Delete { selector, .. }
+            | AssistantCadEditOperation::SetColor { selector, .. }
             | AssistantCadEditOperation::Transform { selector, .. }
             | AssistantCadEditOperation::Copy { selector, .. }
             | AssistantCadEditOperation::LinearPattern { selector, .. }
@@ -5274,6 +5282,7 @@ struct CopySourcePlan {
 
 #[derive(Clone, Debug, PartialEq)]
 struct CutClipboardOccurrence {
+    color: Option<[u8; 3]>,
     source_occurrence_id: OccurrenceId,
     definition_id: DefinitionId,
     transform: Transform,
@@ -5784,6 +5793,7 @@ struct LinearPatternSourcePlan {
     source_parent: Option<GroupId>,
     source_tag: Option<TagId>,
     source_visible: bool,
+    source_color: Option<[u8; 3]>,
     next_occurrence_id: OccurrenceId,
     existing_definition_occurrence_count: usize,
 }
@@ -5822,6 +5832,7 @@ struct RectangularPatternSourcePlan {
     source_parent: Option<GroupId>,
     source_tag: Option<TagId>,
     source_visible: bool,
+    source_color: Option<[u8; 3]>,
     next_occurrence_id: OccurrenceId,
     existing_definition_occurrence_count: usize,
 }
@@ -5866,6 +5877,7 @@ struct CircularPatternSourcePlan {
     source_parent: Option<GroupId>,
     source_tag: Option<TagId>,
     source_visible: bool,
+    source_color: Option<[u8; 3]>,
     next_occurrence_id: OccurrenceId,
     existing_definition_occurrence_count: usize,
 }
@@ -6060,6 +6072,7 @@ pub struct KetchupApp {
     parameter_expression_input: String,
     validator_panel_selection: BTreeSet<&'static str>,
     validator_panel_report: Option<ValidatorPanelReport>,
+    validator_panel_state: validator_ui::ValidatorPanelState,
     parameter_canonical_source: String,
     parameter_provenance: Option<(DocumentId, u64, String)>,
     parameter_last_recomputed_nodes: BTreeSet<NodeId>,
@@ -6308,6 +6321,7 @@ impl KetchupApp {
             parameter_expression_input: String::new(),
             validator_panel_selection: ASSISTANT_VALIDATOR_IDS.into_iter().collect(),
             validator_panel_report: None,
+            validator_panel_state: validator_ui::ValidatorPanelState::default(),
             parameter_canonical_source: String::new(),
             parameter_provenance: None,
             parameter_last_recomputed_nodes: BTreeSet::new(),
@@ -9653,7 +9667,7 @@ impl KetchupApp {
         exact_results: &ExactResultRegistry,
         selection: &AssistantValidationSelection,
     ) -> serde_json::Value {
-        ketchup_application::validation::assistant_validation_context(
+        ketchup_application::validation::assistant_validation_context_with_worker(
             snapshot,
             exact_results,
             &ketchup_application::validation::AssistantValidationSelection {
@@ -9661,6 +9675,9 @@ impl KetchupApp {
                 requested: selection.requested.clone(),
                 unknown: selection.unknown.clone(),
             },
+            &self.container_data,
+            self.validator_worker_path(),
+            Duration::from_secs(30),
         )
     }
 
@@ -10340,6 +10357,12 @@ impl KetchupApp {
                         tag: source.tag(),
                         visible: source.visible(),
                     });
+                    if let Some(color) = source.color() {
+                        commands.push(CanonicalCommand::SetOccurrenceColor {
+                            id: occurrence,
+                            color: Some(color),
+                        });
+                    }
                     next_occurrence = occurrence.0.checked_add(1);
                 }
             }
@@ -12313,6 +12336,7 @@ impl KetchupApp {
                 source_parent: source.parent(),
                 source_tag: source.tag(),
                 source_visible: source.visible(),
+                source_color: source.color(),
                 next_occurrence_id,
                 existing_definition_occurrence_count,
             })
@@ -12370,6 +12394,7 @@ impl KetchupApp {
                 source_parent: source.parent(),
                 source_tag: source.tag(),
                 source_visible: source.visible(),
+                source_color: source.color(),
                 next_occurrence_id,
                 existing_definition_occurrence_count,
             })
@@ -12427,6 +12452,7 @@ impl KetchupApp {
                 source_parent: source.parent(),
                 source_tag: source.tag(),
                 source_visible: source.visible(),
+                source_color: source.color(),
                 next_occurrence_id,
                 existing_definition_occurrence_count,
             })
@@ -19176,9 +19202,16 @@ impl KetchupApp {
                 transform,
             }
         };
+        let mut commands = vec![command];
+        if copy && let Some(color) = source.color() {
+            commands.push(CanonicalCommand::SetOccurrenceColor {
+                id: target_id,
+                color: Some(color),
+            });
+        }
         if self
             .document
-            .apply_batch(&CommandBatch::new(vec![command]))
+            .apply_batch(&CommandBatch::new(commands))
             .is_err()
         {
             return false;
@@ -19414,9 +19447,16 @@ impl KetchupApp {
                 transform,
             }
         };
+        let mut commands = vec![command];
+        if copy && let Some(color) = source.color() {
+            commands.push(CanonicalCommand::SetOccurrenceColor {
+                id: target_id,
+                color: Some(color),
+            });
+        }
         if self
             .document
-            .apply_batch(&CommandBatch::new(vec![command]))
+            .apply_batch(&CommandBatch::new(commands))
             .is_err()
         {
             return false;
@@ -19982,6 +20022,12 @@ impl KetchupApp {
                 tag: source.source_tag,
                 visible: source.source_visible,
             });
+            if let Some(color) = source.source_color {
+                commands.push(CanonicalCommand::SetOccurrenceColor {
+                    id,
+                    color: Some(color),
+                });
+            }
         }
         Some(LinearPatternPlan {
             source: source.clone(),
@@ -20128,7 +20174,12 @@ impl KetchupApp {
             .into_iter()
             .find(|item| item.instance_path == InstancePath::root(plan.source.occurrence_id))?;
         let mut boxes = BTreeMap::new();
-        for (command_index, command) in plan.commands.iter().enumerate() {
+        for (command_index, command) in plan
+            .commands
+            .iter()
+            .filter(|command| matches!(command, CanonicalCommand::CreateOccurrence { .. }))
+            .enumerate()
+        {
             let CanonicalCommand::CreateOccurrence { id, .. } = command else {
                 return None;
             };
@@ -20268,6 +20319,12 @@ impl KetchupApp {
                     tag: source.source_tag,
                     visible: source.source_visible,
                 });
+                if let Some(color) = source.source_color {
+                    commands.push(CanonicalCommand::SetOccurrenceColor {
+                        id,
+                        color: Some(color),
+                    });
+                }
             }
         }
         Some(RectangularPatternPlan {
@@ -20460,7 +20517,10 @@ impl KetchupApp {
             .into_iter()
             .find(|item| item.instance_path == InstancePath::root(plan.source.occurrence_id))?;
         let mut boxes = BTreeMap::new();
-        let mut commands = plan.commands.iter();
+        let mut commands = plan
+            .commands
+            .iter()
+            .filter(|command| matches!(command, CanonicalCommand::CreateOccurrence { .. }));
         for primary_index in 0..plan.primary_count {
             for secondary_index in 0..plan.secondary_count {
                 if primary_index == 0 && secondary_index == 0 {
@@ -20627,6 +20687,12 @@ impl KetchupApp {
                 tag: source.source_tag,
                 visible: source.source_visible,
             });
+            if let Some(color) = source.source_color {
+                commands.push(CanonicalCommand::SetOccurrenceColor {
+                    id,
+                    color: Some(color),
+                });
+            }
         }
         Some(CircularPatternPlan {
             source: source.clone(),
@@ -20801,7 +20867,10 @@ impl KetchupApp {
             .into_iter()
             .find(|item| item.instance_path == InstancePath::root(plan.source.occurrence_id))?;
         let mut boxes = BTreeMap::new();
-        let mut commands = plan.commands.iter();
+        let mut commands = plan
+            .commands
+            .iter()
+            .filter(|command| matches!(command, CanonicalCommand::CreateOccurrence { .. }));
         for index in 1..plan.count {
             let Some(CanonicalCommand::CreateOccurrence { id, .. }) = commands.next() else {
                 return None;
@@ -21550,6 +21619,7 @@ impl KetchupApp {
             .map(|source_occurrence_id| {
                 let occurrence = snapshot.occurrence(source_occurrence_id)?;
                 Some(CutClipboardOccurrence {
+                    color: occurrence.color(),
                     source_occurrence_id,
                     definition_id: occurrence.definition_id(),
                     transform: occurrence.transform(),
@@ -21659,7 +21729,7 @@ impl KetchupApp {
             } else {
                 None
             };
-            let (definition_id, source_transform, parent, tag, visible) =
+            let (definition_id, source_transform, parent, tag, visible, color) =
                 if let Some(source) = cut_source {
                     (
                         source.definition_id,
@@ -21667,6 +21737,7 @@ impl KetchupApp {
                         source.parent,
                         source.tag,
                         source.visible,
+                        source.color,
                     )
                 } else {
                     let source = live_source?;
@@ -21676,6 +21747,7 @@ impl KetchupApp {
                         source.parent(),
                         source.tag(),
                         source.visible(),
+                        source.color(),
                     )
                 };
             let definition = snapshot.definition(definition_id)?;
@@ -21705,6 +21777,12 @@ impl KetchupApp {
                 tag,
                 visible,
             });
+            if let Some(color) = color {
+                commands.push(CanonicalCommand::SetOccurrenceColor {
+                    id: target_id,
+                    color: Some(color),
+                });
+            }
             pasted.push((target_id, definition_id));
         }
         Some(PasteSourcePlan {
@@ -21812,6 +21890,12 @@ impl KetchupApp {
                 tag: source.tag(),
                 visible: source.visible(),
             });
+            if let Some(color) = source.color() {
+                commands.push(CanonicalCommand::SetOccurrenceColor {
+                    id: target_id,
+                    color: Some(color),
+                });
+            }
             duplicated.push((target_id, definition.id()));
         }
         Some(DuplicateSourcePlan {
@@ -21826,7 +21910,12 @@ impl KetchupApp {
     fn apply_duplicate_source_plan(&mut self, plan: DuplicateSourcePlan) -> bool {
         if plan.source_revision != self.document.current().revision_id()
             || plan.source_occurrence_count != plan.source_occurrence_ids.len()
-            || plan.commands.len() != plan.source_occurrence_count
+            || plan
+                .commands
+                .iter()
+                .filter(|command| matches!(command, CanonicalCommand::CreateOccurrence { .. }))
+                .count()
+                != plan.source_occurrence_count
             || plan.duplicated.len() != plan.source_occurrence_count
             || self.duplicate_source_plan().as_ref() != Some(&plan)
         {
@@ -27320,12 +27409,22 @@ impl KetchupApp {
             .into_iter()
             .map(|occurrence| occurrence.instance_path)
             .collect::<BTreeSet<_>>();
+        let occurrence_colors = snapshot
+            .scene_query()
+            .into_iter()
+            .filter_map(|occurrence| {
+                occurrence
+                    .color()
+                    .map(|[r, g, b]| (occurrence.instance_path, Color32::from_rgb(r, g, b)))
+            })
+            .collect::<BTreeMap<_, _>>();
         let mut faces = Vec::new();
         let mut edges = Vec::new();
         let viewport_boxes = self.viewport_boxes(exact_projection);
         for item in viewport_boxes.iter().cloned() {
             let item = self.render_box(item);
             let proxy_preview = self.proxy_preview_is_active(&item);
+            let occurrence_color = occurrence_colors.get(&item.instance_path).copied();
             let out_of_context = !active_context_paths.contains(&item.instance_path);
             let needs_cpu_overlay = !camera_dragging
                 && (self.selection.contains(&item.instance_path)
@@ -27379,7 +27478,7 @@ impl KetchupApp {
                     faces.push(ProjectedFace {
                         selection,
                         polygon: ProjectedPolygon::Quad(points),
-                        color: face.color,
+                        color: occurrence_color.unwrap_or(face.color),
                         depth,
                         previewed: (self.has_preview()
                             && self.preview_definition_id == Some(item.definition_id)
@@ -27425,6 +27524,7 @@ impl KetchupApp {
                             }))
             })
         {
+            let occurrence_color = occurrence_colors.get(&occurrence.instance_path).copied();
             let out_of_context = !active_context_paths.contains(&occurrence.instance_path);
             let needs_cpu_overlay = !camera_dragging
                 && (self.selection.contains(&occurrence.instance_path)
@@ -27546,7 +27646,7 @@ impl KetchupApp {
                             element,
                         },
                         polygon: ProjectedPolygon::Triangle(projected),
-                        color: face_color_from_normal(normal),
+                        color: occurrence_color.unwrap_or_else(|| face_color_from_normal(normal)),
                         depth: points_mm
                             .into_iter()
                             .map(|point| point_depth(point, forward))
@@ -27576,6 +27676,7 @@ impl KetchupApp {
                         .contains_occurrence(&occurrence.instance_path)
             })
         {
+            let occurrence_color = occurrence_colors.get(&occurrence.instance_path).copied();
             let out_of_context = !active_context_paths.contains(&occurrence.instance_path);
             let needs_cpu_overlay = !camera_dragging
                 && (self.selection.contains(&occurrence.instance_path)
@@ -27661,7 +27762,7 @@ impl KetchupApp {
                         element: face_element_from_normal(normal),
                     },
                     polygon: ProjectedPolygon::Triangle(projected),
-                    color: face_color_from_normal(normal),
+                    color: occurrence_color.unwrap_or_else(|| face_color_from_normal(normal)),
                     depth: corners
                         .into_iter()
                         .map(|point| point_depth(point, forward))
@@ -29591,6 +29692,9 @@ impl KetchupApp {
                 color
             };
             fills.push(color);
+            if self.xray_visible {
+                continue;
+            }
             let base = u32::try_from(underlay.vertices.len())
                 .expect("a viewport face mesh must fit in u32 indices");
             let points = face.polygon.points();
@@ -29602,7 +29706,8 @@ impl KetchupApp {
                 underlay.add_triangle(base, base + index, base + index + 1);
             }
         }
-        if !underlay.indices.is_empty() {
+        // Xray must blend each face once, not both the seam underlay and fill.
+        if !self.xray_visible && !underlay.indices.is_empty() {
             painter.add(egui::Shape::mesh(underlay));
         }
         for (face, color) in faces.iter().zip(fills) {
@@ -31868,8 +31973,12 @@ impl KetchupApp {
 
     /// The findings of the last manual validator run, if one has been made.
     #[must_use]
-    pub const fn validator_panel_report(&self) -> Option<&ValidatorPanelReport> {
-        self.validator_panel_report.as_ref()
+    pub fn validator_panel_report(&self) -> Option<&ValidatorPanelReport> {
+        self.validator_panel_state
+            .report_source
+            .as_ref()
+            .filter(|source| source.matches(&self.document.current()))
+            .and(self.validator_panel_report.as_ref())
     }
 
     /// Runs the selected validators on the current document without mutating it.
@@ -31877,6 +31986,9 @@ impl KetchupApp {
     /// This is the same evidence the Assistant reads, so the operator can see
     /// exactly what a validator says without asking the Assistant first.
     pub fn run_validator_panel(&mut self) {
+        if self.validator_panel_pending() {
+            return;
+        }
         let snapshot = self.document.current();
         self.rebind_exact_results(&snapshot);
         let selection = AssistantValidationSelection {
@@ -31886,6 +31998,9 @@ impl KetchupApp {
         };
         let validation =
             self.assistant_validation_context(&snapshot, &self.exact_results, &selection);
+        self.validator_panel_state.report_source =
+            Some(validator_ui::ValidatorSnapshot::new(&snapshot));
+        self.validator_panel_state.notice = None;
         self.validator_panel_report = Some(validator_panel_report(&validation));
     }
 
@@ -31917,15 +32032,26 @@ impl KetchupApp {
         let run = self.catalog.text("validators-run");
         if ui
             .add_enabled(
-                !self.validator_panel_selection.is_empty(),
+                !self.validator_panel_pending() && !self.validator_panel_selection.is_empty(),
                 egui::Button::new(&run),
             )
             .clicked()
         {
-            self.run_validator_panel();
+            self.start_validator_panel(ui.ctx());
         }
-        let Some(report) = &self.validator_panel_report else {
-            ui.label(self.catalog.text("validators-not-run"));
+        if self.validator_panel_pending() {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label(self.catalog.text("validators-pending"));
+            });
+        }
+        if let Some(notice) = self.validator_panel_state.notice {
+            ui.label(self.catalog.text(notice));
+        }
+        let Some(report) = self.validator_panel_report() else {
+            if !self.validator_panel_pending() && self.validator_panel_state.notice.is_none() {
+                ui.label(self.catalog.text("validators-not-run"));
+            }
             return;
         };
         ui.label(
@@ -31958,7 +32084,11 @@ impl KetchupApp {
             ));
         }
         if report.findings.is_empty() {
-            ui.label(self.catalog.text("validators-no-findings"));
+            ui.label(self.catalog.text(if report.complete {
+                "validators-no-findings"
+            } else {
+                "validators-no-confirmed-findings"
+            }));
             return;
         }
         for finding in &report.findings {
@@ -34276,6 +34406,7 @@ impl KetchupApp {
     /// This is the single entry point used both by the windowed `eframe`
     /// integration and by the offscreen [`crate::testing::HeadlessShell`].
     pub fn ui(&mut self, context: &egui::Context) {
+        self.poll_validator_panel(context);
         self.refresh_exact_products(context);
         #[cfg(feature = "named-product-fixtures")]
         self.refresh_beam_m5_products(context);
@@ -34342,6 +34473,7 @@ impl KetchupApp {
                         self.show_feature_history(ui);
                         self.show_body_editor(ui);
                         self.show_assembly_editor(ui);
+                        self.show_occurrence_color_editor(ui);
                         self.show_parameter_editor(ui);
                         self.show_assistant(ui);
                         self.show_validator_panel(ui);
@@ -34370,6 +34502,7 @@ impl KetchupApp {
                         self.show_feature_history(ui);
                         self.show_body_editor(ui);
                         self.show_assembly_editor(ui);
+                        self.show_occurrence_color_editor(ui);
                         self.show_parameter_editor(ui);
                         self.show_outliner_without_assistant(ui);
                         self.show_validator_panel(ui);

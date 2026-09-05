@@ -1436,6 +1436,12 @@ impl StableDigest {
         self.optional_id(occurrence.parent.map(|id| id.0));
         self.optional_id(occurrence.tag.map(|id| id.0));
         self.byte(u8::from(occurrence.visible));
+        self.byte(u8::from(occurrence.color.is_some()));
+        if let Some(color) = occurrence.color {
+            for channel in color {
+                self.byte(channel);
+            }
+        }
     }
 
     fn group(&mut self, group: &Group) {
@@ -1462,6 +1468,12 @@ impl StableDigest {
         self.optional_id(occurrence.parent.map(|id| id.0));
         self.optional_id(occurrence.tag.map(|id| id.0));
         self.byte(u8::from(occurrence.visible));
+        self.byte(u8::from(occurrence.color.is_some()));
+        if let Some(color) = occurrence.color {
+            for channel in color {
+                self.byte(channel);
+            }
+        }
     }
 
     pub(super) fn authoritative_dependency(
@@ -2295,6 +2307,16 @@ impl StableDigest {
             CanonicalCommand::DeleteDrawingSheet { id } => {
                 self.byte(59);
                 self.u64(id.0);
+            }
+            CanonicalCommand::SetOccurrenceColor { id, color } => {
+                self.bytes(b"set-occurrence-color");
+                self.u64(id.0);
+                self.byte(u8::from(color.is_some()));
+                if let Some(color) = color {
+                    for channel in color {
+                        self.byte(*channel);
+                    }
+                }
             }
             CanonicalCommand::SetOccurrenceVisibility { id, visible } => {
                 self.byte(19);

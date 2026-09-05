@@ -1462,9 +1462,16 @@ pub struct Occurrence {
     pub(crate) parent: Option<GroupId>,
     pub(crate) tag: Option<TagId>,
     pub(crate) visible: bool,
+    pub(crate) color: Option<[u8; 3]>,
 }
 
 impl Occurrence {
+    /// Optional sRGB appearance override; never changes geometry.
+    #[must_use]
+    pub const fn color(&self) -> Option<[u8; 3]> {
+        self.color
+    }
+
     #[must_use]
     pub const fn id(&self) -> OccurrenceId {
         self.id
@@ -1540,9 +1547,16 @@ pub struct LocalOccurrence {
     pub(crate) parent: Option<LocalGroupId>,
     pub(crate) tag: Option<TagId>,
     pub(crate) visible: bool,
+    pub(crate) color: Option<[u8; 3]>,
 }
 
 impl LocalOccurrence {
+    /// Optional sRGB appearance override; never changes geometry.
+    #[must_use]
+    pub const fn color(&self) -> Option<[u8; 3]> {
+        self.color
+    }
+
     #[must_use]
     pub const fn key(&self) -> LocalOccurrenceKey {
         self.key
@@ -1784,6 +1798,15 @@ pub struct SceneOccurrence {
     pub local_parent: Option<LocalGroupId>,
     pub visible: bool,
     pub shared_occurrence_count: usize,
+    pub color: Option<[u8; 3]>,
+}
+
+impl SceneOccurrence {
+    /// Resolved inherited sRGB color for this projected occurrence.
+    #[must_use]
+    pub const fn color(&self) -> Option<[u8; 3]> {
+        self.color
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -2215,6 +2238,10 @@ pub enum CanonicalCommand {
     UpdateDrawingSheet(DrawingSheet),
     DeleteDrawingSheet {
         id: DrawingSheetId,
+    },
+    SetOccurrenceColor {
+        id: OccurrenceId,
+        color: Option<[u8; 3]>,
     },
     SetOccurrenceVisibility {
         id: OccurrenceId,
@@ -3416,6 +3443,7 @@ impl Snapshot {
                 parent: occurrence.parent,
                 local_parent: None,
                 visible,
+                color: occurrence.color,
                 shared_occurrence_count: 0,
             });
             project_local_occurrences(
@@ -3425,6 +3453,7 @@ impl Snapshot {
                 &instance_path,
                 world_transform,
                 visible,
+                occurrence.color,
                 &mut occurrences,
             );
         }
@@ -3608,6 +3637,7 @@ fn project_local_occurrences(
     owner_path: &InstancePath,
     owner_transform: Transform,
     owner_visible: bool,
+    owner_color: Option<[u8; 3]>,
     output: &mut Vec<SceneOccurrence>,
 ) {
     let definition = &product.definitions[&owner_definition_id];
@@ -3646,6 +3676,7 @@ fn project_local_occurrences(
             .and_then(|tag_id| product.tags.get(&tag_id))
             .is_none_or(|tag| tag.visible);
         let visible = owner_visible && local.visible && tag_visible;
+        let color = owner_color.or(local.color);
         output.push(SceneOccurrence {
             occurrence_id: root_occurrence_id,
             instance_path: path.clone(),
@@ -3656,6 +3687,7 @@ fn project_local_occurrences(
             parent: None,
             local_parent: local.parent,
             visible,
+            color,
             shared_occurrence_count: 0,
         });
         project_local_occurrences(
@@ -3665,6 +3697,7 @@ fn project_local_occurrences(
             &path,
             world_transform,
             visible,
+            color,
             output,
         );
     }
@@ -5368,6 +5401,7 @@ impl DocumentStore {
                             parent: *parent,
                             tag: *tag,
                             visible: *visible,
+                            color: None,
                         }),
                     );
                 }
@@ -5741,6 +5775,19 @@ impl DocumentStore {
                         .drawing_sheets
                         .remove(id)
                         .ok_or(CanonicalError::DrawingSheetNotFound(*id))?;
+                }
+                CanonicalCommand::SetOccurrenceColor { id, color } => {
+                    let occurrence = product
+                        .occurrences
+                        .get(id)
+                        .ok_or(CanonicalError::OccurrenceNotFound(*id))?;
+                    product.occurrences.insert(
+                        *id,
+                        Arc::new(Occurrence {
+                            color: *color,
+                            ..occurrence.as_ref().clone()
+                        }),
+                    );
                 }
                 CanonicalCommand::SetOccurrenceVisibility { id, visible } => {
                     let existing = product
@@ -11089,6 +11136,7 @@ fn clone_definition_and_repoint(
                 parent: local.parent,
                 tag: local.tag,
                 visible: local.visible,
+                color: local.color,
             }),
         );
     }
@@ -12288,6 +12336,7 @@ fn convert_group_to_component_model(
                     .map(|parent| LocalGroupId(parent.0)),
                 tag: occurrence.tag,
                 visible: occurrence.visible,
+                color: occurrence.color,
             }),
         );
     }
@@ -12307,6 +12356,7 @@ fn convert_group_to_component_model(
             parent: root.parent,
             tag: None,
             visible: true,
+            color: None,
         }),
     );
     Ok(())
@@ -14893,6 +14943,7 @@ fn authoritative_writes(
             | CanonicalCommand::DeleteOccurrence { id }
             | CanonicalCommand::SetOccurrenceTransform { id, .. }
             | CanonicalCommand::RenameEntity { id, .. }
+            | CanonicalCommand::SetOccurrenceColor { id, .. }
             | CanonicalCommand::SetOccurrenceVisibility { id, .. }
             | CanonicalCommand::SetOccurrenceTag { id, .. }
             | CanonicalCommand::RepointOccurrence { id, .. }
@@ -15398,6 +15449,7 @@ fn authoritative_dependencies(
             }
             CanonicalCommand::SetOccurrenceTransform { id, .. }
             | CanonicalCommand::RenameEntity { id, .. }
+            | CanonicalCommand::SetOccurrenceColor { id, .. }
             | CanonicalCommand::SetOccurrenceVisibility { id, .. } => {
                 dependencies.insert(AuthoritativeDependency::Occurrence(*id));
             }

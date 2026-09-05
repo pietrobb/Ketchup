@@ -47,16 +47,21 @@ use std::time::{Duration, Instant};
 
 const MAX_WORKER_REQUEST_LINE_BYTES: usize = MAX_EXACT_BREP_GRAPH_BYTES * 2 + 64 * 1024;
 
+mod pair_query;
+
 fn main() {
     let backend = ExactBackend::new();
     let stdin = io::stdin();
     let mut stdin = stdin.lock();
     let mut stdout = io::stdout().lock();
+    let mut pairs = pair_query::PairQuerySession::default();
     loop {
         let Ok(Some(line)) = read_bounded_request_line(&mut stdin) else {
             break;
         };
-        let response = handle_request(&backend, &line);
+        let response = pairs
+            .handle(&backend, &line)
+            .or_else(|| handle_request(&backend, &line));
         if let Some(response) = response
             && writeln!(stdout, "{response}")
                 .and_then(|()| stdout.flush())

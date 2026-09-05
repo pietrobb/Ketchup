@@ -1,6 +1,7 @@
 //! GUI-independent CAD planning, exact evaluation, validation and document sessions.
 
 mod append_feature;
+mod collision;
 mod creation;
 pub mod diagnostics;
 pub mod evaluation;

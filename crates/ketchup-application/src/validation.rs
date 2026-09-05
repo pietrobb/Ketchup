@@ -1881,10 +1881,15 @@ pub fn assistant_static_load_report(
     })
 }
 
-pub fn assistant_validation_context(
+pub use crate::collision::{
+    assistant_validation_context, assistant_validation_context_with_worker,
+};
+
+pub(crate) fn assistant_validation_context_base(
     snapshot: &Snapshot,
     exact_results: &ExactResultRegistry,
     selection: &AssistantValidationSelection,
+    collision: serde_json::Value,
 ) -> serde_json::Value {
     let tolerance = TolerancePolicy::default();
     let visible_occurrences = snapshot
@@ -2085,35 +2090,8 @@ pub fn assistant_validation_context(
         .and_then(|vector_m_s2| {
             GravitySupportInput::new(gravity_participants.clone(), vector_m_s2).ok()
         });
-    let mut cases = Vec::new();
-    if selection.requested.contains("collision") {
-        for left_index in 0..participants.len() {
-            for right in &participants[left_index + 1..] {
-                cases.push(
-                    GeneralClearanceCase::new(participants[left_index].clone(), right.clone(), 0.0)
-                        .expect("zero collision clearance is valid"),
-                );
-            }
-        }
-    }
-    let report = selection.requested.contains("collision").then(|| {
-        let validator = BuiltinGeneralBodyValidator::new(tolerance);
-        let policy = general_body_validation_policy();
-        let input = general_body_input_bytes(&cases);
-        let invocation = ValidationInvocation::bind(
-            snapshot,
-            validator.descriptor(),
-            &policy,
-            Vec::new(),
-            &input,
-        );
-        validator.invoke(ValidationExecution {
-            snapshot,
-            invocation,
-            policy: &policy,
-            input: &cases,
-        })
-    });
+    // Collision coverage and BRep evidence are independent of the bounded
+    // envelope participants used by the remaining structural validators.
     let gravity_report = selection
         .requested
         .contains("gravity_support")
@@ -2189,56 +2167,9 @@ pub fn assistant_validation_context(
         selection.requested.contains("static_load"),
         coverage_complete,
     );
-    let (collision_state, issue_count, issues) = if let Some(report) = &report {
-        let issue_count = report
-            .diagnostics
-            .iter()
-            .filter(|diagnostic| diagnostic.code == "collision.detected")
-            .count();
-        let issues = cases
-            .iter()
-            .zip(&report.diagnostics)
-            .filter(|(_, diagnostic)| diagnostic.code == "collision.detected")
-            .take(MAX_ASSISTANT_VALIDATION_ISSUES)
-            .map(|(case, diagnostic)| {
-                let left_id = case.left.instance_path().root_occurrence();
-                let right_id = case.right.instance_path().root_occurrence();
-                serde_json::json!({
-                    "code": diagnostic.code.as_str(),
-                    "severity": match diagnostic.severity {
-                        DiagnosticSeverity::Information => "information",
-                        DiagnosticSeverity::Advisory => "advisory",
-                        DiagnosticSeverity::Warning => "warning",
-                        DiagnosticSeverity::Error => "error",
-                    },
-                    "evidence_class": match &diagnostic.evidence_class {
-                        EvidenceClass::Exact => "exact",
-                        EvidenceClass::Tolerant(_) => "tolerant",
-                    },
-                    "left_occurrence_id": left_id.0,
-                    "left_name": names.get(&left_id),
-                    "right_occurrence_id": right_id.0,
-                    "right_name": names.get(&right_id),
-                    "evidence": diagnostic.evidence.as_str(),
-                })
-            })
-            .collect::<Vec<_>>();
-        let state = if report.state == ValidationState::Failed {
-            "failed"
-        } else if !coverage_complete {
-            "not_evaluated"
-        } else {
-            match report.state {
-                ValidationState::Passed => "passed",
-                ValidationState::Failed => "failed",
-                ValidationState::NotEvaluated => "not_evaluated",
-                ValidationState::Unavailable => "unavailable",
-            }
-        };
-        (state, issue_count, issues)
-    } else {
-        ("skipped", 0, Vec::new())
-    };
+    let collision_state = collision["state"].as_str().unwrap_or("not_evaluated");
+    let issue_count = collision["issue_count"].as_u64().unwrap_or(0) as usize;
+    let issues = collision["issues"].as_array().cloned().unwrap_or_default();
     let (gravity_state, gravity_issue_count, gravity_issues, gravity_assumptions) = if let Some(
         report,
     ) =
@@ -2335,11 +2266,13 @@ pub fn assistant_validation_context(
         ("static_load", static_load_state),
     ] {
         if selection.requested.contains(validator)
-            && (!coverage_complete || matches!(validator_state, "not_evaluated" | "unavailable"))
+            && ((validator == "collision" && collision["complete"].as_bool() != Some(true))
+                || (validator != "collision" && !coverage_complete)
+                || matches!(validator_state, "not_evaluated" | "unavailable"))
         {
             not_evaluated.push(serde_json::json!({
                 "validator": validator,
-                "reason": if coverage_complete {
+                "reason": if validator == "collision" || coverage_complete {
                     "validator_specific_context_unavailable"
                 } else {
                     "incomplete_geometry_coverage"
@@ -2358,7 +2291,8 @@ pub fn assistant_validation_context(
         passage_clearance_state,
         static_load_state,
     ]
-    .contains(&"failed")
+    .into_iter()
+    .any(|state| state == "failed")
     {
         "failed"
     } else if not_evaluated.is_empty() {
@@ -2366,10 +2300,10 @@ pub fn assistant_validation_context(
     } else {
         "not_evaluated"
     };
-    let complete = coverage_complete
+    let complete = (selection.requested.iter().all(|id| *id == "collision") || coverage_complete)
         && not_evaluated.is_empty()
         && (!selection.requested.contains("collision")
-            || issue_count <= MAX_ASSISTANT_VALIDATION_ISSUES)
+            || collision["complete"].as_bool() == Some(true))
         && (!selection.requested.contains("gravity_support")
             || gravity_issue_count <= MAX_ASSISTANT_VALIDATION_ISSUES)
         && (!selection.requested.contains("shelf_deflection")
@@ -2408,7 +2342,7 @@ pub fn assistant_validation_context(
     ] {
         all_issues.extend(report["issues"].as_array().into_iter().flatten().cloned());
     }
-    all_issues.truncate(MAX_ASSISTANT_VALIDATION_ISSUES);
+    // Collision issues are already resource-bounded and must not be silently truncated.
     serde_json::json!({
         "schema": "ketchup.assistant-validation-context.v1",
         "document_id": snapshot.document_id().0,
@@ -2424,26 +2358,14 @@ pub fn assistant_validation_context(
         "state": state,
         "complete": complete,
         "visible_occurrence_count": visible_occurrences.len(),
-        "checked_occurrence_count": participants.len(),
-        "checked_pair_count": cases.len(),
+        "checked_occurrence_count": if selection.requested.contains("collision") {
+            collision["checked_occurrence_count"].clone()
+        } else { serde_json::json!(participants.len()) },
+        "checked_pair_count": collision["checked_pair_count"],
         "issue_count": total_issue_count,
-        "issues_complete": total_issue_count <= MAX_ASSISTANT_VALIDATION_ISSUES,
+        "issues_complete": all_issues.len() == total_issue_count,
         "issues": all_issues,
-        "collision": {
-            "state": collision_state,
-            "complete": selection.requested.contains("collision")
-                && coverage_complete
-                && issue_count <= MAX_ASSISTANT_VALIDATION_ISSUES,
-            "checked_occurrence_count": if selection.requested.contains("collision") {
-                participants.len()
-            } else {
-                0
-            },
-            "checked_pair_count": cases.len(),
-            "issue_count": issue_count,
-            "issues_complete": issue_count <= MAX_ASSISTANT_VALIDATION_ISSUES,
-            "issues": issues,
-        },
+        "collision": collision,
         "gravity_support": {
             "state": gravity_state,
             "complete": selection.requested.contains("gravity_support")
@@ -2468,6 +2390,8 @@ pub fn assistant_validation_context(
         "room_placement": room_placement,
         "passage_clearance": passage_clearance,
         "static_load": static_load,
-        "unavailable_occurrences": unavailable,
+        "unavailable_occurrences": if selection.requested.iter().all(|id| *id == "collision") {
+            collision["unavailable_occurrences"].clone()
+        } else { serde_json::json!(unavailable) },
     })
 }

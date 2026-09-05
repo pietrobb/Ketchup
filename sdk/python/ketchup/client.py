@@ -378,6 +378,10 @@ class Document:
         return self.apply([{"operation": "copy", "selector": _selector(occurrence_ids),
                             "translation_mm": list(translation_mm)}])
 
+    def set_color(self, occurrence_ids, color):
+        return self.apply([{"operation": "set_color", "selector": _selector(occurrence_ids),
+                            "color": None if color is None else list(color)}])
+
     def set_grounded(self, occurrence_ids, grounded=True):
         return self._call("set_grounded", {"occurrence_ids": list(occurrence_ids), "grounded": grounded},
                           mutation=True, state=True)

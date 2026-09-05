@@ -134,6 +134,10 @@ pub fn plan_assistant_cad_edit_program(
         .unwrap_or(0)
         .checked_add(1);
 
+    let mut working_colors = snapshot
+        .occurrences()
+        .map(|o| (o.id(), o.color()))
+        .collect::<BTreeMap<_, _>>();
     for operation in &program.operations {
         let operation_name = match operation {
             AssistantCadEditOperation::CreateSketch { .. } => "create_sketch",
@@ -142,6 +146,7 @@ pub fn plan_assistant_cad_edit_program(
             AssistantCadEditOperation::SetDimension { .. } => "set_dimension",
             AssistantCadEditOperation::Delete { .. } => "delete_occurrence",
             AssistantCadEditOperation::Transform { .. } => "transform_occurrence",
+            AssistantCadEditOperation::SetColor { .. } => "set_color",
             AssistantCadEditOperation::Copy { .. } => "copy_occurrence",
             AssistantCadEditOperation::LinearPattern { .. } => "linear_pattern_occurrence",
             AssistantCadEditOperation::Mirror { .. } => "mirror_occurrence",
@@ -153,6 +158,7 @@ pub fn plan_assistant_cad_edit_program(
             | AssistantCadEditOperation::SetDimension { .. } => None,
             AssistantCadEditOperation::Delete { selector, .. }
             | AssistantCadEditOperation::Transform { selector, .. }
+            | AssistantCadEditOperation::SetColor { selector, .. }
             | AssistantCadEditOperation::Copy { selector, .. }
             | AssistantCadEditOperation::LinearPattern { selector, .. }
             | AssistantCadEditOperation::Mirror { selector, .. } => Some(selector),
@@ -388,6 +394,12 @@ pub fn plan_assistant_cad_edit_program(
                     commands.push(CanonicalCommand::SetOccurrenceTransform { id, transform });
                 }
             }
+            AssistantCadEditOperation::SetColor { color, .. } => {
+                for id in targets {
+                    working_colors.insert(id, *color);
+                    commands.push(CanonicalCommand::SetOccurrenceColor { id, color: *color });
+                }
+            }
             AssistantCadEditOperation::Copy { translation_mm, .. } => {
                 let delta = Vec3::new(translation_mm[0], translation_mm[1], translation_mm[2]);
                 for id in targets {
@@ -421,6 +433,12 @@ pub fn plan_assistant_cad_edit_program(
                         tag: source.tag(),
                         visible: source.visible(),
                     });
+                    if let Some(color) = working_colors[&id] {
+                        commands.push(CanonicalCommand::SetOccurrenceColor {
+                            id: occurrence_id,
+                            color: Some(color),
+                        });
+                    }
                 }
             }
             AssistantCadEditOperation::LinearPattern {
@@ -460,6 +478,12 @@ pub fn plan_assistant_cad_edit_program(
                             tag: source.tag(),
                             visible: source.visible(),
                         });
+                        if let Some(color) = working_colors[id] {
+                            commands.push(CanonicalCommand::SetOccurrenceColor {
+                                id: occurrence_id,
+                                color: Some(color),
+                            });
+                        }
                     }
                 }
             }
@@ -530,6 +554,12 @@ pub fn plan_assistant_cad_edit_program(
                         tag: source.tag(),
                         visible: source.visible(),
                     });
+                    if let Some(color) = working_colors[&id] {
+                        commands.push(CanonicalCommand::SetOccurrenceColor {
+                            id: occurrence_id,
+                            color: Some(color),
+                        });
+                    }
                 }
             }
         }

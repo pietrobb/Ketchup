@@ -2,7 +2,9 @@
 
 pub mod assistant;
 pub mod general;
+pub mod pair_query;
 pub mod plugin;
+pub use pair_query::{ExactPairCandidate, ExactPairQueryResult, ExactPairRelation};
 pub mod validator_runtime;
 
 use ketchup_core::assembly::AxialAttachmentKind;

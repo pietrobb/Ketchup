@@ -103,7 +103,8 @@ const SPATIAL_SWEEP_PATH_SCHEMA: u16 = 49;
 const PLANAR_FACE_ATTACHMENT_SCHEMA: u16 = 50;
 const AXIAL_ATTACHMENT_SCHEMA: u16 = 51;
 const FREE_WORKPLANE_SCHEMA: u16 = 52;
-pub const CURRENT_SCHEMA: u16 = FREE_WORKPLANE_SCHEMA;
+const OCCURRENCE_COLOR_SCHEMA: u16 = 53;
+pub const CURRENT_SCHEMA: u16 = OCCURRENCE_COLOR_SCHEMA;
 const COLLECTION_SCHEMA: u16 = 15;
 const TAG_SCHEMA: u16 = 14;
 const PERSISTENT_DIMENSION_SCHEMA: u16 = 13;
@@ -171,6 +172,7 @@ struct ProductSchemaCapabilities {
     planar_face_attachments: bool,
     axial_attachments: bool,
     free_workplanes: bool,
+    occurrence_colors: bool,
 }
 
 impl ProductSchemaCapabilities {
@@ -223,6 +225,7 @@ impl ProductSchemaCapabilities {
         planar_face_attachments: false,
         axial_attachments: false,
         free_workplanes: false,
+        occurrence_colors: false,
     };
 
     const fn current(schema: u16) -> Self {
@@ -275,6 +278,7 @@ impl ProductSchemaCapabilities {
             planar_face_attachments: schema >= PLANAR_FACE_ATTACHMENT_SCHEMA,
             axial_attachments: schema >= AXIAL_ATTACHMENT_SCHEMA,
             free_workplanes: schema >= FREE_WORKPLANE_SCHEMA,
+            occurrence_colors: schema >= OCCURRENCE_COLOR_SCHEMA,
         }
     }
 }
@@ -713,6 +717,12 @@ pub fn save(snapshot: &Snapshot) -> Vec<u8> {
         push_optional_id(&mut payload, occurrence.parent().map(|id| id.0));
         push_optional_id(&mut payload, occurrence.tag().map(|id| id.0));
         push_u8(&mut payload, u8::from(occurrence.visible()));
+        push_u8(&mut payload, u8::from(occurrence.color().is_some()));
+        if let Some(color) = occurrence.color() {
+            for channel in color {
+                push_u8(&mut payload, channel);
+            }
+        }
     }
     push_u32(&mut payload, product.joints.len() as u32);
     for joint in product.joints.values() {
@@ -1863,6 +1873,12 @@ fn write_occurrences(bytes: &mut Vec<u8>, product: &ProductModel) {
         push_optional_id(bytes, occurrence.parent().map(|id| id.0));
         push_optional_id(bytes, occurrence.tag().map(|id| id.0));
         push_u8(bytes, u8::from(occurrence.visible()));
+        push_u8(bytes, u8::from(occurrence.color().is_some()));
+        if let Some(color) = occurrence.color() {
+            for channel in color {
+                push_u8(bytes, channel);
+            }
+        }
     }
 }
 
@@ -2400,6 +2416,7 @@ fn load_document(
             | CUBIC_BEZIER_SEGMENT_PROFILE_SCHEMA
             | SPATIAL_SWEEP_PATH_SCHEMA
             | PLANAR_FACE_ATTACHMENT_SCHEMA
+            | FREE_WORKPLANE_SCHEMA
             | AXIAL_ATTACHMENT_SCHEMA
             | CURRENT_SCHEMA
     ) {
@@ -4309,6 +4326,11 @@ fn read_product(
             parent: reader.optional_id()?.map(GroupId),
             tag: reader.optional_id()?.map(TagId),
             visible: reader.boolean()?,
+            color: if capabilities.occurrence_colors && reader.boolean()? {
+                Some([reader.u8()?, reader.u8()?, reader.u8()?])
+            } else {
+                None
+            },
         };
         if product
             .occurrences
@@ -4359,6 +4381,11 @@ fn read_product(
                 parent: reader.optional_id()?.map(LocalGroupId),
                 tag: reader.optional_id()?.map(TagId),
                 visible: reader.boolean()?,
+                color: if capabilities.occurrence_colors && reader.boolean()? {
+                    Some([reader.u8()?, reader.u8()?, reader.u8()?])
+                } else {
+                    None
+                },
             };
             if product
                 .local_occurrences

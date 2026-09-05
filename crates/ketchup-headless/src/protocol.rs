@@ -107,7 +107,7 @@ impl Server {
         json!({"document_id":s.document_id().0,"revision":s.revision_id(),"canonical_digest":s.canonical_digest(),
             "undo_steps":self.session.visible_undo_steps(),"redo_steps":self.redo_steps,
             "definitions":s.definitions().map(|d| json!({"id":d.id().0,"name":d.name(),"feature_ids":d.feature_ids().iter().map(|id|id.0).collect::<Vec<_>>()})).collect::<Vec<_>>(),
-            "occurrences":s.occurrences().map(|o| json!({"id":o.id().0,"definition_id":o.definition_id().0,"name":o.name(),"transform":o.transform().matrix()})).collect::<Vec<_>>(),
+            "occurrences":s.occurrences().map(|o| json!({"id":o.id().0,"definition_id":o.definition_id().0,"name":o.name(),"transform":o.transform().matrix(),"color":o.color()})).collect::<Vec<_>>(),
             "features":s.features().map(|f| json!({"id":f.id().0,"definition_id":f.definition_id().0,"name":f.name(),"kind":format!("{:?}",f.kind()).split([' ', '{', '(']).next().unwrap_or("unknown")})).collect::<Vec<_>>(),
             "grounded_occurrence_ids":s.grounded_occurrences().map(|id|id.0).collect::<Vec<_>>()})
     }

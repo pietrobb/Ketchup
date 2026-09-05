@@ -2,7 +2,7 @@
 use crate::{
     evaluation::*,
     plan_assistant_cad_edit_program,
-    validation::{AssistantValidationSelection, assistant_validation_context},
+    validation::{AssistantValidationSelection, assistant_validation_context_with_worker},
 };
 use ketchup_core::assistant_sidecar::{AssistantCadEditProgram, AssistantRejectionDiagnostic};
 use ketchup_core::document::{
@@ -275,6 +275,13 @@ impl DocumentSession {
         .map_err(SessionError::Evaluation)
     }
     pub fn validators(&self, selection: &AssistantValidationSelection) -> serde_json::Value {
-        assistant_validation_context(&self.snapshot(), &self.exact_results, selection)
+        assistant_validation_context_with_worker(
+            &self.snapshot(),
+            &self.exact_results,
+            selection,
+            &self.container_data,
+            self.settings.exact_worker_path.clone(),
+            self.settings.evaluation_timeout,
+        )
     }
 }

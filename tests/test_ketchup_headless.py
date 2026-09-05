@@ -116,6 +116,19 @@ class ClientTests(unittest.TestCase):
         with self.assertRaises(SessionClosedError):
             doc.undo()
 
+    def test_set_color_uses_shared_apply_and_refreshes_guards(self):
+        process = FakeProcess()
+        doc = self.session(process).new_document()
+        for color in [(0, 128, 255), None]:
+            before = process.revision
+            doc.set_color([22, 23], color)
+            request = process.requests[-1]
+            self.assertEqual(request["method"], "apply")
+            self.assertEqual(request["params"]["expected_revision"], before)
+            self.assertEqual(request["params"]["program"]["operations"], [{
+                "operation": "set_color", "selector": {"type": "occurrences", "occurrence_ids": [22, 23]},
+                "color": None if color is None else list(color)}])
+
     def test_old_handle_invalid_after_replacement(self):
         process = FakeProcess()
         session = self.session(process)

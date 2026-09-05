@@ -563,6 +563,10 @@ pub enum AssistantCadEditOperation {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         rotation: Option<AssistantCadRotation>,
     },
+    SetColor {
+        selector: AssistantCadEntitySelector,
+        color: Option<[u8; 3]>,
+    },
     Copy {
         selector: AssistantCadEntitySelector,
         translation_mm: [f64; 3],
@@ -995,6 +999,7 @@ impl AssistantCadEditProgram {
                 | AssistantCadEditOperation::SetDimension { .. } => 0,
                 AssistantCadEditOperation::CreatePart { .. } => 1,
                 AssistantCadEditOperation::Delete { selector, .. }
+                | AssistantCadEditOperation::SetColor { selector, .. }
                 | AssistantCadEditOperation::Transform { selector, .. }
                 | AssistantCadEditOperation::Copy { selector, .. }
                 | AssistantCadEditOperation::LinearPattern { selector, .. }
@@ -1065,7 +1070,8 @@ impl AssistantCadEditProgram {
                     }
                     0
                 }
-                AssistantCadEditOperation::Delete { .. } => 0,
+                AssistantCadEditOperation::SetColor { .. }
+                | AssistantCadEditOperation::Delete { .. } => 0,
                 AssistantCadEditOperation::Transform {
                     translation_mm,
                     rotation,

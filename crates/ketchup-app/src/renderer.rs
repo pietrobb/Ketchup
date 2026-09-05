@@ -56,6 +56,8 @@ impl DerivedRenderCache {
 #[derive(Clone, Debug, PartialEq)]
 pub struct RenderInstance {
     pub transform: [f32; 16],
+    /// Optional persisted sRGB bytes; absent preserves the legacy shaded material.
+    pub color: Option<[u8; 3]>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -127,6 +129,14 @@ impl InstancedRenderPlan {
         transform_overrides: &BTreeMap<InstancePath, Transform>,
     ) -> Self {
         let projection = CanonicalInteractionProjection::from_snapshot(snapshot);
+        let colors = snapshot
+            .scene_query()
+            .into_iter()
+            .map(|occurrence| {
+                let color = occurrence.color();
+                (occurrence.instance_path, color)
+            })
+            .collect::<BTreeMap<_, _>>();
         let mut batches = BTreeMap::<(DefinitionId, String), RenderBatch>::new();
         let mut definition_geometries =
             BTreeMap::<DefinitionId, Vec<(String, Arc<RenderGeometry>)>>::new();
@@ -169,6 +179,7 @@ impl InstancedRenderPlan {
                     })
                     .instances
                     .push(RenderInstance {
+                        color: colors.get(&occurrence.instance_path).copied().flatten(),
                         transform: transform_f32(
                             transform_overrides
                                 .get(&occurrence.instance_path)
@@ -701,7 +712,7 @@ impl GpuInstancedRenderer {
             push_constant_ranges: &[],
         });
         let vertex_attributes = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x3, 3 => Float32x3];
-        let instance_attributes = wgpu::vertex_attr_array![4 => Float32x4, 5 => Float32x4, 6 => Float32x4, 7 => Float32x4];
+        let instance_attributes = wgpu::vertex_attr_array![4 => Float32x4, 5 => Float32x4, 6 => Float32x4, 7 => Float32x4, 8 => Float32x4];
         let create_pipeline = |label: &'static str, fragment_entry: &'static str, write_mask| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(label),
@@ -717,7 +728,7 @@ impl GpuInstancedRenderer {
                             attributes: &vertex_attributes,
                         },
                         wgpu::VertexBufferLayout {
-                            array_stride: 64,
+                            array_stride: 80,
                             step_mode: wgpu::VertexStepMode::Instance,
                             attributes: &instance_attributes,
                         },
@@ -1006,10 +1017,44 @@ fn vertex_bytes(vertices: &[RenderVertex]) -> Vec<u8> {
         .collect()
 }
 
+#[test]
+fn instance_color_bytes_keep_transform_stride_and_linear_srgb() {
+    let instances = [None, Some([0, 128, 255])].map(|color| RenderInstance {
+        transform: [0.0; 16],
+        color,
+    });
+    let bytes = instance_bytes(&instances);
+    assert_eq!(bytes.len(), 160);
+    let floats = bytes
+        .chunks_exact(4)
+        .map(|bytes| f32::from_ne_bytes(bytes.try_into().unwrap()))
+        .collect::<Vec<_>>();
+    assert_eq!(&floats[16..20], &[0.0; 4]);
+    assert_eq!(floats[36], 0.0);
+    assert!((floats[37] - 0.2158605).abs() < 0.000001);
+    assert_eq!(&floats[38..40], &[1.0, 1.0]);
+}
+
 fn instance_bytes(instances: &[RenderInstance]) -> Vec<u8> {
     instances
         .iter()
-        .flat_map(|instance| row_major_to_columns(instance.transform))
+        .flat_map(|instance| {
+            // Convert sRGB to linear exactly once per instance, not per vertex.
+            let color = instance.color.map_or([0.0; 4], |rgb| {
+                let linear = rgb.map(|byte| {
+                    let value = f32::from(byte) / 255.0;
+                    if value <= 0.04045 {
+                        value / 12.92
+                    } else {
+                        ((value + 0.055) / 1.055).powf(2.4)
+                    }
+                });
+                [linear[0], linear[1], linear[2], 1.0]
+            });
+            row_major_to_columns(instance.transform)
+                .into_iter()
+                .chain(color)
+        })
         .flat_map(f32::to_ne_bytes)
         .collect()
 }
@@ -1058,6 +1103,7 @@ struct VertexInput {
     @location(5) model_1: vec4<f32>,
     @location(6) model_2: vec4<f32>,
     @location(7) model_3: vec4<f32>,
+    @location(8) color: vec4<f32>,
 };
 
 struct VertexOutput {
@@ -1066,6 +1112,7 @@ struct VertexOutput {
     @location(1) barycentric: vec3<f32>,
     @location(2) @interpolate(flat) edge_mask: vec3<f32>,
     @location(3) view_depth: f32,
+    @location(4) @interpolate(flat) color: vec4<f32>,
 };
 
 @vertex
@@ -1077,6 +1124,7 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     output.world_normal = normalize((model * vec4<f32>(input.normal, 0.0)).xyz);
     output.barycentric = input.barycentric;
     output.edge_mask = input.edge_mask;
+    output.color = input.color;
     output.view_depth = dot(camera.view_depth, world_position);
     return output;
 }
@@ -1110,7 +1158,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     }
     let light_direction = normalize(vec3<f32>(-0.35, -0.45, 0.82));
     let diffuse = 0.62 + 0.38 * max(dot(normalize(input.world_normal), light_direction), 0.0);
-    let face_color = vec3<f32>(0.36, 0.42, 0.50) * diffuse;
+    let face_color = mix(vec3<f32>(0.36, 0.42, 0.50) * diffuse, input.color.rgb, input.color.a);
     let derivative = max(fwidth(input.barycentric), vec3<f32>(0.0001));
     let edge_distance = input.barycentric / derivative;
     let masked_distance = select(

@@ -171,7 +171,34 @@ fn body_contract_tail_len(snapshot: &Snapshot) -> usize {
 
 /// Product sections appended after schema 34, each written as a u32 count followed
 /// by its entries. This fixture holds none of them, so only the counts are removed.
-const EMPTY_TRAILING_SECTION_COUNTS: usize = 6;
+const EMPTY_TRAILING_SECTION_COUNTS: usize = 8;
+
+fn strip_schema_53_occurrence_colors(bytes: &mut Vec<u8>, snapshot: &Snapshot) {
+    // These legacy fixtures contain only uncolored root occurrences. Unlike tail
+    // sections, schema 53's color presence byte must be removed from each record.
+    assert_eq!(snapshot.local_occurrences().count(), 0);
+    for occurrence in snapshot.occurrences() {
+        assert_eq!(occurrence.color(), None);
+        let mut record_prefix = Vec::new();
+        record_prefix.extend_from_slice(&occurrence.id().0.to_le_bytes());
+        record_prefix.extend_from_slice(&occurrence.definition_id().0.to_le_bytes());
+        record_prefix.extend_from_slice(&(occurrence.name().len() as u32).to_le_bytes());
+        record_prefix.extend_from_slice(occurrence.name().as_bytes());
+        let offsets = bytes
+            .windows(record_prefix.len())
+            .enumerate()
+            .filter_map(|(offset, value)| (value == record_prefix).then_some(offset))
+            .collect::<Vec<_>>();
+        assert_eq!(offsets.len(), 1, "fixture occurrence record must be unique");
+        let color_offset = offsets[0]
+            + record_prefix.len()
+            + 16 * 8 // transform
+            + 1 + usize::from(occurrence.parent().is_some()) * 8
+            + 1 + usize::from(occurrence.tag().is_some()) * 8
+            + 1; // visibility
+        assert_eq!(bytes.remove(color_offset), 0, "absent color presence byte");
+    }
+}
 
 fn strip_schema_34_tail(bytes: &mut Vec<u8>, snapshot: &Snapshot) {
     bytes.truncate(
@@ -316,8 +343,9 @@ fn product_schema_round_trip_preserves_identity_hierarchy_values_and_digest() {
     let mut schema_fifteen = persistence::save(&expected);
     let manifest_length = u32::from_le_bytes(schema_fifteen[12..16].try_into().unwrap()) as usize;
     let payload_offset = 16 + manifest_length;
+    strip_schema_53_occurrence_colors(&mut schema_fifteen, &expected);
     strip_schema_34_tail(&mut schema_fifteen, &expected);
-    schema_fifteen.truncate(schema_fifteen.len() - 32);
+    schema_fifteen.truncate(schema_fifteen.len() - 24);
     schema_fifteen[10..12].copy_from_slice(&15_u16.to_le_bytes());
     let payload_length = (schema_fifteen.len() - payload_offset) as u64;
     schema_fifteen[16..24].copy_from_slice(&payload_length.to_le_bytes());
@@ -333,9 +361,10 @@ fn product_schema_round_trip_preserves_identity_hierarchy_values_and_digest() {
     let mut schema_nine = persistence::save(&expected);
     let manifest_length = u32::from_le_bytes(schema_nine[12..16].try_into().unwrap()) as usize;
     let payload_offset = 16 + manifest_length;
+    strip_schema_53_occurrence_colors(&mut schema_nine, &expected);
     strip_schema_34_tail(&mut schema_nine, &expected);
     schema_nine.drain(payload_offset + 25..payload_offset + 29);
-    schema_nine.truncate(schema_nine.len() - 44);
+    schema_nine.truncate(schema_nine.len() - 36);
     schema_nine[10..12].copy_from_slice(&9_u16.to_le_bytes());
     let payload_length = (schema_nine.len() - payload_offset) as u64;
     schema_nine[16..24].copy_from_slice(&payload_length.to_le_bytes());
@@ -4818,4 +4847,133 @@ fn v12_spatial_sweep_is_canonical_persistent_and_rejects_uncompilable_bounds() {
     ));
     assert_eq!(invalid.current().canonical_digest(), before);
     assert_eq!(invalid.visible_undo_steps(), 0);
+}
+
+#[test]
+fn occurrence_color_is_persisted_atomic_and_geometry_independent() {
+    let mut document = seed_product_document();
+    let before = document.current();
+    let color = Some([0, 128, 255]);
+    let batch = CommandBatch::new(vec![CanonicalCommand::SetOccurrenceColor {
+        id: FIRST,
+        color,
+    }]);
+    assert_ne!(
+        batch.digest(),
+        CommandBatch::new(vec![CanonicalCommand::SetOccurrenceColor {
+            id: FIRST,
+            color: None
+        }])
+        .digest()
+    );
+    let revision = document.apply_batch(&batch).unwrap();
+    assert!(revision.dirty_features().is_empty());
+    let colored = document.current();
+    assert_ne!(colored.canonical_digest(), before.canonical_digest());
+    assert_eq!(colored.occurrence(FIRST).unwrap().color(), color);
+    assert_eq!(colored.occurrence(SECOND).unwrap().color(), None);
+    assert_eq!(
+        colored.features().collect::<Vec<_>>(),
+        before.features().collect::<Vec<_>>()
+    );
+    let bytes = persistence::save(&colored);
+    assert_eq!(u16::from_le_bytes(bytes[10..12].try_into().unwrap()), 53);
+    let loaded = persistence::load(&bytes).unwrap();
+    assert_eq!(
+        loaded.document().canonical_digest(),
+        colored.canonical_digest()
+    );
+    document.undo().unwrap();
+    assert_eq!(
+        document.current().canonical_digest(),
+        before.canonical_digest()
+    );
+    document.redo().unwrap();
+    assert_eq!(
+        document.current().canonical_digest(),
+        colored.canonical_digest()
+    );
+    assert!(
+        document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::SetOccurrenceColor {
+                    id: FIRST,
+                    color: None
+                },
+                CanonicalCommand::SetOccurrenceColor {
+                    id: OccurrenceId(999),
+                    color
+                },
+            ]))
+            .is_err()
+    );
+    assert_eq!(
+        document.current().canonical_digest(),
+        colored.canonical_digest()
+    );
+    assert!(
+        document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::SetOccurrenceColor {
+                    id: FIRST,
+                    color: None
+                }
+            ]))
+            .unwrap()
+            .dirty_features()
+            .is_empty()
+    );
+    assert_eq!(
+        document.current().canonical_digest(),
+        before.canonical_digest()
+    );
+}
+
+#[test]
+fn component_conversion_and_unique_preserve_colors_and_resolve_root_override() {
+    let mut document = seed_product_document();
+    let color = Some([21, 42, 63]);
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetOccurrenceColor { id: FIRST, color },
+        ]))
+        .unwrap();
+    let conversion = document
+        .convert_group_to_component(GROUP, "Colored component")
+        .unwrap();
+    let root = conversion.component_occurrence_id;
+    let child_color = |snapshot: &Snapshot| {
+        snapshot
+            .scene_query()
+            .into_iter()
+            .find(|o| o.occurrence_id == root && !o.instance_path.steps().is_empty())
+            .unwrap()
+            .color()
+    };
+    assert_eq!(child_color(&document.current()), color);
+    document
+        .make_unique(root, "Unique colored component")
+        .unwrap();
+    assert_eq!(child_color(&document.current()), color);
+    let override_color = Some([255, 0, 0]);
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetOccurrenceColor {
+                id: root,
+                color: override_color,
+            },
+        ]))
+        .unwrap();
+    assert_eq!(child_color(&document.current()), override_color);
+    let loaded = persistence::load(&persistence::save(&document.current())).unwrap();
+    assert_eq!(child_color(&loaded.document()), override_color);
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetOccurrenceColor {
+                id: root,
+                color: None,
+            },
+        ]))
+        .unwrap();
+    assert_eq!(child_color(&document.current()), color);
 }

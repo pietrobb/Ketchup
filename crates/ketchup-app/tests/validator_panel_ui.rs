@@ -101,7 +101,7 @@ fn running_the_panel_reports_findings_that_name_the_offending_parts() {
     let digest_before = shell.app().canonical_digest();
     let undo_before = shell.app().undo_step_count();
     shell.click_button_label(&shell.catalog().text("validators-run"));
-    shell.settle();
+    wait_for_validation(&mut shell);
 
     let report = shell
         .app()
@@ -111,7 +111,7 @@ fn running_the_panel_reports_findings_that_name_the_offending_parts() {
     assert_eq!(report.revision, revision_before);
     assert_eq!(report.canonical_digest, digest_before);
     assert_eq!(report.executed, KetchupApp::validator_ids().to_vec());
-    assert_eq!(report.state, "failed");
+    assert_eq!(report.state, "failed", "{report:#?}");
     assert!(report.issue_count >= 1);
 
     let collision = report
@@ -149,7 +149,7 @@ fn the_panel_runs_only_the_validators_the_operator_selected() {
     assert_eq!(shell.app().validator_panel_selection(), vec!["collision"]);
 
     shell.click_button_label(&shell.catalog().text("validators-run"));
-    shell.settle();
+    wait_for_validation(&mut shell);
 
     let report = shell.app().validator_panel_report().unwrap();
     assert_eq!(report.executed, vec!["collision"]);
@@ -160,4 +160,14 @@ fn the_panel_runs_only_the_validators_the_operator_selected() {
             .all(|finding| finding.validator == "collision"),
         "a deselected validator must not report findings"
     );
+}
+
+fn wait_for_validation(shell: &mut Shell) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while shell.app().validator_panel_pending() {
+        assert!(std::time::Instant::now() < deadline, "validator timed out");
+        shell.step();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    shell.settle();
 }

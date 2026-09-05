@@ -349,3 +349,42 @@ def test_missing_worker_cannot_claim_exact_evaluation(native_paths, tmp_path):
         assert report["geometry"] == report["topology_geometry"] == []
         # Pure canonical validators may still use tolerant fallback geometry;
         # they are deliberately NOT treated as proof that OCCT ran.
+
+
+def test_persisted_colors_public_api_atomicity_and_geometry_cache(native_paths, tmp_path):
+    saved = tmp_path / "colors.ketchup"
+    with Session(*native_paths) as session:
+        doc = session.new_document()
+        created = doc.box("Colored part", 10, 20, 30)
+        occurrence_id, = created["created"]["occurrence_ids"]
+        baseline = doc.state
+        evaluated = doc.evaluate()
+        assert evaluated["complete"] is True
+        colored = doc.set_color([occurrence_id], [0, 128, 255])["state"]
+        assert colored["occurrences"][0]["color"] == [0, 128, 255]
+        assert colored["canonical_digest"] != baseline["canonical_digest"]
+        cached = doc.evaluate()
+        assert all(p[channel]["status"] == "current" for p in cached["producers"] for channel in ("render", "topology"))
+        assert cached["geometry"] == evaluated["geometry"]
+        assert doc.undo()["state"]["occurrences"][0]["color"] is None
+        assert doc.redo()["state"]["occurrences"][0]["color"] == [0, 128, 255]
+        for bad in ([256, 0, 0], [-1, 0, 0], [1.5, 0, 0], [1, 2], [True, 0, 0]):
+            before = doc.state
+            with pytest.raises(HeadlessError):
+                doc.set_color([occurrence_id], bad)
+            assert doc.state == before
+        before = doc.state
+        with pytest.raises(HeadlessError):
+            doc.set_color([occurrence_id, 999999], None)
+        assert doc.state == before
+        with pytest.raises(HeadlessError) as stale:
+            session._request("apply", {"expected_revision": baseline["revision"], "expected_digest": baseline["canonical_digest"],
+                "program": {"operations": [{"operation": "set_color", "selector": {"type": "occurrences", "occurrence_ids": [occurrence_id]}, "color": None}]}})
+        assert stale.value.code == "stale_state"
+        doc.copy([occurrence_id], [50, 0, 0])
+        assert all(o["color"] == [0, 128, 255] for o in doc.state["occurrences"])
+        doc.set_color([occurrence_id], None)
+        doc.save(saved)
+        expected = canonical(doc.state)
+    with Session(*native_paths) as session:
+        assert canonical(session.open_document(saved).state) == expected

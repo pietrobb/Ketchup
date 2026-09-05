@@ -15,6 +15,10 @@ struct NativeHistoryEvidence;
 struct NativeMeshTriangle;
 struct NativeMeshVertex;
 struct NativeTopologySummary;
+struct NativePairQuery;
+NativePairQuery query_body_pair_native(
+    const class NativeOperationResult& left,
+    const class NativeOperationResult& right) noexcept;
 
 class NativeOperationResult final {
 public:

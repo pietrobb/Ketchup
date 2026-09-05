@@ -709,3 +709,48 @@ fn interrupted_or_corrupt_primary_recovers_the_last_verified_container() {
     assert_eq!(recovered.snapshot().canonical_digest(), first_digest);
     assert!(recovered.audit().recovered_from_backup);
 }
+
+#[test]
+fn schema_52_occurrences_migrate_with_no_color() {
+    let mut store = DocumentStore::new();
+    let name = "Schema52UniqueOccurrenceMarker";
+    store
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DefinitionId(1),
+                name: "Legacy".into(),
+            },
+            CanonicalCommand::CreateOccurrence {
+                id: OccurrenceId(1),
+                definition_id: DefinitionId(1),
+                name: name.into(),
+                transform: Transform::identity(),
+                parent: None,
+                tag: None,
+                visible: true,
+            },
+        ]))
+        .unwrap();
+    let mut bytes = persistence::save(&store.current());
+    // Schema 52 has precisely the same record except for the new optional-color byte.
+    let name_offset = bytes
+        .windows(name.len())
+        .position(|b| b == name.as_bytes())
+        .unwrap();
+    let color_offset = name_offset + name.len() + 16 * 8 + 1 + 1 + 1;
+    assert_eq!(bytes.remove(color_offset), 0);
+    rewrite_envelope_schema(&mut bytes, 52);
+    let loaded = persistence::load(&bytes).unwrap();
+    assert_eq!(
+        loaded
+            .document()
+            .occurrence(OccurrenceId(1))
+            .unwrap()
+            .color(),
+        None
+    );
+    assert_eq!(
+        loaded.document().canonical_digest(),
+        store.current().canonical_digest()
+    );
+}

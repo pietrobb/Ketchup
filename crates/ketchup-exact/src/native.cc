@@ -4540,6 +4540,106 @@ std::unique_ptr<NativeOperationResult> boolean_bodies_native(
   });
 }
 
+NativePairQuery query_body_pair_native(
+    const NativeOperationResult& left, const NativeOperationResult& right) noexcept {
+  NativePairQuery result{};
+  result.status = STATUS_INVALID_SHAPE;
+  try {
+    if (!left.valid() || !right.valid() || left.impl().shape.IsNull() ||
+        right.impl().shape.IsNull() ||
+        count_subshapes(left.impl().shape, TopAbs_SOLID) == 0 ||
+        count_subshapes(right.impl().shape, TopAbs_SOLID) == 0) {
+      result.diagnostic = "Pair query requires valid solid bodies";
+      return result;
+    }
+    // Only actual native-handle identity permits bypassing Boolean Common.
+    if (&left == &right) {
+      if (!BRepCheck_Analyzer(left.impl().shape, true).IsValid()) {
+        result.diagnostic = "OCCT pair self query requires a verified solid";
+        return result;
+      }
+      GProp_GProps properties;
+      for (TopExp_Explorer solids(left.impl().shape, TopAbs_SOLID); solids.More(); solids.Next()) {
+        GProp_GProps solid_properties;
+        BRepGProp::VolumeProperties(solids.Current(), solid_properties);
+        properties.Add(solid_properties);
+      }
+      const double volume = properties.Mass();
+      if (!std::isfinite(volume) || volume <= 0.0) {
+        result.diagnostic = "OCCT pair self query requires finite positive volume";
+        return result;
+      }
+      result.common_volume_mm3 = volume;
+      result.distance_mm = 0.0;
+      result.status = STATUS_OK;
+      return result;
+    }
+    // Exact geometry bounds include shape tolerances, never render triangulation.
+    Bnd_Box left_bounds, right_bounds;
+    BRepBndLib::AddOptimal(left.impl().shape, left_bounds, false, true);
+    BRepBndLib::AddOptimal(right.impl().shape, right_bounds, false, true);
+    double volume = 0.0;
+    if (left_bounds.IsVoid() || right_bounds.IsVoid() || !left_bounds.IsOut(right_bounds)) {
+      // Non-destructive: the same native shapes are reused by subsequent pairs.
+      BRepAlgoAPI_Common common;
+      NCollection_List<TopoDS_Shape> arguments, tools;
+      arguments.Append(left.impl().shape);
+      tools.Append(right.impl().shape);
+      common.SetArguments(arguments);
+      common.SetTools(tools);
+      common.SetNonDestructive(true);
+      common.Build();
+      if (!common.IsDone() || common.HasErrors() || common.HasWarnings() || common.Shape().IsNull() ||
+          !BRepCheck_Analyzer(common.Shape(), true).IsValid()) {
+        result.diagnostic = "OCCT pair common did not produce a verified result";
+        return result;
+      }
+      // An empty compound is a successful common query, unlike Intersect features.
+      // Only solids contribute volume; face/edge/vertex contact has zero volume.
+      GProp_GProps properties;
+      for (TopExp_Explorer solids(common.Shape(), TopAbs_SOLID); solids.More(); solids.Next()) {
+        GProp_GProps solid_properties;
+        BRepGProp::VolumeProperties(solids.Current(), solid_properties);
+        properties.Add(solid_properties);
+      }
+      volume = properties.Mass();
+    }
+    if (!std::isfinite(volume) || volume < 0.0) {
+      result.diagnostic = "OCCT pair volume query failed";
+      return result;
+    }
+    // A verified positive common volume proves zero solid-set distance.
+    if (volume > 0.0) {
+      result.common_volume_mm3 = volume;
+      result.distance_mm = 0.0;
+      result.status = STATUS_OK;
+      return result;
+    }
+    // Bounds reject Boolean work only; preserve exact distance and contact tolerance.
+    // The two-shape constructor already performs the distance computation.
+    BRepExtrema_DistShapeShape distance(left.impl().shape, right.impl().shape);
+    if (!distance.IsDone() || distance.NbSolution() == 0 ||
+        !std::isfinite(distance.Value()) || distance.Value() < 0.0) {
+      result.diagnostic = "OCCT pair volume or distance query failed";
+      return result;
+    }
+    result.common_volume_mm3 = volume;
+    // Zero-volume common results still require the exact distance query.
+    result.distance_mm = distance.Value();
+    result.status = STATUS_OK;
+  } catch (const Standard_Failure& failure) {
+    result.status = STATUS_BACKEND_EXCEPTION;
+    result.diagnostic = standard_failure_message(failure);
+  } catch (const std::exception& failure) {
+    result.status = STATUS_BACKEND_EXCEPTION;
+    result.diagnostic = failure.what();
+  } catch (...) {
+    result.status = STATUS_BACKEND_EXCEPTION;
+    result.diagnostic = "Unknown native pair query failure";
+  }
+  return result;
+}
+
 rust::String export_step_native(
     const NativeOperationResult& body, rust::Str path) noexcept {
   try {

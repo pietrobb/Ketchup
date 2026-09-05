@@ -81,6 +81,132 @@ fn simple_extrusion_graph() -> ExactBRepGraph {
     ExactBRepGraph::from_snapshot(&document.current(), definition, extrusion).unwrap()
 }
 
+#[test]
+fn exact_pair_batch_reuses_graphs_and_handles_contact_containment_transforms_and_failure() {
+    use ketchup_scheduler::pair_query::EXACT_PAIR_IDENTITY;
+    use ketchup_scheduler::{ExactPairCandidate, ExactPairRelation};
+    let graph = simple_extrusion_graph();
+    let candidate = |dx: f64, dy: f64, dz: f64, scale: f64| {
+        let mut matrix = EXACT_PAIR_IDENTITY;
+        matrix[0] = scale;
+        matrix[5] = scale;
+        matrix[10] = scale;
+        matrix[3] = dx;
+        matrix[7] = dy;
+        matrix[11] = dz;
+        ExactPairCandidate {
+            left_graph: 0,
+            right_graph: 1,
+            left_transform: EXACT_PAIR_IDENTITY,
+            right_transform: matrix,
+        }
+    };
+    let candidates = vec![
+        candidate(20.0, 0.0, 0.0, 1.0),
+        candidate(4.0, 0.0, 0.0, 1.0),
+        candidate(1.0, 1.0, 1.0, 0.25),
+        candidate(8.0, 0.0, 0.0, 1.0),
+        candidate(8.0, 6.0, 0.0, 1.0),
+        candidate(8.0, 6.0, 5.0, 1.0),
+    ];
+    let graphs = vec![graph.clone(), graph]; // Deduplicated; worker rejects duplicate loads.
+    let mut worker =
+        ExactWorkerSupervisor::spawn(env!("CARGO_BIN_EXE_ketchup-exact-worker")).unwrap();
+    let results = worker
+        .query_exact_brep_pairs(&graphs, &candidates, &BTreeMap::new(), 1e-7)
+        .unwrap();
+    assert_eq!(
+        results.iter().map(|r| r.relation).collect::<Vec<_>>(),
+        vec![
+            ExactPairRelation::Separated,
+            ExactPairRelation::Penetrating,
+            ExactPairRelation::Penetrating,
+            ExactPairRelation::Touching,
+            ExactPairRelation::Touching,
+            ExactPairRelation::Touching
+        ]
+    );
+    assert!((results[0].distance_mm - 12.0).abs() < 1e-7);
+    assert!((results[1].common_volume_mm3 - 120.0).abs() < 1e-7);
+    assert!((results[2].common_volume_mm3 - 3.75).abs() < 1e-7);
+    assert_eq!(
+        results,
+        worker
+            .query_exact_brep_pairs(&graphs, &candidates, &BTreeMap::new(), 1e-7)
+            .unwrap()
+    );
+    let mut rotated = candidate(6.0, 0.0, 0.0, 1.0);
+    rotated.right_transform[0] = 0.0;
+    rotated.right_transform[1] = -1.0;
+    rotated.right_transform[4] = 1.0;
+    rotated.right_transform[5] = 0.0;
+    let result = worker
+        .query_exact_brep_pairs(&graphs, &[rotated], &BTreeMap::new(), 1e-7)
+        .unwrap();
+    assert!((result[0].common_volume_mm3 - 180.0).abs() < 1e-7);
+    // Parallel rotated boxes have overlapping world AABBs but a 1 mm gap.
+    let c = std::f64::consts::FRAC_1_SQRT_2;
+    let rotation = [
+        c, -c, 0.0, 0.0, c, c, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+    ];
+    let mut disjoint = candidate(0.0, 0.0, 0.0, 1.0);
+    disjoint.left_transform = rotation;
+    disjoint.right_transform = rotation;
+    disjoint.right_transform[3] = -7.0 * c;
+    disjoint.right_transform[7] = 7.0 * c;
+    let result = worker
+        .query_exact_brep_pairs(&graphs, &[disjoint], &BTreeMap::new(), 1e-7)
+        .unwrap();
+    assert_eq!(result[0].relation, ExactPairRelation::Separated);
+    assert!((result[0].distance_mm - 1.0).abs() < 1e-7);
+    let cancelled = AtomicBool::new(true);
+    assert!(matches!(
+        worker.query_exact_brep_pairs_with_cancellation(
+            &graphs,
+            &candidates,
+            &BTreeMap::new(),
+            1e-7,
+            &cancelled
+        ),
+        Err(WorkerError::Cancelled)
+    ));
+    assert_eq!(
+        results,
+        worker
+            .query_exact_brep_pairs(&graphs, &candidates, &BTreeMap::new(), 1e-7)
+            .unwrap()
+    ); // Pre-cancel leaves worker usable.
+    assert!(
+        worker
+            .query_exact_brep_pairs(
+                &graphs,
+                &[candidate(0.0, 0.0, 0.0, 0.0)],
+                &BTreeMap::new(),
+                1e-7
+            )
+            .is_err()
+    );
+    assert_eq!(
+        results,
+        worker
+            .query_exact_brep_pairs(&graphs, &candidates, &BTreeMap::new(), 1e-7)
+            .unwrap()
+    );
+    let oversized =
+        vec![candidates[0].clone(); ketchup_scheduler::pair_query::MAX_EXACT_PAIR_CANDIDATES + 1];
+    assert!(
+        worker
+            .query_exact_brep_pairs(&graphs, &oversized, &BTreeMap::new(), 1e-7)
+            .is_err()
+    );
+    assert_eq!(
+        results,
+        worker
+            .query_exact_brep_pairs(&graphs, &candidates, &BTreeMap::new(), 1e-7)
+            .unwrap()
+    );
+}
+
 fn generated_boolean_scales() -> Vec<[f64; 3]> {
     let mut samples = vec![[0.5, 0.75, 0.6], [1.0, 1.0, 1.0], [3.0, 2.5, 1.75]];
     let mut state = 0x4558_4143_5420_2026_u64;
@@ -534,6 +660,50 @@ fn worker_binds_multiple_imported_sources_by_digest_for_boolean_and_mesh() {
             if *matrix_bits == tool_transform.matrix().map(f64::to_bits)
     )));
     assert_ne!(target_definition, result_definition);
+    let pair_sources = sources
+        .iter()
+        .map(|source| (sha256_hex(source), source.clone()))
+        .collect::<BTreeMap<_, _>>();
+    let pair = ketchup_scheduler::ExactPairCandidate {
+        left_graph: 0,
+        right_graph: 0,
+        left_transform: ketchup_scheduler::pair_query::EXACT_PAIR_IDENTITY,
+        right_transform: ketchup_scheduler::pair_query::EXACT_PAIR_IDENTITY,
+    };
+    let pair_result = supervisor
+        .query_exact_brep_pairs(
+            std::slice::from_ref(&graph),
+            std::slice::from_ref(&pair),
+            &pair_sources,
+            1e-7,
+        )
+        .unwrap();
+    assert_eq!(
+        pair_result[0].relation,
+        ketchup_scheduler::ExactPairRelation::Penetrating
+    );
+    let mut corrupt_sources = pair_sources.clone();
+    corrupt_sources.values_mut().next().unwrap()[0] ^= 1;
+    assert!(
+        supervisor
+            .query_exact_brep_pairs(
+                std::slice::from_ref(&graph),
+                std::slice::from_ref(&pair),
+                &corrupt_sources,
+                1e-7
+            )
+            .is_err()
+    );
+    assert!(
+        supervisor
+            .query_exact_brep_pairs(
+                std::slice::from_ref(&graph),
+                &[pair],
+                &BTreeMap::new(),
+                1e-7
+            )
+            .is_err()
+    );
     let reversed_sources = [sources[1].as_slice(), sources[0].as_slice()];
     let package = supervisor
         .evaluate_exact_brep_graph_with_imported_sources(&graph, &reversed_sources)
