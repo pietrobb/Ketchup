@@ -485,12 +485,24 @@ fn assistant_builds_a_timber_frame_house_from_an_empty_document() {
     let outcome = persistence::load_file(&path).unwrap();
     assert!(outcome.is_editable());
     assert_eq!(outcome.snapshot().canonical_digest(), committed_digest);
+    publish_artifact("timber-frame-house.ketchup", &std::fs::read(&path).unwrap());
 
     // The whole build must unwind step by step back to the empty document.
     while shell.app().document_revision() > baseline_revision {
         assert!(shell.app_mut().undo());
     }
     assert_eq!(shell.app().canonical_digest(), baseline_digest);
+}
+
+/// Copy a produced artifact next to the operator when `KETCHUP_HOUSE_OUT` is set,
+/// so the proof house can be opened and inspected instead of only asserted on.
+fn publish_artifact(name: &str, bytes: &[u8]) {
+    let Some(directory) = std::env::var_os("KETCHUP_HOUSE_OUT") else {
+        return;
+    };
+    let directory = PathBuf::from(directory);
+    std::fs::create_dir_all(&directory).unwrap();
+    std::fs::write(directory.join(name), bytes).unwrap();
 }
 
 fn exact_worker_path() -> PathBuf {
@@ -674,6 +686,13 @@ fn the_timber_frame_house_projects_a_manufacturable_handoff() {
     let manufacturing =
         String::from_utf8(projection.manufacturing_export(&snapshot).unwrap()).unwrap();
     assert!(manufacturing.contains("kind=stock"));
+
+    publish_artifact("timber-frame-house-bom.txt", bom.as_bytes());
+    publish_artifact("timber-frame-house-drawings.svg", drawings.as_bytes());
+    publish_artifact(
+        "timber-frame-house-manufacturing.txt",
+        manufacturing.as_bytes(),
+    );
 }
 
 /// The window opening this scenario needs cannot be expressed today. Both
