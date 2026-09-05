@@ -191,7 +191,9 @@ impl KetchupApp {
                     label: self.catalog.text("feature-history-parameter-offset"),
                     value_mm: distance.millimetres(),
                 }],
-                WorkplaneSupport::Principal(_) | WorkplaneSupport::PlanarFace { .. } => Vec::new(),
+                WorkplaneSupport::Free
+                | WorkplaneSupport::Principal(_)
+                | WorkplaneSupport::PlanarFace { .. } => Vec::new(),
             },
             FeatureKind::Sketch(spec) => spec
                 .constraints

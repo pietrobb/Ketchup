@@ -573,6 +573,7 @@ impl StableDigest {
             FeatureKind::Workplane(spec) => {
                 self.byte(17);
                 match &spec.support {
+                    WorkplaneSupport::Free => self.byte(4),
                     WorkplaneSupport::Principal(plane) => {
                         self.byte(1);
                         self.byte(match plane {

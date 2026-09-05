@@ -69,6 +69,23 @@ pub(crate) fn plan_creation(
                 })?;
             *next_feature = sketch_id.0.checked_add(1);
             let workplane = match workplane {
+                AssistantWorkplaneSpec::Frame {
+                    origin_mm,
+                    x_axis,
+                    y_axis,
+                } => WorkplaneSpec {
+                    support: WorkplaneSupport::Free,
+                    frame: ketchup_core::sketch::WorkplaneFrame::from_axes(
+                        *origin_mm, *x_axis, *y_axis,
+                    )
+                    .map_err(|error| {
+                        assistant_canonical_rejection(
+                            CanonicalError::Sketch(error),
+                            operation_name,
+                            document_target,
+                        )
+                    })?,
+                },
                 AssistantWorkplaneSpec::Principal { plane } => {
                     WorkplaneSpec::principal(assistant_principal_plane(*plane))
                 }
@@ -188,6 +205,23 @@ pub(crate) fn plan_creation(
             })?;
             *next_occurrence = occurrence_id.0.checked_add(1);
             let workplane = match workplane {
+                AssistantWorkplaneSpec::Frame {
+                    origin_mm,
+                    x_axis,
+                    y_axis,
+                } => WorkplaneSpec {
+                    support: WorkplaneSupport::Free,
+                    frame: ketchup_core::sketch::WorkplaneFrame::from_axes(
+                        *origin_mm, *x_axis, *y_axis,
+                    )
+                    .map_err(|error| {
+                        assistant_canonical_rejection(
+                            CanonicalError::Sketch(error),
+                            operation_name,
+                            document_target,
+                        )
+                    })?,
+                },
                 AssistantWorkplaneSpec::Principal { plane } => {
                     WorkplaneSpec::principal(assistant_principal_plane(*plane))
                 }

@@ -898,7 +898,7 @@ impl FeatureKind {
     pub fn dependencies(&self) -> BTreeSet<FeatureId> {
         match self {
             Self::Workplane(spec) => match &spec.support {
-                WorkplaneSupport::Principal(_) => BTreeSet::new(),
+                WorkplaneSupport::Free | WorkplaneSupport::Principal(_) => BTreeSet::new(),
                 WorkplaneSupport::Offset { base, .. } => [*base].into_iter().collect(),
                 WorkplaneSupport::PlanarFace { reference, .. } => {
                     [reference.profile_feature_id, reference.producer_feature_id]
@@ -10823,7 +10823,7 @@ fn clone_definition_and_repoint(
             FeatureKind::Workplane(spec) => {
                 let mut cloned = spec.clone();
                 match &mut cloned.support {
-                    WorkplaneSupport::Principal(_) => {}
+                    WorkplaneSupport::Free | WorkplaneSupport::Principal(_) => {}
                     WorkplaneSupport::Offset { base, .. } => {
                         *base = *mapping.get(base).ok_or(CanonicalError::InvalidFeatureMap)?;
                     }
@@ -11273,7 +11273,7 @@ fn remap_exact_solid_tool_feature_kind(
         FeatureKind::Workplane(spec) => {
             let mut cloned = spec.clone();
             match &mut cloned.support {
-                WorkplaneSupport::Principal(_) => {}
+                WorkplaneSupport::Free | WorkplaneSupport::Principal(_) => {}
                 WorkplaneSupport::Offset { base, .. } => *base = mapped(base)?,
                 WorkplaneSupport::PlanarFace { .. } => {
                     return Err(CanonicalError::InvalidSolidToolPlan);
@@ -13823,7 +13823,7 @@ fn validate_product(product: &ProductModel) -> Result<(), CanonicalError> {
                 }
             }
             FeatureKind::Workplane(spec) => match &spec.support {
-                WorkplaneSupport::Principal(_) => {}
+                WorkplaneSupport::Free | WorkplaneSupport::Principal(_) => {}
                 WorkplaneSupport::PlanarFace { reference, health } => {
                     let producer = product.features.get(&reference.producer_feature_id).ok_or(
                         CanonicalError::Sketch(SketchError::InvalidPlanarFaceSupport),
@@ -15029,7 +15029,7 @@ fn authoritative_dependencies(
                 dependencies.insert(AuthoritativeDependency::Definition(*definition_id));
                 match kind {
                     FeatureKind::Workplane(spec) => match &spec.support {
-                        WorkplaneSupport::Principal(_) => {}
+                        WorkplaneSupport::Free | WorkplaneSupport::Principal(_) => {}
                         WorkplaneSupport::Offset { base, .. } => {
                             add_feature_dependency_closure(snapshot, *base, &mut dependencies);
                         }
@@ -15716,7 +15716,7 @@ fn add_feature_dependency_closure(
         dependencies.insert(AuthoritativeDependency::Definition(feature.definition_id()));
         match feature.kind() {
             FeatureKind::Workplane(spec) => match &spec.support {
-                WorkplaneSupport::Principal(_) => {}
+                WorkplaneSupport::Free | WorkplaneSupport::Principal(_) => {}
                 WorkplaneSupport::Offset { base, .. } => {
                     add_feature_dependency_closure(snapshot, *base, dependencies);
                 }

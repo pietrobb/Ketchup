@@ -102,7 +102,8 @@ const CUBIC_BEZIER_SEGMENT_PROFILE_SCHEMA: u16 = 48;
 const SPATIAL_SWEEP_PATH_SCHEMA: u16 = 49;
 const PLANAR_FACE_ATTACHMENT_SCHEMA: u16 = 50;
 const AXIAL_ATTACHMENT_SCHEMA: u16 = 51;
-pub const CURRENT_SCHEMA: u16 = AXIAL_ATTACHMENT_SCHEMA;
+const FREE_WORKPLANE_SCHEMA: u16 = 52;
+pub const CURRENT_SCHEMA: u16 = FREE_WORKPLANE_SCHEMA;
 const COLLECTION_SCHEMA: u16 = 15;
 const TAG_SCHEMA: u16 = 14;
 const PERSISTENT_DIMENSION_SCHEMA: u16 = 13;
@@ -169,6 +170,7 @@ struct ProductSchemaCapabilities {
     spatial_sweep_path: bool,
     planar_face_attachments: bool,
     axial_attachments: bool,
+    free_workplanes: bool,
 }
 
 impl ProductSchemaCapabilities {
@@ -220,6 +222,7 @@ impl ProductSchemaCapabilities {
         spatial_sweep_path: false,
         planar_face_attachments: false,
         axial_attachments: false,
+        free_workplanes: false,
     };
 
     const fn current(schema: u16) -> Self {
@@ -271,6 +274,7 @@ impl ProductSchemaCapabilities {
             spatial_sweep_path: schema >= SPATIAL_SWEEP_PATH_SCHEMA,
             planar_face_attachments: schema >= PLANAR_FACE_ATTACHMENT_SCHEMA,
             axial_attachments: schema >= AXIAL_ATTACHMENT_SCHEMA,
+            free_workplanes: schema >= FREE_WORKPLANE_SCHEMA,
         }
     }
 }
@@ -1251,6 +1255,7 @@ fn write_ids(bytes: &mut Vec<u8>, ids: impl Iterator<Item = u64>) {
 
 fn write_workplane(bytes: &mut Vec<u8>, spec: &WorkplaneSpec) {
     match &spec.support {
+        WorkplaneSupport::Free => push_u8(bytes, 4),
         WorkplaneSupport::Principal(plane) => {
             push_u8(bytes, 1);
             push_u8(
@@ -2394,6 +2399,8 @@ fn load_document(
             | CUBIC_BEZIER_SKETCH_SCHEMA
             | CUBIC_BEZIER_SEGMENT_PROFILE_SCHEMA
             | SPATIAL_SWEEP_PATH_SCHEMA
+            | PLANAR_FACE_ATTACHMENT_SCHEMA
+            | AXIAL_ATTACHMENT_SCHEMA
             | CURRENT_SCHEMA
     ) {
         return Err(PersistenceError::UnsupportedSchema(schema));
@@ -3242,8 +3249,12 @@ fn read_import_receipt(
     .map_err(|_| PersistenceError::InvalidCanonicalData(CanonicalError::InvalidImportReceipt))
 }
 
-fn read_workplane(reader: &mut Reader<'_>) -> Result<WorkplaneSpec, PersistenceError> {
+fn read_workplane(
+    reader: &mut Reader<'_>,
+    free_workplanes: bool,
+) -> Result<WorkplaneSpec, PersistenceError> {
     let support = match reader.u8()? {
+        4 if free_workplanes => WorkplaneSupport::Free,
         1 => WorkplaneSupport::Principal(match reader.u8()? {
             1 => PrincipalPlane::Xy,
             2 => PrincipalPlane::Yz,
@@ -3860,7 +3871,9 @@ fn read_product(
         let definition_id = DefinitionId(reader.u64()?);
         let name = reader.string()?;
         let kind = match reader.u8()? {
-            17 if capabilities.workplane_sketch => FeatureKind::Workplane(read_workplane(reader)?),
+            17 if capabilities.workplane_sketch => {
+                FeatureKind::Workplane(read_workplane(reader, capabilities.free_workplanes)?)
+            }
             18 if capabilities.workplane_sketch => FeatureKind::Sketch(read_sketch(
                 reader,
                 capabilities.sketch_constraint_vocabulary,

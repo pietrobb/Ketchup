@@ -41,6 +41,8 @@ pub enum WorkplaneSupportHealth {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum WorkplaneSupport {
+    /// An authoritative frame with no upstream geometric support.
+    Free,
     Principal(PrincipalPlane),
     Offset {
         base: FeatureId,
@@ -61,6 +63,22 @@ pub struct WorkplaneFrame {
 }
 
 impl WorkplaneFrame {
+    /// Construct a right-handed frame without normalizing or repairing input axes.
+    pub fn from_axes(
+        origin_mm: [f64; 3],
+        x_axis: [f64; 3],
+        y_axis: [f64; 3],
+    ) -> Result<Self, SketchError> {
+        let frame = Self {
+            origin_mm,
+            x_axis,
+            y_axis,
+            normal: cross(x_axis, y_axis),
+        };
+        frame.validate()?;
+        Ok(frame)
+    }
+
     #[must_use]
     pub const fn principal(plane: PrincipalPlane) -> Self {
         match plane {
@@ -139,6 +157,7 @@ impl WorkplaneSpec {
     pub fn validate_local(&self) -> Result<(), SketchError> {
         self.frame.validate()?;
         match &self.support {
+            WorkplaneSupport::Free => Ok(()),
             WorkplaneSupport::Principal(plane)
                 if self.frame == WorkplaneFrame::principal(*plane) =>
             {

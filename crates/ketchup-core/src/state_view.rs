@@ -792,6 +792,9 @@ pub fn encode_semantic_state_with_results(
                 use crate::sketch::WorkplaneSupport;
                 writeln!(complete, "feature.{}.kind=workplane", feature.id().0).unwrap();
                 match &spec.support {
+                    WorkplaneSupport::Free => {
+                        writeln!(complete, "feature.{}.support=free", feature.id().0).unwrap();
+                    }
                     WorkplaneSupport::Principal(plane) => {
                         writeln!(
                             complete,
@@ -935,6 +938,7 @@ pub fn encode_semantic_state_with_results(
                 )
                 .unwrap();
                 let support = match &spec.support {
+                    WorkplaneSupport::Free => format!("free,frame:{:?}", spec.frame),
                     WorkplaneSupport::Principal(plane) => format!("principal:{plane:?}"),
                     WorkplaneSupport::Offset { base, distance } => format!(
                         "offset:base:{},distance_bits:{:016x}",

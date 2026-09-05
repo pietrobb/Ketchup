@@ -155,6 +155,11 @@ pub enum AssistantPrincipalPlane {
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum AssistantWorkplaneSpec {
+    Frame {
+        origin_mm: [f64; 3],
+        x_axis: [f64; 3],
+        y_axis: [f64; 3],
+    },
     Principal {
         plane: AssistantPrincipalPlane,
     },
@@ -633,6 +638,13 @@ impl AssistantCadRotation {
 impl AssistantWorkplaneSpec {
     fn validate(&self) -> Result<(), String> {
         match self {
+            Self::Frame {
+                origin_mm,
+                x_axis,
+                y_axis,
+            } => crate::sketch::WorkplaneFrame::from_axes(*origin_mm, *x_axis, *y_axis)
+                .map(|_| ())
+                .map_err(|_| "assistant workplane frame is invalid".to_owned()),
             Self::Principal { .. } => Ok(()),
             Self::Offset {
                 base_feature_id,

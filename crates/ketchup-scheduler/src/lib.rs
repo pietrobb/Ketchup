@@ -632,6 +632,9 @@ const EXACT_BREP_GRAPH_CAPABILITY_V12: &str = "EXACT_BREP_GRAPH_V12";
 pub const MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCES: usize = 64;
 pub const MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCE_BYTES: u64 = 128 * 1024 * 1024;
 const DEFAULT_WORKER_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+// General graph operations may rebuild many sequential exact Boolean features.
+// Keep this finite and separate from handshake/simple-call latency limits.
+const EXACT_BREP_GRAPH_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct StepFeatureExportSpec {
@@ -1230,7 +1233,8 @@ impl ExactWorkerClient {
         };
         let mut request = format!("{operation} {} {}", graph.graph_digest, hex_encode(&bytes));
         append_exact_brep_graph_sources(&mut request, imported_sources);
-        let response = self.request_with_cancellation(&request, cancelled)?;
+        let response =
+            self.request_with_timeout(&request, cancelled, EXACT_BREP_GRAPH_REQUEST_TIMEOUT)?;
         let expected_protocol = match graph.schema.as_str() {
             EXACT_BREP_GRAPH_SCHEMA_V6 | EXACT_BREP_GRAPH_SCHEMA_V7 => "OK_BREP_GRAPH_V6",
             EXACT_BREP_GRAPH_SCHEMA_V8 => "OK_BREP_GRAPH_V8",
@@ -1276,7 +1280,8 @@ impl ExactWorkerClient {
             hex_encode(output_path.to_string_lossy().as_bytes())
         );
         append_exact_brep_graph_sources(&mut request, imported_sources);
-        let response = self.request_with_cancellation(&request, cancelled)?;
+        let response =
+            self.request_with_timeout(&request, cancelled, EXACT_BREP_GRAPH_REQUEST_TIMEOUT)?;
         let fields = response.split_whitespace().collect::<Vec<_>>();
         if matches!(fields.first(), Some(&"ERR") | Some(&"ERR_DETAIL")) {
             return Err(parse_error_response(&response, &fields));
@@ -1343,7 +1348,8 @@ impl ExactWorkerClient {
             hex_encode(output_path.to_string_lossy().as_bytes())
         );
         append_exact_brep_graph_sources(&mut request, imported_sources);
-        let response = self.request_with_cancellation(&request, cancelled)?;
+        let response =
+            self.request_with_timeout(&request, cancelled, EXACT_BREP_GRAPH_REQUEST_TIMEOUT)?;
         match parse_exact_brep_graph_step_acknowledgment(
             &response,
             expected_protocol,
@@ -2639,9 +2645,19 @@ impl ExactWorkerClient {
         request: &str,
         cancelled: &AtomicBool,
     ) -> Result<String, WorkerError> {
-        let deadline = Instant::now() + DEFAULT_WORKER_REQUEST_TIMEOUT;
-        self.write_request_until_with_cancellation(request, deadline, cancelled)?;
-        match self.next_response_until_with_cancellation(deadline, cancelled)? {
+        self.request_with_timeout(request, cancelled, DEFAULT_WORKER_REQUEST_TIMEOUT)
+    }
+
+    fn request_with_timeout(
+        &mut self,
+        request: &str,
+        cancelled: &AtomicBool,
+        timeout: Duration,
+    ) -> Result<String, WorkerError> {
+        // Writing and receiving share one budget; cancellation still polls at 10 ms.
+        let deadline = Instant::now() + timeout;
+        self.write_request_until_with_cancellation(request, deadline, cancelled, timeout)?;
+        match self.next_response_until_with_cancellation(deadline, cancelled, timeout)? {
             WorkerResponse::Line(response) => Ok(response),
             WorkerResponse::Exited => self.fail(WorkerError::WorkerExited),
             WorkerResponse::TooLarge => self.fail(WorkerError::ResponseLineTooLarge {
@@ -2655,7 +2671,12 @@ impl ExactWorkerClient {
     }
 
     fn write_request_until(&mut self, request: &str, deadline: Instant) -> Result<(), WorkerError> {
-        self.write_request_until_with_cancellation(request, deadline, &NEVER_CANCELLED)
+        self.write_request_until_with_cancellation(
+            request,
+            deadline,
+            &NEVER_CANCELLED,
+            DEFAULT_WORKER_REQUEST_TIMEOUT,
+        )
     }
 
     fn write_request_until_with_cancellation(
@@ -2663,6 +2684,7 @@ impl ExactWorkerClient {
         request: &str,
         deadline: Instant,
         cancelled: &AtomicBool,
+        timeout: Duration,
     ) -> Result<(), WorkerError> {
         self.ensure_not_cancelled(cancelled)?;
         let (acknowledgment, receiver) = mpsc::channel();
@@ -2683,7 +2705,7 @@ impl ExactWorkerClient {
             self.ensure_not_cancelled(cancelled)?;
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
-                return self.fail(WorkerError::RequestTimedOut(DEFAULT_WORKER_REQUEST_TIMEOUT));
+                return self.fail(WorkerError::RequestTimedOut(timeout));
             }
             match receiver.recv_timeout(remaining.min(CANCELLATION_POLL_INTERVAL)) {
                 Ok(result) => {
@@ -2706,19 +2728,24 @@ impl ExactWorkerClient {
     }
 
     fn next_response_until(&mut self, deadline: Instant) -> Result<WorkerResponse, WorkerError> {
-        self.next_response_until_with_cancellation(deadline, &NEVER_CANCELLED)
+        self.next_response_until_with_cancellation(
+            deadline,
+            &NEVER_CANCELLED,
+            DEFAULT_WORKER_REQUEST_TIMEOUT,
+        )
     }
 
     fn next_response_until_with_cancellation(
         &mut self,
         deadline: Instant,
         cancelled: &AtomicBool,
+        timeout: Duration,
     ) -> Result<WorkerResponse, WorkerError> {
         loop {
             self.ensure_not_cancelled(cancelled)?;
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
-                return self.fail(WorkerError::RequestTimedOut(DEFAULT_WORKER_REQUEST_TIMEOUT));
+                return self.fail(WorkerError::RequestTimedOut(timeout));
             }
             match self
                 .response_receiver
@@ -3308,17 +3335,17 @@ impl ExactWorkerSupervisor {
             &result.result_fingerprint,
             mesh_file.path(),
             imported_sources,
-            &NEVER_CANCELLED,
+            cancelled,
         ) {
             Ok(mesh) => mesh,
             Err(error) if error.permits_restart() => {
-                self.client = Self::spawn_verified_client(&self.executable, &NEVER_CANCELLED)?;
+                self.client = Self::spawn_verified_client(&self.executable, cancelled)?;
                 self.client.tessellate_exact_brep_graph_with_cancellation(
                     graph,
                     &result.result_fingerprint,
                     mesh_file.path(),
                     imported_sources,
-                    &NEVER_CANCELLED,
+                    cancelled,
                 )?
             }
             Err(error) => return Err(error),
@@ -7262,6 +7289,9 @@ fn is_fnv1a64_digest(value: &str) -> bool {
             .bytes()
             .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
 }
+
+#[cfg(test)]
+mod request_timeout_tests;
 
 #[cfg(test)]
 mod tests {
