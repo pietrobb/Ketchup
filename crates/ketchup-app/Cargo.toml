@@ -18,6 +18,7 @@ named-product-fixtures = [
 [dependencies]
 eframe = { version = "0.32.3", default-features = false, features = ["accesskit", "default_fonts", "wgpu"] }
 ketchup-core = { path = "../ketchup-core" }
+ketchup-application = { path = "../ketchup-application" }
 ketchup-interaction = { path = "../ketchup-interaction" }
 ketchup-scheduler = { path = "../ketchup-scheduler" }
 serde = { version = "1.0", features = ["derive"] }

@@ -1683,6 +1683,7 @@ dependencies = [
  "eframe",
  "egui_kittest",
  "getrandom 0.3.4",
+ "ketchup-application",
  "ketchup-core",
  "ketchup-interaction",
  "ketchup-scheduler",
@@ -1694,6 +1695,15 @@ dependencies = [
  "tempfile",
  "wgpu",
  "winreg",
+]
+
+[[package]]
+name = "ketchup-application"
+version = "0.1.0"
+dependencies = [
+ "ketchup-core",
+ "ketchup-interaction",
+ "serde_json",
 ]
 
 [[package]]

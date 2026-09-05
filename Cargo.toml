@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/ketchup-app", "crates/ketchup-core", "crates/ketchup-exact", "crates/ketchup-interaction", "crates/ketchup-scheduler"]
+members = ["crates/ketchup-app", "crates/ketchup-application", "crates/ketchup-core", "crates/ketchup-exact", "crates/ketchup-interaction", "crates/ketchup-scheduler"]
 resolver = "3"
 
 [workspace.package]

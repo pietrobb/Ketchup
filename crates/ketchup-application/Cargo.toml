@@ -1,0 +1,18 @@
+[package]
+name = "ketchup-application"
+description = "GUI-independent canonical CAD application planning for Ketchup"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+ketchup-core = { path = "../ketchup-core" }
+ketchup-interaction = { path = "../ketchup-interaction" }
+
+[dev-dependencies]
+serde_json = "1.0"
+
+[lints]
+workspace = true
