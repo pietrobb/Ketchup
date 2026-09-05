@@ -832,13 +832,40 @@ impl<'a> GraphCompiler<'a> {
                 target,
                 profile,
                 depth,
-            } => ExactBRepOperation::ProfileCut {
-                target: self.compile_body(*target)?,
-                profile: self.compile_profile(*profile, None, identity_frame())?,
-                depth_bits: Some(positive_distance(depth.millimetres())?),
-                interval: linear_interval([0.0, 0.0, 1.0], 0.0, depth.millimetres())?,
-                support_lineage_digest: None,
-            },
+            } => {
+                let target = self.compile_body(*target)?;
+                let (profile, direction) = match self
+                    .snapshot
+                    .feature(*profile)
+                    .map(|feature| feature.kind())
+                {
+                    Some(FeatureKind::Sketch(sketch)) => {
+                        let regions = sketch
+                            .solved_regions()
+                            .map_err(|_| ExactBRepGraphError::UnsupportedProfile(*profile))?;
+                        let [region] = regions.as_slice() else {
+                            return Err(ExactBRepGraphError::UnsupportedProfile(*profile));
+                        };
+                        let (profile, _, direction) = self.compile_sketch_profile(
+                            *profile,
+                            region.id,
+                            FeatureDirection::AlongNormal,
+                        )?;
+                        (profile, direction)
+                    }
+                    _ => (
+                        self.compile_profile(*profile, None, identity_frame())?,
+                        [0.0, 0.0, 1.0],
+                    ),
+                };
+                ExactBRepOperation::ProfileCut {
+                    target,
+                    profile,
+                    depth_bits: Some(positive_distance(depth.millimetres())?),
+                    interval: linear_interval(direction, 0.0, depth.millimetres())?,
+                    support_lineage_digest: None,
+                }
+            }
             FeatureKind::Boolean {
                 operation,
                 target,

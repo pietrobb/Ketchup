@@ -1,18 +1,23 @@
 [package]
 name = "ketchup-application"
-description = "GUI-independent canonical CAD application planning for Ketchup"
+description = "GUI-independent canonical CAD application sessions for Ketchup"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+default = []
+named-product-fixtures = ["ketchup-core/named-product-fixtures", "ketchup-scheduler/named-product-fixtures"]
+
 [dependencies]
 ketchup-core = { path = "../ketchup-core" }
 ketchup-interaction = { path = "../ketchup-interaction" }
-
-[dev-dependencies]
+ketchup-scheduler = { path = "../ketchup-scheduler", default-features = false }
+serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+tempfile = "3.23.0"
 
 [lints]
 workspace = true

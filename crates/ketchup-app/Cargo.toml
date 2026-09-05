@@ -13,6 +13,7 @@ private-oauth = ["ketchup-core/private-oauth", "ketchup-scheduler/private-oauth"
 named-product-fixtures = [
     "ketchup-core/named-product-fixtures",
     "ketchup-scheduler/named-product-fixtures",
+    "ketchup-application/named-product-fixtures",
 ]
 
 [dependencies]

@@ -1,0 +1,21 @@
+[package]
+name = "ketchup-headless"
+description = "GUI-free JSON-lines CAD document session CLI"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+ketchup-application = { path = "../ketchup-application" }
+ketchup-core = { path = "../ketchup-core" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+[build-dependencies]
+syn = { version = "2", features = ["full"] }
+serde_json = "1.0"
+
+[lints]
+workspace = true

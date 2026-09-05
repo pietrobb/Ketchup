@@ -13553,17 +13553,24 @@ fn validate_product(product: &ProductModel) -> Result<(), CanonicalError> {
                     .features
                     .get(&profile)
                     .ok_or(CanonicalError::FeatureNotFound(profile))?;
-                let valid_depth = matches!(
-                    &target.kind,
-                    FeatureKind::Extrusion { height, .. }
-                        if depth.millimetres() < height.millimetres()
-                );
+                let valid_depth = match &profile.kind {
+                    FeatureKind::Sketch(sketch) => {
+                        feature_kind_is_solid(&target.kind)
+                            && sketch
+                                .solved_regions()
+                                .is_ok_and(|regions| regions.len() == 1)
+                    }
+                    _ => {
+                        matches!(&target.kind, FeatureKind::Extrusion { height, .. } if depth.millimetres() < height.millimetres())
+                    }
+                };
                 if target.definition_id != feature.definition_id
                     || profile.definition_id != feature.definition_id
                     || !valid_depth
                     || !matches!(
                         profile.kind,
                         FeatureKind::Profile { .. }
+                            | FeatureKind::Sketch(_)
                             | FeatureKind::SegmentProfile { closed: true, .. }
                     )
                 {

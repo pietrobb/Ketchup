@@ -1703,7 +1703,10 @@ version = "0.1.0"
 dependencies = [
  "ketchup-core",
  "ketchup-interaction",
+ "ketchup-scheduler",
+ "serde",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]
@@ -1724,6 +1727,17 @@ version = "0.1.0"
 dependencies = [
  "cxx",
  "cxx-build",
+]
+
+[[package]]
+name = "ketchup-headless"
+version = "0.1.0"
+dependencies = [
+ "ketchup-application",
+ "ketchup-core",
+ "serde",
+ "serde_json",
+ "syn 2.0.119",
 ]
 
 [[package]]

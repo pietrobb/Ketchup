@@ -3131,6 +3131,20 @@ impl ExactWorkerSupervisor {
         graph: &ExactBRepGraph,
         sources: &[&[u8]],
     ) -> Result<ExactBRepGraphPackage, WorkerError> {
+        self.evaluate_exact_brep_graph_with_imported_sources_and_cancellation(
+            graph,
+            sources,
+            &NEVER_CANCELLED,
+        )
+    }
+
+    pub fn evaluate_exact_brep_graph_with_imported_sources_and_cancellation(
+        &mut self,
+        graph: &ExactBRepGraph,
+        sources: &[&[u8]],
+        cancelled: &AtomicBool,
+    ) -> Result<ExactBRepGraphPackage, WorkerError> {
+        self.client.ensure_not_cancelled(cancelled)?;
         let mut expected = BTreeMap::<String, u64>::new();
         let mut source_order = Vec::new();
         for node in &graph.nodes {
@@ -3167,6 +3181,7 @@ impl ExactWorkerSupervisor {
         let mut supplied = BTreeMap::<String, &[u8]>::new();
         let mut total_bytes = 0_u64;
         for source in sources {
+            self.client.ensure_not_cancelled(cancelled)?;
             let source_len = source.len() as u64;
             total_bytes = total_bytes.checked_add(source_len).ok_or_else(|| {
                 WorkerError::Protocol(
@@ -3184,6 +3199,7 @@ impl ExactWorkerSupervisor {
         }
         let mut source_files = Vec::with_capacity(source_order.len());
         for source_sha256 in source_order {
+            self.client.ensure_not_cancelled(cancelled)?;
             let expected_len = expected[&source_sha256];
             let Some(source) = supplied.remove(&source_sha256) else {
                 return Err(WorkerError::Protocol(
@@ -3215,27 +3231,28 @@ impl ExactWorkerSupervisor {
             .iter()
             .map(|(source_sha256, source)| (source_sha256.as_str(), source.path()))
             .collect::<Vec<_>>();
-        self.evaluate_exact_brep_graph_from_sources(graph, &source_paths)
+        self.evaluate_exact_brep_graph_from_sources(graph, &source_paths, cancelled)
     }
 
     fn evaluate_exact_brep_graph_from_sources(
         &mut self,
         graph: &ExactBRepGraph,
         imported_sources: &[(&str, &Path)],
+        cancelled: &AtomicBool,
     ) -> Result<ExactBRepGraphPackage, WorkerError> {
-        self.client.ensure_not_cancelled(&NEVER_CANCELLED)?;
+        self.client.ensure_not_cancelled(cancelled)?;
         let result = match self.client.evaluate_exact_brep_graph_with_cancellation(
             graph,
             imported_sources,
-            &NEVER_CANCELLED,
+            cancelled,
         ) {
             Ok(result) => result,
             Err(error) if error.permits_restart() => {
-                self.client = Self::spawn_verified_client(&self.executable, &NEVER_CANCELLED)?;
+                self.client = Self::spawn_verified_client(&self.executable, cancelled)?;
                 self.client.evaluate_exact_brep_graph_with_cancellation(
                     graph,
                     imported_sources,
-                    &NEVER_CANCELLED,
+                    cancelled,
                 )?
             }
             Err(error) => return Err(error),
