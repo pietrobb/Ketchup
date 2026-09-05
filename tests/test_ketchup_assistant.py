@@ -1730,6 +1730,8 @@ def test_provider_payloads_expose_only_the_read_only_inspection_tools(monkeypatc
             "measure_bounds",
             "plan_placement",
             "plan_linear_array",
+            "list_validators",
+            "run_validators",
         ]
         assert "delete" not in json.dumps(payload["tools"]).lower()
         assert "shell" not in json.dumps(payload["tools"]).lower()
@@ -2261,3 +2263,134 @@ def test_provider_rejects_mutations_that_do_not_exactly_match_planned_linear_arr
     )
     with pytest.raises(assistant.ProtocolError, match="planned (linear )?array"):
         assistant.send_public_request(provider, model, message, ())
+
+
+def validator_tool_context():
+    context = tool_context()
+    context["validation"] = {
+        "schema": "ketchup.assistant-validation-context.v1",
+        "document_id": 7,
+        "revision": 4,
+        "canonical_digest": "a" * 64,
+        "selection_mode": "all",
+        "validators": [
+            {
+                "id": "collision",
+                "checks": "solid bodies that overlap each other instead of touching",
+            },
+            {
+                "id": "gravity_support",
+                "checks": "parts that are not carried, directly or transitively, by the ground",
+            },
+            {
+                "id": "tipping",
+                "checks": "free-standing bodies that tip below the minimum safe tilt angle",
+            },
+        ],
+        "requested": ["collision", "gravity_support", "tipping"],
+        "executed": ["collision", "gravity_support"],
+        "skipped": ["tipping"],
+        "not_evaluated": [
+            {"validator": "tipping", "reason": "incomplete_geometry_coverage"}
+        ],
+        "state": "failed",
+        "complete": False,
+        "issue_count": 1,
+        "collision": {
+            "state": "passed",
+            "complete": True,
+            "issues_complete": True,
+            "issues": [],
+        },
+        "gravity_support": {
+            "state": "failed",
+            "complete": True,
+            "issues_complete": True,
+            "issues": [
+                {
+                    "code": "gravity.unsupported",
+                    "severity": "error",
+                    "occurrence_id": 8,
+                    "name": "Cap",
+                    "rule": "every body must rest on the ground or on something that does",
+                }
+            ],
+        },
+        "tipping": {
+            "state": "not_evaluated",
+            "complete": False,
+            "issues_complete": True,
+            "issues": [],
+        },
+    }
+    return context
+
+
+def validator_tool_message(context=None, question="Which checks can you run?"):
+    context = validator_tool_context() if context is None else context
+    return (
+        f'<document-context>{json.dumps(context, ensure_ascii=False, sort_keys=True)}'
+        f"</document-context>\n\n{question}"
+    )
+
+
+def test_list_validators_names_every_validator_and_what_it_checks():
+    result = assistant._read_only_tool_result(validator_tool_message(), "list_validators", {})
+    assert result["tool"] == "list_validators"
+    assert result["revision"] == 4
+    assert result["canonical_digest"] == "a" * 64
+    assert [entry["id"] for entry in result["validators"]] == [
+        "collision",
+        "gravity_support",
+        "tipping",
+    ]
+    assert all(entry["checks"] for entry in result["validators"])
+    assert [entry["already_run_on_this_revision"] for entry in result["validators"]] == [
+        True,
+        True,
+        False,
+    ]
+
+
+def test_run_validators_returns_named_findings_and_honest_not_evaluated_states():
+    result = assistant._read_only_tool_result(
+        validator_tool_message(question="Is it standing up?"),
+        "run_validators",
+        {"validators": ["gravity_support", "tipping"]},
+    )
+    assert result["tool"] == "run_validators"
+    assert result["revision"] == 4
+    gravity, tipping = result["results"]
+    assert gravity["validator"] == "gravity_support"
+    assert gravity["state"] == "failed"
+    assert gravity["evidence_complete"] is True
+    assert gravity["issue_count"] == 1
+    assert gravity["issues"][0]["name"] == "Cap"
+    assert tipping["state"] == "skipped"
+    assert tipping["evidence_complete"] is False
+    assert tipping["not_evaluated_reason"] == "incomplete_geometry_coverage"
+
+
+def test_validator_tools_are_fail_closed_on_unknown_names_and_missing_reports():
+    message = validator_tool_message()
+    with pytest.raises(assistant.ProtocolError, match="unknown validator"):
+        assistant._read_only_tool_result(message, "run_validators", {"validators": ["shell"]})
+    with pytest.raises(assistant.ProtocolError, match="missing or unknown fields"):
+        assistant._read_only_tool_result(message, "run_validators", {"names": ["collision"]})
+    with pytest.raises(assistant.ProtocolError, match="arguments are invalid"):
+        assistant._read_only_tool_result(message, "run_validators", {"validators": []})
+    with pytest.raises(assistant.ProtocolError, match="no arguments"):
+        assistant._read_only_tool_result(message, "list_validators", {"validators": ["collision"]})
+
+    without_catalog = validator_tool_context()
+    without_catalog["validation"].pop("validators")
+    with pytest.raises(assistant.ProtocolError, match="validator catalog"):
+        assistant._read_only_tool_result(
+            validator_tool_message(without_catalog), "list_validators", {}
+        )
+
+    without_validation = tool_context()
+    with pytest.raises(assistant.ProtocolError, match="no validation report"):
+        assistant._read_only_tool_result(
+            validator_tool_message(without_validation), "list_validators", {}
+        )

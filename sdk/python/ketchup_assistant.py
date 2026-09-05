@@ -14,6 +14,7 @@ if __package__ in (None, ""):
 from ketchup_assistant_protocol import (  # noqa: E402
     AssistantSidecarBase,
     INSPECT_DOCUMENT_PARAMETERS,
+    LIST_VALIDATORS_PARAMETERS,
     MAX_INSPECT_ROUNDS,
     MAX_LINE_BYTES,
     MAX_MESSAGE_CHARS,
@@ -22,6 +23,7 @@ from ketchup_assistant_protocol import (  # noqa: E402
     PLAN_LINEAR_ARRAY_PARAMETERS,
     PLAN_PLACEMENT_PARAMETERS,
     PROJECT_MEMORY_SCHEMA,
+    RUN_VALIDATORS_PARAMETERS,
     ProtocolError,
     ProviderExchange,
     SYSTEM_PROMPT,
@@ -80,6 +82,16 @@ def send_public_exchange(
                 "name": "plan_linear_array",
                 "description": "Compute the exact step for a touching or gapped linear array of existing occurrences. This tool cannot mutate anything.",
                 "input_schema": PLAN_LINEAR_ARRAY_PARAMETERS,
+            },
+            {
+                "name": "list_validators",
+                "description": "List every validator Kečup can run on the current document, with what each one checks. This tool cannot mutate anything.",
+                "input_schema": LIST_VALIDATORS_PARAMETERS,
+            },
+            {
+                "name": "run_validators",
+                "description": "Read the findings of the named validators on the current revision, including the parts each finding refers to and any honest not-evaluated reason. This tool cannot mutate anything.",
+                "input_schema": RUN_VALIDATORS_PARAMETERS,
             },
         ]
         messages = [*history, {"role": "user", "content": message}]
@@ -201,6 +213,20 @@ def send_public_exchange(
                 "name": "plan_linear_array",
                 "description": "Compute the exact step for a touching or gapped linear array of existing occurrences. This tool cannot mutate anything.",
                 "parameters": PLAN_LINEAR_ARRAY_PARAMETERS,
+                "strict": True,
+            },
+            {
+                "type": "function",
+                "name": "list_validators",
+                "description": "List every validator Kečup can run on the current document, with what each one checks. This tool cannot mutate anything.",
+                "parameters": LIST_VALIDATORS_PARAMETERS,
+                "strict": True,
+            },
+            {
+                "type": "function",
+                "name": "run_validators",
+                "description": "Read the findings of the named validators on the current revision, including the parts each finding refers to and any honest not-evaluated reason. This tool cannot mutate anything.",
+                "parameters": RUN_VALIDATORS_PARAMETERS,
                 "strict": True,
             },
         ]

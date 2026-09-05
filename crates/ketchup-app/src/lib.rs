@@ -218,6 +218,48 @@ const ASSISTANT_VALIDATOR_IDS: [&str; 9] = [
     "passage_clearance",
     "static_load",
 ];
+/// What each validator actually checks, in provider-facing English. The
+/// Assistant cannot honestly offer a validator it cannot describe, so this
+/// catalog travels with every validation context and is what the
+/// `list_validators` sidecar tool reads.
+const ASSISTANT_VALIDATOR_CATALOG: [(&str, &str); 9] = [
+    (
+        "collision",
+        "solid bodies that overlap each other instead of touching",
+    ),
+    (
+        "gravity_support",
+        "parts that are not carried, directly or transitively, by the ground along the declared gravity axis",
+    ),
+    (
+        "shelf_deflection",
+        "shelf sag under the declared design load against the span and absolute deflection limits",
+    ),
+    (
+        "tipping",
+        "free-standing bodies that tip below the minimum safe tilt angle",
+    ),
+    (
+        "anchoring",
+        "tall shallow furniture that must be anchored to the wall",
+    ),
+    (
+        "hardware_manufacturing",
+        "hole edge material, hole spacing, hinge cup envelopes, drawer-slide pair alignment and minimum panel thickness",
+    ),
+    (
+        "room_placement",
+        "furniture that leaves the declared room volume",
+    ),
+    (
+        "passage_clearance",
+        "walking passages narrower or lower than the declared minimum",
+    ),
+    (
+        "static_load",
+        "declared static loads against the supports that actually carry them",
+    ),
+];
 const SHELF_DESIGN_LOAD_N: f64 = 500.0;
 const SHELF_ELASTIC_MODULUS_N_MM2: f64 = 2_500.0;
 const SHELF_DEFLECTION_SPAN_RATIO: f64 = 200.0;
@@ -313,6 +355,13 @@ pub struct ValidatorPanelReport {
     pub issue_count: usize,
     pub findings: Vec<ValidatorPanelFinding>,
     pub not_evaluated: Vec<(String, String)>,
+}
+
+fn assistant_validator_catalog() -> Vec<serde_json::Value> {
+    ASSISTANT_VALIDATOR_CATALOG
+        .into_iter()
+        .map(|(id, checks)| serde_json::json!({ "id": id, "checks": checks }))
+        .collect()
 }
 
 fn validator_finding_parts(issue: &serde_json::Value) -> Vec<String> {
@@ -6652,6 +6701,7 @@ fn summarized_assistant_validation_context(validation: &serde_json::Value) -> se
         "revision",
         "canonical_digest",
         "selection_mode",
+        "validators",
         "requested",
         "executed",
         "skipped",
@@ -11805,6 +11855,7 @@ impl KetchupApp {
                 "revision": snapshot.revision_id(),
                 "canonical_digest": snapshot.canonical_digest(),
                 "selection_mode": selection.mode,
+                "validators": assistant_validator_catalog(),
                 "requested": requested,
                 "executed": [],
                 "skipped": ASSISTANT_VALIDATOR_IDS,
@@ -12293,6 +12344,7 @@ impl KetchupApp {
             "revision": snapshot.revision_id(),
             "canonical_digest": snapshot.canonical_digest(),
             "selection_mode": selection.mode,
+            "validators": assistant_validator_catalog(),
             "requested": requested,
             "executed": requested,
             "skipped": skipped,
@@ -36385,7 +36437,14 @@ impl KetchupApp {
     }
 
     fn show_validator_panel(&mut self, ui: &mut egui::Ui) {
-        section_header(ui, self.palette(), &self.catalog.text("validators-title"));
+        egui::CollapsingHeader::new(self.catalog.text("validators-title"))
+            .id_salt("validator-panel")
+            .default_open(false)
+            .show(ui, |ui| self.show_validator_panel_content(ui));
+        ui.separator();
+    }
+
+    fn show_validator_panel_content(&mut self, ui: &mut egui::Ui) {
         for validator in ASSISTANT_VALIDATOR_IDS {
             let mut enabled = self.validator_panel_selection.contains(validator);
             let label = self.catalog.text(&format!("validator-{validator}-name"));

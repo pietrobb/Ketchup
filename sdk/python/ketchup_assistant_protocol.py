@@ -21,6 +21,8 @@ MAX_CAD_EDIT_OPERATIONS = 64
 MAX_CAD_SELECTOR_TARGETS = 100
 MAX_CAD_GENERATED_OCCURRENCES = 512
 MAX_U64 = (1 << 64) - 1
+MAX_VALIDATORS = 32
+MAX_VALIDATOR_ISSUES = 32
 MAX_INSPECT_RESULT_BYTES = 64 * 1024
 MAX_INSPECT_ROUNDS = 2
 ALLOWED_CAPABILITIES = frozenset(
@@ -34,7 +36,10 @@ ALLOWED_CAPABILITIES = frozenset(
 )
 SYSTEM_PROMPT = (
     "You are Kečup Assistant, a CAD modeling assistant. Your only tools are read-only "
-    "inspect_document, measure_bounds, plan_placement, and plan_linear_array for current or explicit occurrences. "
+    "inspect_document, measure_bounds, plan_placement, plan_linear_array, list_validators and run_validators. "
+    "When the user asks what you can check, which validators exist, or to validate the model, use list_validators to name them and run_validators to read their findings on the current revision. "
+    "Report every finding by the part names it refers to, never as an anonymous count, and say plainly when a validator returned state not_evaluated, skipped or unavailable instead of claiming the model is fine. "
+    "When you cannot repair a reported finding, say so explicitly rather than proposing a change you cannot justify. "
     "Use plan_placement to obtain an exact translation before proposing relative placement, and copy its moving_occurrence_id and delta_mm exactly into the translation proposal. "
     "Use plan_linear_array before stacking or repeating existing parts, and copy its occurrence_ids, instances, and step_mm exactly into the linear array proposal. "
     "Use at most two sequential, different calls in total when exact target facts are needed; "
@@ -171,6 +176,26 @@ PLAN_LINEAR_ARRAY_PARAMETERS = {
         "instances": {"type": "integer", "minimum": 2, "maximum": 1000},
     },
     "required": ["scope", "occurrence_ids", "axis", "direction", "gap_mm", "instances"],
+    "additionalProperties": False,
+}
+LIST_VALIDATORS_PARAMETERS = {
+    "type": "object",
+    "properties": {},
+    "required": [],
+    "additionalProperties": False,
+}
+RUN_VALIDATORS_PARAMETERS = {
+    "type": "object",
+    "properties": {
+        "validators": {
+            "type": "array",
+            "items": {"type": "string"},
+            "minItems": 1,
+            "maxItems": MAX_VALIDATORS,
+            "uniqueItems": True,
+        },
+    },
+    "required": ["validators"],
     "additionalProperties": False,
 }
 
@@ -1879,8 +1904,115 @@ def _plan_linear_array(context: dict, arguments: object) -> dict:
     return result
 
 
+def _validation_report(context: dict) -> dict:
+    validation = context.get("validation")
+    if not isinstance(validation, dict):
+        raise ProtocolError("document context carries no validation report")
+    catalog = validation.get("validators")
+    if not isinstance(catalog, list) or not catalog or len(catalog) > MAX_VALIDATORS:
+        raise ProtocolError("validation report carries no validator catalog")
+    for entry in catalog:
+        if (
+            not isinstance(entry, dict)
+            or set(entry) != {"id", "checks"}
+            or not isinstance(entry["id"], str)
+            or not entry["id"]
+            or not isinstance(entry["checks"], str)
+            or not entry["checks"]
+        ):
+            raise ProtocolError("validator catalog entry is invalid")
+    return validation
+
+
+def _executed_validators(validation: dict) -> set:
+    executed = validation.get("executed")
+    if not isinstance(executed, list):
+        return set()
+    return {name for name in executed if isinstance(name, str)}
+
+
+def _list_validators(context: dict, arguments: object) -> dict:
+    if arguments is not None and arguments != {}:
+        raise ProtocolError("list_validators accepts no arguments")
+    validation = _validation_report(context)
+    executed = _executed_validators(validation)
+    return {
+        "tool": "list_validators",
+        "revision": validation.get("revision"),
+        "canonical_digest": validation.get("canonical_digest"),
+        "validators": [
+            {
+                "id": entry["id"],
+                "checks": entry["checks"],
+                "already_run_on_this_revision": entry["id"] in executed,
+            }
+            for entry in validation["validators"]
+        ],
+    }
+
+
+def _run_validators(context: dict, arguments: object) -> dict:
+    if not isinstance(arguments, dict) or set(arguments) != {"validators"}:
+        raise ProtocolError("run_validators arguments contain missing or unknown fields")
+    requested = arguments["validators"]
+    if (
+        not isinstance(requested, list)
+        or not requested
+        or len(requested) > MAX_VALIDATORS
+        or len(set(requested)) != len(requested)
+        or any(not isinstance(name, str) or not name for name in requested)
+    ):
+        raise ProtocolError("run_validators arguments are invalid")
+    validation = _validation_report(context)
+    known = {entry["id"] for entry in validation["validators"]}
+    if any(name not in known for name in requested):
+        raise ProtocolError("run_validators requested an unknown validator")
+    executed = _executed_validators(validation)
+    skipped_reasons = {}
+    for entry in validation.get("not_evaluated") or []:
+        if isinstance(entry, dict) and isinstance(entry.get("validator"), str):
+            skipped_reasons.setdefault(entry["validator"], entry.get("reason"))
+    results = []
+    for name in requested:
+        report = validation.get(name)
+        report = report if isinstance(report, dict) else {}
+        issues = report.get("issues")
+        issues = issues if isinstance(issues, list) else []
+        state = report.get("state")
+        if not isinstance(state, str):
+            state = "not_evaluated"
+        if name not in executed and state == "not_evaluated":
+            state = "skipped"
+        results.append(
+            {
+                "validator": name,
+                "state": state,
+                "evidence_complete": report.get("complete") is True
+                and report.get("issues_complete") is not False,
+                "issue_count": len(issues),
+                "issues": issues[:MAX_VALIDATOR_ISSUES],
+                "not_evaluated_reason": skipped_reasons.get(name),
+            }
+        )
+    result = {
+        "tool": "run_validators",
+        "revision": validation.get("revision"),
+        "canonical_digest": validation.get("canonical_digest"),
+        "results": results,
+    }
+    if len(json.dumps(result, ensure_ascii=False, separators=(",", ":")).encode("utf-8")) > MAX_INSPECT_RESULT_BYTES:
+        for entry in result["results"]:
+            entry["issues"] = entry["issues"][:2]
+            entry["evidence_complete"] = False
+    return result
+
+
 def _read_only_tool_result(message: str, name: object, arguments: object) -> dict:
     context = _document_context_from_message(message)
+    if name == "list_validators":
+        return _list_validators(context, arguments)
+    if name == "run_validators":
+        return _run_validators(context, arguments)
     if name == "inspect_document":
         return _inspect_document(context, arguments)
     if name == "measure_bounds":

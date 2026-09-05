@@ -26,6 +26,12 @@ fn empty_intent(boxes: Vec<AssistantBoxIntent>) -> AssistantModelIntent {
     }
 }
 
+fn open_validator_panel(shell: &mut Shell) {
+    let title = shell.catalog().text("validators-title");
+    shell.click_role_and_label(Role::Button, &title);
+    shell.settle();
+}
+
 fn build_two_colliding_columns(shell: &mut Shell) {
     assert!(
         shell
@@ -56,6 +62,7 @@ fn the_validator_panel_names_every_validator_and_says_what_it_checks() {
     ] {
         let mut shell = Shell::with_catalog(catalog);
         shell.settle();
+        open_validator_panel(&mut shell);
         assert_eq!(KetchupApp::validator_ids().len(), 9);
         for validator in KetchupApp::validator_ids() {
             let name = shell.catalog().text(&format!("validator-{validator}-name"));
@@ -87,6 +94,7 @@ fn running_the_panel_reports_findings_that_name_the_offending_parts() {
     let mut shell = Shell::new();
     build_two_colliding_columns(&mut shell);
     shell.settle();
+    open_validator_panel(&mut shell);
     assert!(shell.app().validator_panel_report().is_none());
 
     let revision_before = shell.app().document_revision();
@@ -129,6 +137,7 @@ fn the_panel_runs_only_the_validators_the_operator_selected() {
     let mut shell = Shell::new();
     build_two_colliding_columns(&mut shell);
     shell.settle();
+    open_validator_panel(&mut shell);
 
     for validator in KetchupApp::validator_ids() {
         if validator != "collision" {
