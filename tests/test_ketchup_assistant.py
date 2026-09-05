@@ -2315,6 +2315,11 @@ def validator_tool_context():
                     "rule": "every body must rest on the ground or on something that does",
                 }
             ],
+            "assumptions": [
+                "gravity roles were read from the document: only grounded occurrences seed support",
+                "",
+                42,
+            ],
         },
         "tipping": {
             "state": "not_evaluated",
@@ -2369,6 +2374,19 @@ def test_run_validators_returns_named_findings_and_honest_not_evaluated_states()
     assert tipping["state"] == "skipped"
     assert tipping["evidence_complete"] is False
     assert tipping["not_evaluated_reason"] == "incomplete_geometry_coverage"
+
+
+def test_run_validators_carries_derived_assumptions_so_a_verdict_is_never_bare():
+    result = assistant._read_only_tool_result(
+        validator_tool_message(question="Is it standing up?"),
+        "run_validators",
+        {"validators": ["gravity_support", "collision"]},
+    )
+    gravity, collision = result["results"]
+    assert gravity["assumptions"] == [
+        "gravity roles were read from the document: only grounded occurrences seed support"
+    ], "blank and non-text assumptions must not reach the model"
+    assert collision["assumptions"] == [], "a validator that assumed nothing must say so"
 
 
 def test_validator_tools_are_fail_closed_on_unknown_names_and_missing_reports():

@@ -8,9 +8,13 @@
 
 mod harness;
 
+use eframe::egui::accesskit::Role;
 use harness::Shell;
 use ketchup_app::KetchupApp;
-use ketchup_core::assistant_sidecar::{AssistantBoxIntent, AssistantModelIntent};
+use ketchup_core::assistant_sidecar::{
+    AssistantBoxIntent, AssistantModelIntent, AssistantTranslationIntent,
+};
+use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::Command;
@@ -55,6 +59,98 @@ fn build_a_scene_with_a_real_finding(shell: &mut Shell) {
             ]))
     );
     assert!(shell.app_mut().confirm_assistant_proposal());
+}
+
+const FOUNDATION_TOP_MM: f64 = 300.0;
+const POST_TOP_MM: f64 = 2_800.0;
+/// How far above the posts the ridge beam is left hanging.
+const FLOATING_GAP_MM: f64 = 700.0;
+
+fn timber(name: &str, size_mm: [f64; 3], origin_mm: [f64; 3]) -> AssistantBoxIntent {
+    AssistantBoxIntent {
+        name: name.to_owned(),
+        size_mm,
+        origin_mm,
+        subtract_boxes: Vec::new(),
+    }
+}
+
+/// The same frame the operator's panel rejects: a foundation on the ground, two
+/// posts standing on it, and a ridge beam left hanging above them.
+fn build_frame_with_a_floating_ridge(shell: &mut Shell) {
+    let post_height_mm = POST_TOP_MM - FOUNDATION_TOP_MM;
+    assert!(
+        shell
+            .app_mut()
+            .prepare_assistant_model_intent(empty_intent(vec![
+                timber(
+                    "Foundation",
+                    [4_000.0, 400.0, FOUNDATION_TOP_MM],
+                    [0.0, 0.0, 0.0],
+                ),
+                timber(
+                    "Post left",
+                    [200.0, 200.0, post_height_mm],
+                    [0.0, 0.0, FOUNDATION_TOP_MM],
+                ),
+                timber(
+                    "Post right",
+                    [200.0, 200.0, post_height_mm],
+                    [3_800.0, 0.0, FOUNDATION_TOP_MM],
+                ),
+                timber(
+                    "Ridge beam",
+                    [4_000.0, 200.0, 200.0],
+                    [0.0, 0.0, POST_TOP_MM + FLOATING_GAP_MM],
+                ),
+            ]))
+    );
+    assert!(shell.app_mut().confirm_assistant_proposal());
+}
+
+fn occurrence_id_of(shell: &Shell, name: &str) -> u64 {
+    shell
+        .app()
+        .document_snapshot()
+        .scene_query()
+        .into_iter()
+        .find(|occurrence| occurrence.occurrence_name == name)
+        .unwrap_or_else(|| panic!("{name} must be in the scene"))
+        .occurrence_id
+        .0
+}
+
+/// Ground one occurrence through the document's own explicit grounding fact.
+fn ground(shell: &mut Shell, name: &str) {
+    shell.click_role_and_label(Role::Button, &shell.catalog().text("assembly-title"));
+    let preview = shell.catalog().format(
+        "assembly-preview-ground",
+        &BTreeMap::from([("name", name.to_owned())]),
+    );
+    shell.click_button_label(&preview);
+    shell.click_button_label(&shell.catalog().text("assembly-confirm-preview"));
+    shell.click_role_and_label(Role::Button, &shell.catalog().text("assembly-title"));
+    shell.settle();
+}
+
+/// What one validator reported, as the Assistant reads it through its own tool.
+fn validator_result(tools: &serde_json::Value, validator: &str) -> serde_json::Value {
+    tools["ran"]["results"]
+        .as_array()
+        .expect("the sidecar returns one result per requested validator")
+        .iter()
+        .find(|result| result["validator"] == validator)
+        .unwrap_or_else(|| panic!("{validator} must be reachable as a tool"))
+        .clone()
+}
+
+fn unsupported_names(result: &serde_json::Value) -> Vec<String> {
+    result["issues"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|issue| issue["name"].as_str().map(str::to_owned))
+        .collect()
 }
 
 fn repository_root() -> PathBuf {
@@ -122,6 +218,86 @@ fn sidecar_validator_tools(context: &serde_json::Value, question: &str) -> serde
         String::from_utf8_lossy(&output.stderr)
     );
     serde_json::from_slice(&output.stdout).expect("the sidecar returns JSON")
+}
+
+/// The operator's panel already rejects a beam hanging in mid-air. The
+/// Assistant must reach the same verdict on the same model through its own
+/// tool — otherwise statics is only enforced where a human happens to look.
+#[test]
+fn the_assistant_rejects_a_floating_member_by_name_and_clears_it_once_carried() {
+    let mut shell = Shell::new();
+    build_frame_with_a_floating_ridge(&mut shell);
+    shell.settle();
+    ground(&mut shell, "Foundation");
+
+    let revision_before = shell.app().document_revision();
+    let digest_before = shell.app().canonical_digest();
+    let undo_before = shell.app().undo_step_count();
+
+    let context = shell.app().assistant_context();
+    let tools = sidecar_validator_tools(&context, "Is anything unsupported?");
+    let gravity = validator_result(&tools, "gravity_support");
+    assert_eq!(
+        gravity["state"], "failed",
+        "a beam hanging {FLOATING_GAP_MM} mm above the posts must be rejected: {gravity:#?}"
+    );
+    assert!(
+        gravity["not_evaluated_reason"].is_null(),
+        "gravity support must judge a grounded structure, not decline: {gravity:#?}"
+    );
+    let floating = unsupported_names(&gravity);
+    assert!(
+        floating.iter().any(|name| name == "Ridge beam"),
+        "the Assistant must be told which member hangs in mid-air, got {floating:#?}"
+    );
+    assert!(
+        !floating.iter().any(|name| name.starts_with("Post")),
+        "the posts stand on the grounded foundation and must not be reported, got {floating:#?}"
+    );
+
+    // A verdict reached on derived roles must arrive with what was derived, so
+    // the Assistant can never present an assumption as a document fact.
+    let assumptions = gravity["assumptions"]
+        .as_array()
+        .expect("a derived verdict must carry its assumptions")
+        .iter()
+        .filter_map(|assumption| assumption.as_str())
+        .collect::<Vec<_>>();
+    assert!(
+        assumptions
+            .iter()
+            .any(|assumption| assumption.contains("ground")),
+        "the Assistant must learn that support seeds came from the document's grounding, got {assumptions:#?}"
+    );
+
+    // Reading statics is observation, not a change.
+    assert_eq!(shell.app().document_revision(), revision_before);
+    assert_eq!(shell.app().canonical_digest(), digest_before);
+    assert_eq!(shell.app().undo_step_count(), undo_before);
+
+    // Repair: lower the ridge beam onto the posts that are meant to carry it.
+    let ridge = occurrence_id_of(&shell, "Ridge beam");
+    let mut repair = empty_intent(Vec::new());
+    repair.replace_scene = false;
+    repair.translations = vec![AssistantTranslationIntent {
+        occurrence_id: ridge,
+        delta_mm: [0.0, 0.0, -FLOATING_GAP_MM],
+    }];
+    assert!(shell.app_mut().prepare_assistant_model_intent(repair));
+    assert!(shell.app_mut().confirm_assistant_proposal());
+    shell.settle();
+
+    let repaired = shell.app().assistant_context();
+    let tools = sidecar_validator_tools(&repaired, "Is anything unsupported now?");
+    let gravity = validator_result(&tools, "gravity_support");
+    assert!(
+        gravity["not_evaluated_reason"].is_null(),
+        "gravity support must still judge the repaired frame, not decline: {gravity:#?}"
+    );
+    assert!(
+        gravity["state"] == "passed" && unsupported_names(&gravity).is_empty(),
+        "once the ridge beam rests on the posts nothing may be unsupported: {gravity:#?}"
+    );
 }
 
 #[test]

@@ -23,6 +23,7 @@ MAX_CAD_GENERATED_OCCURRENCES = 512
 MAX_U64 = (1 << 64) - 1
 MAX_VALIDATORS = 32
 MAX_VALIDATOR_ISSUES = 32
+MAX_VALIDATOR_ASSUMPTIONS = 8
 MAX_INSPECT_RESULT_BYTES = 64 * 1024
 MAX_INSPECT_ROUNDS = 2
 ALLOWED_CAPABILITIES = frozenset(
@@ -39,6 +40,7 @@ SYSTEM_PROMPT = (
     "inspect_document, measure_bounds, plan_placement, plan_linear_array, list_validators and run_validators. "
     "When the user asks what you can check, which validators exist, or to validate the model, use list_validators to name them and run_validators to read their findings on the current revision. "
     "Report every finding by the part names it refers to, never as an anonymous count, and say plainly when a validator returned state not_evaluated, skipped or unavailable instead of claiming the model is fine. "
+    "When a result carries assumptions, state them with the verdict, because they say what the check had to derive rather than read from the document. "
     "When you cannot repair a reported finding, say so explicitly rather than proposing a change you cannot justify. "
     "Use plan_placement to obtain an exact translation before proposing relative placement, and copy its moving_occurrence_id and delta_mm exactly into the translation proposal. "
     "Use plan_linear_array before stacking or repeating existing parts, and copy its occurrence_ids, instances, and step_mm exactly into the linear array proposal. "
@@ -192,7 +194,7 @@ RUN_VALIDATORS_PARAMETERS = {
             "items": {"type": "string"},
             "minItems": 1,
             "maxItems": MAX_VALIDATORS,
-            "uniqueItems": True,
+            "description": "Distinct validator IDs; duplicates are rejected by the host.",
         },
     },
     "required": ["validators"],
@@ -1983,10 +1985,17 @@ def _run_validators(context: dict, arguments: object) -> dict:
             state = "not_evaluated"
         if name not in executed and state == "not_evaluated":
             state = "skipped"
+        assumptions = report.get("assumptions")
+        assumptions = [
+            assumption
+            for assumption in (assumptions if isinstance(assumptions, list) else [])
+            if isinstance(assumption, str) and assumption
+        ][:MAX_VALIDATOR_ASSUMPTIONS]
         results.append(
             {
                 "validator": name,
                 "state": state,
+                "assumptions": assumptions,
                 "evidence_complete": report.get("complete") is True
                 and report.get("issues_complete") is not False,
                 "issue_count": len(issues),
