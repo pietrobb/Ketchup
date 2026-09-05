@@ -2320,6 +2320,42 @@ fn assistant_passage_clearance_report(
     })
 }
 
+/// Support group used when the roles are read from the document itself.
+const DERIVED_GRAVITY_SUPPORT_GROUP: &str = "document";
+/// Standard gravity, used when the document declares no gravity vector.
+const CANONICAL_GRAVITY_M_S2: [f64; 3] = [0.0, 0.0, -9.81];
+const DERIVED_GRAVITY_ROLE_ASSUMPTION: &str = "gravity roles were read from the document: every visible solid is a body, and only the occurrences the document grounds seed support";
+const DERIVED_GRAVITY_VECTOR_ASSUMPTION: &str =
+    "no gravity vector is declared, so standard gravity 9.81 m/s² along -Z was assumed";
+
+/// Gravity participants read straight from what the document already states.
+///
+/// No floor is invented here. Support still has to be earned by real contact
+/// with an occurrence the document explicitly grounds; this only spares the
+/// operator from restating, as classification roles, two facts the document
+/// already holds — which solids are visible, and which of them are grounded.
+/// Without a single grounded occurrence there is no seed, so nothing is
+/// derived and the validator stays honestly unevaluated.
+fn assistant_derived_gravity_participants(
+    snapshot: &Snapshot,
+    participants: &[GeneralBodyParticipant],
+) -> Vec<GravitySupportParticipant> {
+    if snapshot.grounded_occurrences().next().is_none() {
+        return Vec::new();
+    }
+    participants
+        .iter()
+        .map(|body| {
+            let occurrence_id = body.instance_path().root_occurrence();
+            GravitySupportParticipant::new(
+                body.clone(),
+                DERIVED_GRAVITY_SUPPORT_GROUP,
+                snapshot.occurrence_is_grounded(occurrence_id),
+            )
+        })
+        .collect()
+}
+
 #[derive(Clone, Copy, Debug)]
 struct AssistantGravityInput {
     node_ids: [u64; 3],
@@ -11979,7 +12015,8 @@ impl KetchupApp {
             }
         }
         let validator_roles = ValidatorRoleIndex::from_snapshot(snapshot);
-        let gravity_participants = validator_roles
+        let mut gravity_derivations = Vec::new();
+        let mut gravity_participants = validator_roles
             .as_ref()
             .ok()
             .map(|roles| {
@@ -12007,11 +12044,20 @@ impl KetchupApp {
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
-        let gravity_validator_input = assistant_gravity_input(snapshot)
-            .ok()
-            .filter(|_| !gravity_participants.is_empty())
-            .and_then(|gravity| {
-                GravitySupportInput::new(gravity_participants.clone(), gravity.vector_m_s2).ok()
+        if gravity_participants.is_empty() {
+            gravity_participants = assistant_derived_gravity_participants(snapshot, &participants);
+            if !gravity_participants.is_empty() {
+                gravity_derivations.push(DERIVED_GRAVITY_ROLE_ASSUMPTION.to_owned());
+            }
+        }
+        let declared_gravity = assistant_gravity_input(snapshot).ok();
+        if declared_gravity.is_none() && !gravity_participants.is_empty() {
+            gravity_derivations.push(DERIVED_GRAVITY_VECTOR_ASSUMPTION.to_owned());
+        }
+        let gravity_validator_input = (!gravity_participants.is_empty())
+            .then(|| declared_gravity.map_or(CANONICAL_GRAVITY_M_S2, |gravity| gravity.vector_m_s2))
+            .and_then(|vector_m_s2| {
+                GravitySupportInput::new(gravity_participants.clone(), vector_m_s2).ok()
             });
         let mut cases = Vec::new();
         if selection.requested.contains("collision") {
@@ -12213,14 +12259,16 @@ impl KetchupApp {
                         ValidationState::Unavailable => "unavailable",
                     }
                 };
-                (state, issue_count, issues, report.assumptions.clone())
+                let mut assumptions = gravity_derivations.clone();
+                assumptions.extend(report.assumptions.iter().cloned());
+                (state, issue_count, issues, assumptions)
             } else if selection.requested.contains("gravity_support") {
                 (
                     "not_evaluated",
                     0,
                     Vec::new(),
                     vec![
-                        "explicit gravity roles and a typed non-zero gravity vector are required"
+                        "no occurrence is grounded, so nothing can carry load: ground the parts that stand on the ground, or declare physics.gravity.* roles"
                             .to_owned(),
                     ],
                 )
