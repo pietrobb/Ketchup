@@ -292,6 +292,112 @@ impl AssistantValidationSelection {
     }
 }
 
+/// One validator finding rendered for the operator, with the parts it refers to.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ValidatorPanelFinding {
+    pub validator: &'static str,
+    pub code: String,
+    pub severity: String,
+    pub parts: Vec<String>,
+    pub detail: String,
+}
+
+/// The result of one manual validator run, bound to the revision it was run on.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ValidatorPanelReport {
+    pub revision: u64,
+    pub canonical_digest: String,
+    pub executed: Vec<&'static str>,
+    pub state: String,
+    pub complete: bool,
+    pub issue_count: usize,
+    pub findings: Vec<ValidatorPanelFinding>,
+    pub not_evaluated: Vec<(String, String)>,
+}
+
+fn validator_finding_parts(issue: &serde_json::Value) -> Vec<String> {
+    let labelled = |id: &serde_json::Value, name: &serde_json::Value| {
+        let id = id.as_u64();
+        match (name.as_str(), id) {
+            (Some(name), Some(id)) => Some(format!("{name} (#{id})")),
+            (None, Some(id)) => Some(format!("#{id}")),
+            _ => None,
+        }
+    };
+    let mut parts = Vec::new();
+    parts.extend(labelled(&issue["occurrence_id"], &issue["name"]));
+    parts.extend(labelled(&issue["left_occurrence_id"], &issue["left_name"]));
+    parts.extend(labelled(
+        &issue["right_occurrence_id"],
+        &issue["right_name"],
+    ));
+    if let Some(ids) = issue["occurrence_ids"].as_array() {
+        let names = issue["names"].as_array();
+        for (index, id) in ids.iter().enumerate() {
+            let name = names
+                .and_then(|names| names.get(index))
+                .unwrap_or(&serde_json::Value::Null);
+            parts.extend(labelled(id, name));
+        }
+    }
+    parts
+}
+
+fn validator_panel_report(validation: &serde_json::Value) -> ValidatorPanelReport {
+    let executed = ASSISTANT_VALIDATOR_IDS
+        .into_iter()
+        .filter(|validator| {
+            validation["executed"]
+                .as_array()
+                .is_some_and(|executed| executed.iter().any(|value| value == validator))
+        })
+        .collect::<Vec<_>>();
+    let findings = executed
+        .iter()
+        .flat_map(|validator| {
+            validation[validator]["issues"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|issue| ValidatorPanelFinding {
+                    validator,
+                    code: issue["code"].as_str().unwrap_or_default().to_owned(),
+                    severity: issue["severity"].as_str().unwrap_or_default().to_owned(),
+                    parts: validator_finding_parts(issue),
+                    detail: issue["rule"]
+                        .as_str()
+                        .or_else(|| issue["evidence"].as_str())
+                        .unwrap_or_default()
+                        .to_owned(),
+                })
+        })
+        .collect::<Vec<_>>();
+    let not_evaluated = validation["not_evaluated"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|entry| {
+            (
+                entry["validator"].as_str().unwrap_or_default().to_owned(),
+                entry["reason"].as_str().unwrap_or_default().to_owned(),
+            )
+        })
+        .collect::<Vec<_>>();
+    ValidatorPanelReport {
+        revision: validation["revision"].as_u64().unwrap_or_default(),
+        canonical_digest: validation["canonical_digest"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned(),
+        executed,
+        state: validation["state"].as_str().unwrap_or_default().to_owned(),
+        complete: validation["complete"].as_bool().unwrap_or_default(),
+        issue_count: validation["issue_count"].as_u64().unwrap_or_default() as usize,
+        findings,
+        not_evaluated,
+    }
+}
+
 fn selection_suffix<'a>(query: &'a str, markers: &[&str]) -> Option<&'a str> {
     markers
         .iter()
@@ -8073,6 +8179,8 @@ pub struct KetchupApp {
     pocket_depth_input: String,
     parameter_editor_node: Option<NodeId>,
     parameter_expression_input: String,
+    validator_panel_selection: BTreeSet<&'static str>,
+    validator_panel_report: Option<ValidatorPanelReport>,
     parameter_canonical_source: String,
     parameter_provenance: Option<(DocumentId, u64, String)>,
     parameter_last_recomputed_nodes: BTreeSet<NodeId>,
@@ -8319,6 +8427,8 @@ impl KetchupApp {
             pocket_depth_input: String::new(),
             parameter_editor_node: None,
             parameter_expression_input: String::new(),
+            validator_panel_selection: ASSISTANT_VALIDATOR_IDS.into_iter().collect(),
+            validator_panel_report: None,
             parameter_canonical_source: String::new(),
             parameter_provenance: None,
             parameter_last_recomputed_nodes: BTreeSet::new(),
@@ -36236,6 +36346,135 @@ impl KetchupApp {
         }
     }
 
+    /// Every validator the operator can run by hand, in canonical order.
+    #[must_use]
+    pub const fn validator_ids() -> [&'static str; 9] {
+        ASSISTANT_VALIDATOR_IDS
+    }
+
+    /// Which validators the panel will run on the next manual request.
+    #[must_use]
+    pub fn validator_panel_selection(&self) -> Vec<&'static str> {
+        ASSISTANT_VALIDATOR_IDS
+            .into_iter()
+            .filter(|validator| self.validator_panel_selection.contains(validator))
+            .collect()
+    }
+
+    /// The findings of the last manual validator run, if one has been made.
+    #[must_use]
+    pub const fn validator_panel_report(&self) -> Option<&ValidatorPanelReport> {
+        self.validator_panel_report.as_ref()
+    }
+
+    /// Runs the selected validators on the current document without mutating it.
+    ///
+    /// This is the same evidence the Assistant reads, so the operator can see
+    /// exactly what a validator says without asking the Assistant first.
+    pub fn run_validator_panel(&mut self) {
+        let snapshot = self.document.current();
+        self.rebind_exact_results(&snapshot);
+        let selection = AssistantValidationSelection {
+            mode: "only",
+            requested: self.validator_panel_selection.clone(),
+            unknown: Vec::new(),
+        };
+        let validation =
+            self.assistant_validation_context(&snapshot, &self.exact_results, &selection);
+        self.validator_panel_report = Some(validator_panel_report(&validation));
+    }
+
+    fn show_validator_panel(&mut self, ui: &mut egui::Ui) {
+        section_header(ui, self.palette(), &self.catalog.text("validators-title"));
+        for validator in ASSISTANT_VALIDATOR_IDS {
+            let mut enabled = self.validator_panel_selection.contains(validator);
+            let label = self.catalog.text(&format!("validator-{validator}-name"));
+            if ui.checkbox(&mut enabled, &label).changed() {
+                if enabled {
+                    self.validator_panel_selection.insert(validator);
+                } else {
+                    self.validator_panel_selection.remove(validator);
+                }
+            }
+            ui.label(
+                egui::RichText::new(self.catalog.text(&format!("validator-{validator}-what")))
+                    .small()
+                    .color(self.palette().dim),
+            );
+        }
+        let run = self.catalog.text("validators-run");
+        if ui
+            .add_enabled(
+                !self.validator_panel_selection.is_empty(),
+                egui::Button::new(&run),
+            )
+            .clicked()
+        {
+            self.run_validator_panel();
+        }
+        let Some(report) = &self.validator_panel_report else {
+            ui.label(self.catalog.text("validators-not-run"));
+            return;
+        };
+        ui.label(
+            self.catalog.format(
+                "validators-summary",
+                &BTreeMap::from([
+                    (
+                        "state",
+                        self.catalog
+                            .text(&format!("validators-state-{}", report.state)),
+                    ),
+                    ("count", report.issue_count.to_string()),
+                    ("revision", report.revision.to_string()),
+                ]),
+            ),
+        );
+        if !report.complete {
+            ui.label(self.catalog.text("validators-incomplete"));
+        }
+        for (validator, reason) in &report.not_evaluated {
+            ui.label(self.catalog.format(
+                "validators-not-evaluated",
+                &BTreeMap::from([
+                    (
+                        "validator",
+                        self.catalog.text(&format!("validator-{validator}-name")),
+                    ),
+                    ("reason", reason.clone()),
+                ]),
+            ));
+        }
+        if report.findings.is_empty() {
+            ui.label(self.catalog.text("validators-no-findings"));
+            return;
+        }
+        for finding in &report.findings {
+            ui.label(
+                self.catalog.format(
+                    "validators-finding",
+                    &BTreeMap::from([
+                        (
+                            "validator",
+                            self.catalog
+                                .text(&format!("validator-{}-name", finding.validator)),
+                        ),
+                        ("severity", finding.severity.clone()),
+                        ("code", finding.code.clone()),
+                        ("parts", finding.parts.join(", ")),
+                    ]),
+                ),
+            );
+            if !finding.detail.is_empty() {
+                ui.label(
+                    egui::RichText::new(&finding.detail)
+                        .small()
+                        .color(self.palette().dim),
+                );
+            }
+        }
+    }
+
     fn show_parameter_editor(&mut self, ui: &mut egui::Ui) {
         let nodes = self.parameter_expression_nodes();
         if nodes.is_empty() {
@@ -38612,6 +38851,7 @@ impl KetchupApp {
                         self.show_assembly_editor(ui);
                         self.show_parameter_editor(ui);
                         self.show_assistant(ui);
+                        self.show_validator_panel(ui);
                     });
                 });
             egui::CentralPanel::default()
@@ -38639,6 +38879,7 @@ impl KetchupApp {
                         self.show_assembly_editor(ui);
                         self.show_parameter_editor(ui);
                         self.show_outliner_without_assistant(ui);
+                        self.show_validator_panel(ui);
                     });
                 });
             egui::CentralPanel::default()
