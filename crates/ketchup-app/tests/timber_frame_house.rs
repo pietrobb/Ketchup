@@ -12,14 +12,29 @@ mod harness;
 use eframe::egui;
 use harness::{ScriptedAssistantTransport, Shell};
 use ketchup_core::assistant_sidecar::{
-    AssistantCadBodyFeature, AssistantCadBooleanOperation, AssistantCadEditOperation,
-    AssistantCadEditProgram, AssistantCadEntitySelector, AssistantCadPartFeature,
-    AssistantCadRotation, AssistantChatResult, AssistantPrincipalPlane, AssistantSketchConstraint,
-    AssistantSketchEntity, AssistantWorkplaneSpec,
+    AssistantCadBodyFeature, AssistantCadBooleanOperation, AssistantCadDeletePolicy,
+    AssistantCadEditOperation, AssistantCadEditProgram, AssistantCadEntitySelector,
+    AssistantCadPartFeature, AssistantCadRotation, AssistantChatResult, AssistantPrincipalPlane,
+    AssistantSketchConstraint, AssistantSketchEntity, AssistantWorkplaneSpec,
 };
-use ketchup_core::document::{DefinitionId, FeatureId, FeatureKind};
+use ketchup_core::document::{DefinitionId, FeatureId, FeatureKind, InstancePath, Snapshot};
 use ketchup_core::exact_brep_graph::ExactBRepGraph;
+use ketchup_core::exact_product::{
+    ExactBodyPackage, ExactFeatureChainRequest, ExactResultRegistry,
+};
+use ketchup_core::exact_validation::{
+    BuiltinGeneralBodyValidator, GeneralBodyParticipant, GeneralClearanceCase,
+    general_body_input_bytes, general_body_validation_policy,
+};
+use ketchup_core::fabrication::{GeneralManufacturingKind, ProjectionStatus};
 use ketchup_core::persistence;
+use ketchup_core::prismatic::TolerancePolicy;
+use ketchup_core::validation::{
+    HostNeutralValidator, ValidationExecution, ValidationInvocation, ValidationReport,
+    ValidationState,
+};
+use ketchup_scheduler::ExactWorkerSupervisor;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -183,10 +198,11 @@ fn body_feature_id_of(shell: &Shell, name: &str) -> FeatureId {
         .unwrap_or_else(|| panic!("definition {name} must own a pad"))
 }
 
-/// Build the whole frame, then prove it is exact, editable, savable and undoable.
-#[test]
-fn assistant_builds_a_timber_frame_house_from_an_empty_document() {
+/// Drive the whole frame from an empty document through the Assistant, and
+/// return the shell plus the baseline the build started from.
+fn build_timber_frame_house() -> (Shell, Arc<ScriptedAssistantTransport>, u64, String) {
     let requests = [
+        "Clear the document so the site is empty",
         "Lay the sill plate ring for a 6000 by 4000 mm timber frame house",
         "Raise the first stud on the front wall",
         "Repeat that stud every 625 mm and cap the wall with a top plate",
@@ -205,14 +221,36 @@ fn assistant_builds_a_timber_frame_house_from_an_empty_document() {
     let mut shell = Shell::with_assistant_transport(transport.clone());
     let baseline_revision = shell.app().document_revision();
     let baseline_digest = shell.app().canonical_digest();
-    let baseline_occurrences = shell.app().document_snapshot().occurrences().count();
+
+    // 0. Clear whatever the new document opened with, so the site is empty.
+    let existing = shell
+        .app()
+        .document_snapshot()
+        .occurrences()
+        .map(|occurrence| occurrence.id().0)
+        .collect::<Vec<_>>();
+    assert!(!existing.is_empty(), "a new document must start occupied");
+    build_step(
+        &mut shell,
+        &transport,
+        requests[0],
+        AssistantCadEditProgram {
+            operations: vec![AssistantCadEditOperation::Delete {
+                selector: AssistantCadEntitySelector::Occurrences {
+                    occurrence_ids: existing,
+                },
+                dependency_policy: AssistantCadDeletePolicy::RemoveReferences,
+            }],
+        },
+    );
+    assert_eq!(shell.app().document_snapshot().occurrences().count(), 0);
 
     // 1. Sill plate ring closing the whole footprint.
     let inner_width = HOUSE_WIDTH_MM - 2.0 * TIMBER_WIDTH_MM;
     build_step(
         &mut shell,
         &transport,
-        requests[0],
+        requests[1],
         AssistantCadEditProgram {
             operations: vec![
                 timber(
@@ -250,16 +288,13 @@ fn assistant_builds_a_timber_frame_house_from_an_empty_document() {
             ],
         },
     );
-    assert_eq!(
-        shell.app().document_snapshot().occurrences().count(),
-        baseline_occurrences + 4
-    );
+    assert_eq!(shell.app().document_snapshot().occurrences().count(), 4);
 
     // 2. The first stud, standing on the sill.
     build_step(
         &mut shell,
         &transport,
-        requests[1],
+        requests[2],
         AssistantCadEditProgram {
             operations: vec![timber(
                 "Front stud",
@@ -284,7 +319,7 @@ fn assistant_builds_a_timber_frame_house_from_an_empty_document() {
     build_step(
         &mut shell,
         &transport,
-        requests[2],
+        requests[3],
         AssistantCadEditProgram {
             operations: vec![
                 AssistantCadEditOperation::LinearPattern {
@@ -327,7 +362,7 @@ fn assistant_builds_a_timber_frame_house_from_an_empty_document() {
     build_step(
         &mut shell,
         &transport,
-        requests[3],
+        requests[4],
         AssistantCadEditProgram {
             operations: vec![AssistantCadEditOperation::CreatePart {
                 name: "Front sheathing".to_owned(),
@@ -353,7 +388,7 @@ fn assistant_builds_a_timber_frame_house_from_an_empty_document() {
     build_step(
         &mut shell,
         &transport,
-        requests[4],
+        requests[5],
         AssistantCadEditProgram {
             operations: vec![
                 timber(
@@ -384,6 +419,28 @@ fn assistant_builds_a_timber_frame_house_from_an_empty_document() {
         },
     );
 
+    assert_eq!(transport.remaining_responses(), 0);
+    (shell, transport, baseline_revision, baseline_digest)
+}
+
+/// Every structural member the Assistant authored, by name.
+const HOUSE_MEMBERS: [&str; 9] = [
+    "Sill plate front",
+    "Sill plate back",
+    "Sill plate left",
+    "Sill plate right",
+    "Front stud",
+    "Top plate front",
+    "Front sheathing",
+    "Ridge beam",
+    "Rafter",
+];
+
+/// Prove the built frame is exact, editable, savable and undoable.
+#[test]
+fn assistant_builds_a_timber_frame_house_from_an_empty_document() {
+    let (mut shell, _transport, baseline_revision, baseline_digest) = build_timber_frame_house();
+
     // The rafter must really be tilted, not axis-aligned like every other member.
     let snapshot = shell.app().document_snapshot();
     let rafter_transform = snapshot
@@ -413,17 +470,7 @@ fn assistant_builds_a_timber_frame_house_from_an_empty_document() {
     }
 
     // Every generated member must compile into the general exact BRep graph.
-    for name in [
-        "Sill plate front",
-        "Sill plate back",
-        "Sill plate left",
-        "Sill plate right",
-        "Front stud",
-        "Top plate front",
-        "Front sheathing",
-        "Ridge beam",
-        "Rafter",
-    ] {
+    for name in HOUSE_MEMBERS {
         let definition_id = definition_id_of(&shell, name);
         let body = body_feature_id_of(&shell, name);
         ExactBRepGraph::from_snapshot(&committed, definition_id, body)
@@ -440,12 +487,193 @@ fn assistant_builds_a_timber_frame_house_from_an_empty_document() {
     assert_eq!(outcome.snapshot().canonical_digest(), committed_digest);
 
     // The whole build must unwind step by step back to the empty document.
-    for _ in 0..requests.len() {
+    while shell.app().document_revision() > baseline_revision {
         assert!(shell.app_mut().undo());
     }
-    assert_eq!(shell.app().document_revision(), baseline_revision);
     assert_eq!(shell.app().canonical_digest(), baseline_digest);
-    assert_eq!(transport.remaining_responses(), 0);
+}
+
+fn exact_worker_path() -> PathBuf {
+    let name = if cfg!(windows) {
+        "ketchup-exact-worker.exe"
+    } else {
+        "ketchup-exact-worker"
+    };
+    let colocated = std::env::current_exe()
+        .unwrap()
+        .parent()
+        .and_then(Path::parent)
+        .unwrap()
+        .join(name);
+    if colocated.is_file() {
+        colocated
+    } else {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/debug")
+            .join(name)
+    }
+}
+
+fn general_report(
+    snapshot: &Snapshot,
+    cases: &[GeneralClearanceCase],
+    tolerance: TolerancePolicy,
+) -> ValidationReport {
+    let validator = BuiltinGeneralBodyValidator::new(tolerance);
+    let policy = general_body_validation_policy();
+    let input = general_body_input_bytes(cases);
+    let invocation =
+        ValidationInvocation::bind(snapshot, validator.descriptor(), &policy, vec![], &input);
+    validator.invoke(ValidationExecution {
+        snapshot,
+        invocation,
+        policy: &policy,
+        input: cases,
+    })
+}
+
+/// The Assistant-built house must carry all the way to a manufacturable
+/// handoff: a bill of materials, per-piece drawings and machining operations,
+/// each exportable only while it still matches the document it came from.
+#[test]
+fn the_timber_frame_house_projects_a_manufacturable_handoff() {
+    let (shell, _transport, _revision, _digest) = build_timber_frame_house();
+    let snapshot = shell.app().document_snapshot();
+    let tolerance = TolerancePolicy::default();
+
+    // Solve every member exactly, through the same worker the app uses.
+    let mut worker = ExactWorkerSupervisor::spawn(exact_worker_path()).unwrap();
+    let packages = HOUSE_MEMBERS
+        .iter()
+        .map(|name| {
+            let definition_id = definition_id_of(&shell, name);
+            let request = ExactFeatureChainRequest::from_snapshot(&snapshot, definition_id)
+                .unwrap_or_else(|error| panic!("{name} must yield an exact request: {error}"));
+            let package = worker
+                .evaluate_rectangle(&request)
+                .unwrap_or_else(|error| panic!("{name} must solve exactly: {error}"));
+            Arc::new(ExactBodyPackage::from(package))
+        })
+        .collect::<Vec<_>>();
+    let registry = ExactResultRegistry::accept(&snapshot, packages).unwrap();
+
+    // Cover every visible member with a clearance case; members touch, so the
+    // required minimum is zero and interference would still be caught.
+    let participants = snapshot
+        .scene_query()
+        .into_iter()
+        .filter(|occurrence| occurrence.visible)
+        .map(|occurrence| {
+            GeneralBodyParticipant::accept(
+                &snapshot,
+                &registry,
+                InstancePath::root(occurrence.occurrence_id),
+                tolerance,
+            )
+            .unwrap_or_else(|error| {
+                panic!(
+                    "{} must be an accepted general body: {error:?}",
+                    occurrence.occurrence_name
+                )
+            })
+        })
+        .collect::<Vec<_>>();
+    let visible_definitions = snapshot
+        .scene_query()
+        .into_iter()
+        .filter(|occurrence| occurrence.visible)
+        .map(|occurrence| occurrence.definition_id)
+        .collect::<std::collections::BTreeSet<_>>();
+    assert!(
+        participants.len() >= 8 + STUD_INSTANCES as usize,
+        "every house member must be an accepted general body"
+    );
+    let cases = (0..participants.len())
+        .map(|index| {
+            GeneralClearanceCase::new(
+                participants[index].clone(),
+                participants[(index + 1) % participants.len()].clone(),
+                0.0,
+            )
+            .unwrap()
+        })
+        .collect::<Vec<_>>();
+    let report = general_report(&snapshot, &cases, tolerance);
+    assert_eq!(
+        report.state,
+        ValidationState::Passed,
+        "{:#?}",
+        report.diagnostics
+    );
+
+    let projection = ketchup_core::fabrication::project_general_fabrication(
+        &snapshot, &registry, &cases, &report, tolerance,
+    )
+    .unwrap();
+    assert_eq!(
+        projection,
+        ketchup_core::fabrication::project_general_fabrication(
+            &snapshot, &registry, &cases, &report, tolerance,
+        )
+        .unwrap(),
+        "the manufacturable handoff must regenerate deterministically"
+    );
+
+    // One bill-of-materials row per distinct member, with the studs pooled.
+    assert_eq!(projection.bom.envelope.status, ProjectionStatus::Complete);
+    assert_eq!(projection.bom.rows.len(), visible_definitions.len());
+    for name in HOUSE_MEMBERS {
+        let definition_id = definition_id_of(&shell, name);
+        assert!(
+            projection
+                .bom
+                .rows
+                .iter()
+                .any(|row| row.definition_id == definition_id),
+            "{name} must appear in the bill of materials"
+        );
+    }
+    let stud_definition = definition_id_of(&shell, "Front stud");
+    let stud_row = projection
+        .bom
+        .rows
+        .iter()
+        .find(|row| row.definition_id == stud_definition)
+        .expect("the studs must appear as one pooled row");
+    assert_eq!(stud_row.quantity, STUD_INSTANCES as usize);
+    assert_eq!(stud_row.dimensions.height_mm, WALL_HEIGHT_MM);
+    for row in &projection.bom.rows {
+        assert_eq!(row.validation_state, ValidationState::Passed);
+    }
+
+    // Every member must get a drawing, and every drawing three views.
+    assert_eq!(
+        projection.drawings.drawings.len(),
+        visible_definitions.len()
+    );
+    for drawing in &projection.drawings.drawings {
+        assert_eq!(drawing.views.len(), 3);
+        assert_eq!(drawing.dimensions.len(), 3);
+    }
+
+    // Every member must resolve to a machining operation, none left unresolved.
+    assert_eq!(
+        projection.manufacturing.operations.len(),
+        visible_definitions.len()
+    );
+    assert!(projection.manufacturing.unresolved_sources.is_empty());
+    for operation in &projection.manufacturing.operations {
+        assert_eq!(operation.kind, GeneralManufacturingKind::Stock);
+    }
+
+    // All three exports must succeed against the document they describe.
+    let bom = String::from_utf8(projection.bom_export(&snapshot).unwrap()).unwrap();
+    assert!(bom.contains(&format!("quantity={}", STUD_INSTANCES)));
+    let drawings = String::from_utf8(projection.drawing_svg(&snapshot).unwrap()).unwrap();
+    assert!(drawings.contains("ketchup.general-drawing-svg.v1"));
+    let manufacturing =
+        String::from_utf8(projection.manufacturing_export(&snapshot).unwrap()).unwrap();
+    assert!(manufacturing.contains("kind=stock"));
 }
 
 /// The window opening this scenario needs cannot be expressed today. Both
