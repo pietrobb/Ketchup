@@ -140,6 +140,7 @@ use ketchup_scheduler::{
 mod assembly_ui;
 mod body_ui;
 pub mod dialogs;
+pub mod live_bridge;
 mod face_workflow_ui;
 mod feature_history_ui;
 mod native_document_inspection;
@@ -6035,6 +6036,7 @@ struct MigrationReviewPlan {
 
 pub struct KetchupApp {
     document: DocumentStore,
+    live_bridge: Option<live_bridge::LiveBridge>,
     container_data: ketchup_core::persistence::ContainerData,
     review_candidate: Option<ketchup_core::persistence::LoadOutcome>,
     migration_review_plan: Option<MigrationReviewPlan>,
@@ -6284,6 +6286,7 @@ impl KetchupApp {
         let digest = catalog.text("status-ready");
         Self {
             document,
+            live_bridge: None,
             container_data: ketchup_core::persistence::ContainerData::default(),
             review_candidate: None,
             migration_review_plan: None,
@@ -27787,7 +27790,7 @@ impl KetchupApp {
         drop(interaction_projection_cache);
         faces.sort_by(|left, right| right.depth.total_cmp(&left.depth));
 
-        self.paint_projected_shadows(&painter, response.rect, &viewport_boxes);
+        self.record_live_image_scene(ui, response.rect, &viewport_boxes, &faces, &edges, scene_plan.clone()); self.paint_projected_shadows(&painter, response.rect, &viewport_boxes);
         self.paint_scene_base_layers(&painter, response.rect, scene_plan);
 
         self.paint_projected_faces(&painter, &faces);
@@ -34406,6 +34409,7 @@ impl KetchupApp {
     /// This is the single entry point used both by the windowed `eframe`
     /// integration and by the offscreen [`crate::testing::HeadlessShell`].
     pub fn ui(&mut self, context: &egui::Context) {
+        self.begin_live_image_frame(); self.poll_live_bridge(context);
         self.poll_validator_panel(context);
         self.refresh_exact_products(context);
         #[cfg(feature = "named-product-fixtures")]
@@ -34539,7 +34543,7 @@ impl KetchupApp {
         self.show_sketchup_scene_import_window(context);
         self.show_shortcuts_window(context);
         self.show_about_window(context);
-        self.poll_assistant_chat(context);
+        self.poll_assistant_chat(context); self.finish_live_image_frame(context);
     }
 }
 

@@ -91,7 +91,7 @@ class Session:
     env is merged with the current environment (for OCCT DLL search paths).
     A session serializes requests. Document handles expire on new/open/close.
     """
-    def __init__(self, executable=None, worker=None, *, timeout=30.0, env=None):
+    def __init__(self, executable=None, worker=None, *, timeout=30.0, env=None, compact=False):
         if not isinstance(timeout, (int, float)) or not math.isfinite(timeout) or not 0 < timeout <= 600:
             raise ValueError("timeout must be finite and in (0, 600] seconds")
         self.timeout = float(timeout)
@@ -103,7 +103,7 @@ class Session:
         self._closed = False
         self._generation = 0
         self._id = 0
-        self._state = None
+        self._state, self.compact = None, compact
         process_env = dict(os.environ)
         if env:
             process_env.update(env)
@@ -249,13 +249,13 @@ class Session:
 
     def _expected(self):
         if self._state is None:
-            self._observe(self._request("state"))
+            self._observe(self._request("summary" if self.compact else "state"))
         return {"expected_revision": self._state["revision"],
                 "expected_digest": self._state["canonical_digest"]}
 
     def _replace(self, method, *, discard_unsaved=False, **params):
         with self._lock:
-            params.update(self._expected())
+            params.update(self._expected(), **({"response": "compact"} if self.compact else {}))
             params["discard_unsaved"] = discard_unsaved
             self._observe(self._request(method, params))
             self._generation += 1
@@ -321,20 +321,21 @@ class Document:
             self._check()
             params = dict(params or {})
             if mutation:
-                params.update(self._session._expected())
+                params.update(self._session._expected(), **({"response": "compact"} if self._session.compact else {}))
             result = self._session._request(method, params, timeout=timeout)
             if state:
                 self._session._observe(result)
             return result
 
+    def detail(self, kind, id): return self._call("detail", {"kind": kind, "id": id})
     @property
     def state(self):
         return self._call("state", state=True)["state"]
-
+    def summary(self): return self._call("summary", state=True)
     def apply(self, operations, *, selection=()):
         program = dict(operations) if isinstance(operations, Mapping) else {"operations": list(operations)}
         return self._call("apply", {"program": program, "selection": list(selection)}, mutation=True, state=True)
-
+    def query(self, **params): return self._call("query", params)
     def create_part(self, name, entities, *, feature, constraints=(), plane="xy",
                     translation_mm=(0, 0, 0), rotation=None):
         operation = {"operation": "create_part", "name": name,

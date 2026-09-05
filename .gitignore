@@ -1,12 +1,12 @@
 # Local Supervisor runtime
 .claude/
-skills/
+skills/*
 ClaudeSupervisor_*.exe
 models.yaml
 *.log
 *.log.[0-9]
 *.recovery
-
+!skills/ketchup_model.py
 # Rust and native builds
 /target/
 /target-*/
@@ -19,7 +19,7 @@ cmake-build-*/
 /third_party/occt-install*/
 /artifacts/
 __pycache__/
-
+!skills/ketchup_live.py
 # Local editor and OS files
 .vs/
 .idea/

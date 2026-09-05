@@ -3844,6 +3844,7 @@ pub struct DocumentStore {
     revisions: Vec<Arc<Revision>>,
     cursor: usize,
     next_revision_id: u64,
+    mutation_epoch: u64,
     evaluation_registry: BTreeMap<DerivedResultKey, DerivedResultEvent>,
     human_confirmation_policy: Option<Box<HumanConfirmationPolicy>>,
 }
@@ -3855,6 +3856,16 @@ impl Default for DocumentStore {
 }
 
 impl DocumentStore {
+    // Process-local epoch is not snapshot/history state; rollback must never restore it.
+    pub fn mutation_epoch(&self) -> u64 {
+        self.mutation_epoch
+    }
+
+    fn fresh_mutation_epoch() -> u64 {
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        NEXT.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
+            .expect("document mutation epoch exhausted")
+    }
     #[must_use]
     pub fn new() -> Self {
         Self::from_product(0, ProductModel::default())
@@ -3913,6 +3924,7 @@ impl DocumentStore {
             revisions: vec![revision],
             cursor: 0,
             next_revision_id,
+            mutation_epoch: Self::fresh_mutation_epoch(),
             evaluation_registry: BTreeMap::new(),
             human_confirmation_policy: None,
         })
@@ -6020,6 +6032,7 @@ impl DocumentStore {
             evaluation: Some(evaluation),
         });
 
+        self.mutation_epoch = Self::fresh_mutation_epoch();
         self.revisions.truncate(self.cursor + 1);
         self.revisions.push(Arc::clone(&revision));
         self.cursor += 1;
@@ -6176,6 +6189,7 @@ impl DocumentStore {
         if self.cursor == 0 {
             return None;
         }
+        self.mutation_epoch = Self::fresh_mutation_epoch();
         self.cursor -= 1;
         Some(self.current())
     }
@@ -6184,6 +6198,7 @@ impl DocumentStore {
         if self.cursor + 1 >= self.revisions.len() {
             return None;
         }
+        self.mutation_epoch = Self::fresh_mutation_epoch();
         self.cursor += 1;
         Some(self.current())
     }

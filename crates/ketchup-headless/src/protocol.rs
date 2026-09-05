@@ -1,4 +1,6 @@
 use ketchup_application::evaluation::EvidenceStatus;
+mod model_tools;
+use ketchup_application::model_query::{ModelQuery, created_receipt};
 use ketchup_application::validation::{ASSISTANT_VALIDATOR_IDS, assistant_validator_catalog};
 use ketchup_application::{
     AssistantValidationSelection, DocumentSession, SaveOptions, SessionError, SessionSettings,
@@ -20,6 +22,9 @@ const METHODS: &[&str] = &[
     "new",
     "open",
     "state",
+    "summary",
+    "query",
+    "detail",
     "apply",
     "evaluate",
     "list_validators",
@@ -92,6 +97,8 @@ pub struct Server {
     // Open creates a fresh history cursor in the application persistence API.
     redo_steps: usize,
     pristine: bool,
+    model_queries: ModelQuery,
+    compact_result: bool,
 }
 impl Server {
     pub fn new(settings: SessionSettings) -> Self {
@@ -100,6 +107,8 @@ impl Server {
             settings,
             redo_steps: 0,
             pristine: true,
+            model_queries: ModelQuery::default(),
+            compact_result: false,
         }
     }
     fn state(&self) -> Value {
@@ -112,6 +121,9 @@ impl Server {
             "grounded_occurrence_ids":s.grounded_occurrences().map(|id|id.0).collect::<Vec<_>>()})
     }
     fn state_result(&self) -> Value {
+        if self.compact_result {
+            return self.compact_state_result();
+        }
         json!({"state":self.state(),"path":self.session.path().map(|p|p.to_string_lossy()),"modified":!self.pristine && self.session.is_modified()})
     }
     fn guard(&self, p: &Map<String, Value>) -> Result<()> {
@@ -138,7 +150,7 @@ impl Server {
         }
         Ok(())
     }
-    fn dispatch(&mut self, method: &str, params: Value) -> Result<Value> {
+    fn dispatch_inner(&mut self, method: &str, params: Value) -> Result<Value> {
         let p = params
             .as_object()
             .ok_or_else(|| Error::invalid("params must be an object"))?;
@@ -218,7 +230,11 @@ impl Server {
                 self.redo_steps = 0;
                 self.pristine = false;
                 let mut result = self.state_result();
-                result["created"] = created(&before, &self.session.snapshot());
+                result["created"] = if self.compact_result {
+                    created_receipt(&before, &self.session.snapshot())
+                } else {
+                    created(&before, &self.session.snapshot())
+                };
                 Ok(result)
             }
             "set_grounded" => {
@@ -343,6 +359,7 @@ fn valid_id(id: &Value) -> bool {
     id.is_null() || id.as_u64().is_some() || id.as_str().is_some_and(|s| s.len() <= 256)
 }
 fn failure(id: Value, error: Error) -> Value {
+    let error = model_tools::bounded_error(error);
     let mut detail = json!({"code":error.code,"message":error.message});
     if let Some(details) = error.details {
         detail["details"] = details;
@@ -539,7 +556,7 @@ mod tests {
             caps["result"]["cad_program_schema"]["$defs"]["AssistantCadEditOperation"]["oneOf"]
                 .as_array()
                 .unwrap();
-        assert_eq!(variants.len(), 9);
+        assert_eq!(variants.len(), 10);
         assert!(
             variants
                 .iter()
