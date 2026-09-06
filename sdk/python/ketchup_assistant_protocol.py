@@ -73,7 +73,7 @@ SYSTEM_PROMPT = (
     "Never return both mutation fields. Use cad_edit_program for create_part, create_sketch, append_feature, set_dimension, delete, rigid transform, copy, linear pattern, mirror, classification metadata, or evaluator inputs. "
     "cad_edit_program is {operations: [...]} and every operation names its kind in the field operation, never in a field called type: {operation: create_part, ...}. Inside an operation the field type stays reserved for nested records such as feature, workplane, entities and constraints. "
     "create_part atomically creates a host-ID-assigned definition, workplane, sketch, universal feature, and occurrence. It has name, workplane, entities, constraints, feature, translation_mm, and optional rotation; feature is either {type: extrusion, distance_mm: positive length} or {type: revolve, axis_start_mm: [x,y], axis_end_mm: [x,y], angle_degrees: >0 and <=360}. "
-    "append_feature adds one host-ID-assigned feature to an existing definition. It has definition_id, name, and either feature {type: boolean, operation: cut|union|intersect, target_feature_id, tool_feature_id}, whose inputs are distinct supported exact body features in that definition; feature {type: pocket, target_feature_id, profile_feature_id, depth_mm}, whose distinct inputs are a supported exact extrusion target and closed profile in that definition with positive bounded depth below the target height; feature {type: planar_offset, profile_feature_id, distance_mm}, whose input is the sole existing exact rectangular profile in that definition and whose finite signed distance magnitude from 0.01 to 1000000 mm must leave both result dimensions at least 0.01 mm; feature {type: sweep, profile_feature_id, path_feature_id}, whose distinct inputs are a supported closed polygon or line/arc profile and one open straight path in that definition; feature {type: loft, sections: [{profile_feature_id, elevation_mm}, ...]}, with 2 to 16 unique existing spline profiles in that definition and finite bounded elevations in strictly increasing order; feature {type: topology_shell, target_feature_id, removed_face_reference_ids, thickness_mm}, with 1 to 64 unique opaque reference_id values copied exactly from current topology_face_references for that definition and target, and finite thickness from 0.01 to 100000 mm; feature {type: topology_fillet, target_feature_id, edge_reference_ids, radius_mm}, with 1 to 64 unique opaque reference_id values copied exactly from current topology_edge_references for that definition and target, and finite radius from 0.01 to 100000 mm; or feature {type: topology_chamfer, target_feature_id, edge_reference_ids, distance_mm}, with 1 to 64 unique opaque reference_id values copied exactly from current topology_edge_references for that definition and target, and finite distance from 0.01 to 100000 mm. Never invent topology reference IDs, face or edge ordinals, semantic roles, or named-shape selectors. "
+    "append_feature adds one host-ID-assigned feature to an existing definition. It has definition_id, name, and either feature {type: boolean, operation: cut|union|intersect, target_feature_id, tool_feature_id}, whose inputs are distinct supported exact body features in that definition; each Boolean input is either a positive existing feature ID or {operation_index: zero-based earlier operation index, output: body_feature} referencing an earlier create_part or append_feature output in this same program; feature {type: pocket, target_feature_id, profile_feature_id, depth_mm}, whose distinct inputs are a supported exact extrusion target and closed profile in that definition with positive bounded depth below the target height; feature {type: planar_offset, profile_feature_id, distance_mm}, whose input is the sole existing exact rectangular profile in that definition and whose finite signed distance magnitude from 0.01 to 1000000 mm must leave both result dimensions at least 0.01 mm; feature {type: sweep, profile_feature_id, path_feature_id}, whose distinct inputs are a supported closed polygon or line/arc profile and one open straight path in that definition; feature {type: loft, sections: [{profile_feature_id, elevation_mm}, ...]}, with 2 to 16 unique existing spline profiles in that definition and finite bounded elevations in strictly increasing order; feature {type: topology_shell, target_feature_id, removed_face_reference_ids, thickness_mm}, with 1 to 64 unique opaque reference_id values copied exactly from current topology_face_references for that definition and target, and finite thickness from 0.01 to 100000 mm; feature {type: topology_fillet, target_feature_id, edge_reference_ids, radius_mm}, with 1 to 64 unique opaque reference_id values copied exactly from current topology_edge_references for that definition and target, and finite radius from 0.01 to 100000 mm; or feature {type: topology_chamfer, target_feature_id, edge_reference_ids, distance_mm}, with 1 to 64 unique opaque reference_id values copied exactly from current topology_edge_references for that definition and target, and finite distance from 0.01 to 100000 mm. Never invent topology reference IDs, face or edge ordinals, semantic roles, or named-shape selectors. "
     "create_sketch has definition_id, name, workplane, entities, and constraints; workplane is principal with plane xy/yz/xz or offset with an existing base_feature_id and distance_mm. "
     "Entities are typed line/arc/circle records with positive stable IDs and 2D millimetre coordinates. Constraints are typed horizontal/vertical/coincident/distance/radius/fixed_point records with positive stable IDs and point refs {entity_id, point: start/end/center}. "
     "The host assigns create_part definition, feature, and occurrence IDs and create_sketch workplane and sketch feature IDs. set_dimension targets an existing feature_id, optional constraint_id, and positive value_mm. "
@@ -682,6 +682,37 @@ def _validate_cad_rotation(rotation: object) -> None:
         raise ProtocolError("provider CAD rotation angle is invalid")
 
 
+def _valid_cad_body_feature_reference(
+    value: object, operation_index: int, operations: list[dict]
+) -> bool:
+    if isinstance(value, int) and not isinstance(value, bool):
+        return 0 < value <= MAX_U64
+    if not isinstance(value, dict) or set(value) != {"operation_index", "output"}:
+        return False
+    producer_index = value["operation_index"]
+    return (
+        isinstance(producer_index, int)
+        and not isinstance(producer_index, bool)
+        and 0 <= producer_index < operation_index
+        and value["output"] == "body_feature"
+        and (
+            operations[producer_index].get("operation") == "create_part"
+            or operations[producer_index].get("operation") == "append_feature"
+            and isinstance(operations[producer_index].get("feature"), dict)
+            and operations[producer_index]["feature"].get("type")
+            in {
+                "boolean",
+                "pocket",
+                "sweep",
+                "loft",
+                "topology_shell",
+                "topology_fillet",
+                "topology_chamfer",
+            }
+        )
+    )
+
+
 def _validate_cad_edit_program(program: object) -> dict:
     if not isinstance(program, dict) or set(program) != {"operations"}:
         raise ProtocolError("provider CAD edit program contains missing or unknown fields")
@@ -693,7 +724,7 @@ def _validate_cad_edit_program(program: object) -> dict:
     ):
         raise ProtocolError("provider CAD edit program operation count is invalid")
     generated_occurrences = 0
-    for operation in operations:
+    for operation_index, operation in enumerate(operations):
         if not isinstance(operation, dict) or "operation" not in operation:
             raise ProtocolError("provider CAD edit operation is invalid")
         operation_type = operation["operation"]
@@ -821,12 +852,12 @@ def _validate_cad_edit_program(program: object) -> dict:
                 valid_feature = (
                     set(feature) == {"type", "operation", "target_feature_id", "tool_feature_id"}
                     and feature.get("operation") in {"cut", "union", "intersect"}
-                    and isinstance(target_feature_id, int)
-                    and not isinstance(target_feature_id, bool)
-                    and 0 < target_feature_id <= MAX_U64
-                    and isinstance(feature.get("tool_feature_id"), int)
-                    and not isinstance(feature.get("tool_feature_id"), bool)
-                    and 0 < feature["tool_feature_id"] <= MAX_U64
+                    and _valid_cad_body_feature_reference(
+                        target_feature_id, operation_index, operations
+                    )
+                    and _valid_cad_body_feature_reference(
+                        feature.get("tool_feature_id"), operation_index, operations
+                    )
                     and target_feature_id != feature["tool_feature_id"]
                 )
             elif feature.get("type") == "pocket":

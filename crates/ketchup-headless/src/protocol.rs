@@ -220,7 +220,7 @@ impl Server {
                 json!({"methods":METHODS.iter().map(|name| json!({"name":name,"mutates":matches!(*name,"new"|"open"|"apply"|"batch_job_step"|"set_grounded"|"undo"|"redo"|"save")})).collect::<Vec<_>>(),
                 "cad_program_schema":serde_json::from_str::<Value>(include_str!(concat!(env!("OUT_DIR"),"/cad-program-schema.json"))).expect("build-generated schema"),
                 "bounds":{"max_line_bytes":MAX_LINE_BYTES,"max_output_bytes":MAX_LINE_BYTES,"max_selection":100,"max_operations":64,"max_batch_jobs":MAX_BATCH_JOBS,"evaluation_timeout_ms":{"default":30000,"min":1,"max":300000}},
-                "mutation_preconditions":["expected_revision","expected_digest"],"units":"mm","transform":"row-major 4x4 local occurrence transform","transactions":"one apply = one atomic CAD program; no within-program references to newly allocated IDs","protocol":PROTOCOL}),
+                "mutation_preconditions":["expected_revision","expected_digest"],"units":"mm","transform":"row-major 4x4 local occurrence transform","transactions":"one apply = one atomic CAD program; newly allocated Boolean operands use zero-based earlier operation_index plus output=body_feature, never guessed IDs","protocol":PROTOCOL}),
             ),
             "state" => Ok(self.state_result()),
             "new" => {
@@ -597,6 +597,28 @@ mod tests {
             variants
                 .iter()
                 .any(|v| v["properties"]["operation"]["const"] == "append_feature")
+        );
+    }
+    #[test]
+    fn schema_covers_program_body_feature_references() {
+        let mut s = Server::new(SessionSettings::default());
+        let caps = request(&mut s, "capabilities", json!({}));
+        let references =
+            caps["result"]["cad_program_schema"]["$defs"]["AssistantCadFeatureReference"]["oneOf"]
+                .as_array()
+                .unwrap();
+        assert!(references.iter().any(|value| value["type"] == "integer"));
+        assert!(
+            references
+                .iter()
+                .any(|value| { value["$ref"] == "#/$defs/AssistantCadProgramFeatureReference" })
+        );
+        let local_reference =
+            &caps["result"]["cad_program_schema"]["$defs"]["AssistantCadProgramFeatureReference"];
+        assert_eq!(local_reference["additionalProperties"], false);
+        assert_eq!(
+            local_reference["required"],
+            json!(["operation_index", "output"])
         );
     }
     #[test]

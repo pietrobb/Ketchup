@@ -112,6 +112,153 @@ fn serializable_create_program_plans_without_gui_and_commits_one_editable_revisi
 }
 
 #[test]
+fn same_program_boolean_resolves_host_assigned_body_outputs_atomically() {
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DefinitionId(1),
+                name: "Boolean chain".into(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(1),
+                definition_id: DefinitionId(1),
+                name: "Target profile".into(),
+                kind: FeatureKind::Profile {
+                    points_mm: vec![[0.0, 0.0], [40.0, 0.0], [40.0, 30.0], [0.0, 30.0]],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(2),
+                definition_id: DefinitionId(1),
+                name: "Target body".into(),
+                kind: FeatureKind::Extrusion {
+                    profile: FeatureId(1),
+                    height: Dimension::new("10", 10.0).unwrap(),
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(3),
+                definition_id: DefinitionId(1),
+                name: "First opening".into(),
+                kind: FeatureKind::Profile {
+                    points_mm: vec![[2.0, 2.0], [12.0, 2.0], [12.0, 12.0], [2.0, 12.0]],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(4),
+                definition_id: DefinitionId(1),
+                name: "Second opening".into(),
+                kind: FeatureKind::Profile {
+                    points_mm: vec![[20.0, 10.0], [30.0, 10.0], [30.0, 20.0], [20.0, 20.0]],
+                },
+            },
+        ]))
+        .unwrap();
+    let baseline = document.current();
+    let undo = document.visible_undo_steps();
+    let earlier_body = |operation_index| {
+        AssistantCadFeatureReference::ProgramOutput(AssistantCadProgramFeatureReference {
+            operation_index,
+            output: AssistantCadProgramFeatureOutput::BodyFeature,
+        })
+    };
+    let input = program(vec![
+        AssistantCadEditOperation::AppendFeature {
+            definition_id: 1,
+            name: "First pocket body".into(),
+            feature: AssistantCadBodyFeature::Pocket {
+                target_feature_id: 2,
+                profile_feature_id: 3,
+                depth_mm: 5.0,
+            },
+        },
+        AssistantCadEditOperation::AppendFeature {
+            definition_id: 1,
+            name: "Second pocket body".into(),
+            feature: AssistantCadBodyFeature::Pocket {
+                target_feature_id: 2,
+                profile_feature_id: 4,
+                depth_mm: 5.0,
+            },
+        },
+        AssistantCadEditOperation::AppendFeature {
+            definition_id: 1,
+            name: "Chained Boolean".into(),
+            feature: AssistantCadBodyFeature::Boolean {
+                operation: AssistantCadBooleanOperation::Intersect,
+                target_feature_id: earlier_body(0),
+                tool_feature_id: earlier_body(1),
+            },
+        },
+    ]);
+
+    let mut guessed_output = input.clone();
+    let AssistantCadEditOperation::AppendFeature {
+        feature: AssistantCadBodyFeature::Boolean {
+            target_feature_id, ..
+        },
+        ..
+    } = &mut guessed_output.operations[2]
+    else {
+        unreachable!("the third operation is the chained Boolean")
+    };
+    *target_feature_id = 5.into();
+    let rejection = plan(
+        &document,
+        &BTreeSet::new(),
+        &ExactResultRegistry::default(),
+        &guessed_output,
+    )
+    .unwrap_err();
+    assert_eq!(rejection.code, "canonical.feature_not_found");
+    assert_eq!(
+        document.current().canonical_digest(),
+        baseline.canonical_digest()
+    );
+    assert_eq!(document.visible_undo_steps(), undo);
+
+    let batch = plan(
+        &document,
+        &BTreeSet::new(),
+        &ExactResultRegistry::default(),
+        &input,
+    )
+    .unwrap();
+    assert_eq!(batch.commands().len(), 3);
+    assert_eq!(
+        document.current().canonical_digest(),
+        baseline.canonical_digest()
+    );
+    assert_eq!(document.visible_undo_steps(), undo);
+    let candidate = document.preview_batch(&batch).unwrap();
+    assert!(matches!(
+        candidate.feature(FeatureId(7)).unwrap().kind(),
+        FeatureKind::Boolean {
+            target: FeatureId(5),
+            tool: FeatureId(6),
+            ..
+        }
+    ));
+    ExactBRepGraph::from_snapshot(&candidate, DefinitionId(1), FeatureId(7)).unwrap();
+
+    document.apply_batch(&batch).unwrap();
+    let committed = document.current();
+    assert_eq!(committed.revision_id(), baseline.revision_id() + 1);
+    assert_eq!(document.visible_undo_steps(), undo + 1);
+    document.undo().unwrap();
+    assert_eq!(
+        document.current().canonical_digest(),
+        baseline.canonical_digest()
+    );
+    document.redo().unwrap();
+    assert_eq!(
+        document.current().canonical_digest(),
+        committed.canonical_digest()
+    );
+}
+
+#[test]
 fn explicit_targets_ignore_selection_and_current_selection_is_borrowed() {
     let document = seeded();
     let registry = ExactResultRegistry::default();

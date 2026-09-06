@@ -2009,8 +2009,8 @@ fn scripted_append_boolean_programs_are_exact_persistent_and_one_step() {
                     name: format!("Assistant {operation:?}"),
                     feature: AssistantCadBodyFeature::Boolean {
                         operation,
-                        target_feature_id: 2,
-                        tool_feature_id: 4,
+                        target_feature_id: 2.into(),
+                        tool_feature_id: 4.into(),
                     },
                 }],
             },

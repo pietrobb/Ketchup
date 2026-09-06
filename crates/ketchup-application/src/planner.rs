@@ -10,8 +10,8 @@ use crate::transforms::{
 };
 use ketchup_core::assistant_sidecar::{
     AssistantCadBodyFeature, AssistantCadDeletePolicy, AssistantCadEditOperation,
-    AssistantCadEditProgram, AssistantCadEntitySelector, AssistantRejectionDiagnostic,
-    AssistantRejectionPhase,
+    AssistantCadEditProgram, AssistantCadEntitySelector, AssistantCadFeatureReference,
+    AssistantRejectionDiagnostic, AssistantRejectionPhase,
 };
 use ketchup_core::document::{
     CanonicalCommand, CanonicalError, ClassificationCategoryId, ClassificationDimensionId,
@@ -61,6 +61,78 @@ fn resolve_assistant_cad_selector(
     Ok(ids)
 }
 
+fn resolve_program_feature_reference(
+    reference: AssistantCadFeatureReference,
+    original_snapshot: &Snapshot,
+    operation_outputs: &BTreeMap<usize, FeatureId>,
+    operation: &str,
+) -> AssistantPlanningResult<u64> {
+    match reference {
+        AssistantCadFeatureReference::Existing(id)
+            if original_snapshot.feature(FeatureId(id)).is_some() =>
+        {
+            Ok(id)
+        }
+        AssistantCadFeatureReference::Existing(id) => Err(assistant_canonical_rejection(
+            CanonicalError::FeatureNotFound(FeatureId(id)),
+            operation,
+            &format!("feature:{id}"),
+        )),
+        AssistantCadFeatureReference::ProgramOutput(reference) => operation_outputs
+            .get(&(reference.operation_index as usize))
+            .map(|id| id.0)
+            .ok_or_else(|| {
+                assistant_planning_rejection(
+                    "planning.cad_program_feature_reference_unavailable",
+                    operation,
+                    &format!("operation:{}", reference.operation_index),
+                    "The referenced earlier operation did not produce an available body feature.",
+                    "Reference the body_feature output of an earlier create_part or append_feature operation.",
+                )
+            }),
+    }
+}
+
+fn resolve_program_feature_references(
+    feature: &AssistantCadBodyFeature,
+    original_snapshot: &Snapshot,
+    operation_outputs: &BTreeMap<usize, FeatureId>,
+    operation: &str,
+) -> AssistantPlanningResult<AssistantCadBodyFeature> {
+    let mut feature = feature.clone();
+    if let AssistantCadBodyFeature::Boolean {
+        target_feature_id,
+        tool_feature_id,
+        ..
+    } = &mut feature
+    {
+        let target = resolve_program_feature_reference(
+            *target_feature_id,
+            original_snapshot,
+            operation_outputs,
+            operation,
+        )?;
+        let tool = resolve_program_feature_reference(
+            *tool_feature_id,
+            original_snapshot,
+            operation_outputs,
+            operation,
+        )?;
+        if target == tool {
+            return Err(assistant_planning_rejection(
+                "planning.cad_feature_inputs_identical",
+                operation,
+                &format!("feature:{target}"),
+                "The resolved Boolean operands refer to the same body feature.",
+                "Use two distinct existing or earlier program body features.",
+            ));
+        }
+        *target_feature_id = target.into();
+        *tool_feature_id = tool.into();
+    }
+    Ok(feature)
+}
+
 /// Plans against the current document and explicit host-provided context without mutation.
 ///
 /// An empty selection is valid unless an operation uses `CurrentSelection`.
@@ -89,6 +161,7 @@ pub fn plan_assistant_cad_edit_program(
     })?;
 
     let mut commands = Vec::new();
+    let mut operation_outputs = BTreeMap::new();
     let mut appended_exact_features = Vec::new();
     let mut appended_planar_offsets = Vec::new();
     let mut working_transforms = snapshot
@@ -139,7 +212,7 @@ pub fn plan_assistant_cad_edit_program(
         .occurrences()
         .map(|o| (o.id(), o.color()))
         .collect::<BTreeMap<_, _>>();
-    for operation in &program.operations {
+    for (operation_index, operation) in program.operations.iter().enumerate() {
         let operation_name = match operation {
             AssistantCadEditOperation::CreateSketch { .. } => "create_sketch",
             AssistantCadEditOperation::CreatePart { .. } => "create_part",
@@ -201,22 +274,66 @@ pub fn plan_assistant_cad_edit_program(
         match operation {
             AssistantCadEditOperation::CreateSketch { .. }
             | AssistantCadEditOperation::CreatePart { .. } => {
-                commands.extend(plan_creation(
+                let creation_commands = plan_creation(
                     &snapshot,
                     operation,
                     &mut next_definition,
                     &mut next_feature,
                     &mut next_occurrence,
                     &document_target,
-                )?);
+                )?;
+                if matches!(operation, AssistantCadEditOperation::CreatePart { .. })
+                    && let Some(id) = creation_commands.iter().rev().find_map(|command| {
+                        if let CanonicalCommand::CreateFeature { id, .. } = command {
+                            Some(*id)
+                        } else {
+                            None
+                        }
+                    })
+                {
+                    operation_outputs.insert(operation_index, id);
+                }
+                commands.extend(creation_commands);
             }
             AssistantCadEditOperation::AppendFeature {
                 definition_id,
                 name,
                 feature,
             } => {
+                let references_program_output = matches!(
+                    feature,
+                    AssistantCadBodyFeature::Boolean {
+                        target_feature_id: AssistantCadFeatureReference::ProgramOutput(_),
+                        ..
+                    } | AssistantCadBodyFeature::Boolean {
+                        tool_feature_id: AssistantCadFeatureReference::ProgramOutput(_),
+                        ..
+                    }
+                );
+                let prefix_candidate = if commands.is_empty() || !references_program_output {
+                    None
+                } else {
+                    Some(
+                        document
+                            .preview_batch(&CommandBatch::new(commands.clone()))
+                            .map_err(|error| {
+                                assistant_canonical_rejection(
+                                    error,
+                                    operation_name,
+                                    &document_target,
+                                )
+                            })?,
+                    )
+                };
+                let planning_snapshot = prefix_candidate.as_ref().unwrap_or(&snapshot);
+                let feature = resolve_program_feature_references(
+                    feature,
+                    &snapshot,
+                    &operation_outputs,
+                    operation_name,
+                )?;
                 let definition_id = DefinitionId(*definition_id);
-                if snapshot.definition(definition_id).is_none() {
+                if planning_snapshot.definition(definition_id).is_none() {
                     return Err(assistant_canonical_rejection(
                         CanonicalError::DefinitionNotFound(definition_id),
                         operation_name,
@@ -224,10 +341,10 @@ pub fn plan_assistant_cad_edit_program(
                     ));
                 }
                 let kind = plan_feature_kind(
-                    &snapshot,
+                    planning_snapshot,
                     topology_results,
                     definition_id,
-                    feature,
+                    &feature,
                     operation_name,
                 )?;
                 let id = next_feature.map(FeatureId).ok_or_else(|| {
@@ -244,6 +361,9 @@ pub fn plan_assistant_cad_edit_program(
                     name: name.clone(),
                     kind,
                 });
+                if feature.produces_body_feature_output() {
+                    operation_outputs.insert(operation_index, id);
+                }
                 if matches!(feature, AssistantCadBodyFeature::PlanarOffset { .. }) {
                     appended_planar_offsets.push((definition_id, id));
                 } else {

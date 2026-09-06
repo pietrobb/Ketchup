@@ -26,8 +26,16 @@ pub(crate) fn plan_feature_kind(
             target_feature_id,
             tool_feature_id,
         } => {
-            let target = FeatureId(*target_feature_id);
-            let tool = FeatureId(*tool_feature_id);
+            let target = FeatureId(
+                target_feature_id
+                    .existing_id()
+                    .expect("Assistant Boolean references are resolved before feature planning"),
+            );
+            let tool = FeatureId(
+                tool_feature_id
+                    .existing_id()
+                    .expect("Assistant Boolean references are resolved before feature planning"),
+            );
             let mut input_bounds = [None, None];
             for (index, input) in [target, tool].into_iter().enumerate() {
                 let existing = snapshot.feature(input).ok_or_else(|| {

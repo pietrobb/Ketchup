@@ -18,8 +18,9 @@ use ketchup_application::validation::{
 use ketchup_core::assistant_sidecar::{
     AssistantCadBodyFeature, AssistantCadBooleanOperation, AssistantCadClassificationCategory,
     AssistantCadDeletePolicy, AssistantCadEditOperation, AssistantCadEditProgram,
-    AssistantCadEntitySelector, AssistantCadPartFeature, AssistantCadRotation, AssistantChatResult,
-    AssistantDistribution, AssistantPrincipalPlane, AssistantSketchConstraint,
+    AssistantCadEntitySelector, AssistantCadFeatureReference, AssistantCadPartFeature,
+    AssistantCadProgramFeatureOutput, AssistantCadProgramFeatureReference, AssistantCadRotation,
+    AssistantChatResult, AssistantDistribution, AssistantPrincipalPlane, AssistantSketchConstraint,
     AssistantSketchEntity, AssistantWorkplaneSpec,
 };
 use ketchup_core::document::{
@@ -1923,17 +1924,9 @@ fn assistant_cuts_an_opening_but_cannot_yet_boolean_two_parts_it_created() {
     let revision = shell.app().document_revision();
     let digest = shell.app().canonical_digest();
 
-    // Limit 2: CreatePart always opens a new definition, no operation appends a
-    // second solid to an existing one, and a body created earlier in the same
-    // program is not yet visible to a later operation. A Boolean between two
-    // Assistant-built bodies is therefore unreachable as well.
-    // The pad the CreatePart below would author: workplane, sketch, then pad.
-    let next_part_pad = committed
-        .features()
-        .map(|feature| feature.id().0)
-        .max()
-        .expect("the document owns features")
-        + 3;
+    // CreatePart still opens a new definition, so its symbolically referenced
+    // body is visible to the later operation but cannot bypass canonical
+    // same-definition Boolean ownership.
     let second_part = AssistantCadEditProgram {
         operations: vec![
             timber("Window block", 1_200.0, 1_400.0, 100.0, [0.0; 3], None),
@@ -1942,8 +1935,13 @@ fn assistant_cuts_an_opening_but_cannot_yet_boolean_two_parts_it_created() {
                 name: "Window cut".to_owned(),
                 feature: AssistantCadBodyFeature::Boolean {
                     operation: AssistantCadBooleanOperation::Cut,
-                    target_feature_id: sheathing_pad.0,
-                    tool_feature_id: next_part_pad,
+                    target_feature_id: sheathing_pad.0.into(),
+                    tool_feature_id: AssistantCadFeatureReference::ProgramOutput(
+                        AssistantCadProgramFeatureReference {
+                            operation_index: 0,
+                            output: AssistantCadProgramFeatureOutput::BodyFeature,
+                        },
+                    ),
                 },
             },
         ],
@@ -1951,8 +1949,11 @@ fn assistant_cuts_an_opening_but_cannot_yet_boolean_two_parts_it_created() {
     let rejection = shell
         .app()
         .plan_assistant_cad_edit_program(&second_part)
-        .expect_err("a Boolean against a body from the same program must fail closed");
-    assert_eq!(rejection.code, "canonical.feature_not_found");
+        .expect_err("a cross-definition Boolean must fail closed");
+    assert_eq!(
+        rejection.code,
+        "planning.cad_feature_input_ownership_invalid"
+    );
     assert_eq!(rejection.operation, "append_feature");
 
     // Neither rejection may touch the document.

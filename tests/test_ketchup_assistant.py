@@ -494,6 +494,66 @@ def test_public_sidecar_parses_strict_bounded_cad_edit_program():
     }
     assert assistant._validate_cad_edit_program(revolve_program) == revolve_program
 
+    chained_program = {
+        "operations": [
+            revolve_program["operations"][0],
+            {
+                "operation": "append_feature",
+                "definition_id": 2,
+                "name": "Chained exact cut",
+                "feature": {
+                    "type": "boolean",
+                    "operation": "cut",
+                    "target_feature_id": 11,
+                    "tool_feature_id": {
+                        "operation_index": 0,
+                        "output": "body_feature",
+                    },
+                },
+            },
+        ]
+    }
+    assert assistant._validate_cad_edit_program(chained_program) == chained_program
+    assert "zero-based earlier operation index" in assistant.SYSTEM_PROMPT
+
+    for invalid_reference in [
+        {"operation_index": 1, "output": "body_feature"},
+        {"operation_index": 2, "output": "body_feature"},
+        {"operation_index": 0, "output": "body_feature", "feature_id": 99},
+    ]:
+        invalid_chain = {
+            "operations": [
+                revolve_program["operations"][0],
+                {
+                    **chained_program["operations"][1],
+                    "feature": {
+                        **chained_program["operations"][1]["feature"],
+                        "tool_feature_id": invalid_reference,
+                    },
+                },
+            ]
+        }
+        with pytest.raises(assistant.ProtocolError):
+            assistant._validate_cad_edit_program(invalid_chain)
+
+    planar_chain = {
+        "operations": [
+            {
+                "operation": "append_feature",
+                "definition_id": 2,
+                "name": "Planar result",
+                "feature": {
+                    "type": "planar_offset",
+                    "profile_feature_id": 11,
+                    "distance_mm": 1,
+                },
+            },
+            chained_program["operations"][1],
+        ]
+    }
+    with pytest.raises(assistant.ProtocolError):
+        assistant._validate_cad_edit_program(planar_chain)
+
     boundary = {
         "operations": [
             {

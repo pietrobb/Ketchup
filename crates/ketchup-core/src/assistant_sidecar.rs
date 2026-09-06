@@ -216,6 +216,49 @@ impl AssistantCadPartFeature {
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
+pub enum AssistantCadProgramFeatureOutput {
+    BodyFeature,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AssistantCadProgramFeatureReference {
+    pub operation_index: u32,
+    pub output: AssistantCadProgramFeatureOutput,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(untagged)]
+pub enum AssistantCadFeatureReference {
+    Existing(u64),
+    ProgramOutput(AssistantCadProgramFeatureReference),
+}
+
+impl From<u64> for AssistantCadFeatureReference {
+    fn from(value: u64) -> Self {
+        Self::Existing(value)
+    }
+}
+
+impl AssistantCadFeatureReference {
+    pub fn existing_id(self) -> Option<u64> {
+        match self {
+            Self::Existing(id) => Some(id),
+            Self::ProgramOutput(_) => None,
+        }
+    }
+
+    fn validate(self) -> Result<(), String> {
+        match self {
+            Self::Existing(id) if id != 0 => Ok(()),
+            Self::ProgramOutput(_) => Ok(()),
+            Self::Existing(_) => Err("assistant CAD feature reference is invalid".to_owned()),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum AssistantCadBooleanOperation {
     Cut,
     Union,
@@ -234,8 +277,8 @@ pub struct AssistantCadLoftSection {
 pub enum AssistantCadBodyFeature {
     Boolean {
         operation: AssistantCadBooleanOperation,
-        target_feature_id: u64,
-        tool_feature_id: u64,
+        target_feature_id: AssistantCadFeatureReference,
+        tool_feature_id: AssistantCadFeatureReference,
     },
     Pocket {
         target_feature_id: u64,
@@ -277,8 +320,8 @@ impl AssistantCadBodyFeature {
                 target_feature_id,
                 tool_feature_id,
                 ..
-            } if *target_feature_id != 0
-                && *tool_feature_id != 0
+            } if target_feature_id.validate().is_ok()
+                && tool_feature_id.validate().is_ok()
                 && target_feature_id != tool_feature_id =>
             {
                 Ok(())
@@ -397,6 +440,47 @@ impl AssistantCadBodyFeature {
             }
             Self::TopologyChamfer { .. } => Err("assistant CAD body feature is invalid".to_owned()),
         }
+    }
+
+    pub fn produces_body_feature_output(&self) -> bool {
+        !matches!(self, Self::PlanarOffset { .. })
+    }
+
+    fn validate_program_references(
+        &self,
+        operation_index: usize,
+        operations: &[AssistantCadEditOperation],
+    ) -> Result<(), String> {
+        let validate_reference = |reference: AssistantCadFeatureReference| match reference {
+            AssistantCadFeatureReference::Existing(_) => Ok(()),
+            AssistantCadFeatureReference::ProgramOutput(reference)
+                if (reference.operation_index as usize) < operation_index
+                    && operations
+                        .get(reference.operation_index as usize)
+                        .is_some_and(|operation| match operation {
+                            AssistantCadEditOperation::CreatePart { .. } => true,
+                            AssistantCadEditOperation::AppendFeature { feature, .. } => {
+                                feature.produces_body_feature_output()
+                            }
+                            _ => false,
+                        }) =>
+            {
+                Ok(())
+            }
+            AssistantCadFeatureReference::ProgramOutput(_) => {
+                Err("assistant CAD program feature reference is invalid".to_owned())
+            }
+        };
+        if let Self::Boolean {
+            target_feature_id,
+            tool_feature_id,
+            ..
+        } = self
+        {
+            validate_reference(*target_feature_id)?;
+            validate_reference(*tool_feature_id)?;
+        }
+        Ok(())
     }
 }
 
@@ -1014,7 +1098,7 @@ impl AssistantCadEditProgram {
             return Err("assistant CAD edit program operation count is invalid".to_owned());
         }
         let mut generated_occurrences = 0usize;
-        for operation in &self.operations {
+        for (operation_index, operation) in self.operations.iter().enumerate() {
             let bounded_targets = match operation {
                 AssistantCadEditOperation::CreateSketch { .. }
                 | AssistantCadEditOperation::AppendFeature { .. }
@@ -1078,6 +1162,7 @@ impl AssistantCadEditProgram {
                         return Err("assistant CAD feature append is invalid".to_owned());
                     }
                     feature.validate()?;
+                    feature.validate_program_references(operation_index, &self.operations)?;
                     0
                 }
                 AssistantCadEditOperation::SetDimension {

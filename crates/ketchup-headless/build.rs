@@ -11,6 +11,7 @@ struct Serde {
     snake: bool,
     default: bool,
     deny_unknown: bool,
+    untagged: bool,
 }
 
 fn attributes(attrs: &[syn::Attribute]) -> Serde {
@@ -26,6 +27,8 @@ fn attributes(attrs: &[syn::Attribute]) -> Serde {
                 result.deny_unknown = true;
             } else if meta.path.is_ident("default") {
                 result.default = true;
+            } else if meta.path.is_ident("untagged") {
+                result.untagged = true;
             } else if meta.path.is_ident("skip_serializing_if") {
                 assert_eq!(
                     meta.value()?.parse::<syn::LitStr>()?.value(),
@@ -145,22 +148,36 @@ impl Generator {
             }
             Item::Enum(item) => {
                 let attrs = attributes(&item.attrs);
-                assert!(attrs.snake);
-                let variants: Vec<_> = item
-                    .variants
-                    .iter()
-                    .map(|variant| {
-                        assert!(variant.attrs.is_empty(), "unsupported variant attribute");
-                        let name = snake(&variant.ident.to_string());
-                        if let Some(tag) = &attrs.tag {
-                            assert!(attrs.deny_unknown);
-                            self.fields(&variant.fields, Some((tag, &name)))
-                        } else {
-                            assert!(matches!(variant.fields, Fields::Unit));
-                            json!({"const":name})
-                        }
-                    })
-                    .collect();
+                let variants: Vec<_> = if attrs.untagged {
+                    assert!(attrs.tag.is_none() && !attrs.snake && !attrs.deny_unknown);
+                    item.variants
+                        .iter()
+                        .map(|variant| {
+                            assert!(variant.attrs.is_empty(), "unsupported variant attribute");
+                            let Fields::Unnamed(fields) = &variant.fields else {
+                                panic!("untagged CAD schema variants must be newtypes")
+                            };
+                            assert_eq!(fields.unnamed.len(), 1);
+                            self.ty(&fields.unnamed[0].ty)
+                        })
+                        .collect()
+                } else {
+                    assert!(attrs.snake);
+                    item.variants
+                        .iter()
+                        .map(|variant| {
+                            assert!(variant.attrs.is_empty(), "unsupported variant attribute");
+                            let name = snake(&variant.ident.to_string());
+                            if let Some(tag) = &attrs.tag {
+                                assert!(attrs.deny_unknown);
+                                self.fields(&variant.fields, Some((tag, &name)))
+                            } else {
+                                assert!(matches!(variant.fields, Fields::Unit));
+                                json!({"const":name})
+                            }
+                        })
+                        .collect()
+                };
                 json!({"oneOf": variants})
             }
             _ => unreachable!(),

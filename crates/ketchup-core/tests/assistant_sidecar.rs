@@ -458,8 +458,8 @@ fn cad_edit_append_boolean_contract_is_strict_bounded_and_host_id_assigned() {
             name: "Exact union".to_owned(),
             feature: AssistantCadBodyFeature::Boolean {
                 operation: AssistantCadBooleanOperation::Union,
-                target_feature_id: 11,
-                tool_feature_id: 12,
+                target_feature_id: 11.into(),
+                tool_feature_id: 12.into(),
             },
         }],
     };
@@ -511,14 +511,118 @@ fn cad_edit_append_boolean_contract_is_strict_bounded_and_host_id_assigned() {
         assert!(serde_json::from_value::<AssistantCadEditProgram>(rejected).is_err());
     }
 
+    let local_reference = serde_json::json!({
+        "operations": [
+            {
+                "operation": "append_feature",
+                "definition_id": 7,
+                "name": "First result",
+                "feature": {
+                    "type": "boolean",
+                    "operation": "union",
+                    "target_feature_id": 11,
+                    "tool_feature_id": 12
+                }
+            },
+            {
+                "operation": "append_feature",
+                "definition_id": 7,
+                "name": "Chained result",
+                "feature": {
+                    "type": "boolean",
+                    "operation": "cut",
+                    "target_feature_id": {
+                        "operation_index": 0,
+                        "output": "body_feature"
+                    },
+                    "tool_feature_id": 13
+                }
+            }
+        ]
+    });
+    let local_program =
+        serde_json::from_value::<AssistantCadEditProgram>(local_reference.clone()).unwrap();
+    assert_eq!(local_program.validate(), Ok(()));
+    assert_eq!(
+        serde_json::to_value(local_program).unwrap(),
+        local_reference
+    );
+
+    for invalid_reference in [
+        serde_json::json!({"operation_index": 1, "output": "body_feature"}),
+        serde_json::json!({"operation_index": 2, "output": "body_feature"}),
+        serde_json::json!({"operation_index": 0, "output": "body_feature", "feature_id": 99}),
+    ] {
+        let invalid = serde_json::json!({
+            "operations": [
+                {
+                    "operation": "set_dimension",
+                    "feature_id": 11,
+                    "constraint_id": null,
+                    "value_mm": 8
+                },
+                {
+                    "operation": "append_feature",
+                    "definition_id": 7,
+                    "name": "Invalid chained result",
+                    "feature": {
+                        "type": "boolean",
+                        "operation": "cut",
+                        "target_feature_id": invalid_reference,
+                        "tool_feature_id": 13
+                    }
+                }
+            ]
+        });
+        match serde_json::from_value::<AssistantCadEditProgram>(invalid) {
+            Ok(program) => assert!(program.validate().is_err()),
+            Err(_) => {}
+        }
+    }
+
+    let planar_output = serde_json::json!({
+        "operations": [
+            {
+                "operation": "append_feature",
+                "definition_id": 7,
+                "name": "Planar result",
+                "feature": {
+                    "type": "planar_offset",
+                    "profile_feature_id": 11,
+                    "distance_mm": 1
+                }
+            },
+            {
+                "operation": "append_feature",
+                "definition_id": 7,
+                "name": "Invalid body reference",
+                "feature": {
+                    "type": "boolean",
+                    "operation": "cut",
+                    "target_feature_id": 12,
+                    "tool_feature_id": {
+                        "operation_index": 0,
+                        "output": "body_feature"
+                    }
+                }
+            }
+        ]
+    });
+    assert!(
+        serde_json::from_value::<AssistantCadEditProgram>(planar_output)
+            .unwrap()
+            .validate()
+            .is_err()
+    );
+
     let self_boolean = AssistantCadEditProgram {
         operations: vec![AssistantCadEditOperation::AppendFeature {
             definition_id: 7,
             name: "Invalid".to_owned(),
             feature: AssistantCadBodyFeature::Boolean {
                 operation: AssistantCadBooleanOperation::Intersect,
-                target_feature_id: 11,
-                tool_feature_id: 11,
+                target_feature_id: 11.into(),
+                tool_feature_id: 11.into(),
             },
         }],
     };

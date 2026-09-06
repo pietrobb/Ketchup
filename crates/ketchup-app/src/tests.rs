@@ -120,8 +120,8 @@ fn cad_edit_append_boolean_is_host_id_assigned_exact_and_one_step() {
                 name: "Assistant Boolean".to_owned(),
                 feature: AssistantCadBodyFeature::Boolean {
                     operation: assistant_operation,
-                    target_feature_id: 2,
-                    tool_feature_id: 4,
+                    target_feature_id: 2.into(),
+                    tool_feature_id: 4.into(),
                 },
             }],
         };
@@ -1520,18 +1520,30 @@ fn cad_edit_append_boolean_rejects_invalid_exact_inputs_without_mutation() {
     };
 
     let cross_definition = app
-        .plan_assistant_cad_edit_program(&program(AssistantCadBooleanOperation::Cut, 2, 6))
+        .plan_assistant_cad_edit_program(&program(
+            AssistantCadBooleanOperation::Cut,
+            2.into(),
+            6.into(),
+        ))
         .unwrap_err();
     assert_eq!(
         cross_definition.code,
         "planning.cad_feature_input_ownership_invalid"
     );
     let non_body = app
-        .plan_assistant_cad_edit_program(&program(AssistantCadBooleanOperation::Union, 2, 1))
+        .plan_assistant_cad_edit_program(&program(
+            AssistantCadBooleanOperation::Union,
+            2.into(),
+            1.into(),
+        ))
         .unwrap_err();
     assert_eq!(non_body.code, "planning.cad_feature_input_unsupported");
     let disjoint_intersect = app
-        .plan_assistant_cad_edit_program(&program(AssistantCadBooleanOperation::Intersect, 2, 4))
+        .plan_assistant_cad_edit_program(&program(
+            AssistantCadBooleanOperation::Intersect,
+            2.into(),
+            4.into(),
+        ))
         .unwrap_err();
     assert_eq!(disjoint_intersect.code, "planning.cad_feature_result_empty");
     assert_eq!(app.document.current().revision_id(), baseline_revision);
