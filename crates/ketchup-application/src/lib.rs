@@ -17,6 +17,8 @@ pub use planner::plan_assistant_cad_edit_program;
 
 mod session;
 pub use session::{DocumentSession, SaveOptions, SessionError, SessionSettings};
-pub use validation::AssistantValidationSelection;
+pub use validation::{
+    AssistantValidationSelection, StructuralValidationScope, scoped_static_load_report,
+};
 
 pub use ketchup_core::assistant_sidecar::{AssistantCadEditOperation, AssistantCadEditProgram};

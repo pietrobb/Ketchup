@@ -3,14 +3,22 @@ use ketchup_core::exact_product::ExactResultRegistry;
 use ketchup_core::exact_validation::*;
 use ketchup_core::prismatic::TolerancePolicy;
 use ketchup_core::validation::{
-    DiagnosticSeverity, EvidenceClass, HostNeutralValidator, ValidationExecution,
-    ValidationInvocation, ValidationState, ValidatorRoleError, ValidatorRoleIndex,
+    DiagnosticSeverity, EvidenceClass, HostNeutralValidator, VALIDATOR_ROLE_DIMENSION_V1,
+    ValidationExecution, ValidationInvocation, ValidationState, ValidatorRoleError,
+    ValidatorRoleIndex,
 };
 use std::collections::{BTreeMap, BTreeSet};
 const MAX_ASSISTANT_VALIDATION_OCCURRENCES: usize = 100;
 const MAX_ASSISTANT_VALIDATION_PATH_STEPS: usize = 256;
 const MAX_ASSISTANT_VALIDATION_TEXT_BYTES: usize = 4 * 1024 * 1024;
 const MAX_ASSISTANT_VALIDATION_ISSUES: usize = 100;
+const MAX_STRUCTURAL_SCOPE_OCCURRENCES: usize = 10_000;
+const MAX_STRUCTURAL_SCOPE_LOADS: usize = MAX_ASSISTANT_VALIDATION_ISSUES;
+const MAX_STRUCTURAL_SCOPE_ROLE_ASSIGNMENTS: usize = 10_000;
+const MAX_STRUCTURAL_SCOPE_DEPENDENCIES: usize = 10_000;
+const MAX_STRUCTURAL_SCOPE_PARAMETERS: usize = 30_000;
+const MAX_STRUCTURAL_CLASSIFICATION_DIMENSIONS: usize = 100;
+const MAX_STRUCTURAL_ROLE_CATEGORIES: usize = 10_000;
 pub const ASSISTANT_VALIDATOR_IDS: [&str; 9] = [
     "collision",
     "gravity_support",
@@ -88,6 +96,316 @@ pub struct AssistantValidationSelection {
     pub requested: BTreeSet<&'static str>,
     pub unknown: Vec<String>,
 }
+
+#[derive(Clone, Debug)]
+pub struct StructuralValidationScope {
+    document_id: u64,
+    revision: u64,
+    canonical_digest: String,
+    occurrence_ids: BTreeSet<OccurrenceId>,
+    resource_limit_exceeded: bool,
+}
+
+impl StructuralValidationScope {
+    pub fn bind(
+        snapshot: &Snapshot,
+        occurrence_ids: impl IntoIterator<Item = OccurrenceId>,
+    ) -> Self {
+        let mut bound_occurrence_ids = BTreeSet::new();
+        let mut resource_limit_exceeded = false;
+        for (index, occurrence_id) in occurrence_ids
+            .into_iter()
+            .take(MAX_STRUCTURAL_SCOPE_OCCURRENCES + 1)
+            .enumerate()
+        {
+            if index == MAX_STRUCTURAL_SCOPE_OCCURRENCES {
+                resource_limit_exceeded = true;
+                break;
+            }
+            bound_occurrence_ids.insert(occurrence_id);
+        }
+        Self {
+            document_id: snapshot.document_id().0,
+            revision: snapshot.revision_id(),
+            canonical_digest: snapshot.canonical_digest(),
+            occurrence_ids: bound_occurrence_ids,
+            resource_limit_exceeded,
+        }
+    }
+
+    pub fn is_current(&self, snapshot: &Snapshot) -> bool {
+        self.document_id == snapshot.document_id().0
+            && self.revision == snapshot.revision_id()
+            && self.canonical_digest == snapshot.canonical_digest()
+    }
+
+    pub fn occurrence_ids(&self) -> &BTreeSet<OccurrenceId> {
+        &self.occurrence_ids
+    }
+}
+
+fn scoped_static_load_unavailable(
+    snapshot: &Snapshot,
+    scope: &StructuralValidationScope,
+    reason: &'static str,
+) -> serde_json::Value {
+    serde_json::json!({
+        "schema": "ketchup.scoped-static-load.v1",
+        "document_id": snapshot.document_id().0,
+        "revision": snapshot.revision_id(),
+        "canonical_digest": snapshot.canonical_digest(),
+        "state": "not_evaluated",
+        "complete": false,
+        "applicable_count": 0,
+        "issue_count": 0,
+        "issues_complete": true,
+        "evaluations": [],
+        "issues": [],
+        "not_evaluated": [{
+            "validator": "static_load",
+            "reason": reason,
+        }],
+        "coverage": {
+            "complete": false,
+            "requested_occurrence_count": scope.occurrence_ids.len(),
+            "checked_load_occurrence_count": 0,
+            "boundary_support_occurrence_ids": [],
+            "exact_geometry_loaded_count": 0,
+            "limits": {
+                "scope_occurrences": MAX_STRUCTURAL_SCOPE_OCCURRENCES,
+                "loads": MAX_STRUCTURAL_SCOPE_LOADS,
+                "role_assignments": MAX_STRUCTURAL_SCOPE_ROLE_ASSIGNMENTS,
+                "dependencies": MAX_STRUCTURAL_SCOPE_DEPENDENCIES,
+                "evaluator_parameters": MAX_STRUCTURAL_SCOPE_PARAMETERS,
+                "classification_dimensions": MAX_STRUCTURAL_CLASSIFICATION_DIMENSIONS,
+                "role_categories": MAX_STRUCTURAL_ROLE_CATEGORIES,
+                "text_bytes": MAX_ASSISTANT_VALIDATION_TEXT_BYTES,
+            },
+        },
+    })
+}
+
+pub fn scoped_static_load_report(
+    snapshot: &Snapshot,
+    scope: &StructuralValidationScope,
+    mut cancellation_requested: impl FnMut() -> bool,
+) -> serde_json::Value {
+    if !scope.is_current(snapshot) {
+        return scoped_static_load_unavailable(snapshot, scope, "stale_structural_scope");
+    }
+    if scope.resource_limit_exceeded {
+        return scoped_static_load_unavailable(snapshot, scope, "structural_scope_resource_limit");
+    }
+    if scope.occurrence_ids.is_empty() {
+        return scoped_static_load_unavailable(snapshot, scope, "empty_structural_scope");
+    }
+    if scope.occurrence_ids.len() > MAX_STRUCTURAL_SCOPE_OCCURRENCES {
+        return scoped_static_load_unavailable(snapshot, scope, "structural_scope_resource_limit");
+    }
+    if scope.occurrence_ids.len() > MAX_STRUCTURAL_SCOPE_LOADS {
+        return scoped_static_load_unavailable(snapshot, scope, "structural_load_resource_limit");
+    }
+    if snapshot
+        .occurrences()
+        .take(MAX_STRUCTURAL_SCOPE_OCCURRENCES + 1)
+        .count()
+        > MAX_STRUCTURAL_SCOPE_OCCURRENCES
+    {
+        return scoped_static_load_unavailable(snapshot, scope, "structural_model_resource_limit");
+    }
+    if cancellation_requested() {
+        return scoped_static_load_unavailable(snapshot, scope, "validation_cancelled");
+    }
+
+    let mut classification_dimension_count = 0;
+    for dimension in snapshot.classification_dimensions() {
+        classification_dimension_count += 1;
+        if classification_dimension_count > MAX_STRUCTURAL_CLASSIFICATION_DIMENSIONS {
+            return scoped_static_load_unavailable(
+                snapshot,
+                scope,
+                "structural_classification_resource_limit",
+            );
+        }
+        if dimension.name() == VALIDATOR_ROLE_DIMENSION_V1
+            && dimension
+                .categories()
+                .take(MAX_STRUCTURAL_ROLE_CATEGORIES + 1)
+                .count()
+                > MAX_STRUCTURAL_ROLE_CATEGORIES
+        {
+            return scoped_static_load_unavailable(
+                snapshot,
+                scope,
+                "structural_role_category_resource_limit",
+            );
+        }
+        if cancellation_requested() {
+            return scoped_static_load_unavailable(snapshot, scope, "validation_cancelled");
+        }
+    }
+
+    let roles = ValidatorRoleIndex::from_snapshot(snapshot);
+    let Ok(role_index) = &roles else {
+        return scoped_static_load_unavailable(
+            snapshot,
+            scope,
+            "missing_or_ambiguous_canonical_roles",
+        );
+    };
+    if role_index.assignments().count() > MAX_STRUCTURAL_SCOPE_ROLE_ASSIGNMENTS {
+        return scoped_static_load_unavailable(
+            snapshot,
+            scope,
+            "structural_role_assignment_resource_limit",
+        );
+    }
+
+    let mut load_ids = BTreeSet::new();
+    let mut load_cases = BTreeSet::new();
+    for occurrence_id in &scope.occurrence_ids {
+        if cancellation_requested() {
+            return scoped_static_load_unavailable(snapshot, scope, "validation_cancelled");
+        }
+        let Some(_) = snapshot.occurrence(*occurrence_id) else {
+            return scoped_static_load_unavailable(snapshot, scope, "scoped_occurrence_missing");
+        };
+        if snapshot.occurrence_effectively_visible(*occurrence_id) != Some(true) {
+            return scoped_static_load_unavailable(
+                snapshot,
+                scope,
+                "scoped_occurrence_not_visible",
+            );
+        }
+        let Some(role) = role_index
+            .role(*occurrence_id)
+            .and_then(|role| assistant_physics_role(role.as_str()))
+        else {
+            return scoped_static_load_unavailable(
+                snapshot,
+                scope,
+                "missing_or_invalid_static_load_role",
+            );
+        };
+        if role.kind != AssistantPhysicsRoleKind::StaticLoad {
+            return scoped_static_load_unavailable(
+                snapshot,
+                scope,
+                "missing_or_invalid_static_load_role",
+            );
+        }
+        load_ids.insert(*occurrence_id);
+        if !load_cases.insert(role.group.to_owned()) {
+            return scoped_static_load_unavailable(
+                snapshot,
+                scope,
+                "shared_static_load_case_requires_aggregate_evaluation",
+            );
+        }
+    }
+
+    let mut boundary_support_ids = BTreeSet::new();
+    for assignment in role_index.assignments() {
+        if cancellation_requested() {
+            return scoped_static_load_unavailable(snapshot, scope, "validation_cancelled");
+        }
+        if let Some(role) = assistant_physics_role(assignment.role.as_str())
+            && load_cases.contains(role.group)
+        {
+            match role.kind {
+                AssistantPhysicsRoleKind::StaticLoad
+                    if !load_ids.contains(&assignment.occurrence_id) =>
+                {
+                    return scoped_static_load_unavailable(
+                        snapshot,
+                        scope,
+                        "shared_static_load_case_outside_scope",
+                    );
+                }
+                AssistantPhysicsRoleKind::StaticSupport => {
+                    boundary_support_ids.insert(assignment.occurrence_id);
+                    if boundary_support_ids.len() > MAX_STRUCTURAL_SCOPE_DEPENDENCIES {
+                        return scoped_static_load_unavailable(
+                            snapshot,
+                            scope,
+                            "structural_dependency_resource_limit",
+                        );
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let mut names = BTreeMap::new();
+    let mut text_bytes = 0usize;
+    for occurrence_id in load_ids.iter().chain(&boundary_support_ids) {
+        if let Some(occurrence) = snapshot.occurrence(*occurrence_id)
+            && snapshot.occurrence_effectively_visible(*occurrence_id) == Some(true)
+        {
+            text_bytes = text_bytes.saturating_add(occurrence.name().len());
+            if text_bytes > MAX_ASSISTANT_VALIDATION_TEXT_BYTES {
+                return scoped_static_load_unavailable(
+                    snapshot,
+                    scope,
+                    "structural_text_resource_limit",
+                );
+            }
+            names.insert(*occurrence_id, occurrence.name().to_owned());
+        }
+    }
+    let mut report = assistant_static_load_report_filtered(
+        snapshot,
+        &names,
+        &roles,
+        true,
+        true,
+        Some(&load_ids),
+        &mut cancellation_requested,
+    );
+    let coverage_complete = report["complete"].as_bool() == Some(true);
+    let checked_load_count = report["applicable_count"].as_u64().unwrap_or(0);
+    if let Some(object) = report.as_object_mut() {
+        object.insert(
+            "schema".into(),
+            serde_json::json!("ketchup.scoped-static-load.v1"),
+        );
+        object.insert(
+            "document_id".into(),
+            serde_json::json!(snapshot.document_id().0),
+        );
+        object.insert("revision".into(), serde_json::json!(snapshot.revision_id()));
+        object.insert(
+            "canonical_digest".into(),
+            serde_json::json!(snapshot.canonical_digest()),
+        );
+        object.insert(
+            "coverage".into(),
+            serde_json::json!({
+                "complete": coverage_complete,
+                "requested_occurrence_count": scope.occurrence_ids.len(),
+                "checked_load_occurrence_count": checked_load_count,
+                "boundary_support_occurrence_ids": boundary_support_ids
+                    .iter()
+                    .map(|id| id.0)
+                    .collect::<Vec<_>>(),
+                "exact_geometry_loaded_count": 0,
+                "limits": {
+                    "scope_occurrences": MAX_STRUCTURAL_SCOPE_OCCURRENCES,
+                    "loads": MAX_STRUCTURAL_SCOPE_LOADS,
+                    "role_assignments": MAX_STRUCTURAL_SCOPE_ROLE_ASSIGNMENTS,
+                    "dependencies": MAX_STRUCTURAL_SCOPE_DEPENDENCIES,
+                    "evaluator_parameters": MAX_STRUCTURAL_SCOPE_PARAMETERS,
+                    "classification_dimensions": MAX_STRUCTURAL_CLASSIFICATION_DIMENSIONS,
+                    "role_categories": MAX_STRUCTURAL_ROLE_CATEGORIES,
+                "text_bytes": MAX_ASSISTANT_VALIDATION_TEXT_BYTES,
+                },
+            }),
+        );
+    }
+    report
+}
+
 impl AssistantValidationSelection {
     pub fn all(mode: &'static str) -> Self {
         Self {
@@ -1634,6 +1952,26 @@ pub fn assistant_static_load_report(
     selected: bool,
     coverage_complete: bool,
 ) -> serde_json::Value {
+    assistant_static_load_report_filtered(
+        snapshot,
+        names,
+        roles,
+        selected,
+        coverage_complete,
+        None,
+        &mut || false,
+    )
+}
+
+fn assistant_static_load_report_filtered(
+    snapshot: &Snapshot,
+    names: &BTreeMap<OccurrenceId, String>,
+    roles: &Result<ValidatorRoleIndex, ValidatorRoleError>,
+    selected: bool,
+    coverage_complete: bool,
+    load_filter: Option<&BTreeSet<OccurrenceId>>,
+    cancellation_requested: &mut dyn FnMut() -> bool,
+) -> serde_json::Value {
     if !selected {
         return serde_json::json!({
             "state": "skipped",
@@ -1674,7 +2012,37 @@ pub fn assistant_static_load_report(
     let mut applied_loads = BTreeMap::<OccurrenceId, Vec<(u64, f64)>>::new();
     let mut capacities = BTreeMap::<OccurrenceId, Vec<(u64, f64)>>::new();
 
-    for node in snapshot.evaluator_nodes() {
+    for (parameter_index, node) in snapshot.evaluator_nodes().enumerate() {
+        if load_filter.is_some() && parameter_index >= MAX_STRUCTURAL_SCOPE_PARAMETERS {
+            return serde_json::json!({
+                "state": "not_evaluated",
+                "complete": false,
+                "applicable_count": 0,
+                "issue_count": 0,
+                "issues_complete": true,
+                "evaluations": [],
+                "issues": [],
+                "not_evaluated": [{
+                    "validator": "static_load",
+                    "reason": "structural_parameter_resource_limit",
+                }],
+            });
+        }
+        if cancellation_requested() {
+            return serde_json::json!({
+                "state": "not_evaluated",
+                "complete": false,
+                "applicable_count": 0,
+                "issue_count": 0,
+                "issues_complete": true,
+                "evaluations": [],
+                "issues": [],
+                "not_evaluated": [{
+                    "validator": "static_load",
+                    "reason": "validation_cancelled",
+                }],
+            });
+        }
         let Some(value) = node.dimension().map(|dimension| dimension.millimetres()) else {
             continue;
         };
@@ -1723,40 +2091,58 @@ pub fn assistant_static_load_report(
     let mut evaluations = Vec::new();
     let mut issues = Vec::new();
     let mut not_evaluated = Vec::new();
-    if masses.is_empty() {
+    let loaded_ids = load_filter.map_or_else(
+        || masses.keys().copied().collect::<Vec<_>>(),
+        |ids| ids.iter().copied().collect::<Vec<_>>(),
+    );
+    if loaded_ids.is_empty() {
         not_evaluated.push(serde_json::json!({
             "validator": "static_load",
             "reason": "explicit_load_case_not_found",
             "required_input": "physics.mass_kg.occurrence.<id>",
         }));
     }
-    for (loaded_id, mass_declarations) in &masses {
-        let loaded_name = names.get(loaded_id);
-        let load_declarations = applied_loads.get(loaded_id);
+    'loads: for loaded_id in loaded_ids {
+        if cancellation_requested() {
+            not_evaluated.push(serde_json::json!({
+                "validator": "static_load",
+                "reason": "validation_cancelled",
+            }));
+            break;
+        }
+        let loaded_name = names.get(&loaded_id);
+        let mass_declarations = masses.get(&loaded_id);
+        let load_declarations = applied_loads.get(&loaded_id);
         let loaded_role = roles
-            .role(*loaded_id)
+            .role(loaded_id)
             .and_then(|role| assistant_physics_role(role.as_str()));
-        let support_ids = loaded_role
-            .filter(|role| role.kind == AssistantPhysicsRoleKind::StaticLoad)
-            .map(|loaded_role| {
-                roles
-                    .assignments()
-                    .filter_map(|assignment| {
-                        let role = assistant_physics_role(assignment.role.as_str())?;
-                        (role.kind == AssistantPhysicsRoleKind::StaticSupport
-                            && role.group == loaded_role.group)
-                            .then_some(assignment.occurrence_id)
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
+        let mut support_ids = Vec::new();
+        if let Some(loaded_role) =
+            loaded_role.filter(|role| role.kind == AssistantPhysicsRoleKind::StaticLoad)
+        {
+            for assignment in roles.assignments() {
+                if cancellation_requested() {
+                    not_evaluated.push(serde_json::json!({
+                        "validator": "static_load",
+                        "reason": "validation_cancelled",
+                    }));
+                    break 'loads;
+                }
+                if let Some(role) = assistant_physics_role(assignment.role.as_str())
+                    && role.kind == AssistantPhysicsRoleKind::StaticSupport
+                    && role.group == loaded_role.group
+                {
+                    support_ids.push(assignment.occurrence_id);
+                }
+            }
+        }
         let missing_reason = if loaded_name.is_none() {
             Some("loaded_occurrence_not_visible")
         } else if loaded_role.is_none_or(|role| role.kind != AssistantPhysicsRoleKind::StaticLoad) {
             Some("missing_or_invalid_static_load_role")
-        } else if mass_declarations.len() != 1 {
+        } else if mass_declarations.is_none_or(|values| values.len() != 1) {
             Some("missing_or_ambiguous_mass")
-        } else if mass_declarations[0].1 < 0.0 {
+        } else if mass_declarations.unwrap()[0].1 < 0.0 {
             Some("negative_mass")
         } else if load_declarations.is_none_or(|values| values.len() != 1) {
             Some("missing_or_ambiguous_applied_load")
@@ -1784,7 +2170,7 @@ pub fn assistant_static_load_report(
             continue;
         }
 
-        let (mass_node_id, mass_kg) = mass_declarations[0];
+        let (mass_node_id, mass_kg) = mass_declarations.unwrap()[0];
         let (applied_load_node_id, applied_load_n) = load_declarations.unwrap()[0];
         let support_inputs = support_ids
             .iter()
