@@ -2,7 +2,10 @@ use crate::document::{
     BooleanOperation, DefinitionId, DocumentId, FeatureId, FeatureKind, InstancePath,
     InstancePathStep, Snapshot, Transform,
 };
-use crate::exact_brep_graph::{ExactBRepBooleanOperation, ExactBRepGraph, ExactBRepOperation};
+use crate::exact_brep_graph::{
+    ExactBRepBooleanOperation, ExactBRepGraph, ExactBRepLinearInterval, ExactBRepOperation,
+    ExactBRepPlanarGeometry, ExactBRepPlanarSegment, ExactBRepProfile,
+};
 use crate::exact_product::{
     BodyResultIdentity, BodySubshapeRef, ExactBodyPackage, ExactResultRegistry,
 };
@@ -277,10 +280,10 @@ fn push_projection_bytes(output: &mut Vec<u8>, value: &[u8]) {
     output.extend_from_slice(value);
 }
 
-pub const GENERAL_FABRICATION_EVALUATOR_V1: &str = "ketchup.general-fabrication-evaluator.v1";
+pub const GENERAL_FABRICATION_EVALUATOR_V2: &str = "ketchup.general-fabrication-evaluator.v2";
 pub const GENERAL_BOM_EXPORT_V1: &str = "ketchup.general-bom-export.v1";
 pub const GENERAL_DRAWING_SVG_V1: &str = "ketchup.general-drawing-svg.v1";
-pub const GENERAL_MANUFACTURING_EXPORT_V1: &str = "ketchup.general-manufacturing-export.v1";
+pub const GENERAL_MANUFACTURING_EXPORT_V2: &str = "ketchup.general-manufacturing-export.v2";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum GeneralFabricationError {
@@ -380,6 +383,8 @@ pub struct GeneralDrawingProjection {
 pub enum GeneralManufacturingKind {
     Stock,
     ThroughCut,
+    ProfileCut,
+    CircularDrill,
     BooleanCut,
 }
 
@@ -388,9 +393,59 @@ impl GeneralManufacturingKind {
         match self {
             Self::Stock => "stock",
             Self::ThroughCut => "through-cut",
+            Self::ProfileCut => "profile-cut",
+            Self::CircularDrill => "circular-drill",
             Self::BooleanCut => "boolean-cut",
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GeneralMachiningFrame {
+    pub origin_mm: [f64; 3],
+    pub x_axis: [f64; 3],
+    pub y_axis: [f64; 3],
+    pub normal: [f64; 3],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum GeneralMachiningSegment {
+    Line {
+        start_mm: [f64; 2],
+        end_mm: [f64; 2],
+    },
+    CircularArc {
+        start_mm: [f64; 2],
+        end_mm: [f64; 2],
+        center_mm: [f64; 2],
+        clockwise: bool,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum GeneralMachiningGeometry {
+    TimberStock {
+        frame: GeneralMachiningFrame,
+        cross_section: Vec<GeneralMachiningSegment>,
+        start_mm: [f64; 3],
+        length_axis: [f64; 3],
+        length_mm: f64,
+        cross_section_width_mm: f64,
+        cross_section_height_mm: f64,
+    },
+    ProfileCut {
+        frame: GeneralMachiningFrame,
+        segments: Vec<GeneralMachiningSegment>,
+        start_mm: f64,
+        end_mm: f64,
+    },
+    CircularDrill {
+        frame: GeneralMachiningFrame,
+        center_mm: [f64; 2],
+        diameter_mm: f64,
+        start_mm: f64,
+        end_mm: f64,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -402,6 +457,7 @@ pub struct GeneralManufacturingOperation {
     pub semantic_inputs: Vec<FeatureId>,
     pub frame: &'static str,
     pub bounds: PieceDimensions,
+    pub machining: GeneralMachiningGeometry,
     pub source: crate::exact_product::ExactResultKey,
 }
 
@@ -541,7 +597,7 @@ impl GeneralFabricationProjection {
             return Err(GeneralFabricationError::ExportBlocked);
         }
         let mut output = format!(
-            "{GENERAL_MANUFACTURING_EXPORT_V1}\ndocument_id={}\nsource_revision={}\nsource_digest={}\nresult_digest={}\n",
+            "{GENERAL_MANUFACTURING_EXPORT_V2}\ndocument_id={}\nsource_revision={}\nsource_digest={}\nresult_digest={}\n",
             self.manufacturing.envelope.document_id.0,
             self.manufacturing.envelope.source_revision,
             self.manufacturing.envelope.source_digest,
@@ -549,7 +605,7 @@ impl GeneralFabricationProjection {
         );
         for operation in &self.manufacturing.operations {
             output.push_str(&format!(
-                "operation={};definition={};producer={};kind={};frame={};inputs={};length_mm={};width_mm={};height_mm={};result_fingerprint={}\n",
+                "operation={};definition={};producer={};kind={};frame={};inputs={};length_mm={};width_mm={};height_mm={};machining={};result_fingerprint={}\n",
                 operation.stable_operation_id,
                 operation.definition_id.0,
                 operation.producer_feature_id.0,
@@ -564,6 +620,7 @@ impl GeneralFabricationProjection {
                 format_number(operation.bounds.length_mm),
                 format_number(operation.bounds.width_mm),
                 format_number(operation.bounds.height_mm),
+                machining_token(&operation.machining),
                 operation.source.result_fingerprint
             ));
         }
@@ -680,7 +737,7 @@ pub fn project_general_fabrication(
                 .map(|participant| participant.evidence_class()),
             TolerantEvidence::new(
                 tolerance.epsilon_mm(),
-                GENERAL_FABRICATION_EVALUATOR_V1,
+                GENERAL_FABRICATION_EVALUATOR_V2,
                 PermittedErrorDirection::BidirectionalBounded,
             )
             .expect("the fabrication tolerance and method identity are valid"),
@@ -707,7 +764,7 @@ pub fn project_general_fabrication(
             snapshot,
             &bom_bytes,
             general_status,
-            GENERAL_FABRICATION_EVALUATOR_V1,
+            GENERAL_FABRICATION_EVALUATOR_V2,
         ),
         evidence_counts,
         rows,
@@ -724,7 +781,7 @@ pub fn project_general_fabrication(
             snapshot,
             &drawing_bytes,
             general_status,
-            GENERAL_FABRICATION_EVALUATOR_V1,
+            GENERAL_FABRICATION_EVALUATOR_V2,
         ),
         validation_state,
         drawings,
@@ -765,15 +822,6 @@ pub fn project_general_fabrication(
             }
         }
     }
-    operations.sort_by(|left, right| {
-        left.source
-            .cmp(&right.source)
-            .then_with(|| {
-                manufacturing_operation_phase(left.kind)
-                    .cmp(&manufacturing_operation_phase(right.kind))
-            })
-            .then_with(|| left.stable_operation_id.cmp(&right.stable_operation_id))
-    });
     unresolved_sources.sort();
     unresolved_sources.dedup();
     let manufacturing_status =
@@ -789,7 +837,7 @@ pub fn project_general_fabrication(
             snapshot,
             &manufacturing_bytes,
             manufacturing_status,
-            GENERAL_FABRICATION_EVALUATOR_V1,
+            GENERAL_FABRICATION_EVALUATOR_V2,
         ),
         validation_state,
         operations,
@@ -829,22 +877,45 @@ fn rectangle_manufacturing_operations(
         semantic_inputs: Vec::new(),
         frame: "definition-local",
         bounds: row.dimensions,
+        machining: legacy_stock_geometry(row.dimensions),
         source: source.clone(),
     }];
     for feature_id in definition.feature_ids() {
         let feature = snapshot
             .feature(*feature_id)
             .ok_or(GeneralFabricationError::UnsupportedOrUnavailableGeometry)?;
-        let (kind, semantic_inputs) = match feature.kind() {
+        let (kind, semantic_inputs, machining) = match feature.kind() {
             FeatureKind::ThroughCut { target, profile } => (
                 GeneralManufacturingKind::ThroughCut,
                 vec![*target, *profile],
+                legacy_profile_cut_geometry(snapshot, *profile, row.dimensions, true)?,
+            ),
+            FeatureKind::Pocket {
+                target,
+                profile,
+                depth,
+            } => (
+                GeneralManufacturingKind::ProfileCut,
+                vec![*target, *profile],
+                legacy_profile_cut_geometry(
+                    snapshot,
+                    *profile,
+                    PieceDimensions {
+                        height_mm: depth.millimetres(),
+                        ..row.dimensions
+                    },
+                    false,
+                )?,
             ),
             FeatureKind::Boolean {
                 operation: BooleanOperation::Cut,
                 target,
                 tool,
-            } => (GeneralManufacturingKind::BooleanCut, vec![*target, *tool]),
+            } => (
+                GeneralManufacturingKind::BooleanCut,
+                vec![*target, *tool],
+                legacy_boolean_cut_geometry(snapshot, *tool)?,
+            ),
             _ => continue,
         };
         operations.push(GeneralManufacturingOperation {
@@ -860,6 +931,7 @@ fn rectangle_manufacturing_operations(
             semantic_inputs,
             frame: "definition-local",
             bounds: row.dimensions,
+            machining,
             source: source.clone(),
         });
     }
@@ -871,77 +943,667 @@ fn graph_manufacturing_operations(
     source: &crate::exact_product::ExactResultKey,
     graph: &ExactBRepGraph,
 ) -> Option<Vec<GeneralManufacturingOperation>> {
-    let (stock_feature_id, stock_bounds) = match graph.nodes.as_slice() {
-        [stock] if matches!(stock.operation, ExactBRepOperation::Extrude { .. }) => (
-            FeatureId(stock.source_feature_id),
-            piece_dimensions_from_bounds(graph.node_bounds_mm(stock.id).ok().flatten()?)?,
-        ),
-        [first, second, terminal]
-            if matches!(first.operation, ExactBRepOperation::Extrude { .. })
-                && matches!(second.operation, ExactBRepOperation::Extrude { .. }) =>
-        {
-            let ExactBRepOperation::Boolean {
-                operation: ExactBRepBooleanOperation::Cut,
-                target,
-                tool,
-            } = &terminal.operation
-            else {
-                return None;
-            };
-            let target = graph.nodes.get(target.0 as usize)?;
-            let tool = graph.nodes.get(tool.0 as usize)?;
-            if target.id == tool.id
-                || !matches!(target.operation, ExactBRepOperation::Extrude { .. })
-                || !matches!(tool.operation, ExactBRepOperation::Extrude { .. })
-            {
-                return None;
-            }
-            let stock_feature_id = FeatureId(target.source_feature_id);
-            let stock_bounds =
-                piece_dimensions_from_bounds(graph.node_bounds_mm(target.id).ok().flatten()?)?;
-            return Some(vec![
-                GeneralManufacturingOperation {
-                    stable_operation_id: format!("definition-{}/stock", row.definition_id.0),
-                    definition_id: row.definition_id,
-                    producer_feature_id: stock_feature_id,
-                    kind: GeneralManufacturingKind::Stock,
-                    semantic_inputs: Vec::new(),
-                    frame: "definition-local",
-                    bounds: stock_bounds,
-                    source: source.clone(),
-                },
-                GeneralManufacturingOperation {
-                    stable_operation_id: format!(
-                        "definition-{}/feature-{}/{}",
-                        row.definition_id.0,
-                        terminal.source_feature_id,
-                        GeneralManufacturingKind::BooleanCut.token()
-                    ),
-                    definition_id: row.definition_id,
-                    producer_feature_id: FeatureId(terminal.source_feature_id),
-                    kind: GeneralManufacturingKind::BooleanCut,
-                    semantic_inputs: vec![
-                        FeatureId(target.source_feature_id),
-                        FeatureId(tool.source_feature_id),
-                    ],
-                    frame: "definition-local",
-                    bounds: row.dimensions,
-                    source: source.clone(),
-                },
-            ]);
-        }
-        _ => return None,
+    let stock = graph.nodes.first()?;
+    let ExactBRepOperation::Extrude {
+        profile: stock_profile,
+        interval: stock_interval,
+        ..
+    } = stock.operation
+    else {
+        return None;
     };
-    Some(vec![GeneralManufacturingOperation {
+    let stock_bounds =
+        piece_dimensions_from_bounds(graph.node_bounds_mm(stock.id).ok().flatten()?)?;
+    let mut operations = vec![GeneralManufacturingOperation {
         stable_operation_id: format!("definition-{}/stock", row.definition_id.0),
         definition_id: row.definition_id,
-        producer_feature_id: stock_feature_id,
+        producer_feature_id: FeatureId(stock.source_feature_id),
         kind: GeneralManufacturingKind::Stock,
         semantic_inputs: Vec::new(),
         frame: "definition-local",
         bounds: stock_bounds,
+        machining: timber_stock_geometry(
+            graph.profiles.get(stock_profile.0 as usize)?,
+            stock_interval,
+        )?,
         source: source.clone(),
-    }])
+    }];
+    if graph.nodes.len() == 1 {
+        return Some(operations);
+    }
+
+    let mut previous = stock;
+    let mut profile_cut_chain = true;
+    for node in graph.nodes.iter().skip(1) {
+        let ExactBRepOperation::ProfileCut {
+            target,
+            profile,
+            depth_bits,
+            interval,
+            ..
+        } = node.operation
+        else {
+            profile_cut_chain = false;
+            break;
+        };
+        if target != previous.id {
+            return None;
+        }
+        let profile = graph.profiles.get(profile.0 as usize)?;
+        let machining = profile_cut_geometry(profile, interval)?;
+        let kind = if matches!(machining, GeneralMachiningGeometry::CircularDrill { .. }) {
+            GeneralManufacturingKind::CircularDrill
+        } else if depth_bits.is_none() {
+            GeneralManufacturingKind::ThroughCut
+        } else {
+            GeneralManufacturingKind::ProfileCut
+        };
+        operations.push(GeneralManufacturingOperation {
+            stable_operation_id: format!(
+                "definition-{}/feature-{}/{}",
+                row.definition_id.0,
+                node.source_feature_id,
+                kind.token()
+            ),
+            definition_id: row.definition_id,
+            producer_feature_id: FeatureId(node.source_feature_id),
+            kind,
+            semantic_inputs: vec![
+                FeatureId(previous.source_feature_id),
+                FeatureId(profile.source_feature_id),
+            ],
+            frame: "definition-local",
+            bounds: row.dimensions,
+            machining,
+            source: source.clone(),
+        });
+        previous = node;
+    }
+    if profile_cut_chain {
+        return Some(operations);
+    }
+
+    let [target, tool, terminal] = graph.nodes.as_slice() else {
+        return None;
+    };
+    let ExactBRepOperation::Extrude {
+        profile: tool_profile,
+        interval: tool_interval,
+        ..
+    } = tool.operation
+    else {
+        return None;
+    };
+    let ExactBRepOperation::Boolean {
+        operation: ExactBRepBooleanOperation::Cut,
+        target: boolean_target,
+        tool: boolean_tool,
+    } = terminal.operation
+    else {
+        return None;
+    };
+    if boolean_target != target.id || boolean_tool != tool.id || target.id == tool.id {
+        return None;
+    }
+    operations.push(GeneralManufacturingOperation {
+        stable_operation_id: format!(
+            "definition-{}/feature-{}/{}",
+            row.definition_id.0,
+            terminal.source_feature_id,
+            GeneralManufacturingKind::BooleanCut.token()
+        ),
+        definition_id: row.definition_id,
+        producer_feature_id: FeatureId(terminal.source_feature_id),
+        kind: GeneralManufacturingKind::BooleanCut,
+        semantic_inputs: vec![
+            FeatureId(target.source_feature_id),
+            FeatureId(tool.source_feature_id),
+        ],
+        frame: "definition-local",
+        bounds: row.dimensions,
+        machining: profile_cut_geometry(
+            graph.profiles.get(tool_profile.0 as usize)?,
+            tool_interval,
+        )?,
+        source: source.clone(),
+    });
+    Some(operations)
+}
+
+fn rectangle_machining_segments(
+    minimum: [f64; 2],
+    maximum: [f64; 2],
+) -> Vec<GeneralMachiningSegment> {
+    let points = [
+        minimum,
+        [maximum[0], minimum[1]],
+        maximum,
+        [minimum[0], maximum[1]],
+    ];
+    points
+        .iter()
+        .zip(points.iter().cycle().skip(1))
+        .take(points.len())
+        .map(|(start_mm, end_mm)| GeneralMachiningSegment::Line {
+            start_mm: *start_mm,
+            end_mm: *end_mm,
+        })
+        .collect()
+}
+
+fn legacy_stock_geometry(dimensions: PieceDimensions) -> GeneralMachiningGeometry {
+    GeneralMachiningGeometry::TimberStock {
+        frame: identity_machining_frame(),
+        cross_section: rectangle_machining_segments(
+            [0.0, 0.0],
+            [dimensions.length_mm, dimensions.width_mm],
+        ),
+        start_mm: [0.0, 0.0, 0.0],
+        length_axis: [0.0, 0.0, 1.0],
+        length_mm: dimensions.height_mm,
+        cross_section_width_mm: dimensions.length_mm,
+        cross_section_height_mm: dimensions.width_mm,
+    }
+}
+
+fn legacy_profile_cut_geometry(
+    snapshot: &Snapshot,
+    profile_id: FeatureId,
+    dimensions: PieceDimensions,
+    _through: bool,
+) -> Result<GeneralMachiningGeometry, GeneralFabricationError> {
+    let feature = snapshot
+        .feature(profile_id)
+        .ok_or(GeneralFabricationError::UnsupportedOrUnavailableGeometry)?;
+    let segments = match feature.kind() {
+        FeatureKind::Profile { points_mm } if points_mm.len() >= 3 => points_mm
+            .iter()
+            .zip(points_mm.iter().cycle().skip(1))
+            .take(points_mm.len())
+            .map(|(start_mm, end_mm)| GeneralMachiningSegment::Line {
+                start_mm: *start_mm,
+                end_mm: *end_mm,
+            })
+            .collect(),
+        _ => return Err(GeneralFabricationError::UnsupportedOrUnavailableGeometry),
+    };
+    Ok(GeneralMachiningGeometry::ProfileCut {
+        frame: identity_machining_frame(),
+        segments,
+        start_mm: 0.0,
+        end_mm: dimensions.height_mm,
+    })
+}
+
+fn legacy_boolean_cut_geometry(
+    snapshot: &Snapshot,
+    tool_id: FeatureId,
+) -> Result<GeneralMachiningGeometry, GeneralFabricationError> {
+    let FeatureKind::Extrusion { profile, height } = snapshot
+        .feature(tool_id)
+        .ok_or(GeneralFabricationError::UnsupportedOrUnavailableGeometry)?
+        .kind()
+    else {
+        return Err(GeneralFabricationError::UnsupportedOrUnavailableGeometry);
+    };
+    legacy_profile_cut_geometry(
+        snapshot,
+        *profile,
+        PieceDimensions {
+            length_mm: 1.0,
+            width_mm: 1.0,
+            height_mm: height.millimetres(),
+        },
+        false,
+    )
+}
+
+fn timber_stock_geometry(
+    profile: &ExactBRepProfile,
+    interval: ExactBRepLinearInterval,
+) -> Option<GeneralMachiningGeometry> {
+    let frame = machining_frame(profile, interval.direction())?;
+    let ExactBRepPlanarGeometry::Boundary {
+        closed: true,
+        segments,
+    } = &profile.geometry
+    else {
+        return None;
+    };
+    let mut points = Vec::new();
+    let mut cross_section = Vec::new();
+    for segment in segments {
+        let ExactBRepPlanarSegment::Line {
+            start_bits,
+            end_bits,
+        } = segment
+        else {
+            return None;
+        };
+        let start_mm = start_bits.map(f64::from_bits);
+        let end_mm = end_bits.map(f64::from_bits);
+        points.push(start_mm);
+        points.push(end_mm);
+        cross_section.push(GeneralMachiningSegment::Line { start_mm, end_mm });
+    }
+    let minimum = [
+        points
+            .iter()
+            .map(|point| point[0])
+            .fold(f64::INFINITY, f64::min),
+        points
+            .iter()
+            .map(|point| point[1])
+            .fold(f64::INFINITY, f64::min),
+    ];
+    let maximum = [
+        points
+            .iter()
+            .map(|point| point[0])
+            .fold(f64::NEG_INFINITY, f64::max),
+        points
+            .iter()
+            .map(|point| point[1])
+            .fold(f64::NEG_INFINITY, f64::max),
+    ];
+    let width = maximum[0] - minimum[0];
+    let height = maximum[1] - minimum[1];
+    let direction = interval.direction();
+    let length = interval.length_mm();
+    if !width.is_finite()
+        || !height.is_finite()
+        || !length.is_finite()
+        || width <= 0.0
+        || height <= 0.0
+        || length <= 0.0
+    {
+        return None;
+    }
+    Some(GeneralMachiningGeometry::TimberStock {
+        frame,
+        cross_section,
+        start_mm: std::array::from_fn(|axis| {
+            frame.origin_mm[axis] + direction[axis] * interval.start_mm()
+        }),
+        length_axis: direction,
+        length_mm: length,
+        cross_section_width_mm: width,
+        cross_section_height_mm: height,
+    })
+}
+
+fn profile_cut_geometry(
+    profile: &ExactBRepProfile,
+    interval: ExactBRepLinearInterval,
+) -> Option<GeneralMachiningGeometry> {
+    let frame = machining_frame(profile, interval.direction())?;
+    if let Some((center_mm, radius_mm)) = circular_profile(&profile.geometry) {
+        return Some(GeneralMachiningGeometry::CircularDrill {
+            frame,
+            center_mm,
+            diameter_mm: radius_mm * 2.0,
+            start_mm: interval.start_mm(),
+            end_mm: interval.end_mm(),
+        });
+    }
+    let ExactBRepPlanarGeometry::Boundary {
+        closed: true,
+        segments,
+    } = &profile.geometry
+    else {
+        return None;
+    };
+    let segments = segments
+        .iter()
+        .map(|segment| match segment {
+            ExactBRepPlanarSegment::Line {
+                start_bits,
+                end_bits,
+            } => Some(GeneralMachiningSegment::Line {
+                start_mm: start_bits.map(f64::from_bits),
+                end_mm: end_bits.map(f64::from_bits),
+            }),
+            ExactBRepPlanarSegment::CircularArc {
+                start_bits,
+                end_bits,
+                center_bits,
+                clockwise,
+            } => Some(GeneralMachiningSegment::CircularArc {
+                start_mm: start_bits.map(f64::from_bits),
+                end_mm: end_bits.map(f64::from_bits),
+                center_mm: center_bits.map(f64::from_bits),
+                clockwise: *clockwise,
+            }),
+            ExactBRepPlanarSegment::CubicBezier { .. } => None,
+        })
+        .collect::<Option<Vec<_>>>()?;
+    Some(GeneralMachiningGeometry::ProfileCut {
+        frame,
+        segments,
+        start_mm: interval.start_mm(),
+        end_mm: interval.end_mm(),
+    })
+}
+
+fn machining_frame(
+    profile: &ExactBRepProfile,
+    interval_direction: [f64; 3],
+) -> Option<GeneralMachiningFrame> {
+    let values = profile.frame_bits.map(f64::from_bits);
+    if !values.iter().all(|value| value.is_finite())
+        || !interval_direction.iter().all(|value| value.is_finite())
+    {
+        return None;
+    }
+    let frame = GeneralMachiningFrame {
+        origin_mm: values[0..3].try_into().ok()?,
+        x_axis: values[3..6].try_into().ok()?,
+        y_axis: values[6..9].try_into().ok()?,
+        normal: values[9..12].try_into().ok()?,
+    };
+    let dot = |left: [f64; 3], right: [f64; 3]| {
+        left.into_iter()
+            .zip(right)
+            .map(|(left, right)| left * right)
+            .sum::<f64>()
+    };
+    let cross = [
+        frame.x_axis[1] * frame.y_axis[2] - frame.x_axis[2] * frame.y_axis[1],
+        frame.x_axis[2] * frame.y_axis[0] - frame.x_axis[0] * frame.y_axis[2],
+        frame.x_axis[0] * frame.y_axis[1] - frame.x_axis[1] * frame.y_axis[0],
+    ];
+    let close = |left: f64, right: f64| (left - right).abs() <= 1.0e-12;
+    (close(dot(frame.x_axis, frame.x_axis), 1.0)
+        && close(dot(frame.y_axis, frame.y_axis), 1.0)
+        && close(dot(frame.normal, frame.normal), 1.0)
+        && close(dot(frame.x_axis, frame.y_axis), 0.0)
+        && cross
+            .into_iter()
+            .zip(frame.normal)
+            .all(|(actual, expected)| close(actual, expected))
+        && frame
+            .normal
+            .into_iter()
+            .zip(interval_direction)
+            .all(|(normal, direction)| close(normal, direction)))
+    .then_some(frame)
+}
+
+const fn identity_machining_frame() -> GeneralMachiningFrame {
+    GeneralMachiningFrame {
+        origin_mm: [0.0, 0.0, 0.0],
+        x_axis: [1.0, 0.0, 0.0],
+        y_axis: [0.0, 1.0, 0.0],
+        normal: [0.0, 0.0, 1.0],
+    }
+}
+
+fn circular_profile(geometry: &ExactBRepPlanarGeometry) -> Option<([f64; 2], f64)> {
+    if let ExactBRepPlanarGeometry::Circle {
+        center_bits,
+        radius_bits,
+    } = geometry
+    {
+        let center = center_bits.map(f64::from_bits);
+        let radius = f64::from_bits(*radius_bits);
+        return (center.iter().all(|value| value.is_finite())
+            && radius.is_finite()
+            && radius > 0.0)
+            .then_some((center, radius));
+    }
+    let ExactBRepPlanarGeometry::Boundary {
+        closed: true,
+        segments,
+    } = geometry
+    else {
+        return None;
+    };
+    if segments.len() != 4 {
+        return None;
+    }
+    let ExactBRepPlanarSegment::CircularArc {
+        start_bits,
+        center_bits,
+        clockwise,
+        ..
+    } = &segments[0]
+    else {
+        return None;
+    };
+    let center = center_bits.map(f64::from_bits);
+    let start = start_bits.map(f64::from_bits);
+    let radius_squared = (start[0] - center[0]).powi(2) + (start[1] - center[1]).powi(2);
+    let close = |left: f64, right: f64| {
+        (left - right).abs() <= 1.0e-12 * left.abs().max(right.abs()).max(1.0)
+    };
+    let mut previous_end = start;
+    for segment in segments {
+        let ExactBRepPlanarSegment::CircularArc {
+            start_bits,
+            end_bits,
+            center_bits,
+            clockwise: segment_clockwise,
+        } = segment
+        else {
+            return None;
+        };
+        let segment_start = start_bits.map(f64::from_bits);
+        let segment_end = end_bits.map(f64::from_bits);
+        let segment_center = center_bits.map(f64::from_bits);
+        let start_vector = [segment_start[0] - center[0], segment_start[1] - center[1]];
+        let end_vector = [segment_end[0] - center[0], segment_end[1] - center[1]];
+        let end_radius_squared = end_vector[0].powi(2) + end_vector[1].powi(2);
+        let dot = start_vector[0] * end_vector[0] + start_vector[1] * end_vector[1];
+        let cross = start_vector[0] * end_vector[1] - start_vector[1] * end_vector[0];
+        if segment_center != center
+            || segment_start != previous_end
+            || segment_clockwise != clockwise
+            || !close(end_radius_squared, radius_squared)
+            || !close(dot, 0.0)
+            || !close(cross.abs(), radius_squared)
+            || (*clockwise && cross >= 0.0)
+            || (!*clockwise && cross <= 0.0)
+        {
+            return None;
+        }
+        previous_end = segment_end;
+    }
+    (previous_end == start
+        && center.iter().all(|value| value.is_finite())
+        && radius_squared.is_finite()
+        && radius_squared > 0.0)
+        .then_some((center, radius_squared.sqrt()))
+}
+
+fn machining_token(geometry: &GeneralMachiningGeometry) -> String {
+    match geometry {
+        GeneralMachiningGeometry::TimberStock {
+            frame,
+            cross_section,
+            start_mm,
+            length_axis,
+            length_mm,
+            cross_section_width_mm,
+            cross_section_height_mm,
+        } => format!(
+            "timber-stock:frame({}):section({}):start({}):axis({}):length({}):cross({},{})",
+            frame_token(frame),
+            cross_section
+                .iter()
+                .map(machining_segment_token)
+                .collect::<Vec<_>>()
+                .join("|"),
+            vector_token(start_mm),
+            vector_token(length_axis),
+            format_number(*length_mm),
+            format_number(*cross_section_width_mm),
+            format_number(*cross_section_height_mm)
+        ),
+        GeneralMachiningGeometry::ProfileCut {
+            frame,
+            segments,
+            start_mm,
+            end_mm,
+        } => format!(
+            "profile-cut:frame({}):interval({},{}):segments({})",
+            frame_token(frame),
+            format_number(*start_mm),
+            format_number(*end_mm),
+            segments
+                .iter()
+                .map(machining_segment_token)
+                .collect::<Vec<_>>()
+                .join("|")
+        )
+        .replace(", ", ","),
+        GeneralMachiningGeometry::CircularDrill {
+            frame,
+            center_mm,
+            diameter_mm,
+            start_mm,
+            end_mm,
+        } => format!(
+            "circular-drill:frame({}):center({},{}):diameter({}):interval({},{})",
+            frame_token(frame),
+            format_number(center_mm[0]),
+            format_number(center_mm[1]),
+            format_number(*diameter_mm),
+            format_number(*start_mm),
+            format_number(*end_mm)
+        ),
+    }
+}
+
+fn frame_token(frame: &GeneralMachiningFrame) -> String {
+    format!(
+        "{}/{}/{}/{}",
+        vector_token(&frame.origin_mm),
+        vector_token(&frame.x_axis),
+        vector_token(&frame.y_axis),
+        vector_token(&frame.normal)
+    )
+}
+
+fn vector_token<const N: usize>(values: &[f64; N]) -> String {
+    values
+        .iter()
+        .map(|value| format_number(*value))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn machining_segment_token(segment: &GeneralMachiningSegment) -> String {
+    match segment {
+        GeneralMachiningSegment::Line { start_mm, end_mm } => format!(
+            "line({},{},{},{})",
+            format_number(start_mm[0]),
+            format_number(start_mm[1]),
+            format_number(end_mm[0]),
+            format_number(end_mm[1])
+        ),
+        GeneralMachiningSegment::CircularArc {
+            start_mm,
+            end_mm,
+            center_mm,
+            clockwise,
+        } => format!(
+            "arc({},{},{},{},{},{},{})",
+            format_number(start_mm[0]),
+            format_number(start_mm[1]),
+            format_number(end_mm[0]),
+            format_number(end_mm[1]),
+            format_number(center_mm[0]),
+            format_number(center_mm[1]),
+            u8::from(*clockwise)
+        ),
+    }
+}
+
+fn push_machining_geometry(bytes: &mut Vec<u8>, geometry: &GeneralMachiningGeometry) {
+    match geometry {
+        GeneralMachiningGeometry::TimberStock {
+            frame,
+            cross_section,
+            start_mm,
+            length_axis,
+            length_mm,
+            cross_section_width_mm,
+            cross_section_height_mm,
+        } => {
+            bytes.push(0);
+            push_machining_frame(bytes, frame);
+            push_machining_segments(bytes, cross_section);
+            push_f64_array(bytes, start_mm);
+            push_f64_array(bytes, length_axis);
+            bytes.extend_from_slice(&length_mm.to_bits().to_le_bytes());
+            bytes.extend_from_slice(&cross_section_width_mm.to_bits().to_le_bytes());
+            bytes.extend_from_slice(&cross_section_height_mm.to_bits().to_le_bytes());
+        }
+        GeneralMachiningGeometry::ProfileCut {
+            frame,
+            segments,
+            start_mm,
+            end_mm,
+        } => {
+            bytes.push(1);
+            push_machining_frame(bytes, frame);
+            push_machining_segments(bytes, segments);
+            bytes.extend_from_slice(&start_mm.to_bits().to_le_bytes());
+            bytes.extend_from_slice(&end_mm.to_bits().to_le_bytes());
+        }
+        GeneralMachiningGeometry::CircularDrill {
+            frame,
+            center_mm,
+            diameter_mm,
+            start_mm,
+            end_mm,
+        } => {
+            bytes.push(2);
+            push_machining_frame(bytes, frame);
+            push_f64_array(bytes, center_mm);
+            bytes.extend_from_slice(&diameter_mm.to_bits().to_le_bytes());
+            bytes.extend_from_slice(&start_mm.to_bits().to_le_bytes());
+            bytes.extend_from_slice(&end_mm.to_bits().to_le_bytes());
+        }
+    }
+}
+
+fn push_machining_frame(bytes: &mut Vec<u8>, frame: &GeneralMachiningFrame) {
+    push_f64_array(bytes, &frame.origin_mm);
+    push_f64_array(bytes, &frame.x_axis);
+    push_f64_array(bytes, &frame.y_axis);
+    push_f64_array(bytes, &frame.normal);
+}
+
+fn push_machining_segments(bytes: &mut Vec<u8>, segments: &[GeneralMachiningSegment]) {
+    bytes.extend_from_slice(&(segments.len() as u64).to_le_bytes());
+    for segment in segments {
+        match segment {
+            GeneralMachiningSegment::Line { start_mm, end_mm } => {
+                bytes.push(0);
+                push_f64_array(bytes, start_mm);
+                push_f64_array(bytes, end_mm);
+            }
+            GeneralMachiningSegment::CircularArc {
+                start_mm,
+                end_mm,
+                center_mm,
+                clockwise,
+            } => {
+                bytes.push(1);
+                push_f64_array(bytes, start_mm);
+                push_f64_array(bytes, end_mm);
+                push_f64_array(bytes, center_mm);
+                bytes.push(u8::from(*clockwise));
+            }
+        }
+    }
+}
+
+fn push_f64_array<const N: usize>(bytes: &mut Vec<u8>, values: &[f64; N]) {
+    for value in values {
+        bytes.extend_from_slice(&value.to_bits().to_le_bytes());
+    }
 }
 
 fn manufacturing_export_token_is_safe(token: &str) -> bool {
@@ -949,13 +1611,6 @@ fn manufacturing_export_token_is_safe(token: &str) -> bool {
         && token
             .chars()
             .all(|character| !character.is_control() && character != ';' && character != '=')
-}
-
-const fn manufacturing_operation_phase(kind: GeneralManufacturingKind) -> u8 {
-    match kind {
-        GeneralManufacturingKind::Stock => 0,
-        GeneralManufacturingKind::ThroughCut | GeneralManufacturingKind::BooleanCut => 1,
-    }
 }
 
 fn piece_dimensions_from_bounds(bounds: [[f64; 3]; 2]) -> Option<PieceDimensions> {
@@ -979,7 +1634,7 @@ fn general_envelope_is_current(
     snapshot: &Snapshot,
 ) -> bool {
     envelope.projection_schema == FABRICATION_PROJECTION_V1
-        && envelope.evaluator_id == GENERAL_FABRICATION_EVALUATOR_V1
+        && envelope.evaluator_id == GENERAL_FABRICATION_EVALUATOR_V2
         && envelope.is_current(snapshot)
 }
 
@@ -1249,7 +1904,7 @@ fn general_manufacturing_bytes(
     unresolved_sources: &[GeneralBodySource],
     validation_state: ValidationState,
 ) -> Vec<u8> {
-    let mut bytes = GENERAL_MANUFACTURING_EXPORT_V1.as_bytes().to_vec();
+    let mut bytes = GENERAL_MANUFACTURING_EXPORT_V2.as_bytes().to_vec();
     push_validation_state(&mut bytes, validation_state);
     bytes.extend_from_slice(&(operations.len() as u64).to_le_bytes());
     for operation in operations {
@@ -1259,7 +1914,9 @@ fn general_manufacturing_bytes(
         bytes.push(match operation.kind {
             GeneralManufacturingKind::Stock => 0,
             GeneralManufacturingKind::ThroughCut => 1,
-            GeneralManufacturingKind::BooleanCut => 2,
+            GeneralManufacturingKind::ProfileCut => 2,
+            GeneralManufacturingKind::CircularDrill => 3,
+            GeneralManufacturingKind::BooleanCut => 4,
         });
         bytes.extend_from_slice(&(operation.semantic_inputs.len() as u64).to_le_bytes());
         for input in &operation.semantic_inputs {
@@ -1267,6 +1924,7 @@ fn general_manufacturing_bytes(
         }
         push_projection_bytes(&mut bytes, operation.frame.as_bytes());
         push_dimensions(&mut bytes, operation.bounds);
+        push_machining_geometry(&mut bytes, &operation.machining);
         push_general_source(
             &mut bytes,
             &GeneralBodySource::Exact(operation.source.clone()),

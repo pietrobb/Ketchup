@@ -1,7 +1,8 @@
 use ketchup_core::document::{
     BooleanOperation, CanonicalCommand, ClassificationCategoryId, ClassificationDimensionId,
     CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId, FeatureKind, InstancePath,
-    MESH_BODY_SCHEMA_V1, MeshAuthority, MeshBodySpec, NodeId, OccurrenceId, Snapshot, Transform,
+    MESH_BODY_SCHEMA_V1, MeshAuthority, MeshBodySpec, NodeId, OccurrenceId, ProfileSegment,
+    Snapshot, Transform,
 };
 use ketchup_core::exact_brep_graph::ExactBRepGraph;
 use ketchup_core::exact_product::{
@@ -15,8 +16,8 @@ use ketchup_core::exact_validation::{
     general_body_validation_policy,
 };
 use ketchup_core::fabrication::{
-    GeneralFabricationError, GeneralFabricationProjection, GeneralManufacturingKind,
-    ProjectionStatus, project_general_fabrication,
+    GeneralFabricationError, GeneralFabricationProjection, GeneralMachiningGeometry,
+    GeneralManufacturingKind, ProjectionStatus, project_general_fabrication,
 };
 use ketchup_core::graph::{DerivedIdentity, PortSpec, RuleOutput, SlotPath, SlotSegment};
 use ketchup_core::import::{StepImportMesh, StepMeshTriangle};
@@ -508,6 +509,19 @@ fn exact_brep_graph_boolean_cut_emits_host_neutral_manufacturing_evidence() {
     assert_eq!(cut.producer_feature_id, GRAPH_BOOLEAN);
     assert_eq!(cut.semantic_inputs, vec![GRAPH_BASE_BODY, GRAPH_TOOL_BODY]);
     assert_eq!(cut.bounds.length_mm, 8.0);
+    let GeneralMachiningGeometry::ProfileCut {
+        frame,
+        segments,
+        start_mm,
+        end_mm,
+    } = &cut.machining
+    else {
+        panic!("expected the boolean tool extrusion as a profile cut")
+    };
+    assert_eq!(frame.origin_mm, [0.0, 0.0, 0.0]);
+    assert_eq!(frame.normal, [0.0, 0.0, 1.0]);
+    assert_eq!(segments.len(), 4);
+    assert_eq!((*start_mm, *end_mm), (0.0, 10.0));
     assert!(
         projection
             .manufacturing
@@ -524,6 +538,86 @@ fn exact_brep_graph_boolean_cut_emits_host_neutral_manufacturing_evidence() {
         .find("producer=45;kind=boolean-cut;frame=definition-local;inputs=42,44")
         .unwrap();
     assert!(stock_position < cut_position);
+}
+
+#[test]
+fn exact_profile_cut_projects_btl_ready_timber_stock_and_circular_drilling() {
+    let (snapshot, projection) = circular_drill_fabrication_projection();
+    assert_eq!(projection.manufacturing.operations.len(), 2);
+
+    let stock = &projection.manufacturing.operations[0];
+    assert_eq!(stock.kind, GeneralManufacturingKind::Stock);
+    let GeneralMachiningGeometry::TimberStock {
+        frame,
+        cross_section,
+        start_mm,
+        length_axis,
+        length_mm,
+        cross_section_width_mm,
+        cross_section_height_mm,
+    } = &stock.machining
+    else {
+        panic!("expected timber stock geometry")
+    };
+    assert_eq!(frame.origin_mm, [0.0, 0.0, 0.0]);
+    assert_eq!(frame.normal, [0.0, 0.0, 1.0]);
+    assert_eq!(cross_section.len(), 4);
+    assert_eq!(*start_mm, [0.0, 0.0, 0.0]);
+    assert_eq!(*length_axis, [0.0, 0.0, 1.0]);
+    assert_eq!(*length_mm, 1000.0);
+    assert_eq!(*cross_section_width_mm, 100.0);
+    assert_eq!(*cross_section_height_mm, 50.0);
+
+    let drill = &projection.manufacturing.operations[1];
+    assert_eq!(drill.kind, GeneralManufacturingKind::CircularDrill);
+    let GeneralMachiningGeometry::CircularDrill {
+        frame,
+        center_mm,
+        diameter_mm,
+        start_mm,
+        end_mm,
+    } = &drill.machining
+    else {
+        panic!("expected circular drilling geometry")
+    };
+    assert_eq!(frame.origin_mm, [0.0, 0.0, 0.0]);
+    assert_eq!(frame.normal, [0.0, 0.0, 1.0]);
+    assert_eq!(*center_mm, [50.0, 25.0]);
+    assert_eq!(*diameter_mm, 10.0);
+    assert_eq!((*start_mm, *end_mm), (0.0, 50.0));
+
+    let export = String::from_utf8(projection.manufacturing_export(&snapshot).unwrap()).unwrap();
+    assert!(export.starts_with("ketchup.general-manufacturing-export.v2\n"));
+    assert!(export.contains(
+        "machining=timber-stock:frame(0,0,0/1,0,0/0,1,0/0,0,1):section(line(0,0,100,0)|line(100,0,100,50)|line(100,50,0,50)|line(0,50,0,0)):start(0,0,0):axis(0,0,1):length(1000):cross(100,50)"
+    ));
+    assert!(export.contains(
+        "kind=circular-drill;frame=definition-local;inputs=42,43;length_mm=100;width_mm=50;height_mm=1000;machining=circular-drill:frame(0,0,0/1,0,0/0,1,0/0,0,1):center(50,25):diameter(10):interval(0,50)"
+    ));
+
+    let mut tampered = projection.clone();
+    let GeneralMachiningGeometry::CircularDrill { diameter_mm, .. } =
+        &mut tampered.manufacturing.operations[1].machining
+    else {
+        unreachable!()
+    };
+    *diameter_mm = 12.0;
+    assert_eq!(
+        tampered.manufacturing_export(&snapshot),
+        Err(GeneralFabricationError::ExportBlocked)
+    );
+
+    let mut sub_text_precision_tamper = projection.clone();
+    let GeneralMachiningGeometry::CircularDrill { diameter_mm, .. } =
+        &mut sub_text_precision_tamper.manufacturing.operations[1].machining
+    else {
+        unreachable!()
+    };
+    *diameter_mm += 1.0e-10;
+    assert_eq!(
+        sub_text_precision_tamper.manufacturing_export(&snapshot),
+        Err(GeneralFabricationError::ExportBlocked)
+    );
 }
 
 #[test]
@@ -849,6 +943,113 @@ fn graph_fabrication_projection(
         project_general_fabrication(&snapshot, &registry, &cases, &report, tolerance).unwrap()
     );
     (snapshot, projection)
+}
+
+fn circular_drill_fabrication_projection() -> (Snapshot, GeneralFabricationProjection) {
+    let document = circular_drill_document();
+    let snapshot = document.current();
+    let registry = ExactResultRegistry::accept(
+        &snapshot,
+        [Arc::new(ExactBodyPackage::from(graph_package(
+            &snapshot,
+            "m17-circular-drill-result",
+        )))],
+    )
+    .unwrap();
+    let tolerance = TolerancePolicy::default();
+    let left = GeneralBodyParticipant::accept(
+        &snapshot,
+        &registry,
+        InstancePath::root(GRAPH_LEFT),
+        tolerance,
+    )
+    .unwrap();
+    let right = GeneralBodyParticipant::accept(
+        &snapshot,
+        &registry,
+        InstancePath::root(GRAPH_RIGHT),
+        tolerance,
+    )
+    .unwrap();
+    let cases = vec![GeneralClearanceCase::new(left, right, 5.0).unwrap()];
+    let report = general_report(&snapshot, &cases, tolerance);
+    assert_eq!(report.state, ValidationState::Passed);
+    let projection =
+        project_general_fabrication(&snapshot, &registry, &cases, &report, tolerance).unwrap();
+    assert_eq!(
+        projection,
+        project_general_fabrication(&snapshot, &registry, &cases, &report, tolerance).unwrap(),
+        "machining IR must regenerate deterministically"
+    );
+    (snapshot, projection)
+}
+
+fn circular_drill_document() -> DocumentStore {
+    let center = [50.0, 25.0];
+    let east = [55.0, 25.0];
+    let north = [50.0, 30.0];
+    let west = [45.0, 25.0];
+    let south = [50.0, 20.0];
+    let arc = |start_mm, end_mm| ProfileSegment::CircularArc {
+        start_mm,
+        end_mm,
+        center_mm: center,
+        clockwise: false,
+    };
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: GRAPH_DEFINITION,
+                name: "Timber with circular drilling".to_owned(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: GRAPH_BASE_PROFILE,
+                definition_id: GRAPH_DEFINITION,
+                name: "100 x 50 timber profile".to_owned(),
+                kind: FeatureKind::Profile {
+                    points_mm: vec![[0.0, 0.0], [100.0, 0.0], [100.0, 50.0], [0.0, 50.0]],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: GRAPH_BASE_BODY,
+                definition_id: GRAPH_DEFINITION,
+                name: "1000 mm timber stock".to_owned(),
+                kind: FeatureKind::Extrusion {
+                    profile: GRAPH_BASE_PROFILE,
+                    height: Dimension::from_decimal("1000").unwrap(),
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: GRAPH_TOOL_PROFILE,
+                definition_id: GRAPH_DEFINITION,
+                name: "10 mm drilling profile".to_owned(),
+                kind: FeatureKind::SegmentProfile {
+                    segments: vec![
+                        arc(east, north),
+                        arc(north, west),
+                        arc(west, south),
+                        arc(south, east),
+                    ],
+                    closed: true,
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: GRAPH_BOOLEAN,
+                definition_id: GRAPH_DEFINITION,
+                name: "50 mm circular drilling".to_owned(),
+                kind: FeatureKind::Pocket {
+                    target: GRAPH_BASE_BODY,
+                    profile: GRAPH_TOOL_PROFILE,
+                    depth: Dimension::from_decimal("50").unwrap(),
+                },
+            },
+            occurrence(GRAPH_LEFT, GRAPH_DEFINITION, 0.0),
+            occurrence(GRAPH_RIGHT, GRAPH_DEFINITION, 200.0),
+        ]))
+        .unwrap();
+    document.discard_history_before_current();
+    document
 }
 
 fn graph_boolean_document(operation: BooleanOperation) -> DocumentStore {
