@@ -493,15 +493,39 @@ fn btlx_2_3_1_straight_timber_export_is_pinned_deterministic_and_fail_closed() {
     assert_eq!(export, projection.btlx_2_3_1_export(&snapshot).unwrap());
 
     let (machined_snapshot, machined) = circular_drill_fabrication_projection();
+    let machined_export = machined.btlx_2_3_1_export(&machined_snapshot).unwrap();
     assert_eq!(
-        machined.btlx_2_3_1_export(&machined_snapshot),
-        Err(GeneralFabricationError::ExportBlocked)
+        machined_export,
+        include_bytes!("fixtures/btlx/circular-drilling-2.3.1.btlx")
+    );
+    assert_eq!(
+        machined_export,
+        machined.btlx_2_3_1_export(&machined_snapshot).unwrap()
     );
 
     let mut tampered = projection;
     tampered.bom.rows[0].quantity = 3;
     assert_eq!(
         tampered.btlx_2_3_1_export(&snapshot),
+        Err(GeneralFabricationError::ExportBlocked)
+    );
+
+    let mut tampered_drill = machined;
+    let GeneralMachiningGeometry::CircularDrill { diameter_mm, .. } =
+        &mut tampered_drill.manufacturing.operations[1].machining
+    else {
+        unreachable!()
+    };
+    *diameter_mm = 12.0;
+    assert_eq!(
+        tampered_drill.btlx_2_3_1_export(&machined_snapshot),
+        Err(GeneralFabricationError::ExportBlocked)
+    );
+
+    let (unsupported_snapshot, unsupported) =
+        graph_fabrication_projection(BooleanOperation::Cut, true, "m17-btlx-unsupported-cut");
+    assert_eq!(
+        unsupported.btlx_2_3_1_export(&unsupported_snapshot),
         Err(GeneralFabricationError::ExportBlocked)
     );
 }

@@ -656,13 +656,16 @@ impl GeneralFabricationProjection {
     ) -> Result<Vec<u8>, GeneralFabricationError> {
         self.bom_export(snapshot)?;
         self.manufacturing_export(snapshot)?;
-        if self.bom.rows.is_empty() || self.manufacturing.operations.len() != self.bom.rows.len() {
+        if self.bom.rows.is_empty() || self.manufacturing.operations.is_empty() {
             return Err(GeneralFabricationError::ExportBlocked);
         }
 
         let mut output = format!(
             "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<BTLx xmlns=\"https://www.design2machine.com\" Version=\"{BTLX_2_3_1_VERSION}\" Language=\"en\">\n  <Project Name=\"Ketchup\">\n    <Parts>\n"
         );
+        let mut matched_operation_count = 0usize;
+        let mut next_process_id = 1u32;
+        let mut next_reference_plane_id = 100u32;
         for (index, row) in self.bom.rows.iter().enumerate() {
             let GeneralBodySource::Exact(row_source) = &row.source else {
                 return Err(GeneralFabricationError::ExportBlocked);
@@ -675,9 +678,12 @@ impl GeneralFabricationProjection {
                     operation.definition_id == row.definition_id && operation.source == *row_source
                 })
                 .collect::<Vec<_>>();
-            let [stock] = matching.as_slice() else {
+            let Some((stock, machining)) = matching.split_first() else {
                 return Err(GeneralFabricationError::ExportBlocked);
             };
+            matched_operation_count = matched_operation_count
+                .checked_add(matching.len())
+                .ok_or(GeneralFabricationError::ExportBlocked)?;
             if stock.kind != GeneralManufacturingKind::Stock
                 || !stock.semantic_inputs.is_empty()
                 || row.material_key != TIMBER_MATERIAL_V1
@@ -702,11 +708,69 @@ impl GeneralFabricationProjection {
                 .ok_or(GeneralFabricationError::ExportBlocked)?;
             let height = format_btlx_positive_number(height_mm)
                 .ok_or(GeneralFabricationError::ExportBlocked)?;
+            let drillings = machining
+                .iter()
+                .map(|operation| {
+                    if operation.kind != GeneralManufacturingKind::CircularDrill {
+                        return None;
+                    }
+                    btlx_drilling(&operation.machining)
+                })
+                .collect::<Option<Vec<_>>>()
+                .ok_or(GeneralFabricationError::ExportBlocked)?;
             output.push_str(&format!(
-                "      <Part Count=\"{count}\" Length=\"{length}\" Width=\"{width}\" Height=\"{height}\" SingleMemberNumber=\"{single_member_number}\" Designation=\"definition-{}\" Material=\"{}\"/>\n",
+                "      <Part Count=\"{count}\" Length=\"{length}\" Width=\"{width}\" Height=\"{height}\" SingleMemberNumber=\"{single_member_number}\" Designation=\"definition-{}\" Material=\"{}\"{}\n",
                 row.definition_id.0,
-                TIMBER_MATERIAL_V1
+                TIMBER_MATERIAL_V1,
+                if drillings.is_empty() { "/>" } else { ">" }
             ));
+            if drillings.is_empty() {
+                continue;
+            }
+            output.push_str("        <UserReferencePlanes>\n");
+            let first_reference_plane_id = next_reference_plane_id;
+            for drilling in &drillings {
+                let reference_plane_id = next_reference_plane_id;
+                next_reference_plane_id = next_reference_plane_id
+                    .checked_add(1)
+                    .ok_or(GeneralFabricationError::ExportBlocked)?;
+                output.push_str(&format!(
+                    "          <UserReferencePlane ID=\"{reference_plane_id}\">\n            <Position>\n              <ReferencePoint X=\"{}\" Y=\"{}\" Z=\"{}\"/>\n              <XVector X=\"{}\" Y=\"{}\" Z=\"{}\"/>\n              <YVector X=\"{}\" Y=\"{}\" Z=\"{}\"/>\n            </Position>\n          </UserReferencePlane>\n",
+                    format_number(drilling.reference_point_mm[0]),
+                    format_number(drilling.reference_point_mm[1]),
+                    format_number(drilling.reference_point_mm[2]),
+                    format_number(drilling.x_vector[0]),
+                    format_number(drilling.x_vector[1]),
+                    format_number(drilling.x_vector[2]),
+                    format_number(drilling.y_vector[0]),
+                    format_number(drilling.y_vector[1]),
+                    format_number(drilling.y_vector[2])
+                ));
+            }
+            output.push_str("        </UserReferencePlanes>\n        <Processings>\n");
+            for (drilling_index, drilling) in drillings.iter().enumerate() {
+                let reference_plane_id = first_reference_plane_id
+                    .checked_add(
+                        u32::try_from(drilling_index)
+                            .map_err(|_| GeneralFabricationError::ExportBlocked)?,
+                    )
+                    .ok_or(GeneralFabricationError::ExportBlocked)?;
+                let process_id = next_process_id;
+                next_process_id = next_process_id
+                    .checked_add(1)
+                    .ok_or(GeneralFabricationError::ExportBlocked)?;
+                output.push_str(&format!(
+                    "          <Drilling Name=\"Ketchup circular drilling\" ProcessID=\"{process_id}\" ReferencePlaneID=\"{reference_plane_id}\">\n            <StartX>{}</StartX>\n            <StartY>{}</StartY>\n            <Angle>0</Angle>\n            <Inclination>90</Inclination>\n            <DepthLimited>yes</DepthLimited>\n            <Depth>{}</Depth>\n            <Diameter>{}</Diameter>\n          </Drilling>\n",
+                    drilling.start_x,
+                    drilling.start_y,
+                    drilling.depth,
+                    drilling.diameter
+                ));
+            }
+            output.push_str("        </Processings>\n      </Part>\n");
+        }
+        if matched_operation_count != self.manufacturing.operations.len() {
+            return Err(GeneralFabricationError::ExportBlocked);
         }
         output.push_str("    </Parts>\n  </Project>\n</BTLx>\n");
         Ok(output.into_bytes())
@@ -728,20 +792,120 @@ fn format_btlx_positive_number(value: f64) -> Option<String> {
         .map(|_| formatted)
 }
 
-fn rectangular_timber_stock_dimensions(
-    geometry: &GeneralMachiningGeometry,
-) -> Option<(f64, f64, f64)> {
-    let GeneralMachiningGeometry::TimberStock {
-        cross_section,
-        length_mm,
-        cross_section_width_mm,
-        cross_section_height_mm,
-        ..
+#[derive(Clone, Debug, PartialEq)]
+struct BtlxDrilling {
+    reference_point_mm: [f64; 3],
+    x_vector: [f64; 3],
+    y_vector: [f64; 3],
+    start_x: String,
+    start_y: String,
+    depth: String,
+    diameter: String,
+}
+
+fn btlx_drilling(geometry: &GeneralMachiningGeometry) -> Option<BtlxDrilling> {
+    let GeneralMachiningGeometry::CircularDrill {
+        frame,
+        center_mm,
+        diameter_mm,
+        start_mm,
+        end_mm,
     } = geometry
     else {
         return None;
     };
-    if cross_section.len() != 4
+    if !machining_frame_is_right_handed(frame)
+        || center_mm.iter().any(|value| !value.is_finite())
+        || !start_mm.is_finite()
+        || !end_mm.is_finite()
+        || end_mm <= start_mm
+    {
+        return None;
+    }
+    let depth_mm = end_mm - start_mm;
+    let reference_point_mm = btlx_part_coordinate(std::array::from_fn(|axis| {
+        frame.origin_mm[axis] + frame.normal[axis] * start_mm
+    }));
+    Some(BtlxDrilling {
+        reference_point_mm,
+        x_vector: btlx_part_coordinate(frame.x_axis),
+        y_vector: btlx_part_coordinate(frame.y_axis),
+        start_x: format_btlx_number_in_range(center_mm[0], -100_000.0, 100_000.0)?,
+        start_y: format_btlx_number_in_range(center_mm[1], -50_000.0, 50_000.0)?,
+        depth: format_btlx_number_in_range(depth_mm, f64::MIN_POSITIVE, 50_000.0)?,
+        diameter: format_btlx_number_in_range(*diameter_mm, f64::MIN_POSITIVE, 50_000.0)?,
+    })
+}
+
+fn format_btlx_number_in_range(value: f64, minimum: f64, maximum: f64) -> Option<String> {
+    let formatted = format_number(value);
+    formatted
+        .parse::<f64>()
+        .ok()
+        .filter(|rounded| rounded.is_finite() && *rounded >= minimum && *rounded <= maximum)
+        .map(|_| formatted)
+}
+
+fn btlx_part_coordinate(definition_coordinate: [f64; 3]) -> [f64; 3] {
+    [
+        definition_coordinate[2],
+        definition_coordinate[0],
+        definition_coordinate[1],
+    ]
+}
+
+fn machining_frame_is_right_handed(frame: &GeneralMachiningFrame) -> bool {
+    if frame
+        .origin_mm
+        .iter()
+        .chain(&frame.x_axis)
+        .chain(&frame.y_axis)
+        .chain(&frame.normal)
+        .any(|value| !value.is_finite())
+    {
+        return false;
+    }
+    let dot = |left: [f64; 3], right: [f64; 3]| {
+        left.into_iter()
+            .zip(right)
+            .map(|(left, right)| left * right)
+            .sum::<f64>()
+    };
+    let cross = [
+        frame.x_axis[1] * frame.y_axis[2] - frame.x_axis[2] * frame.y_axis[1],
+        frame.x_axis[2] * frame.y_axis[0] - frame.x_axis[0] * frame.y_axis[2],
+        frame.x_axis[0] * frame.y_axis[1] - frame.x_axis[1] * frame.y_axis[0],
+    ];
+    let close = |left: f64, right: f64| (left - right).abs() <= 1.0e-12;
+    close(dot(frame.x_axis, frame.x_axis), 1.0)
+        && close(dot(frame.y_axis, frame.y_axis), 1.0)
+        && close(dot(frame.normal, frame.normal), 1.0)
+        && close(dot(frame.x_axis, frame.y_axis), 0.0)
+        && cross
+            .into_iter()
+            .zip(frame.normal)
+            .all(|(actual, expected)| close(actual, expected))
+}
+
+fn rectangular_timber_stock_dimensions(
+    geometry: &GeneralMachiningGeometry,
+) -> Option<(f64, f64, f64)> {
+    let GeneralMachiningGeometry::TimberStock {
+        frame,
+        cross_section,
+        start_mm,
+        length_axis,
+        length_mm,
+        cross_section_width_mm,
+        cross_section_height_mm,
+    } = geometry
+    else {
+        return None;
+    };
+    if *frame != identity_machining_frame()
+        || *start_mm != [0.0, 0.0, 0.0]
+        || *length_axis != [0.0, 0.0, 1.0]
+        || cross_section.len() != 4
         || [
             *length_mm,
             *cross_section_width_mm,
@@ -2283,6 +2447,21 @@ mod tests {
             Some((1000.0, 100.0, 50.0))
         );
 
+        let mut translated = valid.clone();
+        let GeneralMachiningGeometry::TimberStock { start_mm, .. } = &mut translated else {
+            unreachable!()
+        };
+        *start_mm = [10.0, 0.0, 0.0];
+        assert_eq!(rectangular_timber_stock_dimensions(&translated), None);
+
+        let mut rotated = valid.clone();
+        let GeneralMachiningGeometry::TimberStock { frame, .. } = &mut rotated else {
+            unreachable!()
+        };
+        frame.x_axis = [0.0, 1.0, 0.0];
+        frame.y_axis = [-1.0, 0.0, 0.0];
+        assert_eq!(rectangular_timber_stock_dimensions(&rotated), None);
+
         let mut open = valid.clone();
         let GeneralMachiningGeometry::TimberStock { cross_section, .. } = &mut open else {
             unreachable!()
@@ -2302,5 +2481,61 @@ mod tests {
         };
         *end_mm = [100.0, 1.0];
         assert_eq!(rectangular_timber_stock_dimensions(&diagonal), None);
+    }
+
+    #[test]
+    fn btlx_drilling_maps_definition_axes_and_rejects_invalid_geometry() {
+        let valid = GeneralMachiningGeometry::CircularDrill {
+            frame: identity_machining_frame(),
+            center_mm: [50.0, 25.0],
+            diameter_mm: 10.0,
+            start_mm: 10.0,
+            end_mm: 60.0,
+        };
+        let drilling = btlx_drilling(&valid).unwrap();
+        assert_eq!(drilling.reference_point_mm, [10.0, 0.0, 0.0]);
+        assert_eq!(drilling.x_vector, [0.0, 1.0, 0.0]);
+        assert_eq!(drilling.y_vector, [0.0, 0.0, 1.0]);
+        assert_eq!(
+            (
+                drilling.start_x.as_str(),
+                drilling.start_y.as_str(),
+                drilling.depth.as_str(),
+                drilling.diameter.as_str(),
+            ),
+            ("50", "25", "50", "10")
+        );
+
+        let mut zero_depth = valid.clone();
+        let GeneralMachiningGeometry::CircularDrill {
+            start_mm, end_mm, ..
+        } = &mut zero_depth
+        else {
+            unreachable!()
+        };
+        *end_mm = *start_mm;
+        assert_eq!(btlx_drilling(&zero_depth), None);
+
+        let mut invalid_diameter = valid.clone();
+        let GeneralMachiningGeometry::CircularDrill { diameter_mm, .. } = &mut invalid_diameter
+        else {
+            unreachable!()
+        };
+        *diameter_mm = 50_000.000_000_001;
+        assert_eq!(btlx_drilling(&invalid_diameter), None);
+
+        let mut invalid_center = valid.clone();
+        let GeneralMachiningGeometry::CircularDrill { center_mm, .. } = &mut invalid_center else {
+            unreachable!()
+        };
+        *center_mm = [100_000.000_000_001, 25.0];
+        assert_eq!(btlx_drilling(&invalid_center), None);
+
+        let mut invalid_frame = valid;
+        let GeneralMachiningGeometry::CircularDrill { frame, .. } = &mut invalid_frame else {
+            unreachable!()
+        };
+        frame.x_axis = [2.0, 0.0, 0.0];
+        assert_eq!(btlx_drilling(&invalid_frame), None);
     }
 }
