@@ -9539,6 +9539,17 @@ impl KetchupApp {
         &self.assistant_messages
     }
 
+    pub fn set_assistant_diagnostics_enabled(&mut self, enabled: bool) {
+        self.assistant_diagnostics_enabled = enabled;
+    }
+
+    #[must_use]
+    pub fn last_assistant_api_diagnostics(&self) -> Option<&AssistantApiDiagnostics> {
+        self.assistant_api_logs
+            .last()
+            .map(|entry| &entry.diagnostics)
+    }
+
     pub fn new_assistant_chat(&mut self) {
         self.assistant_input.clear();
         self.assistant_messages.clear();

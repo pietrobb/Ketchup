@@ -11,11 +11,13 @@ mod harness;
 
 use eframe::egui;
 use harness::{ScriptedAssistantTransport, Shell};
+use ketchup_app::AssistantMessageRole;
 use ketchup_core::assistant_sidecar::{
     AssistantCadBodyFeature, AssistantCadBooleanOperation, AssistantCadDeletePolicy,
     AssistantCadEditOperation, AssistantCadEditProgram, AssistantCadEntitySelector,
-    AssistantCadPartFeature, AssistantCadRotation, AssistantChatResult, AssistantPrincipalPlane,
-    AssistantSketchConstraint, AssistantSketchEntity, AssistantWorkplaneSpec,
+    AssistantCadPartFeature, AssistantCadRotation, AssistantChatResult, AssistantDistribution,
+    AssistantPrincipalPlane, AssistantSketchConstraint, AssistantSketchEntity,
+    AssistantWorkplaneSpec,
 };
 use ketchup_core::document::{DefinitionId, FeatureId, FeatureKind, InstancePath, Snapshot};
 use ketchup_core::exact_brep_graph::ExactBRepGraph;
@@ -37,7 +39,7 @@ use ketchup_core::validation::{
 use ketchup_scheduler::ExactWorkerSupervisor;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Structural dimensions of the proof house, in millimetres.
 const HOUSE_LENGTH_MM: f64 = 6_000.0;
@@ -120,6 +122,32 @@ fn wait_for_assistant_proposal(shell: &mut Shell) {
         "scripted assistant response did not reach accessible proposal review: {:?}",
         shell.app().assistant_messages()
     );
+}
+
+fn wait_for_live_assistant_proposal(shell: &mut Shell) {
+    let confirm = shell.catalog().text("assistant-confirm");
+    let deadline = Instant::now() + Duration::from_secs(300);
+    loop {
+        shell.step();
+        if shell.app().assistant_proposal().is_some() && shell.has_visible_label(&confirm) {
+            return;
+        }
+        assert!(
+            !shell
+                .app()
+                .assistant_messages()
+                .iter()
+                .any(|message| message.role == AssistantMessageRole::Error),
+            "live assistant returned an error: {:?}",
+            shell.app().assistant_messages()
+        );
+        assert!(
+            Instant::now() < deadline,
+            "live assistant did not reach proposal review: {:?}",
+            shell.app().assistant_messages()
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
 }
 
 /// Send one natural-language request, prove preview mutates nothing, confirm it,
@@ -459,6 +487,114 @@ const HOUSE_MEMBERS: [&str; 11] = [
     "Ridge beam",
     "Rafter",
 ];
+
+/// Prove the production OAuth Assistant can author real exact structure instead
+/// of replaying a Rust-authored program. This is the first live A2 construction
+/// slice; the complete house remains a larger opt-in acceptance proof.
+#[test]
+#[ignore = "requires the production OAuth binary, login and live GPT-5.6 requests"]
+fn live_oauth_assistant_builds_a_supported_portal_frame_from_the_empty_site() {
+    let mut shell = Shell::new();
+    shell.app_mut().set_assistant_diagnostics_enabled(true);
+    let handshake = shell.app().assistant_handshake();
+    assert_eq!(handshake.distribution, AssistantDistribution::PrivateOauth);
+    assert_eq!(handshake.provider, "codex-oauth");
+    assert_eq!(handshake.model, "gpt-5.6-sol");
+
+    let baseline_revision = shell.app().document_revision();
+    let baseline_digest = shell.app().canonical_digest();
+    assert!(shell.app().document_snapshot().occurrences().count() > 0);
+
+    let request = "Use one typed cad_edit_program, not model_intent and not prose alone. First delete every existing occurrence listed in the current document context with remove_references so the site is empty. Then create exactly four separate rectangular extruded parts on the XY plane, all dimensions in millimetres: 'Foundation beam' is 4000 by 400 and extruded 300 at translation [0,0,0]; 'Left post' is 200 by 200 and extruded 2500 at [0,0,300]; 'Right post' is 200 by 200 and extruded 2500 at [3800,0,300]; 'Header beam' is 4000 by 200 and extruded 200 at [0,0,2800]. Omit the optional rotation field entirely for every part. Draw the Foundation beam rectangle with corners [0,0], [4000,0], [4000,400], [0,400]; both post rectangles with corners [0,0], [200,0], [200,200], [0,200]; and the Header beam rectangle with corners [0,0], [4000,0], [4000,200], [0,200]. Close each rectangle with four line entities and set constraints to an empty array for every part. Do not emit any constraint object. Do not add any other part and do not approximate with mesh geometry.";
+    let input = shell.catalog().text("assistant-input-hint");
+    shell.focus_text_input(&input);
+    shell.type_text(request);
+    shell.press_key(egui::Key::Enter);
+    wait_for_live_assistant_proposal(&mut shell);
+
+    assert_eq!(shell.app().document_revision(), baseline_revision);
+    assert_eq!(shell.app().canonical_digest(), baseline_digest);
+    assert!(shell.app().assistant_messages().iter().any(|message| {
+        message.role == AssistantMessageRole::Assistant
+            && message.source.contains("gpt-5.6-sol")
+            && !message.text.trim().is_empty()
+    }));
+    let diagnostics = shell
+        .app()
+        .last_assistant_api_diagnostics()
+        .expect("the live provider response must retain bounded diagnostics");
+    assert_eq!(diagnostics.provider, "codex-oauth");
+    assert_eq!(diagnostics.model, "gpt-5.6-sol");
+    assert!(diagnostics.input_tokens > 0 && diagnostics.output_tokens > 0);
+    let provider_response: serde_json::Value = serde_json::from_str(&diagnostics.response_text)
+        .expect("the captured provider response must be JSON");
+    assert_eq!(
+        provider_response["cad_edit_program"]["operations"]
+            .as_array()
+            .expect("GPT-5.6 must return a typed CAD program")
+            .len(),
+        5
+    );
+
+    shell.click_row(&shell.catalog().text("assistant-confirm"));
+    assert_eq!(shell.app().document_revision(), baseline_revision + 1);
+    let committed = shell.app().document_snapshot();
+    assert_eq!(committed.occurrences().count(), 4);
+    let expected = [
+        ("Foundation beam", [4_000.0, 400.0, 300.0], [0.0, 0.0, 0.0]),
+        ("Left post", [200.0, 200.0, 2_500.0], [0.0, 0.0, 300.0]),
+        ("Right post", [200.0, 200.0, 2_500.0], [3_800.0, 0.0, 300.0]),
+        ("Header beam", [4_000.0, 200.0, 200.0], [0.0, 0.0, 2_800.0]),
+    ];
+    let mut worker = ExactWorkerSupervisor::spawn(exact_worker_path()).unwrap();
+    for (name, size, translation) in expected {
+        let occurrence = committed
+            .occurrences()
+            .find(|occurrence| occurrence.name() == name)
+            .unwrap_or_else(|| panic!("live-authored {name} must exist"));
+        let transform = occurrence.transform();
+        let matrix = transform.matrix();
+        assert_eq!([matrix[3], matrix[7], matrix[11]], translation);
+        assert_eq!(
+            [
+                [matrix[0], matrix[1], matrix[2]],
+                [matrix[4], matrix[5], matrix[6]],
+                [matrix[8], matrix[9], matrix[10]],
+            ],
+            [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+        );
+
+        let definition_id = definition_id_of(&shell, name);
+        let body = body_feature_id_of(&shell, name);
+        let graph = ExactBRepGraph::from_snapshot(&committed, definition_id, body)
+            .unwrap_or_else(|error| panic!("live-authored {name} must compile exactly: {error}"));
+        let package = worker
+            .evaluate_exact_brep_graph(&graph)
+            .unwrap_or_else(|error| panic!("live-authored {name} must evaluate in OCCT: {error}"));
+        let expected_volume = size.iter().product::<f64>();
+        assert!((package.volume_mm3 - expected_volume).abs() <= expected_volume * 1.0e-9);
+        assert_eq!(package.bounds_mm, [[0.0, 0.0, 0.0], size]);
+        assert_eq!(package.topology_counts, [8, 12, 6, 1, 1]);
+    }
+
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("live-oauth-portal-frame.ketchup");
+    persistence::save_atomic(&path, &committed).unwrap();
+    let outcome = persistence::load_file(&path).unwrap();
+    assert!(outcome.is_editable());
+    assert_eq!(
+        outcome.snapshot().canonical_digest(),
+        committed.canonical_digest()
+    );
+    publish_artifact(
+        "live-oauth-portal-frame.ketchup",
+        &std::fs::read(path).unwrap(),
+    );
+
+    assert!(shell.app_mut().undo());
+    assert_eq!(shell.app().document_revision(), baseline_revision);
+    assert_eq!(shell.app().canonical_digest(), baseline_digest);
+}
 
 /// Prove the built frame is exact, editable, savable and undoable.
 #[test]
