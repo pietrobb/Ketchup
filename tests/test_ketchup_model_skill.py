@@ -101,7 +101,7 @@ async def call(registered, name, **kwargs):
 
 def test_registration_schema_and_real_decorator_calls(monkeypatch):
     registered = tools(monkeypatch)
-    assert set(registered) == {"KetchupDiscover", "KetchupSession", "KetchupInspect", "KetchupEdit", "KetchupSave", "KetchupVerify"}
+    assert set(registered) == {"KetchupDiscover", "KetchupSession", "KetchupInspect", "KetchupEdit", "KetchupBatch", "KetchupSave", "KetchupVerify"}
     for tool in registered.values():
         schema = tool.to_dict()
         assert schema["input_schema"]["type"] == "object"
@@ -138,6 +138,7 @@ class SafetyDocument:
         self.snapshot = {"document_id": str(uuid.uuid4()), "revision": 0, "canonical_digest": "zero",
                          "undo_steps": 0, "redo_steps": 0}
         self.calls = []
+        self.batch_states = {}
         self.validators = SimpleNamespace(list=lambda: {"validators": []}, run=lambda ids: {"ids": ids})
 
     @property
@@ -166,6 +167,30 @@ class SafetyDocument:
         self.calls.append(("workset_status", handle))
         return {"identity": skill._identity(self.snapshot), "workset_handle": handle,
                 "item_count": 0, "completeness": {"complete": True, "usable_for_batch": True}}
+
+    def start_batch_job(self, workset_handle, operation):
+        self.calls.append(("batch_start", workset_handle, copy.deepcopy(operation)))
+        handle = f"opaque-job-{len(self.batch_states) + 1}"
+        self.batch_states[handle] = "pending"
+        return {"job_handle": handle, "status": {"state": "pending"}}
+
+    def batch_job_status(self, handle):
+        self.calls.append(("batch_status", handle))
+        return {"job_handle": handle, "status": {"state": self.batch_states[handle]}}
+
+    def cancel_batch_job(self, handle):
+        self.calls.append(("batch_cancel", handle))
+        self.batch_states[handle] = "cancelled"
+        return {"job_handle": handle, "status": {"state": "cancelled"}}
+
+    def step_batch_job(self, handle):
+        self.calls.append(("batch_step", handle))
+        if self.batch_states[handle] == "cancelled":
+            raise skill._sdk().HeadlessError("batch_cancelled", "batch job cancelled")
+        self.batch_states[handle] = "completed"
+        self.snapshot.update(revision=1, canonical_digest="batch", undo_steps=1)
+        return {"job_handle": handle, "status": {"state": "completed"},
+                "receipt": {"applied_count": 1, "after": skill._identity(self.snapshot)}}
 
     def apply(self, program, *, selection):
         self.calls.append(("apply", program, selection))
@@ -292,6 +317,40 @@ def test_compact_queries_and_sectioned_capabilities(monkeypatch, doubles):
         skill._capability(caps, "operation", "invented")
 
 
+def test_batch_tool_guards_steps_but_allows_status_and_cancel(monkeypatch, doubles):
+    registered = tools(monkeypatch)
+    operation = {"type": "set_color", "color": [10, 20, 30]}
+    async def scenario():
+        opened = (await call(registered, "KetchupSession", action="new"))["result"]
+        handle = opened["handle"]
+        assert (await call(registered, "KetchupBatch", handle=handle, action="start",
+                           workset_handle="opaque-workset", operation=operation))["error"]["code"] == "precondition_required"
+        started = await call(registered, "KetchupBatch", handle=handle, action="start",
+                             workset_handle="opaque-workset", operation=operation, **expected(opened))
+        cancelled_handle = started["result"]["job_handle"]
+        assert cancelled_handle == "opaque-job-1"
+        assert doubles[0].doc.calls[-1] == ("batch_start", "opaque-workset", operation)
+        assert (await call(registered, "KetchupBatch", handle=handle, action="status",
+                           job_handle=cancelled_handle))["result"]["status"]["state"] == "pending"
+        assert (await call(registered, "KetchupBatch", handle=handle, action="cancel",
+                           job_handle=cancelled_handle))["result"]["status"]["state"] == "cancelled"
+        assert (await call(registered, "KetchupBatch", handle=handle, action="step",
+                           job_handle=cancelled_handle, **expected(opened)))["error"]["code"] == "batch_cancelled"
+        running = await call(registered, "KetchupBatch", handle=handle, action="start",
+                             workset_handle="opaque-workset", operation=operation, **expected(opened))
+        stepped = await call(registered, "KetchupBatch", handle=handle, action="step",
+                             job_handle=running["result"]["job_handle"], **expected(opened))
+        assert stepped["result"]["receipt"]["applied_count"] == 1
+        assert (await call(registered, "KetchupBatch", handle=handle, action="step",
+                           job_handle="opaque-job", **expected(opened)))["error"]["code"] == "stale_precondition"
+        assert sum(c[0] == "batch_step" for c in doubles[0].doc.calls) == 2
+        assert doubles[0].doc.snapshot["undo_steps"] == 1
+        current = (await call(registered, "KetchupInspect", handle=handle))["result"]
+        await call(registered, "KetchupSession", action="close", handle=handle,
+                   discard=True, **expected(current))
+    asyncio.run(scenario())
+
+
 def test_session_limit_and_explicit_executable(monkeypatch, doubles):
     registered = tools(monkeypatch)
     async def scenario():
@@ -313,10 +372,16 @@ def test_plan_tools_reject_and_missing_binding(monkeypatch, doubles):
         opened = (await call(registered, "KetchupSession", action="new"))["result"]
         state.active = True
         assert (await call(registered, "KetchupInspect", handle=opened["handle"]))["ok"]
-        for name, args in (("KetchupEdit", {"action": "undo"}), ("KetchupSave", {"path": str(ROOT / "never.ketchup")}),
+        for name, args in (("KetchupEdit", {"action": "undo"}),
+                           ("KetchupBatch", {"action": "start", "workset_handle": "opaque-workset",
+                                             "operation": {"type": "set_color", "color": None}}),
+                           ("KetchupBatch", {"action": "step", "job_handle": "opaque-job"}),
+                           ("KetchupSave", {"path": str(ROOT / "never.ketchup")}),
                            ("KetchupSession", {"action": "close", "discard": True})):
             result = await call(registered, name, handle=opened["handle"], **expected(opened), **args)
             assert result["error"]["code"] == "plan_mode"
+        assert (await call(registered, "KetchupBatch", handle=opened["handle"], action="cancel",
+                           job_handle="opaque-job"))["ok"]
         state.active = False
         await call(registered, "KetchupSession", action="close", handle=opened["handle"], discard=True, **expected(opened))
         monkeypatch.setattr(skill, "_plan_state", lambda: None)

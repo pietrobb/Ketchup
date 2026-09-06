@@ -2,7 +2,10 @@
 mod harness;
 use harness::Shell;
 use ketchup_app::{AppCommand, live_bridge::*};
-use ketchup_application::model_query::{EntityKind, PageRequest};
+use ketchup_application::{
+    batch_task::OccurrenceBatchOperation,
+    model_query::{EntityKind, PageRequest},
+};
 use ketchup_core::{
     assistant_sidecar::*,
     document::{CommandBatch, DocumentStore},
@@ -222,6 +225,142 @@ fn same_gui_store_observational_reads_verified_once_and_gui_history() {
         "{:?}",
         image.error
     );
+}
+
+#[test]
+fn live_workset_batch_jobs_cancel_or_commit_one_compact_atomic_step() {
+    let mut shell = Shell::new();
+    let mut client = Client::connect(&mut shell);
+    commit(&mut client, &mut shell);
+    let expected = shell.app().live_bridge_stamp();
+    let query = PageRequest {
+        kind: EntityKind::Occurrences,
+        limit: 100,
+        search: String::new(),
+        definition_id: None,
+        tag_id: None,
+        classification_dimension_id: None,
+        classification_category_id: None,
+        world_bounds_mm: None,
+        cursor: None,
+    };
+    let workset = client.call(
+        &mut shell,
+        Request::WorksetCreate {
+            expected: expected.clone(),
+            query,
+        },
+    );
+    assert!(workset.ok, "{:?}", workset.error);
+    let workset_handle = workset.result.unwrap()["workset_handle"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let start = |client: &mut Client, shell: &mut Shell| {
+        client.call(
+            shell,
+            Request::BatchJobStart {
+                expected: expected.clone(),
+                workset_handle: workset_handle.clone(),
+                operation: OccurrenceBatchOperation::SetColor {
+                    color: Some([10, 20, 30]),
+                },
+            },
+        )
+    };
+
+    let cancelled = start(&mut client, &mut shell);
+    let cancelled_handle = cancelled.result.unwrap()["job_handle"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let cancelled = client.call(
+        &mut shell,
+        Request::BatchJobCancel {
+            expected: expected.clone(),
+            handle: cancelled_handle.clone(),
+        },
+    );
+    assert_eq!(cancelled.result.unwrap()["status"]["state"], "cancelled");
+    for _ in 1..16 {
+        assert!(start(&mut client, &mut shell).ok);
+    }
+    let rejected = client.call(
+        &mut shell,
+        Request::BatchJobStart {
+            expected: expected.clone(),
+            workset_handle: "forged".into(),
+            operation: OccurrenceBatchOperation::SetColor {
+                color: Some([10, 20, 30]),
+            },
+        },
+    );
+    assert_eq!(rejected.error.as_deref(), Some("workset_not_found"));
+    let retained = client.call(
+        &mut shell,
+        Request::BatchJobStatus {
+            expected: expected.clone(),
+            handle: cancelled_handle.clone(),
+        },
+    );
+    assert_eq!(retained.result.unwrap()["status"]["state"], "cancelled");
+    let steps = shell.app().undo_step_count();
+    let rejected = client.call(
+        &mut shell,
+        Request::BatchJobStep {
+            expected: expected.clone(),
+            handle: cancelled_handle,
+        },
+    );
+    assert_eq!(rejected.error.as_deref(), Some("batch_cancelled"));
+    assert_eq!(shell.app().live_bridge_stamp(), expected);
+    assert_eq!(shell.app().undo_step_count(), steps);
+
+    let running = start(&mut client, &mut shell);
+    let running_handle = running.result.unwrap()["job_handle"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let stepped = client.call(
+        &mut shell,
+        Request::BatchJobStep {
+            expected,
+            handle: running_handle.clone(),
+        },
+    );
+    assert!(stepped.ok, "{:?}", stepped.error);
+    assert_eq!(
+        stepped.result.as_ref().unwrap()["status"]["state"],
+        "completed"
+    );
+    assert_eq!(
+        stepped.result.as_ref().unwrap()["receipt"]["verified_write_count"],
+        shell.app().document_snapshot().occurrences().count()
+    );
+    assert_eq!(shell.app().undo_step_count(), steps + 1);
+    assert!(
+        shell
+            .app()
+            .document_snapshot()
+            .occurrences()
+            .all(|occurrence| occurrence.color() == Some([10, 20, 30]))
+    );
+    let encoded = serde_json::to_vec(&stepped).unwrap();
+    assert!(encoded.len() < MAX_FRAME_BYTES);
+    assert!(
+        !String::from_utf8(encoded)
+            .unwrap()
+            .contains("occurrence_ids")
+    );
+    let after = shell.app().live_bridge_stamp();
+    let status = client.call(
+        &mut shell,
+        Request::BatchJobStatus {
+            expected: after,
+            handle: running_handle,
+        },
+    );
+    assert_eq!(status.result.unwrap()["status"]["state"], "completed");
 }
 
 #[test]

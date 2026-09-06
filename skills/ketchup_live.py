@@ -432,6 +432,43 @@ def _register_tools(plan_state, *, launcher=None) -> list:
             return getattr(live_session, action)(stamp)
         return await runtime.run(handle, job, mutation=True)
 
+    @beta_async_tool(name="KetchupLiveBatch")
+    async def batch(action: str, handle: str, expected: dict,
+                    workset_handle: str = "", job_handle: str = "",
+                    operation: dict | None = None) -> str:
+        """Run one bounded live occurrence-workset batch job step at a time.
+
+        Args:
+            action: start, status, step, or cancel.
+            handle: Live session UUID.
+            expected: Complete caller-observed document stamp; never refreshed automatically.
+            workset_handle: Complete occurrence workset handle required only for start.
+            job_handle: Opaque batch job handle required for status/step/cancel.
+            operation: For start only; currently {"type":"set_color","color":[r,g,b] or null}.
+        """
+        def job():
+            _action(action, ("start", "status", "step", "cancel"))
+            if action in ("start", "step"):
+                runtime.guard()
+            live_session = runtime.entry(handle)
+            stamp = runtime.expected(expected)
+            if action == "start":
+                if (not workset_handle or len(workset_handle) > 4096 or job_handle
+                        or not isinstance(operation, dict)
+                        or len(json.dumps(operation, allow_nan=False).encode("utf-8")) > 4096):
+                    raise Rejection("invalid_arguments", "start requires one bounded workset handle and operation object.")
+                runtime.guard()
+                return live_session.start_batch_job(stamp, workset_handle, operation)
+            if (not job_handle or len(job_handle) > 128 or workset_handle or operation is not None):
+                raise Rejection("invalid_arguments", "status/step/cancel require only one bounded job handle.")
+            if action == "status":
+                return live_session.batch_job_status(stamp, job_handle)
+            if action == "cancel":
+                return live_session.cancel_batch_job(stamp, job_handle)
+            runtime.guard()
+            return live_session.step_batch_job(stamp, job_handle)
+        return await runtime.run(handle, job, mutation=action == "step")
+
     @beta_async_tool(name="KetchupLiveView")
     async def view(action: str, handle: str, expected: dict,
                    occurrence_ids: list[int] | None = None, view: str = "", image_path: str = "",
@@ -480,4 +517,4 @@ def _register_tools(plan_state, *, launcher=None) -> list:
             return live_session.view(stamp, view)
         return await runtime.run(handle, job, mutation=action in ("selection", "view"))
 
-    return [session, inspect, edit, view]
+    return [session, inspect, edit, batch, view]

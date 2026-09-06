@@ -139,7 +139,8 @@ def test_all_methods_match_wire_and_do_not_refresh_expected_or_modify_inputs():
         return response(req, result={"disconnected": True} if req["request"]["method"] == "disconnect" else {},
                         stamp=Stamp(7, 99, "b" * 64, 101))
     expected, program, selection = asdict(STAMP), copy.deepcopy(PROGRAM), [1]
-    original = copy.deepcopy((expected, program, selection))
+    operation = {"type": "set_color", "color": [10, 20, 30]}
+    original = copy.deepcopy((expected, program, selection, operation))
     with Peer(answer) as peer, LiveSession(peer.address, TOKEN) as live:
         assert peer.requests == []  # No implicit handshake/status/refresh.
         assert live.status()["stamp"]["mutation_epoch"] == 101
@@ -151,6 +152,10 @@ def test_all_methods_match_wire_and_do_not_refresh_expected_or_modify_inputs():
                             tag_id=7, classification_dimension_id=9, classification_category_id=10,
                             world_bounds_mm=[[-1, -2, -3], [4, 5, 6]])
         live.workset_status(expected, "opaque-workset")
+        live.start_batch_job(expected, "opaque-workset", operation)
+        live.batch_job_status(expected, "opaque-job")
+        live.step_batch_job(expected, "opaque-job")
+        live.cancel_batch_job(expected, "opaque-job")
         live.detail(STAMP, "features", 5)
         live.propose(expected, selection, program)
         live.commit(expected, 9)
@@ -166,9 +171,11 @@ def test_all_methods_match_wire_and_do_not_refresh_expected_or_modify_inputs():
         assert not live._token
     requests = [req["request"] for req in peer.requests]
     assert [req["method"] for req in requests] == [
-        "status", "summary", "query", "workset_create", "workset_status", "detail",
-        "propose", "commit", "undo", "redo", "selection", "view", "image", "disconnect"]
-    assert [req["id"] for req in peer.requests] == list(range(1, 15))
+        "status", "summary", "query", "workset_create", "workset_status",
+        "batch_job_start", "batch_job_status", "batch_job_step", "batch_job_cancel",
+        "detail", "propose", "commit", "undo", "redo", "selection", "view", "image",
+        "disconnect"]
+    assert [req["id"] for req in peer.requests] == list(range(1, 19))
     assert requests[2] == {"method": "query", "expected": expected, "query": {
         "kind": "instances", "limit": 2, "search": "Č", "definition_id": 3,
         "tag_id": 7, "classification_dimension_id": 9, "classification_category_id": 10,
@@ -179,13 +186,21 @@ def test_all_methods_match_wire_and_do_not_refresh_expected_or_modify_inputs():
         "world_bounds_mm": [[-1, -2, -3], [4, 5, 6]]}}
     assert requests[4] == {"method": "workset_status", "expected": expected,
                            "handle": "opaque-workset"}
-    assert requests[5] == {"method": "detail", "expected": expected, "kind": "features", "entity_id": 5}
-    assert requests[6] == {"method": "propose", "expected": expected, "selection": [1], "program": program}
-    assert requests[7] == {"method": "commit", "expected": expected, "proposal_id": 9}
-    assert requests[10]["occurrence_ids"] == [1] and requests[11]["view"] == "zoom_fit"
-    assert requests[12]["capture_mode"] == "offscreen"
-    assert all(req["expected"] == expected for req in requests[2:13])
-    assert (expected, program, selection) == original
+    assert requests[5] == {"method": "batch_job_start", "expected": expected,
+                           "workset_handle": "opaque-workset", "operation": operation}
+    assert requests[6] == {"method": "batch_job_status", "expected": expected,
+                           "handle": "opaque-job"}
+    assert requests[7] == {"method": "batch_job_step", "expected": expected,
+                           "handle": "opaque-job"}
+    assert requests[8] == {"method": "batch_job_cancel", "expected": expected,
+                           "handle": "opaque-job"}
+    assert requests[9] == {"method": "detail", "expected": expected, "kind": "features", "entity_id": 5}
+    assert requests[10] == {"method": "propose", "expected": expected, "selection": [1], "program": program}
+    assert requests[11] == {"method": "commit", "expected": expected, "proposal_id": 9}
+    assert requests[14]["occurrence_ids"] == [1] and requests[15]["view"] == "zoom_fit"
+    assert requests[16]["capture_mode"] == "offscreen"
+    assert all(req["expected"] == expected for req in requests[2:17])
+    assert (expected, program, selection, operation) == original
     with pytest.raises(FrozenInstanceError):
         STAMP.mutation_epoch = 25
 

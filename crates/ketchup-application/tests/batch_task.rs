@@ -1,6 +1,7 @@
 use ketchup_application::DocumentSession;
 use ketchup_application::batch_task::{
     MAX_OCCURRENCE_BATCH_ITEMS, OccurrenceBatchError, OccurrenceBatchOperation,
+    OccurrenceBatchState,
 };
 use ketchup_application::model_query::{EntityKind, ModelQuery, PageRequest, QueryError};
 use ketchup_core::document::{
@@ -79,6 +80,10 @@ fn occurrence_workset_runs_as_bounded_atomic_transactions_with_compact_receipts(
     let query = ModelQuery::default();
     let mut task = occurrence_task(&session, &query);
     let undo_before = session.visible_undo_steps();
+    let pending = task.status(&session);
+    assert_eq!(pending.state, OccurrenceBatchState::Pending);
+    assert_eq!(pending.total_count, 513);
+    assert_eq!(pending.completed_count, 0);
 
     let first = task.commit_next(&mut session).unwrap().unwrap();
     assert_eq!(first.batch_index, 0);
@@ -94,6 +99,7 @@ fn occurrence_workset_runs_as_bounded_atomic_transactions_with_compact_receipts(
         }
     );
     assert_eq!(session.visible_undo_steps(), undo_before + 1);
+    assert_eq!(task.status(&session).state, OccurrenceBatchState::Running);
     assert_eq!(
         session
             .snapshot()
@@ -125,6 +131,7 @@ fn occurrence_workset_runs_as_bounded_atomic_transactions_with_compact_receipts(
     assert_eq!(second.remaining_count, 0);
     assert!(second.complete);
     assert!(task.is_complete());
+    assert_eq!(task.status(&session).state, OccurrenceBatchState::Completed);
     task.cancel();
     assert!(task.commit_next(&mut session).unwrap().is_none());
     assert_eq!(session.visible_undo_steps(), undo_before + 2);
@@ -207,6 +214,24 @@ fn undo_redo_aba_cannot_revive_a_partially_completed_task() {
         Err(OccurrenceBatchError::StaleTask { .. })
     ));
     assert_eq!(task.completed_count(), MAX_OCCURRENCE_BATCH_ITEMS);
+}
+
+#[test]
+fn batch_operation_requires_explicit_color_and_rejects_unknown_fields() {
+    assert_eq!(
+        serde_json::from_value::<OccurrenceBatchOperation>(
+            serde_json::json!({"type":"set_color","color":null}),
+        )
+        .unwrap(),
+        OccurrenceBatchOperation::SetColor { color: None }
+    );
+    for invalid in [
+        serde_json::json!({"type":"set_color"}),
+        serde_json::json!({"type":"set_color","colour":null}),
+        serde_json::json!({"type":"set_color","color":null,"extra":true}),
+    ] {
+        assert!(serde_json::from_value::<OccurrenceBatchOperation>(invalid).is_err());
+    }
 }
 
 #[test]

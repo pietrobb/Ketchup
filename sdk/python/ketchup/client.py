@@ -316,12 +316,14 @@ class Document:
         if self._generation != self._session._generation:
             raise SessionClosedError("document handle expired after new/open")
 
-    def _call(self, method, params=None, *, mutation=False, state=False, timeout=None):
+    def _call(self, method, params=None, *, mutation=False, guarded=False, state=False, timeout=None):
         with self._session._lock:
             self._check()
             params = dict(params or {})
+            if mutation or guarded:
+                params.update(self._session._expected())
             if mutation:
-                params.update(self._session._expected(), **({"response": "compact"} if self._session.compact else {}))
+                params.update({"response": "compact"} if self._session.compact else {})
             result = self._session._request(method, params, timeout=timeout)
             if state:
                 self._session._observe(result)
@@ -338,6 +340,20 @@ class Document:
     def query(self, **params): return self._call("query", params)
     def create_workset(self, **params): return self._call("workset_create", params)
     def workset_status(self, handle): return self._call("workset_status", {"handle": handle})
+    def start_batch_job(self, workset_handle, operation):
+        return self._call("batch_job_start", {
+            "workset_handle": workset_handle, "operation": dict(operation)}, guarded=True)
+    def batch_job_status(self, handle):
+        return self._call("batch_job_status", {"handle": handle})
+    def cancel_batch_job(self, handle):
+        return self._call("batch_job_cancel", {"handle": handle})
+    def step_batch_job(self, handle):
+        with self._session._lock:
+            result = self._call("batch_job_step", {"handle": handle}, guarded=True)
+            receipt = result.get("receipt")
+            if isinstance(receipt, dict) and isinstance(receipt.get("after"), dict):
+                self._session._state.update(receipt["after"])
+            return result
     def create_part(self, name, entities, *, feature, constraints=(), plane="xy",
                     translation_mm=(0, 0, 0), rotation=None):
         operation = {"operation": "create_part", "name": name,

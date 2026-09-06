@@ -1,5 +1,8 @@
 use ketchup_application::evaluation::EvidenceStatus;
 mod model_tools;
+use ketchup_application::batch_task::{
+    OccurrenceBatchError, OccurrenceBatchOperation, OccurrenceBatchState, OccurrenceBatchTask,
+};
 use ketchup_application::model_query::{ModelQuery, created_receipt};
 use ketchup_application::validation::{ASSISTANT_VALIDATOR_IDS, assistant_validator_catalog};
 use ketchup_application::{
@@ -11,12 +14,14 @@ use ketchup_core::exact_product::{ExactBodyPackage, ExactResultRegistry};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeSet, VecDeque, hash_map::RandomState},
+    hash::{BuildHasher, Hash, Hasher},
     io::{self, BufRead, Write},
 };
 
 pub const PROTOCOL: &str = "ketchup.headless.v1";
 pub const MAX_LINE_BYTES: usize = 4 * 1024 * 1024;
+pub const MAX_BATCH_JOBS: usize = 16;
 const METHODS: &[&str] = &[
     "capabilities",
     "new",
@@ -27,6 +32,10 @@ const METHODS: &[&str] = &[
     "detail",
     "workset_create",
     "workset_status",
+    "batch_job_start",
+    "batch_job_status",
+    "batch_job_step",
+    "batch_job_cancel",
     "apply",
     "evaluate",
     "list_validators",
@@ -93,6 +102,11 @@ struct Request {
     params: Value,
 }
 
+struct BatchJob {
+    handle: String,
+    task: OccurrenceBatchTask,
+}
+
 pub struct Server {
     session: DocumentSession,
     settings: SessionSettings,
@@ -100,6 +114,9 @@ pub struct Server {
     redo_steps: usize,
     pristine: bool,
     model_queries: ModelQuery,
+    batch_jobs: VecDeque<BatchJob>,
+    batch_job_key: RandomState,
+    next_batch_job: u64,
     compact_result: bool,
 }
 impl Server {
@@ -110,9 +127,24 @@ impl Server {
             redo_steps: 0,
             pristine: true,
             model_queries: ModelQuery::default(),
+            batch_jobs: VecDeque::new(),
+            batch_job_key: RandomState::new(),
+            next_batch_job: 1,
             compact_result: false,
         }
     }
+    fn batch_job_handle(&self, id: u64) -> String {
+        let mut hasher = self.batch_job_key.build_hasher();
+        id.hash(&mut hasher);
+        format!("batch-{id:016x}-{:016x}", hasher.finish())
+    }
+
+    fn revoke_batch_jobs(&mut self) {
+        self.batch_jobs.clear();
+        self.batch_job_key = RandomState::new();
+        self.next_batch_job = 1;
+    }
+
     fn state(&self) -> Value {
         let s = self.session.snapshot();
         json!({"document_id":s.document_id().0,"revision":s.revision_id(),"canonical_digest":s.canonical_digest(),
@@ -185,15 +217,16 @@ impl Server {
         }
         match method {
             "capabilities" => Ok(
-                json!({"methods":METHODS.iter().map(|name| json!({"name":name,"mutates":matches!(*name,"new"|"open"|"apply"|"set_grounded"|"undo"|"redo"|"save")})).collect::<Vec<_>>(),
+                json!({"methods":METHODS.iter().map(|name| json!({"name":name,"mutates":matches!(*name,"new"|"open"|"apply"|"batch_job_step"|"set_grounded"|"undo"|"redo"|"save")})).collect::<Vec<_>>(),
                 "cad_program_schema":serde_json::from_str::<Value>(include_str!(concat!(env!("OUT_DIR"),"/cad-program-schema.json"))).expect("build-generated schema"),
-                "bounds":{"max_line_bytes":MAX_LINE_BYTES,"max_output_bytes":MAX_LINE_BYTES,"max_selection":100,"max_operations":64,"evaluation_timeout_ms":{"default":30000,"min":1,"max":300000}},
+                "bounds":{"max_line_bytes":MAX_LINE_BYTES,"max_output_bytes":MAX_LINE_BYTES,"max_selection":100,"max_operations":64,"max_batch_jobs":MAX_BATCH_JOBS,"evaluation_timeout_ms":{"default":30000,"min":1,"max":300000}},
                 "mutation_preconditions":["expected_revision","expected_digest"],"units":"mm","transform":"row-major 4x4 local occurrence transform","transactions":"one apply = one atomic CAD program; no within-program references to newly allocated IDs","protocol":PROTOCOL}),
             ),
             "state" => Ok(self.state_result()),
             "new" => {
                 self.discard_guard(p)?;
                 self.session = DocumentSession::new(self.settings.clone());
+                self.revoke_batch_jobs();
                 self.redo_steps = 0;
                 self.pristine = true;
                 Ok(self.state_result())
@@ -202,6 +235,7 @@ impl Server {
                 self.discard_guard(p)?;
                 let next = DocumentSession::open(string(p, "path")?, self.settings.clone())?;
                 self.session = next;
+                self.revoke_batch_jobs();
                 self.redo_steps = 0;
                 self.pristine = false;
                 Ok(self.state_result())

@@ -394,6 +394,43 @@ def register_tools() -> list:
                     "next": "inspect before another mutation"}
         return await runtime.run(handle, job)
 
+    @beta_async_tool(name="KetchupBatch")
+    async def batch(handle: str, action: str, expected_revision: int = -1,
+                    expected_digest: str = "", workset_handle: str = "",
+                    job_handle: str = "", operation: dict | None = None) -> str:
+        """Run one bounded occurrence-workset batch job step at a time.
+
+        Args:
+            handle: Owned session UUID.
+            action: start, status, step, or cancel.
+            expected_revision: Required caller-observed revision for start/step only.
+            expected_digest: Required caller-observed canonical_digest for start/step only.
+            workset_handle: Complete occurrence workset handle required only for start.
+            job_handle: Opaque batch job handle required for status/step/cancel.
+            operation: For start only; currently {"type":"set_color","color":[r,g,b] or null}.
+        """
+        def job():
+            _action(action, ("start", "status", "step", "cancel"))
+            if action == "start":
+                if (not workset_handle or len(workset_handle) > 4096 or job_handle
+                        or not isinstance(operation, dict)
+                        or len(_json(operation).encode("utf-8")) > 4096):
+                    raise Rejection("invalid_arguments", "start requires one bounded workset handle and operation object")
+                entry = runtime.mutation(handle, expected_revision, expected_digest)
+                return entry["document"].start_batch_job(workset_handle, operation)
+            if (not job_handle or len(job_handle) > 128 or workset_handle or operation is not None):
+                raise Rejection("invalid_arguments", "status/step/cancel require only one bounded job handle")
+            entry = runtime.entry(handle)
+            if action == "status":
+                return entry["document"].batch_job_status(job_handle)
+            if action == "cancel":
+                return entry["document"].cancel_batch_job(job_handle)
+            entry = runtime.mutation(handle, expected_revision, expected_digest)
+            result = entry["document"].step_batch_job(job_handle)
+            entry["observed"] = None
+            return result
+        return await runtime.run(handle, job)
+
     @beta_async_tool(name="KetchupSave")
     async def save(handle: str, path: str, expected_revision: int, expected_digest: str,
                    overwrite: bool = False) -> str:
@@ -437,4 +474,4 @@ def register_tools() -> list:
             return doc.evaluate(timeout_ms=30000) if action == "evaluate" else doc.validators.list()
         return await runtime.run(handle, job)
 
-    return [discover, session, inspect_model, edit, save, verify]
+    return [discover, session, inspect_model, edit, batch, save, verify]

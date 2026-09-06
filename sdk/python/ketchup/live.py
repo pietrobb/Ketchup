@@ -35,7 +35,7 @@ _U64_MAX = (1 << 64) - 1
 _KINDS = ("occurrences", "instances", "definitions", "features", "relations")
 _VIEWS = ("iso", "top", "front", "zoom_fit")
 _CAPTURE_MODES = ("offscreen", "visible_viewport")
-_MUTATIONS = frozenset({"propose", "commit", "undo", "redo", "selection", "view"})
+_MUTATIONS = frozenset({"batch_job_step", "propose", "commit", "undo", "redo", "selection", "view"})
 # Never surface arbitrary remote text, even if it looks like an error code.
 _ERROR_CODES = frozenset({
     "invalid_request", "unauthorized", "unsupported_version", "queue_unavailable",
@@ -49,6 +49,9 @@ _ERROR_CODES = frozenset({
     "hidden_viewport", "stale_image", "occluded_viewport", "invalid_image_callback",
     "invalid_image_dimensions", "incomplete_image", "unsupported_image_texture",
     "unsupported_image_renderer", "stale_workset", "workset_not_found",
+    "unsupported_workset_scope", "incomplete_workset", "missing_workset_identity",
+    "batch_job_limit", "batch_job_ids_exhausted", "batch_job_not_found",
+    "batch_cancelled", "stale_batch_task", "batch_transaction_failed",
 })
 _FATAL_CODES = frozenset({"invalid_request", "unauthorized", "unsupported_version", "queue_unavailable"})
 Kind = Literal["occurrences", "instances", "definitions", "features", "relations"]
@@ -611,6 +614,32 @@ class LiveSession:
         if not handle:
             raise ValueError("workset handle must be nonempty")
         return self._request("workset_status", expected=_stamp(expected), handle=handle)
+
+    def start_batch_job(self, expected: Stamp | dict, workset_handle: str,
+                        operation: dict) -> dict:
+        workset_handle = _text(workset_handle, 4096)
+        if not workset_handle or type(operation) is not dict:
+            raise ValueError("batch job requires a workset handle and operation object")
+        return self._request("batch_job_start", expected=_stamp(expected),
+                             workset_handle=workset_handle, operation=operation)
+
+    def batch_job_status(self, expected: Stamp | dict, handle: str) -> dict:
+        handle = _text(handle, 128)
+        if not handle:
+            raise ValueError("batch job handle must be nonempty")
+        return self._request("batch_job_status", expected=_stamp(expected), handle=handle)
+
+    def step_batch_job(self, expected: Stamp | dict, handle: str) -> dict:
+        handle = _text(handle, 128)
+        if not handle:
+            raise ValueError("batch job handle must be nonempty")
+        return self._request("batch_job_step", expected=_stamp(expected), handle=handle)
+
+    def cancel_batch_job(self, expected: Stamp | dict, handle: str) -> dict:
+        handle = _text(handle, 128)
+        if not handle:
+            raise ValueError("batch job handle must be nonempty")
+        return self._request("batch_job_cancel", expected=_stamp(expected), handle=handle)
 
     def detail(self, expected: Stamp | dict, kind: Kind, entity_id: int) -> dict:
         if type(kind) is not str or kind not in _KINDS or kind in ("instances", "relations"):

@@ -12,7 +12,10 @@
 
 use crate::{AppCommand, KetchupApp, SelectionId};
 use eframe::egui;
-use ketchup_application::model_query::{EntityKind, ModelQuery, PageRequest};
+use ketchup_application::{
+    batch_task::{OccurrenceBatchOperation, OccurrenceBatchState, OccurrenceBatchTask},
+    model_query::{EntityKind, ModelQuery, PageRequest},
+};
 use ketchup_core::{
     assistant_sidecar::{
         AssistantCadEditOperation, AssistantCadEditProgram, AssistantCadEntitySelector,
@@ -22,7 +25,8 @@ use ketchup_core::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
-    collections::{BTreeSet, VecDeque},
+    collections::{BTreeSet, VecDeque, hash_map::RandomState},
+    hash::{BuildHasher, Hash, Hasher},
     io,
     net::SocketAddr,
     sync::{
@@ -42,6 +46,7 @@ pub const MAX_FRAME_BYTES: usize = 32 * 1024;
 pub const QUEUE_CAPACITY: usize = 8;
 pub const MAX_SELECTION: usize = 100;
 pub const MAX_RECEIPTS: usize = 32;
+pub const MAX_BATCH_JOBS: usize = 16;
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -86,6 +91,23 @@ pub enum Request {
         query: PageRequest,
     },
     WorksetStatus {
+        expected: Stamp,
+        handle: String,
+    },
+    BatchJobStart {
+        expected: Stamp,
+        workset_handle: String,
+        operation: OccurrenceBatchOperation,
+    },
+    BatchJobStatus {
+        expected: Stamp,
+        handle: String,
+    },
+    BatchJobStep {
+        expected: Stamp,
+        handle: String,
+    },
+    BatchJobCancel {
         expected: Stamp,
         handle: String,
     },
@@ -188,6 +210,10 @@ struct Receipt {
     expected: Stamp,
     value: Value,
 }
+struct BatchJob {
+    handle: String,
+    task: OccurrenceBatchTask,
+}
 pub(crate) struct LiveBridge {
     address: SocketAddr,
     token: String,
@@ -200,6 +226,9 @@ pub(crate) struct LiveBridge {
     pending: Option<Pending>,
     next_proposal: u64,
     receipts: VecDeque<Receipt>,
+    batch_jobs: VecDeque<BatchJob>,
+    batch_job_key: RandomState,
+    next_batch_job: u64,
     image: image::ImageState,
 }
 impl Drop for LiveBridge {
@@ -264,6 +293,9 @@ impl KetchupApp {
                 bridge.pending = None;
                 bridge.image.revoke();
                 bridge.receipts.clear();
+                bridge.batch_jobs.clear();
+                bridge.batch_job_key = RandomState::new();
+                bridge.next_batch_job = 1;
                 bridge.query.invalidate();
             }
             let stamp = self.live_bridge_stamp();
@@ -300,6 +332,12 @@ impl KetchupApp {
 }
 
 impl LiveBridge {
+    fn batch_job_handle(&self, id: u64) -> String {
+        let mut hasher = self.batch_job_key.build_hasher();
+        id.hash(&mut hasher);
+        format!("batch-{id:016x}-{:016x}", hasher.finish())
+    }
+
     // Deliberately inspect raw state: validity-filtered preview helpers can hide stale human work.
     fn busy(app: &KetchupApp) -> bool {
         app.preview.is_some()
@@ -482,8 +520,8 @@ impl LiveBridge {
                 "selection":Self::selection(app).ok(),"selection_scope":"root_occurrences_only",
                 "undo_steps":app.undo_step_count(),"redo_steps":app.redo_step_count(),
                 "pending_proposal_id":self.pending.as_ref().map(|p|p.id),
-                "limits":{"frame_bytes":MAX_FRAME_BYTES,"queue":QUEUE_CAPACITY,"receipts":MAX_RECEIPTS,"selection":MAX_SELECTION},
-                "methods":["status","summary","query","detail","workset_create","workset_status","propose","commit","undo","redo","selection","view","image","disconnect"]}),
+                "limits":{"frame_bytes":MAX_FRAME_BYTES,"queue":QUEUE_CAPACITY,"receipts":MAX_RECEIPTS,"selection":MAX_SELECTION,"batch_jobs":MAX_BATCH_JOBS},
+                "methods":["status","summary","query","detail","workset_create","workset_status","batch_job_start","batch_job_status","batch_job_step","batch_job_cancel","propose","commit","undo","redo","selection","view","image","disconnect"]}),
             ),
             Request::Summary {} => Ok(self.query.summary(&app.document.current())),
             Request::Query { expected, query } => {
@@ -513,6 +551,83 @@ impl LiveBridge {
                 self.query
                     .workset_status(&app.document.current(), &handle)
                     .map_err(|e| e.code())
+            }
+            Request::BatchJobStart {
+                expected,
+                workset_handle,
+                operation,
+            } => {
+                Self::guard(app, &expected)?;
+                let task = self
+                    .query
+                    .create_occurrence_batch_task(&app.document, &workset_handle, operation)
+                    .map_err(|e| e.code())?;
+                if self.batch_jobs.len() == MAX_BATCH_JOBS {
+                    let terminal = self
+                        .batch_jobs
+                        .iter()
+                        .position(|job| {
+                            matches!(
+                                job.task.status(&app.document).state,
+                                OccurrenceBatchState::Completed
+                                    | OccurrenceBatchState::Cancelled
+                                    | OccurrenceBatchState::Stale
+                            )
+                        })
+                        .ok_or("batch_job_limit")?;
+                    self.batch_jobs.remove(terminal);
+                }
+                let id = self.next_batch_job;
+                self.next_batch_job = id.checked_add(1).ok_or("batch_job_ids_exhausted")?;
+                let handle = self.batch_job_handle(id);
+                let status = task.status(&app.document);
+                self.batch_jobs.push_back(BatchJob {
+                    handle: handle.clone(),
+                    task,
+                });
+                Ok(json!({"job_handle":handle,"status":status}))
+            }
+            Request::BatchJobStatus { expected, handle } => {
+                Self::guard(app, &expected)?;
+                let job = self
+                    .batch_jobs
+                    .iter()
+                    .find(|job| job.handle == handle)
+                    .ok_or("batch_job_not_found")?;
+                Ok(json!({"job_handle":job.handle,"status":job.task.status(&app.document)}))
+            }
+            Request::BatchJobCancel { expected, handle } => {
+                Self::guard(app, &expected)?;
+                let job = self
+                    .batch_jobs
+                    .iter_mut()
+                    .find(|job| job.handle == handle)
+                    .ok_or("batch_job_not_found")?;
+                job.task.cancel();
+                Ok(json!({"job_handle":job.handle,"status":job.task.status(&app.document)}))
+            }
+            Request::BatchJobStep { expected, handle } => {
+                Self::guard(app, &expected)?;
+                Self::available(app, ui_busy)?;
+                let index = self
+                    .batch_jobs
+                    .iter()
+                    .position(|job| job.handle == handle)
+                    .ok_or("batch_job_not_found")?;
+                let receipt = self.batch_jobs[index]
+                    .task
+                    .commit_next(&mut app.document)
+                    .map_err(|e| e.code())?;
+                if receipt.is_some() {
+                    self.query.invalidate();
+                    self.observed = Some(app.live_bridge_stamp());
+                    app.invalidate_pending_import_reviews();
+                    app.clear_ephemeral_edit_state();
+                    app.reconcile_selection();
+                    app.status_key = "status-ready";
+                }
+                let status = self.batch_jobs[index].task.status(&app.document);
+                Ok(json!({"job_handle":handle,"status":status,"receipt":receipt}))
             }
             Request::Propose {
                 expected,
@@ -661,6 +776,9 @@ impl LiveBridge {
             Request::Disconnect {} => {
                 self.pending = None;
                 self.receipts.clear();
+                self.batch_jobs.clear();
+                self.batch_job_key = RandomState::new();
+                self.next_batch_job = 1;
                 self.query.invalidate();
                 Ok(json!({"disconnected":true}))
             }

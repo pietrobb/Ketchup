@@ -36,6 +36,7 @@ class SessionDouble:
         self.stamp = copy.deepcopy(STAMP)
         self.selected = []
         self.calls = []
+        self.batch_states = {}
         self.closed = False
         self.fail = None
 
@@ -58,6 +59,25 @@ class SessionDouble:
             raise skill._live().LiveBridgeError("stale_document")
         if method == "image":
             raise skill._live().LiveBridgeError("unsupported_image")
+        if method == "start_batch_job":
+            handle = f"opaque-job-{len(self.batch_states) + 1}"
+            self.batch_states[handle] = "pending"
+            return envelope({"job_handle": handle, "status": {"state": "pending"}}, self.stamp)
+        if method in ("batch_job_status", "cancel_batch_job", "step_batch_job"):
+            handle = args[0]
+            if method == "cancel_batch_job":
+                self.batch_states[handle] = "cancelled"
+            elif method == "step_batch_job":
+                if self.batch_states[handle] == "cancelled":
+                    raise skill._live().LiveBridgeError("batch_cancelled")
+                self.batch_states[handle] = "completed"
+                self.stamp["revision"] += 1
+                self.stamp["mutation_epoch"] += 1
+                self.stamp["canonical_digest"] = method
+            result = {"job_handle": handle, "status": {"state": self.batch_states[handle]}}
+            if method == "step_batch_job":
+                result["receipt"] = {"applied_count": 1}
+            return envelope(result, self.stamp)
         if method in ("commit", "undo", "redo"):
             self.stamp["revision"] += 1
             self.stamp["mutation_epoch"] += 1
@@ -67,7 +87,7 @@ class SessionDouble:
         return envelope({"proposal_id": 9} if method == "propose" else {}, self.stamp)
 
     def __getattr__(self, method):
-        if method in ("query", "detail", "create_workset", "workset_status", "propose", "commit", "undo", "redo", "selection", "view", "image"):
+        if method in ("query", "detail", "create_workset", "workset_status", "start_batch_job", "batch_job_status", "step_batch_job", "cancel_batch_job", "propose", "commit", "undo", "redo", "selection", "view", "image"):
             return lambda expected, *args, **kwargs: self.request(method, expected, *args, **kwargs)
         raise AttributeError(method)
 
@@ -98,7 +118,7 @@ def test_registration_shared_helpers_no_offline_runtime_or_shadow(monkeypatch):
     engine = namespace["ClaudeEngine"]()
     engine._plan_state = SimpleNamespace(active=True)
     registered = {tool.name: tool for tool in engine.load()}
-    assert set(registered) == {"KetchupLiveSession", "KetchupLiveInspect", "KetchupLiveEdit", "KetchupLiveView"}
+    assert set(registered) == {"KetchupLiveSession", "KetchupLiveInspect", "KetchupLiveEdit", "KetchupLiveBatch", "KetchupLiveView"}
     for tool in registered.values():
         schema = tool.to_dict()
         props = schema["input_schema"]["properties"]
@@ -192,6 +212,40 @@ def test_registered_lifecycle_stamps_selection_and_stale_rejection(tmp_path, mon
     asyncio.run(scenario())
 
 
+def test_live_batch_tool_routes_bounded_jobs_and_cancel_stays_available_in_plan_mode():
+    state = SimpleNamespace(active=False)
+    session = SessionDouble()
+    registered = tools(state, lambda *args: session)
+    operation = {"type": "set_color", "color": [10, 20, 30]}
+    async def scenario():
+        handle = (await launch(registered))["result"]["handle"]
+        started = await call(registered, "KetchupLiveBatch", action="start", handle=handle,
+                             expected=STAMP, workset_handle="opaque-workset", operation=operation)
+        cancelled_handle = started["result"]["job_handle"]
+        assert cancelled_handle == "opaque-job-1"
+        assert session.calls[-1] == ("start_batch_job", STAMP, ("opaque-workset", operation), {})
+        assert (await call(registered, "KetchupLiveBatch", action="status", handle=handle,
+                           expected=STAMP, job_handle=cancelled_handle))["result"]["status"]["state"] == "pending"
+        state.active = True
+        assert (await call(registered, "KetchupLiveBatch", action="cancel", handle=handle,
+                           expected=STAMP, job_handle=cancelled_handle))["result"]["status"]["state"] == "cancelled"
+        denied = await call(registered, "KetchupLiveBatch", action="step", handle=handle,
+                            expected=STAMP, job_handle=cancelled_handle)
+        assert denied["error"]["code"] == "plan_mode"
+        assert not any(c[0] == "step_batch_job" for c in session.calls)
+        state.active = False
+        cancelled = await call(registered, "KetchupLiveBatch", action="step", handle=handle,
+                               expected=STAMP, job_handle=cancelled_handle)
+        assert cancelled["error"]["code"] == "batch_cancelled"
+        running = await call(registered, "KetchupLiveBatch", action="start", handle=handle,
+                             expected=STAMP, workset_handle="opaque-workset", operation=operation)
+        stepped = await call(registered, "KetchupLiveBatch", action="step", handle=handle,
+                             expected=STAMP, job_handle=running["result"]["job_handle"])
+        assert stepped["result"]["receipt"]["applied_count"] == 1
+        assert stepped["stamp"]["mutation_epoch"] == STAMP["mutation_epoch"] + 1
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize("binding,code", [(None, "plan_guard_unavailable"),
     (SimpleNamespace(active=True), "plan_mode"), (SimpleNamespace(), "plan_guard_unavailable")])
 def test_fail_closed_launch_and_all_mutations(binding, code):
@@ -206,6 +260,11 @@ def test_fail_closed_launch_and_all_mutations(binding, code):
         for action in ("selection", "view"):
             assert (await call(registered, "KetchupLiveView", action=action, handle="bad",
                                expected=STAMP))["error"]["code"] == code
+        assert (await call(registered, "KetchupLiveBatch", action="start", handle="bad",
+                           expected=STAMP, workset_handle="opaque-workset",
+                           operation={"type": "set_color", "color": None}))["error"]["code"] == code
+        assert (await call(registered, "KetchupLiveBatch", action="step", handle="bad",
+                           expected=STAMP, job_handle="opaque-job"))["error"]["code"] == code
     asyncio.run(scenario())
 
 
