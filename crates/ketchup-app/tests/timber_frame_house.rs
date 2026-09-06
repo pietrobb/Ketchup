@@ -942,8 +942,163 @@ fn live_oauth_assistant_builds_a_roofed_house_frame_across_turns() {
             assert!((package.bounds_mm[0][axis] - expected_bounds[0][axis]).abs() <= 1.0e-6);
             assert!((package.bounds_mm[1][axis] - expected_bounds[1][axis]).abs() <= 1.0e-6);
         }
+        let support_y_mm = if name == "Left roof plane" {
+            0.0
+        } else {
+            4_000.0
+        };
+        for support_x_mm in [0.0, 4_000.0] {
+            assert!(
+                package.vertices.iter().any(|vertex| {
+                    (vertex.position_mm[0] - support_x_mm).abs() <= 1.0e-6
+                        && (vertex.position_mm[1] - support_y_mm).abs() <= 1.0e-6
+                        && vertex.position_mm[2].abs() <= 1.0e-6
+                }),
+                "{name} must have an exact lower OCCT edge on its supporting header"
+            );
+        }
         assert_eq!(package.topology_counts, [8, 12, 6, 1, 1]);
     }
+
+    let tolerance = TolerancePolicy::default();
+    let packages = committed
+        .occurrences()
+        .map(|occurrence| {
+            let name = occurrence.name();
+            let body = body_feature_id_of(&shell, name);
+            let graph = ExactBRepGraph::from_snapshot(&committed, occurrence.definition_id(), body)
+                .unwrap_or_else(|error| {
+                    panic!("live-authored {name} must compile for validation: {error}")
+                });
+            let package = worker
+                .evaluate_exact_brep_graph(&graph)
+                .unwrap_or_else(|error| {
+                    panic!("live-authored {name} must evaluate for validation: {error}")
+                });
+            Arc::new(ExactBodyPackage::from(package))
+        })
+        .collect::<Vec<_>>();
+    let registry = ExactResultRegistry::accept(&committed, packages).unwrap();
+    let participants = committed
+        .scene_query()
+        .into_iter()
+        .filter(|occurrence| occurrence.visible)
+        .map(|occurrence| {
+            GeneralBodyParticipant::accept(
+                &committed,
+                &registry,
+                InstancePath::root(occurrence.occurrence_id),
+                tolerance,
+            )
+            .unwrap_or_else(|error| {
+                panic!(
+                    "{} must be an accepted live validation body: {error:?}",
+                    occurrence.occurrence_name
+                )
+            })
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(participants.len(), 12);
+
+    let mut collision_cases = Vec::new();
+    for left in 0..participants.len() {
+        for right in (left + 1)..participants.len() {
+            collision_cases.push(
+                GeneralClearanceCase::new(
+                    participants[left].clone(),
+                    participants[right].clone(),
+                    0.0,
+                )
+                .unwrap(),
+            );
+        }
+    }
+    assert_eq!(collision_cases.len(), 66);
+    let collision_report = general_report(&committed, &collision_cases, tolerance);
+    assert!(collision_report.invocation.is_current(&committed));
+    assert_eq!(collision_report.diagnostics.len(), collision_cases.len());
+    assert!(
+        collision_report
+            .diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.code == "collision.none"),
+        "{:#?}",
+        collision_report.diagnostics
+    );
+    assert_eq!(
+        collision_report.state,
+        ValidationState::Passed,
+        "{:#?}",
+        collision_report.diagnostics
+    );
+
+    let grounded_foundations = committed
+        .scene_query()
+        .into_iter()
+        .filter(|occurrence| {
+            occurrence.visible
+                && matches!(
+                    occurrence.occurrence_name.as_str(),
+                    "Foundation beam" | "Rear foundation beam"
+                )
+        })
+        .map(|occurrence| occurrence.occurrence_id)
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(grounded_foundations.len(), 2);
+    let gravity_participants = participants
+        .iter()
+        .cloned()
+        .map(|body| {
+            let occurrence_id = body.instance_path().root_occurrence();
+            let occurrence = committed
+                .occurrence(occurrence_id)
+                .expect("every validation body must retain its final occurrence identity");
+            assert!(
+                matches!(
+                    occurrence.name(),
+                    "Foundation beam" | "Rear foundation beam"
+                ) == grounded_foundations.contains(&occurrence_id)
+            );
+            GravitySupportParticipant::new(
+                body,
+                "live-house",
+                grounded_foundations.contains(&occurrence_id),
+            )
+        })
+        .collect::<Vec<_>>();
+    let gravity_input = GravitySupportInput::new(gravity_participants, [0.0, 0.0, -9.81]).unwrap();
+    let gravity_validator = BuiltinGravitySupportValidator::new(tolerance);
+    let gravity_policy = gravity_support_validation_policy();
+    let gravity_bytes = gravity_support_input_bytes(&gravity_input);
+    let gravity_invocation = ValidationInvocation::bind(
+        &committed,
+        gravity_validator.descriptor(),
+        &gravity_policy,
+        Vec::new(),
+        &gravity_bytes,
+    );
+    let gravity_report = gravity_validator.invoke(ValidationExecution {
+        snapshot: &committed,
+        invocation: gravity_invocation,
+        policy: &gravity_policy,
+        input: &gravity_input,
+    });
+    assert!(gravity_report.invocation.is_current(&committed));
+    assert_eq!(gravity_report.diagnostics.len(), participants.len());
+    assert!(
+        gravity_report
+            .diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.code != "gravity.unsupported"),
+        "{:#?}",
+        gravity_report.diagnostics
+    );
+    assert_eq!(
+        gravity_report.state,
+        ValidationState::Passed,
+        "{:#?}",
+        gravity_report.diagnostics
+    );
 
     let directory = tempfile::tempdir().unwrap();
     let path = directory
