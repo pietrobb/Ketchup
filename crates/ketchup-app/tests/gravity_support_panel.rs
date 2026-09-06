@@ -131,7 +131,17 @@ fn run_validators(shell: &mut Shell) -> ValidatorPanelReport {
         shell.settle();
     }
     shell.click_button_label(&run);
-    shell.settle();
+    // The panel validates on a background worker, so the operator watches a
+    // spinner until the report lands; the test has to wait for the same thing.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while shell.app().validator_panel_pending() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the validator panel never finished"
+        );
+        shell.step();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
     shell
         .app()
         .validator_panel_report()
