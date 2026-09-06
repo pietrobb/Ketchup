@@ -291,48 +291,60 @@ def register_tools() -> list:
                             definition_id: int | None = None, tag_id: int | None = None,
                             classification_dimension_id: int | None = None,
                             classification_category_id: int | None = None,
-                            world_bounds_mm: list[list[float]] | None = None) -> str:
+                            world_bounds_mm: list[list[float]] | None = None,
+                            workset_handle: str = "") -> str:
         """Read macro summary first, search paged metadata, then detail by ID; no geometry evaluation.
 
         Args:
             handle: Owned session UUID.
-            action: summary, search, or detail.
-            kind: occurrences, instances, definitions, or features. Instances expose qualified hierarchy paths through search.
-            search: Case-sensitive name substring, at most 128 UTF-8 bytes.
+            action: summary, search, detail, workset_create, or workset_status.
+            kind: occurrences, instances, definitions, features, or relations. Relations stream canonical hierarchy, definition-use, and assembly edges.
+            search: Case-sensitive name substring, or relation type (uses_definition/member_of_group/assembly_mate), at most 128 UTF-8 bytes.
             entity_id: Positive ID for detail.
             cursor: Opaque next_cursor from previous search; keep query unchanged. Stale tokens are rejected.
             limit: Search page size from 1 to 100.
-            definition_id: Optional positive definition filter for occurrence/instance/feature search.
+            definition_id: Optional positive definition filter for occurrence/instance/feature/relation search.
             tag_id: Optional exact tag filter for occurrence/instance search; instances match any path step.
             classification_dimension_id: Optional root-occurrence classification dimension filter.
             classification_category_id: Optional category filter; requires classification_dimension_id.
-            world_bounds_mm: Optional inclusive [[min x,y,z],[max x,y,z]] world AABB for instance search.
+            world_bounds_mm: Optional inclusive [[min x,y,z],[max x,y,z]] world AABB for instance search/workset.
+            workset_handle: Opaque handle required only for workset_status.
         """
         def job():
-            _action(action, ("summary", "search", "detail"))
-            _action(kind, ("occurrences", "instances", "definitions", "features"))
+            _action(action, ("summary", "search", "detail", "workset_create", "workset_status"))
+            _action(kind, ("occurrences", "instances", "definitions", "features", "relations"))
             property_ids = (tag_id, classification_dimension_id, classification_category_id)
             if any(value is not None and (type(value) is not int or value <= 0) for value in property_ids):
                 raise Rejection("invalid_query", "Property filter IDs must be positive integers")
             if classification_category_id is not None and classification_dimension_id is None:
                 raise Rejection("invalid_query", "classification_category_id requires classification_dimension_id")
             if any(value is not None for value in property_ids) and (
-                    action != "search" or kind not in ("occurrences", "instances")):
-                raise Rejection("invalid_query", "Property filters apply only to occurrence/instance search")
+                    action not in ("search", "workset_create")
+                    or kind not in ("occurrences", "instances")):
+                raise Rejection("invalid_query", "Property filters apply only to occurrence/instance queries")
             bounds = _world_bounds(world_bounds_mm)
-            if bounds is not None and (action != "search" or kind != "instances"):
-                raise Rejection("invalid_query", "world_bounds_mm applies only to instance search")
+            if bounds is not None and (action not in ("search", "workset_create") or kind != "instances"):
+                raise Rejection("invalid_query", "world_bounds_mm applies only to instance queries")
             if not 1 <= limit <= 100 or len(cursor) > 4096 or len(search.encode("utf-8")) > 128:
                 raise Rejection("invalid_query", "Invalid page bounds or search too long")
+            if action == "workset_create" and cursor:
+                raise Rejection("invalid_query", "workset_create requires a complete query scope without cursor")
+            if action == "workset_status":
+                if not workset_handle or len(workset_handle) > 4096:
+                    raise Rejection("invalid_query", "workset_status requires a bounded opaque handle")
+            elif workset_handle:
+                raise Rejection("invalid_query", "workset_handle applies only to workset_status")
             entry = runtime.entry(handle)
             if action == "summary":
                 result = runtime.summary(entry, runtime.read(entry))
             elif action == "detail":
-                if kind == "instances":
-                    raise Rejection("invalid_query", "Instance detail requires a qualified path; use search")
+                if kind in ("instances", "relations"):
+                    raise Rejection("invalid_query", "Instance/relation detail requires a qualified identity; use search")
                 if entity_id <= 0:
                     raise Rejection("invalid_query", "Detail requires a positive entity ID")
                 result = entry["document"].detail(kind, entity_id)
+            elif action == "workset_status":
+                result = entry["document"].workset_status(workset_handle)
             else:
                 params = {"kind": kind, "search": search, "limit": limit}
                 for key, value in {
@@ -345,7 +357,8 @@ def register_tools() -> list:
                 }.items():
                     if value is not None:
                         params[key] = value
-                result = entry["document"].query(**params)
+                result = (entry["document"].create_workset(**params)
+                          if action == "workset_create" else entry["document"].query(**params))
             if result["identity"]["document_id"] != entry["document_id"]:
                 raise Rejection("document_changed", "Owned document identity changed")
             if len(_json({"ok": True, "result": result}).encode("utf-8")) <= MAX_OUTPUT:

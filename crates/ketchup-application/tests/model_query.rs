@@ -1,5 +1,12 @@
 use ketchup_application::model_query::*;
+use ketchup_core::assembly::{
+    AssemblyMate, AssemblyMateEndpoint, AssemblyMateId, AssemblyMateKind, PlanarFaceAttachment,
+};
 use ketchup_core::document::*;
+use ketchup_core::exact_product::{
+    BODY_SUBSHAPE_REF_SCHEMA_V1, BodySubshapeRef, ExactFaceRole, ReferenceStability,
+    canonical_reference_lineage_digest,
+};
 use serde_json::{Value, json};
 
 fn fixture(count: u64, long_names: bool) -> DocumentStore {
@@ -163,6 +170,36 @@ fn spatial_fixture() -> DocumentStore {
     document
 }
 
+fn planar_reference(snapshot: &Snapshot) -> BodySubshapeRef {
+    let role = ExactFaceRole::Top;
+    BodySubshapeRef {
+        schema: BODY_SUBSHAPE_REF_SCHEMA_V1.into(),
+        document_id: snapshot.document_id(),
+        definition_id: DefinitionId(1),
+        profile_feature_id: FeatureId(1),
+        producer_feature_id: FeatureId(1),
+        semantic_role: role.semantic_role().into(),
+        source_element_id: role.source_element_id().into(),
+        expected_type: role.expected_type().into(),
+        expected_cardinality: 1,
+        stability: ReferenceStability::Guaranteed,
+        canonical_input_digest: "canonical".into(),
+        exact_input_digest: "exact".into(),
+        result_fingerprint: "result".into(),
+        evaluator: "test".into(),
+        backend: "test".into(),
+        tolerance: "0".into(),
+        lineage_digest: canonical_reference_lineage_digest(
+            snapshot.document_id(),
+            FeatureId(1),
+            role.semantic_role(),
+            role.source_element_id(),
+            role.expected_type(),
+        ),
+        corroborating_geometry_fingerprint: "geometry".into(),
+    }
+}
+
 fn request(kind: EntityKind) -> PageRequest {
     PageRequest {
         kind,
@@ -223,6 +260,32 @@ fn collect_instance_ids(
     ids
 }
 
+fn collect_relation_ids(
+    query: &ModelQuery,
+    snapshot: &Snapshot,
+    mut request: PageRequest,
+) -> (Vec<String>, bool) {
+    let mut ids = Vec::new();
+    let mut byte_limited = false;
+    loop {
+        let page = query.page(snapshot, &request).unwrap();
+        bounded(&page);
+        byte_limited |= page["byte_limited"] == true;
+        let items = page["items"].as_array().unwrap();
+        assert!(!items.is_empty() || page["complete"] == true);
+        ids.extend(
+            items
+                .iter()
+                .map(|item| item["id"].as_str().unwrap().to_owned()),
+        );
+        if page["complete"] == true {
+            break;
+        }
+        request.cursor = Some(page["next_cursor"].as_str().unwrap().to_owned());
+    }
+    (ids, byte_limited)
+}
+
 #[test]
 fn ten_thousand_repeated_occurrences_are_bounded_without_gaps_or_duplicates() {
     let document = fixture(10_000, false);
@@ -234,7 +297,8 @@ fn ten_thousand_repeated_occurrences_are_bounded_without_gaps_or_duplicates() {
     bounded(&summary);
     assert_eq!(
         summary["counts"],
-        json!({"root_occurrences":10000,"instances":10000,"definitions":1,"features":1})
+        json!({"root_occurrences":10000,"instances":10000,"definitions":1,"features":1,
+            "relations":10000})
     );
     assert_eq!(summary["coverage"]["nested_hierarchy"], false);
     assert_eq!(
@@ -247,10 +311,110 @@ fn ten_thousand_repeated_occurrences_are_bounded_without_gaps_or_duplicates() {
     unique_instance_ids.sort_unstable();
     unique_instance_ids.dedup();
     assert_eq!(unique_instance_ids.len(), 10_000);
+    let (relation_ids, byte_limited) =
+        collect_relation_ids(&query, &snapshot, request(EntityKind::Relations));
+    assert!(byte_limited);
+    assert_eq!(relation_ids.len(), 10_000);
+    let mut unique_relation_ids = relation_ids;
+    unique_relation_ids.sort_unstable();
+    unique_relation_ids.dedup();
+    assert_eq!(unique_relation_ids.len(), 10_000);
     assert_eq!(query.summary(&snapshot), summary);
     assert_eq!(document.current().canonical_digest(), before);
     assert_eq!(document.visible_undo_steps(), undo);
     assert_eq!(document.visible_redo_steps(), 0);
+}
+
+#[test]
+fn revision_bound_worksets_hold_ten_thousand_query_identities_and_fail_stale() {
+    let mut document = fixture(10_000, false);
+    let snapshot = document.current();
+    let mut query = ModelQuery::default();
+    let created = query
+        .create_workset(&snapshot, &request(EntityKind::Occurrences))
+        .unwrap();
+    bounded(&created);
+    assert_eq!(created["scope"]["source"], "model_query");
+    assert_eq!(created["scope"]["entity_kind"], "occurrences");
+    assert_eq!(created["item_count"], 10_000);
+    assert_eq!(created["source_total_matches"], 10_000);
+    assert_eq!(created["identity_status"]["missing_identity_count"], 0);
+    assert_eq!(created["identity_status"]["stale"], false);
+    assert_eq!(created["completeness"]["complete"], true);
+    assert_eq!(created["completeness"]["usable_for_batch"], true);
+    assert_eq!(created["resource_budget"]["identity_text_bytes"], 38_894);
+    let handle = created["workset_handle"].as_str().unwrap().to_owned();
+    assert_eq!(query.workset_status(&snapshot, &handle).unwrap(), created);
+
+    document
+        .apply_batch(&CommandBatch::new(vec![CanonicalCommand::RenameEntity {
+            id: OccurrenceId(1),
+            name: "changed".into(),
+        }]))
+        .unwrap();
+    query.invalidate();
+    assert_eq!(
+        query.workset_status(&document.current(), &handle),
+        Err(QueryError::StaleWorkset)
+    );
+}
+
+#[test]
+fn worksets_report_incomplete_sources_and_distinguish_missing_handles() {
+    let snapshot = spatial_fixture().current();
+    let query = ModelQuery::default();
+    let mut spatial = request(EntityKind::Instances);
+    spatial.world_bounds_mm = Some([[-1.0; 3], [20.0; 3]]);
+    let incomplete = query.create_workset(&snapshot, &spatial).unwrap();
+    bounded(&incomplete);
+    assert_eq!(incomplete["item_count"], 1);
+    assert_eq!(incomplete["source_total_matches"], 1);
+    assert_eq!(incomplete["completeness"]["complete"], false);
+    assert_eq!(incomplete["completeness"]["usable_for_batch"], false);
+    assert_eq!(
+        incomplete["completeness"]["reason"],
+        "source_query_incomplete"
+    );
+
+    let mut cursored = request(EntityKind::Occurrences);
+    cursored.cursor = Some("not a source scope".into());
+    assert_eq!(
+        query.create_workset(&snapshot, &cursored),
+        Err(QueryError::InvalidInput)
+    );
+    for limit in [0, MAX_PAGE + 1] {
+        let mut invalid = request(EntityKind::Occurrences);
+        invalid.limit = limit;
+        assert_eq!(
+            query.create_workset(&snapshot, &invalid),
+            Err(QueryError::InvalidInput)
+        );
+    }
+    assert_eq!(
+        query.workset_status(&snapshot, "forged"),
+        Err(QueryError::WorksetNotFound)
+    );
+
+    let mut handles = Vec::new();
+    for _ in 0..=MAX_ACTIVE_WORKSETS {
+        handles.push(
+            query
+                .create_workset(&snapshot, &request(EntityKind::Occurrences))
+                .unwrap()["workset_handle"]
+                .as_str()
+                .unwrap()
+                .to_owned(),
+        );
+    }
+    assert_eq!(
+        query.workset_status(&snapshot, &handles[0]),
+        Err(QueryError::WorksetNotFound)
+    );
+    assert!(
+        query
+            .workset_status(&snapshot, handles.last().unwrap())
+            .is_ok()
+    );
 }
 
 #[test]
@@ -887,6 +1051,198 @@ fn spatial_bounds_validation_and_cursor_scope_fail_closed() {
 }
 
 #[test]
+fn relation_queries_stream_canonical_hierarchy_definition_and_assembly_edges() {
+    let mut hierarchy = DocumentStore::new();
+    hierarchy
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DefinitionId(1),
+                name: "Shared part".into(),
+            },
+            CanonicalCommand::CreateGroup {
+                id: GroupId(1),
+                name: "Outer".into(),
+                transform: Transform::identity(),
+                parent: None,
+            },
+            CanonicalCommand::CreateGroup {
+                id: GroupId(2),
+                name: "Inner".into(),
+                transform: Transform::identity(),
+                parent: Some(GroupId(1)),
+            },
+            CanonicalCommand::CreateOccurrence {
+                id: OccurrenceId(1),
+                definition_id: DefinitionId(1),
+                name: "First shared use".into(),
+                transform: Transform::identity(),
+                parent: Some(GroupId(2)),
+                tag: None,
+                visible: true,
+            },
+            CanonicalCommand::CreateOccurrence {
+                id: OccurrenceId(2),
+                definition_id: DefinitionId(1),
+                name: "Second shared use".into(),
+                transform: Transform::identity(),
+                parent: None,
+                tag: None,
+                visible: true,
+            },
+        ]))
+        .unwrap();
+    let snapshot = hierarchy.current();
+    let mut query = ModelQuery::default();
+    assert_eq!(query.summary(&snapshot)["counts"]["relations"], 4);
+    let relation_workset = query
+        .create_workset(&snapshot, &request(EntityKind::Relations))
+        .unwrap();
+    assert_eq!(relation_workset["scope"]["entity_kind"], "relations");
+    assert_eq!(relation_workset["item_count"], 4);
+    assert_eq!(relation_workset["completeness"]["usable_for_batch"], true);
+
+    let mut paged_request = request(EntityKind::Relations);
+    paged_request.limit = 1;
+    let first = query.page(&snapshot, &paged_request).unwrap();
+    assert_eq!(first["items"][0]["relation_type"], "uses_definition");
+    assert_eq!(first["items"][0]["direction"], "outgoing");
+    assert_eq!(
+        first["items"][0]["source"],
+        json!({"kind":"occurrence","id":1})
+    );
+    assert_eq!(
+        first["items"][0]["target"],
+        json!({"kind":"definition","id":1})
+    );
+    assert_eq!(first["total_matches"], 4);
+    assert_eq!(first["total_matches_complete"], true);
+    assert_eq!(first["page_complete"], false);
+    let first_cursor = first["next_cursor"].as_str().unwrap().to_owned();
+
+    let mut ids = Vec::new();
+    loop {
+        let page = query.page(&snapshot, &paged_request).unwrap();
+        bounded(&page);
+        ids.extend(
+            page["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|item| item["id"].as_str().unwrap().to_owned()),
+        );
+        if page["complete"] == true {
+            break;
+        }
+        paged_request.cursor = Some(page["next_cursor"].as_str().unwrap().to_owned());
+    }
+    ids.sort_unstable();
+    ids.dedup();
+    assert_eq!(ids.len(), 4);
+
+    let mut members = request(EntityKind::Relations);
+    members.search = "member_of_group".into();
+    let member_page = query.page(&snapshot, &members).unwrap();
+    assert_eq!(member_page["total_matches"], 2);
+    assert!(member_page["items"].as_array().unwrap().iter().all(|item| {
+        item["relation_type"] == "member_of_group" && item["direction"] == "outgoing"
+    }));
+
+    let mut shared = request(EntityKind::Relations);
+    shared.definition_id = Some(1);
+    assert_eq!(query.page(&snapshot, &shared).unwrap()["total_matches"], 3);
+
+    let mut crossed = request(EntityKind::Relations);
+    crossed.limit = 1;
+    crossed.cursor = Some(first_cursor.clone());
+    crossed.search = "member".into();
+    assert_eq!(
+        query.page(&snapshot, &crossed),
+        Err(QueryError::CrossQueryCursor)
+    );
+
+    hierarchy
+        .apply_batch(&CommandBatch::new(vec![CanonicalCommand::RenameEntity {
+            id: OccurrenceId(1),
+            name: "Renamed".into(),
+        }]))
+        .unwrap();
+    query.invalidate();
+    let mut stale = request(EntityKind::Relations);
+    stale.limit = 1;
+    stale.cursor = Some(first_cursor);
+    assert_eq!(
+        query.page(&hierarchy.current(), &stale),
+        Err(QueryError::StaleCursor)
+    );
+
+    let nested = nested_fixture().current();
+    let mut nested_definition = request(EntityKind::Relations);
+    nested_definition.definition_id = Some(1);
+    let local_relation = ModelQuery::default()
+        .page(&nested, &nested_definition)
+        .unwrap();
+    assert_eq!(local_relation["total_matches"], 1);
+    assert_eq!(
+        local_relation["items"][0]["relation_type"],
+        "uses_definition"
+    );
+    assert_eq!(
+        local_relation["items"][0]["source"]["kind"],
+        "local_occurrence"
+    );
+    assert_eq!(
+        local_relation["items"][0]["source"]["owner_definition_id"],
+        2
+    );
+    assert_eq!(local_relation["items"][0]["source"]["local_id"], 1);
+    assert_eq!(
+        local_relation["items"][0]["target"],
+        json!({"kind":"definition","id":1})
+    );
+
+    let mut assembly = fixture(2, false);
+    let reference = planar_reference(&assembly.current());
+    let endpoint = |occurrence_id| {
+        AssemblyMateEndpoint::resolved_planar_face(
+            occurrence_id,
+            PlanarFaceAttachment::new(reference.clone(), [0.0; 3], [0.0, 0.0, 1.0]).unwrap(),
+        )
+    };
+    assembly
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateAssemblyMate(AssemblyMate::new(
+                AssemblyMateId(7),
+                endpoint(OccurrenceId(1)),
+                endpoint(OccurrenceId(2)),
+                AssemblyMateKind::CoincidentPlanar {
+                    offset_mm: 0.0,
+                    reversed: false,
+                },
+            )),
+        ]))
+        .unwrap();
+    let mut mates = request(EntityKind::Relations);
+    mates.search = "assembly_mate".into();
+    let mate_page = ModelQuery::default()
+        .page(&assembly.current(), &mates)
+        .unwrap();
+    assert_eq!(mate_page["total_matches"], 1);
+    assert_eq!(mate_page["items"][0]["id"], "assembly_mate:7");
+    assert_eq!(mate_page["items"][0]["direction"], "bidirectional");
+    assert_eq!(mate_page["items"][0]["source"]["id"], 1);
+    assert_eq!(mate_page["items"][0]["target"]["id"], 2);
+    assert_eq!(
+        mate_page["items"][0]["source"]["reference_health"]["status"],
+        "resolved"
+    );
+    assert_eq!(mate_page["items"][0]["mate"]["kind"], "coincident_planar");
+    assert_eq!(
+        mate_page["items"][0]["origin"]["kind"],
+        "canonical_assembly_mate"
+    );
+}
+
+#[test]
 fn empty_snapshot_has_complete_empty_pages() {
     let snapshot = DocumentStore::new().current();
     let query = ModelQuery::default();
@@ -895,6 +1251,7 @@ fn empty_snapshot_has_complete_empty_pages() {
         EntityKind::Instances,
         EntityKind::Definitions,
         EntityKind::Features,
+        EntityKind::Relations,
     ] {
         let page = query.page(&snapshot, &request(kind)).unwrap();
         bounded(&page);

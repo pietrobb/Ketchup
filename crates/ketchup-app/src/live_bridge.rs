@@ -81,6 +81,14 @@ pub enum Request {
         kind: EntityKind,
         entity_id: u64,
     },
+    WorksetCreate {
+        expected: Stamp,
+        query: PageRequest,
+    },
+    WorksetStatus {
+        expected: Stamp,
+        handle: String,
+    },
     Propose {
         expected: Stamp,
         selection: Vec<u64>,
@@ -475,7 +483,7 @@ impl LiveBridge {
                 "undo_steps":app.undo_step_count(),"redo_steps":app.redo_step_count(),
                 "pending_proposal_id":self.pending.as_ref().map(|p|p.id),
                 "limits":{"frame_bytes":MAX_FRAME_BYTES,"queue":QUEUE_CAPACITY,"receipts":MAX_RECEIPTS,"selection":MAX_SELECTION},
-                "methods":["status","summary","query","detail","propose","commit","undo","redo","selection","view","image","disconnect"]}),
+                "methods":["status","summary","query","detail","workset_create","workset_status","propose","commit","undo","redo","selection","view","image","disconnect"]}),
             ),
             Request::Summary {} => Ok(self.query.summary(&app.document.current())),
             Request::Query { expected, query } => {
@@ -492,6 +500,18 @@ impl LiveBridge {
                 Self::guard(app, &expected)?;
                 self.query
                     .detail(&app.document.current(), kind, entity_id)
+                    .map_err(|e| e.code())
+            }
+            Request::WorksetCreate { expected, query } => {
+                Self::guard(app, &expected)?;
+                self.query
+                    .create_workset(&app.document.current(), &query)
+                    .map_err(|e| e.code())
+            }
+            Request::WorksetStatus { expected, handle } => {
+                Self::guard(app, &expected)?;
+                self.query
+                    .workset_status(&app.document.current(), &handle)
                     .map_err(|e| e.code())
             }
             Request::Propose {

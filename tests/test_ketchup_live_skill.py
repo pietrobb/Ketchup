@@ -67,7 +67,7 @@ class SessionDouble:
         return envelope({"proposal_id": 9} if method == "propose" else {}, self.stamp)
 
     def __getattr__(self, method):
-        if method in ("query", "detail", "propose", "commit", "undo", "redo", "selection", "view", "image"):
+        if method in ("query", "detail", "create_workset", "workset_status", "propose", "commit", "undo", "redo", "selection", "view", "image"):
             return lambda expected, *args, **kwargs: self.request(method, expected, *args, **kwargs)
         raise AttributeError(method)
 
@@ -139,6 +139,24 @@ def test_registered_lifecycle_stamps_selection_and_stale_rejection(tmp_path, mon
         assert session.calls[-1][3]["world_bounds_mm"] == [[-1, -2, -3], [4, 5, 6]]
         assert session.calls[-1][3]["tag_id"] == 7
         assert session.calls[-1][3]["classification_category_id"] == 10
+        relations = await call(registered, "KetchupLiveInspect", action="query", handle=handle,
+                               expected=STAMP, kind="relations", search="assembly_mate",
+                               definition_id=3)
+        assert relations["stamp"] == STAMP
+        assert session.calls[-1][3]["kind"] == "relations"
+        assert session.calls[-1][3]["definition_id"] == 3
+        workset = await call(registered, "KetchupLiveInspect", action="workset_create",
+                             handle=handle, expected=STAMP, kind="instances", tag_id=7)
+        assert workset["stamp"] == STAMP
+        assert session.calls[-1][0] == "create_workset"
+        assert session.calls[-1][3]["tag_id"] == 7
+        status = await call(registered, "KetchupLiveInspect", action="workset_status",
+                            handle=handle, expected=STAMP, workset_handle="opaque-workset")
+        assert status["stamp"] == STAMP
+        assert session.calls[-1][0] == "workset_status"
+        assert session.calls[-1][2] == ("opaque-workset",)
+        assert (await call(registered, "KetchupLiveInspect", action="workset_create",
+                           handle=handle, expected=STAMP, cursor="partial"))["error"]["code"] == "invalid_arguments"
         rejected = await call(registered, "KetchupLiveEdit", action="propose", handle=handle,
                               expected=STAMP, selection=[1], program=PROGRAM)
         assert rejected["error"]["code"] == "selection_changed"

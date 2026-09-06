@@ -254,6 +254,32 @@ fn human_history_aba_and_selection_refuse_stale_proposals_and_cursors() {
         .as_str()
         .unwrap()
         .to_owned();
+    let workset = client.call(
+        &mut shell,
+        Request::WorksetCreate {
+            expected: before.clone(),
+            query: PageRequest {
+                cursor: None,
+                ..query.clone()
+            },
+        },
+    );
+    assert!(workset.ok, "{:?}", workset.error);
+    let workset_handle = workset.result.unwrap()["workset_handle"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(
+        client
+            .call(
+                &mut shell,
+                Request::WorksetStatus {
+                    expected: before.clone(),
+                    handle: workset_handle.clone(),
+                },
+            )
+            .ok
+    );
     let (expected, proposal_id) = propose(&mut client, &mut shell);
     shell.click_command(AppCommand::Undo);
     let stale = client.call(
@@ -269,6 +295,14 @@ fn human_history_aba_and_selection_refuse_stale_proposals_and_cursors() {
     assert_eq!(after.revision, before.revision);
     assert_eq!(after.canonical_digest, before.canonical_digest);
     assert!(after.mutation_epoch > before.mutation_epoch);
+    let stale_workset = client.call(
+        &mut shell,
+        Request::WorksetStatus {
+            expected: after.clone(),
+            handle: workset_handle,
+        },
+    );
+    assert_eq!(stale_workset.error.as_deref(), Some("stale_workset"));
     let stale = client.call(
         &mut shell,
         Request::Commit {

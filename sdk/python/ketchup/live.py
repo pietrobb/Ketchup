@@ -32,7 +32,7 @@ from .client import ProtocolError, SessionClosedError, TransportError, Transport
 MAX_FRAME_BYTES = 32768
 MAX_TIMEOUT = 30.0
 _U64_MAX = (1 << 64) - 1
-_KINDS = ("occurrences", "instances", "definitions", "features")
+_KINDS = ("occurrences", "instances", "definitions", "features", "relations")
 _VIEWS = ("iso", "top", "front", "zoom_fit")
 _CAPTURE_MODES = ("offscreen", "visible_viewport")
 _MUTATIONS = frozenset({"propose", "commit", "undo", "redo", "selection", "view"})
@@ -48,10 +48,10 @@ _ERROR_CODES = frozenset({
     "cross_query_cursor", "output_too_large", "busy", "image_unavailable", "image_timeout",
     "hidden_viewport", "stale_image", "occluded_viewport", "invalid_image_callback",
     "invalid_image_dimensions", "incomplete_image", "unsupported_image_texture",
-    "unsupported_image_renderer",
+    "unsupported_image_renderer", "stale_workset", "workset_not_found",
 })
 _FATAL_CODES = frozenset({"invalid_request", "unauthorized", "unsupported_version", "queue_unavailable"})
-Kind = Literal["occurrences", "instances", "definitions", "features"]
+Kind = Literal["occurrences", "instances", "definitions", "features", "relations"]
 View = Literal["iso", "top", "front", "zoom_fit"]
 CaptureMode = Literal["offscreen", "visible_viewport"]
 
@@ -158,6 +158,46 @@ def _world_bounds(value: Any) -> list[list[float | int]] | None:
     if any(result[0][axis] > result[1][axis] for axis in range(3)):
         raise ValueError("invalid world bounds")
     return result
+
+
+def _model_query(kind: Kind, limit: int, search: str, definition_id: int | None,
+                 tag_id: int | None, classification_dimension_id: int | None,
+                 classification_category_id: int | None, cursor: str | None,
+                 world_bounds_mm: list[list[float]] | None, *, allow_cursor: bool) -> dict:
+    if type(kind) is not str or kind not in _KINDS:
+        raise ValueError("invalid entity kind")
+    _uint(limit, 1, 100)
+    _text(search, 128)
+    if definition_id is not None:
+        _uint(definition_id, 1)
+        if kind == "definitions":
+            raise ValueError("definitions cannot be filtered by definition ID")
+    for property_id in (tag_id, classification_dimension_id, classification_category_id):
+        if property_id is not None:
+            _uint(property_id, 1)
+    if classification_category_id is not None and classification_dimension_id is None:
+        raise ValueError("classification category requires a dimension")
+    if (tag_id is not None or classification_dimension_id is not None) and kind not in ("occurrences", "instances"):
+        raise ValueError("property filters apply only to occurrences and instances")
+    if cursor is not None:
+        _text(cursor, 4096)
+        if not allow_cursor:
+            raise ValueError("workset source query cannot contain a cursor")
+    bounds = _world_bounds(world_bounds_mm)
+    if bounds is not None and kind != "instances":
+        raise ValueError("world bounds apply only to instances")
+    query = {"kind": kind, "limit": limit, "search": search}
+    for key, value in {
+        "definition_id": definition_id,
+        "tag_id": tag_id,
+        "classification_dimension_id": classification_dimension_id,
+        "classification_category_id": classification_category_id,
+        "cursor": cursor,
+        "world_bounds_mm": bounds,
+    }.items():
+        if value is not None:
+            query[key] = value
+    return query
 
 
 def _json_copy(value: Any, secret: str = "", depth: int = 0, budget=None) -> Any:
@@ -550,41 +590,30 @@ class LiveSession:
               classification_dimension_id: int | None = None,
               classification_category_id: int | None = None, cursor: str | None = None,
               world_bounds_mm: list[list[float]] | None = None) -> dict:
-        if type(kind) is not str or kind not in _KINDS:
-            raise ValueError("invalid entity kind")
-        _uint(limit, 1, 100)
-        _text(search, 128)
-        if definition_id is not None:
-            _uint(definition_id, 1)
-            if kind == "definitions":
-                raise ValueError("definitions cannot be filtered by definition ID")
-        for property_id in (tag_id, classification_dimension_id, classification_category_id):
-            if property_id is not None:
-                _uint(property_id, 1)
-        if classification_category_id is not None and classification_dimension_id is None:
-            raise ValueError("classification category requires a dimension")
-        if (tag_id is not None or classification_dimension_id is not None) and kind not in ("occurrences", "instances"):
-            raise ValueError("property filters apply only to occurrences and instances")
-        if cursor is not None:
-            _text(cursor, 4096)
-        bounds = _world_bounds(world_bounds_mm)
-        if bounds is not None and kind != "instances":
-            raise ValueError("world bounds apply only to instances")
-        query = {"kind": kind, "limit": limit, "search": search}
-        for key, value in {
-            "definition_id": definition_id,
-            "tag_id": tag_id,
-            "classification_dimension_id": classification_dimension_id,
-            "classification_category_id": classification_category_id,
-            "cursor": cursor,
-            "world_bounds_mm": bounds,
-        }.items():
-            if value is not None:
-                query[key] = value
+        query = _model_query(kind, limit, search, definition_id, tag_id,
+                             classification_dimension_id, classification_category_id,
+                             cursor, world_bounds_mm, allow_cursor=True)
         return self._request("query", expected=_stamp(expected), query=query)
 
+    def create_workset(self, expected: Stamp | dict, *, kind: Kind, limit: int = 50,
+                       search: str = "", definition_id: int | None = None,
+                       tag_id: int | None = None,
+                       classification_dimension_id: int | None = None,
+                       classification_category_id: int | None = None,
+                       world_bounds_mm: list[list[float]] | None = None) -> dict:
+        query = _model_query(kind, limit, search, definition_id, tag_id,
+                             classification_dimension_id, classification_category_id,
+                             None, world_bounds_mm, allow_cursor=False)
+        return self._request("workset_create", expected=_stamp(expected), query=query)
+
+    def workset_status(self, expected: Stamp | dict, handle: str) -> dict:
+        handle = _text(handle, 4096)
+        if not handle:
+            raise ValueError("workset handle must be nonempty")
+        return self._request("workset_status", expected=_stamp(expected), handle=handle)
+
     def detail(self, expected: Stamp | dict, kind: Kind, entity_id: int) -> dict:
-        if type(kind) is not str or kind not in _KINDS or kind == "instances":
+        if type(kind) is not str or kind not in _KINDS or kind in ("instances", "relations"):
             raise ValueError("invalid entity kind for numeric detail")
         return self._request("detail", expected=_stamp(expected), kind=kind, entity_id=_uint(entity_id, 1))
 

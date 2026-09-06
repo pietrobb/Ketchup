@@ -119,6 +119,19 @@ def test_offline_exports_preserved():
             "TransportError", "TransportTimeout", "rectangle", "LiveSession"} <= set(ketchup.__all__)
 
 
+def test_relation_query_is_forwarded_and_numeric_detail_is_rejected():
+    with Peer() as peer, LiveSession(peer.address, TOKEN) as live:
+        live.query(STAMP, kind="relations", limit=7, search="assembly_mate",
+                   definition_id=3)
+        assert peer.requests[-1]["request"] == {
+            "method": "query", "expected": asdict(STAMP), "query": {
+                "kind": "relations", "limit": 7, "search": "assembly_mate",
+                "definition_id": 3}}
+        with pytest.raises(ValueError, match="invalid entity kind for numeric detail"):
+            live.detail(STAMP, "relations", 1)
+        live.disconnect()
+
+
 def test_all_methods_match_wire_and_do_not_refresh_expected_or_modify_inputs():
     def answer(req, stream):
         if req["request"]["method"] == "image":
@@ -134,6 +147,10 @@ def test_all_methods_match_wire_and_do_not_refresh_expected_or_modify_inputs():
         live.query(expected, kind="instances", limit=2, search="Č", definition_id=3,
                    tag_id=7, classification_dimension_id=9, classification_category_id=10,
                    cursor="opaque", world_bounds_mm=[[-1, -2, -3], [4, 5, 6]])
+        live.create_workset(expected, kind="instances", limit=2, search="Č", definition_id=3,
+                            tag_id=7, classification_dimension_id=9, classification_category_id=10,
+                            world_bounds_mm=[[-1, -2, -3], [4, 5, 6]])
+        live.workset_status(expected, "opaque-workset")
         live.detail(STAMP, "features", 5)
         live.propose(expected, selection, program)
         live.commit(expected, 9)
@@ -149,19 +166,25 @@ def test_all_methods_match_wire_and_do_not_refresh_expected_or_modify_inputs():
         assert not live._token
     requests = [req["request"] for req in peer.requests]
     assert [req["method"] for req in requests] == [
-        "status", "summary", "query", "detail", "propose", "commit", "undo",
-        "redo", "selection", "view", "image", "disconnect"]
-    assert [req["id"] for req in peer.requests] == list(range(1, 13))
+        "status", "summary", "query", "workset_create", "workset_status", "detail",
+        "propose", "commit", "undo", "redo", "selection", "view", "image", "disconnect"]
+    assert [req["id"] for req in peer.requests] == list(range(1, 15))
     assert requests[2] == {"method": "query", "expected": expected, "query": {
         "kind": "instances", "limit": 2, "search": "Č", "definition_id": 3,
         "tag_id": 7, "classification_dimension_id": 9, "classification_category_id": 10,
         "cursor": "opaque", "world_bounds_mm": [[-1, -2, -3], [4, 5, 6]]}}
-    assert requests[3] == {"method": "detail", "expected": expected, "kind": "features", "entity_id": 5}
-    assert requests[4] == {"method": "propose", "expected": expected, "selection": [1], "program": program}
-    assert requests[5] == {"method": "commit", "expected": expected, "proposal_id": 9}
-    assert requests[8]["occurrence_ids"] == [1] and requests[9]["view"] == "zoom_fit"
-    assert requests[10]["capture_mode"] == "offscreen"
-    assert all(req["expected"] == expected for req in requests[2:11])
+    assert requests[3] == {"method": "workset_create", "expected": expected, "query": {
+        "kind": "instances", "limit": 2, "search": "Č", "definition_id": 3,
+        "tag_id": 7, "classification_dimension_id": 9, "classification_category_id": 10,
+        "world_bounds_mm": [[-1, -2, -3], [4, 5, 6]]}}
+    assert requests[4] == {"method": "workset_status", "expected": expected,
+                           "handle": "opaque-workset"}
+    assert requests[5] == {"method": "detail", "expected": expected, "kind": "features", "entity_id": 5}
+    assert requests[6] == {"method": "propose", "expected": expected, "selection": [1], "program": program}
+    assert requests[7] == {"method": "commit", "expected": expected, "proposal_id": 9}
+    assert requests[10]["occurrence_ids"] == [1] and requests[11]["view"] == "zoom_fit"
+    assert requests[12]["capture_mode"] == "offscreen"
+    assert all(req["expected"] == expected for req in requests[2:13])
     assert (expected, program, selection) == original
     with pytest.raises(FrozenInstanceError):
         STAMP.mutation_epoch = 25
@@ -240,6 +263,8 @@ def test_invalid_caller_parameters_are_not_sent():
                  lambda: live.query(STAMP, kind="occurrences", world_bounds_mm=[[0, 0, 0], [1, 1, 1]]),
                  lambda: live.query(STAMP, kind="instances", world_bounds_mm=[[1, 0, 0], [0, 1, 1]]),
                  lambda: live.query(STAMP, kind="instances", world_bounds_mm=[[0, 0, 0], [10**10000, 1, 1]]),
+                 lambda: live.create_workset(STAMP, kind="instances", tag_id=True),
+                 lambda: live.workset_status(STAMP, "x" * 4097),
                  lambda: live.detail(STAMP, "instances", 1),
                  lambda: live.image(STAMP, "hidden"),
                  lambda: live.propose(STAMP, [], {"operations": []}),

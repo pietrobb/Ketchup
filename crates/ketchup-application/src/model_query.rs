@@ -1,6 +1,7 @@
 //! Bounded projections of canonical snapshots; no geometry evaluation or parallel model.
 //! Occurrences are document/root records (including group members), not expanded
 //! definition-local instances. Definitions/features are the full canonical catalogs.
+use ketchup_core::assembly::{AssemblyMateKind, AssemblyReferenceHealth};
 use ketchup_core::document::{
     ClassificationCategoryId, ClassificationDimensionId, DefinitionId, FeatureId, FeatureKind,
     InstancePath, InstancePathStep, LocalGroupKey, LocalOccurrenceKey, OccurrenceId,
@@ -12,7 +13,7 @@ use ketchup_interaction::projection::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::hash_map::RandomState;
+use std::collections::{BTreeMap, VecDeque, hash_map::RandomState};
 use std::hash::BuildHasher;
 use std::sync::Mutex;
 
@@ -22,6 +23,9 @@ pub const MAX_TEXT_BYTES: usize = 128;
 pub const MAX_INSTANCE_INDEX_ITEMS: usize = 10_000;
 pub const MAX_INSTANCE_PATH_STEPS: usize = 256;
 pub const MAX_INSTANCE_INDEX_TEXT_BYTES: usize = 4 * 1024 * 1024;
+pub const MAX_WORKSET_ITEMS: usize = 10_000;
+pub const MAX_WORKSET_TEXT_BYTES: usize = 4 * 1024 * 1024;
+pub const MAX_ACTIVE_WORKSETS: usize = 16;
 const MAX_CURSOR_BYTES: usize = 4096;
 const PAGE_ITEM_BYTES: usize = 20 * 1024;
 const MAX_PROPERTY_VALUES: usize = 32;
@@ -33,6 +37,7 @@ pub enum EntityKind {
     Instances,
     Definitions,
     Features,
+    Relations,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
@@ -41,7 +46,7 @@ pub struct PageRequest {
     pub kind: EntityKind,
     #[serde(default = "default_limit")]
     pub limit: usize,
-    /// Case-sensitive substring of the complete canonical name; no regex.
+    /// Case-sensitive substring of the canonical name, or relation type for relation queries; no regex.
     #[serde(default)]
     pub search: String,
     #[serde(default)]
@@ -64,6 +69,28 @@ fn default_limit() -> usize {
     50
 }
 
+fn valid_page_request(request: &PageRequest) -> bool {
+    (1..=MAX_PAGE).contains(&request.limit)
+        && request.search.len() <= 128
+        && request.definition_id != Some(0)
+        && request.tag_id != Some(0)
+        && request.classification_dimension_id != Some(0)
+        && request.classification_category_id != Some(0)
+        && !(request.classification_category_id.is_some()
+            && request.classification_dimension_id.is_none())
+        && !(request.kind == EntityKind::Definitions && request.definition_id.is_some())
+        && !((request.tag_id.is_some() || request.classification_dimension_id.is_some())
+            && !matches!(
+                request.kind,
+                EntityKind::Occurrences | EntityKind::Instances
+            ))
+        && !(request.world_bounds_mm.is_some() && request.kind != EntityKind::Instances)
+        && !request
+            .world_bounds_mm
+            .as_ref()
+            .is_some_and(|bounds| !valid_world_bounds(bounds))
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum QueryError {
     InvalidInput,
@@ -71,6 +98,8 @@ pub enum QueryError {
     StaleCursor,
     CrossQueryCursor,
     OutputTooLarge,
+    StaleWorkset,
+    WorksetNotFound,
     NotFound,
 }
 impl QueryError {
@@ -81,6 +110,8 @@ impl QueryError {
             Self::StaleCursor => "stale_cursor",
             Self::CrossQueryCursor => "cross_query_cursor",
             Self::OutputTooLarge => "output_too_large",
+            Self::StaleWorkset => "stale_workset",
+            Self::WorksetNotFound => "workset_not_found",
             Self::NotFound => "entity_not_found",
         }
     }
@@ -93,6 +124,32 @@ struct Cursor {
     generation: u64,
     query: PageRequest,
     after: u64,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct WorksetToken {
+    id: u64,
+    generation: u64,
+    document_id: u64,
+    revision: u64,
+    canonical_digest: String,
+}
+
+struct Workset {
+    query: PageRequest,
+    identities: Vec<Value>,
+    source_total_matches: Option<u64>,
+    complete: bool,
+    incomplete_reason: Option<&'static str>,
+    identity_text_bytes: usize,
+}
+
+#[derive(Default)]
+struct WorksetStore {
+    next_id: u64,
+    order: VecDeque<u64>,
+    items: BTreeMap<u64, Workset>,
 }
 
 /// A cursor scope belongs to one document host. Call `invalidate` after every
@@ -135,10 +192,14 @@ pub struct ModelQuery {
     key: RandomState,
     generation: u64,
     instances: Mutex<Option<InstanceIndex>>,
+    worksets: Mutex<WorksetStore>,
 }
 impl ModelQuery {
     pub fn invalidate(&mut self) {
         *self.instances.get_mut().expect("instance index lock") = None;
+        let worksets = self.worksets.get_mut().expect("workset lock");
+        worksets.items.clear();
+        worksets.order.clear();
         // Also rotate the key on wrap; no old token can become current again.
         if let Some(next) = self.generation.checked_add(1) {
             self.generation = next;
@@ -195,7 +256,8 @@ impl ModelQuery {
         json!({"identity":identity(snapshot),"coverage":coverage(None),
             "counts":{"root_occurrences":snapshot.occurrences().count(),
                 "instances":instance_count,
-                "definitions":snapshot.definitions().count(),"features":snapshot.features().count()},
+                "definitions":snapshot.definitions().count(),"features":snapshot.features().count(),
+                "relations":relation_count(snapshot)},
             "complete":complete,"resource_budget":resource_budget,
             "limits":{"max_page":MAX_PAGE,"max_output_bytes":MAX_OUTPUT_BYTES,
                 "max_name_bytes":MAX_TEXT_BYTES,"max_search_bytes":128,
@@ -205,26 +267,7 @@ impl ModelQuery {
     }
 
     pub fn page(&self, snapshot: &Snapshot, request: &PageRequest) -> Result<Value, QueryError> {
-        if !(1..=MAX_PAGE).contains(&request.limit)
-            || request.search.len() > 128
-            || request.definition_id == Some(0)
-            || request.tag_id == Some(0)
-            || request.classification_dimension_id == Some(0)
-            || request.classification_category_id == Some(0)
-            || request.classification_category_id.is_some()
-                && request.classification_dimension_id.is_none()
-            || (request.kind == EntityKind::Definitions && request.definition_id.is_some())
-            || ((request.tag_id.is_some() || request.classification_dimension_id.is_some())
-                && !matches!(
-                    request.kind,
-                    EntityKind::Occurrences | EntityKind::Instances
-                ))
-            || (request.world_bounds_mm.is_some() && request.kind != EntityKind::Instances)
-            || request
-                .world_bounds_mm
-                .as_ref()
-                .is_some_and(|bounds| !valid_world_bounds(bounds))
-        {
+        if !valid_page_request(request) {
             return Err(QueryError::InvalidInput);
         }
         let identity = identity(snapshot);
@@ -254,10 +297,16 @@ impl ModelQuery {
         if request.kind == EntityKind::Instances {
             return self.instance_page(snapshot, request, identity, query, after);
         }
+        if request.kind == EntityKind::Relations {
+            return self.relation_page(snapshot, request, identity, query, after);
+        }
         // Canonical maps iterate by ascending ID. Project only matching page rows,
         // never materialize the complete catalog or debug-format feature payloads.
         let rows: Box<dyn Iterator<Item = (u64, u64, &str)> + '_> = match request.kind {
             EntityKind::Instances => unreachable!("instances use the hierarchy projection"),
+            EntityKind::Relations => {
+                unreachable!("relations use the canonical relation projection")
+            }
             EntityKind::Occurrences => Box::new(
                 snapshot
                     .occurrences()
@@ -449,6 +498,221 @@ impl ModelQuery {
         )
     }
 
+    fn relation_page(
+        &self,
+        snapshot: &Snapshot,
+        request: &PageRequest,
+        identity: Value,
+        query: PageRequest,
+        after: u64,
+    ) -> Result<Value, QueryError> {
+        let mut page = RelationPageState::new(after);
+        for occurrence in snapshot.occurrences() {
+            let source = json!({"kind":"occurrence","id":occurrence.id().0});
+            page.consider(
+                request,
+                "uses_definition",
+                &[occurrence.definition_id().0],
+                || json!({"id":format!("occurrence:{}/definition", occurrence.id().0),
+                    "relation_type":"uses_definition","direction":"outgoing",
+                    "source":source,"target":{"kind":"definition","id":occurrence.definition_id().0},
+                    "origin":{"kind":"canonical_occurrence","id":occurrence.id().0}}),
+            )?;
+            if let Some(parent) = occurrence.parent() {
+                page.consider(
+                    request,
+                    "member_of_group",
+                    &[occurrence.definition_id().0],
+                    || {
+                        json!({"id":format!("occurrence:{}/parent_group", occurrence.id().0),
+                        "relation_type":"member_of_group","direction":"outgoing",
+                        "source":{"kind":"occurrence","id":occurrence.id().0},
+                        "target":{"kind":"group","id":parent.0},
+                        "origin":{"kind":"canonical_occurrence","id":occurrence.id().0}})
+                    },
+                )?;
+            }
+        }
+        for group in snapshot.groups() {
+            if let Some(parent) = group.parent() {
+                page.consider(request, "member_of_group", &[], || {
+                    json!({"id":format!("group:{}/parent_group", group.id().0),
+                        "relation_type":"member_of_group","direction":"outgoing",
+                        "source":{"kind":"group","id":group.id().0},
+                        "target":{"kind":"group","id":parent.0},
+                        "origin":{"kind":"canonical_group","id":group.id().0}})
+                })?;
+            }
+        }
+        for occurrence in snapshot.local_occurrences() {
+            let key = occurrence.key();
+            page.consider(
+                request,
+                "uses_definition",
+                &[key.definition_id.0, occurrence.definition_id().0],
+                || json!({"id":format!("definition:{}/occurrence:{}/definition", key.definition_id.0, key.local_id.0),
+                    "relation_type":"uses_definition","direction":"outgoing",
+                    "source":{"kind":"local_occurrence","owner_definition_id":key.definition_id.0,
+                        "local_id":key.local_id.0},
+                    "target":{"kind":"definition","id":occurrence.definition_id().0},
+                    "origin":{"kind":"canonical_local_occurrence","owner_definition_id":key.definition_id.0,
+                        "local_id":key.local_id.0}}),
+            )?;
+            if let Some(parent) = occurrence.parent() {
+                page.consider(
+                    request,
+                    "member_of_group",
+                    &[key.definition_id.0, occurrence.definition_id().0],
+                    || json!({"id":format!("definition:{}/occurrence:{}/parent_group", key.definition_id.0, key.local_id.0),
+                        "relation_type":"member_of_group","direction":"outgoing",
+                        "source":{"kind":"local_occurrence","owner_definition_id":key.definition_id.0,
+                            "local_id":key.local_id.0},
+                        "target":{"kind":"local_group","owner_definition_id":key.definition_id.0,
+                            "local_id":parent.0},
+                        "origin":{"kind":"canonical_local_occurrence","owner_definition_id":key.definition_id.0,
+                            "local_id":key.local_id.0}}),
+                )?;
+            }
+        }
+        for group in snapshot.local_groups() {
+            let key = group.key();
+            if let Some(parent) = group.parent() {
+                page.consider(
+                    request,
+                    "member_of_group",
+                    &[key.definition_id.0],
+                    || json!({"id":format!("definition:{}/group:{}/parent_group", key.definition_id.0, key.local_id.0),
+                        "relation_type":"member_of_group","direction":"outgoing",
+                        "source":{"kind":"local_group","owner_definition_id":key.definition_id.0,
+                            "local_id":key.local_id.0},
+                        "target":{"kind":"local_group","owner_definition_id":key.definition_id.0,
+                            "local_id":parent.0},
+                        "origin":{"kind":"canonical_local_group","owner_definition_id":key.definition_id.0,
+                            "local_id":key.local_id.0}}),
+                )?;
+            }
+        }
+        for mate in snapshot.assembly_mates() {
+            let a = mate.endpoint_a();
+            let b = mate.endpoint_b();
+            let definitions = [a, b]
+                .into_iter()
+                .filter_map(|endpoint| {
+                    snapshot
+                        .occurrence(endpoint.occurrence_id())
+                        .map(|occurrence| occurrence.definition_id().0)
+                })
+                .collect::<Vec<_>>();
+            page.consider(request, "assembly_mate", &definitions, || {
+                json!({"id":format!("assembly_mate:{}", mate.id().0),
+                    "relation_type":"assembly_mate","direction":"bidirectional",
+                    "source":{"kind":"occurrence","id":a.occurrence_id().0,
+                        "reference_health":assembly_health_value(a.health())},
+                    "target":{"kind":"occurrence","id":b.occurrence_id().0,
+                        "reference_health":assembly_health_value(b.health())},
+                    "origin":{"kind":"canonical_assembly_mate","id":mate.id().0,
+                        "schema":mate.schema()},"mate":assembly_kind_value(mate.kind())})
+            })?;
+        }
+        page.finish(self, identity, query)
+    }
+
+    pub fn create_workset(
+        &self,
+        snapshot: &Snapshot,
+        request: &PageRequest,
+    ) -> Result<Value, QueryError> {
+        if request.cursor.is_some() || !valid_page_request(request) {
+            return Err(QueryError::InvalidInput);
+        }
+        let mut query = request.clone();
+        query.limit = MAX_PAGE;
+        query.cursor = None;
+        let mut identities = Vec::new();
+        let mut identity_text_bytes = 0usize;
+        let mut source_total_matches = None;
+        let mut complete = false;
+        let mut incomplete_reason = None;
+        loop {
+            let page = self.page(snapshot, &query)?;
+            source_total_matches = page["total_matches"].as_u64().or(source_total_matches);
+            for item in page["items"].as_array().ok_or(QueryError::InvalidInput)? {
+                let item_identity = item["id"].clone();
+                let bytes = serde_json::to_vec(&item_identity)
+                    .expect("query identity is JSON")
+                    .len();
+                if identities.len() == MAX_WORKSET_ITEMS {
+                    incomplete_reason = Some("item_count");
+                    break;
+                }
+                if identity_text_bytes.saturating_add(bytes) > MAX_WORKSET_TEXT_BYTES {
+                    incomplete_reason = Some("identity_text_bytes");
+                    break;
+                }
+                identity_text_bytes += bytes;
+                identities.push(item_identity);
+            }
+            if incomplete_reason.is_some() {
+                break;
+            }
+            if page["complete"] == true {
+                complete = true;
+                break;
+            }
+            let Some(cursor) = page["next_cursor"].as_str() else {
+                incomplete_reason = Some("source_query_incomplete");
+                break;
+            };
+            query.cursor = Some(cursor.to_owned());
+        }
+        query.cursor = None;
+        let mut store = self.worksets.lock().expect("workset lock");
+        store.next_id = store
+            .next_id
+            .checked_add(1)
+            .ok_or(QueryError::OutputTooLarge)?;
+        let id = store.next_id;
+        if store.order.len() == MAX_ACTIVE_WORKSETS {
+            let evicted = store
+                .order
+                .pop_front()
+                .expect("bounded nonempty workset order");
+            store.items.remove(&evicted);
+        }
+        store.order.push_back(id);
+        store.items.insert(
+            id,
+            Workset {
+                query,
+                identities,
+                source_total_matches,
+                complete,
+                incomplete_reason,
+                identity_text_bytes,
+            },
+        );
+        let token = self.encode_workset(snapshot, id);
+        let workset = store.items.get(&id).expect("inserted workset");
+        Ok(workset_value(snapshot, &token, workset))
+    }
+
+    pub fn workset_status(&self, snapshot: &Snapshot, handle: &str) -> Result<Value, QueryError> {
+        let token = self.decode_workset(handle)?;
+        if token.generation != self.generation
+            || token.document_id != snapshot.document_id().0
+            || token.revision != snapshot.revision_id()
+            || token.canonical_digest != snapshot.canonical_digest()
+        {
+            return Err(QueryError::StaleWorkset);
+        }
+        let store = self.worksets.lock().expect("workset lock");
+        let workset = store
+            .items
+            .get(&token.id)
+            .ok_or(QueryError::WorksetNotFound)?;
+        Ok(workset_value(snapshot, handle, workset))
+    }
+
     /// Deliberately bounded metadata detail, not raw feature geometry or a state dump.
     pub fn detail(
         &self,
@@ -456,12 +720,14 @@ impl ModelQuery {
         kind: EntityKind,
         id: u64,
     ) -> Result<Value, QueryError> {
-        if id == 0 || kind == EntityKind::Instances {
+        if id == 0 || matches!(kind, EntityKind::Instances | EntityKind::Relations) {
             return Err(QueryError::InvalidInput);
         }
         let mut item = row(snapshot, kind, id).ok_or(QueryError::NotFound)?;
         let omitted = match kind {
-            EntityKind::Instances => unreachable!("instance detail requires a qualified path"),
+            EntityKind::Instances | EntityKind::Relations => {
+                unreachable!("instance/relation detail requires a qualified identity")
+            }
             EntityKind::Occurrences => {
                 let o = snapshot
                     .occurrence(OccurrenceId(id))
@@ -508,17 +774,192 @@ impl ModelQuery {
         }
         serde_json::from_str(payload).map_err(|_| QueryError::InvalidCursor)
     }
+
+    fn encode_workset(&self, snapshot: &Snapshot, id: u64) -> String {
+        let token = WorksetToken {
+            id,
+            generation: self.generation,
+            document_id: snapshot.document_id().0,
+            revision: snapshot.revision_id(),
+            canonical_digest: snapshot.canonical_digest(),
+        };
+        let payload = serde_json::to_string(&token).expect("workset token serialization");
+        format!("{:016x}:{payload}", self.key.hash_one(&payload))
+    }
+
+    fn decode_workset(&self, handle: &str) -> Result<WorksetToken, QueryError> {
+        if handle.len() > MAX_CURSOR_BYTES {
+            return Err(QueryError::WorksetNotFound);
+        }
+        let (tag, payload) = handle.split_once(':').ok_or(QueryError::WorksetNotFound)?;
+        if tag.len() != 16 || u64::from_str_radix(tag, 16).ok() != Some(self.key.hash_one(payload))
+        {
+            return Err(QueryError::WorksetNotFound);
+        }
+        serde_json::from_str(payload).map_err(|_| QueryError::WorksetNotFound)
+    }
+}
+
+struct RelationPageState {
+    after: u64,
+    total: u64,
+    last: u64,
+    items: Vec<Value>,
+    bytes: usize,
+    byte_limited: bool,
+}
+
+impl RelationPageState {
+    fn new(after: u64) -> Self {
+        Self {
+            after,
+            total: 0,
+            last: after,
+            items: Vec::new(),
+            bytes: 0,
+            byte_limited: false,
+        }
+    }
+
+    fn consider(
+        &mut self,
+        request: &PageRequest,
+        relation_type: &str,
+        definition_ids: &[u64],
+        item: impl FnOnce() -> Value,
+    ) -> Result<(), QueryError> {
+        if !relation_type.contains(&request.search)
+            || request
+                .definition_id
+                .is_some_and(|id| !definition_ids.contains(&id))
+        {
+            return Ok(());
+        }
+        self.total += 1;
+        if self.total <= self.after || self.items.len() == request.limit || self.byte_limited {
+            return Ok(());
+        }
+        let item = item();
+        let size = instance_item_size(&item)?;
+        if self.bytes + size > PAGE_ITEM_BYTES {
+            self.byte_limited = true;
+            return Ok(());
+        }
+        self.bytes += size;
+        self.last = self.total;
+        self.items.push(item);
+        Ok(())
+    }
+
+    fn finish(
+        self,
+        query_owner: &ModelQuery,
+        identity: Value,
+        query: PageRequest,
+    ) -> Result<Value, QueryError> {
+        if self.after > self.total {
+            return Err(QueryError::InvalidCursor);
+        }
+        let more = self.last < self.total;
+        let next = more.then(|| {
+            query_owner.encode(&Cursor {
+                identity: identity.clone(),
+                generation: query_owner.generation,
+                query,
+                after: self.last,
+            })
+        });
+        Ok(
+            json!({"identity":identity,"coverage":coverage(Some(EntityKind::Relations)),
+            "items":self.items,"total_matches":self.total,"total_matches_complete":true,
+            "complete":!more,"page_complete":!more,"next_cursor":next,
+            "byte_limited":self.byte_limited,
+            "resource_budget":{"status":"within_budget","resource":"streamed_canonical_relations",
+                "max_page":MAX_PAGE,"max_output_bytes":MAX_OUTPUT_BYTES}}),
+        )
+    }
 }
 
 pub fn identity(snapshot: &Snapshot) -> Value {
     json!({"document_id":snapshot.document_id().0,"revision":snapshot.revision_id(),
         "canonical_digest":snapshot.canonical_digest()})
 }
+
+fn workset_value(snapshot: &Snapshot, handle: &str, workset: &Workset) -> Value {
+    json!({"identity":identity(snapshot),"workset_handle":handle,
+        "scope":{"source":"model_query","query":workset.query,
+            "entity_kind":workset.query.kind},
+        "item_count":workset.identities.len(),
+        "source_total_matches":workset.source_total_matches,
+        "identity_status":{"stale":false,"missing_identity_count":0},
+        "completeness":{"complete":workset.complete,
+            "usable_for_batch":workset.complete,
+            "reason":workset.incomplete_reason},
+        "resource_budget":{"status":if workset.complete {"within_budget"} else {"incomplete"},
+            "max_items":MAX_WORKSET_ITEMS,"max_identity_text_bytes":MAX_WORKSET_TEXT_BYTES,
+            "identity_text_bytes":workset.identity_text_bytes,
+            "max_active_worksets":MAX_ACTIVE_WORKSETS}})
+}
+
 fn coverage(kind: Option<EntityKind>) -> Value {
     json!({"occurrences":"root_records_including_group_members",
         "instances":"expanded_qualified_hierarchy","definitions":"canonical_catalog",
-        "features":"canonical_catalog","nested_hierarchy":kind == Some(EntityKind::Instances),
+        "features":"canonical_catalog",
+        "relations":"canonical_hierarchy_definition_and_assembly_edges",
+        "nested_hierarchy":kind == Some(EntityKind::Instances),
+        "relations_streamed":kind == Some(EntityKind::Relations),
         "spatial":false,"geometry_evaluated":false})
+}
+
+fn relation_count(snapshot: &Snapshot) -> usize {
+    snapshot.occurrences().count()
+        + snapshot
+            .occurrences()
+            .filter(|occurrence| occurrence.parent().is_some())
+            .count()
+        + snapshot
+            .groups()
+            .filter(|group| group.parent().is_some())
+            .count()
+        + snapshot.local_occurrences().count()
+        + snapshot
+            .local_occurrences()
+            .filter(|occurrence| occurrence.parent().is_some())
+            .count()
+        + snapshot
+            .local_groups()
+            .filter(|group| group.parent().is_some())
+            .count()
+        + snapshot.assembly_mates().count()
+}
+
+fn assembly_health_value(health: AssemblyReferenceHealth) -> Value {
+    match health {
+        AssemblyReferenceHealth::Resolved => json!({"status":"resolved"}),
+        AssemblyReferenceHealth::Broken => json!({"status":"broken"}),
+        AssemblyReferenceHealth::Ambiguous { candidate_count } => {
+            json!({"status":"ambiguous","candidate_count":candidate_count})
+        }
+        AssemblyReferenceHealth::Lost => json!({"status":"lost"}),
+    }
+}
+
+fn assembly_kind_value(kind: AssemblyMateKind) -> Value {
+    match kind {
+        AssemblyMateKind::CoincidentPlanar {
+            offset_mm,
+            reversed,
+        } => json!({"kind":"coincident_planar","offset_mm":offset_mm,"reversed":reversed}),
+        AssemblyMateKind::ConcentricAxial { reversed } => {
+            json!({"kind":"concentric_axial","reversed":reversed})
+        }
+        AssemblyMateKind::Distance { distance_mm } => {
+            json!({"kind":"distance","distance_mm":distance_mm})
+        }
+        AssemblyMateKind::Angle { angle_degrees } => {
+            json!({"kind":"angle","angle_degrees":angle_degrees})
+        }
+    }
 }
 fn instance_budget_page(identity: Value, exceeded: SceneQueryBudgetExceeded) -> Value {
     json!({"identity":identity,"coverage":coverage(Some(EntityKind::Instances)),"items":[],
@@ -553,7 +994,9 @@ fn instance_coverage(spatial: Option<&SpatialMetadata>) -> Value {
     };
     json!({"occurrences":"root_records_including_group_members",
         "instances":"expanded_qualified_hierarchy","definitions":"canonical_catalog",
-        "features":"canonical_catalog","nested_hierarchy":true,"spatial":true,
+        "features":"canonical_catalog",
+        "relations":"canonical_hierarchy_definition_and_assembly_edges",
+        "nested_hierarchy":true,"relations_streamed":false,"spatial":true,
         "spatial_candidates_complete":spatial.unbounded_scope_instances == 0,
         "geometry_evaluated":false})
 }
@@ -868,7 +1311,7 @@ fn instance_bounds(occurrence: &ProjectedOccurrence) -> Value {
 
 fn row(snapshot: &Snapshot, kind: EntityKind, id: u64) -> Option<Value> {
     Some(match kind {
-        EntityKind::Instances => return None,
+        EntityKind::Instances | EntityKind::Relations => return None,
         EntityKind::Occurrences => {
             let o = snapshot.occurrence(OccurrenceId(id))?;
             json!({"id":id,"definition_id":o.definition_id().0,"name":bounded_text(o.name()),

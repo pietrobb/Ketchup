@@ -35,7 +35,10 @@ impl Server {
         let p = params
             .as_object_mut()
             .ok_or_else(|| Error::invalid("params must be an object"))?;
-        if matches!(method, "summary" | "query" | "detail") {
+        if matches!(
+            method,
+            "summary" | "query" | "detail" | "workset_create" | "workset_status"
+        ) {
             let snapshot = self.session.snapshot();
             let result = match method {
                 "summary" => {
@@ -60,6 +63,22 @@ impl Server {
                         .map_err(|e| Error::invalid(e.to_string()))?;
                     self.model_queries
                         .detail(&snapshot, request.kind, request.id)
+                }
+                "workset_create" => {
+                    let request: PageRequest = serde_json::from_value(params)
+                        .map_err(|e| Error::invalid(e.to_string()))?;
+                    self.model_queries.create_workset(&snapshot, &request)
+                }
+                "workset_status" => {
+                    #[derive(Deserialize)]
+                    #[serde(deny_unknown_fields)]
+                    struct WorksetStatus {
+                        handle: String,
+                    }
+                    let request: WorksetStatus = serde_json::from_value(params)
+                        .map_err(|e| Error::invalid(e.to_string()))?;
+                    self.model_queries
+                        .workset_status(&snapshot, &request.handle)
                 }
                 _ => unreachable!(),
             };
@@ -119,6 +138,29 @@ mod tests {
         );
         assert_eq!(page["result"]["total_matches"], 0);
         assert_eq!(page["result"]["complete"], true);
+        let relations = call(
+            &mut server,
+            "query",
+            json!({"kind":"relations","limit":10,"definition_id":1}),
+        );
+        assert_eq!(relations["result"]["total_matches"], 0);
+        assert_eq!(relations["result"]["total_matches_complete"], true);
+        let workset = call(
+            &mut server,
+            "workset_create",
+            json!({"kind":"occurrences","limit":10}),
+        );
+        assert_eq!(workset["result"]["item_count"], 0);
+        assert_eq!(workset["result"]["completeness"]["usable_for_batch"], true);
+        let handle = workset["result"]["workset_handle"].as_str().unwrap();
+        assert_eq!(
+            call(&mut server, "workset_status", json!({"handle":handle}))["result"],
+            workset["result"]
+        );
+        assert_eq!(
+            call(&mut server, "workset_status", json!({"handle":"forged"}))["error"]["code"],
+            "workset_not_found"
+        );
         assert_eq!(
             call(
                 &mut server,

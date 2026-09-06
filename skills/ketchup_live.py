@@ -355,32 +355,50 @@ def _register_tools(plan_state, *, launcher=None) -> list:
                       search: str = "", definition_id: int | None = None, tag_id: int | None = None,
                       classification_dimension_id: int | None = None,
                       classification_category_id: int | None = None, cursor: str | None = None,
-                      world_bounds_mm: list[list[float]] | None = None) -> str:
+                      world_bounds_mm: list[list[float]] | None = None,
+                      workset_handle: str = "") -> str:
         """Read live status/summary/query/detail. Results retain the complete bridge stamp; no geometry is fabricated.
 
         Args:
-            action: status, summary, query, or detail. Allowed in plan mode.
+            action: status, summary, query, detail, workset_create, or workset_status. Allowed in plan mode.
             handle: Live session UUID.
             expected: Complete observed stamp required for query/detail: document_id, revision, canonical_digest, mutation_epoch.
-            kind: occurrences, instances, definitions, or features. Instances expose qualified paths through query.
-            entity_id: Positive ID for detail; not valid for instances.
+            kind: occurrences, instances, definitions, features, or relations. Relations stream canonical hierarchy, definition-use, and assembly edges.
+            entity_id: Positive ID for detail; not valid for instances or relations.
             limit: Query page size 1 through 100.
-            search: Query text, at most 128 UTF-8 bytes.
-            definition_id: Optional positive definition filter for occurrence/instance/feature queries.
+            search: Name substring or relation type (uses_definition/member_of_group/assembly_mate), at most 128 UTF-8 bytes.
+            definition_id: Optional positive definition filter for occurrence/instance/feature/relation queries.
             tag_id: Optional exact tag filter for occurrence/instance queries; instances match any path step.
             classification_dimension_id: Optional root-occurrence classification dimension filter.
             classification_category_id: Optional category filter; requires classification_dimension_id.
             cursor: Optional opaque query continuation, never refreshed automatically.
-            world_bounds_mm: Optional inclusive [[min x,y,z],[max x,y,z]] world AABB for instance query.
+            world_bounds_mm: Optional inclusive [[min x,y,z],[max x,y,z]] world AABB for instance query/workset.
+            workset_handle: Opaque handle required only for workset_status.
         """
         def job():
-            _action(action, ("status", "summary", "query", "detail"))
+            _action(action, ("status", "summary", "query", "detail", "workset_create", "workset_status"))
+            if action == "workset_create" and cursor:
+                raise Rejection("invalid_arguments", "workset_create requires a complete query scope without cursor.")
+            if action == "workset_status":
+                if type(workset_handle) is not str or not workset_handle or len(workset_handle) > 4096:
+                    raise Rejection("invalid_arguments", "workset_status requires a bounded opaque handle.")
+            elif workset_handle:
+                raise Rejection("invalid_arguments", "workset_handle applies only to workset_status.")
             live_session = runtime.entry(handle)
             if action in ("status", "summary"):
                 return getattr(live_session, action)()
             stamp = runtime.expected(expected)
             if action == "detail":
                 return live_session.detail(stamp, kind, entity_id)
+            if action == "workset_status":
+                return live_session.workset_status(stamp, workset_handle)
+            if action == "workset_create":
+                return live_session.create_workset(
+                    stamp, kind=kind, limit=limit, search=search,
+                    definition_id=definition_id, tag_id=tag_id,
+                    classification_dimension_id=classification_dimension_id,
+                    classification_category_id=classification_category_id,
+                    world_bounds_mm=world_bounds_mm)
             return live_session.query(stamp, kind=kind, limit=limit, search=search,
                                       definition_id=definition_id, tag_id=tag_id,
                                       classification_dimension_id=classification_dimension_id,

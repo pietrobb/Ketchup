@@ -336,6 +336,8 @@ class Document:
         program = dict(operations) if isinstance(operations, Mapping) else {"operations": list(operations)}
         return self._call("apply", {"program": program, "selection": list(selection)}, mutation=True, state=True)
     def query(self, **params): return self._call("query", params)
+    def create_workset(self, **params): return self._call("workset_create", params)
+    def workset_status(self, handle): return self._call("workset_status", {"handle": handle})
     def create_part(self, name, entities, *, feature, constraints=(), plane="xy",
                     translation_mm=(0, 0, 0), rotation=None):
         operation = {"operation": "create_part", "name": name,

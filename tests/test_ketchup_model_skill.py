@@ -157,6 +157,16 @@ class SafetyDocument:
         self.calls.append(("detail", kind, id))
         return {"identity": skill._identity(self.snapshot), "item": {"id": id}, "completeness": {"metadata_only": True}}
 
+    def create_workset(self, **params):
+        self.calls.append(("workset_create", params))
+        return {"identity": skill._identity(self.snapshot), "workset_handle": "opaque-workset",
+                "item_count": 0, "completeness": {"complete": True, "usable_for_batch": True}}
+
+    def workset_status(self, handle):
+        self.calls.append(("workset_status", handle))
+        return {"identity": skill._identity(self.snapshot), "workset_handle": handle,
+                "item_count": 0, "completeness": {"complete": True, "usable_for_batch": True}}
+
     def apply(self, program, *, selection):
         self.calls.append(("apply", program, selection))
         self.snapshot.update(revision=1, canonical_digest="one", undo_steps=1)
@@ -243,6 +253,23 @@ def test_compact_queries_and_sectioned_capabilities(monkeypatch, doubles):
                            classification_category_id=10))["ok"]
         assert doubles[0].doc.calls[-1][1]["tag_id"] == 7
         assert doubles[0].doc.calls[-1][1]["classification_category_id"] == 10
+        assert (await call(registered, "KetchupInspect", handle=handle, action="search", kind="relations",
+                           search="assembly_mate", definition_id=3))["ok"]
+        assert doubles[0].doc.calls[-1][1] == {
+            "kind": "relations", "search": "assembly_mate", "limit": 20, "definition_id": 3}
+        created = await call(registered, "KetchupInspect", handle=handle, action="workset_create",
+                             kind="instances", tag_id=7)
+        assert created["result"]["workset_handle"] == "opaque-workset"
+        assert doubles[0].doc.calls[-1] == ("workset_create", {
+            "kind": "instances", "search": "", "limit": 20, "tag_id": 7})
+        status = await call(registered, "KetchupInspect", handle=handle, action="workset_status",
+                            workset_handle="opaque-workset")
+        assert status["result"]["completeness"]["usable_for_batch"] is True
+        assert doubles[0].doc.calls[-1] == ("workset_status", "opaque-workset")
+        assert (await call(registered, "KetchupInspect", handle=handle, action="workset_create",
+                           cursor="partial"))["error"]["code"] == "invalid_query"
+        assert (await call(registered, "KetchupInspect", handle=handle,
+                           workset_handle="unexpected"))["error"]["code"] == "invalid_query"
         assert (await call(registered, "KetchupInspect", handle=handle, action="search", kind="instances",
                            classification_category_id=10))["error"]["code"] == "invalid_query"
         assert (await call(registered, "KetchupInspect", handle=handle, action="search", kind="features",
@@ -250,6 +277,7 @@ def test_compact_queries_and_sectioned_capabilities(monkeypatch, doubles):
         assert (await call(registered, "KetchupInspect", handle=handle, action="search",
                            world_bounds_mm=[[0, 0, 0], [1, 1, 1]]))["error"]["code"] == "invalid_query"
         assert (await call(registered, "KetchupInspect", handle=handle, action="detail", kind="instances", entity_id=4))["error"]["code"] == "invalid_query"
+        assert (await call(registered, "KetchupInspect", handle=handle, action="detail", kind="relations", entity_id=4))["error"]["code"] == "invalid_query"
         assert (await call(registered, "KetchupInspect", handle=handle, action="detail", entity_id=4))["result"]["item"]["id"] == 4
         assert (await call(registered, "KetchupInspect", handle=handle, limit=101))["error"]["code"] == "invalid_query"
         assert (await call(registered, "KetchupSession", action="close", handle=handle, discard=True, **expected(opened)))["ok"]

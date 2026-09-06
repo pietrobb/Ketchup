@@ -25,6 +25,8 @@ const METHODS: &[&str] = &[
     "summary",
     "query",
     "detail",
+    "workset_create",
+    "workset_status",
     "apply",
     "evaluate",
     "list_validators",
