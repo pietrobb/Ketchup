@@ -2041,11 +2041,100 @@ fn active_boxes_cache_invalidates_on_same_revision_exact_results_and_registry_re
         expected[0].origin_mm = Vec3::new(minimum[0], minimum[1], minimum[2]);
         expected[0].size_mm = Vec3::new(maximum[0], maximum[1], maximum[2]) - expected[0].origin_mm;
         assert_eq!(app.active_boxes(), expected); // Also warm before the next replacement.
+        assert_eq!(
+            app.render_boxes_from_projection(
+                &snapshot,
+                &CanonicalInteractionProjection::from_snapshot(&snapshot),
+                false,
+            ),
+            canonical,
+            "disabled exact bounds must preserve the canonical box proxy"
+        );
     }
 
     app.exact_results = ExactResultRegistry::default();
     assert_eq!(app.document.current().revision_id(), snapshot.revision_id());
     assert_eq!(app.active_boxes(), canonical);
+}
+
+#[test]
+fn historical_render_boxes_do_not_read_geometry_from_the_current_tip() {
+    let mut app = KetchupApp::new();
+    app.document = DocumentStore::new();
+    app.document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DefinitionId(1),
+                name: "Historical body".to_owned(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(1),
+                definition_id: DefinitionId(1),
+                name: "First parent profile".to_owned(),
+                kind: FeatureKind::Profile {
+                    points_mm: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(2),
+                definition_id: DefinitionId(1),
+                name: "Second parent profile".to_owned(),
+                kind: FeatureKind::Profile {
+                    points_mm: vec![[20.0, 20.0], [30.0, 20.0], [30.0, 30.0], [20.0, 30.0]],
+                },
+            },
+            CanonicalCommand::CreateOccurrence {
+                id: OccurrenceId(1),
+                definition_id: DefinitionId(1),
+                name: "Historical occurrence".to_owned(),
+                transform: Transform::identity(),
+                parent: None,
+                tag: None,
+                visible: true,
+            },
+        ]))
+        .unwrap();
+    let parent = app.document.current();
+    assert!(app.active_boxes_for_snapshot(&parent).is_empty());
+
+    app.document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::DeleteFeature { id: FeatureId(1) },
+            CanonicalCommand::DeleteFeature { id: FeatureId(2) },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(3),
+                definition_id: DefinitionId(1),
+                name: "Tip profile".to_owned(),
+                kind: FeatureKind::Profile {
+                    points_mm: vec![[0.0, 0.0], [20.0, 0.0], [20.0, 30.0], [0.0, 30.0]],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(4),
+                definition_id: DefinitionId(1),
+                name: "Tip extrusion".to_owned(),
+                kind: FeatureKind::Extrusion {
+                    profile: FeatureId(3),
+                    height: Dimension::from_decimal("40").unwrap(),
+                },
+            },
+        ]))
+        .unwrap();
+
+    assert_eq!(app.active_boxes()[0].size_mm, Vec3::new(20.0, 30.0, 40.0));
+    assert!(
+        app.active_boxes_for_snapshot(&parent).is_empty(),
+        "the parent snapshot must not inherit render bounds from the current tip"
+    );
+    assert!(
+        app.render_boxes_from_projection(
+            &app.document.current(),
+            &CanonicalInteractionProjection::from_snapshot(&parent),
+            false,
+        )
+        .is_empty(),
+        "a projection and snapshot from different revisions must fail closed"
+    );
 }
 
 #[test]

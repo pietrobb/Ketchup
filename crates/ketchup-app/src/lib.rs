@@ -9732,6 +9732,7 @@ impl KetchupApp {
                     snapshot,
                     occurrence.body.definition_id,
                     occurrence.local_box,
+                    true,
                 )?;
                 let size = maximum - minimum;
                 let bounds = bounds_of(box_corners(size.x, size.y, size.z).into_iter().map(
@@ -11838,6 +11839,7 @@ impl KetchupApp {
                     snapshot,
                     occurrence.body.definition_id,
                     occurrence.local_box,
+                    true,
                 )?;
                 let size = maximum - minimum;
                 Some(box_corners(size.x, size.y, size.z).map(|corner| {
@@ -11917,6 +11919,7 @@ impl KetchupApp {
             .render_boxes
             .get_or_init(|| {
                 self.render_boxes_from_projection(
+                    &snapshot,
                     &cache
                         .as_ref()
                         .expect("interaction cache was built")
@@ -11935,6 +11938,7 @@ impl KetchupApp {
             return self.active_boxes();
         }
         self.render_boxes_from_projection(
+            snapshot,
             &CanonicalInteractionProjection::from_snapshot(snapshot),
             false,
         )
@@ -11942,12 +11946,15 @@ impl KetchupApp {
 
     fn render_boxes_from_projection(
         &self,
+        snapshot: &Snapshot,
         projection: &InteractionProjection,
         use_exact_bounds: bool,
     ) -> Vec<RenderBox> {
-        let snapshot = self.document.current();
+        if !projection.is_current(snapshot) {
+            return Vec::new();
+        }
         let exact_packages =
-            use_exact_bounds.then(|| self.exact_results.render_by_definition(&snapshot));
+            use_exact_bounds.then(|| self.exact_results.render_by_definition(snapshot));
         let mut exact_solid_tool_features = BTreeMap::new();
         projection
             .occurrences()
@@ -11966,9 +11973,10 @@ impl KetchupApp {
                         return None;
                     }
                     let [minimum, maximum] = self.definition_local_bounds(
-                        &snapshot,
+                        snapshot,
                         occurrence.body.definition_id,
                         occurrence.local_box,
+                        use_exact_bounds,
                     )?;
                     let size = maximum - minimum;
                     let [world_minimum, world_maximum] = bounds_of(
@@ -24558,8 +24566,12 @@ impl KetchupApp {
         snapshot: &Snapshot,
         definition_id: DefinitionId,
         local_box: Option<ProjectedBox>,
+        use_exact_bounds: bool,
     ) -> Option<[Vec3; 2]> {
-        if let Some(package) = self.exact_results.get_render(snapshot, definition_id) {
+        if let Some(package) = use_exact_bounds
+            .then(|| self.exact_results.get_render(snapshot, definition_id))
+            .flatten()
+        {
             let [minimum, maximum] = package.bounds_mm();
             return Some([
                 Vec3::new(minimum[0], minimum[1], minimum[2]),
@@ -24644,6 +24656,7 @@ impl KetchupApp {
                     &snapshot,
                     occurrence.body.definition_id,
                     occurrence.local_box,
+                    true,
                 )?;
                 let size = maximum - minimum;
                 Some(box_corners(size.x, size.y, size.z).map(|corner| {
