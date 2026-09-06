@@ -19,10 +19,12 @@ use ketchup_core::assistant_sidecar::{
     AssistantCadBodyFeature, AssistantCadBooleanOperation, AssistantCadClassificationCategory,
     AssistantCadDeletePolicy, AssistantCadEditOperation, AssistantCadEditProgram,
     AssistantCadEntitySelector, AssistantCadPartFeature, AssistantCadRotation, AssistantChatResult,
-    AssistantDistribution, AssistantPrincipalPlane, AssistantSketchConstraint,
-    AssistantSketchEntity, AssistantWorkplaneSpec,
+    AssistantDistribution, AssistantPrincipalPlane, AssistantRejectionPhase,
+    AssistantSketchConstraint, AssistantSketchEntity, AssistantWorkplaneSpec,
 };
-use ketchup_core::document::{DefinitionId, FeatureId, FeatureKind, InstancePath, Snapshot};
+use ketchup_core::document::{
+    DefinitionId, EdgeFinishKind, FeatureId, FeatureKind, InstancePath, Snapshot,
+};
 use ketchup_core::exact_brep_graph::ExactBRepGraph;
 use ketchup_core::exact_product::{
     ExactBodyPackage, ExactFeatureChainRequest, ExactResultRegistry,
@@ -1870,4 +1872,320 @@ fn assistant_cuts_an_opening_but_cannot_yet_boolean_two_parts_it_created() {
     assert_eq!(shell.app().document_revision(), revision);
     assert_eq!(shell.app().canonical_digest(), digest);
     assert!(shell.app().assistant_proposal().is_none());
+}
+
+/// A fixture can feed canonical Profile/SegmentProfile inputs into Sweep, but
+/// the generic Assistant contract can author only Sketch inputs. Pin that
+/// expressibility gap through the real reviewed Assistant flow.
+#[test]
+fn assistant_authored_sketches_cannot_yet_feed_a_sweep() {
+    let clear_request = "Clear the document for a sweep test";
+    let profile_request = "Create a square sweep profile part";
+    let path_request = "Create an open straight sweep path in that part";
+    let sweep_request = "Sweep the authored square profile along the authored path";
+    let chat_result = || AssistantChatResult {
+        message: "Review the generic sweep step.".to_owned(),
+        model_intent: None,
+    };
+    let transport = Arc::new(ScriptedAssistantTransport::new([
+        (clear_request.to_owned(), chat_result()),
+        (profile_request.to_owned(), chat_result()),
+        (path_request.to_owned(), chat_result()),
+        (sweep_request.to_owned(), chat_result()),
+        (sweep_request.to_owned(), chat_result()),
+    ]));
+    let mut shell = Shell::with_assistant_transport(transport.clone());
+
+    let existing = shell
+        .app()
+        .document_snapshot()
+        .occurrences()
+        .map(|occurrence| occurrence.id().0)
+        .collect::<Vec<_>>();
+    build_step(
+        &mut shell,
+        &transport,
+        clear_request,
+        AssistantCadEditProgram {
+            operations: vec![AssistantCadEditOperation::Delete {
+                selector: AssistantCadEntitySelector::Occurrences {
+                    occurrence_ids: existing,
+                },
+                dependency_policy: AssistantCadDeletePolicy::RemoveReferences,
+            }],
+        },
+    );
+    assert_eq!(shell.app().document_snapshot().occurrences().count(), 0);
+
+    let (entities, constraints) = rectangle(20.0, 20.0);
+    build_step(
+        &mut shell,
+        &transport,
+        profile_request,
+        AssistantCadEditProgram {
+            operations: vec![AssistantCadEditOperation::CreatePart {
+                name: "Sweep profile".to_owned(),
+                workplane: AssistantWorkplaneSpec::Principal {
+                    plane: AssistantPrincipalPlane::Xy,
+                },
+                entities,
+                constraints,
+                feature: AssistantCadPartFeature::Extrusion { distance_mm: 5.0 },
+                translation_mm: [0.0; 3],
+                rotation: None,
+            }],
+        },
+    );
+    let definition_id = definition_id_of(&shell, "Sweep profile");
+
+    build_step(
+        &mut shell,
+        &transport,
+        path_request,
+        AssistantCadEditProgram {
+            operations: vec![AssistantCadEditOperation::CreateSketch {
+                definition_id: definition_id.0,
+                name: "Sweep path".to_owned(),
+                workplane: AssistantWorkplaneSpec::Principal {
+                    plane: AssistantPrincipalPlane::Xy,
+                },
+                entities: vec![AssistantSketchEntity::Line {
+                    id: 1,
+                    start_mm: [0.0, 0.0],
+                    end_mm: [200.0, 0.0],
+                }],
+                constraints: vec![AssistantSketchConstraint::Horizontal {
+                    id: 1,
+                    entity_id: 1,
+                }],
+            }],
+        },
+    );
+
+    let authored = shell.app().document_snapshot();
+    let profile_id = authored
+        .features()
+        .find(|feature| feature.name() == "Sweep profile sketch")
+        .expect("the generic part must own its Assistant-authored profile sketch")
+        .id();
+    let path_id = authored
+        .features()
+        .find(|feature| feature.name() == "Sweep path")
+        .expect("the generic CreateSketch operation must author the path")
+        .id();
+    assert!(matches!(
+        authored.feature(profile_id).unwrap().kind(),
+        FeatureKind::Sketch(_)
+    ));
+    assert!(matches!(
+        authored.feature(path_id).unwrap().kind(),
+        FeatureKind::Sketch(_)
+    ));
+
+    let sweep_program = AssistantCadEditProgram {
+        operations: vec![AssistantCadEditOperation::AppendFeature {
+            definition_id: definition_id.0,
+            name: "Rejected generic sweep".to_owned(),
+            feature: AssistantCadBodyFeature::Sweep {
+                profile_feature_id: profile_id.0,
+                path_feature_id: path_id.0,
+            },
+        }],
+    };
+    transport.queue_cad_edit_program(sweep_request, sweep_program.clone());
+    transport.queue_cad_edit_program(sweep_request, sweep_program);
+    let revision = shell.app().document_revision();
+    let digest = shell.app().canonical_digest();
+    let undo_steps = shell.app().undo_step_count();
+    let request_count = transport.request_ids().len();
+
+    shell.focus_text_input(&shell.catalog().text("assistant-input-hint"));
+    shell.type_text(sweep_request);
+    shell.press_key(egui::Key::Enter);
+    for _ in 0..1_000 {
+        shell.step();
+        if shell
+            .app()
+            .assistant_messages()
+            .iter()
+            .filter(|message| message.diagnostic.is_some())
+            .count()
+            == 2
+        {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    shell.settle();
+
+    let diagnostics = shell
+        .app()
+        .assistant_messages()
+        .iter()
+        .filter_map(|message| message.diagnostic.as_ref())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        diagnostics.len(),
+        2,
+        "the host must perform one bounded replan"
+    );
+    for diagnostic in diagnostics {
+        assert_eq!(diagnostic.phase, AssistantRejectionPhase::ProposalPlanning);
+        assert_eq!(diagnostic.code, "planning.cad_feature_input_unsupported");
+        assert_eq!(diagnostic.operation, "append_feature");
+        assert_eq!(diagnostic.target, "feature_inputs");
+    }
+    assert!(shell.app().assistant_proposal().is_none());
+    assert_eq!(shell.app().document_revision(), revision);
+    assert_eq!(shell.app().canonical_digest(), digest);
+    assert_eq!(shell.app().undo_step_count(), undo_steps);
+    assert_eq!(transport.request_ids().len(), request_count + 2);
+    assert_eq!(
+        shell
+            .app()
+            .assistant_messages()
+            .iter()
+            .filter(|message| message.role == AssistantMessageRole::Error)
+            .count(),
+        2
+    );
+    assert_eq!(transport.remaining_responses(), 0);
+}
+
+/// Unlike fixture-backed geometry, this starts from an Assistant-authored body.
+/// The headless hook publishes the worker result deterministically; this test
+/// isolates the generic Assistant context/planner/commit path for a real fillet.
+#[test]
+fn assistant_authored_part_accepts_a_host_issued_topology_fillet() {
+    let clear_request = "Clear the document for a fillet test";
+    let part_request = "Create a small rectangular part";
+    let fillet_request = "Fillet one current edge of that part by 2 mm";
+    let chat_result = || AssistantChatResult {
+        message: "Review the generic fillet step.".to_owned(),
+        model_intent: None,
+    };
+    let transport = Arc::new(ScriptedAssistantTransport::new([
+        (clear_request.to_owned(), chat_result()),
+        (part_request.to_owned(), chat_result()),
+        (fillet_request.to_owned(), chat_result()),
+    ]));
+    let mut shell = Shell::with_assistant_transport(transport.clone());
+
+    let existing = shell
+        .app()
+        .document_snapshot()
+        .occurrences()
+        .map(|occurrence| occurrence.id().0)
+        .collect::<Vec<_>>();
+    build_step(
+        &mut shell,
+        &transport,
+        clear_request,
+        AssistantCadEditProgram {
+            operations: vec![AssistantCadEditOperation::Delete {
+                selector: AssistantCadEntitySelector::Occurrences {
+                    occurrence_ids: existing,
+                },
+                dependency_policy: AssistantCadDeletePolicy::RemoveReferences,
+            }],
+        },
+    );
+
+    let (entities, constraints) = rectangle(40.0, 30.0);
+    build_step(
+        &mut shell,
+        &transport,
+        part_request,
+        AssistantCadEditProgram {
+            operations: vec![AssistantCadEditOperation::CreatePart {
+                name: "Fillet block".to_owned(),
+                workplane: AssistantWorkplaneSpec::Principal {
+                    plane: AssistantPrincipalPlane::Xy,
+                },
+                entities,
+                constraints,
+                feature: AssistantCadPartFeature::Extrusion { distance_mm: 20.0 },
+                translation_mm: [0.0; 3],
+                rotation: None,
+            }],
+        },
+    );
+
+    let definition_id = definition_id_of(&shell, "Fillet block");
+    let body_id = body_feature_id_of(&shell, "Fillet block");
+    let base_graph =
+        ExactBRepGraph::from_snapshot(&shell.app().document_snapshot(), definition_id, body_id)
+            .expect("the Assistant-authored block must compile into an exact graph");
+    let mut worker = ExactWorkerSupervisor::spawn(exact_worker_path()).unwrap();
+    let base_package = worker.evaluate_exact_brep_graph(&base_graph).unwrap();
+    let base_volume_mm3 = base_package.volume_mm3;
+    let edge_reference = base_package
+        .topological_references
+        .iter()
+        .find(|reference| {
+            reference
+                .producer_element_id
+                .starts_with("generated-result/edge/")
+        })
+        .expect("the exact block must publish host-issued edge references")
+        .lineage_digest
+        .clone();
+    assert!(
+        shell
+            .app_mut()
+            .headless_install_exact_package(ExactBodyPackage::Graph(base_package))
+    );
+    assert!(
+        shell.app().assistant_context()["topology_edge_references"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|reference| reference["reference_id"] == edge_reference)
+    );
+
+    build_step(
+        &mut shell,
+        &transport,
+        fillet_request,
+        AssistantCadEditProgram {
+            operations: vec![AssistantCadEditOperation::AppendFeature {
+                definition_id: definition_id.0,
+                name: "Rounded edge".to_owned(),
+                feature: AssistantCadBodyFeature::TopologyFillet {
+                    target_feature_id: body_id.0,
+                    edge_reference_ids: vec![edge_reference.clone()],
+                    radius_mm: 2.0,
+                },
+            }],
+        },
+    );
+
+    let committed = shell.app().document_snapshot();
+    let fillet_id = committed
+        .features()
+        .find(|feature| feature.name() == "Rounded edge")
+        .expect("the reviewed fillet must be canonical")
+        .id();
+    assert!(matches!(
+        committed.feature(fillet_id).unwrap().kind(),
+        FeatureKind::TopologyEdgeFinish {
+            target,
+            edges,
+            kind: EdgeFinishKind::Fillet,
+            amount,
+        } if *target == body_id
+            && edges.len() == 1
+            && edges[0].lineage_digest == edge_reference
+            && amount.millimetres() == 2.0
+    ));
+    let fillet_graph = ExactBRepGraph::from_snapshot(&committed, definition_id, fillet_id)
+        .expect("the Assistant fillet must remain an exact graph");
+    let fillet_package = worker.evaluate_exact_brep_graph(&fillet_graph).unwrap();
+    assert!(fillet_package.volume_mm3 > 0.0);
+    assert!(
+        fillet_package.volume_mm3 < base_volume_mm3,
+        "a convex edge fillet must remove exact material from the block"
+    );
+    assert_eq!(fillet_package.topology_counts[4], 1);
+    assert_eq!(transport.remaining_responses(), 0);
 }
