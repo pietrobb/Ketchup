@@ -503,10 +503,10 @@ const HOUSE_MEMBERS: [&str; 11] = [
 
 /// Prove the production OAuth Assistant can author and extend real exact
 /// structure across revision-bound turns instead of replaying a Rust-authored
-/// program. The complete house remains a larger opt-in acceptance proof.
+/// program, including a pitched roof authored as general prismatic parts.
 #[test]
 #[ignore = "requires the production OAuth binary, login and live GPT-5.6 requests"]
-fn live_oauth_assistant_builds_a_supported_house_frame_across_turns() {
+fn live_oauth_assistant_builds_a_roofed_house_frame_across_turns() {
     let mut shell = Shell::new();
     shell.app_mut().set_assistant_diagnostics_enabled(true);
     let handshake = shell.app().assistant_handshake();
@@ -745,8 +745,210 @@ fn live_oauth_assistant_builds_a_supported_house_frame_across_turns() {
         assert_eq!(package.topology_counts, [8, 12, 6, 1, 1]);
     }
 
+    let frame_identities = committed
+        .occurrences()
+        .map(|occurrence| {
+            (
+                occurrence.name().to_owned(),
+                occurrence.id(),
+                occurrence.definition_id(),
+                occurrence.transform(),
+            )
+        })
+        .collect::<Vec<_>>();
+    let frame_graphs = frame_identities
+        .iter()
+        .map(|(name, _, definition_id, _)| {
+            let body = body_feature_id_of(&shell, name);
+            let graph = ExactBRepGraph::from_snapshot(&committed, *definition_id, body)
+                .unwrap_or_else(|error| {
+                    panic!("{name} must compile before the roof turn: {error}")
+                });
+            (
+                name.clone(),
+                graph.definition_id,
+                graph.producer_feature_id,
+                graph.profiles,
+                graph.nodes,
+            )
+        })
+        .collect::<Vec<_>>();
+    let frame_revision = shell.app().document_revision();
+    let frame_digest = shell.app().canonical_digest();
+    let roof_request = "Use one typed cad_edit_program, not model_intent and not prose alone. Add a pitched roof to the existing 4000 by 4000 mm house frame by creating exactly two separate prismatic parts. Keep every existing occurrence unchanged and do not delete it. Create both parts on the YZ principal plane, extruded 4000 mm through the house length, translated [0,0,3000], with constraints as an empty array and with the optional rotation field omitted. 'Left roof plane' has one closed four-line profile with corners [0,0], [2000,1000], [2000,1100], [0,100]. 'Right roof plane' has one closed four-line profile with corners [2000,1000], [4000,0], [4000,100], [2000,1100]. For each profile use four line entity objects with exactly the keys type, id, start_mm and end_mm, where each end_mm equals the next line's start_mm and the fourth end_mm closes at the first start_mm. Use extrusion as the part feature with distance_mm 4000. Do not emit any constraint object, add any other part, or approximate with mesh geometry.";
+    shell.focus_text_input(&input);
+    shell.type_text(roof_request);
+    shell.press_key(egui::Key::Enter);
+    wait_for_live_assistant_proposal(&mut shell);
+
+    assert_eq!(shell.app().document_revision(), frame_revision);
+    assert_eq!(shell.app().canonical_digest(), frame_digest);
+    let proposal = shell
+        .app()
+        .assistant_proposal()
+        .expect("the roof response must create a reviewable proposal");
+    assert_eq!(proposal.provenance_revision(), frame_revision);
+    assert_eq!(proposal.provenance_digest(), frame_digest);
+    let diagnostics = shell
+        .app()
+        .last_assistant_api_diagnostics()
+        .expect("the roof response must retain bounded provider diagnostics");
+    assert_eq!(diagnostics.provider, "codex-oauth");
+    assert_eq!(diagnostics.model, "gpt-5.6-sol");
+    assert!(diagnostics.input_tokens > 0 && diagnostics.output_tokens > 0);
+    let roof_provider_message = json_string_ending_with(&diagnostics.request_payload, roof_request)
+        .expect("the provider payload must contain the roof request");
+    let (document_context, provider_prompt) = roof_provider_message
+        .strip_prefix("<document-context>")
+        .and_then(|message| message.split_once("</document-context>\n\n"))
+        .expect("the roof request must carry serialized frame context");
+    assert_eq!(provider_prompt, roof_request);
+    let document_context: serde_json::Value = serde_json::from_str(document_context)
+        .expect("the roof provider context must remain valid JSON");
+    assert_eq!(document_context["revision"], frame_revision);
+    assert_eq!(document_context["canonical_digest"], frame_digest);
+    assert_eq!(document_context["occurrence_count"], 10);
+    assert!(
+        document_context["conversation"]
+            .as_array()
+            .expect("the roof context must retain earlier turns")
+            .iter()
+            .any(|message| {
+                message["role"] == "user" && message["text"].as_str() == Some(second_request)
+            })
+    );
+    let provider_response: serde_json::Value = serde_json::from_str(&diagnostics.response_text)
+        .expect("the captured roof provider response must be JSON");
+    let operations = provider_response["cad_edit_program"]["operations"]
+        .as_array()
+        .expect("GPT-5.6 must return a typed roof CAD program");
+    assert!(
+        operations
+            .iter()
+            .all(|operation| operation.get("rotation").is_none()),
+        "the provider must omit rotation instead of changing the roof placement"
+    );
+    let profile = |corners: [[f64; 2]; 4]| {
+        (0..4)
+            .map(|index| AssistantSketchEntity::Line {
+                id: index as u64 + 1,
+                start_mm: corners[index],
+                end_mm: corners[(index + 1) % 4],
+            })
+            .collect::<Vec<_>>()
+    };
+    let expected_roof_program = AssistantCadEditProgram {
+        operations: vec![
+            AssistantCadEditOperation::CreatePart {
+                name: "Left roof plane".to_owned(),
+                workplane: AssistantWorkplaneSpec::Principal {
+                    plane: AssistantPrincipalPlane::Yz,
+                },
+                entities: profile([
+                    [0.0, 0.0],
+                    [2_000.0, 1_000.0],
+                    [2_000.0, 1_100.0],
+                    [0.0, 100.0],
+                ]),
+                constraints: Vec::new(),
+                feature: AssistantCadPartFeature::Extrusion {
+                    distance_mm: 4_000.0,
+                },
+                translation_mm: [0.0, 0.0, 3_000.0],
+                rotation: None,
+            },
+            AssistantCadEditOperation::CreatePart {
+                name: "Right roof plane".to_owned(),
+                workplane: AssistantWorkplaneSpec::Principal {
+                    plane: AssistantPrincipalPlane::Yz,
+                },
+                entities: profile([
+                    [2_000.0, 1_000.0],
+                    [4_000.0, 0.0],
+                    [4_000.0, 100.0],
+                    [2_000.0, 1_100.0],
+                ]),
+                constraints: Vec::new(),
+                feature: AssistantCadPartFeature::Extrusion {
+                    distance_mm: 4_000.0,
+                },
+                translation_mm: [0.0, 0.0, 3_000.0],
+                rotation: None,
+            },
+        ],
+    };
+    let roof_program = serde_json::from_value::<AssistantCadEditProgram>(
+        provider_response["cad_edit_program"].clone(),
+    )
+    .expect("the roof response must deserialize through the public typed contract");
+    assert_eq!(roof_program, expected_roof_program);
+
+    shell.click_row(&shell.catalog().text("assistant-confirm"));
+    assert_eq!(shell.app().document_revision(), frame_revision + 1);
+    assert_ne!(shell.app().canonical_digest(), frame_digest);
+    let committed = shell.app().document_snapshot();
+    assert_eq!(committed.occurrences().count(), 12);
+    for (name, occurrence_id, definition_id, transform) in frame_identities {
+        let occurrence = committed
+            .occurrences()
+            .find(|occurrence| occurrence.name() == name)
+            .unwrap_or_else(|| panic!("the roof turn must preserve {name}"));
+        assert_eq!(occurrence.id(), occurrence_id);
+        assert_eq!(occurrence.definition_id(), definition_id);
+        assert_eq!(occurrence.transform(), transform);
+    }
+    for (name, definition_id, producer_feature_id, profiles, nodes) in frame_graphs {
+        let body = body_feature_id_of(&shell, &name);
+        let graph = ExactBRepGraph::from_snapshot(&committed, DefinitionId(definition_id), body)
+            .unwrap_or_else(|error| panic!("{name} must compile after the roof turn: {error}"));
+        assert_eq!(graph.producer_feature_id, producer_feature_id);
+        assert_eq!(graph.profiles, profiles);
+        assert_eq!(graph.nodes, nodes);
+    }
+    for (name, expected_bounds) in [
+        (
+            "Left roof plane",
+            [[0.0, 0.0, 0.0], [4_000.0, 2_000.0, 1_100.0]],
+        ),
+        (
+            "Right roof plane",
+            [[0.0, 2_000.0, 0.0], [4_000.0, 4_000.0, 1_100.0]],
+        ),
+    ] {
+        let occurrence = committed
+            .occurrences()
+            .find(|occurrence| occurrence.name() == name)
+            .unwrap_or_else(|| panic!("live-authored {name} must exist"));
+        let transform = occurrence.transform();
+        let matrix = transform.matrix();
+        assert_eq!([matrix[3], matrix[7], matrix[11]], [0.0, 0.0, 3_000.0]);
+        assert_eq!(
+            [
+                [matrix[0], matrix[1], matrix[2]],
+                [matrix[4], matrix[5], matrix[6]],
+                [matrix[8], matrix[9], matrix[10]],
+            ],
+            [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+        );
+        let definition_id = definition_id_of(&shell, name);
+        let body = body_feature_id_of(&shell, name);
+        let graph = ExactBRepGraph::from_snapshot(&committed, definition_id, body)
+            .unwrap_or_else(|error| panic!("live-authored {name} must compile exactly: {error}"));
+        let package = worker
+            .evaluate_exact_brep_graph(&graph)
+            .unwrap_or_else(|error| panic!("live-authored {name} must evaluate in OCCT: {error}"));
+        assert!((package.volume_mm3 - 800_000_000.0).abs() <= 0.8);
+        for axis in 0..3 {
+            assert!((package.bounds_mm[0][axis] - expected_bounds[0][axis]).abs() <= 1.0e-6);
+            assert!((package.bounds_mm[1][axis] - expected_bounds[1][axis]).abs() <= 1.0e-6);
+        }
+        assert_eq!(package.topology_counts, [8, 12, 6, 1, 1]);
+    }
+
     let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("live-oauth-house-frame.ketchup");
+    let path = directory
+        .path()
+        .join("live-oauth-roofed-house-frame.ketchup");
     persistence::save_atomic(&path, &committed).unwrap();
     let outcome = persistence::load_file(&path).unwrap();
     assert!(outcome.is_editable());
@@ -755,10 +957,13 @@ fn live_oauth_assistant_builds_a_supported_house_frame_across_turns() {
         committed.canonical_digest()
     );
     publish_artifact(
-        "live-oauth-house-frame.ketchup",
+        "live-oauth-roofed-house-frame.ketchup",
         &std::fs::read(path).unwrap(),
     );
 
+    assert!(shell.app_mut().undo());
+    assert_eq!(shell.app().document_revision(), frame_revision);
+    assert_eq!(shell.app().canonical_digest(), frame_digest);
     assert!(shell.app_mut().undo());
     assert_eq!(shell.app().document_revision(), first_revision);
     assert_eq!(shell.app().canonical_digest(), first_digest);
