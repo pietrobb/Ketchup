@@ -1,6 +1,6 @@
 use crate::document::{
-    BooleanOperation, DefinitionId, EdgeFinishKind, FeatureId, FeatureKind, LoftSection,
-    ProfileSegment, Snapshot, SpatialPathSegment, Transform,
+    BooleanOperation, DefinitionId, EdgeFinishKind, FeatureDependencyGraph, FeatureId, FeatureKind,
+    LoftSection, ProfileSegment, Snapshot, SpatialPathSegment, Transform,
 };
 use crate::exact_product::{
     EXACT_MIN_LENGTH_MM, ExactCircleProfile, ExactPlanarOffsetRegion,
@@ -391,9 +391,23 @@ impl ExactBRepGraph {
         definition_id: DefinitionId,
         producer_feature_id: FeatureId,
     ) -> Result<Self, ExactBRepGraphError> {
-        snapshot
+        let dependencies = snapshot
             .feature_dependency_graph()
             .map_err(|_| ExactBRepGraphError::InvalidDependencyGraph)?;
+        Self::from_snapshot_with_dependencies(
+            snapshot,
+            definition_id,
+            producer_feature_id,
+            &dependencies,
+        )
+    }
+
+    pub(crate) fn from_snapshot_with_dependencies(
+        snapshot: &Snapshot,
+        definition_id: DefinitionId,
+        producer_feature_id: FeatureId,
+        _dependencies: &FeatureDependencyGraph,
+    ) -> Result<Self, ExactBRepGraphError> {
         let definition = snapshot
             .definition(definition_id)
             .ok_or(ExactBRepGraphError::DefinitionNotFound(definition_id))?;

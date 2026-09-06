@@ -8,6 +8,8 @@ use ketchup_core::validation::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 const MAX_ASSISTANT_VALIDATION_OCCURRENCES: usize = 100;
+const MAX_ASSISTANT_VALIDATION_PATH_STEPS: usize = 256;
+const MAX_ASSISTANT_VALIDATION_TEXT_BYTES: usize = 4 * 1024 * 1024;
 const MAX_ASSISTANT_VALIDATION_ISSUES: usize = 100;
 pub const ASSISTANT_VALIDATOR_IDS: [&str; 9] = [
     "collision",
@@ -1882,7 +1884,8 @@ pub fn assistant_static_load_report(
 }
 
 pub use crate::collision::{
-    assistant_validation_context, assistant_validation_context_with_worker,
+    CollisionScope, assistant_validation_context, assistant_validation_context_with_worker,
+    scoped_collision_report_with_worker,
 };
 
 pub(crate) fn assistant_validation_context_base(
@@ -1892,11 +1895,25 @@ pub(crate) fn assistant_validation_context_base(
     collision: serde_json::Value,
 ) -> serde_json::Value {
     let tolerance = TolerancePolicy::default();
-    let visible_occurrences = snapshot
-        .scene_query()
-        .into_iter()
-        .filter(|occurrence| occurrence.visible)
-        .collect::<Vec<_>>();
+    let needs_participant_projection = selection.requested.iter().any(|id| *id != "collision");
+    let (visible_occurrences, scene_query_error) = if needs_participant_projection {
+        match snapshot.scene_query_bounded(
+            MAX_ASSISTANT_VALIDATION_OCCURRENCES,
+            MAX_ASSISTANT_VALIDATION_PATH_STEPS,
+            MAX_ASSISTANT_VALIDATION_TEXT_BYTES,
+        ) {
+            Ok(occurrences) => (
+                occurrences
+                    .into_iter()
+                    .filter(|occurrence| occurrence.visible)
+                    .collect::<Vec<_>>(),
+                None,
+            ),
+            Err(error) => (Vec::new(), Some(error)),
+        }
+    } else {
+        (Vec::new(), None)
+    };
     let requested = ASSISTANT_VALIDATOR_IDS
         .into_iter()
         .filter(|validator| selection.requested.contains(validator))
@@ -2013,8 +2030,8 @@ pub(crate) fn assistant_validation_context_base(
             "unavailable_occurrences": [],
         });
     }
-    let occurrence_limit_complete =
-        visible_occurrences.len() <= MAX_ASSISTANT_VALIDATION_OCCURRENCES;
+    let occurrence_limit_complete = scene_query_error.is_none()
+        && visible_occurrences.len() <= MAX_ASSISTANT_VALIDATION_OCCURRENCES;
     let names = visible_occurrences
         .iter()
         .take(MAX_ASSISTANT_VALIDATION_OCCURRENCES)
@@ -2274,6 +2291,8 @@ pub(crate) fn assistant_validation_context_base(
                 "validator": validator,
                 "reason": if validator == "collision" || coverage_complete {
                     "validator_specific_context_unavailable"
+                } else if scene_query_error.is_some() {
+                    "validation_context_resource_limit"
                 } else {
                     "incomplete_geometry_coverage"
                 },
@@ -2342,6 +2361,28 @@ pub(crate) fn assistant_validation_context_base(
     ] {
         all_issues.extend(report["issues"].as_array().into_iter().flatten().cloned());
     }
+    let visible_occurrence_count = if selection.requested.contains("collision") {
+        collision["visible_occurrence_count"].clone()
+    } else if scene_query_error.is_some() {
+        serde_json::Value::Null
+    } else {
+        serde_json::json!(visible_occurrences.len())
+    };
+    let visible_occurrence_count_at_least = if selection.requested.contains("collision") {
+        collision["visible_occurrence_count_at_least"].clone()
+    } else {
+        scene_query_error
+            .as_ref()
+            .map(|error| serde_json::json!(error.observed_at_least))
+            .unwrap_or(serde_json::Value::Null)
+    };
+    let validation_context_resource_limit = scene_query_error.as_ref().map(|error| {
+        serde_json::json!({
+            "resource": format!("{:?}", error.kind),
+            "limit": error.limit,
+            "observed_at_least": error.observed_at_least,
+        })
+    });
     // Collision issues are already resource-bounded and must not be silently truncated.
     serde_json::json!({
         "schema": "ketchup.assistant-validation-context.v1",
@@ -2355,9 +2396,11 @@ pub(crate) fn assistant_validation_context_base(
         "skipped": skipped,
         "not_evaluated": not_evaluated,
         "selection_error": null,
+        "validation_context_resource_limit": validation_context_resource_limit,
         "state": state,
         "complete": complete,
-        "visible_occurrence_count": visible_occurrences.len(),
+        "visible_occurrence_count": visible_occurrence_count,
+        "visible_occurrence_count_at_least": visible_occurrence_count_at_least,
         "checked_occurrence_count": if selection.requested.contains("collision") {
             collision["checked_occurrence_count"].clone()
         } else { serde_json::json!(participants.len()) },

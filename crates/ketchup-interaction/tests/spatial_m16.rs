@@ -9,9 +9,12 @@ use ketchup_core::exact_product::{
 use ketchup_interaction::exact_projection::ExactInteractionProjection;
 use ketchup_interaction::mesh_projection::MeshInteractionProjection;
 use ketchup_interaction::projection::CanonicalInteractionProjection;
-use ketchup_interaction::spatial::{SPATIAL_INDEX_V1, SpatialQueryError, overlapping_bounds_pairs};
+use ketchup_interaction::spatial::{
+    SPATIAL_INDEX_V1, SpatialQueryError, overlapping_bounds_for_sources,
+    overlapping_bounds_for_sources_with_cancellation, overlapping_bounds_pairs,
+};
 use ketchup_interaction::{Ray, Vec3};
-use std::sync::Arc;
+use std::sync::{Arc, atomic::AtomicBool};
 
 const DEFINITION: DefinitionId = DefinitionId(1);
 const PROFILE: FeatureId = FeatureId(1);
@@ -164,6 +167,29 @@ fn broad_phase_pairs_are_deterministic_boundary_safe_and_sparse_at_10k() {
     let first = overlapping_bounds_pairs(&touching).unwrap();
     assert_eq!(first.0, vec![(0, 1)]);
     assert_eq!(overlapping_bounds_pairs(&touching).unwrap(), first);
+    assert_eq!(
+        overlapping_bounds_for_sources(&touching, &[0], 1)
+            .unwrap()
+            .0,
+        vec![(0, 1)]
+    );
+    assert_eq!(
+        overlapping_bounds_for_sources(&touching, &[3], 1),
+        Err(SpatialQueryError::InvalidSourceIndex)
+    );
+    let dense = vec![[[0.0; 3], [1.0; 3]]; 32];
+    assert_eq!(
+        overlapping_bounds_for_sources(&dense, &[0], 10),
+        Err(SpatialQueryError::CandidateLimitExceeded)
+    );
+    assert_eq!(
+        overlapping_bounds_for_sources(&dense, &[0], 0),
+        Err(SpatialQueryError::CandidateLimitExceeded)
+    );
+    assert_eq!(
+        overlapping_bounds_for_sources_with_cancellation(&dense, &[0], 10, &AtomicBool::new(true),),
+        Err(SpatialQueryError::Cancelled)
+    );
 
     let sparse = (0..10_000)
         .map(|index| {

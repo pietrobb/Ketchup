@@ -10,8 +10,8 @@ use crate::document::{
     MeshAuthority, MeshBodySpec, ProfileSegment, Snapshot, Transform,
 };
 use crate::exact_brep_graph::{
-    ExactBRepGraph, ExactBRepPlanarLoop, ExactBRepPlanarSegment, MAX_EXACT_BREP_COORDINATE_MM,
-    MAX_EXACT_BREP_LOFT_CONTROL_POINTS, MAX_EXACT_BREP_REGION_HOLES,
+    ExactBRepGraph, ExactBRepGraphError, ExactBRepPlanarLoop, ExactBRepPlanarSegment,
+    MAX_EXACT_BREP_COORDINATE_MM, MAX_EXACT_BREP_LOFT_CONTROL_POINTS, MAX_EXACT_BREP_REGION_HOLES,
     MAX_EXACT_BREP_REGION_SEGMENTS, MAX_EXACT_BREP_SWEEP_PATH_LENGTH_MM,
     MIN_EXACT_BREP_SWEEP_PATH_LENGTH_MM,
 };
@@ -1742,6 +1742,43 @@ fn next_contents_stamp() -> u64 {
 
     static NEXT: AtomicU64 = AtomicU64::new(1);
     NEXT.fetch_add(1, Ordering::Relaxed)
+}
+
+pub struct ExactSnapshotPreparation<'a> {
+    snapshot: &'a Snapshot,
+    dependencies: FeatureDependencyGraph,
+}
+
+impl<'a> ExactSnapshotPreparation<'a> {
+    pub fn new(snapshot: &'a Snapshot) -> Result<Self, ExactProductError> {
+        let dependencies = snapshot
+            .feature_dependency_graph()
+            .map_err(|_| ExactProductError::UnsupportedDefinition)?;
+        Ok(Self {
+            snapshot,
+            dependencies,
+        })
+    }
+
+    pub fn terminal_features(
+        &self,
+        definition_id: DefinitionId,
+    ) -> Result<BTreeMap<BodyId, FeatureId>, ExactProductError> {
+        exact_body_terminal_features_with_graph(self.snapshot, definition_id, &self.dependencies)
+    }
+
+    pub fn graph(
+        &self,
+        definition_id: DefinitionId,
+        producer_feature_id: FeatureId,
+    ) -> Result<ExactBRepGraph, ExactBRepGraphError> {
+        ExactBRepGraph::from_snapshot_with_dependencies(
+            self.snapshot,
+            definition_id,
+            producer_feature_id,
+            &self.dependencies,
+        )
+    }
 }
 
 pub fn exact_body_terminal_features(

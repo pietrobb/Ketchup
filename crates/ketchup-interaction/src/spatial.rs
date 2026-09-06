@@ -2,7 +2,11 @@
 
 use crate::{Ray, Vec3};
 use ketchup_core::document::{DocumentId, Snapshot, Transform};
-use std::fmt;
+use std::{
+    collections::BTreeSet,
+    fmt,
+    sync::atomic::{AtomicBool, Ordering},
+};
 
 pub const SPATIAL_INDEX_V1: &str = "ketchup.spatial-bvh.v1";
 const LEAF_CAPACITY: usize = 4;
@@ -43,6 +47,9 @@ pub struct SpatialQueryStats {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SpatialQueryError {
     InvalidBounds,
+    InvalidSourceIndex,
+    CandidateLimitExceeded,
+    Cancelled,
     StaleProjection,
 }
 
@@ -50,6 +57,9 @@ impl fmt::Display for SpatialQueryError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
             Self::InvalidBounds => "spatial bounds must be finite and ordered",
+            Self::InvalidSourceIndex => "spatial source index is out of range",
+            Self::CandidateLimitExceeded => "spatial candidate limit exceeded",
+            Self::Cancelled => "spatial query cancelled",
             Self::StaleProjection => {
                 "spatial projection is bound to a different canonical snapshot"
             }
@@ -245,12 +255,10 @@ impl SpatialIndex {
     }
 }
 
-/// Deterministic broad-phase only. Every returned pair still requires an
-/// authoritative geometry check before it can establish contact or separation.
-pub fn overlapping_bounds_pairs(
+fn validated_spatial_bounds(
     bounds: &[[[f64; 3]; 2]],
-) -> Result<(Vec<(usize, usize)>, SpatialQueryStats), SpatialQueryError> {
-    let bounds = bounds
+) -> Result<Vec<SpatialBounds>, SpatialQueryError> {
+    bounds
         .iter()
         .map(|value| {
             if !value.iter().flatten().all(|axis| axis.is_finite())
@@ -263,7 +271,15 @@ pub fn overlapping_bounds_pairs(
                 Vec3::new(value[1][0], value[1][1], value[1][2]),
             ))
         })
-        .collect::<Result<Vec<_>, _>>()?;
+        .collect()
+}
+
+/// Deterministic broad-phase only. Every returned pair still requires an
+/// authoritative geometry check before it can establish contact or separation.
+pub fn overlapping_bounds_pairs(
+    bounds: &[[[f64; 3]; 2]],
+) -> Result<(Vec<(usize, usize)>, SpatialQueryStats), SpatialQueryError> {
+    let bounds = validated_spatial_bounds(bounds)?;
     let index = SpatialIndex::build(bounds.iter().copied().enumerate());
     let mut pairs = Vec::new();
     let mut bounds_tested = 0usize;
@@ -279,6 +295,62 @@ pub fn overlapping_bounds_pairs(
     }
     pairs.sort_unstable();
     pairs.dedup();
+    let stats = SpatialQueryStats {
+        indexed_items: bounds.len(),
+        bounds_tested,
+        candidate_count: pairs.len(),
+    };
+    Ok((pairs, stats))
+}
+
+/// Query only pairs incident to the supplied source indices. The aggregate
+/// candidate limit bounds host memory before exact narrow-phase batching.
+pub fn overlapping_bounds_for_sources(
+    bounds: &[[[f64; 3]; 2]],
+    source_indices: &[usize],
+    max_candidates: usize,
+) -> Result<(Vec<(usize, usize)>, SpatialQueryStats), SpatialQueryError> {
+    overlapping_bounds_for_sources_with_cancellation(
+        bounds,
+        source_indices,
+        max_candidates,
+        &AtomicBool::new(false),
+    )
+}
+
+pub fn overlapping_bounds_for_sources_with_cancellation(
+    bounds: &[[[f64; 3]; 2]],
+    source_indices: &[usize],
+    max_candidates: usize,
+    cancelled: &AtomicBool,
+) -> Result<(Vec<(usize, usize)>, SpatialQueryStats), SpatialQueryError> {
+    let bounds = validated_spatial_bounds(bounds)?;
+    if source_indices.iter().any(|index| *index >= bounds.len()) {
+        return Err(SpatialQueryError::InvalidSourceIndex);
+    }
+    if cancelled.load(Ordering::Acquire) {
+        return Err(SpatialQueryError::Cancelled);
+    }
+    let index = SpatialIndex::build(bounds.iter().copied().enumerate());
+    let mut sources = source_indices.to_vec();
+    sources.sort_unstable();
+    sources.dedup();
+    let mut pairs = BTreeSet::new();
+    let mut bounds_tested = 0usize;
+    for left in sources {
+        if let Some(root) = &index.root {
+            query_bounds_pairs_limited(
+                root,
+                bounds[left],
+                left,
+                &mut pairs,
+                max_candidates,
+                &mut bounds_tested,
+                cancelled,
+            )?;
+        }
+    }
+    let pairs = pairs.into_iter().collect::<Vec<_>>();
     let stats = SpatialQueryStats {
         indexed_items: bounds.len(),
         bounds_tested,
@@ -368,6 +440,61 @@ fn query_bounds_node(
             query_bounds_node(right, query, candidates, bounds_tested);
         }
     }
+}
+
+fn query_bounds_pairs_limited(
+    node: &SpatialNode,
+    query: SpatialBounds,
+    source: usize,
+    pairs: &mut BTreeSet<(usize, usize)>,
+    max_candidates: usize,
+    bounds_tested: &mut usize,
+    cancelled: &AtomicBool,
+) -> Result<(), SpatialQueryError> {
+    if cancelled.load(Ordering::Acquire) {
+        return Err(SpatialQueryError::Cancelled);
+    }
+    *bounds_tested += 1;
+    if !node.bounds().intersects_bounds(query) {
+        return Ok(());
+    }
+    match node {
+        SpatialNode::Leaf { items, .. } => {
+            for item in items {
+                if cancelled.load(Ordering::Acquire) {
+                    return Err(SpatialQueryError::Cancelled);
+                }
+                *bounds_tested += 1;
+                if item.source_index != source && item.bounds.intersects_bounds(query) {
+                    pairs.insert((source.min(item.source_index), source.max(item.source_index)));
+                    if pairs.len() > max_candidates {
+                        return Err(SpatialQueryError::CandidateLimitExceeded);
+                    }
+                }
+            }
+        }
+        SpatialNode::Branch { left, right, .. } => {
+            query_bounds_pairs_limited(
+                left,
+                query,
+                source,
+                pairs,
+                max_candidates,
+                bounds_tested,
+                cancelled,
+            )?;
+            query_bounds_pairs_limited(
+                right,
+                query,
+                source,
+                pairs,
+                max_candidates,
+                bounds_tested,
+                cancelled,
+            )?;
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn transformed_bounds(transform: Transform, bounds: [[f64; 3]; 2]) -> SpatialBounds {

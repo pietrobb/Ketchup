@@ -1,5 +1,6 @@
 use ketchup_application::validation::{
-    assistant_validation_context, assistant_validation_context_with_worker,
+    CollisionScope, assistant_validation_context, assistant_validation_context_with_worker,
+    scoped_collision_report_with_worker,
 };
 use ketchup_application::{AssistantValidationSelection, DocumentSession, SessionSettings};
 use ketchup_core::{document::*, exact_product::ExactResultRegistry, persistence::ContainerData};
@@ -55,6 +56,17 @@ fn exact(document: &DocumentStore) -> serde_json::Value {
         Duration::from_secs(120),
     )
 }
+
+fn exact_scope(document: &DocumentStore, scope: &CollisionScope) -> serde_json::Value {
+    scoped_collision_report_with_worker(
+        &document.current(),
+        &ContainerData::default(),
+        None,
+        Duration::from_secs(120),
+        scope,
+        std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+    )
+}
 #[test]
 fn worker_contact_penetration_and_snapshot_are_exact() {
     for (x, state, count) in [(10.0, "passed", 0), (9.0, "failed", 1), (11.0, "passed", 0)] {
@@ -89,6 +101,230 @@ fn worker_contact_penetration_and_snapshot_are_exact() {
         assert_eq!(undo, document.visible_undo_steps());
     }
 }
+#[test]
+fn scoped_collision_checks_boundary_neighbors_but_rejects_distant_pairs() {
+    let mut document = DocumentStore::new();
+    add(&mut document, 1, rectangle(), 0.0);
+    add(&mut document, 2, rectangle(), 9.0);
+    add(&mut document, 3, rectangle(), 100.0);
+    let scope = CollisionScope::bind(&document.current(), [OccurrenceId(1)]);
+
+    let report = exact_scope(&document, &scope);
+    assert_eq!(report["state"], "failed", "{report}");
+    assert_eq!(report["complete"], true, "{report}");
+    assert_eq!(report["issue_count"], 1, "{report}");
+    assert_eq!(report["total_body_count"], 1, "{report}");
+    assert_eq!(report["model_body_count"], 3, "{report}");
+    assert_eq!(report["total_pair_count"], 2, "{report}");
+    assert_eq!(report["checked_pair_count"], 2, "{report}");
+    assert_eq!(report["broad_phase_rejected_pair_count"], 1, "{report}");
+    assert_eq!(report["narrow_phase_pair_count"], 1, "{report}");
+    assert_eq!(report["scope"]["boundary_occurrence_count"], 1, "{report}");
+    assert_eq!(
+        report["scope"]["candidate_coverage_complete"], true,
+        "{report}"
+    );
+    assert_eq!(report["issues"][0]["right_occurrence_id"], 2, "{report}");
+}
+
+#[test]
+fn scoped_collision_rejects_all_distant_pairs_across_ten_thousand_occurrences() {
+    let mut document = DocumentStore::new();
+    let mut commands = vec![
+        CanonicalCommand::CreateDefinition {
+            id: DefinitionId(1),
+            name: "Repeated part".into(),
+        },
+        CanonicalCommand::CreateFeature {
+            id: FeatureId(1),
+            definition_id: DefinitionId(1),
+            name: "Profile".into(),
+            kind: FeatureKind::Profile {
+                points_mm: rectangle(),
+            },
+        },
+        CanonicalCommand::CreateFeature {
+            id: FeatureId(2),
+            definition_id: DefinitionId(1),
+            name: "Solid".into(),
+            kind: FeatureKind::Extrusion {
+                profile: FeatureId(1),
+                height: Dimension::new("10", 10.0).unwrap(),
+            },
+        },
+    ];
+    commands.extend((1..=10_000).map(|id| CanonicalCommand::CreateOccurrence {
+        id: OccurrenceId(id),
+        definition_id: DefinitionId(1),
+        name: format!("Part {id}"),
+        transform: Transform::from_translation(id as f64 * 20.0, 0.0, 0.0).unwrap(),
+        parent: None,
+        tag: None,
+        visible: true,
+    }));
+    document.apply_batch(&CommandBatch::new(commands)).unwrap();
+    let scope = CollisionScope::bind(&document.current(), [OccurrenceId(5_000)]);
+
+    let report = exact_scope(&document, &scope);
+    assert_eq!(report["state"], "passed", "{report}");
+    assert_eq!(report["complete"], true, "{report}");
+    assert_eq!(report["model_body_count"], 10_000);
+    assert_eq!(report["total_body_count"], 1);
+    assert_eq!(report["total_pair_count"], 9_999);
+    assert_eq!(report["checked_pair_count"], 9_999);
+    assert_eq!(report["broad_phase_rejected_pair_count"], 9_999);
+    assert_eq!(report["narrow_phase_pair_count"], 0);
+    assert_eq!(report["scope"]["boundary_occurrence_count"], 0);
+}
+
+#[test]
+fn scoped_collision_caps_unique_graph_preparation() {
+    let mut document = DocumentStore::new();
+    let commands = (1..=513)
+        .flat_map(|id| {
+            [
+                CanonicalCommand::CreateDefinition {
+                    id: DefinitionId(id),
+                    name: format!("Part {id}"),
+                },
+                CanonicalCommand::CreateFeature {
+                    id: FeatureId(id * 2 - 1),
+                    definition_id: DefinitionId(id),
+                    name: "Profile".into(),
+                    kind: FeatureKind::Profile {
+                        points_mm: rectangle(),
+                    },
+                },
+                CanonicalCommand::CreateFeature {
+                    id: FeatureId(id * 2),
+                    definition_id: DefinitionId(id),
+                    name: "Solid".into(),
+                    kind: FeatureKind::Extrusion {
+                        profile: FeatureId(id * 2 - 1),
+                        height: Dimension::new("10", 10.0).unwrap(),
+                    },
+                },
+                CanonicalCommand::CreateOccurrence {
+                    id: OccurrenceId(id),
+                    definition_id: DefinitionId(id),
+                    name: format!("Part {id}"),
+                    transform: Transform::from_translation(id as f64 * 20.0, 0.0, 0.0).unwrap(),
+                    parent: None,
+                    tag: None,
+                    visible: true,
+                },
+            ]
+        })
+        .collect::<Vec<_>>();
+    document.apply_batch(&CommandBatch::new(commands)).unwrap();
+    let scope = CollisionScope::bind(&document.current(), [OccurrenceId(1)]);
+
+    let report = exact_scope(&document, &scope);
+    assert_eq!(report["state"], "not_evaluated", "{report}");
+    assert_eq!(report["complete"], false, "{report}");
+    assert_eq!(
+        report["not_evaluated"][0]["reason"], "exact_graph_count_resource_limit",
+        "{report}"
+    );
+    assert_eq!(report["not_evaluated"][0]["limit"], 512, "{report}");
+}
+
+#[test]
+fn scoped_collision_cancel_is_explicit_and_incomplete() {
+    let mut document = DocumentStore::new();
+    add(&mut document, 1, rectangle(), 0.0);
+    let scope = CollisionScope::bind(&document.current(), [OccurrenceId(1)]);
+    let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let report = scoped_collision_report_with_worker(
+        &document.current(),
+        &ContainerData::default(),
+        None,
+        Duration::from_secs(120),
+        &scope,
+        cancelled,
+    );
+    assert_eq!(report["state"], "not_evaluated", "{report}");
+    assert_eq!(report["complete"], false, "{report}");
+    assert_eq!(
+        report["not_evaluated"][0]["reason"],
+        "exact_collision_cancelled"
+    );
+}
+
+#[test]
+fn full_validation_context_fails_closed_at_its_scene_projection_budget() {
+    let mut document = DocumentStore::new();
+    add(&mut document, 1, rectangle(), 0.0);
+    document
+        .apply_batch(&CommandBatch::new(
+            (2..=101)
+                .map(|id| CanonicalCommand::CreateOccurrence {
+                    id: OccurrenceId(id),
+                    definition_id: DefinitionId(1),
+                    name: format!("Part {id}"),
+                    transform: Transform::from_translation(id as f64 * 20.0, 0.0, 0.0).unwrap(),
+                    parent: None,
+                    tag: None,
+                    visible: true,
+                })
+                .collect(),
+        ))
+        .unwrap();
+
+    let report = assistant_validation_context(
+        &document.current(),
+        &ExactResultRegistry::default(),
+        &AssistantValidationSelection::only(&["gravity_support"]),
+    );
+    assert_eq!(report["state"], "not_evaluated", "{report}");
+    assert_eq!(report["complete"], false, "{report}");
+    assert_eq!(report["visible_occurrence_count"], serde_json::Value::Null);
+    assert_eq!(report["visible_occurrence_count_at_least"], 101, "{report}");
+    assert_eq!(
+        report["validation_context_resource_limit"]["resource"], "Occurrences",
+        "{report}"
+    );
+    assert_eq!(
+        report["validation_context_resource_limit"]["limit"], 100,
+        "{report}"
+    );
+    assert!(
+        report["not_evaluated"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| {
+                entry["validator"] == "gravity_support"
+                    && entry["reason"] == "validation_context_resource_limit"
+            }),
+        "{report}"
+    );
+}
+
+#[test]
+fn scoped_collision_rejects_a_scope_bound_to_an_older_snapshot() {
+    let mut document = DocumentStore::new();
+    add(&mut document, 1, rectangle(), 0.0);
+    let scope = CollisionScope::bind(&document.current(), [OccurrenceId(1)]);
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetOccurrenceTransform {
+                id: OccurrenceId(1),
+                transform: Transform::from_translation(1.0, 0.0, 0.0).unwrap(),
+            },
+        ]))
+        .unwrap();
+
+    let report = exact_scope(&document, &scope);
+    assert_eq!(report["state"], "not_evaluated", "{report}");
+    assert_eq!(report["complete"], false, "{report}");
+    assert_eq!(report["issue_count"], 0, "{report}");
+    assert_eq!(
+        report["not_evaluated"][0]["reason"], "stale_collision_scope",
+        "{report}"
+    );
+}
+
 #[test]
 fn overlapping_sloped_envelopes_are_not_solid_collisions() {
     let mut document = DocumentStore::new();
