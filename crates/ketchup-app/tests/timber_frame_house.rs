@@ -34,7 +34,10 @@ use ketchup_core::exact_validation::{
     GeneralClearanceCase, GravitySupportInput, GravitySupportParticipant, general_body_input_bytes,
     general_body_validation_policy, gravity_support_input_bytes, gravity_support_validation_policy,
 };
-use ketchup_core::fabrication::{GeneralManufacturingKind, ProjectionStatus};
+use ketchup_core::fabrication::{
+    FABRICATION_ROLE_DIMENSION_V1, GeneralManufacturingKind, ProjectionStatus, TIMBER_MATERIAL_V1,
+    TIMBER_MEMBER_ROLE_V1,
+};
 use ketchup_core::persistence::{self, ContainerData};
 use ketchup_core::prismatic::TolerancePolicy;
 use ketchup_core::validation::{
@@ -261,6 +264,8 @@ fn static_metadata_program(snapshot: &Snapshot) -> (AssistantCadEditProgram, usi
         + 1;
     let load_category_id = first_category_id;
     let support_category_id = first_category_id + 1;
+    let fabrication_dimension_id = dimension_id + 1;
+    let timber_category_id = first_category_id + 2;
     let mut next_node_id = snapshot
         .evaluator_nodes()
         .map(|node| node.id().0)
@@ -288,6 +293,13 @@ fn static_metadata_program(snapshot: &Snapshot) -> (AssistantCadEditProgram, usi
         .collect::<Vec<_>>();
     assert_eq!(support_ids.len(), 2);
     assert_eq!(load_ids.len(), 10);
+    let all_ids = snapshot
+        .scene_query()
+        .into_iter()
+        .filter(|occurrence| occurrence.visible)
+        .map(|occurrence| occurrence.occurrence_id.0)
+        .collect::<Vec<_>>();
+    assert_eq!(all_ids.len(), 12);
 
     let mut operations = vec![
         AssistantCadEditOperation::UpsertClassificationDimension {
@@ -317,6 +329,21 @@ fn static_metadata_program(snapshot: &Snapshot) -> (AssistantCadEditProgram, usi
             },
             dimension_id,
             category_id: Some(support_category_id),
+        },
+        AssistantCadEditOperation::UpsertClassificationDimension {
+            dimension_id: fabrication_dimension_id,
+            name: FABRICATION_ROLE_DIMENSION_V1.to_owned(),
+            categories: vec![AssistantCadClassificationCategory {
+                id: timber_category_id,
+                name: TIMBER_MEMBER_ROLE_V1.to_owned(),
+            }],
+        },
+        AssistantCadEditOperation::SetOccurrenceClassification {
+            selector: AssistantCadEntitySelector::Occurrences {
+                occurrence_ids: all_ids,
+            },
+            dimension_id: fabrication_dimension_id,
+            category_id: Some(timber_category_id),
         },
     ];
     for (name, value) in [
@@ -352,7 +379,7 @@ fn static_metadata_program(snapshot: &Snapshot) -> (AssistantCadEditProgram, usi
         });
         next_node_id += 1;
     }
-    assert_eq!(operations.len(), 28);
+    assert_eq!(operations.len(), 30);
     (AssistantCadEditProgram { operations }, load_ids.len())
 }
 
@@ -366,6 +393,7 @@ fn build_timber_frame_house() -> (Shell, Arc<ScriptedAssistantTransport>, u64, S
         "Repeat that stud every 625 mm and cap the wall with a top plate",
         "Sheath the front wall with an 18 mm panel",
         "Stand the gable posts, carry the ridge beam on them and add a rafter sloping up to it",
+        "Mark every completed house occurrence as a timber member for fabrication",
     ];
     let transport = Arc::new(ScriptedAssistantTransport::new(requests.map(|request| {
         (
@@ -594,6 +622,49 @@ fn build_timber_frame_house() -> (Shell, Arc<ScriptedAssistantTransport>, u64, S
                         angle_degrees: rafter_pitch_degrees,
                     }),
                 ),
+            ],
+        },
+    );
+
+    let snapshot = shell.app().document_snapshot();
+    let dimension_id = snapshot
+        .classification_dimensions()
+        .map(|dimension| dimension.id().0)
+        .max()
+        .unwrap_or(0)
+        + 1;
+    let category_id = snapshot
+        .classification_dimensions()
+        .flat_map(|dimension| dimension.categories())
+        .map(|category| category.id().0)
+        .max()
+        .unwrap_or(0)
+        + 1;
+    let occurrence_ids = snapshot
+        .scene_query()
+        .into_iter()
+        .filter(|occurrence| occurrence.visible)
+        .map(|occurrence| occurrence.occurrence_id.0)
+        .collect::<Vec<_>>();
+    build_step(
+        &mut shell,
+        &transport,
+        requests[6],
+        AssistantCadEditProgram {
+            operations: vec![
+                AssistantCadEditOperation::UpsertClassificationDimension {
+                    dimension_id,
+                    name: FABRICATION_ROLE_DIMENSION_V1.to_owned(),
+                    categories: vec![AssistantCadClassificationCategory {
+                        id: category_id,
+                        name: TIMBER_MEMBER_ROLE_V1.to_owned(),
+                    }],
+                },
+                AssistantCadEditOperation::SetOccurrenceClassification {
+                    selector: AssistantCadEntitySelector::Occurrences { occurrence_ids },
+                    dimension_id,
+                    category_id: Some(category_id),
+                },
             ],
         },
     );
@@ -1313,6 +1384,13 @@ fn live_oauth_assistant_builds_a_roofed_house_frame_across_turns() {
     assert!(fabrication.drawings.envelope.is_current(&committed));
     assert!(fabrication.manufacturing.envelope.is_current(&committed));
     assert_eq!(fabrication.bom.rows.len(), participants.len());
+    assert!(
+        fabrication
+            .bom
+            .rows
+            .iter()
+            .all(|row| row.material_key == TIMBER_MATERIAL_V1)
+    );
     assert_eq!(fabrication.drawings.drawings.len(), participants.len());
     assert_eq!(
         fabrication.manufacturing.operations.len(),
@@ -1567,6 +1645,13 @@ fn the_timber_frame_house_projects_a_manufacturable_handoff() {
     // One bill-of-materials row per distinct member, with the studs pooled.
     assert_eq!(projection.bom.envelope.status, ProjectionStatus::Complete);
     assert_eq!(projection.bom.rows.len(), visible_definitions.len());
+    assert!(
+        projection
+            .bom
+            .rows
+            .iter()
+            .all(|row| row.material_key == TIMBER_MATERIAL_V1)
+    );
     for name in HOUSE_MEMBERS {
         let definition_id = definition_id_of(&shell, name);
         assert!(

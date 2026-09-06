@@ -1,6 +1,6 @@
 use crate::document::{
     BooleanOperation, DefinitionId, DocumentId, FeatureId, FeatureKind, InstancePath,
-    InstancePathStep, Snapshot, Transform,
+    InstancePathStep, OccurrenceId, Snapshot, Transform,
 };
 use crate::exact_brep_graph::{
     ExactBRepBooleanOperation, ExactBRepGraph, ExactBRepLinearInterval, ExactBRepOperation,
@@ -280,7 +280,10 @@ fn push_projection_bytes(output: &mut Vec<u8>, value: &[u8]) {
     output.extend_from_slice(value);
 }
 
-pub const GENERAL_FABRICATION_EVALUATOR_V2: &str = "ketchup.general-fabrication-evaluator.v2";
+pub const GENERAL_FABRICATION_EVALUATOR_V3: &str = "ketchup.general-fabrication-evaluator.v3";
+pub const FABRICATION_ROLE_DIMENSION_V1: &str = "ketchup.fabrication-role.v1";
+pub const TIMBER_MEMBER_ROLE_V1: &str = "fabrication.timber-member.v1";
+pub const TIMBER_MATERIAL_V1: &str = "ketchup.material.timber.unspecified.v1";
 pub const GENERAL_BOM_EXPORT_V1: &str = "ketchup.general-bom-export.v1";
 pub const GENERAL_DRAWING_SVG_V1: &str = "ketchup.general-drawing-svg.v1";
 pub const GENERAL_MANUFACTURING_EXPORT_V2: &str = "ketchup.general-manufacturing-export.v2";
@@ -288,6 +291,10 @@ pub const GENERAL_MANUFACTURING_EXPORT_V2: &str = "ketchup.general-manufacturing
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum GeneralFabricationError {
     ValidationBindingMismatch,
+    FabricationRoleDimensionMissing,
+    FabricationRoleDimensionAmbiguous,
+    TimberMemberRoleMissing,
+    TimberMemberRoleAmbiguous,
     UnsupportedOrUnavailableGeometry,
     InvalidGeometry,
     NoSupportedGeometry,
@@ -300,6 +307,18 @@ impl fmt::Display for GeneralFabricationError {
             Self::ValidationBindingMismatch => formatter.write_str(
                 "general fabrication requires current complete general-body validation coverage",
             ),
+            Self::FabricationRoleDimensionMissing => {
+                formatter.write_str("the fabrication role dimension is missing")
+            }
+            Self::FabricationRoleDimensionAmbiguous => {
+                formatter.write_str("the fabrication role dimension is ambiguous")
+            }
+            Self::TimberMemberRoleMissing => {
+                formatter.write_str("the timber-member fabrication role is missing")
+            }
+            Self::TimberMemberRoleAmbiguous => {
+                formatter.write_str("the timber-member fabrication role is ambiguous")
+            }
             Self::UnsupportedOrUnavailableGeometry => formatter.write_str(
                 "a visible geometry-bearing occurrence has unsupported or unavailable evidence",
             ),
@@ -628,6 +647,41 @@ impl GeneralFabricationProjection {
     }
 }
 
+fn timber_member_occurrences(
+    snapshot: &Snapshot,
+) -> Result<BTreeSet<OccurrenceId>, GeneralFabricationError> {
+    let dimensions = snapshot
+        .classification_dimensions()
+        .filter(|dimension| dimension.name() == FABRICATION_ROLE_DIMENSION_V1)
+        .collect::<Vec<_>>();
+    let [dimension] = dimensions.as_slice() else {
+        return Err(if dimensions.is_empty() {
+            GeneralFabricationError::FabricationRoleDimensionMissing
+        } else {
+            GeneralFabricationError::FabricationRoleDimensionAmbiguous
+        });
+    };
+    let categories = dimension
+        .categories()
+        .filter(|category| category.name() == TIMBER_MEMBER_ROLE_V1)
+        .collect::<Vec<_>>();
+    let [timber_category] = categories.as_slice() else {
+        return Err(if categories.is_empty() {
+            GeneralFabricationError::TimberMemberRoleMissing
+        } else {
+            GeneralFabricationError::TimberMemberRoleAmbiguous
+        });
+    };
+    Ok(snapshot
+        .occurrences()
+        .filter(|occurrence| {
+            snapshot.occurrence_classification(occurrence.id(), dimension.id())
+                == Some(timber_category.id())
+        })
+        .map(|occurrence| occurrence.id())
+        .collect())
+}
+
 pub fn project_general_fabrication(
     snapshot: &Snapshot,
     registry: &ExactResultRegistry,
@@ -635,6 +689,7 @@ pub fn project_general_fabrication(
     validation_report: &ValidationReport,
     tolerance: TolerancePolicy,
 ) -> Result<GeneralFabricationProjection, GeneralFabricationError> {
+    let timber_members = timber_member_occurrences(snapshot)?;
     let validation_input = general_body_input_bytes(validation_cases);
     if !validation_report.invocation.is_current(snapshot)
         || validation_report.invocation.contract_id != GENERAL_BODY_VALIDATOR_CONTRACT_V1
@@ -654,11 +709,9 @@ pub fn project_general_fabrication(
         })
         .collect::<BTreeSet<_>>();
     let mut accepted = Vec::new();
-    for occurrence in snapshot
-        .scene_query()
-        .into_iter()
-        .filter(|occurrence| occurrence.visible)
-    {
+    for occurrence in snapshot.scene_query().into_iter().filter(|occurrence| {
+        occurrence.visible && timber_members.contains(&occurrence.occurrence_id)
+    }) {
         let definition = snapshot
             .definition(occurrence.definition_id)
             .ok_or(GeneralFabricationError::UnsupportedOrUnavailableGeometry)?;
@@ -737,7 +790,7 @@ pub fn project_general_fabrication(
                 .map(|participant| participant.evidence_class()),
             TolerantEvidence::new(
                 tolerance.epsilon_mm(),
-                GENERAL_FABRICATION_EVALUATOR_V2,
+                GENERAL_FABRICATION_EVALUATOR_V3,
                 PermittedErrorDirection::BidirectionalBounded,
             )
             .expect("the fabrication tolerance and method identity are valid"),
@@ -750,7 +803,7 @@ pub fn project_general_fabrication(
             ),
             definition_id,
             source,
-            material_key: "ketchup.material.unspecified.v1".to_owned(),
+            material_key: TIMBER_MATERIAL_V1.to_owned(),
             quantity: instances.len(),
             dimensions,
             instances,
@@ -764,7 +817,7 @@ pub fn project_general_fabrication(
             snapshot,
             &bom_bytes,
             general_status,
-            GENERAL_FABRICATION_EVALUATOR_V2,
+            GENERAL_FABRICATION_EVALUATOR_V3,
         ),
         evidence_counts,
         rows,
@@ -781,7 +834,7 @@ pub fn project_general_fabrication(
             snapshot,
             &drawing_bytes,
             general_status,
-            GENERAL_FABRICATION_EVALUATOR_V2,
+            GENERAL_FABRICATION_EVALUATOR_V3,
         ),
         validation_state,
         drawings,
@@ -837,7 +890,7 @@ pub fn project_general_fabrication(
             snapshot,
             &manufacturing_bytes,
             manufacturing_status,
-            GENERAL_FABRICATION_EVALUATOR_V2,
+            GENERAL_FABRICATION_EVALUATOR_V3,
         ),
         validation_state,
         operations,
@@ -1634,7 +1687,7 @@ fn general_envelope_is_current(
     snapshot: &Snapshot,
 ) -> bool {
     envelope.projection_schema == FABRICATION_PROJECTION_V1
-        && envelope.evaluator_id == GENERAL_FABRICATION_EVALUATOR_V2
+        && envelope.evaluator_id == GENERAL_FABRICATION_EVALUATOR_V3
         && envelope.is_current(snapshot)
 }
 

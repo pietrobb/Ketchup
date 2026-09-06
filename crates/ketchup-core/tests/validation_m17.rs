@@ -16,8 +16,9 @@ use ketchup_core::exact_validation::{
     general_body_validation_policy,
 };
 use ketchup_core::fabrication::{
-    GeneralFabricationError, GeneralFabricationProjection, GeneralMachiningGeometry,
-    GeneralManufacturingKind, ProjectionStatus, project_general_fabrication,
+    FABRICATION_ROLE_DIMENSION_V1, GeneralFabricationError, GeneralFabricationProjection,
+    GeneralMachiningGeometry, GeneralManufacturingKind, ProjectionStatus, TIMBER_MATERIAL_V1,
+    TIMBER_MEMBER_ROLE_V1, project_general_fabrication,
 };
 use ketchup_core::graph::{DerivedIdentity, PortSpec, RuleOutput, SlotPath, SlotSegment};
 use ketchup_core::import::{StepImportMesh, StepMeshTriangle};
@@ -58,6 +59,8 @@ const SPACE_RULE: NodeId = NodeId(33);
 const ROLE_DIMENSION: ClassificationDimensionId = ClassificationDimensionId(900);
 const ROLE_CATEGORY_SUBJECT: ClassificationCategoryId = ClassificationCategoryId(901);
 const ROLE_CATEGORY_SUPPORT: ClassificationCategoryId = ClassificationCategoryId(902);
+const FABRICATION_ROLE_DIMENSION: ClassificationDimensionId = ClassificationDimensionId(920);
+const TIMBER_MEMBER_CATEGORY: ClassificationCategoryId = ClassificationCategoryId(921);
 
 #[test]
 fn validator_roles_are_explicit_name_invariant_and_deterministic() {
@@ -463,6 +466,62 @@ fn general_fabrication_regenerates_deterministically_and_exports_fail_closed() {
             tolerance,
         ),
         Err(GeneralFabricationError::UnsupportedOrUnavailableGeometry)
+    );
+}
+
+#[test]
+fn general_fabrication_requires_explicit_unambiguous_timber_marking() {
+    let mut selectively_marked = exact_only_document();
+    selectively_marked
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetOccurrenceClassification {
+                occurrence_id: EXACT_RIGHT,
+                dimension_id: FABRICATION_ROLE_DIMENSION,
+                category_id: None,
+            },
+        ]))
+        .unwrap();
+    let projection = exact_document_fabrication_projection(&selectively_marked).unwrap();
+    assert_eq!(projection.bom.rows.len(), 1);
+    assert_eq!(projection.bom.rows[0].quantity, 1);
+    assert_eq!(projection.bom.rows[0].material_key, TIMBER_MATERIAL_V1);
+    assert_eq!(
+        projection.bom.rows[0].instances,
+        vec![InstancePath::root(EXACT_LEFT)]
+    );
+    assert_eq!(projection.manufacturing.operations.len(), 1);
+
+    let mut missing_dimension = exact_only_document();
+    missing_dimension
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::UpsertClassificationDimension {
+                id: FABRICATION_ROLE_DIMENSION,
+                name: "unrelated.fabrication-role.v1".to_owned(),
+                categories: vec![(TIMBER_MEMBER_CATEGORY, TIMBER_MEMBER_ROLE_V1.to_owned())],
+            },
+        ]))
+        .unwrap();
+    assert_eq!(
+        exact_document_fabrication_projection(&missing_dimension),
+        Err(GeneralFabricationError::FabricationRoleDimensionMissing)
+    );
+
+    let mut ambiguous_dimension = exact_only_document();
+    ambiguous_dimension
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::UpsertClassificationDimension {
+                id: ClassificationDimensionId(930),
+                name: FABRICATION_ROLE_DIMENSION_V1.to_owned(),
+                categories: vec![(
+                    ClassificationCategoryId(931),
+                    TIMBER_MEMBER_ROLE_V1.to_owned(),
+                )],
+            },
+        ]))
+        .unwrap();
+    assert_eq!(
+        exact_document_fabrication_projection(&ambiguous_dimension),
+        Err(GeneralFabricationError::FabricationRoleDimensionAmbiguous)
     );
 }
 
@@ -881,6 +940,35 @@ fn canonical_space_and_rule_clearance_round_trip_and_fail_closed_when_slot_is_lo
     assert_eq!(invalid.current().spaces().count(), 0);
 }
 
+fn exact_document_fabrication_projection(
+    document: &DocumentStore,
+) -> Result<GeneralFabricationProjection, GeneralFabricationError> {
+    let snapshot = document.current();
+    let registry = ExactResultRegistry::accept(
+        &snapshot,
+        [Arc::new(ExactBodyPackage::from(exact_package(&snapshot)))],
+    )
+    .unwrap();
+    let tolerance = TolerancePolicy::default();
+    let left = GeneralBodyParticipant::accept(
+        &snapshot,
+        &registry,
+        InstancePath::root(EXACT_LEFT),
+        tolerance,
+    )
+    .unwrap();
+    let right = GeneralBodyParticipant::accept(
+        &snapshot,
+        &registry,
+        InstancePath::root(EXACT_RIGHT),
+        tolerance,
+    )
+    .unwrap();
+    let cases = vec![GeneralClearanceCase::new(left, right, 10.0).unwrap()];
+    let report = general_report(&snapshot, &cases, tolerance);
+    project_general_fabrication(&snapshot, &registry, &cases, &report, tolerance)
+}
+
 fn general_report(
     snapshot: &ketchup_core::document::Snapshot,
     cases: &[GeneralClearanceCase],
@@ -1048,6 +1136,7 @@ fn circular_drill_document() -> DocumentStore {
             occurrence(GRAPH_RIGHT, GRAPH_DEFINITION, 200.0),
         ]))
         .unwrap();
+    mark_timber_members(&mut document, &[GRAPH_LEFT, GRAPH_RIGHT]);
     document.discard_history_before_current();
     document
 }
@@ -1108,6 +1197,7 @@ fn graph_boolean_document(operation: BooleanOperation) -> DocumentStore {
             occurrence(GRAPH_RIGHT, GRAPH_DEFINITION, 20.0),
         ]))
         .unwrap();
+    mark_timber_members(&mut document, &[GRAPH_LEFT, GRAPH_RIGHT]);
     document.discard_history_before_current();
     document
 }
@@ -1163,6 +1253,22 @@ fn graph_package(snapshot: &Snapshot, result_fingerprint: &str) -> ExactBRepGrap
     .unwrap()
 }
 
+fn mark_timber_members(document: &mut DocumentStore, occurrence_ids: &[OccurrenceId]) {
+    let mut commands = vec![CanonicalCommand::UpsertClassificationDimension {
+        id: FABRICATION_ROLE_DIMENSION,
+        name: FABRICATION_ROLE_DIMENSION_V1.to_owned(),
+        categories: vec![(TIMBER_MEMBER_CATEGORY, TIMBER_MEMBER_ROLE_V1.to_owned())],
+    }];
+    commands.extend(occurrence_ids.iter().map(|occurrence_id| {
+        CanonicalCommand::SetOccurrenceClassification {
+            occurrence_id: *occurrence_id,
+            dimension_id: FABRICATION_ROLE_DIMENSION,
+            category_id: Some(TIMBER_MEMBER_CATEGORY),
+        }
+    }));
+    document.apply_batch(&CommandBatch::new(commands)).unwrap();
+}
+
 fn exact_only_document() -> DocumentStore {
     let mut document = DocumentStore::new();
     document
@@ -1192,6 +1298,7 @@ fn exact_only_document() -> DocumentStore {
             occurrence(EXACT_RIGHT, EXACT_DEFINITION, 20.0),
         ]))
         .unwrap();
+    mark_timber_members(&mut document, &[EXACT_LEFT, EXACT_RIGHT]);
     document.discard_history_before_current();
     document
 }
@@ -1250,6 +1357,10 @@ fn mixed_document() -> DocumentStore {
             occurrence(MESH_COLLIDING, MESH_DEFINITION, 45.0),
         ]))
         .unwrap();
+    mark_timber_members(
+        &mut document,
+        &[EXACT_LEFT, EXACT_RIGHT, MESH_CLEAR, MESH_COLLIDING],
+    );
     document.discard_history_before_current();
     document
 }
