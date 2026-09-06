@@ -124,6 +124,19 @@ fn wait_for_assistant_proposal(shell: &mut Shell) {
     );
 }
 
+fn json_string_ending_with<'a>(value: &'a serde_json::Value, suffix: &str) -> Option<&'a str> {
+    match value {
+        serde_json::Value::String(text) => text.ends_with(suffix).then_some(text),
+        serde_json::Value::Array(values) => values
+            .iter()
+            .find_map(|value| json_string_ending_with(value, suffix)),
+        serde_json::Value::Object(values) => values
+            .values()
+            .find_map(|value| json_string_ending_with(value, suffix)),
+        _ => None,
+    }
+}
+
 fn wait_for_live_assistant_proposal(shell: &mut Shell) {
     let confirm = shell.catalog().text("assistant-confirm");
     let deadline = Instant::now() + Duration::from_secs(300);
@@ -488,12 +501,12 @@ const HOUSE_MEMBERS: [&str; 11] = [
     "Rafter",
 ];
 
-/// Prove the production OAuth Assistant can author real exact structure instead
-/// of replaying a Rust-authored program. This is the first live A2 construction
-/// slice; the complete house remains a larger opt-in acceptance proof.
+/// Prove the production OAuth Assistant can author and extend real exact
+/// structure across revision-bound turns instead of replaying a Rust-authored
+/// program. The complete house remains a larger opt-in acceptance proof.
 #[test]
 #[ignore = "requires the production OAuth binary, login and live GPT-5.6 requests"]
-fn live_oauth_assistant_builds_a_supported_portal_frame_from_the_empty_site() {
+fn live_oauth_assistant_builds_a_supported_house_frame_across_turns() {
     let mut shell = Shell::new();
     shell.app_mut().set_assistant_diagnostics_enabled(true);
     let handshake = shell.app().assistant_handshake();
@@ -547,7 +560,7 @@ fn live_oauth_assistant_builds_a_supported_portal_frame_from_the_empty_site() {
         ("Header beam", [4_000.0, 200.0, 200.0], [0.0, 0.0, 2_800.0]),
     ];
     let mut worker = ExactWorkerSupervisor::spawn(exact_worker_path()).unwrap();
-    for (name, size, translation) in expected {
+    for &(name, size, translation) in &expected {
         let occurrence = committed
             .occurrences()
             .find(|occurrence| occurrence.name() == name)
@@ -577,8 +590,163 @@ fn live_oauth_assistant_builds_a_supported_portal_frame_from_the_empty_site() {
         assert_eq!(package.topology_counts, [8, 12, 6, 1, 1]);
     }
 
+    let first_identities = expected.map(|(name, _, _)| {
+        let occurrence = committed
+            .occurrences()
+            .find(|occurrence| occurrence.name() == name)
+            .unwrap_or_else(|| panic!("live-authored {name} must exist before turn two"));
+        (
+            name,
+            occurrence.id(),
+            occurrence.definition_id(),
+            occurrence.transform(),
+        )
+    });
+    let first_revision = shell.app().document_revision();
+    let first_digest = shell.app().canonical_digest();
+    let second_request = "Use one typed cad_edit_program, not model_intent and not prose alone. Extend the existing front portal into a supported 4000 by 4000 mm house frame by creating exactly six additional separate rectangular extruded parts on the XY plane. Keep every existing occurrence and do not modify or delete it. 'Rear foundation beam' is 4000 by 400 and extruded 300 at translation [0,3600,0]. 'Rear left post' and 'Rear right post' are each 200 by 200 and extruded 2500 at [0,3800,300] and [3800,3800,300]. 'Rear header beam' is 4000 by 200 and extruded 200 at [0,3800,2800]. 'Left top tie' and 'Right top tie' are each 200 by 3600 and extruded 200 at [0,200,2800] and [3800,200,2800]. Draw each 4000 by 400 rectangle with corners [0,0], [4000,0], [4000,400], [0,400]; each 200 by 200 rectangle with corners [0,0], [200,0], [200,200], [0,200]; the 4000 by 200 rectangle with corners [0,0], [4000,0], [4000,200], [0,200]; and each 200 by 3600 rectangle with corners [0,0], [200,0], [200,3600], [0,3600]. Close every rectangle with four line entities whose objects use exactly the keys type, id, start_mm and end_mm; never use start or end. Set constraints to an empty array and omit the optional rotation field entirely for every part. Do not emit any constraint object, add any other part, or approximate with mesh geometry.";
+    shell.focus_text_input(&input);
+    shell.type_text(second_request);
+    shell.press_key(egui::Key::Enter);
+    wait_for_live_assistant_proposal(&mut shell);
+
+    assert_eq!(shell.app().document_revision(), first_revision);
+    assert_eq!(shell.app().canonical_digest(), first_digest);
+    let diagnostics = shell
+        .app()
+        .last_assistant_api_diagnostics()
+        .expect("the second live provider response must retain bounded diagnostics");
+    assert_eq!(diagnostics.provider, "codex-oauth");
+    assert_eq!(diagnostics.model, "gpt-5.6-sol");
+    assert!(diagnostics.input_tokens > 0 && diagnostics.output_tokens > 0);
+    let second_provider_message =
+        json_string_ending_with(&diagnostics.request_payload, second_request)
+            .expect("the provider payload must contain the second request");
+    let (document_context, provider_prompt) = second_provider_message
+        .strip_prefix("<document-context>")
+        .and_then(|message| message.split_once("</document-context>\n\n"))
+        .expect("the second request must carry a serialized document context");
+    assert_eq!(provider_prompt, second_request);
+    let document_context: serde_json::Value = serde_json::from_str(document_context)
+        .expect("the second provider context must remain valid JSON");
+    assert_eq!(document_context["revision"], first_revision);
+    assert_eq!(document_context["canonical_digest"], first_digest);
+    assert_eq!(document_context["occurrence_count"], 4);
+    let conversation = document_context["conversation"]
+        .as_array()
+        .expect("the second context must retain the first app turn");
+    assert!(
+        conversation.iter().any(|message| {
+            message["role"] == "user" && message["text"].as_str() == Some(request)
+        })
+    );
+    assert!(conversation.iter().any(|message| {
+        message["role"] == "assistant"
+            && message["text"]
+                .as_str()
+                .is_some_and(|text| !text.trim().is_empty())
+    }));
+    for (name, _, _) in expected {
+        assert!(
+            document_context["occurrences"]
+                .as_array()
+                .expect("the context must list the first-turn occurrences")
+                .iter()
+                .any(|occurrence| occurrence["name"] == name),
+            "the second provider context must expose {name}"
+        );
+    }
+
+    let provider_response: serde_json::Value = serde_json::from_str(&diagnostics.response_text)
+        .expect("the second captured provider response must be JSON");
+    let operations = provider_response["cad_edit_program"]["operations"]
+        .as_array()
+        .expect("GPT-5.6 must return a second typed CAD program");
+    assert_eq!(operations.len(), 6);
+    assert!(
+        operations
+            .iter()
+            .all(|operation| operation["operation"] == "create_part"),
+        "turn two may only append the six requested parts"
+    );
+
+    shell.click_row(&shell.catalog().text("assistant-confirm"));
+    assert_eq!(shell.app().document_revision(), first_revision + 1);
+    assert_ne!(shell.app().canonical_digest(), first_digest);
+    let committed = shell.app().document_snapshot();
+    assert_eq!(committed.occurrences().count(), 10);
+    for (name, occurrence_id, definition_id, transform) in first_identities {
+        let occurrence = committed
+            .occurrences()
+            .find(|occurrence| occurrence.name() == name)
+            .unwrap_or_else(|| panic!("turn two must preserve {name}"));
+        assert_eq!(occurrence.id(), occurrence_id);
+        assert_eq!(occurrence.definition_id(), definition_id);
+        assert_eq!(occurrence.transform(), transform);
+    }
+    let extension = [
+        (
+            "Rear foundation beam",
+            [4_000.0, 400.0, 300.0],
+            [0.0, 3_600.0, 0.0],
+        ),
+        (
+            "Rear left post",
+            [200.0, 200.0, 2_500.0],
+            [0.0, 3_800.0, 300.0],
+        ),
+        (
+            "Rear right post",
+            [200.0, 200.0, 2_500.0],
+            [3_800.0, 3_800.0, 300.0],
+        ),
+        (
+            "Rear header beam",
+            [4_000.0, 200.0, 200.0],
+            [0.0, 3_800.0, 2_800.0],
+        ),
+        (
+            "Left top tie",
+            [200.0, 3_600.0, 200.0],
+            [0.0, 200.0, 2_800.0],
+        ),
+        (
+            "Right top tie",
+            [200.0, 3_600.0, 200.0],
+            [3_800.0, 200.0, 2_800.0],
+        ),
+    ];
+    for (name, size, translation) in extension {
+        let occurrence = committed
+            .occurrences()
+            .find(|occurrence| occurrence.name() == name)
+            .unwrap_or_else(|| panic!("live-authored {name} must exist"));
+        let transform = occurrence.transform();
+        let matrix = transform.matrix();
+        assert_eq!([matrix[3], matrix[7], matrix[11]], translation);
+        assert_eq!(
+            [
+                [matrix[0], matrix[1], matrix[2]],
+                [matrix[4], matrix[5], matrix[6]],
+                [matrix[8], matrix[9], matrix[10]],
+            ],
+            [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+        );
+        let definition_id = definition_id_of(&shell, name);
+        let body = body_feature_id_of(&shell, name);
+        let graph = ExactBRepGraph::from_snapshot(&committed, definition_id, body)
+            .unwrap_or_else(|error| panic!("live-authored {name} must compile exactly: {error}"));
+        let package = worker
+            .evaluate_exact_brep_graph(&graph)
+            .unwrap_or_else(|error| panic!("live-authored {name} must evaluate in OCCT: {error}"));
+        let expected_volume = size.iter().product::<f64>();
+        assert!((package.volume_mm3 - expected_volume).abs() <= expected_volume * 1.0e-9);
+        assert_eq!(package.bounds_mm, [[0.0, 0.0, 0.0], size]);
+        assert_eq!(package.topology_counts, [8, 12, 6, 1, 1]);
+    }
+
     let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("live-oauth-portal-frame.ketchup");
+    let path = directory.path().join("live-oauth-house-frame.ketchup");
     persistence::save_atomic(&path, &committed).unwrap();
     let outcome = persistence::load_file(&path).unwrap();
     assert!(outcome.is_editable());
@@ -587,10 +755,13 @@ fn live_oauth_assistant_builds_a_supported_portal_frame_from_the_empty_site() {
         committed.canonical_digest()
     );
     publish_artifact(
-        "live-oauth-portal-frame.ketchup",
+        "live-oauth-house-frame.ketchup",
         &std::fs::read(path).unwrap(),
     );
 
+    assert!(shell.app_mut().undo());
+    assert_eq!(shell.app().document_revision(), first_revision);
+    assert_eq!(shell.app().canonical_digest(), first_digest);
     assert!(shell.app_mut().undo());
     assert_eq!(shell.app().document_revision(), baseline_revision);
     assert_eq!(shell.app().canonical_digest(), baseline_digest);
