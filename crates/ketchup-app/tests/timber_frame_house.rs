@@ -1100,6 +1100,53 @@ fn live_oauth_assistant_builds_a_roofed_house_frame_across_turns() {
         gravity_report.diagnostics
     );
 
+    let fabrication = ketchup_core::fabrication::project_general_fabrication(
+        &committed,
+        &registry,
+        &collision_cases,
+        &collision_report,
+        tolerance,
+    )
+    .expect("the final live-authored revision must project a manufacturing handoff");
+    assert_eq!(fabrication.bom.envelope.status, ProjectionStatus::Complete);
+    assert_eq!(
+        fabrication.drawings.envelope.status,
+        ProjectionStatus::Complete
+    );
+    assert_eq!(
+        fabrication.manufacturing.envelope.status,
+        ProjectionStatus::Complete
+    );
+    assert!(fabrication.bom.envelope.is_current(&committed));
+    assert!(fabrication.drawings.envelope.is_current(&committed));
+    assert!(fabrication.manufacturing.envelope.is_current(&committed));
+    assert_eq!(fabrication.bom.rows.len(), participants.len());
+    assert_eq!(fabrication.drawings.drawings.len(), participants.len());
+    assert_eq!(
+        fabrication.manufacturing.operations.len(),
+        participants.len()
+    );
+    assert!(fabrication.manufacturing.unresolved_sources.is_empty());
+    assert!(
+        fabrication
+            .manufacturing
+            .operations
+            .iter()
+            .all(|operation| operation.kind == GeneralManufacturingKind::Stock)
+    );
+    let bom = fabrication.bom_export(&committed).unwrap();
+    let drawings = fabrication.drawing_svg(&committed).unwrap();
+    let manufacturing = fabrication.manufacturing_export(&committed).unwrap();
+    let bom_text = String::from_utf8_lossy(&bom);
+    assert!(bom_text.contains("ketchup.general-bom-export.v1"));
+    assert!(bom_text.contains(&format!("source_revision={}", committed.revision_id())));
+    assert!(bom_text.contains(&format!("source_digest={}", committed.canonical_digest())));
+    assert!(String::from_utf8_lossy(&drawings).contains("ketchup.general-drawing-svg.v1"));
+    assert!(String::from_utf8_lossy(&manufacturing).contains("kind=stock"));
+    publish_artifact("live-oauth-roofed-house-bom.txt", &bom);
+    publish_artifact("live-oauth-roofed-house-drawings.svg", &drawings);
+    publish_artifact("live-oauth-roofed-house-manufacturing.txt", &manufacturing);
+
     let directory = tempfile::tempdir().unwrap();
     let path = directory
         .path()
