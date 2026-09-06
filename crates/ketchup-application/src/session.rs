@@ -7,7 +7,7 @@ use crate::{
 use ketchup_core::assistant_sidecar::{AssistantCadEditProgram, AssistantRejectionDiagnostic};
 use ketchup_core::document::{
     CanonicalCommand, CanonicalError, CommandBatch, DocumentStore, OccurrenceId, Proposal,
-    ProposalCommitError, ProposalContext, ProposalPrepareError, Snapshot,
+    ProposalCommitError, ProposalContext, ProposalPrepareError, Snapshot, VerifiedProposalCommit,
 };
 use ketchup_core::exact_product::ExactResultRegistry;
 use ketchup_core::persistence::{self, ContainerData};
@@ -152,6 +152,9 @@ impl DocumentSession {
     pub fn visible_redo_steps(&self) -> usize {
         self.document.visible_redo_steps()
     }
+    pub fn mutation_epoch(&self) -> u64 {
+        self.document.mutation_epoch()
+    }
     pub fn exact_results(&self) -> &ExactResultRegistry {
         &self.exact_results
     }
@@ -181,11 +184,19 @@ impl DocumentSession {
             .map_err(SessionError::Prepare)
     }
     pub fn apply_proposal(&mut self, proposal: &Proposal) -> Result<Snapshot, SessionError> {
-        self.document
+        self.apply_proposal_verified(proposal)?;
+        Ok(self.snapshot())
+    }
+    pub fn apply_proposal_verified(
+        &mut self,
+        proposal: &Proposal,
+    ) -> Result<VerifiedProposalCommit, SessionError> {
+        let committed = self
+            .document
             .commit_verified_proposal(proposal)
             .map_err(SessionError::Commit)?;
         self.rebind();
-        Ok(self.snapshot())
+        Ok(committed)
     }
     /// One bounded program is one Undo step. Created IDs can be obtained by snapshot diff.
     pub fn apply_cad_program(

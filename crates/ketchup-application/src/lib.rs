@@ -1,6 +1,7 @@
 //! GUI-independent CAD planning, exact evaluation, validation and document sessions.
 
 mod append_feature;
+pub mod batch_task;
 mod collision;
 mod creation;
 pub mod diagnostics;

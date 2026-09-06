@@ -345,6 +345,10 @@ fn revision_bound_worksets_hold_ten_thousand_query_identities_and_fail_stale() {
     assert_eq!(created["resource_budget"]["identity_text_bytes"], 38_894);
     let handle = created["workset_handle"].as_str().unwrap().to_owned();
     assert_eq!(query.workset_status(&snapshot, &handle).unwrap(), created);
+    let ids = query.workset_occurrence_ids(&snapshot, &handle).unwrap();
+    assert_eq!(ids.len(), 10_000);
+    assert_eq!(ids.first(), Some(&OccurrenceId(1)));
+    assert_eq!(ids.last(), Some(&OccurrenceId(10_000)));
 
     document
         .apply_batch(&CommandBatch::new(vec![CanonicalCommand::RenameEntity {
@@ -374,6 +378,10 @@ fn worksets_report_incomplete_sources_and_distinguish_missing_handles() {
     assert_eq!(
         incomplete["completeness"]["reason"],
         "source_query_incomplete"
+    );
+    assert_eq!(
+        query.workset_occurrence_ids(&snapshot, incomplete["workset_handle"].as_str().unwrap()),
+        Err(QueryError::IncompleteWorkset)
     );
 
     let mut cursored = request(EntityKind::Occurrences);
@@ -1100,6 +1108,13 @@ fn relation_queries_stream_canonical_hierarchy_definition_and_assembly_edges() {
     assert_eq!(relation_workset["scope"]["entity_kind"], "relations");
     assert_eq!(relation_workset["item_count"], 4);
     assert_eq!(relation_workset["completeness"]["usable_for_batch"], true);
+    assert_eq!(
+        query.workset_occurrence_ids(
+            &snapshot,
+            relation_workset["workset_handle"].as_str().unwrap()
+        ),
+        Err(QueryError::UnsupportedWorksetScope)
+    );
 
     let mut paged_request = request(EntityKind::Relations);
     paged_request.limit = 1;

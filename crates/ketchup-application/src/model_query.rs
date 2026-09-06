@@ -100,6 +100,9 @@ pub enum QueryError {
     OutputTooLarge,
     StaleWorkset,
     WorksetNotFound,
+    IncompleteWorkset,
+    UnsupportedWorksetScope,
+    MissingWorksetIdentity,
     NotFound,
 }
 impl QueryError {
@@ -112,6 +115,9 @@ impl QueryError {
             Self::OutputTooLarge => "output_too_large",
             Self::StaleWorkset => "stale_workset",
             Self::WorksetNotFound => "workset_not_found",
+            Self::IncompleteWorkset => "incomplete_workset",
+            Self::UnsupportedWorksetScope => "unsupported_workset_scope",
+            Self::MissingWorksetIdentity => "missing_workset_identity",
             Self::NotFound => "entity_not_found",
         }
     }
@@ -711,6 +717,40 @@ impl ModelQuery {
             .get(&token.id)
             .ok_or(QueryError::WorksetNotFound)?;
         Ok(workset_value(snapshot, handle, workset))
+    }
+
+    pub fn workset_occurrence_ids(
+        &self,
+        snapshot: &Snapshot,
+        handle: &str,
+    ) -> Result<Vec<OccurrenceId>, QueryError> {
+        self.workset_status(snapshot, handle)?;
+        let token = self.decode_workset(handle)?;
+        let store = self.worksets.lock().expect("workset lock");
+        let workset = store
+            .items
+            .get(&token.id)
+            .ok_or(QueryError::WorksetNotFound)?;
+        if !workset.complete {
+            return Err(QueryError::IncompleteWorkset);
+        }
+        if workset.query.kind != EntityKind::Occurrences {
+            return Err(QueryError::UnsupportedWorksetScope);
+        }
+        workset
+            .identities
+            .iter()
+            .map(|identity| {
+                let id = identity
+                    .as_u64()
+                    .map(OccurrenceId)
+                    .ok_or(QueryError::MissingWorksetIdentity)?;
+                snapshot
+                    .occurrence(id)
+                    .map(|_| id)
+                    .ok_or(QueryError::MissingWorksetIdentity)
+            })
+            .collect()
     }
 
     /// Deliberately bounded metadata detail, not raw feature geometry or a state dump.
