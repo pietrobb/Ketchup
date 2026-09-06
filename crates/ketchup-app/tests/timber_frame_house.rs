@@ -23,8 +23,9 @@ use ketchup_core::exact_product::{
     ExactBodyPackage, ExactFeatureChainRequest, ExactResultRegistry,
 };
 use ketchup_core::exact_validation::{
-    BuiltinGeneralBodyValidator, GeneralBodyParticipant, GeneralClearanceCase,
-    general_body_input_bytes, general_body_validation_policy,
+    BuiltinGeneralBodyValidator, BuiltinGravitySupportValidator, GeneralBodyParticipant,
+    GeneralClearanceCase, GravitySupportInput, GravitySupportParticipant, general_body_input_bytes,
+    general_body_validation_policy, gravity_support_input_bytes, gravity_support_validation_policy,
 };
 use ketchup_core::fabrication::{GeneralManufacturingKind, ProjectionStatus};
 use ketchup_core::persistence;
@@ -207,7 +208,7 @@ fn build_timber_frame_house() -> (Shell, Arc<ScriptedAssistantTransport>, u64, S
         "Raise the first stud on the front wall",
         "Repeat that stud every 625 mm and cap the wall with a top plate",
         "Sheath the front wall with an 18 mm panel",
-        "Lay the ridge beam and add a rafter sloping up to it",
+        "Stand the gable posts, carry the ridge beam on them and add a rafter sloping up to it",
     ];
     let transport = Arc::new(ScriptedAssistantTransport::new(requests.map(|request| {
         (
@@ -301,7 +302,7 @@ fn build_timber_frame_house() -> (Shell, Arc<ScriptedAssistantTransport>, u64, S
                 TIMBER_WIDTH_MM,
                 TIMBER_DEPTH_MM,
                 WALL_HEIGHT_MM,
-                [0.0, 0.0, PLATE_THICKNESS_MM],
+                [0.0, SHEATHING_THICKNESS_MM, PLATE_THICKNESS_MM],
                 None,
             )],
         },
@@ -374,15 +375,20 @@ fn build_timber_frame_house() -> (Shell, Arc<ScriptedAssistantTransport>, u64, S
                 feature: AssistantCadPartFeature::Extrusion {
                     distance_mm: SHEATHING_THICKNESS_MM,
                 },
-                translation_mm: [0.0, -SHEATHING_THICKNESS_MM, PLATE_THICKNESS_MM],
+                translation_mm: [0.0, 0.0, PLATE_THICKNESS_MM],
                 rotation: None,
             }],
         },
     );
 
-    // 5. Ridge beam and one rafter placed by an arbitrary finite rotation.
+    // 5. Gable posts, the ridge beam they carry, and one rafter placed by an
+    //    arbitrary finite rotation. The rafter runs from the outer top arris of
+    //    the plate up to the near face of the ridge, so every roof member is
+    //    carried by something that reaches the ground.
     let eaves_height = PLATE_THICKNESS_MM + WALL_HEIGHT_MM + PLATE_THICKNESS_MM;
-    let rafter_run = HOUSE_WIDTH_MM / 2.0;
+    let ridge_near_face_mm = HOUSE_WIDTH_MM / 2.0 - TIMBER_WIDTH_MM / 2.0;
+    let ridge_soffit_mm = eaves_height + RIDGE_RISE_MM;
+    let rafter_run = ridge_near_face_mm;
     let rafter_length = rafter_run.hypot(RIDGE_RISE_MM);
     let rafter_pitch_degrees = RIDGE_RISE_MM.atan2(rafter_run).to_degrees();
     build_step(
@@ -392,15 +398,31 @@ fn build_timber_frame_house() -> (Shell, Arc<ScriptedAssistantTransport>, u64, S
         AssistantCadEditProgram {
             operations: vec![
                 timber(
+                    "Gable post left",
+                    TIMBER_WIDTH_MM,
+                    TIMBER_WIDTH_MM,
+                    ridge_soffit_mm - PLATE_THICKNESS_MM,
+                    [0.0, ridge_near_face_mm, PLATE_THICKNESS_MM],
+                    None,
+                ),
+                timber(
+                    "Gable post right",
+                    TIMBER_WIDTH_MM,
+                    TIMBER_WIDTH_MM,
+                    ridge_soffit_mm - PLATE_THICKNESS_MM,
+                    [
+                        HOUSE_LENGTH_MM - TIMBER_WIDTH_MM,
+                        ridge_near_face_mm,
+                        PLATE_THICKNESS_MM,
+                    ],
+                    None,
+                ),
+                timber(
                     "Ridge beam",
                     HOUSE_LENGTH_MM,
                     TIMBER_WIDTH_MM,
                     2.0 * TIMBER_WIDTH_MM,
-                    [
-                        0.0,
-                        HOUSE_WIDTH_MM / 2.0 - TIMBER_WIDTH_MM / 2.0,
-                        eaves_height + RIDGE_RISE_MM,
-                    ],
+                    [0.0, ridge_near_face_mm, ridge_soffit_mm],
                     None,
                 ),
                 timber(
@@ -412,7 +434,7 @@ fn build_timber_frame_house() -> (Shell, Arc<ScriptedAssistantTransport>, u64, S
                     Some(AssistantCadRotation {
                         pivot_mm: [0.0, 0.0, eaves_height],
                         axis: [1.0, 0.0, 0.0],
-                        angle_degrees: -rafter_pitch_degrees,
+                        angle_degrees: rafter_pitch_degrees,
                     }),
                 ),
             ],
@@ -424,7 +446,7 @@ fn build_timber_frame_house() -> (Shell, Arc<ScriptedAssistantTransport>, u64, S
 }
 
 /// Every structural member the Assistant authored, by name.
-const HOUSE_MEMBERS: [&str; 9] = [
+const HOUSE_MEMBERS: [&str; 11] = [
     "Sill plate front",
     "Sill plate back",
     "Sill plate left",
@@ -432,6 +454,8 @@ const HOUSE_MEMBERS: [&str; 9] = [
     "Front stud",
     "Top plate front",
     "Front sheathing",
+    "Gable post left",
+    "Gable post right",
     "Ridge beam",
     "Rafter",
 ];
@@ -695,24 +719,135 @@ fn the_timber_frame_house_projects_a_manufacturable_handoff() {
     );
 }
 
-/// The window opening this scenario needs cannot be expressed today. Both
-/// blocking limits fail closed with a specific machine code and no mutation.
+/// Manufacturability is not structural sanity. The same house must also be
+/// held up by gravity: every member either sits on the ground or rests on
+/// something that does. This is the check the acceptance proof was missing —
+/// it is what catches a ridge beam hanging in mid-air.
 #[test]
-fn assistant_cannot_yet_cut_an_opening_into_a_part_it_created() {
-    let request = "Sheath the front wall";
-    let transport = Arc::new(ScriptedAssistantTransport::new([(
-        request.to_owned(),
-        AssistantChatResult {
-            message: "Review the sheathing.".to_owned(),
-            model_intent: None,
-        },
-    )]));
+fn the_timber_frame_house_must_stand_up_under_gravity() {
+    let (shell, _transport, _revision, _digest) = build_timber_frame_house();
+    let snapshot = shell.app().document_snapshot();
+    let tolerance = TolerancePolicy::default();
+
+    let mut worker = ExactWorkerSupervisor::spawn(exact_worker_path()).unwrap();
+    let packages = HOUSE_MEMBERS
+        .iter()
+        .map(|name| {
+            let definition_id = definition_id_of(&shell, name);
+            let request = ExactFeatureChainRequest::from_snapshot(&snapshot, definition_id)
+                .unwrap_or_else(|error| panic!("{name} must yield an exact request: {error}"));
+            let package = worker
+                .evaluate_rectangle(&request)
+                .unwrap_or_else(|error| panic!("{name} must solve exactly: {error}"));
+            Arc::new(ExactBodyPackage::from(package))
+        })
+        .collect::<Vec<_>>();
+    let registry = ExactResultRegistry::accept(&snapshot, packages).unwrap();
+
+    // Only the sill plates are founded on the ground. Everything else has to
+    // earn its support through real contact with something already supported.
+    let sill_definitions = [
+        "Sill plate front",
+        "Sill plate back",
+        "Sill plate left",
+        "Sill plate right",
+    ]
+    .map(|name| definition_id_of(&shell, name));
+    let participants = snapshot
+        .scene_query()
+        .into_iter()
+        .filter(|occurrence| occurrence.visible)
+        .map(|occurrence| {
+            let body = GeneralBodyParticipant::accept(
+                &snapshot,
+                &registry,
+                InstancePath::root(occurrence.occurrence_id),
+                tolerance,
+            )
+            .unwrap_or_else(|error| {
+                panic!(
+                    "{} must be an accepted general body: {error:?}",
+                    occurrence.occurrence_name
+                )
+            });
+            let grounded = occurrence.occurrence_name.starts_with("Sill plate")
+                || sill_definitions.contains(&occurrence.definition_id);
+            GravitySupportParticipant::new(body, "house", grounded)
+        })
+        .collect::<Vec<_>>();
+
+    let input = GravitySupportInput::new(participants, [0.0, 0.0, -9.81]).unwrap();
+    let validator = BuiltinGravitySupportValidator::new(tolerance);
+    let policy = gravity_support_validation_policy();
+    let bytes = gravity_support_input_bytes(&input);
+    let invocation = ValidationInvocation::bind(
+        &snapshot,
+        validator.descriptor(),
+        &policy,
+        Vec::new(),
+        &bytes,
+    );
+    let report = validator.invoke(ValidationExecution {
+        snapshot: &snapshot,
+        invocation,
+        policy: &policy,
+        input: &input,
+    });
+
+    let unsupported = report
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.code == "gravity.unsupported")
+        .map(|diagnostic| {
+            let evidence = diagnostic.evidence.clone();
+            match snapshot.scene_query().into_iter().find(|occurrence| {
+                evidence.starts_with(&format!("body=occurrence:{};", occurrence.occurrence_id.0))
+            }) {
+                Some(occurrence) => occurrence.occurrence_name,
+                None => evidence,
+            }
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        unsupported.is_empty(),
+        "the Assistant-built house has {} member(s) floating in mid-air: {:#?}",
+        unsupported.len(),
+        unsupported
+    );
+    assert_eq!(
+        report.state,
+        ValidationState::Passed,
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+/// The window opening this scenario needs was blocked by two generality limits.
+/// The first one is gone: a Pocket now consumes a Sketch profile authored by the
+/// same generic program, so the Assistant can cut an opening into a part it just
+/// created. The second still fails closed with a specific machine code and no
+/// mutation, and this test pins that split.
+#[test]
+fn assistant_cuts_an_opening_but_cannot_yet_boolean_two_parts_it_created() {
+    let requests = [
+        "Sheath the front wall",
+        "Cut a window opening into that sheathing",
+    ];
+    let transport = Arc::new(ScriptedAssistantTransport::new(requests.map(|request| {
+        (
+            request.to_owned(),
+            AssistantChatResult {
+                message: "Review the sheathing.".to_owned(),
+                model_intent: None,
+            },
+        )
+    })));
     let (entities, constraints) = rectangle(HOUSE_LENGTH_MM, WALL_HEIGHT_MM);
     let mut shell = Shell::with_assistant_transport(transport.clone());
     build_step(
         &mut shell,
         &transport,
-        request,
+        requests[0],
         AssistantCadEditProgram {
             operations: vec![AssistantCadEditOperation::CreatePart {
                 name: "Front sheathing".to_owned(),
@@ -732,12 +867,9 @@ fn assistant_cannot_yet_cut_an_opening_into_a_part_it_created() {
 
     let sheathing = definition_id_of(&shell, "Front sheathing");
     let sheathing_pad = body_feature_id_of(&shell, "Front sheathing");
-    let revision = shell.app().document_revision();
-    let digest = shell.app().canonical_digest();
 
-    // Limit 1: a Pocket profile must be a legacy Profile feature, but the only
-    // profile the generic program can author is a Sketch, so an opening cut into
-    // an Assistant-created part is unreachable.
+    // Lifted limit: a Pocket now accepts the Sketch profile the same program
+    // authored, so the opening goes all the way through review to commit.
     let (window_entities, window_constraints) = rectangle(1_200.0, 1_400.0);
     let sketch_then_pocket = AssistantCadEditProgram {
         operations: vec![
@@ -762,18 +894,50 @@ fn assistant_cannot_yet_cut_an_opening_into_a_part_it_created() {
             },
         ],
     };
-    let rejection = shell
-        .app()
-        .plan_assistant_cad_edit_program(&sketch_then_pocket)
-        .expect_err("a sketch-profiled pocket must fail closed");
-    assert_eq!(rejection.code, "canonical.invalid_feature_ownership");
-    assert_eq!(rejection.operation, "append_feature");
-    assert!(rejection.retryable);
+    build_step(&mut shell, &transport, requests[1], sketch_then_pocket);
+
+    // The committed definition really owns the pocket, driven by that sketch and
+    // targeting the pad, and the whole part stays an editable exact chain.
+    let committed = shell.app().document_snapshot();
+    let pocket_id = committed
+        .definitions()
+        .find(|definition| definition.id() == sheathing)
+        .expect("the sheathing definition must survive the cut")
+        .feature_ids()
+        .iter()
+        .copied()
+        .find(|id| {
+            matches!(
+                committed.feature(*id).unwrap().kind(),
+                FeatureKind::Pocket { .. }
+            )
+        })
+        .expect("the sheathing must own the window pocket");
+    let FeatureKind::Pocket {
+        target, profile, ..
+    } = committed.feature(pocket_id).unwrap().kind()
+    else {
+        unreachable!("the pocket kind was just matched")
+    };
+    assert_eq!(*target, sheathing_pad);
+    assert_eq!(profile.0, sheathing_pad.0 + 2);
+    ExactBRepGraph::from_snapshot(&committed, sheathing, pocket_id)
+        .expect("the pocketed sheathing must compile into an exact graph");
+
+    let revision = shell.app().document_revision();
+    let digest = shell.app().canonical_digest();
 
     // Limit 2: CreatePart always opens a new definition, no operation appends a
     // second solid to an existing one, and a body created earlier in the same
     // program is not yet visible to a later operation. A Boolean between two
     // Assistant-built bodies is therefore unreachable as well.
+    // The pad the CreatePart below would author: workplane, sketch, then pad.
+    let next_part_pad = committed
+        .features()
+        .map(|feature| feature.id().0)
+        .max()
+        .expect("the document owns features")
+        + 3;
     let second_part = AssistantCadEditProgram {
         operations: vec![
             timber("Window block", 1_200.0, 1_400.0, 100.0, [0.0; 3], None),
@@ -783,7 +947,7 @@ fn assistant_cannot_yet_cut_an_opening_into_a_part_it_created() {
                 feature: AssistantCadBodyFeature::Boolean {
                     operation: AssistantCadBooleanOperation::Cut,
                     target_feature_id: sheathing_pad.0,
-                    tool_feature_id: sheathing_pad.0 + 3,
+                    tool_feature_id: next_part_pad,
                 },
             },
         ],
