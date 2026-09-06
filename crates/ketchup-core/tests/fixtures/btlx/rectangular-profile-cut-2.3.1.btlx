@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<BTLx xmlns="https://www.design2machine.com" Version="2.3.1" Language="en">
+  <Project Name="Ketchup">
+    <Parts>
+      <Part Count="2" Length="1000" Width="100" Height="50" SingleMemberNumber="1" Designation="definition-40" Material="ketchup.material.timber.unspecified.v1">
+        <UserReferencePlanes>
+          <UserReferencePlane ID="100">
+            <Position>
+              <ReferencePoint X="0" Y="0" Z="0"/>
+              <XVector X="0" Y="1" Z="0"/>
+              <YVector X="0" Y="0" Z="1"/>
+            </Position>
+          </UserReferencePlane>
+        </UserReferencePlanes>
+        <Processings>
+          <FreeContour Name="Ketchup profile cut" ProcessID="1" ReferencePlaneID="100" ToolPosition="left">
+            <Contour DepthBounded="yes" Depth="20" Inclination="0">
+              <StartPoint X="10" Y="10" Z="0"/>
+              <Line><EndPoint X="30" Y="10" Z="0"/></Line>
+              <Line><EndPoint X="30" Y="25" Z="0"/></Line>
+              <Line><EndPoint X="10" Y="25" Z="0"/></Line>
+              <Line><EndPoint X="10" Y="10" Z="0"/></Line>
+            </Contour>
+          </FreeContour>
+        </Processings>
+      </Part>
+    </Parts>
+  </Project>
+</BTLx>

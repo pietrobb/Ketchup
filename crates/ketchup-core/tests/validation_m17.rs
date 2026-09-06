@@ -503,6 +503,21 @@ fn btlx_2_3_1_straight_timber_export_is_pinned_deterministic_and_fail_closed() {
         machined.btlx_2_3_1_export(&machined_snapshot).unwrap()
     );
 
+    let (profile_cut_snapshot, profile_cut) = rectangular_profile_cut_fabrication_projection();
+    let profile_cut_export = profile_cut
+        .btlx_2_3_1_export(&profile_cut_snapshot)
+        .unwrap();
+    assert_eq!(
+        profile_cut_export,
+        include_bytes!("fixtures/btlx/rectangular-profile-cut-2.3.1.btlx")
+    );
+    assert_eq!(
+        profile_cut_export,
+        profile_cut
+            .btlx_2_3_1_export(&profile_cut_snapshot)
+            .unwrap()
+    );
+
     let mut tampered = projection;
     tampered.bom.rows[0].quantity = 3;
     assert_eq!(
@@ -1095,13 +1110,33 @@ fn graph_fabrication_projection(
 }
 
 fn circular_drill_fabrication_projection() -> (Snapshot, GeneralFabricationProjection) {
-    let document = circular_drill_document();
+    exact_graph_document_fabrication_projection(
+        circular_drill_document(),
+        "m17-circular-drill-result",
+        GRAPH_BOOLEAN,
+    )
+}
+
+fn rectangular_profile_cut_fabrication_projection() -> (Snapshot, GeneralFabricationProjection) {
+    exact_graph_document_fabrication_projection(
+        rectangular_profile_cut_document(),
+        "m17-rectangular-profile-cut-result",
+        GRAPH_BOOLEAN,
+    )
+}
+
+fn exact_graph_document_fabrication_projection(
+    document: DocumentStore,
+    result_fingerprint: &str,
+    producer_feature_id: FeatureId,
+) -> (Snapshot, GeneralFabricationProjection) {
     let snapshot = document.current();
     let registry = ExactResultRegistry::accept(
         &snapshot,
-        [Arc::new(ExactBodyPackage::from(graph_package(
+        [Arc::new(ExactBodyPackage::from(graph_package_for(
             &snapshot,
-            "m17-circular-drill-result",
+            result_fingerprint,
+            producer_feature_id,
         )))],
     )
     .unwrap();
@@ -1202,6 +1237,58 @@ fn circular_drill_document() -> DocumentStore {
     document
 }
 
+fn rectangular_profile_cut_document() -> DocumentStore {
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: GRAPH_DEFINITION,
+                name: "Timber with rectangular profile cut".to_owned(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: GRAPH_BASE_PROFILE,
+                definition_id: GRAPH_DEFINITION,
+                name: "100 x 50 timber profile".to_owned(),
+                kind: FeatureKind::Profile {
+                    points_mm: vec![[0.0, 0.0], [100.0, 0.0], [100.0, 50.0], [0.0, 50.0]],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: GRAPH_BASE_BODY,
+                definition_id: GRAPH_DEFINITION,
+                name: "1000 mm timber stock".to_owned(),
+                kind: FeatureKind::Extrusion {
+                    profile: GRAPH_BASE_PROFILE,
+                    height: Dimension::from_decimal("1000").unwrap(),
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: GRAPH_TOOL_PROFILE,
+                definition_id: GRAPH_DEFINITION,
+                name: "20 x 15 rectangular profile cut".to_owned(),
+                kind: FeatureKind::Profile {
+                    points_mm: vec![[10.0, 10.0], [30.0, 10.0], [30.0, 25.0], [10.0, 25.0]],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: GRAPH_BOOLEAN,
+                definition_id: GRAPH_DEFINITION,
+                name: "20 mm rectangular profile cut".to_owned(),
+                kind: FeatureKind::Pocket {
+                    target: GRAPH_BASE_BODY,
+                    profile: GRAPH_TOOL_PROFILE,
+                    depth: Dimension::from_decimal("20").unwrap(),
+                },
+            },
+            occurrence(GRAPH_LEFT, GRAPH_DEFINITION, 0.0),
+            occurrence(GRAPH_RIGHT, GRAPH_DEFINITION, 200.0),
+        ]))
+        .unwrap();
+    mark_timber_members(&mut document, &[GRAPH_LEFT, GRAPH_RIGHT]);
+    document.discard_history_before_current();
+    document
+}
+
 fn graph_boolean_document(operation: BooleanOperation) -> DocumentStore {
     let mut document = DocumentStore::new();
     document
@@ -1264,11 +1351,20 @@ fn graph_boolean_document(operation: BooleanOperation) -> DocumentStore {
 }
 
 fn graph_package(snapshot: &Snapshot, result_fingerprint: &str) -> ExactBRepGraphPackage {
-    let graph = ExactBRepGraph::from_snapshot(snapshot, GRAPH_DEFINITION, GRAPH_BOOLEAN).unwrap();
+    graph_package_for(snapshot, result_fingerprint, GRAPH_BOOLEAN)
+}
+
+fn graph_package_for(
+    snapshot: &Snapshot,
+    result_fingerprint: &str,
+    producer_feature_id: FeatureId,
+) -> ExactBRepGraphPackage {
+    let graph =
+        ExactBRepGraph::from_snapshot(snapshot, GRAPH_DEFINITION, producer_feature_id).unwrap();
     let mut bounds_mm = graph.producer_bounds_mm().unwrap().unwrap();
     if matches!(
         snapshot
-            .feature(GRAPH_BOOLEAN)
+            .feature(producer_feature_id)
             .map(|feature| feature.kind()),
         Some(FeatureKind::Boolean {
             operation: BooleanOperation::Cut,

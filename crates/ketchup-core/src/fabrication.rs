@@ -708,50 +708,46 @@ impl GeneralFabricationProjection {
                 .ok_or(GeneralFabricationError::ExportBlocked)?;
             let height = format_btlx_positive_number(height_mm)
                 .ok_or(GeneralFabricationError::ExportBlocked)?;
-            let drillings = machining
+            let processings = machining
                 .iter()
-                .map(|operation| {
-                    if operation.kind != GeneralManufacturingKind::CircularDrill {
-                        return None;
-                    }
-                    btlx_drilling(&operation.machining)
-                })
+                .map(|operation| btlx_processing(operation))
                 .collect::<Option<Vec<_>>>()
                 .ok_or(GeneralFabricationError::ExportBlocked)?;
             output.push_str(&format!(
                 "      <Part Count=\"{count}\" Length=\"{length}\" Width=\"{width}\" Height=\"{height}\" SingleMemberNumber=\"{single_member_number}\" Designation=\"definition-{}\" Material=\"{}\"{}\n",
                 row.definition_id.0,
                 TIMBER_MATERIAL_V1,
-                if drillings.is_empty() { "/>" } else { ">" }
+                if processings.is_empty() { "/>" } else { ">" }
             ));
-            if drillings.is_empty() {
+            if processings.is_empty() {
                 continue;
             }
             output.push_str("        <UserReferencePlanes>\n");
             let first_reference_plane_id = next_reference_plane_id;
-            for drilling in &drillings {
+            for processing in &processings {
                 let reference_plane_id = next_reference_plane_id;
                 next_reference_plane_id = next_reference_plane_id
                     .checked_add(1)
                     .ok_or(GeneralFabricationError::ExportBlocked)?;
+                let (reference_point_mm, x_vector, y_vector) = processing.reference_plane();
                 output.push_str(&format!(
                     "          <UserReferencePlane ID=\"{reference_plane_id}\">\n            <Position>\n              <ReferencePoint X=\"{}\" Y=\"{}\" Z=\"{}\"/>\n              <XVector X=\"{}\" Y=\"{}\" Z=\"{}\"/>\n              <YVector X=\"{}\" Y=\"{}\" Z=\"{}\"/>\n            </Position>\n          </UserReferencePlane>\n",
-                    format_number(drilling.reference_point_mm[0]),
-                    format_number(drilling.reference_point_mm[1]),
-                    format_number(drilling.reference_point_mm[2]),
-                    format_number(drilling.x_vector[0]),
-                    format_number(drilling.x_vector[1]),
-                    format_number(drilling.x_vector[2]),
-                    format_number(drilling.y_vector[0]),
-                    format_number(drilling.y_vector[1]),
-                    format_number(drilling.y_vector[2])
+                    format_number(reference_point_mm[0]),
+                    format_number(reference_point_mm[1]),
+                    format_number(reference_point_mm[2]),
+                    format_number(x_vector[0]),
+                    format_number(x_vector[1]),
+                    format_number(x_vector[2]),
+                    format_number(y_vector[0]),
+                    format_number(y_vector[1]),
+                    format_number(y_vector[2])
                 ));
             }
             output.push_str("        </UserReferencePlanes>\n        <Processings>\n");
-            for (drilling_index, drilling) in drillings.iter().enumerate() {
+            for (processing_index, processing) in processings.iter().enumerate() {
                 let reference_plane_id = first_reference_plane_id
                     .checked_add(
-                        u32::try_from(drilling_index)
+                        u32::try_from(processing_index)
                             .map_err(|_| GeneralFabricationError::ExportBlocked)?,
                     )
                     .ok_or(GeneralFabricationError::ExportBlocked)?;
@@ -759,13 +755,7 @@ impl GeneralFabricationProjection {
                 next_process_id = next_process_id
                     .checked_add(1)
                     .ok_or(GeneralFabricationError::ExportBlocked)?;
-                output.push_str(&format!(
-                    "          <Drilling Name=\"Ketchup circular drilling\" ProcessID=\"{process_id}\" ReferencePlaneID=\"{reference_plane_id}\">\n            <StartX>{}</StartX>\n            <StartY>{}</StartY>\n            <Angle>0</Angle>\n            <Inclination>90</Inclination>\n            <DepthLimited>yes</DepthLimited>\n            <Depth>{}</Depth>\n            <Diameter>{}</Diameter>\n          </Drilling>\n",
-                    drilling.start_x,
-                    drilling.start_y,
-                    drilling.depth,
-                    drilling.diameter
-                ));
+                output.push_str(&processing.xml(process_id, reference_plane_id));
             }
             output.push_str("        </Processings>\n      </Part>\n");
         }
@@ -793,6 +783,55 @@ fn format_btlx_positive_number(value: f64) -> Option<String> {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+enum BtlxProcessing {
+    Drilling(BtlxDrilling),
+    FreeContour(BtlxFreeContour),
+}
+
+impl BtlxProcessing {
+    fn reference_plane(&self) -> ([f64; 3], [f64; 3], [f64; 3]) {
+        match self {
+            Self::Drilling(drilling) => (
+                drilling.reference_point_mm,
+                drilling.x_vector,
+                drilling.y_vector,
+            ),
+            Self::FreeContour(contour) => (
+                contour.reference_point_mm,
+                contour.x_vector,
+                contour.y_vector,
+            ),
+        }
+    }
+
+    fn xml(&self, process_id: u32, reference_plane_id: u32) -> String {
+        match self {
+            Self::Drilling(drilling) => format!(
+                "          <Drilling Name=\"Ketchup circular drilling\" ProcessID=\"{process_id}\" ReferencePlaneID=\"{reference_plane_id}\">\n            <StartX>{}</StartX>\n            <StartY>{}</StartY>\n            <Angle>0</Angle>\n            <Inclination>90</Inclination>\n            <DepthLimited>yes</DepthLimited>\n            <Depth>{}</Depth>\n            <Diameter>{}</Diameter>\n          </Drilling>\n",
+                drilling.start_x, drilling.start_y, drilling.depth, drilling.diameter
+            ),
+            Self::FreeContour(contour) => {
+                let mut xml = format!(
+                    "          <FreeContour Name=\"Ketchup profile cut\" ProcessID=\"{process_id}\" ReferencePlaneID=\"{reference_plane_id}\" ToolPosition=\"{}\">\n            <Contour DepthBounded=\"yes\" Depth=\"{}\" Inclination=\"0\">\n              <StartPoint X=\"{}\" Y=\"{}\" Z=\"0\"/>\n",
+                    contour.tool_position,
+                    contour.depth,
+                    contour.start_point[0],
+                    contour.start_point[1]
+                );
+                for end_point in &contour.end_points {
+                    xml.push_str(&format!(
+                        "              <Line><EndPoint X=\"{}\" Y=\"{}\" Z=\"0\"/></Line>\n",
+                        end_point[0], end_point[1]
+                    ));
+                }
+                xml.push_str("            </Contour>\n          </FreeContour>\n");
+                xml
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
 struct BtlxDrilling {
     reference_point_mm: [f64; 3],
     x_vector: [f64; 3],
@@ -801,6 +840,29 @@ struct BtlxDrilling {
     start_y: String,
     depth: String,
     diameter: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct BtlxFreeContour {
+    reference_point_mm: [f64; 3],
+    x_vector: [f64; 3],
+    y_vector: [f64; 3],
+    tool_position: &'static str,
+    start_point: [String; 2],
+    end_points: Vec<[String; 2]>,
+    depth: String,
+}
+
+fn btlx_processing(operation: &GeneralManufacturingOperation) -> Option<BtlxProcessing> {
+    match operation.kind {
+        GeneralManufacturingKind::CircularDrill => {
+            btlx_drilling(&operation.machining).map(BtlxProcessing::Drilling)
+        }
+        GeneralManufacturingKind::ProfileCut => {
+            btlx_free_contour(&operation.machining).map(BtlxProcessing::FreeContour)
+        }
+        _ => None,
+    }
 }
 
 fn btlx_drilling(geometry: &GeneralMachiningGeometry) -> Option<BtlxDrilling> {
@@ -834,6 +896,126 @@ fn btlx_drilling(geometry: &GeneralMachiningGeometry) -> Option<BtlxDrilling> {
         start_y: format_btlx_number_in_range(center_mm[1], -50_000.0, 50_000.0)?,
         depth: format_btlx_number_in_range(depth_mm, f64::MIN_POSITIVE, 50_000.0)?,
         diameter: format_btlx_number_in_range(*diameter_mm, f64::MIN_POSITIVE, 50_000.0)?,
+    })
+}
+
+fn btlx_free_contour(geometry: &GeneralMachiningGeometry) -> Option<BtlxFreeContour> {
+    let GeneralMachiningGeometry::ProfileCut {
+        frame,
+        segments,
+        start_mm,
+        end_mm,
+    } = geometry
+    else {
+        return None;
+    };
+    if !machining_frame_is_right_handed(frame)
+        || !start_mm.is_finite()
+        || !end_mm.is_finite()
+        || end_mm <= start_mm
+        || segments.len() != 4
+    {
+        return None;
+    }
+    let edges = segments
+        .iter()
+        .map(|segment| {
+            let GeneralMachiningSegment::Line { start_mm, end_mm } = segment else {
+                return None;
+            };
+            (start_mm
+                .iter()
+                .chain(end_mm)
+                .all(|coordinate| coordinate.is_finite())
+                && (start_mm[0] == end_mm[0]) != (start_mm[1] == end_mm[1]))
+                .then_some((*start_mm, *end_mm))
+        })
+        .collect::<Option<Vec<_>>>()?;
+    if !edges
+        .iter()
+        .zip(edges.iter().cycle().skip(1))
+        .all(|((_, end), (next_start, _))| end == next_start)
+    {
+        return None;
+    }
+    let minimum = [
+        edges
+            .iter()
+            .flat_map(|(start, end)| [start[0], end[0]])
+            .fold(f64::INFINITY, f64::min),
+        edges
+            .iter()
+            .flat_map(|(start, end)| [start[1], end[1]])
+            .fold(f64::INFINITY, f64::min),
+    ];
+    let maximum = [
+        edges
+            .iter()
+            .flat_map(|(start, end)| [start[0], end[0]])
+            .fold(f64::NEG_INFINITY, f64::max),
+        edges
+            .iter()
+            .flat_map(|(start, end)| [start[1], end[1]])
+            .fold(f64::NEG_INFINITY, f64::max),
+    ];
+    let expected_edges = [
+        ([minimum[0], minimum[1]], [maximum[0], minimum[1]]),
+        ([maximum[0], minimum[1]], [maximum[0], maximum[1]]),
+        ([maximum[0], maximum[1]], [minimum[0], maximum[1]]),
+        ([minimum[0], maximum[1]], [minimum[0], minimum[1]]),
+    ];
+    if minimum[0] >= maximum[0]
+        || minimum[1] >= maximum[1]
+        || expected_edges.iter().any(|expected| {
+            edges
+                .iter()
+                .filter(|actual| {
+                    **actual == *expected || (actual.0 == expected.1 && actual.1 == expected.0)
+                })
+                .count()
+                != 1
+        })
+    {
+        return None;
+    }
+    let formatted_edges = edges
+        .iter()
+        .map(|(start, end)| (start.map(format_number), end.map(format_number)))
+        .collect::<Vec<_>>();
+    let rounded_edges = formatted_edges
+        .iter()
+        .map(|(start, end)| {
+            Some((
+                [start[0].parse::<f64>().ok()?, start[1].parse::<f64>().ok()?],
+                [end[0].parse::<f64>().ok()?, end[1].parse::<f64>().ok()?],
+            ))
+        })
+        .collect::<Option<Vec<_>>>()?;
+    let signed_double_area = rounded_edges
+        .iter()
+        .map(|(start, end)| start[0] * end[1] - end[0] * start[1])
+        .sum::<f64>();
+    if rounded_edges.iter().any(|(start, end)| start == end)
+        || !signed_double_area.is_finite()
+        || signed_double_area == 0.0
+    {
+        return None;
+    }
+    let depth_mm = end_mm - start_mm;
+    Some(BtlxFreeContour {
+        reference_point_mm: btlx_part_coordinate(std::array::from_fn(|axis| {
+            frame.origin_mm[axis] + frame.normal[axis] * start_mm
+        })),
+        x_vector: btlx_part_coordinate(frame.x_axis),
+        y_vector: btlx_part_coordinate(frame.y_axis),
+        tool_position: if signed_double_area > 0.0 {
+            "left"
+        } else {
+            "right"
+        },
+        start_point: formatted_edges[0].0.clone(),
+        end_points: formatted_edges.into_iter().map(|(_, end)| end).collect(),
+        depth: format_btlx_number_in_range(depth_mm, f64::MIN_POSITIVE, 100_000.0)?,
     })
 }
 
@@ -2537,5 +2719,82 @@ mod tests {
         };
         frame.x_axis = [2.0, 0.0, 0.0];
         assert_eq!(btlx_drilling(&invalid_frame), None);
+    }
+
+    #[test]
+    fn btlx_free_contour_requires_a_closed_rectangular_profile() {
+        let line = |start_mm, end_mm| GeneralMachiningSegment::Line { start_mm, end_mm };
+        let valid = GeneralMachiningGeometry::ProfileCut {
+            frame: identity_machining_frame(),
+            segments: vec![
+                line([0.0, 0.0], [20.0, 0.0]),
+                line([20.0, 0.0], [20.0, 10.0]),
+                line([20.0, 10.0], [0.0, 10.0]),
+                line([0.0, 10.0], [0.0, 0.0]),
+            ],
+            start_mm: 10.0,
+            end_mm: 30.0,
+        };
+        let contour = btlx_free_contour(&valid).unwrap();
+        assert_eq!(contour.reference_point_mm, [10.0, 0.0, 0.0]);
+        assert_eq!(contour.tool_position, "left");
+        assert_eq!(contour.start_point, ["0".to_owned(), "0".to_owned()]);
+        assert_eq!(contour.depth, "20");
+
+        let clockwise = GeneralMachiningGeometry::ProfileCut {
+            frame: identity_machining_frame(),
+            segments: vec![
+                line([0.0, 0.0], [0.0, 10.0]),
+                line([0.0, 10.0], [20.0, 10.0]),
+                line([20.0, 10.0], [20.0, 0.0]),
+                line([20.0, 0.0], [0.0, 0.0]),
+            ],
+            start_mm: 0.0,
+            end_mm: 20.0,
+        };
+        assert_eq!(
+            btlx_free_contour(&clockwise).unwrap().tool_position,
+            "right"
+        );
+
+        let mut open = valid.clone();
+        let GeneralMachiningGeometry::ProfileCut { segments, .. } = &mut open else {
+            unreachable!()
+        };
+        let GeneralMachiningSegment::Line { end_mm, .. } = &mut segments[3] else {
+            unreachable!()
+        };
+        *end_mm = [1.0, 0.0];
+        assert_eq!(btlx_free_contour(&open), None);
+
+        let mut diagonal = valid.clone();
+        let GeneralMachiningGeometry::ProfileCut { segments, .. } = &mut diagonal else {
+            unreachable!()
+        };
+        let GeneralMachiningSegment::Line { end_mm, .. } = &mut segments[0] else {
+            unreachable!()
+        };
+        *end_mm = [20.0, 1.0];
+        assert_eq!(btlx_free_contour(&diagonal), None);
+
+        let collapsed_after_formatting = GeneralMachiningGeometry::ProfileCut {
+            frame: identity_machining_frame(),
+            segments: vec![
+                line([0.0, 0.0], [1.0e-10, 0.0]),
+                line([1.0e-10, 0.0], [1.0e-10, 10.0]),
+                line([1.0e-10, 10.0], [0.0, 10.0]),
+                line([0.0, 10.0], [0.0, 0.0]),
+            ],
+            start_mm: 0.0,
+            end_mm: 20.0,
+        };
+        assert_eq!(btlx_free_contour(&collapsed_after_formatting), None);
+
+        let mut excessive_depth = valid;
+        let GeneralMachiningGeometry::ProfileCut { end_mm, .. } = &mut excessive_depth else {
+            unreachable!()
+        };
+        *end_mm = 100_011.0;
+        assert_eq!(btlx_free_contour(&excessive_depth), None);
     }
 }
