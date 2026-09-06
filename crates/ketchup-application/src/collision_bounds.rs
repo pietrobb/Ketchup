@@ -165,6 +165,10 @@ pub(super) fn certified_bounds(graph: &ExactBRepGraph) -> Option<Bounds> {
 }
 
 impl Bounds {
+    pub(super) fn coordinates(self) -> [[f64; 3]; 2] {
+        self.0
+    }
+
     fn expanded(mut bounds: [[f64; 3]; 2], margin: f64) -> Option<Self> {
         for axis in 0..3 {
             bounds[0][axis] = (bounds[0][axis] - margin).next_down();
@@ -201,7 +205,8 @@ impl Bounds {
         Self::expanded(bounds, tolerance + error)
     }
 
-    pub(super) fn separated(self, other: Self) -> bool {
+    #[cfg(test)]
+    fn separated(self, other: Self) -> bool {
         (0..3).any(|axis| self.0[1][axis] < other.0[0][axis] || other.0[1][axis] < self.0[0][axis])
     }
 }

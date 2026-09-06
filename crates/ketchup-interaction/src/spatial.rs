@@ -42,12 +42,18 @@ pub struct SpatialQueryStats {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SpatialQueryError {
+    InvalidBounds,
     StaleProjection,
 }
 
 impl fmt::Display for SpatialQueryError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("spatial projection is bound to a different canonical snapshot")
+        formatter.write_str(match self {
+            Self::InvalidBounds => "spatial bounds must be finite and ordered",
+            Self::StaleProjection => {
+                "spatial projection is bound to a different canonical snapshot"
+            }
+        })
     }
 }
 
@@ -237,6 +243,48 @@ impl SpatialIndex {
         };
         (candidates, stats)
     }
+}
+
+/// Deterministic broad-phase only. Every returned pair still requires an
+/// authoritative geometry check before it can establish contact or separation.
+pub fn overlapping_bounds_pairs(
+    bounds: &[[[f64; 3]; 2]],
+) -> Result<(Vec<(usize, usize)>, SpatialQueryStats), SpatialQueryError> {
+    let bounds = bounds
+        .iter()
+        .map(|value| {
+            if !value.iter().flatten().all(|axis| axis.is_finite())
+                || (0..3).any(|axis| value[0][axis] > value[1][axis])
+            {
+                return Err(SpatialQueryError::InvalidBounds);
+            }
+            Ok(SpatialBounds::from_min_max(
+                Vec3::new(value[0][0], value[0][1], value[0][2]),
+                Vec3::new(value[1][0], value[1][1], value[1][2]),
+            ))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let index = SpatialIndex::build(bounds.iter().copied().enumerate());
+    let mut pairs = Vec::new();
+    let mut bounds_tested = 0usize;
+    for (left, query) in bounds.iter().copied().enumerate() {
+        let (candidates, stats) = index.query_bounds_with_stats(query);
+        bounds_tested = bounds_tested.saturating_add(stats.bounds_tested);
+        pairs.extend(
+            candidates
+                .into_iter()
+                .filter(|right| *right > left)
+                .map(|right| (left, right)),
+        );
+    }
+    pairs.sort_unstable();
+    pairs.dedup();
+    let stats = SpatialQueryStats {
+        indexed_items: bounds.len(),
+        bounds_tested,
+        candidate_count: pairs.len(),
+    };
+    Ok((pairs, stats))
 }
 
 fn build_node(items: &mut [SpatialItem]) -> SpatialNode {

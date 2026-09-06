@@ -68,6 +68,16 @@ fn worker_contact_penetration_and_snapshot_are_exact() {
         assert_eq!(report["complete"], true, "{report}");
         assert_eq!(report["issue_count"], count);
         assert_eq!(report["checked_pair_count"], 1);
+        assert_eq!(
+            report["collision"]["broad_phase_rejected_pair_count"],
+            usize::from(x == 11.0),
+            "{report}"
+        );
+        assert_eq!(
+            report["collision"]["narrow_phase_pair_count"],
+            usize::from(x != 11.0),
+            "{report}"
+        );
         if count == 1 {
             assert_eq!(report["issues"][0]["left"]["producer_feature_id"], 2);
             assert!(report["issues"][0]["left_instance_path"]["steps"].is_array());

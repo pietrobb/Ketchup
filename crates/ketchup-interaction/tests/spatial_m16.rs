@@ -9,7 +9,7 @@ use ketchup_core::exact_product::{
 use ketchup_interaction::exact_projection::ExactInteractionProjection;
 use ketchup_interaction::mesh_projection::MeshInteractionProjection;
 use ketchup_interaction::projection::CanonicalInteractionProjection;
-use ketchup_interaction::spatial::{SPATIAL_INDEX_V1, SpatialQueryError};
+use ketchup_interaction::spatial::{SPATIAL_INDEX_V1, SpatialQueryError, overlapping_bounds_pairs};
 use ketchup_interaction::{Ray, Vec3};
 use std::sync::Arc;
 
@@ -152,6 +152,40 @@ fn mesh_document() -> DocumentStore {
     let mut store = DocumentStore::new();
     store.apply_batch(&CommandBatch::new(commands)).unwrap();
     store
+}
+
+#[test]
+fn broad_phase_pairs_are_deterministic_boundary_safe_and_sparse_at_10k() {
+    let touching = [
+        [[0.0, 0.0, 0.0], [10.0, 10.0, 10.0]],
+        [[10.0, 0.0, 0.0], [20.0, 10.0, 10.0]],
+        [[30.0, 0.0, 0.0], [40.0, 10.0, 10.0]],
+    ];
+    let first = overlapping_bounds_pairs(&touching).unwrap();
+    assert_eq!(first.0, vec![(0, 1)]);
+    assert_eq!(overlapping_bounds_pairs(&touching).unwrap(), first);
+
+    let sparse = (0..10_000)
+        .map(|index| {
+            let x = index as f64 * 20.0;
+            [[x, 0.0, 0.0], [x + 10.0, 10.0, 10.0]]
+        })
+        .collect::<Vec<_>>();
+    let (pairs, stats) = overlapping_bounds_pairs(&sparse).unwrap();
+    assert!(pairs.is_empty());
+    assert_eq!(stats.indexed_items, 10_000);
+    assert_eq!(stats.candidate_count, 0);
+    assert!(stats.bounds_tested < 10_000 * 64, "{stats:?}");
+
+    for invalid in [
+        [[1.0, 0.0, 0.0], [0.0, 1.0, 1.0]],
+        [[0.0, 0.0, 0.0], [f64::NAN, 1.0, 1.0]],
+    ] {
+        assert_eq!(
+            overlapping_bounds_pairs(&[invalid]),
+            Err(SpatialQueryError::InvalidBounds)
+        );
+    }
 }
 
 #[test]

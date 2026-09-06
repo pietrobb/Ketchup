@@ -13,6 +13,7 @@ use ketchup_core::exact_validation::{
 use ketchup_core::persistence::ContainerData;
 use ketchup_core::prismatic::TolerancePolicy;
 use ketchup_core::validation::EvidenceClass;
+use ketchup_interaction::spatial::overlapping_bounds_pairs;
 use ketchup_scheduler::pair_query::{MAX_EXACT_PAIR_CANDIDATES, MAX_EXACT_PAIR_GRAPHS};
 use ketchup_scheduler::{ExactPairCandidate, ExactPairRelation, ExactWorkerSupervisor};
 use serde_json::{Value, json};
@@ -257,39 +258,59 @@ fn collision_report(
                 ));
             }
         }
-        // Block ordering keeps each native graph cache useful across thousands
-        // of pairs, including models larger than one batch's graph envelope.
-        let block = MAX_EXACT_PAIR_GRAPHS / 2;
-        for left_block in (0..bodies.len()).step_by(block) {
-            for right_block in (left_block..bodies.len()).step_by(block) {
-                for left in left_block..(left_block + block).min(bodies.len()) {
-                    for right in right_block..(right_block + block).min(bodies.len()) {
-                        if right <= left {
-                            continue;
-                        }
-                        if let (Some(l), Some(r)) = (bodies[left].graph, bodies[right].graph) {
-                            if world_bounds[left]
-                                .zip(world_bounds[right])
-                                .is_some_and(|(l, r)| l.separated(r))
-                            {
-                                broad_rejected += 1;
-                                checked += 1;
-                                continue;
-                            }
-                            pairs.push((
-                                left,
-                                right,
-                                ExactPairCandidate {
-                                    left_graph: l,
-                                    right_graph: r,
-                                    left_transform: *bodies[left].occurrence.transform.matrix(),
-                                    right_transform: *bodies[right].occurrence.transform.matrix(),
-                                },
-                            ));
-                        }
-                    }
-                }
-            }
+        let bounded = world_bounds
+            .iter()
+            .enumerate()
+            .filter_map(|(index, bounds)| bounds.map(|bounds| (index, bounds.coordinates())))
+            .collect::<Vec<_>>();
+        let mut candidates = overlapping_bounds_pairs(
+            &bounded
+                .iter()
+                .map(|(_, coordinates)| *coordinates)
+                .collect::<Vec<_>>(),
+        )
+        .map(|(candidate_pairs, _)| {
+            candidate_pairs
+                .into_iter()
+                .map(|(left, right)| (bounded[left].0, bounded[right].0))
+                .collect::<BTreeSet<_>>()
+        })
+        .unwrap_or_else(|_| {
+            (0..bodies.len())
+                .flat_map(|left| (left + 1..bodies.len()).map(move |right| (left, right)))
+                .collect()
+        });
+        // An uncertifiable bound can reject nothing, but it must not disable BVH
+        // rejection between all other certified bodies.
+        for unbounded in world_bounds
+            .iter()
+            .enumerate()
+            .filter_map(|(index, bounds)| bounds.is_none().then_some(index))
+        {
+            candidates.extend((0..bodies.len()).filter_map(|other| {
+                (other != unbounded).then_some((unbounded.min(other), unbounded.max(other)))
+            }));
+        }
+        broad_rejected = total_pairs.saturating_sub(candidates.len());
+        checked = broad_rejected;
+        let graph_block = MAX_EXACT_PAIR_GRAPHS / 2;
+        let mut candidates = candidates.into_iter().collect::<Vec<_>>();
+        candidates
+            .sort_by_key(|(left, right)| (left / graph_block, right / graph_block, *left, *right));
+        for (left, right) in candidates {
+            let (Some(l), Some(r)) = (bodies[left].graph, bodies[right].graph) else {
+                continue;
+            };
+            pairs.push((
+                left,
+                right,
+                ExactPairCandidate {
+                    left_graph: l,
+                    right_graph: r,
+                    left_transform: *bodies[left].occurrence.transform.matrix(),
+                    right_transform: *bodies[right].occurrence.transform.matrix(),
+                },
+            ));
         }
         let path = worker_path.or_else(|| {
             crate::evaluation::exact_worker_candidates()
