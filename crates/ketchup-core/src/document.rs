@@ -11,9 +11,10 @@ use crate::assembly_joint::{
 use crate::drawing::{DrawingError, DrawingSheet, DrawingSheetId, DrawingSource};
 use crate::exact_brep_graph::{
     ExactBRepGraph, MAX_EXACT_BREP_GRAPH_NODES, MAX_EXACT_BREP_GRAPH_PROFILES,
-    MAX_EXACT_BREP_LOFT_CONTROL_POINTS, MAX_EXACT_BREP_SWEEP_PATH_LENGTH_MM,
-    MAX_EXACT_BREP_SWEEP_PATH_SEGMENTS, MIN_EXACT_BREP_SWEEP_PATH_LENGTH_MM,
-    MIN_EXACT_BREP_SWEEP_PATH_SEGMENT_LENGTH_MM, spatial_sweep_bounds_are_valid,
+    MAX_EXACT_BREP_LOFT_CONTROL_POINTS, MAX_EXACT_BREP_PLANAR_LOOP_SEGMENTS,
+    MAX_EXACT_BREP_SWEEP_PATH_LENGTH_MM, MAX_EXACT_BREP_SWEEP_PATH_SEGMENTS,
+    MIN_EXACT_BREP_SWEEP_PATH_LENGTH_MM, MIN_EXACT_BREP_SWEEP_PATH_SEGMENT_LENGTH_MM,
+    SKETCH_SWEEP_FRAME_EPSILON_MM, spatial_sweep_bounds_are_valid,
 };
 use crate::exact_product::{
     BodySubshapeRef, EXACT_MIN_LENGTH_MM, ExactFaceRole, ExactFeatureChainRequest,
@@ -46,7 +47,8 @@ use crate::prismatic::{CanonicalJoint, JointId, PrismaticError};
 use crate::sketch::{
     FeatureExtent, FeatureExtentEnd, PadPocketOperation, PadSpec, PocketSpec, PrincipalPlane,
     SketchConstraintId, SketchConstraintKind, SketchEntity, SketchError, SketchPointKind,
-    SketchSpec, WorkplaneFrame, WorkplaneSpec, WorkplaneSupport, WorkplaneSupportHealth,
+    SketchSpec, SolvedSketchRegionProfile, WorkplaneFrame, WorkplaneSpec, WorkplaneSupport,
+    WorkplaneSupportHealth,
 };
 use crate::space::{
     CanonicalClearanceVolume, CanonicalSpace, ClearanceCoordinateFrame, ClearanceOwner,
@@ -10419,6 +10421,94 @@ fn sweep_path_self_intersects(
     false
 }
 
+pub fn solved_sketch_sweep_path(sketch: &SketchSpec) -> Option<Vec<ProfileSegment>> {
+    let solution = sketch.solve_geometry().ok()?;
+    let [
+        SketchEntity::Line {
+            start_mm, end_mm, ..
+        },
+    ] = solution.entities.as_slice()
+    else {
+        return None;
+    };
+    let segments = vec![ProfileSegment::Line {
+        start_mm: *start_mm,
+        end_mm: *end_mm,
+    }];
+    is_valid_sweep_path(&segments).then_some(segments)
+}
+
+pub fn valid_sketch_sweep_inputs(
+    snapshot: &Snapshot,
+    profile: &SketchSpec,
+    path: &SketchSpec,
+) -> bool {
+    valid_sketch_sweep_inputs_with_frames(profile, path, |workplane| {
+        snapshot.feature(workplane).and_then(|feature| {
+            if let FeatureKind::Workplane(spec) = feature.kind() {
+                Some(spec.frame)
+            } else {
+                None
+            }
+        })
+    })
+}
+
+fn valid_sketch_sweep_inputs_with_frames(
+    profile: &SketchSpec,
+    path: &SketchSpec,
+    mut frame: impl FnMut(FeatureId) -> Option<WorkplaneFrame>,
+) -> bool {
+    let Ok(regions) = profile.solved_regions() else {
+        return false;
+    };
+    let [region] = regions.as_slice() else {
+        return false;
+    };
+    let SolvedSketchRegionProfile::Polyline(points) = &region.outer else {
+        return false;
+    };
+    if !region.holes.is_empty()
+        || !(3..=MAX_EXACT_BREP_PLANAR_LOOP_SEGMENTS).contains(&points.len())
+    {
+        return false;
+    }
+    let Some(path_segments) = solved_sketch_sweep_path(path) else {
+        return false;
+    };
+    let ProfileSegment::Line {
+        start_mm, end_mm, ..
+    } = path_segments[0]
+    else {
+        return false;
+    };
+    let (Some(profile_frame), Some(path_frame)) = (frame(profile.workplane), frame(path.workplane))
+    else {
+        return false;
+    };
+    let to_world = |point: [f64; 2]| {
+        [0, 1, 2].map(|axis| {
+            path_frame.origin_mm[axis]
+                + path_frame.x_axis[axis] * point[0]
+                + path_frame.y_axis[axis] * point[1]
+        })
+    };
+    let start = to_world(start_mm);
+    let end = to_world(end_mm);
+    let delta = [0, 1, 2].map(|axis| end[axis] - start[axis]);
+    let length = delta[0].hypot(delta[1]).hypot(delta[2]);
+    let direction = delta.map(|component| component / length);
+    let starts_at_profile = [0, 1, 2].into_iter().all(|axis| {
+        (start[axis] - profile_frame.origin_mm[axis]).abs() <= SKETCH_SWEEP_FRAME_EPSILON_MM
+    });
+    let aligned = [0, 1, 2]
+        .into_iter()
+        .map(|axis| direction[axis] * profile_frame.normal[axis])
+        .sum::<f64>()
+        >= 1.0 - SKETCH_SWEEP_FRAME_EPSILON_MM;
+    starts_at_profile && aligned
+}
+
 pub fn is_valid_sweep_path(segments: &[ProfileSegment]) -> bool {
     if !(1..=MAX_EXACT_BREP_SWEEP_PATH_SEGMENTS).contains(&segments.len())
         || segments.len() == 1 && !matches!(segments[0], ProfileSegment::Line { .. })
@@ -13880,6 +13970,20 @@ fn validate_product(product: &ProductModel) -> Result<(), CanonicalError> {
                         if is_valid_spatial_sweep_path(segments)
                             && spatial_sweep_bounds_are_valid(&profile_source.kind, segments)
                 );
+                let valid_sketch_inputs = match (&profile_source.kind, &path_source.kind) {
+                    (FeatureKind::Sketch(profile), FeatureKind::Sketch(path)) => {
+                        valid_sketch_sweep_inputs_with_frames(profile, path, |workplane| {
+                            product.features.get(&workplane).and_then(|feature| {
+                                if let FeatureKind::Workplane(spec) = &feature.kind {
+                                    Some(spec.frame)
+                                } else {
+                                    None
+                                }
+                            })
+                        })
+                    }
+                    _ => false,
+                };
                 let feature_position = definition
                     .feature_ids
                     .iter()
@@ -13894,8 +13998,7 @@ fn validate_product(product: &ProductModel) -> Result<(), CanonicalError> {
                 });
                 if profile_source.definition_id != feature.definition_id
                     || path_source.definition_id != feature.definition_id
-                    || !valid_profile
-                    || !valid_path
+                    || !(valid_profile && valid_path || valid_sketch_inputs)
                     || !sources_precede_sweep
                 {
                     return Err(CanonicalError::InvalidSweep);

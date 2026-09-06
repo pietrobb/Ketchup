@@ -19,13 +19,15 @@ use ketchup_core::assistant_sidecar::{
     AssistantCadBodyFeature, AssistantCadBooleanOperation, AssistantCadClassificationCategory,
     AssistantCadDeletePolicy, AssistantCadEditOperation, AssistantCadEditProgram,
     AssistantCadEntitySelector, AssistantCadPartFeature, AssistantCadRotation, AssistantChatResult,
-    AssistantDistribution, AssistantPrincipalPlane, AssistantRejectionPhase,
-    AssistantSketchConstraint, AssistantSketchEntity, AssistantWorkplaneSpec,
+    AssistantDistribution, AssistantPrincipalPlane, AssistantSketchConstraint,
+    AssistantSketchEntity, AssistantWorkplaneSpec,
 };
 use ketchup_core::document::{
     DefinitionId, EdgeFinishKind, FeatureId, FeatureKind, InstancePath, Snapshot,
 };
-use ketchup_core::exact_brep_graph::ExactBRepGraph;
+use ketchup_core::exact_brep_graph::{
+    EXACT_BREP_GRAPH_SCHEMA_V12, EXACT_BREP_GRAPH_SCHEMA_V13, ExactBRepGraph, ExactBRepGraphError,
+};
 use ketchup_core::exact_product::{
     ExactBodyPackage, ExactFeatureChainRequest, ExactResultRegistry,
 };
@@ -1959,11 +1961,10 @@ fn assistant_cuts_an_opening_but_cannot_yet_boolean_two_parts_it_created() {
     assert!(shell.app().assistant_proposal().is_none());
 }
 
-/// A fixture can feed canonical Profile/SegmentProfile inputs into Sweep, but
-/// the generic Assistant contract can author only Sketch inputs. Pin that
-/// expressibility gap through the real reviewed Assistant flow.
+/// The generic Assistant can feed its own closed-profile and open-path Sketches
+/// into the same reviewed exact Sweep path used by canonical fixtures.
 #[test]
-fn assistant_authored_sketches_cannot_yet_feed_a_sweep() {
+fn assistant_authored_sketches_feed_a_reviewed_exact_sweep() {
     let clear_request = "Clear the document for a sweep test";
     let profile_request = "Create a square sweep profile part";
     let path_request = "Create an open straight sweep path in that part";
@@ -2011,7 +2012,7 @@ fn assistant_authored_sketches_cannot_yet_feed_a_sweep() {
             operations: vec![AssistantCadEditOperation::CreatePart {
                 name: "Sweep profile".to_owned(),
                 workplane: AssistantWorkplaneSpec::Principal {
-                    plane: AssistantPrincipalPlane::Xy,
+                    plane: AssistantPrincipalPlane::Yz,
                 },
                 entities,
                 constraints,
@@ -2070,71 +2071,48 @@ fn assistant_authored_sketches_cannot_yet_feed_a_sweep() {
     let sweep_program = AssistantCadEditProgram {
         operations: vec![AssistantCadEditOperation::AppendFeature {
             definition_id: definition_id.0,
-            name: "Rejected generic sweep".to_owned(),
+            name: "Assistant sketch sweep".to_owned(),
             feature: AssistantCadBodyFeature::Sweep {
                 profile_feature_id: profile_id.0,
                 path_feature_id: path_id.0,
             },
         }],
     };
-    transport.queue_cad_edit_program(sweep_request, sweep_program.clone());
-    transport.queue_cad_edit_program(sweep_request, sweep_program);
-    let revision = shell.app().document_revision();
-    let digest = shell.app().canonical_digest();
-    let undo_steps = shell.app().undo_step_count();
-    let request_count = transport.request_ids().len();
+    build_step(&mut shell, &transport, sweep_request, sweep_program);
 
-    shell.focus_text_input(&shell.catalog().text("assistant-input-hint"));
-    shell.type_text(sweep_request);
-    shell.press_key(egui::Key::Enter);
-    for _ in 0..1_000 {
-        shell.step();
-        if shell
-            .app()
-            .assistant_messages()
-            .iter()
-            .filter(|message| message.diagnostic.is_some())
-            .count()
-            == 2
-        {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    shell.settle();
-
-    let diagnostics = shell
-        .app()
-        .assistant_messages()
-        .iter()
-        .filter_map(|message| message.diagnostic.as_ref())
-        .collect::<Vec<_>>();
+    let committed = shell.app().document_snapshot();
+    let sweep_id = committed
+        .features()
+        .find(|feature| feature.name() == "Assistant sketch sweep")
+        .expect("the reviewed Assistant step must create the Sweep")
+        .id();
+    assert!(matches!(
+        committed.feature(sweep_id).unwrap().kind(),
+        FeatureKind::Sweep { profile, path }
+            if *profile == profile_id && *path == path_id
+    ));
+    let graph = ExactBRepGraph::from_snapshot(&committed, definition_id, sweep_id).unwrap();
+    let reopened = persistence::load(&persistence::save(&committed)).unwrap();
     assert_eq!(
-        diagnostics.len(),
-        2,
-        "the host must perform one bounded replan"
+        ExactBRepGraph::from_snapshot(&reopened.snapshot(), definition_id, sweep_id).unwrap(),
+        graph
     );
-    for diagnostic in diagnostics {
-        assert_eq!(diagnostic.phase, AssistantRejectionPhase::ProposalPlanning);
-        assert_eq!(diagnostic.code, "planning.cad_feature_input_unsupported");
-        assert_eq!(diagnostic.operation, "append_feature");
-        assert_eq!(diagnostic.target, "feature_inputs");
-    }
-    assert!(shell.app().assistant_proposal().is_none());
-    assert_eq!(shell.app().document_revision(), revision);
-    assert_eq!(shell.app().canonical_digest(), digest);
-    assert_eq!(shell.app().undo_step_count(), undo_steps);
-    assert_eq!(transport.request_ids().len(), request_count + 2);
-    assert_eq!(
-        shell
-            .app()
-            .assistant_messages()
-            .iter()
-            .filter(|message| message.role == AssistantMessageRole::Error)
-            .count(),
-        2
-    );
-    assert_eq!(transport.remaining_responses(), 0);
+    assert_eq!(graph.schema, EXACT_BREP_GRAPH_SCHEMA_V13);
+    let mut downgraded = graph.clone();
+    downgraded.schema = EXACT_BREP_GRAPH_SCHEMA_V12.to_owned();
+    assert!(matches!(
+        downgraded.to_bytes(),
+        Err(ExactBRepGraphError::InvalidGraph)
+    ));
+    assert_eq!(graph.profiles.len(), 2);
+    assert_eq!(graph.profiles[0].source_feature_id, profile_id.0);
+    assert_eq!(graph.profiles[1].source_feature_id, path_id.0);
+    let expected_bounds = [[0.0, 0.0, 0.0], [200.0, 20.0, 20.0]];
+    assert_eq!(graph.producer_bounds_mm().unwrap(), Some(expected_bounds));
+    let mut worker = ExactWorkerSupervisor::spawn(exact_worker_path()).unwrap();
+    let package = worker.evaluate_exact_brep_graph(&graph).unwrap();
+    assert!((package.volume_mm3 - 80_000.0).abs() <= 1.0e-6);
+    assert_eq!(package.bounds_mm, expected_bounds);
 }
 
 /// Unlike fixture-backed geometry, this starts from an Assistant-authored body.

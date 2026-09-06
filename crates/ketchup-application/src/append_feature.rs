@@ -7,7 +7,7 @@ use crate::topology::{
 use ketchup_core::assistant_sidecar::{AssistantCadBodyFeature, AssistantCadBooleanOperation};
 use ketchup_core::document::{
     BooleanOperation, CanonicalError, DefinitionId, Dimension, FeatureId, FeatureKind, LoftSection,
-    Snapshot, is_valid_spatial_sweep_path, is_valid_sweep_path,
+    Snapshot, is_valid_spatial_sweep_path, is_valid_sweep_path, valid_sketch_sweep_inputs,
 };
 use ketchup_core::exact_brep_graph::ExactBRepGraph;
 use ketchup_core::exact_product::{ExactResultRegistry, line_arc_profile_bounds};
@@ -201,7 +201,13 @@ pub(crate) fn plan_feature_kind(
                 FeatureKind::SpatialPath { segments } => is_valid_spatial_sweep_path(segments),
                 _ => false,
             };
-            if !valid_profile || !valid_path {
+            let valid_sketch_inputs = match (profile_source.kind(), path_source.kind()) {
+                (FeatureKind::Sketch(profile), FeatureKind::Sketch(path)) => {
+                    valid_sketch_sweep_inputs(snapshot, profile, path)
+                }
+                _ => false,
+            };
+            if !(valid_profile && valid_path || valid_sketch_inputs) {
                 return Err(assistant_planning_rejection(
                     "planning.cad_feature_input_unsupported",
                     operation_name,

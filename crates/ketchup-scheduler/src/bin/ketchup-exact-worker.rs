@@ -3,12 +3,13 @@
 use ketchup_core::exact_brep_graph::{
     EXACT_BREP_GRAPH_SCHEMA_V6, EXACT_BREP_GRAPH_SCHEMA_V7, EXACT_BREP_GRAPH_SCHEMA_V8,
     EXACT_BREP_GRAPH_SCHEMA_V9, EXACT_BREP_GRAPH_SCHEMA_V10, EXACT_BREP_GRAPH_SCHEMA_V11,
-    EXACT_BREP_GRAPH_SCHEMA_V12, ExactBRepBooleanOperation, ExactBRepEdgeFinishKind,
-    ExactBRepGraph, ExactBRepLinearInterval, ExactBRepOperation, ExactBRepPlanarGeometry,
-    ExactBRepPlanarLoop, ExactBRepPlanarSegment, ExactBRepProfile, ExactBRepSpatialPathSegment,
-    ExactBRepTopologyKind, ExactBRepTopologySelector, MAX_EXACT_BREP_GRAPH_BYTES,
-    MAX_EXACT_BREP_PLANAR_LOOP_SEGMENTS, MAX_EXACT_BREP_REGION_HOLES,
-    MAX_EXACT_BREP_REGION_SEGMENTS, exact_brep_planar_rectangle_bounds,
+    EXACT_BREP_GRAPH_SCHEMA_V12, EXACT_BREP_GRAPH_SCHEMA_V13, ExactBRepBooleanOperation,
+    ExactBRepEdgeFinishKind, ExactBRepGraph, ExactBRepLinearInterval, ExactBRepOperation,
+    ExactBRepPlanarGeometry, ExactBRepPlanarLoop, ExactBRepPlanarSegment, ExactBRepProfile,
+    ExactBRepSpatialPathSegment, ExactBRepTopologyKind, ExactBRepTopologySelector,
+    MAX_EXACT_BREP_GRAPH_BYTES, MAX_EXACT_BREP_PLANAR_LOOP_SEGMENTS, MAX_EXACT_BREP_REGION_HOLES,
+    MAX_EXACT_BREP_REGION_SEGMENTS, SKETCH_SWEEP_FRAME_EPSILON_MM,
+    exact_brep_planar_rectangle_bounds,
 };
 use ketchup_core::exact_product::{EXACT_BREP_GRAPH_EVALUATOR_V1, ExactCircleProfile};
 use ketchup_core::graph::sha256_hex;
@@ -144,6 +145,9 @@ fn handle_request(backend: &ExactBackend, request: &str) -> Option<String> {
         (Some("CAPS"), Some("EXACT_BREP_GRAPH_V12"), None) => {
             Some("CAPS EXACT_BREP_GRAPH_V12".to_owned())
         }
+        (Some("CAPS"), Some("EXACT_BREP_GRAPH_V13"), None) => {
+            Some("CAPS EXACT_BREP_GRAPH_V13".to_owned())
+        }
         (
             Some(
                 operation @ ("TESSELLATE_BREP_GRAPH_V6"
@@ -152,7 +156,8 @@ fn handle_request(backend: &ExactBackend, request: &str) -> Option<String> {
                 | "TESSELLATE_BREP_GRAPH_V9"
                 | "TESSELLATE_BREP_GRAPH_V10"
                 | "TESSELLATE_BREP_GRAPH_V11"
-                | "TESSELLATE_BREP_GRAPH_V12"),
+                | "TESSELLATE_BREP_GRAPH_V12"
+                | "TESSELLATE_BREP_GRAPH_V13"),
             ),
             Some(graph_digest),
             Some(encoded_graph),
@@ -167,7 +172,11 @@ fn handle_request(backend: &ExactBackend, request: &str) -> Option<String> {
             ))
         }
         (
-            Some(operation @ ("EXPORT_BREP_GRAPH_STEP_V2" | "EXPORT_BREP_GRAPH_STEP_V3")),
+            Some(
+                operation @ ("EXPORT_BREP_GRAPH_STEP_V2"
+                | "EXPORT_BREP_GRAPH_STEP_V3"
+                | "EXPORT_BREP_GRAPH_STEP_V4"),
+            ),
             Some(graph_digest),
             Some(encoded_graph),
         ) => {
@@ -188,7 +197,8 @@ fn handle_request(backend: &ExactBackend, request: &str) -> Option<String> {
                 | "EVAL_BREP_GRAPH_V9"
                 | "EVAL_BREP_GRAPH_V10"
                 | "EVAL_BREP_GRAPH_V11"
-                | "EVAL_BREP_GRAPH_V12"),
+                | "EVAL_BREP_GRAPH_V12"
+                | "EVAL_BREP_GRAPH_V13"),
             ),
             Some(graph_digest),
             Some(encoded_graph),
@@ -1467,6 +1477,9 @@ fn exact_brep_graph_schema_matches_operation(operation: &str, schema: &str) -> b
         "EVAL_BREP_GRAPH_V12" | "TESSELLATE_BREP_GRAPH_V12" => {
             schema == EXACT_BREP_GRAPH_SCHEMA_V12
         }
+        "EVAL_BREP_GRAPH_V13" | "TESSELLATE_BREP_GRAPH_V13" => {
+            schema == EXACT_BREP_GRAPH_SCHEMA_V13
+        }
         "EXPORT_BREP_GRAPH_STEP_V2" => matches!(
             schema,
             EXACT_BREP_GRAPH_SCHEMA_V6
@@ -1477,6 +1490,7 @@ fn exact_brep_graph_schema_matches_operation(operation: &str, schema: &str) -> b
                 | EXACT_BREP_GRAPH_SCHEMA_V11
         ),
         "EXPORT_BREP_GRAPH_STEP_V3" => schema == EXACT_BREP_GRAPH_SCHEMA_V12,
+        "EXPORT_BREP_GRAPH_STEP_V4" => schema == EXACT_BREP_GRAPH_SCHEMA_V13,
         _ => false,
     }
 }
@@ -1679,6 +1693,7 @@ fn exact_brep_graph_step_response(
     let response_protocol = match operation {
         "EXPORT_BREP_GRAPH_STEP_V2" => "OK_BREP_GRAPH_STEP_V2",
         "EXPORT_BREP_GRAPH_STEP_V3" => "OK_BREP_GRAPH_STEP_V3",
+        "EXPORT_BREP_GRAPH_STEP_V4" => "OK_BREP_GRAPH_STEP_V4",
         _ => return "ERR invalid_request".to_owned(),
     };
     match backend.export_step(&output.body, &output_path) {
@@ -1719,9 +1734,11 @@ fn exact_brep_graph_response(
             | EXACT_BREP_GRAPH_SCHEMA_V10
             | EXACT_BREP_GRAPH_SCHEMA_V11
             | EXACT_BREP_GRAPH_SCHEMA_V12
+            | EXACT_BREP_GRAPH_SCHEMA_V13
     ) {
         (
             match graph.schema.as_str() {
+                EXACT_BREP_GRAPH_SCHEMA_V13 => "OK_BREP_GRAPH_V13",
                 EXACT_BREP_GRAPH_SCHEMA_V12 => "OK_BREP_GRAPH_V12",
                 EXACT_BREP_GRAPH_SCHEMA_V11 => "OK_BREP_GRAPH_V11",
                 EXACT_BREP_GRAPH_SCHEMA_V10 => "OK_BREP_GRAPH_V10",
@@ -1850,6 +1867,13 @@ fn evaluate_exact_brep_graph(
                 backend,
                 &graph.profiles[profile.0 as usize],
                 &graph.profiles[path.0 as usize],
+                false,
+            )?,
+            ExactBRepOperation::SketchSweep { profile, path } => exact_brep_sweep(
+                backend,
+                &graph.profiles[profile.0 as usize],
+                &graph.profiles[path.0 as usize],
+                true,
             )?,
             ExactBRepOperation::SpatialSweep { profile, path } => exact_brep_spatial_sweep(
                 backend,
@@ -2146,6 +2170,7 @@ fn exact_brep_sweep(
     backend: &ExactBackend,
     profile: &ExactBRepProfile,
     path: &ExactBRepProfile,
+    sketch_sweep: bool,
 ) -> Result<ExactOpOutput, ketchup_exact::GeometryError> {
     let ExactBRepPlanarGeometry::Boundary {
         closed: false,
@@ -2178,6 +2203,43 @@ fn exact_brep_sweep(
     let end = end_bits.map(f64::from_bits);
     let direction = [end[0] - start[0], end[1] - start[1]];
     let length = direction[0].hypot(direction[1]);
+    if sketch_sweep {
+        let path_frame = path.frame_bits.map(f64::from_bits);
+        let to_world = |point: [f64; 2]| {
+            [0, 1, 2].map(|axis| {
+                path_frame[axis] + path_frame[3 + axis] * point[0] + path_frame[6 + axis] * point[1]
+            })
+        };
+        let world_start = to_world(start);
+        let world_end = to_world(end);
+        let world_delta = [0, 1, 2].map(|axis| world_end[axis] - world_start[axis]);
+        let world_length = world_delta[0].hypot(world_delta[1]).hypot(world_delta[2]);
+        let world_direction = world_delta.map(|component| component / world_length);
+        let profile_frame = profile.frame_bits.map(f64::from_bits);
+        let starts_at_profile = [0, 1, 2].into_iter().all(|axis| {
+            (world_start[axis] - profile_frame[axis]).abs() <= SKETCH_SWEEP_FRAME_EPSILON_MM
+        });
+        let aligned = [0, 1, 2]
+            .into_iter()
+            .map(|axis| world_direction[axis] * profile_frame[9 + axis])
+            .sum::<f64>()
+            >= 1.0 - SKETCH_SWEEP_FRAME_EPSILON_MM;
+        if !world_length.is_finite() || world_length <= 1.0e-9 || !starts_at_profile || !aligned {
+            return Err(exact_brep_profile_error(
+                profile,
+                "Sketch Sweep requires the path to start at the profile frame origin and follow its normal",
+            ));
+        }
+        return exact_brep_profile_body(
+            backend,
+            profile,
+            ExactBRepLinearInterval {
+                direction_bits: world_direction.map(f64::to_bits),
+                start_bits: 0.0_f64.to_bits(),
+                end_bits: world_length.to_bits(),
+            },
+        );
+    }
     let tangent = [direction[0] / length, direction[1] / length];
     let section = [tangent[1], -tangent[0]];
     let local = exact_brep_profile_body(
@@ -6189,6 +6251,10 @@ mod tests {
             handle_request(&backend, "CAPS EXACT_BREP_GRAPH_V12").as_deref(),
             Some("CAPS EXACT_BREP_GRAPH_V12")
         );
+        assert_eq!(
+            handle_request(&backend, "CAPS EXACT_BREP_GRAPH_V13").as_deref(),
+            Some("CAPS EXACT_BREP_GRAPH_V13")
+        );
         for (operation, schema) in [
             ("EVAL_BREP_GRAPH_V6", EXACT_BREP_GRAPH_SCHEMA_V6),
             ("TESSELLATE_BREP_GRAPH_V6", EXACT_BREP_GRAPH_SCHEMA_V6),
@@ -6204,7 +6270,10 @@ mod tests {
             ("TESSELLATE_BREP_GRAPH_V11", EXACT_BREP_GRAPH_SCHEMA_V11),
             ("EVAL_BREP_GRAPH_V12", EXACT_BREP_GRAPH_SCHEMA_V12),
             ("TESSELLATE_BREP_GRAPH_V12", EXACT_BREP_GRAPH_SCHEMA_V12),
+            ("EVAL_BREP_GRAPH_V13", EXACT_BREP_GRAPH_SCHEMA_V13),
+            ("TESSELLATE_BREP_GRAPH_V13", EXACT_BREP_GRAPH_SCHEMA_V13),
             ("EXPORT_BREP_GRAPH_STEP_V3", EXACT_BREP_GRAPH_SCHEMA_V12),
+            ("EXPORT_BREP_GRAPH_STEP_V4", EXACT_BREP_GRAPH_SCHEMA_V13),
             ("EXPORT_BREP_GRAPH_STEP_V2", EXACT_BREP_GRAPH_SCHEMA_V6),
             ("EXPORT_BREP_GRAPH_STEP_V2", EXACT_BREP_GRAPH_SCHEMA_V7),
             ("EXPORT_BREP_GRAPH_STEP_V2", EXACT_BREP_GRAPH_SCHEMA_V8),
@@ -6235,13 +6304,56 @@ mod tests {
             ("TESSELLATE_BREP_GRAPH_V11", EXACT_BREP_GRAPH_SCHEMA_V12),
             ("EVAL_BREP_GRAPH_V12", EXACT_BREP_GRAPH_SCHEMA_V11),
             ("TESSELLATE_BREP_GRAPH_V12", EXACT_BREP_GRAPH_SCHEMA_V11),
+            ("EVAL_BREP_GRAPH_V12", EXACT_BREP_GRAPH_SCHEMA_V13),
+            ("TESSELLATE_BREP_GRAPH_V12", EXACT_BREP_GRAPH_SCHEMA_V13),
+            ("EVAL_BREP_GRAPH_V13", EXACT_BREP_GRAPH_SCHEMA_V12),
+            ("TESSELLATE_BREP_GRAPH_V13", EXACT_BREP_GRAPH_SCHEMA_V12),
             ("EXPORT_BREP_GRAPH_STEP_V2", EXACT_BREP_GRAPH_SCHEMA_V12),
             ("EXPORT_BREP_GRAPH_STEP_V3", EXACT_BREP_GRAPH_SCHEMA_V11),
+            ("EXPORT_BREP_GRAPH_STEP_V3", EXACT_BREP_GRAPH_SCHEMA_V13),
+            ("EXPORT_BREP_GRAPH_STEP_V4", EXACT_BREP_GRAPH_SCHEMA_V12),
         ] {
             assert!(!exact_brep_graph_schema_matches_operation(
                 operation, schema
             ));
         }
+    }
+
+    #[test]
+    fn legacy_sweep_does_not_infer_sketch_semantics_from_region_metadata() {
+        let line = |start: [f64; 2], end: [f64; 2]| ExactBRepPlanarSegment::Line {
+            start_bits: start.map(f64::to_bits),
+            end_bits: end.map(f64::to_bits),
+        };
+        let profile = ExactBRepProfile {
+            id: ketchup_core::exact_brep_graph::ExactBRepProfileId(0),
+            source_feature_id: 1,
+            region_id: Some(1),
+            frame_bits: [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+                .map(f64::to_bits),
+            geometry: ExactBRepPlanarGeometry::Boundary {
+                closed: true,
+                segments: vec![
+                    line([-2.0, -1.0], [2.0, -1.0]),
+                    line([2.0, -1.0], [2.0, 1.0]),
+                    line([2.0, 1.0], [-2.0, 1.0]),
+                    line([-2.0, 1.0], [-2.0, -1.0]),
+                ],
+            },
+        };
+        let path = ExactBRepProfile {
+            id: ketchup_core::exact_brep_graph::ExactBRepProfileId(1),
+            source_feature_id: 2,
+            region_id: None,
+            frame_bits: profile.frame_bits,
+            geometry: ExactBRepPlanarGeometry::Boundary {
+                closed: false,
+                segments: vec![line([0.0, 0.0], [100.0, 0.0])],
+            },
+        };
+        let backend = ExactBackend::new();
+        assert!(exact_brep_sweep(&backend, &profile, &path, false).is_ok());
+        assert!(exact_brep_sweep(&backend, &profile, &path, true).is_err());
     }
 
     #[test]
