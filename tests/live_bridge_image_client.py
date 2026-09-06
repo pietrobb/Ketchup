@@ -55,7 +55,9 @@ async def scenario():
         safe(json.dumps(schema))
         assert not {"token", "address", "credentials", "launcher", "plan_mode"} & set(
             schema["input_schema"]["properties"])
-    assert "image_path" in tools["KetchupLiveView"].to_dict()["input_schema"]["properties"]
+    view_schema = tools["KetchupLiveView"].to_dict()["input_schema"]["properties"]
+    assert "image_path" in view_schema
+    assert view_schema["capture_mode"]["default"] == "offscreen"
 
     async def call(name, **arguments):
         safe(json.dumps(arguments))
@@ -112,8 +114,11 @@ async def scenario():
     assert result["render"]["gui_overlays_included"] is False
     assert "data" not in result and "png_base64" not in result
     assert result["scope"] == "cad_viewport" and result["mime_type"] == "image/png"
-    assert result["render"]["callback_correlated"] is True
-    assert result["render"]["viewport_unoccluded"] is True
+    assert result["capture_mode"] == "offscreen"
+    assert result["render"]["render_correlated"] is True
+    assert isinstance(result["render"]["callback_correlated"], bool)
+    assert result["render"]["viewport_visibility_required"] is False
+    assert result["render"]["viewport_unoccluded"] is False
     assert result["render"]["geometry_complete"] is False
     assert result["render"]["completeness"] == "display_only_not_geometry_validation"
     artifact = result["artifact"]

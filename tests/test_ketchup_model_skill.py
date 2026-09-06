@@ -52,6 +52,23 @@ def test_invalid_handles_and_paths():
             skill._absolute(path)
 
 
+def test_world_bounds_validation_is_finite_ordered_and_shape_strict():
+    bounds = [[-1, 0.0, 2], [3.0, 4, 5.0]]
+    assert skill._world_bounds(bounds) is bounds
+    assert skill._world_bounds(None) is None
+    for invalid in (
+        [0, 1],
+        [[0, 0, 0]],
+        [[0, 0], [1, 1]],
+        [[1, 0, 0], [0, 1, 1]],
+        [[0, 0, 0], [float("inf"), 1, 1]],
+        [[0, 0, 0], [10**10000, 1, 1]],
+        [[False, 0, 0], [1, 1, 1]],
+    ):
+        with pytest.raises(skill.Rejection, match="world_bounds_mm"):
+            skill._world_bounds(invalid)
+
+
 def test_sdk_load_does_not_shadow_global_package():
     sentinel = object()
     original = sys.modules.get("ketchup", sentinel)
@@ -214,7 +231,25 @@ def test_compact_queries_and_sectioned_capabilities(monkeypatch, doubles):
         opened = (await call(registered, "KetchupSession", action="new"))["result"]
         handle = opened["handle"]
         assert (await call(registered, "KetchupInspect", handle=handle, action="search", cursor="opaque", definition_id=3))["ok"]
-        assert doubles[0].doc.calls[-1][1] == {"kind": "occurrences", "search": "", "limit": 20, "cursor": "opaque", "definition_id": 3}
+        assert doubles[0].doc.calls[-1][1] == {"kind": "occurrences", "search": "", "limit": 20,
+            "cursor": "opaque", "definition_id": 3}
+        assert (await call(registered, "KetchupInspect", handle=handle, action="search", kind="instances",
+                           world_bounds_mm=[[-1, -2, -3], [4, 5, 6]]))["ok"]
+        assert doubles[0].doc.calls[-1][1] == {
+            "kind": "instances", "search": "", "limit": 20,
+            "world_bounds_mm": [[-1, -2, -3], [4, 5, 6]]}
+        assert (await call(registered, "KetchupInspect", handle=handle, action="search", kind="instances",
+                           tag_id=7, classification_dimension_id=9,
+                           classification_category_id=10))["ok"]
+        assert doubles[0].doc.calls[-1][1]["tag_id"] == 7
+        assert doubles[0].doc.calls[-1][1]["classification_category_id"] == 10
+        assert (await call(registered, "KetchupInspect", handle=handle, action="search", kind="instances",
+                           classification_category_id=10))["error"]["code"] == "invalid_query"
+        assert (await call(registered, "KetchupInspect", handle=handle, action="search", kind="features",
+                           tag_id=7))["error"]["code"] == "invalid_query"
+        assert (await call(registered, "KetchupInspect", handle=handle, action="search",
+                           world_bounds_mm=[[0, 0, 0], [1, 1, 1]]))["error"]["code"] == "invalid_query"
+        assert (await call(registered, "KetchupInspect", handle=handle, action="detail", kind="instances", entity_id=4))["error"]["code"] == "invalid_query"
         assert (await call(registered, "KetchupInspect", handle=handle, action="detail", entity_id=4))["result"]["item"]["id"] == 4
         assert (await call(registered, "KetchupInspect", handle=handle, limit=101))["error"]["code"] == "invalid_query"
         assert (await call(registered, "KetchupSession", action="close", handle=handle, discard=True, **expected(opened)))["ok"]

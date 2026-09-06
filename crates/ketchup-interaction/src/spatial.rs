@@ -216,13 +216,26 @@ impl SpatialIndex {
     }
 
     pub(crate) fn query_bounds(&self, bounds: SpatialBounds) -> Vec<usize> {
+        self.query_bounds_with_stats(bounds).0
+    }
+
+    pub(crate) fn query_bounds_with_stats(
+        &self,
+        bounds: SpatialBounds,
+    ) -> (Vec<usize>, SpatialQueryStats) {
         let mut candidates = Vec::new();
+        let mut bounds_tested = 0;
         if let Some(root) = &self.root {
-            query_bounds_node(root, bounds, &mut candidates);
+            query_bounds_node(root, bounds, &mut candidates, &mut bounds_tested);
         }
         candidates.sort_unstable();
         candidates.dedup();
-        candidates
+        let stats = SpatialQueryStats {
+            indexed_items: self.item_count,
+            bounds_tested,
+            candidate_count: candidates.len(),
+        };
+        (candidates, stats)
     }
 }
 
@@ -283,20 +296,28 @@ fn query_ray_node(
     }
 }
 
-fn query_bounds_node(node: &SpatialNode, query: SpatialBounds, candidates: &mut Vec<usize>) {
+fn query_bounds_node(
+    node: &SpatialNode,
+    query: SpatialBounds,
+    candidates: &mut Vec<usize>,
+    bounds_tested: &mut usize,
+) {
+    *bounds_tested += 1;
     if !node.bounds().intersects_bounds(query) {
         return;
     }
     match node {
-        SpatialNode::Leaf { items, .. } => candidates.extend(
-            items
-                .iter()
-                .filter(|item| item.bounds.intersects_bounds(query))
-                .map(|item| item.source_index),
-        ),
+        SpatialNode::Leaf { items, .. } => {
+            for item in items {
+                *bounds_tested += 1;
+                if item.bounds.intersects_bounds(query) {
+                    candidates.push(item.source_index);
+                }
+            }
+        }
         SpatialNode::Branch { left, right, .. } => {
-            query_bounds_node(left, query, candidates);
-            query_bounds_node(right, query, candidates);
+            query_bounds_node(left, query, candidates, bounds_tested);
+            query_bounds_node(right, query, candidates, bounds_tested);
         }
     }
 }

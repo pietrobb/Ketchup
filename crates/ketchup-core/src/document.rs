@@ -1775,6 +1775,20 @@ pub enum SceneQueryError {
     SnapshotMismatch,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SceneQueryBudgetKind {
+    Occurrences,
+    PathSteps,
+    TextBytes,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SceneQueryBudgetExceeded {
+    pub kind: SceneQueryBudgetKind,
+    pub limit: usize,
+    pub observed_at_least: usize,
+}
+
 impl fmt::Display for SceneQueryError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
@@ -3423,13 +3437,35 @@ impl Snapshot {
 
     #[must_use]
     pub fn scene_query(&self) -> Vec<SceneOccurrence> {
+        self.scene_query_bounded(usize::MAX, usize::MAX, usize::MAX)
+            .expect("unbounded scene query cannot exceed its limits")
+    }
+
+    pub fn scene_query_bounded(
+        &self,
+        max_occurrences: usize,
+        max_path_steps: usize,
+        max_text_bytes: usize,
+    ) -> Result<Vec<SceneOccurrence>, SceneQueryBudgetExceeded> {
         let mut occurrences = Vec::new();
+        let mut text_bytes = 0usize;
         for occurrence in self.product.occurrences.values() {
+            if occurrences.len() >= max_occurrences {
+                return Err(SceneQueryBudgetExceeded {
+                    kind: SceneQueryBudgetKind::Occurrences,
+                    limit: max_occurrences,
+                    observed_at_least: max_occurrences.saturating_add(1),
+                });
+            }
             let definition = &self.product.definitions[&occurrence.definition_id];
+            consume_scene_text_budget(
+                &mut text_bytes,
+                occurrence.name.len().saturating_add(definition.name.len()),
+                max_text_bytes,
+            )?;
             let instance_path = InstancePath::root(occurrence.id);
-            let world_transform = self
-                .world_transform_for_occurrence(occurrence.id)
-                .expect("validated occurrence hierarchy has a world transform");
+            let world_transform =
+                self.world_transform_for_occurrence_bounded(occurrence.id, max_path_steps)?;
             let visible = self
                 .occurrence_effectively_visible(occurrence.id)
                 .expect("validated occurrence is queryable");
@@ -3446,7 +3482,7 @@ impl Snapshot {
                 color: occurrence.color,
                 shared_occurrence_count: 0,
             });
-            project_local_occurrences(
+            project_local_occurrences_bounded(
                 &self.product,
                 occurrence.id,
                 definition.id,
@@ -3455,7 +3491,11 @@ impl Snapshot {
                 visible,
                 occurrence.color,
                 &mut occurrences,
-            );
+                max_occurrences,
+                max_path_steps,
+                &mut text_bytes,
+                max_text_bytes,
+            )?;
         }
 
         let mut sharing = BTreeMap::<DefinitionId, usize>::new();
@@ -3465,7 +3505,7 @@ impl Snapshot {
         for occurrence in &mut occurrences {
             occurrence.shared_occurrence_count = sharing[&occurrence.definition_id];
         }
-        occurrences
+        Ok(occurrences)
     }
 
     pub fn bind_scene_query(
@@ -3614,6 +3654,36 @@ impl Snapshot {
         )
     }
 
+    fn world_transform_for_occurrence_bounded(
+        &self,
+        id: OccurrenceId,
+        max_group_steps: usize,
+    ) -> Result<Transform, SceneQueryBudgetExceeded> {
+        let occurrence = self
+            .occurrence(id)
+            .expect("validated occurrence is queryable");
+        let mut lineage = Vec::new();
+        let mut cursor = occurrence.parent;
+        while let Some(group_id) = cursor {
+            if lineage.len() >= max_group_steps {
+                return Err(SceneQueryBudgetExceeded {
+                    kind: SceneQueryBudgetKind::PathSteps,
+                    limit: max_group_steps,
+                    observed_at_least: max_group_steps.saturating_add(1),
+                });
+            }
+            lineage.push(group_id);
+            cursor = self.product.groups[&group_id].parent;
+        }
+        lineage.reverse();
+        let parent_transform = lineage
+            .into_iter()
+            .fold(Transform::identity(), |transform, group_id| {
+                transform.compose(self.product.groups[&group_id].transform)
+            });
+        Ok(parent_transform.compose(occurrence.transform))
+    }
+
     #[must_use]
     pub fn world_transform_for_occurrence(&self, id: OccurrenceId) -> Option<Transform> {
         let occurrence = self.occurrence(id)?;
@@ -3630,7 +3700,24 @@ impl Snapshot {
     }
 }
 
-fn project_local_occurrences(
+fn consume_scene_text_budget(
+    used: &mut usize,
+    additional: usize,
+    limit: usize,
+) -> Result<(), SceneQueryBudgetExceeded> {
+    let next = used.saturating_add(additional);
+    if next > limit {
+        return Err(SceneQueryBudgetExceeded {
+            kind: SceneQueryBudgetKind::TextBytes,
+            limit,
+            observed_at_least: next,
+        });
+    }
+    *used = next;
+    Ok(())
+}
+
+fn project_local_occurrences_bounded(
     product: &ProductModel,
     root_occurrence_id: OccurrenceId,
     owner_definition_id: DefinitionId,
@@ -3639,7 +3726,11 @@ fn project_local_occurrences(
     owner_visible: bool,
     owner_color: Option<[u8; 3]>,
     output: &mut Vec<SceneOccurrence>,
-) {
+    max_occurrences: usize,
+    max_path_steps: usize,
+    text_bytes: &mut usize,
+    max_text_bytes: usize,
+) -> Result<(), SceneQueryBudgetExceeded> {
     let definition = &product.definitions[&owner_definition_id];
     for local_id in &definition.local_occurrence_ids {
         let local = &product.local_occurrences[&LocalOccurrenceKey {
@@ -3649,6 +3740,13 @@ fn project_local_occurrences(
         let mut group_lineage = Vec::new();
         let mut parent = local.parent;
         while let Some(local_group_id) = parent {
+            if owner_path.steps().len().saturating_add(group_lineage.len()) >= max_path_steps {
+                return Err(SceneQueryBudgetExceeded {
+                    kind: SceneQueryBudgetKind::PathSteps,
+                    limit: max_path_steps,
+                    observed_at_least: max_path_steps.saturating_add(1),
+                });
+            }
             let group = &product.local_groups[&LocalGroupKey {
                 definition_id: owner_definition_id,
                 local_id: local_group_id,
@@ -3657,6 +3755,27 @@ fn project_local_occurrences(
             parent = group.parent;
         }
         group_lineage.reverse();
+        let next_path_steps = owner_path
+            .steps()
+            .len()
+            .saturating_add(group_lineage.len())
+            .saturating_add(1);
+        if next_path_steps > max_path_steps {
+            return Err(SceneQueryBudgetExceeded {
+                kind: SceneQueryBudgetKind::PathSteps,
+                limit: max_path_steps,
+                observed_at_least: next_path_steps,
+            });
+        }
+        let target_definition = &product.definitions[&local.definition_id];
+        consume_scene_text_budget(
+            text_bytes,
+            local
+                .name
+                .len()
+                .saturating_add(target_definition.name.len()),
+            max_text_bytes,
+        )?;
 
         let mut path = owner_path.clone();
         let mut world_transform = owner_transform;
@@ -3670,13 +3789,19 @@ fn project_local_occurrences(
         }
         path = path.with_step(InstancePathStep::Occurrence(*local_id));
         world_transform = world_transform.compose(local.transform);
-        let target_definition = &product.definitions[&local.definition_id];
         let tag_visible = local
             .tag
             .and_then(|tag_id| product.tags.get(&tag_id))
             .is_none_or(|tag| tag.visible);
         let visible = owner_visible && local.visible && tag_visible;
         let color = owner_color.or(local.color);
+        if output.len() >= max_occurrences {
+            return Err(SceneQueryBudgetExceeded {
+                kind: SceneQueryBudgetKind::Occurrences,
+                limit: max_occurrences,
+                observed_at_least: max_occurrences.saturating_add(1),
+            });
+        }
         output.push(SceneOccurrence {
             occurrence_id: root_occurrence_id,
             instance_path: path.clone(),
@@ -3690,7 +3815,7 @@ fn project_local_occurrences(
             color,
             shared_occurrence_count: 0,
         });
-        project_local_occurrences(
+        project_local_occurrences_bounded(
             product,
             root_occurrence_id,
             local.definition_id,
@@ -3699,8 +3824,13 @@ fn project_local_occurrences(
             visible,
             color,
             output,
-        );
+            max_occurrences,
+            max_path_steps,
+            text_bytes,
+            max_text_bytes,
+        )?;
     }
+    Ok(())
 }
 
 #[derive(Clone)]

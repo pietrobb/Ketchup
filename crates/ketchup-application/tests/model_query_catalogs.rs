@@ -28,6 +28,10 @@ fn definition_and_feature_catalogs_page_and_definition_detail_caps_feature_ids()
             limit: 100,
             search: String::new(),
             definition_id: None,
+            tag_id: None,
+            classification_dimension_id: None,
+            classification_category_id: None,
+            world_bounds_mm: None,
             cursor: None,
         };
         let mut ids = Vec::new();

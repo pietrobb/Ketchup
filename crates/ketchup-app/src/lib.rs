@@ -140,9 +140,9 @@ use ketchup_scheduler::{
 mod assembly_ui;
 mod body_ui;
 pub mod dialogs;
-pub mod live_bridge;
 mod face_workflow_ui;
 mod feature_history_ui;
+pub mod live_bridge;
 mod native_document_inspection;
 mod occurrence_color_ui;
 #[cfg(feature = "named-product-fixtures")]
@@ -6229,6 +6229,8 @@ pub struct KetchupApp {
     render_plan: Option<Arc<InstancedRenderPlan>>,
     overlay_edge_cache: RefCell<BTreeMap<DefinitionId, OverlayEdges>>,
     wgpu_target_format: Option<eframe::wgpu::TextureFormat>,
+    wgpu_device: Option<eframe::wgpu::Device>,
+    wgpu_queue: Option<eframe::wgpu::Queue>,
 }
 
 impl Default for KetchupApp {
@@ -6475,6 +6477,8 @@ impl KetchupApp {
             render_plan: None,
             overlay_edge_cache: RefCell::new(BTreeMap::new()),
             wgpu_target_format: None,
+            wgpu_device: None,
+            wgpu_queue: None,
         }
     }
 
@@ -6494,6 +6498,8 @@ impl KetchupApp {
                     render_state.target_format,
                 ));
             app.wgpu_target_format = Some(render_state.target_format);
+            app.wgpu_device = Some(render_state.device.clone());
+            app.wgpu_queue = Some(render_state.queue.clone());
         }
         app
     }
@@ -6652,10 +6658,14 @@ impl KetchupApp {
         // The graphics device outlives the document: losing its target format
         // here would silently drop the whole instanced scene until restart.
         let wgpu_target_format = self.wgpu_target_format;
+        let wgpu_device = self.wgpu_device.clone();
+        let wgpu_queue = self.wgpu_queue.clone();
         *self = Self::with_catalog(catalog)
             .with_dialogs(dialogs)
             .with_assistant_transport(assistant_transport);
         self.wgpu_target_format = wgpu_target_format;
+        self.wgpu_device = wgpu_device;
+        self.wgpu_queue = wgpu_queue;
         self.assistant_request_sequence = assistant_request_sequence;
         self.assistant_diagnostics_enabled = assistant_diagnostics_enabled;
         self.assistant_inspector_tab = assistant_inspector_tab;
@@ -27790,7 +27800,15 @@ impl KetchupApp {
         drop(interaction_projection_cache);
         faces.sort_by(|left, right| right.depth.total_cmp(&left.depth));
 
-        self.record_live_image_scene(ui, response.rect, &viewport_boxes, &faces, &edges, scene_plan.clone()); self.paint_projected_shadows(&painter, response.rect, &viewport_boxes);
+        self.record_live_image_scene(
+            ui,
+            response.rect,
+            &viewport_boxes,
+            &faces,
+            &edges,
+            scene_plan.clone(),
+        );
+        self.paint_projected_shadows(&painter, response.rect, &viewport_boxes);
         self.paint_scene_base_layers(&painter, response.rect, scene_plan);
 
         self.paint_projected_faces(&painter, &faces);
@@ -34409,7 +34427,8 @@ impl KetchupApp {
     /// This is the single entry point used both by the windowed `eframe`
     /// integration and by the offscreen [`crate::testing::HeadlessShell`].
     pub fn ui(&mut self, context: &egui::Context) {
-        self.begin_live_image_frame(); self.poll_live_bridge(context);
+        self.begin_live_image_frame();
+        self.poll_live_bridge(context);
         self.poll_validator_panel(context);
         self.refresh_exact_products(context);
         #[cfg(feature = "named-product-fixtures")]
@@ -34520,6 +34539,15 @@ impl KetchupApp {
                 )
                 .show(context, |ui| {
                     ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
+                    if self.live_offscreen_image_pending() {
+                        let mut hidden_viewport = ui.new_child(
+                            egui::UiBuilder::new()
+                                .id_salt("live-offscreen-viewport")
+                                .max_rect(ui.max_rect())
+                                .invisible(),
+                        );
+                        self.viewport(&mut hidden_viewport);
+                    }
                     self.show_assistant(ui);
                 });
         }
@@ -34543,7 +34571,8 @@ impl KetchupApp {
         self.show_sketchup_scene_import_window(context);
         self.show_shortcuts_window(context);
         self.show_about_window(context);
-        self.poll_assistant_chat(context); self.finish_live_image_frame(context);
+        self.poll_assistant_chat(context);
+        self.finish_live_image_frame(context);
     }
 }
 

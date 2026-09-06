@@ -207,8 +207,21 @@ fn same_gui_store_observational_reads_verified_once_and_gui_history() {
             .ok
     );
     assert_eq!(shell.app().live_bridge_stamp(), stamp);
-    let image = client.call(&mut shell, Request::Image { expected: stamp });
-    assert!(matches!(image.error.as_deref(), Some("image_timeout" | "stale_image")), "{:?}", image.error);
+    let image = client.call(
+        &mut shell,
+        Request::Image {
+            expected: stamp,
+            capture_mode: CaptureMode::Offscreen,
+        },
+    );
+    assert!(
+        matches!(
+            image.error.as_deref(),
+            Some("image_timeout" | "stale_image")
+        ),
+        "{:?}",
+        image.error
+    );
 }
 
 #[test]
@@ -223,6 +236,10 @@ fn human_history_aba_and_selection_refuse_stale_proposals_and_cursors() {
         limit: 1,
         search: String::new(),
         definition_id: None,
+        tag_id: None,
+        classification_dimension_id: None,
+        classification_category_id: None,
+        world_bounds_mm: None,
         cursor: None,
     };
     let page = client.call(
@@ -342,6 +359,10 @@ fn auth_bounds_disconnect_and_default_disabled() {
                 limit: 101,
                 search: String::new(),
                 definition_id: None,
+                tag_id: None,
+                classification_dimension_id: None,
+                classification_category_id: None,
+                world_bounds_mm: None,
                 cursor: None,
             },
         },

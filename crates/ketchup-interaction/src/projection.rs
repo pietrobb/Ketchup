@@ -1,8 +1,8 @@
-use crate::spatial::SnapshotBinding;
+use crate::spatial::{SnapshotBinding, SpatialBounds, SpatialIndex, SpatialQueryStats};
 use crate::{InteractionError, InteractionScene, SharedBoxGeometry, Vec3};
 use ketchup_core::document::{
     DefinitionId, DocumentId, FeatureId, FeatureKind, GroupId, InstancePath, OccurrenceId,
-    ProfileSegment, Snapshot, Transform,
+    ProfileSegment, SceneOccurrence, SceneQueryBudgetExceeded, Snapshot, Transform,
 };
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -44,6 +44,13 @@ pub struct ProjectedOccurrence {
     pub box_proxy: Option<ProjectedBox>,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct ProjectedBoundsQuery {
+    pub occurrence_indices: Vec<usize>,
+    pub stats: SpatialQueryStats,
+    pub unbounded_occurrences: usize,
+}
+
 pub struct InteractionProjection {
     binding: SnapshotBinding,
     document_id: DocumentId,
@@ -51,6 +58,8 @@ pub struct InteractionProjection {
     source_digest: String,
     status: ProjectionStatus,
     occurrences: Vec<ProjectedOccurrence>,
+    spatial_index: SpatialIndex,
+    unbounded_occurrences: usize,
 }
 
 pub struct CanonicalInteractionProjection;
@@ -58,12 +67,31 @@ pub struct CanonicalInteractionProjection;
 impl CanonicalInteractionProjection {
     #[must_use]
     pub fn from_snapshot(snapshot: &Snapshot) -> InteractionProjection {
-        let occurrences = snapshot
-            .scene_query()
+        Self::from_scene_occurrences(snapshot, snapshot.scene_query())
+    }
+
+    pub fn from_snapshot_bounded(
+        snapshot: &Snapshot,
+        max_occurrences: usize,
+        max_path_steps: usize,
+        max_text_bytes: usize,
+    ) -> Result<InteractionProjection, SceneQueryBudgetExceeded> {
+        snapshot
+            .scene_query_bounded(max_occurrences, max_path_steps, max_text_bytes)
+            .map(|occurrences| Self::from_scene_occurrences(snapshot, occurrences))
+    }
+
+    fn from_scene_occurrences(
+        snapshot: &Snapshot,
+        scene_occurrences: Vec<SceneOccurrence>,
+    ) -> InteractionProjection {
+        let mut boxes = BTreeMap::new();
+        let occurrences: Vec<ProjectedOccurrence> = scene_occurrences
             .into_iter()
             .map(|scene_occurrence| {
-                let (profile_feature_id, extrusion_feature_id, local_box) =
-                    canonical_box(snapshot, scene_occurrence.definition_id);
+                let (profile_feature_id, extrusion_feature_id, local_box) = *boxes
+                    .entry(scene_occurrence.definition_id)
+                    .or_insert_with(|| canonical_box(snapshot, scene_occurrence.definition_id));
                 let box_proxy = local_box
                     .and_then(|local_box| transformed_aabb(scene_occurrence.transform, local_box));
                 ProjectedOccurrence {
@@ -85,6 +113,20 @@ impl CanonicalInteractionProjection {
                 }
             })
             .collect();
+        let spatial_index = SpatialIndex::build(occurrences.iter().enumerate().filter_map(
+            |(index, occurrence)| {
+                occurrence.box_proxy.map(|bounds| {
+                    (
+                        index,
+                        SpatialBounds::from_origin_size(bounds.origin_mm, bounds.size_mm),
+                    )
+                })
+            },
+        ));
+        let unbounded_occurrences = occurrences
+            .iter()
+            .filter(|occurrence| occurrence.box_proxy.is_none())
+            .count();
         InteractionProjection {
             binding: SnapshotBinding::from_snapshot(snapshot),
             document_id: snapshot.document_id(),
@@ -92,6 +134,8 @@ impl CanonicalInteractionProjection {
             source_digest: snapshot.canonical_digest(),
             status: ProjectionStatus::ProxyIncomplete,
             occurrences,
+            spatial_index,
+            unbounded_occurrences,
         }
     }
 }
@@ -135,6 +179,18 @@ impl InteractionProjection {
     #[must_use]
     pub fn occurrences(&self) -> &[ProjectedOccurrence] {
         &self.occurrences
+    }
+
+    #[must_use]
+    pub fn query_world_bounds(&self, min_mm: Vec3, max_mm: Vec3) -> ProjectedBoundsQuery {
+        let (occurrence_indices, stats) = self
+            .spatial_index
+            .query_bounds_with_stats(SpatialBounds::from_min_max(min_mm, max_mm));
+        ProjectedBoundsQuery {
+            occurrence_indices,
+            stats,
+            unbounded_occurrences: self.unbounded_occurrences,
+        }
     }
 
     #[must_use]
@@ -216,15 +272,14 @@ pub fn definition_requires_evaluated_geometry(
         return false;
     };
     definition.feature_ids().iter().any(|feature_id| {
-        snapshot.feature(*feature_id).is_some_and(|feature| {
-            matches!(
+        snapshot.feature(*feature_id).is_none_or(|feature| {
+            !matches!(
                 feature.kind(),
-                FeatureKind::BottleProfileControl { .. }
-                    | FeatureKind::Revolve { .. }
-                    | FeatureKind::Shell { .. }
-                    | FeatureKind::BottleEdgeFinish { .. }
-                    | FeatureKind::ThroughCut { .. }
-                    | FeatureKind::Boolean { .. }
+                FeatureKind::Workplane(_)
+                    | FeatureKind::Sketch(_)
+                    | FeatureKind::Profile { .. }
+                    | FeatureKind::SegmentProfile { .. }
+                    | FeatureKind::Extrusion { .. }
             )
         })
     })
@@ -240,34 +295,40 @@ fn canonical_box(
     if definition_requires_evaluated_geometry(snapshot, definition_id) {
         return (None, None, None);
     }
-    let profiles = definition
-        .feature_ids()
-        .iter()
-        .filter_map(|feature_id| {
-            matches!(
-                snapshot.feature(*feature_id)?.kind(),
-                FeatureKind::Profile { .. } | FeatureKind::SegmentProfile { .. }
-            )
-            .then_some(*feature_id)
-        })
-        .collect::<Vec<_>>();
-    let extrusions = definition
-        .feature_ids()
-        .iter()
-        .filter_map(|feature_id| {
-            let FeatureKind::Extrusion { profile, height } = snapshot.feature(*feature_id)?.kind()
-            else {
-                return None;
-            };
-            Some((*feature_id, *profile, height.millimetres()))
-        })
-        .collect::<Vec<_>>();
-    let (profile_id, extrusion_id, height) = match extrusions.as_slice() {
-        [] if definition.feature_ids().len() == 1 && profiles.len() == 1 => {
-            (profiles[0], None, 0.0)
+    let mut profile = None;
+    let mut extrusion = None;
+    for feature_id in definition.feature_ids() {
+        let Some(feature) = snapshot.feature(*feature_id) else {
+            return (None, None, None);
+        };
+        match feature.kind() {
+            FeatureKind::Profile { .. } | FeatureKind::SegmentProfile { .. } => {
+                profile.get_or_insert(*feature_id);
+            }
+            FeatureKind::Extrusion {
+                profile: source,
+                height,
+            } => {
+                if extrusion
+                    .replace((*feature_id, *source, height.millimetres()))
+                    .is_some()
+                {
+                    return (None, None, None);
+                }
+            }
+            FeatureKind::Workplane(_) | FeatureKind::Sketch(_) => {}
+            _ => return (None, None, None),
         }
-        [(extrusion_id, profile_id, height)] => (*profile_id, Some(*extrusion_id), *height),
-        _ => return (None, None, None),
+    }
+    let (profile_id, extrusion_id, height) = match extrusion {
+        None if definition.feature_ids().len() == 1 => {
+            let Some(profile_id) = profile else {
+                return (None, None, None);
+            };
+            (profile_id, None, 0.0)
+        }
+        Some((extrusion_id, profile_id, height)) => (profile_id, Some(extrusion_id), height),
+        None => return (None, None, None),
     };
     let Some(profile) = snapshot.feature(profile_id) else {
         return (None, None, None);

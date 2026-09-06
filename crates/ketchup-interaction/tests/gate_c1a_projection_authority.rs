@@ -160,6 +160,37 @@ fn canonical_projection_carries_every_c1a_authority_field() {
 }
 
 #[test]
+fn shape_changing_feature_never_reuses_the_simple_extrusion_proxy() {
+    let mut store = source_document();
+    store
+        .apply_batch(&CommandBatch::new(vec![CanonicalCommand::CreateFeature {
+            id: FeatureId(100),
+            definition_id: DEFINITION,
+            name: "Moved result".to_owned(),
+            kind: FeatureKind::RigidTransform {
+                target: EXTRUSION,
+                transform: Transform::from_translation(10_000.0, 0.0, 0.0).unwrap(),
+            },
+        }]))
+        .unwrap();
+
+    let projection = CanonicalInteractionProjection::from_snapshot(&store.current());
+    assert!(
+        projection
+            .occurrences()
+            .iter()
+            .all(|occurrence| occurrence.box_proxy.is_none())
+    );
+    let query = projection.query_world_bounds(
+        Vec3::new(9_900.0, -100.0, -100.0),
+        Vec3::new(11_000.0, 1_000.0, 1_000.0),
+    );
+    assert!(query.occurrence_indices.is_empty());
+    assert_eq!(query.stats.indexed_items, 0);
+    assert_eq!(query.unbounded_occurrences, 2);
+}
+
+#[test]
 fn profile_only_definition_projects_as_a_flat_selectable_plane() {
     let mut store = DocumentStore::new();
     store

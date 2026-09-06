@@ -32,8 +32,9 @@ from .client import ProtocolError, SessionClosedError, TransportError, Transport
 MAX_FRAME_BYTES = 32768
 MAX_TIMEOUT = 30.0
 _U64_MAX = (1 << 64) - 1
-_KINDS = ("occurrences", "definitions", "features")
+_KINDS = ("occurrences", "instances", "definitions", "features")
 _VIEWS = ("iso", "top", "front", "zoom_fit")
+_CAPTURE_MODES = ("offscreen", "visible_viewport")
 _MUTATIONS = frozenset({"propose", "commit", "undo", "redo", "selection", "view"})
 # Never surface arbitrary remote text, even if it looks like an error code.
 _ERROR_CODES = frozenset({
@@ -44,14 +45,15 @@ _ERROR_CODES = frozenset({
     "receipt_guard_mismatch", "proposal_not_found", "commit_rejected",
     "undo_unavailable", "redo_unavailable", "entity_not_found", "view_unavailable",
     "unsupported_image", "invalid_params", "invalid_cursor", "stale_cursor",
-    "cross_query_cursor", "busy", "image_unavailable", "image_timeout",
+    "cross_query_cursor", "output_too_large", "busy", "image_unavailable", "image_timeout",
     "hidden_viewport", "stale_image", "occluded_viewport", "invalid_image_callback",
     "invalid_image_dimensions", "incomplete_image", "unsupported_image_texture",
     "unsupported_image_renderer",
 })
 _FATAL_CODES = frozenset({"invalid_request", "unauthorized", "unsupported_version", "queue_unavailable"})
-Kind = Literal["occurrences", "definitions", "features"]
+Kind = Literal["occurrences", "instances", "definitions", "features"]
 View = Literal["iso", "top", "front", "zoom_fit"]
+CaptureMode = Literal["offscreen", "visible_viewport"]
 
 
 class LiveBridgeError(RuntimeError):
@@ -130,6 +132,31 @@ def _ids(values: Any) -> list[int]:
     result = [_uint(value, 1) for value in values]
     if len(set(result)) != len(result):
         raise ValueError("selection IDs must be unique")
+    return result
+
+
+def _world_bounds(value: Any) -> list[list[float | int]] | None:
+    if value is None:
+        return None
+    if (type(value) not in (list, tuple) or len(value) != 2
+            or any(type(point) not in (list, tuple) or len(point) != 3 for point in value)):
+        raise ValueError("invalid world bounds")
+    result = []
+    for point in value:
+        converted = []
+        for axis in point:
+            if type(axis) not in (int, float):
+                raise ValueError("invalid world bounds")
+            try:
+                finite = math.isfinite(axis)
+            except OverflowError:
+                finite = False
+            if not finite:
+                raise ValueError("invalid world bounds")
+            converted.append(axis)
+        result.append(converted)
+    if any(result[0][axis] > result[1][axis] for axis in range(3)):
+        raise ValueError("invalid world bounds")
     return result
 
 
@@ -250,12 +277,15 @@ def _png_dimensions(data: bytes) -> tuple[int, int]:
     return dimensions
 
 
-def _image_bytes(response: dict, expected: Stamp | dict, encoded_png: str) -> bytes:
+def _image_bytes(response: dict, expected: Stamp | dict, encoded_png: str,
+                 capture_mode: CaptureMode = "offscreen") -> bytes:
     """Validate capture binding and bytes independently of the payload wire key.
 
     Wire adapter follows live_bridge/image.rs: result.data is base64 PNG.
     Capture/render metadata is retained, never promoted to visual evidence.
     """
+    if type(capture_mode) is not str or capture_mode not in _CAPTURE_MODES:
+        raise ValueError("invalid capture mode")
     response = _json_copy(response)
     if len(json.dumps(response, ensure_ascii=False, allow_nan=False, separators=(",", ":")).encode("utf-8")) > MAX_FRAME_BYTES:
         raise ValueError("image response exceeds frame budget")
@@ -266,12 +296,16 @@ def _image_bytes(response: dict, expected: Stamp | dict, encoded_png: str) -> by
     if type(result) is not dict or "artifact" in result:
         raise ValueError("invalid image metadata")
     if (result.get("mime_type") != "image/png" or result.get("encoding") != "base64"
-            or result.get("scope") != "cad_viewport" or "stamp" not in result):
+            or result.get("scope") != "cad_viewport" or "stamp" not in result
+            or result.get("capture_mode") != capture_mode):
         raise ValueError("invalid CAD image metadata")
     _uint(result.get("capture_pass"))
     render = result.get("render")
-    if (type(render) is not dict or render.get("callback_correlated") is not True
-            or render.get("viewport_unoccluded") is not True):
+    visible = capture_mode == "visible_viewport"
+    if (type(render) is not dict or render.get("render_correlated") is not True
+            or type(render.get("callback_correlated")) is not bool
+            or render.get("viewport_visibility_required") is not visible
+            or render.get("viewport_unoccluded") is not visible):
         raise ValueError("uncorrelated CAD image")
     for key in ("stamp", "capture_stamp"):
         if key in result and _stamp(result[key]) != _stamp(expected):
@@ -309,7 +343,8 @@ def _image_path(image_path: str) -> Path:
     return path
 
 
-def save_image(response: dict, expected: Stamp | dict, image_path: str) -> dict:
+def save_image(response: dict, expected: Stamp | dict, image_path: str,
+               capture_mode: CaptureMode = "offscreen") -> dict:
     """Save validated CAD pixels, exclusively. Receipt is NOT visual/geometry proof.
 
     Missing directories on the caller's explicit path may be created, but no
@@ -319,7 +354,7 @@ def save_image(response: dict, expected: Stamp | dict, image_path: str) -> dict:
     try:
         snapshot = _json_copy(response)
         result = snapshot["result"]
-        data = _image_bytes(snapshot, expected, result["data"])
+        data = _image_bytes(snapshot, expected, result["data"], capture_mode)
         del result["data"]
         result["artifact"] = {"path": str(path), "byte_count": len(data),
                               "sha256": hashlib.sha256(data).hexdigest(),
@@ -511,7 +546,10 @@ class LiveSession:
         return self._request("summary")
 
     def query(self, expected: Stamp | dict, *, kind: Kind, limit: int = 50,
-              search: str = "", definition_id: int | None = None, cursor: str | None = None) -> dict:
+              search: str = "", definition_id: int | None = None, tag_id: int | None = None,
+              classification_dimension_id: int | None = None,
+              classification_category_id: int | None = None, cursor: str | None = None,
+              world_bounds_mm: list[list[float]] | None = None) -> dict:
         if type(kind) is not str or kind not in _KINDS:
             raise ValueError("invalid entity kind")
         _uint(limit, 1, 100)
@@ -520,15 +558,34 @@ class LiveSession:
             _uint(definition_id, 1)
             if kind == "definitions":
                 raise ValueError("definitions cannot be filtered by definition ID")
+        for property_id in (tag_id, classification_dimension_id, classification_category_id):
+            if property_id is not None:
+                _uint(property_id, 1)
+        if classification_category_id is not None and classification_dimension_id is None:
+            raise ValueError("classification category requires a dimension")
+        if (tag_id is not None or classification_dimension_id is not None) and kind not in ("occurrences", "instances"):
+            raise ValueError("property filters apply only to occurrences and instances")
         if cursor is not None:
             _text(cursor, 4096)
-        return self._request("query", expected=_stamp(expected), query={
-            "kind": kind, "limit": limit, "search": search,
-            "definition_id": definition_id, "cursor": cursor})
+        bounds = _world_bounds(world_bounds_mm)
+        if bounds is not None and kind != "instances":
+            raise ValueError("world bounds apply only to instances")
+        query = {"kind": kind, "limit": limit, "search": search}
+        for key, value in {
+            "definition_id": definition_id,
+            "tag_id": tag_id,
+            "classification_dimension_id": classification_dimension_id,
+            "classification_category_id": classification_category_id,
+            "cursor": cursor,
+            "world_bounds_mm": bounds,
+        }.items():
+            if value is not None:
+                query[key] = value
+        return self._request("query", expected=_stamp(expected), query=query)
 
     def detail(self, expected: Stamp | dict, kind: Kind, entity_id: int) -> dict:
-        if type(kind) is not str or kind not in _KINDS:
-            raise ValueError("invalid entity kind")
+        if type(kind) is not str or kind not in _KINDS or kind == "instances":
+            raise ValueError("invalid entity kind for numeric detail")
         return self._request("detail", expected=_stamp(expected), kind=kind, entity_id=_uint(entity_id, 1))
 
     def propose(self, expected: Stamp | dict, selection: list[int] | tuple[int, ...], program: dict) -> dict:
@@ -557,9 +614,12 @@ class LiveSession:
             raise ValueError("invalid view")
         return self._request("view", expected=_stamp(expected), view=view)
 
-    def image(self, expected: Stamp | dict) -> dict:
-        """Read capture envelope; use save_image for validated create-only delivery."""
-        return self._request("image", expected=_stamp(expected))
+    def image(self, expected: Stamp | dict,
+              capture_mode: CaptureMode = "offscreen") -> dict:
+        """Read a correlated CAD render; visible proof is explicit and optional."""
+        if type(capture_mode) is not str or capture_mode not in _CAPTURE_MODES:
+            raise ValueError("invalid capture mode")
+        return self._request("image", expected=_stamp(expected), capture_mode=capture_mode)
 
     def disconnect(self) -> dict | None:
         """Request connection-local authority revocation, then close only socket."""

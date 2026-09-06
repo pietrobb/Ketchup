@@ -105,6 +105,8 @@ def test_registration_shared_helpers_no_offline_runtime_or_shadow(monkeypatch):
         assert not {"token", "address", "plan_mode", "launcher", "session_factory", "args", "env"} & props.keys()
     required = registered["KetchupLiveEdit"].to_dict()["input_schema"]["required"]
     assert {"expected", "selection"} <= set(required)
+    capture = registered["KetchupLiveView"].to_dict()["input_schema"]["properties"]["capture_mode"]
+    assert capture["default"] == "offscreen"
     async def scenario():
         result = await call(registered, "KetchupLiveSession", action="launch", executable=sys.executable)
         assert result["error"]["code"] == "plan_mode"
@@ -129,6 +131,14 @@ def test_registered_lifecycle_stamps_selection_and_stale_rejection(tmp_path, mon
                                 expected=STAMP, kind="features", entity_id=3, cursor="opaque")
             assert result["stamp"] == STAMP
         assert session.calls[-2][3]["cursor"] == "opaque"
+        bounded = await call(registered, "KetchupLiveInspect", action="query", handle=handle,
+                             expected=STAMP, kind="instances", tag_id=7,
+                             classification_dimension_id=9, classification_category_id=10,
+                             world_bounds_mm=[[-1, -2, -3], [4, 5, 6]])
+        assert bounded["stamp"] == STAMP
+        assert session.calls[-1][3]["world_bounds_mm"] == [[-1, -2, -3], [4, 5, 6]]
+        assert session.calls[-1][3]["tag_id"] == 7
+        assert session.calls[-1][3]["classification_category_id"] == 10
         rejected = await call(registered, "KetchupLiveEdit", action="propose", handle=handle,
                               expected=STAMP, selection=[1], program=PROGRAM)
         assert rejected["error"]["code"] == "selection_changed"
@@ -431,16 +441,19 @@ def test_registered_sdk_socket_injection_unknown_commit_no_retry():
     assert methods == ["status", "status", "commit"]
 
 
-def image_envelope():
+def image_envelope(capture_mode="offscreen"):
     """Synthetic PNG fixture, not runtime visual evidence."""
+    visible = capture_mode == "visible_viewport"
     def chunk(kind, data):
         return struct.pack("!I", len(data)) + kind + data + struct.pack("!I", zlib.crc32(kind + data))
     data = (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack("!IIBBBBB", 1, 1, 8, 6, 0, 0, 0))
             + chunk(b"IDAT", zlib.compress(b"\0\x12\x34\x56\xff")) + chunk(b"IEND", b""))
     return envelope({"data": base64.b64encode(data).decode("ascii"), "width": 1, "height": 1,
         "stamp": copy.deepcopy(STAMP), "capture_stamp": copy.deepcopy(STAMP),
-        "mime_type": "image/png", "encoding": "base64", "scope": "cad_viewport", "capture_pass": 17,
-        "render": {"callback_correlated": True, "viewport_unoccluded": True},
+        "mime_type": "image/png", "encoding": "base64", "scope": "cad_viewport",
+        "capture_mode": capture_mode, "capture_pass": 17,
+        "render": {"render_correlated": True, "callback_correlated": not visible,
+                   "viewport_visibility_required": visible, "viewport_unoccluded": visible},
         "capture_id": 13, "render_id": 17, "source": "cad_viewport"})
 
 
@@ -449,8 +462,8 @@ def test_registered_image_artifact_receipt_no_base64_or_overwrite(tmp_path, monk
     destination = skill.IMAGE_ROOT / "explicit.png"
     session = SessionDouble()
     image_calls = []
-    def image(expected):
-        image_calls.append(copy.deepcopy(expected))
+    def image(expected, capture_mode="offscreen"):
+        image_calls.append((copy.deepcopy(expected), capture_mode))
         return image_envelope()
     session.image = image
     registered = tools(SimpleNamespace(active=False), lambda *args: session)
@@ -471,7 +484,7 @@ def test_registered_image_artifact_receipt_no_base64_or_overwrite(tmp_path, monk
         result = await call(registered, "KetchupLiveView", action="image", handle=handle,
                             expected=STAMP, image_path=str(destination))
         assert result["error"]["code"] == "file_exists"
-        assert destination.read_bytes() == original and image_calls == [STAMP]
+        assert destination.read_bytes() == original and image_calls == [(STAMP, "offscreen")]
     asyncio.run(scenario())
 
 
@@ -500,8 +513,8 @@ def test_image_file_write_guard_but_inspection_stays_read_only(tmp_path, monkeyp
     destination = tmp_path / "guarded.png"
     state = SimpleNamespace(active=False)
     session = SessionDouble()
-    def image(expected):
-        assert when == "during"
+    def image(expected, capture_mode="offscreen"):
+        assert capture_mode == "offscreen" and when == "during"
         state.active = True
         return image_envelope()
     session.image = image
@@ -532,7 +545,7 @@ def test_registered_image_invalid_response_never_saves_or_leaks(tmp_path, monkey
         value["result"]["capture_stamp"]["mutation_epoch"] += 1
     else:
         value["result"]["data"] = "DO_NOT_EXPOSE"
-    session.image = lambda expected: value
+    session.image = lambda expected, capture_mode="offscreen": value
     registered = tools(SimpleNamespace(active=False), lambda *args: session)
     async def scenario():
         handle = (await launch(registered))["result"]["handle"]

@@ -352,19 +352,26 @@ def _register_tools(plan_state, *, launcher=None) -> list:
     @beta_async_tool(name="KetchupLiveInspect")
     async def inspect(action: str, handle: str, expected: dict | None = None,
                       kind: str = "occurrences", entity_id: int = 0, limit: int = 50,
-                      search: str = "", definition_id: int | None = None, cursor: str | None = None) -> str:
+                      search: str = "", definition_id: int | None = None, tag_id: int | None = None,
+                      classification_dimension_id: int | None = None,
+                      classification_category_id: int | None = None, cursor: str | None = None,
+                      world_bounds_mm: list[list[float]] | None = None) -> str:
         """Read live status/summary/query/detail. Results retain the complete bridge stamp; no geometry is fabricated.
 
         Args:
             action: status, summary, query, or detail. Allowed in plan mode.
             handle: Live session UUID.
             expected: Complete observed stamp required for query/detail: document_id, revision, canonical_digest, mutation_epoch.
-            kind: occurrences, definitions, or features for query/detail.
-            entity_id: Positive ID for detail.
+            kind: occurrences, instances, definitions, or features. Instances expose qualified paths through query.
+            entity_id: Positive ID for detail; not valid for instances.
             limit: Query page size 1 through 100.
             search: Query text, at most 128 UTF-8 bytes.
-            definition_id: Optional positive definition filter for occurrence/feature queries.
+            definition_id: Optional positive definition filter for occurrence/instance/feature queries.
+            tag_id: Optional exact tag filter for occurrence/instance queries; instances match any path step.
+            classification_dimension_id: Optional root-occurrence classification dimension filter.
+            classification_category_id: Optional category filter; requires classification_dimension_id.
             cursor: Optional opaque query continuation, never refreshed automatically.
+            world_bounds_mm: Optional inclusive [[min x,y,z],[max x,y,z]] world AABB for instance query.
         """
         def job():
             _action(action, ("status", "summary", "query", "detail"))
@@ -375,7 +382,10 @@ def _register_tools(plan_state, *, launcher=None) -> list:
             if action == "detail":
                 return live_session.detail(stamp, kind, entity_id)
             return live_session.query(stamp, kind=kind, limit=limit, search=search,
-                                      definition_id=definition_id, cursor=cursor)
+                                      definition_id=definition_id, tag_id=tag_id,
+                                      classification_dimension_id=classification_dimension_id,
+                                      classification_category_id=classification_category_id,
+                                      cursor=cursor, world_bounds_mm=world_bounds_mm)
         return await runtime.run(handle, job)
 
     @beta_async_tool(name="KetchupLiveEdit")
@@ -406,7 +416,8 @@ def _register_tools(plan_state, *, launcher=None) -> list:
 
     @beta_async_tool(name="KetchupLiveView")
     async def view(action: str, handle: str, expected: dict,
-                   occurrence_ids: list[int] | None = None, view: str = "", image_path: str = "") -> str:
+                   occurrence_ids: list[int] | None = None, view: str = "", image_path: str = "",
+                   capture_mode: str = "offscreen") -> str:
         """Guarded live view commands and CAD PNG artifacts; never desktop screenshots.
 
         Saving an artifact does not establish visual delivery or geometry correctness.
@@ -418,12 +429,13 @@ def _register_tools(plan_state, *, launcher=None) -> list:
             occurrence_ids: Explicit root occurrence IDs for selection, including [] to clear.
             view: For view action, iso, top, front, or zoom_fit.
             image_path: Required only for image: explicit absolute NEW .png under workspace artifacts/live-view; never overwritten.
+            capture_mode: For image, offscreen (default AI render) or visible_viewport (proof of a visible focused canvas).
         """
         def job():
             _action(action, ("selection", "view", "image"))
             runtime.guard()
-            if action != "image" and image_path:
-                raise Rejection("invalid_arguments", "image_path applies only to image.")
+            if action != "image" and (image_path or capture_mode != "offscreen"):
+                raise Rejection("invalid_arguments", "image_path and capture_mode apply only to image.")
             live_session = runtime.entry(handle)
             stamp = runtime.expected(expected)
             if action == "image":
@@ -436,10 +448,12 @@ def _register_tools(plan_state, *, launcher=None) -> list:
                     raise Rejection("file_exists", "Image destination exists; choose a NEW .png path.") from None
                 except (ValueError, TypeError, OSError):
                     raise Rejection("invalid_path", "Supply an absolute NEW .png under workspace artifacts/live-view, without links.") from None
-                response = live_session.image(stamp)
+                response = live_session.image(stamp, capture_mode=capture_mode)
                 runtime.guard()  # Plan may have changed while the bounded read ran.
                 try:
-                    return runtime.sdk.save_image(response, stamp, str(destination))
+                    return runtime.sdk.save_image(
+                        response, stamp, str(destination), capture_mode=capture_mode
+                    )
                 except FileExistsError:
                     raise Rejection("file_exists", "Image destination exists; choose a NEW .png path.") from None
             runtime.guard()

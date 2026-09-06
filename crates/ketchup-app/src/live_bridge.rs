@@ -34,9 +34,10 @@ use std::{
 };
 
 pub mod bootstrap;
+mod image;
 #[cfg(test)]
 mod tests;
-mod transport; mod image;
+mod transport;
 pub const MAX_FRAME_BYTES: usize = 32 * 1024;
 pub const QUEUE_CAPACITY: usize = 8;
 pub const MAX_SELECTION: usize = 100;
@@ -105,8 +106,27 @@ pub enum Request {
     },
     Image {
         expected: Stamp,
+        #[serde(default)]
+        capture_mode: CaptureMode,
     },
     Disconnect {},
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CaptureMode {
+    #[default]
+    Offscreen,
+    VisibleViewport,
+}
+
+impl CaptureMode {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Offscreen => "offscreen",
+            Self::VisibleViewport => "visible_viewport",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
@@ -171,7 +191,8 @@ pub(crate) struct LiveBridge {
     session: u64,
     pending: Option<Pending>,
     next_proposal: u64,
-    receipts: VecDeque<Receipt>, image: image::ImageState,
+    receipts: VecDeque<Receipt>,
+    image: image::ImageState,
 }
 impl Drop for LiveBridge {
     fn drop(&mut self) {
@@ -232,7 +253,8 @@ impl KetchupApp {
             }
             if bridge.session != queued.session {
                 bridge.session = queued.session;
-                bridge.pending = None; bridge.image.revoke();
+                bridge.pending = None;
+                bridge.image.revoke();
                 bridge.receipts.clear();
                 bridge.query.invalidate();
             }
@@ -241,7 +263,11 @@ impl KetchupApp {
                 bridge.query.invalidate();
                 bridge.observed = Some(stamp);
             }
-            if matches!(queued.request, Request::Image { .. }) { bridge.request_image(self, context, queued); continue; } let result = bridge.execute(
+            if matches!(queued.request, Request::Image { .. }) {
+                bridge.request_image(self, context, queued);
+                continue;
+            }
+            let result = bridge.execute(
                 self,
                 queued.request,
                 context.wants_keyboard_input() || context.is_using_pointer(),
@@ -444,7 +470,7 @@ impl LiveBridge {
     ) -> Result<Value, &'static str> {
         match request {
             Request::Status {} => Ok(
-                json!({"connected":true,"protocol":1,"image":"cad_viewport_png_thumbnail","busy":ui_busy || Self::busy(app),"read_only":app.review_candidate.is_some(),
+                json!({"connected":true,"protocol":1,"image":"cad_viewport_png_thumbnail","image_capture_modes":["offscreen","visible_viewport"],"default_image_capture_mode":"offscreen","busy":ui_busy || Self::busy(app),"read_only":app.review_candidate.is_some(),
                 "selection":Self::selection(app).ok(),"selection_scope":"root_occurrences_only",
                 "undo_steps":app.undo_step_count(),"redo_steps":app.redo_step_count(),
                 "pending_proposal_id":self.pending.as_ref().map(|p|p.id),
@@ -608,7 +634,7 @@ impl LiveBridge {
                 app.dispatch_command(command);
                 Ok(json!({"view":view,"canonical_mutation":false,"image":"not_requested"}))
             }
-            Request::Image { expected } => {
+            Request::Image { expected, .. } => {
                 Self::guard(app, &expected)?;
                 Err("image_requires_frame_callback")
             }

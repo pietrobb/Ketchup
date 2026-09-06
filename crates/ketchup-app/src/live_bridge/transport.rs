@@ -55,7 +55,8 @@ pub(super) fn start_with_token(context: egui::Context, token: String) -> io::Res
         session: 0,
         pending: None,
         next_proposal: 1,
-        receipts: VecDeque::new(), image: image::ImageState::default(),
+        receipts: VecDeque::new(),
+        image: image::ImageState::default(),
     })
 }
 

@@ -131,7 +131,9 @@ def test_all_methods_match_wire_and_do_not_refresh_expected_or_modify_inputs():
         assert peer.requests == []  # No implicit handshake/status/refresh.
         assert live.status()["stamp"]["mutation_epoch"] == 101
         live.summary()
-        live.query(expected, kind="occurrences", limit=2, search="Č", definition_id=3, cursor="opaque")
+        live.query(expected, kind="instances", limit=2, search="Č", definition_id=3,
+                   tag_id=7, classification_dimension_id=9, classification_category_id=10,
+                   cursor="opaque", world_bounds_mm=[[-1, -2, -3], [4, 5, 6]])
         live.detail(STAMP, "features", 5)
         live.propose(expected, selection, program)
         live.commit(expected, 9)
@@ -151,15 +153,28 @@ def test_all_methods_match_wire_and_do_not_refresh_expected_or_modify_inputs():
         "redo", "selection", "view", "image", "disconnect"]
     assert [req["id"] for req in peer.requests] == list(range(1, 13))
     assert requests[2] == {"method": "query", "expected": expected, "query": {
-        "kind": "occurrences", "limit": 2, "search": "Č", "definition_id": 3, "cursor": "opaque"}}
+        "kind": "instances", "limit": 2, "search": "Č", "definition_id": 3,
+        "tag_id": 7, "classification_dimension_id": 9, "classification_category_id": 10,
+        "cursor": "opaque", "world_bounds_mm": [[-1, -2, -3], [4, 5, 6]]}}
     assert requests[3] == {"method": "detail", "expected": expected, "kind": "features", "entity_id": 5}
     assert requests[4] == {"method": "propose", "expected": expected, "selection": [1], "program": program}
     assert requests[5] == {"method": "commit", "expected": expected, "proposal_id": 9}
     assert requests[8]["occurrence_ids"] == [1] and requests[9]["view"] == "zoom_fit"
+    assert requests[10]["capture_mode"] == "offscreen"
     assert all(req["expected"] == expected for req in requests[2:11])
     assert (expected, program, selection) == original
     with pytest.raises(FrozenInstanceError):
         STAMP.mutation_epoch = 25
+
+
+def test_query_omits_absent_extension_fields_for_protocol_one_compatibility():
+    with Peer() as peer, LiveSession(peer.address, TOKEN) as live:
+        live.query(STAMP, kind="occurrences")
+    assert peer.requests[0]["request"] == {
+        "method": "query",
+        "expected": asdict(STAMP),
+        "query": {"kind": "occurrences", "limit": 50, "search": ""},
+    }
 
 
 @pytest.mark.parametrize("address", [
@@ -219,6 +234,14 @@ def test_invalid_caller_parameters_are_not_sent():
                  lambda: live.query(STAMP, kind="features", search="é" * 65),
                  lambda: live.query(STAMP, kind="features", cursor="x" * 4097),
                  lambda: live.query(STAMP, kind="definitions", definition_id=1),
+                 lambda: live.query(STAMP, kind="instances", classification_category_id=1),
+                 lambda: live.query(STAMP, kind="features", tag_id=1),
+                 lambda: live.query(STAMP, kind="instances", tag_id=True),
+                 lambda: live.query(STAMP, kind="occurrences", world_bounds_mm=[[0, 0, 0], [1, 1, 1]]),
+                 lambda: live.query(STAMP, kind="instances", world_bounds_mm=[[1, 0, 0], [0, 1, 1]]),
+                 lambda: live.query(STAMP, kind="instances", world_bounds_mm=[[0, 0, 0], [10**10000, 1, 1]]),
+                 lambda: live.detail(STAMP, "instances", 1),
+                 lambda: live.image(STAMP, "hidden"),
                  lambda: live.propose(STAMP, [], {"operations": []}),
                  lambda: live.propose(STAMP, [], {"operations": [{}] * 65}),
                  lambda: live.propose(STAMP, [], {"operations": [{}], "extra": 1})]
@@ -325,6 +348,14 @@ def test_server_cannot_leak_token_in_return_error_repr_or_traceback(where):
         assert TOKEN not in rendered + str(caught.value) + repr(caught.value) + repr(live)
         assert caught.value.__context__ is None
         assert live.closed and not live._token
+
+
+def test_output_too_large_is_typed_and_nonfatal():
+    with Peer(lambda req, stream: response(req, error="output_too_large")) as peer, LiveSession(peer.address, TOKEN) as live:
+        with pytest.raises(LiveBridgeError) as caught:
+            live.status()
+        assert caught.value.code == "output_too_large"
+        assert not live.closed
 
 
 def test_unrecognized_error_text_is_not_exposed():
@@ -498,13 +529,16 @@ def png_fixture(width=2, height=2, pixels=None):
             + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
 
 
-def image_response(data=None, width=2, height=2):
+def image_response(data=None, width=2, height=2, capture_mode="offscreen"):
     data = png_fixture(width, height) if data is None else data
+    visible = capture_mode == "visible_viewport"
     return response({"id": 1}, result={"data": base64.b64encode(data).decode("ascii"),
         "width": width, "height": height, "byte_count": len(data),
         "stamp": asdict(STAMP), "capture_stamp": asdict(STAMP), "capture_id": 21, "render_id": 34,
-        "mime_type": "image/png", "encoding": "base64", "scope": "cad_viewport", "capture_pass": 34,
-        "render": {"callback_correlated": True, "viewport_unoccluded": True},
+        "mime_type": "image/png", "encoding": "base64", "scope": "cad_viewport",
+        "capture_mode": capture_mode, "capture_pass": 34,
+        "render": {"render_correlated": True, "callback_correlated": not visible,
+                   "viewport_visibility_required": visible, "viewport_unoccluded": visible},
         "source": "cad_viewport", "camera": {"view": "iso"}})
 
 
@@ -514,7 +548,8 @@ def test_image_artifact_preserves_metadata_and_original_hash(tmp_path):
     destination = tmp_path / "new" / "capture.png"
     with Peer(lambda req, stream: {**value, "id": req["id"]}) as peer, LiveSession(peer.address, TOKEN) as live:
         receipt = save_image(live.image(STAMP), STAMP, str(destination))
-        assert [r["request"] for r in peer.requests] == [{"method": "image", "expected": asdict(STAMP)}]
+        assert [r["request"] for r in peer.requests] == [{
+            "method": "image", "expected": asdict(STAMP), "capture_mode": "offscreen"}]
     assert value == original
     assert destination.read_bytes() == png_fixture()
     assert receipt["stamp"] == original["stamp"]
@@ -526,6 +561,22 @@ def test_image_artifact_preserves_metadata_and_original_hash(tmp_path):
         "visual_delivery": "unverified", "geometry_evaluated": False}
     assert "data" not in receipt["result"]
     assert len(json.dumps(receipt).encode()) < MAX_FRAME_BYTES
+
+
+def test_visible_image_mode_is_bound_to_request_and_visibility_proof(tmp_path):
+    value = image_response(capture_mode="visible_viewport")
+    destination = tmp_path / "visible.png"
+    with Peer(lambda req, stream: {**value, "id": req["id"]}) as peer, LiveSession(
+            peer.address, TOKEN) as live:
+        receipt = save_image(
+            live.image(STAMP, "visible_viewport"), STAMP, str(destination), "visible_viewport")
+        assert peer.requests[0]["request"]["capture_mode"] == "visible_viewport"
+    assert receipt["result"]["capture_mode"] == "visible_viewport"
+    assert receipt["result"]["render"]["viewport_unoccluded"] is True
+    mismatched = tmp_path / "mismatched.png"
+    with pytest.raises(LiveProtocolError):
+        save_image(value, STAMP, str(mismatched), "offscreen")
+    assert not mismatched.exists()
 
 
 @pytest.mark.parametrize("field", list(asdict(STAMP)))
@@ -553,7 +604,8 @@ def test_image_tampered_stamp_never_writes(tmp_path, field, location):
     lambda r: r.pop("stamp"), lambda r: r.update(artifact={}),
     lambda r: r.update(mime_type="text/plain"), lambda r: r.update(scope="desktop"),
     lambda r: r.update(encoding="raw"), lambda r: r.update(capture_pass=True),
-    lambda r: r.update(render={"callback_correlated": False, "viewport_unoccluded": True}),
+    lambda r: r.update(render={"render_correlated": False, "callback_correlated": False,
+                               "viewport_visibility_required": False, "viewport_unoccluded": False}),
 ])
 def test_image_bad_encoding_and_metadata_never_writes(tmp_path, alter):
     value = image_response()

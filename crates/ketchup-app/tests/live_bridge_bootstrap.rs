@@ -1,7 +1,7 @@
 //! Bootstrap contract against real pipes/TCP and the actual offscreen app, not OS input.
 mod harness;
 use harness::Shell;
-use ketchup_app::live_bridge::{Envelope, Request, Response, bootstrap::*};
+use ketchup_app::live_bridge::{CaptureMode, Envelope, Request, Response, bootstrap::*};
 use std::{
     ffi::OsString,
     io::{self, Cursor, Read, Write},
@@ -264,9 +264,13 @@ fn readiness_authentication_and_detach_use_the_actual_app() {
         TOKEN,
         Request::Image {
             expected: before.clone(),
+            capture_mode: CaptureMode::Offscreen,
         },
     );
-    assert!(matches!(image.error.as_deref(), Some("image_timeout" | "stale_image"))); // Async exact publication may invalidate before the unrendered callback times out.
+    assert!(matches!(
+        image.error.as_deref(),
+        Some("image_timeout" | "stale_image")
+    )); // Async exact publication may invalidate before the unrendered callback times out.
     assert!(call(&mut shell, &mut stream, TOKEN, Request::Disconnect {}).ok);
     drop(stream);
     shell.step();

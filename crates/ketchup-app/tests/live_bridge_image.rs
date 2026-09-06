@@ -39,7 +39,7 @@ fn harness() -> Harness<'static, KetchupApp> {
     h.state_mut().enable_live_bridge(&ctx).unwrap();
     h
 }
-fn send_request(h: &Harness<'_, KetchupApp>) -> TcpStream {
+fn send_request_mode(h: &Harness<'_, KetchupApp>, capture_mode: CaptureMode) -> TcpStream {
     let credentials = h.state().live_bridge_credentials().unwrap();
     let mut socket = TcpStream::connect(credentials.address).unwrap();
     socket
@@ -51,6 +51,7 @@ fn send_request(h: &Harness<'_, KetchupApp>) -> TcpStream {
         token: credentials.token,
         request: Request::Image {
             expected: h.state().live_bridge_stamp(),
+            capture_mode,
         },
     })
     .unwrap();
@@ -60,8 +61,14 @@ fn send_request(h: &Harness<'_, KetchupApp>) -> TcpStream {
     socket.write_all(&body).unwrap();
     socket
 }
-fn request(h: &Harness<'_, KetchupApp>) -> mpsc::Receiver<Response> {
-    let mut socket = send_request(h);
+fn send_request(h: &Harness<'_, KetchupApp>) -> TcpStream {
+    send_request_mode(h, CaptureMode::Offscreen)
+}
+fn request_mode(
+    h: &Harness<'_, KetchupApp>,
+    capture_mode: CaptureMode,
+) -> mpsc::Receiver<Response> {
+    let mut socket = send_request_mode(h, capture_mode);
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
         let mut header = [0; 4];
@@ -73,6 +80,9 @@ fn request(h: &Harness<'_, KetchupApp>) -> mpsc::Receiver<Response> {
         tx.send(serde_json::from_slice(&body).unwrap()).unwrap();
     });
     rx
+}
+fn request(h: &Harness<'_, KetchupApp>) -> mpsc::Receiver<Response> {
+    request_mode(h, CaptureMode::Offscreen)
 }
 fn has_callback(h: &Harness<'_, KetchupApp>) -> bool {
     fn contains(shape: &egui::Shape) -> bool {
@@ -175,7 +185,11 @@ fn assert_pixels(png: &[u8], value: &serde_json::Value, rect: egui::Rect) {
     assert_eq!(value["thumbnail"], true);
     assert_eq!(value["render"]["source"], "isolated_cad_target");
     assert_eq!(value["render"]["gui_overlays_included"], false);
+    assert_eq!(value["capture_mode"], "offscreen");
+    assert_eq!(value["render"]["render_correlated"], true);
     assert_eq!(value["render"]["callback_correlated"], true);
+    assert_eq!(value["render"]["viewport_visibility_required"], false);
+    assert_eq!(value["render"]["viewport_unoccluded"], false);
     assert_eq!(value["render"]["geometry_complete"], false);
     assert_eq!(
         value["render"]["completeness"],
@@ -359,7 +373,14 @@ fn pending_gpu_capture_rejects_precise_hidden_and_stale_states() {
         let _gpu = GPU_TEST.lock().unwrap_or_else(|error| error.into_inner());
         let mut h = harness();
         let initial = h.state().live_bridge_stamp();
-        let rx = request(&h);
+        let rx = request_mode(
+            &h,
+            if case == "hidden" {
+                CaptureMode::VisibleViewport
+            } else {
+                CaptureMode::Offscreen
+            },
+        );
         wait_callback(&mut h);
         // Do not render: change state before delivery, never fabricate private GPU data.
         match case {
@@ -393,6 +414,33 @@ fn pending_gpu_capture_rejects_precise_hidden_and_stale_states() {
             "{case}: {response:?}"
         );
     }
+}
+#[test]
+fn offscreen_capture_works_while_the_gui_canvas_is_not_visible() {
+    let _gpu = GPU_TEST.lock().unwrap_or_else(|error| error.into_inner());
+    let mut h = harness();
+    h.state_mut()
+        .set_assistant_workspace_mode(AssistantWorkspaceMode::Tab);
+    let stamp = h.state().live_bridge_stamp();
+    let rx = request_mode(&h, CaptureMode::Offscreen);
+    let pass = wait_callback(&mut h);
+    h.render()
+        .expect("service private GPU target without a visible CAD canvas");
+    let response = wait_response(&mut h, rx);
+    assert!(response.ok, "{response:?}");
+    assert_eq!(response.stamp, Some(stamp.clone()));
+    let value = response.result.unwrap();
+    assert_eq!(value["stamp"], serde_json::to_value(stamp).unwrap());
+    assert_eq!(value["capture_pass"], pass);
+    assert_eq!(value["capture_mode"], "offscreen");
+    assert_eq!(value["render"]["render_correlated"], true);
+    assert_eq!(value["render"]["viewport_visibility_required"], false);
+    assert_eq!(value["render"]["viewport_unoccluded"], false);
+    assert_pixels(
+        &decode64(value["data"].as_str().unwrap()),
+        &value,
+        h.state().viewport_rect().unwrap(),
+    );
 }
 #[test]
 fn disconnected_capture_is_revoked_before_reconnect() {

@@ -78,12 +78,11 @@ pub(super) fn dimensions(screen: egui::Rect, ppp: f32) -> Result<[u32; 2], &'sta
     }
     Ok(size.map(|v| v as u32))
 }
-pub(super) fn schedule(
-    ctx: &egui::Context,
-    capture: &Painted,
+fn capture(
+    painted: &Painted,
     nonce: CaptureNonce,
     cancelled: Arc<AtomicBool>,
-) -> Result<Readback, &'static str> {
+) -> Result<(Readback, IsolatedCapture), &'static str> {
     let shared = Arc::new(Shared {
         state: Mutex::new(State::default()),
         revoked: AtomicBool::new(false),
@@ -93,16 +92,39 @@ pub(super) fn schedule(
         shared: shared.clone(),
         cancelled,
         nonce,
-        pass: capture.pass,
-        size: dimensions(capture.screen, capture.ppp)?,
-        ppp: capture.ppp,
-        jobs: capture.jobs.clone(),
-        atlas: capture.atlas.clone(),
-        scene: capture.callbacks != 0,
+        pass: painted.pass,
+        size: dimensions(painted.screen, painted.ppp)?,
+        ppp: painted.ppp,
+        jobs: painted.jobs.clone(),
+        atlas: painted.atlas.clone(),
+        scene: painted.callbacks != 0,
     };
+    Ok((Readback(shared), callback))
+}
+
+pub(super) fn schedule(
+    ctx: &egui::Context,
+    painted: &Painted,
+    nonce: CaptureNonce,
+    cancelled: Arc<AtomicBool>,
+) -> Result<Readback, &'static str> {
+    let (readback, callback) = capture(painted, nonce, cancelled)?;
     ctx.layer_painter(egui::LayerId::background())
-        .add(Callback::new_paint_callback(capture.rect, callback));
-    Ok(Readback(shared))
+        .add(Callback::new_paint_callback(painted.rect, callback));
+    Ok(readback)
+}
+
+pub(super) fn submit(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    painted: &Painted,
+    nonce: CaptureNonce,
+    cancelled: Arc<AtomicBool>,
+) -> Result<Readback, &'static str> {
+    let (readback, callback) = capture(painted, nonce, cancelled)?;
+    callback.shared.started.store(true, Ordering::Release);
+    callback.render(device, queue)?;
+    Ok(readback)
 }
 struct IsolatedCapture {
     shared: Arc<Shared>,

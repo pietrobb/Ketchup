@@ -17,6 +17,7 @@ fn queue(h: &mut Harness<'_, KetchupApp>, session: u64) -> mpsc::Receiver<Respon
             id: session,
             request: Request::Image {
                 expected: app.live_bridge_stamp(),
+                capture_mode: CaptureMode::Offscreen,
             },
             cancelled: Arc::new(AtomicBool::new(false)),
             reply,
@@ -211,7 +212,7 @@ fn native_harness(ppp: f32) -> Harness<'static, KetchupApp> {
     h
 }
 
-fn capture<'a>(h: &'a Harness<'_, KetchupApp>) -> &'a (Painted, target::Readback) {
+fn capture<'a>(h: &'a Harness<'_, KetchupApp>) -> &'a (Painted, target::Readback, bool) {
     h.state()
         .live_bridge
         .as_ref()

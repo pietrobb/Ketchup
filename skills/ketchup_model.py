@@ -5,6 +5,7 @@ import asyncio
 import importlib.util
 import inspect
 import json
+import math
 import os
 from pathlib import Path
 import sys
@@ -79,6 +80,26 @@ def _absolute(path):
 def _action(value, choices):
     if value not in choices:
         raise Rejection("invalid_action", "Choose one of: " + ", ".join(choices))
+
+
+def _finite_number(value):
+    if type(value) not in (int, float):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
+
+
+def _world_bounds(value):
+    if value is None:
+        return None
+    if (type(value) is not list or len(value) != 2
+            or any(type(point) is not list or len(point) != 3 for point in value)
+            or any(not _finite_number(axis) for point in value for axis in point)
+            or any(value[0][axis] > value[1][axis] for axis in range(3))):
+        raise Rejection("invalid_query", "world_bounds_mm must be finite [[min x,y,z],[max x,y,z]]")
+    return value
 
 
 def _identity(state):
@@ -203,7 +224,8 @@ def register_tools() -> list:
                         "workflow": "session new/open -> inspect summary -> search -> detail -> edit -> inspect -> verify -> save",
                         "preconditions": "edit/save/close require caller-observed expected_revision and expected_digest; inspect after every edit",
                         "limitations": "Requires compact-capable SDK/headless. No scripts, raw canonical commands, "
-                                       "GUI bridge, spatial queries or automatic retries. Oversized evidence is rejected incomplete."}
+                                       "GUI bridge, exact spatial geometry or automatic retries. Spatial bounds use explicit conservative proxies; "
+                                       "coverage reports omitted unbounded instances. Oversized evidence is rejected incomplete."}
             entry = runtime.entry(handle)
             if section == "validators":
                 return entry["document"].validators.list()
@@ -266,34 +288,64 @@ def register_tools() -> list:
     @beta_async_tool(name="KetchupInspect")
     async def inspect_model(handle: str, action: str = "summary", kind: str = "occurrences",
                             search: str = "", entity_id: int = 0, cursor: str = "", limit: int = 20,
-                            definition_id: int | None = None) -> str:
+                            definition_id: int | None = None, tag_id: int | None = None,
+                            classification_dimension_id: int | None = None,
+                            classification_category_id: int | None = None,
+                            world_bounds_mm: list[list[float]] | None = None) -> str:
         """Read macro summary first, search paged metadata, then detail by ID; no geometry evaluation.
 
         Args:
             handle: Owned session UUID.
             action: summary, search, or detail.
-            kind: occurrences, definitions, or features.
+            kind: occurrences, instances, definitions, or features. Instances expose qualified hierarchy paths through search.
             search: Case-sensitive name substring, at most 128 UTF-8 bytes.
             entity_id: Positive ID for detail.
             cursor: Opaque next_cursor from previous search; keep query unchanged. Stale tokens are rejected.
             limit: Search page size from 1 to 100.
-            definition_id: Optional positive definition filter for occurrence/feature search.
+            definition_id: Optional positive definition filter for occurrence/instance/feature search.
+            tag_id: Optional exact tag filter for occurrence/instance search; instances match any path step.
+            classification_dimension_id: Optional root-occurrence classification dimension filter.
+            classification_category_id: Optional category filter; requires classification_dimension_id.
+            world_bounds_mm: Optional inclusive [[min x,y,z],[max x,y,z]] world AABB for instance search.
         """
         def job():
             _action(action, ("summary", "search", "detail"))
-            _action(kind, ("occurrences", "definitions", "features"))
+            _action(kind, ("occurrences", "instances", "definitions", "features"))
+            property_ids = (tag_id, classification_dimension_id, classification_category_id)
+            if any(value is not None and (type(value) is not int or value <= 0) for value in property_ids):
+                raise Rejection("invalid_query", "Property filter IDs must be positive integers")
+            if classification_category_id is not None and classification_dimension_id is None:
+                raise Rejection("invalid_query", "classification_category_id requires classification_dimension_id")
+            if any(value is not None for value in property_ids) and (
+                    action != "search" or kind not in ("occurrences", "instances")):
+                raise Rejection("invalid_query", "Property filters apply only to occurrence/instance search")
+            bounds = _world_bounds(world_bounds_mm)
+            if bounds is not None and (action != "search" or kind != "instances"):
+                raise Rejection("invalid_query", "world_bounds_mm applies only to instance search")
             if not 1 <= limit <= 100 or len(cursor) > 4096 or len(search.encode("utf-8")) > 128:
                 raise Rejection("invalid_query", "Invalid page bounds or search too long")
             entry = runtime.entry(handle)
             if action == "summary":
                 result = runtime.summary(entry, runtime.read(entry))
             elif action == "detail":
+                if kind == "instances":
+                    raise Rejection("invalid_query", "Instance detail requires a qualified path; use search")
                 if entity_id <= 0:
                     raise Rejection("invalid_query", "Detail requires a positive entity ID")
                 result = entry["document"].detail(kind, entity_id)
             else:
-                result = entry["document"].query(kind=kind, search=search, limit=limit,
-                                               cursor=cursor or None, definition_id=definition_id)
+                params = {"kind": kind, "search": search, "limit": limit}
+                for key, value in {
+                    "cursor": cursor or None,
+                    "definition_id": definition_id,
+                    "tag_id": tag_id,
+                    "classification_dimension_id": classification_dimension_id,
+                    "classification_category_id": classification_category_id,
+                    "world_bounds_mm": bounds,
+                }.items():
+                    if value is not None:
+                        params[key] = value
+                result = entry["document"].query(**params)
             if result["identity"]["document_id"] != entry["document_id"]:
                 raise Rejection("document_changed", "Owned document identity changed")
             if len(_json({"ok": True, "result": result}).encode("utf-8")) <= MAX_OUTPUT:

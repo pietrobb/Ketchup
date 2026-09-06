@@ -37,8 +37,9 @@ struct ImageRequest {
     queued: Queued,
     deadline: Instant,
     initial: VisualState,
+    mode: CaptureMode,
     nonce: CaptureNonce,
-    capture: Option<(Painted, target::Readback)>,
+    capture: Option<(Painted, target::Readback, bool)>,
 }
 #[derive(Clone, Debug, PartialEq)]
 struct CaptureNonce([u8; 32]);
@@ -127,6 +128,12 @@ impl KetchupApp {
             bridge.image.painted = None;
         }
     }
+    pub(crate) fn live_offscreen_image_pending(&self) -> bool {
+        self.live_bridge
+            .as_ref()
+            .and_then(|bridge| bridge.image.pending.as_ref())
+            .is_some_and(|request| request.mode == CaptureMode::Offscreen)
+    }
     /// Deliberately accepts CAD data, NOT a layer/range from the GUI context.
     /// No menus, chat, viewport readouts, debug plugins or externally supplied
     /// shapes can paint into this private context or its eventual GPU target.
@@ -139,19 +146,21 @@ impl KetchupApp {
         edges: &[ProjectedEdge],
         plan: Option<Arc<crate::InstancedRenderPlan>>,
     ) {
-        if !self
+        let Some(mode) = self
             .live_bridge
             .as_ref()
-            .is_some_and(|b| b.image.pending.is_some())
-        {
+            .and_then(|bridge| bridge.image.pending.as_ref())
+            .map(|request| request.mode)
+        else {
             return;
-        }
+        };
         let painted = (|| {
             let screen = ui.ctx().screen_rect();
             let ppp = ui.ctx().pixels_per_point();
-            if !ui.is_visible()
-                || !ui.clip_rect().contains_rect(rect)
-                || !screen.contains_rect(rect)
+            if mode == CaptureMode::VisibleViewport
+                && (!ui.is_visible()
+                    || !ui.clip_rect().contains_rect(rect)
+                    || !screen.contains_rect(rect))
             {
                 return Err("hidden_viewport");
             }
@@ -222,7 +231,11 @@ impl LiveBridge {
     pub(super) fn request_image(&mut self, app: &KetchupApp, ctx: &egui::Context, queued: Queued) {
         self.image.purge_abandoned(self.session);
         let result = (|| {
-            let Request::Image { expected } = &queued.request else {
+            let Request::Image {
+                expected,
+                capture_mode,
+            } = &queued.request
+            else {
                 unreachable!()
             };
             Self::guard(app, expected)?;
@@ -232,14 +245,15 @@ impl LiveBridge {
             }
             let mut nonce = [0; 32];
             getrandom::fill(&mut nonce).map_err(|_| "image_unavailable")?;
-            Ok((VisualState::read(app)?, CaptureNonce(nonce)))
+            Ok((VisualState::read(app)?, *capture_mode, CaptureNonce(nonce)))
         })();
         match result {
-            Ok((initial, nonce)) => {
+            Ok((initial, mode, nonce)) => {
                 self.image.pending = Some(ImageRequest {
                     queued,
                     deadline: Instant::now() + Duration::from_millis(1500),
                     initial,
+                    mode,
                     nonce,
                     capture: None,
                 })
@@ -265,16 +279,23 @@ impl LiveBridge {
             }
             Self::guard(app, &request.initial.stamp)?;
             Self::available(app, ctx.wants_keyboard_input() || ctx.is_using_pointer())?;
-            if ctx.viewport_id() != egui::ViewportId::ROOT
-                || ctx.input(|i| i.viewport().minimized == Some(true) || !i.focused)
+            if request.mode == CaptureMode::VisibleViewport
+                && (ctx.viewport_id() != egui::ViewportId::ROOT
+                    || ctx.input(|i| i.viewport().minimized == Some(true) || !i.focused))
             {
                 return Err("hidden_viewport");
             }
-            let painted = self.image.painted.take().ok_or("hidden_viewport")??;
+            let painted = self.image.painted.take().ok_or(
+                if request.mode == CaptureMode::VisibleViewport {
+                    "hidden_viewport"
+                } else {
+                    "image_unavailable"
+                },
+            )??;
             if VisualState::read(app)? != painted.state {
                 return Err("stale_image");
             }
-            if let Some((capture, readback)) = &request.capture {
+            if let Some((capture, readback, direct)) = &request.capture {
                 if !capture.same(&painted) {
                     return Err("stale_image");
                 }
@@ -285,7 +306,7 @@ impl LiveBridge {
                     {
                         return Err("invalid_image_callback");
                     }
-                    return thumbnail(capture, &pixels.image).map(Some);
+                    return thumbnail(capture, &pixels.image, request.mode, *direct).map(Some);
                 }
                 // A discarded pass never executes its GPU callback. Do not attach
                 // an old stamp to a later pass; fail closed rather than reuse it.
@@ -296,13 +317,26 @@ impl LiveBridge {
                 {
                     return Err("stale_image");
                 }
-                let readback = target::schedule(
-                    ctx,
-                    &painted,
-                    request.nonce.clone(),
-                    request.queued.cancelled.clone(),
-                )?;
-                request.capture = Some((painted, readback));
+                let direct = request.mode == CaptureMode::Offscreen
+                    && app.wgpu_device.is_some()
+                    && app.wgpu_queue.is_some();
+                let readback = if direct {
+                    target::submit(
+                        app.wgpu_device.as_ref().unwrap(),
+                        app.wgpu_queue.as_ref().unwrap(),
+                        &painted,
+                        request.nonce.clone(),
+                        request.queued.cancelled.clone(),
+                    )?
+                } else {
+                    target::schedule(
+                        ctx,
+                        &painted,
+                        request.nonce.clone(),
+                        request.queued.cancelled.clone(),
+                    )?
+                };
+                request.capture = Some((painted, readback, direct));
             }
             Ok(None)
         })();
@@ -325,12 +359,10 @@ impl LiveBridge {
                     Err(code) => Response::error(request.queued.id, code),
                     Ok(None) => unreachable!(),
                 };
-                response.stamp = Some(
-                    request
-                        .capture
-                        .as_ref()
-                        .map_or_else(|| app.live_bridge_stamp(), |(p, _)| p.state.stamp.clone()),
-                );
+                response.stamp = Some(request.capture.as_ref().map_or_else(
+                    || app.live_bridge_stamp(),
+                    |(p, _, _)| p.state.stamp.clone(),
+                ));
                 if serde_json::to_vec(&response).map_or(true, |v| v.len() > MAX_FRAME_BYTES) {
                     response = Response::error(request.queued.id, "response_limit");
                 }
@@ -342,7 +374,12 @@ impl LiveBridge {
         }
     }
 }
-fn thumbnail(capture: &Painted, image: &ColorImage) -> Result<Value, &'static str> {
+fn thumbnail(
+    capture: &Painted,
+    image: &ColorImage,
+    mode: CaptureMode,
+    direct: bool,
+) -> Result<Value, &'static str> {
     let ppp = capture.ppp;
     let expected = target::dimensions(capture.screen, ppp)?.map(|v| v as usize);
     let count = image.size[0]
@@ -382,13 +419,15 @@ fn thumbnail(capture: &Painted, image: &ColorImage) -> Result<Value, &'static st
     let camera = &capture.state.camera;
     Ok(
         json!({"mime_type":"image/png","encoding":"base64","data":base64(&png),"width":w,"height":h,
-        "scope":"cad_viewport","stamp":capture.state.stamp,"capture_pass":capture.pass,
+        "scope":"cad_viewport","capture_mode":mode.as_str(),"stamp":capture.state.stamp,"capture_pass":capture.pass,
         "source_size_px":image.size,"crop_px":[x0,y0,sw,sh],"pixels_per_point":ppp,
         "sampling":"nearest_center","thumbnail":true,
         "view":{"projection":format!("{:?}",camera.projection_mode),"yaw":camera.yaw,"pitch":camera.pitch,
             "target_z_mm":camera.target_z,"zoom":camera.zoom,"pan":[camera.pan.x,camera.pan.y],"distance_mm":capture.state.distance},
         "selection":capture.state.selection,
-        "render":{"callback_correlated":true,"viewport_unoccluded":true,"geometry_complete":false,
+        "render":{"render_correlated":true,"callback_correlated":!direct,
+            "viewport_visibility_required":mode == CaptureMode::VisibleViewport,
+            "viewport_unoccluded":mode == CaptureMode::VisibleViewport,"geometry_complete":false,
             "source":"isolated_cad_target","gui_overlays_included":false,
             "completeness":"display_only_not_geometry_validation","exact_contents_stamp":capture.state.exact,
             "topology_contents_stamp":capture.state.topology,"exact_evaluation_complete":capture.state.exact_complete,
