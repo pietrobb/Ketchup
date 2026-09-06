@@ -293,6 +293,10 @@ impl Shell {
         self.harness.step();
     }
 
+    pub fn output_shapes(&self) -> &[egui::epaint::ClippedShape] {
+        &self.harness.output().shapes
+    }
+
     /// The 3D viewport rectangle of the current layout.
     ///
     /// Panics rather than returning a zero rectangle, so a test that interacts

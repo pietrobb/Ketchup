@@ -10763,6 +10763,42 @@ fn a_viewport_drag_in_move_commits_exactly_one_canonical_batch() {
     );
 }
 
+fn count_rotation_rings(shape: &eframe::egui::Shape) -> usize {
+    match shape {
+        eframe::egui::Shape::Path(path)
+            if path.points.len() == 73
+                && path.stroke.width == 1.6
+                && matches!(
+                    &path.stroke.color,
+                    eframe::egui::epaint::ColorMode::Solid(colour) if colour.a() == 130
+                )
+                && path
+                    .points
+                    .first()
+                    .zip(path.points.last())
+                    .is_some_and(|(first, last)| first.distance(*last) < 0.01) =>
+        {
+            1
+        }
+        eframe::egui::Shape::Vec(shapes) => shapes.iter().map(count_rotation_rings).sum(),
+        _ => 0,
+    }
+}
+
+fn count_selection_outline_segments(shape: &eframe::egui::Shape) -> usize {
+    match shape {
+        eframe::egui::Shape::LineSegment { stroke, .. }
+            if stroke.color == eframe::egui::Color32::from_rgb(240, 78, 35) =>
+        {
+            1
+        }
+        eframe::egui::Shape::Vec(shapes) => {
+            shapes.iter().map(count_selection_outline_segments).sum()
+        }
+        _ => 0,
+    }
+}
+
 #[test]
 fn a_viewport_drag_in_rotate_turns_the_occurrence_and_the_arrow_keys_pick_the_axis() {
     let mut shell = Shell::new();
@@ -10776,6 +10812,15 @@ fn a_viewport_drag_in_rotate_turns_the_occurrence_and_the_arrow_keys_pick_the_ax
     // swap those two extents. Reading the extents proves the body really turned
     // instead of merely reporting that it did.
     assert_eq!((size.x, size.y), (100.0, 60.0));
+    let selected_outline_segments: usize = shell
+        .output_shapes()
+        .iter()
+        .map(|clipped| count_selection_outline_segments(&clipped.shape))
+        .sum();
+    assert!(
+        selected_outline_segments > 0,
+        "the test must first observe the selected body's outline"
+    );
     let centre = Vec3::new(
         origin.x + size.x * 0.5,
         origin.y + size.y * 0.5,
@@ -10783,6 +10828,24 @@ fn a_viewport_drag_in_rotate_turns_the_occurrence_and_the_arrow_keys_pick_the_ax
     );
 
     shell.click_command(AppCommand::Rotate);
+    let rotation_rings: usize = shell
+        .output_shapes()
+        .iter()
+        .map(|clipped| count_rotation_rings(&clipped.shape))
+        .sum();
+    let selection_outline_segments: usize = shell
+        .output_shapes()
+        .iter()
+        .map(|clipped| count_selection_outline_segments(&clipped.shape))
+        .sum();
+    assert_eq!(
+        rotation_rings, 1,
+        "Rotate must retain exactly one circular degree guide"
+    );
+    assert_eq!(
+        selection_outline_segments, 0,
+        "Rotate must not paint the selected body's bounding outline"
+    );
     let before_revision = shell.app().document_revision();
     let before_digest = shell.app().canonical_digest();
     // Grab an arm on the top face and swing it a quarter turn.

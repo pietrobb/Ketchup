@@ -29539,6 +29539,9 @@ impl KetchupApp {
     }
 
     fn paint_projected_selection(&self, painter: &egui::Painter, edges: &[ProjectedEdge]) {
+        if self.active_tool == ActiveTool::Rotate {
+            return;
+        }
         let selection_stroke = Stroke::new(1.8_f32, Color32::from_rgb(240, 78, 35));
         let halo_stroke = Stroke::new(
             4.8_f32,
