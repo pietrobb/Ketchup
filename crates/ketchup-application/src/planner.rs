@@ -14,8 +14,9 @@ use ketchup_core::assistant_sidecar::{
     AssistantRejectionPhase,
 };
 use ketchup_core::document::{
-    CanonicalCommand, CanonicalError, CommandBatch, DefinitionId, Dimension, DocumentStore,
-    FeatureId, OccurrenceId, Snapshot, Transform,
+    CanonicalCommand, CanonicalError, ClassificationCategoryId, ClassificationDimensionId,
+    CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId, NodeId, OccurrenceId,
+    Snapshot, Transform,
 };
 use ketchup_core::exact_brep_graph::ExactBRepGraph;
 use ketchup_core::exact_product::{ExactPlanarOffsetRequest, ExactResultRegistry};
@@ -147,6 +148,13 @@ pub fn plan_assistant_cad_edit_program(
             AssistantCadEditOperation::Delete { .. } => "delete_occurrence",
             AssistantCadEditOperation::Transform { .. } => "transform_occurrence",
             AssistantCadEditOperation::SetColor { .. } => "set_color",
+            AssistantCadEditOperation::UpsertClassificationDimension { .. } => {
+                "upsert_classification_dimension"
+            }
+            AssistantCadEditOperation::SetOccurrenceClassification { .. } => {
+                "set_occurrence_classification"
+            }
+            AssistantCadEditOperation::CreateEvaluatorInput { .. } => "create_evaluator_input",
             AssistantCadEditOperation::Copy { .. } => "copy_occurrence",
             AssistantCadEditOperation::LinearPattern { .. } => "linear_pattern_occurrence",
             AssistantCadEditOperation::Mirror { .. } => "mirror_occurrence",
@@ -155,10 +163,13 @@ pub fn plan_assistant_cad_edit_program(
             AssistantCadEditOperation::CreateSketch { .. }
             | AssistantCadEditOperation::CreatePart { .. }
             | AssistantCadEditOperation::AppendFeature { .. }
-            | AssistantCadEditOperation::SetDimension { .. } => None,
+            | AssistantCadEditOperation::SetDimension { .. }
+            | AssistantCadEditOperation::UpsertClassificationDimension { .. }
+            | AssistantCadEditOperation::CreateEvaluatorInput { .. } => None,
             AssistantCadEditOperation::Delete { selector, .. }
             | AssistantCadEditOperation::Transform { selector, .. }
             | AssistantCadEditOperation::SetColor { selector, .. }
+            | AssistantCadEditOperation::SetOccurrenceClassification { selector, .. }
             | AssistantCadEditOperation::Copy { selector, .. }
             | AssistantCadEditOperation::LinearPattern { selector, .. }
             | AssistantCadEditOperation::Mirror { selector, .. } => Some(selector),
@@ -400,6 +411,43 @@ pub fn plan_assistant_cad_edit_program(
                     commands.push(CanonicalCommand::SetOccurrenceColor { id, color: *color });
                 }
             }
+            AssistantCadEditOperation::UpsertClassificationDimension {
+                dimension_id,
+                name,
+                categories,
+            } => commands.push(CanonicalCommand::UpsertClassificationDimension {
+                id: ClassificationDimensionId(*dimension_id),
+                name: name.clone(),
+                categories: categories
+                    .iter()
+                    .map(|category| (ClassificationCategoryId(category.id), category.name.clone()))
+                    .collect(),
+            }),
+            AssistantCadEditOperation::SetOccurrenceClassification {
+                dimension_id,
+                category_id,
+                ..
+            } => {
+                for occurrence_id in targets {
+                    commands.push(CanonicalCommand::SetOccurrenceClassification {
+                        occurrence_id,
+                        dimension_id: ClassificationDimensionId(*dimension_id),
+                        category_id: category_id.map(ClassificationCategoryId),
+                    });
+                }
+            }
+            AssistantCadEditOperation::CreateEvaluatorInput {
+                node_id,
+                name,
+                value,
+            } => commands.push(CanonicalCommand::CreateEvaluatorNode {
+                id: NodeId(*node_id),
+                name: name.clone(),
+                dimension: Dimension::new(value.to_string(), *value).map_err(|error| {
+                    assistant_canonical_rejection(error, operation_name, &format!("node:{node_id}"))
+                })?,
+                dependencies: Vec::new(),
+            }),
             AssistantCadEditOperation::Copy { translation_mm, .. } => {
                 let delta = Vec3::new(translation_mm[0], translation_mm[1], translation_mm[2]);
                 for id in targets {

@@ -70,13 +70,14 @@ SYSTEM_PROMPT = (
     "unsupported or unavailable occurrences or say that the relevant check is incomplete or skipped. Return ONLY "
     "one JSON object with exactly three fields: message (a concise user-facing string), "
     "model_intent (null for discussion or CAD edits), and cad_edit_program (null unless proposing typed CAD operations). "
-    "Never return both mutation fields. Use cad_edit_program for create_part, create_sketch, append_feature, set_dimension, delete, rigid transform, copy, linear pattern, or mirror. "
+    "Never return both mutation fields. Use cad_edit_program for create_part, create_sketch, append_feature, set_dimension, delete, rigid transform, copy, linear pattern, mirror, classification metadata, or evaluator inputs. "
     "cad_edit_program is {operations: [...]} and every operation names its kind in the field operation, never in a field called type: {operation: create_part, ...}. Inside an operation the field type stays reserved for nested records such as feature, workplane, entities and constraints. "
     "create_part atomically creates a host-ID-assigned definition, workplane, sketch, universal feature, and occurrence. It has name, workplane, entities, constraints, feature, translation_mm, and optional rotation; feature is either {type: extrusion, distance_mm: positive length} or {type: revolve, axis_start_mm: [x,y], axis_end_mm: [x,y], angle_degrees: >0 and <=360}. "
     "append_feature adds one host-ID-assigned feature to an existing definition. It has definition_id, name, and either feature {type: boolean, operation: cut|union|intersect, target_feature_id, tool_feature_id}, whose inputs are distinct supported exact body features in that definition; feature {type: pocket, target_feature_id, profile_feature_id, depth_mm}, whose distinct inputs are a supported exact extrusion target and closed profile in that definition with positive bounded depth below the target height; feature {type: planar_offset, profile_feature_id, distance_mm}, whose input is the sole existing exact rectangular profile in that definition and whose finite signed distance magnitude from 0.01 to 1000000 mm must leave both result dimensions at least 0.01 mm; feature {type: sweep, profile_feature_id, path_feature_id}, whose distinct inputs are a supported closed polygon or line/arc profile and one open straight path in that definition; feature {type: loft, sections: [{profile_feature_id, elevation_mm}, ...]}, with 2 to 16 unique existing spline profiles in that definition and finite bounded elevations in strictly increasing order; feature {type: topology_shell, target_feature_id, removed_face_reference_ids, thickness_mm}, with 1 to 64 unique opaque reference_id values copied exactly from current topology_face_references for that definition and target, and finite thickness from 0.01 to 100000 mm; feature {type: topology_fillet, target_feature_id, edge_reference_ids, radius_mm}, with 1 to 64 unique opaque reference_id values copied exactly from current topology_edge_references for that definition and target, and finite radius from 0.01 to 100000 mm; or feature {type: topology_chamfer, target_feature_id, edge_reference_ids, distance_mm}, with 1 to 64 unique opaque reference_id values copied exactly from current topology_edge_references for that definition and target, and finite distance from 0.01 to 100000 mm. Never invent topology reference IDs, face or edge ordinals, semantic roles, or named-shape selectors. "
     "create_sketch has definition_id, name, workplane, entities, and constraints; workplane is principal with plane xy/yz/xz or offset with an existing base_feature_id and distance_mm. "
     "Entities are typed line/arc/circle records with positive stable IDs and 2D millimetre coordinates. Constraints are typed horizontal/vertical/coincident/distance/radius/fixed_point records with positive stable IDs and point refs {entity_id, point: start/end/center}. "
     "The host assigns create_part definition, feature, and occurrence IDs and create_sketch workplane and sketch feature IDs. set_dimension targets an existing feature_id, optional constraint_id, and positive value_mm. "
+    "upsert_classification_dimension has positive dimension_id, non-empty name, and 1 to 64 categories [{id: positive unique ID, name: non-empty string}]. set_occurrence_classification has an occurrence selector, positive dimension_id, and category_id as a positive ID or null. create_evaluator_input has positive node_id, non-empty name, and finite value from -1000000 to 1000000. Use only IDs proven free or present by the current document context. "
     "Occurrence operations have a selector: either {type: current_selection} or {type: occurrences, occurrence_ids: [positive unique IDs]}. "
     "Delete also has dependency_policy reject_if_referenced or remove_references. Transform has translation_mm and optional rotation with pivot_mm, non-zero axis, and angle_degrees. "
     "Copy has non-zero translation_mm. Linear_pattern has instances including originals and non-zero step_mm. Mirror has plane_origin_mm and non-zero plane_normal. "
@@ -1019,12 +1020,84 @@ def _validate_cad_edit_program(program: object) -> dict:
                 or not 0 < value <= 1_000_000
             ):
                 raise ProtocolError("provider CAD dimension edit is invalid")
+        elif operation_type == "upsert_classification_dimension":
+            if set(operation) != {"operation", "dimension_id", "name", "categories"}:
+                raise ProtocolError("provider CAD classification dimension contains missing or unknown fields")
+            categories = operation["categories"]
+            if (
+                not isinstance(operation["dimension_id"], int)
+                or isinstance(operation["dimension_id"], bool)
+                or not 0 < operation["dimension_id"] <= MAX_U64
+                or not isinstance(operation["name"], str)
+                or not operation["name"].strip()
+                or len(operation["name"].encode("utf-8")) > 128
+                or not isinstance(categories, list)
+                or not 1 <= len(categories) <= MAX_CAD_EDIT_OPERATIONS
+                or any(
+                    not isinstance(category, dict)
+                    or set(category) != {"id", "name"}
+                    or not isinstance(category["id"], int)
+                    or isinstance(category["id"], bool)
+                    or not 0 < category["id"] <= MAX_U64
+                    or not isinstance(category["name"], str)
+                    or not category["name"].strip()
+                    or len(category["name"].encode("utf-8")) > 128
+                    for category in categories
+                )
+                or len({category["id"] for category in categories}) != len(categories)
+            ):
+                raise ProtocolError("provider CAD classification dimension is invalid")
+        elif operation_type == "create_evaluator_input":
+            if set(operation) != {"operation", "node_id", "name", "value"}:
+                raise ProtocolError("provider CAD evaluator input contains missing or unknown fields")
+            value = operation["value"]
+            if (
+                not isinstance(operation["node_id"], int)
+                or isinstance(operation["node_id"], bool)
+                or not 0 < operation["node_id"] <= MAX_U64
+                or not isinstance(operation["name"], str)
+                or not operation["name"].strip()
+                or len(operation["name"].encode("utf-8")) > 128
+                or not isinstance(value, (int, float))
+                or isinstance(value, bool)
+                or not math.isfinite(value)
+                or abs(value) > 1_000_000
+            ):
+                raise ProtocolError("provider CAD evaluator input is invalid")
         else:
             if "selector" not in operation:
                 raise ProtocolError("provider CAD edit selector is missing")
             target_count = _validate_cad_selector(operation["selector"])
-        if operation_type in {"create_sketch", "create_part", "append_feature", "set_dimension"}:
+        if operation_type in {
+            "create_sketch",
+            "create_part",
+            "append_feature",
+            "set_dimension",
+            "upsert_classification_dimension",
+            "create_evaluator_input",
+        }:
             pass
+        elif operation_type == "set_occurrence_classification":
+            if set(operation) != {
+                "operation",
+                "selector",
+                "dimension_id",
+                "category_id",
+            }:
+                raise ProtocolError("provider CAD classification assignment contains missing or unknown fields")
+            category_id = operation["category_id"]
+            if (
+                not isinstance(operation["dimension_id"], int)
+                or isinstance(operation["dimension_id"], bool)
+                or not 0 < operation["dimension_id"] <= MAX_U64
+                or category_id is not None
+                and (
+                    not isinstance(category_id, int)
+                    or isinstance(category_id, bool)
+                    or not 0 < category_id <= MAX_U64
+                )
+            ):
+                raise ProtocolError("provider CAD classification assignment is invalid")
         elif operation_type == "delete":
             if set(operation) != {"operation", "selector", "dependency_policy"} or operation[
                 "dependency_policy"

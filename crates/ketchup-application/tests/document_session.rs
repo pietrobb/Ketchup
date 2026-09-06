@@ -1,6 +1,7 @@
 use ketchup_application::evaluation::*;
 use ketchup_application::{
     AssistantValidationSelection, DocumentSession, SaveOptions, SessionError, SessionSettings,
+    StructuralValidationScope, scoped_static_load_report,
 };
 use ketchup_core::{
     assistant_sidecar::*, document::*, exact_product::ExactResultRegistry,
@@ -407,4 +408,106 @@ fn real_worker_face_supported_pocket_keeps_intermediate_and_roundtrips() {
         before.canonical_digest()
     );
     assert!(reopened.evaluate().unwrap().complete);
+}
+
+#[test]
+fn typed_cad_program_commits_static_metadata_atomically() {
+    let mut session = DocumentSession::default();
+    session
+        .apply_cad_program(
+            &AssistantCadEditProgram {
+                operations: vec![part(), part()],
+            },
+            &BTreeSet::new(),
+        )
+        .unwrap();
+    let geometry = session.snapshot();
+    let metadata = AssistantCadEditProgram {
+        operations: vec![
+            AssistantCadEditOperation::UpsertClassificationDimension {
+                dimension_id: 1,
+                name: "ketchup.validator-role.v1".into(),
+                categories: vec![
+                    AssistantCadClassificationCategory {
+                        id: 1,
+                        name: "physics.static.load:case-a".into(),
+                    },
+                    AssistantCadClassificationCategory {
+                        id: 2,
+                        name: "physics.static.support:case-a".into(),
+                    },
+                ],
+            },
+            AssistantCadEditOperation::SetOccurrenceClassification {
+                selector: AssistantCadEntitySelector::Occurrences {
+                    occurrence_ids: vec![1],
+                },
+                dimension_id: 1,
+                category_id: Some(1),
+            },
+            AssistantCadEditOperation::SetOccurrenceClassification {
+                selector: AssistantCadEntitySelector::Occurrences {
+                    occurrence_ids: vec![2],
+                },
+                dimension_id: 1,
+                category_id: Some(2),
+            },
+            AssistantCadEditOperation::CreateEvaluatorInput {
+                node_id: 1,
+                name: "physics.gravity_x_m_s2".into(),
+                value: 0.0,
+            },
+            AssistantCadEditOperation::CreateEvaluatorInput {
+                node_id: 2,
+                name: "physics.gravity_y_m_s2".into(),
+                value: 0.0,
+            },
+            AssistantCadEditOperation::CreateEvaluatorInput {
+                node_id: 3,
+                name: "physics.gravity_z_m_s2".into(),
+                value: -9.81,
+            },
+            AssistantCadEditOperation::CreateEvaluatorInput {
+                node_id: 4,
+                name: "physics.mass_kg.occurrence.1".into(),
+                value: 100.0,
+            },
+            AssistantCadEditOperation::CreateEvaluatorInput {
+                node_id: 5,
+                name: "physics.applied_load_n.occurrence.1".into(),
+                value: 200.0,
+            },
+            AssistantCadEditOperation::CreateEvaluatorInput {
+                node_id: 6,
+                name: "physics.support_capacity_n.occurrence.2".into(),
+                value: 2_000.0,
+            },
+        ],
+    };
+
+    let proposal = session
+        .plan_cad_program(&metadata, &BTreeSet::new())
+        .unwrap();
+    assert_eq!(
+        session.snapshot().canonical_digest(),
+        geometry.canonical_digest()
+    );
+    assert_eq!(session.visible_undo_steps(), 1);
+    let committed = session.apply_proposal(&proposal).unwrap();
+    assert_eq!(session.visible_undo_steps(), 2);
+    assert_eq!(
+        committed.occurrence_classification(OccurrenceId(1), ClassificationDimensionId(1)),
+        Some(ClassificationCategoryId(1))
+    );
+    let scope = StructuralValidationScope::bind(&committed, [OccurrenceId(1)]);
+    let report = scoped_static_load_report(&committed, &scope, || false);
+    assert_eq!(report["state"], "passed", "{report:#}");
+    assert_eq!(report["complete"], true, "{report:#}");
+    assert_eq!(report["coverage"]["checked_load_occurrence_count"], 1);
+
+    session.undo().unwrap();
+    assert_eq!(
+        session.snapshot().canonical_digest(),
+        geometry.canonical_digest()
+    );
 }

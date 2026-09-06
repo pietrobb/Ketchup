@@ -523,6 +523,13 @@ pub enum AssistantSketchConstraint {
     },
 }
 
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AssistantCadClassificationCategory {
+    pub id: u64,
+    pub name: String,
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 pub enum AssistantCadEditOperation {
@@ -566,6 +573,21 @@ pub enum AssistantCadEditOperation {
     SetColor {
         selector: AssistantCadEntitySelector,
         color: Option<[u8; 3]>,
+    },
+    UpsertClassificationDimension {
+        dimension_id: u64,
+        name: String,
+        categories: Vec<AssistantCadClassificationCategory>,
+    },
+    SetOccurrenceClassification {
+        selector: AssistantCadEntitySelector,
+        dimension_id: u64,
+        category_id: Option<u64>,
+    },
+    CreateEvaluatorInput {
+        node_id: u64,
+        name: String,
+        value: f64,
     },
     Copy {
         selector: AssistantCadEntitySelector,
@@ -996,10 +1018,13 @@ impl AssistantCadEditProgram {
             let bounded_targets = match operation {
                 AssistantCadEditOperation::CreateSketch { .. }
                 | AssistantCadEditOperation::AppendFeature { .. }
-                | AssistantCadEditOperation::SetDimension { .. } => 0,
+                | AssistantCadEditOperation::SetDimension { .. }
+                | AssistantCadEditOperation::UpsertClassificationDimension { .. }
+                | AssistantCadEditOperation::CreateEvaluatorInput { .. } => 0,
                 AssistantCadEditOperation::CreatePart { .. } => 1,
                 AssistantCadEditOperation::Delete { selector, .. }
                 | AssistantCadEditOperation::SetColor { selector, .. }
+                | AssistantCadEditOperation::SetOccurrenceClassification { selector, .. }
                 | AssistantCadEditOperation::Transform { selector, .. }
                 | AssistantCadEditOperation::Copy { selector, .. }
                 | AssistantCadEditOperation::LinearPattern { selector, .. }
@@ -1067,6 +1092,56 @@ impl AssistantCadEditProgram {
                         || *value_mm > MAX_ASSISTANT_ABS_MM
                     {
                         return Err("assistant CAD dimension edit is invalid".to_owned());
+                    }
+                    0
+                }
+                AssistantCadEditOperation::UpsertClassificationDimension {
+                    dimension_id,
+                    name,
+                    categories,
+                } => {
+                    let mut category_ids = BTreeSet::new();
+                    if *dimension_id == 0
+                        || name.trim().is_empty()
+                        || name.len() > MAX_ASSISTANT_NAME_BYTES
+                        || name.chars().any(char::is_control)
+                        || categories.is_empty()
+                        || categories.len() > MAX_ASSISTANT_CAD_EDIT_OPERATIONS
+                        || categories.iter().any(|category| {
+                            category.id == 0
+                                || category.name.trim().is_empty()
+                                || category.name.len() > MAX_ASSISTANT_NAME_BYTES
+                                || category.name.chars().any(char::is_control)
+                                || !category_ids.insert(category.id)
+                        })
+                    {
+                        return Err("assistant CAD classification dimension is invalid".to_owned());
+                    }
+                    0
+                }
+                AssistantCadEditOperation::SetOccurrenceClassification {
+                    dimension_id,
+                    category_id,
+                    ..
+                } => {
+                    if *dimension_id == 0 || category_id == &Some(0) {
+                        return Err("assistant CAD classification assignment is invalid".to_owned());
+                    }
+                    0
+                }
+                AssistantCadEditOperation::CreateEvaluatorInput {
+                    node_id,
+                    name,
+                    value,
+                } => {
+                    if *node_id == 0
+                        || name.trim().is_empty()
+                        || name.len() > MAX_ASSISTANT_NAME_BYTES
+                        || name.chars().any(char::is_control)
+                        || !value.is_finite()
+                        || value.abs() > MAX_ASSISTANT_ABS_MM
+                    {
+                        return Err("assistant CAD evaluator input is invalid".to_owned());
                     }
                     0
                 }

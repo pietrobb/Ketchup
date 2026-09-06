@@ -414,9 +414,12 @@ fn bind_assistant_cad_current_selection(
             AssistantCadEditOperation::CreateSketch { .. }
             | AssistantCadEditOperation::CreatePart { .. }
             | AssistantCadEditOperation::AppendFeature { .. }
-            | AssistantCadEditOperation::SetDimension { .. } => None,
+            | AssistantCadEditOperation::SetDimension { .. }
+            | AssistantCadEditOperation::UpsertClassificationDimension { .. }
+            | AssistantCadEditOperation::CreateEvaluatorInput { .. } => None,
             AssistantCadEditOperation::Delete { selector, .. }
             | AssistantCadEditOperation::SetColor { selector, .. }
+            | AssistantCadEditOperation::SetOccurrenceClassification { selector, .. }
             | AssistantCadEditOperation::Transform { selector, .. }
             | AssistantCadEditOperation::Copy { selector, .. }
             | AssistantCadEditOperation::LinearPattern { selector, .. }

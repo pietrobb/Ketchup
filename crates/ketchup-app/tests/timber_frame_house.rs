@@ -12,12 +12,15 @@ mod harness;
 use eframe::egui;
 use harness::{ScriptedAssistantTransport, Shell};
 use ketchup_app::AssistantMessageRole;
+use ketchup_application::validation::{
+    AssistantValidationSelection, assistant_validation_context_with_worker,
+};
 use ketchup_core::assistant_sidecar::{
-    AssistantCadBodyFeature, AssistantCadBooleanOperation, AssistantCadDeletePolicy,
-    AssistantCadEditOperation, AssistantCadEditProgram, AssistantCadEntitySelector,
-    AssistantCadPartFeature, AssistantCadRotation, AssistantChatResult, AssistantDistribution,
-    AssistantPrincipalPlane, AssistantSketchConstraint, AssistantSketchEntity,
-    AssistantWorkplaneSpec,
+    AssistantCadBodyFeature, AssistantCadBooleanOperation, AssistantCadClassificationCategory,
+    AssistantCadDeletePolicy, AssistantCadEditOperation, AssistantCadEditProgram,
+    AssistantCadEntitySelector, AssistantCadPartFeature, AssistantCadRotation, AssistantChatResult,
+    AssistantDistribution, AssistantPrincipalPlane, AssistantSketchConstraint,
+    AssistantSketchEntity, AssistantWorkplaneSpec,
 };
 use ketchup_core::document::{DefinitionId, FeatureId, FeatureKind, InstancePath, Snapshot};
 use ketchup_core::exact_brep_graph::ExactBRepGraph;
@@ -30,7 +33,7 @@ use ketchup_core::exact_validation::{
     general_body_validation_policy, gravity_support_input_bytes, gravity_support_validation_policy,
 };
 use ketchup_core::fabrication::{GeneralManufacturingKind, ProjectionStatus};
-use ketchup_core::persistence;
+use ketchup_core::persistence::{self, ContainerData};
 use ketchup_core::prismatic::TolerancePolicy;
 use ketchup_core::validation::{
     HostNeutralValidator, ValidationExecution, ValidationInvocation, ValidationReport,
@@ -238,6 +241,117 @@ fn body_feature_id_of(shell: &Shell, name: &str) -> FeatureId {
         .copied()
         .find(|id| matches!(snapshot.feature(*id).unwrap().kind(), FeatureKind::Pad(_)))
         .unwrap_or_else(|| panic!("definition {name} must own a pad"))
+}
+
+fn static_metadata_program(snapshot: &Snapshot) -> (AssistantCadEditProgram, usize) {
+    let dimension_id = snapshot
+        .classification_dimensions()
+        .map(|dimension| dimension.id().0)
+        .max()
+        .unwrap_or(0)
+        + 1;
+    let first_category_id = snapshot
+        .classification_dimensions()
+        .flat_map(|dimension| dimension.categories())
+        .map(|category| category.id().0)
+        .max()
+        .unwrap_or(0)
+        + 1;
+    let load_category_id = first_category_id;
+    let support_category_id = first_category_id + 1;
+    let mut next_node_id = snapshot
+        .evaluator_nodes()
+        .map(|node| node.id().0)
+        .max()
+        .unwrap_or(0)
+        + 1;
+    let support_ids = snapshot
+        .scene_query()
+        .into_iter()
+        .filter(|occurrence| {
+            matches!(
+                occurrence.occurrence_name.as_str(),
+                "Foundation beam" | "Rear foundation beam"
+            )
+        })
+        .map(|occurrence| occurrence.occurrence_id.0)
+        .collect::<Vec<_>>();
+    let load_ids = snapshot
+        .scene_query()
+        .into_iter()
+        .filter(|occurrence| {
+            occurrence.visible && !support_ids.contains(&occurrence.occurrence_id.0)
+        })
+        .map(|occurrence| occurrence.occurrence_id.0)
+        .collect::<Vec<_>>();
+    assert_eq!(support_ids.len(), 2);
+    assert_eq!(load_ids.len(), 10);
+
+    let mut operations = vec![
+        AssistantCadEditOperation::UpsertClassificationDimension {
+            dimension_id,
+            name: "ketchup.validator-role.v1".to_owned(),
+            categories: vec![
+                AssistantCadClassificationCategory {
+                    id: load_category_id,
+                    name: "physics.static.load:live-house".to_owned(),
+                },
+                AssistantCadClassificationCategory {
+                    id: support_category_id,
+                    name: "physics.static.support:live-house".to_owned(),
+                },
+            ],
+        },
+        AssistantCadEditOperation::SetOccurrenceClassification {
+            selector: AssistantCadEntitySelector::Occurrences {
+                occurrence_ids: load_ids.clone(),
+            },
+            dimension_id,
+            category_id: Some(load_category_id),
+        },
+        AssistantCadEditOperation::SetOccurrenceClassification {
+            selector: AssistantCadEntitySelector::Occurrences {
+                occurrence_ids: support_ids.clone(),
+            },
+            dimension_id,
+            category_id: Some(support_category_id),
+        },
+    ];
+    for (name, value) in [
+        ("physics.gravity_x_m_s2".to_owned(), 0.0),
+        ("physics.gravity_y_m_s2".to_owned(), 0.0),
+        ("physics.gravity_z_m_s2".to_owned(), -9.81),
+    ] {
+        operations.push(AssistantCadEditOperation::CreateEvaluatorInput {
+            node_id: next_node_id,
+            name,
+            value,
+        });
+        next_node_id += 1;
+    }
+    for occurrence_id in &load_ids {
+        for (prefix, value) in [
+            ("physics.mass_kg.occurrence", 100.0),
+            ("physics.applied_load_n.occurrence", 500.0),
+        ] {
+            operations.push(AssistantCadEditOperation::CreateEvaluatorInput {
+                node_id: next_node_id,
+                name: format!("{prefix}.{occurrence_id}"),
+                value,
+            });
+            next_node_id += 1;
+        }
+    }
+    for occurrence_id in support_ids {
+        operations.push(AssistantCadEditOperation::CreateEvaluatorInput {
+            node_id: next_node_id,
+            name: format!("physics.support_capacity_n.occurrence.{occurrence_id}"),
+            value: 100_000.0,
+        });
+        next_node_id += 1;
+    }
+    assert_eq!(operations.len(), 28);
+    (AssistantCadEditProgram { operations }, load_ids.len())
 }
 
 /// Drive the whole frame from an empty document through the Assistant, and
@@ -886,6 +1000,58 @@ fn live_oauth_assistant_builds_a_roofed_house_frame_across_turns() {
     shell.click_row(&shell.catalog().text("assistant-confirm"));
     assert_eq!(shell.app().document_revision(), frame_revision + 1);
     assert_ne!(shell.app().canonical_digest(), frame_digest);
+    let roof_revision = shell.app().document_revision();
+    let roof_digest = shell.app().canonical_digest();
+    let roof_snapshot = shell.app().document_snapshot();
+    let (expected_static_program, static_load_count) = static_metadata_program(&roof_snapshot);
+    let static_program_json = serde_json::to_string(&expected_static_program).unwrap();
+    let static_request = format!(
+        "Use one typed cad_edit_program, not model_intent and not prose alone. Keep all 12 existing occurrences and their geometry unchanged. Add the canonical classification roles and explicit numeric evaluator inputs for a complete static-load check by returning exactly this cad_edit_program object: {static_program_json} Do not add, delete, transform or recolor any occurrence and do not emit any additional operation."
+    );
+    shell.focus_text_input(&input);
+    shell.type_text(&static_request);
+    shell.press_key(egui::Key::Enter);
+    wait_for_live_assistant_proposal(&mut shell);
+
+    assert_eq!(shell.app().document_revision(), roof_revision);
+    assert_eq!(shell.app().canonical_digest(), roof_digest);
+    let proposal = shell
+        .app()
+        .assistant_proposal()
+        .expect("the static metadata response must create a reviewable proposal");
+    assert_eq!(proposal.provenance_revision(), roof_revision);
+    assert_eq!(proposal.provenance_digest(), roof_digest);
+    let diagnostics = shell
+        .app()
+        .last_assistant_api_diagnostics()
+        .expect("the static metadata response must retain provider diagnostics");
+    assert_eq!(diagnostics.provider, "codex-oauth");
+    assert_eq!(diagnostics.model, "gpt-5.6-sol");
+    assert!(diagnostics.input_tokens > 0 && diagnostics.output_tokens > 0);
+    let static_provider_message =
+        json_string_ending_with(&diagnostics.request_payload, &static_request)
+            .expect("the provider payload must contain the static metadata request");
+    let (document_context, provider_prompt) = static_provider_message
+        .strip_prefix("<document-context>")
+        .and_then(|message| message.split_once("</document-context>\n\n"))
+        .expect("the static metadata request must carry serialized roof context");
+    assert_eq!(provider_prompt, static_request);
+    let document_context: serde_json::Value = serde_json::from_str(document_context)
+        .expect("the static metadata provider context must remain valid JSON");
+    assert_eq!(document_context["revision"], roof_revision);
+    assert_eq!(document_context["canonical_digest"], roof_digest);
+    assert_eq!(document_context["occurrence_count"], 12);
+    let provider_response: serde_json::Value = serde_json::from_str(&diagnostics.response_text)
+        .expect("the captured static metadata provider response must be JSON");
+    let static_program = serde_json::from_value::<AssistantCadEditProgram>(
+        provider_response["cad_edit_program"].clone(),
+    )
+    .expect("the static metadata response must deserialize through the public typed contract");
+    assert_eq!(static_program, expected_static_program);
+
+    shell.click_row(&shell.catalog().text("assistant-confirm"));
+    assert_eq!(shell.app().document_revision(), roof_revision + 1);
+    assert_ne!(shell.app().canonical_digest(), roof_digest);
     let committed = shell.app().document_snapshot();
     assert_eq!(committed.occurrences().count(), 12);
     for (name, occurrence_id, definition_id, transform) in frame_identities {
@@ -1100,6 +1266,30 @@ fn live_oauth_assistant_builds_a_roofed_house_frame_across_turns() {
         gravity_report.diagnostics
     );
 
+    let static_validation = assistant_validation_context_with_worker(
+        &committed,
+        &registry,
+        &AssistantValidationSelection::only(&["static_load"]),
+        &ContainerData::default(),
+        Some(exact_worker_path()),
+        Duration::from_secs(30),
+    );
+    assert_eq!(static_validation["revision"], committed.revision_id());
+    assert_eq!(
+        static_validation["canonical_digest"],
+        committed.canonical_digest()
+    );
+    assert_eq!(
+        static_validation["state"], "passed",
+        "{static_validation:#}"
+    );
+    assert_eq!(static_validation["complete"], true, "{static_validation:#}");
+    assert_eq!(
+        static_validation["static_load"]["applicable_count"],
+        static_load_count
+    );
+    assert_eq!(static_validation["static_load"]["issue_count"], 0);
+
     let fabrication = ketchup_core::fabrication::project_general_fabrication(
         &committed,
         &registry,
@@ -1163,6 +1353,9 @@ fn live_oauth_assistant_builds_a_roofed_house_frame_across_turns() {
         &std::fs::read(path).unwrap(),
     );
 
+    assert!(shell.app_mut().undo());
+    assert_eq!(shell.app().document_revision(), roof_revision);
+    assert_eq!(shell.app().canonical_digest(), roof_digest);
     assert!(shell.app_mut().undo());
     assert_eq!(shell.app().document_revision(), frame_revision);
     assert_eq!(shell.app().canonical_digest(), frame_digest);

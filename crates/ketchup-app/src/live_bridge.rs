@@ -483,13 +483,16 @@ impl LiveBridge {
                 AssistantCadEditOperation::Delete { selector, .. }
                 | AssistantCadEditOperation::Transform { selector, .. }
                 | AssistantCadEditOperation::SetColor { selector, .. }
+                | AssistantCadEditOperation::SetOccurrenceClassification { selector, .. }
                 | AssistantCadEditOperation::Copy { selector, .. }
                 | AssistantCadEditOperation::LinearPattern { selector, .. }
                 | AssistantCadEditOperation::Mirror { selector, .. } => Some(selector),
                 AssistantCadEditOperation::CreateSketch { .. }
                 | AssistantCadEditOperation::CreatePart { .. }
                 | AssistantCadEditOperation::AppendFeature { .. }
-                | AssistantCadEditOperation::SetDimension { .. } => None,
+                | AssistantCadEditOperation::SetDimension { .. }
+                | AssistantCadEditOperation::UpsertClassificationDimension { .. }
+                | AssistantCadEditOperation::CreateEvaluatorInput { .. } => None,
             };
             if let Some(AssistantCadEntitySelector::Occurrences { occurrence_ids }) = selector {
                 Self::root_ids(app, occurrence_ids)?;
